@@ -1,0 +1,4 @@
+interface:
+  display_name: "I2PR NTCP2 Interop"
+  short_description: "Run the Ubuntu NTCP2 interop harness"
+  default_prompt: "Use $i2pr-ntcp2-interop to run or extend the I2PR Ubuntu reference-router interoperability harness."
