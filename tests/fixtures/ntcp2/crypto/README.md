@@ -18,3 +18,10 @@ storage round-trip and malformed-record tests.
 The adjacent `manifest.tsv` records every file's SHA-256 and is checked by
 `scripts/check-ntcp2-vectors.sh`. Fixture values are redistributable synthetic
 test material under the repository's eventual project license.
+
+Plan 034 adds `data-phase-blocks.hex` (a canonical timestamp plus padding
+plaintext), `data-phase-frame.hex` (one fixed-key authenticated frame), and
+`data-phase-malformed.hex` (duplicate padding). These are locally authored hex
+fixtures consumed by the frame and block tests. They contain no operational
+keys, identities, addresses, captures, or interoperability evidence; the
+manifest records their exact hashes and classification.

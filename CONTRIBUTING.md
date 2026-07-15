@@ -111,6 +111,27 @@ bounded simulated partial-I/O actions. Keep those tests in the pure NTCP2
 crate or the deterministic testkit; do not add Tokio, sockets, wall-clock
 sleeps, public-network traffic, or capability claims.
 
+Plan 034 data-phase changes must exercise authenticate-before-parse behavior,
+zero/minimum/maximum/maximum-plus-one lengths, strict block headers, unknown
+and duplicate blocks, terminal ordering, tag mutation, counter exhaustion,
+RouterInfo signature/static-key binding, and bounded I2NP handoff. Use the
+deterministic testkit drivers for one-byte reads/writes, split lengths,
+multi-frame buffering, truncation, cancellation, backpressure, and exact
+buffer/lease teardown. Add a locally authored fixture row for every committed
+vector or malformed corpus file and run the NTCP2 vector-manifest check.
+The current specification has no data-phase rekey threshold; do not invent an
+in-session rekey wire message. Counter exhaustion or static-key/IV rotation
+requires a fresh Noise handshake until a later compatibility plan says more.
+
+The focused Plan 034 lane is:
+
+```text
+cargo test -p i2pr-transport-ntcp2 --all-targets
+cargo test -p i2pr-testkit --all-targets
+bash scripts/check-ntcp2-vectors.sh
+cargo +nightly check --manifest-path fuzz/Cargo.toml --offline --all-targets
+```
+
 The independent deterministic corpus is local crypto evidence only. Do not
 describe it as Java I2P/i2pd interoperability or use it to advertise NTCP2;
 that evidence belongs to the authorized later interoperability plan.

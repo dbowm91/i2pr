@@ -64,6 +64,14 @@ Network, disk, reseed and local-API inputs are untrusted. Decoders must:
 
 Unknown blocks or options may be ignored only when the specification explicitly defines forward-compatible skipping. The parser must still validate the enclosing length and resource bounds.
 
+For Plan 034 NTCP2 frames, AEAD verification is a mandatory gate before block
+iteration, unknown-block skipping, or semantic output. Transmit and receive
+counters are independent and direction-specific; accepted frames advance once,
+failed authentication is terminal, and the forbidden nonce value is never
+emitted. The data-phase dossier defines no periodic rekey threshold, so
+counter exhaustion requires a fresh Noise handshake. Fuzz and malformed tests
+must preserve these invariants while remaining bounded and payload-redacted.
+
 ## Encoder policy
 
 Encoders must:

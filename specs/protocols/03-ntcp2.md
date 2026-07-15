@@ -74,6 +74,34 @@ for replay, cache-full, or unavailable decisions. The specification leaves
 production padding distribution/negotiation and the age of an older NetDB
 RouterInfo open; those choices remain deferred and are not capability claims.
 
+## Plan 034 data-phase implementation boundary
+
+The runtime-neutral implementation follows the deployed data-phase layout:
+
+| Surface | Wire/limit | Multiplicity and ordering | Output/policy boundary |
+| --- | --- | --- | --- |
+| Frame | 2-byte obfuscated length; clear ciphertext 16..=65,535 bytes; ChaCha20-Poly1305 tag 16 bytes; plaintext at most 65,519 bytes | one length per complete frame; no allocation before clear validation | `TransmitState`/`ReceiveState`; empty associated data |
+| Timestamp (0) | exactly 4 bytes, unsigned Unix seconds | at most one; ordinary data ordering | typed timestamp; injected clock/skew policy remains outside |
+| Options (1) | at least 12, at most 4,096 bytes; fixed u8/u16 fields plus bounded extensions | at most one | typed bounded options, no string policy |
+| RouterInfo (2) | flags plus verified uncompressed RouterInfo; data-phase encoded bytes at most 65,515 | at most one; no NetDB mutation | signed/key-bound update candidate |
+| I2NP (3) | complete 9-byte NTCP2 short header plus bounded body; no fragmentation | multiple allowed | consuming outbound owner; borrowed authenticated inbound view |
+| Termination (4) | 8-byte valid-frame count, 1-byte reason, at most 256 additional bytes | at most one; terminal and not combined with application/control blocks | bounded reason enum; no remote text retention |
+| Padding (254) | 0..=65,516 bytes | at most one and last | length-only observation |
+| Unknown | 3-byte header plus bounded body | skipped only after AEAD; max 256 blocks and 4,096 unknown bytes | treated as bounded padding, never policy |
+
+The parser rejects truncated headers/bodies, invalid fixed lengths, duplicate
+control blocks, padding or termination order violations, oversized fields,
+malformed RouterInfo/signatures, and trailing plaintext. AEAD authentication
+always precedes block parsing. `i2pr-transport-ntcp2` does not own sockets,
+runtime queues, coalescing waits, deadlines, cancellation, NetDB mutation,
+RouterInfo publication, or capability advertisement.
+
+The current specification has no in-session periodic data-phase rekey
+threshold. Plan 034 therefore makes the last permitted nonce/counter terminal
+and requires a fresh Noise handshake for rekey or static-key/IV rotation. A
+future plan may add a compatibility-approved rekey protocol only after its
+wire behavior is specified and independently evidenced.
+
 ## Required MVP behavior
 
 ### RouterInfo and key material

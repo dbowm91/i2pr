@@ -191,6 +191,45 @@ padding maxima for messages 1/2. The production padding distribution and
 negotiation remain open; no state-machine result changes support metadata or
 publishes an address.
 
+### NTCP2 data-phase boundary
+
+Plan 034 keeps the authenticated data phase synchronous and runtime-neutral:
+
+```text
+TransmitReady -> FramePrepared -> TransmitReady | Terminated
+ReceiveReady  -> LengthDecoded -> CiphertextCollected
+             -> ReceiveReady | Terminated
+```
+
+The wire layout is `obfuscated_length:u16_be || ciphertext`, where the clear
+ciphertext length is 16..=65,535 bytes and includes the 16-byte
+ChaCha20-Poly1305 tag. Plaintext is therefore at most 65,519 bytes. The
+receiver advances the SipHash length state while deobfuscating and validates
+the clear value before admitting ciphertext storage. AEAD uses empty
+associated data; only a successfully opened plaintext reaches
+`parse_blocks`.
+
+Each authenticated block owns a 1-byte type, 2-byte big-endian payload length,
+and bounded payload. Types 0 (timestamp), 1 (options), 2 (RouterInfo), 3
+(I2NP), 4 (termination), and 254 (padding) have typed codecs. Unknown types
+are skipped only after authentication and count against the per-frame block
+and unknown-byte budgets. Padding is last; termination is terminal and may
+not be combined with application/control payloads. RouterInfo is verified and
+returned as an update candidate; it never mutates NetDB in this layer.
+
+Outbound I2NP blocks consume `EncodedI2npMessage` and append its bytes without
+an implicit clone. Inbound frames retain one bounded authenticated plaintext
+owner while parsed I2NP views are borrowed; an explicit receiver handoff may
+create the transport owner. Future runtime integration may attach exact
+`BufferedBytes`/queue leases to queued, ciphertext, plaintext, and partial
+frame owners, but Plan 034 itself does not own those queues. Partial reads,
+writes, deadlines, cancellation, and coalescing waits belong to Plan 035.
+
+The current NTCP2 specification defines no periodic data-phase rekey
+threshold. This implementation therefore treats the last permitted nonce and
+counter exhaustion as terminal and requires a new Noise handshake for rekey or
+static-key/IV rotation. No speculative wire rekey is emitted.
+
 Generated and reconstructed private seeds are held by zeroizing owners during
 crypto operations. Storage encoding and file-read buffers are also zeroizing;
 the `DatabaseLookup` reply-key/tag wrappers in `i2pr-proto::i2np::netdb` are
@@ -332,8 +371,8 @@ NetDB, select tunnels, score peers, or route application traffic.
 State-machine drivers communicate through explicit bounded actions and typed
 results rather than async traits. `i2pr-transport-ntcp2` owns the NTCP2
 protocol constants, Plan 032 cryptographic/transcript foundation, and Plan 033
-handshake wire/state layer; future plans add data-phase frames and runtime
-adaptation. The runtime adapter will later translate those actions into owned
+handshake wire/state layer and Plan 034 data-phase frames; future plans add
+runtime adaptation. The runtime adapter will later translate those actions into owned
 I/O operations.
 The boundary deliberately models only immediate Milestone 3 needs, leaving
 SSU2-specific behavior and duplicate winner policy to later plans.

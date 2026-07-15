@@ -208,6 +208,38 @@ split-key result. Random production padding, partial-stream adaptation,
 timeouts, cancellation, and probing-resistance behavior remain the
 runtime-owned follow-up boundary.
 
+## NTCP2 data-phase threats and controls
+
+Plan 034 deobfuscates the length prefix with a direction-specific SipHash
+state and rejects the clear length before allocating ciphertext. The wire
+prefix itself may be any two bytes, so validation is deliberately performed
+after XOR rather than on the attacker-controlled obfuscated value. Ciphertext
+is authenticated with empty associated data before any block header or unknown
+type is inspected; tag failure, malformed blocks, invalid ordering, and
+counter exhaustion put the receive/transmit owner into a terminal state.
+
+The authenticated plaintext has explicit limits for total bytes, block count,
+unknown bytes, options, RouterInfo, I2NP messages, padding, and termination
+metadata. Duplicate control blocks, conflicting termination/application
+payloads, trailing headers, and oversized fields fail closed. RouterInfo
+signature and authenticated-link static-key checks produce candidates only;
+they do not update NetDB. Unknown blocks are treated as bounded padding only
+after authentication and cannot bypass the aggregate budget.
+
+Transmit and receive owners contain independent cipher and length counters.
+Counters advance once for an accepted frame; failed authentication cannot be
+reused because the owner is terminal. The protocol dossier defines no
+periodic in-session rekey threshold, so this layer never invents one: a fresh
+Noise handshake is required after exhaustion or static-key/IV rotation. The
+forbidden nonce value `2^64 - 1` is never emitted.
+
+Partial length/ciphertext reads are retained by the future runtime adapter in
+bounded owners, not inferred as frame alignment. Deterministic testkit cases
+cover split prefixes, one-byte writes, truncation, duplicate frames,
+backpressure, cancellation, and teardown. Debug and error values expose only
+lengths, counts, typed categories, and terminal state; they never expose
+payloads, keys, tags, identities, addresses, or remote text.
+
 Transport payloads cross the manager boundary as bounded owned encoded-I2NP
 messages. The owner validates nonzero and maximum lengths at construction,
 preserves authenticated bytes, exposes no implicit large-payload clone, and

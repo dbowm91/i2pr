@@ -16,6 +16,7 @@ use crate::constants;
 use crate::crypto::{
     AesObfuscationState, Ntcp2CryptoError, PublicKeyBytes, Role, SplitKeys, Transcript,
 };
+use crate::frame::{ReceiveState, TransmitState, into_directional_states};
 use crate::handshake::{
     AuthenticatedPeer, ClockSkewPolicy, ConfirmedPayload, HandshakeError, ReplayDecision,
     ReplayToken, SessionConfirmed, SessionCreated, SessionCreatedOptions, SessionRequest,
@@ -258,6 +259,12 @@ impl AuthenticatedHandshake {
     /// Borrows the consuming data-phase key owners.
     pub const fn split_keys(&mut self) -> &mut SplitKeys {
         &mut self.split_keys
+    }
+
+    /// Consumes the handshake result into independent runtime-neutral data
+    /// phase transmit and receive owners.
+    pub fn into_data_phase(self) -> (TransmitState, ReceiveState) {
+        into_directional_states(self.split_keys)
     }
 }
 

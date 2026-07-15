@@ -13,6 +13,7 @@
 mod clock;
 mod faults;
 mod network;
+mod ntcp2;
 mod peers;
 mod rng;
 mod transport;
@@ -29,6 +30,9 @@ pub use network::{
     AdvanceReport, DatagramConfig, DatagramEndpoint, DatagramError, DatagramLink, DatagramPacket,
     MAX_DATAGRAM_SIZE, MAX_LINK_ID, NetworkScheduler, ReplayEvent, SchedulerConfig, SchedulerError,
     SchedulerSnapshot, StreamConfig, StreamEndpoint, StreamError, StreamLink, SyntheticAddress,
+};
+pub use ntcp2::{
+    MAX_NTCP2_DRIVER_BUFFERED_BYTES, Ntcp2DataPhaseDriver, Ntcp2DriverCounters, Ntcp2DriverError,
 };
 pub use peers::{
     MAX_TEST_PEERS, PeerFactory, PeerFactoryError, PeerId, PeerSummary, SyntheticServiceId,

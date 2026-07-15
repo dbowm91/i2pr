@@ -32,3 +32,8 @@ peer identities, or copied implementation fixtures.
 The `ntcp2_transcript` and `ntcp2_storage` targets cover bounded synthetic
 transcript sequencing and exact-format transport-static-key record decoding;
 they never use operational keys or filesystem access.
+
+Plan 034 adds `ntcp2_blocks` for authenticated-plaintext block and ordering
+parsing and `ntcp2_frames` for bounded length/ciphertext and counter-state
+commands using fixed test-only keys. Both targets are pure, bounded, and
+payload-redacted; unauthenticated input never yields application blocks.

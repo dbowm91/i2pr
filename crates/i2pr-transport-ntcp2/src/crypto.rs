@@ -166,6 +166,12 @@ impl CipherState {
         }
     }
 
+    /// Constructs a deterministic cipher owner for local data-phase tests.
+    #[doc(hidden)]
+    pub fn from_key_for_test(key: [u8; constants::KEY_LENGTH]) -> Self {
+        Self::new(AeadKey::from_bytes(key))
+    }
+
     /// Encrypts one bounded payload and consumes one nonce value.
     pub fn seal(
         &mut self,
@@ -294,16 +300,43 @@ impl SipHashState {
         }
     }
 
-    /// Obfuscates or deobfuscates one valid frame length and advances state.
-    pub fn mask_length(&mut self, length: u16) -> Result<u16, Ntcp2CryptoError> {
-        if !(16..=u16::MAX).contains(&length) {
-            return Err(Ntcp2CryptoError::FrameLengthOutOfRange { length });
-        }
+    /// Constructs deterministic length state for local data-phase tests.
+    #[doc(hidden)]
+    pub fn from_material_for_test(material: [u8; constants::HASH_LENGTH]) -> Self {
+        Self::new(&material)
+    }
+
+    fn next_mask(&mut self) -> u16 {
         let mut hasher = SipHasher24::new_with_keys(self.key1, self.key2);
         hasher.write(&self.iv);
         let next_iv = hasher.finish().to_le_bytes();
         self.iv = next_iv;
-        Ok(length ^ u16::from_le_bytes([next_iv[0], next_iv[1]]))
+        u16::from_le_bytes([next_iv[0], next_iv[1]])
+    }
+
+    /// Obfuscates one clear, valid frame length and advances state.
+    pub fn obfuscate_length(&mut self, length: u16) -> Result<u16, Ntcp2CryptoError> {
+        if !(16..=u16::MAX).contains(&length) {
+            return Err(Ntcp2CryptoError::FrameLengthOutOfRange { length });
+        }
+        Ok(length ^ self.next_mask())
+    }
+
+    /// Deobfuscates one wire length and validates the clear result.
+    ///
+    /// The wire value may be any `u16`; validating it before XOR would reject
+    /// valid frames whose obfuscated prefix happens to be below 16.
+    pub fn deobfuscate_length(&mut self, obfuscated: u16) -> Result<u16, Ntcp2CryptoError> {
+        let length = obfuscated ^ self.next_mask();
+        if !(16..=u16::MAX).contains(&length) {
+            return Err(Ntcp2CryptoError::FrameLengthOutOfRange { length });
+        }
+        Ok(length)
+    }
+
+    /// Compatibility alias for callers that are obfuscating a clear length.
+    pub fn mask_length(&mut self, length: u16) -> Result<u16, Ntcp2CryptoError> {
+        self.obfuscate_length(length)
     }
 }
 
@@ -334,6 +367,16 @@ impl SplitKeys {
     /// Borrows the receive frame-length mask state.
     pub const fn receive_lengths(&mut self) -> &mut SipHashState {
         &mut self.receive_lengths
+    }
+
+    /// Consumes the combined key owner into independent directional parts.
+    pub fn into_parts(self) -> (CipherState, CipherState, SipHashState, SipHashState) {
+        (
+            self.transmit,
+            self.receive,
+            self.transmit_lengths,
+            self.receive_lengths,
+        )
     }
 }
 

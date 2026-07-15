@@ -55,18 +55,21 @@ Plan 031 established the first Milestone 3 boundary: the runtime-neutral
 bounded link/delivery/resource vocabulary, and deterministic synthetic
 transport evidence. Plan 032 added the non-I/O transcript foundation and Plan
 033 now adds the bounded, runtime-neutral NTCP2 handshake codecs and consuming
-state machines. None of these plans add sockets, data-phase frames, live
-addresses, mixed-router interoperability, or capability advertisement; all
-transport support remains non-advertised experimental work.
+state machines. Plan 034 now adds bounded authenticated data frames, strict
+payload blocks, direction-specific frame owners, and deterministic partial-I/O
+evidence. None of these plans add sockets, live addresses, mixed-router
+interoperability, NetDB mutation, or capability advertisement; all transport
+support remains non-advertised experimental work.
 Plan 032 now adds the non-I/O NTCP2 cryptographic foundation: reviewed
 X25519/AES/ChaCha20-Poly1305/HMAC/SipHash wrappers, a consuming three-message
 transcript model, an independently generated deterministic crypto corpus, and
 a separate hardened static-key/IV store. Plan 033 adds bounded codecs for all
 three handshake messages, consuming initiator/responder transitions, replay and
 clock-skew policy seams, RouterInfo/static-key binding, and explicit runtime-
-neutral I/O actions. These remain local experimental evidence only; sockets,
-data-phase framing, mixed-router interoperability, and capability advertisement
-remain unimplemented.
+neutral I/O actions. Plan 034 adds SipHash-masked lengths, AEAD frames, strict
+authenticated blocks, and terminal counter/error handling. These remain local
+experimental evidence only; sockets, mixed-router interoperability, NetDB
+mutation, and capability advertisement remain unimplemented.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
@@ -192,6 +195,8 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 032 closure record](plans/032-closure.md)
 - [Plan 033 NTCP2 handshake state machines](plans/033-m3-ntcp2-handshake-state-machines.md)
 - [Plan 033 closure record](plans/033-closure.md)
+- [Plan 034 NTCP2 data phase and blocks](plans/034-m3-ntcp2-data-phase-and-blocks.md)
+- [Plan 034 closure record](plans/034-closure.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)
@@ -202,6 +207,7 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Transport contracts and crate boundaries ADR](docs/adr/0010-transport-contracts-and-crate-boundaries.md)
 - [NTCP2 crypto and static-key storage ADR](docs/adr/0011-ntcp2-crypto-and-static-key-storage.md)
 - [NTCP2 handshake state-machines ADR](docs/adr/0012-ntcp2-handshake-state-machines.md)
+- [NTCP2 data-phase and blocks ADR](docs/adr/0013-ntcp2-data-phase-and-blocks.md)
 - [Contribution guide](CONTRIBUTING.md)
 - [Protocol specification index and source ledger](specs/README.md)
 

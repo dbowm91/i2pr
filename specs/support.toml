@@ -140,6 +140,24 @@ evidence = ["crates/i2pr-transport-ntcp2/src/state_machine.rs", "plans/033-closu
 advertised = false
 
 [[surface]]
+id = "ntcp2.data-phase-frames"
+protocol = "ntcp2"
+structure = "siphash-masked-aead-data-frames-and-directional-counters"
+scope = "required-later"
+status = "experimental"
+evidence = ["crates/i2pr-transport-ntcp2/src/frame.rs", "plans/034-closure.md"]
+advertised = false
+
+[[surface]]
+id = "ntcp2.data-phase-blocks"
+protocol = "ntcp2"
+structure = "bounded-authenticated-timestamp-options-routerinfo-i2np-termination-padding-blocks"
+scope = "required-later"
+status = "experimental"
+evidence = ["crates/i2pr-transport-ntcp2/src/block.rs", "crates/i2pr-testkit/src/ntcp2.rs", "plans/034-closure.md"]
+advertised = false
+
+[[surface]]
 id = "i2np.envelope"
 protocol = "i2np"
 structure = "bounded-message-envelope-and-header"

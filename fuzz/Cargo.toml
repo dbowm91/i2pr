@@ -135,3 +135,15 @@ name = "ntcp2_handshake"
 path = "fuzz_targets/ntcp2_handshake.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "ntcp2_blocks"
+path = "fuzz_targets/ntcp2_blocks.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ntcp2_frames"
+path = "fuzz_targets/ntcp2_frames.rs"
+test = false
+doc = false

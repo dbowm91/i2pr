@@ -75,6 +75,23 @@ message-1 cipher owner through SessionConfirmed part one, reject unknown
 blocks, malformed trailing data, and mismatched padding, and keep the support
 ledger non-advertised.
 
+Plan 034 adds only runtime-neutral authenticated NTCP2 data frames and bounded
+payload blocks. Authenticate the complete ciphertext before iterating blocks or
+skipping unknown types; deobfuscate and validate the two-byte length before any
+frame allocation. Keep transmit and receive cipher/length owners separate,
+advance counters once per accepted frame, make authentication and malformed
+block failures terminal, and never emit the forbidden nonce value `2^64 - 1`.
+Bound block counts, unknown bytes, options, RouterInfo, I2NP, padding, and
+termination metadata. Preserve consuming I2NP ownership on outbound handoff,
+redact inbound payloads from `Debug` and errors, and release every frame owner
+on success, failure, drop, truncation, and cancellation. Use deterministic
+partial-I/O and fuzz tests only in `i2pr-testkit`/the nightly fuzz workspace.
+Plan 034 does not authorize sockets, Tokio, manager queue policy, NetDB
+mutation, RouterInfo publication, capability advertisement, or public-network
+testing. The current NTCP2 specification defines no in-session periodic rekey
+threshold; counter exhaustion is terminal and a fresh Noise handshake is the
+rekey mechanism until a later compatibility plan says otherwise.
+
 ## Runtime, Security, and Observability Rules
 
 Every long-lived task has an owned supervisor/service scope and is awaited or
