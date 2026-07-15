@@ -30,8 +30,8 @@ Plan 041 reference-pair records use schema 2:
 schema|scenario_id|date_utc|i2pr_commit|java_reference|java_version|java_revision|java_artifact_sha256|java_installed_tree_sha256|java_configuration_sha256|i2pd_reference|i2pd_version|i2pd_revision|i2pd_artifact_sha256|i2pd_installed_tree_sha256|i2pd_configuration_sha256|namespace_topology_sha256|private_network_id|direction_policy|router_info_validation|authenticated_link_observations|connection_counters|process_counters|expected_authenticated_link_count|actual_typed_result|cleanup_result|evidence_sha256|known_deviation|reproduction
 ```
 
-The record must distinguish `passed`, `rejected`, `skipped_ipv6`,
-`blocked_missing_driver`, `blocked_host_contract`, and `failed_cleanup`
+The record must distinguish `passed`, `rejected`, `blocked`, `skipped_ipv6`,
+`blocked_host_contract`, and `failed_cleanup`
 outcomes. A run is not milestone evidence until both directions and both
 required reference implementations have passed the applicable scenario matrix.
 Raw run roots are deleted after sanitation, including keys, identities,

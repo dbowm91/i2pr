@@ -31,7 +31,9 @@ expected = {
         "i2pr-storage",
         "i2pr-transport",
     },
-    "i2pr-runtime": {"i2pr-core", "i2pr-transport"},
+    "i2pr-runtime": {
+        "i2pr-core", "i2pr-transport", "i2pr-transport-ntcp2"
+    },
 }
 
 for name, allowed in expected.items():
@@ -40,6 +42,7 @@ for name, allowed in expected.items():
     direct = {
         dependency["name"]
         for dependency in packages[name]["dependencies"]
+        if dependency["kind"] in (None, "normal")
         if dependency["name"].startswith("i2pr-")
     }
     unexpected = direct - allowed

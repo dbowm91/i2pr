@@ -66,8 +66,10 @@ Plan 041 scenarios, `reference-java-i2pd-ipv4` and
 private network ID 99, strict RouterInfo validation, one-way firewall policy,
 and authoritative authenticated observations from both routers. It is a
 reference-only control and is not i2pr evidence. The handshake/full profiles remain
-`blocked_missing_driver` until the complete runtime-owned wire adapter exists;
-this is an explicit blocker, not a skipped success.
+`blocked` with reason `i2pr-mixed-router-profile-not-wired` while the reference
+runner's i2pr/reference topology is incomplete; this is an explicit blocker,
+not a skipped success. The launcher itself now has a bounded local
+listener/dial, handshake, authenticated-link, and DeliveryStatus path.
 
 The dedicated launcher seam is separate from the normal daemon:
 
@@ -77,11 +79,13 @@ i2pr-interop ntcp2 dial --scenario-config <path>
 i2pr-interop ntcp2 inspect --state-dir <path>
 ```
 
-It emits typed JSON only. `listen` and `dial` remain the missing-driver seam
-reserved for Plan 042; `inspect` now delegates RouterInfo structural,
-signature, and NTCP2-address validation to the repository's strict Rust
-parser. The reference-pair runner uses this inspection only inside a deleted
-run root and never treats it as mixed-router i2pr evidence.
+It emits versioned typed JSON only. `listen` emits listener readiness followed
+by one terminal typed result, and `dial` emits one terminal typed result.
+`inspect` delegates
+RouterInfo structural, signature, and NTCP2-address validation to the
+repository's strict Rust parser. The reference-pair runner uses this
+inspection only inside a deleted run root and never treats it as mixed-router
+i2pr evidence.
 
 ## Cleanup and evidence
 
@@ -120,8 +124,9 @@ identities, keys, endpoints, or logs.
 
 - A host or namespace error is fail-closed; run the pre/post checker and fix
   Ubuntu, amd64, UTF-8 locale, `sudo`, `iproute2`, or kernel namespace support.
-- `blocked_missing_driver` means the prepared references or complete i2pr wire
-  adapter is unavailable. Do not replace it with a self-handshake.
+- `blocked` with reason `i2pr-mixed-router-profile-not-wired` means the
+  reference runner is not yet connected to the i2pr launcher. Do not replace it
+  with a self-handshake or treat local launcher success as reference evidence.
 - `blocked_host_contract` means execution did not start and no protocol claim
   may be inferred.
 - Inspect only disposable local build metadata. Never retain raw logs, packet

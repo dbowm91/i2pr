@@ -30,7 +30,8 @@ These are checked on CI and will reject the change:
 - Dependency direction (`scripts/check-dependency-direction.sh`):
   `i2pr-proto <- i2pr-crypto <- i2pr-storage`; `i2pr-core <- i2pr-transport
   <- i2pr-runtime <- i2pr-daemon`; `i2pr-transport-ntcp2` consumes
-  `i2pr-crypto`/`i2pr-proto`/`i2pr-transport`. **No production crate may
+  `i2pr-crypto`/`i2pr-proto`/`i2pr-transport`, and `i2pr-runtime` may compose
+  `i2pr-transport-ntcp2` for Plan 042. **No production crate may
   depend on `i2pr-testkit`.**
 - Runtime boundaries (`scripts/check-runtime-boundaries.sh`):
   - No `unbounded_channel`, `UnboundedSender`, `UnboundedReceiver` in
@@ -49,13 +50,20 @@ These are checked on CI and will reject the change:
 
 If a check fails, fix the boundary, don't suppress the script.
 
-Plan 037 corrective integration is the active Milestone 3 plan. Keep accepted
+Plan 042 is the active runtime-owned NTCP2 wire-driver plan. Keep accepted
 inbound streams paired with their non-cloneable pending-handshake permit until
 authentication or a terminal handshake outcome. Runtime link queue entries
 must own their item/byte accounting and release it on write success, failure,
 cancellation, receiver closure, or supervisor teardown. Reader and writer
 children must use the configured cancellation-aware idle/read and write
 deadlines; unrestricted socket I/O is not an accepted adapter path.
+
+The Plan 042 driver belongs in `i2pr-runtime`: it translates bounded handshake
+actions into cancellation-aware socket operations, retains replay/admission and
+link leases through their owning terminal paths, and owns authenticated NTCP2
+frame read/write children and queues. `i2pr-transport-ntcp2` remains pure and
+runtime-neutral. `tools/i2pr-interop` is only a non-production composition seam
+and must never activate `i2pr-daemon`.
 
 The general NTCP2 data-phase parser may accept specification-permitted
 repeated non-padding blocks and late Termination followed only by final
@@ -64,6 +72,17 @@ Local self-handshakes, loopback sockets, vectors, and deterministic testkit
 runs are not Java I2P/i2pd interoperability evidence. Keep the daemon disabled
 and all NTCP2 support rows experimental/non-advertised until sanitized mixed-
 router results, hashes, and run identifiers are committed.
+
+The launcher status boundary is part of this plan: completed `listen` must
+separate listener readiness from authenticated completion, `dial` must return
+one terminal typed result, and `inspect` may return only redacted metadata.
+The checkout now contains the listener/dial, handshake-to-link, and
+DeliveryStatus smoke composition. State, handshake, data-phase, timeout, and
+cleanup failures remain typed and fail closed. Plan 042's selected smoke scope
+is the existing fixed-size DeliveryStatus message (I2NP type 10), one valid
+outbound and one valid inbound message per direction. Its 12-byte body and
+21-byte short-transport encoding are bounded local scope only; reference
+acceptance and response behavior remain unverified.
 
 Plan 038 defines the controlled evidence harness. It is Ubuntu-only and
 amd64-only for the first closure. Keep preparation and execution as separate
@@ -85,6 +104,7 @@ bash scripts/interop/build-references.sh --offline
 bash scripts/interop/run-scenario.sh --scenario <id> --reference java_i2p --build-cache <path> --run-root <path>
 bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
 bash scripts/interop/run-matrix.sh --profile environment-smoke
+bash scripts/interop/run-matrix.sh --profile reference-crosscheck-ipv4
 i2pr-interop ntcp2 listen --scenario-config <path>
 i2pr-interop ntcp2 dial --scenario-config <path>
 i2pr-interop ntcp2 inspect --state-dir <path>
@@ -103,6 +123,13 @@ typed results and artifact/configuration hashes under
 `target/interop/runs/<run-id>/` are deleted. Delete identities, keys,
 RouterInfo, I2NP, raw addresses, transcripts, raw logs, and arbitrary remote
 error text. These harness profiles do not enable the daemon or advertise NTCP2.
+
+The current typed blockers are distinct: `blocked_host_contract` means the
+Ubuntu/amd64/privilege/isolation prerequisite failed before a protocol run;
+`i2pr-mixed-router-profile-not-wired` means the reference harness has not yet
+connected the launcher to a reference adapter. Rejected scenarios/state and
+typed authentication, timeout, or cleanup failures must stay visible.
+Empty or reference-only evidence is not an i2pr interoperability result.
 
 ## Build, Test, and Quality
 

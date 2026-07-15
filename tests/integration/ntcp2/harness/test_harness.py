@@ -15,6 +15,8 @@ from evidence import EvidenceError, validate_file, validate_record, write_record
 from firewall import canonical_firewall_rules
 from config_contract import ConfigurationContractError, assert_i2pd_private_configuration, assert_java_private_configuration
 from i2pd import I2pdAdapter, I2pdError
+from i2pr import I2prAdapter
+from launcher_protocol import LauncherScenarioError, LauncherStatusError, load_launcher_scenario, parse_status_line
 from java_i2p import JavaI2pAdapter, JavaI2pError
 from metadata import MetadataError, hash_runtime_tree, parse_metadata
 from reference_scenario import load_reference_scenario
@@ -116,7 +118,7 @@ class HarnessContractTests(unittest.TestCase):
             "address_family": "ipv4",
             "deterministic_parameters": "seed=1",
             "expected": "bounded",
-            "actual_typed_result": "blocked_missing_driver",
+            "actual_typed_result": "blocked",
             "resource_counters": {"tasks": 0},
             "process_counters": {"started": 0},
             "cleanup_result": "not-started",
@@ -183,6 +185,58 @@ class HarnessContractTests(unittest.TestCase):
         value = json.loads(completed.stdout.strip())
         self.assertEqual(value["actual_typed_result"], "blocked_host_contract")
         self.assertNotIn("Traceback", completed.stdout)
+
+    def test_launcher_scenario_and_status_contracts_are_strict(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scenario_path = root / "scenario.toml"
+            scenario_path.write_text(
+                """[scenario]
+schema = 1
+scenario_id = "synthetic-run"
+role = "initiator"
+address_family = "ipv4"
+local_address = "192.0.2.1"
+local_port = 45680
+peer_address = "192.0.2.2"
+peer_port = 45678
+network_id = 99
+state_dir = "state"
+peer_router_info = "exchange/peer.info"
+handshake_deadline_ms = 30000
+read_deadline_ms = 1000
+write_deadline_ms = 1000
+queue_deadline_ms = 1000
+drain_deadline_ms = 1000
+padding_profile = "representative"
+smoke_message_profile = "delivery-status"
+deterministic_seed = 1
+expected_result_class = "authenticated-handshake-and-bounded-i2np-exchange"
+status_path = "status.jsonl"
+""",
+                encoding="utf-8",
+            )
+            loaded = load_launcher_scenario(scenario_path)
+            self.assertEqual(loaded.network_id, 99)
+            self.assertEqual(loaded.peer_port, 45678)
+            with self.assertRaises(LauncherScenarioError):
+                load_launcher_scenario(root / "missing.toml")
+            status = parse_status_line(
+                '{"schema":1,"type":"i2pr-interop-status","scenario_id":"synthetic-run",'
+                '"phase":"terminal","result":"rejected",'
+                '"reason_code":"state_invalid",'
+                '"counters":{"listener_ready":0,"authenticated":0,"frames_sent":0,'
+                '"frames_received":0,"i2np_sent":0,"i2np_received":0}}'
+            )
+            self.assertEqual(status["result"], "rejected")
+            with self.assertRaises(LauncherStatusError):
+                parse_status_line(
+                    '{"schema":1,"type":"i2pr-interop-status","scenario_id":"synthetic-run",'
+                    '"phase":"listener_ready","result":"rejected",'
+                    '"reason_code":"state_invalid",'
+                    '"counters":{"listener_ready":0,"authenticated":0,"frames_sent":0,'
+                    '"frames_received":0,"i2np_sent":0,"i2np_received":0}}'
+                )
 
     def test_plan_041_reference_pair_scenarios_are_strict_and_directional(self) -> None:
         scenario_root = ROOT / "tests/integration/ntcp2/reference-scenarios"

@@ -76,14 +76,23 @@ loopback listener/dial services, and joined link children. The runtime socket
 surface is disabled outside explicit controlled tests; no public listener,
 automatic address publication, NetDB mutation, mixed-router interoperability, or
 capability advertisement is claimed.
-Plan 037 is the active corrective integration plan. Its boundary keeps inbound
+Plan 037 was the corrective integration plan. Its boundary keeps inbound
 admission attached to the accepted stream through handshake completion or a
 typed terminal outcome, applies configured cancellation/deadline policy to the
 actual link I/O, and gives each queued frame one bounded ownership path for item
 and byte accounting. It also separates strict SessionConfirmed parsing from
-general data-phase block parsing. These corrections do not yet constitute a
-complete authenticated socket adapter or mixed-router evidence; daemon
-activation remains disabled.
+general data-phase block parsing. Plan 042 now supplies the complete bounded
+authenticated socket/data-phase composition through the non-production
+launcher; daemon activation and mixed-router evidence remain disabled.
+
+Plan 042 defines the bounded NTCP2 wire driver owned by `i2pr-runtime` and
+driven by the runtime-neutral handshake/data state machines. The runtime driver
+owns socket I/O, action deadlines, cancellation, replay and admission
+decisions, authenticated frame state, bounded queues, and link/task cleanup.
+The non-production `i2pr-interop` launcher now validates confined scenario
+input, prepares disposable identity/RouterInfo state, drives listener or dial
+handshakes, promotes authenticated links, and exchanges a bounded
+DeliveryStatus message; it does not activate `i2pr-daemon`.
 
 Plan 038/040 define an Ubuntu-only, opt-in reference-router harness for
 acquiring the missing evidence under controlled conditions. Plan 041 adds the
@@ -114,6 +123,13 @@ i2pr-interop ntcp2 dial --scenario-config <path>
 i2pr-interop ntcp2 inspect --state-dir <path>
 ```
 
+The launcher status boundary is explicit. A completed `listen` path emits
+listener readiness separately from a later authenticated terminal result;
+`dial` emits one terminal typed result; and `inspect` emits only bounded,
+redacted state metadata. Readiness is not authentication. State, handshake,
+data-phase, timeout, and cleanup failures remain typed rejections; no launcher
+status is mixed-router evidence.
+
 Environment smoke proves only that each reference can start, produce
 disposable state, avoid public connections, and stop cleanly. The
 `reference-crosscheck-ipv4` profile runs both directional reference-pair
@@ -130,6 +146,16 @@ limited to typed outcomes, run metadata, and hashes of sanitized artifacts.
 Secret-bearing run roots under `target/interop/runs/<run-id>/` are deleted.
 Raw addresses, peer identities, RouterInfo, I2NP, keys, transcripts, logs, and
 remote error text are disposable and must not be committed.
+
+Plan 042 selects the existing fixed-size DeliveryStatus message (I2NP type 10)
+as the initial smoke scope. Its body is 12 bytes; the NTCP2/SSU2 short I2NP
+encoding is 21 bytes before the 3-byte NTCP2 block header, frame overhead, and
+padding. The launcher’s local gate is one valid outbound and one valid inbound
+DeliveryStatus, with bounded message IDs/timestamps and no
+NetDB, tunnel, garlic, or public-routing behavior. Reference acceptance and
+response behavior have not been verified here, so this selection is a Plan 042
+scope decision, not interoperability evidence; padding or TCP readiness cannot
+stand in for the message exchange.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
@@ -229,9 +255,10 @@ inbound admission now travels with the accepted stream, link queue entries
 release their accounting through RAII, and supervised reader/writer I/O uses
 configured cancellation and deadline bounds. General data-phase block parsing
 also separates its deployed-wire ordering rules from strict SessionConfirmed
-payload parsing. The complete socket-to-state-machine adapter and Java I2P /
-i2pd evidence remain unavailable, so Milestone 3 and all NTCP2 support rows
-remain blocked, experimental, and non-advertised.
+payload parsing. Plan 042 now supplies the bounded socket-to-state-machine/data-
+phase composition through the non-production launcher. Java I2P/i2pd evidence
+remains unavailable, so Milestone 3 and all NTCP2 support rows remain blocked,
+experimental, and non-advertised.
 
 The current `i2pr-proto` API uses borrowed cursors and caller-visible maximums,
 strict exact-consumption decoding, canonical immutable mappings, typed
@@ -283,6 +310,8 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 037 corrective integration and closure](plans/037-m3-corrective-integration-closure.md)
 - [Plan 037 closure record](plans/037-closure.md)
 - [Plan 038 Ubuntu reference-router interoperability harness](plans/038-ubuntu-reference-router-interoperability-harness.md)
+- [Plan 042 runtime-owned NTCP2 wire driver](plans/042-runtime-owned-ntcp2-wire-driver.md)
+- [Plan 042 current status](plans/042-status.md)
 - [Aggregate Milestone 3 closure record](plans/030-milestone-3-closure.md)
 - [Controlled NTCP2 interoperability lane](tests/integration/ntcp2/README.md)
 - [Machine-readable protocol support ledger](specs/support.toml)

@@ -61,7 +61,7 @@ def _load_scenario(repo_root: Path, scenario_id: str) -> dict[str, Any]:
                 scenario = dict(scenario)
                 scenario["profile"] = "environment-smoke"
             return scenario
-    raise HarnessBlocked("unknown-scenario", "blocked_missing_driver")
+    raise HarnessBlocked("unknown-scenario", "rejected")
 
 
 def _run_id() -> str:
@@ -80,7 +80,7 @@ def _cache_for(base: Path, reference: str, repo_root: Path) -> tuple[Path, Cache
     else:
         summary_path = base / "current-cache.json"
         if not summary_path.is_file():
-            raise HarnessBlocked("missing-current-cache-summary", "blocked_missing_driver")
+            raise HarnessBlocked("missing-current-cache-summary", "blocked")
         try:
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
             if summary.get("schema") != 2 or summary.get("host_contract") != "ubuntu-24.04-amd64" or summary.get("lock_sha256") != _lock_sha256(repo_root):
@@ -96,7 +96,7 @@ def _cache_for(base: Path, reference: str, repo_root: Path) -> tuple[Path, Cache
             if recorded != metadata_path.resolve():
                 raise ValueError("summary metadata path does not match cache key")
         except (OSError, KeyError, StopIteration, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise HarnessBlocked("invalid-current-cache-summary", "blocked_missing_driver") from exc
+            raise HarnessBlocked("invalid-current-cache-summary", "blocked") from exc
     try:
         metadata = parse_metadata(
             metadata_path,
@@ -106,10 +106,10 @@ def _cache_for(base: Path, reference: str, repo_root: Path) -> tuple[Path, Cache
             expected_host_contract="ubuntu-24.04-amd64",
         )
     except MetadataError as exc:
-        raise HarnessBlocked("invalid-reference-cache", "blocked_missing_driver") from exc
+        raise HarnessBlocked("invalid-reference-cache", "blocked") from exc
     if not (base / "build-metadata.txt").is_file():
         if entry.get("artifact_sha256") != metadata.artifact_sha256 or entry.get("installed_tree_sha256") != metadata.installed_tree_sha256:
-            raise HarnessBlocked("current-cache-summary-hash-mismatch", "blocked_missing_driver")
+            raise HarnessBlocked("current-cache-summary-hash-mismatch", "blocked")
     return metadata_path.parent, metadata
 
 
@@ -182,7 +182,7 @@ def run(args: argparse.Namespace) -> int:
     scenario = _load_scenario(repo_root, args.scenario)
     reference = args.reference
     if scenario.get("reference") != reference:
-        raise HarnessBlocked("scenario-reference-mismatch", "blocked_missing_driver")
+        raise HarnessBlocked("scenario-reference-mismatch", "rejected")
     base = Path(args.run_root or repo_root / "target/interop/runs").resolve()
     runs_root = (repo_root / "target/interop/runs").resolve()
     if base != runs_root and runs_root not in base.parents:
@@ -196,7 +196,7 @@ def run(args: argparse.Namespace) -> int:
     adapter: Any = None
     metadata: CacheMetadata | None = None
     cleanup = "not-started"
-    result = "blocked_missing_driver"
+    result = "blocked"
     reason = "not-started"
     i2pr_commit = "0" * 40 + ";dirty"
     evidence_path: Path | None = None
@@ -205,17 +205,12 @@ def run(args: argparse.Namespace) -> int:
         i2pr_commit = _git_identity(repo_root)
         cache, metadata = _cache_for(cache_base, reference, repo_root)
         if scenario.get("profile") != "environment-smoke":
-            raise HarnessBlocked("i2pr-wire-driver-not-available", "blocked_missing_driver")
+            raise HarnessBlocked("i2pr-mixed-router-profile-not-wired", "blocked")
         if scenario.get("address_family") == "ipv6":
             disabled = Path("/proc/sys/net/ipv6/conf/all/disable_ipv6")
             capability = subprocess.run(["ip", "-6", "route", "show"], capture_output=True, text=True, check=False)
             if capability.returncode != 0 or (disabled.is_file() and disabled.read_text().strip() != "0"):
                 raise HarnessBlocked("ipv6-capability-unavailable", "skipped_ipv6")
-        scenario_path = run_dir / "scenario.toml"
-        scenario_path.write_text("[scenario]\n" + "\n".join(f'{key} = {json.dumps(value)}' for key, value in scenario.items()) + "\n", encoding="utf-8")
-        (run_dir / "secrets").mkdir(mode=0o700)
-        (run_dir / "secrets/router.identity").write_bytes(os.urandom(32))
-        (run_dir / "secrets/ntcp2.static.key").write_bytes(os.urandom(32))
         ipv6 = str(scenario.get("address_family")) == "ipv6"
         reference_port = 45678 if reference == "java_i2p" else 45679
         topology = NamespaceTopology(repo_root, run_dir.name.removeprefix("run-"), ipv6, reference_port=reference_port)

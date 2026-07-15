@@ -78,4 +78,20 @@ Plan 041 schema-2 records additionally carry both reference revisions and
 artifact/tree/configuration hashes, the direction policy, typed RouterInfo
 validation results, dual authenticated-link observations, connection/process
 counters, and the evidence digest. The reference control is not a support
-claim; i2pr mixed-router evidence still requires the later Plan 042 driver.
+claim; i2pr mixed-router evidence still requires the authorized Plan 042
+launcher-to-reference execution.
+
+## Plan 042 launcher boundary
+
+The Plan 042 launcher is now a bounded runtime composition seam, not a
+placeholder readiness process. It validates the strict confined scenario,
+prepares disposable permission-hardened identity, NTCP2 static-key/IV, and
+RouterInfo state, then invokes the runtime listener/dial, handshake executor,
+authenticated-link promotion, and DeliveryStatus exchange. Its JSONL status
+records keep listener readiness separate from terminal authentication/data
+results and use fixed reason codes only.
+
+This local launcher path is still not reference evidence. The reference runner
+must complete the Ubuntu namespace, cache, RouterInfo import, and observation
+gates before any mixed-router result can be retained. The normal daemon remains
+disabled and all NTCP2 support rows remain experimental/non-advertised.

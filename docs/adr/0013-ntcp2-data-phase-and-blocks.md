@@ -43,8 +43,9 @@ It does not define a periodic in-session data rekey threshold.
    side effect occurs here.
 6. Padding/coalescing is represented as a pure bounded policy input. This
    layer never waits for more messages, selects queues, or generates runtime
-   randomness. Deterministic tests use fixed zero padding; a later runtime
-   adapter supplies compliant random padding and scheduling decisions.
+   randomness. Deterministic tests use fixed zero padding; the Plan 042
+   runtime-owned driver supplies compliant random padding and scheduling
+   decisions.
 7. Because the current specification supplies no data-phase rekey threshold,
    this implementation does not invent one. The last permitted nonce is
    usable, the forbidden `2^64 - 1` value is never emitted, and exhaustion or
@@ -53,11 +54,25 @@ It does not define a periodic in-session data rekey threshold.
 ## Consequences
 
 The protocol crate can prove framing, block bounds, ownership, terminal-state,
-and malformed-input behavior without sockets or a runtime. The future runtime
-must retain partial length/ciphertext buffers under explicit resource leases,
-flush complete encoded frames, apply deadlines/cancellation, and perform
-NetDB/policy actions only after typed data-phase output. Local vectors and fuzz
-results remain experimental evidence and do not establish interoperability.
+and malformed-input behavior without sockets or a runtime. Plan 042's driver
+retains partial length/ciphertext buffers under explicit resource leases,
+flushes complete encoded frames, applies deadlines/cancellation, and performs
+policy actions only after typed data-phase output. The non-production launcher
+now composes handshake-to-link and local smoke exchange; local vectors,
+loopback, and launcher results remain experimental evidence and do not
+establish interoperability.
+
+## Plan 042 smoke-message scope
+
+The initial bounded I2NP smoke scope is `DeliveryStatus` (I2NP type 10), whose
+fixed body is 12 bytes. The NTCP2/SSU2 short transport representation is
+21 bytes (9-byte short header plus body), and its NTCP2 block is 24 bytes before
+frame overhead and padding. The intended positive result requires one valid
+outbound and one valid inbound DeliveryStatus in each direction, with no
+payload retention in status or evidence. This scope does not imply that either
+reference echoes or otherwise acknowledges the message; that behavior must be
+verified during an authorized run before it can support an interoperability
+claim.
 
 ## Evidence
 
@@ -78,3 +93,13 @@ still rejecting blocks after Termination except final Padding, duplicate
 Padding, malformed lengths, and excessive unknown bytes. This is a local
 wire-conformance correction; no mixed-router evidence or support advertisement
 is implied.
+
+## Plan 042 runtime composition amendment
+
+`i2pr-runtime` will own the authenticated `TransmitState` and `ReceiveState`,
+exact encrypted-frame reads/writes, bounded frame/message queues, and sibling
+reader/writer cancellation and joins. The launcher may report aggregate frame
+and message counters, but it must not expose frame payloads, endpoints, or
+identity material. Authentication, a complete bounded smoke exchange, and
+successful cleanup are separate gates; TCP connection or listener readiness is
+not a data-phase result.

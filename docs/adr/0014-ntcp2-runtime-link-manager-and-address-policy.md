@@ -71,11 +71,12 @@ operator opt-in outside the default event/snapshot path.
 ### Framing and queue policy
 
 The runtime exposes exact/bounded partial-I/O helpers and typed
-cancellation/deadline inputs for a future handshake-action driver. The Plan
-035 implementation does not claim a complete wire-level handshake or
-authenticated data-phase driver. The bounded link owner provides the later
-handoff point for directional key owners; receive framing, authenticated I2NP
-delivery, and frame-level queue leases remain Plan 036 composition work.
+cancellation/deadline inputs for the Plan 042 handshake-action driver. The
+Plan 035 implementation did not claim a complete wire-level handshake or
+authenticated data-phase composition; the current Plan 042 action executor
+fills the bounded handshake actions and `AuthenticatedLink` owns receive
+framing and frame-level queue leases, while their listener/dial and I2NP
+composition remains incomplete.
 
 ## Plan 037 corrective amendment
 
@@ -90,12 +91,29 @@ and reader/writer children use the configured cancellation-aware idle/read,
 write, and queue-wait deadlines.
 
 Outbound dial admission is consulted before connect and is cleared only by an
-explicit `DialAttempt::mark_authenticated()` call. These APIs are still
-runtime seams: the current workspace does not yet compose them with the pure
-NTCP2 handshake/data state machines or the synchronous `TransportManager`, and
-the daemon keeps live activation disabled. Adding that composition requires a
-new approved composition boundary (or a narrowly scoped adapter crate) and
-must precede any mixed-router testnet execution.
+explicit `DialAttempt::mark_authenticated()` call. These APIs remain runtime
+seams: the Plan 042 action executor now composes bounded handshake actions,
+but listener/dial policy, the authenticated data phase, and the synchronous
+`TransportManager` remain unwired, and the daemon keeps live activation
+disabled. Full composition must precede any mixed-router testnet execution.
+
+## Plan 042 runtime-driver amendment
+
+Plan 042 is the approved composition boundary: the complete NTCP2 action
+executor and authenticated data-phase owner belong in `i2pr-runtime`, using
+these socket, admission, replay, backoff, deadline, queue, and child-scope
+owners. The non-production launcher supplies only validated scenario and
+disposable-state capabilities. It must not move socket ownership into
+`i2pr-transport-ntcp2` or activate `i2pr-daemon`.
+
+Inbound listener readiness and authenticated readiness are separate status
+events. The pending-handshake permit remains attached until authentication or
+terminal failure; only an authenticated stream receives active-link ownership.
+The current checkout composes listener/dial, handshake-to-data-phase
+promotion, and the DeliveryStatus smoke in the non-production launcher. Local
+success provides driver validation only; it cannot provide interoperability
+evidence. State, authentication, data-phase, timeout, and cleanup failures
+remain typed terminal results.
 
 ## Consequences
 
@@ -103,9 +121,9 @@ The runtime can exercise controlled TCP lifecycle and cleanup without changing
 the pure protocol dependency direction. It adds implementation and test
 surface for admission and ownership, but keeps public activation and support
 claims disabled. Loopback success and local vectors remain structural evidence
-only. Future mixed-router work must validate the duplicate rule,
-padding/coalescing policy, address publication, and full handshake/data
-exchange before changing the support ledger.
+only. Mixed-router work must validate the duplicate rule, padding/coalescing
+policy, address publication, and full handshake/data exchange before changing
+the support ledger.
 
 ## Review triggers
 

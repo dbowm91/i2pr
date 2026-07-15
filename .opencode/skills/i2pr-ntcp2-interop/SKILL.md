@@ -5,7 +5,7 @@ description: Operate, diagnose, or extend the repository's Ubuntu 24.04 referenc
 
 # I2PR NTCP2 interoperability
 
-Use this skill from the repository root for the manual, opt-in Plan 038/040/041
+Use this skill from the repository root for the manual, opt-in Plan 038/040/041/042
 harness. Read `AGENTS.md`, `plans/038-ubuntu-reference-router-interoperability-harness.md`,
 `tests/integration/ntcp2/README.md`, and the relevant architecture/ADR files
 before changing the apparatus.
@@ -29,6 +29,32 @@ Run only on an authorized disposable Ubuntu 24.04 amd64 host. The namespace
 and firewall checks are mandatory and fail closed. Do not bypass a host,
 privilege, route, cleanup, or evidence validation error.
 
+## Plan 042 runtime and launcher boundary
+
+The NTCP2 wire driver is a runtime-owned composition. `i2pr-runtime` owns
+Tokio sockets and tasks, action deadlines, cancellation, replay/admission,
+authenticated frame state, bounded queues, and child joins. The
+`i2pr-transport-ntcp2` state machines remain runtime-neutral and receive only
+complete bounded actions. `tools/i2pr-interop` is a non-production launcher
+seam: it validates bounded non-secret scenario input and composes the runtime
+driver, but it must never activate `i2pr-daemon`.
+
+The launcher status protocol has separate meanings. A completed `listen` emits
+listener readiness and then a distinct authenticated terminal result; `dial`
+emits one terminal typed result; and `inspect` emits redacted state metadata.
+Listener readiness is not authentication. The current checkout composes the
+runtime-owned handshake executor, authenticated link owner, listener/dial
+promotion, and DeliveryStatus smoke. State, handshake, data-phase, timeout,
+and cleanup failures are typed terminal results; none is evidence by itself.
+
+Plan 042 selects the existing fixed-size DeliveryStatus message (I2NP type 10)
+for the first data smoke: 12-byte body, 21-byte NTCP2/SSU2 short transport
+encoding, and 24-byte NTCP2 block before frame overhead and padding. A positive
+gate requires one authenticated outbound and one authenticated inbound
+DeliveryStatus per direction plus orderly cleanup. Reference acceptance or
+echo behavior is not yet verified; do not claim interoperability or substitute
+padding/TCP readiness for the message exchange.
+
 ## Workflow
 
 1. Inspect the lock and scenario definitions before execution. Do not change
@@ -48,9 +74,10 @@ privilege, route, cleanup, or evidence validation error.
    dedicated `reference-java-i2pd-ipv4` and `reference-i2pd-java-ipv4`
    scenarios with separate namespaces, an explicit non-public network ID,
    staged RouterInfo exchange, and dual authenticated observations. Run
-   handshake/full only after the earlier gates pass. Pass `--offline` when appropriate and
-   use `--keep-failed-sanitized` only when reviewing an allowed sanitized
-   failure record.
+   handshake/full only after the earlier gates pass and the runtime-owned
+   driver is available. Pass `--offline` when appropriate and use
+   `--keep-failed-sanitized` only when reviewing an allowed sanitized failure
+   record.
 5. Validate every retained record with
    `bash scripts/interop/validate-evidence.py` and
    `bash scripts/check-ntcp2-interoperability.sh`. Empty evidence is not

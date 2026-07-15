@@ -36,11 +36,37 @@ option must match the authenticated X25519 static key. The result contains
 only the typed role, RouterIdentity hash, negotiated bounds, and consuming
 data-phase key owners. It does not update NetDB or publish an address.
 
+## Plan 042 runtime-driver amendment
+
+Plan 042 composes these actions in `i2pr-runtime`, which is the sole owner of
+TCP streams, Tokio tasks, deadlines, cancellation, runtime clock access,
+padding randomness, replay-cache decisions, and bounded I/O buffers. The
+driver must feed complete bounded reads and writes to the consuming states and
+must retain pending-handshake admission until authentication or a terminal
+typed outcome. `tools/i2pr-interop` validates the non-secret scenario boundary
+and composes this runtime owner; it does not move sockets or filesystem work
+into `i2pr-transport-ntcp2` or enable `i2pr-daemon`.
+
+The current checkout contains the bounded action executor, including exact I/O,
+deadlines, cancellation, clock, replay, padding, and RouterInfo action
+handling, and composes it with runtime listener/dial promotion and the
+authenticated data-phase link. The non-production launcher can perform a
+bounded local DeliveryStatus smoke, but that is not interoperability evidence.
+An ambiguous unframed `ReadBounded` action is rejected as a typed invalid
+action rather than being inferred from an arbitrary TCP read. A completed
+listener exposes readiness separately from authenticated completion, and a
+dial exposes one terminal typed result.
+The current bounded padding profiles are local driver behavior; production
+randomized padding and reference compatibility remain unproven. Local
+state-machine, loopback, vector, and testkit results remain structural evidence
+only.
+
 ## Consequences and review triggers
 
-The action boundary is deterministic and testable with synthetic inputs, but
-it requires a later runtime owner to implement exact stream adaptation. Local
+The action boundary is deterministic and testable with synthetic inputs. Plan
+042 is the reviewed runtime owner for exact stream adaptation, but its driver
+must still be completed and exercised before any mixed-router claim. Local
 vectors and state-machine tests are structural/experimental evidence only.
-Revisit this decision before adding runtime I/O, a production padding
-distribution, mixed-router interoperability, data-phase frames, or capability
+Revisit this decision before changing the action contract, production padding
+distribution, mixed-router interoperability policy, or capability
 advertisement.

@@ -116,8 +116,8 @@ def validate_record(record: dict[str, Any]) -> None:
     if record["actual_typed_result"] not in {
         "passed",
         "rejected",
+        "blocked",
         "skipped_ipv6",
-        "blocked_missing_driver",
         "blocked_host_contract",
         "failed_cleanup",
     }:
@@ -210,7 +210,7 @@ def _validate_reference_pair_record(record: dict[str, Any]) -> None:
     for value in record["process_counters"].values():
         if not isinstance(value, dict) or any(key not in value for key in ("started", "exited", "forced")):
             raise EvidenceError("reference-pair process counter shape is invalid")
-    if record["actual_typed_result"] not in {"passed", "rejected", "blocked_host_contract", "blocked_missing_driver", "failed_cleanup"}:
+    if record["actual_typed_result"] not in {"passed", "rejected", "blocked", "blocked_host_contract", "failed_cleanup"}:
         raise EvidenceError("unknown reference-pair typed result")
     if record["cleanup_result"] not in {"clean", "forced", "failed", "not-started"}:
         raise EvidenceError("unknown reference-pair cleanup result")

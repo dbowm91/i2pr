@@ -28,6 +28,23 @@ Network tunnels (router-to-router) and application service tunnels
 (local app to destination) are deliberately kept apart. Service tunnels
 must not import transport internals or peer-profile storage.
 
+## Plan 042 runtime-owned NTCP2 composition
+
+The runtime boundary is now concrete for the bounded NTCP2 wire path. The
+runtime-neutral state machines in `i2pr-transport-ntcp2` emit complete,
+bounded actions; `i2pr-runtime` fulfills them with exact socket I/O,
+cancellation-aware deadlines, clock and replay services, and authenticated
+data-frame owners. `AuthenticatedLink` supervises one reader and one writer,
+and each queued frame or received frame carries its own accounting lease.
+
+The non-production `i2pr-interop` binary is a disposable composition root. It
+validates the strict synthetic scenario, owns temporary identity/static-key and
+RouterInfo preparation, runs either the listener or dial path, and performs a
+DeliveryStatus smoke exchange before bounded cleanup. It does not enable the
+daemon, publish capabilities, or create interoperability evidence. Reference
+profiles remain a separate Ubuntu namespace gate and require sanitized
+mixed-router observations.
+
 ## Plan 038 harness boundary
 
 The Ubuntu reference-router harness is an opt-in test boundary, not another

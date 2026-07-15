@@ -1,5 +1,6 @@
 use i2pr_crypto::{RouterIdentityBundle, X25519PrivateKey};
 use i2pr_proto::{Date, Mapping, RouterAddress};
+use i2pr_transport_ntcp2::constants::MIN_HANDSHAKE_MESSAGE_LENGTH;
 use i2pr_transport_ntcp2::crypto::{PublicKeyBytes, Role};
 use i2pr_transport_ntcp2::handshake::{
     ClockSkewPolicy, HandshakeError, ReplayDecision, SessionConfirmed, validate_router_info,
@@ -173,12 +174,20 @@ fn deterministic_initiator_and_responder_complete_with_matching_data_keys() {
     let step = responder.start().expect("responder start");
     let step = step
         .state
-        .transition(HandshakeInput::Bytes(request))
+        .transition(HandshakeInput::Bytes(
+            request[..MIN_HANDSHAKE_MESSAGE_LENGTH].to_vec(),
+        ))
         .expect("request read");
     let step = step
         .state
         .transition(HandshakeInput::Replay(ReplayDecision::Fresh))
         .expect("request replay");
+    let step = step
+        .state
+        .transition(HandshakeInput::Bytes(
+            request[MIN_HANDSHAKE_MESSAGE_LENGTH..].to_vec(),
+        ))
+        .expect("request padding read");
     let step = step
         .state
         .transition(HandshakeInput::Timestamp(1_000))
@@ -191,8 +200,16 @@ fn deterministic_initiator_and_responder_complete_with_matching_data_keys() {
     let responder_after_created = step.state;
 
     let step = initiator_after_request
-        .transition(HandshakeInput::Bytes(created))
+        .transition(HandshakeInput::Bytes(
+            created[..MIN_HANDSHAKE_MESSAGE_LENGTH].to_vec(),
+        ))
         .expect("created read");
+    let step = step
+        .state
+        .transition(HandshakeInput::Bytes(
+            created[MIN_HANDSHAKE_MESSAGE_LENGTH..].to_vec(),
+        ))
+        .expect("created padding read");
     let step = step
         .state
         .transition(HandshakeInput::Timestamp(1_000))

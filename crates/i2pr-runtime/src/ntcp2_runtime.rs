@@ -20,7 +20,13 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
+use crate::ntcp2_driver::{
+    HandshakeDriverConfig, HandshakeDriverError, HandshakeRun, drive_initiator_handshake,
+    drive_responder_handshake,
+};
+use crate::ntcp2_link::{AuthenticatedLink, AuthenticatedLinkStartError};
 use crate::{CancellationToken, ChildScope, ChildScopeError, ChildTaskFailure};
+use i2pr_transport_ntcp2::frame::{ReceiveState, TransmitState};
 
 /// Hard maximum for one Plan 035 runtime duration.
 pub const MAX_NTCP2_RUNTIME_DURATION: Duration = Duration::from_secs(3_600);
@@ -705,6 +711,74 @@ impl AdmittedInboundStream {
         } = self;
         (stream, permit, family)
     }
+
+    /// Drives a responder handshake while retaining this stream's pending
+    /// admission permit. A failed handshake drops the permit; success returns
+    /// an authenticated stream owner that still carries it until handoff.
+    pub async fn drive_responder_handshake(
+        self,
+        state: i2pr_transport_ntcp2::state_machine::ResponderState,
+        local_router_info: &[u8],
+        replay: &ReplayCache,
+        config: HandshakeDriverConfig,
+        cancellation: &CancellationToken,
+    ) -> Result<(AuthenticatedInboundStream, HandshakeRun), HandshakeDriverError> {
+        let (mut stream, permit, family) = self.into_parts();
+        let result = drive_responder_handshake(
+            state,
+            &mut stream,
+            local_router_info,
+            replay,
+            config,
+            cancellation,
+        )
+        .await?;
+        Ok((
+            AuthenticatedInboundStream {
+                stream,
+                permit,
+                family,
+            },
+            result,
+        ))
+    }
+}
+
+/// An authenticated inbound stream that still owns its pending admission
+/// permit until the caller starts or rejects its active link.
+pub struct AuthenticatedInboundStream {
+    stream: TcpStream,
+    permit: InboundPermit,
+    family: AddressFamily,
+}
+
+impl fmt::Debug for AuthenticatedInboundStream {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthenticatedInboundStream")
+            .field("family", &self.family)
+            .field("stream", &"<owned>")
+            .field("permit", &"<held>")
+            .finish()
+    }
+}
+
+impl AuthenticatedInboundStream {
+    /// Returns the coarse address family.
+    pub const fn family(&self) -> AddressFamily {
+        self.family
+    }
+
+    /// Transfers the socket, pending permit, and family to an active-link
+    /// composition root.
+    pub fn into_parts(self) -> (TcpStream, InboundPermit, AddressFamily) {
+        let Self {
+            stream,
+            permit,
+            family,
+        } = self;
+        (stream, permit, family)
+    }
 }
 
 impl AsyncRead for AdmittedInboundStream {
@@ -1195,6 +1269,29 @@ impl DialAttempt {
     /// callers must invoke this only after the NTCP2 handshake authenticates.
     pub fn mark_authenticated(&self) {
         self.backoff.clear(self.key);
+    }
+
+    /// Drives an initiator handshake while retaining this dial attempt's
+    /// socket and backoff owner. The caller must mark the returned attempt
+    /// authenticated only after this method succeeds.
+    pub async fn drive_initiator_handshake(
+        mut self,
+        state: i2pr_transport_ntcp2::state_machine::InitiatorState,
+        local_router_info: &[u8],
+        replay: &ReplayCache,
+        config: HandshakeDriverConfig,
+        cancellation: &CancellationToken,
+    ) -> Result<(Self, HandshakeRun), HandshakeDriverError> {
+        let result = drive_initiator_handshake(
+            state,
+            &mut self.stream,
+            local_router_info,
+            replay,
+            config,
+            cancellation,
+        )
+        .await?;
+        Ok((self, result))
     }
 }
 
@@ -1847,6 +1944,15 @@ impl Ntcp2RuntimeService {
         })
     }
 
+    /// Creates a supervised child scope for a controlled composition root.
+    pub fn child_scope(&self, parent: &CancellationToken) -> ChildScope {
+        ChildScope::new(
+            parent,
+            crate::ChildFailurePolicy::FailParent,
+            crate::observability::TaskCounters::new(),
+        )
+    }
+
     /// Starts a bounded listener under a caller-owned service scope.
     pub async fn listen(
         &self,
@@ -1950,6 +2056,64 @@ impl Ntcp2RuntimeService {
             self.config.deadlines,
             &self.active_links,
         )
+    }
+
+    /// Starts a supervised authenticated NTCP2 frame owner after handshake.
+    ///
+    /// Unlike [`Self::start_link`], this path retains protocol frame state and
+    /// exposes parsed authenticated frames rather than raw byte counters.
+    pub fn start_authenticated_link(
+        &self,
+        scope: &ChildScope,
+        stream: TcpStream,
+        family: AddressFamily,
+        id: u64,
+        transmit: TransmitState,
+        receive: ReceiveState,
+    ) -> Result<AuthenticatedLink, AuthenticatedLinkStartError> {
+        AuthenticatedLink::start_with_admission(
+            scope,
+            stream,
+            family,
+            id,
+            transmit,
+            receive,
+            self.config.limits,
+            self.config.deadlines,
+            &self.active_links,
+        )
+    }
+
+    /// Promotes an authenticated inbound stream into the frame owner while
+    /// releasing pending admission only after active-link admission succeeds.
+    pub fn promote_authenticated_inbound(
+        &self,
+        scope: &ChildScope,
+        inbound: AuthenticatedInboundStream,
+        handshake: HandshakeRun,
+        id: u64,
+    ) -> Result<AuthenticatedLink, AuthenticatedLinkStartError> {
+        let (stream, permit, family) = inbound.into_parts();
+        let (transmit, receive) = handshake.authenticated.into_data_phase();
+        let link = self.start_authenticated_link(scope, stream, family, id, transmit, receive)?;
+        drop(permit);
+        Ok(link)
+    }
+
+    /// Promotes a successfully authenticated outbound dial into the frame
+    /// owner and clears retry backoff only at that same authenticated gate.
+    pub fn promote_authenticated_dial(
+        &self,
+        scope: &ChildScope,
+        attempt: DialAttempt,
+        handshake: HandshakeRun,
+        id: u64,
+    ) -> Result<AuthenticatedLink, AuthenticatedLinkStartError> {
+        attempt.mark_authenticated();
+        let family = attempt.family();
+        let stream = attempt.into_stream();
+        let (transmit, receive) = handshake.authenticated.into_data_phase();
+        self.start_authenticated_link(scope, stream, family, id, transmit, receive)
     }
 
     /// Returns active-link lease counters.

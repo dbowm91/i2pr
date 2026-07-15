@@ -364,6 +364,17 @@ enum InitiatorPhase {
         request_padding_length: usize,
         expected_part2_length: usize,
     },
+    AwaitCreatedPadding {
+        common: InitiatorCommon,
+        transcript: Transcript,
+        confirmed_plaintext: Vec<u8>,
+        request_padding_length: usize,
+        expected_part2_length: usize,
+        responder_ephemeral: PublicKeyBytes,
+        created_timestamp: u32,
+        replay_token: ReplayToken,
+        expected_padding_length: usize,
+    },
     NeedPeerTimestamp {
         common: InitiatorCommon,
         transcript: Transcript,
@@ -608,9 +619,8 @@ impl InitiatorState {
                     next,
                     vec![
                         HandshakeAction::Write(request_bytes),
-                        HandshakeAction::ReadBounded {
-                            minimum: constants::MIN_HANDSHAKE_MESSAGE_LENGTH,
-                            maximum: constants::MAX_HANDSHAKE_MESSAGE_LENGTH,
+                        HandshakeAction::ReadExact {
+                            length: constants::MIN_HANDSHAKE_MESSAGE_LENGTH,
                         },
                     ],
                 ))
@@ -626,6 +636,9 @@ impl InitiatorState {
                 },
                 HandshakeInput::Bytes(bytes),
             ) => {
+                if bytes.len() != constants::MIN_HANDSHAKE_MESSAGE_LENGTH {
+                    return Err(HandshakeError::InvalidFixedLength);
+                }
                 let created =
                     SessionCreated::decode(&bytes, constants::MAX_HANDSHAKE_MESSAGE_LENGTH)?;
                 let encrypted_ephemeral =
@@ -645,10 +658,65 @@ impl InitiatorState {
                     )
                     .map_err(map_crypto)?;
                 let options = SessionCreatedOptions::decode(&plaintext)?;
-                check_padding(created.padding().len(), usize::from(options.padding_length))?;
-                let transcript = transcript
-                    .mix_padding(created.padding())
-                    .map_err(map_crypto)?;
+                let expected_padding_length = usize::from(options.padding_length);
+                let replay_token = ReplayToken::from_ephemeral_bytes(created.encrypted_ephemeral());
+                if expected_padding_length == 0 {
+                    let transcript = transcript.mix_padding(&[]).map_err(map_crypto)?;
+                    Ok(transition(
+                        Self {
+                            phase: InitiatorPhase::NeedPeerTimestamp {
+                                common,
+                                transcript,
+                                confirmed_plaintext,
+                                request_padding_length,
+                                expected_part2_length,
+                                created_padding_length: 0,
+                                created_timestamp: options.timestamp,
+                                replay_token,
+                                responder_ephemeral,
+                            },
+                        },
+                        vec![HandshakeAction::RequestTimestamp {
+                            purpose: TimestampPurpose::PeerValidation,
+                        }],
+                    ))
+                } else {
+                    Ok(transition(
+                        Self {
+                            phase: InitiatorPhase::AwaitCreatedPadding {
+                                common,
+                                transcript,
+                                confirmed_plaintext,
+                                request_padding_length,
+                                expected_part2_length,
+                                responder_ephemeral,
+                                created_timestamp: options.timestamp,
+                                replay_token,
+                                expected_padding_length,
+                            },
+                        },
+                        vec![HandshakeAction::ReadExact {
+                            length: expected_padding_length,
+                        }],
+                    ))
+                }
+            }
+            (
+                InitiatorPhase::AwaitCreatedPadding {
+                    common,
+                    transcript,
+                    confirmed_plaintext,
+                    request_padding_length,
+                    expected_part2_length,
+                    responder_ephemeral,
+                    created_timestamp,
+                    replay_token,
+                    expected_padding_length,
+                },
+                HandshakeInput::Bytes(padding),
+            ) => {
+                check_padding(padding.len(), expected_padding_length)?;
+                let transcript = transcript.mix_padding(&padding).map_err(map_crypto)?;
                 Ok(transition(
                     Self {
                         phase: InitiatorPhase::NeedPeerTimestamp {
@@ -657,11 +725,9 @@ impl InitiatorState {
                             confirmed_plaintext,
                             request_padding_length,
                             expected_part2_length,
-                            created_padding_length: created.padding().len(),
-                            created_timestamp: options.timestamp,
-                            replay_token: ReplayToken::from_ephemeral_bytes(
-                                created.encrypted_ephemeral(),
-                            ),
+                            created_padding_length: expected_padding_length,
+                            created_timestamp,
+                            replay_token,
                             responder_ephemeral,
                         },
                     },
@@ -785,6 +851,14 @@ enum ResponderPhase {
         obfuscation: AesObfuscationState,
         request: SessionRequest,
     },
+    AwaitRequestPadding {
+        common: ResponderCommon,
+        obfuscation: AesObfuscationState,
+        request_options: SessionRequestOptions,
+        initiator_ephemeral: PublicKeyBytes,
+        transcript: Transcript,
+        expected_padding_length: usize,
+    },
     NeedPeerTimestamp {
         common: ResponderCommon,
         obfuscation: AesObfuscationState,
@@ -850,9 +924,8 @@ impl ResponderState {
         match self.phase {
             ResponderPhase::NeedRequest { .. } => Ok(transition(
                 self,
-                vec![HandshakeAction::ReadBounded {
-                    minimum: constants::MIN_HANDSHAKE_MESSAGE_LENGTH,
-                    maximum: constants::MAX_HANDSHAKE_MESSAGE_LENGTH,
+                vec![HandshakeAction::ReadExact {
+                    length: constants::MIN_HANDSHAKE_MESSAGE_LENGTH,
                 }],
             )),
             _ => Err(HandshakeError::StateViolation),
@@ -900,6 +973,9 @@ impl ResponderState {
                 },
                 HandshakeInput::Bytes(bytes),
             ) => {
+                if bytes.len() != constants::MIN_HANDSHAKE_MESSAGE_LENGTH {
+                    return Err(HandshakeError::InvalidFixedLength);
+                }
                 let request =
                     SessionRequest::decode(&bytes, constants::MAX_HANDSHAKE_MESSAGE_LENGTH)?;
                 let token = ReplayToken::from_ephemeral_bytes(request.encrypted_ephemeral());
@@ -945,17 +1021,62 @@ impl ResponderState {
                 if options.network_id != common.network_id {
                     return Err(HandshakeError::WrongNetwork);
                 }
-                check_padding(request.padding().len(), usize::from(options.padding_length))?;
-                let transcript = transcript
-                    .mix_padding(request.padding())
-                    .map_err(map_crypto)?;
+                let expected_padding_length = usize::from(options.padding_length);
+                if expected_padding_length == 0 {
+                    let transcript = transcript.mix_padding(&[]).map_err(map_crypto)?;
+                    Ok(transition(
+                        Self {
+                            phase: ResponderPhase::NeedPeerTimestamp {
+                                common,
+                                obfuscation,
+                                request_padding: Vec::new(),
+                                request_options: options,
+                                initiator_ephemeral,
+                                transcript,
+                            },
+                        },
+                        vec![HandshakeAction::RequestTimestamp {
+                            purpose: TimestampPurpose::PeerValidation,
+                        }],
+                    ))
+                } else {
+                    Ok(transition(
+                        Self {
+                            phase: ResponderPhase::AwaitRequestPadding {
+                                common,
+                                obfuscation,
+                                request_options: options,
+                                initiator_ephemeral,
+                                transcript,
+                                expected_padding_length,
+                            },
+                        },
+                        vec![HandshakeAction::ReadExact {
+                            length: expected_padding_length,
+                        }],
+                    ))
+                }
+            }
+            (
+                ResponderPhase::AwaitRequestPadding {
+                    common,
+                    obfuscation,
+                    request_options,
+                    initiator_ephemeral,
+                    transcript,
+                    expected_padding_length,
+                },
+                HandshakeInput::Bytes(padding),
+            ) => {
+                check_padding(padding.len(), expected_padding_length)?;
+                let transcript = transcript.mix_padding(&padding).map_err(map_crypto)?;
                 Ok(transition(
                     Self {
                         phase: ResponderPhase::NeedPeerTimestamp {
                             common,
                             obfuscation,
-                            request_padding: request.padding().to_vec(),
-                            request_options: options,
+                            request_padding: padding,
+                            request_options,
                             initiator_ephemeral,
                             transcript,
                         },

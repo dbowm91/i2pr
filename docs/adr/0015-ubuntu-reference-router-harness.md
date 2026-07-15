@@ -28,14 +28,45 @@ The harness has two security domains:
    processes, and sanitizes typed evidence before deleting raw state.
 
 The dedicated `tools/i2pr-interop` binary is a non-production composition seam
-depending on the runtime and protocol owners. Until the complete wire-level
-adapter exists, `listen` and `dial` return `blocked_missing_driver`; they do
-not activate `i2pr-daemon`, claim a handshake, or print arbitrary diagnostics.
+depending on the runtime and protocol owners. The current checkout contains
+the bounded runtime-owned handshake action executor, authenticated link owner,
+listener/dial promotion, and DeliveryStatus smoke. It does not activate
+`i2pr-daemon`, claim mixed-router interoperability, or print arbitrary
+diagnostics.
 The Plan 041 reference-only control path is owned by
 `tests/integration/ntcp2/harness/reference_runner.py` and
 `reference_topology.py`, not by the launcher or the normal daemon. The
 launcher `inspect` operation may perform strict RouterInfo/signature/NTCP2
 address validation and emit only bounded typed JSON.
+
+## Plan 042 launcher and evidence amendment
+
+The completed Plan 042 launcher protocol is versioned and typed. `listen` must
+flush one listener-readiness record and later one authenticated terminal
+result; `dial` must emit one terminal result; and `inspect` must emit only
+redacted state metadata. Listener readiness proves only that the configured
+literal listener is active. Authentication requires the complete handshake,
+active-link admission, an authenticated data exchange, and bounded cleanup.
+The status record is schema-1 `i2pr-interop-status` JSON with fixed phase,
+result, reason-code, and aggregate counters. Readiness is separate from the
+terminal result. Local success is driver validation only; the reference
+runner still needs its isolated i2pr/reference adapter and authoritative
+observations before evidence can be retained.
+
+The selected initial smoke message is the existing fixed-size DeliveryStatus
+I2NP message (type 10): 12-byte body, 21-byte NTCP2/SSU2 short transport
+encoding, and 24-byte NTCP2 block before frame overhead and padding. A positive
+Plan 042 record must show one valid outbound and one valid inbound message per
+direction, in addition to authenticated handshake and cleanup results. No
+reference echo behavior has been proven, so the selection does not yet support
+an interoperability claim and padding/TCP readiness cannot substitute for it.
+
+The runtime-owned driver remains in `i2pr-runtime`; it owns socket I/O, action
+deadlines, cancellation, replay/admission, authenticated frame state, bounded
+queues, and child joins. The launcher only supplies bounded scenario and
+disposable-state capabilities. The current checkout has no sanitized i2pr-to-
+reference record: Plan 041 reference-pair output is a harness control only,
+and the current host blocker is `blocked_host_contract`.
 
 ## Consequences
 
@@ -55,6 +86,13 @@ address validation and emit only bounded typed JSON.
   is by canonical reference and current-cache summary; sanitized evidence is
   written under `target/interop/evidence/` only after cleanup, and the run
   root is deleted even when a failed record is retained.
+- `blocked_host_contract`, launcher `result=blocked` with its fixed reason code
+  (and `i2pr-mixed-router-profile-not-wired` from the incomplete reference
+  adapter), rejected
+  state/configuration, authentication failure, timeout, and cleanup failure
+  remain typed outcomes.
+  None may be converted to `passed`; an empty evidence directory is not
+  evidence.
 
 ## Rejected alternatives
 

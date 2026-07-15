@@ -7,7 +7,8 @@ edges.
 
 ## Allowlist
 
-Production edges (reads as "may depend on"):
+Production edges (reads as "may depend on"). Dev-dependencies are excluded
+from this production graph; they are allowed to support crate-local tests.
 
 | Crate | May depend on |
 | --- | --- |
@@ -17,7 +18,7 @@ Production edges (reads as "may depend on"):
 | `i2pr-core` | (zero deps) |
 | `i2pr-transport` | `i2pr-core`, `i2pr-proto` |
 | `i2pr-transport-ntcp2` | `i2pr-proto`, `i2pr-crypto`, `i2pr-transport` + `aes`, `chacha20poly1305`, `hmac`, `sha2`, `siphasher`, `thiserror`, `zeroize` |
-| `i2pr-runtime` | `i2pr-core`, `i2pr-transport` + `tokio`, `tokio-util`, `futures-util`, `tracing` |
+| `i2pr-runtime` | `i2pr-core`, `i2pr-transport`, `i2pr-transport-ntcp2` + `tokio`, `tokio-util`, `futures-util`, `tracing` |
 | `i2pr-daemon` | (top of graph; `i2pr-crypto`, `i2pr-storage` today; `i2pr-core`, `i2pr-proto`, `i2pr-runtime`, `i2pr-transport` declared but unused) + `clap`, `serde`, `toml`, `thiserror`, `tracing`, `tracing-subscriber` |
 | `i2pr-testkit` (test-only) | every transport-and-runtime crate + `rand_chacha`, `rand_core`, `sha2`, `tokio` |
 
@@ -31,24 +32,23 @@ Reverse edges (i.e. "may NOT depend on"):
   `i2pr-tunnel`, `i2pr-client`.
 - `i2pr-transport-ntcp2` may not depend on `i2pr-runtime`,
   `i2pr-daemon`, `i2pr-testkit`.
-- `i2pr-runtime` may not depend on `i2pr-daemon`,
-  `i2pr-transport-ntcp2` is allowed transitively only through
-  runtime integration.
+- `i2pr-runtime` may not depend on `i2pr-daemon`; its direct
+  `i2pr-transport-ntcp2` edge is the approved Plan 042 runtime composition
+  boundary.
 - **No production crate may depend on `i2pr-testkit`.**
 
 ## ASCII graph
 
 ```text
-i2pr-proto  <- i2pr-crypto <- i2pr-storage
-     ^             ^              ^
-     |             |              |
-i2pr-core <- i2pr-transport <- i2pr-runtime <- i2pr-daemon (composition root)
-     ^             ^              ^
-     |             |              |
-     +-------------+   i2pr-transport-ntcp2
-                          ^
-                          |
-                i2pr-proto + i2pr-crypto
+i2pr-daemon -> i2pr-runtime -> i2pr-transport-ntcp2
+                         |                 |
+                         v                 v
+                 i2pr-transport -------> i2pr-crypto -> i2pr-proto
+                         |
+                         v
+                     i2pr-core
+
+i2pr-storage -> i2pr-crypto
 
 i2pr-testkit (test/simulation only; may depend on transport crates;
               no production crate may depend on it)

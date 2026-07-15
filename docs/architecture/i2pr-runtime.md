@@ -2,10 +2,10 @@
 
 The **only production owner of Tokio** in the workspace. Built on top
 of `i2pr-core` (contracts) and `i2pr-transport` (link contracts), it provides
-the bounded socket, timer, channel, and wakeable-cancellation seam that a
-future adapter can use to fulfill `i2pr-transport-ntcp2` actions. The
-checked-in runtime link helper is still a raw, controlled lifecycle owner; it
-does not claim a complete wire-level handshake or mixed-router exchange.
+the bounded socket, timer, channel, and wakeable-cancellation seam that fulfills
+`i2pr-transport-ntcp2` actions. Plan 042 adds the runtime-owned handshake
+executor and authenticated data-frame link; these are controlled local
+composition surfaces, not mixed-router evidence.
 
 Path: `crates/i2pr-runtime/`
 
@@ -21,9 +21,12 @@ rest of the world. It is where:
 - Bounded service channels are built (command, event, request,
   latest-state) with resource charging.
 - TCP listeners and link children are owned.
-- NTCP2 action/frame integration has bounded exact-I/O helpers; the complete
-  socket-to-state-machine adapter remains a later composition step and is not
-  represented as interoperability evidence.
+- NTCP2 actions are fulfilled by `ntcp2_driver` with exact reads/writes,
+  deadlines, cancellation, replay admission, clock, padding, and RouterInfo
+  handoff.
+- `ntcp2_link` owns authenticated frame reader/writer children and queue
+  leases. Listener/dial promotion keeps pending admission attached until
+  active-link admission succeeds.
 - Privacy-safe runtime snapshots are produced.
 
 The contract that protocol, transport, and storage crates stay free
@@ -37,7 +40,9 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
 | `channel` | `src/channel.rs` | 1908 | Typed bounded service channels with resource charging, overflow policies, privacy-safe counters | `ChannelSpec`, `ChannelName`, `CommunicationClass`, `OverflowPolicy`, `QueueCharge`, `*Sender*`/`*Receiver*`, `Received`, `ReceivedRequest`, `ChannelSnapshot`, all error types |
 | `context` | `src/context.rs` | 585 | Per-service context bundle, readiness signals, health publication, child-task scope with bounded join and forced abort | `ServiceContext`, `Readiness`, `HealthReporter`, `HealthReceiver`, `ChildScope`, `ChildFailurePolicy`, `ChildTaskFailure`, `ChildScopeError`, `ChildShutdownReport` |
 | `graph` | `src/graph.rs` | 648 | Service registration, deterministic topological ordering, full graph validation before startup | `ServiceGraph`, `ServiceGraphBuilder`, `ServiceSpec`, `ServiceFuture`, `RestartPolicy`, `RestartExhaustion`, `RestartPolicyError`, `GraphError` |
-| `ntcp2_runtime` | `src/ntcp2_runtime.rs` | 1592 | Bounded NTCP2 socket/link lifecycle, TCP listener ownership, admission control, replay cache, dial backoff, link reader/writer children, exact I/O helpers | `Ntcp2RuntimeService`, `BoundNtcp2Listener`, `ListenerHandle`, `LinkHandle`, `InboundAdmission`, `ReplayCache`, `DialAdmission`, etc.; fns `read_exact`, `write_all_exact` |
+| `ntcp2_runtime` | `src/ntcp2_runtime.rs` | — | Bounded NTCP2 socket/link lifecycle, TCP listener ownership, admission control, replay cache, dial backoff, link reader/writer children, exact I/O helpers | `Ntcp2RuntimeService`, `BoundNtcp2Listener`, `ListenerHandle`, `LinkHandle`, `InboundAdmission`, `ReplayCache`, `DialAdmission`, etc.; fns `read_exact`, `write_all_exact` |
+| `ntcp2_driver` | `src/ntcp2_driver.rs` | Plan 042 | Runtime-owned handshake action executor with bounded deadlines, cancellation, replay, clock, padding, and RouterInfo provision | `HandshakeDriverConfig`, `HandshakeRun`, `drive_initiator_handshake`, `drive_responder_handshake` |
+| `ntcp2_link` | `src/ntcp2_link.rs` | Plan 042 | Authenticated frame reader/writer children and item/byte accounting leases | `AuthenticatedLink`, `ReceivedFrameLease`, `AuthenticatedLinkSnapshot` |
 | `observability` | `src/observability.rs` | 360 | Privacy-aware runtime events (tracing), bounded aggregate snapshots, shared task counters | `RouterLifecycle`, `SupervisorSnapshot`, `ServiceSnapshot`, `RuntimeSnapshot`, `SimulationSnapshot`, `event::*` |
 | `supervisor` | `src/supervisor.rs` | 1703 | Service startup sequencing, health tracking, restart with bounded exponential backoff, graceful/forced shutdown | `Supervisor`, `SupervisorHandle`, `SupervisorError`, `SupervisorConfigError`, `ShutdownReport`, `ShutdownOutcome` |
 
@@ -84,6 +89,12 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
 - `supervisor`: `MAX_SHUTDOWN_DEADLINE`, `ShutdownOutcome`,
   `ShutdownReport`, `Supervisor`, `SupervisorConfigError`,
   `SupervisorError`, `SupervisorHandle`
+- Plan 042 NTCP2 composition: `HandshakeClock`, `HandshakeDriverConfig`,
+  `HandshakeDriverError`, `HandshakeRun`, `PaddingProfile`,
+  `AuthenticatedLink`, `AuthenticatedLinkError`,
+  `AuthenticatedLinkSnapshot`, `AuthenticatedLinkStartError`, and
+  `ReceivedFrameLease`; helpers `run_blocking` and `bounded_timeout` keep
+  Tokio ownership inside this crate.
 - Re-exports from `i2pr-core`: `CancellationReason`, `DegradationCode`,
   `FailureCategory`, `HealthDetail`, `HealthSnapshot`, `HealthState`,
   `InvalidLifecycleTransition`, `LifecycleState`,
@@ -166,6 +177,20 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
   their own `CancellationToken` (`ntcp2_runtime.rs:1194, 1219`).
 - Reader uses a fixed 4096-byte buffer. Reader EOF or error
   cancels the writer via the shared token.
+
+### Handshake and authenticated data owner (`ntcp2_driver.rs`, `ntcp2_link.rs`)
+- `drive_initiator_handshake` and `drive_responder_handshake` consume the
+  protocol state machines and reject ambiguous unframed bounded reads.
+- `AuthenticatedInboundStream` retains the pending inbound permit through
+  successful handshake; promotion releases it only after active-link
+  admission succeeds. Dial backoff is cleared only at the same authenticated
+  gate.
+- `AuthenticatedLink::send_blocks` and `recv` expose bounded owners. Queue
+  leases release on write success, failure, cancellation, receiver closure, or
+  owner drop.
+- `run_blocking` and `bounded_timeout` are runtime-owned helpers used by the
+  isolated launcher, keeping Tokio dependencies out of tooling and
+  runtime-neutral crates.
 
 ### Replay cache (`ntcp2_runtime.rs`)
 - `ReplayCache::new(maximum)`,

@@ -5,7 +5,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .process import BoundedProcess, ProcessError
+try:
+    from .launcher_protocol import LauncherStatusError, parse_status_line
+    from .process import BoundedProcess, ProcessError
+except ImportError:  # pragma: no cover - direct harness-module execution
+    from launcher_protocol import LauncherStatusError, parse_status_line  # type: ignore
+    from process import BoundedProcess, ProcessError  # type: ignore
 
 
 class I2prAdapter:
@@ -16,8 +21,12 @@ class I2prAdapter:
         self.run_root = run_root
         self.namespace = namespace
         self.process: BoundedProcess | None = None
+        self.mode: str | None = None
+        self.last_status: dict[str, object] | None = None
 
     def start(self, mode: str) -> None:
+        if mode not in {"listen", "dial"}:
+            raise RuntimeError("invalid-i2pr-mode")
         binary = self.repo_root / "target" / "debug" / "i2pr-interop"
         if not binary.is_file():
             raise RuntimeError("missing-i2pr-interop-launcher")
@@ -33,17 +42,47 @@ class I2prAdapter:
             str(self.run_root / "scenario.toml"),
         ]
         self.process = BoundedProcess(command, self.run_root / "raw" / "i2pr.log")
+        self.mode = mode
         self.process.start()
 
     def wait_ready(self, timeout_seconds: float = 30.0) -> None:
         if self.process is None:
             raise RuntimeError("i2pr-not-started")
+        if self.mode != "listen":
+            raise RuntimeError("readiness-not-available-for-dial")
         try:
-            self.process.wait_ready(("blocked_missing_driver", "ready"), timeout_seconds)
+            status = self.process.wait_for_record(_parse_status, timeout_seconds)
         except ProcessError as exc:
             raise RuntimeError(exc.code) from exc
+        self.last_status = status
+        if status["phase"] != "listener_ready" or status["result"] != "ready":
+            raise RuntimeError("terminal-status-before-readiness")
+
+    def wait_terminal(self, timeout_seconds: float = 30.0) -> dict[str, object]:
+        if self.process is None:
+            raise RuntimeError("i2pr-not-started")
+        try:
+            status = self.process.wait_for_record(_parse_terminal_status, timeout_seconds)
+        except ProcessError as exc:
+            raise RuntimeError(exc.code) from exc
+        self.last_status = status
+        return status
 
     def stop(self, timeout_seconds: float = 5.0) -> str:
         if self.process is None:
             return "not-started"
         return self.process.stop(timeout_seconds)
+
+
+def _parse_status(line: str) -> dict[str, object] | None:
+    try:
+        return parse_status_line(line)
+    except LauncherStatusError:
+        return None
+
+
+def _parse_terminal_status(line: str) -> dict[str, object] | None:
+    status = _parse_status(line)
+    if status is not None and status["phase"] == "terminal":
+        return status
+    return None

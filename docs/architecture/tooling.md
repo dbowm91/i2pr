@@ -115,6 +115,14 @@ i2pr-interop ntcp2 dial --scenario-config <path>
 i2pr-interop ntcp2 inspect --state-dir <path>
 ```
 
+The launcher uses `i2pr-runtime` as its only Tokio owner. A valid disposable
+scenario creates or reloads private identity/static-key state, verifies the
+published RouterInfo endpoint, runs the selected listener or dial handshake,
+promotes the authenticated frame owner, and exchanges DeliveryStatus before
+cleanup. Its status protocol is versioned and redacted; state, handshake,
+data-phase, timeout, and cleanup failures are typed rejections. A successful
+launcher run is local driver validation only, never mixed-router evidence.
+
 The evidence taxonomy is strict: environment smoke validates reference
 startup/RouterInfo generation and cleanup only; Plan 041's
 `reference-crosscheck-ipv4` profile runs two dedicated directional

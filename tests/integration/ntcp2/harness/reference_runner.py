@@ -59,7 +59,7 @@ def _acquire_run_lock(repo_root: Path):
 def _scenario_path(repo_root: Path, scenario_id: str) -> Path:
     path = repo_root / "tests/integration/ntcp2/reference-scenarios" / f"{scenario_id}.toml"
     if not path.is_file():
-        raise HarnessBlocked("unknown-reference-scenario", "blocked_missing_driver")
+        raise HarnessBlocked("unknown-reference-scenario", "rejected")
     return path
 
 
@@ -186,7 +186,7 @@ def run(args: argparse.Namespace) -> int:
     stopped: set[int] = set()
     final: tuple[Any, Any] | None = None
     metadata_java = metadata_i2pd = None
-    result = "blocked_missing_driver"
+    result = "blocked"
     reason = "not-started"
     cleanup = "not-started"
     commit = "0" * 40 + ";dirty"
@@ -263,7 +263,7 @@ def run(args: argparse.Namespace) -> int:
         else:
             result, reason = "rejected", "authenticated-link-observation-missing"
     except (HarnessBlocked, ReferenceScenarioError) as exc:
-        result, reason = getattr(exc, "result", "blocked_missing_driver"), str(exc)
+        result, reason = getattr(exc, "result", "blocked"), str(exc)
     except (ReferenceTopologyError, JavaI2pError, I2pdError, RouterInfoPathError, OSError, RuntimeError) as exc:
         result, reason = "rejected", getattr(exc, "code", "typed-reference-pair-operation-failed")
     finally:
@@ -321,7 +321,7 @@ def main() -> int:
     try:
         return run(args)
     except (HarnessBlocked, ReferenceScenarioError) as exc:
-        _emit(args.scenario, getattr(exc, "result", "blocked_missing_driver"), str(exc), "not-started")
+        _emit(args.scenario, getattr(exc, "result", "blocked"), str(exc), "not-started")
         return 2
     except (OSError, RuntimeError, ValueError) as exc:
         _emit(args.scenario, "rejected", "typed-reference-pair-operation-failed", "not-started")

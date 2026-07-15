@@ -37,6 +37,8 @@ class BoundedProcess:
         self.process: subprocess.Popen[bytes] | None = None
         self._reader: threading.Thread | None = None
         self._ready_lines: deque[str] = deque(maxlen=32)
+        self._line_event = threading.Event()
+        self._line_lock = threading.Lock()
         self._log_bytes = 0
         self.forced = False
         self.pid_path = self.log_path.parent.parent / "pids" / f"{self.log_path.stem}.pid"
@@ -89,13 +91,38 @@ class BoundedProcess:
             while True:
                 line = self.process.stdout.readline()
                 if not line:
+                    self._line_event.set()
                     return
                 if self._log_bytes < self.max_log_bytes:
                     remaining = self.max_log_bytes - self._log_bytes
                     log.write(line[:remaining])
                     self._log_bytes += min(len(line), remaining)
                 decoded = line[:4096].decode("utf-8", errors="replace")
-                self._ready_lines.append(decoded)
+                with self._line_lock:
+                    self._ready_lines.append(decoded)
+                self._line_event.set()
+
+    def wait_for_record(self, parser, timeout_seconds: float):
+        """Wait for one bounded structured record from the child output."""
+
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            with self._line_lock:
+                lines = tuple(self._ready_lines)
+            for line in lines:
+                try:
+                    value = parser(line)
+                except ValueError:
+                    continue
+                if value is not None:
+                    return value
+            if self.process is None:
+                raise ProcessError("not-started")
+            if self.process.poll() is not None:
+                raise ProcessError("process-exited-before-status")
+            self._line_event.wait(min(0.05, max(0.0, deadline - time.monotonic())))
+            self._line_event.clear()
+        raise ProcessError("status-timeout")
 
     def wait_ready(self, tokens: Sequence[str], timeout_seconds: float) -> None:
         deadline = time.monotonic() + timeout_seconds
@@ -104,7 +131,9 @@ class BoundedProcess:
                 raise ProcessError("not-started")
             if self.process.poll() is not None:
                 raise ProcessError("process-exited-before-ready")
-            if any(token in line for line in self._ready_lines for token in tokens):
+            with self._line_lock:
+                ready = any(token in line for line in self._ready_lines for token in tokens)
+            if ready:
                 return
             time.sleep(0.02)
         raise ProcessError("readiness-timeout")
@@ -136,4 +165,5 @@ class BoundedProcess:
     def observed_phrase(self, phrases: Sequence[str]) -> bool:
         """Return whether a bounded, implementation-specific status phrase appeared."""
 
-        return any(phrase in line for line in self._ready_lines for phrase in phrases)
+        with self._line_lock:
+            return any(phrase in line for line in self._ready_lines for phrase in phrases)

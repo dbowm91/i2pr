@@ -254,6 +254,15 @@ impl TransportStaticKeyMaterial {
     pub const fn iv(&self) -> &[u8; NTCP2_IV_LENGTH] {
         &self.iv
     }
+
+    /// Consumes the validated record into the private key owner and public IV.
+    ///
+    /// This is the explicit handoff used by a runtime composition root after
+    /// loading disposable state. The private key remains owned by the
+    /// zeroizing wrapper; callers cannot clone it through this API.
+    pub fn into_parts(self) -> (TransportStaticKey, [u8; NTCP2_IV_LENGTH]) {
+        (self.key, self.iv)
+    }
 }
 
 /// A create-only store for NTCP2 static key material.

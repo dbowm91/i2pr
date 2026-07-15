@@ -11,9 +11,14 @@ publish = false
 futures-util.workspace = true
 i2pr-core = { path = "../i2pr-core" }
 i2pr-transport = { path = "../i2pr-transport" }
+i2pr-transport-ntcp2 = { path = "../i2pr-transport-ntcp2" }
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+i2pr-crypto = { path = "../i2pr-crypto" }
+i2pr-proto = { path = "../i2pr-proto" }
