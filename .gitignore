@@ -6,3 +6,4 @@ __pycache__/
 /fuzz/corpus/*/leak-*
 /fuzz/corpus/*/timeout-*
 /fuzz/target/
+.opencode/skills/i2pr-ntcp2-interop/
