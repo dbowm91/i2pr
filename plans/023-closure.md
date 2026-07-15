@@ -109,10 +109,11 @@ cargo +1.85.0 check --workspace --all-targets                PASS
 git diff --check                                              PASS
 ```
 
-CI evidence is recorded after the direct main-branch push. The workflow is
+CI evidence was checked after the direct main-branch push. The workflow is
 configured for both Ubuntu and macOS quality jobs, Ubuntu MSRV, and dependency
-policy; a missing or unavailable remote run is recorded explicitly rather than
-inferred as a pass.
+policy, but `gh run list --commit 1a32ab7 --limit 10` returned no runs. No
+remote CI pass is therefore claimed; the local gates above are the available
+quality evidence for this direct main-branch push.
 
 ## Dependency and security decisions
 
