@@ -150,6 +150,38 @@ unwind, cancellation, and forced task cleanup are all release paths. Snapshot
 metadata contains only static class/channel identifiers and bounded counters;
 payloads, secrets, peer identities, addresses, and destinations are excluded.
 
+## Deterministic simulation threats and controls
+
+Plan 023 is a local test boundary, not an emulation of I2P transports or a
+security/interoperability claim. The scheduler opens no sockets, resolves no
+names, and has no public-network path. Fault scripts are executable only in
+the testkit and authorized isolated testnets; malformed or stress traffic must
+not be sent to live peers.
+
+Simulation inputs have hard limits for sleepers, pending deliveries, buffered
+bytes, receiver queues, datagrams, stream segments, fault rules, duplicate
+expansion, peers, and idle steps. Queue admission and resource leases happen
+before scheduled payload ownership. Due work stays pending under receiver
+backpressure, and reset/close paths purge or release queued ownership. A
+manual clock never polls wall time; dropping its final handle deterministically
+fails pending sleeps.
+
+Reproducibility uses domain-separated seed derivation rather than one shared
+mutable RNG, preventing task interleaving from changing unrelated components.
+Replay records contain root seed, scenario, safe sequence/rule/outcome
+categories, final monotonic time, and bounded resource/queue snapshots. They
+never contain payloads, private keys, destinations, real addresses, or full
+RouterInfo bytes. `TestPeer` deliberately has a redacted `Debug` impl and
+keeps deterministic private identity material in memory-only zeroizing crypto
+owners. Link leases remain attached to live endpoint handles, so tests must
+drop those handles before asserting zero active links.
+
+The harness does not hide detached Tokio tasks: it manually pumps the
+scheduler, exposes the runtime cancellation token, and leaves any supervised
+service ownership with the caller's Plan 021 graph. Teardown snapshots are
+therefore evidence about queued simulation resources, not proof of a live
+router's network cleanup behavior.
+
 ## Observability and non-claims
 
 Default logs and metrics must not expose full router hashes, destination

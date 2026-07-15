@@ -63,6 +63,23 @@ the production workspace and requires nightly `cargo-fuzz`; use
 `bash scripts/fuzz-smoke.sh` for bounded local smoke runs. Fuzz-only
 dependencies must not be added to production manifests.
 
+Plan 023 deterministic simulation tests use `i2pr-testkit`'s fixed seed matrix:
+the zero seed, the all-ones seed, and named regression seeds. Reproduce a
+failure by recording the seed and scenario identifier, then compare the
+privacy-safe `ReplayRecord` from two runs. Use manual clock advancement and
+`run_until_idle(max_steps)`; do not add wall-clock sleeps, OS-random seeds,
+real sockets, DNS, or public-network fault injection. The focused lane is:
+
+```text
+cargo test -p i2pr-testkit --all-targets
+```
+
+Simulation assertions must include bounded pending deliveries and bytes,
+receiver backpressure, cancellation/deadline outcomes, and teardown snapshots
+for queued units, timers, and resource leases. Link leases are owned by the
+live endpoint handles and must be dropped explicitly when a test expects zero
+active links.
+
 Committed protocol fixtures must be sanitized, locally authored or provenance-
 recorded, free of private keys/live identities/addresses/destinations, and
 listed with classification, expected type or error category, exact source

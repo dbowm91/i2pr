@@ -49,9 +49,14 @@ runtime-neutral service, health, lifecycle, cancellation, and resource-domain
 types. `i2pr-runtime` owns Tokio, wakeable cancellation, service graph
 validation, readiness, latest-state health publication, supervised task
 managers, bounded restart policy, and graceful/forced shutdown. `i2pr-testkit`
-provides deterministic clocks, randomness, and bounded fault vocabulary for
-tests. The daemon owns CLI/configuration and is the composition root, but its
-live command remains intentionally disabled.
+is a test/simulation-only dependency. It provides a manually wakeable
+monotonic clock, domain-separated deterministic RNGs, a bounded manual-pump
+scheduler, distinct stream and datagram endpoint pairs, executable fault
+scripts, ephemeral identity/RouterInfo factories, topology summaries, and
+payload-free replay records. It may depend on `i2pr-core`, `i2pr-runtime`,
+`i2pr-proto`, and `i2pr-crypto`, but no production crate may depend on it. The
+daemon owns CLI/configuration and is the composition root, but its live command
+remains intentionally disabled.
 
 The direction is mechanically checked by
 `scripts/check-dependency-direction.sh`. Production crates do not depend on
@@ -250,6 +255,39 @@ expose bounded limit, current usage, high-water mark, and saturating denial
 counts. Channel snapshots expose static metadata, capacity, queue depth, typed
 outcome counters, and drop/resource-denial counters without payloads, secrets,
 peer identities, or dynamic labels.
+
+### Deterministic simulation boundary
+
+Plan 023 keeps simulation below the future transport boundary. `ManualClock`
+stores bounded sleepers in deadline/registration order; advancing time wakes
+all due waiters, while dropping the final clock handle closes and wakes pending
+sleepers. `TokioClock` is an adapter for callers that need production-style
+Tokio timing, but the deterministic test suite uses only `ManualClock`.
+
+`ReproducibilitySeed::derive` hashes a root seed and a bounded domain label, so
+topology, link directions, fault decisions, identities, and messages do not
+share mutable RNG state. Fault scripts match only bounded metadata (link,
+direction, unit kind, sequence/range/every-N, and deterministic probability).
+Rules compose in declaration order: delays add, duplicates are hard-capped,
+reorder reverses bounded sequence groups, truncation is applied to the unit,
+and disconnect/reset are explicit terminal outcomes.
+
+The scheduler orders deliveries by `(deadline, link, direction,
+order-sequence, sequence, duplicate-index)`. It reserves receiver capacity and
+Plan 022 leases before a payload enters the pending map. Pending deliveries and
+buffered bytes are bounded; due work remains queued when a receiver is full.
+Stream reads preserve ordered bytes and half-close/EOF semantics. Datagram
+receives preserve complete packet boundaries and return a synthetic source
+address. The first API is testkit-specific rather than `AsyncRead`/
+`AsyncWrite`, so transport plans retain control of adapter semantics.
+
+The harness is a manual pump with the runtime cancellation token and Plan 022
+budget contracts. It does not spawn a scheduler task; services used in a
+simulation remain owned by the caller's Plan 021 supervisor or child scope.
+`run_until_idle` has an explicit step bound. Shutdown purges pending units and
+resets endpoint waiters. Link resource leases remain owned by live endpoint
+handles and are released when those handles are dropped, which makes ownership
+visible in final snapshots rather than silently detaching it.
 
 ## External boundaries
 

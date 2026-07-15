@@ -4,12 +4,18 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "Deterministic clocks, randomness, and fault model types for i2pr tests"
+description = "Deterministic clocks, bounded links, peers, and fault simulation for i2pr tests"
 publish = false
 
 [dependencies]
+i2pr-core = { path = "../i2pr-core" }
+i2pr-crypto = { path = "../i2pr-crypto" }
+i2pr-proto = { path = "../i2pr-proto" }
+i2pr-runtime = { path = "../i2pr-runtime" }
 rand_chacha.workspace = true
 rand_core.workspace = true
+sha2.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

@@ -34,7 +34,12 @@ Plan 022 now adds bounded command, request, and event channels, latest-state
 snapshots, typed overload outcomes, and runtime-neutral resource leases with
 atomic bundles and bounded diagnostics. These are infrastructure contracts
 only; no live transport, NetDB, tunnel, client, or listener behavior has been
-introduced.
+introduced. Plan 023 now adds a bounded deterministic testkit with manually
+wakeable monotonic time, domain-separated seeds, in-memory stream/datagram
+links, executable fault scripts, ephemeral peer/topology factories, and
+privacy-safe replay records. The testkit is a manual simulation pump only: it
+opens no sockets, performs no DNS, persists no private identities, and does not
+provide transport interoperability evidence.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
@@ -148,6 +153,7 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Aggregate Milestone 1 corrective closure record](plans/010-milestone-1-closure.md)
 - [Plan 021 supervision and cancellation closure record](plans/021-closure.md)
 - [Plan 022 bounded channels and resource governor closure record](plans/022-closure.md)
+- [Plan 023 deterministic network testkit closure record](plans/023-closure.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)

@@ -89,6 +89,20 @@ Do not select a project license or copy implementation code from another router
 without explicit owner review. Do not perform malformed-traffic or stress
 testing against the public I2P network.
 
+Plan 023 simulation rules are mandatory: use a documented root
+`ReproducibilitySeed` plus a stable scenario identifier in every deterministic
+failure report; derive independent component seeds rather than sharing mutable
+RNG state across components. Replay records must contain only bounded seed,
+scenario, sequence, fault-category, queue, timer, task, and resource metadata;
+never include payloads, private keys, destinations, full RouterInfo values, or
+real addresses. Keep stream and datagram links semantically distinct, admit
+queue items before payload ownership, and enforce explicit pending-delivery,
+buffer, duplicate, rule, peer, timer, and step limits. Fault scripts belong
+only to `i2pr-testkit` and authorized isolated testnets; never run malformed,
+stress, or fault-injection traffic against the public I2P network. A testkit
+shutdown must purge queued work, wake waiters, and document any still-live
+endpoint lease ownership; no detached simulation task is permitted.
+
 The common and I2NP implementations expose grouped private leaf namespaces
 through `crates/i2pr-proto/src/common/` and `src/i2np/`; preserve the crate-root
 re-export façade and keep decode helpers private. `ReplySecret` is a
