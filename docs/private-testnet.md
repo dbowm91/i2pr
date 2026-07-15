@@ -16,5 +16,12 @@ The harness must fail closed when a target is not loopback or inside the
 explicit isolated namespace. It must not use reseeding, public bootstrap,
 automatic address discovery, NAT mapping, RouterInfo publication, or NetDB
 mutation. Every process and task is terminated and drained before the run is
-reported complete. Mixed-router handshake and data evidence is a Plan 036
-prerequisite and is not present in this repository yet.
+reported complete.
+
+The reproducible Plan 036 lane is documented in
+[`tests/integration/ntcp2/README.md`](../tests/integration/ntcp2/README.md),
+with exact reference pins in its manifest and a fail-closed repository
+preflight in `scripts/check-ntcp2-interoperability.sh`. The lane is manual and
+does not run from normal CI. Mixed-router handshake and data evidence is still
+not present in this checkout because the complete wire-level adapter and an
+authorized testnet run are not available; this remains a closure blocker.

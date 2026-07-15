@@ -396,3 +396,19 @@ correctness against hostile peers, complete identity interoperability, secure
 recovery/rotation, protocol interoperability, or safe public-network
 operation. Local crypto/storage tests do not replace mixed-router evidence.
 Malformed and stress tests must run only in an authorized isolated testnet.
+
+## Plan 036 evidence and artifact sanitation
+
+The Plan 036 integration path is a manual evidence boundary, not a public
+network feature. Its manifest pins Java I2P and i2pd revisions, requires a
+synthetic private network with reseed/bootstrap disabled, and requires
+disposable identities and static keys. The committed preflight rejects private
+key markers, identity/static-key files, and packet captures from the evidence
+directory. Completed runs may retain only typed outcomes and hashes of
+sanitized artifacts/configuration; raw addresses, peer identities, RouterInfo,
+I2NP, keys, transcripts, and remote error text must be deleted.
+
+The current checkout has no mixed-router artifacts or results because the
+complete runtime wire adapter and authorized testnet are unavailable. This is
+recorded as a blocker in `plans/036-closure.md`; neither the fixed-seed testkit
+matrix nor pure fuzz campaigns are treated as interoperability evidence.

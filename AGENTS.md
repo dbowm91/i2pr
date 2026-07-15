@@ -109,6 +109,16 @@ payloads, and arbitrary OS error text. Use paused Tokio time/manual clocks and
 loopback-only sockets for runtime tests; malformed or stress traffic belongs only
 to the deterministic testkit or an authorized isolated testnet.
 
+Plan 036 is validation and closure only. The controlled interoperability lane
+is under `tests/integration/ntcp2/`; it is manual, loopback/private-network
+only, reseed/bootstrap-disabled, disposable-identity-only, and must record
+reference versions, artifact/configuration hashes, typed outcomes, and
+sanitized evidence. The checked-in preflight and fixed-seed local campaigns
+are not mixed-router evidence. Until a complete wire-level runtime adapter and
+authorized Java I2P/i2pd runs exist in both directions, keep every NTCP2 ledger
+row `experimental` and `advertised = false`, keep live daemon activation
+disabled, and record the blocker rather than inferring interoperability.
+
 ## Runtime, Security, and Observability Rules
 
 Every long-lived task has an owned supervisor/service scope and is awaited or

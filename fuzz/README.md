@@ -37,3 +37,11 @@ Plan 034 adds `ntcp2_blocks` for authenticated-plaintext block and ordering
 parsing and `ntcp2_frames` for bounded length/ciphertext and counter-state
 commands using fixed test-only keys. Both targets are pure, bounded, and
 payload-redacted; unauthenticated input never yields application blocks.
+
+Plan 036's local validation runs the complete smoke list at 32 deterministic
+runs per target and runs `ntcp2_handshake`, `ntcp2_blocks`, `ntcp2_frames`, and
+`ntcp2_transcript` at 1,000 runs each with fixed seed `36`. In managed ptrace
+environments, set `LSAN_OPTIONS=detect_leaks=0`; this disables only the runner's
+known LeakSanitizer shutdown incompatibility and does not alter the fuzz
+target. These campaigns are pure local evidence and do not replace the
+required Java I2P/i2pd controlled interoperability lane.

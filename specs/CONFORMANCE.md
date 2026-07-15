@@ -33,6 +33,14 @@ capability-advertisement requirements below are met. Empty `evidence` and
 
 Java I2P and I2P+ share lineage and count as one implementation family for independence. The preferred router-to-router interoperability pair is Java I2P or I2P+ plus i2pd. Emissary/go-i2p should be added where its current implementation is complete enough for the tested surface.
 
+Plan 036's required mixed-router evidence is recorded separately from local
+codec/runtime evidence. The pinned manual lane is
+`tests/integration/ntcp2/manifest.toml`; its preflight must fail closed for
+public networking, reseed/bootstrap, operational identities, unpinned
+artifacts, and unsanitized evidence. A local self-handshake, loopback socket,
+fixed-seed simulation, or fuzz result cannot satisfy the two-implementation,
+two-direction requirement.
+
 ## Source-to-code traceability
 
 Every protocol module should identify:

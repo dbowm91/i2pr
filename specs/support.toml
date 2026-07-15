@@ -100,7 +100,7 @@ protocol = "ntcp2"
 structure = "x25519-aes-chacha-hmac-siphash-protocol-wrappers"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-transport-ntcp2/src/crypto.rs", "tests/fixtures/ntcp2/crypto/manifest.tsv", "plans/032-closure.md"]
+evidence = ["crates/i2pr-transport-ntcp2/src/crypto.rs", "tests/fixtures/ntcp2/crypto/manifest.tsv", "plans/032-closure.md", "plans/036-closure.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -109,7 +109,7 @@ protocol = "ntcp2"
 structure = "consuming-three-message-transcript-and-split"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-transport-ntcp2/src/crypto.rs", "tests/fixtures/ntcp2/crypto/vectors.tsv", "plans/032-closure.md"]
+evidence = ["crates/i2pr-transport-ntcp2/src/crypto.rs", "tests/fixtures/ntcp2/crypto/vectors.tsv", "plans/032-closure.md", "plans/036-closure.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -118,7 +118,7 @@ protocol = "ntcp2"
 structure = "versioned-static-key-and-obfuscation-iv-store"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-storage/src/lib.rs", "tests/fixtures/ntcp2/crypto/storage-static-key.hex", "plans/032-closure.md"]
+evidence = ["crates/i2pr-storage/src/lib.rs", "tests/fixtures/ntcp2/crypto/storage-static-key.hex", "plans/032-closure.md", "plans/036-closure.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -127,7 +127,7 @@ protocol = "ntcp2"
 structure = "bounded-session-request-created-confirmed-codecs"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-transport-ntcp2/src/handshake.rs", "plans/033-closure.md"]
+evidence = ["crates/i2pr-transport-ntcp2/src/handshake.rs", "crates/i2pr-transport-ntcp2/tests/handshake.rs", "plans/033-closure.md", "plans/036-closure.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -136,7 +136,7 @@ protocol = "ntcp2"
 structure = "consuming-initiator-responder-actions-and-peer-binding"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-transport-ntcp2/src/state_machine.rs", "plans/033-closure.md"]
+evidence = ["crates/i2pr-transport-ntcp2/src/state_machine.rs", "crates/i2pr-transport-ntcp2/tests/handshake.rs", "plans/033-closure.md", "plans/036-closure.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -145,7 +145,7 @@ protocol = "ntcp2"
 structure = "siphash-masked-aead-data-frames-and-directional-counters"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-transport-ntcp2/src/frame.rs", "plans/034-closure.md"]
+evidence = ["crates/i2pr-transport-ntcp2/src/frame.rs", "crates/i2pr-transport-ntcp2/tests/handshake.rs", "plans/034-closure.md", "plans/036-closure.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -154,7 +154,7 @@ protocol = "ntcp2"
 structure = "bounded-authenticated-timestamp-options-routerinfo-i2np-termination-padding-blocks"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-transport-ntcp2/src/block.rs", "crates/i2pr-testkit/src/ntcp2.rs", "plans/034-closure.md"]
+evidence = ["crates/i2pr-transport-ntcp2/src/block.rs", "crates/i2pr-testkit/src/ntcp2.rs", "crates/i2pr-testkit/tests/milestone_3.rs", "plans/034-closure.md", "plans/036-closure.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -163,7 +163,7 @@ protocol = "ntcp2"
 structure = "controlled-runtime-tcp-admission-replay-backoff-and-link-ownership"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-runtime/src/ntcp2_runtime.rs", "crates/i2pr-transport-ntcp2/src/address.rs", "plans/035-closure.md"]
+evidence = ["crates/i2pr-runtime/src/ntcp2_runtime.rs", "crates/i2pr-transport-ntcp2/src/address.rs", "crates/i2pr-testkit/tests/milestone_3.rs", "plans/035-closure.md", "plans/036-closure.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]

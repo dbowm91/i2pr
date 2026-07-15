@@ -162,6 +162,14 @@ inside that runtime boundary. Later plans
 will add protocol and service crates when their contracts are understood;
 empty placeholder crates are not created in advance.
 
+Plan 036 adds the controlled interoperability and adversarial-validation
+evidence boundary under `tests/integration/ntcp2/`. Its preflight is manual and
+fail-closed: it requires disposable identities, a synthetic private network,
+disabled reseed/bootstrap, pinned Java I2P/i2pd artifacts, and sanitized
+typed-result records. The current checkout keeps live activation disabled and
+does not claim mixed-router interoperability until a complete wire-level
+runtime adapter and authorized runs in both directions are available.
+
 The current `i2pr-proto` API uses borrowed cursors and caller-visible maximums,
 strict exact-consumption decoding, canonical immutable mappings, typed
 algorithm/length validation, preserved signed-byte regions, and a bounded I2NP
@@ -207,6 +215,10 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 034 closure record](plans/034-closure.md)
 - [Plan 035 runtime link manager and addresses](plans/035-m3-runtime-link-manager-and-addresses.md)
 - [Plan 035 closure record](plans/035-closure.md)
+- [Plan 036 interoperability and adversarial validation](plans/036-m3-interoperability-adversarial-validation-closure.md)
+- [Plan 036 closure record](plans/036-closure.md)
+- [Aggregate Milestone 3 closure record](plans/030-milestone-3-closure.md)
+- [Controlled NTCP2 interoperability lane](tests/integration/ntcp2/README.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)
@@ -274,8 +286,9 @@ bash scripts/check-ntcp2-vectors.sh
 ```
 
 Plan 033 also requires the NTCP2 handshake codec/state tests and the separate
-nightly fuzz workspace. These tests are deterministic and local; they are not
-mixed-router or public-network evidence.
+nightly fuzz workspace. Plan 036 adds the fixed-seed 0..255 integrated testkit
+matrix and the sanitized interoperability preflight. These tests are
+deterministic and local; they are not mixed-router or public-network evidence.
 
 The Plan 024 integrated validation lane is `cargo test -p i2pr-testkit
 --all-targets`; it runs the five named scenarios and the fixed 32-seed replay

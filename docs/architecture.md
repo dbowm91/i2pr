@@ -272,6 +272,30 @@ synthetic local link IDs, bounded counters, coarse families, and typed outcomes;
 raw endpoints, peer hashes, keys, transcripts, frames, payloads, and OS error
 text remain outside the default observation boundary.
 
+### Plan 036 validation boundary
+
+Plan 036 adds no production transport API and does not turn the daemon's
+disabled `run` command into a live router. The reproducible manual lane lives
+under `tests/integration/ntcp2/` and has a separate ownership boundary:
+
+```text
+authorized private namespace
+  ├── disposable Java I2P / i2pd process or pinned image
+  ├── disposable identity and NTCP2 static-key owners
+  ├── bounded scenario driver and fixed clock
+  └── sanitized typed outcomes + artifact/configuration hashes
+```
+
+The lane must reject public endpoints, reseed/bootstrap, operational
+identities, and unbounded captures before starting a scenario. Its committed
+preflight checks only the pinned manifest and evidence directory; it never
+starts a router. The current implementation has not yet composed the pure
+Plan 033/034 state machines with the Plan 035 socket owner, so Java I2P and
+i2pd results are an explicit blocker in `plans/036-closure.md`, not local
+interoperability evidence. The testkit's 0..255 fixed-seed matrix and pure
+NTCP2 fuzz campaigns remain useful bounded evidence but cannot advance the
+support ledger.
+
 Generated and reconstructed private seeds are held by zeroizing owners during
 crypto operations. Storage encoding and file-read buffers are also zeroizing;
 the `DatabaseLookup` reply-key/tag wrappers in `i2pr-proto::i2np::netdb` are

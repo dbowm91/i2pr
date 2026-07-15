@@ -1,0 +1,100 @@
+# Plan 036 controlled interoperability manifest.
+#
+# This file is a reproducibility contract, not an enablement switch. It does
+# not contain router identities, keys, peer lists, captures, or credentials.
+
+[environment]
+network_id = "synthetic-private-036"
+public_network = false
+reseed = false
+bootstrap = false
+ipv4_bind = "127.0.0.1"
+ipv6_bind = "::1"
+clock = "fixed UTC test clock; scenario supplies timestamps"
+identity_policy = "disposable generated identity per scenario"
+secret_policy = "delete identities, keys, logs, and containers after scenario"
+evidence_policy = "typed outcomes and hashes only"
+
+[i2pr]
+workspace_toolchain = "1.95.0"
+daemon_activation = "disabled; no complete wire-level composition is currently exposed"
+commit = "record at execution time"
+configuration_hash = "record at execution time"
+
+[reference.java_i2p]
+release = "2.12.0"
+source_revision = "2800040"
+source = "https://github.com/i2p/i2p.i2p/tree/2800040"
+artifact_sha256 = "record-per-run"
+configuration_hash = "record-per-run"
+
+[reference.i2pd]
+release = "2.60.0"
+source_revision = "f618e41"
+source = "https://github.com/PurpleI2P/i2pd/tree/f618e41"
+artifact_sha256 = "record-per-run"
+configuration_hash = "record-per-run"
+
+[[scenario]]
+id = "java-ipv4-inbound-outbound"
+reference = "java_i2p"
+direction = "both"
+address_family = "ipv4"
+padding = "minimum-variable-maximum"
+expected = "authenticated-handshake-and-bounded-i2np-exchange"
+
+[[scenario]]
+id = "java-ipv6-inbound-outbound"
+reference = "java_i2p"
+direction = "both"
+address_family = "ipv6"
+padding = "minimum-variable-maximum"
+expected = "authenticated-handshake-and-bounded-i2np-exchange-or-explicit-environment-skip"
+
+[[scenario]]
+id = "java-adversarial-and-resource"
+reference = "java_i2p"
+direction = "both"
+address_family = "ipv4"
+padding = "boundary-and-maximum-plus-one"
+expected = "typed-rejection-with-bounded-cleanup"
+
+[[scenario]]
+id = "java-duplicate-link-race"
+reference = "java_i2p"
+direction = "both"
+address_family = "ipv4"
+padding = "representative"
+expected = "deterministic-winner-and-loser-drain"
+
+[[scenario]]
+id = "i2pd-ipv4-inbound-outbound"
+reference = "i2pd"
+direction = "both"
+address_family = "ipv4"
+padding = "minimum-variable-maximum"
+expected = "authenticated-handshake-and-bounded-i2np-exchange"
+
+[[scenario]]
+id = "i2pd-ipv6-inbound-outbound"
+reference = "i2pd"
+direction = "both"
+address_family = "ipv6"
+padding = "minimum-variable-maximum"
+expected = "authenticated-handshake-and-bounded-i2np-exchange-or-explicit-environment-skip"
+
+[[scenario]]
+id = "i2pd-adversarial-and-resource"
+reference = "i2pd"
+direction = "both"
+address_family = "ipv4"
+padding = "boundary-and-maximum-plus-one"
+expected = "typed-rejection-with-bounded-cleanup"
+
+[[scenario]]
+id = "i2pd-duplicate-link-race"
+reference = "i2pd"
+direction = "both"
+address_family = "ipv4"
+padding = "representative"
+expected = "deterministic-winner-and-loser-drain"

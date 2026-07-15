@@ -47,6 +47,12 @@ jobs:
       - name: Check fixture manifest
         if: runner.os == 'Linux'
         run: bash scripts/check-fixture-manifest.sh
+      - name: Check NTCP2 vectors
+        if: runner.os == 'Linux'
+        run: bash scripts/check-ntcp2-vectors.sh
+      - name: Check NTCP2 interoperability evidence boundary
+        if: runner.os == 'Linux'
+        run: bash scripts/check-ntcp2-interoperability.sh
 
   msrv:
     name: MSRV (Ubuntu)

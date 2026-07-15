@@ -207,6 +207,23 @@ remote hash direction rule with bounded drain and stale-close protection; mixed
 Java I2P/i2pd evidence remains a Plan 036 prerequisite. Loopback tests are
 local lifecycle evidence only and do not advance this dossier's support claim.
 
+## Plan 036 evidence boundary
+
+Plan 036 supplies the controlled-lane manifest at
+`tests/integration/ntcp2/manifest.toml`, pinned to Java I2P 2.12.0 revision
+`2800040` and i2pd 2.60.0 revision `f618e41`, plus a repository-side
+preflight and sanitized evidence format. The lane requires a synthetic
+private network, disabled reseed/bootstrap, disposable identities and static
+keys, fixed clocks, explicit bounds, and teardown before any result is
+retained. The preflight does not run routers or claim a result.
+
+This checkout has not executed the required Java I2P and i2pd runs: the daemon
+still keeps live activation disabled and the complete wire-level composition of
+the pure handshake/data owners with the runtime socket owner is not present.
+That is an explicit Plan 036 blocker. The 0..255 deterministic testkit matrix,
+pure parser/state tests, and fuzz campaigns are local evidence only; they do
+not advance `specs/support.toml` or capability advertisement.
+
 ## Deferred and excluded behavior
 
 - NTCP1 compatibility: legacy-reject; the MVP explicitly excludes NTCP1.
