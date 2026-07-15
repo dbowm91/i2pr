@@ -18,8 +18,11 @@ i2pr identity generate --config <path>
 i2pr identity inspect --config <path>
 ```
 
-`identity generate` may create and harden the configured data directory, then
-creates the identity file only if it does not already exist. `identity inspect`
+`identity generate` may create the final configured data directory with
+creation-time restrictive mode when its immediate parent already exists, then
+creates the identity file only if it does not already exist. Recursive missing
+intermediates are rejected rather than created with a post-create chmod.
+`identity inspect`
 loads, revalidates, and summarizes only public algorithm identifiers. It never
 prints private bytes or silently regenerates missing/corrupt state. `run
 --dry-run` and `check-config` do not create directories or identity files.

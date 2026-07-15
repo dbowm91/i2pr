@@ -33,7 +33,7 @@ Implemented values are:
   raw-byte append used by preserved signed regions.
 - `crates/i2pr-proto/src/lib.rs` — export common structures and the expanded
   error taxonomy.
-- `crates/i2pr-proto/src/common.rs` — implement the Plan 012 structural model,
+- `crates/i2pr-proto/src/common_impl.rs` plus the grouped `common/` façade — implement the Plan 012 structural model,
   canonical encoders, strict decoders, limits, and unit tests.
 - `README.md`, `AGENTS.md`, and `docs/architecture.md` — describe the new
   structural boundary and its non-claiming status.

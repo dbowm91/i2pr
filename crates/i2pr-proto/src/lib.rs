@@ -9,7 +9,11 @@
 
 mod codec;
 mod common;
+#[doc(hidden)]
+mod common_impl;
 mod i2np;
+#[doc(hidden)]
+mod i2np_impl;
 
 pub use codec::{CodecError, DecodeCursor, EncodeBuffer, decode_exact, encode_to_vec};
 pub use common::*;

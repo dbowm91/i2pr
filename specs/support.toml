@@ -19,7 +19,7 @@ protocol = "common-structures"
 structure = "integers-dates-utf8-strings-hashes"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/common.rs", "plans/012-closure.md"]
+evidence = ["crates/i2pr-proto/src/common/mod.rs", "plans/012-closure.md"]
 advertised = false
 
 [[surface]]
@@ -28,7 +28,7 @@ protocol = "common-structures"
 structure = "mappings-certificates-key-certificates"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/common.rs", "plans/012-closure.md"]
+evidence = ["crates/i2pr-proto/src/common/mod.rs", "plans/012-closure.md"]
 advertised = false
 
 [[surface]]
@@ -37,7 +37,7 @@ protocol = "common-structures"
 structure = "router-identity-destination"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/common.rs", "plans/012-closure.md"]
+evidence = ["crates/i2pr-proto/src/common/mod.rs", "plans/012-closure.md"]
 advertised = false
 
 [[surface]]
@@ -46,16 +46,25 @@ protocol = "common-structures"
 structure = "router-address-router-info"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/common.rs", "plans/012-closure.md"]
+evidence = ["crates/i2pr-proto/src/common/mod.rs", "plans/012-closure.md"]
 advertised = false
 
 [[surface]]
-id = "common.leases-leasesets"
+id = "common.lease"
 protocol = "common-structures"
-structure = "lease-and-required-leaseset-variants"
+structure = "lease-and-classic-leaseset-structural-subset"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/common.rs", "plans/012-closure.md"]
+evidence = ["crates/i2pr-proto/src/common/lease.rs", "plans/012-closure.md"]
+advertised = false
+
+[[surface]]
+id = "common.leaseset2-family"
+protocol = "common-structures"
+structure = "leaseset2-encryptedleaseset-metaleaseset"
+scope = "required-later"
+status = "deferred"
+evidence = ["crates/i2pr-proto/src/common/lease.rs", "specs/protocols/01-common-identity-crypto.md"]
 advertised = false
 
 [[surface]]
@@ -91,7 +100,7 @@ protocol = "i2np"
 structure = "bounded-message-envelope-and-header"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/i2np.rs", "tests/fixtures/i2np/manifest.tsv", "plans/014-closure.md"]
+evidence = ["crates/i2pr-proto/src/i2np/mod.rs", "tests/fixtures/i2np/manifest.tsv", "plans/014-closure.md"]
 advertised = false
 
 [[surface]]
@@ -100,7 +109,7 @@ protocol = "i2np"
 structure = "message-type-identifiers-and-bounded-dispatch"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/i2np.rs", "plans/014-closure.md"]
+evidence = ["crates/i2pr-proto/src/i2np/mod.rs", "plans/014-closure.md"]
 advertised = false
 
 [[surface]]
@@ -109,7 +118,16 @@ protocol = "i2np"
 structure = "database-lookup-search-reply-delivery-status-and-store-framing"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/i2np.rs", "crates/i2pr-proto/src/common.rs", "plans/014-closure.md"]
+evidence = ["crates/i2pr-proto/src/i2np/netdb.rs", "crates/i2pr-proto/src/common/lease.rs", "plans/014-closure.md"]
+advertised = false
+
+[[surface]]
+id = "i2np.lookup-reply-secrets"
+protocol = "i2np"
+structure = "zeroizing-noncloneable-reply-key-and-tag-wrappers"
+scope = "required-later"
+status = "experimental"
+evidence = ["crates/i2pr-proto/src/i2np/netdb.rs", "plans/015-m1-corrective-closure.md"]
 advertised = false
 
 [[surface]]
@@ -118,7 +136,7 @@ protocol = "i2np"
 structure = "router-info-compression-and-leaseset-family-deferred-payloads"
 scope = "required-later"
 status = "deferred"
-evidence = ["crates/i2pr-proto/src/i2np.rs", "specs/protocols/02-i2np.md", "plans/014-closure.md"]
+evidence = ["crates/i2pr-proto/src/i2np/tunnel.rs", "specs/protocols/02-i2np.md", "plans/014-closure.md"]
 advertised = false
 
 [[surface]]
@@ -127,7 +145,7 @@ protocol = "i2np"
 structure = "tunnel-data-gateway-and-build-record-framing"
 scope = "required-later"
 status = "deferred"
-evidence = ["crates/i2pr-proto/src/i2np.rs", "specs/protocols/02-i2np.md", "plans/014-closure.md"]
+evidence = ["crates/i2pr-proto/src/i2np/deferred.rs", "specs/protocols/02-i2np.md", "plans/014-closure.md"]
 advertised = false
 
 [[surface]]
@@ -136,7 +154,7 @@ protocol = "i2np"
 structure = "bounded-garlic-and-data-opaque-payload-framing"
 scope = "required-later"
 status = "deferred"
-evidence = ["crates/i2pr-proto/src/i2np.rs", "specs/protocols/02-i2np.md", "plans/014-closure.md"]
+evidence = ["crates/i2pr-proto/src/i2np/mod.rs", "specs/protocols/02-i2np.md", "plans/014-closure.md"]
 advertised = false
 
 [[surface]]

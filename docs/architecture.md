@@ -41,9 +41,9 @@ certificate/key-type, RouterIdentity, Destination, RouterAddress, RouterInfo,
 Lease, and classic LeaseSet values. Parsed signed records retain the exact
 signed region. Its cursor borrows input, its encoder requires caller-visible
 output limits, and strict top-level decoders reject trailing bytes. It has no
-runtime, filesystem, CLI, transport, or tracing-subscriber dependency; the
-only external dependency is the reviewed `sha2` crate for SHA-256 hash
-derivation. `i2pr-core` owns runtime-neutral service,
+runtime, filesystem, CLI, transport, or tracing-subscriber dependency; its
+direct external dependencies are the reviewed `sha2` crate for SHA-256 hash
+derivation and the narrow `zeroize` wrapper dependency. `i2pr-core` owns runtime-neutral service,
 health, lifecycle, cancellation, and resource-domain types. `i2pr-testkit`
 provides deterministic clocks, randomness, and bounded fault vocabulary for
 tests. The daemon owns CLI/configuration and is the future composition root.
@@ -72,6 +72,26 @@ bytes or validated fixed framing. Nested TunnelGateway messages require a
 standard I2NP envelope. No I2NP decoder applies clock policy, routes a message,
 authenticates a transport, decrypts garlic, performs tunnel cryptography,
 updates NetDB, or advertises an I2NP version.
+
+The protocol source tree now exposes internal ownership boundaries without
+changing the crate-root API:
+
+```text
+i2pr-proto/src/
+  common/
+    mod.rs       date.rs       keys.rs       mapping.rs
+    certificate.rs  identity.rs  router_info.rs  lease.rs
+  i2np/
+    mod.rs       header.rs     netdb.rs      delivery.rs
+    tunnel.rs    deferred.rs
+```
+
+The private `common_impl.rs` and `i2np_impl.rs` units retain the existing
+strict codec glue and helper visibility while grouped leaf modules expose only
+stable structural names. This compatibility-oriented arrangement avoids
+making parsing helpers public merely to complete a mechanical split. Future
+protocol work should add behavior to the owning leaf namespace and preserve
+the crate-root re-export façade.
 
 The fuzz workspace is an opt-in nightly test boundary. It depends on the
 production protocol crate but never enters the production dependency graph;
@@ -102,6 +122,14 @@ It can construct a no-capability local RouterInfo, sign the exact retained
 identity. Timestamp freshness, transport interpretation, capability policy,
 publication, and network interoperability remain outside this boundary.
 
+Generated and reconstructed private seeds are held by zeroizing owners during
+crypto operations. Storage encoding and file-read buffers are also zeroizing;
+the `DatabaseLookup` reply-key/tag wrappers in `i2pr-proto::i2np::netdb` are
+non-cloneable and redact their contents. These measures reduce ordinary
+post-use retention but do not provide encrypted reply semantics or defeat
+process compromise, allocator copies, swap, core dumps, or every compiler or
+platform memory-retention behavior.
+
 ### Identity storage boundary
 
 `i2pr-storage` stores only the private router identity format described by ADR
@@ -111,6 +139,13 @@ versions and integrity failures; it never regenerates an existing identity.
 The explicit create-only operation uses a same-directory temporary file,
 flush/sync, an atomic no-replace install, cleanup, and directory sync where the
 platform supports it.
+
+New identity directories use creation-time mode `0700` on Unix. The standard
+library path creates only the final component with restrictive mode and
+requires its parent to already exist; recursive missing intermediates are not
+silently created. Existing directories are revalidated for symlink, type, and
+permission safety. Parent-directory ownership remains an operator threat-model
+responsibility, and non-Unix permission/durability semantics remain limited.
 
 ### Cancellation scope
 

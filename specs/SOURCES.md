@@ -87,7 +87,8 @@ The public source used here is named `go-i2p/go-i2p`. This corpus uses “Emissa
 
 ## i2pr source-to-code traceability
 
-The bounded implementation in `crates/i2pr-proto/src/common.rs` follows the
+The bounded implementation in `crates/i2pr-proto/src/common_impl.rs` and its
+grouped `common/` façade follows the
 common-structures source above at pinned website commit
 `88596022920bdf99f27db27688faf4f204792fcd`, especially Integer/Date/String,
 Mapping, Certificate/Key Certificate, KeysAndCert, RouterIdentity, Destination,
@@ -107,7 +108,7 @@ deferred, only classic LeaseSet is decoded, and LeaseSet2, MetaLeaseSet, and
 EncryptedLeaseSet are explicit unsupported paths pending their later crypto and
 NetDB plans.
 
-Plan 014's `crates/i2pr-proto/src/i2np.rs` follows the same pinned website
+Plan 014's `crates/i2pr-proto/src/i2np_impl.rs` and grouped `i2np/` façade follow the same pinned website
 commit's I2NP message table, standard/short header layouts, checksum rule,
 DatabaseStore/Lookup/SearchReply/DeliveryStatus fields, Garlic/Data framing,
 TunnelData/TunnelGateway framing, and tunnel-build record sizes. The fixed

@@ -30,8 +30,10 @@ derived-public-key mismatches. Version 2 requires a new decision and migration
 policy; internal Rust layout and serde are not storage contracts.
 
 The data directory must be a non-symlink directory with no group/world mode
-bits on Unix. Newly created directories use mode 0700 and identity files use
-mode 0600. Existing insecure paths are rejected. Writes use a same-directory
+bits on Unix. Newly created final directories use mode 0700 at creation time
+and identity files use mode 0600. The standard-library path requires the
+immediate parent to exist rather than recursively creating intermediate
+components. Existing insecure paths are rejected. Writes use a same-directory
 temporary file, write and `sync_all`, then an atomic no-replace hard-link
 install followed by temporary-file removal and directory sync on Unix. The
 no-replace install is deliberate: unlike a normal rename, it cannot overwrite

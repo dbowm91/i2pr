@@ -44,7 +44,7 @@ and free of private keys, live peer captures, addresses, and destinations.
 Run `bash scripts/check-fixture-manifest.sh` when fixture bytes change and use
 `bash scripts/fuzz-smoke.sh` for the opt-in short fuzz lane.
 
-The common-structure model in `crates/i2pr-proto/src/common.rs` preserves exact
+The common-structure model in `crates/i2pr-proto/src/common/` preserves exact
 signed byte regions, uses immutable sorted mappings, and treats algorithm
 identifiers and lengths as explicit typed data. It is structural only: do not
 add signing, encryption, freshness policy, transport interpretation, or
@@ -64,3 +64,13 @@ checksum, and at-rest threat model are recorded in ADR 0006.
 Do not select a project license or copy implementation code from another router
 without explicit owner review. Do not perform malformed-traffic or stress
 testing against the public I2P network.
+
+The common and I2NP implementations expose grouped private leaf namespaces
+through `crates/i2pr-proto/src/common/` and `src/i2np/`; preserve the crate-root
+re-export façade and keep decode helpers private. `ReplySecret` is a
+non-cloneable zeroizing wrapper for DatabaseLookup reply keys/tags and must not
+be broadened into encrypted-reply semantics. Committed I2NP fixtures must use
+the manifest schema in `tests/fixtures/i2np/manifest.tsv`, include provenance,
+classification, deterministic inputs, hashes, and independence status, and be
+consumed by tests rather than only hash-checked. New identity directories must
+use creation-time restrictive modes; do not reintroduce create-then-chmod.

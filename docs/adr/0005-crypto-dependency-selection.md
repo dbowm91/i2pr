@@ -37,6 +37,11 @@ types; `i2pr-crypto` additionally owns non-cloneable private wrappers so secret
 bytes do not acquire public protocol-type traits. `rand_core::OsRng` is passed
 into generation explicitly rather than hidden in a constructor.
 
+`i2pr-storage` uses the same workspace `zeroize` dependency directly for its
+serialized write buffer, file-read buffer, and decoded fixed arrays. It does
+not expose a general secret-management abstraction or serialize secrets for
+logging.
+
 ## Consequences
 
 The dependency graph adds curve arithmetic and random-source transitive code,

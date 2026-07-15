@@ -108,7 +108,8 @@ Compare serialization output, signed ranges, mapping ordering, timestamp validat
 ## Current i2pr structural implementation
 
 Plan 012 implements the bounded structural subset in
-`crates/i2pr-proto/src/common.rs`: Date/Date32, Hash, typed public/signing
+`crates/i2pr-proto/src/common_impl.rs` and the grouped `common/` namespace:
+Date/Date32, Hash, typed public/signing
 material and signatures, Mapping, Certificate/KeyCertificate,
 RouterIdentity, Destination, RouterAddress, RouterInfo, Lease, and classic
 LeaseSet. The module follows the pinned source in `specs/SOURCES.md`, uses a

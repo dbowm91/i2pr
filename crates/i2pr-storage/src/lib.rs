@@ -18,6 +18,7 @@ use i2pr_crypto::{
     RouterIdentityBundle, constant_time_eq, sha256,
 };
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 /// The only private identity filename used by the explicit CLI lifecycle.
 pub const IDENTITY_FILE_NAME: &str = "router.identity";
@@ -136,7 +137,7 @@ impl IdentityStore {
         let (temporary_path, mut temporary) = create_temporary_file(parent)?;
         let result = (|| {
             temporary
-                .write_all(&encoded)
+                .write_all(encoded.as_slice())
                 .map_err(|source| storage_io("write temporary identity", source))?;
             temporary
                 .sync_all()
@@ -187,7 +188,7 @@ impl IdentityStore {
         }
         let mut file =
             File::open(&self.path).map_err(|source| storage_io("open identity", source))?;
-        let mut bytes = Vec::with_capacity(length);
+        let mut bytes = Zeroizing::new(Vec::with_capacity(length));
         file.read_to_end(&mut bytes)
             .map_err(|source| storage_io("read identity", source))?;
         if bytes.len() > MAX_IDENTITY_FILE_SIZE {
@@ -204,7 +205,7 @@ fn storage_io(operation: &'static str, source: io::Error) -> StorageError {
     StorageError::Io { operation, source }
 }
 
-fn encode_identity(bundle: &RouterIdentityBundle) -> Result<Vec<u8>, StorageError> {
+fn encode_identity(bundle: &RouterIdentityBundle) -> Result<Zeroizing<Vec<u8>>, StorageError> {
     let signing_public = bundle.identity().signing_key().as_bytes();
     let encryption_public = bundle.identity().public_key().as_bytes();
     if signing_public.len() != PUBLIC_KEY_LENGTH || encryption_public.len() != PUBLIC_KEY_LENGTH {
@@ -227,7 +228,7 @@ fn encode_identity(bundle: &RouterIdentityBundle) -> Result<Vec<u8>, StorageErro
     bytes.extend_from_slice(encryption_public);
     let checksum = sha256(&bytes);
     bytes.extend_from_slice(checksum.as_bytes());
-    Ok(bytes)
+    Ok(Zeroizing::new(bytes))
 }
 
 fn decode_identity(bytes: &[u8]) -> Result<RouterIdentityBundle, StorageError> {
@@ -284,15 +285,15 @@ fn decode_identity(bytes: &[u8]) -> Result<RouterIdentityBundle, StorageError> {
     reader.finish()?;
 
     let expected_checksum = sha256(&bytes[..IDENTITY_FILE_LENGTH - CHECKSUM_LENGTH]);
-    if !constant_time_eq(&stored_checksum, expected_checksum.as_bytes()) {
+    if !constant_time_eq(&*stored_checksum, expected_checksum.as_bytes()) {
         return Err(StorageError::Integrity);
     }
 
-    let bundle = RouterIdentityBundle::from_private_bytes(signing_private, encryption_private)?;
-    if !constant_time_eq(bundle.identity().signing_key().as_bytes(), &signing_public)
+    let bundle = RouterIdentityBundle::from_zeroizing_bytes(signing_private, encryption_private)?;
+    if !constant_time_eq(bundle.identity().signing_key().as_bytes(), &*signing_public)
         || !constant_time_eq(
             bundle.identity().public_key().as_bytes(),
-            &encryption_public,
+            &*encryption_public,
         )
     {
         return Err(StorageError::Integrity);
@@ -349,21 +350,26 @@ fn ensure_secure_directory(path: &Path) -> Result<(), StorageError> {
             validate_directory_permissions(&metadata)
         }
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir_all(path)
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            let parent_metadata = fs::symlink_metadata(parent)
+                .map_err(|source| storage_io("inspect identity directory parent", source))?;
+            if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+                return Err(StorageError::UnsafePath);
+            }
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder
+                .create(path)
                 .map_err(|source| storage_io("create identity directory", source))?;
             let metadata = fs::symlink_metadata(path)
                 .map_err(|source| storage_io("inspect identity directory", source))?;
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
                 return Err(StorageError::UnsafePath);
             }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-                    .map_err(|source| storage_io("harden identity directory", source))?;
-            }
-            let metadata = fs::symlink_metadata(path)
-                .map_err(|source| storage_io("reinspect identity directory", source))?;
             validate_directory_permissions(&metadata)
         }
         Err(source) => Err(storage_io("inspect identity directory", source)),
@@ -449,10 +455,10 @@ impl<'a> Reader<'a> {
         ))
     }
 
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], StorageError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| StorageError::Truncated)
+    fn array<const N: usize>(&mut self) -> Result<Zeroizing<[u8; N]>, StorageError> {
+        let mut value = Zeroizing::new([0_u8; N]);
+        value.copy_from_slice(self.take(N)?);
+        Ok(value)
     }
 
     fn finish(&self) -> Result<(), StorageError> {
@@ -479,7 +485,7 @@ mod tests {
     }
 
     fn encoded(bundle: &RouterIdentityBundle) -> Vec<u8> {
-        encode_identity(bundle).expect("encode identity")
+        encode_identity(bundle).expect("encode identity").to_vec()
     }
 
     fn store(directory: &tempfile::TempDir) -> IdentityStore {
@@ -614,6 +620,36 @@ mod tests {
 
         let linked_store = IdentityStore::in_data_dir(&link);
         assert!(matches!(linked_store.load(), Err(StorageError::UnsafePath)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_directories_are_private_and_missing_intermediates_are_not_created() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().expect("directory");
+        let new_state = directory.path().join("new-state");
+        IdentityStore::prepare_directory(&new_state).expect("create private directory");
+        let mode = fs::metadata(&new_state)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
+
+        let permissive = directory.path().join("permissive");
+        fs::create_dir(&permissive).expect("permissive directory");
+        fs::set_permissions(&permissive, fs::Permissions::from_mode(0o755))
+            .expect("set permissive mode");
+        assert!(matches!(
+            IdentityStore::prepare_directory(&permissive),
+            Err(StorageError::InsecurePermissions)
+        ));
+
+        let missing_parent = directory.path().join("missing-parent");
+        let nested = missing_parent.join("child");
+        assert!(IdentityStore::prepare_directory(&nested).is_err());
+        assert!(!missing_parent.exists());
     }
 
     #[test]

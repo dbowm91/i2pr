@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 sha2.workspace = true
+zeroize.workspace = true
 
 [lints]
 workspace = true

@@ -86,7 +86,7 @@ not treated as interoperability evidence.
 
 ## Changed files
 
-- `crates/i2pr-proto/src/i2np.rs` — registry, headers, bodies, limits, tests.
+- `crates/i2pr-proto/src/i2np_impl.rs` plus the grouped `i2np/` façade — registry, headers, bodies, limits, tests.
 - `crates/i2pr-proto/src/lib.rs` — module/export and boundary documentation.
 - `.gitignore` — ignores generated fuzz artifacts and targets.
 - `tests/fixtures/i2np/` — locally authored vectors and manifest.

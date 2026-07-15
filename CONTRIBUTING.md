@@ -46,6 +46,14 @@ the production workspace and requires nightly `cargo-fuzz`; use
 `bash scripts/fuzz-smoke.sh` for bounded local smoke runs. Fuzz-only
 dependencies must not be added to production manifests.
 
+Committed protocol fixtures must be sanitized, locally authored or provenance-
+recorded, free of private keys/live identities/addresses/destinations, and
+listed with classification, expected type or error category, exact source
+revision, generator/input, license note, SHA-256, and independence status.
+Fixture-backed tests must consume the bytes. Secret-bearing protocol values
+must use narrow non-cloneable, zeroizing owners with redacted `Debug`; memory
+hygiene does not imply encrypted-protocol support.
+
 ## Security and testing
 
 Treat all external input as hostile. Add malformed, boundary, cancellation,
@@ -59,6 +67,11 @@ Report security issues privately to the project owner rather than publishing
 exploit details in an issue or pull request. Treat router identity files and
 backups as private key material; do not add private fixtures or print secret
 bytes in tests and diagnostics.
+
+Identity directories must be created with restrictive permissions from
+inception. A post-create permission change is not an acceptable substitute;
+when recursive creation cannot be made safe, require an existing secure
+parent and document that policy.
 
 ## Dependencies, provenance, and commits
 

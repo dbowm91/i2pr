@@ -14,7 +14,10 @@ side-effect-free configuration validation, bounded common-structure and
 initial-I2NP codecs, reviewed Ed25519/X25519 identity wrappers,
 permission-hardened identity storage, a deterministic testkit foundation, and
 a non-networked CLI shell. Plan 014 also adds an opt-in nightly fuzz workspace
-and locally authored, hashed I2NP regression fixtures.
+and locally authored, hashed I2NP regression fixtures. Plan 015 adds
+creation-time directory permissions, zeroizing transient identity/reply-secret
+owners, grouped protocol namespaces, and fixture-backed positive/malformed
+regressions. These remain structural and local evidence only.
 Plans 011–013 provide the structural and local cryptographic foundation for
 common I2P identities, mappings, certificates, RouterInfo, RouterAddress,
 Lease, classic LeaseSet, explicit identity generation, atomic reload, local
@@ -132,6 +135,7 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Milestone 1 common-structures closure record](plans/012-closure.md)
 - [Milestone 1 identity/crypto/storage closure record](plans/013-closure.md)
 - [Milestone 1 I2NP/evidence/fuzzing closure record](plans/014-closure.md)
+- [Aggregate Milestone 1 corrective closure record](plans/010-milestone-1-closure.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)

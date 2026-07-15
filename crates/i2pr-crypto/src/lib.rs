@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Operating-system-backed randomness for explicit production injection.
 pub use rand_core::OsRng;
@@ -146,15 +146,14 @@ pub struct RouterIdentityBundle {
 impl RouterIdentityBundle {
     /// Generates a new identity from an injected cryptographic random source.
     pub fn generate<R: TryCryptoRng + ?Sized>(rng: &mut R) -> Result<Self, CryptoError> {
-        let mut signing = [0_u8; PRIVATE_KEY_LENGTH];
-        let mut encryption = [0_u8; PRIVATE_KEY_LENGTH];
-        if rng.try_fill_bytes(&mut signing).is_err() || rng.try_fill_bytes(&mut encryption).is_err()
+        let mut signing = Zeroizing::new([0_u8; PRIVATE_KEY_LENGTH]);
+        let mut encryption = Zeroizing::new([0_u8; PRIVATE_KEY_LENGTH]);
+        if rng.try_fill_bytes(&mut *signing).is_err()
+            || rng.try_fill_bytes(&mut *encryption).is_err()
         {
-            signing.zeroize();
-            encryption.zeroize();
             return Err(CryptoError::RandomnessUnavailable);
         }
-        Self::from_private_bytes(signing, encryption)
+        Self::from_zeroizing_bytes(signing, encryption)
     }
 
     /// Reconstructs an identity from explicit private key bytes.
@@ -162,8 +161,19 @@ impl RouterIdentityBundle {
         signing: [u8; PRIVATE_KEY_LENGTH],
         encryption: [u8; PRIVATE_KEY_LENGTH],
     ) -> Result<Self, CryptoError> {
-        let signing_key = SigningPrivateKey::from_bytes(signing);
-        let encryption_key = EncryptionPrivateKey::from_bytes(encryption);
+        Self::from_zeroizing_bytes(Zeroizing::new(signing), Zeroizing::new(encryption))
+    }
+
+    /// Reconstructs an identity while consuming zeroizing temporary owners.
+    /// The compatibility-preserving private wrapper constructors copy the
+    /// fixed-size arrays, after which the temporary owners are dropped and
+    /// wiped.
+    pub fn from_zeroizing_bytes(
+        signing: Zeroizing<[u8; PRIVATE_KEY_LENGTH]>,
+        encryption: Zeroizing<[u8; PRIVATE_KEY_LENGTH]>,
+    ) -> Result<Self, CryptoError> {
+        let signing_key = SigningPrivateKey::from_bytes(*signing);
+        let encryption_key = EncryptionPrivateKey::from_bytes(*encryption);
         let identity = build_router_identity(&signing_key, &encryption_key)?;
         Ok(Self {
             identity,

@@ -10,6 +10,7 @@ use std::fmt;
 
 use crate::codec::{CodecError, DecodeCursor, EncodeBuffer, decode_exact, encode_to_vec};
 use crate::{Date, Hash, LeaseSet};
+use zeroize::Zeroizing;
 
 /// The largest I2NP payload accepted by this codec.
 ///
@@ -284,6 +285,44 @@ impl fmt::Debug for DatabaseStoreData {
     }
 }
 
+/// A non-cloneable, zeroizing reply key or session tag.
+///
+/// This narrow wrapper exists only for the structurally parsed
+/// `DatabaseLookup` reply fields. It provides memory hygiene and redacted
+/// formatting; it does not implement reply encryption, key derivation, or
+/// any general secret-management API.
+#[derive(Eq, PartialEq)]
+pub struct ReplySecret<const N: usize> {
+    bytes: Zeroizing<[u8; N]>,
+}
+
+impl<const N: usize> ReplySecret<N> {
+    /// Creates a reply-secret value from protocol bytes.
+    pub fn from_bytes(bytes: [u8; N]) -> Self {
+        Self {
+            bytes: Zeroizing::new(bytes),
+        }
+    }
+
+    fn from_zeroizing(bytes: Zeroizing<[u8; N]>) -> Self {
+        Self { bytes }
+    }
+
+    /// Borrows the secret for the shortest practical encoding interval.
+    pub fn as_bytes(&self) -> &[u8; N] {
+        &self.bytes
+    }
+}
+
+impl<const N: usize> fmt::Debug for ReplySecret<N> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReplySecret")
+            .field("length", &N)
+            .finish()
+    }
+}
+
 /// DatabaseStore message body.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DatabaseStoreMessage {
@@ -300,23 +339,23 @@ pub struct DatabaseStoreMessage {
 }
 
 /// Reply encryption material in DatabaseLookup.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub enum ReplyEncryption {
     /// No encrypted reply requested.
     None,
     /// Legacy ElGamal/AES reply material.
     ElGamal {
         /// Session key bytes.
-        reply_key: [u8; 32],
+        reply_key: ReplySecret<32>,
         /// 32-byte session tags.
-        reply_tags: Vec<[u8; 32]>,
+        reply_tags: Vec<ReplySecret<32>>,
     },
     /// ECIES reply material.
     Ecies {
         /// Session key bytes.
-        reply_key: [u8; 32],
+        reply_key: ReplySecret<32>,
         /// 8-byte session tags.
-        reply_tags: Vec<[u8; 8]>,
+        reply_tags: Vec<ReplySecret<8>>,
     },
 }
 
@@ -339,7 +378,7 @@ impl fmt::Debug for ReplyEncryption {
 }
 
 /// DatabaseLookup message body.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct DatabaseLookupMessage {
     /// Hash key to look up.
     pub key: Hash,
@@ -358,7 +397,7 @@ pub struct DatabaseLookupMessage {
 }
 
 /// DatabaseSearchReply message body.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct DatabaseSearchReplyMessage {
     /// Hash key that was searched.
     pub key: Hash,
@@ -407,7 +446,7 @@ impl fmt::Debug for TunnelDataMessage {
 }
 
 /// TunnelGateway message body containing a standard nested I2NP message.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct TunnelGatewayMessage {
     /// Nonzero destination tunnel identifier.
     pub tunnel_id: u32,
@@ -485,7 +524,7 @@ pub struct OpaqueMessageBody {
 }
 
 /// The typed body registry for the initial I2NP subset.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum I2npBody {
     /// DatabaseStore body.
     DatabaseStore(Box<DatabaseStoreMessage>),
@@ -606,7 +645,7 @@ impl I2npBody {
 }
 
 /// A complete I2NP message with one of the specification's header variants.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct I2npMessage {
     header: I2npHeader,
     body: I2npBody,
@@ -1071,11 +1110,11 @@ fn decode_database_lookup(
     let reply_encryption = match (encryption_flag, ecies_flag) {
         (false, false) => ReplyEncryption::None,
         (true, false) => ReplyEncryption::ElGamal {
-            reply_key: read_array(cursor)?,
+            reply_key: read_reply_secret(cursor)?,
             reply_tags: read_tags::<32>(cursor)?,
         },
         (false, true) => ReplyEncryption::Ecies {
-            reply_key: read_array(cursor)?,
+            reply_key: read_reply_secret(cursor)?,
             reply_tags: read_tags::<8>(cursor)?,
         },
         (true, true) => {
@@ -1145,6 +1184,12 @@ fn decode_fixed_records(
     count: u8,
     record_size: usize,
 ) -> Result<DeferredBuildRecords, CodecError> {
+    if count == 0 || usize::from(count) > MAX_BUILD_RECORDS {
+        return Err(CodecError::InvalidFieldValue {
+            offset: cursor.offset(),
+            context: "tunnel-build record count",
+        });
+    }
     let length =
         usize::from(count)
             .checked_mul(record_size)
@@ -1283,10 +1328,10 @@ fn encode_database_lookup(
             reply_tags,
         } => {
             validate_tag_count(reply_tags.len(), encoder.len())?;
-            encoder.write_raw(reply_key)?;
+            encoder.write_raw(reply_key.as_bytes())?;
             encoder.write_u8(reply_tags.len() as u8)?;
             for tag in reply_tags {
-                encoder.write_raw(tag)?;
+                encoder.write_raw(tag.as_bytes())?;
             }
             Ok(())
         }
@@ -1295,10 +1340,10 @@ fn encode_database_lookup(
             reply_tags,
         } => {
             validate_tag_count(reply_tags.len(), encoder.len())?;
-            encoder.write_raw(reply_key)?;
+            encoder.write_raw(reply_key.as_bytes())?;
             encoder.write_u8(reply_tags.len() as u8)?;
             for tag in reply_tags {
-                encoder.write_raw(tag)?;
+                encoder.write_raw(tag.as_bytes())?;
             }
             Ok(())
         }
@@ -1413,10 +1458,20 @@ fn read_nonzero_u32(
     Ok(value)
 }
 
-fn read_tags<const N: usize>(cursor: &mut DecodeCursor<'_>) -> Result<Vec<[u8; N]>, CodecError> {
+fn read_tags<const N: usize>(
+    cursor: &mut DecodeCursor<'_>,
+) -> Result<Vec<ReplySecret<N>>, CodecError> {
     let count = usize::from(cursor.read_u8()?);
     validate_tag_count(count, cursor.offset().saturating_sub(1))?;
-    (0..count).map(|_| read_array(cursor)).collect()
+    (0..count).map(|_| read_reply_secret(cursor)).collect()
+}
+
+fn read_reply_secret<const N: usize>(
+    cursor: &mut DecodeCursor<'_>,
+) -> Result<ReplySecret<N>, CodecError> {
+    let mut bytes = Zeroizing::new([0_u8; N]);
+    bytes.copy_from_slice(cursor.take(N)?);
+    Ok(ReplySecret::from_zeroizing(bytes))
 }
 
 fn validate_tag_count(count: usize, offset: usize) -> Result<(), CodecError> {
