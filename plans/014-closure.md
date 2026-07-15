@@ -136,11 +136,12 @@ tree is formatted and tested:
 | `rtk bash scripts/check-fixture-manifest.sh` | passed |
 | `rtk cargo +nightly check --manifest-path fuzz/Cargo.toml --offline --all-targets` | passed |
 | `rtk bash -c 'CARGO_NET_OFFLINE=true bash scripts/fuzz-smoke.sh'` | passed — 17 targets × 32 runs; managed-environment leak sanitizer disabled by the script |
+| GitHub Actions CI run [`29390732012`](https://github.com/dbowm91/i2pr/actions/runs/29390732012) | passed — Ubuntu/macOS quality, Ubuntu MSRV, and dependency policy jobs |
 
-CI evidence will be filled with the pushed commit's GitHub Actions run before
-the closure is considered complete. The first online fuzz-smoke attempt was
-blocked by crates.io DNS resolution; the recorded smoke result used cached
-dependencies offline. No public-network malformed, stress, or adversarial
+The first online fuzz-smoke attempt was blocked by crates.io DNS resolution;
+the recorded smoke result used cached dependencies offline. The CI run does
+not claim a fuzz campaign because the fuzz workspace is intentionally an
+optional nightly lane. No public-network malformed, stress, or adversarial
 testing was performed.
 
 ## Prerequisites for later milestones
