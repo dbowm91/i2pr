@@ -1,151 +1,75 @@
-# Repository agent instructions
+# Repository Guidelines
 
-These instructions supplement the environment-provided RTK command guidance.
+## Project Structure and Boundaries
 
-Before changing code, read `README.md`, `GUARDRAILS.md`, the applicable plan in
-`plans/`, and any relevant ADR in `docs/adr/`. Protocol work also requires the
-matching dossier under `specs/protocols/` and `specs/CONFORMANCE.md`.
+`i2pr` is an experimental Rust I2P router; it is not production-ready and
+must not be used for anonymity or security-sensitive workloads. Source lives
+under `crates/`: `i2pr-proto` (bounded wire codecs), `i2pr-crypto`,
+`i2pr-storage`, runtime-neutral `i2pr-core`, Tokio-owning `i2pr-runtime`, the
+`i2pr-daemon` composition root, and test-only `i2pr-testkit`. Integration tests
+are in crate `tests/` directories; sanitized I2NP fixtures are in
+`tests/fixtures/i2np/`; the opt-in nightly fuzz workspace is `fuzz/`.
 
-Milestone closure work must leave an explicit closure record with the changed
-files, deviations, dependency and security decisions, quality-command results,
-CI evidence, and known limitations. Keep `specs/support.toml` synchronized
-with `docs/protocol-support.md`; code or namespace presence is not protocol
-support evidence.
+Preserve the dependency direction `i2pr-proto <- i2pr-crypto <- i2pr-storage`
+and `i2pr-core <- i2pr-runtime <- i2pr-daemon`. Production crates must not
+depend on `i2pr-testkit`; lower-level crates must not depend on the daemon.
+Do not add transport, NetDB, tunnel, client, or plugin APIs without a bounded
+plan.
 
-Keep changes plan-first and bounded. Preserve the dependency direction shown in
-`docs/architecture.md`; do not add future transport, NetDB, tunnel, client, or
-plugin APIs without a detailed plan. Production crates must not depend on
-`i2pr-testkit`, and lower-level crates must not depend on `i2pr-daemon`. The
-current direction is `i2pr-proto <- i2pr-crypto <- i2pr-storage`, with
-`i2pr-core <- i2pr-runtime <- i2pr-daemon` is the runtime composition path;
-the daemon remains the process composition root. `i2pr-runtime` is the only
-production crate allowed to depend on Tokio or `tokio-util`; protocol, crypto,
-storage, and `i2pr-core` remain runtime-neutral.
+## Before Changing Code
 
-Use the local quality commands documented in `CONTRIBUTING.md`. Configuration
-and protocol inputs are untrusted: keep parsing bounded, reject unknown
-fields, avoid side effects during validation, and test negative paths. Do not
-claim protocol support before interoperability evidence exists.
+Read `README.md`, `GUARDRAILS.md`, `CONTRIBUTING.md`, the applicable `plans/`
+document, and relevant `docs/adr/` records. Protocol changes also require the
+matching dossier under `specs/protocols/` and `specs/CONFORMANCE.md`. Keep
+`specs/support.toml` synchronized with `docs/protocol-support.md`; namespace
+presence is not interoperability evidence.
 
-Plan 021 supervision rules are mandatory: every long-lived task must be owned
-by the supervisor or a service child scope, and every owned task must be
-awaited, explicitly aborted after a recorded deadline, or transferred to a
-documented owner. Discarded `JoinHandle`s and detached `tokio::spawn` calls are
-not allowed. Service startup must validate the complete graph before spawning,
-use explicit one-shot readiness, publish bounded latest-state health, and use
-typed static failure categories. Runtime tests must use paused Tokio time or
-explicit deterministic advancement; wall-clock sleeps are not acceptable.
+Treat configuration, protocol, and persisted data as hostile: use explicit
+bounds, reject unknown or trailing data, avoid validation side effects, and
+test negative paths. Preserve the `i2pr-proto` crate-root façade, borrowed
+cursors, strict decoding, typed codec errors, and structural-only protocol
+scope. Secret-bearing values must be narrow, non-debuggable, non-cloneable
+where practical, and zeroizing.
 
-Plan 022 communication rules are mandatory: every asynchronous queue must have
-an explicit nonzero capacity below the infrastructure ceiling; sends and
-receives must expose typed overload, closure, deadline, and cancellation
-outcomes; service-to-service sends must not wait without a caller-visible
-deadline or cancellation scope; and latest-state values must not imply
-lossless history. Resource leases are non-cloneable, own one exact grant, and
-release on drop, explicit consuming release, cancellation, timeout, panic, and
-forced cleanup. Queue admission occurs before payload ownership enters a queue,
-and an accepted queue item owns its charge until receiver handoff or drop.
-Do not add unbounded Tokio channels, hidden retry loops, dynamic peer-derived
-channel identifiers, or partial multi-class resource acquisition.
+## Build and Test
 
-The `i2pr-proto` codec foundation uses borrowed cursors and caller-visible
-maximums. New protocol decoders should use strict top-level consumption and
-typed `CodecError` categories; do not add hidden unlimited defaults, runtime or
-filesystem dependencies, or speculative universal codec traits.
+Use the pinned Rust 1.95 toolchain; Rust 1.85 is the declared MSRV. Before
+handoff, run:
 
-The Plan 014 I2NP module is structural only: standard, obsolete-SSU, and
-NTCP2/SSU2 short headers, checksum/length validation, typed dispatch, and
-bounded selected bodies/framing are allowed. Expiration policy, duplicate
-suppression, routing, transport authentication, NetDB actions, tunnel crypto
-or reassembly, garlic decryption, and capability advertisement remain outside
-`i2pr-proto`. Deferred/opaque bodies must be named explicitly and redact raw
-bytes in `Debug` output.
+```text
+cargo fmt --all --check
+cargo check --workspace --all-targets
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+```
 
-The maintained fuzz workspace lives under `fuzz/`, is not a production
-workspace member, and uses nightly-only `cargo-fuzz` with bounded inputs. Seed
-corpora must be locally authored or provenance-recorded, sanitized, hashed,
-and free of private keys, live peer captures, addresses, and destinations.
-Run `bash scripts/check-fixture-manifest.sh` when fixture bytes change and use
-`bash scripts/fuzz-smoke.sh` for the opt-in short fuzz lane.
+Run `bash scripts/check-fixture-manifest.sh` when fixture bytes change and
+`bash scripts/fuzz-smoke.sh` for the opt-in fuzz lane. Runtime tests must use
+paused Tokio time or `ManualClock`, fixed seeds, stable scenario names, and
+bounded steps—never wall-clock sleeps or public-network traffic.
 
-The common-structure model in `crates/i2pr-proto/src/common/` preserves exact
-signed byte regions, uses immutable sorted mappings, and treats algorithm
-identifiers and lengths as explicit typed data. It is structural only: do not
-add signing, encryption, freshness policy, transport interpretation, or
-capability advertisement there. Plan 013's type-7 Ed25519/type-4 X25519
-execution belongs in `i2pr-crypto`; versioned private identity persistence
-belongs in `i2pr-storage`. Secret wrappers must remain non-debuggable,
-non-cloneable where practical, and zeroizing. Keep `specs/support.toml` and
-`docs/protocol-support.md` aligned with the evidence available for each exact
-surface.
+## Runtime, Security, and Observability Rules
 
-The explicit identity commands are intentionally narrow: generation is
-create-only, inspection never prints private material, dry-run never mutates
-identity state, and corrupt identity files must fail closed rather than trigger
-silent regeneration. The storage format, Unix permissions, atomic install,
-checksum, and at-rest threat model are recorded in ADR 0006.
+Every long-lived task has an owned supervisor/service scope and is awaited or
+explicitly aborted and drained. Child counters decrement only after joins;
+`Drop` may request abort but cannot claim completion. Queues have explicit,
+nonzero bounded capacity and caller-visible overload, closure, deadline, and
+cancellation outcomes. Resource leases own one exact grant and expose
+underflow during cleanup without panicking. Log only fixed typed categories,
+bounded counters, and synthetic metadata; never payloads, keys, identities,
+addresses, paths, or arbitrary error text. Identity creation is create-only,
+restrictive from inception, atomic, and fails closed on corruption.
 
-Do not select a project license or copy implementation code from another router
-without explicit owner review. Do not perform malformed-traffic or stress
-testing against the public I2P network.
+Do not perform malformed, stress, or fault-injection testing against the
+public I2P network; use `i2pr-testkit` or an authorized isolated testnet.
 
-Plan 023 simulation rules are mandatory: use a documented root
-`ReproducibilitySeed` plus a stable scenario identifier in every deterministic
-failure report; derive independent component seeds rather than sharing mutable
-RNG state across components. Replay records must contain only bounded seed,
-scenario, sequence, fault-category, queue, timer, task, and resource metadata;
-never include payloads, private keys, destinations, full RouterInfo values, or
-real addresses. Keep stream and datagram links semantically distinct, admit
-queue items before payload ownership, and enforce explicit pending-delivery,
-buffer, duplicate, rule, peer, timer, and step limits. Fault scripts belong
-only to `i2pr-testkit` and authorized isolated testnets; never run malformed,
-stress, or fault-injection traffic against the public I2P network. A testkit
-shutdown must purge queued work, wake waiters, and document any still-live
-endpoint lease ownership; no detached simulation task is permitted.
+## Commits and Pull Requests
 
-The common and I2NP implementations expose grouped private leaf namespaces
-through `crates/i2pr-proto/src/common/` and `src/i2np/`; preserve the crate-root
-re-export façade and keep decode helpers private. `ReplySecret` is a
-non-cloneable zeroizing wrapper for DatabaseLookup reply keys/tags and must not
-be broadened into encrypted-reply semantics. Committed I2NP fixtures must use
-the manifest schema in `tests/fixtures/i2np/manifest.tsv`, include provenance,
-classification, deterministic inputs, hashes, and independence status, and be
-consumed by tests rather than only hash-checked. New identity directories must
-use creation-time restrictive modes; do not reintroduce create-then-chmod.
-
-Plan 024 observability rules are mandatory: use the fixed event names exported
-by `i2pr-runtime::event`; event fields must be validated service/channel
-identifiers, typed lifecycle/failure categories, bounded counters, units,
-monotonic durations, or synthetic link/sequence metadata. Never log payloads,
-private or reply keys, session tags, RouterIdentity/Destination bytes, full
-hashes, addresses, arbitrary error or panic text, filesystem paths, or
-peer-derived metric labels. Lower crates may emit events but only
-`i2pr-daemon` may install the subscriber. Aggregate snapshots must omit health
-detail text, sort bounded entries deterministically, and document eventual
-coherence.
-
-Plan 024 integration tests belong below the transport boundary and must use
-paused Tokio time or `ManualClock`, fixed root seeds, stable scenario names,
-and explicit step limits. The minimum local matrix is the five named service
-graph/link scenarios plus 32 fixed seeds, capacities 1/2/normal, exact and
-over-limit resources, recovery and restart exhaustion, graceful and forced
-shutdown, and teardown assertions for tasks, waiters, timers, links, queues,
-and resource usage. Closure work must record exact commands/results, CI
-evidence or its absence, dependencies, security decisions, deviations, and
-Milestone 3 prerequisites.
-
-Plan 025 corrective rules are mandatory: a child-task counter may decrement
-only after a corresponding join result. Each active service manager retains a
-bounded owner slot for its `ChildScope`, so forced manager abort transfers the
-exact child collection to the supervisor for explicit abort-and-drain. `Drop`
-may request abort but must not claim completion or decrement counters. Final
-reports and snapshots may report zero owned tasks only after confirmed joins;
-remaining handles or failed drains are typed cleanup evidence. Service
-`RequestedShutdown` is valid only when the service/manager/root cancellation
-scope is already cancelled; an uncancelled result is an unexpected clean exit
-and must follow the service classification policy. Resource release
-underflow is an internal invariant signal with bounded accounting and must not
-silently disappear or panic during cleanup. The corrective CI gates are
-`bash scripts/check-runtime-boundaries.sh` and
-`bash scripts/check-fixture-manifest.sh`, and Linux CI must check all workspace
-targets.
+Use focused imperative commit subjects, for example
+`docs: streamline repository guidelines`. PRs should explain scope, changed
+files, test commands and results, dependency/security decisions, deviations,
+and known limitations. Milestone closure work must leave an explicit closure
+record with that evidence.
