@@ -42,10 +42,13 @@ remains the pinned normal development and CI toolchain. The workflow checks
 formatting, checks, tests, Clippy, rustdoc, and dependency-direction checks on
 Ubuntu and macOS using Rust `1.95.0`.
 
-The repository is private and the workflow is configured for both pushes and
-pull requests. The authoritative remote evidence for this closure is the
+The workflow is configured for both pushes and pull requests, and GitHub
+reports the workflow as active. The plan describes a private repository, but
+GitHub currently reports `dbowm91/i2pr` as public; no repository-visibility
+change was made by this task. The authoritative remote evidence is the
 [Milestone 0 CI workflow](https://github.com/dbowm91/i2pr/actions/workflows/ci.yml)
-and the successful run associated with the final `main` commit.
+and [successful run 29386474913](https://github.com/dbowm91/i2pr/actions/runs/29386474913)
+for commit `ee70f9c`.
 
 The first local Rust 1.85 check exposed a pre-existing let-chain expression in
 the resource-lease release path that Rust 1.85 still treats as unstable. The
