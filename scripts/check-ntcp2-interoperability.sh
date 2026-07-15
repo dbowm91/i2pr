@@ -16,9 +16,9 @@ required=(
   'reseed = false'
   'bootstrap = false'
   'release = "2.12.0"'
-  'source_revision = "2800040"'
+  'source_revision = "2800040deee9bb376567b671ef2e9c34cf3e30b6"'
   'release = "2.60.0"'
-  'source_revision = "f618e41"'
+  'source_revision = "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"'
   'daemon_activation = "disabled; no complete wire-level composition is currently exposed"'
 )
 for entry in "${required[@]}"; do

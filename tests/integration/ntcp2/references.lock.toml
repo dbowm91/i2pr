@@ -4,8 +4,8 @@
 # hashes are intentionally recorded per build because upstream packaging can
 # embed timestamps. Execution is always offline and namespace-isolated.
 
-schema = 1
-lock_version = "plan-038-v1"
+schema = 2
+lock_version = "plan-040-v1"
 host_contract = "ubuntu-24.04-amd64"
 cache_key_inputs = ["source_revision", "lock_sha256", "host_contract", "build_command_version"]
 artifact_hash_policy = "sha256-complete-runtime-tree-per-build"
@@ -22,7 +22,7 @@ verification = "sha256sum of the exact Maven Central installer downloaded on 202
 [packages]
 common = [
   "ca-certificates", "curl", "git", "wget", "xz-utils", "unzip", "zip",
-  "coreutils", "findutils", "procps", "util-linux", "iproute2", "nftables",
+  "coreutils", "findutils", "procps", "util-linux", "iproute2", "nftables", "openssl",
   "python3", "python3-venv",
 ]
 java_i2p = ["openjdk-17-jdk-headless", "ant", "gettext"]
@@ -34,16 +34,16 @@ i2pd = [
 [reference.java_i2p]
 release = "2.12.0"
 source_repository = "https://github.com/i2p/i2p.i2p.git"
-source_revision = "2800040"
-source_url = "https://github.com/i2p/i2p.i2p/tree/2800040"
+source_revision = "2800040deee9bb376567b671ef2e9c34cf3e30b6"
+source_url = "https://github.com/i2p/i2p.i2p/tree/2800040deee9bb376567b671ef2e9c34cf3e30b6"
 build_system = "apache-ant"
-build_command_version = "java-i2p-ant-pkg5-v1"
+build_command_version = "java_i2p-ant-pkg5-v1"
 build_command = "ant distclean pkg5"
 override_properties = ["build.built-by=Plan 038 harness", "noExe=true"]
 expected_outputs = ["install.jar"]
 runtime_entrypoint = "staged headless launcher discovered from install tree"
-configuration_template_version = "java-i2p-v1"
-source_provenance = "upstream .github/workflows/ant.yml at 2800040"
+configuration_template_version = "java_i2p-v1"
+source_provenance = "upstream .github/workflows/ant.yml at 2800040deee9bb376567b671ef2e9c34cf3e30b6"
 artifact_sha256 = "record-per-build"
 installed_tree_sha256 = "record-per-build"
 execution_reseed = false
@@ -53,15 +53,15 @@ execution_updates = false
 [reference.i2pd]
 release = "2.60.0"
 source_repository = "https://github.com/PurpleI2P/i2pd.git"
-source_revision = "f618e41"
-source_url = "https://github.com/PurpleI2P/i2pd/tree/f618e41"
+source_revision = "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
+source_url = "https://github.com/PurpleI2P/i2pd/tree/f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
 build_system = "cmake"
 build_command_version = "i2pd-cmake-relwithdebinfo-v1"
 build_command = "cmake -DWITH_GIT_VERSION=ON -DWITH_UPNP=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo .. && cmake --build . --parallel <bounded-jobs>"
 expected_outputs = ["i2pd"]
 runtime_entrypoint = "i2pd --datadir <run-data-dir> --conf <rendered-config> (daemon=false in rendered config)"
 configuration_template_version = "i2pd-v1"
-source_provenance = "upstream CMake configuration and contrib samples at f618e41"
+source_provenance = "upstream CMake configuration and contrib samples at f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
 artifact_sha256 = "record-per-build"
 installed_tree_sha256 = "record-per-build"
 execution_reseed = false
@@ -69,7 +69,7 @@ execution_bootstrap = false
 execution_updates = false
 
 [provenance]
-java_build_workflow = "https://raw.githubusercontent.com/i2p/i2p.i2p/2800040/.github/workflows/ant.yml"
-i2pd_repository = "https://github.com/PurpleI2P/i2pd/tree/f618e41"
+java_build_workflow = "https://raw.githubusercontent.com/i2p/i2p.i2p/2800040deee9bb376567b671ef2e9c34cf3e30b6/.github/workflows/ant.yml"
+i2pd_repository = "https://github.com/PurpleI2P/i2pd/tree/f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
 izpack_release = "https://repo1.maven.org/maven2/org/codehaus/izpack/izpack-dist/5.2.4/"
 notes = "No stable reference artifact hash is fabricated; source, lock, and complete output tree hashes are recorded by the builder."

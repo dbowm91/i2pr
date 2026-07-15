@@ -1,6 +1,6 @@
 # ADR 0015: Ubuntu reference-router interoperability harness boundary
 
-- Status: accepted for Plan 038 foundation
+- Status: accepted for Plan 040 corrective apparatus
 - Date: 2026-07-15
 - Decision owners: repository maintainers
 
@@ -17,7 +17,9 @@ must not move Tokio or socket ownership below `i2pr-runtime`.
 The harness has two security domains:
 
 1. network-enabled preparation installs only the locked Ubuntu package set,
-   fetches the exact Java I2P `2800040` and i2pd `f618e41` revisions, verifies
+   fetches the exact Java I2P
+   `2800040deee9bb376567b671ef2e9c34cf3e30b6` and i2pd
+   `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e` revisions, verifies
    the pinned IzPack 5.2.4 artifact, builds relocatable caches, and records
    source/tool/artifact hashes;
 2. network-isolated execution creates two disposable namespaces joined only by
@@ -40,7 +42,10 @@ not activate `i2pr-daemon`, claim a handshake, or print arbitrary diagnostics.
   validation only. Mixed-router i2pr evidence remains required before any
   support-ledger or RouterInfo advertisement change.
 - Generated source trees, identities, keys, RouterInfo, logs, configurations,
-  and raw result files stay under ignored `target/interop` paths.
+  and raw result files stay under ignored `target/interop` paths. Cache lookup
+  is by canonical reference and current-cache summary; sanitized evidence is
+  written under `target/interop/evidence/` only after cleanup, and the run
+  root is deleted even when a failed record is retained.
 
 ## Rejected alternatives
 

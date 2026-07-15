@@ -5,10 +5,16 @@ description: Operate, diagnose, or extend the repository's Ubuntu 24.04 referenc
 
 # I2PR NTCP2 interoperability
 
-Use this skill from the repository root for the manual, opt-in Plan 038
+Use this skill from the repository root for the manual, opt-in Plan 038/040
 harness. Read `AGENTS.md`, `plans/038-ubuntu-reference-router-interoperability-harness.md`,
 `tests/integration/ntcp2/README.md`, and the relevant architecture/ADR files
 before changing the apparatus.
+
+The canonical reference identifiers are `java_i2p` and `i2pd`. The locked
+source objects are Java I2P
+`2800040deee9bb376567b671ef2e9c34cf3e30b6` and i2pd
+`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`; abbreviated revisions are not
+valid cache or evidence inputs.
 
 ## Safety boundary
 
@@ -34,9 +40,13 @@ privilege, route, cleanup, or evidence validation error.
 3. Prepare the exact reference caches with
    `bash scripts/interop/build-references.sh`; use `--offline` only when the
    cache already exists and network access is intentionally unavailable.
+   Resolve caches through `target/interop/cache/current-cache.json`; strict
+   schema-2 metadata is parsed and the complete runtime tree is re-hashed
+   before launch.
 4. Run the smallest required profile first. Use `run-matrix.sh --profile
-   environment-smoke`, then `reference-crosscheck-ipv4`, then handshake/full
-   only after the earlier gates pass. Pass `--offline` when appropriate and
+   environment-smoke`, then the reserved `reference-crosscheck-ipv4` profile
+   (which must remain `blocked_missing_driver` until Plan 041), then
+   handshake/full only after the earlier gates pass. Pass `--offline` when appropriate and
    use `--keep-failed-sanitized` only when reviewing an allowed sanitized
    failure record.
 5. Validate every retained record with
@@ -44,7 +54,9 @@ privilege, route, cleanup, or evidence validation error.
    `bash scripts/check-ntcp2-interoperability.sh`. Empty evidence is not
    success.
 6. Always run the bounded cleanup path and verify no namespaces, veths, child
-   processes, or secret-bearing run roots remain.
+   processes, or secret-bearing run roots remain. Passed and explicitly
+   retained failed records live only under `target/interop/evidence/`; never
+   retain a run root to preserve evidence.
 
 Consult [operations.md](references/operations.md) for command routing,
 profiles, typed outcomes, and implementation-specific stop conditions.

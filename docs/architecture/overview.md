@@ -39,9 +39,14 @@ artifacts. Execution creates disposable per-scenario state and two Linux
 namespaces joined only by a veth pair; it rejects default routes, DNS, and
 public egress before starting a router. The normal daemon remains disabled.
 
+The corrective apparatus contract is documented in
+[`interop-apparatus.md`](interop-apparatus.md): canonical full source pins,
+strict cache metadata, short topology tokens, exact nftables policies, and
+evidence finalization outside the secret-bearing run root.
+
 The harness uses three evidence classes: environment smoke covers reference
-startup and cleanup; reference crosscheck covers Java I2P versus i2pd and says
-nothing about i2pr; i2pr mixed-router evidence requires bounded authenticated
+startup and cleanup; the reference-crosscheck profile is reserved for Plan 041
+and currently returns `blocked_missing_driver`; i2pr mixed-router evidence requires bounded authenticated
 runs between i2pr and each reference in both directions. Only the last class
 can contribute to a protocol support claim, and only after sanitation leaves
 typed outcomes, bounded metadata, and artifact/configuration hashes. Raw

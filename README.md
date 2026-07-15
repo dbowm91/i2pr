@@ -105,7 +105,7 @@ bash scripts/interop/ubuntu/setup-host.sh
 bash scripts/interop/ubuntu/check-host.sh --post-install
 bash scripts/interop/build-references.sh
 bash scripts/interop/build-references.sh --offline
-bash scripts/interop/run-scenario.sh --scenario <id> --reference java-i2p --build-cache <path> --run-root <path>
+bash scripts/interop/run-scenario.sh --scenario <id> --reference java_i2p --build-cache <path> --run-root <path>
 bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
 bash scripts/interop/run-matrix.sh --profile environment-smoke
 i2pr-interop ntcp2 listen --scenario-config <path>
@@ -114,14 +114,16 @@ i2pr-interop ntcp2 inspect --state-dir <path>
 ```
 
 Environment smoke proves only that each reference can start, produce
-disposable state, avoid public connections, and stop cleanly. Reference
-crosscheck proves only that Java I2P and i2pd can be exercised against each
-other through the isolated harness. Neither profile is i2pr evidence. The
+disposable state, avoid public connections, and stop cleanly. The
+`reference-crosscheck-ipv4` profile is reserved for Plan 041 and currently
+returns `blocked_missing_driver`; it is not a substituted i2pr run. Neither
+profile is i2pr evidence. The
 i2pr mixed-router profile requires bounded authenticated runs in both
 directions against each reference; the full manifest and its adversarial
 profiles remain gated on positive i2pr handshake/data smoke in both directions.
-Retained evidence is
+Retained evidence is written only under `target/interop/evidence/` and is
 limited to typed outcomes, run metadata, and hashes of sanitized artifacts.
+Secret-bearing run roots under `target/interop/runs/<run-id>/` are deleted.
 Raw addresses, peer identities, RouterInfo, I2NP, keys, transcripts, logs, and
 remote error text are disposable and must not be committed.
 

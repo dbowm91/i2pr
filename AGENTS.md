@@ -82,7 +82,7 @@ bash scripts/interop/ubuntu/setup-host.sh
 bash scripts/interop/ubuntu/check-host.sh --post-install
 bash scripts/interop/build-references.sh
 bash scripts/interop/build-references.sh --offline
-bash scripts/interop/run-scenario.sh --scenario <id> --reference java-i2p --build-cache <path> --run-root <path>
+bash scripts/interop/run-scenario.sh --scenario <id> --reference java_i2p --build-cache <path> --run-root <path>
 bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
 bash scripts/interop/run-matrix.sh --profile environment-smoke
 i2pr-interop ntcp2 listen --scenario-config <path>
@@ -91,10 +91,12 @@ i2pr-interop ntcp2 inspect --state-dir <path>
 ```
 
 Classify harness results precisely: environment smoke validates reference
-startup and cleanup only; reference crosscheck validates Java I2P/i2pd against
-each other only; i2pr mixed-router evidence requires an authenticated bounded
+startup and cleanup only; the reference-crosscheck profile is reserved for
+Plan 041 and currently returns `blocked_missing_driver`; i2pr mixed-router evidence requires an authenticated bounded
 run between i2pr and each reference in both directions. Keep only sanitized
-typed results and artifact/configuration hashes. Delete identities, keys,
+typed results and artifact/configuration hashes under
+`target/interop/evidence/`; secret-bearing run roots under
+`target/interop/runs/<run-id>/` are deleted. Delete identities, keys,
 RouterInfo, I2NP, raw addresses, transcripts, raw logs, and arbitrary remote
 error text. These harness profiles do not enable the daemon or advertise NTCP2.
 

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +46,8 @@ _FORBIDDEN = re.compile(
     re.IGNORECASE,
 )
 _ENDPOINT = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}:\d+|\[[0-9a-f:]+\]:\d+", re.IGNORECASE)
+_HEX40 = re.compile(r"^[0-9a-f]{40};(?:clean|dirty)$")
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class EvidenceError(ValueError):
@@ -85,6 +89,28 @@ def validate_record(record: dict[str, Any]) -> None:
         raise EvidenceError("unknown typed result")
     if record["cleanup_result"] not in {"clean", "forced", "failed", "not-started"}:
         raise EvidenceError("unknown cleanup result")
+    if record["reference"] not in {"java_i2p", "i2pd"}:
+        raise EvidenceError("non-canonical reference identifier")
+    expected_version = "2.12.0" if record["reference"] == "java_i2p" else "2.60.0"
+    if record["reference_version"] != expected_version:
+        raise EvidenceError("reference version does not match identifier")
+    if not _HEX40.fullmatch(str(record["i2pr_commit"])):
+        raise EvidenceError("i2pr commit is not an exact commit plus disposition")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(record["reference_revision"])):
+        raise EvidenceError("reference revision is not a full object ID")
+    for field in ("artifact_sha256", "installed_tree_sha256", "configuration_sha256", "namespace_topology_sha256"):
+        value = str(record[field])
+        if not _HEX64.fullmatch(value):
+            raise EvidenceError(f"{field} is not a SHA-256 digest")
+        if record["actual_typed_result"] == "passed" and value == "0" * 64:
+            raise EvidenceError(f"passed record contains a zero-filled {field}")
+    if record["actual_typed_result"] == "passed":
+        if record["cleanup_result"] not in {"clean", "forced"}:
+            raise EvidenceError("passed record did not clean up")
+        if record["i2pr_commit"] == "record-at-execution":
+            raise EvidenceError("passed record contains an execution placeholder")
+    if record["evidence_sha256"] and not _HEX64.fullmatch(str(record["evidence_sha256"])):
+        raise EvidenceError("evidence digest is not a SHA-256 digest")
 
 
 def write_record(path: Path, record: dict[str, Any]) -> str:
@@ -98,8 +124,17 @@ def write_record(path: Path, record: dict[str, Any]) -> str:
     record["evidence_sha256"] = digest
     validate_record(record)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.write_text(json.dumps(record, sort_keys=False, separators=(",", ":")) + "\n", encoding="utf-8")
-    path.chmod(0o600)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=False, separators=(",", ":")) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     return digest
 
 
@@ -113,3 +148,11 @@ def validate_file(path: Path) -> None:
     if not isinstance(value, dict):
         raise EvidenceError("evidence record must be a JSON object")
     validate_record(value)
+    if not value["evidence_sha256"]:
+        raise EvidenceError("evidence record is not finalized")
+    unsigned = dict(value)
+    expected = unsigned["evidence_sha256"]
+    unsigned["evidence_sha256"] = ""
+    actual = hashlib.sha256(json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if actual != expected:
+        raise EvidenceError("evidence digest mismatch")

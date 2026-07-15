@@ -11,7 +11,7 @@ from harness.evidence import EvidenceError, validate_file  # noqa: E402
 
 
 def main() -> int:
-    evidence = Path(__file__).resolve().parents[2] / "tests/integration/ntcp2/evidence"
+    evidence = Path(__file__).resolve().parents[2] / "target/interop/evidence"
     records = sorted(path for path in evidence.glob("*.json") if path.is_file())
     for path in records:
         try:

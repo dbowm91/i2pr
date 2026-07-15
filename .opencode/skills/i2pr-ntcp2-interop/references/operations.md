@@ -16,7 +16,8 @@ guide for an agent.
 - `scripts/interop/`: host setup, builders, isolation, matrix, and cleanup.
 - `tools/i2pr-interop/`: non-production launcher seam; it currently reports
   `blocked_missing_driver` for listen/dial.
-- `tests/integration/ntcp2/evidence/`: sanitized records only.
+- `target/interop/evidence/`: sanitized records only; `target/interop/runs/`
+  is secret-bearing and is deleted after every run.
 
 ## Host and build gates
 
@@ -31,6 +32,10 @@ Use `build-references.sh --offline` only with a complete prepared cache. The
 builders reject dirty or mismatched source trees and record per-build hashes.
 Do not substitute packaged routers or floating revisions.
 
+The only reference identifiers are `java_i2p` and `i2pd`. Cache resolution uses
+`target/interop/cache/current-cache.json` and a strict metadata schema; it does
+not recursively search for a matching text substring.
+
 ## Profiles
 
 ```text
@@ -41,8 +46,8 @@ sudo -E bash scripts/interop/run-matrix.sh --profile full
 ```
 
 `environment-smoke` checks reference startup, disposable RouterInfo production,
-and cleanup. `reference-crosscheck-ipv4` is Java I2P versus i2pd and does not
-make an i2pr claim. `handshake-smoke` and `full` require the complete
+and cleanup. `reference-crosscheck-ipv4` is reserved for Plan 041 and currently
+returns `blocked_missing_driver`; it does not make an i2pr claim. `handshake-smoke` and `full` require the complete
 runtime-owned i2pr NTCP2 wire adapter; until it exists, the correct result is
 `blocked_missing_driver`, not a substituted self-handshake.
 

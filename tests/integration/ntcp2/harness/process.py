@@ -5,6 +5,8 @@ from __future__ import annotations
 import subprocess
 import threading
 import time
+import os
+import tempfile
 from collections import deque
 from pathlib import Path
 from typing import Sequence
@@ -37,6 +39,27 @@ class BoundedProcess:
         self._ready_lines: deque[str] = deque(maxlen=32)
         self._log_bytes = 0
         self.forced = False
+        self.pid_path = self.log_path.parent.parent / "pids" / f"{self.log_path.stem}.pid"
+
+    def _write_pid(self) -> None:
+        self.pid_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=f".{self.pid_path.name}.", dir=self.pid_path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="ascii") as handle:
+                handle.write(f"{self.process.pid}\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, self.pid_path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def _remove_pid(self) -> None:
+        try:
+            self.pid_path.unlink()
+        except FileNotFoundError:
+            pass
 
     def start(self) -> None:
         if self.process is not None:
@@ -50,6 +73,13 @@ class BoundedProcess:
             close_fds=True,
             env=self.environment,
         )
+        try:
+            self._write_pid()
+        except OSError as exc:
+            self.process.terminate()
+            self.process.wait(timeout=2)
+            self.process = None
+            raise ProcessError("pid-file-write-failed") from exc
         self._reader = threading.Thread(target=self._drain, name="interop-log-drain", daemon=True)
         self._reader.start()
 
@@ -92,6 +122,7 @@ class BoundedProcess:
                 self.process.wait(timeout=timeout_seconds)
         if self._reader is not None:
             self._reader.join(timeout=timeout_seconds)
+        self._remove_pid()
         return "forced" if self.forced else "clean"
 
     def snapshot(self) -> dict[str, int | str]:
@@ -99,4 +130,5 @@ class BoundedProcess:
             "running": int(self.process is not None and self.process.poll() is None),
             "exit_code": self.process.returncode if self.process is not None else -1,
             "log_bytes": self._log_bytes,
+            "forced": int(self.forced),
         }

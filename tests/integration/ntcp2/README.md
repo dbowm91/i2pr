@@ -5,8 +5,9 @@ workspace tests and is restricted to Ubuntu 24.04 amd64. The harness is not a
 public bootstrap configuration, does not enable `i2pr-daemon`, and does not
 advertise NTCP2.
 
-The pinned targets are Java I2P 2.12.0 at revision `2800040` and i2pd 2.60.0
-at revision `f618e41`. Their source URLs, build commands, package set, and
+The pinned targets are Java I2P 2.12.0 at revision
+`2800040deee9bb376567b671ef2e9c34cf3e30b6` and i2pd 2.60.0 at revision
+`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`. Their source URLs, build commands, package set, and
 verified IzPack 5.2.4 hash are in [`references.lock.toml`](references.lock.toml).
 Build hashes are recorded per build; no nondeterministic stable artifact hash
 is fabricated.
@@ -26,7 +27,9 @@ bash scripts/interop/build-references.sh
 The setup script installs only the declared packages, never enables a router
 service, and is safe to repeat. The builders clone/fetch only the locked
 repositories, detach at the exact revisions, reject dirty or mismatched source
-trees, and write cache/build metadata below `target/interop/`.
+trees, and write cache/build metadata below `target/interop/`. Cache lookup
+uses the canonical `java_i2p` and `i2pd` identifiers plus
+`target/interop/cache/current-cache.json`; it never scans arbitrary metadata.
 
 Offline repeatability uses only an already prepared cache:
 
@@ -54,8 +57,9 @@ sudo -E bash scripts/interop/run-matrix.sh --profile full
 ```
 
 `environment-smoke` validates reference startup, disposable RouterInfo
-production, and cleanup only. `reference-crosscheck-ipv4` validates Java I2P
-against i2pd without making an i2pr claim. The handshake/full profiles remain
+production, and cleanup only. `reference-crosscheck-ipv4` is reserved for
+Plan 041 and currently returns the typed `blocked_missing_driver` result rather
+than running an i2pr scenario. The handshake/full profiles remain
 `blocked_missing_driver` until the complete runtime-owned wire adapter exists;
 this is an explicit blocker, not a skipped success.
 
@@ -81,7 +85,8 @@ sudo -E bash scripts/interop/cleanup.sh
 ```
 
 Only sanitized JSON records containing typed outcomes and hashes may be
-retained. Validate records with:
+retained under `target/interop/evidence/`; secret-bearing run roots are always
+deleted. Validate records with:
 
 ```text
 bash scripts/interop/validate-evidence.py

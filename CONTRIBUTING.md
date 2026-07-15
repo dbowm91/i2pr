@@ -191,7 +191,7 @@ bash scripts/interop/ubuntu/setup-host.sh
 bash scripts/interop/ubuntu/check-host.sh --post-install
 bash scripts/interop/build-references.sh
 bash scripts/interop/build-references.sh --offline
-bash scripts/interop/run-scenario.sh --scenario <id> --reference java-i2p --build-cache <path> --run-root <path>
+bash scripts/interop/run-scenario.sh --scenario <id> --reference java_i2p --build-cache <path> --run-root <path>
 bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
 bash scripts/interop/run-matrix.sh --profile environment-smoke
 ```

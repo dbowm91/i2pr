@@ -1,17 +1,19 @@
 # Plan 038 i2pd 2.60.0 template; generated values remain in the run root.
 daemon = false
-address4 = 192.0.2.2
-host = 192.0.2.2
-port = 45679
-ipv4 = true
-ipv6 = false
+netid = 99
+address4 = @ADDRESS4@
+address6 = @ADDRESS6@
+host = @ADDRESS4@
+port = @LOCAL_PORT@
+ipv4 = @IPV4_ENABLED@
+ipv6 = @IPV6_ENABLED@
 notransit = true
 floodfill = false
 
 [ntcp2]
 enabled = true
 published = true
-port = 45679
+port = @LOCAL_PORT@
 
 [ssu2]
 enabled = false

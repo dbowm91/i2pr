@@ -20,7 +20,11 @@ done
 case "$profile" in
   environment-smoke) ids=(smoke-java-ipv4 smoke-i2pd-ipv4) ;;
   handshake-smoke) ids=(java-ipv4-inbound-outbound i2pd-ipv4-inbound-outbound) ;;
-  reference-crosscheck-ipv4) ids=(java-ipv4-inbound-outbound i2pd-ipv4-inbound-outbound) ;;
+  reference-crosscheck-ipv4)
+    printf '{"schema":1,"type":"i2pr-interop-result","profile":"reference-crosscheck-ipv4","reference":"java_i2p","actual_typed_result":"blocked_missing_driver","reason_code":"plan-041-reference-crosscheck-not-implemented","cleanup_result":"not-started"}\n'
+    printf '{"schema":1,"type":"i2pr-interop-result","profile":"reference-crosscheck-ipv4","reference":"i2pd","actual_typed_result":"blocked_missing_driver","reason_code":"plan-041-reference-crosscheck-not-implemented","cleanup_result":"not-started"}\n'
+    exit 2
+    ;;
   full) ids=(java-ipv4-inbound-outbound java-ipv6-inbound-outbound java-adversarial-and-resource java-duplicate-link-race i2pd-ipv4-inbound-outbound i2pd-ipv6-inbound-outbound i2pd-adversarial-and-resource i2pd-duplicate-link-race) ;;
 esac
 status=0

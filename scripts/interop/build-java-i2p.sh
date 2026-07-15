@@ -15,18 +15,21 @@ for arg in "$@"; do
 done
 assert_lock_contract
 ensure_target_dirs
-for command in git java ant gettext curl sha256sum; do require_command "$command"; done
+for command in git java ant gettext curl sha256sum python3; do require_command "$command"; done
 
-command_version="java-i2p-ant-pkg5-v1"
-cache_key=$(cache_key_for java-i2p "$JAVA_REVISION" "$command_version")
-cache_dir="$CACHE_ROOT/java-i2p/$cache_key"
+command_version="java_i2p-ant-pkg5-v1"
+cache_key=$(cache_key_for "$JAVA_REFERENCE" "$JAVA_REVISION" "$command_version")
+cache_dir="$CACHE_ROOT/$JAVA_REFERENCE/$cache_key"
 metadata="$cache_dir/build-metadata.txt"
 if [[ "$force" == "0" && -f "$metadata" ]]; then
-  expected_tree=$(sed -n 's/^installed_tree_sha256=//p' "$metadata")
-  [[ -n "$expected_tree" && "$(hash_tree "$cache_dir")" == "$expected_tree" ]] \
-    || die "cached Java I2P runtime tree hash mismatch"
-  printf 'reference=java-i2p\ncache_key=%s\nmetadata=%s\n' "$cache_key" "$metadata"
+  validate_cache_metadata "$metadata" "$JAVA_REFERENCE"
+  printf 'reference=%s\ncache_key=%s\nmetadata=%s\ndisposition=cache-reused\n' \
+    "$JAVA_REFERENCE" "$cache_key" "$metadata"
   exit 0
+fi
+if [[ "$force" == "1" && -d "$cache_dir" ]]; then
+  chmod -R u+w "$cache_dir"
+  rm -rf "$cache_dir"
 fi
 
 source_dir="$BUILD_ROOT/sources/java-i2p"
@@ -42,6 +45,7 @@ if [[ "$offline" == "0" ]]; then
 fi
 git -C "$source_dir" checkout --detach --quiet "$JAVA_REVISION"
 verify_git_revision "$source_dir" "$JAVA_REVISION"
+verify_git_remote "$source_dir" "$JAVA_REPOSITORY"
 cleanup_generated_source() {
   rm -f "$source_dir/override.properties" "$source_dir/install.jar"
 }
@@ -70,8 +74,10 @@ auto_options="$log_dir/auto-install.properties"
 cat >"$auto_options" <<EOF
 sys.installationDir=$install_dir
 EOF
-printf 'reference=java-i2p\nrevision=%s\ncommand=ant distclean pkg5\n' "$JAVA_REVISION" \
+printf 'reference=%s\nrevision=%s\ncommand=ant distclean pkg5\n' "$JAVA_REFERENCE" "$JAVA_REVISION" \
   >"$log_dir/build-command.txt"
+grep -Fq '<target name="pkg5"' "$source_dir/build.xml" \
+  || die "pinned Java I2P source does not contain the reviewed pkg5 target"
 (cd "$source_dir" && ant distclean pkg5) >"$log_dir/ant.log" 2>&1
 [[ -f "$source_dir/install.jar" ]] || die "Java I2P build did not produce install.jar"
 install -m 0644 "$source_dir/install.jar" "$log_dir/install.jar"
@@ -82,18 +88,34 @@ for candidate in "$install_dir/i2psvc" "$install_dir/i2prouter" "$install_dir/ru
   if [[ -x "$candidate" ]]; then launcher="$candidate"; break; fi
 done
 [[ -n "$launcher" ]] || die "Java I2P staged runtime has no approved headless launcher"
-"$launcher" --help >"$log_dir/readiness-probe.txt" 2>&1 || true
 mkdir -p "$cache_dir"
 cp -a "$install_dir/." "$cache_dir/"
-artifact_sha256=$(sha256sum "$source_dir/install.jar" | awk '{print $1}')
+mkdir -p "$cache_dir/artifacts"
+install -m 0644 "$source_dir/install.jar" "$cache_dir/artifacts/install.jar"
+if head -n 1 "$launcher" | grep -q '^#!'; then
+  bash -n "$launcher" >"$log_dir/launcher-inspection.txt"
+else
+  die "Java I2P launcher is not a reviewed shell launcher"
+fi
+artifact_sha256=$(sha256sum "$cache_dir/artifacts/install.jar" | awk '{print $1}')
 installed_tree_sha256=$(hash_tree "$cache_dir")
-write_metadata_header "$metadata" java-i2p "$JAVA_REVISION" "$command_version"
+write_metadata_header "$metadata" "$JAVA_REFERENCE" "$JAVA_REVISION" "$command_version"
 {
   printf 'source_repository=%s\n' "$JAVA_REPOSITORY"
   printf 'artifact_sha256=%s\n' "$artifact_sha256"
+  printf 'artifact_path=artifacts/install.jar\n'
   printf 'installed_tree_sha256=%s\n' "$installed_tree_sha256"
-  printf 'launcher=%s\n' "$(basename "$launcher")"
+  printf 'launcher=%s\n' "${launcher#"$install_dir/"}"
   printf 'execution_network=forbidden\n'
+  printf 'toolchain=java:%s;ant:%s;gettext:%s;izpack:5.2.4\n' \
+    "$(java -version 2>&1 | head -n 1)" "$(ant -version 2>&1 | head -n 1)" \
+    "$(gettext --version | head -n 1)"
+  printf 'launcher_probe=static-bash-syntax-only\n'
+  printf 'version_check=install-jar-sha256-verified\n'
+  printf 'test_disposition=not-applicable\n'
 } >>"$metadata"
-printf 'reference=java-i2p\ncache_key=%s\nartifact_sha256=%s\ninstalled_tree_sha256=%s\n' \
-  "$cache_key" "$artifact_sha256" "$installed_tree_sha256"
+validate_cache_metadata "$metadata" "$JAVA_REFERENCE"
+chmod -R a-w "$cache_dir"
+printf 'reference=%s\ncache_key=%s\nmetadata=%s\nartifact_sha256=%s\ninstalled_tree_sha256=%s\n' \
+  "$JAVA_REFERENCE" \
+  "$cache_key" "$metadata" "$artifact_sha256" "$installed_tree_sha256"

@@ -6,6 +6,7 @@ i2np.ntcp.hostname=@NTCP2_ADDRESS@
 i2np.ntcp.port=@NTCP2_PORT@
 i2np.ntcp.autoip=false
 i2np.ntcp.autoport=false
+i2np.ntcp.ipv6=@ADDRESS_FAMILY_IPV6@
 i2np.upnp.enable=false
 router.networkID=99
 router.reseedDisable=true

@@ -23,15 +23,15 @@ configuration_hash = "record at execution time"
 
 [reference.java_i2p]
 release = "2.12.0"
-source_revision = "2800040"
-source = "https://github.com/i2p/i2p.i2p/tree/2800040"
+source_revision = "2800040deee9bb376567b671ef2e9c34cf3e30b6"
+source = "https://github.com/i2p/i2p.i2p/tree/2800040deee9bb376567b671ef2e9c34cf3e30b6"
 artifact_sha256 = "record-per-run"
 configuration_hash = "record-per-run"
 
 [reference.i2pd]
 release = "2.60.0"
-source_revision = "f618e41"
-source = "https://github.com/PurpleI2P/i2pd/tree/f618e41"
+source_revision = "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
+source = "https://github.com/PurpleI2P/i2pd/tree/f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
 artifact_sha256 = "record-per-run"
 configuration_hash = "record-per-run"
 

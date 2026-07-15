@@ -1,4 +1,4 @@
-# Sanitized Plan 038 evidence
+# Sanitized Plan 038/040 evidence
 
 No mixed-router run is recorded in this checkout. The `i2pr` daemon still
 keeps live activation disabled and the dedicated `i2pr-interop` binary is only
@@ -6,7 +6,9 @@ a runtime/protocol composition seam; it reports a typed blocker until the
 complete wire-level handshake/data-phase driver exists. Environment smoke and
 reference crosscheck results validate the harness, not i2pr support.
 
-When an authorized operator runs the lane, retain only a JSON record with the
+This tracked directory remains a documentation boundary. Authorized runs
+write records only under `target/interop/evidence/`; never copy a run root or
+raw artifact here. Retain only a JSON record with the
 fields below and SHA-256 hashes of sanitized artifacts/configuration. Do not
 commit the logs, captures, RouterInfo values, identities, addresses, private
 keys, static keys, ephemeral keys, or payload bytes. The

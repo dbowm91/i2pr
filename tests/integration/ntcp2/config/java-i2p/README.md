@@ -1,8 +1,20 @@
 # Java I2P template provenance
 
 These properties are rendered only into a disposable run root. The template
-is pinned to Java I2P 2.12.0 revision `2800040`; the builder records the exact
-source checkout and configuration hash in run metadata.
+is pinned to Java I2P 2.12.0 revision
+`2800040deee9bb376567b671ef2e9c34cf3e30b6`; the builder records the exact
+source checkout and configuration hash in cache/run metadata.
+
+The pinned source's directory contract is explicit: `i2p.dir.base` is the
+read-only copied installation under `run-root/reference-runtime`,
+`i2p.dir.config` is `run-root/config`, and `i2p.dir.router` is the writable
+`run-root/reference-data` directory. The router writes `router.info` there;
+the Java NetDB import directory is `reference-data/netDb` and uses the
+`routerInfo-<I2P-base64-identity-hash>.dat` filename convention. The approved
+headless launcher is the staged `i2prouter` shell launcher; the builder only
+runs a static shell-syntax inspection, while the adapter starts it in the
+reference namespace and watches its bounded output for readiness. SIGTERM is
+the graceful shutdown path, followed by a bounded kill/join fallback.
 
 Safety-critical names are traced to the pinned upstream router configuration
 and build sources before use: `i2np.allowLocal`, `i2np.ntcp.enable`,

@@ -10,6 +10,8 @@ source /etc/os-release
 [[ "$(uname -m)" == "x86_64" || "$(uname -m)" == "amd64" ]] \
   || die "Plan 038 requires amd64/x86_64"
 
+"$script_dir/check-host.sh" --pre-install
+
 if [[ "$EUID" -eq 0 ]]; then
   root_prefix=()
 else
@@ -20,7 +22,7 @@ fi
 
 packages=(
   ca-certificates curl git wget xz-utils unzip zip coreutils findutils procps
-  util-linux iproute2 nftables python3 python3-venv
+  util-linux iproute2 nftables openssl python3 python3-venv
   openjdk-17-jdk-headless ant gettext
   build-essential cmake pkg-config libboost-all-dev libssl-dev zlib1g-dev
 )

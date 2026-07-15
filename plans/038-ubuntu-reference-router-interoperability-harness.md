@@ -552,7 +552,7 @@ The runner must accept:
 
 ```text
 --scenario <id>
---reference java-i2p|i2pd
+--reference java_i2p|i2pd
 --build-cache <path>
 --run-root <path>
 --keep-failed-sanitized

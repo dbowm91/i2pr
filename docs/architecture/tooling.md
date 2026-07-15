@@ -57,8 +57,8 @@ pattern scanning and `sha256sum` / `find` for manifest integrity.
 - `manifest.toml` — defines a synthetic test network
   (`network_id = "synthetic-private-036"`), loopback-only, fixed
   clocks, disposable identities. Pins reference implementations:
-  Java I2P 2.12.0 (rev `2800040`) and i2pd 2.60.0 (rev
-  `f618e41`). Specifies exactly 8 scenarios:
+  Java I2P 2.12.0 and i2pd 2.60.0 at the exact full revisions recorded in
+  `references.lock.toml`. Specifies exactly 8 scenarios:
   1. `java-ipv4-inbound-outbound` — authenticated handshake + I2NP
      exchange.
   2. `java-ipv6-inbound-outbound` — same, IPv6.
@@ -106,7 +106,7 @@ publication, NetDB mutation, or public endpoint.
 The scenario and launcher interfaces are:
 
 ```text
-bash scripts/interop/run-scenario.sh --scenario <id> --reference java-i2p --build-cache <path> --run-root <path>
+bash scripts/interop/run-scenario.sh --scenario <id> --reference java_i2p --build-cache <path> --run-root <path>
 bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
 bash scripts/interop/run-matrix.sh --profile environment-smoke
 i2pr-interop ntcp2 listen --scenario-config <path>
@@ -115,8 +115,9 @@ i2pr-interop ntcp2 inspect --state-dir <path>
 ```
 
 The evidence taxonomy is strict: environment smoke validates reference
-startup/RouterInfo generation and cleanup only; reference crosscheck validates
-Java I2P versus i2pd and makes no i2pr claim; i2pr mixed-router evidence
+startup/RouterInfo generation and cleanup only; the reference-crosscheck
+profile is reserved for Plan 041 and currently returns `blocked_missing_driver`;
+i2pr mixed-router evidence
 requires bounded authenticated runs between i2pr and each reference in both
 directions. The full eight-scenario manifest remains gated on the positive
 smoke profiles. Sanitize before retention and keep only typed outcomes,
@@ -125,6 +126,18 @@ addresses, peer identities, RouterInfo, I2NP, keys, transcripts, logs, and
 arbitrary remote error text. Until the harness is implemented and produces
 qualifying records, this lane remains a blocker and NTCP2 remains
 experimental/non-advertised.
+
+### Plan 040 corrective apparatus
+
+Plan 040 hardens that foundation. The machine identifiers are exactly
+`java_i2p` and `i2pd`; the exact source revisions, cache metadata schema,
+topology token rules, firewall semantics, implementation-specific runtime
+paths, and evidence finalization order are recorded in
+[`interop-apparatus.md`](interop-apparatus.md). The cache summary is
+`target/interop/cache/current-cache.json`; sanitized run results are written
+to `target/interop/evidence/`, while `target/interop/runs/` is always deleted
+after cleanup. A successful environment smoke result remains harness
+validation only and cannot advertise NTCP2.
 
 ### Zero Rust integration test files
 
