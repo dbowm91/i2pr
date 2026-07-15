@@ -142,10 +142,10 @@ cargo +1.85.0 check --workspace --all-targets   PASS
 git diff --check                                PASS
 ```
 
-Remote CI evidence is not inferred from local success. The local closure was
-performed before the requested push, so the remote commit and Linux/macOS CI
-run remain to be recorded after the remote workflow reports. If no workflow is
-configured for this branch, record that limitation explicitly.
+Remote CI evidence: pushed commit `3c8137b` passed GitHub Actions CI run
+`29401961187`, including Quality on Ubuntu and macOS, Ubuntu MSRV, and
+dependency-policy advisories/bans/sources. GitHub reported only the existing
+Node.js action deprecation annotations; no job failed.
 
 ## Known limitations and Plan 022 handoff
 
