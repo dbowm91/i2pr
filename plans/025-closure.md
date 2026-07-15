@@ -6,9 +6,7 @@
 
 ## Implementation commits
 
-The implementation and documentation are intended to land on `main` as the
-Plan 025 corrective commit. The post-push CI run ID is recorded below when the
-remote workflow has completed.
+Implementation and documentation commit: `4fbf2c5`
 
 ## Changed files
 
@@ -112,12 +110,15 @@ workspace compilation, rustdoc, tests, and fixture/fuzz lanes.
 
 ## CI evidence
 
-The workflow now runs workspace all-target checks on both quality platforms and
-runs the runtime-boundary and fixture-manifest gates on Linux. The fresh
-post-push run ID and job results are recorded here after publication:
+The workflow runs workspace all-target checks on both quality platforms and the
+runtime-boundary and fixture-manifest gates on Linux. Fresh post-push run
+[`29416020928`](https://github.com/dbowm91/i2pr/actions/runs/29416020928)
+passed all required jobs: Quality (Ubuntu), Quality (macOS), MSRV (Ubuntu),
+and Dependency policy. MacOS retained the general matrix because the fixture
+gate uses Linux Bash associative arrays.
 
 ```text
-pending final push
+29416020928: PASS
 ```
 
 ## Deviations, dependency and security decisions
