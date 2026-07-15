@@ -30,7 +30,7 @@ The four plan implementation/closure points are:
 | Plan 022 CI evidence record | `531fab4` | normal/MSRV evidence status recorded there |
 | Plan 023 deterministic network testkit implementation and closure | `1a32ab7` | `plans/023-closure.md` |
 | Remote CI evidence availability record | `69dffbc` | remote evidence was unavailable at that point |
-| Plan 024 implementation, validation, and aggregate closure | this commit | local matrix below; remote run link to be added after push |
+| Plan 024 implementation, validation, and aggregate closure | `4fd9ee8` | local matrix below and CI run `29413167750` |
 
 ## Final dependency graph
 
@@ -182,13 +182,13 @@ cancellation code without a second implementation.
 
 ## CI evidence
 
-The repository CI definition still covers pinned Ubuntu/macOS quality,
-Rust 1.85 MSRV, dependency policy, documentation warnings, and dependency
-direction. Prior availability status is recorded by `69dffbc`. This closure
-commit is being pushed to `main` to produce fresh runs; the exact GitHub Actions
-run URL must be appended here after the remote run is created. A remote run
-that is unavailable or incomplete must be recorded explicitly rather than
-treated as local evidence.
+The repository CI definition covers pinned Ubuntu/macOS quality, Rust 1.85
+MSRV, dependency policy, documentation warnings, and dependency direction.
+Prior availability status is recorded by `69dffbc`. The fresh push run
+[`29413167750`](https://github.com/dbowm91/i2pr/actions/runs/29413167750)
+passed all four jobs: Quality (Ubuntu), Quality (macOS), MSRV (Ubuntu), and
+Dependency policy. The Node.js 20 deprecation notices from the hosted action
+runner are non-failing annotations and do not affect the job results.
 
 ## Deviations, dependency/security decisions, and limitations
 
