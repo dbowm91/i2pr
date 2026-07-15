@@ -1,0 +1,15 @@
+[package]
+name = "i2pr-testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Deterministic clocks, randomness, and fault model types for i2pr tests"
+publish = false
+
+[dependencies]
+rand_chacha.workspace = true
+rand_core.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,28 @@
+[package]
+name = "i2pr-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "The non-networked i2pr CLI and future daemon composition root"
+publish = false
+
+[dependencies]
+clap.workspace = true
+i2pr-core = { path = "../i2pr-core" }
+i2pr-proto = { path = "../i2pr-proto" }
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile = "3.14"
+
+[[bin]]
+name = "i2pr"
+path = "src/main.rs"
+
+[lints]
+workspace = true

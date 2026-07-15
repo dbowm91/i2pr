@@ -1,0 +1,11 @@
+[package]
+name = "i2pr-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Foundational protocol namespace and error categories for i2pr"
+publish = false
+
+[lints]
+workspace = true

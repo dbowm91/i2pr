@@ -1,0 +1,6 @@
+[toolchain]
+# Pin the current stable release used by the bootstrap and require the quality
+# components used by local checks and CI.
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

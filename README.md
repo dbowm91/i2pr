@@ -8,7 +8,10 @@ The initial compatibility target is the current I2P network as implemented by I2
 
 ## Project status
 
-The project is in pre-implementation planning and workspace bootstrap.
+Milestone 0 workspace bootstrap is implemented. The repository now contains a
+buildable four-crate Rust workspace, strict side-effect-free configuration
+validation, a deterministic testkit foundation, and a non-networked CLI shell.
+The router runtime and all I2P protocol implementations remain unimplemented.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
@@ -84,7 +87,10 @@ crates/
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
 ```
 
-The first bootstrap phase may create placeholders for only a subset of these crates, provided the planned dependency direction remains enforceable.
+The bootstrap intentionally creates only `i2pr-proto`, `i2pr-core`,
+`i2pr-daemon`, and `i2pr-testkit`. Later plans will add protocol and service
+crates when their contracts are understood; empty placeholder crates are not
+created in advance.
 
 ## External integration direction
 
@@ -97,11 +103,38 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Project guardrails](GUARDRAILS.md)
 - [MVP roadmap](plans/000-mvp-roadmap.md)
 - [Workspace and skeleton pre-plan](plans/001-preplan-workspace-skeleton.md)
+- [Architecture](docs/architecture.md)
+- [Protocol support matrix](docs/protocol-support.md)
+- [Security model](docs/security-model.md)
+- [Architecture decision records](docs/adr/0000-adr-process.md)
+- [Contribution guide](CONTRIBUTING.md)
 - [Protocol specification index and source ledger](specs/README.md)
 
 ## Development expectations
 
-Before implementation work begins, read `GUARDRAILS.md`, the relevant plan in `plans/`, and the applicable protocol dossier under `specs/protocols/`. Each implementation phase should define acceptance criteria, tests, non-goals, dependency changes, security implications, source revisions, and documentation updates.
+Before implementation work begins, read `GUARDRAILS.md`, the relevant plan in
+`plans/`, and the applicable protocol dossier under `specs/protocols/`. Each
+implementation phase should define acceptance criteria, tests, non-goals,
+dependency changes, security implications, source revisions, and documentation
+updates.
+
+The local quality baseline is:
+
+```text
+cargo fmt --all --check
+cargo check --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+bash scripts/check-dependency-direction.sh
+cargo deny check advisories bans sources
+```
+
+The CLI currently exposes only `--help`, `--version`,
+`check-config --config <path>`, and `run --config <path> --dry-run`. A live
+`run` deliberately exits with code 20 and explains that the router runtime is
+not implemented. No bootstrap command opens a socket, creates a router
+identity, creates a data directory, or writes network state.
 
 The project should favor incremental, reviewable changes. A protocol feature is not complete merely because it compiles or communicates with one peer. Completion requires negative tests, malformed-input handling, lifecycle cleanup, bounded resource behavior, and interoperability evidence.
 

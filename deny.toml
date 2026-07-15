@@ -1,0 +1,24 @@
+# The project license has not been selected yet.  License allow-listing is
+# intentionally deferred; the CI job checks advisories, bans, and sources.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[licenses]
+# The empty allow-list intentionally makes license checking fail closed once the
+# project enables `cargo deny check licenses`; populate it only after owner
+# selection and provenance review of the project license policy.
+allow = []
