@@ -494,3 +494,32 @@ successful aggregate run or mixed-router i2pr record is present. These gaps are
 explicit blockers.
 No support-ledger status, RouterInfo capability, or NTCP2 advertisement may
 change until the conformance and promotion requirements are met.
+
+## Plan 044 mixed-router evidence boundary
+
+Plan 044 composes the mixed-router execution model with four directional
+i2pr/reference IPv4 scenarios. Each direction has its own namespace pair,
+firewall policy, startup order, and evidence record. No direction may mask
+another.
+
+The data-phase oracle must not rely on an echo assumption; it uses a
+protocol-valid trigger supported by both pinned references. Evidence records
+carry real counters for authenticated-link count, frames sent/received, I2NP
+message aggregates, admission/replay counters, process lifecycle counters,
+and cleanup disposition. Zero-filled required hashes and required counters at
+zero are rejected.
+
+Gate archival uses gate-specific staging to prevent cross-gate record
+relabeling. The aggregate manifest must include exactly the expected records
+for the selected profile; missing, extra, mislabeled, or zero-valued records
+fail the gate. Protocol success never overrides cleanup failure.
+
+Negative scenarios must define injection point, responsible side, expected
+typed result, maximum runtime, expected counters, cleanup expectations, and
+whether the reference process is expected to remain healthy. A negative case
+passes only when the expected bounded rejection occurs; an unexpected
+successful session is a test failure.
+
+No completed mixed-router i2pr record is present in this checkout. These are
+explicit blockers, not skipped successes. NTCP2 remains experimental and
+non-advertised.

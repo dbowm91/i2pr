@@ -315,8 +315,9 @@ The general data-phase parser accepts specification-permitted repeated
 non-padding blocks and allows Termination after earlier valid blocks, with
 only final Padding afterward. SessionConfirmed part-two parsing remains a
 separate strict parser. These are local corrective guarantees; the runtime
-still does not expose a complete socket-to-state-machine adapter, mixed-router
-evidence, RouterInfo publication, NetDB mutation, or daemon activation.
+owns the NTCP2 wire adapter and has been locally validated, but mixed-router
+evidence, RouterInfo publication, NetDB mutation, and daemon activation
+remain pending.
 
 Generated and reconstructed private seeds are held by zeroizing owners during
 crypto operations. Storage encoding and file-read buffers are also zeroizing;

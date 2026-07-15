@@ -1304,5 +1304,244 @@ class MixedDirectionCoverageTests(unittest.TestCase):
         self.assertEqual(d2.responder, "i2pr")
 
 
+class DataPhaseOracleTests(unittest.TestCase):
+    def test_java_oracle_probe_returns_supported(self) -> None:
+        from data_oracle import JavaDataPhaseOracle, OracleKind
+        oracle = JavaDataPhaseOracle()
+        result = oracle.probe()
+        self.assertTrue(result.supported)
+        self.assertEqual(result.kind, OracleKind.JAVA_SEND_ONLY)
+
+    def test_i2pd_oracle_probe_returns_supported(self) -> None:
+        from data_oracle import I2pdDataPhaseOracle, OracleKind
+        oracle = I2pdDataPhaseOracle()
+        result = oracle.probe()
+        self.assertTrue(result.supported)
+        self.assertEqual(result.kind, OracleKind.I2PD_SEND_ONLY)
+
+    def test_mixed_oracle_for_java_i2pr_initiator(self) -> None:
+        from data_oracle import MixedDataPhaseOracle, OracleKind
+        oracle = MixedDataPhaseOracle("java_i2p", True)
+        result = oracle.probe()
+        self.assertTrue(result.supported)
+        self.assertEqual(result.kind, OracleKind.MIXED_SPLIT)
+        self.assertIn("i2pr->Java", result.description)
+
+    def test_mixed_oracle_for_java_reference_initiator(self) -> None:
+        from data_oracle import MixedDataPhaseOracle, OracleKind
+        oracle = MixedDataPhaseOracle("java_i2p", False)
+        result = oracle.probe()
+        self.assertTrue(result.supported)
+        self.assertEqual(result.kind, OracleKind.MIXED_SPLIT)
+        self.assertIn("Java->i2pr", result.description)
+
+    def test_mixed_oracle_for_i2pd_i2pr_initiator(self) -> None:
+        from data_oracle import MixedDataPhaseOracle, OracleKind
+        oracle = MixedDataPhaseOracle("i2pd", True)
+        result = oracle.probe()
+        self.assertTrue(result.supported)
+        self.assertIn("i2pr->i2pd", result.description)
+
+    def test_mixed_oracle_for_i2pd_reference_initiator(self) -> None:
+        from data_oracle import MixedDataPhaseOracle, OracleKind
+        oracle = MixedDataPhaseOracle("i2pd", False)
+        result = oracle.probe()
+        self.assertTrue(result.supported)
+        self.assertIn("i2pd->i2pr", result.description)
+
+    def test_select_oracle_returns_mixed_for_known_reference(self) -> None:
+        from data_oracle import select_oracle, MixedDataPhaseOracle
+        oracle = select_oracle("java_i2p", True)
+        self.assertIsInstance(oracle, MixedDataPhaseOracle)
+
+    def test_select_oracle_returns_unsupported_for_unknown(self) -> None:
+        from data_oracle import select_oracle, _UnsupportedOracle
+        oracle = select_oracle("unknown_ref", True)
+        self.assertIsInstance(oracle, _UnsupportedOracle)
+        self.assertFalse(oracle.probe().supported)
+
+    def test_oracle_observe_returns_pending_state(self) -> None:
+        from data_oracle import select_oracle
+        oracle = select_oracle("i2pd", False)
+        obs = oracle.observe()
+        self.assertFalse(obs.sender_observed)
+        self.assertFalse(obs.receiver_observed)
+
+    def test_oracle_rejects_echo_assumption(self) -> None:
+        from data_oracle import select_oracle
+        for ref in ("java_i2p", "i2pd"):
+            for initiator in (True, False):
+                oracle = select_oracle(ref, initiator)
+                obs = oracle.observe()
+                self.assertNotIn("echo", obs.sender_evidence.lower())
+                self.assertNotIn("echo", obs.receiver_evidence.lower())
+
+
+class ReferenceTriggerTests(unittest.TestCase):
+    def test_java_trigger_kind(self) -> None:
+        from reference_trigger import JavaReferenceTrigger, TriggerKind
+        trigger = JavaReferenceTrigger()
+        self.assertEqual(trigger.trigger_kind, TriggerKind.JAVA_SAM_DIAL)
+
+    def test_i2pd_trigger_kind(self) -> None:
+        from reference_trigger import I2pdReferenceTrigger, TriggerKind
+        trigger = I2pdReferenceTrigger()
+        self.assertEqual(trigger.trigger_kind, TriggerKind.I2PD_HTTP_DIAL)
+
+    def test_select_trigger_returns_java_for_java(self) -> None:
+        from reference_trigger import select_trigger, JavaReferenceTrigger
+        trigger = select_trigger("java_i2p")
+        self.assertIsInstance(trigger, JavaReferenceTrigger)
+
+    def test_select_trigger_returns_i2pd_for_i2pd(self) -> None:
+        from reference_trigger import select_trigger, I2pdReferenceTrigger
+        trigger = select_trigger("i2pd")
+        self.assertIsInstance(trigger, I2pdReferenceTrigger)
+
+    def test_select_trigger_returns_unsupported_for_unknown(self) -> None:
+        from reference_trigger import select_trigger, _UnsupportedTrigger
+        trigger = select_trigger("unknown_ref")
+        self.assertIsInstance(trigger, _UnsupportedTrigger)
+
+    def test_trigger_results_are_pending(self) -> None:
+        from reference_trigger import select_trigger
+        for ref in ("java_i2p", "i2pd"):
+            trigger = select_trigger(ref)
+            auto = trigger.verify_auto_dial()
+            self.assertFalse(auto.observed)
+            manual = trigger.issue_trigger()
+            self.assertFalse(manual.observed)
+
+
+class NegativeScenarioGuardTests(unittest.TestCase):
+    def test_known_positive_scenarios_are_allowed(self) -> None:
+        from mixed_runner import _reject_negative_before_primary
+        for scenario_id in ("i2pr-to-java-ipv4", "java-to-i2pr-ipv4",
+                            "i2pr-to-i2pd-ipv4", "i2pd-to-i2pr-ipv4"):
+            _reject_negative_before_primary(scenario_id)
+
+    def test_unknown_scenario_is_rejected(self) -> None:
+        from mixed_runner import _reject_negative_before_primary, MixedRunError
+        with self.assertRaises(MixedRunError) as ctx:
+            _reject_negative_before_primary("negative-malformed-handshake")
+        self.assertEqual(ctx.exception.code, "negative-scenario-before-primary-directions")
+
+    def test_another_unknown_scenario_is_rejected(self) -> None:
+        from mixed_runner import _reject_negative_before_primary, MixedRunError
+        with self.assertRaises(MixedRunError):
+            _reject_negative_before_primary("adversarial-replay-injection")
+
+
+class MixedRunnerOracleIntegrationTests(unittest.TestCase):
+    def test_mixed_runner_record_includes_data_phase_oracle(self) -> None:
+        from mixed_runner import _record_mixed, MixedDirection
+        direction = MixedDirection(
+            execution_id="i2pr-to-java-ipv4",
+            reference="java_i2p",
+            profile="handshake-smoke",
+            direction="i2pr-to-reference",
+            address_family="ipv4",
+            padding="minimum-variable-maximum",
+            expected="authenticated-handshake-and-bounded-i2np-exchange",
+            initiator="i2pr",
+            responder="java_i2p",
+        )
+        record = _record_mixed(
+            direction, "passed", "mixed-router-direction-authenticated",
+            "clean", "a" * 40 + ";clean", None, None,
+            {"i2pr": "validated-and-bound", "java_i2p": "validated-and-bound"},
+            {"i2pr": "authenticated", "java_i2p": "authenticated"},
+            {"i2pr": {"started": 1, "exited": 1, "forced": 0},
+             "java_i2p": {"started": 1, "exited": 1, "forced": 0}},
+            oracle_kind="split-send-and-receive",
+            runtime_counters={"handshake_attempts": 1},
+        )
+        self.assertIn("data_phase_oracle=split-send-and-receive",
+                       record["deterministic_parameters"])
+
+    def test_mixed_runner_record_rejects_echo_in_oracle_field(self) -> None:
+        from mixed_runner import _record_mixed, MixedDirection
+        direction = MixedDirection(
+            execution_id="test",
+            reference="i2pd",
+            profile="handshake-smoke",
+            direction="i2pr-to-reference",
+            address_family="ipv4",
+            padding="representative",
+            expected="bounded-result",
+            initiator="i2pr",
+            responder="i2pd",
+        )
+        record = _record_mixed(
+            direction, "blocked", "driver-absent", "not-started",
+            "a" * 40 + ";clean", None, None,
+            {"i2pr": "not-run", "i2pd": "not-run"},
+            {"i2pr": "not-observed", "i2pd": "not-observed"},
+            {"i2pr": {"started": 0, "exited": 0, "forced": 0},
+             "i2pd": {"started": 0, "exited": 0, "forced": 0}},
+            oracle_kind="split-send-and-receive",
+        )
+        self.assertNotIn("echo", record["deterministic_parameters"].lower())
+
+
+class BuildGateHandshakeSmokeTests(unittest.TestCase):
+    def test_handshake_smoke_scenarios_are_directional_mixed(self) -> None:
+        from build_gate import GATE_SCENARIOS
+        hs = GATE_SCENARIOS["handshake-smoke"]
+        self.assertEqual(len(hs), 4)
+        self.assertIn("i2pr-to-java-ipv4", hs)
+        self.assertIn("java-to-i2pr-ipv4", hs)
+        self.assertIn("i2pr-to-i2pd-ipv4", hs)
+        self.assertIn("i2pd-to-i2pr-ipv4", hs)
+
+    def test_full_profile_includes_handshake_smoke(self) -> None:
+        from build_gate import gates_for_profile
+        gates = gates_for_profile("full")
+        self.assertIn("handshake-smoke", gates)
+
+    def test_handshake_smoke_gate_chain_includes_prerequisites(self) -> None:
+        from build_gate import gates_for_profile
+        gates = gates_for_profile("handshake-smoke")
+        self.assertIn("environment-smoke", gates)
+        self.assertIn("reference-crosscheck-ipv4", gates)
+        self.assertIn("handshake-smoke", gates)
+
+
+class CleanupFailureInjectionTests(unittest.TestCase):
+    def test_stop_adapter_returns_failed_on_runtime_error(self) -> None:
+        from mixed_runner import _stop_adapter
+        class FailingAdapter:
+            def stop(self, timeout: float) -> str:
+                raise RuntimeError("refusing-stop")
+        result = _stop_adapter(FailingAdapter(), 1.0)
+        self.assertEqual(result, "failed")
+
+    def test_stop_adapter_returns_clean_on_success(self) -> None:
+        from mixed_runner import _stop_adapter
+        class CleanAdapter:
+            def stop(self, timeout: float) -> str:
+                return "clean"
+        result = _stop_adapter(CleanAdapter(), 1.0)
+        self.assertEqual(result, "clean")
+
+    def test_no_residual_state_returns_true_for_empty_lists(self) -> None:
+        import subprocess
+        import os
+        from mixed_runner import _no_residual_state
+        prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
+        namespaces = subprocess.run(
+            prefix + ["ip", "netns", "list"],
+            capture_output=True, text=True, check=False,
+        )
+        if namespaces.returncode != 0:
+            self.skipTest("cannot list namespaces")
+
+    def test_evidence_record_schema_unchanged(self) -> None:
+        from evidence import RECORD_FIELDS
+        self.assertIn("deterministic_parameters", RECORD_FIELDS)
+        self.assertIn("resource_counters", RECORD_FIELDS)
+        self.assertIn("process_counters", RECORD_FIELDS)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,4 @@
-# Plan 040/041/043 interoperability apparatus
+# Plan 040/041/043/044 interoperability apparatus
 
 The Ubuntu reference-router harness is preparation infrastructure, not a
 runtime plane and not an interoperability claim. Preparation runs on the
@@ -197,3 +197,41 @@ Promotion is manual first, then low-frequency scheduled control after repeated
 clean-checkout and cache-reuse runs, then a current successful run at
 Milestone 3 closure. Any trusted pull-request lane requires a separate later
 decision and must not expose privileged execution to forked or untrusted code.
+
+## Plan 044 mixed-router composition
+
+Plan 044 converts the component implementations from Plans 040–043 into one
+executable, reproducible, fail-closed path. It adds four directional
+i2pr/reference mixed-scenario definitions under
+`tests/integration/ntcp2/mixed-scenarios/`:
+
+- `i2pr-to-java-ipv4` (i2pr initiates, Java I2P responds)
+- `java-to-i2pr-ipv4` (Java I2P initiates, i2pr responds)
+- `i2pr-to-i2pd-ipv4` (i2pr initiates, i2pd responds)
+- `i2pd-to-i2pr-ipv4` (i2pd initiates, i2pr responds)
+
+Each direction has a unique execution ID, one declared initiator and responder,
+one terminal typed result, and one evidence record. No direction may mask
+another.
+
+The mixed runner composes `I2prAdapter` with each reference adapter through a
+strict launcher scenario renderer. The renderer populates the exact launcher
+schema and rejects absolute paths, parent traversal, endpoints outside
+synthetic namespace ranges, mismatched address families, missing peer data for
+initiators, peer data for responders, and unknown fields.
+
+The data-phase oracle does not rely on an echo assumption. It uses a
+protocol-valid trigger supported by both pinned references. Evidence records
+carry real counters for authenticated-link count, frames sent/received, I2NP
+message aggregates, admission/replay counters, process lifecycle counters,
+and cleanup disposition.
+
+Gate archival uses gate-specific staging to prevent cross-gate record
+relabeling. The aggregate manifest must include exactly the expected records
+for the selected profile; missing, extra, mislabeled, or zero-valued records
+fail the gate.
+
+The current checkout contains the mixed-scenario definitions, the mixed-runner
+composition, the strict launcher renderer, and the non-echo data-phase oracle.
+No completed mixed-router i2pr record is present; these are explicit blockers,
+not skipped successes. NTCP2 remains experimental and non-advertised.

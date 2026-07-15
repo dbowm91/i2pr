@@ -27,6 +27,14 @@ corrections, but mixed-router handshake and data evidence is still not present
 in this checkout because the complete wire-level adapter and an authorized
 testnet run are not available; this remains a closure blocker.
 
+Plan 044 adds a mixed-router scenario expansion layer under
+`tests/integration/ntcp2/mixed-scenarios/`. It defines four directional
+i2pr/reference IPv4 scenarios, composes `I2prAdapter` with each reference
+adapter through a strict launcher renderer, and uses a data-phase oracle
+that does not rely on an echo assumption. The expansion layer converts the
+component implementations into one executable path, but no completed
+mixed-router i2pr record is present in this checkout.
+
 ## Plan 038 Ubuntu harness boundary
 
 Plan 038 defines the first harness foundation for Ubuntu amd64. It has two

@@ -39,7 +39,12 @@ GATE_SCENARIOS: dict[str, tuple[str, ...]] = {
         "reference-java-i2pd-ipv4",
         "reference-i2pd-java-ipv4",
     ),
-    "handshake-smoke": ("java-ipv4-inbound-outbound", "i2pd-ipv4-inbound-outbound"),
+    "handshake-smoke": (
+        "i2pr-to-java-ipv4",
+        "java-to-i2pr-ipv4",
+        "i2pr-to-i2pd-ipv4",
+        "i2pd-to-i2pr-ipv4",
+    ),
     "full": (
         "java-ipv4-inbound-outbound",
         "java-ipv6-inbound-outbound",

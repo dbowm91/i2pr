@@ -199,6 +199,25 @@ successful aggregate run or mixed-router i2pr evidence is present in this
 checkout; these are blockers, not skipped successes. NTCP2 remains experimental
 and non-advertised.
 
+### Plan 044 mixed-router integration status
+
+The checkout now contains a runtime-owned NTCP2 wire adapter implemented and
+locally validated; mixed-router harness composition and authorized evidence
+pending; NTCP2 remains experimental and non-advertised.
+
+Plan 044 adds the four directional i2pr/reference mixed-scenario definitions
+under `tests/integration/ntcp2/mixed-scenarios/`, the mixed-runner that
+composes `I2prAdapter` with each reference adapter, a strict launcher
+scenario renderer, and a data-phase oracle that does not rely on an echo
+assumption. The aggregate evidence schema now carries real counters for
+authenticated-link count, frames sent/received, I2NP message aggregates,
+admission/replay counters, process lifecycle counters, and cleanup
+disposition. The gate archival model prevents cross-gate record relabeling.
+
+No completed mixed-router i2pr record is present in this checkout. These are
+explicit implementation blockers, not skipped successes. NTCP2 remains
+experimental and non-advertised.
+
 ## MVP direction
 
 The feature MVP is expected to include:
@@ -296,8 +315,11 @@ release their accounting through RAII, and supervised reader/writer I/O uses
 configured cancellation and deadline bounds. General data-phase block parsing
 also separates its deployed-wire ordering rules from strict SessionConfirmed
 payload parsing. Plan 042 now supplies the bounded socket-to-state-machine/data-
-phase composition through the non-production launcher. Java I2P/i2pd evidence
-remains unavailable, so Milestone 3 and all NTCP2 support rows remain blocked,
+phase composition through the non-production launcher. Plan 044 composes the
+mixed-router execution model with the four directional i2pr/reference scenarios,
+the strict launcher renderer, the non-echo data-phase oracle, and the mixed
+evidence schema. Java I2P/i2pd mixed-router evidence remains pending
+execution, so Milestone 3 and all NTCP2 support rows remain blocked,
 experimental, and non-advertised.
 
 The current `i2pr-proto` API uses borrowed cursors and caller-visible maximums,

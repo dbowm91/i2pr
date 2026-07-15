@@ -177,6 +177,36 @@ testkit results are not Java I2P or i2pd evidence, and no daemon activation or
 support advertisement follows from them. Mixed-router evidence requires the
 authorized private-testnet procedure in `docs/private-testnet.md`.
 
+### Plan 044 mixed-runner responsibilities
+
+The mixed runner composes `I2prAdapter` with each reference adapter through
+a strict launcher scenario renderer. Each directional scenario file under
+`tests/integration/ntcp2/mixed-scenarios/` declares a unique direction
+(`i2pr-to-reference` or `reference-to-i2pr`), one initiator and one responder,
+and an IPv4 address family. The runner expands each entry into an independent
+execution with its own namespace pair, firewall policy, startup order, and
+evidence record.
+
+The data-phase oracle uses a protocol-valid trigger supported by both pinned
+references; it does not rely on an echo assumption. Evidence records carry
+real counters for authenticated-link count, frames sent/received, I2NP
+message aggregates, admission/replay counters, process lifecycle counters,
+and cleanup disposition.
+
+To add a new directional scenario:
+
+1. Add an entry to `tests/integration/ntcp2/mixed-scenarios/manifest.toml`
+   with a unique `id`, the correct `reference`, `direction`, `initiator`,
+   and `responder`.
+2. Ensure the corresponding scenario TOML file exists under
+   `tests/integration/ntcp2/mixed-scenarios/`.
+3. The strict launcher renderer must reject absolute paths, parent traversal,
+   endpoints outside synthetic namespace ranges, mismatched address families,
+   missing peer data for initiators, peer data for responders, and unknown
+   fields.
+4. The aggregate manifest must include the new scenario in its expected
+   scenario set; missing records fail the gate.
+
 Plan 038 adds a manual, Ubuntu-only harness contract for that procedure. Keep
 the two phases separate: host preparation may install declared Ubuntu
 packages, fetch pinned reference sources, and build/hash artifacts; scenario

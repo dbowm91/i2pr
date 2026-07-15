@@ -5,7 +5,9 @@ of `i2pr-core` (contracts) and `i2pr-transport` (link contracts), it provides
 the bounded socket, timer, channel, and wakeable-cancellation seam that fulfills
 `i2pr-transport-ntcp2` actions. Plan 042 adds the runtime-owned handshake
 executor and authenticated data-frame link; these are controlled local
-composition surfaces, not mixed-router evidence.
+composition surfaces, not mixed-router evidence. Plan 044 confirms that the
+runtime-owned NTCP2 wire adapter is implemented and locally validated; mixed-
+router harness composition and authorized evidence remain pending.
 
 Path: `crates/i2pr-runtime/`
 

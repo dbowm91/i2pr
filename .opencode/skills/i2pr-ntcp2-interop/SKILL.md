@@ -5,8 +5,9 @@ description: Operate, diagnose, or extend the repository's Ubuntu 24.04 referenc
 
 # I2PR NTCP2 interoperability
 
-Use this skill from the repository root for the manual, opt-in Plan 038/040/041/042/043
+Use this skill from the repository root for the manual, opt-in Plan 038/040/041/042/043/044
 harness. Read `AGENTS.md`, `plans/043-ubuntu-build-system-interop-gates.md`,
+`plans/044-ntcp2-interop-final-integration-corrective-pass.md`,
 `plans/038-ubuntu-reference-router-interoperability-harness.md`,
 `tests/integration/ntcp2/README.md`, and the relevant architecture/ADR files
 before changing the apparatus.
@@ -61,6 +62,32 @@ gate requires one authenticated outbound and one authenticated inbound
 DeliveryStatus per direction plus orderly cleanup. Reference acceptance or
 echo behavior is not yet verified; do not claim interoperability or substitute
 padding/TCP readiness for the message exchange.
+
+## Plan 044 mixed-runner composition
+
+The checkout now contains the four directional mixed-scenario definitions under
+`tests/integration/ntcp2/mixed-scenarios/`: `i2pr-to-java-ipv4`,
+`java-to-i2pr-ipv4`, `i2pr-to-i2pd-ipv4`, and `i2pd-to-i2pr-ipv4`. Each
+direction has a unique execution ID, one declared initiator and responder, and
+one terminal typed result.
+
+The mixed runner composes `I2prAdapter` with each reference adapter through
+a strict launcher scenario renderer. The renderer populates the exact launcher
+schema with execution-specific scenario ID, role, address family, synthetic
+endpoints, private network ID 99, confined state directory, deadlines, padding
+profile, smoke-message profile, and expected-result class.
+
+The data-phase oracle does not rely on an echo assumption. It uses a
+protocol-valid trigger supported by both pinned references. Evidence records
+carry real counters for authenticated-link count, frames sent/received, I2NP
+message aggregates, admission/replay counters, process lifecycle counters,
+and cleanup disposition.
+
+Gate archival uses gate-specific staging to prevent cross-gate record
+relabeling. The aggregate manifest must include exactly the expected records
+for the selected profile; missing, extra, mislabeled, or zero-valued
+records fail the gate. No completed mixed-router i2pr record is present;
+these are explicit blockers, not skipped successes.
 
 ## Plan 043 workflow
 

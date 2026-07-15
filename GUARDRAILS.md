@@ -295,6 +295,24 @@ four independent authenticated i2pr/reference directions, bounded I2NP
 exchange, adversarial coverage, sanitized evidence, and clean-host verification
 meet `specs/CONFORMANCE.md`. The current checkout has not met those gates.
 
+## Plan 044 mixed-router guardrails
+
+1. The data-phase oracle must not rely on an echo assumption. It must use a
+   protocol-valid trigger supported by both pinned references.
+2. Do not activate `i2pr-daemon`. The launcher is a non-production composition
+   seam only.
+3. Each directional scenario must have its own execution ID, namespace pair,
+   firewall policy, and evidence record. No direction may mask another.
+4. Gate archival must use gate-specific staging to prevent cross-gate record
+   relabeling.
+5. The aggregate manifest must include exactly the expected records for the
+   selected profile; missing, extra, mislabeled, or zero-valued records fail
+   the gate.
+6. Evidence records must carry real counters, not placeholders. Zero-filled
+   required hashes and required counters at zero are rejected.
+7. Protocol success never overrides cleanup failure, even after a positive
+   mixed-router result.
+
 ## 13. Synvoid and eggsec integration
 
 Synvoid integration should normally occur through a local service boundary:

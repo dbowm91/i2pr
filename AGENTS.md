@@ -50,7 +50,9 @@ These are checked on CI and will reject the change:
 
 If a check fails, fix the boundary, don't suppress the script.
 
-Plan 042 is the active runtime-owned NTCP2 wire-driver plan. Keep accepted
+Plan 042 is the active runtime-owned NTCP2 wire-driver plan. Plan 044
+composes the mixed-router execution model, directional scenario expansion,
+strict launcher rendering, and the non-echo data-phase oracle. Keep accepted
 inbound streams paired with their non-cloneable pending-handshake permit until
 authentication or a terminal handshake outcome. Runtime link queue entries
 must own their item/byte accounting and release it on write success, failure,
@@ -77,12 +79,14 @@ The launcher status boundary is part of this plan: completed `listen` must
 separate listener readiness from authenticated completion, `dial` must return
 one terminal typed result, and `inspect` may return only redacted metadata.
 The checkout now contains the listener/dial, handshake-to-link, and
-DeliveryStatus smoke composition. State, handshake, data-phase, timeout, and
-cleanup failures remain typed and fail closed. Plan 042's selected smoke scope
-is the existing fixed-size DeliveryStatus message (I2NP type 10), one valid
-outbound and one valid inbound message per direction. Its 12-byte body and
-21-byte short-transport encoding are bounded local scope only; reference
-acceptance and response behavior remain unverified.
+DeliveryStatus smoke composition, plus the four directional mixed-scenario
+definitions, the mixed-runner adapter composition, the strict launcher
+renderer, and the non-echo data-phase oracle. State, handshake, data-phase,
+timeout, and cleanup failures remain typed and fail closed. Plan 042's
+selected smoke scope is the existing fixed-size DeliveryStatus message (I2NP
+type 10), one valid outbound and one valid inbound message per direction. Its
+12-byte body and 21-byte short-transport encoding are bounded local scope
+only; reference acceptance and response behavior remain unverified.
 
 Plan 038 defines the controlled evidence harness. It is Ubuntu-only and
 amd64-only for the first closure. Keep preparation and execution as separate
@@ -156,6 +160,26 @@ Privileged execution is not automatically exposed to forked or untrusted pull
 requests. The current checkout has not completed this lane and has no
 mixed-router i2pr evidence; do not present workflow scaffolding or reference-
 only control results as NTCP2 support.
+
+## Plan 044 mixed-router boundaries
+
+Plan 044 composes the mixed-router execution model with four directional
+i2pr/reference IPv4 scenarios: `i2pr-to-java-ipv4`, `java-to-i2pr-ipv4`,
+`i2pr-to-i2pd-ipv4`, and `i2pd-to-i2pr-ipv4`. Each direction has a unique
+execution ID, one declared initiator and responder, one terminal typed result,
+and one evidence record. No direction may mask another.
+
+The mixed runner composes `I2prAdapter` with each reference adapter through
+a strict launcher scenario renderer. The data-phase oracle does not rely on
+an echo assumption; it uses a protocol-valid trigger supported by both pinned
+references. The evidence schema carries real counters for authenticated-link
+count, frames sent/received, I2NP message aggregates, admission/replay
+counters, process lifecycle counters, and cleanup disposition.
+
+Gate archival uses gate-specific staging to prevent cross-gate record
+relabeling. The aggregate manifest must include exactly the expected records
+for the selected profile; missing, extra, mislabeled, or zero-valued
+records fail the gate.
 
 ## Build, Test, and Quality
 

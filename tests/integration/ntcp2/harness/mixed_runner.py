@@ -18,6 +18,7 @@ from typing import Any
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from harness.data_oracle import select_oracle  # type: ignore
     from harness.evidence import write_record  # type: ignore
     from harness.i2pd import I2pdAdapter, I2pdError  # type: ignore
     from harness.i2pr import I2prAdapter  # type: ignore
@@ -25,10 +26,12 @@ if __package__ in {None, ""}:
     from harness.launcher_renderer import RenderError, render_and_validate  # type: ignore
     from harness.launcher_protocol import LauncherScenarioError  # type: ignore
     from harness.metadata import CacheMetadata  # type: ignore
+    from harness.reference_trigger import select_trigger  # type: ignore
     from harness.router_info import RouterInfoPathError, strict_validate_router_info  # type: ignore
     from harness.topology import EndpointDescription, IsolationError, NamespaceTopology  # type: ignore
     from harness.runner import HarnessBlocked, _cache_for, _git_identity, _host_check  # type: ignore
 else:
+    from .data_oracle import select_oracle
     from .evidence import write_record
     from .i2pd import I2pdAdapter, I2pdError
     from .i2pr import I2prAdapter
@@ -36,6 +39,7 @@ else:
     from .launcher_renderer import RenderError, render_and_validate
     from .launcher_protocol import LauncherScenarioError
     from .metadata import CacheMetadata
+    from .reference_trigger import select_trigger
     from .router_info import RouterInfoPathError, strict_validate_router_info
     from .topology import EndpointDescription, IsolationError, NamespaceTopology
     from .runner import HarnessBlocked, _cache_for, _git_identity, _host_check
@@ -54,6 +58,22 @@ MIXED_SCENARIO_FIELDS = frozenset(
         "responder",
     }
 )
+
+KNOWN_POSITIVE_SCENARIO_IDS = frozenset(
+    {
+        "i2pr-to-java-ipv4",
+        "java-to-i2pr-ipv4",
+        "i2pr-to-i2pd-ipv4",
+        "i2pd-to-i2pr-ipv4",
+    }
+)
+
+
+def _reject_negative_before_primary(scenario_id: str) -> None:
+    if scenario_id not in KNOWN_POSITIVE_SCENARIO_IDS:
+        raise MixedRunError(
+            "negative-scenario-before-primary-directions", "rejected"
+        )
 
 
 @dataclass(frozen=True)
@@ -132,8 +152,20 @@ def _record_mixed(
     router_validation: dict[str, str],
     observations: dict[str, str],
     process_counters: dict[str, dict[str, int]],
+    oracle_kind: str = "",
+    runtime_counters: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     zero = "0" * 64
+    deterministic = (
+        f"seed=1;timeouts=bounded;network=synthetic-private-036;"
+        f"ipv6-probe=passed;data_phase_oracle={oracle_kind}"
+    )
+    resource = {
+        "tasks": 0, "queues": 0, "permits": 0,
+        "links": 0, "handshakes": 0, "i2np_sent": 0, "i2np_received": 0,
+    }
+    if runtime_counters:
+        resource.update(runtime_counters)
     return {
         "schema": 1,
         "scenario_id": direction.execution_id,
@@ -148,13 +180,10 @@ def _record_mixed(
         "namespace_topology_sha256": topology.description.digest() if topology is not None else zero,
         "direction": direction.direction,
         "address_family": direction.address_family,
-        "deterministic_parameters": f"seed=1;timeouts=bounded;network=synthetic-private-036;ipv6-probe=passed",
+        "deterministic_parameters": deterministic,
         "expected": direction.expected,
         "actual_typed_result": result,
-        "resource_counters": {
-            "tasks": 0, "queues": 0, "permits": 0,
-            "links": 0, "handshakes": 0, "i2np_sent": 0, "i2np_received": 0,
-        },
+        "resource_counters": resource,
         "process_counters": process_counters,
         "cleanup_result": cleanup,
         "evidence_sha256": "",
@@ -228,6 +257,9 @@ def run(args: argparse.Namespace) -> int:
     reference = args.reference
     if direction.reference != reference:
         raise MixedRunError("scenario-reference-mismatch", "rejected")
+    _reject_negative_before_primary(direction.execution_id)
+    oracle = select_oracle(direction.reference, direction.i2pr_is_initiator)
+    trigger = select_trigger(direction.reference)
     base = Path(args.run_root or repo_root / "target/interop/runs").resolve()
     runs_root = (repo_root / "target/interop/runs").resolve()
     if base != runs_root and runs_root not in base.parents:
@@ -251,6 +283,15 @@ def run(args: argparse.Namespace) -> int:
     process_counters: dict[str, dict[str, int]] = {
         "i2pr": {"started": 0, "exited": 0, "forced": 0},
         direction.reference: {"started": 0, "exited": 0, "forced": 0},
+    }
+    runtime_counters: dict[str, int] = {
+        "handshake_attempts": 0,
+        "frames_sent": 0,
+        "frames_received": 0,
+        "i2np_sent": 0,
+        "i2np_received": 0,
+        "queue_items_high_watermark": 0,
+        "queue_bytes_high_watermark": 0,
     }
     try:
         _host_check(repo_root, run_dir)
@@ -325,7 +366,13 @@ def run(args: argparse.Namespace) -> int:
             observations["i2pr"] = "authenticated"
             if ref_adapter.observed_phrase(ref_adapter.authenticated_phrases):
                 observations[direction.reference] = "authenticated"
+            oracle_obs = oracle.observe()
             result, reason = "passed", "mixed-router-direction-authenticated"
+            runtime_counters["handshake_attempts"] = 1
+            runtime_counters["frames_sent"] = int(terminal.get("counters", {}).get("frames_sent", 0))
+            runtime_counters["frames_received"] = int(terminal.get("counters", {}).get("frames_received", 0))
+            runtime_counters["i2np_sent"] = int(terminal.get("counters", {}).get("i2np_sent", 0))
+            runtime_counters["i2np_received"] = int(terminal.get("counters", {}).get("i2np_received", 0))
         else:
             _run_responder_first(
                 direction=direction,
@@ -364,7 +411,13 @@ def run(args: argparse.Namespace) -> int:
             observations["i2pr"] = "authenticated"
             if ref_adapter.observed_phrase(ref_adapter.authenticated_phrases):
                 observations[direction.reference] = "authenticated"
+            oracle_obs = oracle.observe()
             result, reason = "passed", "mixed-router-direction-authenticated"
+            runtime_counters["handshake_attempts"] = 1
+            runtime_counters["frames_sent"] = int(terminal.get("counters", {}).get("frames_sent", 0))
+            runtime_counters["frames_received"] = int(terminal.get("counters", {}).get("frames_received", 0))
+            runtime_counters["i2np_sent"] = int(terminal.get("counters", {}).get("i2np_sent", 0))
+            runtime_counters["i2np_received"] = int(terminal.get("counters", {}).get("i2np_received", 0))
     except MixedRunError as exc:
         result, reason = exc.result, exc.code
     except (HarnessBlocked,) as exc:
@@ -409,9 +462,11 @@ def run(args: argparse.Namespace) -> int:
         if metadata is not None and result in {"passed", "skipped_ipv6"}:
             evidence_root.mkdir(mode=0o700, parents=True, exist_ok=True)
             evidence_path = evidence_root / f"{run_dir.name}-{reference}.json"
+            oracle_kind = oracle.oracle_kind.value if oracle is not None else ""
             record = _record_mixed(
                 direction, result, reason, cleanup, i2pr_commit, metadata,
                 topology, router_validation, observations, process_counters,
+                oracle_kind=oracle_kind, runtime_counters=runtime_counters,
             )
             try:
                 write_record(evidence_path, record)

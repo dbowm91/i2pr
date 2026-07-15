@@ -106,6 +106,8 @@ _ALLOWED_KNOWN_DEVIATION = {
     "authenticated-link-observation-missing",
     "typed-reference-pair-operation-failed",
     "run-root-delete-failed",
+    "negative-scenario-before-primary-directions",
+    "data-oracle-not-available",
 }
 
 

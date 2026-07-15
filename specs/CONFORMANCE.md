@@ -89,7 +89,10 @@ pass with failed cleanup verification is not a pass.
 
 The current checkout has no sanitized i2pr-to-reference record or completed
 successful aggregate manifest. The workflow-integrated clean-host verifier is
-present, but no successful Plan 043 run has established conformance. Therefore NTCP2 remains
+present, but no successful Plan 043 run has established conformance. Plan 044
+implements the mixed-router composition, directional scenario expansion,
+strict launcher rendering, and the non-echo data-phase oracle, but no
+authorized mixed-router execution has been completed. Therefore NTCP2 remains
 `experimental` and `advertised = false`; workflow scaffolding, local launcher
 success, loopback, vectors, testkit output, and Plan 041 reference-control
 records cannot change that status.
