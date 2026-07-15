@@ -74,7 +74,7 @@ public egress. The host checker must fail before changing an unsupported host,
 and isolation must be verified before any router starts. Do not add an option
 that disables isolation.
 
-The exact planned command interfaces are:
+The exact command interfaces are:
 
 ```text
 bash scripts/interop/ubuntu/check-host.sh --pre-install
@@ -84,7 +84,7 @@ bash scripts/interop/build-references.sh
 bash scripts/interop/build-references.sh --offline
 bash scripts/interop/run-scenario.sh --scenario <id> --reference java-i2p --build-cache <path> --run-root <path>
 bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
-bash scripts/interop/run-matrix.sh
+bash scripts/interop/run-matrix.sh --profile environment-smoke
 i2pr-interop ntcp2 listen --scenario-config <path>
 i2pr-interop ntcp2 dial --scenario-config <path>
 i2pr-interop ntcp2 inspect --state-dir <path>

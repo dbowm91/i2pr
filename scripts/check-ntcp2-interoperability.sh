@@ -3,9 +3,11 @@ set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 manifest="$root/tests/integration/ntcp2/manifest.toml"
+lock="$root/tests/integration/ntcp2/references.lock.toml"
 evidence="$root/tests/integration/ntcp2/evidence"
 
 test -f "$manifest"
+test -f "$lock"
 test -d "$evidence"
 
 required=(
@@ -22,6 +24,15 @@ required=(
 for entry in "${required[@]}"; do
   if ! grep -Fq "$entry" "$manifest"; then
     echo "NTCP2 interoperability manifest entry missing: $entry" >&2
+    exit 1
+  fi
+done
+for entry in \
+  'host_contract = "ubuntu-24.04-amd64"' \
+  'execution_network = "forbidden"' \
+  'sha256 = "a3f2c85afea82e04ebca5ebb1b9b5c95ea770c4d35a7635de312370e14a44d43"'; do
+  if ! grep -Fq "$entry" "$lock"; then
+    echo "NTCP2 reference lock entry missing: $entry" >&2
     exit 1
   fi
 done
@@ -66,5 +77,8 @@ if find "$evidence" -type f ! -name README.md -print0 \
   echo "private-key material found in NTCP2 evidence" >&2
   exit 1
 fi
+
+python3 "$root/scripts/interop/validate-evidence.py"
+python3 "$root/scripts/interop/validate-scenarios.py"
 
 echo "NTCP2 interoperability manifest and sanitized evidence boundary are valid (${scenario_count} scenarios)."

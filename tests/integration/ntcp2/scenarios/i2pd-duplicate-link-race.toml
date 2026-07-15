@@ -1,0 +1,8 @@
+[scenario]
+id = "i2pd-duplicate-link-race"
+reference = "i2pd"
+profile = "full"
+direction = "both"
+address_family = "ipv4"
+padding = "representative"
+expected = "deterministic-winner-and-loser-drain"

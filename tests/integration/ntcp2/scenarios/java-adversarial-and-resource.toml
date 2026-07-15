@@ -1,0 +1,8 @@
+[scenario]
+id = "java-adversarial-and-resource"
+reference = "java_i2p"
+profile = "full"
+direction = "both"
+address_family = "ipv4"
+padding = "boundary-and-maximum-plus-one"
+expected = "typed-rejection-with-bounded-cleanup"

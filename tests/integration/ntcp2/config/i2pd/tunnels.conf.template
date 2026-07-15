@@ -1,0 +1,7 @@
+# No client or proxy tunnels are allowed in an NTCP2-only scenario.
+[HTTP]
+enabled = false
+[SOCKS]
+enabled = false
+[SAM]
+enabled = false

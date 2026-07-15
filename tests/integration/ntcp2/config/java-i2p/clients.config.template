@@ -1,0 +1,5 @@
+# No client tunnels or proxy listeners are enabled for Plan 038.
+clientApp.0.main=net.i2p.router.clientRouterClient
+clientApp.0.args=
+clientApp.0.startOnLoad=false
+clientApp.0.stopargs=

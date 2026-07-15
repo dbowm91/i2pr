@@ -1,0 +1,8 @@
+[scenario]
+id = "i2pd-adversarial-and-resource"
+reference = "i2pd"
+profile = "full"
+direction = "both"
+address_family = "ipv4"
+padding = "boundary-and-maximum-plus-one"
+expected = "typed-rejection-with-bounded-cleanup"

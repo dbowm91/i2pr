@@ -1,0 +1,102 @@
+"""Bounded subprocess ownership for reference-router adapters."""
+
+from __future__ import annotations
+
+import subprocess
+import threading
+import time
+from collections import deque
+from pathlib import Path
+from typing import Sequence
+
+
+class ProcessError(RuntimeError):
+    """A bounded process operation failed."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+class BoundedProcess:
+    """Own one child process and retain only a bounded private log."""
+
+    def __init__(
+        self,
+        command: Sequence[str],
+        log_path: Path,
+        max_log_bytes: int = 131_072,
+        environment: dict[str, str] | None = None,
+    ):
+        self.command = tuple(command)
+        self.log_path = log_path
+        self.max_log_bytes = max_log_bytes
+        self.environment = environment
+        self.process: subprocess.Popen[bytes] | None = None
+        self._reader: threading.Thread | None = None
+        self._ready_lines: deque[str] = deque(maxlen=32)
+        self._log_bytes = 0
+        self.forced = False
+
+    def start(self) -> None:
+        if self.process is not None:
+            raise ProcessError("already-started")
+        self.log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.process = subprocess.Popen(
+            list(self.command),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+            env=self.environment,
+        )
+        self._reader = threading.Thread(target=self._drain, name="interop-log-drain", daemon=True)
+        self._reader.start()
+
+    def _drain(self) -> None:
+        assert self.process is not None and self.process.stdout is not None
+        with self.log_path.open("wb") as log:
+            while True:
+                line = self.process.stdout.readline()
+                if not line:
+                    return
+                if self._log_bytes < self.max_log_bytes:
+                    remaining = self.max_log_bytes - self._log_bytes
+                    log.write(line[:remaining])
+                    self._log_bytes += min(len(line), remaining)
+                decoded = line[:4096].decode("utf-8", errors="replace")
+                self._ready_lines.append(decoded)
+
+    def wait_ready(self, tokens: Sequence[str], timeout_seconds: float) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if self.process is None:
+                raise ProcessError("not-started")
+            if self.process.poll() is not None:
+                raise ProcessError("process-exited-before-ready")
+            if any(token in line for line in self._ready_lines for token in tokens):
+                return
+            time.sleep(0.02)
+        raise ProcessError("readiness-timeout")
+
+    def stop(self, timeout_seconds: float) -> str:
+        if self.process is None:
+            return "not-started"
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                self.forced = True
+                self.process.kill()
+                self.process.wait(timeout=timeout_seconds)
+        if self._reader is not None:
+            self._reader.join(timeout=timeout_seconds)
+        return "forced" if self.forced else "clean"
+
+    def snapshot(self) -> dict[str, int | str]:
+        return {
+            "running": int(self.process is not None and self.process.poll() is None),
+            "exit_code": self.process.returncode if self.process is not None else -1,
+            "log_bytes": self._log_bytes,
+        }

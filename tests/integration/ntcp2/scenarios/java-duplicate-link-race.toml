@@ -1,0 +1,8 @@
+[scenario]
+id = "java-duplicate-link-race"
+reference = "java_i2p"
+profile = "full"
+direction = "both"
+address_family = "ipv4"
+padding = "representative"
+expected = "deterministic-winner-and-loser-drain"

@@ -182,7 +182,7 @@ the two phases separate: host preparation may install declared Ubuntu
 packages, fetch pinned reference sources, and build/hash artifacts; scenario
 execution must run in disposable Linux namespaces with only the scenario veth
 pair, no default route, no DNS, and no public egress. Isolation is checked
-before launch and cannot be disabled by a scenario option. The planned entry
+before launch and cannot be disabled by a scenario option. The entry
 points are:
 
 ```text
@@ -193,7 +193,7 @@ bash scripts/interop/build-references.sh
 bash scripts/interop/build-references.sh --offline
 bash scripts/interop/run-scenario.sh --scenario <id> --reference java-i2p --build-cache <path> --run-root <path>
 bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
-bash scripts/interop/run-matrix.sh
+bash scripts/interop/run-matrix.sh --profile environment-smoke
 ```
 
 The harness must distinguish environment smoke (reference startup and

@@ -1,0 +1,8 @@
+[scenario]
+id = "java-ipv4-inbound-outbound"
+reference = "java_i2p"
+profile = "handshake-smoke"
+direction = "both"
+address_family = "ipv4"
+padding = "minimum-variable-maximum"
+expected = "authenticated-handshake-and-bounded-i2np-exchange"

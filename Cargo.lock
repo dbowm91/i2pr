@@ -415,6 +415,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "i2pr-interop"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "i2pr-crypto",
+ "i2pr-proto",
+ "i2pr-runtime",
+ "i2pr-storage",
+ "i2pr-transport",
+ "i2pr-transport-ntcp2",
+]
+
+[[package]]
 name = "i2pr-proto"
 version = "0.1.0"
 dependencies = [

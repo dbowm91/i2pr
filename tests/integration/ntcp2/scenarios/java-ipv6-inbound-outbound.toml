@@ -1,0 +1,8 @@
+[scenario]
+id = "java-ipv6-inbound-outbound"
+reference = "java_i2p"
+profile = "full"
+direction = "both"
+address_family = "ipv6"
+padding = "minimum-variable-maximum"
+expected = "authenticated-handshake-and-bounded-i2np-exchange-or-explicit-environment-skip"

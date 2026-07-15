@@ -1,4 +1,6 @@
 /target/
+/target/interop/
+__pycache__/
 /fuzz/artifacts/
 /fuzz/corpus/*/crash-*
 /fuzz/corpus/*/leak-*

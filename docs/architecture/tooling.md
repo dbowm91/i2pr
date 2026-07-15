@@ -79,11 +79,11 @@ pattern scanning and `sha256sum` / `find` for manifest integrity.
 - **Verified by** `scripts/check-ntcp2-interoperability.sh` on
   every CI run.
 
-### Plan 038 Ubuntu harness (planned, opt-in)
+### Plan 038 Ubuntu harness (implemented foundation, opt-in)
 
 Plan 038 extends the manual lane with an Ubuntu-only, amd64-only harness. The
 existing manifest and evidence preflight remain a repository boundary; they do
-not install or launch reference routers. The planned host and build commands
+not install or launch reference routers. The host and build commands
 are:
 
 ```text
@@ -108,7 +108,7 @@ The scenario and launcher interfaces are:
 ```text
 bash scripts/interop/run-scenario.sh --scenario <id> --reference java-i2p --build-cache <path> --run-root <path>
 bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
-bash scripts/interop/run-matrix.sh
+bash scripts/interop/run-matrix.sh --profile environment-smoke
 i2pr-interop ntcp2 listen --scenario-config <path>
 i2pr-interop ntcp2 dial --scenario-config <path>
 i2pr-interop ntcp2 inspect --state-dir <path>

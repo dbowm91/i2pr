@@ -1,42 +1,104 @@
-# Plan 036 controlled NTCP2 interoperability lane
+# Plan 038 Ubuntu reference-router interoperability harness
 
-This is a manual, opt-in integration path. It is intentionally separate from
-the normal workspace tests because malformed, slow, stress, and fault-injected
-traffic is permitted only in an authorized isolated testnet.
+This is a manual, opt-in integration path. It is separate from normal
+workspace tests and is restricted to Ubuntu 24.04 amd64. The harness is not a
+public bootstrap configuration, does not enable `i2pr-daemon`, and does not
+advertise NTCP2.
 
-The pinned reference targets are Java I2P 2.12.0 at source revision
-`2800040` and i2pd 2.60.0 at source revision `f618e41`. The release pages and
-source revisions are recorded in `manifest.toml`; each built binary or image
-must also be recorded by SHA-256 in the per-run evidence record. These values
-are pins, not claims that the versions were executed here.
+The pinned targets are Java I2P 2.12.0 at revision `2800040` and i2pd 2.60.0
+at revision `f618e41`. Their source URLs, build commands, package set, and
+verified IzPack 5.2.4 hash are in [`references.lock.toml`](references.lock.toml).
+Build hashes are recorded per build; no nondeterministic stable artifact hash
+is fabricated.
 
-The environment must use the synthetic network ID in the manifest, disposable
-identities and NTCP2 static keys, loopback/private namespaces only, disabled
-reseed/bootstrap, fixed clocks, explicit timeouts, and teardown that removes
-all secret-bearing artifacts. Public I2P addresses, operational identities,
-peer lists, and traffic captures are prohibited.
+## Preparation
 
-Run the repository-side preflight from the workspace root:
+Preparation is the only phase allowed to install packages or fetch sources.
+Run it from the repository root on a disposable Ubuntu host:
 
 ```text
+bash scripts/interop/ubuntu/check-host.sh --pre-install
+sudo bash scripts/interop/ubuntu/setup-host.sh
+bash scripts/interop/ubuntu/check-host.sh --post-install
+bash scripts/interop/build-references.sh
+```
+
+The setup script installs only the declared packages, never enables a router
+service, and is safe to repeat. The builders clone/fetch only the locked
+repositories, detach at the exact revisions, reject dirty or mismatched source
+trees, and write cache/build metadata below `target/interop/`.
+
+Offline repeatability uses only an already prepared cache:
+
+```text
+bash scripts/interop/build-references.sh --offline
+```
+
+## Isolated execution
+
+Each scenario creates a unique run root, one `i2pr-*` namespace, and one
+`ref-*` namespace. Both veth endpoints leave the host namespace. The only
+allowed path is the directly connected synthetic peer subnet; default routes,
+DNS, host bridges, public egress, reseed, bootstrap, NAT/UPnP, SSU/SSU2, and
+unrelated client services are forbidden. Route checks are primary and
+namespace-scoped nftables rules are defense in depth.
+
+Run a bounded scenario with the reference cache and optional explicit paths:
+
+```text
+sudo -E bash scripts/interop/run-scenario.sh --scenario smoke-java-ipv4 --reference java_i2p
+sudo -E bash scripts/interop/run-scenario.sh --scenario smoke-i2pd-ipv4 --reference i2pd
+sudo -E bash scripts/interop/run-matrix.sh --profile environment-smoke
+sudo -E bash scripts/interop/run-matrix.sh --profile handshake-smoke
+sudo -E bash scripts/interop/run-matrix.sh --profile full
+```
+
+`environment-smoke` validates reference startup, disposable RouterInfo
+production, and cleanup only. `reference-crosscheck-ipv4` validates Java I2P
+against i2pd without making an i2pr claim. The handshake/full profiles remain
+`blocked_missing_driver` until the complete runtime-owned wire adapter exists;
+this is an explicit blocker, not a skipped success.
+
+The dedicated launcher seam is separate from the normal daemon:
+
+```text
+i2pr-interop ntcp2 listen --scenario-config <path>
+i2pr-interop ntcp2 dial --scenario-config <path>
+i2pr-interop ntcp2 inspect --state-dir <path>
+```
+
+It emits typed JSON only and currently reports the missing-driver result for
+listen/dial. It must not be used as interoperability evidence by itself.
+
+## Cleanup and evidence
+
+Every runner path stops and drains children, deletes both namespaces and veth
+state, removes identities, keys, RouterInfo, configs, raw logs, and run roots,
+and treats cleanup failure as scenario failure. Emergency cleanup is:
+
+```text
+sudo -E bash scripts/interop/cleanup.sh
+```
+
+Only sanitized JSON records containing typed outcomes and hashes may be
+retained. Validate records with:
+
+```text
+bash scripts/interop/validate-evidence.py
 bash scripts/check-ntcp2-interoperability.sh
 ```
 
-The preflight validates the pinned manifest and scans the committed evidence
-directory for secret/capture artifacts. It does not start a router or claim
-interoperability. An authorized external runner must supply the complete
-wire-level `i2pr` adapter, reference binaries/images, exact artifact hashes,
-configuration hashes, isolated namespace, and sanitized result writer before
-executing the matrix.
+An empty evidence directory is reported as “no evidence”, never as success.
+Local testkit, loopback, vectors, and fuzz results remain useful local
+evidence but cannot satisfy the two-reference, two-direction requirement.
 
-The required matrix includes both directions for Java I2P and i2pd, IPv4 and
-available IPv6, padding boundaries, skew/replay/identity/network failures,
-authenticated I2NP exchange, partial/coalesced I/O, duplicate-link races,
-slow/oversized/mutated inputs, queue/resource saturation, and cleanup. The
-full scenario list is in `manifest.toml`; the evidence format is in
-`evidence/README.md`.
+## Troubleshooting
 
-Local substitutes are deliberately labeled separately: `cargo test -p
-i2pr-testkit --all-targets` runs the fixed-seed 0..255 simulation matrix, and
-the NTCP2 unit/fuzz lanes exercise pure parsers and state owners. They do not
-replace mixed-router evidence.
+- A host or namespace error is fail-closed; run the pre/post checker and fix
+  Ubuntu, amd64, UTF-8 locale, `sudo`, `iproute2`, or kernel namespace support.
+- `blocked_missing_driver` means the prepared references or complete i2pr wire
+  adapter is unavailable. Do not replace it with a self-handshake.
+- `blocked_host_contract` means execution did not start and no protocol claim
+  may be inferred.
+- Inspect only disposable local build metadata. Never retain raw logs, packet
+  captures, RouterInfo, identities, keys, endpoint diagnostics, or payloads.

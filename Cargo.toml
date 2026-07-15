@@ -9,6 +9,7 @@ members = [
     "crates/i2pr-testkit",
     "crates/i2pr-transport",
     "crates/i2pr-transport-ntcp2",
+    "tools/i2pr-interop",
 ]
 resolver = "2"
 

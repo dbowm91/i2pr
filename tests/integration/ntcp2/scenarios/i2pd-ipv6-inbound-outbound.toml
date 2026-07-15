@@ -1,0 +1,8 @@
+[scenario]
+id = "i2pd-ipv6-inbound-outbound"
+reference = "i2pd"
+profile = "full"
+direction = "both"
+address_family = "ipv6"
+padding = "minimum-variable-maximum"
+expected = "authenticated-handshake-and-bounded-i2np-exchange-or-explicit-environment-skip"

@@ -29,14 +29,14 @@ testnet run are not available; this remains a closure blocker.
 
 ## Plan 038 Ubuntu harness boundary
 
-Plan 038 defines the first planned harness for Ubuntu amd64. It has two
+Plan 038 defines the first harness foundation for Ubuntu amd64. It has two
 security domains. Preparation may use `apt` and network access only to install
 declared tools and fetch the locked Java I2P 2.12.0 and i2pd 2.60.0 revisions;
 it records source, tool, build-command, and artifact hashes. Execution must
 run from those prepared inputs without downloads, DNS, reseed, bootstrap,
 RouterInfo publication, NetDB mutation, or public endpoints.
 
-The planned commands are:
+The commands are:
 
 ```text
 bash scripts/interop/ubuntu/check-host.sh --pre-install
@@ -46,7 +46,7 @@ bash scripts/interop/build-references.sh
 bash scripts/interop/build-references.sh --offline
 bash scripts/interop/run-scenario.sh --scenario <id> --reference java-i2p --build-cache <path> --run-root <path>
 bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
-bash scripts/interop/run-matrix.sh
+bash scripts/interop/run-matrix.sh --profile environment-smoke
 ```
 
 Before a router starts, the harness creates one namespace per participant and

@@ -97,7 +97,7 @@ rejects default routes, DNS, and public egress, generates temporary state, and
 cleans up before reporting a result. The execution phase must not download,
 reseed, bootstrap, publish RouterInfo, mutate NetDB, or start the normal daemon.
 
-The planned command surface is:
+The command surface is:
 
 ```text
 bash scripts/interop/ubuntu/check-host.sh --pre-install
@@ -107,7 +107,7 @@ bash scripts/interop/build-references.sh
 bash scripts/interop/build-references.sh --offline
 bash scripts/interop/run-scenario.sh --scenario <id> --reference java-i2p --build-cache <path> --run-root <path>
 bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
-bash scripts/interop/run-matrix.sh
+bash scripts/interop/run-matrix.sh --profile environment-smoke
 i2pr-interop ntcp2 listen --scenario-config <path>
 i2pr-interop ntcp2 dial --scenario-config <path>
 i2pr-interop ntcp2 inspect --state-dir <path>

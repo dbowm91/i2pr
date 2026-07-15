@@ -1,0 +1,43 @@
+name: NTCP2 interoperability (Ubuntu manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  environment-smoke:
+    name: Plan 038 environment smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - name: Install Ubuntu harness dependencies
+        run: sudo -E bash scripts/interop/ubuntu/setup-host.sh
+      - name: Build pinned reference routers
+        run: bash scripts/interop/build-references.sh
+      - name: Run environment smoke
+        run: sudo -E bash scripts/interop/run-matrix.sh --profile environment-smoke
+      - name: Validate sanitized evidence boundary
+        if: always()
+        run: bash scripts/check-ntcp2-interoperability.sh
+      - name: Clean namespaces and disposable state
+        if: always()
+        run: sudo -E bash scripts/interop/cleanup.sh
+      - name: Upload sanitized build metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ntcp2-interop-ubuntu-metadata
+          if-no-files-found: error
+          path: |
+            target/interop/build/*summary.txt
+            target/interop/cache/**/build-metadata.txt
+            target/interop/runs/**/sanitized-result.json
+          retention-days: 7
