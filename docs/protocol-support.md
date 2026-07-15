@@ -10,6 +10,12 @@ The fine-grained, machine-readable inventory for Milestone 1 is
 `experimental` with repository evidence, but remain `advertised = false`; the
 ledger does not itself publish protocol capabilities.
 
+Plan 031 adds transport-neutral link, delivery, lifecycle, and resource
+contracts plus a Tokio-free NTCP2 crate skeleton. These are architectural
+contracts, not NTCP2 protocol support evidence, so the NTCP2 row remains
+“Not implemented” and no transport capability is advertised or added to the
+protocol support ledger.
+
 | Protocol area | Status | Planned milestone | Specification/source starting point | Test-vector status | Interoperability status |
 | --- | --- | --- | --- | --- | --- |
 | Common identity, keys, and certificates | Experimental structural subset plus local type-4/type-7 execution | 1 | `specs/protocols/01-common-identity-crypto.md`, pinned source in `specs/SOURCES.md` | Locally authored structural bytes, Ed25519 mutation tests, and X25519 derivation tests; no independent router vectors | None |

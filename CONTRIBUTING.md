@@ -78,6 +78,23 @@ real sockets, DNS, or public-network fault injection. The focused lane is:
 cargo test -p i2pr-testkit --all-targets
 ```
 
+Plan 031 transport contract tests are runtime-neutral and remain below the
+socket and wire-cryptography boundary:
+
+```text
+cargo test -p i2pr-transport --all-targets
+cargo test -p i2pr-transport-ntcp2 --all-targets
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+```
+
+Transport code must pass bounded encoded-I2NP owners through explicit consuming
+handoffs, retain only typed delivery and termination outcomes, and keep peer
+references, addresses, keys, transcripts, and payload bytes out of default
+debugging and snapshots. `i2pr-runtime` remains the sole production owner of
+Tokio tasks, sockets, timers, channels, and wakeable cancellation; transport
+crates must not grow async traits or plugin registries.
+
 Plan 024's integrated lane contains named clean-startup, bounded-overload,
 restart-recovery, essential-failure, and simulated-link-fault scenarios plus
 a fixed 32-seed replay matrix. Run it with paused Tokio time and the manual

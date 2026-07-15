@@ -135,6 +135,40 @@ reported as forced. No Plan 021 service binds sockets, connects to peers,
 performs DNS, touches NetDB, constructs tunnels, exposes client listeners, or
 advertises protocol capabilities.
 
+## Transport contract threats and controls
+
+Plan 031 adds only the ownership vocabulary needed before NTCP2 wire work. The
+transport manager owns bounded link candidates, authenticated-link admission,
+delivery queue ownership, lifecycle observations, and typed outcomes. The
+runtime owns every future socket, Tokio channel, timer, reader/writer task, and
+cancellation scope. `i2pr-transport-ntcp2` remains a pure protocol crate and
+cannot open sockets or perform filesystem, NetDB, tunnel, or client work.
+
+Transport payloads cross the manager boundary as bounded owned encoded-I2NP
+messages. The owner validates nonzero and maximum lengths at construction,
+preserves authenticated bytes, exposes no implicit large-payload clone, and
+uses explicit consuming handoff. Delivery requests carry only a redacted peer
+reference, payload owner, bounded monotonic expiry, and a runtime-owned
+response capability. Typed outcomes distinguish no-link, queue/resource
+denial, deadline, cancellation, replacement, closure, protocol termination,
+and identity mismatch without retaining remote error text.
+
+Pending handshakes, active links, buffered bytes, and queue items use existing
+`ResourceClass` leases. Admission is immediate grant-or-deny; every accepted
+lease stays with its exact candidate, link, or queued payload until handoff,
+completion, rejection, cancellation, or drop. Capacity-one, exact-limit, and
+limit-plus-one cases are deterministic tests, and valid teardown must return
+usage to zero without an underflow signal.
+
+Link IDs are local bounded correlators and are not derived from peer identity.
+Peer references wrap the redacted public identity digest but do not expose full
+bytes or mutable profile state. Default snapshots contain only bounded local
+IDs, transport/direction/lifecycle categories, queue counters, rounded age,
+typed termination, and resource usage. They exclude addresses, ports, hashes,
+keys, transcripts, payloads, and dynamic peer labels. Duplicate-link inputs
+and decisions are representable, but the winner policy remains deferred to
+Plan 035 rather than being guessed here.
+
 ## Bounded communication and resource-governor threats
 
 Plan 022 treats queue exhaustion and slow consumers as explicit denial-of-

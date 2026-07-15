@@ -14,7 +14,14 @@ expected = {
     "i2pr-proto": set(),
     "i2pr-crypto": {"i2pr-proto"},
     "i2pr-core": set(),
-    "i2pr-testkit": {"i2pr-core", "i2pr-crypto", "i2pr-proto", "i2pr-runtime"},
+    "i2pr-transport": {"i2pr-core", "i2pr-proto"},
+    "i2pr-transport-ntcp2": {
+        "i2pr-crypto", "i2pr-proto", "i2pr-transport"
+    },
+    "i2pr-testkit": {
+        "i2pr-core", "i2pr-crypto", "i2pr-proto", "i2pr-runtime",
+        "i2pr-transport", "i2pr-transport-ntcp2",
+    },
     "i2pr-storage": {"i2pr-crypto"},
     "i2pr-daemon": {
         "i2pr-core",
@@ -22,8 +29,9 @@ expected = {
         "i2pr-crypto",
         "i2pr-runtime",
         "i2pr-storage",
+        "i2pr-transport",
     },
-    "i2pr-runtime": {"i2pr-core"},
+    "i2pr-runtime": {"i2pr-core", "i2pr-transport"},
 }
 
 for name, allowed in expected.items():

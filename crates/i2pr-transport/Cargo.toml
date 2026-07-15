@@ -1,0 +1,15 @@
+[package]
+name = "i2pr-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Runtime-neutral bounded transport contracts for i2pr"
+publish = false
+
+[dependencies]
+i2pr-core = { path = "../i2pr-core" }
+i2pr-proto = { path = "../i2pr-proto" }
+
+[lints]
+workspace = true

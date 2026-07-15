@@ -10,7 +10,7 @@ The intended modular monolith is organized into four conceptual planes:
 
 | Plane | Responsibility | Current bounded status |
 | --- | --- | --- |
-| Data | Protocol representations, authenticated links, messages, and network tunnel traffic | Bounded common-structure and initial I2NP models plus Ed25519/X25519 wrappers and local RouterInfo signing; no sockets or network behavior |
+| Data | Protocol representations, authenticated links, messages, and network tunnel traffic | Bounded common-structure and initial I2NP models plus transport-neutral link contracts and Ed25519/X25519 wrappers; no sockets or network behavior |
 | Control | Configuration, lifecycle, health, cancellation, supervision, and resource budgets | Runtime-neutral core contracts plus the concrete non-networked `i2pr-runtime` supervisor |
 | Client | Destinations, LeaseSets, streaming, SAM, and I2CP adapters | Not implemented |
 | Service | HTTP, SOCKS5, IRC, generic TCP, and local service-tunnel composition | Not implemented |
@@ -22,17 +22,22 @@ storage.
 
 ## Current crate graph
 
-The current bounded workspace has seven crates, including the test-only
+The current bounded workspace has nine crates, including the test-only
 simulation crate:
 
 ```text
 i2pr-proto  <- i2pr-crypto <- i2pr-storage
      ^              ^               ^
      |              |               |
-i2pr-core <- i2pr-runtime <- i2pr-daemon (composition root)
-     ^             ^
-     |             |
- i2pr-testkit (test/simulation dependency only)
+i2pr-core <- i2pr-transport <- i2pr-runtime <- i2pr-daemon (composition root)
+     ^             ^       ^          ^
+     |             |       |          |
+     +-------------+-------+  i2pr-transport-ntcp2
+                                   ^       ^
+                                   |       |
+                         i2pr-proto + i2pr-crypto
+
+i2pr-testkit (test/simulation dependency only; may depend on transport crates)
 ```
 
 The arrows show dependency direction. `i2pr-proto` owns protocol-facing names,
@@ -48,13 +53,19 @@ derivation and the narrow `zeroize` wrapper dependency. `i2pr-core` owns
 runtime-neutral service, health, lifecycle, cancellation, and resource-domain
 types. `i2pr-runtime` owns Tokio, wakeable cancellation, service graph
 validation, readiness, latest-state health publication, supervised task
-managers, bounded restart policy, and graceful/forced shutdown. `i2pr-testkit`
+managers, bounded restart policy, and graceful/forced shutdown. `i2pr-transport`
+owns runtime-neutral link, delivery, admission, lifecycle, observation, and
+snapshot contracts. `i2pr-transport-ntcp2` depends on those contracts plus
+protocol/crypto vocabulary but owns no Tokio, filesystem, socket, NetDB,
+tunnel, client, or daemon behavior. `i2pr-runtime` is the sole production
+owner of Tokio tasks, sockets, timers, channels, and wakeable cancellation.
+`i2pr-testkit`
 is a test/simulation-only dependency. It provides a manually wakeable
 monotonic clock, domain-separated deterministic RNGs, a bounded manual-pump
 scheduler, distinct stream and datagram endpoint pairs, executable fault
 scripts, ephemeral identity/RouterInfo factories, topology summaries, and
 payload-free replay records. It may depend on `i2pr-core`, `i2pr-runtime`,
-`i2pr-proto`, and `i2pr-crypto`, but no production crate may depend on it. The
+`i2pr-proto`, `i2pr-crypto`, and the transport crates, but no production crate may depend on it. The
 daemon owns CLI/configuration and is the composition root, but its live command
 remains intentionally disabled.
 
@@ -254,6 +265,29 @@ NetDB action, tunnel, client/API listener, or capability advertisement.
 The daemon will eventually compose supervised services and pass each service
 only the narrow handles or capabilities it needs. A global mutable router
 context or unrestricted service locator is not an architectural default.
+
+### Transport manager boundary
+
+The transport manager is a runtime-neutral decision boundary. It accepts
+bounded authenticated-link candidates, resolves them against the current
+local link set, admits delivery requests, records typed closure/backoff and
+address observations, and publishes bounded privacy-safe snapshots. It does
+not wait on time, open a socket, read a Tokio channel, mutate RouterInfo or
+NetDB, select tunnels, score peers, or route application traffic.
+
+State-machine drivers communicate through explicit bounded actions and typed
+results rather than async traits. `i2pr-transport-ntcp2` owns future NTCP2
+address, handshake, frame, block, and state-machine implementation; the
+runtime adapter will later translate its actions into owned I/O operations.
+The boundary deliberately models only immediate Milestone 3 needs, leaving
+SSU2-specific behavior and duplicate winner policy to later plans.
+
+The encoded-I2NP handoff is an owned bounded byte container. It keeps the
+canonical authenticated representation stable and prevents repeated
+decode/re-encode, while its redacted `Debug` and consuming delivery handoff
+keep payloads out of diagnostics and avoid implicit large clones. Resource
+leases for `PendingHandshakes`, `ActiveLinks`, and `BufferedBytes` remain
+attached to the exact owner until handoff or teardown.
 
 The current identity CLI is deliberately not a runtime service: `identity
 generate` is the only operation allowed to create the private identity file,

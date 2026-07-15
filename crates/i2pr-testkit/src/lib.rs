@@ -15,6 +15,7 @@ mod faults;
 mod network;
 mod peers;
 mod rng;
+mod transport;
 
 pub use clock::{
     ClockError, Deadline, MAX_PENDING_TIMERS, ManualClock, ManualInstant, MonotonicClock,
@@ -36,6 +37,11 @@ pub use peers::{
 pub use rng::{
     DeterministicRng, MAX_DOMAIN_LABEL_BYTES, ReproducibilitySeed, SeedDerivationError,
     SeedParseError,
+};
+pub use transport::{
+    assert_payload_bounds, assert_snapshot_redaction, resource_usage, synthetic_i2np_payload,
+    synthetic_link_candidate, synthetic_transport_peer, transport_manager_for_test,
+    transport_resources_for_test,
 };
 
 /// A bounded deterministic simulation harness.

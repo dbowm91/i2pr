@@ -12,6 +12,8 @@ i2pr-core = { path = "../i2pr-core" }
 i2pr-crypto = { path = "../i2pr-crypto" }
 i2pr-proto = { path = "../i2pr-proto" }
 i2pr-runtime = { path = "../i2pr-runtime" }
+i2pr-transport = { path = "../i2pr-transport" }
+i2pr-transport-ntcp2 = { path = "../i2pr-transport-ntcp2" }
 rand_chacha.workspace = true
 rand_core.workspace = true
 sha2.workspace = true

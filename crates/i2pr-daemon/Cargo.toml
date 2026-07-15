@@ -14,6 +14,7 @@ i2pr-core = { path = "../i2pr-core" }
 i2pr-proto = { path = "../i2pr-proto" }
 i2pr-runtime = { path = "../i2pr-runtime" }
 i2pr-storage = { path = "../i2pr-storage" }
+i2pr-transport = { path = "../i2pr-transport" }
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true

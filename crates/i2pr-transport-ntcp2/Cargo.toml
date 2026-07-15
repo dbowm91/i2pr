@@ -1,0 +1,16 @@
+[package]
+name = "i2pr-transport-ntcp2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Tokio-free NTCP2 implementation boundary reserved for later plans"
+publish = false
+
+[dependencies]
+i2pr-crypto = { path = "../i2pr-crypto" }
+i2pr-proto = { path = "../i2pr-proto" }
+i2pr-transport = { path = "../i2pr-transport" }
+
+[lints]
+workspace = true

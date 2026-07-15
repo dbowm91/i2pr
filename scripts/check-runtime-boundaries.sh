@@ -40,4 +40,22 @@ if rg -n 'i2pr-testkit' "$root/crates"/*/Cargo.toml | rg -v 'crates/i2pr-testkit
   exit 1
 fi
 
+if rg -n 'tokio::|std::net|std::fs|TcpStream|TcpListener|UdpSocket|UnixStream|OpenOptions|File::' \
+  "$root/crates/i2pr-transport/src" "$root/crates/i2pr-transport-ntcp2/src"; then
+  echo "transport contract crates must not own Tokio, sockets, or filesystem I/O" >&2
+  exit 1
+fi
+
+if rg -n 'async[[:space:]]+fn|async_trait|i2pr-(netdb|tunnel|client)' \
+  "$root/crates/i2pr-transport" "$root/crates/i2pr-transport-ntcp2"; then
+  echo "transport contracts must remain synchronous and independent of routing clients" >&2
+  exit 1
+fi
+
+if rg -n 'i2pr-daemon|i2pr-runtime|i2pr-testkit' \
+  "$root/crates/i2pr-transport/Cargo.toml" "$root/crates/i2pr-transport-ntcp2/Cargo.toml"; then
+  echo "transport crates must not depend on runtime, daemon, or testkit" >&2
+  exit 1
+fi
+
 echo "runtime boundary checks passed"

@@ -50,6 +50,12 @@ Plan 025 corrects forced child cleanup ownership, cancellation-aware service
 completion classification, physical protocol module ownership, CI guardrails,
 and resource-release underflow visibility. Its closure remains limited to
 bounded local evidence and does not add router behavior or interoperability.
+Plan 031 now establishes the first Milestone 3 boundary: the runtime-neutral
+`i2pr-transport` contracts, the Tokio-free `i2pr-transport-ntcp2` skeleton,
+bounded link/delivery/resource vocabulary, and deterministic synthetic
+transport evidence. It does not implement NTCP2 handshakes, encryption,
+frames, sockets, live addresses, or capability advertisement; all transport
+support remains non-advertised structural work.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
@@ -127,10 +133,12 @@ crates/
 ```
 
 The current workspace contains `i2pr-proto`, `i2pr-crypto`, `i2pr-storage`,
-`i2pr-core`, `i2pr-runtime`, `i2pr-daemon`, and `i2pr-testkit`. The runtime
-crate is the only production crate that owns Tokio tasks, timers, or wakeable
-cancellation. Later plans will add protocol and service crates when their
-contracts are understood; empty placeholder crates are not created in advance.
+`i2pr-core`, `i2pr-transport`, `i2pr-transport-ntcp2`, `i2pr-runtime`,
+`i2pr-daemon`, and `i2pr-testkit`. The runtime crate is the only production
+crate that owns Tokio tasks, timers, channels, or wakeable cancellation;
+transport crates expose pure contracts and protocol seams only. Later plans
+will add protocol and service crates when their contracts are understood;
+empty placeholder crates are not created in advance.
 
 The current `i2pr-proto` API uses borrowed cursors and caller-visible maximums,
 strict exact-consumption decoding, canonical immutable mappings, typed
@@ -167,6 +175,8 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Aggregate Milestone 2 closure record](plans/020-milestone-2-closure.md)
 - [Plan 024 observability and validation plan](plans/024-m2-observability-validation-closure.md)
 - [Plan 025 targeted corrective closure](plans/025-closure.md)
+- [Plan 031 transport contracts and crate boundaries](plans/031-m3-transport-contracts-and-crate-boundaries.md)
+- [Plan 031 closure record](plans/031-closure.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)
@@ -174,6 +184,7 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Architecture decision records](docs/adr/0000-adr-process.md)
 - [Runtime and supervision ADR](docs/adr/0008-runtime-supervision-and-cancellation.md)
 - [Runtime observability and validation ADR](docs/adr/0009-runtime-observability-and-validation.md)
+- [Transport contracts and crate boundaries ADR](docs/adr/0010-transport-contracts-and-crate-boundaries.md)
 - [Contribution guide](CONTRIBUTING.md)
 - [Protocol specification index and source ledger](specs/README.md)
 
@@ -205,6 +216,19 @@ Runtime changes must use deterministic Tokio test time (`start_paused` or
 explicit `time::advance`) rather than wall-clock sleeps. Every spawned task
 must be owned by the supervisor or a service child scope and must be joined or
 explicitly aborted before the runtime returns.
+
+Transport changes must keep `i2pr-transport` runtime-neutral and keep
+`i2pr-transport-ntcp2` free of Tokio, filesystem, sockets, and live protocol
+side effects. Drive state through bounded explicit actions and outcomes; use
+owned encoded-I2NP handoffs and redacted snapshots rather than raw payloads,
+addresses, keys, or runtime channels. Plan 031's focused local checks are:
+
+```text
+cargo test -p i2pr-transport --all-targets
+cargo test -p i2pr-transport-ntcp2 --all-targets
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+```
 
 The Plan 024 integrated validation lane is `cargo test -p i2pr-testkit
 --all-targets`; it runs the five named scenarios and the fixed 32-seed replay

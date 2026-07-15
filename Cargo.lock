@@ -339,6 +339,7 @@ dependencies = [
  "i2pr-proto",
  "i2pr-runtime",
  "i2pr-storage",
+ "i2pr-transport",
  "serde",
  "tempfile",
  "thiserror",
@@ -361,6 +362,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "i2pr-core",
+ "i2pr-transport",
  "tokio",
  "tokio-util",
  "tracing",
@@ -386,10 +388,29 @@ dependencies = [
  "i2pr-crypto",
  "i2pr-proto",
  "i2pr-runtime",
+ "i2pr-transport",
+ "i2pr-transport-ntcp2",
  "rand_chacha",
  "rand_core 0.9.5",
  "sha2",
  "tokio",
+]
+
+[[package]]
+name = "i2pr-transport"
+version = "0.1.0"
+dependencies = [
+ "i2pr-core",
+ "i2pr-proto",
+]
+
+[[package]]
+name = "i2pr-transport-ntcp2"
+version = "0.1.0"
+dependencies = [
+ "i2pr-crypto",
+ "i2pr-proto",
+ "i2pr-transport",
 ]
 
 [[package]]

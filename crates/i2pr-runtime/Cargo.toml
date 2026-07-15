@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 futures-util.workspace = true
 i2pr-core = { path = "../i2pr-core" }
+i2pr-transport = { path = "../i2pr-transport" }
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
