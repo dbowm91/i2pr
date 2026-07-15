@@ -87,6 +87,39 @@ security claim.
 `identity inspect` reports only the storage path and public algorithm IDs. It
 does not print private seeds, a private serialization, or a full router hash.
 
+## NTCP2 cryptographic foundation threats and controls
+
+Plan 032 adds local cryptographic composition but no network activation. The
+NTCP2 static X25519 key and its published AES obfuscation IV are independent
+from the RouterIdentity and are persisted in a separate versioned, checksummed,
+create-only record. Immediate restart reuses both values; silent replacement
+or rotation would invalidate cached RouterAddresses and is rejected. The
+record is still plaintext private material protected by restrictive directory
+and file permissions, not encryption at rest.
+
+The transcript binds the exact I2P Noise name, empty prologue, responder
+static key, role, and message ordering. SessionRequest/Created/Confirmed
+stages are consuming owners; SessionConfirmed part one uses the retained
+SessionRequest cipher state at nonce 1, and split invalidates the handshake
+owner. This prevents accidental state reuse and transcript confusion but does
+not protect a process whose memory, swap, core dump, or crash artifacts are
+compromised.
+
+X25519 all-zero shared secrets are rejected before KDF use. ChaCha20-
+Poly1305 counters are checked before use and never emit `2^64 - 1`; a nonce
+reuse or counter wrap would compromise authenticated encryption and therefore
+terminates the bounded state operation. AES-CBC ephemeral obfuscation is DPI
+obfuscation using public RouterHash/IV inputs, not authentication or secrecy.
+SipHash material is directional and used only for the two-byte length mask;
+it is not a substitute for AEAD authentication.
+
+Private keys, chaining keys, cipher keys, split keys, and shared secrets use
+non-cloneable zeroizing owners with no `Debug`, `Display`, serde, or payload
+formatting. Public keys and transcript hashes use typed wrappers with redacted
+diagnostics. Fixed vectors contain synthetic test values only; the validator
+and support ledger prevent local vectors from becoming interoperability or
+capability evidence.
+
 ## Runtime supervision threats and controls
 
 Plan 021 adds a concrete non-networked runtime boundary without changing the

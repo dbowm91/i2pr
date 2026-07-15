@@ -37,6 +37,9 @@ pub const SIGNATURE_LENGTH: usize = 64;
 /// The common-structure key-area padding for the selected key certificate.
 pub const IDENTITY_PADDING_LENGTH: usize = 384 - PRIVATE_KEY_LENGTH - PRIVATE_KEY_LENGTH;
 
+/// The raw X25519 key length used by NTCP2 transport keys.
+pub const X25519_KEY_LENGTH: usize = 32;
+
 /// Errors returned by the protocol-specific cryptographic wrappers.
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum CryptoError {
@@ -57,6 +60,9 @@ pub enum CryptoError {
         /// Static key category.
         context: &'static str,
     },
+    /// X25519 produced the invalid all-zero shared secret.
+    #[error("invalid all-zero X25519 shared secret")]
+    AllZeroSharedSecret,
     /// A signature did not verify against the supplied message and key.
     #[error("signature verification failed")]
     InvalidSignature,
@@ -64,6 +70,82 @@ pub enum CryptoError {
     #[error("protocol structure rejected: {0}")]
     Protocol(#[from] i2pr_proto::CodecError),
 }
+
+/// A private X25519 key owner for transport static or ephemeral use.
+///
+/// The wrapper is intentionally semantic-free at this lower boundary so the
+/// storage crate can persist transport static material without depending on
+/// the NTCP2 protocol crate. Callers in the NTCP2 crate wrap it in the
+/// protocol-specific state owner appropriate to the handshake role.
+#[derive(Zeroize)]
+#[zeroize(drop)]
+pub struct X25519PrivateKey([u8; X25519_KEY_LENGTH]);
+
+impl X25519PrivateKey {
+    /// Loads a raw X25519 private key without exposing it through formatting.
+    pub const fn from_bytes(bytes: [u8; X25519_KEY_LENGTH]) -> Self {
+        Self(bytes)
+    }
+
+    /// Generates a private key from an injected cryptographic random source.
+    pub fn generate<R: TryCryptoRng + ?Sized>(rng: &mut R) -> Result<Self, CryptoError> {
+        let mut bytes = Zeroizing::new([0_u8; X25519_KEY_LENGTH]);
+        rng.try_fill_bytes(&mut *bytes)
+            .map_err(|_| CryptoError::RandomnessUnavailable)?;
+        Ok(Self::from_bytes(*bytes))
+    }
+
+    /// Borrows the raw private key for explicit persistence or protocol use.
+    pub const fn secret_bytes(&self) -> &[u8; X25519_KEY_LENGTH] {
+        &self.0
+    }
+
+    /// Returns the raw little-endian X25519 public key bytes.
+    pub fn public_bytes(&self) -> [u8; X25519_KEY_LENGTH] {
+        let secret = StaticSecret::from(self.0);
+        X25519PublicKey::from(&secret).to_bytes()
+    }
+
+    /// Returns the public key in the common-structure representation.
+    pub fn public_key(&self) -> Result<PublicKey, CryptoError> {
+        PublicKey::new(ROUTER_CRYPTO_KEY_TYPE, self.public_bytes().to_vec())
+            .map_err(CryptoError::Protocol)
+    }
+
+    /// Computes a checked X25519 shared secret with a peer public key.
+    pub fn diffie_hellman(
+        &self,
+        peer: &[u8; X25519_KEY_LENGTH],
+    ) -> Result<X25519SharedSecret, CryptoError> {
+        let secret = StaticSecret::from(self.0);
+        let peer = X25519PublicKey::from(*peer);
+        let shared = secret.diffie_hellman(&peer);
+        if shared.as_bytes().iter().all(|byte| *byte == 0) {
+            return Err(CryptoError::AllZeroSharedSecret);
+        }
+        Ok(X25519SharedSecret::from_bytes(*shared.as_bytes()))
+    }
+}
+
+/// A zeroizing X25519 shared-secret owner.
+#[derive(Zeroize)]
+#[zeroize(drop)]
+pub struct X25519SharedSecret([u8; X25519_KEY_LENGTH]);
+
+impl X25519SharedSecret {
+    /// Constructs a shared-secret owner for deterministic protocol tests.
+    pub const fn from_bytes(bytes: [u8; X25519_KEY_LENGTH]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrows the shared secret for one protocol KDF operation.
+    pub const fn as_bytes(&self) -> &[u8; X25519_KEY_LENGTH] {
+        &self.0
+    }
+}
+
+/// Semantic alias used by the persistence layer for an NTCP2 static key.
+pub type TransportStaticKey = X25519PrivateKey;
 
 /// A private Ed25519 signing seed.
 ///
@@ -391,6 +473,15 @@ mod tests {
         assert!(constant_time_eq(b"same", b"same"));
         assert!(!constant_time_eq(b"same", b"different"));
         assert!(!constant_time_eq(b"same", b"same\0"));
+    }
+
+    #[test]
+    fn x25519_rejects_an_all_zero_shared_secret() {
+        let key = X25519PrivateKey::from_bytes([7_u8; X25519_KEY_LENGTH]);
+        assert!(matches!(
+            key.diffie_hellman(&[0_u8; X25519_KEY_LENGTH]),
+            Err(CryptoError::AllZeroSharedSecret)
+        ));
     }
 
     #[test]

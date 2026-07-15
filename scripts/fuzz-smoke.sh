@@ -6,6 +6,7 @@ TARGETS=(
   date date32 hash mapping certificate key_certificate key_and_cert router_identity
   destination router_address router_info lease lease_set
   i2np_standard i2np_bodies i2np_short_ssu i2np_short_transport
+  ntcp2_transcript ntcp2_storage
 )
 
 if ! command -v cargo-fuzz >/dev/null 2>&1; then

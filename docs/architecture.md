@@ -144,6 +144,15 @@ It can construct a no-capability local RouterInfo, sign the exact retained
 identity. Timestamp freshness, transport interpretation, capability policy,
 publication, and network interoperability remain outside this boundary.
 
+Plan 032 extends the crypto boundary without changing that policy surface.
+`i2pr-crypto` owns zeroizing X25519 private/shared-secret owners for transport
+use; `i2pr-transport-ntcp2` owns only protocol composition over reviewed
+X25519, SHA-256/HMAC, ChaCha20-Poly1305, AES block, SipHash, subtle, and
+zeroize dependencies. Its consuming transcript binds the I2P Noise name and
+responder static key, retains the SessionRequest cipher state needed by
+SessionConfirmed part one, and produces role-mapped split owners. It has no
+RNG, clock, filesystem, socket, Tokio, or generic Noise-provider surface.
+
 Generated and reconstructed private seeds are held by zeroizing owners during
 crypto operations. Storage encoding and file-read buffers are also zeroizing;
 the `DatabaseLookup` reply-key/tag wrappers in `i2pr-proto::i2np::netdb` are
@@ -161,6 +170,13 @@ versions and integrity failures; it never regenerates an existing identity.
 The explicit create-only operation uses a same-directory temporary file,
 flush/sync, an atomic no-replace install, cleanup, and directory sync where the
 platform supports it.
+
+The separate `TransportStaticKeyStore` persists an independently generated
+NTCP2 X25519 static key, rederived public key, and obfuscation IV in
+`ntcp2.static.key`. Its versioned 132-byte record is not derived from or
+interchangeable with `router.identity`; it uses the same strict path,
+permission, checksum, zeroizing-buffer, and no-replace rules. Address
+publication, RouterInfo mutation, and rotation policy remain outside storage.
 
 New identity directories use creation-time mode `0700` on Unix. The standard
 library path creates only the final component with restrictive mode and
@@ -276,9 +292,11 @@ not wait on time, open a socket, read a Tokio channel, mutate RouterInfo or
 NetDB, select tunnels, score peers, or route application traffic.
 
 State-machine drivers communicate through explicit bounded actions and typed
-results rather than async traits. `i2pr-transport-ntcp2` owns future NTCP2
-address, handshake, frame, block, and state-machine implementation; the
-runtime adapter will later translate its actions into owned I/O operations.
+results rather than async traits. `i2pr-transport-ntcp2` owns the NTCP2
+protocol constants and Plan 032 cryptographic/transcript foundation; future
+plans add address, handshake wire, frame, block, and state-machine behavior.
+The runtime adapter will later translate those actions into owned I/O
+operations.
 The boundary deliberately models only immediate Milestone 3 needs, leaving
 SSU2-specific behavior and duplicate winner policy to later plans.
 

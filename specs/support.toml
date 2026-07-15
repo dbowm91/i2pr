@@ -95,6 +95,33 @@ evidence = ["crates/i2pr-storage/src/lib.rs", "plans/013-closure.md"]
 advertised = false
 
 [[surface]]
+id = "crypto.ntcp2-foundation"
+protocol = "ntcp2"
+structure = "x25519-aes-chacha-hmac-siphash-protocol-wrappers"
+scope = "required-later"
+status = "experimental"
+evidence = ["crates/i2pr-transport-ntcp2/src/crypto.rs", "tests/fixtures/ntcp2/crypto/manifest.tsv", "plans/032-closure.md"]
+advertised = false
+
+[[surface]]
+id = "crypto.ntcp2-transcript"
+protocol = "ntcp2"
+structure = "consuming-three-message-transcript-and-split"
+scope = "required-later"
+status = "experimental"
+evidence = ["crates/i2pr-transport-ntcp2/src/crypto.rs", "tests/fixtures/ntcp2/crypto/vectors.tsv", "plans/032-closure.md"]
+advertised = false
+
+[[surface]]
+id = "storage.ntcp2-static-key"
+protocol = "ntcp2"
+structure = "versioned-static-key-and-obfuscation-iv-store"
+scope = "required-later"
+status = "experimental"
+evidence = ["crates/i2pr-storage/src/lib.rs", "tests/fixtures/ntcp2/crypto/storage-static-key.hex", "plans/032-closure.md"]
+advertised = false
+
+[[surface]]
 id = "i2np.envelope"
 protocol = "i2np"
 structure = "bounded-message-envelope-and-header"

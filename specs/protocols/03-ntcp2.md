@@ -18,6 +18,34 @@ NTCP2 provides authenticated point-to-point transport of complete I2NP messages 
 
 The official protocol is based on `Noise_XK_25519_ChaChaPoly_SHA256` with I2P-specific transcript/KDF identifiers and framing extensions. A generic Noise XK library is not sufficient without implementing those exact extensions.
 
+## Plan 032 foundation evidence
+
+Plan 032 implements only the non-I/O cryptographic composition needed by the
+later handshake plan. The selected protocol name is
+`Noise_XKaesobfse+hs2+hs3_25519_ChaChaPoly_SHA256`, with an empty prologue,
+SHA-256 transcript hashing, HMAC-SHA256 KDF steps, ChaCha20-Poly1305 cipher
+states, AES-256-CBC ephemeral-key obfuscation, and SipHash-2-4 length material.
+The source-linked constants are centralized in
+`crates/i2pr-transport-ntcp2/src/constants.rs`; dependency and Noise choices
+are recorded in [ADR 0011](../../docs/adr/0011-ntcp2-crypto-and-static-key-storage.md).
+
+`crates/i2pr-transport-ntcp2/src/crypto.rs` provides consuming role-aware
+stages for SessionRequest, SessionCreated, and SessionConfirmed. It does not
+parse complete messages, RouterInfo, options, padding policy, frames, blocks,
+timestamps, sockets, or runtime events. SessionConfirmed part one deliberately
+uses the retained SessionRequest cipher state at nonce 1 before the `se` KDF.
+
+`i2pr-storage::TransportStaticKeyStore` persists the independent X25519 static
+key and published IV at `ntcp2.static.key` in the private router data
+directory. This record is separate from `router.identity`, strict and
+checksummed, create-only, permission-hardened, and not a publication API.
+
+Deterministic evidence is under `tests/fixtures/ntcp2/crypto/` and is checked
+by `scripts/check-ntcp2-vectors.sh`. The corpus includes independent
+Python-cryptography primitive/transcript-composition values and synthetic
+storage bytes. It is local experimental evidence only; it is not Java I2P or
+i2pd interoperability evidence and does not authorize capability advertisement.
+
 ## Required MVP behavior
 
 ### RouterInfo and key material

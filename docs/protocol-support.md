@@ -11,10 +11,10 @@ The fine-grained, machine-readable inventory for Milestone 1 is
 ledger does not itself publish protocol capabilities.
 
 Plan 031 adds transport-neutral link, delivery, lifecycle, and resource
-contracts plus a Tokio-free NTCP2 crate skeleton. These are architectural
-contracts, not NTCP2 protocol support evidence, so the NTCP2 row remains
-“Not implemented” and no transport capability is advertised or added to the
-protocol support ledger.
+contracts, and Plan 032 adds a Tokio-free NTCP2 cryptographic/transcript
+foundation plus static-key persistence. These are experimental local evidence,
+not complete NTCP2 protocol support; no transport capability is advertised or
+published in RouterInfo.
 
 | Protocol area | Status | Planned milestone | Specification/source starting point | Test-vector status | Interoperability status |
 | --- | --- | --- | --- | --- | --- |
@@ -24,7 +24,7 @@ protocol support ledger.
 | I2NP envelope and header variants | Experimental structural subset; not advertised | 1, 3–6 | `specs/protocols/02-i2np.md`, pinned 0.9.69 source in `specs/SOURCES.md` | Locally authored standard/short vectors, truncation, size, checksum, and trailing-byte tests; hashed fixture manifest | None |
 | I2NP type registry and selected body codecs | Experimental structural subset; NetDB body semantics deferred | 1, 4 | `specs/protocols/02-i2np.md`, `crates/i2pr-proto/src/i2np/mod.rs` | Fixed and malformed local vectors for DatabaseLookup, DatabaseSearchReply, DeliveryStatus, DatabaseStore framing, and fixed tunnel framing | None |
 | I2NP tunnel, garlic, data, and later record semantics | Deferred or framing-only | 1, 5–6 | `specs/protocols/02-i2np.md`, `specs/protocols/05-tunnels.md`, `specs/protocols/06-garlic-ecies-leasesets.md` | Bounded `Deferred`/`Opaque` retention and shape checks only; no crypto or state-machine vectors | None |
-| NTCP2 | Not implemented | 3 | `specs/protocols/03-ntcp2.md` | None imported | None |
+| NTCP2 crypto/transcript foundation | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0011 | Independent deterministic primitive/transcript vectors and hashed manifest; no router interoperability | None |
 | Reseed and RouterInfo publication | Not implemented | 4 | `specs/protocols/04-reseed-netdb.md` | None imported | None |
 | Network tunnels and transit participation | Not implemented | 5 | `specs/protocols/05-tunnels.md` | None imported | None |
 | Classic LeaseSet structural codec | Experimental structural subset; LeaseSet2-family deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Local Lease/LeaseSet vectors and negative tests; no independent router vectors | None |

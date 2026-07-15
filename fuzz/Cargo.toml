@@ -10,7 +10,10 @@ cargo-fuzz = true
 [workspace]
 
 [dependencies]
+i2pr-crypto = { path = "../crates/i2pr-crypto" }
 i2pr-proto = { path = "../crates/i2pr-proto" }
+i2pr-storage = { path = "../crates/i2pr-storage" }
+i2pr-transport-ntcp2 = { path = "../crates/i2pr-transport-ntcp2" }
 libfuzzer-sys = "0.4"
 
 [[bin]]
@@ -112,5 +115,17 @@ doc = false
 [[bin]]
 name = "i2np_short_transport"
 path = "fuzz_targets/i2np_short_transport.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ntcp2_transcript"
+path = "fuzz_targets/ntcp2_transcript.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ntcp2_storage"
+path = "fuzz_targets/ntcp2_storage.rs"
 test = false
 doc = false

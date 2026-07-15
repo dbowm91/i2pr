@@ -1,17 +1,16 @@
-//! NTCP2 ownership boundary reserved for later protocol plans.
+//! Runtime-neutral NTCP2 cryptographic foundation.
 //!
-//! Plan 031 deliberately exposes no handshake, frame, block, socket, address,
-//! or cryptographic behavior.  The private modules establish physical
-//! ownership locations so later work does not leak Tokio or filesystem
-//! responsibilities into this crate.
+//! Plan 032 adds protocol-specific cryptographic composition and deterministic
+//! transcript stages. Complete handshake messages, frames, blocks, sockets,
+//! and link management remain later-plan responsibilities.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 mod address;
 mod block;
-mod constants;
-mod crypto;
+pub mod constants;
+pub mod crypto;
 mod frame;
 mod handshake;
 mod state_machine;

@@ -1,8 +1,8 @@
 # i2pr-proto fuzzing
 
-This is an independent cargo-fuzz workspace. Its only runtime dependency is
-the local `i2pr-proto` crate; `libfuzzer-sys` is intentionally confined here
-and is used by nightly-only cargo-fuzz builds.
+This is an independent cargo-fuzz workspace. Its runtime dependencies are
+local protocol, crypto, storage, and NTCP2 crates; `libfuzzer-sys` is
+intentionally confined here and is used by nightly-only cargo-fuzz builds.
 
 Each target rejects input above its caller-visible maximum before invoking a
 decoder. Harnesses perform only pure parsing: they do not open sockets, read or
@@ -28,3 +28,7 @@ Long campaigns should retain minimized regressions in the matching corpus.
 The seed files are deliberately small, locally authored malformed inputs. See
 `corpus/metadata.toml` for their provenance; they are not network captures,
 peer identities, or copied implementation fixtures.
+
+The `ntcp2_transcript` and `ntcp2_storage` targets cover bounded synthetic
+transcript sequencing and exact-format transport-static-key record decoding;
+they never use operational keys or filesystem access.

@@ -9,7 +9,8 @@ under `crates/`: `i2pr-proto` (bounded wire codecs), `i2pr-crypto`,
 Tokio-free `i2pr-transport-ntcp2`, Tokio-owning `i2pr-runtime`, the
 `i2pr-daemon` composition root, and test-only `i2pr-testkit`. Integration tests
 are in crate `tests/` directories; sanitized I2NP fixtures are in
-`tests/fixtures/i2np/`; the opt-in nightly fuzz workspace is `fuzz/`.
+`tests/fixtures/i2np/`; NTCP2 crypto fixtures are under
+`tests/fixtures/ntcp2/crypto/`; the opt-in nightly fuzz workspace is `fuzz/`.
 
 Preserve the dependency direction `i2pr-proto <- i2pr-crypto <- i2pr-storage`,
 `i2pr-core <- i2pr-transport <- i2pr-runtime <- i2pr-daemon`, and the
@@ -62,7 +63,9 @@ bounded steps—never wall-clock sleeps or public-network traffic.
 Transport-focused changes should also run `cargo test -p i2pr-transport
 --all-targets`, `cargo test -p i2pr-transport-ntcp2 --all-targets`, and both
 dependency/runtime boundary scripts. Plan 031 is structural evidence only;
-it does not authorize NTCP2 handshake, socket, or public-network testing.
+Plan 032 adds only runtime-neutral cryptographic composition and deterministic
+vectors; it does not authorize complete NTCP2 handshake, socket, or
+public-network testing.
 
 ## Runtime, Security, and Observability Rules
 
@@ -78,6 +81,17 @@ restrictive from inception, atomic, and fails closed on corruption.
 
 Do not perform malformed, stress, or fault-injection testing against the
 public I2P network; use `i2pr-testkit` or an authorized isolated testnet.
+
+NTCP2 secret owners must remain non-cloneable, non-debuggable, and zeroizing;
+the forbidden nonce value `2^64 - 1` must never be emitted. Keep the
+SessionRequest cipher owner needed by SessionConfirmed part one explicit and
+consuming. Store NTCP2 static key/IV material only through the separate
+versioned `i2pr-storage` record; never derive it from or overwrite the router
+identity record. Committed NTCP2 vectors must be synthetic, provenance-recorded,
+hash-manifested, and consumed by tests. Run
+`bash scripts/check-ntcp2-vectors.sh` when they change. Local crypto vectors are
+not interoperability evidence and must not advance support or capability
+advertisement claims.
 
 ## Commits and Pull Requests
 

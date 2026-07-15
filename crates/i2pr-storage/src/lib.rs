@@ -15,8 +15,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use i2pr_crypto::{
     CryptoError, PRIVATE_KEY_LENGTH, ROUTER_CRYPTO_KEY_TYPE, ROUTER_SIGNING_KEY_TYPE,
-    RouterIdentityBundle, constant_time_eq, sha256,
+    RouterIdentityBundle, TransportStaticKey, X25519PrivateKey, constant_time_eq, sha256,
 };
+use rand_core::TryCryptoRng;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -27,6 +28,13 @@ pub const MAX_IDENTITY_FILE_SIZE: usize = 4096;
 /// Version of the explicit private identity format.
 pub const IDENTITY_FORMAT_VERSION: u16 = 1;
 
+/// The private NTCP2 static-key and obfuscation-IV filename.
+pub const NTCP2_TRANSPORT_KEY_FILE_NAME: &str = "ntcp2.static.key";
+/// Maximum bytes read from the NTCP2 static-key file before parsing.
+pub const MAX_NTCP2_TRANSPORT_KEY_FILE_SIZE: usize = 4096;
+/// Version of the NTCP2 static-key and IV format.
+pub const NTCP2_TRANSPORT_KEY_FORMAT_VERSION: u16 = 1;
+
 const MAGIC: &[u8; 8] = b"I2PRID\0\0";
 const CHECKSUM_LENGTH: usize = 32;
 const PUBLIC_KEY_LENGTH: usize = 32;
@@ -35,6 +43,17 @@ const PAYLOAD_LENGTH: usize = PRIVATE_KEY_LENGTH * 4;
 const IDENTITY_FILE_LENGTH: usize = HEADER_LENGTH + PAYLOAD_LENGTH + CHECKSUM_LENGTH;
 const RESERVED_HEADER: u16 = 0;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+const NTCP2_MAGIC: &[u8; 8] = b"I2PRN2K\0";
+const NTCP2_HEADER_LENGTH: usize = 20;
+const NTCP2_PUBLIC_KEY_LENGTH: usize = 32;
+const NTCP2_IV_LENGTH: usize = 16;
+const NTCP2_CHECKSUM_LENGTH: usize = 32;
+const NTCP2_FILE_LENGTH: usize = NTCP2_HEADER_LENGTH
+    + PRIVATE_KEY_LENGTH
+    + NTCP2_PUBLIC_KEY_LENGTH
+    + NTCP2_IV_LENGTH
+    + NTCP2_CHECKSUM_LENGTH;
 
 /// Errors returned while creating, loading, validating, or atomically storing
 /// a private router identity.
@@ -134,7 +153,7 @@ impl IdentityStore {
         ensure_secure_directory(parent)?;
         reject_existing_target(&self.path)?;
 
-        let (temporary_path, mut temporary) = create_temporary_file(parent)?;
+        let (temporary_path, mut temporary) = create_temporary_file(parent, "router.identity")?;
         let result = (|| {
             temporary
                 .write_all(encoded.as_slice())
@@ -199,6 +218,155 @@ impl IdentityStore {
         }
         decode_identity(&bytes)
     }
+}
+
+/// Independently generated NTCP2 static key and its published obfuscation IV.
+///
+/// The private key is owned by the zeroizing `i2pr-crypto` wrapper. The IV is
+/// public protocol material but is persisted beside the key so an immediate
+/// restart cannot silently change the RouterAddress contract.
+pub struct TransportStaticKeyMaterial {
+    key: TransportStaticKey,
+    iv: [u8; NTCP2_IV_LENGTH],
+}
+
+impl TransportStaticKeyMaterial {
+    /// Generates independent static key and IV material from an injected RNG.
+    pub fn generate<R: TryCryptoRng + ?Sized>(rng: &mut R) -> Result<Self, StorageError> {
+        let key = X25519PrivateKey::generate(rng)?;
+        let mut iv = Zeroizing::new([0_u8; NTCP2_IV_LENGTH]);
+        rng.try_fill_bytes(&mut *iv)
+            .map_err(|_| StorageError::Crypto(CryptoError::RandomnessUnavailable))?;
+        Ok(Self { key, iv: *iv })
+    }
+
+    /// Reconstructs material for deterministic tests or an explicit migration.
+    pub fn from_parts(key: TransportStaticKey, iv: [u8; NTCP2_IV_LENGTH]) -> Self {
+        Self { key, iv }
+    }
+
+    /// Borrows the private static-key owner.
+    pub const fn key(&self) -> &TransportStaticKey {
+        &self.key
+    }
+
+    /// Borrows the published AES obfuscation IV.
+    pub const fn iv(&self) -> &[u8; NTCP2_IV_LENGTH] {
+        &self.iv
+    }
+}
+
+/// A create-only store for NTCP2 static key material.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransportStaticKeyStore {
+    path: PathBuf,
+}
+
+impl TransportStaticKeyStore {
+    /// Creates a store for an exact NTCP2 key path without touching disk.
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// Creates a store under the existing private router data directory.
+    pub fn in_data_dir(data_dir: &Path) -> Self {
+        Self::new(data_dir.join(NTCP2_TRANSPORT_KEY_FILE_NAME))
+    }
+
+    /// Returns the configured key path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Generates and atomically saves new material without replacement.
+    pub fn generate_new<R: TryCryptoRng + ?Sized>(
+        &self,
+        rng: &mut R,
+    ) -> Result<TransportStaticKeyMaterial, StorageError> {
+        let material = TransportStaticKeyMaterial::generate(rng)?;
+        self.save_new(&material)?;
+        Ok(material)
+    }
+
+    /// Saves material with atomic no-replace semantics.
+    pub fn save_new(&self, material: &TransportStaticKeyMaterial) -> Result<(), StorageError> {
+        let encoded = encode_ntcp2_transport_key(material)?;
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        ensure_secure_directory(parent)?;
+        reject_existing_target(&self.path)?;
+        let (temporary_path, mut temporary) = create_temporary_file(parent, "ntcp2.static.key")?;
+        let result = (|| {
+            temporary
+                .write_all(encoded.as_slice())
+                .map_err(|source| storage_io("write temporary NTCP2 key", source))?;
+            temporary
+                .sync_all()
+                .map_err(|source| storage_io("sync temporary NTCP2 key", source))?;
+            drop(temporary);
+            fs::hard_link(&temporary_path, &self.path).map_err(|source| {
+                if source.kind() == io::ErrorKind::AlreadyExists {
+                    StorageError::AlreadyExists
+                } else {
+                    storage_io("install NTCP2 key", source)
+                }
+            })?;
+            fs::remove_file(&temporary_path)
+                .map_err(|source| storage_io("remove temporary NTCP2 key", source))?;
+            sync_directory(parent)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+        }
+        result
+    }
+
+    /// Loads and fully validates existing NTCP2 static material.
+    pub fn load(&self) -> Result<TransportStaticKeyMaterial, StorageError> {
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        validate_existing_directory(parent)?;
+        let metadata = fs::symlink_metadata(&self.path)
+            .map_err(|source| storage_io("inspect NTCP2 key", source))?;
+        validate_identity_file_metadata(&metadata)?;
+        let length = usize::try_from(metadata.len()).map_err(|_| StorageError::TooLarge {
+            actual: usize::MAX,
+            maximum: MAX_NTCP2_TRANSPORT_KEY_FILE_SIZE,
+        })?;
+        if length > MAX_NTCP2_TRANSPORT_KEY_FILE_SIZE {
+            return Err(StorageError::TooLarge {
+                actual: length,
+                maximum: MAX_NTCP2_TRANSPORT_KEY_FILE_SIZE,
+            });
+        }
+        let mut file =
+            File::open(&self.path).map_err(|source| storage_io("open NTCP2 key", source))?;
+        let mut bytes = Zeroizing::new(Vec::with_capacity(length));
+        file.read_to_end(&mut bytes)
+            .map_err(|source| storage_io("read NTCP2 key", source))?;
+        if bytes.len() > MAX_NTCP2_TRANSPORT_KEY_FILE_SIZE {
+            return Err(StorageError::TooLarge {
+                actual: bytes.len(),
+                maximum: MAX_NTCP2_TRANSPORT_KEY_FILE_SIZE,
+            });
+        }
+        decode_transport_static_key(&bytes)
+    }
+}
+
+/// Decodes one bounded, exact-format NTCP2 static-key record.
+///
+/// This pure entry point is used by the isolated fuzz harness and by callers
+/// that already own the file-policy boundary. It does not log, retain, or
+/// expose the decoded private key.
+pub fn decode_transport_static_key(
+    bytes: &[u8],
+) -> Result<TransportStaticKeyMaterial, StorageError> {
+    if bytes.len() > MAX_NTCP2_TRANSPORT_KEY_FILE_SIZE {
+        return Err(StorageError::TooLarge {
+            actual: bytes.len(),
+            maximum: MAX_NTCP2_TRANSPORT_KEY_FILE_SIZE,
+        });
+    }
+    decode_ntcp2_transport_key(bytes)
 }
 
 fn storage_io(operation: &'static str, source: io::Error) -> StorageError {
@@ -301,6 +469,91 @@ fn decode_identity(bytes: &[u8]) -> Result<RouterIdentityBundle, StorageError> {
     Ok(bundle)
 }
 
+fn encode_ntcp2_transport_key(
+    material: &TransportStaticKeyMaterial,
+) -> Result<Zeroizing<Vec<u8>>, StorageError> {
+    let public = material.key().public_bytes();
+    let mut bytes = Vec::with_capacity(NTCP2_FILE_LENGTH);
+    bytes.extend_from_slice(NTCP2_MAGIC);
+    push_u16(&mut bytes, NTCP2_TRANSPORT_KEY_FORMAT_VERSION);
+    push_u16(&mut bytes, RESERVED_HEADER);
+    push_u16(&mut bytes, ROUTER_CRYPTO_KEY_TYPE.code());
+    push_u16(&mut bytes, PRIVATE_KEY_LENGTH as u16);
+    push_u16(&mut bytes, NTCP2_PUBLIC_KEY_LENGTH as u16);
+    push_u16(&mut bytes, NTCP2_IV_LENGTH as u16);
+    bytes.extend_from_slice(material.key().secret_bytes());
+    bytes.extend_from_slice(&public);
+    bytes.extend_from_slice(material.iv());
+    let checksum = sha256(&bytes);
+    bytes.extend_from_slice(checksum.as_bytes());
+    if bytes.len() != NTCP2_FILE_LENGTH {
+        return Err(StorageError::Malformed {
+            context: "NTCP2 encoded length",
+        });
+    }
+    Ok(Zeroizing::new(bytes))
+}
+
+fn decode_ntcp2_transport_key(bytes: &[u8]) -> Result<TransportStaticKeyMaterial, StorageError> {
+    if bytes.len() < NTCP2_FILE_LENGTH {
+        return Err(StorageError::Truncated);
+    }
+    if bytes.len() > NTCP2_FILE_LENGTH {
+        return Err(StorageError::TrailingBytes);
+    }
+    let mut reader = Reader::new(bytes);
+    if reader.take(NTCP2_MAGIC.len())? != NTCP2_MAGIC {
+        return Err(StorageError::Malformed {
+            context: "NTCP2 magic",
+        });
+    }
+    let version = reader.u16()?;
+    if version != NTCP2_TRANSPORT_KEY_FORMAT_VERSION {
+        return Err(StorageError::UnsupportedVersion { actual: version });
+    }
+    if reader.u16()? != RESERVED_HEADER {
+        return Err(StorageError::Malformed {
+            context: "NTCP2 reserved header",
+        });
+    }
+    let algorithm = reader.u16()?;
+    if algorithm != ROUTER_CRYPTO_KEY_TYPE.code() {
+        return Err(StorageError::UnsupportedAlgorithm {
+            algorithm,
+            context: "NTCP2 static key",
+        });
+    }
+    if reader.u16()? != PRIVATE_KEY_LENGTH as u16 {
+        return Err(StorageError::Malformed {
+            context: "NTCP2 private key length",
+        });
+    }
+    if reader.u16()? != NTCP2_PUBLIC_KEY_LENGTH as u16 {
+        return Err(StorageError::Malformed {
+            context: "NTCP2 public key length",
+        });
+    }
+    if reader.u16()? != NTCP2_IV_LENGTH as u16 {
+        return Err(StorageError::Malformed {
+            context: "NTCP2 IV length",
+        });
+    }
+    let private = reader.array::<PRIVATE_KEY_LENGTH>()?;
+    let public = reader.array::<NTCP2_PUBLIC_KEY_LENGTH>()?;
+    let iv = reader.array::<NTCP2_IV_LENGTH>()?;
+    let stored_checksum = reader.array::<NTCP2_CHECKSUM_LENGTH>()?;
+    reader.finish()?;
+    let expected_checksum = sha256(&bytes[..NTCP2_FILE_LENGTH - NTCP2_CHECKSUM_LENGTH]);
+    if !constant_time_eq(&*stored_checksum, expected_checksum.as_bytes()) {
+        return Err(StorageError::Integrity);
+    }
+    let key = X25519PrivateKey::from_bytes(*private);
+    if !constant_time_eq(&key.public_bytes(), &*public) {
+        return Err(StorageError::Integrity);
+    }
+    Ok(TransportStaticKeyMaterial::from_parts(key, *iv))
+}
+
 fn push_u16(bytes: &mut Vec<u8>, value: u16) {
     bytes.extend_from_slice(&value.to_be_bytes());
 }
@@ -314,14 +567,10 @@ fn reject_existing_target(path: &Path) -> Result<(), StorageError> {
     }
 }
 
-fn create_temporary_file(parent: &Path) -> Result<(PathBuf, File), StorageError> {
+fn create_temporary_file(parent: &Path, prefix: &str) -> Result<(PathBuf, File), StorageError> {
     for _ in 0..16 {
         let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = parent.join(format!(
-            ".router.identity.{:?}.{}",
-            std::process::id(),
-            counter
-        ));
+        let path = parent.join(format!(".{prefix}.{:?}.{counter}", std::process::id()));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -668,5 +917,123 @@ mod tests {
             .count();
         assert_eq!(successes, 1);
         store.load().expect("winner remains loadable");
+    }
+
+    fn transport_store(directory: &tempfile::TempDir) -> TransportStaticKeyStore {
+        let data_dir = directory.path().join("state");
+        IdentityStore::prepare_directory(&data_dir).expect("private state directory");
+        TransportStaticKeyStore::in_data_dir(&data_dir)
+    }
+
+    fn transport_material(seed: u64) -> TransportStaticKeyMaterial {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        TransportStaticKeyMaterial::generate(&mut rng).expect("transport material")
+    }
+
+    fn decode_hex_fixture(value: &str) -> Vec<u8> {
+        value
+            .split_whitespace()
+            .flat_map(|part| part.as_bytes().chunks_exact(2))
+            .map(|pair| {
+                let high = (pair[0] as char).to_digit(16).expect("hex high");
+                let low = (pair[1] as char).to_digit(16).expect("hex low");
+                ((high << 4) | low) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ntcp2_static_key_and_iv_round_trip_without_identity_coupling() {
+        let directory = tempdir().expect("directory");
+        let store = transport_store(&directory);
+        let material = transport_material(21);
+        store.save_new(&material).expect("save transport material");
+        let loaded = store.load().expect("load transport material");
+        assert_eq!(loaded.key().public_bytes(), material.key().public_bytes());
+        assert_eq!(loaded.iv(), material.iv());
+        assert_ne!(
+            store.path(),
+            IdentityStore::in_data_dir(store.path().parent().expect("parent")).path()
+        );
+    }
+
+    #[test]
+    fn committed_ntcp2_static_key_fixture_loads_strictly() {
+        let directory = tempdir().expect("directory");
+        let store = transport_store(&directory);
+        let bytes = decode_hex_fixture(include_str!(
+            "../../../tests/fixtures/ntcp2/crypto/storage-static-key.hex"
+        ));
+        assert_eq!(bytes.len(), NTCP2_FILE_LENGTH);
+        write_fixture(store.path(), &bytes);
+        let loaded = store.load().expect("fixture load");
+        assert_eq!(
+            loaded.iv(),
+            &[
+                0x23, 0x22, 0x5e, 0xc6, 0x7a, 0x4e, 0x5d, 0x69, 0xc0, 0xb8, 0xfc, 0xb1, 0x01, 0x68,
+                0x6f, 0x29,
+            ]
+        );
+    }
+
+    #[test]
+    fn ntcp2_static_key_rejects_mutations_and_replacement() {
+        let directory = tempdir().expect("directory");
+        let store = transport_store(&directory);
+        let material = transport_material(22);
+        store.save_new(&material).expect("save transport material");
+        let before = fs::read(store.path()).expect("read transport material");
+        assert!(matches!(
+            store.save_new(&transport_material(23)),
+            Err(StorageError::AlreadyExists)
+        ));
+        assert_eq!(
+            fs::read(store.path()).expect("read transport material"),
+            before
+        );
+
+        let mut checksum = before.clone();
+        checksum[NTCP2_HEADER_LENGTH] ^= 1;
+        write_fixture(store.path(), &checksum);
+        assert!(matches!(store.load(), Err(StorageError::Integrity)));
+
+        let mut public_mismatch = before.clone();
+        public_mismatch[NTCP2_HEADER_LENGTH + PRIVATE_KEY_LENGTH] ^= 1;
+        let checksum = sha256(&public_mismatch[..NTCP2_FILE_LENGTH - NTCP2_CHECKSUM_LENGTH]);
+        public_mismatch[NTCP2_FILE_LENGTH - NTCP2_CHECKSUM_LENGTH..]
+            .copy_from_slice(checksum.as_bytes());
+        write_fixture(store.path(), &public_mismatch);
+        assert!(matches!(store.load(), Err(StorageError::Integrity)));
+
+        let mut version = before.clone();
+        version[8..10].copy_from_slice(&2_u16.to_be_bytes());
+        write_fixture(store.path(), &version);
+        assert!(matches!(
+            store.load(),
+            Err(StorageError::UnsupportedVersion { actual: 2 })
+        ));
+
+        for end in 0..before.len() {
+            write_fixture(store.path(), &before[..end]);
+            assert!(store.load().is_err(), "truncated transport key must fail");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ntcp2_static_key_store_has_private_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().expect("directory");
+        let store = transport_store(&directory);
+        store
+            .save_new(&transport_material(24))
+            .expect("save transport material");
+        let mode = fs::metadata(store.path())
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }

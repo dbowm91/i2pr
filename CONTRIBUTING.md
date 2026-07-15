@@ -88,6 +88,26 @@ bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh
 ```
 
+Plan 032's `i2pr-transport-ntcp2` work is still runtime-neutral. Keep reviewed
+primitive crates behind the protocol-specific wrappers; do not add a generic
+Noise/provider API, Tokio, sockets, or filesystem access. Preserve consuming
+transcript transitions, the retained SessionRequest cipher state used by
+SessionConfirmed part one, checked nonce bounds, all-zero X25519 rejection,
+and redacted secret owners. Persist NTCP2 static key plus IV material only
+through `i2pr-storage`'s separate versioned create-only record.
+
+When changing NTCP2 fixtures, run:
+
+```text
+cargo test -p i2pr-transport-ntcp2 --all-targets
+cargo test -p i2pr-storage --all-targets
+bash scripts/check-ntcp2-vectors.sh
+```
+
+The independent deterministic corpus is local crypto evidence only. Do not
+describe it as Java I2P/i2pd interoperability or use it to advertise NTCP2;
+that evidence belongs to the authorized later interoperability plan.
+
 Transport code must pass bounded encoded-I2NP owners through explicit consuming
 handoffs, retain only typed delivery and termination outcomes, and keep peer
 references, addresses, keys, transcripts, and payload bytes out of default
