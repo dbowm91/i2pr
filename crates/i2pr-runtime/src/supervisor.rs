@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::FutureExt;
@@ -48,6 +48,9 @@ pub struct ShutdownReport {
     forced_services: Vec<ServiceName>,
     completions: BTreeMap<ServiceName, ServiceCompletion>,
     joined_tasks: usize,
+    joined_child_tasks: usize,
+    remaining_child_tasks: usize,
+    cleanup_failures: usize,
     remaining_tasks: usize,
 }
 
@@ -75,6 +78,21 @@ impl ShutdownReport {
     /// Number of manager tasks joined by the supervisor.
     pub const fn joined_tasks(&self) -> usize {
         self.joined_tasks
+    }
+
+    /// Number of child tasks joined during forced cleanup.
+    pub const fn joined_child_tasks(&self) -> usize {
+        self.joined_child_tasks
+    }
+
+    /// Number of child tasks still owned after the final bounded drain.
+    pub const fn remaining_child_tasks(&self) -> usize {
+        self.remaining_child_tasks
+    }
+
+    /// Number of typed cleanup-invariant failures observed.
+    pub const fn cleanup_failures(&self) -> usize {
+        self.cleanup_failures
     }
 
     /// Number of owned tasks remaining after shutdown. This must be zero.
@@ -204,12 +222,21 @@ struct ManagerOutput {
 struct ActiveManager {
     cancellation: CancellationToken,
     graceful_period: Duration,
+    child_scope: Arc<Mutex<Option<ChildScope>>>,
 }
 
 #[derive(Debug)]
 struct AttemptOutput {
     completion: ServiceCompletion,
     sustained_ready: bool,
+}
+
+struct AttemptOwner<'a> {
+    health: &'a Arc<SharedHealth>,
+    clock: &'a Arc<RuntimeClock>,
+    state: &'a Arc<TaskCounters>,
+    startup_sender: &'a watch::Sender<bool>,
+    child_scope_slot: &'a Arc<Mutex<Option<ChildScope>>>,
 }
 
 enum ReadinessPhase {
@@ -542,6 +569,8 @@ impl Supervisor {
         let manager_name = spec.name().clone();
         let clock = Arc::clone(&self.clock);
         let state = Arc::clone(&self.state);
+        let child_scope = Arc::new(Mutex::new(None));
+        let child_scope_for_task = Arc::clone(&child_scope);
         let manager_token_for_task = manager_token.clone();
         tasks.spawn(async move {
             match AssertUnwindSafe(run_manager(
@@ -551,6 +580,7 @@ impl Supervisor {
                 clock,
                 state,
                 ready_sender,
+                child_scope_for_task,
             ))
             .catch_unwind()
             .await
@@ -567,6 +597,7 @@ impl Supervisor {
             ActiveManager {
                 cancellation: manager_token,
                 graceful_period,
+                child_scope,
             },
             ready_receiver,
         )
@@ -838,6 +869,9 @@ impl Supervisor {
 
         let mut forced_services = BTreeSet::new();
         let mut joined_tasks = 0;
+        let mut joined_child_tasks = 0;
+        let mut remaining_child_tasks = 0;
+        let mut cleanup_failures = 0;
         let mut cleanup_failed = false;
         let mut aborted = false;
         let graceful_period = active
@@ -887,10 +921,36 @@ impl Supervisor {
                         );
                         completions.insert(name.clone(), completion);
                     }
-                    active.clear();
                     tasks.abort_all();
-                    shutdown_event(event::SHUTDOWN_FORCED, forced_services.len());
                     aborted = true;
+                    while let Some(joined) = tasks.join_next().await {
+                        self.state.service_finished();
+                        joined_tasks += 1;
+                        if joined.is_err() && !aborted {
+                            cleanup_failed = true;
+                        }
+                    }
+                    let child_scopes: Vec<ChildScope> = active
+                        .values()
+                        .filter_map(|manager| {
+                            manager
+                                .child_scope
+                                .lock()
+                                .ok()
+                                .and_then(|scope| scope.clone())
+                        })
+                        .collect();
+                    for child_scope in child_scopes {
+                        let child_report = child_scope.force_shutdown().await;
+                        joined_child_tasks += child_report.joined();
+                        remaining_child_tasks += child_report.remaining();
+                        if child_report.remaining() != 0 {
+                            cleanup_failures += 1;
+                            cleanup_failed = true;
+                        }
+                    }
+                    active.clear();
+                    shutdown_event(event::SHUTDOWN_FORCED, forced_services.len());
                     break;
                 }
             }
@@ -917,7 +977,10 @@ impl Supervisor {
             forced_services: forced_services.into_iter().collect(),
             completions: completions.clone(),
             joined_tasks,
-            remaining_tasks: tasks.len(),
+            joined_child_tasks,
+            remaining_child_tasks,
+            cleanup_failures,
+            remaining_tasks: tasks.len() + remaining_child_tasks,
         }
     }
 }
@@ -929,6 +992,7 @@ async fn run_manager(
     clock: Arc<RuntimeClock>,
     state: Arc<TaskCounters>,
     startup_sender: watch::Sender<bool>,
+    child_scope: Arc<Mutex<Option<ChildScope>>>,
 ) -> ManagerOutput {
     let name = spec.name().clone();
     let mut restart_count = 0;
@@ -952,15 +1016,16 @@ async fn run_manager(
             &spec,
             &token,
             restart_count,
-            &health,
-            &clock,
-            &state,
-            &startup_sender,
+            AttemptOwner {
+                health: &health,
+                clock: &clock,
+                state: &state,
+                startup_sender: &startup_sender,
+                child_scope_slot: &child_scope,
+            },
         )
         .await;
-        if matches!(attempt.completion, ServiceCompletion::RequestedShutdown)
-            || token.is_cancelled()
-        {
+        if matches!(attempt.completion, ServiceCompletion::RequestedShutdown) {
             health.set(
                 LifecycleState::Stopped,
                 HealthState::Stopping,
@@ -1067,20 +1132,20 @@ async fn run_attempt(
     spec: &ServiceSpec,
     token: &CancellationToken,
     restart_count: u32,
-    health: &Arc<SharedHealth>,
-    clock: &Arc<RuntimeClock>,
-    state: &Arc<TaskCounters>,
-    startup_sender: &watch::Sender<bool>,
+    owner: AttemptOwner<'_>,
 ) -> AttemptOutput {
     let service_token = token.child_token();
     let (readiness, mut readiness_receiver) = Readiness::new();
     let readiness_observer = readiness.clone();
-    let children = ChildScope::new(&service_token, spec.child_policy(), Arc::clone(state));
+    let children = ChildScope::new(&service_token, spec.child_policy(), Arc::clone(owner.state));
+    if let Ok(mut slot) = owner.child_scope_slot.lock() {
+        *slot = Some(children.clone());
+    }
     let context = ServiceContext::new(
         spec.name().clone(),
         service_token.clone(),
         readiness,
-        health.reporter(),
+        owner.health.reporter(),
         children.clone(),
     );
     let factory = spec.factory();
@@ -1094,9 +1159,9 @@ async fn run_attempt(
             tokio::select! {
                 ready = Readiness::wait(&mut readiness_receiver) => {
                     if ready.is_ok() {
-                        ready_at = Some(clock.now());
-                        let _ = startup_sender.send(true);
-                        health.set(
+                        ready_at = Some(owner.clock.now());
+                        let _ = owner.startup_sender.send(true);
+                        owner.health.set(
                             LifecycleState::Ready,
                             HealthState::Ready,
                             restart_count,
@@ -1126,36 +1191,18 @@ async fn run_attempt(
     let completion = match phase {
         Err(_) => ServiceCompletion::StartupTimeout,
         Ok(Err(_)) => ServiceCompletion::ReadinessTimeout,
-        Ok(Ok(ReadinessPhase::Ready | ReadinessPhase::Closed)) => match service.await {
-            Ok(ServiceResult::RequestedShutdown) => ServiceCompletion::RequestedShutdown,
-            Ok(ServiceResult::Completed) => {
-                if service_token.is_cancelled() {
-                    ServiceCompletion::RequestedShutdown
-                } else {
-                    ServiceCompletion::UnexpectedCleanExit
-                }
-            }
-            Ok(ServiceResult::Failed(failure)) => ServiceCompletion::Failed(failure),
-            Err(_) => ServiceCompletion::Panic,
-        },
-        Ok(Ok(ReadinessPhase::Completed(result))) => match result {
-            Ok(ServiceResult::RequestedShutdown) => ServiceCompletion::RequestedShutdown,
-            Ok(ServiceResult::Completed) => {
-                if service_token.is_cancelled() {
-                    ServiceCompletion::RequestedShutdown
-                } else {
-                    ServiceCompletion::UnexpectedCleanExit
-                }
-            }
-            Ok(ServiceResult::Failed(failure)) => ServiceCompletion::Failed(failure),
-            Err(_) => ServiceCompletion::Panic,
-        },
+        Ok(Ok(ReadinessPhase::Ready | ReadinessPhase::Closed)) => {
+            classify_service_result(service.await, &service_token)
+        }
+        Ok(Ok(ReadinessPhase::Completed(result))) => {
+            classify_service_result(result, &service_token)
+        }
     };
 
     if readiness_observer.is_signalled() && ready_at.is_none() {
-        ready_at = Some(clock.now());
-        let _ = startup_sender.send(true);
-        health.set(
+        ready_at = Some(owner.clock.now());
+        let _ = owner.startup_sender.send(true);
+        owner.health.set(
             LifecycleState::Ready,
             HealthState::Ready,
             restart_count,
@@ -1176,7 +1223,7 @@ async fn run_attempt(
             && children.policy() == ChildFailurePolicy::DegradeParent
             && !matches!(completion, ServiceCompletion::RequestedShutdown)
         {
-            health.set(
+            owner.health.set(
                 LifecycleState::Degraded,
                 HealthState::Degraded(DegradationCode::LocalPolicy),
                 restart_count,
@@ -1192,16 +1239,35 @@ async fn run_attempt(
             spec.restart_config()
                 .and_then(|policy| policy.reset_interval()),
         )
-        .is_some_and(|(ready_at, duration)| clock.now().saturating_sub(ready_at) >= duration);
+        .is_some_and(|(ready_at, duration)| owner.clock.now().saturating_sub(ready_at) >= duration);
     AttemptOutput {
         completion,
         sustained_ready,
     }
 }
 
+fn classify_service_result(
+    result: Result<ServiceResult, Box<dyn std::any::Any + Send>>,
+    service_token: &CancellationToken,
+) -> ServiceCompletion {
+    match result {
+        Ok(ServiceResult::RequestedShutdown | ServiceResult::Completed)
+            if service_token.is_cancelled() =>
+        {
+            ServiceCompletion::RequestedShutdown
+        }
+        Ok(ServiceResult::RequestedShutdown | ServiceResult::Completed) => {
+            ServiceCompletion::UnexpectedCleanExit
+        }
+        Ok(ServiceResult::Failed(failure)) => ServiceCompletion::Failed(failure),
+        Err(_) => ServiceCompletion::Panic,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::ChildTaskFailure;
     use crate::graph::{RestartPolicy, ServiceGraph};
     use i2pr_core::{CancellationReason, ServiceName, ShutdownReason};
 
@@ -1473,6 +1539,123 @@ mod tests {
         let result = task.await.expect("supervisor joined").expect("report");
         assert_eq!(result.outcome(), ShutdownOutcome::PartiallyForced);
         assert_eq!(result.remaining_tasks(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forced_shutdown_aborts_and_joins_the_owned_child_scope() {
+        let service = ServiceSpec::new(
+            name("stuck-with-children"),
+            ServiceClassification::Essential,
+            |context| async move {
+                context
+                    .children()
+                    .spawn(|_| async move {
+                        std::future::pending::<Result<(), ChildTaskFailure>>().await
+                    })
+                    .expect("non-cooperative child registered");
+                context
+                    .children()
+                    .spawn(|cancellation| async move {
+                        cancellation.cancelled().await;
+                        Ok(())
+                    })
+                    .expect("cooperative child registered");
+                context.signal_ready().expect("ready");
+                std::future::pending::<ServiceResult>().await
+            },
+        );
+        let supervisor =
+            Supervisor::new(graph(service), Duration::from_secs(2)).expect("supervisor");
+        let handle = supervisor.handle();
+        let task = tokio::spawn(supervisor.run());
+        for _ in 0..32 {
+            tokio::task::yield_now().await;
+            if handle.snapshot().ready {
+                break;
+            }
+        }
+        assert_eq!(handle.snapshot().owned_child_tasks, 2);
+        handle.shutdown(ShutdownReason::Test);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let report = task.await.expect("supervisor joined").expect("report");
+        assert_eq!(report.outcome(), ShutdownOutcome::PartiallyForced);
+        assert_eq!(report.joined_child_tasks(), 2);
+        assert_eq!(report.remaining_child_tasks(), 0);
+        assert_eq!(report.cleanup_failures(), 0);
+        assert_eq!(report.remaining_tasks(), 0);
+        assert_eq!(handle.snapshot().owned_child_tasks, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forced_child_cleanup_is_repeatably_joined() {
+        for _ in 0..100 {
+            let service = ServiceSpec::new(
+                name("repeat-stuck"),
+                ServiceClassification::Essential,
+                |context| async move {
+                    context
+                        .children()
+                        .spawn(|_| async move {
+                            std::future::pending::<Result<(), ChildTaskFailure>>().await
+                        })
+                        .expect("child registered");
+                    context.signal_ready().expect("ready");
+                    std::future::pending::<ServiceResult>().await
+                },
+            );
+            let supervisor =
+                Supervisor::new(graph(service), Duration::from_secs(1)).expect("supervisor");
+            let handle = supervisor.handle();
+            let task = tokio::spawn(supervisor.run());
+            for _ in 0..16 {
+                tokio::task::yield_now().await;
+                if handle.snapshot().ready {
+                    break;
+                }
+            }
+            handle.shutdown(ShutdownReason::Test);
+            tokio::time::advance(Duration::from_secs(1)).await;
+            let report = task.await.expect("supervisor joined").expect("report");
+            assert_eq!(report.remaining_tasks(), 0);
+            assert_eq!(report.remaining_child_tasks(), 0);
+            assert_eq!(report.cleanup_failures(), 0);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn uncancelled_requested_shutdown_fails_an_essential_service() {
+        let service = ServiceSpec::new(
+            name("invalid-essential-completion"),
+            ServiceClassification::Essential,
+            |_context| async move { ServiceResult::RequestedShutdown },
+        );
+        let supervisor = Supervisor::new(graph(service), Duration::from_secs(5)).expect("graph");
+        let Err(SupervisorError::StartupFailed { completion, .. }) = supervisor.run().await else {
+            panic!("uncancelled requested shutdown must fail startup");
+        };
+        assert_eq!(completion, ServiceCompletion::UnexpectedCleanExit);
+    }
+
+    #[test]
+    fn completion_classification_requires_observed_cancellation() {
+        let token = CancellationToken::new();
+        assert_eq!(
+            classify_service_result(Ok(ServiceResult::RequestedShutdown), &token),
+            ServiceCompletion::UnexpectedCleanExit
+        );
+        assert_eq!(
+            classify_service_result(Ok(ServiceResult::Completed), &token),
+            ServiceCompletion::UnexpectedCleanExit
+        );
+        token.cancel(CancellationReason::OperatorRequest);
+        assert_eq!(
+            classify_service_result(Ok(ServiceResult::RequestedShutdown), &token),
+            ServiceCompletion::RequestedShutdown
+        );
+        assert_eq!(
+            classify_service_result(Ok(ServiceResult::Completed), &token),
+            ServiceCompletion::RequestedShutdown
+        );
     }
 
     #[tokio::test(start_paused = true)]

@@ -89,19 +89,20 @@ changing the crate-root API:
 ```text
 i2pr-proto/src/
   common/
-    mod.rs       date.rs       keys.rs       mapping.rs
-    certificate.rs  identity.rs  router_info.rs  lease.rs
+    mod.rs       date.rs       hash.rs       keys.rs
+    mapping.rs   certificate.rs identity.rs  router_address.rs
+    router_info.rs lease.rs
   i2np/
-    mod.rs       header.rs     netdb.rs      delivery.rs
-    tunnel.rs    deferred.rs
+    mod.rs       header.rs     message.rs    netdb.rs
+    delivery.rs  tunnel.rs     deferred.rs
 ```
 
-The private `common_impl.rs` and `i2np_impl.rs` units retain the existing
-strict codec glue and helper visibility while grouped leaf modules expose only
-stable structural names. This compatibility-oriented arrangement avoids
-making parsing helpers public merely to complete a mechanical split. Future
-protocol work should add behavior to the owning leaf namespace and preserve
-the crate-root re-export façade.
+Each leaf now owns its implementation bodies and only narrowly scoped private
+codec helpers cross domain boundaries. `common_impl.rs` and `i2np_impl.rs` are
+removed; the crate-root re-export façade remains stable, signed regions and
+numeric bounds are unchanged, and decode helpers remain private. Future
+protocol work should add behavior to the owning leaf namespace rather than
+recreate a compatibility warehouse.
 
 The fuzz workspace is an opt-in nightly test boundary. It depends on the
 production protocol crate but never enters the production dependency graph;
@@ -195,7 +196,12 @@ policy. Essential failures cancel the graph; degradable and optional failures
 remain visible without accidental process termination; restart exhaustion has
 an explicit degrade-or-shutdown choice. Service child tasks inherit
 cancellation and are joined by their scope before the parent manager reports
-completion.
+completion. The supervisor also retains one bounded owner slot for each
+active child scope. If a manager misses the shutdown deadline, the supervisor
+aborts the manager, aborts and drains that exact child collection, and only
+then publishes final task counts. Scope drop may request abort as a
+synchronous last resort but cannot decrement counters; an unconfirmed drain
+is reported as typed cleanup failure.
 
 Shutdown first cancels every manager and joins within the configured bounded
 deadline. Remaining managers are then aborted and joined. The report records
@@ -292,8 +298,9 @@ resource vocabulary. `ResourceLease` is non-cloneable and releases exactly one
 grant on drop or consuming early release. `ResourceBundle` validates all
 requests, rejects duplicates, orders classes deterministically, and commits
 all classes atomically; denial leaves usage unchanged. Per-class snapshots
-expose bounded limit, current usage, high-water mark, and saturating denial
-counts. Channel snapshots expose static metadata, capacity, queue depth, typed
+expose bounded limit, current usage, high-water mark, saturating denial
+counts, and a saturating release-underflow invariant count. Channel snapshots
+expose static metadata, capacity, queue depth, typed
 outcome counters, and drop/resource-denial counters without payloads, secrets,
 peer identities, or dynamic labels.
 

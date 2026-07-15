@@ -100,6 +100,16 @@ bounded deadline, aborts remaining managers, and joins aborted handles before
 returning. Child scopes abort their remaining children on drop as a final
 guard, while normal service completion explicitly joins them.
 
+Plan 025 closes the false-zero cleanup risk by retaining each active manager's
+bounded child-scope owner in the supervisor. A forced manager abort is followed
+by abort-and-drain of that exact child collection; child counters decrement
+only after join results, and a bounded failed drain is reported as typed
+`FailedCleanup` evidence. A synchronous scope drop can still request abort as a
+last resort, but it cannot claim termination. Service-selected
+`RequestedShutdown` without observed cancellation is classified as an
+unexpected clean exit, preventing an essential service from disappearing
+while the graph remains ready.
+
 Cancellation races are handled by Tokio's hierarchical cancellation primitive:
 registration and cancellation are wake-safe, cancellation is idempotent, a
 bounded static reason is recorded once, parent cancellation reaches children,
@@ -149,6 +159,11 @@ counters saturate rather than wrap. Lease drop, consuming release, panic
 unwind, cancellation, and forced task cleanup are all release paths. Snapshot
 metadata contains only static class/channel identifiers and bounded counters;
 payloads, secrets, peer identities, addresses, and destinations are excluded.
+Release amounts greater than current usage are treated as an internal
+accounting fault: usage is bounded back to zero, a saturating typed
+underflow counter is recorded, and cleanup remains non-panicking. The fault
+must remain visible in resource snapshots so a double release or ownership
+bug cannot be mistaken for valid cleanup.
 
 ## Deterministic simulation threats and controls
 

@@ -93,6 +93,23 @@ text are redacted. Forced abort is reported as cleanup evidence and does not
 claim that non-cooperative code performed graceful cleanup. The workspace
 continues to use `panic = "unwind"` so manager tasks can classify panics.
 
+## Plan 025 corrective amendment
+
+The accepted ownership model includes one bounded child-scope owner slot per
+active service manager. Normal manager execution retains the child `JoinSet`
+inside its `ChildScope` and joins every result before returning. On a forced
+manager abort, the supervisor retains that same scope, aborts its children,
+and drains the collection before final reporting. A scope's synchronous
+`Drop` path may request abort, but it never decrements confirmed-task counters
+or claims cleanup completion. A bounded drain that cannot confirm termination
+is surfaced as `FailedCleanup` with remaining-child evidence.
+
+Service completion is classified from observed cancellation state. A
+`RequestedShutdown` result without service, manager, or root cancellation is
+an unexpected clean exit and follows the service classification policy; only a
+cancellation-driven result is a clean requested shutdown. This prevents a
+service-selected enum value from silently removing an essential service.
+
 ## Consequences
 
 The runtime boundary is concrete rather than portable, but later replacement

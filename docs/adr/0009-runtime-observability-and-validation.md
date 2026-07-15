@@ -38,6 +38,12 @@ independent channel/resource/simulation owners, so callers must treat them as
 eventually coherent. Detailed operator troubleshooting needs typed categories
 or a later reviewed diagnostic surface rather than arbitrary error strings.
 
+Snapshots also depend on confirmed ownership evidence: a zero service or child
+task count is published only after the corresponding manager or child join has
+completed. Forced manager cleanup uses the supervisor-retained child scope;
+remaining child handles and cleanup-invariant failures remain visible in the
+typed shutdown report rather than being hidden by counter decrements.
+
 The five integrated scenarios and 32-seed matrix add deterministic test time
 but no network features, protocol support evidence, persistent event history,
 metrics exporter, or administrative listener.

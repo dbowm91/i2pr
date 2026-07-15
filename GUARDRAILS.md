@@ -92,6 +92,15 @@ Required properties:
 
 Every parser must have explicit input limits and complete-consumption behavior. Every asynchronous request path must have a deadline, cancellation path, and cleanup behavior. Every resource-owning subsystem must define shutdown semantics.
 
+Forced runtime cleanup is evidence-bearing: aborting a manager is not a child
+join. The supervisor must retain the manager's bounded child-scope owner,
+abort that exact collection after the deadline, and drain each join result
+before reporting zero child tasks. Scope `Drop` cannot decrement counters or
+claim cleanup success. An uncancelled `RequestedShutdown` is an unexpected
+clean exit and must not hide essential-service loss. Resource lease release
+underflow is a typed, bounded invariant signal; cleanup remains non-panicking
+but accounting corruption is never silently normalized.
+
 ## 5. Resource governance
 
 Resource control is a cross-cutting security property.

@@ -659,6 +659,9 @@ pub struct ResourceUsage {
     pub high_water: u64,
     /// Number of denied acquisitions, saturating at `u64::MAX`.
     pub denied: u64,
+    /// Number of invalid releases observed by this class, saturating at
+    /// `u64::MAX`. A nonzero value records an internal accounting fault.
+    pub release_underflow: u64,
 }
 
 impl ResourceUsage {
@@ -671,6 +674,11 @@ impl ResourceUsage {
     pub const fn denied_count(self) -> u64 {
         self.denied
     }
+
+    /// Returns the number of invalid release attempts observed.
+    pub const fn release_underflow_count(self) -> u64 {
+        self.release_underflow
+    }
 }
 
 #[derive(Debug, Default)]
@@ -679,6 +687,7 @@ struct ClassState {
     used: u64,
     high_water: u64,
     denied: u64,
+    release_underflow: u64,
 }
 
 #[derive(Debug, Default)]
@@ -909,6 +918,7 @@ impl ResourceBudget {
             limit: class_state.limit,
             high_water: class_state.high_water,
             denied: class_state.denied,
+            release_underflow: class_state.release_underflow,
         })
     }
 
@@ -928,6 +938,7 @@ impl ResourceBudget {
                 limit: class_state.limit,
                 high_water: class_state.high_water,
                 denied: class_state.denied,
+                release_underflow: class_state.release_underflow,
             })
             .collect())
     }
@@ -942,8 +953,18 @@ impl ResourceBudget {
             Err(poisoned) => poisoned.into_inner(),
         };
         if let Some(class_state) = state.classes.get_mut(&class) {
-            class_state.used = class_state.used.saturating_sub(amount);
+            if amount <= class_state.used {
+                class_state.used -= amount;
+            } else {
+                class_state.release_underflow = class_state.release_underflow.saturating_add(1);
+                class_state.used = 0;
+            }
         }
+    }
+
+    #[cfg(test)]
+    fn release_for_test(&self, class: ResourceClass, amount: u64) {
+        self.release(class, amount);
     }
 }
 
@@ -1149,7 +1170,11 @@ mod tests {
                 .all(|pair| pair[0].class < pair[1].class)
         );
         assert!(snapshot.iter().all(|usage| {
-            usage.used == 0 && usage.limit == 1 && usage.high_water == 0 && usage.denied == 0
+            usage.used == 0
+                && usage.limit == 1
+                && usage.high_water == 0
+                && usage.denied == 0
+                && usage.release_underflow == 0
         }));
     }
 
@@ -1165,6 +1190,7 @@ mod tests {
         assert_eq!(usage.used, 2);
         assert_eq!(usage.high_water_mark(), 2);
         assert_eq!(usage.denied_count(), 0);
+        assert_eq!(usage.release_underflow_count(), 0);
 
         assert!(matches!(
             budget.try_acquire(ResourceRequest::new(class, 1).expect("request")),
@@ -1180,6 +1206,7 @@ mod tests {
         assert_eq!(usage.used, 0);
         assert_eq!(usage.high_water, 2);
         assert_eq!(usage.denied, 1);
+        assert_eq!(usage.release_underflow, 0);
     }
 
     #[test]
@@ -1238,6 +1265,29 @@ mod tests {
         }));
         assert!(result.is_err());
         assert_eq!(budget.usage(class).expect("usage").used, 0);
+        assert_eq!(
+            budget
+                .usage(class)
+                .expect("usage")
+                .release_underflow_count(),
+            0
+        );
+    }
+
+    #[test]
+    fn invalid_release_is_visible_without_wrapping_or_panicking() {
+        let class = ResourceClass::Tasks;
+        let budget =
+            ResourceBudget::new([ResourceLimit::new(class, 2).expect("limit")]).expect("budget");
+        let lease = budget
+            .try_acquire(ResourceRequest::new(class, 1).expect("request"))
+            .expect("grant");
+        drop(lease);
+
+        budget.release_for_test(class, 2);
+        let usage = budget.usage(class).expect("usage");
+        assert_eq!(usage.used, 0);
+        assert_eq!(usage.release_underflow_count(), 1);
     }
 
     #[test]
@@ -1281,6 +1331,8 @@ mod tests {
         bundle.release();
         assert_eq!(budget.usage(service).expect("usage").used, 0);
         assert_eq!(budget.usage(child).expect("usage").used, 0);
+        assert_eq!(budget.usage(service).expect("usage").release_underflow, 0);
+        assert_eq!(budget.usage(child).expect("usage").release_underflow, 0);
     }
 
     #[test]

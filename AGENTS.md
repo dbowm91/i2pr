@@ -133,3 +133,19 @@ shutdown, and teardown assertions for tasks, waiters, timers, links, queues,
 and resource usage. Closure work must record exact commands/results, CI
 evidence or its absence, dependencies, security decisions, deviations, and
 Milestone 3 prerequisites.
+
+Plan 025 corrective rules are mandatory: a child-task counter may decrement
+only after a corresponding join result. Each active service manager retains a
+bounded owner slot for its `ChildScope`, so forced manager abort transfers the
+exact child collection to the supervisor for explicit abort-and-drain. `Drop`
+may request abort but must not claim completion or decrement counters. Final
+reports and snapshots may report zero owned tasks only after confirmed joins;
+remaining handles or failed drains are typed cleanup evidence. Service
+`RequestedShutdown` is valid only when the service/manager/root cancellation
+scope is already cancelled; an uncancelled result is an unexpected clean exit
+and must follow the service classification policy. Resource release
+underflow is an internal invariant signal with bounded accounting and must not
+silently disappear or panic during cleanup. The corrective CI gates are
+`bash scripts/check-runtime-boundaries.sh` and
+`bash scripts/check-fixture-manifest.sh`, and Linux CI must check all workspace
+targets.

@@ -10,7 +10,7 @@ use i2pr_core::{
     CancellationReason, DegradationCode, FailureCategory, HealthDetail, HealthSnapshot,
     HealthState, LifecycleState, ServiceClassification, ServiceName,
 };
-use tokio::sync::watch;
+use tokio::sync::{Mutex as AsyncMutex, watch};
 use tokio::task::JoinSet;
 
 use crate::cancel::CancellationToken;
@@ -333,6 +333,8 @@ struct ChildTaskOutput(Result<(), ChildTaskFailure>);
 pub struct ChildShutdownReport {
     failed: bool,
     joined: usize,
+    remaining: usize,
+    forced: bool,
 }
 
 impl ChildShutdownReport {
@@ -345,12 +347,22 @@ impl ChildShutdownReport {
     pub const fn joined(&self) -> usize {
         self.joined
     }
+
+    /// Returns the number of child tasks that could not be joined.
+    pub const fn remaining(&self) -> usize {
+        self.remaining
+    }
+
+    /// Returns whether the scope used forced abort before joining.
+    pub const fn was_forced(&self) -> bool {
+        self.forced
+    }
 }
 
 struct ChildScopeInner {
     closed: AtomicBool,
     cancellation: CancellationToken,
-    tasks: Mutex<Option<JoinSet<ChildTaskOutput>>>,
+    tasks: AsyncMutex<Option<JoinSet<ChildTaskOutput>>>,
     counters: Arc<TaskCounters>,
 }
 
@@ -366,13 +378,9 @@ impl std::fmt::Debug for ChildScopeInner {
 impl Drop for ChildScopeInner {
     fn drop(&mut self) {
         self.closed.store(true, Ordering::Release);
-        if let Ok(mut tasks) = self.tasks.lock() {
+        if let Ok(mut tasks) = self.tasks.try_lock() {
             if let Some(tasks) = tasks.as_mut() {
-                let remaining = tasks.len();
                 tasks.abort_all();
-                for _ in 0..remaining {
-                    self.counters.child_finished();
-                }
             }
         }
     }
@@ -395,7 +403,7 @@ impl ChildScope {
             inner: Arc::new(ChildScopeInner {
                 closed: AtomicBool::new(false),
                 cancellation: parent.child_token(),
-                tasks: Mutex::new(Some(JoinSet::new())),
+                tasks: AsyncMutex::new(Some(JoinSet::new())),
                 counters,
             }),
             policy,
@@ -414,7 +422,7 @@ impl ChildScope {
         let mut tasks = self
             .inner
             .tasks
-            .lock()
+            .try_lock()
             .map_err(|_| ChildScopeError::Closed)?;
         let set = tasks.as_mut().ok_or(ChildScopeError::Closed)?;
         if set.len() >= MAX_CHILD_TASKS {
@@ -423,6 +431,7 @@ impl ChildScope {
             });
         }
         let cancellation = self.inner.cancellation.clone();
+        self.inner.counters.child_started();
         set.spawn(async move {
             let child = cancellation.child_token();
             let result = std::panic::AssertUnwindSafe(async move { factory(child).await })
@@ -433,7 +442,6 @@ impl ChildScope {
                 Err(_) => Err(ChildTaskFailure::Panic),
             })
         });
-        self.inner.counters.child_started();
         Ok(())
     }
 
@@ -444,25 +452,72 @@ impl ChildScope {
             .inner
             .cancellation
             .cancel(CancellationReason::ParentScope);
-        let mut tasks = self
-            .inner
-            .tasks
-            .lock()
-            .ok()
-            .and_then(|mut tasks| tasks.take());
-        let Some(ref mut tasks) = tasks else {
+        let mut tasks = self.inner.tasks.lock().await;
+        let Some(set) = tasks.as_mut() else {
             return ChildShutdownReport::default();
         };
         let mut report = ChildShutdownReport::default();
-        while let Some(result) = tasks.join_next().await {
-            report.joined += 1;
-            self.inner.counters.child_finished();
-            match result {
-                Ok(ChildTaskOutput(Err(_))) | Err(_) => report.failed = true,
-                Ok(ChildTaskOutput(Ok(()))) => {}
+        while let Some(result) = set.join_next().await {
+            self.record_join(&mut report, result);
+        }
+        *tasks = None;
+        report
+    }
+
+    /// Aborts and drains this exact child collection after its manager was
+    /// forcibly stopped. The bounded poll budget prevents a non-cooperative
+    /// child from extending supervisor shutdown indefinitely; any remaining
+    /// handles stay accounted and are reported as cleanup failure.
+    pub(crate) async fn force_shutdown(&self) -> ChildShutdownReport {
+        self.inner.closed.store(true, Ordering::Release);
+        let _ = self
+            .inner
+            .cancellation
+            .cancel(CancellationReason::ShutdownDeadline);
+        let mut tasks = self.inner.tasks.lock().await;
+        let Some(set) = tasks.as_mut() else {
+            return ChildShutdownReport {
+                forced: true,
+                ..ChildShutdownReport::default()
+            };
+        };
+        set.abort_all();
+        let mut report = ChildShutdownReport {
+            forced: true,
+            ..ChildShutdownReport::default()
+        };
+        for _ in 0..=MAX_CHILD_TASKS {
+            if set.is_empty() {
+                break;
+            }
+            tokio::select! {
+                biased;
+                result = set.join_next() => {
+                    if let Some(result) = result {
+                        self.record_join(&mut report, result);
+                    }
+                }
+                _ = tokio::task::yield_now() => {}
             }
         }
+        report.remaining = set.len();
+        if report.remaining == 0 {
+            *tasks = None;
+        }
         report
+    }
+
+    fn record_join(
+        &self,
+        report: &mut ChildShutdownReport,
+        result: Result<ChildTaskOutput, tokio::task::JoinError>,
+    ) {
+        report.joined += 1;
+        self.inner.counters.child_finished();
+        match result {
+            Ok(ChildTaskOutput(Err(_))) | Err(_) => report.failed = true,
+            Ok(ChildTaskOutput(Ok(()))) => {}
+        }
     }
 
     /// Returns whether a child failure should fail the parent.

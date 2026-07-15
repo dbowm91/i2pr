@@ -46,6 +46,10 @@ subscriber is attached; integrated clean, overload, restart, essential-failure,
 and stream/datagram fault scenarios; and a fixed 32-seed deterministic replay
 matrix. These are bounded local validation artifacts, not protocol, anonymity,
 resilience, or public-network evidence.
+Plan 025 corrects forced child cleanup ownership, cancellation-aware service
+completion classification, physical protocol module ownership, CI guardrails,
+and resource-release underflow visibility. Its closure remains limited to
+bounded local evidence and does not add router behavior or interoperability.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
@@ -162,6 +166,7 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 023 deterministic network testkit closure record](plans/023-closure.md)
 - [Aggregate Milestone 2 closure record](plans/020-milestone-2-closure.md)
 - [Plan 024 observability and validation plan](plans/024-m2-observability-validation-closure.md)
+- [Plan 025 targeted corrective closure](plans/025-closure.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)

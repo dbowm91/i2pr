@@ -4,6 +4,13 @@
 - Date: 2026-07-15
 - Plans: 021, 022, 023, and 024
 
+> Corrective note: the lifecycle and accounting statements in this historical
+> aggregate record are superseded where they describe forced child cleanup.
+> Plan 025 adds the authoritative child-scope transfer/drain model,
+> cancellation-aware completion classification, visible release-underflow
+> accounting, and the final CI gates. See [plans/025-closure.md](025-closure.md)
+> for the corrected evidence; earlier milestone evidence is retained.
+
 ## Scope and non-claims
 
 Milestone 2 now has concrete supervision, wakeable hierarchical cancellation,
@@ -144,7 +151,7 @@ pending-delivery, byte, stream, and datagram behavior from Plan 023.
 | Owner | Creation bound | Normal cleanup | Forced/cancel cleanup | Final assertion |
 | --- | --- | --- | --- | --- |
 | Supervisor manager | graph service maximum | `JoinSet::join_next` | abort all then join | zero service tasks |
-| Service child scope | 64 children | child scope join | abort on scope drop, count released | zero child tasks |
+| Service child scope | 64 children | child scope join | supervisor-retained scope abort-and-drain; drop cannot claim completion | zero child tasks only after confirmed joins |
 | Channel queue item | channel capacity | receiver handoff | queued-item drop | zero queue depth/lease usage |
 | Manual-clock sleeper | `MAX_PENDING_TIMERS` | wake at deadline | clock close/cancel | zero pending timers |
 | Scheduled link delivery | scheduler pending/byte limits | delivery handoff | purge on close/reset | zero deliveries/bytes |

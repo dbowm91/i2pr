@@ -47,6 +47,10 @@ readiness, panic classification, restart exhaustion, graceful shutdown, forced
 abort, child-scope cleanup, and the zero-remaining-task report. Do not use
 wall-clock sleeps or live sockets in this milestone. Run the focused lane with
 `cargo test -p i2pr-runtime --all-targets` in addition to the workspace checks.
+The corrective lane also covers forced manager abort with exact child-scope
+drain, uncancelled `RequestedShutdown` classification, typed cleanup evidence,
+and a deterministic repeated forced-cleanup test. Run the 100-iteration
+focused test with `cargo test -p i2pr-runtime forced_child_cleanup_is_repeatably_joined -- --test-threads=1`.
 
 Bounded communication and resource-governor tests must cover capacities of one,
 exact offered load, and maximum-plus-one offered load. Test typed full,
@@ -83,6 +87,10 @@ mechanical boundary lane is:
 ```text
 bash scripts/check-runtime-boundaries.sh
 ```
+
+CI also runs `cargo check --workspace --all-targets` and, on Linux, both the
+runtime-boundary and fixture-manifest gates. The fixture gate enforces a
+one-to-one mapping between committed `.hex` files and manifest rows.
 
 Runtime snapshots are aggregate, eventually coherent observations assembled
 without awaiting. Lower crates may emit the documented fixed-name tracing
