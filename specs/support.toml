@@ -122,6 +122,24 @@ evidence = ["crates/i2pr-storage/src/lib.rs", "tests/fixtures/ntcp2/crypto/stora
 advertised = false
 
 [[surface]]
+id = "ntcp2.handshake-codecs"
+protocol = "ntcp2"
+structure = "bounded-session-request-created-confirmed-codecs"
+scope = "required-later"
+status = "experimental"
+evidence = ["crates/i2pr-transport-ntcp2/src/handshake.rs", "plans/033-closure.md"]
+advertised = false
+
+[[surface]]
+id = "ntcp2.handshake-state-machines"
+protocol = "ntcp2"
+structure = "consuming-initiator-responder-actions-and-peer-binding"
+scope = "required-later"
+status = "experimental"
+evidence = ["crates/i2pr-transport-ntcp2/src/state_machine.rs", "plans/033-closure.md"]
+advertised = false
+
+[[surface]]
 id = "i2np.envelope"
 protocol = "i2np"
 structure = "bounded-message-envelope-and-header"

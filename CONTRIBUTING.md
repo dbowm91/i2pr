@@ -104,6 +104,13 @@ cargo test -p i2pr-storage --all-targets
 bash scripts/check-ntcp2-vectors.sh
 ```
 
+Plan 033 handshake changes must also exercise strict message-1/2/3 lengths,
+reserved options, padding bounds, timestamp boundaries, replay decisions,
+RouterInfo signature/static-key binding, consuming state transitions, and
+bounded simulated partial-I/O actions. Keep those tests in the pure NTCP2
+crate or the deterministic testkit; do not add Tokio, sockets, wall-clock
+sleeps, public-network traffic, or capability claims.
+
 The independent deterministic corpus is local crypto evidence only. Do not
 describe it as Java I2P/i2pd interoperability or use it to advertise NTCP2;
 that evidence belongs to the authorized later interoperability plan.

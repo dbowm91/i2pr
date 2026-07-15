@@ -153,6 +153,44 @@ responder static key, retains the SessionRequest cipher state needed by
 SessionConfirmed part one, and produces role-mapped split owners. It has no
 RNG, clock, filesystem, socket, Tokio, or generic Noise-provider surface.
 
+### NTCP2 handshake state boundary
+
+Plan 033 adds the first wire/state layer above the cryptographic transcript.
+`i2pr-transport-ntcp2::handshake` owns strict, bounded codecs for
+SessionRequest, SessionCreated, SessionConfirmed, their fixed options, and the
+RouterInfo/options/padding block sequence in SessionConfirmed part two.
+Fixed regions require exact lengths; variable cleartext padding in messages 1
+and 2 is admitted only after the authenticated options length is checked.
+`state_machine` owns consuming `InitiatorState` and `ResponderState` values.
+Each transition accepts one typed input and returns one of the following
+bounded actions:
+
+```text
+initiator:
+  RequestRouterInfo -> RequestTimestamp -> RequestPadding(SessionRequest)
+    -> RequestPadding(SessionConfirmed) -> Write(SessionRequest)
+    -> ReadBounded(SessionCreated) -> RequestTimestamp -> RequestReplay
+    -> Write(SessionConfirmed) -> Authenticated
+responder:
+  ReadBounded(SessionRequest) -> RequestReplay -> RequestTimestamp
+    -> RequestPadding(SessionCreated) -> Write(SessionCreated)
+    -> ReadExact(SessionConfirmed) -> Authenticated
+```
+
+The runtime adapter later fulfills exact/bounded reads and writes, timestamp
+and padding requests, replay admission, cancellation, and deadlines; it does
+not cross raw sockets, Tokio channels, payload bytes, or peer addresses into
+this crate. RouterInfo signature verification and NTCP/NTCP2 version-2
+static-key binding happen before an authenticated result is emitted. The
+authenticated result owns the role-mapped `SplitKeys`, while its default
+diagnostics expose only role and bounded public correlators.
+
+The local compatibility policy is ±60 seconds with replay retention of at
+least twice the window, fail-closed replay admission, and 880/848-byte clear
+padding maxima for messages 1/2. The production padding distribution and
+negotiation remain open; no state-machine result changes support metadata or
+publishes an address.
+
 Generated and reconstructed private seeds are held by zeroizing owners during
 crypto operations. Storage encoding and file-read buffers are also zeroizing;
 the `DatabaseLookup` reply-key/tag wrappers in `i2pr-proto::i2np::netdb` are
@@ -293,10 +331,10 @@ NetDB, select tunnels, score peers, or route application traffic.
 
 State-machine drivers communicate through explicit bounded actions and typed
 results rather than async traits. `i2pr-transport-ntcp2` owns the NTCP2
-protocol constants and Plan 032 cryptographic/transcript foundation; future
-plans add address, handshake wire, frame, block, and state-machine behavior.
-The runtime adapter will later translate those actions into owned I/O
-operations.
+protocol constants, Plan 032 cryptographic/transcript foundation, and Plan 033
+handshake wire/state layer; future plans add data-phase frames and runtime
+adaptation. The runtime adapter will later translate those actions into owned
+I/O operations.
 The boundary deliberately models only immediate Milestone 3 needs, leaving
 SSU2-specific behavior and duplicate winner policy to later plans.
 

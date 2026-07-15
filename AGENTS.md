@@ -66,6 +66,14 @@ dependency/runtime boundary scripts. Plan 031 is structural evidence only;
 Plan 032 adds only runtime-neutral cryptographic composition and deterministic
 vectors; it does not authorize complete NTCP2 handshake, socket, or
 public-network testing.
+Plan 033 adds only runtime-neutral bounded SessionRequest, SessionCreated, and
+SessionConfirmed codecs, consuming initiator/responder states, replay/skew
+policy seams, RouterInfo/static-key binding, and explicit action/result APIs.
+It does not authorize Tokio, sockets, data frames, NetDB mutation, capability
+advertisement, mixed-router testing, or public-network traffic. Preserve the
+message-1 cipher owner through SessionConfirmed part one, reject unknown
+blocks, malformed trailing data, and mismatched padding, and keep the support
+ledger non-advertised.
 
 ## Runtime, Security, and Observability Rules
 

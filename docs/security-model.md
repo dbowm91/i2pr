@@ -177,6 +177,37 @@ runtime owns every future socket, Tokio channel, timer, reader/writer task, and
 cancellation scope. `i2pr-transport-ntcp2` remains a pure protocol crate and
 cannot open sockets or perform filesystem, NetDB, tunnel, or client work.
 
+## NTCP2 handshake threats and controls
+
+Plan 033 adds bounded handshake parsing and consuming state transitions without
+activating a network adapter. SessionRequest and SessionCreated accept only a
+fixed 32-byte obfuscated ephemeral field, a fixed authenticated 16-byte
+options payload, and bounded cleartext padding. SessionConfirmed requires the
+fixed 48-byte static-key frame plus the negotiated second frame; its plaintext
+may contain only RouterInfo, Options, then Padding. Lengths are checked before
+allocation; fixed regions are exact and trailing bytes in the part-two block
+sequence are rejected.
+
+The responder and initiator use injected timestamp values with a documented
+±60-second policy and no wall-clock access in the protocol crate. Replay
+tokens are bounded SHA-256 values derived from encrypted ephemeral material;
+the reference cache expires entries deterministically and fails closed on
+replay, capacity, or unavailable decisions. Neither timestamps nor replay
+tokens enter default logs.
+
+RouterInfo is structurally decoded, its retained signed region is verified,
+and the NTCP/NTCP2 version-2 `s` option must match the X25519 static key
+authenticated by SessionConfirmed. RouterIdentity hash and static-key
+mismatches are distinct typed failures. Structural parsing never becomes an
+authentication claim, and no accepted RouterInfo mutates NetDB.
+
+Consuming states prevent retransmission or resumption after a failed
+transition. Actions retain only bounded owned handshake bytes or redacted
+typed decisions; secret transcript/cipher owners are consumed into the final
+split-key result. Random production padding, partial-stream adaptation,
+timeouts, cancellation, and probing-resistance behavior remain the
+runtime-owned follow-up boundary.
+
 Transport payloads cross the manager boundary as bounded owned encoded-I2NP
 messages. The owner validates nonzero and maximum lengths at construction,
 preserves authenticated bytes, exposes no implicit large-payload clone, and

@@ -50,18 +50,22 @@ Plan 025 corrects forced child cleanup ownership, cancellation-aware service
 completion classification, physical protocol module ownership, CI guardrails,
 and resource-release underflow visibility. Its closure remains limited to
 bounded local evidence and does not add router behavior or interoperability.
-Plan 031 now establishes the first Milestone 3 boundary: the runtime-neutral
+Plan 031 established the first Milestone 3 boundary: the runtime-neutral
 `i2pr-transport` contracts, the Tokio-free `i2pr-transport-ntcp2` skeleton,
 bounded link/delivery/resource vocabulary, and deterministic synthetic
-transport evidence. It does not implement NTCP2 handshakes, encryption,
-frames, sockets, live addresses, or capability advertisement; all transport
-support remains non-advertised structural work.
+transport evidence. Plan 032 added the non-I/O transcript foundation and Plan
+033 now adds the bounded, runtime-neutral NTCP2 handshake codecs and consuming
+state machines. None of these plans add sockets, data-phase frames, live
+addresses, mixed-router interoperability, or capability advertisement; all
+transport support remains non-advertised experimental work.
 Plan 032 now adds the non-I/O NTCP2 cryptographic foundation: reviewed
 X25519/AES/ChaCha20-Poly1305/HMAC/SipHash wrappers, a consuming three-message
 transcript model, an independently generated deterministic crypto corpus, and
-a separate hardened static-key/IV store. These are local experimental
-composition and persistence evidence only; complete handshake behavior,
-data-phase framing, sockets, interoperability, and capability advertisement
+a separate hardened static-key/IV store. Plan 033 adds bounded codecs for all
+three handshake messages, consuming initiator/responder transitions, replay and
+clock-skew policy seams, RouterInfo/static-key binding, and explicit runtime-
+neutral I/O actions. These remain local experimental evidence only; sockets,
+data-phase framing, mixed-router interoperability, and capability advertisement
 remain unimplemented.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
@@ -186,6 +190,8 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 031 closure record](plans/031-closure.md)
 - [Plan 032 NTCP2 crypto/transcript plan](plans/032-m3-ntcp2-crypto-transcript-and-vectors.md)
 - [Plan 032 closure record](plans/032-closure.md)
+- [Plan 033 NTCP2 handshake state machines](plans/033-m3-ntcp2-handshake-state-machines.md)
+- [Plan 033 closure record](plans/033-closure.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)
@@ -195,6 +201,7 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Runtime observability and validation ADR](docs/adr/0009-runtime-observability-and-validation.md)
 - [Transport contracts and crate boundaries ADR](docs/adr/0010-transport-contracts-and-crate-boundaries.md)
 - [NTCP2 crypto and static-key storage ADR](docs/adr/0011-ntcp2-crypto-and-static-key-storage.md)
+- [NTCP2 handshake state-machines ADR](docs/adr/0012-ntcp2-handshake-state-machines.md)
 - [Contribution guide](CONTRIBUTING.md)
 - [Protocol specification index and source ledger](specs/README.md)
 
@@ -229,9 +236,10 @@ explicitly aborted before the runtime returns.
 
 Transport changes must keep `i2pr-transport` runtime-neutral and keep
 `i2pr-transport-ntcp2` free of Tokio, filesystem, sockets, and live protocol
-side effects. Plan 032 additionally keeps cryptographic state consuming and
-secret-safe, persists transport static key/IV material only through the
-versioned storage boundary, and requires the hashed fixture validator. Drive
+side effects. Plans 032–033 additionally keep cryptographic and handshake
+state consuming and secret-safe, persist transport static key/IV material only
+through the versioned storage boundary, and require the hashed fixture
+validator. Drive
 state through bounded explicit actions and outcomes; use
 owned encoded-I2NP handoffs and redacted snapshots rather than raw payloads,
 addresses, keys, or runtime channels. Plan 031's focused local checks are:
@@ -243,6 +251,10 @@ bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh
 bash scripts/check-ntcp2-vectors.sh
 ```
+
+Plan 033 also requires the NTCP2 handshake codec/state tests and the separate
+nightly fuzz workspace. These tests are deterministic and local; they are not
+mixed-router or public-network evidence.
 
 The Plan 024 integrated validation lane is `cargo test -p i2pr-testkit
 --all-targets`; it runs the five named scenarios and the fixed 32-seed replay

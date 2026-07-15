@@ -46,6 +46,34 @@ Python-cryptography primitive/transcript-composition values and synthetic
 storage bytes. It is local experimental evidence only; it is not Java I2P or
 i2pd interoperability evidence and does not authorize capability advertisement.
 
+## Plan 033 handshake implementation boundary
+
+The runtime-neutral Plan 033 layer implements the three establishment messages
+using the 0.9.69 layouts above:
+
+| Message | Exact wire regions | Local bounds and checks |
+| --- | --- | --- |
+| SessionRequest | 32-byte AES-obfuscated X, 32-byte AEAD options frame, cleartext padding | 64-byte minimum; 65535-byte wire maximum; 880-byte non-PQ padding maximum; options version/reserved bytes, timestamp, network ID, and negotiated message-3-part-2 length are checked |
+| SessionCreated | 32-byte AES-obfuscated Y using the continued message-1 AES state, 32-byte AEAD options frame, cleartext padding | 64-byte minimum; 65535-byte wire maximum; 848-byte non-PQ padding maximum; all reserved bytes are zero and timestamp/padding lengths agree |
+| SessionConfirmed | fixed 48-byte encrypted Alice static frame, negotiated encrypted part-two frame | total is at most 65535 bytes; part two is 16..65487 bytes including its tag; plaintext blocks are strictly RouterInfo, optional Options, optional Padding |
+
+The codecs reject truncation, impossible lengths, excessive padding, unknown
+blocks, duplicate optional blocks, and malformed trailing bytes before
+allocating peer-controlled regions. Message-1/2 trailing regions are admitted
+only as the cleartext padding whose authenticated option length was declared;
+the consuming state machines request bounded reads,
+writes, timestamp, replay, padding, and local RouterInfo through typed actions;
+they do not own those effects. RouterInfo is decoded and signature-verified,
+then its NTCP/NTCP2 version-2 `s` option is compared with the authenticated
+X25519 static key before an authenticated result is emitted.
+
+For local compatibility evidence, the initial skew policy is ±60 seconds and
+the replay retention is at least twice that window. Replay tokens are SHA-256
+digests of the encrypted ephemeral field, and replay admission is fail-closed
+for replay, cache-full, or unavailable decisions. The specification leaves
+production padding distribution/negotiation and the age of an older NetDB
+RouterInfo open; those choices remain deferred and are not capability claims.
+
 ## Required MVP behavior
 
 ### RouterInfo and key material

@@ -31,6 +31,27 @@ pub const MAX_WIRE_FRAME_LENGTH: usize = MAX_FRAME_LENGTH + 2;
 pub const MAX_SESSION_CONFIRMED_PART2: usize = 65_487;
 /// Maximum SessionConfirmed part-two plaintext length.
 pub const MAX_SESSION_CONFIRMED_PART2_PLAINTEXT: usize = 65_471;
+/// Fixed encrypted ephemeral-key region in SessionRequest and SessionCreated.
+pub const HANDSHAKE_EPHEMERAL_LENGTH: usize = KEY_LENGTH;
+/// Fixed encrypted options frame in SessionRequest and SessionCreated.
+pub const HANDSHAKE_OPTIONS_FRAME_LENGTH: usize = OPTION_BLOCK_LENGTH + AUTH_TAG_LENGTH;
+/// Minimum complete SessionRequest or SessionCreated message (no padding).
+pub const MIN_HANDSHAKE_MESSAGE_LENGTH: usize =
+    HANDSHAKE_EPHEMERAL_LENGTH + HANDSHAKE_OPTIONS_FRAME_LENGTH;
+/// Fixed first frame in SessionConfirmed, including its authentication tag.
+pub const SESSION_CONFIRMED_PART1_LENGTH: usize = KEY_LENGTH + AUTH_TAG_LENGTH;
+/// Maximum complete SessionRequest or SessionCreated message under the wire cap.
+pub const MAX_HANDSHAKE_MESSAGE_LENGTH: usize = MAX_FRAME_LENGTH;
+/// Maximum complete SessionConfirmed message under the wire cap.
+pub const MAX_SESSION_CONFIRMED_LENGTH: usize = MAX_FRAME_LENGTH;
+/// Maximum RouterInfo bytes retained inside SessionConfirmed.
+pub const MAX_ROUTER_INFO_PAYLOAD: usize = 64 * 1024;
+/// Maximum variable options bytes in a SessionConfirmed options block.
+pub const MAX_CONFIRMED_OPTIONS: usize = 4 * 1024;
+/// Maximum number of pure state-machine actions in one handshake.
+pub const MAX_HANDSHAKE_ACTIONS: usize = 32;
+/// Maximum buffered handshake input retained by a pure driver.
+pub const MAX_HANDSHAKE_BUFFERED_INPUT: usize = MAX_SESSION_CONFIRMED_LENGTH;
 /// Current maximum Java non-PQ SessionRequest padding from the pinned source.
 pub const MAX_SESSION_REQUEST_PADDING: usize = 880;
 /// Current maximum Java non-PQ SessionCreated padding from the pinned source.

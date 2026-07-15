@@ -574,6 +574,60 @@ impl Transcript {
         Ok((state, static_public))
     }
 
+    /// Decrypts SessionConfirmed part one before RouterInfo binding is known.
+    ///
+    /// The responder must first recover Alice's static key, then decrypt the
+    /// RouterInfo that authenticates and binds that key. Callers must compare
+    /// the returned public value with the validated RouterInfo before treating
+    /// the handshake as authenticated.
+    pub fn decrypt_static_unchecked(
+        self,
+        ciphertext: &[u8],
+    ) -> Result<(Self, PublicKeyBytes), Ntcp2CryptoError> {
+        if self.role != Role::Responder || self.stage != TranscriptStage::Message2Padded {
+            return Err(if self.role != Role::Responder {
+                Ntcp2CryptoError::WrongRole
+            } else {
+                Ntcp2CryptoError::InvalidState
+            });
+        }
+        let mut state = self;
+        let associated_data = state.hash.0;
+        let cipher = state
+            .message1_cipher
+            .as_mut()
+            .ok_or(Ntcp2CryptoError::InvalidState)?;
+        let plaintext = cipher.open(ciphertext, &associated_data)?;
+        state.hash = TranscriptHash(sha256_concat(&associated_data, ciphertext));
+        state.message1_cipher = None;
+        let bytes: [u8; constants::KEY_LENGTH] = plaintext
+            .as_slice()
+            .try_into()
+            .map_err(|_| Ntcp2CryptoError::InvalidPublicKey)?;
+        let static_public = PublicKeyBytes::new(bytes)?;
+        Ok((state, static_public))
+    }
+
+    /// Completes SessionConfirmed part one after an unchecked static-key read.
+    ///
+    /// This is separate because the responder must recover Alice's static
+    /// public key before it can compute the `se` shared secret.
+    pub fn mix_static_secret(
+        self,
+        shared_secret: X25519SharedSecret,
+    ) -> Result<Self, Ntcp2CryptoError> {
+        if self.role != Role::Responder || self.stage != TranscriptStage::Message2Padded {
+            return Err(if self.role != Role::Responder {
+                Ntcp2CryptoError::WrongRole
+            } else {
+                Ntcp2CryptoError::InvalidState
+            });
+        }
+        let mut state = self.mix_key(shared_secret)?;
+        state.stage = TranscriptStage::StaticEncrypted;
+        Ok(state)
+    }
+
     /// Encrypts SessionConfirmed part two and completes the handshake transcript.
     pub fn encrypt_confirmed_payload(
         self,
