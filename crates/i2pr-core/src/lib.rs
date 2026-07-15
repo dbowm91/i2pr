@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// Maximum UTF-8 byte length of a service identifier.
 pub const MAX_SERVICE_NAME_BYTES: usize = 64;
@@ -78,8 +79,10 @@ impl std::error::Error for ServiceNameError {}
 /// Lifecycle state of a supervised service.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LifecycleState {
-    /// The service exists but has not started.
-    Created,
+    /// The service is registered but has not entered startup sequencing.
+    Registered,
+    /// The service is waiting for its declared dependencies.
+    WaitingForDependencies,
     /// Startup is in progress.
     Starting,
     /// The service can serve its required work.
@@ -100,12 +103,16 @@ impl LifecycleState {
         let valid = self == next
             || matches!(
                 (self, next),
-                (Self::Created, Self::Starting | Self::Stopping)
-                    | (
-                        Self::Starting,
-                        Self::Ready | Self::Degraded | Self::Stopping | Self::Failed
-                    )
-                    | (Self::Ready, Self::Degraded | Self::Stopping | Self::Failed)
+                (
+                    Self::Registered,
+                    Self::WaitingForDependencies | Self::Starting | Self::Stopping
+                ) | (
+                    Self::WaitingForDependencies,
+                    Self::Starting | Self::Stopping | Self::Failed
+                ) | (
+                    Self::Starting,
+                    Self::Ready | Self::Degraded | Self::Stopping | Self::Failed
+                ) | (Self::Ready, Self::Degraded | Self::Stopping | Self::Failed)
                     | (Self::Degraded, Self::Ready | Self::Stopping | Self::Failed)
                     | (Self::Stopping, Self::Stopped)
                     | (Self::Failed, Self::Stopping)
@@ -146,6 +153,146 @@ impl fmt::Display for InvalidLifecycleTransition {
 }
 
 impl std::error::Error for InvalidLifecycleTransition {}
+
+/// Failure policy for a long-lived service.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ServiceClassification {
+    /// Failure cancels the router and produces a router failure result.
+    Essential,
+    /// Failure may be recovered by an explicit bounded restart policy.
+    Restartable,
+    /// Failure is visible as degradation while other required services continue.
+    Degradable,
+    /// Failure is recorded without changing router readiness.
+    Optional,
+}
+
+/// Static categories that may be safely retained in health and completion data.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum FailureCategory {
+    /// A service returned a typed failure.
+    ServiceFailure,
+    /// A service exited normally without a shutdown request.
+    UnexpectedCleanExit,
+    /// The task was terminated by a panic.
+    Panic,
+    /// The runtime could not join the task.
+    TaskJoinFailure,
+    /// A service did not start before its startup deadline.
+    StartupTimeout,
+    /// A service did not signal readiness before its deadline.
+    ReadinessTimeout,
+    /// Graceful shutdown exceeded its deadline.
+    GracefulShutdownTimeout,
+    /// A remaining task was forcibly aborted.
+    ForcedAbort,
+    /// The restart policy no longer permits another attempt.
+    RestartBudgetExhausted,
+    /// A hard dependency is permanently unavailable.
+    DependencyUnavailable,
+}
+
+/// Typed categories a service may report without exposing arbitrary errors.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ServiceFailureCategory {
+    /// A bounded internal service failure.
+    Internal,
+    /// A required dependency was unavailable.
+    DependencyUnavailable,
+    /// A bounded resource could not be acquired.
+    ResourceExhausted,
+    /// The service observed an invalid local state.
+    InvalidState,
+}
+
+/// A service failure with privacy-safe, bounded optional detail.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServiceFailure {
+    category: ServiceFailureCategory,
+    detail: Option<HealthDetail>,
+}
+
+impl ServiceFailure {
+    /// Creates a typed failure. Detail is retained only after bounded validation.
+    pub const fn new(category: ServiceFailureCategory, detail: Option<HealthDetail>) -> Self {
+        Self { category, detail }
+    }
+
+    /// Returns the static failure category.
+    pub const fn category(&self) -> ServiceFailureCategory {
+        self.category
+    }
+
+    /// Returns bounded diagnostic context, if supplied.
+    pub fn detail(&self) -> Option<&HealthDetail> {
+        self.detail.as_ref()
+    }
+}
+
+/// The completion reported by a service future or synthesized by its owner.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ServiceCompletion {
+    /// The service observed an owned cancellation and exited cleanly.
+    RequestedShutdown,
+    /// The service returned normally without an owned shutdown request.
+    UnexpectedCleanExit,
+    /// The service returned a typed failure.
+    Failed(ServiceFailure),
+    /// The task panicked; the panic payload is deliberately not retained.
+    Panic,
+    /// The runtime could not join the task.
+    TaskJoinFailure,
+    /// Startup or readiness did not complete before its deadline.
+    StartupTimeout,
+    /// The service did not signal readiness before its deadline.
+    ReadinessTimeout,
+    /// Graceful shutdown exceeded its deadline.
+    GracefulShutdownTimeout,
+    /// The owner forcibly aborted the task.
+    ForcedAbort,
+    /// The restart budget was exhausted.
+    RestartBudgetExhausted,
+}
+
+impl ServiceCompletion {
+    /// Returns the static category represented by this completion.
+    pub const fn category(&self) -> Option<FailureCategory> {
+        match self {
+            Self::RequestedShutdown => None,
+            Self::UnexpectedCleanExit => Some(FailureCategory::UnexpectedCleanExit),
+            Self::Failed(_) => Some(FailureCategory::ServiceFailure),
+            Self::Panic => Some(FailureCategory::Panic),
+            Self::TaskJoinFailure => Some(FailureCategory::TaskJoinFailure),
+            Self::StartupTimeout => Some(FailureCategory::StartupTimeout),
+            Self::ReadinessTimeout => Some(FailureCategory::ReadinessTimeout),
+            Self::GracefulShutdownTimeout => Some(FailureCategory::GracefulShutdownTimeout),
+            Self::ForcedAbort => Some(FailureCategory::ForcedAbort),
+            Self::RestartBudgetExhausted => Some(FailureCategory::RestartBudgetExhausted),
+        }
+    }
+
+    /// Whether this completion represents a failure rather than a clean request.
+    pub const fn is_failure(&self) -> bool {
+        self.category().is_some()
+    }
+}
+
+/// Bounded reasons for cancellation of runtime-owned work.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CancellationReason {
+    /// An operator requested shutdown.
+    OperatorRequest,
+    /// An essential service failed.
+    EssentialServiceFailure,
+    /// Startup could not complete.
+    StartupFailure,
+    /// A shutdown deadline was reached.
+    ShutdownDeadline,
+    /// A parent scope was cancelled.
+    ParentScope,
+    /// The deterministic test harness is tearing down.
+    TestHarnessTeardown,
+}
 
 /// Typed reason for a service to report degraded health.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -226,8 +373,14 @@ impl std::error::Error for HealthDetailError {}
 /// Immutable health observation with explicit liveness and readiness flags.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HealthSnapshot {
+    service: Option<ServiceName>,
+    classification: Option<ServiceClassification>,
+    lifecycle: LifecycleState,
     state: HealthState,
+    restart_count: u32,
+    last_failure: Option<FailureCategory>,
     transition_sequence: u64,
+    transition_time: Duration,
     detail: Option<HealthDetail>,
 }
 
@@ -239,10 +392,78 @@ impl HealthSnapshot {
         detail: Option<HealthDetail>,
     ) -> Self {
         Self {
+            service: None,
+            classification: None,
+            lifecycle: match state {
+                HealthState::Starting => LifecycleState::Starting,
+                HealthState::Ready => LifecycleState::Ready,
+                HealthState::Degraded(_) => LifecycleState::Degraded,
+                HealthState::Stopping => LifecycleState::Stopping,
+                HealthState::Failed => LifecycleState::Failed,
+            },
             state,
+            restart_count: 0,
+            last_failure: None,
             transition_sequence,
+            transition_time: Duration::ZERO,
             detail,
         }
+    }
+
+    /// Creates a full runtime-facing snapshot with bounded service metadata.
+    #[allow(clippy::too_many_arguments)]
+    pub const fn for_service(
+        service: ServiceName,
+        classification: ServiceClassification,
+        lifecycle: LifecycleState,
+        state: HealthState,
+        restart_count: u32,
+        last_failure: Option<FailureCategory>,
+        transition_sequence: u64,
+        transition_time: Duration,
+        detail: Option<HealthDetail>,
+    ) -> Self {
+        Self {
+            service: Some(service),
+            classification: Some(classification),
+            lifecycle,
+            state,
+            restart_count,
+            last_failure,
+            transition_sequence,
+            transition_time,
+            detail,
+        }
+    }
+
+    /// Stable service identity, present for supervisor-created snapshots.
+    pub fn service_name(&self) -> Option<&ServiceName> {
+        self.service.as_ref()
+    }
+
+    /// Registered service failure classification, when known.
+    pub const fn classification(&self) -> Option<ServiceClassification> {
+        self.classification
+    }
+
+    /// Current lifecycle phase.
+    pub const fn lifecycle(&self) -> LifecycleState {
+        self.lifecycle
+    }
+
+    /// Current health state.
+    pub const fn health(&self) -> HealthState {
+        self.state
+    }
+
+    /// Number of replacement attempts that have started.
+    pub const fn restart_count(&self) -> u32 {
+        self.restart_count
+    }
+
+    /// Last static failure category, if any.
+    pub const fn last_failure(&self) -> Option<FailureCategory> {
+        self.last_failure
     }
 
     /// Current typed state.
@@ -253,6 +474,11 @@ impl HealthSnapshot {
     /// Monotonic transition sequence supplied by the owning service.
     pub const fn transition_sequence(&self) -> u64 {
         self.transition_sequence
+    }
+
+    /// Monotonic runtime time at which this snapshot was published.
+    pub const fn transition_time(&self) -> Duration {
+        self.transition_time
     }
 
     /// Whether this snapshot reports a live service.
@@ -565,9 +791,9 @@ mod tests {
                 .is_err()
         );
         assert_eq!(
-            LifecycleState::Created
+            LifecycleState::Registered
                 .transition(LifecycleState::Starting)
-                .expect("created can start"),
+                .expect("registered can start"),
             LifecycleState::Starting
         );
     }

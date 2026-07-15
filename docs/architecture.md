@@ -11,7 +11,7 @@ The intended modular monolith is organized into four conceptual planes:
 | Plane | Responsibility | Current bounded status |
 | --- | --- | --- |
 | Data | Protocol representations, authenticated links, messages, and network tunnel traffic | Bounded common-structure and initial I2NP models plus Ed25519/X25519 wrappers and local RouterInfo signing; no sockets or network behavior |
-| Control | Configuration, lifecycle, health, cancellation, supervision, and resource budgets | CLI validation plus runtime-neutral core contracts |
+| Control | Configuration, lifecycle, health, cancellation, supervision, and resource budgets | Runtime-neutral core contracts plus the concrete non-networked `i2pr-runtime` supervisor |
 | Client | Destinations, LeaseSets, streaming, SAM, and I2CP adapters | Not implemented |
 | Service | HTTP, SOCKS5, IRC, generic TCP, and local service-tunnel composition | Not implemented |
 
@@ -22,15 +22,16 @@ storage.
 
 ## Current crate graph
 
-The current bounded workspace has six crates:
+The current bounded workspace has seven crates, including the test-only
+simulation crate:
 
 ```text
 i2pr-proto  <- i2pr-crypto <- i2pr-storage
      ^              ^               ^
      |              |               |
- i2pr-core <------ i2pr-daemon  (composition root)
-     ^
-     |
+i2pr-core <- i2pr-runtime <- i2pr-daemon (composition root)
+     ^             ^
+     |             |
  i2pr-testkit (test/simulation dependency only)
 ```
 
@@ -43,10 +44,14 @@ signed region. Its cursor borrows input, its encoder requires caller-visible
 output limits, and strict top-level decoders reject trailing bytes. It has no
 runtime, filesystem, CLI, transport, or tracing-subscriber dependency; its
 direct external dependencies are the reviewed `sha2` crate for SHA-256 hash
-derivation and the narrow `zeroize` wrapper dependency. `i2pr-core` owns runtime-neutral service,
-health, lifecycle, cancellation, and resource-domain types. `i2pr-testkit`
+derivation and the narrow `zeroize` wrapper dependency. `i2pr-core` owns
+runtime-neutral service, health, lifecycle, cancellation, and resource-domain
+types. `i2pr-runtime` owns Tokio, wakeable cancellation, service graph
+validation, readiness, latest-state health publication, supervised task
+managers, bounded restart policy, and graceful/forced shutdown. `i2pr-testkit`
 provides deterministic clocks, randomness, and bounded fault vocabulary for
-tests. The daemon owns CLI/configuration and is the future composition root.
+tests. The daemon owns CLI/configuration and is the composition root, but its
+live command remains intentionally disabled.
 
 The direction is mechanically checked by
 `scripts/check-dependency-direction.sh`. Production crates do not depend on
@@ -149,12 +154,49 @@ responsibility, and non-Unix permission/durability semantics remain limited.
 
 ### Cancellation scope
 
-The current `i2pr-core::CancellationToken` is runtime-neutral bootstrap
-machinery: an atomic cancellation flag for cooperative polling. It records a
+`i2pr-core::CancellationToken` remains runtime-neutral bootstrap machinery: an
+atomic cancellation flag for synchronous cooperative polling. It records a
 cancellation request but does not provide async wake semantics or async wait
-and selection operations. Runtime-specific cancellation integration remains at
-runtime-facing service boundaries; this bootstrap does not introduce a
-generalized runtime abstraction.
+and selection operations.
+
+`i2pr-runtime::CancellationToken` is the concrete runtime-facing boundary. It
+wraps Tokio's hierarchical cancellation primitive, records one bounded
+`CancellationReason`, wakes all current waiters, supports cancellation before
+registration, and exposes an async wait that can participate in `select!` with
+commands and deadlines. Child tokens inherit parent cancellation without
+propagating child cancellation upward. Dropping a handle does not cancel an
+unrelated scope.
+
+### Supervised service graph
+
+`i2pr-runtime::ServiceGraph` validates the complete registration set before
+spawning work. Service names, counts, descriptions, deadlines, dependencies,
+and restart attempts are bounded. Duplicate names, missing/self dependencies,
+cycles, invalid timeouts, missing essential services, and restart policies on
+non-restartable classifications are rejected. Kahn's algorithm over ordered
+sets produces a deterministic dependency-first startup order; independent
+services are intentionally started sequentially in this milestone so tests do
+not depend on scheduler poll order.
+
+Each manager owns one service future and its child scope. A service must signal
+one-shot readiness explicitly. Health is a latest-state `watch` snapshot with
+the service identifier, classification, lifecycle, health, restart count,
+static failure category, bounded detail, sequence, and runtime monotonic
+transition time. Panic payloads and raw service errors never enter completion,
+health, or diagnostic data.
+
+Restartable services alone may use an explicit bounded exponential-backoff
+policy. Essential failures cancel the graph; degradable and optional failures
+remain visible without accidental process termination; restart exhaustion has
+an explicit degrade-or-shutdown choice. Service child tasks inherit
+cancellation and are joined by their scope before the parent manager reports
+completion.
+
+Shutdown first cancels every manager and joins within the configured bounded
+deadline. Remaining managers are then aborted and joined. The report records
+graceful versus forced cleanup, final typed completions, joined-task count, and
+zero remaining owned tasks. No runtime service opens sockets or adds protocol,
+NetDB, tunnel, client, API, or plugin behavior.
 
 ## Composition and communication
 
@@ -167,12 +209,12 @@ generate` is the only operation allowed to create the private identity file,
 `identity inspect` only loads and summarizes it, and `run --dry-run` remains
 side-effect-free. No identity command opens a listener or publishes a record.
 
-The planned service model classifies work as essential, restartable,
-degradable, or optional. Each long-lived service will declare startup
-dependencies, readiness, health signals, owned resources, cancellation, and
-graceful/forced shutdown behavior. Milestone 0 defines the lifecycle and
-resource vocabulary but does not implement a supervisor or asynchronous
-service graph.
+The implemented service model classifies work as essential, restartable,
+degradable, or optional. Each long-lived service declares startup dependencies,
+readiness, health signals, owned resources, cancellation, and graceful/forced
+shutdown behavior through `i2pr-runtime`. Later Plans 022–024 may add bounded
+channels, resource-governor integration, deterministic network simulation,
+and observability; they must preserve this ownership boundary.
 
 ## External boundaries
 

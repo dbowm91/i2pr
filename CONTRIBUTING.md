@@ -40,6 +40,14 @@ cargo deny check advisories bans sources
 The CI matrix covers Linux and macOS. Dependency downloads may require network
 access in restricted environments; do not weaken checks to work around that.
 
+Runtime supervision tests belong in `i2pr-runtime` and must use
+`#[tokio::test(start_paused = true)]` or explicit `tokio::time::advance` for
+deadlines and restart backoff. Exercise cancellation before and during waits,
+readiness, panic classification, restart exhaustion, graceful shutdown, forced
+abort, child-scope cleanup, and the zero-remaining-task report. Do not use
+wall-clock sleeps or live sockets in this milestone. Run the focused lane with
+`cargo test -p i2pr-runtime --all-targets` in addition to the workspace checks.
+
 Run `bash scripts/check-fixture-manifest.sh` after changing committed fixture
 bytes. The maintained fuzz workspace under `fuzz/` is intentionally outside
 the production workspace and requires nightly `cargo-fuzz`; use

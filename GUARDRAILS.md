@@ -38,12 +38,19 @@ The project is a modular monolith. One daemon process may contain multiple focus
 The intended dependency direction is broadly:
 
 ```text
-proto <- crypto
+proto <- crypto <- storage
+core <- runtime <- daemon
 proto/core <- transports, netdb, tunnel, client
 client <- api, service-tunnels
 all runtime services <- daemon composition root
 shared deterministic fixtures <- testkit
 ```
+
+The concrete runtime boundary is `i2pr-runtime`: it owns Tokio, wakeable
+cancellation, supervised task collections, readiness, bounded restart policy,
+and graceful/forced shutdown. `i2pr-core` remains runtime-neutral. No service
+may detach a long-lived task or return while an owned child task is still
+alive.
 
 The exact graph may be refined, but the following constraints apply:
 

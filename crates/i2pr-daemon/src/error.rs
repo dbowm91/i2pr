@@ -53,9 +53,9 @@ pub enum DaemonError {
     /// A configuration was found but failed parsing or validation.
     #[error(transparent)]
     Config(#[from] ConfigError),
-    /// A live run was requested before router runtime work exists.
+    /// A live run was requested before daemon composition is enabled.
     #[error(
-        "router runtime is not implemented in this milestone; use --dry-run to validate configuration"
+        "live daemon execution is not enabled in this milestone; use --dry-run to validate configuration"
     )]
     RuntimeNotImplemented,
     /// Identity persistence failed.

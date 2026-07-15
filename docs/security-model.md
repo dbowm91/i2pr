@@ -87,6 +87,44 @@ security claim.
 `identity inspect` reports only the storage path and public algorithm IDs. It
 does not print private seeds, a private serialization, or a full router hash.
 
+## Runtime supervision threats and controls
+
+Plan 021 adds a concrete non-networked runtime boundary without changing the
+protocol support claim. Tokio is confined to `i2pr-runtime`; protocol, crypto,
+storage, and runtime-neutral core crates remain executor-free.
+
+Long-lived task leaks are treated as resource-exhaustion vulnerabilities. A
+supervisor owns every service manager through an owned `JoinSet`, and each
+service owns a bounded child scope. Shutdown cancels all scopes, joins within a
+bounded deadline, aborts remaining managers, and joins aborted handles before
+returning. Child scopes abort their remaining children on drop as a final
+guard, while normal service completion explicitly joins them.
+
+Cancellation races are handled by Tokio's hierarchical cancellation primitive:
+registration and cancellation are wake-safe, cancellation is idempotent, a
+bounded static reason is recorded once, parent cancellation reaches children,
+and child cancellation cannot reach a parent. The runtime-neutral atomic token
+is retained only for synchronous contracts and is not used as async service
+cancellation.
+
+Restart policy is explicit and bounded. Only services classified
+`Restartable` may restart; attempts, exponential delay, service timeouts, and
+the router-wide service count are capped. Zero-delay hot loops are rejected.
+Restart exhaustion must choose degradation or coordinated shutdown. Dependency
+failure marks dependent snapshots degraded and cancels their owned managers so
+they cannot remain ready after a hard dependency is gone.
+
+Panic and join failures become static completion categories. Panic payloads,
+raw errors, secrets, peer data, addresses, and arbitrary user text are not
+formatted into health snapshots or normal diagnostics. Health uses a bounded
+latest-state watch snapshot rather than an unbounded event log.
+
+Forced abort is cleanup evidence, not a claim that arbitrary code can be made
+graceful. A non-cooperative service is stopped at the configured deadline and
+reported as forced. No Plan 021 service binds sockets, connects to peers,
+performs DNS, touches NetDB, constructs tunnels, exposes client listeners, or
+advertises protocol capabilities.
+
 ## Observability and non-claims
 
 Default logs and metrics must not expose full router hashes, destination

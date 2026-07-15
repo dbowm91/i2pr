@@ -9,7 +9,7 @@ use clap::{Args, Parser, Subcommand};
 #[command(
     name = "i2pr",
     version,
-    about = "Experimental I2P router workspace (runtime not implemented)"
+    about = "Experimental I2P router workspace (live daemon execution not enabled)"
 )]
 pub struct Cli {
     /// Subcommand to execute.

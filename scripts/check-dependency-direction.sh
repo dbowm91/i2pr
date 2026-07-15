@@ -20,8 +20,10 @@ expected = {
         "i2pr-core",
         "i2pr-proto",
         "i2pr-crypto",
+        "i2pr-runtime",
         "i2pr-storage",
     },
+    "i2pr-runtime": {"i2pr-core"},
 }
 
 for name, allowed in expected.items():

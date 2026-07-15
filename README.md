@@ -9,7 +9,7 @@ The initial compatibility target is the current I2P network as implemented by I2
 ## Project status
 
 Milestone 0 workspace bootstrap and its corrective closure are implemented. The
-repository contains a buildable six-crate Rust workspace, strict
+repository contains a buildable seven-crate Rust workspace, strict
 side-effect-free configuration validation, bounded common-structure and
 initial-I2NP codecs, reviewed Ed25519/X25519 identity wrappers,
 permission-hardened identity storage, a deterministic testkit foundation, and
@@ -25,8 +25,11 @@ RouterInfo signing, and the initial bounded I2NP message model. Cryptographic
 interoperability, LeaseSet2-family records, transport integration, networking,
 router behavior, and I2NP body state-machine semantics remain unimplemented.
 Normal development and CI use pinned Rust 1.95.0; the declared Rust 1.85 MSRV
-is checked by a dedicated Ubuntu CI job. The router runtime and network
-interoperability remain unimplemented.
+is checked by a dedicated Ubuntu CI job. Plan 021 now provides a concrete,
+non-networked Tokio runtime with deterministic service supervision, wakeable
+cancellation, readiness/health snapshots, bounded restart policy, and
+graceful/forced shutdown. Live router behavior and network interoperability
+remain unimplemented.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
@@ -98,14 +101,16 @@ crates/
   i2pr-api/                 SAM and I2CP adapters
   i2pr-service-tunnels/     HTTP, SOCKS5, IRC, generic TCP forwarding
   i2pr-storage/             Atomic persistence and migration support
+  i2pr-runtime/             Tokio-backed supervision and cancellation
   i2pr-daemon/              CLI, configuration, composition, supervision
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
 ```
 
 The current workspace contains `i2pr-proto`, `i2pr-crypto`, `i2pr-storage`,
-`i2pr-core`, `i2pr-daemon`, and `i2pr-testkit`. Later plans will add protocol
-and service crates when their contracts are understood; empty placeholder
-crates are not created in advance.
+`i2pr-core`, `i2pr-runtime`, `i2pr-daemon`, and `i2pr-testkit`. The runtime
+crate is the only production crate that owns Tokio tasks, timers, or wakeable
+cancellation. Later plans will add protocol and service crates when their
+contracts are understood; empty placeholder crates are not created in advance.
 
 The current `i2pr-proto` API uses borrowed cursors and caller-visible maximums,
 strict exact-consumption decoding, canonical immutable mappings, typed
@@ -136,11 +141,13 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Milestone 1 identity/crypto/storage closure record](plans/013-closure.md)
 - [Milestone 1 I2NP/evidence/fuzzing closure record](plans/014-closure.md)
 - [Aggregate Milestone 1 corrective closure record](plans/010-milestone-1-closure.md)
+- [Plan 021 supervision and cancellation closure record](plans/021-closure.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)
 - [Security model](docs/security-model.md)
 - [Architecture decision records](docs/adr/0000-adr-process.md)
+- [Runtime and supervision ADR](docs/adr/0008-runtime-supervision-and-cancellation.md)
 - [Contribution guide](CONTRIBUTING.md)
 - [Protocol specification index and source ledger](specs/README.md)
 
@@ -168,15 +175,20 @@ The optional nightly-only fuzz lane is maintained separately from the
 production workspace. See `fuzz/README.md` and run
 `bash scripts/fuzz-smoke.sh` for bounded local smoke tests.
 
+Runtime changes must use deterministic Tokio test time (`start_paused` or
+explicit `time::advance`) rather than wall-clock sleeps. Every spawned task
+must be owned by the supervisor or a service child scope and must be joined or
+explicitly aborted before the runtime returns.
+
 The CLI exposes `--help`, `--version`,
 `check-config --config <path>`, `identity generate --config <path>`,
 `identity inspect --config <path>`, and `run --config <path> --dry-run`. Identity
 generation is explicit, create-only, and permission-hardened. Inspection
 loads and validates the file without displaying private material. Config
 validation and dry-run do not create directories or identity files. A live
-`run` deliberately exits with code 20 and explains that the router runtime is
-not implemented. No command opens a socket, publishes RouterInfo, or writes
-network state.
+`run` deliberately remains non-networked and exits with code 20 until a later
+daemon-composition plan wires the runtime into a live router. No command opens
+a socket, publishes RouterInfo, or writes network state.
 
 The project should favor incremental, reviewable changes. A protocol feature
 is not complete merely because it compiles or communicates with one peer.

@@ -1,0 +1,17 @@
+[package]
+name = "i2pr-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Tokio-backed bounded service supervision and cancellation for i2pr"
+publish = false
+
+[dependencies]
+futures-util.workspace = true
+i2pr-core = { path = "../i2pr-core" }
+tokio.workspace = true
+tokio-util.workspace = true
+
+[lints]
+workspace = true

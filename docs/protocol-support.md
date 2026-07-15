@@ -29,7 +29,9 @@ ledger does not itself publish protocol capabilities.
 | I2CP | Not implemented | 9 | `specs/protocols/10-i2cp-service-tunnels.md` | None imported | None |
 | Service tunnels | Not implemented | 10 | `specs/protocols/10-i2cp-service-tunnels.md` | None imported | None |
 
-The six-crate workspace may name the `common` and `i2np` namespaces, and Plan
+The workspace may name the `common` and `i2np` namespaces and now includes the
+non-networked `i2pr-runtime` supervision crate, but runtime infrastructure is
+not protocol support evidence. Plan
 013 adds local type-4/type-7 execution plus a private identity file. These
 local operations do not establish mixed-router protocol support, complete
 signature/encryption coverage, transport support, network compatibility, or

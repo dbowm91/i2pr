@@ -17,12 +17,24 @@ Keep changes plan-first and bounded. Preserve the dependency direction shown in
 plugin APIs without a detailed plan. Production crates must not depend on
 `i2pr-testkit`, and lower-level crates must not depend on `i2pr-daemon`. The
 current direction is `i2pr-proto <- i2pr-crypto <- i2pr-storage`, with
-`i2pr-daemon` as the composition root over those crates and `i2pr-core`.
+`i2pr-core <- i2pr-runtime <- i2pr-daemon` is the runtime composition path;
+the daemon remains the process composition root. `i2pr-runtime` is the only
+production crate allowed to depend on Tokio or `tokio-util`; protocol, crypto,
+storage, and `i2pr-core` remain runtime-neutral.
 
 Use the local quality commands documented in `CONTRIBUTING.md`. Configuration
 and protocol inputs are untrusted: keep parsing bounded, reject unknown
 fields, avoid side effects during validation, and test negative paths. Do not
 claim protocol support before interoperability evidence exists.
+
+Plan 021 supervision rules are mandatory: every long-lived task must be owned
+by the supervisor or a service child scope, and every owned task must be
+awaited, explicitly aborted after a recorded deadline, or transferred to a
+documented owner. Discarded `JoinHandle`s and detached `tokio::spawn` calls are
+not allowed. Service startup must validate the complete graph before spawning,
+use explicit one-shot readiness, publish bounded latest-state health, and use
+typed static failure categories. Runtime tests must use paused Tokio time or
+explicit deterministic advancement; wall-clock sleeps are not acceptable.
 
 The `i2pr-proto` codec foundation uses borrowed cursors and caller-visible
 maximums. New protocol decoders should use strict top-level consumption and
