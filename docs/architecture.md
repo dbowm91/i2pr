@@ -212,9 +212,44 @@ side-effect-free. No identity command opens a listener or publishes a record.
 The implemented service model classifies work as essential, restartable,
 degradable, or optional. Each long-lived service declares startup dependencies,
 readiness, health signals, owned resources, cancellation, and graceful/forced
-shutdown behavior through `i2pr-runtime`. Later Plans 022–024 may add bounded
-channels, resource-governor integration, deterministic network simulation,
-and observability; they must preserve this ownership boundary.
+shutdown behavior through `i2pr-runtime`. Plan 022 now provides the bounded
+communication and resource-governor foundation; later plans may add
+deterministic network simulation and observability while preserving this
+ownership boundary.
+
+### Bounded communication and resource ownership
+
+Plan 022 makes the communication boundary concrete without adding a service or
+transport. Runtime channels use four explicit patterns:
+
+| Pattern | Contract | Initial overflow policy |
+| --- | --- | --- |
+| Command | ordered point-to-point instruction, no silent drop | wait only through an explicit deadline and cancellation scope |
+| Request | one bounded response path, with response closure surfaced | wait only through the same bounded scope |
+| Event | bounded single-consumer observation | drop-newest with an exact counter |
+| Latest state | current value plus version and initial absence | coalesce to the newest value through `watch` |
+
+Channel names and owners are bounded metadata. Infrastructure channel capacity
+is nonzero and capped at 4,096 slots; caller byte estimates are capped at
+1 MiB. A sender reserves a queue slot before it acquires an optional resource
+lease, so a cancelled or expired capacity waiter cannot pin a lease. Accepted
+items carry their lease through queueing and receiver processing. Receiver drop
+deterministically drops queued entries and releases their charges. Shutdown is
+out-of-band through the existing cancellation scope and cannot wait behind an
+ordinary command queue.
+
+`i2pr-core::ResourceBudget` uses immutable per-runtime limits and immediate
+grant-or-deny admission. The initial classes include service tasks, child tasks,
+command and event queue items, buffered bytes, simulated stream and datagram
+links, pending timers, and test peers, while preserving the existing future
+resource vocabulary. `ResourceLease` is non-cloneable and releases exactly one
+grant on drop or consuming early release. `ResourceBundle` validates all
+requests, rejects duplicates, orders classes deterministically, and commits
+all classes atomically; denial leaves usage unchanged. Per-class snapshots
+expose bounded limit, current usage, high-water mark, and saturating denial
+counts. Channel snapshots expose static metadata, capacity, queue depth, typed
+outcome counters, and drop/resource-denial counters without payloads, secrets,
+peer identities, or dynamic labels.
 
 ## External boundaries
 

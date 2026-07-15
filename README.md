@@ -30,6 +30,11 @@ non-networked Tokio runtime with deterministic service supervision, wakeable
 cancellation, readiness/health snapshots, bounded restart policy, and
 graceful/forced shutdown. Live router behavior and network interoperability
 remain unimplemented.
+Plan 022 now adds bounded command, request, and event channels, latest-state
+snapshots, typed overload outcomes, and runtime-neutral resource leases with
+atomic bundles and bounded diagnostics. These are infrastructure contracts
+only; no live transport, NetDB, tunnel, client, or listener behavior has been
+introduced.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
@@ -142,6 +147,7 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Milestone 1 I2NP/evidence/fuzzing closure record](plans/014-closure.md)
 - [Aggregate Milestone 1 corrective closure record](plans/010-milestone-1-closure.md)
 - [Plan 021 supervision and cancellation closure record](plans/021-closure.md)
+- [Plan 022 bounded channels and resource governor closure record](plans/022-closure.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)

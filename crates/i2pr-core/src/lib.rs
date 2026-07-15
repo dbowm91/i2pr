@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -528,13 +529,32 @@ impl CancellationToken {
     }
 }
 
+/// Maximum number of resource classes a budget or bundle may contain.
+pub const MAX_RESOURCE_CLASSES: usize = 32;
+
 /// Resource categories reserved for router-wide accounting.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ResourceClass {
-    /// Supervised task count.
-    Tasks,
+    /// Supervised service task count.
+    ServiceTasks,
+    /// Tasks owned by a supervised service child scope.
+    ChildTasks,
+    /// Commands retained by a bounded service queue.
+    CommandQueueItems,
+    /// Events retained by a bounded service queue.
+    EventQueueItems,
     /// Bytes retained in bounded buffers.
     BufferedBytes,
+    /// Stream links used by a deterministic simulated peer.
+    SimulatedStreamLinks,
+    /// Datagram links used by a deterministic simulated peer.
+    SimulatedDatagramLinks,
+    /// Timers registered for later service work.
+    PendingTimers,
+    /// Peers represented by a deterministic test harness.
+    TestPeers,
+    /// Legacy aggregate task count retained for existing callers.
+    Tasks,
     /// Pending transport handshakes.
     PendingHandshakes,
     /// Active peer links.
@@ -549,6 +569,32 @@ pub enum ResourceClass {
     Streams,
     /// SAM or I2CP client sessions.
     ApiSessions,
+}
+
+impl ResourceClass {
+    /// All currently defined classes in deterministic order.
+    pub const ALL: [Self; 17] = [
+        Self::ServiceTasks,
+        Self::ChildTasks,
+        Self::CommandQueueItems,
+        Self::EventQueueItems,
+        Self::BufferedBytes,
+        Self::SimulatedStreamLinks,
+        Self::SimulatedDatagramLinks,
+        Self::PendingTimers,
+        Self::TestPeers,
+        Self::Tasks,
+        Self::PendingHandshakes,
+        Self::ActiveLinks,
+        Self::NetDbQueries,
+        Self::TunnelBuilds,
+        Self::Destinations,
+        Self::Streams,
+        Self::ApiSessions,
+    ];
+
+    /// Number of currently defined classes.
+    pub const COUNT: usize = Self::ALL.len();
 }
 
 /// A positive limit for one resource class.
@@ -591,7 +637,7 @@ impl ResourceRequest {
     }
 }
 
-/// Current usage for one resource class.
+/// Current usage and bounded accounting diagnostics for one resource class.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResourceUsage {
     /// Accounted resource class.
@@ -600,12 +646,35 @@ pub struct ResourceUsage {
     pub used: u64,
     /// Configured maximum.
     pub limit: u64,
+    /// Highest usage observed since budget creation.
+    pub high_water: u64,
+    /// Number of denied acquisitions, saturating at `u64::MAX`.
+    pub denied: u64,
+}
+
+impl ResourceUsage {
+    /// Returns the highest usage observed since budget creation.
+    pub const fn high_water_mark(self) -> u64 {
+        self.high_water
+    }
+
+    /// Returns the number of denied acquisitions.
+    pub const fn denied_count(self) -> u64 {
+        self.denied
+    }
+}
+
+#[derive(Debug, Default)]
+struct ClassState {
+    limit: u64,
+    used: u64,
+    high_water: u64,
+    denied: u64,
 }
 
 #[derive(Debug, Default)]
 struct BudgetState {
-    limits: BTreeMap<ResourceClass, u64>,
-    used: BTreeMap<ResourceClass, u64>,
+    classes: BTreeMap<ResourceClass, ClassState>,
 }
 
 #[derive(Debug)]
@@ -613,7 +682,7 @@ struct BudgetInner {
     state: Mutex<BudgetState>,
 }
 
-/// Small in-memory budget that provides tested release-on-drop semantics.
+/// Small in-memory budget with immutable limits and owned lease accounting.
 #[derive(Clone, Debug)]
 pub struct ResourceBudget {
     inner: Arc<BudgetInner>,
@@ -623,11 +692,26 @@ impl ResourceBudget {
     /// Creates a budget from positive, non-duplicated limits.
     pub fn new(limits: impl IntoIterator<Item = ResourceLimit>) -> Result<Self, ResourceError> {
         let mut state = BudgetState::default();
-        for limit in limits {
+        for (index, limit) in limits.into_iter().enumerate() {
+            if index >= MAX_RESOURCE_CLASSES {
+                return Err(ResourceError::TooManyClasses {
+                    maximum: MAX_RESOURCE_CLASSES,
+                });
+            }
             if limit.maximum == 0 {
                 return Err(ResourceError::ZeroLimit { class: limit.class });
             }
-            if state.limits.insert(limit.class, limit.maximum).is_some() {
+            if state
+                .classes
+                .insert(
+                    limit.class,
+                    ClassState {
+                        limit: limit.maximum,
+                        ..ClassState::default()
+                    },
+                )
+                .is_some()
+            {
                 return Err(ResourceError::DuplicateLimit { class: limit.class });
             }
         }
@@ -640,41 +724,163 @@ impl ResourceBudget {
 
     /// Attempts to acquire a bounded lease without exceeding its class limit.
     pub fn try_acquire(&self, request: ResourceRequest) -> Result<ResourceLease, ResourceError> {
+        if request.amount == 0 {
+            return Err(ResourceError::ZeroRequest {
+                class: request.class,
+            });
+        }
         let mut state = self
             .inner
             .state
             .lock()
             .map_err(|_| ResourceError::Poisoned)?;
-        let limit =
+        let class_state =
             state
-                .limits
-                .get(&request.class)
-                .copied()
+                .classes
+                .get_mut(&request.class)
                 .ok_or(ResourceError::MissingLimit {
                     class: request.class,
                 })?;
-        let used = state.used.get(&request.class).copied().unwrap_or(0);
-        let next = used
-            .checked_add(request.amount)
-            .ok_or(ResourceError::Exhausted {
-                class: request.class,
-                requested: request.amount,
-                available: limit.saturating_sub(used),
-            })?;
-        if next > limit {
-            return Err(ResourceError::Exhausted {
-                class: request.class,
-                requested: request.amount,
-                available: limit.saturating_sub(used),
-            });
-        }
-        state.used.insert(request.class, next);
+        let available = class_state.limit.saturating_sub(class_state.used);
+        let next = match class_state.used.checked_add(request.amount) {
+            Some(next) if next <= class_state.limit => next,
+            Some(_) => {
+                class_state.denied = class_state.denied.saturating_add(1);
+                return Err(ResourceError::Exhausted {
+                    class: request.class,
+                    requested: request.amount,
+                    available,
+                });
+            }
+            None => {
+                class_state.denied = class_state.denied.saturating_add(1);
+                return Err(ResourceError::ArithmeticOverflow {
+                    class: request.class,
+                    used: class_state.used,
+                    requested: request.amount,
+                });
+            }
+        };
+        class_state.used = next;
+        class_state.high_water = class_state.high_water.max(next);
         drop(state);
         Ok(ResourceLease {
-            budget: self.clone(),
+            budget: Some(self.clone()),
             class: request.class,
             amount: request.amount,
         })
+    }
+
+    /// Attempts to acquire several classes atomically.
+    ///
+    /// Requests are copied, validated, and ordered by [`ResourceClass`] before
+    /// accounting. A duplicate class, missing limit, or exhausted class leaves
+    /// every class unchanged. Both owned requests and borrowed slices are
+    /// accepted through the [`Borrow`] bound.
+    pub fn try_acquire_bundle<I, R>(&self, request_iter: I) -> Result<ResourceBundle, ResourceError>
+    where
+        I: IntoIterator<Item = R>,
+        R: Borrow<ResourceRequest>,
+    {
+        let mut requests: Vec<ResourceRequest> = Vec::new();
+        for request in request_iter {
+            if requests.len() >= MAX_RESOURCE_CLASSES {
+                return Err(ResourceError::TooManyClasses {
+                    maximum: MAX_RESOURCE_CLASSES,
+                });
+            }
+            let request = *request.borrow();
+            if request.amount == 0 {
+                return Err(ResourceError::ZeroRequest {
+                    class: request.class,
+                });
+            }
+            requests.push(request);
+        }
+        if requests.is_empty() {
+            return Err(ResourceError::EmptyBundle);
+        }
+
+        requests.sort_unstable_by_key(|request| request.class);
+        for pair in requests.windows(2) {
+            if pair[0].class == pair[1].class {
+                return Err(ResourceError::DuplicateRequest {
+                    class: pair[0].class,
+                });
+            }
+        }
+
+        // Allocate the bounded result before mutating accounting. The exact
+        // capacity means later pushes cannot fail due to vector growth.
+        let mut leases = Vec::with_capacity(requests.len());
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| ResourceError::Poisoned)?;
+
+        for request in &requests {
+            if !state.classes.contains_key(&request.class) {
+                return Err(ResourceError::MissingLimit {
+                    class: request.class,
+                });
+            }
+        }
+
+        let mut next_values = Vec::with_capacity(requests.len());
+        for request in &requests {
+            let class_state = state
+                .classes
+                .get(&request.class)
+                .expect("bundle limits were validated above");
+            let available = class_state.limit.saturating_sub(class_state.used);
+            match class_state.used.checked_add(request.amount) {
+                Some(next) if next <= class_state.limit => next_values.push(next),
+                Some(_) => {
+                    let class_state = state
+                        .classes
+                        .get_mut(&request.class)
+                        .expect("bundle limits were validated above");
+                    class_state.denied = class_state.denied.saturating_add(1);
+                    return Err(ResourceError::Exhausted {
+                        class: request.class,
+                        requested: request.amount,
+                        available,
+                    });
+                }
+                None => {
+                    let class_state = state
+                        .classes
+                        .get_mut(&request.class)
+                        .expect("bundle limits were validated above");
+                    class_state.denied = class_state.denied.saturating_add(1);
+                    return Err(ResourceError::ArithmeticOverflow {
+                        class: request.class,
+                        used: class_state.used,
+                        requested: request.amount,
+                    });
+                }
+            }
+        }
+
+        for (request, next) in requests.iter().zip(next_values) {
+            let class_state = state
+                .classes
+                .get_mut(&request.class)
+                .expect("bundle limits were validated above");
+            class_state.used = next;
+            class_state.high_water = class_state.high_water.max(next);
+        }
+        drop(state);
+
+        for request in requests {
+            leases.push(ResourceLease {
+                budget: Some(self.clone()),
+                class: request.class,
+                amount: request.amount,
+            });
+        }
+        Ok(ResourceBundle { leases })
     }
 
     /// Returns a snapshot for a configured class.
@@ -684,43 +890,95 @@ impl ResourceBudget {
             .state
             .lock()
             .map_err(|_| ResourceError::Poisoned)?;
-        let limit = state
-            .limits
+        let class_state = state
+            .classes
             .get(&class)
-            .copied()
             .ok_or(ResourceError::MissingLimit { class })?;
         Ok(ResourceUsage {
             class,
-            used: state.used.get(&class).copied().unwrap_or(0),
-            limit,
+            used: class_state.used,
+            limit: class_state.limit,
+            high_water: class_state.high_water,
+            denied: class_state.denied,
         })
     }
 
+    /// Returns a bounded, deterministic snapshot of every configured class.
+    pub fn snapshot(&self) -> Result<Vec<ResourceUsage>, ResourceError> {
+        let state = self
+            .inner
+            .state
+            .lock()
+            .map_err(|_| ResourceError::Poisoned)?;
+        Ok(state
+            .classes
+            .iter()
+            .map(|(&class, class_state)| ResourceUsage {
+                class,
+                used: class_state.used,
+                limit: class_state.limit,
+                high_water: class_state.high_water,
+                denied: class_state.denied,
+            })
+            .collect())
+    }
+
     fn release(&self, class: ResourceClass, amount: u64) {
-        if let Ok(mut state) = self.inner.state.lock() {
-            if let Some(used) = state.used.get_mut(&class) {
-                if *used >= amount {
-                    *used -= amount;
-                }
-                if *used == 0 {
-                    state.used.remove(&class);
-                }
-            }
+        // A lease drop is cleanup and must remain best-effort even if another
+        // thread panicked while holding the accounting mutex. The governor
+        // never exposes its mutable state, so recovering the poisoned guard is
+        // preferable to leaking an owned grant during unwinding.
+        let mut state = match self.inner.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(class_state) = state.classes.get_mut(&class) {
+            class_state.used = class_state.used.saturating_sub(amount);
         }
+    }
+}
+
+/// A group of resource leases admitted atomically.
+#[derive(Debug)]
+pub struct ResourceBundle {
+    leases: Vec<ResourceLease>,
+}
+
+impl ResourceBundle {
+    /// Number of class grants held by this bundle.
+    pub fn len(&self) -> usize {
+        self.leases.len()
+    }
+
+    /// Whether this bundle contains no class grants.
+    pub fn is_empty(&self) -> bool {
+        self.leases.is_empty()
+    }
+
+    /// Iterates over grants in deterministic [`ResourceClass`] order.
+    pub fn iter(&self) -> std::slice::Iter<'_, ResourceLease> {
+        self.leases.iter()
+    }
+
+    /// Releases every grant by consuming the bundle.
+    pub fn release(self) {
+        drop(self);
     }
 }
 
 /// An owned resource lease that releases its units when dropped.
 #[derive(Debug)]
 pub struct ResourceLease {
-    budget: ResourceBudget,
+    budget: Option<ResourceBudget>,
     class: ResourceClass,
     amount: u64,
 }
 
 impl Drop for ResourceLease {
     fn drop(&mut self) {
-        self.budget.release(self.class, self.amount);
+        if let Some(budget) = self.budget.take() {
+            budget.release(self.class, self.amount);
+        }
     }
 }
 
@@ -734,6 +992,11 @@ impl ResourceLease {
     pub const fn amount(&self) -> u64 {
         self.amount
     }
+
+    /// Releases this lease by consuming it.
+    pub fn release(self) {
+        drop(self);
+    }
 }
 
 /// Errors produced by resource limits and lease acquisition.
@@ -745,6 +1008,12 @@ pub enum ResourceError {
     ZeroRequest { class: ResourceClass },
     /// The same class was configured more than once.
     DuplicateLimit { class: ResourceClass },
+    /// The same class appeared more than once in one atomic bundle.
+    DuplicateRequest { class: ResourceClass },
+    /// A bundle contained no resource requests.
+    EmptyBundle,
+    /// A budget or bundle exceeded the bounded class count.
+    TooManyClasses { maximum: usize },
     /// No limit was configured for the requested class.
     MissingLimit { class: ResourceClass },
     /// The request would exceed the remaining capacity.
@@ -752,6 +1021,12 @@ pub enum ResourceError {
         class: ResourceClass,
         requested: u64,
         available: u64,
+    },
+    /// Adding the request to current usage would overflow `u64`.
+    ArithmeticOverflow {
+        class: ResourceClass,
+        used: u64,
+        requested: u64,
     },
     /// The internal lock was poisoned by a prior panic.
     Poisoned,
@@ -763,6 +1038,16 @@ impl fmt::Display for ResourceError {
             Self::ZeroLimit { class } => write!(formatter, "zero limit for {class:?}"),
             Self::ZeroRequest { class } => write!(formatter, "zero request for {class:?}"),
             Self::DuplicateLimit { class } => write!(formatter, "duplicate limit for {class:?}"),
+            Self::DuplicateRequest { class } => {
+                write!(formatter, "duplicate bundle request for {class:?}")
+            }
+            Self::EmptyBundle => formatter.write_str("resource bundle must not be empty"),
+            Self::TooManyClasses { maximum } => {
+                write!(
+                    formatter,
+                    "resource class count exceeds the {maximum}-class limit"
+                )
+            }
             Self::MissingLimit { class } => write!(formatter, "missing limit for {class:?}"),
             Self::Exhausted {
                 class,
@@ -771,6 +1056,14 @@ impl fmt::Display for ResourceError {
             } => write!(
                 formatter,
                 "resource {class:?} exhausted: requested {requested}, available {available}"
+            ),
+            Self::ArithmeticOverflow {
+                class,
+                used,
+                requested,
+            } => write!(
+                formatter,
+                "resource {class:?} accounting overflow: used {used}, requested {requested}"
             ),
             Self::Poisoned => formatter.write_str("resource budget lock poisoned"),
         }
@@ -782,6 +1075,10 @@ impl std::error::Error for ResourceError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     #[test]
     fn lifecycle_rejects_recovery_from_stopped() {
@@ -821,6 +1118,226 @@ mod tests {
         assert!(budget.try_acquire(request).is_err());
         drop(lease);
         assert_eq!(budget.usage(ResourceClass::Tasks).expect("usage").used, 0);
+    }
+
+    #[test]
+    fn resource_classes_and_snapshots_are_bounded_and_deterministic() {
+        assert_eq!(ResourceClass::COUNT, ResourceClass::ALL.len());
+        const {
+            assert!(ResourceClass::COUNT <= MAX_RESOURCE_CLASSES);
+        }
+
+        let limits = ResourceClass::ALL
+            .into_iter()
+            .map(|class| ResourceLimit::new(class, 1).expect("positive limit"));
+        let budget = ResourceBudget::new(limits).expect("all classes fit");
+        let snapshot = budget.snapshot().expect("snapshot");
+
+        assert_eq!(snapshot.len(), ResourceClass::COUNT);
+        assert!(
+            snapshot
+                .windows(2)
+                .all(|pair| pair[0].class < pair[1].class)
+        );
+        assert!(snapshot.iter().all(|usage| {
+            usage.used == 0 && usage.limit == 1 && usage.high_water == 0 && usage.denied == 0
+        }));
+    }
+
+    #[test]
+    fn resource_usage_records_exact_limit_denial_and_high_water() {
+        let class = ResourceClass::ServiceTasks;
+        let budget =
+            ResourceBudget::new([ResourceLimit::new(class, 2).expect("limit")]).expect("budget");
+        let exact = ResourceRequest::new(class, 2).expect("request");
+        let lease = budget.try_acquire(exact).expect("exact limit is accepted");
+
+        let usage = budget.usage(class).expect("usage");
+        assert_eq!(usage.used, 2);
+        assert_eq!(usage.high_water_mark(), 2);
+        assert_eq!(usage.denied_count(), 0);
+
+        assert!(matches!(
+            budget.try_acquire(ResourceRequest::new(class, 1).expect("request")),
+            Err(ResourceError::Exhausted {
+                class: denied_class,
+                requested: 1,
+                available: 0,
+            }) if denied_class == class
+        ));
+        drop(lease);
+
+        let usage = budget.usage(class).expect("usage");
+        assert_eq!(usage.used, 0);
+        assert_eq!(usage.high_water, 2);
+        assert_eq!(usage.denied, 1);
+    }
+
+    #[test]
+    fn resource_validation_rejects_zero_and_handles_u64_overflow() {
+        let class = ResourceClass::BufferedBytes;
+        assert_eq!(
+            ResourceLimit::new(class, 0),
+            Err(ResourceError::ZeroLimit { class })
+        );
+        assert_eq!(
+            ResourceRequest::new(class, 0),
+            Err(ResourceError::ZeroRequest { class })
+        );
+
+        let budget = ResourceBudget::new([ResourceLimit::new(class, u64::MAX).expect("limit")])
+            .expect("budget");
+        let lease = budget
+            .try_acquire(ResourceRequest::new(class, u64::MAX).expect("request"))
+            .expect("maximum u64 grant");
+        assert_eq!(budget.usage(class).expect("usage").used, u64::MAX);
+
+        assert!(matches!(
+            budget.try_acquire(ResourceRequest::new(class, 1).expect("request")),
+            Err(ResourceError::ArithmeticOverflow {
+                class: overflow_class,
+                used: u64::MAX,
+                requested: 1,
+            }) if overflow_class == class
+        ));
+        drop(lease);
+
+        let malformed = ResourceRequest { class, amount: 0 };
+        assert!(matches!(
+            budget.try_acquire(malformed),
+            Err(ResourceError::ZeroRequest { class: denied_class }) if denied_class == class
+        ));
+    }
+
+    #[test]
+    fn resource_release_is_consuming_drop_safe_and_unwind_safe() {
+        let class = ResourceClass::ChildTasks;
+        let budget =
+            ResourceBudget::new([ResourceLimit::new(class, 1).expect("limit")]).expect("budget");
+
+        let lease = budget
+            .try_acquire(ResourceRequest::new(class, 1).expect("request"))
+            .expect("grant");
+        lease.release();
+        assert_eq!(budget.usage(class).expect("usage").used, 0);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _lease = budget
+                .try_acquire(ResourceRequest::new(class, 1).expect("request"))
+                .expect("grant");
+            panic!("exercise lease cleanup during unwind");
+        }));
+        assert!(result.is_err());
+        assert_eq!(budget.usage(class).expect("usage").used, 0);
+    }
+
+    #[test]
+    fn resource_bundle_is_atomic_sorted_and_releases_together() {
+        let service = ResourceClass::ServiceTasks;
+        let child = ResourceClass::ChildTasks;
+        let budget = ResourceBudget::new([
+            ResourceLimit::new(service, 2).expect("limit"),
+            ResourceLimit::new(child, 1).expect("limit"),
+        ])
+        .expect("budget");
+        let child_request = ResourceRequest::new(child, 1).expect("request");
+        let service_request = ResourceRequest::new(service, 2).expect("request");
+        let blocker = budget.try_acquire(child_request).expect("child grant");
+
+        assert!(matches!(
+            budget.try_acquire_bundle([service_request, child_request]),
+            Err(ResourceError::Exhausted {
+                class: denied_class,
+                requested: 1,
+                available: 0,
+            }) if denied_class == child
+        ));
+        assert_eq!(budget.usage(service).expect("usage").used, 0);
+        assert_eq!(budget.usage(child).expect("usage").used, 1);
+        assert_eq!(budget.usage(child).expect("usage").denied, 1);
+
+        drop(blocker);
+        let requests = [child_request, service_request];
+        let bundle = budget
+            .try_acquire_bundle(requests.as_slice())
+            .expect("bundle grant");
+        assert_eq!(bundle.len(), 2);
+        assert_eq!(
+            bundle.iter().map(ResourceLease::class).collect::<Vec<_>>(),
+            vec![service, child]
+        );
+        assert_eq!(budget.usage(service).expect("usage").used, 2);
+        assert_eq!(budget.usage(child).expect("usage").used, 1);
+
+        bundle.release();
+        assert_eq!(budget.usage(service).expect("usage").used, 0);
+        assert_eq!(budget.usage(child).expect("usage").used, 0);
+    }
+
+    #[test]
+    fn resource_bundle_rejects_duplicates_without_mutation() {
+        let class = ResourceClass::EventQueueItems;
+        let budget =
+            ResourceBudget::new([ResourceLimit::new(class, 2).expect("limit")]).expect("budget");
+        let request = ResourceRequest::new(class, 1).expect("request");
+
+        assert!(matches!(
+            budget.try_acquire_bundle([request, request]),
+            Err(ResourceError::DuplicateRequest { class: duplicate_class })
+                if duplicate_class == class
+        ));
+        assert_eq!(budget.usage(class).expect("usage").used, 0);
+        assert_eq!(budget.usage(class).expect("usage").denied, 0);
+        assert!(matches!(
+            budget.try_acquire_bundle(std::iter::empty::<ResourceRequest>()),
+            Err(ResourceError::EmptyBundle)
+        ));
+    }
+
+    #[test]
+    fn concurrent_acquisition_never_exceeds_the_limit() {
+        const THREADS: usize = 16;
+        const LIMIT: usize = 4;
+        let class = ResourceClass::SimulatedDatagramLinks;
+        let budget = Arc::new(
+            ResourceBudget::new([ResourceLimit::new(class, LIMIT as u64).expect("limit")])
+                .expect("budget"),
+        );
+        let ready = Arc::new(Barrier::new(THREADS + 1));
+        let release = Arc::new(Barrier::new(THREADS + 1));
+        let granted = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::with_capacity(THREADS);
+
+        for _ in 0..THREADS {
+            let budget = Arc::clone(&budget);
+            let ready = Arc::clone(&ready);
+            let release = Arc::clone(&release);
+            let granted = Arc::clone(&granted);
+            handles.push(thread::spawn(move || {
+                let lease = budget
+                    .try_acquire(ResourceRequest::new(class, 1).expect("request"))
+                    .ok();
+                if lease.is_some() {
+                    granted.fetch_add(1, Ordering::Relaxed);
+                }
+                ready.wait();
+                release.wait();
+                drop(lease);
+            }));
+        }
+
+        ready.wait();
+        assert_eq!(granted.load(Ordering::Relaxed), LIMIT);
+        assert_eq!(budget.usage(class).expect("usage").used, LIMIT as u64);
+        release.wait();
+        for handle in handles {
+            handle.join().expect("worker joined");
+        }
+        assert_eq!(budget.usage(class).expect("usage").used, 0);
+        assert_eq!(
+            budget.usage(class).expect("usage").denied,
+            (THREADS - LIMIT) as u64
+        );
     }
 
     #[test]

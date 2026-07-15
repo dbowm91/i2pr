@@ -125,6 +125,31 @@ reported as forced. No Plan 021 service binds sockets, connects to peers,
 performs DNS, touches NetDB, constructs tunnels, exposes client listeners, or
 advertises protocol capabilities.
 
+## Bounded communication and resource-governor threats
+
+Plan 022 treats queue exhaustion and slow consumers as explicit denial-of-
+service conditions. Command and request queues wait only under a caller-owned
+deadline and wakeable cancellation scope; event queues use a documented
+drop-newest policy with counters; latest-state consumers receive only the
+current version and can detect closure. Shutdown cancellation is a separate
+path, so a full ordinary queue cannot starve supervisor teardown.
+
+Request response senders are one-shot and are dropped when the requester is
+cancelled or its deadline expires. A service that drops its response path is
+reported as response closure rather than leaving an unbounded waiter. Queue
+items own resource leases through enqueue and processing, and dropping a
+receiver drops queued items so their charges are released.
+
+Resource accounting is immediate-grant or immediate-denial under one bounded
+lock; it has no hidden asynchronous waiter queue. Bundle requests validate all
+classes before mutating usage, reject duplicate classes, and commit atomically,
+so an exhausted class cannot leave partial grants. Limits are immutable for a
+budget lifetime, class counts and estimates are bounded, and high-water/denial
+counters saturate rather than wrap. Lease drop, consuming release, panic
+unwind, cancellation, and forced task cleanup are all release paths. Snapshot
+metadata contains only static class/channel identifiers and bounded counters;
+payloads, secrets, peer identities, addresses, and destinations are excluded.
+
 ## Observability and non-claims
 
 Default logs and metrics must not expose full router hashes, destination

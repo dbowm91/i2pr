@@ -36,6 +36,18 @@ use explicit one-shot readiness, publish bounded latest-state health, and use
 typed static failure categories. Runtime tests must use paused Tokio time or
 explicit deterministic advancement; wall-clock sleeps are not acceptable.
 
+Plan 022 communication rules are mandatory: every asynchronous queue must have
+an explicit nonzero capacity below the infrastructure ceiling; sends and
+receives must expose typed overload, closure, deadline, and cancellation
+outcomes; service-to-service sends must not wait without a caller-visible
+deadline or cancellation scope; and latest-state values must not imply
+lossless history. Resource leases are non-cloneable, own one exact grant, and
+release on drop, explicit consuming release, cancellation, timeout, panic, and
+forced cleanup. Queue admission occurs before payload ownership enters a queue,
+and an accepted queue item owns its charge until receiver handoff or drop.
+Do not add unbounded Tokio channels, hidden retry loops, dynamic peer-derived
+channel identifiers, or partial multi-class resource acquisition.
+
 The `i2pr-proto` codec foundation uses borrowed cursors and caller-visible
 maximums. New protocol decoders should use strict top-level consumption and
 typed `CodecError` categories; do not add hidden unlimited defaults, runtime or

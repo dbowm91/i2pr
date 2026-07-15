@@ -1,6 +1,7 @@
 //! Owned service startup, health, restart, and shutdown orchestration.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -484,13 +485,27 @@ impl Supervisor {
             .clone();
         let spec = spec.clone();
         let graceful_period = spec.shutdown_grace();
-        tasks.spawn(run_manager(
-            spec,
-            manager_token.clone(),
-            health,
-            Arc::clone(&self.clock),
-            ready_sender,
-        ));
+        let manager_name = spec.name().clone();
+        let clock = Arc::clone(&self.clock);
+        let manager_token_for_task = manager_token.clone();
+        tasks.spawn(async move {
+            match AssertUnwindSafe(run_manager(
+                spec,
+                manager_token_for_task,
+                health,
+                clock,
+                ready_sender,
+            ))
+            .catch_unwind()
+            .await
+            {
+                Ok(output) => output,
+                Err(_) => ManagerOutput {
+                    name: manager_name,
+                    completion: ServiceCompletion::Panic,
+                },
+            }
+        });
         (
             ActiveManager {
                 cancellation: manager_token,
@@ -550,6 +565,12 @@ impl Supervisor {
                                             &output.completion,
                                             completions,
                                         );
+                                        if self.graph.service(&output.name).classification()
+                                            == ServiceClassification::Essential
+                                            && output.completion.is_failure()
+                                        {
+                                            return Err(output.completion);
+                                        }
                                         if self.graph.service(current).dependencies().contains(&output.name) {
                                             return Err(ServiceCompletion::Failed(ServiceFailure::new(
                                                 ServiceFailureCategory::DependencyUnavailable,
@@ -602,6 +623,12 @@ impl Supervisor {
                                     &output.completion,
                                     completions,
                                 );
+                                if self.graph.service(&output.name).classification()
+                                    == ServiceClassification::Essential
+                                    && output.completion.is_failure()
+                                {
+                                    return Err(output.completion);
+                                }
                                 if self.graph.service(current).dependencies().contains(&output.name) {
                                     return Err(ServiceCompletion::Failed(ServiceFailure::new(
                                         ServiceFailureCategory::DependencyUnavailable,
@@ -1084,11 +1111,48 @@ mod tests {
         let supervisor =
             Supervisor::new(graph(service), Duration::from_secs(5)).expect("supervisor");
         let result = supervisor.run().await;
-        let Err(SupervisorError::StartupFailed { completion, .. }) = result else {
+        let Err(SupervisorError::StartupFailed {
+            service,
+            completion,
+            ..
+        }) = result
+        else {
             panic!("panic should fail startup");
         };
+        assert_eq!(service, name("panic"));
         assert_eq!(completion, ServiceCompletion::Panic);
         assert!(!format!("{completion:?}").contains("secret panic payload"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn essential_failure_during_later_startup_stops_the_graph() {
+        let failed = ServiceSpec::new(
+            name("a-essential"),
+            ServiceClassification::Essential,
+            |context| async move {
+                context.signal_ready().expect("ready");
+                ServiceResult::Failed(ServiceFailure::new(ServiceFailureCategory::Internal, None))
+            },
+        );
+        let waiting = ServiceSpec::new(
+            name("b-essential"),
+            ServiceClassification::Essential,
+            |_context| async move { std::future::pending::<ServiceResult>().await },
+        );
+        let mut builder = ServiceGraph::builder(8).expect("bound");
+        builder.register(failed).expect("register");
+        builder.register(waiting).expect("register");
+        let supervisor = Supervisor::new(builder.build().expect("graph"), Duration::from_secs(5))
+            .expect("supervisor");
+        let result = supervisor.run().await;
+        let Err(SupervisorError::StartupFailed { completion, .. }) = result else {
+            panic!("essential startup failure should stop the graph");
+        };
+        assert!(matches!(
+            completion,
+            ServiceCompletion::Failed(failure)
+                if failure.category() == ServiceFailureCategory::Internal
+        ));
     }
 
     #[tokio::test(start_paused = true)]

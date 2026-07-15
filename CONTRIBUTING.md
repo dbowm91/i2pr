@@ -48,6 +48,15 @@ abort, child-scope cleanup, and the zero-remaining-task report. Do not use
 wall-clock sleeps or live sockets in this milestone. Run the focused lane with
 `cargo test -p i2pr-runtime --all-targets` in addition to the workspace checks.
 
+Bounded communication and resource-governor tests must cover capacities of one,
+exact offered load, and maximum-plus-one offered load. Test typed full,
+deadline, cancellation, closure, response-drop, and resource-denial outcomes;
+verify queue-held leases release on receive, drop, timeout, cancellation,
+panic unwind, and supervisor teardown; and exercise atomic bundle denial with
+no partial usage. Use deterministic Tokio time and explicit reproducibility
+seeds where scheduling or accounting is exercised. Do not use wall-clock
+sleeps, unbounded retry loops, or live network traffic for overload tests.
+
 Run `bash scripts/check-fixture-manifest.sh` after changing committed fixture
 bytes. The maintained fuzz workspace under `fuzz/` is intentionally outside
 the production workspace and requires nightly `cargo-fuzz`; use

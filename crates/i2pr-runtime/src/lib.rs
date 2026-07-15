@@ -7,11 +7,20 @@
 #![forbid(unsafe_code)]
 
 mod cancel;
+mod channel;
 mod context;
 mod graph;
 mod supervisor;
 
 pub use cancel::CancellationToken;
+pub use channel::{
+    ChannelConfigError, ChannelName, ChannelNameError, ChannelSnapshot, ChannelSpec,
+    CommunicationClass, EventReceiver, EventSendError, EventSender, LatestState,
+    LatestStateReceiver, LatestStateSender, MAX_CHANNEL_CAPACITY, MAX_CHANNEL_NAME_BYTES,
+    MAX_QUEUE_ITEM_BYTES, OverflowPolicy, QueueCharge, ReceiveError, Received, ReceivedRequest,
+    RequestChannelParts, RequestError, RequestReceiver, RequestSender, SendError, StateUpdateError,
+    TryReceiveError, command_channel, event_channel, latest_state_channel, request_channel,
+};
 pub use context::{
     ChildFailurePolicy, ChildScope, ChildScopeError, ChildShutdownReport, ChildTaskFailure,
     HealthReceiver, HealthReporter, MAX_CHILD_TASKS, Readiness, ReadinessError, ServiceContext,
