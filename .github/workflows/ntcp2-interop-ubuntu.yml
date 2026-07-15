@@ -2,42 +2,112 @@ name: NTCP2 interoperability (Ubuntu manual)
 
 on:
   workflow_dispatch:
+    inputs:
+      profile:
+        description: Ordered gate profile to execute
+        required: true
+        type: choice
+        default: environment-smoke
+        options:
+          - environment-smoke
+          - reference-crosscheck-ipv4
+          - handshake-smoke
+          - full
 
 permissions:
   contents: read
 
+# The lane is manual-only and uses fixed major action versions. Privileged
+# execution is deliberately kept in one job so namespaces and host state do
+# not cross an unverified job-artifact boundary.
+concurrency:
+  group: ntcp2-interop-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  environment-smoke:
-    name: Plan 038 environment smoke
+  contract:
+    name: Plan 043 contract gate
+    if: ${{ github.event.repository.fork == false }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 45
     steps:
       - name: Check out source
         uses: actions/checkout@v4
-      - name: Install pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.95.0
-      - name: Install Ubuntu harness dependencies
+      - name: Install repository Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --no-self-update
+      - name: Run static and deterministic contract checks
+        env:
+          CARGO_NET_OFFLINE: "false"
+        run: |
+          cargo +1.95.0 fmt --all --check
+          cargo +1.95.0 check --workspace --all-targets
+          cargo +1.95.0 test --workspace
+          cargo +1.95.0 clippy --workspace --all-targets --all-features -- -D warnings
+          RUSTDOCFLAGS="-D warnings" cargo +1.95.0 doc --workspace --no-deps
+          bash scripts/check-dependency-direction.sh
+          bash scripts/check-runtime-boundaries.sh
+          bash scripts/check-ntcp2-interoperability.sh
+          python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
+          python3 scripts/interop/validate-build-contract.py
+
+  ubuntu-lane:
+    name: Plan 043 Ubuntu ordered lane
+    if: ${{ github.event.repository.fork == false }}
+    needs: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      PROFILE: ${{ inputs.profile }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install repository Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --no-self-update
+      - name: Pre-install host contract
+        run: bash scripts/interop/ubuntu/check-host.sh --pre-install
+      - name: Reset generated lane state
+        run: sudo -E bash scripts/interop/reset-lane-state.sh
+      - name: Prepare Ubuntu host dependencies
         run: sudo -E bash scripts/interop/ubuntu/setup-host.sh
-      - name: Build pinned reference routers
-        run: bash scripts/interop/build-references.sh
-      - name: Run environment smoke
-        run: sudo -E bash scripts/interop/run-matrix.sh --profile environment-smoke
-      - name: Validate sanitized evidence boundary
+      - name: Verify post-install host contract
+        run: bash scripts/interop/ubuntu/check-host.sh --post-install
+      - name: Record clean-host baseline
+        run: sudo -E bash scripts/interop/verify-clean-host.sh --record-baseline
+      - name: Reference build gate (network-enabled preparation)
+        run: bash scripts/interop/build-references.sh --force-rebuild
+      - name: Verify exact selected reference cache manifest
+        run: python3 scripts/interop/cache-manifest.py --verify
+      - name: Reference offline-reuse and launcher build gate
+        run: sudo -E bash scripts/interop/offline-reuse.sh
+      - name: Environment-smoke gate
+        if: ${{ inputs.profile == 'environment-smoke' || inputs.profile == 'reference-crosscheck-ipv4' || inputs.profile == 'handshake-smoke' || inputs.profile == 'full' }}
+        run: sudo -E bash scripts/interop/run-gate.sh --profile environment-smoke --offline
+      - name: Reference-control gate
+        if: ${{ inputs.profile == 'reference-crosscheck-ipv4' || inputs.profile == 'handshake-smoke' || inputs.profile == 'full' }}
+        run: sudo -E bash scripts/interop/run-gate.sh --profile reference-crosscheck-ipv4 --offline
+      - name: i2pr handshake-smoke gate
+        if: ${{ inputs.profile == 'handshake-smoke' || inputs.profile == 'full' }}
+        run: sudo -E bash scripts/interop/run-gate.sh --profile handshake-smoke --offline
+      - name: Full bounded matrix gate
+        if: ${{ inputs.profile == 'full' }}
+        run: sudo -E bash scripts/interop/run-gate.sh --profile full --offline
+      - name: Evidence aggregation and validation
         if: always()
-        run: bash scripts/check-ntcp2-interoperability.sh
-      - name: Clean namespaces and disposable state
+        run: |
+          python3 scripts/interop/validate-evidence.py
+          python3 scripts/interop/aggregate-evidence.py --profile "$PROFILE"
+      - name: Final cleanup verification
         if: always()
-        run: sudo -E bash scripts/interop/cleanup.sh
-      - name: Upload sanitized build metadata
+        run: |
+          sudo -E bash scripts/interop/cleanup.sh
+          sudo -E bash scripts/interop/verify-clean-host.sh --verify
+      - name: Upload sanitized Plan 043 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ntcp2-interop-ubuntu-metadata
-          if-no-files-found: error
-          path: |
-            target/interop/build/*summary.txt
-            target/interop/cache/**/build-metadata.txt
-            target/interop/runs/**/sanitized-result.json
+          name: ntcp2-interop-ubuntu-${{ github.run_id }}
+          if-no-files-found: ignore
           retention-days: 7
+          path: |
+            target/interop/evidence/*.json
+            target/interop/build/reference-build-summary.json

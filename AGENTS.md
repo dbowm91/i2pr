@@ -131,6 +131,32 @@ connected the launcher to a reference adapter. Rejected scenarios/state and
 typed authentication, timeout, or cleanup failures must stay visible.
 Empty or reference-only evidence is not an i2pr interoperability result.
 
+Plan 043 adds the build-system promotion contract. Its ordered gates are
+`contract`, `reference-build`, `reference-offline-reuse`, `environment-smoke`,
+`reference-crosscheck-ipv4`, `i2pr-handshake-smoke-ipv4`, `full-matrix`,
+`evidence-validation`, and `cleanup-verification`. Preparation is the only
+network-enabled trust domain; execution consumes verified offline caches and
+namespace-local veth links. The reference control must pass before i2pr
+profiles, and cleanup verification must run with an always-run policy and fail
+the lane independently of protocol results.
+
+The exact host contract is Ubuntu 24.04 amd64/x86_64, Bash 4+, UTF-8 locale,
+non-interactive sudo when needed, Linux namespace/nftables support, and at
+least 4 GiB free under `target/`. The declared package set and locked source,
+IzPack, cache, and build-command inputs are authoritative in
+`tests/integration/ntcp2/references.lock.toml`. Offline reuse must re-hash the
+complete runtime tree and must never fetch on a miss. The aggregate evidence
+manifest may reference only sanitized typed JSON and approved hashes; raw logs,
+RouterInfo, identities, keys, endpoints, packet captures, payloads, private
+paths, and secret-bearing run roots are forbidden.
+
+Promotion is manual first, scheduled only after repeated clean-checkout and
+cache-reuse success, then a current successful run at Milestone 3 closure.
+Privileged execution is not automatically exposed to forked or untrusted pull
+requests. The current checkout has not completed this lane and has no
+mixed-router i2pr evidence; do not present workflow scaffolding or reference-
+only control results as NTCP2 support.
+
 ## Build, Test, and Quality
 
 Toolchain is pinned to Rust 1.95.0 (`rust-toolchain.toml`); MSRV is 1.85

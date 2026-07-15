@@ -5,8 +5,9 @@ description: Operate, diagnose, or extend the repository's Ubuntu 24.04 referenc
 
 # I2PR NTCP2 interoperability
 
-Use this skill from the repository root for the manual, opt-in Plan 038/040/041/042
-harness. Read `AGENTS.md`, `plans/038-ubuntu-reference-router-interoperability-harness.md`,
+Use this skill from the repository root for the manual, opt-in Plan 038/040/041/042/043
+harness. Read `AGENTS.md`, `plans/043-ubuntu-build-system-interop-gates.md`,
+`plans/038-ubuntu-reference-router-interoperability-harness.md`,
 `tests/integration/ntcp2/README.md`, and the relevant architecture/ADR files
 before changing the apparatus.
 
@@ -28,6 +29,12 @@ non-advertised unless sanitized evidence satisfies `specs/CONFORMANCE.md`.
 Run only on an authorized disposable Ubuntu 24.04 amd64 host. The namespace
 and firewall checks are mandatory and fail closed. Do not bypass a host,
 privilege, route, cleanup, or evidence validation error.
+
+The exact host contract is Ubuntu 24.04 amd64/x86_64, Bash 4+, a UTF-8 locale,
+non-interactive `sudo` when not root, Linux namespace/nftables capability, and
+at least 4 GiB free under `target/`. The declared package set and all cache
+identity inputs are authoritative in
+`tests/integration/ntcp2/references.lock.toml`.
 
 ## Plan 042 runtime and launcher boundary
 
@@ -55,37 +62,56 @@ DeliveryStatus per direction plus orderly cleanup. Reference acceptance or
 echo behavior is not yet verified; do not claim interoperability or substitute
 padding/TCP readiness for the message exchange.
 
-## Workflow
+## Plan 043 workflow
 
-1. Inspect the lock and scenario definitions before execution. Do not change
-   source revisions, package assumptions, scenario IDs, or the IzPack hash
-   without updating the plan and conformance documentation.
-2. Run `bash scripts/interop/ubuntu/check-host.sh --pre-install`. On the
-   authorized host, run the declared `setup-host.sh` once, then
+The semantic gates are ordered and later gates are ineligible when required
+inputs are missing or invalid:
+
+```text
+contract -> reference-build -> reference-offline-reuse -> environment-smoke
+-> reference-crosscheck-ipv4 -> i2pr-handshake-smoke-ipv4 -> full-matrix
+-> evidence-validation -> cleanup-verification
+```
+
+1. Inspect the lock, scenario definitions, and current workflow status. Do not
+   change source revisions, package assumptions, scenario IDs, or the IzPack
+   hash without updating the plan and conformance documentation.
+2. Run the contract checks without starting routers. Preparation then runs
+   `check-host.sh --pre-install`, the declared `setup-host.sh`, and
    `check-host.sh --post-install`.
-3. Prepare the exact reference caches with
-   `bash scripts/interop/build-references.sh`; use `--offline` only when the
-   cache already exists and network access is intentionally unavailable.
-   Resolve caches through `target/interop/cache/current-cache.json`; strict
-   schema-2 metadata is parsed and the complete runtime tree is re-hashed
-   before launch.
-4. Run the smallest required profile first. Use `run-matrix.sh --profile
-   environment-smoke`, then `reference-crosscheck-ipv4`, which executes the
-   dedicated `reference-java-i2pd-ipv4` and `reference-i2pd-java-ipv4`
-   scenarios with separate namespaces, an explicit non-public network ID,
-   staged RouterInfo exchange, and dual authenticated observations. Run
-   handshake/full only after the earlier gates pass and the runtime-owned
-   driver is available. Pass `--offline` when appropriate and use
-   `--keep-failed-sanitized` only when reviewing an allowed sanitized failure
-   record.
-5. Validate every retained record with
-   `bash scripts/interop/validate-evidence.py` and
-   `bash scripts/check-ntcp2-interoperability.sh`. Empty evidence is not
-   success.
-6. Always run the bounded cleanup path and verify no namespaces, veths, child
-   processes, or secret-bearing run roots remain. Passed and explicitly
-   retained failed records live only under `target/interop/evidence/`; never
-   retain a run root to preserve evidence.
+3. Build exact reference caches with `build-references.sh --force-rebuild`.
+   This is the only network-enabled phase and records source/tool/artifact/tree
+   hashes. Resolve only through `target/interop/cache/current-cache.json`.
+4. Restore the verified cache and run `build-references.sh --offline`.
+   Re-hash the complete runtime tree. A cache miss or metadata mismatch is a
+   hard failure; never fetch or choose an arbitrary cache.
+5. Run `environment-smoke`, then `reference-crosscheck-ipv4`. The latter uses
+   separate Java/i2pd namespaces, private network ID 99, staged strict
+   RouterInfo validation/import, controlled directions, and dual authenticated
+   observations. It is harness control evidence only.
+6. Only after reference control passes, build the current launcher and run
+   `handshake-smoke`; require four independent i2pr/reference directions,
+   authenticated handshake, bounded DeliveryStatus exchange, typed counters,
+   sanitized finalization, and clean state. Run `full` only afterward; it adds
+   bounded adversarial/resource cases and never unbounded fuzzing.
+7. Validate every record and the aggregate manifest with
+   `validate-evidence.py` and `check-ntcp2-interoperability.sh`. Empty evidence,
+   placeholders, forbidden content, missing scenarios, extra passed records,
+   hash mismatches, or incomplete direction coverage fail the gate.
+8. Record the clean-host baseline before privileged execution with
+   `sudo -E bash scripts/interop/verify-clean-host.sh --record-baseline`.
+   Always run `cleanup.sh`, then verify with
+   `sudo -E bash scripts/interop/verify-clean-host.sh --verify --baseline
+   target/interop/build/clean-host-baseline.json`. Reject residual namespaces,
+   veths, child processes, secret-bearing run roots, forbidden retained files,
+   or attributable host nftables/routes/forwarding changes. Cleanup
+   verification failure overrides protocol success.
+
+The workflow and helper apparatus expose the ordered manual Plan 043 lane,
+including clean-host verification and aggregate validation, but no completed
+successful aggregate run is present. Treat that as an explicit Plan 043
+blocker, not a skipped pass. Retain only sanitized typed records and approved
+hashes under `target/interop/evidence/`.
 
 Consult [operations.md](references/operations.md) for command routing,
 profiles, typed outcomes, and implementation-specific stop conditions.

@@ -151,6 +151,44 @@ to `target/interop/evidence/`, while `target/interop/runs/` is always deleted
 after cleanup. A successful environment smoke result remains harness
 validation only and cannot advertise NTCP2.
 
+### Plan 043 build-system gates
+
+Plan 043 owns the build-system promotion boundary. The semantic gate order is
+`contract` → `reference-build` → `reference-offline-reuse` →
+`environment-smoke` → `reference-crosscheck-ipv4` →
+`i2pr-handshake-smoke-ipv4` → `full-matrix` → `evidence-validation` →
+`cleanup-verification`. The contract gate is unprivileged and does not start
+routers. Preparation is the only network-enabled phase; offline reuse and all
+scenario profiles consume verified caches and namespace-local synthetic links.
+
+The exact host is Ubuntu 24.04 amd64/x86_64 with Bash 4+, UTF-8 locale,
+non-interactive `sudo` when needed, Linux namespace/nftables capability, and at
+least 4 GiB free under `target/`. The setup package list, full source pins,
+IzPack digest, cache schema, and build-command versions are authoritative in
+`tests/integration/ntcp2/references.lock.toml`. Host evidence records Ubuntu,
+kernel, architecture, Rust/Cargo, Java/Ant, compiler/CMake, Python, iproute2,
+and nftables; the aggregate manifest adds workflow run and attempt metadata.
+
+The offline gate restores only a cache selected through
+`target/interop/cache/current-cache.json`, validates strict schema-2 metadata,
+and re-hashes the complete runtime tree. Its key includes the canonical
+reference (`java_i2p` or `i2pd`), full source revision, lock digest,
+`ubuntu-24.04-amd64`, build-command version, and relevant tool/ABI versions.
+It must not fetch, clone, install, resolve DNS, or fall back on a cache miss.
+Runtime configs, identities, keys, RouterInfo, NetDB state, run roots, raw
+logs, namespace state, and evidence records are never cache inputs.
+
+The reference crosscheck is a control, not an i2pr result; it must pass before
+the four independent i2pr/reference IPv4 directions can run. The full profile
+adds bounded malformed, replay, timeout, resource, race, cancellation, and
+failure-cleanup scenarios, but not unbounded fuzzing. The evidence gate
+validates an aggregate manifest and a narrow sanitized upload allowlist.
+Cleanup runs with an always-run policy, and Plan 043 requires an independent
+`verify-clean-host.sh` check for residual namespaces, veths, processes,
+secret-bearing run roots, forbidden files, and attributable host firewall or
+route changes. The workflow and helper apparatus now expose this manual lane,
+but documentation of the contract is not a claim that the lane has passed.
+
 ### Zero Rust integration test files
 
 There are **zero `.rs` files** under `tests/`. All decode/encode

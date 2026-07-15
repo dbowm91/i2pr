@@ -12,7 +12,11 @@ from harness.evidence import EvidenceError, validate_file  # noqa: E402
 
 def main() -> int:
     evidence = Path(__file__).resolve().parents[2] / "target/interop/evidence"
-    records = sorted(path for path in evidence.glob("*.json") if path.is_file())
+    records = sorted(
+        path
+        for path in evidence.glob("*.json")
+        if path.is_file() and path.name != "run-manifest.json"
+    )
     for path in records:
         try:
             validate_file(path)

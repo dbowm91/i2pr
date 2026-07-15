@@ -89,7 +89,9 @@ fi
 if mapfile -t remaining_links < <("${prefix[@]}" ip -o link show 2>/dev/null | awk -F': ' '$2 ~ /^(i2pr-v|ref-v|jv[0-9a-f]{8}a|iv[0-9a-f]{8}b)/ {print $2}'); then
   ((${#remaining_links[@]} == 0)) || failures=$((failures + ${#remaining_links[@]}))
 fi
-if pgrep -af '(^|/)(i2pd|i2pr-interop|i2prouter)( |$)' >/dev/null 2>&1; then failures=$((failures + 1)); fi
+if ps -eo args= | grep -E '[i]2pd|[i]2pr-interop|[i]2prouter|[j]ava.*(i2psvc|runplain|i2prouter)' >/dev/null 2>&1; then
+  failures=$((failures + 1))
+fi
 if find "$run_root" -mindepth 1 -print -quit 2>/dev/null | grep -q .; then failures=$((failures + 1)); fi
 
 printf '{"schema":2,"started":%d,"terminated":%d,"forced":%d,"namespaces_deleted":%d,"interfaces_deleted":%d,"failures":%d}\n' \

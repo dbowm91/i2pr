@@ -65,3 +65,51 @@ only with bounded authenticated runs between i2pr and each reference in both
 directions. Records may retain typed outcomes, bounded metadata, and hashes of
 sanitized artifacts/configuration. Raw addresses, identities, RouterInfo,
 I2NP, keys, transcripts, logs, and arbitrary remote error text must be deleted.
+
+## Plan 043 build-system boundary
+
+The Ubuntu build-system lane makes the trust-domain split and promotion order
+explicit. Preparation may use network access only for the declared Ubuntu
+packages, the locked Java I2P/i2pd sources, the verified IzPack artifact, and
+their declared build dependencies. Execution starts only after preparation and
+cache validation complete; it is offline and restricted to the disposable
+namespace-local veth topology described above.
+
+The terminal gate order is:
+
+```text
+contract -> reference-build -> reference-offline-reuse -> environment-smoke
+-> reference-crosscheck-ipv4 -> i2pr-handshake-smoke-ipv4 -> full-matrix
+-> evidence-validation -> cleanup-verification
+```
+
+The reference-control profile must pass before an i2pr profile is eligible. It
+uses separate `java-*` and `i2pd-*` namespaces, the explicit private network
+ID 99, staged strict RouterInfo validation/import, controlled direction policy,
+and dual authenticated observations. It is a harness control and never an
+i2pr support claim. The i2pr gate requires four independent authenticated
+i2pr↔reference IPv4 directions and bounded DeliveryStatus exchange. TCP
+connectivity, listener readiness, RouterInfo production, or local launcher
+success cannot substitute for that evidence.
+
+Cache reuse is restore-only and keyed by the canonical reference ID, complete
+source revision, lock digest, Ubuntu/architecture contract, build-command
+version, and relevant tool/ABI metadata. The complete runtime tree is
+re-hashed before execution. No cache miss may fetch or use an arbitrary cache;
+identities, keys, RouterInfo, NetDB state, rendered configs, run roots, raw
+logs, namespaces, and evidence records are excluded from caches.
+
+Evidence is finalized only after process and namespace cleanup. The aggregate
+manifest records expected and actual scenario records, hashes, gate
+dispositions, and cleanup verification. Only sanitized JSON and approved
+hashes are retained. Cleanup runs unconditionally, and an independent clean-
+host check must reject residual prefixed namespaces/veths, router or launcher
+processes, secret-bearing run roots, forbidden files, and attributable global
+nftables/routes/forwarding changes. Cleanup failure converts a protocol pass to
+failure.
+
+Promotion is manual first, scheduled only after repeated clean-checkout and
+cache-reuse success, then a current successful run at Milestone 3 closure. A
+trusted pull-request lane requires a separate decision and must not expose
+privileged execution to forked or untrusted code. The current checkout has no
+mixed-router evidence and remains experimental/non-advertised.

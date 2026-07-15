@@ -1,8 +1,22 @@
-# Plans 038–042 operations reference
+# Plans 038–043 operations reference
 
 Run commands from the repository root. The authoritative harness instructions
 are in `tests/integration/ntcp2/README.md`; this reference is a compact routing
 guide for an agent.
+
+Plan 043 gate order is:
+
+```text
+contract -> reference-build -> reference-offline-reuse -> environment-smoke
+-> reference-crosscheck-ipv4 -> i2pr-handshake-smoke-ipv4 -> full-matrix
+-> evidence-validation -> cleanup-verification
+```
+
+Preparation is network-enabled only for the lock-listed Ubuntu packages,
+sources, verified IzPack artifact, and declared dependencies. Restore-only
+offline reuse must re-hash the complete runtime tree and fail on a cache miss;
+execution has no public egress. Cleanup and the independent clean-host check
+run with an always-run policy and override protocol success on failure.
 
 ## Files to inspect
 
@@ -95,9 +109,17 @@ records are harness controls, not i2pr mixed-router evidence.
 
 ```text
 bash scripts/interop/validate-evidence.py
+python3 scripts/interop/aggregate-evidence.py --profile <profile>
 bash scripts/check-ntcp2-interoperability.sh
 sudo -E bash scripts/interop/cleanup.sh
+sudo -E bash scripts/interop/verify-clean-host.sh --verify --baseline target/interop/build/clean-host-baseline.json
 ```
 
 Retain only sanitized typed JSON records and approved hashes. If cleanup is
 uncertain, stop and investigate the disposable host before any later run.
+
+The workflow now exposes the ordered manual Plan 043 lane, but the checkout has
+no completed successful aggregate manifest. Do not describe the gate chain as
+passing, and do not convert the current
+`i2pr-mixed-router-profile-not-wired` blocker or reference-only control records
+into i2pr interoperability evidence.

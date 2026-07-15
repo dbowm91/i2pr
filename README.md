@@ -159,6 +159,46 @@ stand in for the message exchange.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
+### Plan 043 build-system status
+
+The Ubuntu build-system lane has an explicit ordered promotion contract:
+
+```text
+contract -> reference-build -> reference-offline-reuse -> environment-smoke
+-> reference-crosscheck-ipv4 -> i2pr-handshake-smoke-ipv4 -> full-matrix
+-> evidence-validation -> cleanup-verification
+```
+
+Preparation is the only network-enabled trust domain. Execution is offline and
+uses only verified reference caches plus disposable namespace-local veth links.
+The exact host is Ubuntu 24.04 amd64/x86_64 with the lock-listed package set,
+namespace/nftables capability, UTF-8 locale, non-interactive sudo when needed,
+and at least 4 GiB free under `target/`. Cache reuse binds the canonical
+reference, full source revision, lock digest, host contract, build-command
+version, and relevant tool/ABI metadata; a miss never permits a fetch.
+
+Environment smoke and the Java-I2P/i2pd `reference-crosscheck-ipv4` profile are
+harness controls only. The reference control must pass before the four
+independent i2pr/reference IPv4 directions are eligible. A positive i2pr gate
+requires authenticated handshake, strict binding, bounded DeliveryStatus
+exchange in each direction, sanitized evidence, and clean state. The full
+matrix adds bounded adversarial and resource cases; it does not run unbounded
+fuzzing.
+
+The evidence gate accepts only an aggregate manifest and sanitized typed JSON
+with approved hashes. Cleanup runs unconditionally, and an independent
+clean-host verifier must reject residual namespaces, veths, processes,
+secret-bearing run roots, forbidden retained files, and attributable host
+firewall or route changes. A cleanup failure overrides protocol success.
+
+Promotion is manual first, scheduled only after repeated clean-checkout and
+cache-reuse success, then a current successful run at Milestone 3 closure. The
+workflow and helper apparatus now expose the ordered manual Plan 043 lane,
+including clean-host verification and aggregate validation. No completed
+successful aggregate run or mixed-router i2pr evidence is present in this
+checkout; these are blockers, not skipped successes. NTCP2 remains experimental
+and non-advertised.
+
 ## MVP direction
 
 The feature MVP is expected to include:

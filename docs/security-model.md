@@ -443,3 +443,54 @@ i2pr-to-reference runs in both directions can contribute to a mixed-router
 claim. Sanitation retains typed outcomes, bounded run metadata, and hashes of
 sanitized artifacts/configuration; it deletes raw addresses, peer identities,
 RouterInfo, I2NP, keys, transcripts, raw logs, and arbitrary remote error text.
+
+## Plan 043 build-system trust domains and promotion controls
+
+Plan 043 treats the build runner as two security domains with a one-way
+promotion boundary. Network-enabled preparation may install only the exact
+Ubuntu package set from `references.lock.toml`, fetch only the full locked
+Java I2P/i2pd revisions and verified IzPack artifact, and resolve declared
+build dependencies. It records host/tool/source/build/artifact metadata and
+must leave no router process or namespace behind. Preparation output is input
+to execution, not proof of protocol behavior.
+
+Execution is offline and fail-closed. It restores only a verified cache,
+re-hashes the complete runtime tree, and runs references in disposable
+namespaces connected only by synthetic veth peers. Default routes, DNS,
+forwarding, host bridges, public egress, reseed/bootstrap, updates, and
+unbounded discovery are prohibited. A cache miss, metadata mismatch, network
+attempt, or failed isolation check stops before router startup.
+
+The ordered gates are `contract`, `reference-build`,
+`reference-offline-reuse`, `environment-smoke`,
+`reference-crosscheck-ipv4`, `i2pr-handshake-smoke-ipv4`, `full-matrix`,
+`evidence-validation`, and `cleanup-verification`. Reference control is
+deliberately before i2pr execution: the Java I2P/i2pd pair must use private
+network ID 99, strict staged RouterInfo validation/import, controlled
+directions, and dual authenticated observations. This proves harness health,
+not i2pr interoperability. The i2pr gate requires four independent
+authenticated i2pr/reference IPv4 directions and bounded DeliveryStatus
+exchange; one direction or listener readiness cannot stand in for the others.
+
+The evidence threat model includes both leakage and false success. The
+aggregate manifest and each typed record are checked for expected scenario
+coverage, exact cache/build hashes, placeholders, forbidden content, private
+absolute paths, and cleanup disposition. Raw logs, packet captures, endpoints,
+RouterInfo, identities, keys, payloads, and mutable run roots are deleted
+before retention. Only the narrow sanitized JSON/hash allowlist may cross a
+workflow artifact boundary.
+
+Cleanup is an independent security property, not a postscript to protocol
+success. An always-run cleanup path terminates and drains children, removes
+owned namespaces/veths, deletes secret-bearing run roots, and records bounded
+counters. A separate clean-host verifier must then reject residual interop
+namespaces, veths, reference/launcher processes, forbidden retained files, or
+attributable global nftables/routes/forwarding changes. A cleanup or verifier
+failure remains a failed lane even if all protocol scenarios passed.
+
+The workflow and helper apparatus now expose the complete ordered Plan 043
+lane, including clean-host verification and aggregate validation, but no
+successful aggregate run or mixed-router i2pr record is present. These gaps are
+explicit blockers.
+No support-ledger status, RouterInfo capability, or NTCP2 advertisement may
+change until the conformance and promotion requirements are met.

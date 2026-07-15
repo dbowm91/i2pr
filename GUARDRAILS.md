@@ -264,6 +264,37 @@ can contribute to a mixed-router claim. Raw addresses, identities, RouterInfo,
 I2NP, keys, transcripts, logs, and remote error text must be destroyed before
 retaining evidence.
 
+Plan 043 extends this boundary into the build system. The required order is
+`contract` → `reference-build` → `reference-offline-reuse` →
+`environment-smoke` → `reference-crosscheck-ipv4` →
+`i2pr-handshake-smoke-ipv4` → `full-matrix` → `evidence-validation` →
+`cleanup-verification`. Preparation is the only network-enabled trust domain;
+execution is offline, cache-verified, and namespace-isolated. Ordinary CI
+must remain unprivileged, and privileged execution must not run arbitrary
+fork/pull-request code.
+
+The cache key must bind the canonical reference ID, full source revision, lock
+digest, Ubuntu/architecture contract, build-command version, and relevant
+tool/ABI versions. Re-hash the complete runtime tree before use. Never cache
+identities, keys, RouterInfo, NetDB state, rendered configs, run roots, raw
+logs, namespaces, or evidence records. Never fetch after an offline cache miss.
+
+The aggregate evidence manifest and narrow upload allowlist must reject
+placeholders, missing or unexpected passed records, inconsistent hashes,
+incomplete direction coverage, private absolute paths, endpoints, identities,
+keys, RouterInfo, payloads, raw logs, and packet captures. Cleanup runs with
+an always-run policy after privileged phases and at the end. An independent
+clean-host verifier must reject residual prefixed namespaces/veths,
+reference/launcher processes, secret-bearing run roots, forbidden retained
+files, and attributable global nftables/routes/forwarding changes. Cleanup
+verification failure is a lane failure even after protocol success.
+
+Environment smoke and the Java-I2P/i2pd reference crosscheck are harness
+controls only. NTCP2 support remains experimental and non-advertised until
+four independent authenticated i2pr/reference directions, bounded I2NP
+exchange, adversarial coverage, sanitized evidence, and clean-host verification
+meet `specs/CONFORMANCE.md`. The current checkout has not met those gates.
+
 ## 13. Synvoid and eggsec integration
 
 Synvoid integration should normally occur through a local service boundary:

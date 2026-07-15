@@ -1,12 +1,12 @@
-# Sanitized Plan 038/040/041 evidence
+# Sanitized Plan 038/040/041/043 evidence
 
 No mixed-router run is recorded in this checkout. The `i2pr` daemon still
-keeps live activation disabled and the dedicated `i2pr-interop` binary is only
-a runtime/protocol composition seam: its listen/dial operations report a typed
-blocker until the complete wire-level handshake/data-phase driver exists, while
-its inspect operation is limited to strict disposable RouterInfo validation.
-Environment smoke and reference crosscheck results validate the harness, not
-i2pr support. Plan 041
+keeps live activation disabled. The dedicated `i2pr-interop` binary now
+contains the bounded local runtime/protocol composition seam, including
+listener/dial, authenticated-link promotion, and DeliveryStatus smoke; local
+success remains driver validation only. Its inspect operation is limited to
+strict disposable RouterInfo validation. Environment smoke and reference
+crosscheck results validate the harness, not i2pr support. Plan 041
 reference-pair records are control evidence only and do not replace the four
 later i2pr-to-reference direction gates.
 
@@ -36,3 +36,34 @@ outcomes. A run is not milestone evidence until both directions and both
 required reference implementations have passed the applicable scenario matrix.
 Raw run roots are deleted after sanitation, including keys, identities,
 RouterInfo, configurations, logs, namespaces, and process state.
+
+## Plan 043 aggregate manifest
+
+The Plan 043 evidence gate consumes one sanitized `run-manifest.json` for the
+lane. It must contain the schema version, i2pr commit, workflow run and
+attempt, host-contract digest, lock digest, reference cache keys, artifact and
+installed-tree hashes, expected scenario IDs, actual record filenames with
+SHA-256 digests, per-gate dispositions, cleanup-verification disposition, and
+the aggregate manifest digest. Every referenced JSON record is validated before
+aggregation.
+
+Validation fails closed when an expected record is absent, an unexpected record
+is marked passed, a placeholder is present, a hash disagrees with build/cache
+metadata, direction coverage is incomplete, cleanup is not clean (or an
+explicitly allowed forced-cleanup negative test), or forbidden content appears
+in the retained tree. The allowlist is limited to sanitized JSON records,
+`target/interop/build/reference-build-summary.json`, and the aggregate
+manifest. Do not upload source trees, cache directories, rendered configs,
+run roots, raw logs, packet captures, RouterInfo, identities, keys, endpoints,
+payloads, or absolute private paths.
+
+Cleanup verification is a separate terminal disposition. `cleanup.sh` removes
+owned processes, prefixed namespaces/veths, and secret-bearing run roots;
+`verify-clean-host.sh` must independently reject any residual interop state,
+forbidden retained file, or attributable global nftables/route/forwarding
+change. A protocol pass with failed cleanup verification is not a pass.
+
+The current checkout has no completed aggregate manifest or mixed-router
+record. The shared worktree contains the clean-host verifier helper, but the
+workflow has not yet produced an integrated aggregate run and verified
+terminal disposition; these are Plan 043 blockers, not skipped successes.

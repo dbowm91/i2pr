@@ -1,4 +1,4 @@
-# Plan 038/040/041 Ubuntu reference-router interoperability harness
+# Plan 038/040/041/043 Ubuntu reference-router interoperability harness
 
 This is a manual, opt-in integration path. It is separate from normal
 workspace tests and is restricted to Ubuntu 24.04 amd64. The harness is not a
@@ -131,3 +131,82 @@ identities, keys, endpoints, or logs.
   may be inferred.
 - Inspect only disposable local build metadata. Never retain raw logs, packet
   captures, RouterInfo, identities, keys, endpoint diagnostics, or payloads.
+
+## Plan 043 build-system lane
+
+The build-system lane is a manual, opt-in Ubuntu job. Its phases are ordered;
+the next phase cannot promote a result when the preceding artifact or evidence
+is absent or invalid. Cleanup is the exception: it runs after every privileged
+phase and at the end even when an earlier phase fails.
+
+```text
+contract
+reference-build
+reference-offline-reuse
+environment-smoke
+reference-crosscheck-ipv4
+i2pr-handshake-smoke-ipv4
+full-matrix
+evidence-validation
+cleanup-verification
+```
+
+The contract phase does not start routers. It runs the repository's locked Rust
+checks, dependency/runtime boundary checks, `check-ntcp2-interoperability.sh`,
+and the Python harness unit tests. The reference-build phase is the only
+network-enabled phase and uses `setup-host.sh` plus
+`build-references.sh --force-rebuild`. The offline-reuse phase restores a
+verified cache and runs `build-references.sh --offline`; a cache miss, digest
+mismatch, or attempted network operation is a hard failure.
+
+The exact workflow command surface is:
+
+```text
+bash scripts/interop/ubuntu/check-host.sh --pre-install
+sudo -E bash scripts/interop/ubuntu/setup-host.sh
+bash scripts/interop/ubuntu/check-host.sh --post-install
+sudo -E bash scripts/interop/verify-clean-host.sh --record-baseline
+bash scripts/interop/build-references.sh --force-rebuild
+python3 scripts/interop/cache-manifest.py --verify
+bash scripts/interop/offline-reuse.sh
+sudo -E bash scripts/interop/run-matrix.sh --profile environment-smoke --offline
+sudo -E bash scripts/interop/run-matrix.sh --profile reference-crosscheck-ipv4 --offline
+cargo +1.95.0 build --locked --package i2pr-interop
+sudo -E bash scripts/interop/run-matrix.sh --profile handshake-smoke --offline
+sudo -E bash scripts/interop/run-matrix.sh --profile full --offline
+bash scripts/interop/validate-evidence.py
+python3 scripts/interop/aggregate-evidence.py --profile <profile>
+bash scripts/check-ntcp2-interoperability.sh
+sudo -E bash scripts/interop/cleanup.sh
+sudo -E bash scripts/interop/verify-clean-host.sh --verify --baseline target/interop/build/clean-host-baseline.json
+```
+
+`--offline` is required for execution and cache reuse, not preparation. The
+workflow must additionally enforce network denial after cache restoration; a
+flag alone is not evidence of offline execution. Do not supply arbitrary
+shell fragments, source URLs, revisions, endpoints, network IDs, or paths as
+profile inputs.
+
+`reference-crosscheck-ipv4` is a control gate only. It runs the separate
+`reference-java-i2pd-ipv4` and `reference-i2pd-java-ipv4` scenarios with
+private network ID 99, strict RouterInfo validation/import, and dual
+authenticated observations. The i2pr gate is not eligible to run unless that
+control passes. The four i2pr/reference IPv4 directions must each independently
+show authenticated handshake, strict binding, bounded DeliveryStatus exchange,
+typed counters, sanitized finalization, and clean state. The full profile adds
+bounded malformed, replay, deadline, resource, race, cancellation, and
+failure-cleanup cases; it does not run unbounded fuzzing.
+
+The retained aggregate manifest must include its schema, i2pr commit, workflow
+run/attempt, host and lock digests, cache keys/tree hashes, expected scenario
+IDs, actual record filenames and SHA-256 values, per-gate dispositions, and
+cleanup-verification disposition/digest. Validation rejects missing or
+unexpected passed records, placeholders, inconsistent hashes, incomplete
+directions, forbidden material, and non-clean cleanup. Upload only the narrow
+allowlist documented in `evidence/README.md`.
+
+The workflow and helper apparatus now expose the ordered manual Plan 043 lane,
+including clean-host verification and aggregate validation. The current
+checkout has no completed successful aggregate run or mixed-router i2pr record.
+These are explicit implementation blockers, not skipped successes. NTCP2
+remains experimental and non-advertised.

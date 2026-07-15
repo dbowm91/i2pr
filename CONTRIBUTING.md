@@ -205,6 +205,44 @@ RouterInfo, I2NP, keys, transcripts, logs, and arbitrary remote error text.
 None of these profiles activates the normal daemon or justifies an NTCP2
 support or capability claim without the conformance evidence requirements.
 
+### Plan 043 build-system responsibilities
+
+The privileged lane has explicit ordered gates:
+
+```text
+contract -> reference-build -> reference-offline-reuse -> environment-smoke
+-> reference-crosscheck-ipv4 -> i2pr-handshake-smoke-ipv4 -> full-matrix
+-> evidence-validation -> cleanup-verification
+```
+
+Ordinary CI owns the unprivileged Rust, static, unit, deterministic, fixture,
+manifest, and boundary checks. The Ubuntu lane is manual and opt-in. Only the
+preparation gate may install the exact lock-listed packages or fetch the full
+locked reference sources; all later gates consume verified offline caches and
+synthetic namespace-local links. A cache miss, digest mismatch, isolation
+failure, or reference-control failure stops promotion.
+
+Contributors must not use workflow inputs for shell fragments, source URLs,
+revisions, endpoints, network IDs, or arbitrary paths. The reference control
+must complete before i2pr/reference scenarios. A valid i2pr result requires all
+four independent IPv4 directions, authenticated handshake and bounded
+DeliveryStatus exchange, typed counters, sanitized finalization, and clean
+state. A local launcher, loopback socket, reference-only pair, or listener
+readiness event is not mixed-router evidence.
+
+Evidence validation consumes an aggregate manifest and rejects missing or
+unexpected passed records, placeholders, hash disagreement, incomplete
+direction coverage, forbidden content, or non-clean cleanup. Retain only the
+narrow sanitized JSON/hash allowlist. Cleanup must run on every privileged
+failure path and at the end; the independent clean-host verifier is a required
+terminal gate. A protocol pass cannot override cleanup failure.
+
+Plan 043 promotion is manual first, scheduled only after repeated clean-
+checkout and cache-reuse success, then a current successful run at Milestone 3
+closure. Any trusted pull-request lane requires a separate decision and must
+not expose privileged execution to forked or untrusted code. The current lane
+has no mixed-router i2pr evidence and remains experimental/non-advertised.
+
 Plan 024's integrated lane contains named clean-startup, bounded-overload,
 restart-recovery, essential-failure, and simulated-link-fault scenarios plus
 a fixed 32-seed replay matrix. Run it with paused Tokio time and the manual

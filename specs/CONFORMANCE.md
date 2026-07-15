@@ -59,6 +59,41 @@ I2P/i2pd reference crosscheck validate the harness only. They cannot advance
 an i2pr support row. Only sanitized, bounded authenticated i2pr-to-reference
 runs in both directions can supply mixed-router evidence for NTCP2.
 
+Plan 043 makes the evidence path an ordered build-system contract. The
+promotion sequence is `contract`, `reference-build`,
+`reference-offline-reuse`, `environment-smoke`,
+`reference-crosscheck-ipv4`, `i2pr-handshake-smoke-ipv4`, `full-matrix`,
+`evidence-validation`, and `cleanup-verification`. Preparation may use the
+declared Ubuntu package/source network access; execution must consume verified
+offline caches in disposable namespaces with no default route, DNS, or public
+egress. The reference-only crosscheck must pass before i2pr scenarios are
+eligible, but it never advances an i2pr support row.
+
+The exact host/cache contract is recorded in
+[`tests/integration/ntcp2/references.lock.toml`](../tests/integration/ntcp2/references.lock.toml)
+and the operational commands and current status are recorded in
+[`tests/integration/ntcp2/README.md`](../tests/integration/ntcp2/README.md) and
+[`docs/architecture/interop-apparatus.md`](../docs/architecture/interop-apparatus.md).
+Evidence records and the Plan 043 aggregate manifest are specified in
+[`tests/integration/ntcp2/evidence/README.md`](../tests/integration/ntcp2/evidence/README.md).
+Validation must reject missing/extra passed records, placeholders, digest
+mismatches, incomplete direction coverage, forbidden material, and failed
+cleanup verification. The retained artifact allowlist is sanitized JSON and
+approved hashes only.
+
+Cleanup is an independent conformance property: an always-run cleanup path and
+clean-host verifier must prove zero residual prefixed namespaces/veths,
+reference or launcher processes, secret-bearing run roots, forbidden retained
+files, and attributable host nftables/routes/forwarding changes. A protocol
+pass with failed cleanup verification is not a pass.
+
+The current checkout has no sanitized i2pr-to-reference record or completed
+successful aggregate manifest. The workflow-integrated clean-host verifier is
+present, but no successful Plan 043 run has established conformance. Therefore NTCP2 remains
+`experimental` and `advertised = false`; workflow scaffolding, local launcher
+success, loopback, vectors, testkit output, and Plan 041 reference-control
+records cannot change that status.
+
 ## Source-to-code traceability
 
 Every protocol module should identify:

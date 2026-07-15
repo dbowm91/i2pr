@@ -19,6 +19,7 @@ from i2pr import I2prAdapter
 from launcher_protocol import LauncherScenarioError, LauncherStatusError, load_launcher_scenario, parse_status_line
 from java_i2p import JavaI2pAdapter, JavaI2pError
 from metadata import MetadataError, hash_runtime_tree, parse_metadata
+from build_gate import BuildGateError, build_cache_manifest, gates_for_profile, validate_cache_manifest
 from reference_scenario import load_reference_scenario
 from reference_topology import ReferencePairTopology
 from topology import EndpointDescription, NamespaceTopology, topology_token
@@ -29,6 +30,87 @@ ROOT = Path(__file__).resolve().parents[4]
 
 
 class HarnessContractTests(unittest.TestCase):
+    def test_plan_043_profiles_have_ordered_distinct_gate_chains(self) -> None:
+        self.assertEqual(gates_for_profile("environment-smoke"), ("environment-smoke",))
+        self.assertEqual(
+            gates_for_profile("full"),
+            ("environment-smoke", "reference-crosscheck-ipv4", "handshake-smoke", "full"),
+        )
+        with self.assertRaises(BuildGateError):
+            gates_for_profile("arbitrary-shell-fragment")
+
+    def test_plan_043_cache_manifest_rejects_mutated_selected_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock = root / "tests/integration/ntcp2/references.lock.toml"
+            lock.parent.mkdir(parents=True)
+            lock.write_text("schema = 2\n", encoding="utf-8")
+            cache_root = root / "target/interop/cache"
+            references = []
+            for reference in ("java_i2p", "i2pd"):
+                key = ("a" if reference == "java_i2p" else "b") * 64
+                cache = cache_root / reference / key
+                (cache / "bin").mkdir(parents=True)
+                launcher = cache / "bin/launcher"
+                launcher.write_bytes(reference.encode())
+                launcher.chmod(0o755)
+                artifact_sha256 = hashlib.sha256(launcher.read_bytes()).hexdigest()
+                metadata = cache / "build-metadata.txt"
+                metadata.write_text(
+                    "\n".join(
+                        [
+                            "schema=2",
+                            f"reference={reference}",
+                            "source_revision=" + ("c" * 40 if reference == "java_i2p" else "d" * 40),
+                            "source_repository=https://example.invalid/source.git",
+                            "lock_sha256=" + hashlib.sha256(lock.read_bytes()).hexdigest(),
+                            "build_command_version=test",
+                            "host_contract=ubuntu-24.04-amd64",
+                            f"artifact_sha256={artifact_sha256}",
+                            "artifact_path=bin/launcher",
+                            "installed_tree_sha256=PLACEHOLDER",
+                            "launcher=bin/launcher",
+                            "execution_network=forbidden",
+                            "toolchain=test",
+                            "launcher_probe=test",
+                            "version_check=test",
+                            "test_disposition=not-available",
+                        ]
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                tree_hash = hash_runtime_tree(cache)
+                metadata.write_text(
+                    metadata.read_text(encoding="utf-8").replace("PLACEHOLDER", tree_hash),
+                    encoding="utf-8",
+                )
+                references.append(
+                    {
+                        "reference": reference,
+                        "cache_key": key,
+                        "metadata": f"target/interop/cache/{reference}/{key}/build-metadata.txt",
+                        "source_revision": "c" * 40 if reference == "java_i2p" else "d" * 40,
+                        "build_command_version": "test",
+                        "artifact_sha256": artifact_sha256,
+                        "installed_tree_sha256": tree_hash,
+                    }
+                )
+            cache_root.mkdir(parents=True, exist_ok=True)
+            summary = {
+                "schema": 2,
+                "host_contract": "ubuntu-24.04-amd64",
+                "lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
+                "references": references,
+            }
+            (cache_root / "current-cache.json").write_text(json.dumps(summary), encoding="utf-8")
+            manifest_path = root / "target/interop/build/reference-cache-manifest.json"
+            build_cache_manifest(root, manifest_path)
+            validate_cache_manifest(root, manifest_path)
+            (cache_root / "i2pd" / ("b" * 64) / "bin/launcher").write_bytes(b"mutated")
+            with self.assertRaises(BuildGateError):
+                validate_cache_manifest(root, manifest_path)
+
     def test_lock_manifest_has_exact_pins_and_verified_izpack(self) -> None:
         lock = tomllib.loads((ROOT / "tests/integration/ntcp2/references.lock.toml").read_text())
         self.assertRegex(lock["reference"]["java_i2p"]["source_revision"], r"^[0-9a-f]{40}$")

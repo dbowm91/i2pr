@@ -1,4 +1,4 @@
-# Plan 040/041 interoperability apparatus
+# Plan 040/041/043 interoperability apparatus
 
 The Ubuntu reference-router harness is preparation infrastructure, not a
 runtime plane and not an interoperability claim. Preparation runs on the
@@ -95,3 +95,105 @@ This local launcher path is still not reference evidence. The reference runner
 must complete the Ubuntu namespace, cache, RouterInfo import, and observation
 gates before any mixed-router result can be retained. The normal daemon remains
 disabled and all NTCP2 support rows remain experimental/non-advertised.
+
+## Plan 043 build-system gate contract
+
+Plan 043 adds a fail-closed build-system promotion boundary around this
+apparatus. The required ordered gates are:
+
+```text
+contract
+-> reference-build
+-> reference-offline-reuse
+-> environment-smoke
+-> reference-crosscheck-ipv4
+-> i2pr-handshake-smoke-ipv4
+-> full-matrix
+-> evidence-validation
+-> cleanup-verification
+```
+
+The contract gate runs without starting routers and covers the locked Rust
+build, tests, documentation, dependency/runtime boundary checks, NTCP2
+manifest/evidence checks, and Python harness unit tests. The reference-build
+gate is the only network-enabled build phase. It uses the exact lock-listed
+packages and sources, records Ubuntu/tool metadata, runs available reference
+tests, and emits a canonical summary with source, artifact, and complete
+installed-tree hashes.
+
+The supported host is exactly Ubuntu 24.04 amd64/x86_64 with Bash 4+, a UTF-8
+locale, non-interactive `sudo` when not root, Linux user/network namespaces,
+nftables, at least 4 GiB free under `target/`, and the commands checked by the
+host preflight. The declared setup package set is:
+
+```text
+ca-certificates curl git wget xz-utils unzip zip coreutils findutils procps
+util-linux iproute2 nftables openssl python3 python3-venv
+openjdk-17-jdk-headless ant gettext
+build-essential cmake pkg-config libboost-all-dev libssl-dev zlib1g-dev
+```
+
+The pinned references are Java I2P 2.12.0 at
+`2800040deee9bb376567b671ef2e9c34cf3e30b6` and i2pd 2.60.0 at
+`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`. The IzPack 5.2.4 download is
+accepted only with the SHA-256 in `references.lock.toml`. Rust uses the
+repository-pinned 1.95.0 toolchain and locked Cargo builds. Host metadata
+records the Ubuntu release, kernel, architecture, Java, Ant, compiler, CMake,
+Python, and iproute2/nftables versions; the aggregate manifest records
+workflow run and attempt as non-secret metadata.
+
+The offline-reuse gate restores only a verified cache, runs
+`build-references.sh --offline`, and re-hashes the complete runtime tree. It
+must not clone, fetch, download, install packages, resolve DNS, or silently
+fall back to another cache. Cache identity includes the canonical reference,
+full source revision, lock digest, `ubuntu-24.04-amd64` host contract,
+build-command version, and relevant tool/ABI versions. Identities, keys,
+RouterInfo, NetDB state, rendered runtime configuration, run roots, raw logs,
+namespace state, and evidence records are never cache inputs.
+
+After offline reuse, the environment-smoke and reference-control gates run
+before any i2pr gate. Environment smoke proves reference startup, disposable
+state production, and bounded cleanup only. `reference-crosscheck-ipv4` runs
+the separate `reference-java-i2pd-ipv4` and `reference-i2pd-java-ipv4`
+scenarios with private network ID 99, staged strict RouterInfo validation and
+import, controlled directions, dual authenticated observations, and clean
+shutdown. It is a harness control, not i2pr evidence. The i2pr gate requires
+four independent directions (i2pr↔Java I2P and i2pr↔i2pd), authenticated
+handshake and bounded DeliveryStatus exchange; one passing direction cannot
+mask another failure. The full matrix adds the bounded adversarial and
+resource cases, not unbounded fuzzing.
+
+Evidence validation consumes an aggregate run manifest. It rejects missing or
+unexpected passed records, placeholders, digest mismatches, incomplete
+direction coverage, forbidden content, and non-clean cleanup. Only sanitized
+JSON records, the sanitized reference-build summary, and the aggregate
+manifest belong in an upload allowlist. `cleanup.sh` must run with an
+always-run policy after privileged phases and at the end. Plan 043 requires a
+separate `verify-clean-host.sh` check for residual prefixed namespaces/veths,
+reference or launcher processes, secret-bearing run roots, forbidden retained
+files, and attributable nftables/routes/forwarding changes. The workflow now
+exposes the ordered manual lane and its verifier helper, but no completed
+successful aggregate run is present; this is a required contract, not a
+passing result.
+
+The clean-host verifier records a sanitized baseline before privileged
+execution:
+
+```text
+sudo -E bash scripts/interop/verify-clean-host.sh --record-baseline
+```
+
+After cleanup, it compares the host state and retained tree against that
+baseline:
+
+```text
+sudo -E bash scripts/interop/verify-clean-host.sh --verify --baseline target/interop/build/clean-host-baseline.json
+```
+
+The baseline and verification marker remain under ignored `target/interop`
+state and are not evidence uploads.
+
+Promotion is manual first, then low-frequency scheduled control after repeated
+clean-checkout and cache-reuse runs, then a current successful run at
+Milestone 3 closure. Any trusted pull-request lane requires a separate later
+decision and must not expose privileged execution to forked or untrusted code.

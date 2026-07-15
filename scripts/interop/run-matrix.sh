@@ -3,20 +3,28 @@ set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 profile=""
-expect_profile=0
 offline=0
 keep=0
-for arg in "$@"; do
-  case "$arg" in
-    --profile) expect_profile=1 ;;
-    handshake-smoke|environment-smoke|reference-crosscheck-ipv4|full)
-      if [[ "$expect_profile" == "1" ]]; then profile="$arg"; expect_profile=0; fi ;;
+usage='usage: run-matrix.sh --profile <environment-smoke|handshake-smoke|reference-crosscheck-ipv4|full> [--offline] [--keep-failed-sanitized]'
+while (($#)); do
+  case "$1" in
+    --profile)
+      (($# >= 2)) || { printf '%s\n' "$usage" >&2; exit 2; }
+      [[ -z "$profile" ]] || { printf 'duplicate --profile\n' >&2; exit 2; }
+      profile=$2
+      shift
+      ;;
     --offline) offline=1 ;;
     --keep-failed-sanitized) keep=1 ;;
-    *) : ;;
+    *) printf 'unknown run-matrix option: %s\n%s\n' "$1" "$usage" >&2; exit 2 ;;
   esac
+  shift
 done
-[[ -n "$profile" && "$expect_profile" == "0" ]] || { printf 'usage: run-matrix.sh --profile <environment-smoke|handshake-smoke|reference-crosscheck-ipv4|full>\n' >&2; exit 2; }
+[[ -n "$profile" ]] || { printf '%s\n' "$usage" >&2; exit 2; }
+case "$profile" in
+  environment-smoke|handshake-smoke|reference-crosscheck-ipv4|full) ;;
+  *) printf 'invalid profile: %s\n' "$profile" >&2; exit 2 ;;
+esac
 case "$profile" in
   environment-smoke) ids=(smoke-java-ipv4 smoke-i2pd-ipv4) ;;
   handshake-smoke) ids=(java-ipv4-inbound-outbound i2pd-ipv4-inbound-outbound) ;;
