@@ -92,13 +92,18 @@ capability.
 
 ## CI evidence and known limitations
 
-CI evidence will be recorded after the implementation is pushed. The support
-ledger remains `experimental` and `advertised = false`: no independent router
-vectors or mixed-router interoperability tests have been added. The selected
-identity profile does not generate legacy or hybrid/PQ identities. Storage
-integrity does not defend against an attacker with write access to the parent
-directory, and non-Unix durability/permission behavior needs platform-specific
-follow-up before a production claim.
+The pushed implementation commit `7469e74` passed [GitHub Actions CI run
+29389400514](https://github.com/dbowm91/i2pr/actions/runs/29389400514): Ubuntu
+MSRV, dependency policy, macOS quality, and Ubuntu quality all passed. GitHub
+reported only the existing non-blocking `actions/checkout@v4` Node.js 20
+deprecation annotations.
+
+The support ledger remains `experimental` and `advertised = false`: no
+independent router vectors or mixed-router interoperability tests have been
+added. The selected identity profile does not generate legacy or hybrid/PQ
+identities. Storage integrity does not defend against an attacker with write
+access to the parent directory, and non-Unix durability/permission behavior
+needs platform-specific follow-up before a production claim.
 
 No private test keys are committed. Deterministic tests derive ephemeral keys
 from seeded test RNGs in memory and do not write private fixture files.
