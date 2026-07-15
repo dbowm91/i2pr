@@ -1,6 +1,6 @@
 # ADR 0015: Ubuntu reference-router interoperability harness boundary
 
-- Status: accepted for Plan 040 corrective apparatus
+- Status: accepted for Plan 040 corrective apparatus; extended by Plan 041
 - Date: 2026-07-15
 - Decision owners: repository maintainers
 
@@ -31,6 +31,11 @@ The dedicated `tools/i2pr-interop` binary is a non-production composition seam
 depending on the runtime and protocol owners. Until the complete wire-level
 adapter exists, `listen` and `dial` return `blocked_missing_driver`; they do
 not activate `i2pr-daemon`, claim a handshake, or print arbitrary diagnostics.
+The Plan 041 reference-only control path is owned by
+`tests/integration/ntcp2/harness/reference_runner.py` and
+`reference_topology.py`, not by the launcher or the normal daemon. The
+launcher `inspect` operation may perform strict RouterInfo/signature/NTCP2
+address validation and emit only bounded typed JSON.
 
 ## Consequences
 
@@ -41,6 +46,10 @@ not activate `i2pr-daemon`, claim a handshake, or print arbitrary diagnostics.
 - Environment smoke and Java-I2P/i2pd reference crosscheck are harness
   validation only. Mixed-router i2pr evidence remains required before any
   support-ledger or RouterInfo advertisement change.
+- Plan 041 uses a dedicated pair schema, one-way namespace firewall policy,
+  explicit non-public network ID 99, staged RouterInfo exchange, and dual
+  authenticated observations. A TCP connection, listener, RouterInfo file,
+  or generic `NTCP2` log line is not a successful crosscheck.
 - Generated source trees, identities, keys, RouterInfo, logs, configurations,
   and raw result files stay under ignored `target/interop` paths. Cache lookup
   is by canonical reference and current-cache summary; sanitized evidence is

@@ -45,8 +45,9 @@ strict cache metadata, short topology tokens, exact nftables policies, and
 evidence finalization outside the secret-bearing run root.
 
 The harness uses three evidence classes: environment smoke covers reference
-startup and cleanup; the reference-crosscheck profile is reserved for Plan 041
-and currently returns `blocked_missing_driver`; i2pr mixed-router evidence requires bounded authenticated
+startup and cleanup; Plan 041's reference-crosscheck profile runs the two
+directional Java I2P/i2pd control scenarios in a dedicated reference-pair
+topology and requires dual authenticated observations; i2pr mixed-router evidence requires bounded authenticated
 runs between i2pr and each reference in both directions. Only the last class
 can contribute to a protocol support claim, and only after sanitation leaves
 typed outcomes, bounded metadata, and artifact/configuration hashes. Raw

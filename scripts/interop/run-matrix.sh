@@ -21,9 +21,14 @@ case "$profile" in
   environment-smoke) ids=(smoke-java-ipv4 smoke-i2pd-ipv4) ;;
   handshake-smoke) ids=(java-ipv4-inbound-outbound i2pd-ipv4-inbound-outbound) ;;
   reference-crosscheck-ipv4)
-    printf '{"schema":1,"type":"i2pr-interop-result","profile":"reference-crosscheck-ipv4","reference":"java_i2p","actual_typed_result":"blocked_missing_driver","reason_code":"plan-041-reference-crosscheck-not-implemented","cleanup_result":"not-started"}\n'
-    printf '{"schema":1,"type":"i2pr-interop-result","profile":"reference-crosscheck-ipv4","reference":"i2pd","actual_typed_result":"blocked_missing_driver","reason_code":"plan-041-reference-crosscheck-not-implemented","cleanup_result":"not-started"}\n'
-    exit 2
+    status=0
+    for scenario in reference-java-i2pd-ipv4 reference-i2pd-java-ipv4; do
+      args=(--scenario "$scenario")
+      [[ "$offline" == "1" ]] && args+=(--offline)
+      [[ "$keep" == "1" ]] && args+=(--keep-failed-sanitized)
+      if ! python3 "$root/tests/integration/ntcp2/harness/reference_runner.py" "${args[@]}"; then status=1; fi
+    done
+    exit "$status"
     ;;
   full) ids=(java-ipv4-inbound-outbound java-ipv6-inbound-outbound java-adversarial-and-resource java-duplicate-link-race i2pd-ipv4-inbound-outbound i2pd-ipv6-inbound-outbound i2pd-adversarial-and-resource i2pd-duplicate-link-race) ;;
 esac

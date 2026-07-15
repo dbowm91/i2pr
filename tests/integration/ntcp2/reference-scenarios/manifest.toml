@@ -1,0 +1,16 @@
+# Plan 041 private reference-pair scenarios. This manifest is deliberately
+# separate from the eight-entry i2pr mixed-router manifest.
+schema_version = 1
+network_id = 99
+network_id_policy = "explicit-non-public"
+address_family = "ipv4"
+
+[[scenario]]
+id = "reference-java-i2pd-ipv4"
+file = "reference-java-i2pd-ipv4.toml"
+dial_initiator = "java_i2p"
+
+[[scenario]]
+id = "reference-i2pd-java-ipv4"
+file = "reference-i2pd-java-ipv4.toml"
+dial_initiator = "i2pd"

@@ -85,8 +85,9 @@ general data-phase block parsing. These corrections do not yet constitute a
 complete authenticated socket adapter or mixed-router evidence; daemon
 activation remains disabled.
 
-Plan 038 defines an Ubuntu-only, opt-in reference-router harness for acquiring
-the missing evidence under controlled conditions. It is a harness contract,
+Plan 038/040 define an Ubuntu-only, opt-in reference-router harness for
+acquiring the missing evidence under controlled conditions. Plan 041 adds the
+dedicated Java I2P/i2pd reference-pair crosscheck. It is a harness contract,
 not a production bootstrap path or an interoperability result. The supported
 host contract is Ubuntu amd64 with `apt`, Bash 4+, Python 3, Linux network
 namespaces, `iproute2`, and `sudo`. Preparation may install declared packages,
@@ -115,8 +116,11 @@ i2pr-interop ntcp2 inspect --state-dir <path>
 
 Environment smoke proves only that each reference can start, produce
 disposable state, avoid public connections, and stop cleanly. The
-`reference-crosscheck-ipv4` profile is reserved for Plan 041 and currently
-returns `blocked_missing_driver`; it is not a substituted i2pr run. Neither
+`reference-crosscheck-ipv4` profile runs both directional reference-pair
+scenarios with the separately owned topology, explicit private network ID 99,
+strict RouterInfo validation/import, and dual authenticated-link observations.
+It remains reference-control evidence, not an i2pr run. A missing host/cache,
+strict parser, or authoritative observation is a typed blocker. Neither
 profile is i2pr evidence. The
 i2pr mixed-router profile requires bounded authenticated runs in both
 directions against each reference; the full manifest and its adversarial

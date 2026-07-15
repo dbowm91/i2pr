@@ -1,4 +1,4 @@
-"""Sanitized, typed evidence records for the Plan 038 harness.
+"""Sanitized, typed evidence records for the Plan 038/041 harness.
 
 This module deliberately has no router, socket, or network dependencies. Raw
 logs and secret-bearing run state remain outside the record schema and are
@@ -40,6 +40,38 @@ RECORD_FIELDS = (
     "reproduction",
 )
 
+REFERENCE_PAIR_RECORD_FIELDS = (
+    "schema",
+    "scenario_id",
+    "date_utc",
+    "i2pr_commit",
+    "java_reference",
+    "java_version",
+    "java_revision",
+    "java_artifact_sha256",
+    "java_installed_tree_sha256",
+    "java_configuration_sha256",
+    "i2pd_reference",
+    "i2pd_version",
+    "i2pd_revision",
+    "i2pd_artifact_sha256",
+    "i2pd_installed_tree_sha256",
+    "i2pd_configuration_sha256",
+    "namespace_topology_sha256",
+    "private_network_id",
+    "direction_policy",
+    "router_info_validation",
+    "authenticated_link_observations",
+    "connection_counters",
+    "process_counters",
+    "expected_authenticated_link_count",
+    "actual_typed_result",
+    "cleanup_result",
+    "evidence_sha256",
+    "known_deviation",
+    "reproduction",
+)
+
 _FORBIDDEN = re.compile(
     r"(?:-----BEGIN[^\n]*PRIVATE KEY-----|router\.identity|ntcp2\.static\.key|"
     r"\.pcap(?:ng)?\b|RouterInfo|I2NP|/home/|/root/|[A-Fa-f0-9]{80,})",
@@ -70,6 +102,9 @@ def _scan(value: Any) -> None:
 def validate_record(record: dict[str, Any]) -> None:
     """Validate the exact typed-record shape and sanitation rules."""
 
+    if record.get("schema") == 2:
+        _validate_reference_pair_record(record)
+        return
     if tuple(record) != RECORD_FIELDS:
         raise EvidenceError("record fields do not match the locked schema")
     if record["schema"] != 1:
@@ -111,6 +146,78 @@ def validate_record(record: dict[str, Any]) -> None:
             raise EvidenceError("passed record contains an execution placeholder")
     if record["evidence_sha256"] and not _HEX64.fullmatch(str(record["evidence_sha256"])):
         raise EvidenceError("evidence digest is not a SHA-256 digest")
+
+
+def _require_sha256(record: dict[str, Any], field: str, *, nonzero: bool) -> None:
+    value = str(record[field])
+    if not _HEX64.fullmatch(value):
+        raise EvidenceError(f"{field} is not a SHA-256 digest")
+    if nonzero and value == "0" * 64:
+        raise EvidenceError(f"passed record contains a zero-filled {field}")
+
+
+def _validate_reference_pair_record(record: dict[str, Any]) -> None:
+    if tuple(record) != REFERENCE_PAIR_RECORD_FIELDS:
+        raise EvidenceError("reference-pair record fields do not match the locked schema")
+    _scan(record)
+    if record["schema"] != 2:
+        raise EvidenceError("unsupported reference-pair evidence schema")
+    if record["java_reference"] != "java_i2p" or record["i2pd_reference"] != "i2pd":
+        raise EvidenceError("non-canonical reference-pair identifiers")
+    if record["java_version"] != "2.12.0" or record["i2pd_version"] != "2.60.0":
+        raise EvidenceError("reference-pair version does not match identifier")
+    if record["java_revision"] != "2800040deee9bb376567b671ef2e9c34cf3e30b6":
+        raise EvidenceError("Java reference revision does not match the lock")
+    if record["i2pd_revision"] != "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e":
+        raise EvidenceError("i2pd reference revision does not match the lock")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(record["i2pr_commit"])):
+        raise EvidenceError("reference-pair commit is not exact")
+    for field in (
+        "java_artifact_sha256",
+        "java_installed_tree_sha256",
+        "java_configuration_sha256",
+        "i2pd_artifact_sha256",
+        "i2pd_installed_tree_sha256",
+        "i2pd_configuration_sha256",
+        "namespace_topology_sha256",
+    ):
+        _require_sha256(record, field, nonzero=record["actual_typed_result"] == "passed")
+    if record["private_network_id"] != "explicit-non-public":
+        raise EvidenceError("reference-pair network ID is not classified as explicit and non-public")
+    if record["direction_policy"] not in {"java_i2p", "i2pd"}:
+        raise EvidenceError("unknown reference-pair direction policy")
+    if record["expected_authenticated_link_count"] != 1:
+        raise EvidenceError("reference-pair expected-link count is not one")
+    if not isinstance(record["router_info_validation"], dict) or set(record["router_info_validation"]) != {"java_i2p", "i2pd"}:
+        raise EvidenceError("reference-pair RouterInfo validation is not dual-sided")
+    if any(value not in {"validated-and-bound", "not-run", "rejected"} for value in record["router_info_validation"].values()):
+        raise EvidenceError("reference-pair RouterInfo validation was not complete")
+    if record["actual_typed_result"] == "passed" and any(value != "validated-and-bound" for value in record["router_info_validation"].values()):
+        raise EvidenceError("passed reference-pair record lacks dual RouterInfo validation")
+    if not isinstance(record["authenticated_link_observations"], dict) or set(record["authenticated_link_observations"]) != {"java_i2p", "i2pd"}:
+        raise EvidenceError("reference-pair observations are not dual-sided")
+    if any(value not in {"authenticated", "not-observed", "not-run"} for value in record["authenticated_link_observations"].values()):
+        raise EvidenceError("reference-pair authentication observation is not typed")
+    if any(value != "authenticated" for value in record["authenticated_link_observations"].values()) and record["actual_typed_result"] == "passed":
+        raise EvidenceError("passed reference-pair record lacks dual authentication observations")
+    if not isinstance(record["connection_counters"], dict) or set(record["connection_counters"]) != {"java_i2p", "i2pd"}:
+        raise EvidenceError("reference-pair connection counters are not dual-sided")
+    if not isinstance(record["process_counters"], dict) or set(record["process_counters"]) != {"java_i2p", "i2pd"}:
+        raise EvidenceError("reference-pair process counters are not dual-sided")
+    for value in record["connection_counters"].values():
+        if not isinstance(value, dict) or any(key not in value for key in ("attempts", "authenticated")):
+            raise EvidenceError("reference-pair connection counter shape is invalid")
+    for value in record["process_counters"].values():
+        if not isinstance(value, dict) or any(key not in value for key in ("started", "exited", "forced")):
+            raise EvidenceError("reference-pair process counter shape is invalid")
+    if record["actual_typed_result"] not in {"passed", "rejected", "blocked_host_contract", "blocked_missing_driver", "failed_cleanup"}:
+        raise EvidenceError("unknown reference-pair typed result")
+    if record["cleanup_result"] not in {"clean", "forced", "failed", "not-started"}:
+        raise EvidenceError("unknown reference-pair cleanup result")
+    if record["actual_typed_result"] == "passed" and record["cleanup_result"] not in {"clean", "forced"}:
+        raise EvidenceError("passed reference-pair record did not clean up")
+    if record["evidence_sha256"] and not _HEX64.fullmatch(str(record["evidence_sha256"])):
+        raise EvidenceError("reference-pair evidence digest is not a SHA-256 digest")
 
 
 def write_record(path: Path, record: dict[str, Any]) -> str:

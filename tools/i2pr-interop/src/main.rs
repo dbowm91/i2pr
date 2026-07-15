@@ -1,11 +1,11 @@
-//! Deliberately non-production Plan 038 launcher seam.
+//! Deliberately non-production Plan 038/041 launcher seam.
 //!
 //! This binary is separate from `i2pr-daemon`. It validates the disposable
-//! scenario boundary and reports the typed missing-driver result until the
-//! runtime-owned socket adapter is complete. It never starts a router or
-//! contacts a network.
+//! scenario boundary, reports the typed missing-driver result for listen/dial,
+//! and provides a strict RouterInfo inspection helper for the reference-only
+//! harness. It never starts a router or contacts a network.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -62,6 +62,39 @@ fn validate_file(path: &PathBuf, limit: usize) -> bool {
         .unwrap_or(false)
 }
 
+fn inspect_router_info(state_dir: &Path) -> ExitCode {
+    let path = state_dir.join("router.info");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return emit("rejected", "router-info-missing");
+    };
+    if bytes.is_empty() || bytes.len() > i2pr_proto::MAX_COMMON_STRUCTURE_SIZE {
+        return emit("rejected", "router-info-size-invalid");
+    }
+    let Ok(info) = i2pr_proto::RouterInfo::decode(&bytes, i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+    else {
+        return emit("rejected", "router-info-structural-validation-failed");
+    };
+    if i2pr_crypto::verify_router_info(&info).is_err() {
+        return emit("rejected", "router-info-signature-validation-failed");
+    }
+    let mut ntcp2_addresses = 0_u32;
+    for address in info.addresses() {
+        if matches!(
+            i2pr_transport_ntcp2::Ntcp2RouterAddress::parse(address),
+            Ok(parsed) if parsed.endpoint().is_some()
+        ) {
+            ntcp2_addresses = ntcp2_addresses.saturating_add(1);
+        }
+    }
+    if ntcp2_addresses == 0 {
+        return emit("rejected", "router-info-has-no-published-ntcp2-address");
+    }
+    println!(
+        "{{\"schema\":1,\"type\":\"i2pr-interop-inspection\",\"result\":\"validated\",\"router_info_count\":1,\"ntcp2_address_count\":{ntcp2_addresses}}}"
+    );
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     // Keep the ownership dependency visible at this composition seam. The
@@ -87,7 +120,7 @@ fn main() -> ExitCode {
                 if !state_dir.is_dir() {
                     return emit("rejected", "invalid-state-dir");
                 }
-                emit("blocked_missing_driver", "inspect-seam-only")
+                inspect_router_info(&state_dir)
             }
         },
     }

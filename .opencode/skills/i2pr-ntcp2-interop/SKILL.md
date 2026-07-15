@@ -5,7 +5,7 @@ description: Operate, diagnose, or extend the repository's Ubuntu 24.04 referenc
 
 # I2PR NTCP2 interoperability
 
-Use this skill from the repository root for the manual, opt-in Plan 038/040
+Use this skill from the repository root for the manual, opt-in Plan 038/040/041
 harness. Read `AGENTS.md`, `plans/038-ubuntu-reference-router-interoperability-harness.md`,
 `tests/integration/ntcp2/README.md`, and the relevant architecture/ADR files
 before changing the apparatus.
@@ -44,8 +44,10 @@ privilege, route, cleanup, or evidence validation error.
    schema-2 metadata is parsed and the complete runtime tree is re-hashed
    before launch.
 4. Run the smallest required profile first. Use `run-matrix.sh --profile
-   environment-smoke`, then the reserved `reference-crosscheck-ipv4` profile
-   (which must remain `blocked_missing_driver` until Plan 041), then
+   environment-smoke`, then `reference-crosscheck-ipv4`, which executes the
+   dedicated `reference-java-i2pd-ipv4` and `reference-i2pd-java-ipv4`
+   scenarios with separate namespaces, an explicit non-public network ID,
+   staged RouterInfo exchange, and dual authenticated observations. Run
    handshake/full only after the earlier gates pass. Pass `--offline` when appropriate and
    use `--keep-failed-sanitized` only when reviewing an allowed sanitized
    failure record.

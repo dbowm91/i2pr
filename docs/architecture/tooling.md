@@ -109,22 +109,26 @@ The scenario and launcher interfaces are:
 bash scripts/interop/run-scenario.sh --scenario <id> --reference java_i2p --build-cache <path> --run-root <path>
 bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
 bash scripts/interop/run-matrix.sh --profile environment-smoke
+bash scripts/interop/run-matrix.sh --profile reference-crosscheck-ipv4
 i2pr-interop ntcp2 listen --scenario-config <path>
 i2pr-interop ntcp2 dial --scenario-config <path>
 i2pr-interop ntcp2 inspect --state-dir <path>
 ```
 
 The evidence taxonomy is strict: environment smoke validates reference
-startup/RouterInfo generation and cleanup only; the reference-crosscheck
-profile is reserved for Plan 041 and currently returns `blocked_missing_driver`;
-i2pr mixed-router evidence
+startup/RouterInfo generation and cleanup only; Plan 041's
+`reference-crosscheck-ipv4` profile runs two dedicated directional
+Java-I2P/i2pd control scenarios in `reference-scenarios/`, with a separate
+`java-*`/`i2pd-*` topology, explicit network ID 99, staged RouterInfo
+validation/import, and dual authenticated observations. It remains harness
+control evidence; i2pr mixed-router evidence
 requires bounded authenticated runs between i2pr and each reference in both
 directions. The full eight-scenario manifest remains gated on the positive
 smoke profiles. Sanitize before retention and keep only typed outcomes,
 bounded run metadata, and artifact/configuration hashes. Delete raw
 addresses, peer identities, RouterInfo, I2NP, keys, transcripts, logs, and
-arbitrary remote error text. Until the harness is implemented and produces
-qualifying records, this lane remains a blocker and NTCP2 remains
+arbitrary remote error text. A missing host, cache, strict parser, or
+authoritative observation remains a typed blocker; NTCP2 remains
 experimental/non-advertised.
 
 ### Plan 040 corrective apparatus

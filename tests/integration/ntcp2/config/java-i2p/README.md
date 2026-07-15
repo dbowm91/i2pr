@@ -29,3 +29,11 @@ The template intentionally does not enable the daemon, reseed, bootstrap,
 automatic address discovery, SSU/SSU2, console, client tunnels, or proxy
 listeners. RouterInfo import is a disposable adapter operation; it is not
 NetDB publication evidence.
+
+The pinned Java source contract for the private network is the
+`router.networkID` property read by the router configuration path in
+`router/java/src/net/i2p/router/Router.java` at revision
+`2800040deee9bb376567b671ef2e9c34cf3e30b6`. Plan 041 renders the reviewed
+non-public value `99`; the adapter parses the final property set and rejects a
+missing, duplicate, unknown, or public-network value before launch. This is a
+configuration contract, not an advertisement or public NetDB identity.

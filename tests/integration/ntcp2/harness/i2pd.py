@@ -7,10 +7,18 @@ import os
 import shutil
 from pathlib import Path
 
-from .metadata import CacheMetadata, MetadataError, parse_metadata
-from .process import BoundedProcess, ProcessError
-from .router_info import RouterInfoPathError, netdb_filename
-from .topology import EndpointDescription
+try:
+    from .metadata import CacheMetadata, MetadataError, parse_metadata
+    from .config_contract import ConfigurationContractError, assert_i2pd_private_configuration
+    from .process import BoundedProcess, ProcessError
+    from .router_info import RouterInfoPathError, netdb_filename
+    from .topology import EndpointDescription
+except ImportError:  # unittest discovery loads this directory as a flat path.
+    from metadata import CacheMetadata, MetadataError, parse_metadata  # type: ignore
+    from config_contract import ConfigurationContractError, assert_i2pd_private_configuration  # type: ignore
+    from process import BoundedProcess, ProcessError  # type: ignore
+    from router_info import RouterInfoPathError, netdb_filename  # type: ignore
+    from topology import EndpointDescription  # type: ignore
 
 
 class I2pdError(RuntimeError):
@@ -26,6 +34,7 @@ class I2pdAdapter:
 
     version = "2.60.0"
     revision = "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
+    authenticated_phrases = ("NTCP2 session established", "Established NTCP2 session")
 
     def __init__(self, cache: Path, run_root: Path, endpoint: EndpointDescription, repo_root: Path):
         self.cache = cache.resolve()
@@ -72,13 +81,16 @@ class I2pdAdapter:
             rendered = rendered.replace(key, value)
         if "@" in rendered or self.endpoint.local_address not in rendered:
             raise I2pdError("unrendered-or-wrong-reference-address")
-        required = (
-            "daemon = false", "notransit = true", "floodfill = false", "netid = 99",
-            "[ntcp2]", "enabled = true", "[ssu2]", "enabled = false", "[upnp]",
-            "[reseed]", "threshold = 0", f"port = {self.endpoint.local_port}",
-        )
-        if any(line not in rendered for line in required):
-            raise I2pdError("safety-configuration-assertion-failed")
+        try:
+            assert_i2pd_private_configuration(
+                rendered,
+                address=self.endpoint.local_address,
+                port=self.endpoint.local_port,
+                network_id=99,
+                ipv6=self.endpoint.address_family == "ipv6",
+            )
+        except ConfigurationContractError as exc:
+            raise I2pdError("safety-configuration-assertion-failed") from exc
         config = self.config_dir / "i2pd.conf"
         config.write_text(rendered, encoding="utf-8")
         (self.config_dir / "tunnels.conf").write_text(
@@ -133,6 +145,11 @@ class I2pdAdapter:
         if self.process is None:
             return {"state": "not-started"}
         return {"state": "running" if self.process.snapshot()["running"] else "stopped"}
+
+    def authenticated_observation(self) -> str:
+        if self.process is None:
+            return "not-started"
+        return "authenticated" if self.process.observed_phrase(self.authenticated_phrases) else "not-observed"
 
     def counters(self) -> dict[str, int]:
         snapshot = self.process.snapshot() if self.process is not None else {"running": 0, "exit_code": -1, "forced": 0}

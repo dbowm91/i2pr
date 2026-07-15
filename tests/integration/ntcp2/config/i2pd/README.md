@@ -20,3 +20,10 @@ port, a zero reseed threshold with empty URLs, no UPnP, disabled SSU2, no
 floodfill or transit role, and disabled unrelated client services. Any
 upstream rewrite or ignored setting is a typed scenario failure. The exact
 section/key spellings come from the pinned `contrib/i2pd.conf` sample.
+
+The pinned source contract for the private network is the `netid` option
+parsed by `libi2pd/Config.cpp` at revision
+`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`. Plan 041 renders the same reviewed
+non-public value `99` used by Java I2P. The adapter parses the final INI
+document, rejects unknown or duplicate keys, and requires every unrelated
+service to be explicitly disabled; a substring match is not sufficient.

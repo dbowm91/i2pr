@@ -132,3 +132,8 @@ class BoundedProcess:
             "log_bytes": self._log_bytes,
             "forced": int(self.forced),
         }
+
+    def observed_phrase(self, phrases: Sequence[str]) -> bool:
+        """Return whether a bounded, implementation-specific status phrase appeared."""
+
+        return any(phrase in line for line in self._ready_lines for phrase in phrases)

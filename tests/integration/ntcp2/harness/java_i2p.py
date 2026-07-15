@@ -7,10 +7,18 @@ import os
 import shutil
 from pathlib import Path
 
-from .metadata import CacheMetadata, MetadataError, parse_metadata
-from .process import BoundedProcess, ProcessError
-from .router_info import RouterInfoPathError, netdb_filename
-from .topology import EndpointDescription
+try:
+    from .metadata import CacheMetadata, MetadataError, parse_metadata
+    from .config_contract import ConfigurationContractError, assert_java_private_configuration
+    from .process import BoundedProcess, ProcessError
+    from .router_info import RouterInfoPathError, netdb_filename
+    from .topology import EndpointDescription
+except ImportError:  # unittest discovery loads this directory as a flat path.
+    from metadata import CacheMetadata, MetadataError, parse_metadata  # type: ignore
+    from config_contract import ConfigurationContractError, assert_java_private_configuration  # type: ignore
+    from process import BoundedProcess, ProcessError  # type: ignore
+    from router_info import RouterInfoPathError, netdb_filename  # type: ignore
+    from topology import EndpointDescription  # type: ignore
 
 
 class JavaI2pError(RuntimeError):
@@ -26,6 +34,7 @@ class JavaI2pAdapter:
 
     version = "2.12.0"
     revision = "2800040deee9bb376567b671ef2e9c34cf3e30b6"
+    authenticated_phrases = ("NTCP2 connection established", "Established NTCP2 connection")
 
     def __init__(self, cache: Path, run_root: Path, endpoint: EndpointDescription, repo_root: Path):
         self.cache = cache.resolve()
@@ -76,15 +85,16 @@ class JavaI2pAdapter:
             rendered = rendered.replace(key, value)
         if "@" in rendered or self.endpoint.local_address not in rendered:
             raise JavaI2pError("unrendered-or-wrong-reference-address")
-        required = (
-            "i2np.allowLocal=true", "router.reseedDisable=true", "router.updateDisabled=true",
-            f"i2np.ntcp.port={self.endpoint.local_port}",
-            f"i2np.ntcp.hostname={self.endpoint.local_address}", "i2np.ntcp.autoip=false",
-            "i2np.ntcp.autoport=false", "i2np.upnp.enable=false", "i2np.udp.enable=false",
-            "router.floodfillParticipant=false", "router.maxParticipatingTunnels=0",
-        )
-        if any(line not in rendered for line in required):
-            raise JavaI2pError("safety-configuration-assertion-failed")
+        try:
+            assert_java_private_configuration(
+                rendered,
+                address=self.endpoint.local_address,
+                port=self.endpoint.local_port,
+                network_id=99,
+                ipv6=self.endpoint.address_family == "ipv6",
+            )
+        except ConfigurationContractError as exc:
+            raise JavaI2pError("safety-configuration-assertion-failed") from exc
         (self.config_dir / "router.config").write_text(rendered, encoding="utf-8")
         clients = (self.repo_root / "tests/integration/ntcp2/config/java-i2p/clients.config.template").read_text(encoding="utf-8").replace("@DATA_DIR@", str(self.data_dir))
         (self.config_dir / "clients.config").write_text(clients, encoding="utf-8")
@@ -138,6 +148,11 @@ class JavaI2pAdapter:
         if self.process is None:
             return {"state": "not-started"}
         return {"state": "running" if self.process.snapshot()["running"] else "stopped"}
+
+    def authenticated_observation(self) -> str:
+        if self.process is None:
+            return "not-started"
+        return "authenticated" if self.process.observed_phrase(self.authenticated_phrases) else "not-observed"
 
     def counters(self) -> dict[str, int]:
         snapshot = self.process.snapshot() if self.process is not None else {"running": 0, "exit_code": -1, "forced": 0}

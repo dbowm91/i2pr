@@ -1,4 +1,4 @@
-# Plan 040 interoperability apparatus
+# Plan 040/041 interoperability apparatus
 
 The Ubuntu reference-router harness is preparation infrastructure, not a
 runtime plane and not an interoperability claim. Preparation runs on the
@@ -39,6 +39,19 @@ port. IPv6 uses the same protocol/port constraints. A disposable canary
 proves the allowed peer port, rejects a second peer port, and rejects a public
 route before a router starts.
 
+Plan 041 does not reuse the i2pr/reference topology owner for its control run.
+`harness/reference_topology.py` creates `java-<short-run-id>` and
+`i2pd-<short-run-id>` namespaces, assigns `192.0.2.1/30` and `192.0.2.2/30`,
+and installs a one-way new-TCP policy selected by the scenario. The reverse
+direction is a separate run; source-port observations never decide who
+initiated a session.
+
+The private network-ID contract is explicit and checked after rendering:
+Java I2P uses `router.networkID=99` and i2pd uses `netid = 99`. The names are
+source-traced in the adjacent configuration READMEs to the locked Java
+`Router.java` and i2pd `libi2pd/Config.cpp` revisions. A missing or public value
+rejects the run before either router starts.
+
 ## Runtime layout and evidence
 
 The Java adapter stages the read-only cache under `reference-runtime`, keeps
@@ -60,3 +73,9 @@ clean/dirty i2pr commit disposition, full reference revision, artifact/tree,
 configuration and topology hashes, counters, and cleanup result. Cleanup
 failure changes a protocol pass to `failed_cleanup`; it never leaves a secret
 run root behind.
+
+Plan 041 schema-2 records additionally carry both reference revisions and
+artifact/tree/configuration hashes, the direction policy, typed RouterInfo
+validation results, dual authenticated-link observations, connection/process
+counters, and the evidence digest. The reference control is not a support
+claim; i2pr mixed-router evidence still requires the later Plan 042 driver.

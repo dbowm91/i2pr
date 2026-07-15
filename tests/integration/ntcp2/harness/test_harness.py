@@ -13,8 +13,13 @@ import tomllib
 
 from evidence import EvidenceError, validate_file, validate_record, write_record
 from firewall import canonical_firewall_rules
+from config_contract import ConfigurationContractError, assert_i2pd_private_configuration, assert_java_private_configuration
+from i2pd import I2pdAdapter, I2pdError
+from java_i2p import JavaI2pAdapter, JavaI2pError
 from metadata import MetadataError, hash_runtime_tree, parse_metadata
-from topology import NamespaceTopology, topology_token
+from reference_scenario import load_reference_scenario
+from reference_topology import ReferencePairTopology
+from topology import EndpointDescription, NamespaceTopology, topology_token
 from router_info import netdb_filename
 
 
@@ -178,6 +183,96 @@ class HarnessContractTests(unittest.TestCase):
         value = json.loads(completed.stdout.strip())
         self.assertEqual(value["actual_typed_result"], "blocked_host_contract")
         self.assertNotIn("Traceback", completed.stdout)
+
+    def test_plan_041_reference_pair_scenarios_are_strict_and_directional(self) -> None:
+        scenario_root = ROOT / "tests/integration/ntcp2/reference-scenarios"
+        java_first = load_reference_scenario(scenario_root / "reference-java-i2pd-ipv4.toml")
+        i2pd_first = load_reference_scenario(scenario_root / "reference-i2pd-java-ipv4.toml")
+        self.assertEqual(java_first.dial_initiator, "java_i2p")
+        self.assertEqual(i2pd_first.dial_initiator, "i2pd")
+        self.assertEqual(java_first.reference_revisions["i2pd"], "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e")
+        self.assertEqual(java_first.java.address, "192.0.2.1")
+        self.assertEqual(java_first.i2pd.address, "192.0.2.2")
+
+    def test_plan_041_configuration_contract_requires_identical_private_network_id(self) -> None:
+        java = (ROOT / "tests/integration/ntcp2/config/java-i2p/router.config.template").read_text()
+        java = java.replace("@CONFIG_DIR@", "/run/root/config").replace("@NTCP2_ADDRESS@", "192.0.2.1").replace("@NTCP2_PORT@", "45678").replace("@ADDRESS_FAMILY_IPV6@", "false")
+        assert_java_private_configuration(java, address="192.0.2.1", port=45678, network_id=99)
+        with self.assertRaises(ConfigurationContractError):
+            assert_java_private_configuration(java.replace("router.networkID=99", "router.networkID=2"), address="192.0.2.1", port=45678, network_id=99)
+        i2pd = (ROOT / "tests/integration/ntcp2/config/i2pd/i2pd.conf.template").read_text()
+        i2pd = i2pd.replace("@ADDRESS4@", "192.0.2.2").replace("@ADDRESS6@", "").replace("@LOCAL_PORT@", "45679").replace("@IPV4_ENABLED@", "true").replace("@IPV6_ENABLED@", "false")
+        assert_i2pd_private_configuration(i2pd, address="192.0.2.2", port=45679, network_id=99)
+        with self.assertRaises(ConfigurationContractError):
+            assert_i2pd_private_configuration(i2pd.replace("netid = 99", "netid = 2"), address="192.0.2.2", port=45679, network_id=99)
+
+    def test_plan_041_topology_uses_reference_names_and_directional_firewall(self) -> None:
+        scenario = load_reference_scenario(ROOT / "tests/integration/ntcp2/reference-scenarios/reference-java-i2pd-ipv4.toml")
+        topology = ReferencePairTopology(scenario, "run-041-test")
+        self.assertRegex(topology.java_namespace, r"^java-[0-9a-f]{8}$")
+        self.assertRegex(topology.i2pd_namespace, r"^i2pd-[0-9a-f]{8}$")
+        self.assertIn("ip daddr 192.0.2.2 tcp dport 45679 ct state new accept", topology.java_rules)
+        self.assertNotIn("ip daddr 192.0.2.1 tcp dport 45678 ct state new accept", topology.i2pd_rules)
+        self.assertNotIn("default", topology.java_rules)
+
+    def test_plan_041_router_info_import_is_confined_to_the_run_root(self) -> None:
+        scenario = load_reference_scenario(ROOT / "tests/integration/ntcp2/reference-scenarios/reference-java-i2pd-ipv4.toml")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_root = root / "run"
+            outside = root / "outside.info"
+            outside.write_bytes(b"not-a-router-info")
+            java_endpoint = EndpointDescription(
+                local_address=scenario.java.address,
+                peer_address=scenario.i2pd.address,
+                local_port=scenario.java.port,
+                peer_port=scenario.i2pd.port,
+                address_family="ipv4",
+                namespace="java-test",
+                network_id="99",
+            )
+            i2pd_endpoint = EndpointDescription(
+                local_address=scenario.i2pd.address,
+                peer_address=scenario.java.address,
+                local_port=scenario.i2pd.port,
+                peer_port=scenario.java.port,
+                address_family="ipv4",
+                namespace="i2pd-test",
+                network_id="99",
+            )
+            java = JavaI2pAdapter(root / "java-cache", run_root / "java", java_endpoint, ROOT)
+            i2pd = I2pdAdapter(root / "i2pd-cache", run_root / "i2pd", i2pd_endpoint, ROOT)
+            with self.assertRaises(JavaI2pError) as java_error:
+                java.import_peer_router_info(outside)
+            with self.assertRaises(I2pdError) as i2pd_error:
+                i2pd.import_peer_router_info(outside)
+            self.assertEqual(java_error.exception.code, "peer-router-info-outside-run-root")
+            self.assertEqual(i2pd_error.exception.code, "peer-router-info-outside-run-root")
+
+    def test_plan_041_pair_evidence_requires_dual_authentication_and_cleanup(self) -> None:
+        pair = {
+            "schema": 2, "scenario_id": "reference-java-i2pd-ipv4", "date_utc": "2026-01-01T00:00:00Z",
+            "i2pr_commit": "a" * 40, "java_reference": "java_i2p", "java_version": "2.12.0",
+            "java_revision": "2800040deee9bb376567b671ef2e9c34cf3e30b6", "java_artifact_sha256": "1" * 64,
+            "java_installed_tree_sha256": "2" * 64, "java_configuration_sha256": "3" * 64,
+            "i2pd_reference": "i2pd", "i2pd_version": "2.60.0", "i2pd_revision": "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e",
+            "i2pd_artifact_sha256": "4" * 64, "i2pd_installed_tree_sha256": "5" * 64, "i2pd_configuration_sha256": "6" * 64,
+            "namespace_topology_sha256": "7" * 64, "private_network_id": "explicit-non-public", "direction_policy": "java_i2p",
+            "router_info_validation": {"java_i2p": "validated-and-bound", "i2pd": "validated-and-bound"},
+            "authenticated_link_observations": {"java_i2p": "authenticated", "i2pd": "authenticated"},
+            "connection_counters": {"java_i2p": {"attempts": 1, "authenticated": 1}, "i2pd": {"attempts": 0, "authenticated": 1}},
+            "process_counters": {"java_i2p": {"started": 2, "exited": 2, "forced": 0}, "i2pd": {"started": 2, "exited": 2, "forced": 0}},
+            "expected_authenticated_link_count": 1, "actual_typed_result": "passed", "cleanup_result": "clean",
+            "evidence_sha256": "", "known_deviation": "reference-only-control", "reproduction": "reference-crosscheck-ipv4",
+        }
+        validate_record(pair)
+        pair["authenticated_link_observations"]["i2pd"] = "not-observed"
+        with self.assertRaises(EvidenceError):
+            validate_record(pair)
+        pair["authenticated_link_observations"]["i2pd"] = "authenticated"
+        pair["cleanup_result"] = "failed"
+        with self.assertRaises(EvidenceError):
+            validate_record(pair)
 
 
 if __name__ == "__main__":

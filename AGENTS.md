@@ -91,8 +91,12 @@ i2pr-interop ntcp2 inspect --state-dir <path>
 ```
 
 Classify harness results precisely: environment smoke validates reference
-startup and cleanup only; the reference-crosscheck profile is reserved for
-Plan 041 and currently returns `blocked_missing_driver`; i2pr mixed-router evidence requires an authenticated bounded
+startup and cleanup only; Plan 041's dedicated reference-pair profile runs
+`reference-java-i2pd-ipv4` and `reference-i2pd-java-ipv4` with separate
+`java-*`/`i2pd-*` namespaces, an explicit non-public network ID, staged
+RouterInfo validation/import, and dual authenticated observations. A host,
+cache, parser, or observation failure remains a typed blocker; it is never a
+protocol pass. i2pr mixed-router evidence requires an authenticated bounded
 run between i2pr and each reference in both directions. Keep only sanitized
 typed results and artifact/configuration hashes under
 `target/interop/evidence/`; secret-bearing run roots under

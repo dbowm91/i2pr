@@ -8,9 +8,11 @@ guide for an agent.
 
 - `tests/integration/ntcp2/references.lock.toml`: Ubuntu contract, source pins,
   build commands, and the exact IzPack SHA-256.
-- `tests/integration/ntcp2/scenarios/*.toml`: the eight bounded scenario
-  definitions. Keep their IDs synchronized with
+- `tests/integration/ntcp2/scenarios/*.toml`: the eight bounded i2pr/reference
+  scenario definitions. Keep their IDs synchronized with
   `tests/integration/ntcp2/manifest.toml`.
+- `tests/integration/ntcp2/reference-scenarios/`: the separate Plan 041 pair
+  schema and the two directional Java I2P/i2pd control scenarios.
 - `tests/integration/ntcp2/harness/`: Python topology, adapters, process
   bounds, runner, and evidence code.
 - `scripts/interop/`: host setup, builders, isolation, matrix, and cleanup.
@@ -46,10 +48,16 @@ sudo -E bash scripts/interop/run-matrix.sh --profile full
 ```
 
 `environment-smoke` checks reference startup, disposable RouterInfo production,
-and cleanup. `reference-crosscheck-ipv4` is reserved for Plan 041 and currently
-returns `blocked_missing_driver`; it does not make an i2pr claim. `handshake-smoke` and `full` require the complete
+and cleanup. `reference-crosscheck-ipv4` runs both Plan 041 reference-pair
+scenarios, validates the explicit private network ID and RouterInfo exchange,
+and requires authoritative authenticated observations from both references; it
+does not make an i2pr claim. `handshake-smoke` and `full` require the complete
 runtime-owned i2pr NTCP2 wire adapter; until it exists, the correct result is
 `blocked_missing_driver`, not a substituted self-handshake.
+
+The Plan 041 runner serializes reference-pair executions with a host-local
+lock. Its emergency cleanup owns the dedicated `java-*`/`i2pd-*` namespaces and
+their short `jv…`/`iv…` veth names.
 
 For one bounded run, use:
 

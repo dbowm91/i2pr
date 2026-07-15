@@ -1,4 +1,4 @@
-# Plan 038 Ubuntu reference-router interoperability harness
+# Plan 038/040/041 Ubuntu reference-router interoperability harness
 
 This is a manual, opt-in integration path. It is separate from normal
 workspace tests and is restricted to Ubuntu 24.04 amd64. The harness is not a
@@ -39,12 +39,14 @@ bash scripts/interop/build-references.sh --offline
 
 ## Isolated execution
 
-Each scenario creates a unique run root, one `i2pr-*` namespace, and one
-`ref-*` namespace. Both veth endpoints leave the host namespace. The only
-allowed path is the directly connected synthetic peer subnet; default routes,
-DNS, host bridges, public egress, reseed, bootstrap, NAT/UPnP, SSU/SSU2, and
-unrelated client services are forbidden. Route checks are primary and
-namespace-scoped nftables rules are defense in depth.
+The Plan 038/040 i2pr/reference scenarios create one `i2pr-*` namespace and
+one `ref-*` namespace. Plan 041 uses a separate reference-pair owner and
+creates `java-<short-run-id>` and `i2pd-<short-run-id>` namespaces. Both veth
+endpoints leave the host namespace. The only allowed path is the directly
+connected synthetic peer subnet; default routes, DNS, host bridges, public
+egress, reseed, bootstrap, NAT/UPnP, SSU/SSU2, and unrelated client services
+are forbidden. Route checks are primary and namespace-scoped nftables rules
+are defense in depth.
 
 Run a bounded scenario with the reference cache and optional explicit paths:
 
@@ -52,14 +54,18 @@ Run a bounded scenario with the reference cache and optional explicit paths:
 sudo -E bash scripts/interop/run-scenario.sh --scenario smoke-java-ipv4 --reference java_i2p
 sudo -E bash scripts/interop/run-scenario.sh --scenario smoke-i2pd-ipv4 --reference i2pd
 sudo -E bash scripts/interop/run-matrix.sh --profile environment-smoke
+sudo -E bash scripts/interop/run-matrix.sh --profile reference-crosscheck-ipv4
 sudo -E bash scripts/interop/run-matrix.sh --profile handshake-smoke
 sudo -E bash scripts/interop/run-matrix.sh --profile full
 ```
 
 `environment-smoke` validates reference startup, disposable RouterInfo
-production, and cleanup only. `reference-crosscheck-ipv4` is reserved for
-Plan 041 and currently returns the typed `blocked_missing_driver` result rather
-than running an i2pr scenario. The handshake/full profiles remain
+production, and cleanup only. `reference-crosscheck-ipv4` runs the two dedicated
+Plan 041 scenarios, `reference-java-i2pd-ipv4` and
+`reference-i2pd-java-ipv4`. It requires both offline caches, the explicit
+private network ID 99, strict RouterInfo validation, one-way firewall policy,
+and authoritative authenticated observations from both routers. It is a
+reference-only control and is not i2pr evidence. The handshake/full profiles remain
 `blocked_missing_driver` until the complete runtime-owned wire adapter exists;
 this is an explicit blocker, not a skipped success.
 
@@ -71,8 +77,11 @@ i2pr-interop ntcp2 dial --scenario-config <path>
 i2pr-interop ntcp2 inspect --state-dir <path>
 ```
 
-It emits typed JSON only and currently reports the missing-driver result for
-listen/dial. It must not be used as interoperability evidence by itself.
+It emits typed JSON only. `listen` and `dial` remain the missing-driver seam
+reserved for Plan 042; `inspect` now delegates RouterInfo structural,
+signature, and NTCP2-address validation to the repository's strict Rust
+parser. The reference-pair runner uses this inspection only inside a deleted
+run root and never treats it as mixed-router i2pr evidence.
 
 ## Cleanup and evidence
 
@@ -83,6 +92,10 @@ and treats cleanup failure as scenario failure. Emergency cleanup is:
 ```text
 sudo -E bash scripts/interop/cleanup.sh
 ```
+
+Plan 041 reference-pair runs hold a host-local lock so directional runs cannot
+overlap. Emergency cleanup also owns their `java-*`/`i2pd-*` namespaces and
+short `jv…`/`iv…` veth names.
 
 Only sanitized JSON records containing typed outcomes and hashes may be
 retained under `target/interop/evidence/`; secret-bearing run roots are always
@@ -96,6 +109,12 @@ bash scripts/check-ntcp2-interoperability.sh
 An empty evidence directory is reported as “no evidence”, never as success.
 Local testkit, loopback, vectors, and fuzz results remain useful local
 evidence but cannot satisfy the two-reference, two-direction requirement.
+
+Plan 041 pair records use schema 2 and retain only both reference revisions,
+artifact/tree/configuration hashes, a topology hash, typed RouterInfo and
+authenticated-link observations, bounded counters, direction policy, cleanup
+result, digest, and reproduction command. They never retain raw RouterInfo,
+identities, keys, endpoints, or logs.
 
 ## Troubleshooting
 

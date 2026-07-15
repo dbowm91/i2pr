@@ -38,8 +38,9 @@ complete wire-level adapter and authorized Java I2P/i2pd runs are not available
 in this checkout, so the blocker is recorded and every NTCP2 surface remains
 experimental and non-advertised.
 
-Plan 038 documents the planned Ubuntu-only, amd64-only harness for resolving
-that blocker; it does not change any row in this matrix. Preparation may use
+Plans 038/040/041 document the Ubuntu-only, amd64-only harness for resolving
+that blocker; Plan 041 adds a reference-only Java I2P/i2pd control crosscheck
+but does not change any row in this matrix. Preparation may use
 declared package/source network access to build and hash pinned references.
 Execution is a separate fail-closed phase using disposable namespaces joined
 only by a veth pair, with no default route, DNS, or public egress. Environment

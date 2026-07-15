@@ -55,7 +55,7 @@ for pid_file in "$run_root"/*/pids/*.pid; do
   kill_pid "$pid"
 done
 
-mapfile -t namespaces < <("${prefix[@]}" ip netns list 2>/dev/null | awk '$1 ~ /^(i2pr|ref)-[A-Za-z0-9-]+$/ {print $1}')
+mapfile -t namespaces < <("${prefix[@]}" ip netns list 2>/dev/null | awk '$1 ~ /^(i2pr|ref|java|i2pd)-[A-Za-z0-9-]+$/ {print $1}')
 for namespace in "${namespaces[@]}"; do
   mapfile -t namespace_pids < <("${prefix[@]}" ip netns pids "$namespace" 2>/dev/null || true)
   for pid in "${namespace_pids[@]}"; do
@@ -68,7 +68,7 @@ for namespace in "${namespaces[@]}"; do
   fi
 done
 
-mapfile -t interfaces < <("${prefix[@]}" ip -o link show 2>/dev/null | awk -F': ' '$2 ~ /^(i2pr-v|ref-v)/ {sub(/@.*/, "", $2); print $2}')
+mapfile -t interfaces < <("${prefix[@]}" ip -o link show 2>/dev/null | awk -F': ' '$2 ~ /^(i2pr-v|ref-v|jv[0-9a-f]{8}a|iv[0-9a-f]{8}b)/ {sub(/@.*/, "", $2); print $2}')
 for interface in "${interfaces[@]}"; do
   if "${prefix[@]}" ip link del "$interface" >/dev/null 2>&1; then
     interface_deleted=$((interface_deleted + 1))
@@ -83,10 +83,10 @@ for child in "$run_root"/*; do
   rm -rf "$child"
 done
 
-if mapfile -t remaining < <("${prefix[@]}" ip netns list 2>/dev/null | awk '$1 ~ /^(i2pr|ref)-[A-Za-z0-9-]+$/ {print $1}'); then
+if mapfile -t remaining < <("${prefix[@]}" ip netns list 2>/dev/null | awk '$1 ~ /^(i2pr|ref|java|i2pd)-[A-Za-z0-9-]+$/ {print $1}'); then
   ((${#remaining[@]} == 0)) || failures=$((failures + ${#remaining[@]}))
 fi
-if mapfile -t remaining_links < <("${prefix[@]}" ip -o link show 2>/dev/null | awk -F': ' '$2 ~ /^(i2pr-v|ref-v)/ {print $2}'); then
+if mapfile -t remaining_links < <("${prefix[@]}" ip -o link show 2>/dev/null | awk -F': ' '$2 ~ /^(i2pr-v|ref-v|jv[0-9a-f]{8}a|iv[0-9a-f]{8}b)/ {print $2}'); then
   ((${#remaining_links[@]} == 0)) || failures=$((failures + ${#remaining_links[@]}))
 fi
 if pgrep -af '(^|/)(i2pd|i2pr-interop|i2prouter)( |$)' >/dev/null 2>&1; then failures=$((failures + 1)); fi

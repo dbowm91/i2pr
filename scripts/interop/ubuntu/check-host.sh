@@ -99,10 +99,10 @@ EOF
   root_run ip netns list | awk '{print $1}' | grep -Fxq "$probe" && die "host probe namespace could not be deleted" || true
   trap - EXIT
 
-  stale_namespaces=$(root_run ip netns list | awk '$1 ~ /^i2pr-/ || $1 ~ /^ref-/ {print $1}' || true)
-  [[ -z "$stale_namespaces" ]] || die "stale Plan 038/039/040 namespace exists"
-  stale_veths=$(root_run ip -o link show | awk -F': ' '$2 ~ /^(i2pr-v|ref-v)/ {print $2}' || true)
-  [[ -z "$stale_veths" ]] || die "stale Plan 040 veth exists"
+  stale_namespaces=$(root_run ip netns list | awk '$1 ~ /^(i2pr|ref|java|i2pd)-[A-Za-z0-9-]+$/ {print $1}' || true)
+  [[ -z "$stale_namespaces" ]] || die "stale Plan 038/039/040/041 namespace exists"
+  stale_veths=$(root_run ip -o link show | awk -F': ' '$2 ~ /^(i2pr-v|ref-v|jv[0-9a-f]{8}a|iv[0-9a-f]{8}b)/ {print $2}' || true)
+  [[ -z "$stale_veths" ]] || die "stale Plan 040/041 veth exists"
   if pgrep -af '(^|/)(i2pd|i2pr-interop|i2prouter)( |$)' >/dev/null 2>&1; then
     die "a reference-router or i2pr interoperability process is already running"
   fi

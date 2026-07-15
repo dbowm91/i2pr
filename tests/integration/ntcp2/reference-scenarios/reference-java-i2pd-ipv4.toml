@@ -1,0 +1,22 @@
+# Plan 041 reference-only Java I2P -> i2pd directional crosscheck.
+[scenario]
+schema_version = 1
+scenario_id = "reference-java-i2pd-ipv4"
+java_reference = "java_i2p"
+java_revision = "2800040deee9bb376567b671ef2e9c34cf3e30b6"
+i2pd_reference = "i2pd"
+i2pd_revision = "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
+private_network_id = 99
+private_network_policy = "explicit-non-public"
+address_family = "ipv4"
+java_address = "192.0.2.1"
+java_port = 45678
+i2pd_address = "192.0.2.2"
+i2pd_port = 45679
+startup_order = ["java_i2p", "i2pd"]
+router_info_exchange_order = ["java_i2p", "i2pd"]
+dial_initiator = "java_i2p"
+handshake_deadline_seconds = 45
+observation_method = "dual-authoritative-authenticated-state"
+expected_authenticated_link_count = 1
+cleanup_policy = "delete-run-root-and-verify-zero-residual"

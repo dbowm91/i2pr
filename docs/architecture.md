@@ -354,16 +354,20 @@ the sole owner of Tokio and sockets; a dedicated non-production
 `i2pr-interop` launcher composes it with the runtime-neutral transport and
 NTCP2 protocol crates without activating `i2pr-daemon`.
 
-Each scenario gets one i2pr namespace and one reference-router namespace. Both
-veth endpoints leave the host namespace, and each scenario namespace contains
-only loopback, its veth interface, and the expected directly connected routes.
+Plan 038/040 i2pr/reference scenarios get one i2pr namespace and one
+reference-router namespace. Plan 041's reference-only control uses the separate
+`reference_topology.py` owner and names its namespaces `java-*` and `i2pd-*`.
+Both veth endpoints leave the host namespace, and each scenario namespace
+contains only loopback, its veth interface, and the expected directly
+connected routes.
 Route isolation is primary; namespace-scoped nftables rules are defense in
 depth. The host checker and isolation verifier must fail closed before a
 router starts, and cleanup failure is a scenario failure.
 
 The evidence classes are deliberately separate. Environment smoke validates
-reference startup and cleanup; reference crosscheck validates Java I2P against
-i2pd without making an i2pr claim; only bounded authenticated i2pr-to-reference
+reference startup and cleanup; Plan 041 reference crosscheck validates Java I2P
+against i2pd with explicit network ID 99, staged RouterInfo exchange, and dual
+authenticated observations without making an i2pr claim; only bounded authenticated i2pr-to-reference
 runs in both directions are mixed-router evidence. Retained records contain
 typed outcomes, bounded run metadata, and hashes of sanitized artifacts only.
 Raw addresses, peer identities, RouterInfo, I2NP, keys, transcripts, raw logs,

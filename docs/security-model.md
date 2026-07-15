@@ -434,9 +434,11 @@ disabled by a scenario option. Process termination, child draining, namespace
 deletion, veth cleanup, and secret-state deletion are all required; a cleanup
 failure is a failed scenario.
 
-The harness distinguishes environment smoke, reference crosscheck, and i2pr
-mixed-router evidence. Smoke validates reference startup and cleanup only.
-Crosscheck validates Java I2P against i2pd only. Only bounded authenticated
+The harness distinguishes environment smoke, the Plan 041 reference-pair
+crosscheck, and i2pr mixed-router evidence. Smoke validates reference startup
+and cleanup only. The crosscheck validates Java I2P against i2pd only, using
+separate namespaces, explicit network ID 99, staged RouterInfo exchange, and
+dual authenticated observations. Only bounded authenticated
 i2pr-to-reference runs in both directions can contribute to a mixed-router
 claim. Sanitation retains typed outcomes, bounded run metadata, and hashes of
 sanitized artifacts/configuration; it deletes raw addresses, peer identities,
