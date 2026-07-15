@@ -117,8 +117,10 @@ git diff --check                                PASS
 ```
 
 Known pre-existing dependency-policy warnings are called out rather than
-silently suppressed. Remote CI evidence is recorded after the main-branch push
-when the repository's GitHub authentication is available.
+silently suppressed. The connected GitHub workflow query for pushed commit
+`9b099da` reported no pull-request-triggered workflow runs, so no remote CI
+result is available for this direct main-branch push. The local `gh` token was
+also invalid; local quality results above are the available evidence.
 
 ## Security and dependency decisions
 
