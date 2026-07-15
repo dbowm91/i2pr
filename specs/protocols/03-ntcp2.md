@@ -1,0 +1,113 @@
+# NTCP2 transport
+
+Status: **required**  
+Primary roadmap milestone: **3**  
+Role: first interoperable router-to-router transport
+
+## Scope
+
+NTCP2 provides authenticated point-to-point transport of complete I2NP messages over TCP. It is not a general-purpose byte stream for applications. The protocol combines a Noise XK handshake with I2P-specific key obfuscation, padding, framing, payload blocks, replay/skew checks and RouterInfo address fields.
+
+## Authoritative sources
+
+- [NTCP2 specification](https://i2p.net/en/docs/specs/ntcp2/), pinned in [SOURCES.md](../SOURCES.md), updated 2026-03 and accurate for 0.9.69.
+- [Proposal 111](https://github.com/i2p/i2p.website/blob/88596022920bdf99f27db27688faf4f204792fcd/static/proposals/111-ntcp-2.txt) for design and migration background.
+- [Common structures](https://i2p.net/en/docs/specs/common-structures/) for RouterInfo/address options and keys.
+- Noise Protocol Framework revision identified by the official specification.
+- RFC 7748 and the ChaCha20-Poly1305/SipHash references named by the official specification.
+
+The official protocol is based on `Noise_XK_25519_ChaChaPoly_SHA256` with I2P-specific transcript/KDF identifiers and framing extensions. A generic Noise XK library is not sufficient without implementing those exact extensions.
+
+## Required MVP behavior
+
+### RouterInfo and key material
+
+- Parse and validate NTCP2 RouterAddress options, including host/port, static key and initialization-vector material.
+- Generate persistent transport static keys independently from ephemeral handshake keys.
+- Publish only addresses actually reachable under the router’s current policy.
+- Keep address observation and RouterInfo mutation outside the transport codec/state machine.
+
+### Handshake
+
+Implement explicit initiator and responder states for:
+
+- SessionRequest;
+- SessionCreated;
+- SessionConfirmed;
+- transition to independent transmit/receive data cipher states.
+
+The implementation must exactly reproduce I2P transcript hashing, KDF labels, ephemeral-key obfuscation, cleartext and encrypted padding rules, option fields, timestamp/skew validation, RouterInfo transmission/validation and authentication failure behavior.
+
+### Data phase
+
+Implement:
+
+- obfuscated two-byte frame lengths;
+- authenticated payload frames and nonce/counter progression;
+- all required block types for I2NP delivery, RouterInfo, timestamp, padding, termination and options as defined by the current specification;
+- bounded unknown-block skipping only when permitted;
+- coalescing and padding without unbounded delay or allocation;
+- orderly termination and abrupt failure cleanup;
+- rekeying behavior exactly as specified.
+
+The maximum wire message and decoded block limits must be constants derived from the specification and reconciled with deployed-router behavior. A valid maximum must not imply that every peer receives that allocation eagerly.
+
+### Link management
+
+The transport-neutral manager must own dial policy, duplicate-link resolution, replacement, per-peer connection limits, retry/backoff and outbound queue limits. NTCP2 owns protocol state and authenticated delivery, not peer scoring, NetDB mutation or tunnel selection.
+
+## Security requirements
+
+- Bound simultaneous incoming handshakes before expensive cryptographic operations.
+- Apply read, write, handshake and idle deadlines.
+- Reject replayed or implausibly skewed handshakes according to documented policy.
+- Validate the authenticated peer RouterIdentity against the expected RouterInfo/target for outbound sessions.
+- Handle partial TCP reads/writes without assuming frame alignment.
+- Prevent attacker-selected frame lengths from causing large allocations.
+- Use constant-time library verification for tags and keys where provided.
+- Treat all-zero/invalid X25519 results according to the selected crypto library and specification.
+- Release buffers, queue permits, socket tasks and key material on every failure/cancellation path.
+- Avoid detailed remote error responses that become a probing oracle.
+
+## Implementation references
+
+- Java I2P: `router/java/src/net/i2p/router/transport/ntcp`, especially `NTCP2Options`, `NTCP2Payload`, inbound/outbound establishment state, `NTCPConnection` and `NTCPTransport`.
+- I2P+: the matching package, including `OutboundNTCP2State`; inspect recent hardening and scheduling differences.
+- i2pd: `libi2pd/NTCP2.h` and `libi2pd/NTCP2.cpp`.
+- Emissary/go-i2p: `lib/transport/ntcp2` and `lib/router/router_ntcp2.go`.
+
+Compare transcript/KDF constants, maximum padding, timestamp policy, frame/block parsing, RouterInfo handling, duplicate sessions, termination reasons and rekey thresholds. Generate differential vectors from fixed keys rather than relying only on live handshakes.
+
+## Required tests
+
+- Official and independently generated handshake vectors for every message and KDF stage.
+- Initiator and responder interoperability with Java I2P and i2pd in a controlled testnet.
+- Optional third-party validation against I2P+ and Emissary/go-i2p.
+- One-bit mutation tests for obfuscated keys, options, transcript inputs and authentication tags.
+- Replay, stale/future timestamp and wrong-network/identity tests.
+- Minimum, maximum and excessive padding.
+- Partial reads/writes at every field/frame boundary.
+- Zero-length, maximum-length and oversized frame declarations.
+- Unknown, duplicate and invalid block sequences.
+- Rekey/counter-boundary tests.
+- Slowloris, stalled write, queue saturation and cancellation tests.
+- Duplicate simultaneous inbound/outbound connection resolution.
+- Fuzzing of authenticated plaintext block parsing and deterministic handshake state transitions.
+
+## Deferred and excluded behavior
+
+- NTCP1 compatibility: legacy-reject; the MVP explicitly excludes NTCP1.
+- Shared-port NTCP1/NTCP2 detection: deferred unless current deployment requires it despite NTCP1 exclusion.
+- Pluggable transports or experimental NTCP2 variants: deferred.
+- Automatic address discovery/NAT mapping: outside the codec; addressed by reachability policy and SSU2 work.
+- Hybrid/PQ NTCP2 variants: compatibility watch pending official deployment requirements.
+
+## Open decisions before implementation
+
+1. Reviewed Rust crates for X25519, ChaCha20-Poly1305, SHA-256/HMAC/HKDF, AES obfuscation and SipHash behavior.
+2. Maximum concurrent incoming/outgoing handshakes and per-IP/per-subnet admission policy.
+3. Exact clock-skew window and whether repeated skew failures affect peer profile/backoff.
+4. Duplicate-link winner rules that interoperate without churn while remaining transport-neutral.
+5. Buffer ownership and zero-copy boundaries between TCP framing, decrypted blocks and I2NP dispatch.
+6. Padding policy that remains compliant without creating a stable `i2pr` fingerprint.
+7. Whether the first milestone publishes IPv4 only or includes IPv6 address/listener conformance immediately.
