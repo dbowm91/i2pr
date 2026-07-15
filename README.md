@@ -97,10 +97,11 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Project guardrails](GUARDRAILS.md)
 - [MVP roadmap](plans/000-mvp-roadmap.md)
 - [Workspace and skeleton pre-plan](plans/001-preplan-workspace-skeleton.md)
+- [Protocol specification index and source ledger](specs/README.md)
 
 ## Development expectations
 
-Before implementation work begins, read `GUARDRAILS.md` and the relevant plan in `plans/`. Each implementation phase should define acceptance criteria, tests, non-goals, dependency changes, security implications, and documentation updates.
+Before implementation work begins, read `GUARDRAILS.md`, the relevant plan in `plans/`, and the applicable protocol dossier under `specs/protocols/`. Each implementation phase should define acceptance criteria, tests, non-goals, dependency changes, security implications, source revisions, and documentation updates.
 
 The project should favor incremental, reviewable changes. A protocol feature is not complete merely because it compiles or communicates with one peer. Completion requires negative tests, malformed-input handling, lifecycle cleanup, bounded resource behavior, and interoperability evidence.
 
