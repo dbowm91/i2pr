@@ -1,0 +1,9 @@
+schema = 1
+provenance = "All seeds were authored locally for i2pr-proto fuzz smoke coverage on 2026-07-15."
+source = "local-handwritten"
+license = "project-authored; no third-party bytes"
+
+[[seed]]
+target = "all"
+path = "corpus/<target>/seed-oversized-shape"
+description = "Short malformed input exercising truncation and strict consumption paths."

@@ -143,6 +143,14 @@ At minimum, fuzz:
 
 Fuzz harnesses must have bounded input size and should assert no panic, no excessive allocation, no infinite loop and stable error classification where practical.
 
+Plan 014 maintains these entry points in the separate nightly `fuzz/`
+workspace: every public common decoder (`date`, `date32`, `hash`, `mapping`,
+certificate/key certificate, key-and-cert, identity, destination, address,
+RouterInfo, Lease, and LeaseSet), the three I2NP header decoders, and an
+`i2np_bodies` dispatch target covering each independently complex I2NP body.
+The smoke script is opt-in and bounded; its fuzz-only dependency is excluded
+from production workspace and MSRV checks.
+
 ## Differential tests
 
 Use differential testing selectively. Valuable comparisons include:

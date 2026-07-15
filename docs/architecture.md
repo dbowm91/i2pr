@@ -10,7 +10,7 @@ The intended modular monolith is organized into four conceptual planes:
 
 | Plane | Responsibility | Current bounded status |
 | --- | --- | --- |
-| Data | Protocol representations, authenticated links, messages, and network tunnel traffic | Bounded common-structure model plus Ed25519/X25519 wrappers and local RouterInfo signing; no sockets or network behavior |
+| Data | Protocol representations, authenticated links, messages, and network tunnel traffic | Bounded common-structure and initial I2NP models plus Ed25519/X25519 wrappers and local RouterInfo signing; no sockets or network behavior |
 | Control | Configuration, lifecycle, health, cancellation, supervision, and resource budgets | CLI validation plus runtime-neutral core contracts |
 | Client | Destinations, LeaseSets, streaming, SAM, and I2CP adapters | Not implemented |
 | Service | HTTP, SOCKS5, IRC, generic TCP, and local service-tunnel composition | Not implemented |
@@ -35,7 +35,8 @@ i2pr-proto  <- i2pr-crypto <- i2pr-storage
 ```
 
 The arrows show dependency direction. `i2pr-proto` owns protocol-facing names,
-bounds, and typed codec error categories. It now also owns immutable Mapping,
+bounds, typed codec error categories, and the structural I2NP message registry.
+It now also owns immutable Mapping,
 certificate/key-type, RouterIdentity, Destination, RouterAddress, RouterInfo,
 Lease, and classic LeaseSet values. Parsed signed records retain the exact
 signed region. Its cursor borrows input, its encoder requires caller-visible
@@ -52,6 +53,30 @@ The direction is mechanically checked by
 `i2pr-testkit`, and `i2pr-proto` does not depend on filesystem or crypto
 execution. The daemon is the only crate that composes configuration, explicit
 identity lifecycle commands, crypto randomness, and storage.
+
+### I2NP codec boundary
+
+`i2pr-proto::i2np` implements the pinned 0.9.69 message identifiers, the
+16-byte standard header, the obsolete five-byte SSU header, and the
+NTCP2/SSU2 nine-byte short header. Standard payload lengths are checked before
+body decoding and the one-byte SHA-256 checksum is verified. The codec caps
+payloads at 62,708 bytes, DatabaseLookup exclusions at 512 hashes,
+DatabaseSearchReply peers at 16, tunnel-build records at eight, and tunnel
+data at its fixed 1,024 bytes.
+
+DatabaseLookup, DatabaseSearchReply, DeliveryStatus, and the structural
+DatabaseStore envelope are typed. Classic LeaseSet payloads use the existing
+common codec; compressed RouterInfo, LeaseSet2-family records, garlic/data
+payloads, and tunnel-build records retain only bounded `Deferred`/`Opaque`
+bytes or validated fixed framing. Nested TunnelGateway messages require a
+standard I2NP envelope. No I2NP decoder applies clock policy, routes a message,
+authenticates a transport, decrypts garlic, performs tunnel cryptography,
+updates NetDB, or advertises an I2NP version.
+
+The fuzz workspace is an opt-in nightly test boundary. It depends on the
+production protocol crate but never enters the production dependency graph;
+its harnesses cap input and perform no filesystem, network, or global-state
+work.
 
 ### Common-structure boundary
 

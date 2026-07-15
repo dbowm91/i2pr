@@ -1,0 +1,3 @@
+# id|path|sha256|source|revision|generator|seed|expected|license
+i2np-standard-delivery-status|tests/fixtures/i2np/standard-delivery-status.hex|f01bbdf8cdd8d70fdd142f17597e1a141b33ad89ef47d4161bdf805243a92033|official I2NP specification|0.9.69|locally authored fixed vector|n/a|standard DeliveryStatus decodes|CC-BY documentation-derived bytes
+i2np-malformed-checksum|tests/fixtures/i2np/malformed-checksum.hex|69b4ddc2d81a2820c1fc3a9f36b9e4ea8f3fe719332105d6283e3ffa10953d78|official I2NP specification|0.9.69|locally authored one-byte mutation|n/a|checksum error|CC-BY documentation-derived bytes

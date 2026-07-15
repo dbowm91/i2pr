@@ -107,6 +107,15 @@ deferred, only classic LeaseSet is decoded, and LeaseSet2, MetaLeaseSet, and
 EncryptedLeaseSet are explicit unsupported paths pending their later crypto and
 NetDB plans.
 
+Plan 014's `crates/i2pr-proto/src/i2np.rs` follows the same pinned website
+commit's I2NP message table, standard/short header layouts, checksum rule,
+DatabaseStore/Lookup/SearchReply/DeliveryStatus fields, Garlic/Data framing,
+TunnelData/TunnelGateway framing, and tunnel-build record sizes. The fixed
+I2NP fixtures under `tests/fixtures/i2np/` are locally authored from those
+documented bytes; no implementation code, live capture, peer identity, or
+opaque external corpus was copied. Deferred values are intentionally not
+counted as cryptographic, NetDB, tunnel, garlic, or interoperability support.
+
 ## Refresh triggers
 
 Refresh this ledger when any of the following occurs:

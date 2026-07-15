@@ -90,8 +90,8 @@ id = "i2np.envelope"
 protocol = "i2np"
 structure = "bounded-message-envelope-and-header"
 scope = "required"
-status = "not-implemented"
-evidence = []
+status = "experimental"
+evidence = ["crates/i2pr-proto/src/i2np.rs", "tests/fixtures/i2np/manifest.tsv", "plans/014-closure.md"]
 advertised = false
 
 [[surface]]
@@ -99,8 +99,44 @@ id = "i2np.typed-dispatch"
 protocol = "i2np"
 structure = "message-type-identifiers-and-bounded-dispatch"
 scope = "required"
-status = "not-implemented"
-evidence = []
+status = "experimental"
+evidence = ["crates/i2pr-proto/src/i2np.rs", "plans/014-closure.md"]
+advertised = false
+
+[[surface]]
+id = "i2np.selected-netdb-bodies"
+protocol = "i2np"
+structure = "database-lookup-search-reply-delivery-status-and-store-framing"
+scope = "required-later"
+status = "experimental"
+evidence = ["crates/i2pr-proto/src/i2np.rs", "crates/i2pr-proto/src/common.rs", "plans/014-closure.md"]
+advertised = false
+
+[[surface]]
+id = "i2np.store-payloads"
+protocol = "i2np"
+structure = "router-info-compression-and-leaseset-family-deferred-payloads"
+scope = "required-later"
+status = "deferred"
+evidence = ["crates/i2pr-proto/src/i2np.rs", "specs/protocols/02-i2np.md", "plans/014-closure.md"]
+advertised = false
+
+[[surface]]
+id = "i2np.tunnel-framing"
+protocol = "i2np"
+structure = "tunnel-data-gateway-and-build-record-framing"
+scope = "required-later"
+status = "deferred"
+evidence = ["crates/i2pr-proto/src/i2np.rs", "specs/protocols/02-i2np.md", "plans/014-closure.md"]
+advertised = false
+
+[[surface]]
+id = "i2np.garlic-data-framing"
+protocol = "i2np"
+structure = "bounded-garlic-and-data-opaque-payload-framing"
+scope = "required-later"
+status = "deferred"
+evidence = ["crates/i2pr-proto/src/i2np.rs", "specs/protocols/02-i2np.md", "plans/014-closure.md"]
 advertised = false
 
 [[surface]]
@@ -108,6 +144,6 @@ id = "i2np.initial-bodies"
 protocol = "i2np"
 structure = "initial-netdb-delivery-tunnel-and-garlic-message-bodies"
 scope = "required-later"
-status = "not-implemented"
-evidence = []
+status = "deferred"
+evidence = ["specs/protocols/02-i2np.md", "plans/014-closure.md"]
 advertised = false

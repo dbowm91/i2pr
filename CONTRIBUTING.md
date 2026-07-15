@@ -40,6 +40,12 @@ cargo deny check advisories bans sources
 The CI matrix covers Linux and macOS. Dependency downloads may require network
 access in restricted environments; do not weaken checks to work around that.
 
+Run `bash scripts/check-fixture-manifest.sh` after changing committed fixture
+bytes. The maintained fuzz workspace under `fuzz/` is intentionally outside
+the production workspace and requires nightly `cargo-fuzz`; use
+`bash scripts/fuzz-smoke.sh` for bounded local smoke runs. Fuzz-only
+dependencies must not be added to production manifests.
+
 ## Security and testing
 
 Treat all external input as hostile. Add malformed, boundary, cancellation,

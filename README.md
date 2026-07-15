@@ -10,17 +10,20 @@ The initial compatibility target is the current I2P network as implemented by I2
 
 Milestone 0 workspace bootstrap and its corrective closure are implemented. The
 repository contains a buildable six-crate Rust workspace, strict
-side-effect-free configuration validation, bounded common-structure codecs,
-reviewed Ed25519/X25519 identity wrappers, permission-hardened identity
-storage, a deterministic testkit foundation, and a non-networked CLI shell.
+side-effect-free configuration validation, bounded common-structure and
+initial-I2NP codecs, reviewed Ed25519/X25519 identity wrappers,
+permission-hardened identity storage, a deterministic testkit foundation, and
+a non-networked CLI shell. Plan 014 also adds an opt-in nightly fuzz workspace
+and locally authored, hashed I2NP regression fixtures.
 Plans 011–013 provide the structural and local cryptographic foundation for
 common I2P identities, mappings, certificates, RouterInfo, RouterAddress,
-Lease, classic LeaseSet, explicit identity generation, atomic reload, and
-local RouterInfo signing. Cryptographic interoperability, LeaseSet2-family
-records, transports, networking, and router behavior remain unimplemented.
+Lease, classic LeaseSet, explicit identity generation, atomic reload, local
+RouterInfo signing, and the initial bounded I2NP message model. Cryptographic
+interoperability, LeaseSet2-family records, transport integration, networking,
+router behavior, and I2NP body state-machine semantics remain unimplemented.
 Normal development and CI use pinned Rust 1.95.0; the declared Rust 1.85 MSRV
-is checked by a dedicated Ubuntu CI job. The router runtime and all I2P
-protocol implementations remain unimplemented.
+is checked by a dedicated Ubuntu CI job. The router runtime and network
+interoperability remain unimplemented.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
@@ -103,7 +106,10 @@ crates are not created in advance.
 
 The current `i2pr-proto` API uses borrowed cursors and caller-visible maximums,
 strict exact-consumption decoding, canonical immutable mappings, typed
-algorithm/length validation, and preserved signed-byte regions. The separate
+algorithm/length validation, preserved signed-byte regions, and a bounded I2NP
+registry with standard and short header codecs. I2NP bodies that need later
+cryptography or state machines are named `Deferred`/`Opaque` values rather
+than support claims. The separate
 `i2pr-crypto` crate implements only type-7 Ed25519 signing/verification,
 type-4 X25519 public-key derivation, SHA-256 wrappers, constant-time equality,
 and zeroizing private wrappers. `i2pr-storage` implements the version-1
@@ -125,6 +131,7 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Milestone 0 closure record](plans/001-closure.md)
 - [Milestone 1 common-structures closure record](plans/012-closure.md)
 - [Milestone 1 identity/crypto/storage closure record](plans/013-closure.md)
+- [Milestone 1 I2NP/evidence/fuzzing closure record](plans/014-closure.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)
@@ -153,6 +160,10 @@ bash scripts/check-dependency-direction.sh
 cargo deny check advisories bans sources
 ```
 
+The optional nightly-only fuzz lane is maintained separately from the
+production workspace. See `fuzz/README.md` and run
+`bash scripts/fuzz-smoke.sh` for bounded local smoke tests.
+
 The CLI exposes `--help`, `--version`,
 `check-config --config <path>`, `identity generate --config <path>`,
 `identity inspect --config <path>`, and `run --config <path> --dry-run`. Identity
@@ -163,7 +174,11 @@ validation and dry-run do not create directories or identity files. A live
 not implemented. No command opens a socket, publishes RouterInfo, or writes
 network state.
 
-The project should favor incremental, reviewable changes. A protocol feature is not complete merely because it compiles or communicates with one peer. Completion requires negative tests, malformed-input handling, lifecycle cleanup, bounded resource behavior, and interoperability evidence.
+The project should favor incremental, reviewable changes. A protocol feature
+is not complete merely because it compiles or communicates with one peer.
+Completion requires negative tests, malformed-input handling, lifecycle
+cleanup, bounded resource behavior, fuzz coverage, fixture provenance, and
+interoperability evidence.
 
 ## License
 

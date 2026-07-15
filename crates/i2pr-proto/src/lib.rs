@@ -1,17 +1,19 @@
 //! Protocol-facing names, bounded codecs, and error categories for `i2pr`.
 //!
-//! The codec module provides only primitive mechanics: a borrowed read cursor,
-//! checked network-order integers, caller-bounded length-prefixed fields, and
-//! a bounded encoder. It does not implement RouterIdentity, Destination,
-//! RouterInfo, I2NP, runtime integration, filesystem I/O, or router policy.
+//! The codec module provides primitive mechanics plus bounded common-structure
+//! and initial I2NP models. It does not implement runtime integration,
+//! filesystem I/O, routing, transport behavior, or router policy. I2NP values
+//! requiring later cryptography or state machines remain explicitly deferred.
 
 #![forbid(unsafe_code)]
 
 mod codec;
 mod common;
+mod i2np;
 
 pub use codec::{CodecError, DecodeCursor, EncodeBuffer, decode_exact, encode_to_vec};
 pub use common::*;
+pub use i2np::*;
 
 /// Stable structural outcomes shared by protocol parsers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,15 +34,12 @@ pub enum ProtocolErrorKind {
     Unsupported,
 }
 
-/// Namespaces reserved for protocol-facing crates.
-///
-/// These names do not indicate that any corresponding protocol is currently
-/// implemented.
+/// Protocol-facing namespaces owned by this crate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Namespace {
     /// Common identity and encoding vocabulary.
     Common,
-    /// I2NP message namespace, reserved for a later detailed plan.
+    /// I2NP message namespace and bounded structural codecs.
     I2np,
 }
 

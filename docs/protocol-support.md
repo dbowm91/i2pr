@@ -15,7 +15,9 @@ ledger does not itself publish protocol capabilities.
 | Common identity, keys, and certificates | Experimental structural subset plus local type-4/type-7 execution | 1 | `specs/protocols/01-common-identity-crypto.md`, pinned source in `specs/SOURCES.md` | Locally authored structural bytes, Ed25519 mutation tests, and X25519 derivation tests; no independent router vectors | None |
 | Router identity generation and local RouterInfo signing | Experimental local lifecycle | 1 | `plans/013-m1-identity-crypto-storage.md`, ADRs 0004 and 0007 | Deterministic injected-RNG generation, exact signed-region verification, save/reload and mutation tests | None |
 | Private router identity storage | Experimental local persistence | 1 | `plans/013-m1-identity-crypto-storage.md`, ADR 0006 | Version/length/truncation/integrity/permission/concurrency tests; no external storage interoperability claim | None |
-| I2NP message envelope and message types | Not implemented | 1 | `specs/protocols/02-i2np.md` | None imported | None |
+| I2NP envelope and header variants | Experimental structural subset; not advertised | 1, 3–6 | `specs/protocols/02-i2np.md`, pinned 0.9.69 source in `specs/SOURCES.md` | Locally authored standard/short vectors, truncation, size, checksum, and trailing-byte tests; hashed fixture manifest | None |
+| I2NP type registry and selected body codecs | Experimental structural subset; NetDB body semantics deferred | 1, 4 | `specs/protocols/02-i2np.md`, `crates/i2pr-proto/src/i2np.rs` | Fixed and malformed local vectors for DatabaseLookup, DatabaseSearchReply, DeliveryStatus, DatabaseStore framing, and fixed tunnel framing | None |
+| I2NP tunnel, garlic, data, and later record semantics | Deferred or framing-only | 1, 5–6 | `specs/protocols/02-i2np.md`, `specs/protocols/05-tunnels.md`, `specs/protocols/06-garlic-ecies-leasesets.md` | Bounded `Deferred`/`Opaque` retention and shape checks only; no crypto or state-machine vectors | None |
 | NTCP2 | Not implemented | 3 | `specs/protocols/03-ntcp2.md` | None imported | None |
 | Reseed and RouterInfo publication | Not implemented | 4 | `specs/protocols/04-reseed-netdb.md` | None imported | None |
 | Network tunnels and transit participation | Not implemented | 5 | `specs/protocols/05-tunnels.md` | None imported | None |
@@ -31,6 +33,15 @@ local operations do not establish mixed-router protocol support, complete
 signature/encryption coverage, transport support, network compatibility, or
 capability advertisement. Legacy NTCP and SSU1 are outside the MVP target
 unless a later plan explicitly changes scope.
+
+The I2NP implementation recognizes the pinned message identifiers and strictly
+decodes standard, obsolete-SSU, and NTCP2/SSU2 short headers. It fully models
+the structural fields of DatabaseLookup, DatabaseSearchReply, DeliveryStatus,
+and DatabaseStore; only classic LeaseSet payloads reuse an existing structural
+codec. Compressed RouterInfo, LeaseSet2-family records, tunnel-build record
+cryptography, garlic/data semantics, duplicate/expiry policy, routing,
+transport authentication, and capability advertisement remain deferred. No
+I2NP row is `advertised = true`, and no row claims mixed-router support.
 
 Each future protocol row must be updated with exact targeted proposal/spec
 revisions, limits, malformed-input behavior, vectors, and mixed-router evidence

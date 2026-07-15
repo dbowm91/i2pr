@@ -1,0 +1,116 @@
+[package]
+name = "i2pr-proto-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+i2pr-proto = { path = "../crates/i2pr-proto" }
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "mapping"
+path = "fuzz_targets/mapping.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "date"
+path = "fuzz_targets/date.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "date32"
+path = "fuzz_targets/date32.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "hash"
+path = "fuzz_targets/hash.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "certificate"
+path = "fuzz_targets/certificate.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "key_certificate"
+path = "fuzz_targets/key_certificate.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "key_and_cert"
+path = "fuzz_targets/key_and_cert.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "router_identity"
+path = "fuzz_targets/router_identity.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "destination"
+path = "fuzz_targets/destination.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "router_address"
+path = "fuzz_targets/router_address.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "router_info"
+path = "fuzz_targets/router_info.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "lease"
+path = "fuzz_targets/lease.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "lease_set"
+path = "fuzz_targets/lease_set.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "i2np_standard"
+path = "fuzz_targets/i2np_standard.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "i2np_bodies"
+path = "fuzz_targets/i2np_bodies.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "i2np_short_ssu"
+path = "fuzz_targets/i2np_short_ssu.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "i2np_short_transport"
+path = "fuzz_targets/i2np_short_transport.rs"
+test = false
+doc = false

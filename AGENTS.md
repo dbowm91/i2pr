@@ -29,6 +29,21 @@ maximums. New protocol decoders should use strict top-level consumption and
 typed `CodecError` categories; do not add hidden unlimited defaults, runtime or
 filesystem dependencies, or speculative universal codec traits.
 
+The Plan 014 I2NP module is structural only: standard, obsolete-SSU, and
+NTCP2/SSU2 short headers, checksum/length validation, typed dispatch, and
+bounded selected bodies/framing are allowed. Expiration policy, duplicate
+suppression, routing, transport authentication, NetDB actions, tunnel crypto
+or reassembly, garlic decryption, and capability advertisement remain outside
+`i2pr-proto`. Deferred/opaque bodies must be named explicitly and redact raw
+bytes in `Debug` output.
+
+The maintained fuzz workspace lives under `fuzz/`, is not a production
+workspace member, and uses nightly-only `cargo-fuzz` with bounded inputs. Seed
+corpora must be locally authored or provenance-recorded, sanitized, hashed,
+and free of private keys, live peer captures, addresses, and destinations.
+Run `bash scripts/check-fixture-manifest.sh` when fixture bytes change and use
+`bash scripts/fuzz-smoke.sh` for the opt-in short fuzz lane.
+
 The common-structure model in `crates/i2pr-proto/src/common.rs` preserves exact
 signed byte regions, uses immutable sorted mappings, and treats algorithm
 identifiers and lengths as explicit typed data. It is structural only: do not

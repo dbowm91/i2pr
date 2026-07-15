@@ -38,6 +38,15 @@ rejection, deferral, backoff, or shedding rather than unbounded memory growth.
 Persisted network data must be revalidated on load, and security-sensitive
 writes must be atomic or recoverable.
 
+The initial I2NP codec applies a 62,708-byte payload ceiling before body
+allocation, checks standard-header lengths and checksums, rejects unknown
+message identifiers, caps DatabaseLookup exclusions at 512 and search replies
+at 16 peers, and validates fixed tunnel/build framing. Compressed, encrypted,
+and cryptographic body semantics remain explicitly deferred. Deferred payload
+wrappers redact bytes from `Debug`; callers must opt into accessing their
+contents. No parser performs clock, routing, NetDB, tunnel, garlic, or
+transport side effects.
+
 Secret-bearing types must avoid accidental `Debug`, `Display`, unrestricted
 serialization, and unnecessary cloning. Production cryptography must use
 reviewed implementations; deterministic randomness belongs only to tests and
