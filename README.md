@@ -11,7 +11,9 @@ The initial compatibility target is the current I2P network as implemented by I2
 Milestone 0 workspace bootstrap and its corrective closure are implemented. The
 repository contains a buildable four-crate Rust workspace, strict
 side-effect-free configuration validation, a deterministic testkit foundation,
-and a non-networked CLI shell. Normal development and CI use pinned Rust
+and a non-networked CLI shell. Plan 011 now adds a bounded primitive codec
+foundation to `i2pr-proto`; common I2P structures and interoperability remain
+unimplemented. Normal development and CI use pinned Rust
 1.95.0; the declared Rust 1.85 MSRV is checked by a dedicated Ubuntu CI job.
 The router runtime and all I2P protocol implementations remain unimplemented.
 
@@ -93,6 +95,11 @@ The bootstrap intentionally creates only `i2pr-proto`, `i2pr-core`,
 `i2pr-daemon`, and `i2pr-testkit`. Later plans will add protocol and service
 crates when their contracts are understood; empty placeholder crates are not
 created in advance.
+
+The current `i2pr-proto` codec API is deliberately limited to borrowed cursors,
+checked big-endian primitives, caller-bounded length-prefixed bytes and UTF-8,
+strict exact-consumption decoding, and bounded vector encoding. It does not
+claim support for any complete I2P wire structure or advertise capabilities.
 
 ## External integration direction
 

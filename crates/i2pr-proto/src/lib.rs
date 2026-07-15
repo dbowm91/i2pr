@@ -1,10 +1,15 @@
-//! Protocol-facing names and error categories for `i2pr`.
+//! Protocol-facing names, bounded codecs, and error categories for `i2pr`.
 //!
-//! This crate deliberately contains no wire codecs, runtime integration, or
-//! router policy.  It establishes only stable vocabulary that later protocol
-//! plans can refine without pulling daemon concerns into lower layers.
+//! The codec module provides only primitive mechanics: a borrowed read cursor,
+//! checked network-order integers, caller-bounded length-prefixed fields, and
+//! a bounded encoder. It does not implement RouterIdentity, Destination,
+//! RouterInfo, I2NP, runtime integration, filesystem I/O, or router policy.
 
 #![forbid(unsafe_code)]
+
+mod codec;
+
+pub use codec::{CodecError, DecodeCursor, EncodeBuffer, decode_exact, encode_to_vec};
 
 /// Broad structural outcomes shared by future protocol parsers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

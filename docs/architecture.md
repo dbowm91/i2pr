@@ -33,8 +33,11 @@ i2pr-core  <------ i2pr-testkit
 i2pr-daemon  (composition root; also depends on i2pr-proto)
 ```
 
-The arrows show dependency direction. `i2pr-proto` owns only protocol-facing
-names and primitive error categories. `i2pr-core` owns runtime-neutral service,
+The arrows show dependency direction. `i2pr-proto` owns protocol-facing names,
+bounded primitive codec mechanics, and typed codec error categories. Its cursor
+borrows input, its encoder requires caller-visible output limits, and strict
+top-level decoders reject trailing bytes. It has no runtime, filesystem, CLI,
+or tracing-subscriber dependency. `i2pr-core` owns runtime-neutral service,
 health, lifecycle, cancellation, and resource-domain types. `i2pr-testkit`
 provides deterministic clocks, randomness, and bounded fault vocabulary for
 tests. The daemon owns CLI/configuration and is the future composition root.

@@ -22,6 +22,11 @@ and protocol inputs are untrusted: keep parsing bounded, reject unknown
 fields, avoid side effects during validation, and test negative paths. Do not
 claim protocol support before interoperability evidence exists.
 
+The `i2pr-proto` codec foundation uses borrowed cursors and caller-visible
+maximums. New protocol decoders should use strict top-level consumption and
+typed `CodecError` categories; do not add hidden unlimited defaults, runtime or
+filesystem dependencies, or speculative universal codec traits.
+
 Do not select a project license or copy implementation code from another router
 without explicit owner review. Do not perform malformed-traffic or stress
 testing against the public I2P network.
