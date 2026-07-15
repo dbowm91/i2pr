@@ -265,6 +265,42 @@ keys, transcripts, payloads, and dynamic peer labels. Duplicate-link inputs
 and decisions are representable, but the winner policy remains deferred to
 Plan 035 rather than being guessed here.
 
+## Plan 035 runtime TCP threats and controls
+
+Plan 035 is the first phase allowed to open TCP sockets, but only through
+`i2pr-runtime` and only for controlled local/private scenarios. The listener is
+disabled unless an explicit test configuration enables it. Every accepted
+socket is immediately covered by global, per-IP, and IPv4 `/24` or IPv6 `/64`
+pending-handshake admission before cryptography. Admission keys are bounded
+internal counters; raw addresses never enter default events or snapshots.
+
+Slowloris reads, stalled writes, connect storms, and duplicate candidates are
+bounded by nonzero capped connect/handshake/read-idle/write/queue/drain
+deadlines, bounded queues and bytes, replay capacity, active-link limits, and
+expiring dial backoff records. Replay-cache capacity fails closed. The runtime
+uses typed outcomes for overload, cancellation, deadline, identity mismatch,
+replacement, closure, and protocol termination rather than retaining OS error
+text or peer-controlled messages.
+
+The listener/dialer owns sockets through the supervisor; each runtime-managed
+link registers exactly one reader and one writer child. A child failure cancels
+its sibling, and both are joined before closure. The current subset does not
+yet drive authenticated NTCP2 frames or claim end-to-end I2NP delivery.
+Forced shutdown aborts and
+drains the owned scope, and counters/leases are released only after join or
+explicit bounded cleanup. Stale close notifications carry the local link ID so
+they cannot remove a replacement. Outbound I2NP owners remain consuming and
+are reserved for the later authenticated data-phase driver; they are not
+claimed as delivered by the Plan 035 raw link helper.
+
+NTCP2 address parsing accepts only validated literal fields and separates
+configured literals from resolved dial targets. Reachability is an observation
+candidate only: one peer cannot infer or publish an external address, and the
+runtime never mutates RouterInfo or NetDB. Runtime TCP and malformed/fault
+tests use loopback, the deterministic testkit, or an authorized isolated
+testnet; no public-network stress or mutation is permitted. Local TCP success,
+self-handshakes, and synthetic vectors remain non-advertised evidence.
+
 ## Bounded communication and resource-governor threats
 
 Plan 022 treats queue exhaustion and slow consumers as explicit denial-of-

@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use crate::{
     AddressFamily, AddressOrigin, CandidateDecision, Confidence, Deadline, DeliveryOutcome,
-    DeliveryRequest, Direction, DuplicateResolution, EncodedI2npMessage, LinkCandidate, LinkId,
-    LinkState, MAX_I2NP_MESSAGE_BYTES, MAX_REACHABILITY_OBSERVATIONS, PeerId, Reachability,
-    ReachabilityObservation, ReachabilityRecordOutcome, ResourceClass, TerminationCategory,
-    TransportKind, TransportLimits, TransportManager, ValidationState,
+    DeliveryRequest, Direction, DuplicateLinkPolicy, DuplicateResolution, EncodedI2npMessage,
+    LinkCandidate, LinkId, LinkState, MAX_I2NP_MESSAGE_BYTES, MAX_REACHABILITY_OBSERVATIONS,
+    PeerId, Reachability, ReachabilityObservation, ReachabilityRecordOutcome, ResourceClass,
+    TerminationCategory, TransportKind, TransportLimits, TransportManager, ValidationState,
 };
 
 fn peer(value: u8) -> PeerId {
@@ -18,6 +18,18 @@ fn candidate(id: u64, peer_value: u8) -> LinkCandidate {
         peer(peer_value),
         TransportKind::Ntcp2,
         Direction::Inbound,
+    );
+    candidate.begin_handshake().expect("handshake transition");
+    candidate.authenticate().expect("authentication transition");
+    candidate
+}
+
+fn candidate_with_direction(id: u64, peer_value: u8, direction: Direction) -> LinkCandidate {
+    let mut candidate = LinkCandidate::with_id(
+        LinkId::new(id).expect("bounded link id"),
+        peer(peer_value),
+        TransportKind::Ntcp2,
+        direction,
     );
     candidate.begin_handshake().expect("handshake transition");
     candidate.authenticate().expect("authentication transition");
@@ -427,5 +439,50 @@ fn lifecycle_authentication_is_one_way() {
         LinkState::Closed
             .transition(LinkState::Authenticated)
             .is_err()
+    );
+}
+
+#[test]
+fn duplicate_policy_is_deterministic_and_direction_aware() {
+    let inbound = candidate_with_direction(1, 2, Direction::Inbound);
+    let outbound = candidate_with_direction(2, 2, Direction::Outbound);
+    assert_eq!(
+        DuplicateLinkPolicy::new(peer(1)).decide(&inbound, &outbound),
+        DuplicateResolution::ReplaceExisting
+    );
+    assert_eq!(
+        DuplicateLinkPolicy::new(peer(3)).decide(&inbound, &outbound),
+        DuplicateResolution::RetainExistingDrainNew
+    );
+    assert_eq!(
+        DuplicateLinkPolicy::new(peer(1)).decide(&inbound, &inbound),
+        DuplicateResolution::RejectNew
+    );
+}
+
+#[test]
+fn manager_duplicate_policy_does_not_mutate_state() {
+    let manager = manager();
+    manager
+        .register_authenticated(
+            candidate_with_direction(1, 2, Direction::Inbound),
+            Duration::ZERO,
+            DuplicateResolution::RejectNew,
+        )
+        .expect("link");
+    let candidate = candidate_with_direction(2, 2, Direction::Outbound);
+    assert_eq!(
+        manager
+            .duplicate_resolution(peer(1), &candidate)
+            .expect("policy"),
+        DuplicateResolution::ReplaceExisting
+    );
+    assert_eq!(
+        manager
+            .snapshot(Duration::ZERO)
+            .expect("snapshot")
+            .links
+            .len(),
+        1
     );
 }

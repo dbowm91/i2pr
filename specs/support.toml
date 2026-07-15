@@ -158,6 +158,15 @@ evidence = ["crates/i2pr-transport-ntcp2/src/block.rs", "crates/i2pr-testkit/src
 advertised = false
 
 [[surface]]
+id = "ntcp2.runtime-link-manager"
+protocol = "ntcp2"
+structure = "controlled-runtime-tcp-admission-replay-backoff-and-link-ownership"
+scope = "required-later"
+status = "experimental"
+evidence = ["crates/i2pr-runtime/src/ntcp2_runtime.rs", "crates/i2pr-transport-ntcp2/src/address.rs", "plans/035-closure.md"]
+advertised = false
+
+[[surface]]
 id = "i2np.envelope"
 protocol = "i2np"
 structure = "bounded-message-envelope-and-header"

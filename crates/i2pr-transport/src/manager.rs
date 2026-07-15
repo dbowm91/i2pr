@@ -33,6 +33,47 @@ pub enum DuplicateResolution {
     RetainExistingDrainNew,
 }
 
+/// Selects a deterministic winner for simultaneous inbound/outbound links.
+///
+/// The runtime supplies the local router reference because this crate does not
+/// own router identity or policy.  When the two directions race, the side
+/// whose direction is preferred by the local/remote hash ordering wins.  A
+/// candidate that wins replaces the current link; a losing candidate is
+/// retained only long enough for its runtime owner to drain and close it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DuplicateLinkPolicy {
+    local_peer: PeerId,
+}
+
+impl DuplicateLinkPolicy {
+    /// Creates the policy for one local router reference.
+    pub const fn new(local_peer: PeerId) -> Self {
+        Self { local_peer }
+    }
+
+    /// Returns the bounded duplicate decision for an existing/candidate pair.
+    pub fn decide(
+        self,
+        existing: &LinkCandidate,
+        candidate: &LinkCandidate,
+    ) -> DuplicateResolution {
+        if existing.peer() != candidate.peer() {
+            return DuplicateResolution::AcceptNew;
+        }
+        if existing.direction() == candidate.direction() {
+            return DuplicateResolution::RejectNew;
+        }
+        let outbound_wins = self.local_peer < candidate.peer();
+        let candidate_wins = (outbound_wins && candidate.direction() == Direction::Outbound)
+            || (!outbound_wins && candidate.direction() == Direction::Inbound);
+        if candidate_wins {
+            DuplicateResolution::ReplaceExisting
+        } else {
+            DuplicateResolution::RetainExistingDrainNew
+        }
+    }
+}
+
 /// A bounded candidate-admission failure category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegistrationError {
@@ -416,6 +457,30 @@ impl TransportManager {
     /// Returns the immutable ceilings selected for this manager.
     pub fn limits(&self) -> TransportLimits {
         self.inner.limits
+    }
+
+    /// Computes the default duplicate policy for an authenticated candidate.
+    ///
+    /// The returned decision is pure and does not mutate manager state.  A
+    /// missing peer slot accepts the candidate; the active link is looked up
+    /// only to compare its direction and peer identity.
+    pub fn duplicate_resolution(
+        &self,
+        local_peer: PeerId,
+        candidate: &LinkCandidate,
+    ) -> Result<DuplicateResolution, RegistrationError> {
+        let state = self.lock_state()?;
+        let Some(link_ids) = state.peers.get(&candidate.peer()) else {
+            return Ok(DuplicateResolution::AcceptNew);
+        };
+        let Some(existing_id) = link_ids.iter().next() else {
+            return Ok(DuplicateResolution::AcceptNew);
+        };
+        let existing = state
+            .links
+            .get(existing_id)
+            .ok_or(RegistrationError::MissingLink)?;
+        Ok(DuplicateLinkPolicy::new(local_peer).decide(&existing.candidate, candidate))
     }
 
     /// Admits one pending-handshake lease.

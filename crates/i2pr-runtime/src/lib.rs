@@ -12,6 +12,7 @@ mod cancel;
 mod channel;
 mod context;
 mod graph;
+mod ntcp2_runtime;
 mod observability;
 mod supervisor;
 
@@ -32,6 +33,16 @@ pub use graph::{
     GraphError, MAX_RESTART_ATTEMPTS, MAX_SERVICE_COUNT, MAX_SERVICE_TIMEOUT, RestartExhaustion,
     RestartPolicy, RestartPolicyError, ServiceFuture, ServiceGraph, ServiceGraphBuilder,
     ServiceResult, ServiceSpec,
+};
+pub use ntcp2_runtime::{
+    AddressFamily, AdmissionDenied, AdmissionRejection, AdmissionSnapshot, BoundNtcp2Listener,
+    DialAdmission, DialAttempt, DialBackoffConfig, DialBackoffDecision, DialBackoffSnapshot,
+    DialKey, DialKeyError, DialOutcome, ExactIoError, InboundAdmission, InboundChunk,
+    InboundPermit, IoErrorKind, IpPrefixPolicy, LinkHandle, LinkId, LinkSendError, LinkSnapshot,
+    LinkTermination, ListenerHandle, ListenerSnapshot, Ntcp2Deadline, Ntcp2DeadlineError,
+    Ntcp2Event, Ntcp2EventKind, Ntcp2RuntimeConfig, Ntcp2RuntimeConfigError, Ntcp2RuntimeDeadlines,
+    Ntcp2RuntimeLimits, Ntcp2RuntimeService, ReplayCache, ReplayCacheDecision, ReplayCacheSnapshot,
+    RuntimeLimitKind, WriteOutcome, read_exact, write_all_exact,
 };
 pub use observability::{
     MAX_SNAPSHOT_CHANNELS, MAX_SNAPSHOT_RESOURCES, RouterLifecycle, RuntimeSnapshot,

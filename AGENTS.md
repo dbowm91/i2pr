@@ -92,6 +92,23 @@ testing. The current NTCP2 specification defines no in-session periodic rekey
 threshold; counter exhaustion is terminal and a fresh Noise handshake is the
 rekey mechanism until a later compatibility plan says otherwise.
 
+Plan 035 is the first socket-owning phase. Keep every `TcpListener`,
+`TcpStream`, Tokio task/channel/timer, deadline, admission lease, replay-cache
+owner, and link reader/writer child in `i2pr-runtime`; `i2pr-transport` and
+`i2pr-transport-ntcp2` remain runtime-neutral. Listener and dial configuration
+must be explicit and disabled by default outside controlled loopback/private
+tests. Enforce global, per-IP, and IPv4/IPv6 subnet handshake limits before
+cryptography, bounded active-link and queue/byte limits, typed cancellation and
+deadline outcomes, and deterministic backoff/replay expiry. Authenticate before
+parsing data frames, transfer directional key owners exactly once, and join both
+link children before reporting closure. Never mutate RouterInfo or NetDB, infer
+an external address from one peer, publish an address automatically, or claim
+mixed-router interoperability or capability advertisement from local TCP tests.
+Default events and snapshots omit raw endpoints, peer hashes, keys, transcripts,
+payloads, and arbitrary OS error text. Use paused Tokio time/manual clocks and
+loopback-only sockets for runtime tests; malformed or stress traffic belongs only
+to the deterministic testkit or an authorized isolated testnet.
+
 ## Runtime, Security, and Observability Rules
 
 Every long-lived task has an owned supervisor/service scope and is awaited or

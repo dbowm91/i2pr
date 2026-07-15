@@ -44,6 +44,16 @@ pub mod event {
     pub const CHANNEL_REJECTED: &str = "runtime.channel.rejected";
     /// A bounded resource admission was denied.
     pub const RESOURCE_DENIED: &str = "runtime.resource.denied";
+    /// A controlled NTCP2 listener accepted an admitted stream.
+    pub const NTCP2_ACCEPTED: &str = "runtime.ntcp2.accepted";
+    /// A controlled NTCP2 inbound attempt was denied by a bounded limit.
+    pub const NTCP2_ADMISSION_DENIED: &str = "runtime.ntcp2.admission_denied";
+    /// A controlled NTCP2 dial completed with a typed outcome.
+    pub const NTCP2_DIAL_COMPLETED: &str = "runtime.ntcp2.dial_completed";
+    /// A controlled NTCP2 link was replaced or entered drain.
+    pub const NTCP2_LINK_REPLACED: &str = "runtime.ntcp2.link_replaced";
+    /// A controlled NTCP2 link closed with a typed category.
+    pub const NTCP2_LINK_CLOSED: &str = "runtime.ntcp2.link_closed";
     /// A synthetic fault rule was applied.
     pub const SIMULATION_FAULT_APPLIED: &str = "simulation.fault.applied";
     /// A deterministic simulation completed.

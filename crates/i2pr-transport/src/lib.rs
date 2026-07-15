@@ -30,9 +30,9 @@ pub use identity::PeerId;
 pub use lifecycle::{InvalidLinkTransition, LinkState};
 pub use manager::{
     CandidateAdmissionError, CandidateDecision, CloseOutcome, DialBackoff, DialBackoffError,
-    DuplicateResolution, LinkCandidate, LinkDeliveryCapability, PendingHandshake,
-    ReachabilityRecordOutcome, RegistrationError, RegistrationOutcome, RegistrationRejection,
-    TransportManager,
+    DuplicateLinkPolicy, DuplicateResolution, LinkCandidate, LinkDeliveryCapability,
+    PendingHandshake, ReachabilityRecordOutcome, RegistrationError, RegistrationOutcome,
+    RegistrationRejection, TransportManager,
 };
 pub use payload::{EncodedI2npMessage, PayloadError};
 pub use resource::{

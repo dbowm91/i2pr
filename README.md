@@ -70,6 +70,12 @@ neutral I/O actions. Plan 034 adds SipHash-masked lengths, AEAD frames, strict
 authenticated blocks, and terminal counter/error handling. These remain local
 experimental evidence only; sockets, mixed-router interoperability, NetDB
 mutation, and capability advertisement remain unimplemented.
+Plan 035 now adds a bounded runtime-owned TCP integration seam: strict NTCP2
+address interpretation, pre-crypto admission, replay/backoff owners, controlled
+loopback listener/dial services, and joined link children. The runtime socket
+surface is disabled outside explicit controlled tests; no public listener,
+automatic address publication, NetDB mutation, mixed-router interoperability, or
+capability advertisement is claimed.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
@@ -149,8 +155,10 @@ crates/
 The current workspace contains `i2pr-proto`, `i2pr-crypto`, `i2pr-storage`,
 `i2pr-core`, `i2pr-transport`, `i2pr-transport-ntcp2`, `i2pr-runtime`,
 `i2pr-daemon`, and `i2pr-testkit`. The runtime crate is the only production
-crate that owns Tokio tasks, timers, channels, or wakeable cancellation;
-transport crates expose pure contracts and protocol seams only. Later plans
+crate that owns Tokio tasks, timers, channels, sockets, or wakeable cancellation;
+transport crates expose pure contracts and protocol seams only. Plan 035's
+listener, dialer, replay owner, and per-link reader/writer children all remain
+inside that runtime boundary. Later plans
 will add protocol and service crates when their contracts are understood;
 empty placeholder crates are not created in advance.
 
@@ -197,10 +205,13 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 033 closure record](plans/033-closure.md)
 - [Plan 034 NTCP2 data phase and blocks](plans/034-m3-ntcp2-data-phase-and-blocks.md)
 - [Plan 034 closure record](plans/034-closure.md)
+- [Plan 035 runtime link manager and addresses](plans/035-m3-runtime-link-manager-and-addresses.md)
+- [Plan 035 closure record](plans/035-closure.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)
 - [Security model](docs/security-model.md)
+- [Controlled private-testnet boundary](docs/private-testnet.md)
 - [Architecture decision records](docs/adr/0000-adr-process.md)
 - [Runtime and supervision ADR](docs/adr/0008-runtime-supervision-and-cancellation.md)
 - [Runtime observability and validation ADR](docs/adr/0009-runtime-observability-and-validation.md)
@@ -208,6 +219,7 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [NTCP2 crypto and static-key storage ADR](docs/adr/0011-ntcp2-crypto-and-static-key-storage.md)
 - [NTCP2 handshake state-machines ADR](docs/adr/0012-ntcp2-handshake-state-machines.md)
 - [NTCP2 data-phase and blocks ADR](docs/adr/0013-ntcp2-data-phase-and-blocks.md)
+- [NTCP2 runtime link manager and address policy ADR](docs/adr/0014-ntcp2-runtime-link-manager-and-address-policy.md)
 - [Contribution guide](CONTRIBUTING.md)
 - [Protocol specification index and source ledger](specs/README.md)
 
@@ -242,7 +254,10 @@ explicitly aborted before the runtime returns.
 
 Transport changes must keep `i2pr-transport` runtime-neutral and keep
 `i2pr-transport-ntcp2` free of Tokio, filesystem, sockets, and live protocol
-side effects. Plans 032–033 additionally keep cryptographic and handshake
+side effects. Plan 035 additionally keeps every TCP listener/stream, async
+deadline, replay-cache owner, admission counter, and reader/writer child inside
+`i2pr-runtime`; controlled sockets remain disabled-by-default test infrastructure.
+Plans 032–033 additionally keep cryptographic and handshake
 state consuming and secret-safe, persist transport static key/IV material only
 through the versioned storage boundary, and require the hashed fixture
 validator. Drive

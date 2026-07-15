@@ -9,10 +9,15 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-mod address;
+pub mod address;
 pub mod block;
 pub mod constants;
 pub mod crypto;
 pub mod frame;
 pub mod handshake;
 pub mod state_machine;
+
+pub use address::{
+    ConfiguredListenAddress, Ntcp2AddressError, Ntcp2AddressMaterial, Ntcp2Capabilities,
+    Ntcp2Endpoint, Ntcp2ObfuscationIv, Ntcp2RouterAddress, Ntcp2TransportStyle, ResolvedDialTarget,
+};

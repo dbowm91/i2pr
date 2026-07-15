@@ -178,6 +178,35 @@ Compare transcript/KDF constants, maximum padding, timestamp policy, frame/block
 - Duplicate simultaneous inbound/outbound connection resolution.
 - Fuzzing of authenticated plaintext block parsing and deterministic handshake state transitions.
 
+## Plan 035 runtime boundary
+
+Plan 035 adds only a runtime adapter around the pure handshake and data-phase
+surfaces above. `i2pr-runtime` owns TCP sockets, partial reads/writes,
+deadlines, cancellation, replay retention, admission, bounded queues, and
+joined reader/writer children. `i2pr-transport-ntcp2` remains free of Tokio,
+DNS, filesystem, sockets, RouterInfo mutation, and publication policy.
+The checked-in Plan 035 implementation is the controlled ownership subset: it
+provides exact-I/O helpers, listener/dial lifecycle, admission, replay,
+backoff, and joined raw-link children, but does not claim complete wire-level
+handshake or authenticated data-phase execution. That composition is deferred
+to Plan 036.
+
+The adapter validates NTCP2 RouterAddress literals before dialing: `host` is a
+literal IPv4/IPv6 address, `port` is decimal 1..=65535, the static key is an
+exact 32-byte value, and the obfuscation IV is an exact 16-byte value. Duplicate
+or conflicting fields are rejected and unsupported fields are not silently
+interpreted. Configured addresses and resolved socket targets are distinct
+types. Observed endpoints produce bounded family/reachability observations only;
+they do not infer an external address or update RouterInfo/NetDB.
+
+The controlled runtime policy uses global, per-IP, IPv4 `/24`, and IPv6 `/64`
+pending-handshake limits before expensive cryptography. Replay capacity fails
+closed, expiry ordering is deterministic, and dial retry/backoff records are
+bounded and cancellable. The default duplicate rule is a deterministic local /
+remote hash direction rule with bounded drain and stale-close protection; mixed
+Java I2P/i2pd evidence remains a Plan 036 prerequisite. Loopback tests are
+local lifecycle evidence only and do not advance this dossier's support claim.
+
 ## Deferred and excluded behavior
 
 - NTCP1 compatibility: legacy-reject; the MVP explicitly excludes NTCP1.

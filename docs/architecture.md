@@ -10,8 +10,8 @@ The intended modular monolith is organized into four conceptual planes:
 
 | Plane | Responsibility | Current bounded status |
 | --- | --- | --- |
-| Data | Protocol representations, authenticated links, messages, and network tunnel traffic | Bounded common-structure and initial I2NP models plus transport-neutral link contracts and Ed25519/X25519 wrappers; no sockets or network behavior |
-| Control | Configuration, lifecycle, health, cancellation, supervision, and resource budgets | Runtime-neutral core contracts plus the concrete non-networked `i2pr-runtime` supervisor |
+| Data | Protocol representations, authenticated links, messages, and network tunnel traffic | Bounded common-structure and initial I2NP models plus transport-neutral link contracts, NTCP2 state, and controlled runtime TCP integration; no public-network behavior |
+| Control | Configuration, lifecycle, health, cancellation, supervision, and resource budgets | Runtime-neutral core contracts plus the `i2pr-runtime` supervisor and bounded socket-owning services |
 | Client | Destinations, LeaseSets, streaming, SAM, and I2CP adapters | Not implemented |
 | Service | HTTP, SOCKS5, IRC, generic TCP, and local service-tunnel composition | Not implemented |
 
@@ -53,7 +53,9 @@ derivation and the narrow `zeroize` wrapper dependency. `i2pr-core` owns
 runtime-neutral service, health, lifecycle, cancellation, and resource-domain
 types. `i2pr-runtime` owns Tokio, wakeable cancellation, service graph
 validation, readiness, latest-state health publication, supervised task
-managers, bounded restart policy, and graceful/forced shutdown. `i2pr-transport`
+managers, bounded restart policy, graceful/forced shutdown, TCP listeners and
+streams, deadline timers, replay-cache state, and link child tasks.
+`i2pr-transport`
 owns runtime-neutral link, delivery, admission, lifecycle, observation, and
 snapshot contracts. `i2pr-transport-ntcp2` depends on those contracts plus
 protocol/crypto vocabulary but owns no Tokio, filesystem, socket, NetDB,
@@ -230,6 +232,46 @@ threshold. This implementation therefore treats the last permitted nonce and
 counter exhaustion as terminal and requires a new Noise handshake for rekey or
 static-key/IV rotation. No speculative wire rekey is emitted.
 
+### Plan 035 runtime link boundary
+
+Plan 035 adds the first controlled socket layer without moving runtime
+ownership into the protocol crates. The production service graph is:
+
+```text
+transport-manager (runtime service)
+  ├── ntcp2-listener (owned accept loop)
+  ├── ntcp2-dialer (bounded connect attempts/backoff)
+  ├── replay-cache (bounded expiry owner)
+  └── link scopes
+        ├── reader child (bounded stream receive)
+        └── writer child (bounded stream delivery)
+```
+
+`i2pr-runtime` owns every `TcpListener`, `TcpStream`, split half, Tokio
+channel, deadline, admission lease, and child join. A listener is a valid
+disabled state until an explicit controlled-test configuration enables it. An
+unexpected required-service failure is reported through the supervisor rather
+than being treated as readiness. The listener admits global, per-IP, and
+explicit IPv4/IPv6 subnet limits before expensive cryptography; internal
+accounting keys never enter snapshots or default tracing.
+
+The current Plan 035 runtime subset exposes the ownership and I/O seams needed
+to translate pure handshake actions into exact or bounded reads, complete
+writes, injected timestamps/padding, replay decisions, and typed
+cancellation/deadline inputs. It does not yet claim a complete wire-level
+handshake or authenticated data-phase driver; that composition is a Plan 036
+prerequisite. The bounded link owner still gives the runtime an explicit place
+to transfer directional data-phase owners exactly once. Address parsing and
+reachability observations are candidates only: they never mutate RouterInfo or
+NetDB and never infer an external address from one peer.
+
+Runtime TCP tests are restricted to loopback or an authorized isolated testnet,
+use paused Tokio time where possible, and provide no capability-advertisement
+or mixed-router evidence. Default diagnostics contain only fixed categories,
+synthetic local link IDs, bounded counters, coarse families, and typed outcomes;
+raw endpoints, peer hashes, keys, transcripts, frames, payloads, and OS error
+text remain outside the default observation boundary.
+
 Generated and reconstructed private seeds are held by zeroizing owners during
 crypto operations. Storage encoding and file-read buffers are also zeroizing;
 the `DatabaseLookup` reply-key/tag wrappers in `i2pr-proto::i2np::netdb` are
@@ -371,9 +413,9 @@ NetDB, select tunnels, score peers, or route application traffic.
 State-machine drivers communicate through explicit bounded actions and typed
 results rather than async traits. `i2pr-transport-ntcp2` owns the NTCP2
 protocol constants, Plan 032 cryptographic/transcript foundation, and Plan 033
-handshake wire/state layer and Plan 034 data-phase frames; future plans add
-runtime adaptation. The runtime adapter will later translate those actions into owned
-I/O operations.
+handshake wire/state layer and Plan 034 data-phase frames. Plan 035 supplies
+the owned runtime socket, deadline, admission, and child-task boundary; a
+future plan must translate those actions into complete protocol I/O operations.
 The boundary deliberately models only immediate Milestone 3 needs, leaving
 SSU2-specific behavior and duplicate winner policy to later plans.
 

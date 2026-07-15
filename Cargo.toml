@@ -35,7 +35,7 @@ thiserror = "2.0"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-tokio = { version = "1.48", default-features = false, features = ["macros", "rt", "sync", "time", "test-util"] }
+tokio = { version = "1.48", default-features = false, features = ["io-util", "macros", "net", "rt", "sync", "time", "test-util"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 x25519-dalek = { version = "2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
 zeroize = { version = "1.8", default-features = false, features = ["derive"] }

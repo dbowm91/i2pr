@@ -21,6 +21,11 @@ blocks, and deterministic partial-I/O evidence. The current specification has
 no in-session rekey threshold; counter exhaustion remains terminal and requires
 a fresh handshake. This is still local evidence only; no sockets, NetDB
 mutation, mixed-router interoperability, or transport capability is claimed.
+Plan 035 adds controlled runtime-owned TCP lifecycle, strict NTCP2 address
+interpretation, admission, replay/backoff, and joined link-child ownership.
+Loopback/private socket tests are local lifecycle evidence only; public
+listeners, automatic address publication, NetDB mutation, mixed-router
+interoperability, and capability advertisement remain excluded.
 
 | Protocol area | Status | Planned milestone | Specification/source starting point | Test-vector status | Interoperability status |
 | --- | --- | --- | --- | --- | --- |
@@ -33,6 +38,7 @@ mutation, mixed-router interoperability, or transport capability is claimed.
 | NTCP2 crypto/transcript foundation | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0011 | Independent deterministic primitive/transcript vectors and hashed manifest; no router interoperability | None |
 | NTCP2 handshake codecs and state machines | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0012 | Fixed/malformed/bounded state and policy tests; no mixed-router interoperability, sockets, or capability claim | None |
 | NTCP2 authenticated data frames and payload blocks | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0013 | Deterministic frame/block vectors, malformed ordering/length/tag tests, and partial-I/O cleanup tests; no mixed-router interoperability | None |
+| NTCP2 runtime link manager, addresses, and controlled TCP lifecycle | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0014 | Bounded address/admission/replay/backoff/duplicate/cleanup tests plus loopback lifecycle tests; no mixed-router interoperability or publication | None |
 | Reseed and RouterInfo publication | Not implemented | 4 | `specs/protocols/04-reseed-netdb.md` | None imported | None |
 | Network tunnels and transit participation | Not implemented | 5 | `specs/protocols/05-tunnels.md` | None imported | None |
 | Classic LeaseSet structural codec | Experimental structural subset; LeaseSet2-family deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Local Lease/LeaseSet vectors and negative tests; no independent router vectors | None |
