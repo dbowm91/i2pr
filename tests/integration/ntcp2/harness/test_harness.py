@@ -990,5 +990,319 @@ class JavaRouterInfoExportTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, "router-info-oversized")
 
 
+class MixedScenarioTests(unittest.TestCase):
+    def test_all_four_directional_scenarios_exist(self) -> None:
+        mixed_dir = ROOT / "tests/integration/ntcp2/mixed-scenarios"
+        expected_ids = {
+            "i2pr-to-java-ipv4",
+            "java-to-i2pr-ipv4",
+            "i2pr-to-i2pd-ipv4",
+            "i2pd-to-i2pr-ipv4",
+        }
+        files = {path.stem for path in mixed_dir.glob("[!.]*.toml") if path.name != "manifest.toml"}
+        self.assertEqual(files, expected_ids)
+        manifest = tomllib.loads((mixed_dir / "manifest.toml").read_text(encoding="utf-8"))
+        manifest_ids = {item["id"] for item in manifest["scenario"]}
+        self.assertEqual(manifest_ids, expected_ids)
+
+    def test_mixed_scenarios_match_manifest(self) -> None:
+        from mixed_runner import load_mixed_scenario
+        mixed_dir = ROOT / "tests/integration/ntcp2/mixed-scenarios"
+        manifest = tomllib.loads((mixed_dir / "manifest.toml").read_text(encoding="utf-8"))
+        for item in manifest["scenario"]:
+            direction = load_mixed_scenario(ROOT, item["id"])
+            self.assertEqual(direction.execution_id, item["id"])
+            self.assertEqual(direction.reference, item["reference"])
+            self.assertEqual(direction.initiator, item["initiator"])
+            self.assertEqual(direction.responder, item["responder"])
+
+    def test_mixed_scenario_direction_invariants(self) -> None:
+        from mixed_runner import load_mixed_scenario
+        for scenario_id in ("i2pr-to-java-ipv4", "i2pr-to-i2pd-ipv4"):
+            d = load_mixed_scenario(ROOT, scenario_id)
+            self.assertTrue(d.i2pr_is_initiator)
+            self.assertEqual(d.direction, "i2pr-to-reference")
+        for scenario_id in ("java-to-i2pr-ipv4", "i2pd-to-i2pr-ipv4"):
+            d = load_mixed_scenario(ROOT, scenario_id)
+            self.assertFalse(d.i2pr_is_initiator)
+            self.assertEqual(d.direction, "reference-to-i2pr")
+
+    def test_mixed_scenario_references_match(self) -> None:
+        from mixed_runner import load_mixed_scenario
+        d1 = load_mixed_scenario(ROOT, "i2pr-to-java-ipv4")
+        self.assertEqual(d1.reference, "java_i2p")
+        d2 = load_mixed_scenario(ROOT, "java-to-i2pr-ipv4")
+        self.assertEqual(d2.reference, "java_i2p")
+        d3 = load_mixed_scenario(ROOT, "i2pr-to-i2pd-ipv4")
+        self.assertEqual(d3.reference, "i2pd")
+        d4 = load_mixed_scenario(ROOT, "i2pd-to-i2pr-ipv4")
+        self.assertEqual(d4.reference, "i2pd")
+
+
+class LauncherRendererTests(unittest.TestCase):
+    def test_render_valid_initiator_scenario(self) -> None:
+        from launcher_renderer import render_scenario_toml, RenderError
+        content = render_scenario_toml(
+            execution_id="i2pr-to-java-ipv4",
+            role="initiator",
+            address_family="ipv4",
+            local_address="192.0.2.1",
+            local_port=45680,
+            peer_address="192.0.2.2",
+            peer_port=45678,
+            state_dir="state",
+            peer_router_info="exchange/peer.info",
+        )
+        self.assertIn('role = "initiator"', content)
+        self.assertIn('peer_address = "192.0.2.2"', content)
+        self.assertIn("peer_port = 45678", content)
+        self.assertIn("network_id = 99", content)
+
+    def test_render_valid_responder_scenario(self) -> None:
+        from launcher_renderer import render_scenario_toml
+        content = render_scenario_toml(
+            execution_id="java-to-i2pr-ipv4",
+            role="responder",
+            address_family="ipv4",
+            local_address="192.0.2.1",
+            local_port=45680,
+            peer_address=None,
+            peer_port=None,
+            state_dir="state",
+            peer_router_info=None,
+        )
+        self.assertIn('role = "responder"', content)
+        self.assertIn('peer_address = ""', content)
+        self.assertIn("peer_port = 0", content)
+        self.assertIn('peer_router_info = ""', content)
+
+    def test_render_rejects_absolute_path(self) -> None:
+        from launcher_renderer import render_scenario_toml, RenderError
+        with self.assertRaises(RenderError):
+            render_scenario_toml(
+                execution_id="test", role="responder", address_family="ipv4",
+                local_address="192.0.2.1", local_port=45680,
+                peer_address=None, peer_port=None,
+                state_dir="/etc/state", peer_router_info=None,
+            )
+
+    def test_render_rejects_parent_traversal(self) -> None:
+        from launcher_renderer import render_scenario_toml, RenderError
+        with self.assertRaises(RenderError):
+            render_scenario_toml(
+                execution_id="test", role="responder", address_family="ipv4",
+                local_address="192.0.2.1", local_port=45680,
+                peer_address=None, peer_port=None,
+                state_dir="../escape", peer_router_info=None,
+            )
+
+    def test_render_rejects_address_outside_synthetic_range(self) -> None:
+        from launcher_renderer import render_scenario_toml, RenderError
+        with self.assertRaises(RenderError):
+            render_scenario_toml(
+                execution_id="test", role="responder", address_family="ipv4",
+                local_address="10.0.0.1", local_port=45680,
+                peer_address=None, peer_port=None,
+                state_dir="state", peer_router_info=None,
+            )
+
+    def test_render_rejects_mismatched_address_family(self) -> None:
+        from launcher_renderer import render_scenario_toml, RenderError
+        with self.assertRaises(RenderError):
+            render_scenario_toml(
+                execution_id="test", role="responder", address_family="ipv4",
+                local_address="2001:db8:36::1", local_port=45680,
+                peer_address=None, peer_port=None,
+                state_dir="state", peer_router_info=None,
+            )
+
+    def test_render_rejects_missing_peer_for_initiator(self) -> None:
+        from launcher_renderer import render_scenario_toml, RenderError
+        with self.assertRaises(RenderError):
+            render_scenario_toml(
+                execution_id="test", role="initiator", address_family="ipv4",
+                local_address="192.0.2.1", local_port=45680,
+                peer_address=None, peer_port=None,
+                state_dir="state", peer_router_info="exchange/peer.info",
+            )
+
+    def test_render_rejects_peer_for_responder(self) -> None:
+        from launcher_renderer import render_scenario_toml, RenderError
+        with self.assertRaises(RenderError):
+            render_scenario_toml(
+                execution_id="test", role="responder", address_family="ipv4",
+                local_address="192.0.2.1", local_port=45680,
+                peer_address="192.0.2.2", peer_port=45678,
+                state_dir="state", peer_router_info=None,
+            )
+
+    def test_render_rejects_unsupported_padding(self) -> None:
+        from launcher_renderer import render_scenario_toml, RenderError
+        with self.assertRaises(RenderError):
+            render_scenario_toml(
+                execution_id="test", role="responder", address_family="ipv4",
+                local_address="192.0.2.1", local_port=45680,
+                peer_address=None, peer_port=None,
+                state_dir="state", peer_router_info=None,
+                padding_profile="arbitrary",
+            )
+
+    def test_render_rejects_unsupported_smoke_profile(self) -> None:
+        from launcher_renderer import render_scenario_toml, RenderError
+        with self.assertRaises(RenderError):
+            render_scenario_toml(
+                execution_id="test", role="responder", address_family="ipv4",
+                local_address="192.0.2.1", local_port=45680,
+                peer_address=None, peer_port=None,
+                state_dir="state", peer_router_info=None,
+                smoke_message_profile="arbitrary",
+            )
+
+    def test_render_rejects_duplicate_endpoint(self) -> None:
+        from launcher_renderer import render_scenario_toml, RenderError
+        with self.assertRaises(RenderError):
+            render_scenario_toml(
+                execution_id="test", role="initiator", address_family="ipv4",
+                local_address="192.0.2.1", local_port=45680,
+                peer_address="192.0.2.1", peer_port=45680,
+                state_dir="state", peer_router_info="exchange/peer.info",
+            )
+
+    def test_render_rejects_unsupported_expected_result(self) -> None:
+        from launcher_renderer import render_scenario_toml, RenderError
+        with self.assertRaises(RenderError):
+            render_scenario_toml(
+                execution_id="test", role="responder", address_family="ipv4",
+                local_address="192.0.2.1", local_port=45680,
+                peer_address=None, peer_port=None,
+                state_dir="state", peer_router_info=None,
+                expected_result_class="arbitrary-result",
+            )
+
+    def test_render_and_validate_writes_valid_toml(self) -> None:
+        from launcher_renderer import render_and_validate
+        with tempfile.TemporaryDirectory() as directory:
+            run_root = Path(directory) / "run"
+            path = render_and_validate(
+                run_root,
+                execution_id="i2pr-to-java-ipv4",
+                role="responder",
+                address_family="ipv4",
+                local_address="192.0.2.1",
+                local_port=45680,
+                peer_address=None,
+                peer_port=None,
+                state_dir="state",
+                peer_router_info=None,
+            )
+            self.assertTrue(path.is_file())
+            loaded = load_launcher_scenario(path)
+            self.assertEqual(loaded.scenario_id, "i2pr-to-java-ipv4")
+            self.assertEqual(loaded.role, "responder")
+
+
+class MixedRunnerTerminalStatusTests(unittest.TestCase):
+    def test_listener_ready_must_come_before_terminal(self) -> None:
+        from i2pr import I2prAdapter
+        with tempfile.TemporaryDirectory() as directory:
+            run_root = Path(directory)
+            adapter = I2prAdapter(ROOT, run_root, "test-ns")
+            with self.assertRaises(RuntimeError) as ctx:
+                adapter.wait_ready()
+            self.assertIn("not-started", str(ctx.exception))
+
+    def test_wait_terminal_requires_started(self) -> None:
+        from i2pr import I2prAdapter
+        with tempfile.TemporaryDirectory() as directory:
+            run_root = Path(directory)
+            adapter = I2prAdapter(ROOT, run_root, "test-ns")
+            with self.assertRaises(RuntimeError) as ctx:
+                adapter.wait_terminal()
+            self.assertIn("not-started", str(ctx.exception))
+
+    def test_parse_status_line_rejects_unknown_reason(self) -> None:
+        with self.assertRaises(LauncherStatusError):
+            parse_status_line(
+                '{"schema":1,"type":"i2pr-interop-status","scenario_id":"test",'
+                '"phase":"terminal","result":"rejected",'
+                '"reason_code":"arbitrary-reason",'
+                '"counters":{"listener_ready":0,"authenticated":0,"frames_sent":0,'
+                '"frames_received":0,"i2np_sent":0,"i2np_received":0}}'
+            )
+
+    def test_parse_status_line_rejects_multi_terminal(self) -> None:
+        with self.assertRaises(LauncherStatusError):
+            parse_status_line(
+                '{"schema":1,"type":"i2pr-interop-status","scenario_id":"test",'
+                '"phase":"terminal","result":"ready",'
+                '"reason_code":"listener_bound",'
+                '"counters":{"listener_ready":0,"authenticated":0,"frames_sent":0,'
+                '"frames_received":0,"i2np_sent":0,"i2np_received":0}}'
+            )
+
+    def test_parse_status_line_rejects_unknown_counter(self) -> None:
+        with self.assertRaises(LauncherStatusError):
+            parse_status_line(
+                '{"schema":1,"type":"i2pr-interop-status","scenario_id":"test",'
+                '"phase":"terminal","result":"rejected",'
+                '"reason_code":"handshake_failed",'
+                '"counters":{"listener_ready":0,"authenticated":0,"frames_sent":0,'
+                '"frames_received":0,"i2np_sent":0,"i2np_received":0,"unknown":1}}'
+            )
+
+    def test_parse_status_line_rejects_extra_json_fields(self) -> None:
+        with self.assertRaises(LauncherStatusError):
+            parse_status_line(
+                '{"schema":1,"type":"i2pr-interop-status","scenario_id":"test",'
+                '"phase":"terminal","result":"rejected",'
+                '"reason_code":"handshake_failed",'
+                '"counters":{"listener_ready":0,"authenticated":0,"frames_sent":0,'
+                '"frames_received":0,"i2np_sent":0,"i2np_received":0},'
+                '"extra_field":"value"}'
+            )
+
+
+class MixedDirectionCoverageTests(unittest.TestCase):
+    def test_each_direction_has_distinct_execution_id(self) -> None:
+        from mixed_runner import load_mixed_scenario
+        ids = set()
+        for scenario_id in ("i2pr-to-java-ipv4", "java-to-i2pr-ipv4", "i2pr-to-i2pd-ipv4", "i2pd-to-i2pr-ipv4"):
+            d = load_mixed_scenario(ROOT, scenario_id)
+            self.assertNotIn(d.execution_id, ids)
+            ids.add(d.execution_id)
+
+    def test_each_direction_has_one_initiator_one_responder(self) -> None:
+        from mixed_runner import load_mixed_scenario
+        for scenario_id in ("i2pr-to-java-ipv4", "java-to-i2pr-ipv4", "i2pr-to-i2pd-ipv4", "i2pd-to-i2pr-ipv4"):
+            d = load_mixed_scenario(ROOT, scenario_id)
+            self.assertIn(d.initiator, {"i2pr", "java_i2p", "i2pd"})
+            self.assertIn(d.responder, {"i2pr", "java_i2p", "i2pd"})
+            self.assertNotEqual(d.initiator, d.responder)
+
+    def test_each_direction_has_expected_result(self) -> None:
+        from mixed_runner import load_mixed_scenario
+        for scenario_id in ("i2pr-to-java-ipv4", "java-to-i2pr-ipv4", "i2pr-to-i2pd-ipv4", "i2pd-to-i2pr-ipv4"):
+            d = load_mixed_scenario(ROOT, scenario_id)
+            self.assertEqual(d.expected, "authenticated-handshake-and-bounded-i2np-exchange")
+
+    def test_java_directions_cover_both_initiator_and_responder(self) -> None:
+        from mixed_runner import load_mixed_scenario
+        d1 = load_mixed_scenario(ROOT, "i2pr-to-java-ipv4")
+        d2 = load_mixed_scenario(ROOT, "java-to-i2pr-ipv4")
+        self.assertEqual(d1.initiator, "i2pr")
+        self.assertEqual(d1.responder, "java_i2p")
+        self.assertEqual(d2.initiator, "java_i2p")
+        self.assertEqual(d2.responder, "i2pr")
+
+    def test_i2pd_directions_cover_both_initiator_and_responder(self) -> None:
+        from mixed_runner import load_mixed_scenario
+        d1 = load_mixed_scenario(ROOT, "i2pr-to-i2pd-ipv4")
+        d2 = load_mixed_scenario(ROOT, "i2pd-to-i2pr-ipv4")
+        self.assertEqual(d1.initiator, "i2pr")
+        self.assertEqual(d1.responder, "i2pd")
+        self.assertEqual(d2.initiator, "i2pd")
+        self.assertEqual(d2.responder, "i2pr")
+
+
 if __name__ == "__main__":
     unittest.main()

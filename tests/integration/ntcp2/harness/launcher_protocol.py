@@ -149,6 +149,10 @@ def load_launcher_scenario(path: Path) -> LauncherScenario:
     local_port = _port(value["local_port"])
     peer_address_value = value["peer_address"]
     peer_port_value = value["peer_port"]
+    if isinstance(peer_address_value, str) and peer_address_value == "":
+        peer_address_value = None
+    if isinstance(peer_port_value, int) and peer_port_value == 0:
+        peer_port_value = None
     if (peer_address_value is None) != (peer_port_value is None):
         raise LauncherScenarioError("peer-endpoint-incomplete")
     if role == "initiator" and peer_address_value is None:
@@ -170,8 +174,11 @@ def load_launcher_scenario(path: Path) -> LauncherScenario:
     if state_dir.exists() and not state_dir.is_dir():
         raise LauncherScenarioError("state-path-is-file")
     peer_router_info = None
-    if value["peer_router_info"] is not None:
-        peer_router_info = _confined_path(run_root, value["peer_router_info"])
+    peer_router_info_raw = value["peer_router_info"]
+    if isinstance(peer_router_info_raw, str) and peer_router_info_raw == "":
+        peer_router_info_raw = None
+    if peer_router_info_raw is not None:
+        peer_router_info = _confined_path(run_root, peer_router_info_raw)
     if role == "initiator" and peer_router_info is None:
         raise LauncherScenarioError("initiator-router-info-missing")
     if role == "responder" and peer_router_info is not None:

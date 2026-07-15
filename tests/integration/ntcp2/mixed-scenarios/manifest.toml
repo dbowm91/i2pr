@@ -1,0 +1,33 @@
+# Plan 044 mixed-router directional scenarios. This manifest is deliberately
+# separate from the eight-entry Plan 038 manifest.
+schema_version = 1
+network_id = 99
+address_family = "ipv4"
+
+[[scenario]]
+id = "i2pr-to-java-ipv4"
+reference = "java_i2p"
+direction = "i2pr-to-reference"
+initiator = "i2pr"
+responder = "java_i2p"
+
+[[scenario]]
+id = "java-to-i2pr-ipv4"
+reference = "java_i2p"
+direction = "reference-to-i2pr"
+initiator = "java_i2p"
+responder = "i2pr"
+
+[[scenario]]
+id = "i2pr-to-i2pd-ipv4"
+reference = "i2pd"
+direction = "i2pr-to-reference"
+initiator = "i2pr"
+responder = "i2pd"
+
+[[scenario]]
+id = "i2pd-to-i2pr-ipv4"
+reference = "i2pd"
+direction = "reference-to-i2pr"
+initiator = "i2pd"
+responder = "i2pr"

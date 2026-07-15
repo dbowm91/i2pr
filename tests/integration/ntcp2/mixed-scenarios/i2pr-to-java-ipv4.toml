@@ -1,0 +1,10 @@
+[scenario]
+id = "i2pr-to-java-ipv4"
+reference = "java_i2p"
+profile = "handshake-smoke"
+direction = "i2pr-to-reference"
+address_family = "ipv4"
+padding = "minimum-variable-maximum"
+expected = "authenticated-handshake-and-bounded-i2np-exchange"
+initiator = "i2pr"
+responder = "java_i2p"

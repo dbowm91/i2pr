@@ -1,0 +1,10 @@
+[scenario]
+id = "i2pd-to-i2pr-ipv4"
+reference = "i2pd"
+profile = "handshake-smoke"
+direction = "reference-to-i2pr"
+address_family = "ipv4"
+padding = "minimum-variable-maximum"
+expected = "authenticated-handshake-and-bounded-i2np-exchange"
+initiator = "i2pd"
+responder = "i2pr"
