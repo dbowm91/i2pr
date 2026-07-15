@@ -47,10 +47,11 @@ pull requests. The authoritative remote evidence for this closure is the
 [Milestone 0 CI workflow](https://github.com/dbowm91/i2pr/actions/workflows/ci.yml)
 and the successful run associated with the final `main` commit.
 
-The Rust 1.85 toolchain was not installed in the local execution environment,
-so the MSRV command was not run locally. It is nevertheless continuously
-checked by the dedicated remote job; no dependency was weakened or check
-removed to accommodate that environment limitation.
+The first local Rust 1.85 check exposed a pre-existing let-chain expression in
+the resource-lease release path that Rust 1.85 still treats as unstable. The
+expression was rewritten as equivalent nested conditionals; no dependency was
+weakened and no check was removed. The corrected workspace now passes the
+declared MSRV check locally and remains covered by the dedicated remote job.
 
 ## Local validation
 
@@ -61,6 +62,7 @@ All commands below passed on the pinned Rust `1.95.0` toolchain:
 | `rtk cargo fmt --all --check` | passed |
 | `rtk cargo check --workspace` | passed |
 | `rtk cargo check --workspace --all-targets` | passed |
+| `rtk rustup run 1.85.0 cargo check --workspace --all-targets` | passed after MSRV correction |
 | `rtk cargo test --workspace` | 23 tests passed |
 | `rtk cargo clippy --workspace --all-targets --all-features -- -D warnings` | passed |
 | `RUSTDOCFLAGS="-D warnings" rtk cargo doc --workspace --no-deps` | passed |

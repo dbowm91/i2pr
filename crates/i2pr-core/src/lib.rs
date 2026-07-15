@@ -471,14 +471,14 @@ impl ResourceBudget {
     }
 
     fn release(&self, class: ResourceClass, amount: u64) {
-        if let Ok(mut state) = self.inner.state.lock()
-            && let Some(used) = state.used.get_mut(&class)
-        {
-            if *used >= amount {
-                *used -= amount;
-            }
-            if *used == 0 {
-                state.used.remove(&class);
+        if let Ok(mut state) = self.inner.state.lock() {
+            if let Some(used) = state.used.get_mut(&class) {
+                if *used >= amount {
+                    *used -= amount;
+                }
+                if *used == 0 {
+                    state.used.remove(&class);
+                }
             }
         }
     }
