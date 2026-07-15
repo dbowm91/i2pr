@@ -4,7 +4,13 @@ These instructions supplement the environment-provided RTK command guidance.
 
 Before changing code, read `README.md`, `GUARDRAILS.md`, the applicable plan in
 `plans/`, and any relevant ADR in `docs/adr/`. Protocol work also requires the
-matching dossier under `specs/protocols/`.
+matching dossier under `specs/protocols/` and `specs/CONFORMANCE.md`.
+
+Milestone closure work must leave an explicit closure record with the changed
+files, deviations, dependency and security decisions, quality-command results,
+CI evidence, and known limitations. Keep `specs/support.toml` synchronized
+with `docs/protocol-support.md`; code or namespace presence is not protocol
+support evidence.
 
 Keep changes plan-first and bounded. Preserve the dependency direction shown in
 `docs/architecture.md`; do not add future transport, NetDB, tunnel, client, or

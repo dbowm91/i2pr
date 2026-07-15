@@ -4,6 +4,11 @@ This matrix is intentionally explicit: every row describes planned work, not
 current interoperability. “Not implemented” means the repository provides no
 usable implementation for that area.
 
+The fine-grained, machine-readable inventory for Milestone 1 is
+[`specs/support.toml`](../specs/support.toml). Its initial entries are
+`not-implemented`, carry no evidence, and set `advertised = false`; the ledger
+does not itself publish protocol capabilities.
+
 | Protocol area | Status | Planned milestone | Specification/source starting point | Test-vector status | Interoperability status |
 | --- | --- | --- | --- | --- | --- |
 | Common identity, keys, and certificates | Not implemented | 1 | `specs/protocols/01-common-identity-crypto.md` | None imported | None |

@@ -40,6 +40,19 @@ jobs:
       - name: Check dependency direction
         run: bash scripts/check-dependency-direction.sh
 
+  msrv:
+    name: MSRV (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install declared MSRV toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.85.0
+      - name: Check workspace on MSRV
+        run: cargo check --workspace --all-targets
+
   dependency-policy:
     name: Dependency policy
     runs-on: ubuntu-latest

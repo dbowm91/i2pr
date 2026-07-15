@@ -43,6 +43,15 @@ The direction is mechanically checked by
 `scripts/check-dependency-direction.sh`. Production crates do not depend on
 `i2pr-testkit`.
 
+### Cancellation scope
+
+The current `i2pr-core::CancellationToken` is runtime-neutral bootstrap
+machinery: an atomic cancellation flag for cooperative polling. It records a
+cancellation request but does not provide async wake semantics or async wait
+and selection operations. Runtime-specific cancellation integration remains at
+runtime-facing service boundaries; this bootstrap does not introduce a
+generalized runtime abstraction.
+
 ## Composition and communication
 
 The daemon will eventually compose supervised services and pass each service

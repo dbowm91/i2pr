@@ -60,6 +60,13 @@ Every protocol feature tracked by `i2pr` should use one of these labels:
 
 A feature is not “supported” merely because its constants or structures exist. Support requires encode/decode coverage, state-machine behavior, negative tests, resource bounds, and mixed-router interoperability where applicable.
 
+The machine-readable ledger in [`support.toml`](support.toml) keeps planning
+scope separate from conformance status. Its `scope` field uses the labels
+above; its `status` field uses `not-implemented`, `implemented`,
+`compatibility`, `experimental`, `deferred`, `legacy-reject`, or `open`.
+Every Milestone 1 entry starts as `not-implemented`, with no evidence and no
+advertised capability; this initial status is not a protocol claim.
+
 ## Update procedure
 
 Before implementing a dossier:

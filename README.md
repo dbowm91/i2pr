@@ -8,9 +8,11 @@ The initial compatibility target is the current I2P network as implemented by I2
 
 ## Project status
 
-Milestone 0 workspace bootstrap is implemented. The repository now contains a
-buildable four-crate Rust workspace, strict side-effect-free configuration
-validation, a deterministic testkit foundation, and a non-networked CLI shell.
+Milestone 0 workspace bootstrap and its corrective closure are implemented. The
+repository contains a buildable four-crate Rust workspace, strict
+side-effect-free configuration validation, a deterministic testkit foundation,
+and a non-networked CLI shell. Normal development and CI use pinned Rust
+1.95.0; the declared Rust 1.85 MSRV is checked by a dedicated Ubuntu CI job.
 The router runtime and all I2P protocol implementations remain unimplemented.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
@@ -103,6 +105,8 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Project guardrails](GUARDRAILS.md)
 - [MVP roadmap](plans/000-mvp-roadmap.md)
 - [Workspace and skeleton pre-plan](plans/001-preplan-workspace-skeleton.md)
+- [Milestone 0 closure record](plans/001-closure.md)
+- [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)
 - [Security model](docs/security-model.md)
@@ -113,10 +117,10 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 ## Development expectations
 
 Before implementation work begins, read `GUARDRAILS.md`, the relevant plan in
-`plans/`, and the applicable protocol dossier under `specs/protocols/`. Each
-implementation phase should define acceptance criteria, tests, non-goals,
-dependency changes, security implications, source revisions, and documentation
-updates.
+`plans/`, the applicable ADRs, and the applicable protocol dossier and
+conformance policy under `specs/`. Each implementation phase should define
+acceptance criteria, tests, non-goals, dependency changes, security
+implications, source revisions, and documentation updates.
 
 The local quality baseline is:
 

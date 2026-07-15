@@ -14,6 +14,23 @@
 8. documentation of unsupported and compatibility-only behavior;
 9. no advertised RouterInfo, I2NP, API or transport capability beyond the tested subset.
 
+## Machine-readable support ledger
+
+`specs/support.toml` is a declarative inventory of planned protocol surfaces;
+it is not a capability registry. Its schema is versioned by the top-level
+integer `schema` field. Each `[[surface]]` entry contains `id`, `protocol`,
+`structure`, `scope`, `status`, `evidence` (an array of repository references),
+and `advertised` (a boolean).
+
+The allowed `status` values are `not-implemented`, `implemented`,
+`compatibility`, `experimental`, `deferred`, `legacy-reject`, and `open`.
+`not-implemented` is the initial state for Milestone 1. `implemented` is only
+valid after the claim requirements above are met for that exact surface;
+`scope` uses the planning labels from `specs/README.md` and does not itself
+make a support claim. An entry may set `advertised` to `true` only after the
+capability-advertisement requirements below are met. Empty `evidence` and
+`advertised = false` therefore describe the initial, non-claiming ledger.
+
 Java I2P and I2P+ share lineage and count as one implementation family for independence. The preferred router-to-router interoperability pair is Java I2P or I2P+ plus i2pd. Emissary/go-i2p should be added where its current implementation is complete enough for the tested surface.
 
 ## Source-to-code traceability

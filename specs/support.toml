@@ -1,0 +1,112 @@
+# Machine-readable Milestone 1 support inventory.
+# Empty evidence and advertised = false are intentional until conformance work exists.
+schema = 1
+milestone = 1
+
+[[surface]]
+id = "common.codec-foundation"
+protocol = "common-structures"
+structure = "bounded-codec-foundation"
+scope = "required"
+status = "not-implemented"
+evidence = []
+advertised = false
+
+[[surface]]
+id = "common.primitives"
+protocol = "common-structures"
+structure = "integers-dates-strings-hashes-encodings"
+scope = "required"
+status = "not-implemented"
+evidence = []
+advertised = false
+
+[[surface]]
+id = "common.mappings-certificates"
+protocol = "common-structures"
+structure = "mappings-certificates-key-certificates"
+scope = "required"
+status = "not-implemented"
+evidence = []
+advertised = false
+
+[[surface]]
+id = "common.identity-destination"
+protocol = "common-structures"
+structure = "router-identity-destination"
+scope = "required"
+status = "not-implemented"
+evidence = []
+advertised = false
+
+[[surface]]
+id = "common.router-address-info"
+protocol = "common-structures"
+structure = "router-address-router-info"
+scope = "required"
+status = "not-implemented"
+evidence = []
+advertised = false
+
+[[surface]]
+id = "common.leases-leasesets"
+protocol = "common-structures"
+structure = "lease-and-required-leaseset-variants"
+scope = "required"
+status = "not-implemented"
+evidence = []
+advertised = false
+
+[[surface]]
+id = "crypto.protocol-wrappers"
+protocol = "cryptography"
+structure = "protocol-specific-key-signature-and-hash-wrappers"
+scope = "required"
+status = "not-implemented"
+evidence = []
+advertised = false
+
+[[surface]]
+id = "identity.generation-signing"
+protocol = "common-structures"
+structure = "router-identity-generation-and-router-info-signing"
+scope = "required"
+status = "not-implemented"
+evidence = []
+advertised = false
+
+[[surface]]
+id = "storage.router-identity"
+protocol = "storage"
+structure = "versioned-atomic-router-identity-store"
+scope = "required"
+status = "not-implemented"
+evidence = []
+advertised = false
+
+[[surface]]
+id = "i2np.envelope"
+protocol = "i2np"
+structure = "bounded-message-envelope-and-header"
+scope = "required"
+status = "not-implemented"
+evidence = []
+advertised = false
+
+[[surface]]
+id = "i2np.typed-dispatch"
+protocol = "i2np"
+structure = "message-type-identifiers-and-bounded-dispatch"
+scope = "required"
+status = "not-implemented"
+evidence = []
+advertised = false
+
+[[surface]]
+id = "i2np.initial-bodies"
+protocol = "i2np"
+structure = "initial-netdb-delivery-tunnel-and-garlic-message-bodies"
+scope = "required-later"
+status = "not-implemented"
+evidence = []
+advertised = false
