@@ -122,13 +122,26 @@ class JavaI2pAdapter:
             raise JavaI2pError(exc.code) from exc
 
     def export_router_info(self) -> Path:
-        candidates = (self.runtime_dir / "router.info", self.runtime_dir / "router.info.su3")
-        for candidate in candidates:
-            if candidate.is_file():
-                target = self.run_root / "exchange" / "java-router.info"
-                target.parent.mkdir(mode=0o700, exist_ok=True)
-                shutil.copyfile(candidate, target)
-                return target
+        allowed_names = ("router.info", "router.info.su3")
+        for name in allowed_names:
+            candidate = self.data_dir / name
+            if not (self.run_root == candidate or self.run_root in candidate.parents):
+                raise JavaI2pError("router-info-outside-run-root")
+            if candidate.is_symlink():
+                raise JavaI2pError("router-info-symlink-rejected")
+            if not candidate.is_file():
+                continue
+            stat = candidate.stat()
+            if stat.st_size == 0:
+                raise JavaI2pError("router-info-empty")
+            if stat.st_size > 1_048_576:
+                raise JavaI2pError("router-info-oversized")
+            target = self.run_root / "exchange" / "java-router.info"
+            target.parent.mkdir(mode=0o700, exist_ok=True)
+            shutil.copyfile(candidate, target)
+            if not self._inside_run_root(target):
+                raise JavaI2pError("exported-router-info-outside-run-root")
+            return target
         raise JavaI2pError("router-info-not-produced")
 
     def import_peer_router_info(self, source: Path) -> None:

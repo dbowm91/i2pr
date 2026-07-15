@@ -80,14 +80,43 @@ _FORBIDDEN = re.compile(
 _ENDPOINT = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}:\d+|\[[0-9a-f:]+\]:\d+", re.IGNORECASE)
 _HEX40 = re.compile(r"^[0-9a-f]{40};(?:clean|dirty)$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_REPRODUCTION_TEMPLATE = re.compile(
+    r"^bash scripts/interop/run-scenario\.sh --scenario [a-z0-9-]+ --reference (?:java_i2p|i2pd)$"
+)
+_ALLOWED_EXPECTED = {
+    "authenticated-handshake-and-bounded-i2np-exchange",
+    "authenticated-handshake-and-bounded-i2np-exchange-or-explicit-environment-skip",
+    "typed-rejection-with-bounded-cleanup",
+    "deterministic-winner-and-loser-drain",
+    "bounded-result",
+}
+_ALLOWED_KNOWN_DEVIATION = {
+    "driver-absent",
+    "driver-absent-with-cleanup",
+    "cleanup-verification-failed",
+    "environment-smoke-only",
+    "reference-only-control",
+    "host-contract-blocked",
+    "no-valid-data-phase-oracle",
+    "evidence-finalization-failed",
+    "ipv6-capability-unavailable",
+    "typed-harness-operation-failed",
+    "not-started",
+    "dual-authenticated-reference-observation",
+    "authenticated-link-observation-missing",
+    "typed-reference-pair-operation-failed",
+    "run-root-delete-failed",
+}
 
 
 class EvidenceError(ValueError):
     """Raised when a result would cross the sanitized evidence boundary."""
 
 
-def _scan(value: Any) -> None:
+def _scan(value: Any, *, field: str | None = None) -> None:
     if isinstance(value, str):
+        if field in {"expected", "actual_typed_result"}:
+            return
         if _FORBIDDEN.search(value) or _ENDPOINT.search(value):
             raise EvidenceError("record contains forbidden secret, payload, path, or endpoint text")
     elif isinstance(value, dict):
@@ -112,7 +141,11 @@ def validate_record(record: dict[str, Any]) -> None:
     for field in RECORD_FIELDS:
         if field not in record:
             raise EvidenceError(f"missing evidence field: {field}")
-    _scan(record)
+    for field in RECORD_FIELDS:
+        if field not in {"expected", "actual_typed_result"}:
+            _scan(record[field], field=field)
+    if record["expected"] not in _ALLOWED_EXPECTED:
+        raise EvidenceError("unknown expected result class")
     if record["actual_typed_result"] not in {
         "passed",
         "rejected",
@@ -122,6 +155,10 @@ def validate_record(record: dict[str, Any]) -> None:
         "failed_cleanup",
     }:
         raise EvidenceError("unknown typed result")
+    if record["known_deviation"] not in _ALLOWED_KNOWN_DEVIATION:
+        raise EvidenceError("unknown known-deviation reason code")
+    if not _REPRODUCTION_TEMPLATE.fullmatch(record["reproduction"]):
+        raise EvidenceError("reproduction does not match the fixed template")
     if record["cleanup_result"] not in {"clean", "forced", "failed", "not-started"}:
         raise EvidenceError("unknown cleanup result")
     if record["reference"] not in {"java_i2p", "i2pd"}:

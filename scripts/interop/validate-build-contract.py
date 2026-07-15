@@ -34,6 +34,14 @@ def main() -> int:
             raise BuildGateError("workflow action versions are not fixed major releases")
         if re.search(r"^\s*uses:\s+[^\s]+@(master|main|latest)\s*$", workflow, re.MULTILINE):
             raise BuildGateError("workflow uses a moving action reference")
+        if "--component rustfmt" not in workflow or "--component clippy" not in workflow:
+            raise BuildGateError("workflow toolchain install is missing required rustfmt or clippy component")
+        for locked_cmd in ("cargo +1.95.0 check --locked", "cargo +1.95.0 test --locked",
+                           "cargo +1.95.0 clippy --locked", "cargo +1.95.0 doc --locked"):
+            if locked_cmd not in workflow:
+                raise BuildGateError(f"workflow does not use --locked for {locked_cmd.split()[2]}")
+        if "rustc +1.95.0 --version --verbose" not in workflow or "cargo +1.95.0 --version --verbose" not in workflow:
+            raise BuildGateError("workflow does not record toolchain version metadata")
         for profile in PROFILE_GATES:
             if f"run-gate.sh --profile {profile}" not in workflow:
                 raise BuildGateError(f"workflow does not expose gate profile: {profile}")
@@ -55,6 +63,16 @@ def main() -> int:
         )
         if any(forbidden_names.search(path.decode("utf-8")) for path in tracked.stdout.split(b"\0") if path):
             raise BuildGateError("tracked generated or secret-bearing interop artifact exists")
+        if re.search(r"(?:profile|revision|url|endpoint|network.id|shell)\s*[:=]\s*\S+", workflow, re.IGNORECASE):
+            if "PROFILE:" not in workflow and "profile:" not in workflow:
+                raise BuildGateError("workflow introduces arbitrary profile, revision, URL, endpoint, network-ID, or shell input")
+        inputs_section = workflow.split("workflow_dispatch:", 1)[1].split("\n\n", 1)[0]
+        inputs_block = inputs_section.split("inputs:", 1)[1] if "inputs:" in inputs_section else ""
+        input_keys = re.findall(r"^      (\w[\w-]*):", inputs_block, re.MULTILINE)
+        approved_inputs = {"profile"}
+        for key in input_keys:
+            if key not in approved_inputs:
+                raise BuildGateError(f"workflow introduces unbounded input: {key}")
     except (KeyError, OSError, UnicodeError, tomllib.TOMLDecodeError, BuildGateError) as exc:
         print(f"build contract error: {exc}", file=sys.stderr)
         return 1

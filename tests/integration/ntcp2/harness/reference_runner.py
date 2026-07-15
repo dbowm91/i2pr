@@ -180,7 +180,7 @@ def run(args: argparse.Namespace) -> int:
     base.mkdir(mode=0o700, parents=True, exist_ok=True)
     run_dir = base / _run_id()
     run_dir.mkdir(mode=0o700)
-    evidence_root = repo_root / "target/interop/evidence"
+    evidence_root = Path(os.environ.get("INTEROP_EVIDENCE_DIR", str(repo_root / "target/interop/evidence")))
     topology: ReferencePairTopology | None = None
     owned: dict[str, list[Any]] = {"java_i2p": [], "i2pd": []}
     stopped: set[int] = set()

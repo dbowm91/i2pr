@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -199,14 +200,14 @@ class HarnessContractTests(unittest.TestCase):
             "direction": "both",
             "address_family": "ipv4",
             "deterministic_parameters": "seed=1",
-            "expected": "bounded",
+            "expected": "bounded-result",
             "actual_typed_result": "blocked",
             "resource_counters": {"tasks": 0},
             "process_counters": {"started": 0},
             "cleanup_result": "not-started",
             "evidence_sha256": "",
-            "known_deviation": "driver absent",
-            "reproduction": "bash scripts/interop/run-scenario.sh",
+            "known_deviation": "driver-absent",
+            "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
         }
         validate_record(base)
         base["known_deviation"] = "10.0.0.1:45678"
@@ -232,7 +233,7 @@ class HarnessContractTests(unittest.TestCase):
             "direction": "both",
             "address_family": "ipv4",
             "deterministic_parameters": "seed=1;timeouts=bounded",
-            "expected": "bounded",
+            "expected": "authenticated-handshake-and-bounded-i2np-exchange",
             "actual_typed_result": "passed",
             "resource_counters": {"tasks": 0},
             "process_counters": {"started": 1, "exited": 1, "forced": 0},
@@ -247,6 +248,276 @@ class HarnessContractTests(unittest.TestCase):
             validate_file(path)
             self.assertTrue(path.is_file())
             self.assertFalse((Path(directory) / "secret.log").exists())
+
+    def test_evidence_taxonomy_expected_values_are_accepted(self) -> None:
+        base = {
+            "schema": 1,
+            "scenario_id": "synthetic",
+            "date_utc": "2026-01-01T00:00:00Z",
+            "i2pr_commit": "a" * 40 + ";clean",
+            "reference": "i2pd",
+            "reference_version": "2.60.0",
+            "reference_revision": "f" * 40,
+            "artifact_sha256": "0" * 64,
+            "installed_tree_sha256": "0" * 64,
+            "configuration_sha256": "0" * 64,
+            "namespace_topology_sha256": "0" * 64,
+            "direction": "both",
+            "address_family": "ipv4",
+            "deterministic_parameters": "seed=1",
+            "expected": "authenticated-handshake-and-bounded-i2np-exchange",
+            "actual_typed_result": "blocked",
+            "resource_counters": {"tasks": 0},
+            "process_counters": {"started": 0},
+            "cleanup_result": "not-started",
+            "evidence_sha256": "",
+            "known_deviation": "driver-absent",
+            "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+        }
+        for expected in (
+            "authenticated-handshake-and-bounded-i2np-exchange",
+            "authenticated-handshake-and-bounded-i2np-exchange-or-explicit-environment-skip",
+            "typed-rejection-with-bounded-cleanup",
+            "deterministic-winner-and-loser-drain",
+            "bounded-result",
+        ):
+            base["expected"] = expected
+            validate_record(base)
+
+    def test_evidence_rejects_unknown_expected_and_deviation(self) -> None:
+        base = {
+            "schema": 1,
+            "scenario_id": "synthetic",
+            "date_utc": "2026-01-01T00:00:00Z",
+            "i2pr_commit": "a" * 40 + ";clean",
+            "reference": "i2pd",
+            "reference_version": "2.60.0",
+            "reference_revision": "f" * 40,
+            "artifact_sha256": "0" * 64,
+            "installed_tree_sha256": "0" * 64,
+            "configuration_sha256": "0" * 64,
+            "namespace_topology_sha256": "0" * 64,
+            "direction": "both",
+            "address_family": "ipv4",
+            "deterministic_parameters": "seed=1",
+            "expected": "bounded-result",
+            "actual_typed_result": "blocked",
+            "resource_counters": {"tasks": 0},
+            "process_counters": {"started": 0},
+            "cleanup_result": "not-started",
+            "evidence_sha256": "",
+            "known_deviation": "driver-absent",
+            "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+        }
+        base["expected"] = "arbitrary-free-text"
+        with self.assertRaises(EvidenceError):
+            validate_record(base)
+        base["expected"] = "bounded-result"
+        base["known_deviation"] = "arbitrary-free-text"
+        with self.assertRaises(EvidenceError):
+            validate_record(base)
+
+    def test_evidence_rejects_forbidden_material_in_string_fields(self) -> None:
+        base = {
+            "schema": 1,
+            "scenario_id": "synthetic",
+            "date_utc": "2026-01-01T00:00:00Z",
+            "i2pr_commit": "a" * 40 + ";clean",
+            "reference": "i2pd",
+            "reference_version": "2.60.0",
+            "reference_revision": "f" * 40,
+            "artifact_sha256": "0" * 64,
+            "installed_tree_sha256": "0" * 64,
+            "configuration_sha256": "0" * 64,
+            "namespace_topology_sha256": "0" * 64,
+            "direction": "both",
+            "address_family": "ipv4",
+            "deterministic_parameters": "seed=1",
+            "expected": "bounded-result",
+            "actual_typed_result": "blocked",
+            "resource_counters": {"tasks": 0},
+            "process_counters": {"started": 0},
+            "cleanup_result": "not-started",
+            "evidence_sha256": "",
+            "known_deviation": "driver-absent",
+            "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+        }
+        for pattern, field in (
+            ("-----BEGIN PRIVATE KEY-----", "known_deviation"),
+            ("router.identity", "known_deviation"),
+            ("ntcp2.static.key", "known_deviation"),
+            ("192.168.1.1:45678", "known_deviation"),
+            ("/home/user/data", "known_deviation"),
+            ("/root/.ssh", "known_deviation"),
+            ("capture.pcap", "known_deviation"),
+            ("capture.pcapng", "known_deviation"),
+            ("RouterInfo-data", "known_deviation"),
+            ("a" * 80, "known_deviation"),
+        ):
+            base[field] = pattern
+            with self.assertRaises(EvidenceError):
+                validate_record(base)
+            base[field] = "driver-absent"
+
+    def test_evidence_rejects_forbidden_material_in_parameters(self) -> None:
+        base = {
+            "schema": 1,
+            "scenario_id": "synthetic",
+            "date_utc": "2026-01-01T00:00:00Z",
+            "i2pr_commit": "a" * 40 + ";clean",
+            "reference": "i2pd",
+            "reference_version": "2.60.0",
+            "reference_revision": "f" * 40,
+            "artifact_sha256": "0" * 64,
+            "installed_tree_sha256": "0" * 64,
+            "configuration_sha256": "0" * 64,
+            "namespace_topology_sha256": "0" * 64,
+            "direction": "both",
+            "address_family": "ipv4",
+            "deterministic_parameters": "seed=1",
+            "expected": "bounded-result",
+            "actual_typed_result": "blocked",
+            "resource_counters": {"tasks": 0},
+            "process_counters": {"started": 0},
+            "cleanup_result": "not-started",
+            "evidence_sha256": "",
+            "known_deviation": "driver-absent",
+            "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+        }
+        base["deterministic_parameters"] = "seed=1;path=/home/user/state"
+        with self.assertRaises(EvidenceError):
+            validate_record(base)
+        base["deterministic_parameters"] = "seed=1"
+
+    def test_evidence_rejects_invalid_reproduction_format(self) -> None:
+        base = {
+            "schema": 1,
+            "scenario_id": "synthetic",
+            "date_utc": "2026-01-01T00:00:00Z",
+            "i2pr_commit": "a" * 40 + ";clean",
+            "reference": "i2pd",
+            "reference_version": "2.60.0",
+            "reference_revision": "f" * 40,
+            "artifact_sha256": "0" * 64,
+            "installed_tree_sha256": "0" * 64,
+            "configuration_sha256": "0" * 64,
+            "namespace_topology_sha256": "0" * 64,
+            "direction": "both",
+            "address_family": "ipv4",
+            "deterministic_parameters": "seed=1",
+            "expected": "bounded-result",
+            "actual_typed_result": "blocked",
+            "resource_counters": {"tasks": 0},
+            "process_counters": {"started": 0},
+            "cleanup_result": "not-started",
+            "evidence_sha256": "",
+            "known_deviation": "driver-absent",
+            "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+        }
+        base["reproduction"] = "arbitrary-command"
+        with self.assertRaises(EvidenceError):
+            validate_record(base)
+        base["reproduction"] = "bash scripts/interop/run-scenario.sh --scenario synthetic --reference java_i2p"
+        validate_record(base)
+
+    def test_evidence_passed_record_rejects_zero_hashes(self) -> None:
+        base = {
+            "schema": 1,
+            "scenario_id": "synthetic",
+            "date_utc": "2026-01-01T00:00:00Z",
+            "i2pr_commit": "a" * 40 + ";clean",
+            "reference": "i2pd",
+            "reference_version": "2.60.0",
+            "reference_revision": "f" * 40,
+            "artifact_sha256": "1" * 64,
+            "installed_tree_sha256": "2" * 64,
+            "configuration_sha256": "3" * 64,
+            "namespace_topology_sha256": "4" * 64,
+            "direction": "both",
+            "address_family": "ipv4",
+            "deterministic_parameters": "seed=1",
+            "expected": "authenticated-handshake-and-bounded-i2np-exchange",
+            "actual_typed_result": "passed",
+            "resource_counters": {"tasks": 0},
+            "process_counters": {"started": 1, "exited": 1, "forced": 0},
+            "cleanup_result": "clean",
+            "evidence_sha256": "",
+            "known_deviation": "environment-smoke-only",
+            "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+        }
+        base["artifact_sha256"] = "0" * 64
+        with self.assertRaises(EvidenceError):
+            validate_record(base)
+        base["artifact_sha256"] = "1" * 64
+        validate_record(base)
+
+    def test_evidence_passed_record_rejects_placeholder_commit(self) -> None:
+        base = {
+            "schema": 1,
+            "scenario_id": "synthetic",
+            "date_utc": "2026-01-01T00:00:00Z",
+            "i2pr_commit": "a" * 40 + ";clean",
+            "reference": "i2pd",
+            "reference_version": "2.60.0",
+            "reference_revision": "f" * 40,
+            "artifact_sha256": "1" * 64,
+            "installed_tree_sha256": "2" * 64,
+            "configuration_sha256": "3" * 64,
+            "namespace_topology_sha256": "4" * 64,
+            "direction": "both",
+            "address_family": "ipv4",
+            "deterministic_parameters": "seed=1",
+            "expected": "authenticated-handshake-and-bounded-i2np-exchange",
+            "actual_typed_result": "passed",
+            "resource_counters": {"tasks": 0},
+            "process_counters": {"started": 1, "exited": 1, "forced": 0},
+            "cleanup_result": "clean",
+            "evidence_sha256": "",
+            "known_deviation": "environment-smoke-only",
+            "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+        }
+        base["i2pr_commit"] = "record-at-execution"
+        with self.assertRaises(EvidenceError):
+            validate_record(base)
+
+    def test_evidence_finalization_failure_is_not_mislabeled_as_cleanup(self) -> None:
+        base = {
+            "schema": 1,
+            "scenario_id": "synthetic",
+            "date_utc": "2026-01-01T00:00:00Z",
+            "i2pr_commit": "a" * 40 + ";clean",
+            "reference": "i2pd",
+            "reference_version": "2.60.0",
+            "reference_revision": "f" * 40,
+            "artifact_sha256": "1" * 64,
+            "installed_tree_sha256": "2" * 64,
+            "configuration_sha256": "3" * 64,
+            "namespace_topology_sha256": "4" * 64,
+            "direction": "both",
+            "address_family": "ipv4",
+            "deterministic_parameters": "seed=1",
+            "expected": "authenticated-handshake-and-bounded-i2np-exchange",
+            "actual_typed_result": "passed",
+            "resource_counters": {"tasks": 0},
+            "process_counters": {"started": 1, "exited": 1, "forced": 0},
+            "cleanup_result": "clean",
+            "evidence_sha256": "",
+            "known_deviation": "environment-smoke-only",
+            "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+        }
+        evidence_only = dict(base)
+        evidence_only["actual_typed_result"] = "blocked"
+        evidence_only["known_deviation"] = "evidence-finalization-failed"
+        evidence_only["cleanup_result"] = "clean"
+        validate_record(evidence_only)
+        self.assertNotEqual(evidence_only["actual_typed_result"], "failed_cleanup")
+        cleanup_failed = dict(base)
+        cleanup_failed["actual_typed_result"] = "failed_cleanup"
+        cleanup_failed["cleanup_result"] = "failed"
+        cleanup_failed["known_deviation"] = "cleanup-verification-failed"
+        validate_record(cleanup_failed)
+        self.assertEqual(cleanup_failed["actual_typed_result"], "failed_cleanup")
+        self.assertEqual(cleanup_failed["cleanup_result"], "failed")
 
     def test_runner_emits_typed_block_without_raw_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -409,6 +680,314 @@ status_path = "status.jsonl"
         pair["cleanup_result"] = "failed"
         with self.assertRaises(EvidenceError):
             validate_record(pair)
+
+
+class SequentialGateArchivalTests(unittest.TestCase):
+    def _make_record(self, scenario_id: str, reference: str = "i2pd") -> dict:
+        return {
+            "schema": 1, "scenario_id": scenario_id,
+            "date_utc": "2026-01-01T00:00:00Z",
+            "i2pr_commit": "a" * 40 + ";clean",
+            "reference": reference,
+            "reference_version": "2.12.0" if reference == "java_i2p" else "2.60.0",
+            "reference_revision": "f" * 40,
+            "artifact_sha256": "1" * 64,
+            "installed_tree_sha256": "2" * 64,
+            "configuration_sha256": "3" * 64,
+            "namespace_topology_sha256": "4" * 64,
+            "direction": "both",
+            "address_family": "ipv4",
+            "deterministic_parameters": "seed=1;timeouts=bounded",
+            "expected": "authenticated-handshake-and-bounded-i2np-exchange",
+            "actual_typed_result": "blocked",
+            "resource_counters": {"tasks": 0},
+            "process_counters": {"started": 0},
+            "cleanup_result": "not-started",
+            "evidence_sha256": "",
+            "known_deviation": "environment-smoke-only",
+            "reproduction": f"bash scripts/interop/run-scenario.sh --scenario {scenario_id} --reference {reference}",
+        }
+
+    def _write_record(self, evidence_dir: Path, filename: str, record: dict) -> Path:
+        path = evidence_dir / filename
+        write_record(path, record)
+        return path
+
+    def _sha256(self, path: Path) -> str:
+        import hashlib
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def test_sequential_gates_preserve_attribution_and_digests(self) -> None:
+        from build_gate import PROFILE_GATES
+        gates = ("environment-smoke", "reference-crosscheck-ipv4", "handshake-smoke", "full")
+        with tempfile.TemporaryDirectory() as directory:
+            evidence_dir = Path(directory) / "evidence"
+            evidence_dir.mkdir()
+
+            gate_files: dict[str, list[Path]] = {}
+            gate_digests: dict[str, dict[str, str]] = {}
+
+            env_smoke_scenarios = [
+                ("java-ipv4-inbound-outbound", "java_i2p"),
+                ("i2pd-ipv4-inbound-outbound", "i2pd"),
+            ]
+            ref_cross_scenarios = [
+                ("reference-java-i2pd-ipv4", "java_i2p"),
+                ("reference-i2pd-java-ipv4", "i2pd"),
+            ]
+            hs_smoke_scenarios = [
+                ("java-ipv4-inbound-outbound", "java_i2p"),
+                ("i2pd-ipv4-inbound-outbound", "i2pd"),
+            ]
+            full_scenarios = [
+                ("java-ipv4-inbound-outbound", "java_i2p"),
+                ("java-ipv6-inbound-outbound", "java_i2p"),
+                ("i2pd-ipv4-inbound-outbound", "i2pd"),
+                ("i2pd-ipv6-inbound-outbound", "i2pd"),
+            ]
+
+            gate_scenario_map = {
+                "environment-smoke": env_smoke_scenarios,
+                "reference-crosscheck-ipv4": ref_cross_scenarios,
+                "handshake-smoke": hs_smoke_scenarios,
+                "full": full_scenarios,
+            }
+
+            for gate in gates:
+                gate_files[gate] = []
+                gate_digests[gate] = {}
+                for scenario_id, ref in gate_scenario_map[gate]:
+                    record = self._make_record(scenario_id, ref)
+                    raw_filename = f"run-test-{gate}-{scenario_id}-{ref}.json"
+                    staging_dir = evidence_dir / "staging" / gate
+                    staging_dir.mkdir(parents=True, exist_ok=True)
+                    path = self._write_record(staging_dir, raw_filename, record)
+                    dest = evidence_dir / f"{gate}--{raw_filename}"
+                    path.rename(dest)
+                    gate_files[gate].append(dest)
+                    gate_digests[gate][dest.name] = self._sha256(dest)
+
+            for gate in gates:
+                for f in gate_files[gate]:
+                    self.assertTrue(f.exists(), f"{f.name} should exist after gate {gate}")
+                    self.assertEqual(self._sha256(f), gate_digests[gate][f.name],
+                                     f"digest of {f.name} changed after gate {gate}")
+
+            self.assertEqual(len(list(evidence_dir.glob("*.json"))),
+                             sum(len(v) for v in gate_files.values()))
+
+    def test_gate_rejects_filename_collision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence_dir = Path(directory) / "evidence"
+            evidence_dir.mkdir()
+            record = self._make_record("java-ipv4-inbound-outbound")
+            existing_path = self._write_record(evidence_dir, "handshake-smoke--run-existing.json", record)
+            original_digest = self._sha256(existing_path)
+            staging_dir = evidence_dir / "staging" / "handshake-smoke"
+            staging_dir.mkdir(parents=True)
+            self._write_record(staging_dir, "run-existing.json", record)
+            dest = evidence_dir / "handshake-smoke--run-existing.json"
+            self.assertTrue(dest.exists())
+            self.assertEqual(self._sha256(dest), original_digest,
+                             "collision destination already exists with correct content")
+            self.assertEqual(
+                f"handshake-smoke--run-existing.json",
+                dest.name,
+            )
+
+    def test_gate_cannot_modify_earlier_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence_dir = Path(directory) / "evidence"
+            evidence_dir.mkdir()
+            record = self._make_record("java-ipv4-inbound-outbound")
+            path = self._write_record(evidence_dir, "environment-smoke--run-test.json", record)
+            original_digest = self._sha256(path)
+            modified_record = self._make_record("java-ipv4-inbound-outbound")
+            modified_record["known_deviation"] = "driver-absent"
+            modified_record["evidence_sha256"] = ""
+            staging_dir = evidence_dir / "staging" / "handshake-smoke"
+            staging_dir.mkdir(parents=True)
+            self._write_record(staging_dir, "run-test-modified.json", modified_record)
+            dest = evidence_dir / "handshake-smoke--run-test-modified.json"
+            (staging_dir / "run-test-modified.json").rename(dest)
+            self.assertEqual(self._sha256(path), original_digest)
+
+    def test_gate_preserves_earlier_records_after_archival(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence_dir = Path(directory) / "evidence"
+            evidence_dir.mkdir()
+            env_record = self._make_record("java-ipv4-inbound-outbound")
+            env_path = self._write_record(evidence_dir, "environment-smoke--run-env.json", env_record)
+            env_digest = self._sha256(env_path)
+            hs_record = self._make_record("java-ipv4-inbound-outbound")
+            staging_dir = evidence_dir / "staging" / "handshake-smoke"
+            staging_dir.mkdir(parents=True)
+            self._write_record(staging_dir, "run-hs.json", hs_record)
+            hs_dest = evidence_dir / "handshake-smoke--run-hs.json"
+            (staging_dir / "run-hs.json").rename(hs_dest)
+            self.assertEqual(self._sha256(env_path), env_digest,
+                             "earlier gate record was modified during archival")
+            self.assertTrue(env_path.exists())
+
+    def test_staging_directory_cleaned_after_successful_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence_dir = Path(directory) / "evidence"
+            evidence_dir.mkdir()
+            staging_dir = evidence_dir / "staging" / "test-gate"
+            staging_dir.mkdir(parents=True)
+            record = self._make_record("java-ipv4-inbound-outbound")
+            self._write_record(staging_dir, "run-test.json", record)
+            self.assertTrue(staging_dir.exists())
+            self.assertTrue(any(staging_dir.iterdir()))
+            import shutil
+            shutil.rmtree(staging_dir)
+            self.assertFalse(staging_dir.exists())
+
+
+class StaticWorkflowContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._workflow = (ROOT / ".github/workflows/ntcp2-interop-ubuntu.yml").read_text(encoding="utf-8")
+
+    def test_workflow_requires_rustfmt_component(self) -> None:
+        self.assertIn("--component rustfmt", self._workflow)
+
+    def test_workflow_requires_clippy_component(self) -> None:
+        self.assertIn("--component clippy", self._workflow)
+
+    def test_workflow_rejects_ubuntu_latest(self) -> None:
+        self.assertNotIn("ubuntu-latest", self._workflow)
+
+    def test_workflow_rejects_moving_action_references(self) -> None:
+        self.assertIsNone(re.search(r"uses:\s+[^\s]+@(master|main|latest)\b", self._workflow))
+
+    def test_workflow_uses_locked_cargo_check(self) -> None:
+        self.assertIn("cargo +1.95.0 check --locked", self._workflow)
+
+    def test_workflow_uses_locked_cargo_test(self) -> None:
+        self.assertIn("cargo +1.95.0 test --locked", self._workflow)
+
+    def test_workflow_uses_locked_cargo_clippy(self) -> None:
+        self.assertIn("cargo +1.95.0 clippy --locked", self._workflow)
+
+    def test_workflow_uses_locked_cargo_doc(self) -> None:
+        self.assertIn("cargo +1.95.0 doc --locked", self._workflow)
+
+    def test_workflow_records_toolchain_versions(self) -> None:
+        self.assertIn("rustc +1.95.0 --version --verbose", self._workflow)
+        self.assertIn("cargo +1.95.0 --version --verbose", self._workflow)
+
+    def test_workflow_rejects_unbounded_inputs(self) -> None:
+        if "workflow_dispatch:" in self._workflow and "inputs:" in self._workflow:
+            dispatch_block = self._workflow.split("workflow_dispatch:", 1)[1]
+            section = dispatch_block.split("\n\n", 1)[0] if "\n\n" in dispatch_block else dispatch_block
+            if "inputs:" in section:
+                inputs_block = section.split("inputs:", 1)[1]
+                input_keys = re.findall(r"^      (\w[\w-]*):", inputs_block, re.MULTILINE)
+                approved = {"profile"}
+                for key in input_keys:
+                    self.assertIn(key, approved, f"unbounded input introduced: {key}")
+
+
+class JavaRouterInfoExportTests(unittest.TestCase):
+    def _make_adapter(self, root: Path) -> JavaI2pAdapter:
+        from topology import EndpointDescription
+        endpoint = EndpointDescription(
+            local_address="192.0.2.1", peer_address="192.0.2.2",
+            local_port=45678, peer_port=45679,
+            address_family="ipv4", namespace="test", network_id="99",
+        )
+        return JavaI2pAdapter(root / "cache", root / "run", endpoint, ROOT)
+
+    def test_reference_data_router_info_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = self._make_adapter(root)
+            adapter.data_dir.mkdir(parents=True)
+            ri = adapter.data_dir / "router.info"
+            ri.write_bytes(b"valid-router-info-bytes")
+            result = adapter.export_router_info()
+            self.assertTrue(result.is_file())
+            self.assertIn("exchange", str(result))
+            self.assertEqual(result.read_bytes(), b"valid-router-info-bytes")
+
+    def test_reference_data_router_info_su3_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = self._make_adapter(root)
+            adapter.data_dir.mkdir(parents=True)
+            ri = adapter.data_dir / "router.info.su3"
+            ri.write_bytes(b"valid-su3-bytes")
+            result = adapter.export_router_info()
+            self.assertTrue(result.is_file())
+            self.assertEqual(result.read_bytes(), b"valid-su3-bytes")
+
+    def test_file_only_in_reference_runtime_is_not_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = self._make_adapter(root)
+            adapter.runtime_dir.mkdir(parents=True)
+            (adapter.runtime_dir / "router.info").write_bytes(b"wrong-dir")
+            with self.assertRaises(JavaI2pError) as ctx:
+                adapter.export_router_info()
+            self.assertEqual(ctx.exception.code, "router-info-not-produced")
+
+    def test_symlink_candidate_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = self._make_adapter(root)
+            adapter.data_dir.mkdir(parents=True)
+            real = adapter.data_dir / "real.info"
+            real.write_bytes(b"real")
+            link = adapter.data_dir / "router.info"
+            link.symlink_to(real)
+            with self.assertRaises(JavaI2pError) as ctx:
+                adapter.export_router_info()
+            self.assertEqual(ctx.exception.code, "router-info-symlink-rejected")
+
+    def test_path_escape_candidate_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = self._make_adapter(root)
+            adapter.data_dir.mkdir(parents=True)
+            real = adapter.data_dir / "real.info"
+            real.write_bytes(b"real")
+            escaped = root / "escaped" / "router.info"
+            escaped.parent.mkdir(parents=True)
+            escaped.write_bytes(b"escaped")
+            adapter.data_dir.joinpath("router.info").symlink_to(escaped)
+            with self.assertRaises(JavaI2pError) as ctx:
+                adapter.export_router_info()
+            self.assertEqual(ctx.exception.code, "router-info-symlink-rejected")
+
+    def test_exported_copy_remains_inside_exchange_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = self._make_adapter(root)
+            adapter.data_dir.mkdir(parents=True)
+            (adapter.data_dir / "router.info").write_bytes(b"inside-check")
+            result = adapter.export_router_info()
+            self.assertTrue(adapter._inside_run_root(result))
+            self.assertIn("exchange", result.parts)
+
+    def test_empty_file_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = self._make_adapter(root)
+            adapter.data_dir.mkdir(parents=True)
+            (adapter.data_dir / "router.info").write_bytes(b"")
+            with self.assertRaises(JavaI2pError) as ctx:
+                adapter.export_router_info()
+            self.assertEqual(ctx.exception.code, "router-info-empty")
+
+    def test_oversized_file_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = self._make_adapter(root)
+            adapter.data_dir.mkdir(parents=True)
+            (adapter.data_dir / "router.info").write_bytes(b"x" * 1_048_577)
+            with self.assertRaises(JavaI2pError) as ctx:
+                adapter.export_router_info()
+            self.assertEqual(ctx.exception.code, "router-info-oversized")
 
 
 if __name__ == "__main__":
