@@ -104,3 +104,22 @@ Compare serialization output, signed ranges, mapping ordering, timestamp validat
 4. How preserved signed bytes and normalized semantic views are represented without duplicate unbounded storage.
 5. Initial policy for hybrid/PQ records: recognize-and-reject, parse-and-store opaque, or fully validate signatures while deferring decryption.
 6. Maximum accepted RouterInfo size, address count, mapping size and LeaseSet lease count, reconciled against the current specification and deployed routers.
+
+## Current i2pr structural implementation
+
+Plan 012 implements the bounded structural subset in
+`crates/i2pr-proto/src/common.rs`: Date/Date32, Hash, typed public/signing
+material and signatures, Mapping, Certificate/KeyCertificate,
+RouterIdentity, Destination, RouterAddress, RouterInfo, Lease, and classic
+LeaseSet. The module follows the pinned source in `specs/SOURCES.md`, uses a
+1 MiB caller-visible common-structure ceiling, the specification's 65,535-byte
+Mapping body ceiling, 255 RouterAddress/peer entries, and 16 classic leases.
+
+Parsed RouterInfo and LeaseSet values retain the exact bytes before their
+signatures. No signature verification, key generation, secret material,
+timestamp freshness policy, transport option interpretation, or capability
+advertisement is present. LeaseSet2, MetaLeaseSet, and EncryptedLeaseSet are
+rejected explicitly until later plans define their crypto and NetDB semantics.
+Local fixed bytes and malformed/boundary tests are not interoperability
+evidence; the support ledger therefore remains `experimental` and
+`advertised = false`.

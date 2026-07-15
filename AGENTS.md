@@ -27,6 +27,14 @@ maximums. New protocol decoders should use strict top-level consumption and
 typed `CodecError` categories; do not add hidden unlimited defaults, runtime or
 filesystem dependencies, or speculative universal codec traits.
 
+The common-structure model in `crates/i2pr-proto/src/common.rs` preserves exact
+signed byte regions, uses immutable sorted mappings, and treats algorithm
+identifiers and lengths as explicit typed data. It is structural only: do not
+add signing, encryption, freshness policy, transport interpretation, or
+capability advertisement there. Keep `specs/support.toml` and
+`docs/protocol-support.md` aligned with the evidence available for each exact
+surface.
+
 Do not select a project license or copy implementation code from another router
 without explicit owner review. Do not perform malformed-traffic or stress
 testing against the public I2P network.

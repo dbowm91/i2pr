@@ -104,16 +104,15 @@ impl CodecError {
     /// Returns the broad bootstrap category corresponding to this error.
     pub const fn kind(self) -> ProtocolErrorKind {
         match self {
-            Self::LengthExceeded { .. } | Self::PolicyRejected { .. } => {
-                ProtocolErrorKind::LimitExceeded
-            }
+            Self::Truncated { .. } => ProtocolErrorKind::Truncated,
+            Self::LengthExceeded { .. } => ProtocolErrorKind::LimitExceeded,
+            Self::PolicyRejected { .. } => ProtocolErrorKind::PolicyRejected,
             Self::Unsupported { .. } => ProtocolErrorKind::Unsupported,
-            Self::Truncated { .. }
-            | Self::ArithmeticOverflow { .. }
+            Self::InvalidFieldValue { .. } => ProtocolErrorKind::InvalidValue,
+            Self::TrailingBytes { .. } => ProtocolErrorKind::TrailingBytes,
+            Self::ArithmeticOverflow { .. }
             | Self::InvalidUtf8 { .. }
-            | Self::InvalidFieldValue { .. }
             | Self::NonCanonical { .. }
-            | Self::TrailingBytes { .. }
             | Self::DuplicateField { .. } => ProtocolErrorKind::Malformed,
         }
     }
@@ -176,10 +175,20 @@ impl fmt::Display for CodecError {
 impl std::error::Error for CodecError {}
 
 /// A read-only cursor over a borrowed protocol byte slice.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct DecodeCursor<'a> {
     input: &'a [u8],
     offset: usize,
+}
+
+impl fmt::Debug for DecodeCursor<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DecodeCursor")
+            .field("input_length", &self.input.len())
+            .field("offset", &self.offset)
+            .finish()
+    }
 }
 
 impl<'a> DecodeCursor<'a> {
@@ -348,11 +357,20 @@ where
 }
 
 /// A bounded encoder that appends to a caller-provided byte vector.
-#[derive(Debug)]
 pub struct EncodeBuffer<'a> {
     output: &'a mut Vec<u8>,
     start_len: usize,
     maximum: usize,
+}
+
+impl fmt::Debug for EncodeBuffer<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EncodeBuffer")
+            .field("length", &self.len())
+            .field("maximum", &self.maximum)
+            .finish()
+    }
 }
 
 impl<'a> EncodeBuffer<'a> {
@@ -446,16 +464,45 @@ impl<'a> EncodeBuffer<'a> {
             });
         }
 
-        match width_maximum {
-            0xff => self.write_u8(bytes.len() as u8)?,
-            0xffff => self.write_u16(bytes.len() as u16)?,
-            value if value == u32::MAX as usize => self.write_u32(bytes.len() as u32)?,
+        let prefix_len: usize = match width_maximum {
+            0xff => 1,
+            0xffff => 2,
+            value if value == u32::MAX as usize => 4,
             _ => {
                 return Err(CodecError::InvalidFieldValue {
                     offset: self.output.len(),
                     context,
                 });
             }
+        };
+        let field_len =
+            prefix_len
+                .checked_add(bytes.len())
+                .ok_or(CodecError::ArithmeticOverflow {
+                    offset: self.output.len(),
+                    context: "length-prefixed field length",
+                })?;
+        let new_length =
+            self.output
+                .len()
+                .checked_add(field_len)
+                .ok_or(CodecError::ArithmeticOverflow {
+                    offset: self.output.len(),
+                    context: "encoder output length",
+                })?;
+        if new_length > self.maximum {
+            return Err(CodecError::LengthExceeded {
+                offset: self.output.len(),
+                declared: new_length,
+                maximum: self.maximum,
+                context,
+            });
+        }
+        match width_maximum {
+            0xff => self.write_u8(bytes.len() as u8)?,
+            0xffff => self.write_u16(bytes.len() as u16)?,
+            value if value == u32::MAX as usize => self.write_u32(bytes.len() as u32)?,
+            _ => unreachable!("validated prefix width"),
         }
         self.write(bytes)
     }
@@ -493,6 +540,11 @@ impl<'a> EncodeBuffer<'a> {
     /// Returns the underlying output vector after encoding is complete.
     pub fn finish(self) -> &'a mut Vec<u8> {
         self.output
+    }
+
+    /// Appends already-encoded bytes after enforcing the encoder limit.
+    pub(crate) fn write_raw(&mut self, bytes: &[u8]) -> Result<(), CodecError> {
+        self.write(bytes)
     }
 }
 
@@ -728,6 +780,31 @@ mod tests {
     }
 
     #[test]
+    fn length_prefixed_output_limit_failure_is_transactional() {
+        let mut output = vec![0xaa];
+        {
+            let mut encoder = EncodeBuffer::new(&mut output, 3).unwrap();
+            let error = encoder.write_utf8_u8("ok", 2).unwrap_err();
+            assert!(matches!(error, CodecError::LengthExceeded { .. }));
+        }
+        assert_eq!(output, [0xaa]);
+    }
+
+    #[test]
+    fn codec_debug_output_redacts_input_and_output_contents() {
+        let cursor = DecodeCursor::new(b"secret", 16).unwrap();
+        assert_eq!(
+            format!("{cursor:?}"),
+            "DecodeCursor { input_length: 6, offset: 0 }"
+        );
+        let mut output = vec![0x5a];
+        let encoder = EncodeBuffer::new(&mut output, 8).unwrap();
+        let debug = format!("{encoder:?}");
+        assert!(debug.contains("length: 0"));
+        assert!(!debug.contains("90"));
+    }
+
+    #[test]
     fn length_prefix_width_rejects_unrepresentable_values() {
         let too_long = vec![0_u8; 256];
         let error =
@@ -816,10 +893,10 @@ mod tests {
             assert!(!message.contains("["));
             assert_eq!(format!("{error}"), message);
         }
-        assert_eq!(errors[0].kind(), ProtocolErrorKind::Malformed);
+        assert_eq!(errors[0].kind(), ProtocolErrorKind::Truncated);
         assert_eq!(errors[1].kind(), ProtocolErrorKind::LimitExceeded);
         assert_eq!(errors[6].kind(), ProtocolErrorKind::Unsupported);
-        assert_eq!(errors[9].kind(), ProtocolErrorKind::LimitExceeded);
+        assert_eq!(errors[9].kind(), ProtocolErrorKind::PolicyRejected);
     }
 
     #[test]

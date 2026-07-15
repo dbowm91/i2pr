@@ -11,9 +11,11 @@ The initial compatibility target is the current I2P network as implemented by I2
 Milestone 0 workspace bootstrap and its corrective closure are implemented. The
 repository contains a buildable four-crate Rust workspace, strict
 side-effect-free configuration validation, a deterministic testkit foundation,
-and a non-networked CLI shell. Plan 011 now adds a bounded primitive codec
-foundation to `i2pr-proto`; common I2P structures and interoperability remain
-unimplemented. Normal development and CI use pinned Rust
+and a non-networked CLI shell. Plans 011 and 012 now provide bounded primitive
+codec mechanics plus an experimental structural model for common I2P
+identities, mappings, certificates, RouterInfo, RouterAddress, Lease, and the
+classic LeaseSet. Cryptographic execution, LeaseSet2-family records,
+interoperability, and router behavior remain unimplemented. Normal development and CI use pinned Rust
 1.95.0; the declared Rust 1.85 MSRV is checked by a dedicated Ubuntu CI job.
 The router runtime and all I2P protocol implementations remain unimplemented.
 
@@ -96,10 +98,11 @@ The bootstrap intentionally creates only `i2pr-proto`, `i2pr-core`,
 crates when their contracts are understood; empty placeholder crates are not
 created in advance.
 
-The current `i2pr-proto` codec API is deliberately limited to borrowed cursors,
-checked big-endian primitives, caller-bounded length-prefixed bytes and UTF-8,
-strict exact-consumption decoding, and bounded vector encoding. It does not
-claim support for any complete I2P wire structure or advertise capabilities.
+The current `i2pr-proto` API uses borrowed cursors and caller-visible maximums,
+strict exact-consumption decoding, canonical immutable mappings, typed
+algorithm/length validation, and preserved signed-byte regions. It contains no
+cryptographic signing or verification, transport behavior, runtime integration,
+filesystem I/O, or capability advertisement.
 
 ## External integration direction
 
@@ -113,6 +116,7 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [MVP roadmap](plans/000-mvp-roadmap.md)
 - [Workspace and skeleton pre-plan](plans/001-preplan-workspace-skeleton.md)
 - [Milestone 0 closure record](plans/001-closure.md)
+- [Milestone 1 common-structures closure record](plans/012-closure.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)

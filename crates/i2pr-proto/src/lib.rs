@@ -8,16 +8,26 @@
 #![forbid(unsafe_code)]
 
 mod codec;
+mod common;
 
 pub use codec::{CodecError, DecodeCursor, EncodeBuffer, decode_exact, encode_to_vec};
+pub use common::*;
 
-/// Broad structural outcomes shared by future protocol parsers.
+/// Stable structural outcomes shared by protocol parsers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProtocolErrorKind {
     /// The input is not valid for the selected protocol shape.
     Malformed,
+    /// The input ended before a complete value was available.
+    Truncated,
     /// A declared size, count, or nesting level exceeds a local limit.
     LimitExceeded,
+    /// A field value is structurally invalid but not a size/format error.
+    InvalidValue,
+    /// A strict decoder found bytes outside the value boundary.
+    TrailingBytes,
+    /// A value is structurally valid but rejected by a local policy.
+    PolicyRejected,
     /// The input uses a feature that this implementation does not support.
     Unsupported,
 }
@@ -60,6 +70,10 @@ mod tests {
         assert_ne!(
             ProtocolErrorKind::Malformed,
             ProtocolErrorKind::LimitExceeded
+        );
+        assert_ne!(
+            ProtocolErrorKind::PolicyRejected,
+            ProtocolErrorKind::InvalidValue
         );
     }
 }

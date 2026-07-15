@@ -85,6 +85,22 @@ These are code references, not normative specifications.
 
 The public source used here is named `go-i2p/go-i2p`. This corpus uses “Emissary/go-i2p” to preserve the project terminology in the `i2pr` roadmap discussion without asserting that every upstream branch or release uses the Emissary name.
 
+## i2pr source-to-code traceability
+
+The bounded implementation in `crates/i2pr-proto/src/common.rs` follows the
+common-structures source above at pinned website commit
+`88596022920bdf99f27db27688faf4f204792fcd`, especially Integer/Date/String,
+Mapping, Certificate/Key Certificate, KeysAndCert, RouterIdentity, Destination,
+RouterAddress, RouterInfo, Lease, and classic LeaseSet. Hash derivation uses the
+reviewed `sha2` crate and is covered by locally authored fixed primitive bytes;
+no external router implementation code or opaque fixture corpus was copied.
+
+The same module records the deliberate deviations: signed records preserve
+their parsed signed region, timestamp freshness and signature verification are
+deferred, only classic LeaseSet is decoded, and LeaseSet2, MetaLeaseSet, and
+EncryptedLeaseSet are explicit unsupported paths pending their later crypto and
+NetDB plans.
+
 ## Refresh triggers
 
 Refresh this ledger when any of the following occurs:

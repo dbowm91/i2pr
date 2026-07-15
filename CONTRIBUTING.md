@@ -16,6 +16,10 @@ Read, in order:
 Protocol changes require a plan covering acceptance criteria, limits, negative
 tests, dependency changes, security implications, sources, and documentation.
 Do not add empty future crates or claim interoperability without evidence.
+The current common-structure subset in `i2pr-proto` is structural only: keep
+signed byte regions intact, use the pinned source ledger, and leave signing,
+freshness policy, transport interpretation, and LeaseSet2-family behavior to
+their later plans.
 
 ## Local quality checks
 

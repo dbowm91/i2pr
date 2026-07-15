@@ -1,7 +1,8 @@
 # Architecture
 
-This document describes the Milestone 0 shape. It records boundaries and
-ownership, not implemented router behavior.
+This document records the current modular-monolith boundaries and ownership.
+The implemented common-structure codecs remain structural data handling, not
+router behavior or an interoperability claim.
 
 ## Four planes
 
@@ -9,7 +10,7 @@ The intended modular monolith is organized into four conceptual planes:
 
 | Plane | Responsibility | Milestone 0 status |
 | --- | --- | --- |
-| Data | Protocol representations, authenticated links, messages, and network tunnel traffic | Namespace vocabulary only; no wire protocol or socket is implemented |
+| Data | Protocol representations, authenticated links, messages, and network tunnel traffic | Bounded common-structure model plus primitive codecs; no crypto, socket, or network behavior |
 | Control | Configuration, lifecycle, health, cancellation, supervision, and resource budgets | CLI validation plus runtime-neutral core contracts |
 | Client | Destinations, LeaseSets, streaming, SAM, and I2CP adapters | Not implemented |
 | Service | HTTP, SOCKS5, IRC, generic TCP, and local service-tunnel composition | Not implemented |
@@ -24,7 +25,7 @@ storage.
 The bootstrap has only four crates:
 
 ```text
-i2pr-proto   (no workspace dependencies)
+i2pr-proto   (sha2 for fixed hash derivation; no workspace dependencies)
       ^                 ^
       |                 |
 i2pr-core  <------ i2pr-testkit
@@ -34,10 +35,14 @@ i2pr-daemon  (composition root; also depends on i2pr-proto)
 ```
 
 The arrows show dependency direction. `i2pr-proto` owns protocol-facing names,
-bounded primitive codec mechanics, and typed codec error categories. Its cursor
-borrows input, its encoder requires caller-visible output limits, and strict
-top-level decoders reject trailing bytes. It has no runtime, filesystem, CLI,
-or tracing-subscriber dependency. `i2pr-core` owns runtime-neutral service,
+bounds, and typed codec error categories. It now also owns immutable Mapping,
+certificate/key-type, RouterIdentity, Destination, RouterAddress, RouterInfo,
+Lease, and classic LeaseSet values. Parsed signed records retain the exact
+signed region. Its cursor borrows input, its encoder requires caller-visible
+output limits, and strict top-level decoders reject trailing bytes. It has no
+runtime, filesystem, CLI, transport, or tracing-subscriber dependency; the
+only external dependency is the reviewed `sha2` crate for SHA-256 hash
+derivation. `i2pr-core` owns runtime-neutral service,
 health, lifecycle, cancellation, and resource-domain types. `i2pr-testkit`
 provides deterministic clocks, randomness, and bounded fault vocabulary for
 tests. The daemon owns CLI/configuration and is the future composition root.
@@ -45,6 +50,15 @@ tests. The daemon owns CLI/configuration and is the future composition root.
 The direction is mechanically checked by
 `scripts/check-dependency-direction.sh`. Production crates do not depend on
 `i2pr-testkit`.
+
+### Common-structure boundary
+
+`i2pr-proto::common` validates wire shape, bounded sizes, canonical mapping
+order, algorithm-specific public-material lengths, and exact signed-byte
+boundaries. It does not verify signatures, generate secrets, decide timestamp
+freshness, interpret transport options, publish RouterInfo, or construct
+LeaseSet2-family records. Those responsibilities belong to later crypto,
+storage, NetDB, and client plans.
 
 ### Cancellation scope
 
