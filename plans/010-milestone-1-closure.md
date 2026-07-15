@@ -193,7 +193,7 @@ was formatted and tested:
 | `rtk cargo +1.85.0 check --workspace --all-targets` | passed |
 | `rtk cargo +nightly check --manifest-path fuzz/Cargo.toml --offline --all-targets` | passed |
 | `CARGO_NET_OFFLINE=true rtk bash scripts/fuzz-smoke.sh` | passed — 17 targets × 32 runs |
-| Linux/macOS CI | pending push of corrective commit |
+| GitHub Actions CI ([run 29399571987](https://github.com/dbowm91/i2pr/actions/runs/29399571987)) | passed — Ubuntu quality, MSRV, macOS quality, and dependency policy |
 
 ## Deviations and unresolved ambiguities
 
@@ -229,5 +229,8 @@ interoperability.
 
 ## Plan 015 completing commit
 
-The final corrective commit and post-push CI run are added here when the
-validated changes are committed to `main` and pushed.
+The validated implementation was committed as `97e216e` (`Close Milestone 1
+corrective plan`) and pushed to `main`. GitHub Actions run
+[29399571987](https://github.com/dbowm91/i2pr/actions/runs/29399571987) passed
+the Ubuntu quality, MSRV, macOS quality, and dependency-policy jobs. This
+closure-record update is the follow-up CI-evidence commit.
