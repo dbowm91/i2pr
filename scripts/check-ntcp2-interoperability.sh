@@ -20,25 +20,25 @@ required=(
   'daemon_activation = "disabled; no complete wire-level composition is currently exposed"'
 )
 for entry in "${required[@]}"; do
-  rg -Fq "$entry" "$manifest" || {
+  if ! grep -Fq "$entry" "$manifest"; then
     echo "NTCP2 interoperability manifest entry missing: $entry" >&2
     exit 1
-  }
+  fi
 done
 
-scenario_count=$(rg -c '^\[\[scenario\]\]$' "$manifest")
+scenario_count=$(grep -Ec '^\[\[scenario\]\]$' "$manifest" || true)
 if [[ "$scenario_count" -ne 8 ]]; then
   echo "expected eight bounded NTCP2 interoperability scenarios, found $scenario_count" >&2
   exit 1
 fi
 
 # The committed evidence directory is intentionally text-only and sanitized.
-if find "$evidence" -type f \( -name '*.pcap' -o -name '*.pcapng' -o -name 'router.identity' -o -name 'ntcp2.static.key' \) -print -quit | rg -q .; then
+if find "$evidence" -type f \( -name '*.pcap' -o -name '*.pcapng' -o -name 'router.identity' -o -name 'ntcp2.static.key' \) -print -quit | grep -q .; then
   echo "forbidden NTCP2 evidence artifact present" >&2
   exit 1
 fi
-if rg -n --hidden --glob '!README.md' --glob '!*.tsv' \
-  -- '-----BEGIN .*PRIVATE KEY-----|-----BEGIN OPENSSH PRIVATE KEY-----' "$evidence"; then
+if find "$evidence" -type f ! -name README.md ! -name '*.tsv' -print0 \
+  | xargs -0 grep -En -- '-----BEGIN .*PRIVATE KEY-----|-----BEGIN OPENSSH PRIVATE KEY-----' >/dev/null 2>&1; then
   echo "private-key material found in NTCP2 evidence" >&2
   exit 1
 fi

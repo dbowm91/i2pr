@@ -66,10 +66,10 @@ required=(
     split-kdf
 )
 for id in "${required[@]}"; do
-    rg -q "^${id}[[:space:]]" "$corpus/vectors.tsv" || {
+    if ! grep -Eq "^${id}[[:space:]]" "$corpus/vectors.tsv"; then
         echo "NTCP2 vector row missing: $id" >&2
         exit 1
-    }
+    fi
 done
 
 echo "NTCP2 vector manifest is complete and hashes match."
