@@ -326,6 +326,49 @@ post-use retention but do not provide encrypted reply semantics or defeat
 process compromise, allocator copies, swap, core dumps, or every compiler or
 platform memory-retention behavior.
 
+### Plan 038 Ubuntu reference-router harness boundary
+
+Plan 038 defines an opt-in evidence harness outside the production daemon. The
+first supported host is Ubuntu amd64. Its workflow has two security domains:
+
+```text
+preparation (network-enabled, host scope)
+  -> verify Ubuntu/toolchain contract
+  -> install declared packages
+  -> fetch locked Java I2P/i2pd revisions
+  -> build, hash, and cache disposable artifacts
+
+execution (network-isolated, per-scenario scope)
+  -> create disposable run state and two namespaces
+  -> connect namespaces only with a veth pair
+  -> reject default routes, DNS, and public egress
+  -> generate identities/configuration and exchange RouterInfo locally
+  -> run one bounded participant pair and collect typed outcomes
+  -> sanitize, destroy secret-bearing state, drain processes, delete namespaces
+```
+
+Preparation is the only phase allowed to use package/source network access.
+Execution must not download, resolve names, reseed, bootstrap, publish
+RouterInfo, mutate NetDB, or contact a public endpoint. `i2pr-runtime` remains
+the sole owner of Tokio and sockets; a dedicated non-production
+`i2pr-interop` launcher composes it with the runtime-neutral transport and
+NTCP2 protocol crates without activating `i2pr-daemon`.
+
+Each scenario gets one i2pr namespace and one reference-router namespace. Both
+veth endpoints leave the host namespace, and each scenario namespace contains
+only loopback, its veth interface, and the expected directly connected routes.
+Route isolation is primary; namespace-scoped nftables rules are defense in
+depth. The host checker and isolation verifier must fail closed before a
+router starts, and cleanup failure is a scenario failure.
+
+The evidence classes are deliberately separate. Environment smoke validates
+reference startup and cleanup; reference crosscheck validates Java I2P against
+i2pd without making an i2pr claim; only bounded authenticated i2pr-to-reference
+runs in both directions are mixed-router evidence. Retained records contain
+typed outcomes, bounded run metadata, and hashes of sanitized artifacts only.
+Raw addresses, peer identities, RouterInfo, I2NP, keys, transcripts, raw logs,
+and arbitrary remote error text are deleted.
+
 ### Identity storage boundary
 
 `i2pr-storage` stores only the private router identity format described by ADR

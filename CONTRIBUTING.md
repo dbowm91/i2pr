@@ -177,6 +177,34 @@ testkit results are not Java I2P or i2pd evidence, and no daemon activation or
 support advertisement follows from them. Mixed-router evidence requires the
 authorized private-testnet procedure in `docs/private-testnet.md`.
 
+Plan 038 adds a manual, Ubuntu-only harness contract for that procedure. Keep
+the two phases separate: host preparation may install declared Ubuntu
+packages, fetch pinned reference sources, and build/hash artifacts; scenario
+execution must run in disposable Linux namespaces with only the scenario veth
+pair, no default route, no DNS, and no public egress. Isolation is checked
+before launch and cannot be disabled by a scenario option. The planned entry
+points are:
+
+```text
+bash scripts/interop/ubuntu/check-host.sh --pre-install
+bash scripts/interop/ubuntu/setup-host.sh
+bash scripts/interop/ubuntu/check-host.sh --post-install
+bash scripts/interop/build-references.sh
+bash scripts/interop/build-references.sh --offline
+bash scripts/interop/run-scenario.sh --scenario <id> --reference java-i2p --build-cache <path> --run-root <path>
+bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
+bash scripts/interop/run-matrix.sh
+```
+
+The harness must distinguish environment smoke (reference startup and
+cleanup), reference crosscheck (Java I2P versus i2pd, with no i2pr claim), and
+i2pr mixed-router evidence (bounded authenticated runs between i2pr and each
+reference in both directions). Sanitize before retention: keep only typed
+outcomes, bounded run metadata, and hashes; delete raw addresses, identities,
+RouterInfo, I2NP, keys, transcripts, logs, and arbitrary remote error text.
+None of these profiles activates the normal daemon or justifies an NTCP2
+support or capability claim without the conformance evidence requirements.
+
 Plan 024's integrated lane contains named clean-startup, bounded-overload,
 restart-recovery, essential-failure, and simulated-link-fault scenarios plus
 a fixed 32-seed replay matrix. Run it with paused Tokio time and the manual

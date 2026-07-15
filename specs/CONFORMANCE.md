@@ -47,6 +47,16 @@ artifacts, and unsanitized evidence. A local self-handshake, loopback socket,
 fixed-seed simulation, or fuzz result cannot satisfy the two-implementation,
 two-direction requirement.
 
+Plan 038 defines how that evidence may be prepared, not a relaxation of the
+claim model. Its Ubuntu-only harness has a network-enabled preparation phase
+for declared packages and locked reference builds, followed by a
+network-isolated execution phase. Execution requires disposable namespaces
+with only a veth connection, no default routes, no DNS, and no public egress;
+isolation and cleanup are part of the result. Environment smoke and a Java
+I2P/i2pd reference crosscheck validate the harness only. They cannot advance
+an i2pr support row. Only sanitized, bounded authenticated i2pr-to-reference
+runs in both directions can supply mixed-router evidence for NTCP2.
+
 ## Source-to-code traceability
 
 Every protocol module should identify:

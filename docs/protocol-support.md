@@ -38,6 +38,16 @@ complete wire-level adapter and authorized Java I2P/i2pd runs are not available
 in this checkout, so the blocker is recorded and every NTCP2 surface remains
 experimental and non-advertised.
 
+Plan 038 documents the planned Ubuntu-only, amd64-only harness for resolving
+that blocker; it does not change any row in this matrix. Preparation may use
+declared package/source network access to build and hash pinned references.
+Execution is a separate fail-closed phase using disposable namespaces joined
+only by a veth pair, with no default route, DNS, or public egress. Environment
+smoke and Java I2P/i2pd reference crosscheck are harness validation only. An
+i2pr mixed-router claim still requires sanitized bounded authenticated runs
+against each reference in both directions, plus the evidence and
+advertisement requirements in `specs/CONFORMANCE.md`.
+
 | Protocol area | Status | Planned milestone | Specification/source starting point | Test-vector status | Interoperability status |
 | --- | --- | --- | --- | --- | --- |
 | Common identity, keys, and certificates | Experimental structural subset plus local type-4/type-7 execution | 1 | `specs/protocols/01-common-identity-crypto.md`, pinned source in `specs/SOURCES.md` | Locally authored structural bytes, Ed25519 mutation tests, and X25519 derivation tests; no independent router vectors | None |

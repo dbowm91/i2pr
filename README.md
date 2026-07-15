@@ -85,6 +85,46 @@ general data-phase block parsing. These corrections do not yet constitute a
 complete authenticated socket adapter or mixed-router evidence; daemon
 activation remains disabled.
 
+Plan 038 defines an Ubuntu-only, opt-in reference-router harness for acquiring
+the missing evidence under controlled conditions. It is a harness contract,
+not a production bootstrap path or an interoperability result. The supported
+host contract is Ubuntu amd64 with `apt`, Bash 4+, Python 3, Linux network
+namespaces, `iproute2`, and `sudo`. Preparation may install declared packages,
+fetch only the pinned Java I2P 2.12.0 and i2pd 2.60.0 sources, build disposable
+reference artifacts, and record hashes. Execution is a separate network-
+isolated phase: it creates disposable namespaces joined only by a veth pair,
+rejects default routes, DNS, and public egress, generates temporary state, and
+cleans up before reporting a result. The execution phase must not download,
+reseed, bootstrap, publish RouterInfo, mutate NetDB, or start the normal daemon.
+
+The planned command surface is:
+
+```text
+bash scripts/interop/ubuntu/check-host.sh --pre-install
+bash scripts/interop/ubuntu/setup-host.sh
+bash scripts/interop/ubuntu/check-host.sh --post-install
+bash scripts/interop/build-references.sh
+bash scripts/interop/build-references.sh --offline
+bash scripts/interop/run-scenario.sh --scenario <id> --reference java-i2p --build-cache <path> --run-root <path>
+bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
+bash scripts/interop/run-matrix.sh
+i2pr-interop ntcp2 listen --scenario-config <path>
+i2pr-interop ntcp2 dial --scenario-config <path>
+i2pr-interop ntcp2 inspect --state-dir <path>
+```
+
+Environment smoke proves only that each reference can start, produce
+disposable state, avoid public connections, and stop cleanly. Reference
+crosscheck proves only that Java I2P and i2pd can be exercised against each
+other through the isolated harness. Neither profile is i2pr evidence. The
+i2pr mixed-router profile requires bounded authenticated runs in both
+directions against each reference; the full manifest and its adversarial
+profiles remain gated on positive i2pr handshake/data smoke in both directions.
+Retained evidence is
+limited to typed outcomes, run metadata, and hashes of sanitized artifacts.
+Raw addresses, peer identities, RouterInfo, I2NP, keys, transcripts, logs, and
+remote error text are disposable and must not be committed.
+
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
 ## MVP direction
@@ -236,6 +276,7 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 036 closure record](plans/036-closure.md)
 - [Plan 037 corrective integration and closure](plans/037-m3-corrective-integration-closure.md)
 - [Plan 037 closure record](plans/037-closure.md)
+- [Plan 038 Ubuntu reference-router interoperability harness](plans/038-ubuntu-reference-router-interoperability-harness.md)
 - [Aggregate Milestone 3 closure record](plans/030-milestone-3-closure.md)
 - [Controlled NTCP2 interoperability lane](tests/integration/ntcp2/README.md)
 - [Machine-readable protocol support ledger](specs/support.toml)

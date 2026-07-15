@@ -28,6 +28,26 @@ Network tunnels (router-to-router) and application service tunnels
 (local app to destination) are deliberately kept apart. Service tunnels
 must not import transport internals or peer-profile storage.
 
+## Plan 038 harness boundary
+
+The Ubuntu reference-router harness is an opt-in test boundary, not another
+runtime plane and not a production daemon path. It supports Ubuntu amd64 for
+the initial closure and separates network-enabled preparation from
+network-isolated execution. Preparation verifies the host, installs only
+declared tools, fetches the pinned Java I2P/i2pd revisions, and hashes cached
+artifacts. Execution creates disposable per-scenario state and two Linux
+namespaces joined only by a veth pair; it rejects default routes, DNS, and
+public egress before starting a router. The normal daemon remains disabled.
+
+The harness uses three evidence classes: environment smoke covers reference
+startup and cleanup; reference crosscheck covers Java I2P versus i2pd and says
+nothing about i2pr; i2pr mixed-router evidence requires bounded authenticated
+runs between i2pr and each reference in both directions. Only the last class
+can contribute to a protocol support claim, and only after sanitation leaves
+typed outcomes, bounded metadata, and artifact/configuration hashes. Raw
+addresses, identities, RouterInfo, I2NP, keys, transcripts, logs, and arbitrary
+remote error text are not retained.
+
 ## Crate graph
 
 The dependency direction is enforced by `scripts/check-dependency-direction.sh`

@@ -79,6 +79,53 @@ pattern scanning and `sha256sum` / `find` for manifest integrity.
 - **Verified by** `scripts/check-ntcp2-interoperability.sh` on
   every CI run.
 
+### Plan 038 Ubuntu harness (planned, opt-in)
+
+Plan 038 extends the manual lane with an Ubuntu-only, amd64-only harness. The
+existing manifest and evidence preflight remain a repository boundary; they do
+not install or launch reference routers. The planned host and build commands
+are:
+
+```text
+bash scripts/interop/ubuntu/check-host.sh --pre-install
+bash scripts/interop/ubuntu/setup-host.sh
+bash scripts/interop/ubuntu/check-host.sh --post-install
+bash scripts/interop/build-references.sh
+bash scripts/interop/build-references.sh --offline
+```
+
+Reference builds are source-pinned and hashed during preparation. The runner
+then uses a separate execution phase for each scenario. It creates one i2pr
+namespace and one reference namespace, moves both ends of a veth pair out of
+the host namespace, permits only the expected directly connected routes, and
+rejects default routes, DNS, host bridges, and public egress before launch.
+Route checks are primary; namespace-scoped nftables rules are defense in
+depth. Execution has no dependency downloads, reseed, bootstrap, RouterInfo
+publication, NetDB mutation, or public endpoint.
+
+The scenario and launcher interfaces are:
+
+```text
+bash scripts/interop/run-scenario.sh --scenario <id> --reference java-i2p --build-cache <path> --run-root <path>
+bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
+bash scripts/interop/run-matrix.sh
+i2pr-interop ntcp2 listen --scenario-config <path>
+i2pr-interop ntcp2 dial --scenario-config <path>
+i2pr-interop ntcp2 inspect --state-dir <path>
+```
+
+The evidence taxonomy is strict: environment smoke validates reference
+startup/RouterInfo generation and cleanup only; reference crosscheck validates
+Java I2P versus i2pd and makes no i2pr claim; i2pr mixed-router evidence
+requires bounded authenticated runs between i2pr and each reference in both
+directions. The full eight-scenario manifest remains gated on the positive
+smoke profiles. Sanitize before retention and keep only typed outcomes,
+bounded run metadata, and artifact/configuration hashes. Delete raw
+addresses, peer identities, RouterInfo, I2NP, keys, transcripts, logs, and
+arbitrary remote error text. Until the harness is implemented and produces
+qualifying records, this lane remains a blocker and NTCP2 remains
+experimental/non-advertised.
+
 ### Zero Rust integration test files
 
 There are **zero `.rs` files** under `tests/`. All decode/encode

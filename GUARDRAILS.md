@@ -64,6 +64,15 @@ The exact graph may be refined, but the following constraints apply:
 
 Avoid global mutable state and unrestricted `Arc<RouterContext>` service locators. Each subsystem should receive narrow handles or capabilities for the operations it is permitted to perform.
 
+Plan 038's reference-router harness is an external, non-production test
+boundary. It must not become a dependency of the daemon or enable the daemon's
+normal live execution. Its Ubuntu-only preparation phase may install declared
+tools and build pinned reference revisions; its execution phase must be
+network-isolated and must compose only disposable namespaces, reference
+adapters, and the dedicated i2pr interoperability launcher. The execution
+phase must not reseed, bootstrap, publish RouterInfo, mutate NetDB, or use
+public endpoints.
+
 Do not introduce runtime-loadable in-process Rust plugins during the MVP. Rust does not provide a stable ABI suitable for a security-sensitive third-party plugin ecosystem. Compile-time components or authenticated out-of-process interfaces are preferred.
 
 ## 4. Defensive programming
@@ -242,6 +251,18 @@ Protocol and subsystem work must include, as applicable:
 Tests involving timing should prefer a virtual or controllable clock. Tests involving randomness should use reproducible seeds unless validating production entropy integration.
 
 Public-network testing must be passive, ordinary, and non-disruptive. Stress, mutation, malformed traffic, load testing, and adversarial scenarios belong in an isolated authorized testnet.
+
+The Plan 038 harness is fail-closed: it supports Ubuntu amd64 only for the
+initial closure, verifies host and namespace prerequisites before launch, and
+requires two namespaces connected only by a scenario veth pair. Each namespace
+must have loopback and only the expected connected routes; default routes, DNS,
+host bridges, and public egress are rejected. Route checks are primary and
+namespace-scoped nftables rules are defense in depth. Environment smoke and
+reference crosscheck are harness validation, not i2pr interoperability
+evidence. Only sanitized, bounded i2pr-to-reference runs in both directions
+can contribute to a mixed-router claim. Raw addresses, identities, RouterInfo,
+I2NP, keys, transcripts, logs, and remote error text must be destroyed before
+retaining evidence.
 
 ## 13. Synvoid and eggsec integration
 

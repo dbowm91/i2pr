@@ -65,6 +65,39 @@ runs are not Java I2P/i2pd interoperability evidence. Keep the daemon disabled
 and all NTCP2 support rows experimental/non-advertised until sanitized mixed-
 router results, hashes, and run identifiers are committed.
 
+Plan 038 defines the controlled evidence harness. It is Ubuntu-only and
+amd64-only for the first closure. Keep preparation and execution as separate
+security domains: preparation may use `apt` and network access only for the
+declared packages and pinned reference source/artifacts; execution must use
+disposable namespaces with only a veth peer, no default route, no DNS, and no
+public egress. The host checker must fail before changing an unsupported host,
+and isolation must be verified before any router starts. Do not add an option
+that disables isolation.
+
+The exact planned command interfaces are:
+
+```text
+bash scripts/interop/ubuntu/check-host.sh --pre-install
+bash scripts/interop/ubuntu/setup-host.sh
+bash scripts/interop/ubuntu/check-host.sh --post-install
+bash scripts/interop/build-references.sh
+bash scripts/interop/build-references.sh --offline
+bash scripts/interop/run-scenario.sh --scenario <id> --reference java-i2p --build-cache <path> --run-root <path>
+bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
+bash scripts/interop/run-matrix.sh
+i2pr-interop ntcp2 listen --scenario-config <path>
+i2pr-interop ntcp2 dial --scenario-config <path>
+i2pr-interop ntcp2 inspect --state-dir <path>
+```
+
+Classify harness results precisely: environment smoke validates reference
+startup and cleanup only; reference crosscheck validates Java I2P/i2pd against
+each other only; i2pr mixed-router evidence requires an authenticated bounded
+run between i2pr and each reference in both directions. Keep only sanitized
+typed results and artifact/configuration hashes. Delete identities, keys,
+RouterInfo, I2NP, raw addresses, transcripts, raw logs, and arbitrary remote
+error text. These harness profiles do not enable the daemon or advertise NTCP2.
+
 ## Build, Test, and Quality
 
 Toolchain is pinned to Rust 1.95.0 (`rust-toolchain.toml`); MSRV is 1.85

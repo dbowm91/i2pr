@@ -414,3 +414,30 @@ The current checkout has no mixed-router artifacts or results because the
 complete runtime wire adapter and authorized testnet are unavailable. This is
 recorded as a blocker in `plans/036-closure.md`; neither the fixed-seed testkit
 matrix nor pure fuzz campaigns are treated as interoperability evidence.
+
+## Plan 038 harness threats and controls
+
+Plan 038 is a manual evidence boundary, not a public-network feature. The
+first host contract is Ubuntu amd64. Preparation and execution are separate:
+preparation may install declared packages and fetch only the locked reference
+sources, while execution consumes prepared artifacts without downloads, DNS,
+reseed, bootstrap, RouterInfo publication, NetDB mutation, or public egress.
+Host and tool checks must fail before modifying an unsupported host.
+
+Each scenario uses disposable run state and two Linux namespaces connected only
+by a veth pair. Both endpoints leave the host namespace; each namespace
+contains only loopback, its expected interface, and directly connected routes.
+No default route, DNS path, host bridge, or public canary may work. Route
+isolation is the primary control, with namespace-scoped nftables rules as
+defense in depth. Isolation is checked before a router starts and cannot be
+disabled by a scenario option. Process termination, child draining, namespace
+deletion, veth cleanup, and secret-state deletion are all required; a cleanup
+failure is a failed scenario.
+
+The harness distinguishes environment smoke, reference crosscheck, and i2pr
+mixed-router evidence. Smoke validates reference startup and cleanup only.
+Crosscheck validates Java I2P against i2pd only. Only bounded authenticated
+i2pr-to-reference runs in both directions can contribute to a mixed-router
+claim. Sanitation retains typed outcomes, bounded run metadata, and hashes of
+sanitized artifacts/configuration; it deletes raw addresses, peer identities,
+RouterInfo, I2NP, keys, transcripts, raw logs, and arbitrary remote error text.
