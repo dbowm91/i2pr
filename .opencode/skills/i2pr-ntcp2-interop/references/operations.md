@@ -1,4 +1,4 @@
-# Plans 038–043 operations reference
+# Plans 038–044 operations reference
 
 Run commands from the repository root. The authoritative harness instructions
 are in `tests/integration/ntcp2/README.md`; this reference is a compact routing
@@ -27,14 +27,21 @@ run with an always-run policy and override protocol success on failure.
   `tests/integration/ntcp2/manifest.toml`.
 - `tests/integration/ntcp2/reference-scenarios/`: the separate Plan 041 pair
   schema and the two directional Java I2P/i2pd control scenarios.
+- `tests/integration/ntcp2/mixed-scenarios/`: the four Plan 044 directional
+  i2pr/reference scenarios with their own manifest. Each direction has a
+  unique execution ID, declared initiator/responder, and launcher role.
 - `tests/integration/ntcp2/harness/`: Python topology, adapters, process
-  bounds, runner, and evidence code.
-- `scripts/interop/`: host setup, builders, isolation, matrix, and cleanup.
+  bounds, runner, evidence, mixed-runner, launcher renderer, data-phase
+  oracle, and reference-trigger code.
+- `scripts/interop/`: host setup, builders, isolation, matrix, gate staging,
+  aggregate, and cleanup.
 - `tools/i2pr-interop/`: non-production launcher seam; the current checkout
   composes bounded state preparation, listener/dial, handshake, authenticated
-  link, and DeliveryStatus smoke. Its success is local driver validation only.
-- `target/interop/evidence/`: sanitized records only; `target/interop/runs/`
-  is secret-bearing and is deleted after every run.
+  link, and DeliveryStatus smoke through the Plan 044 mixed-runner. Its
+  success is local driver validation only.
+- `target/interop/evidence/`: sanitized records only; gate-prefixed files
+  live alongside `run-manifest.json`. `target/interop/runs/` is secret-bearing
+  and is deleted after every run.
 
 ## Host and build gates
 
@@ -66,18 +73,25 @@ sudo -E bash scripts/interop/run-matrix.sh --profile full
 and cleanup. `reference-crosscheck-ipv4` runs both Plan 041 reference-pair
 scenarios, validates the explicit private network ID and RouterInfo exchange,
 and requires authoritative authenticated observations from both references; it
-does not make an i2pr claim. `handshake-smoke` and `full` now invoke the
-bounded runtime-owned i2pr launcher path. A successful launcher result is
-local driver validation only; the reference profile still requires
-authenticated data exchange and cleanup, not TCP or listener readiness alone.
-The current runner returns `i2pr-mixed-router-profile-not-wired` for those
-profiles until it connects the launcher to the reference adapter.
+does not make an i2pr claim. `handshake-smoke` and `full` now invoke the bounded runtime-owned i2pr
+launcher path composed with the Plan 044 mixed-router runner. Plan 044
+expands each primary IPv4 scenario into four independently attributable
+directional executions (`i2pr-to-java-ipv4`, `java-to-i2pr-ipv4`,
+`i2pr-to-i2pd-ipv4`, `i2pd-to-i2pr-ipv4`) and renders each launcher
+scenario through the strict renderer; the data-phase proof uses a typed
+non-echo oracle (split send/receive per direction) rather than an assumed
+echo. A successful launcher result is local driver validation only; the
+reference profile still requires authenticated data exchange and cleanup,
+not TCP or listener readiness alone. The runner emits
+`i2pr-mixed-router-profile-not-wired` only for scenario IDs that are not
+allowlisted for the active gate.
 
-Plan 042's selected smoke scope is DeliveryStatus (I2NP type 10): a 12-byte
-body, 21-byte NTCP2/SSU2 short transport message, and 24-byte NTCP2 block
-before frame overhead and padding. Require one valid outbound and one valid
-inbound message per direction. No reference echo behavior is currently proven,
-so this remains a bounded plan scope rather than interoperability evidence.
+The data-phase scope remains DeliveryStatus (I2NP type 10): a 12-byte body,
+21-byte NTCP2/SSU2 short transport message, and 24-byte NTCP2 block before
+frame overhead and padding. Plan 044 replaces the unsupported echo
+assumption with a typed oracle probe and split send/receive observations;
+no reference echo behavior is currently proven, so this remains a bounded
+plan scope rather than interoperability evidence.
 
 The launcher status meanings are fixed: schema-1 `i2pr-interop-status` records
 use fixed phase, result, reason-code, and aggregate counters; `listen` readiness
@@ -100,8 +114,8 @@ sudo -E bash scripts/interop/run-scenario.sh --scenario smoke-i2pd-ipv4 --refere
 ## Result interpretation and cleanup
 
 `blocked_host_contract` means no router process or protocol claim was made.
-`i2pr-mixed-router-profile-not-wired` means the reference runner has not
-connected the launcher to a reference adapter. Rejected
+`i2pr-mixed-router-profile-not-wired` means the active scenario ID is not
+allowlisted for the current mixed-router gate. Rejected
 configuration/state, authentication, timeout, cleanup, and evidence-validation failures remain
 typed and visible. Never convert them to pass or omit them from the closure
 record. An empty evidence directory is not success; Plan 041 reference-pair
@@ -119,7 +133,11 @@ Retain only sanitized typed JSON records and approved hashes. If cleanup is
 uncertain, stop and investigate the disposable host before any later run.
 
 The workflow now exposes the ordered manual Plan 043 lane, but the checkout has
-no completed successful aggregate manifest. Do not describe the gate chain as
-passing, and do not convert the current
-`i2pr-mixed-router-profile-not-wired` blocker or reference-only control records
-into i2pr interoperability evidence.
+no completed successful aggregate manifest. Plan 044 closes the deterministic
+defects (Java RouterInfo export, schema-1 sanitation, gate-specific staging,
+locked Cargo), wires the mixed-runner composition, the strict launcher
+renderer, the non-echo data-phase oracle, and the gate-staging archival
+design, but the authorized Plan 044 mixed-router execution has not been
+performed. Do not describe the gate chain as passing, do not present
+reference-only control records as i2pr mixed-router evidence, and do not
+advertise NTCP2 or close Milestone 3.
