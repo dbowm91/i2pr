@@ -158,10 +158,12 @@ masks for frame-length obfuscation.
 - Max 256 blocks per frame.
 - Unknown block bytes capped at 4096 aggregate
   (`MAX_UNKNOWN_BLOCK_BYTES`).
-- Termination block must appear first (before any other block), max
-  256 additional bytes.
-- Padding block must appear last, only once.
-- Control blocks (types 0-4): no duplicates.
+- Termination may follow earlier valid non-padding blocks, but is the last
+  non-padding block and permits only trailing Padding; it is accepted once
+  with at most 256 additional bytes.
+- Padding may appear once and must be final.
+- General data-phase non-padding blocks may repeat where the specification
+  permits; the separate SessionConfirmed payload parser remains strict.
 - Unknown block types (5-223, 255): authenticated and skipped as
   bounded padding.
 

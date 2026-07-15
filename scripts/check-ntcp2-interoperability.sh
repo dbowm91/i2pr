@@ -32,12 +32,36 @@ if [[ "$scenario_count" -ne 8 ]]; then
   exit 1
 fi
 
+expected_ids=(
+  java-ipv4-inbound-outbound
+  java-ipv6-inbound-outbound
+  java-adversarial-and-resource
+  java-duplicate-link-race
+  i2pd-ipv4-inbound-outbound
+  i2pd-ipv6-inbound-outbound
+  i2pd-adversarial-and-resource
+  i2pd-duplicate-link-race
+)
+for scenario_id in "${expected_ids[@]}"; do
+  count=$(grep -Ec "^id = \"${scenario_id//-/\\-}\"$" "$manifest" || true)
+  if [[ "$count" -ne 1 ]]; then
+    echo "expected exactly one NTCP2 scenario id: $scenario_id (found $count)" >&2
+    exit 1
+  fi
+done
+
+duplicate_ids=$(grep -E '^id = "' "$manifest" | sort | uniq -d || true)
+if [[ -n "$duplicate_ids" ]]; then
+  echo "duplicate NTCP2 scenario id(s): $duplicate_ids" >&2
+  exit 1
+fi
+
 # The committed evidence directory is intentionally text-only and sanitized.
 if find "$evidence" -type f \( -name '*.pcap' -o -name '*.pcapng' -o -name 'router.identity' -o -name 'ntcp2.static.key' \) -print -quit | grep -q .; then
   echo "forbidden NTCP2 evidence artifact present" >&2
   exit 1
 fi
-if find "$evidence" -type f ! -name README.md ! -name '*.tsv' -print0 \
+if find "$evidence" -type f ! -name README.md -print0 \
   | xargs -0 grep -En -- '-----BEGIN .*PRIVATE KEY-----|-----BEGIN OPENSSH PRIVATE KEY-----' >/dev/null 2>&1; then
   echo "private-key material found in NTCP2 evidence" >&2
   exit 1

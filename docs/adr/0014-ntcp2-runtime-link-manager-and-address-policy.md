@@ -77,6 +77,26 @@ authenticated data-phase driver. The bounded link owner provides the later
 handoff point for directional key owners; receive framing, authenticated I2NP
 delivery, and frame-level queue leases remain Plan 036 composition work.
 
+## Plan 037 corrective amendment
+
+The corrective integration review tightens the ownership seams without
+changing the dependency direction. `InboundChunk::into_stream()` now returns
+an `AdmittedInboundStream`, so the non-cloneable pending-handshake permit stays
+with the accepted socket until the wrapper is consumed or dropped. Service
+created links use `ActiveLinkAdmission` and retain an `ActiveLinkPermit` in the
+`LinkHandle`; `Ntcp2RuntimeService::start_link()` is the bounded entry point
+for that path. Each queued frame owns its item and byte release through drop,
+and reader/writer children use the configured cancellation-aware idle/read,
+write, and queue-wait deadlines.
+
+Outbound dial admission is consulted before connect and is cleared only by an
+explicit `DialAttempt::mark_authenticated()` call. These APIs are still
+runtime seams: the current workspace does not yet compose them with the pure
+NTCP2 handshake/data state machines or the synchronous `TransportManager`, and
+the daemon keeps live activation disabled. Adding that composition requires a
+new approved composition boundary (or a narrowly scoped adapter crate) and
+must precede any mixed-router testnet execution.
+
 ## Consequences
 
 The runtime can exercise controlled TCP lifecycle and cleanup without changing

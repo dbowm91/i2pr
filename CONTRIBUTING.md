@@ -143,16 +143,25 @@ debugging and snapshots. `i2pr-runtime` remains the sole production owner of
 Tokio tasks, sockets, timers, channels, and wakeable cancellation; transport
 crates must not grow async traits or plugin registries.
 
-Plan 035 is the controlled runtime TCP lane. Keep address parsing and protocol
-state machines synchronous; only `i2pr-runtime` may own TCP sockets, async I/O,
-deadlines, replay caches, admission counters, bounded channels, and joined
-reader/writer children. Tests may bind loopback addresses and use paused Tokio
-time, but must never contact public I2P peers. Exercise per-IP and IPv4/IPv6
-subnet admission, partial reads/writes, replay expiry/capacity, backoff and
-cancellation, queue/byte denial, duplicate replacement with stale-close
-protection, sibling-child teardown, and redacted diagnostics. Runtime address
-observations are candidates for later policy only: they must not mutate NetDB,
-RouterInfo, or publication state. Run the focused Plan 035 lane with:
+Plans 035 and 037 define the controlled runtime TCP lane. Keep address parsing
+and protocol state machines synchronous; only `i2pr-runtime` may own TCP
+sockets, async I/O, deadlines, replay caches, admission counters, bounded
+channels, queued-frame accounting, and joined reader/writer children. An
+accepted inbound stream must carry its pending admission owner through the
+handshake; authenticated registration must transition to active-link ownership
+without a gap. Actual frame reads and writes use the configured deadline and
+cancellation policy, and queue entries release item/byte accounting on every
+drop path. The general data-phase parser must remain separate from the stricter
+SessionConfirmed parser. These are corrective integration requirements, not a
+claim that the complete adapter or external interoperability exists.
+
+Tests may bind loopback addresses and use paused Tokio time, but must never
+contact public I2P peers. Exercise per-IP and IPv4/IPv6 subnet admission,
+partial reads/writes, replay expiry/capacity, backoff and cancellation,
+queue/byte denial, duplicate replacement with stale-close protection,
+sibling-child teardown, parser sequence boundaries, and redacted diagnostics.
+Runtime address observations are candidates for later policy only: they must
+not mutate NetDB, RouterInfo, or publication state. Run the focused lane with:
 
 ```text
 cargo test -p i2pr-runtime --all-targets
@@ -162,6 +171,11 @@ cargo test -p i2pr-testkit --all-targets
 bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh
 ```
+
+The Plan 037 evidence boundary remains fail-closed: local self-integration and
+testkit results are not Java I2P or i2pd evidence, and no daemon activation or
+support advertisement follows from them. Mixed-router evidence requires the
+authorized private-testnet procedure in `docs/private-testnet.md`.
 
 Plan 024's integrated lane contains named clean-startup, bounded-overload,
 restart-recovery, essential-failure, and simulated-link-fault scenarios plus

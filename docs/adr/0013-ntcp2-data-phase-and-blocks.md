@@ -32,8 +32,10 @@ It does not define a periodic in-session data rekey threshold.
    4, and 254 are implemented for timestamp, options, RouterInfo, I2NP,
    termination, and padding. Unknown types are skipped as bounded padding only
    after authentication, with 256 blocks and 4,096 unknown bytes as aggregate
-   limits. Padding is last; termination cannot share a frame with application
-   or control blocks.
+   limits. General data-phase non-padding blocks may repeat where permitted;
+   Padding is at most once and last, and Termination is at most once and the
+   last non-padding block. The separate SessionConfirmed part-two parser keeps
+   its strict RouterInfo/Options/Padding ordering and singleton rules.
 5. Outbound I2NP blocks consume the existing bounded
    `EncodedI2npMessage`. Inbound I2NP views borrow the authenticated plaintext
    owner and only copy at an explicit transport handoff. RouterInfo is decoded,
@@ -65,3 +67,14 @@ results remain experimental evidence and do not establish interoperability.
 - `crates/i2pr-testkit/src/ntcp2.rs`
 - `tests/fixtures/ntcp2/crypto/manifest.tsv`
 - `plans/034-closure.md`
+
+## Plan 037 corrective amendment
+
+The original singleton and Termination-first wording applied the handshake
+payload constraints to general data frames. The implementation now keeps those
+contexts separate: authenticated general frames accept specification-permitted
+repeated non-padding blocks and allow valid blocks before Termination, while
+still rejecting blocks after Termination except final Padding, duplicate
+Padding, malformed lengths, and excessive unknown bytes. This is a local
+wire-conformance correction; no mixed-router evidence or support advertisement
+is implied.

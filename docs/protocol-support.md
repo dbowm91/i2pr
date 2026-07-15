@@ -5,7 +5,8 @@ available, not just code presence. “Experimental structural subset” means
 bounded codecs exist and are tested locally, but no mixed-router interoperability
 or capability claim exists.
 
-The fine-grained, machine-readable inventory for Milestone 1 is
+The fine-grained, machine-readable inventory through the current Milestone 3
+corrective integration is
 [`specs/support.toml`](../specs/support.toml). Structural entries may be marked
 `experimental` with repository evidence, but remain `advertised = false`; the
 ledger does not itself publish protocol capabilities.
@@ -16,6 +17,11 @@ plus static-key persistence, and Plan 033 adds bounded handshake codecs and
 consuming action-driven state machines. These are experimental local evidence,
 not complete NTCP2 protocol support; no transport capability is advertised or
 published in RouterInfo.
+
+Plan 037 records local corrections to admission ownership, deadline-enforced
+link I/O, queue RAII, and general data-phase block ordering. It does not add a
+complete socket-to-state-machine adapter or mixed-router evidence; NTCP2 rows
+therefore remain experimental and non-advertised.
 Plan 034 adds runtime-neutral authenticated data frames, strict payload
 blocks, and deterministic partial-I/O evidence. The current specification has
 no in-session rekey threshold; counter exhaustion remains terminal and requires
@@ -40,10 +46,10 @@ experimental and non-advertised.
 | I2NP envelope and header variants | Experimental structural subset; not advertised | 1, 3–6 | `specs/protocols/02-i2np.md`, pinned 0.9.69 source in `specs/SOURCES.md` | Locally authored standard/short vectors, truncation, size, checksum, and trailing-byte tests; hashed fixture manifest | None |
 | I2NP type registry and selected body codecs | Experimental structural subset; NetDB body semantics deferred | 1, 4 | `specs/protocols/02-i2np.md`, `crates/i2pr-proto/src/i2np/mod.rs` | Fixed and malformed local vectors for DatabaseLookup, DatabaseSearchReply, DeliveryStatus, DatabaseStore framing, and fixed tunnel framing | None |
 | I2NP tunnel, garlic, data, and later record semantics | Deferred or framing-only | 1, 5–6 | `specs/protocols/02-i2np.md`, `specs/protocols/05-tunnels.md`, `specs/protocols/06-garlic-ecies-leasesets.md` | Bounded `Deferred`/`Opaque` retention and shape checks only; no crypto or state-machine vectors | None |
-| NTCP2 crypto/transcript foundation | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0011, `plans/036-closure.md` | Independent deterministic primitive/transcript vectors, hashed manifest, and Plan 036 evidence review; no router interoperability run | `tests/integration/ntcp2/manifest.toml` pinned but execution blocked |
-| NTCP2 handshake codecs and state machines | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0012, `plans/036-closure.md` | Fixed/malformed/bounded state and policy tests plus fixed-seed local campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; see `tests/integration/ntcp2/evidence/README.md` |
-| NTCP2 authenticated data frames and payload blocks | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0013, `plans/036-closure.md` | Deterministic frame/block vectors, malformed ordering/length/tag tests, partial-I/O cleanup, and local campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked |
-| NTCP2 runtime link manager, addresses, and controlled TCP lifecycle | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0014, `plans/036-closure.md` | Bounded address/admission/replay/backoff/duplicate/cleanup tests plus loopback lifecycle and preflight; no wire-level mixed-router result or publication | Required Java I2P/i2pd lanes blocked |
+| NTCP2 crypto/transcript foundation | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0011, `plans/036-closure.md`, `plans/037-closure.md` | Independent deterministic primitive/transcript vectors and corrective review; no router interoperability run | `tests/integration/ntcp2/manifest.toml` pinned but execution blocked |
+| NTCP2 handshake codecs and state machines | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0012, `plans/036-closure.md`, `plans/037-closure.md` | Fixed/malformed/bounded state and policy tests plus local corrective campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; see `tests/integration/ntcp2/evidence/README.md` |
+| NTCP2 authenticated data frames and payload blocks | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0013, `plans/036-closure.md`, `plans/037-closure.md` | Deterministic frame/block vectors, corrected repeated-block/termination ordering tests, partial-I/O cleanup, and local campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked |
+| NTCP2 runtime link manager, addresses, and controlled TCP lifecycle | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0014, `plans/036-closure.md`, `plans/037-closure.md` | Bounded address/admission/replay/backoff/duplicate/RAII cleanup tests plus loopback lifecycle and preflight; no complete wire-level adapter or mixed-router result | Required Java I2P/i2pd lanes blocked |
 | Reseed and RouterInfo publication | Not implemented | 4 | `specs/protocols/04-reseed-netdb.md` | None imported | None |
 | Network tunnels and transit participation | Not implemented | 5 | `specs/protocols/05-tunnels.md` | None imported | None |
 | Classic LeaseSet structural codec | Experimental structural subset; LeaseSet2-family deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Local Lease/LeaseSet vectors and negative tests; no independent router vectors | None |

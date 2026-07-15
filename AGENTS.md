@@ -49,6 +49,22 @@ These are checked on CI and will reject the change:
 
 If a check fails, fix the boundary, don't suppress the script.
 
+Plan 037 corrective integration is the active Milestone 3 plan. Keep accepted
+inbound streams paired with their non-cloneable pending-handshake permit until
+authentication or a terminal handshake outcome. Runtime link queue entries
+must own their item/byte accounting and release it on write success, failure,
+cancellation, receiver closure, or supervisor teardown. Reader and writer
+children must use the configured cancellation-aware idle/read and write
+deadlines; unrestricted socket I/O is not an accepted adapter path.
+
+The general NTCP2 data-phase parser may accept specification-permitted
+repeated non-padding blocks and late Termination followed only by final
+Padding. SessionConfirmed part-two parsing remains a separate strict parser.
+Local self-handshakes, loopback sockets, vectors, and deterministic testkit
+runs are not Java I2P/i2pd interoperability evidence. Keep the daemon disabled
+and all NTCP2 support rows experimental/non-advertised until sanitized mixed-
+router results, hashes, and run identifiers are committed.
+
 ## Build, Test, and Quality
 
 Toolchain is pinned to Rust 1.95.0 (`rust-toolchain.toml`); MSRV is 1.85
@@ -80,9 +96,10 @@ Focused lanes:
 - Deterministic testkit: `cargo test -p i2pr-testkit --all-targets`.
 
 Runtime tests must use `#[tokio::test(start_paused = true)]` or `ManualClock`
-with fixed seeds and bounded steps. **No wall-clock sleeps, no real sockets, no
-DNS, no public-network traffic in tests.** All transport verification runs
-loopback/private-network only.
+with fixed seeds and bounded steps. **No wall-clock sleeps, no DNS, and no
+public-network traffic in tests.** Runtime-owned socket lifecycle tests may
+use loopback only; all other transport verification uses the testkit or an
+explicitly authorized private network.
 
 ## Coding Conventions
 

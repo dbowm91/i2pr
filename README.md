@@ -76,6 +76,14 @@ loopback listener/dial services, and joined link children. The runtime socket
 surface is disabled outside explicit controlled tests; no public listener,
 automatic address publication, NetDB mutation, mixed-router interoperability, or
 capability advertisement is claimed.
+Plan 037 is the active corrective integration plan. Its boundary keeps inbound
+admission attached to the accepted stream through handshake completion or a
+typed terminal outcome, applies configured cancellation/deadline policy to the
+actual link I/O, and gives each queued frame one bounded ownership path for item
+and byte accounting. It also separates strict SessionConfirmed parsing from
+general data-phase block parsing. These corrections do not yet constitute a
+complete authenticated socket adapter or mixed-router evidence; daemon
+activation remains disabled.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
@@ -170,6 +178,15 @@ typed-result records. The current checkout keeps live activation disabled and
 does not claim mixed-router interoperability until a complete wire-level
 runtime adapter and authorized runs in both directions are available.
 
+Plan 037 corrects the local integration defects found during that review:
+inbound admission now travels with the accepted stream, link queue entries
+release their accounting through RAII, and supervised reader/writer I/O uses
+configured cancellation and deadline bounds. General data-phase block parsing
+also separates its deployed-wire ordering rules from strict SessionConfirmed
+payload parsing. The complete socket-to-state-machine adapter and Java I2P /
+i2pd evidence remain unavailable, so Milestone 3 and all NTCP2 support rows
+remain blocked, experimental, and non-advertised.
+
 The current `i2pr-proto` API uses borrowed cursors and caller-visible maximums,
 strict exact-consumption decoding, canonical immutable mappings, typed
 algorithm/length validation, preserved signed-byte regions, and a bounded I2NP
@@ -217,6 +234,8 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 035 closure record](plans/035-closure.md)
 - [Plan 036 interoperability and adversarial validation](plans/036-m3-interoperability-adversarial-validation-closure.md)
 - [Plan 036 closure record](plans/036-closure.md)
+- [Plan 037 corrective integration and closure](plans/037-m3-corrective-integration-closure.md)
+- [Plan 037 closure record](plans/037-closure.md)
 - [Aggregate Milestone 3 closure record](plans/030-milestone-3-closure.md)
 - [Controlled NTCP2 interoperability lane](tests/integration/ntcp2/README.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
@@ -266,9 +285,12 @@ explicitly aborted before the runtime returns.
 
 Transport changes must keep `i2pr-transport` runtime-neutral and keep
 `i2pr-transport-ntcp2` free of Tokio, filesystem, sockets, and live protocol
-side effects. Plan 035 additionally keeps every TCP listener/stream, async
-deadline, replay-cache owner, admission counter, and reader/writer child inside
-`i2pr-runtime`; controlled sockets remain disabled-by-default test infrastructure.
+side effects. Plans 035 and 037 keep every TCP listener/stream, async deadline,
+replay-cache owner, admission counter, queued-frame owner, and reader/writer
+child inside `i2pr-runtime`; controlled sockets remain disabled-by-default test
+infrastructure. Plan 037 requires the pending admission owner to survive the
+handshake handoff, cancellation to win I/O races, and queue accounting to drop
+exactly once on success, failure, cancellation, or teardown.
 Plans 032–033 additionally keep cryptographic and handshake
 state consuming and secret-safe, persist transport static key/IV material only
 through the versioned storage boundary, and require the hashed fixture
@@ -286,9 +308,10 @@ bash scripts/check-ntcp2-vectors.sh
 ```
 
 Plan 033 also requires the NTCP2 handshake codec/state tests and the separate
-nightly fuzz workspace. Plan 036 adds the fixed-seed 0..255 integrated testkit
-matrix and the sanitized interoperability preflight. These tests are
-deterministic and local; they are not mixed-router or public-network evidence.
+nightly fuzz workspace. Plans 036–037 add the fixed-seed 0..255 integrated
+testkit matrix, parser-boundary regressions, and the sanitized interoperability
+preflight. These tests are deterministic and local; they are not mixed-router
+or public-network evidence.
 
 The Plan 024 integrated validation lane is `cargo test -p i2pr-testkit
 --all-targets`; it runs the five named scenarios and the fixed 32-seed replay

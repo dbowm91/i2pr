@@ -1,9 +1,11 @@
 # `i2pr-runtime` — Deep Dive
 
 The **only production owner of Tokio** in the workspace. Built on top
-of `i2pr-core` (contracts) and `i2pr-transport` (link contracts),
-fulfilling the actions emitted by `i2pr-transport-ntcp2` with real
-sockets, timers, channels, and wakeable cancellation.
+of `i2pr-core` (contracts) and `i2pr-transport` (link contracts), it provides
+the bounded socket, timer, channel, and wakeable-cancellation seam that a
+future adapter can use to fulfill `i2pr-transport-ntcp2` actions. The
+checked-in runtime link helper is still a raw, controlled lifecycle owner; it
+does not claim a complete wire-level handshake or mixed-router exchange.
 
 Path: `crates/i2pr-runtime/`
 
@@ -19,8 +21,9 @@ rest of the world. It is where:
 - Bounded service channels are built (command, event, request,
   latest-state) with resource charging.
 - TCP listeners and link children are owned.
-- NTCP2 handshakes and data-phase frames are driven against real
-  sockets via `read_exact` / `write_all_exact` adapters.
+- NTCP2 action/frame integration has bounded exact-I/O helpers; the complete
+  socket-to-state-machine adapter remains a later composition step and is not
+  represented as interoperability evidence.
 - Privacy-safe runtime snapshots are produced.
 
 The contract that protocol, transport, and storage crates stay free
@@ -63,7 +66,9 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
   `AdmissionRejection`, `AdmissionSnapshot`, `BoundNtcp2Listener`,
   `DialAdmission`, `DialAttempt`, `DialBackoffConfig`,
   `DialBackoffDecision`, `DialBackoffSnapshot`, `DialKey`,
-  `DialKeyError`, `DialOutcome`, `ExactIoError`, `InboundAdmission`,
+  `AdmittedInboundStream`, `ActiveLinkAdmission`, `ActiveLinkPermit`,
+  `ActiveLinkSnapshot`, `DialKeyError`, `DialOutcome`, `ExactIoError`,
+  `InboundAdmission`,
   `InboundChunk`, `InboundPermit`, `IoErrorKind`, `IpPrefixPolicy`,
   `LinkHandle`, `LinkId`, `LinkSendError`, `LinkSnapshot`,
   `LinkTermination`, `ListenerHandle`, `ListenerSnapshot`,
@@ -216,8 +221,9 @@ runtime-boundary check.
 
 ## Tests
 
-All async tests use `#[tokio::test(start_paused = true)]` — no
-wall-clock sleeps, no real sockets, no DNS. Fixed seeds are implicit
+Most async tests use `#[tokio::test(start_paused = true)]`; the two explicit
+socket lifecycle tests use loopback-only sockets and are never public-network
+tests. There are no wall-clock sleeps or DNS lookups. Fixed seeds are implicit
 in the paused runtime.
 
 | Module | Tests | Notable |
@@ -225,7 +231,7 @@ in the paused runtime.
 | `cancel.rs:116-169` | 4 async | `cancellation_before_wait_is_immediate`, `parent_reason_is_visible_to_child`, `all_waiters_wake` |
 | `channel.rs:1575-1908` | 10 | `commands_are_ordered_and_resource_charged_until_processing_finishes`, `synthetic_overload_graph_drains_and_shuts_down_without_usage_or_tasks`, `request_*`, `latest_state_*` |
 | `graph.rs:577-648` | 3 sync | `topological_order_is_lexically_deterministic`, `invalid_graphs_are_rejected_before_startup`, `restartable_services_require_a_policy` |
-| `ntcp2_runtime.rs:1445-1592` | 5 | `admission_is_global_ip_and_subnet_bounded_and_releases`, `replay_cache_fails_closed_and_expires_deterministically`, `loopback_listener_and_exact_io_use_supervised_scope` |
+| `ntcp2_runtime.rs` | 8 | `admission_is_global_ip_and_subnet_bounded_and_releases`, `replay_cache_fails_closed_and_expires_deterministically`, `loopback_listener_and_exact_io_use_supervised_scope`, queue RAII, active-link admission, and repeated teardown tests |
 | `supervisor.rs:1267-1703` | 13 | **`forced_child_cleanup_is_repeatably_joined`** (100-iteration, requires `--test-threads=1`), `panic_is_classified_without_payload`, `forced_shutdown_aborts_and_joins_the_owned_child_scope`, `restartable_services_use_bounded_backoff` |
 
 ## Distinctive design choices
@@ -241,26 +247,33 @@ in the paused runtime.
    lease while waiting for a queue slot.
 4. **`DialKey` redacts its `[u8; 32]` in `Debug`** — renders as
    `DialKey(<redacted>)`.
-5. **`InboundChunk` is a `TcpStream` with an admission permit** —
-   permit RAII decrements admission counters; calling
-   `.into_stream()` drops the permit early.
+5. **`InboundChunk` transfers an admitted stream owner** — the
+   `AdmittedInboundStream` wrapper carries the non-cloneable permit through
+   handshake work; dropping the wrapper releases admission exactly once.
 6. **`LinkHandle` spawns reader and writer as separate supervised
-   children** — each link is two tasks in the `ChildScope`.
-7. **Forced child shutdown uses a bounded poll budget** —
+   children** — each link is two tasks in the `ChildScope`; service-created
+   links retain one active-link lease until the handle is dropped.
+7. **Queue entries are RAII owners** — one queued frame releases its item and
+   byte accounting on write, cancellation, receiver closure, or scope teardown;
+   valid paths leave the underflow counter at zero.
+8. **Forced child shutdown uses a bounded poll budget** —
    `for _ in 0..=MAX_CHILD_TASKS` with `yield_now()` interleaved
    prevents a non-cooperative child from extending shutdown
    indefinitely.
-8. **`ServiceContext` narrows the API surface** — services receive
+9. **`ServiceContext` narrows the API surface** — services receive
    only the context bundle, never a direct handle to the supervisor.
-9. **`RuntimeSnapshot::try_new` sorts channels and resources** —
+10. **`RuntimeSnapshot::try_new` sorts channels and resources** —
    by name and by class — for deterministic diagnostics.
-10. **The `channel` module is the largest file (1908 lines)** —
-    implements four channel paradigms with a shared
-    `CommandSenderInner<T>`.
-11. **No `async fn` in transport contracts** — this crate provides
-    the async bridge via `read_exact` / `write_all_exact`.
-12. **`Ntcp2RuntimeService` is `Clone`** — backed entirely by
-    `Arc`-wrapped shared state.
+11. **The `channel` module is the largest file** — it implements four channel
+   paradigms with a shared `CommandSenderInner<T>`.
+12. **The runtime is a bounded seam, not yet a protocol driver** —
+   `start_link()` enforces runtime ownership after an external authenticated
+   handoff; it does not claim handshake, frame, manager-registration, or
+   mixed-router completion.
+13. **No `async fn` in transport contracts** — this crate provides
+   the async bridge via `read_exact` / `write_all_exact`.
+14. **`Ntcp2RuntimeService` is `Clone`** — backed entirely by
+   `Arc`-wrapped shared state.
 
 ## Cross-references
 
@@ -273,6 +286,7 @@ in the paused runtime.
   `HandshakeAction` / `FrameAction` requests fulfilled here.
 - Plan-of-record: `plans/021-m2-supervision-cancellation.md`,
   `plans/022-m2-bounded-channels-resource-governor.md`,
-  `plans/035-m3-runtime-link-manager-and-addresses.md`.
+  `plans/035-m3-runtime-link-manager-and-addresses.md`,
+  `plans/037-m3-corrective-integration-closure.md`.
 - Closures: `plans/021-closure.md`, `plans/022-closure.md`,
-  `plans/035-closure.md`.
+  `plans/035-closure.md`, `plans/037-closure.md`.

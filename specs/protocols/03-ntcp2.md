@@ -57,8 +57,8 @@ using the 0.9.69 layouts above:
 | SessionCreated | 32-byte AES-obfuscated Y using the continued message-1 AES state, 32-byte AEAD options frame, cleartext padding | 64-byte minimum; 65535-byte wire maximum; 848-byte non-PQ padding maximum; all reserved bytes are zero and timestamp/padding lengths agree |
 | SessionConfirmed | fixed 48-byte encrypted Alice static frame, negotiated encrypted part-two frame | total is at most 65535 bytes; part two is 16..65487 bytes including its tag; plaintext blocks are strictly RouterInfo, optional Options, optional Padding |
 
-The codecs reject truncation, impossible lengths, excessive padding, unknown
-blocks, duplicate optional blocks, and malformed trailing bytes before
+The handshake codecs reject truncation, impossible lengths, excessive padding,
+unknown blocks, duplicate optional blocks, and malformed trailing bytes before
 allocating peer-controlled regions. Message-1/2 trailing regions are admitted
 only as the cleartext padding whose authenticated option length was declared;
 the consuming state machines request bounded reads,
@@ -81,16 +81,17 @@ The runtime-neutral implementation follows the deployed data-phase layout:
 | Surface | Wire/limit | Multiplicity and ordering | Output/policy boundary |
 | --- | --- | --- | --- |
 | Frame | 2-byte obfuscated length; clear ciphertext 16..=65,535 bytes; ChaCha20-Poly1305 tag 16 bytes; plaintext at most 65,519 bytes | one length per complete frame; no allocation before clear validation | `TransmitState`/`ReceiveState`; empty associated data |
-| Timestamp (0) | exactly 4 bytes, unsigned Unix seconds | at most one; ordinary data ordering | typed timestamp; injected clock/skew policy remains outside |
-| Options (1) | at least 12, at most 4,096 bytes; fixed u8/u16 fields plus bounded extensions | at most one | typed bounded options, no string policy |
-| RouterInfo (2) | flags plus verified uncompressed RouterInfo; data-phase encoded bytes at most 65,515 | at most one; no NetDB mutation | signed/key-bound update candidate |
+| Timestamp (0) | exactly 4 bytes, unsigned Unix seconds | repeated non-padding blocks are accepted in general data frames | typed timestamp; injected clock/skew policy remains outside |
+| Options (1) | at least 12, at most 4,096 bytes; fixed u8/u16 fields plus bounded extensions | repeated non-padding blocks are accepted in general data frames | typed bounded options, no string policy |
+| RouterInfo (2) | flags plus verified uncompressed RouterInfo; data-phase encoded bytes at most 65,515 | repeated non-padding blocks are accepted in general data frames; no NetDB mutation | signed/key-bound update candidate |
 | I2NP (3) | complete 9-byte NTCP2 short header plus bounded body; no fragmentation | multiple allowed | consuming outbound owner; borrowed authenticated inbound view |
-| Termination (4) | 8-byte valid-frame count, 1-byte reason, at most 256 additional bytes | at most one; terminal and not combined with application/control blocks | bounded reason enum; no remote text retention |
+| Termination (4) | 8-byte valid-frame count, 1-byte reason, at most 256 additional bytes | at most one; last non-padding block, with only trailing Padding permitted | bounded reason enum; no remote text retention |
 | Padding (254) | 0..=65,516 bytes | at most one and last | length-only observation |
 | Unknown | 3-byte header plus bounded body | skipped only after AEAD; max 256 blocks and 4,096 unknown bytes | treated as bounded padding, never policy |
 
-The parser rejects truncated headers/bodies, invalid fixed lengths, duplicate
-control blocks, padding or termination order violations, oversized fields,
+The general data-phase parser rejects truncated headers/bodies, invalid fixed
+lengths, duplicate Padding or Termination, padding or termination order
+violations, oversized fields,
 malformed RouterInfo/signatures, and trailing plaintext. AEAD authentication
 always precedes block parsing. `i2pr-transport-ntcp2` does not own sockets,
 runtime queues, coalescing waits, deadlines, cancellation, NetDB mutation,

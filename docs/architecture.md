@@ -215,17 +215,21 @@ Each authenticated block owns a 1-byte type, 2-byte big-endian payload length,
 and bounded payload. Types 0 (timestamp), 1 (options), 2 (RouterInfo), 3
 (I2NP), 4 (termination), and 254 (padding) have typed codecs. Unknown types
 are skipped only after authentication and count against the per-frame block
-and unknown-byte budgets. Padding is last; termination is terminal and may
-not be combined with application/control payloads. RouterInfo is verified and
-returned as an update candidate; it never mutates NetDB in this layer.
+and unknown-byte budgets. SessionConfirmed part two remains structurally
+strict. General data-phase parsing is a separate Plan 037 boundary: it must
+accept every specification-permitted sequence, including permitted repeated
+blocks, while keeping padding final and termination terminal. RouterInfo is
+verified and returned as an update candidate; it never mutates NetDB in this
+layer.
 
 Outbound I2NP blocks consume `EncodedI2npMessage` and append its bytes without
 an implicit clone. Inbound frames retain one bounded authenticated plaintext
 owner while parsed I2NP views are borrowed; an explicit receiver handoff may
-create the transport owner. Future runtime integration may attach exact
-`BufferedBytes`/queue leases to queued, ciphertext, plaintext, and partial
-frame owners, but Plan 034 itself does not own those queues. Partial reads,
-writes, deadlines, cancellation, and coalescing waits belong to Plan 035.
+create the transport owner. Plan 035 established the socket ownership seam;
+Plan 037 requires the runtime adapter to attach exact bounded owners to
+queued, ciphertext, plaintext, and partial-frame work. Plan 034 itself does
+not own those queues. Partial reads, writes, deadlines, cancellation, and
+coalescing waits remain runtime concerns.
 
 The current NTCP2 specification defines no periodic data-phase rekey
 threshold. This implementation therefore treats the last permitted nonce and
@@ -295,6 +299,24 @@ i2pd results are an explicit blocker in `plans/036-closure.md`, not local
 interoperability evidence. The testkit's 0..255 fixed-seed matrix and pure
 NTCP2 fuzz campaigns remain useful bounded evidence but cannot advance the
 support ledger.
+
+### Plan 037 corrective integration boundary
+
+Plan 037 corrects the local ownership defects exposed by the Plan 036 review.
+An accepted inbound stream is now transferred as an `AdmittedInboundStream`
+that retains its non-cloneable pending-handshake permit. Link queue entries
+reserve item/byte capacity once and release it by RAII on successful write,
+failure, cancellation, receiver closure, or child-scope teardown. Reader and
+writer children use cancellation-aware read-idle/write deadlines; dial retry
+backoff is consulted before connect and cleared only after explicit handshake
+authentication.
+
+The general data-phase parser accepts specification-permitted repeated
+non-padding blocks and allows Termination after earlier valid blocks, with
+only final Padding afterward. SessionConfirmed part-two parsing remains a
+separate strict parser. These are local corrective guarantees; the runtime
+still does not expose a complete socket-to-state-machine adapter, mixed-router
+evidence, RouterInfo publication, NetDB mutation, or daemon activation.
 
 Generated and reconstructed private seeds are held by zeroizing owners during
 crypto operations. Storage encoding and file-read buffers are also zeroizing;

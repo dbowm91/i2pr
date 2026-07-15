@@ -22,6 +22,12 @@ integer `schema` field. Each `[[surface]]` entry contains `id`, `protocol`,
 `structure`, `scope`, `status`, `evidence` (an array of repository references),
 and `advertised` (a boolean).
 
+Plan 037's local NTCP2 corrections are evidence for bounded ownership and
+parser behavior only. They do not satisfy the mixed-router requirement: Java
+I2P and i2pd results must include sanitized run records, artifact/configuration
+hashes, and reproduction identifiers before any NTCP2 row can advance or be
+advertised.
+
 The allowed `status` values are `not-implemented`, `implemented`,
 `compatibility`, `experimental`, `deferred`, `legacy-reject`, and `open`.
 `not-implemented` is the initial state for Milestone 1. `implemented` is only

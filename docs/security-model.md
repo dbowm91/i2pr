@@ -220,8 +220,10 @@ counter exhaustion put the receive/transmit owner into a terminal state.
 
 The authenticated plaintext has explicit limits for total bytes, block count,
 unknown bytes, options, RouterInfo, I2NP messages, padding, and termination
-metadata. Duplicate control blocks, conflicting termination/application
-payloads, trailing headers, and oversized fields fail closed. RouterInfo
+metadata. General data-phase non-padding blocks may repeat where permitted;
+Termination is accepted after earlier valid blocks but must be the final
+non-padding block, and Padding remains single and final. Invalid blocks after
+Termination, trailing headers, and oversized fields fail closed. RouterInfo
 signature and authenticated-link static-key checks produce candidates only;
 they do not update NetDB. Unknown blocks are treated as bounded padding only
 after authentication and cannot bypass the aggregate budget.

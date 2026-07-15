@@ -7,13 +7,16 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use i2pr_core::CancellationReason;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
@@ -390,9 +393,21 @@ where
     if buffer.is_empty() {
         return Ok(());
     }
+    if cancellation.is_cancelled() {
+        return Err(ExactIoError {
+            kind: IoErrorKind::Cancelled,
+        });
+    }
+    let remaining = deadline.remaining();
+    if remaining.is_zero() {
+        return Err(ExactIoError {
+            kind: IoErrorKind::Deadline,
+        });
+    }
     tokio::select! {
+        biased;
         _ = cancellation.cancelled() => Err(ExactIoError { kind: IoErrorKind::Cancelled }),
-        result = tokio::time::timeout(deadline.remaining(), reader.read_exact(buffer)) => {
+        result = tokio::time::timeout(remaining, reader.read_exact(buffer)) => {
             match result {
                 Ok(Ok(_)) => Ok(()),
                 Ok(Err(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -418,9 +433,21 @@ where
     if buffer.is_empty() {
         return Ok(());
     }
+    if cancellation.is_cancelled() {
+        return Err(ExactIoError {
+            kind: IoErrorKind::Cancelled,
+        });
+    }
+    let remaining = deadline.remaining();
+    if remaining.is_zero() {
+        return Err(ExactIoError {
+            kind: IoErrorKind::Deadline,
+        });
+    }
     tokio::select! {
+        biased;
         _ = cancellation.cancelled() => Err(ExactIoError { kind: IoErrorKind::Cancelled }),
-        result = tokio::time::timeout(deadline.remaining(), writer.write_all(buffer)) => {
+        result = tokio::time::timeout(remaining, writer.write_all(buffer)) => {
             match result {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
@@ -612,7 +639,7 @@ fn decrement<K: Eq + std::hash::Hash>(map: &mut HashMap<K, usize>, key: K) {
 /// A received stream waiting for a supervised link handoff.
 pub struct InboundChunk {
     stream: TcpStream,
-    permit: Option<InboundPermit>,
+    permit: InboundPermit,
     family: AddressFamily,
 }
 
@@ -632,10 +659,85 @@ impl InboundChunk {
         self.family
     }
 
-    /// Transfers the accepted stream to a link owner.
-    pub fn into_stream(mut self) -> TcpStream {
-        let _ = self.permit.take();
-        self.stream
+    /// Transfers the accepted stream and its admission lease together.
+    ///
+    /// The returned wrapper must remain owned by the handshake driver until
+    /// authentication or a terminal failure. Dropping it releases admission.
+    pub fn into_stream(self) -> AdmittedInboundStream {
+        AdmittedInboundStream {
+            stream: self.stream,
+            permit: self.permit,
+            family: self.family,
+        }
+    }
+}
+
+/// An accepted stream whose pending-handshake admission lease is still held.
+pub struct AdmittedInboundStream {
+    stream: TcpStream,
+    permit: InboundPermit,
+    family: AddressFamily,
+}
+
+impl fmt::Debug for AdmittedInboundStream {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AdmittedInboundStream")
+            .field("family", &self.family)
+            .field("stream", &"<owned>")
+            .field("permit", &"<held>")
+            .finish()
+    }
+}
+
+impl AdmittedInboundStream {
+    /// Returns the coarse address family.
+    pub const fn family(&self) -> AddressFamily {
+        self.family
+    }
+
+    /// Splits the stream from its still-held admission lease.
+    pub fn into_parts(self) -> (TcpStream, InboundPermit, AddressFamily) {
+        let Self {
+            stream,
+            permit,
+            family,
+        } = self;
+        (stream, permit, family)
+    }
+}
+
+impl AsyncRead for AdmittedInboundStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(context, buffer)
+    }
+}
+
+impl AsyncWrite for AdmittedInboundStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(context)
     }
 }
 
@@ -744,11 +846,18 @@ impl BoundNtcp2Listener {
                         };
                         let chunk = InboundChunk {
                             stream,
-                            permit: Some(permit),
+                            permit,
                             family: AddressFamily::of(address.ip()),
                         };
-                        if sender.send(chunk).await.is_err() {
-                            return Ok(());
+                        tokio::select! {
+                            biased;
+                            _ = child.cancelled() => return Ok(()),
+                            _ = task_cancellation.cancelled() => return Ok(()),
+                            result = sender.send(chunk) => {
+                                if result.is_err() {
+                                    return Ok(());
+                                }
+                            }
                         }
                     }
                 }
@@ -1055,6 +1164,8 @@ pub enum DialOutcome {
 pub struct DialAttempt {
     stream: TcpStream,
     family: AddressFamily,
+    key: DialKey,
+    backoff: DialAdmission,
 }
 
 impl fmt::Debug for DialAttempt {
@@ -1076,6 +1187,14 @@ impl DialAttempt {
     /// Transfers the socket to a link owner.
     pub fn into_stream(self) -> TcpStream {
         self.stream
+    }
+
+    /// Marks the attempt authenticated and clears its retry backoff.
+    ///
+    /// A successful TCP connect alone is not sufficient to clear backoff;
+    /// callers must invoke this only after the NTCP2 handshake authenticates.
+    pub fn mark_authenticated(&self) {
+        self.backoff.clear(self.key);
     }
 }
 
@@ -1135,7 +1254,139 @@ pub struct LinkSnapshot {
     pub written_bytes: u64,
     /// Whether link teardown has started.
     pub closed: bool,
+    /// Number of attempted queue releases that found no matching reservation.
+    pub queue_release_underflows: u64,
 }
+
+/// A bounded runtime owner for authenticated link slots.
+#[derive(Clone)]
+pub struct ActiveLinkAdmission {
+    maximum: usize,
+    used: Arc<AtomicUsize>,
+}
+
+impl fmt::Debug for ActiveLinkAdmission {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ActiveLinkAdmission(..)")
+    }
+}
+
+impl ActiveLinkAdmission {
+    /// Creates an active-link owner with a positive capacity.
+    pub fn new(maximum: usize) -> Result<Self, Ntcp2RuntimeConfigError> {
+        if maximum == 0 {
+            return Err(Ntcp2RuntimeConfigError::ZeroLimit {
+                kind: RuntimeLimitKind::ActiveLinks,
+            });
+        }
+        Ok(Self {
+            maximum,
+            used: Arc::new(AtomicUsize::new(0)),
+        })
+    }
+
+    /// Attempts to reserve one active-link slot.
+    pub fn admit(&self) -> Result<ActiveLinkPermit, ActiveLinkAdmissionError> {
+        let mut used = self.used.load(Ordering::Acquire);
+        loop {
+            if used >= self.maximum {
+                return Err(ActiveLinkAdmissionError::LimitReached {
+                    maximum: self.maximum,
+                });
+            }
+            match self.used.compare_exchange_weak(
+                used,
+                used + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Ok(ActiveLinkPermit {
+                        used: Arc::clone(&self.used),
+                    });
+                }
+                Err(current) => used = current,
+            }
+        }
+    }
+
+    /// Returns the privacy-safe active-link count and capacity.
+    pub fn snapshot(&self) -> ActiveLinkSnapshot {
+        ActiveLinkSnapshot {
+            active: self.used.load(Ordering::Acquire),
+            capacity: self.maximum,
+        }
+    }
+}
+
+/// Typed active-link admission failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActiveLinkAdmissionError {
+    /// The configured active-link limit is full.
+    LimitReached { maximum: usize },
+}
+
+impl fmt::Display for ActiveLinkAdmissionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LimitReached { maximum } => {
+                write!(formatter, "active NTCP2 link limit reached: {maximum}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ActiveLinkAdmissionError {}
+
+/// One non-cloneable active-link slot lease.
+pub struct ActiveLinkPermit {
+    used: Arc<AtomicUsize>,
+}
+
+impl fmt::Debug for ActiveLinkPermit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ActiveLinkPermit(..)")
+    }
+}
+
+impl Drop for ActiveLinkPermit {
+    fn drop(&mut self) {
+        let _ = self
+            .used
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_sub(1)
+            });
+    }
+}
+
+/// Privacy-safe active-link counters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActiveLinkSnapshot {
+    /// Current active-link leases.
+    pub active: usize,
+    /// Configured active-link capacity.
+    pub capacity: usize,
+}
+
+/// Failure while creating a resource-owned link.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LinkStartError {
+    /// No active-link slot was available.
+    ActiveLink(ActiveLinkAdmissionError),
+    /// The child scope could not retain a reader or writer child.
+    ChildScope(ChildScopeError),
+}
+
+impl fmt::Display for LinkStartError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ActiveLink(error) => error.fmt(formatter),
+            Self::ChildScope(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for LinkStartError {}
 
 struct LinkState {
     closed: AtomicBool,
@@ -1143,6 +1394,114 @@ struct LinkState {
     queued_bytes: AtomicUsize,
     read_bytes: AtomicU64,
     written_bytes: AtomicU64,
+    queue_release_underflows: AtomicU64,
+}
+
+struct QueuedFrame {
+    bytes: Vec<u8>,
+    state: Arc<LinkState>,
+}
+
+impl Drop for QueuedFrame {
+    fn drop(&mut self) {
+        release_counter(
+            &self.state.queued_items,
+            1,
+            &self.state.queue_release_underflows,
+        );
+        release_counter(
+            &self.state.queued_bytes,
+            self.bytes.len(),
+            &self.state.queue_release_underflows,
+        );
+    }
+}
+
+fn release_counter(counter: &AtomicUsize, amount: usize, underflows: &AtomicU64) {
+    let result = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+        value.checked_sub(amount)
+    });
+    if result.is_err() {
+        underflows.fetch_add(1, Ordering::Relaxed);
+        counter.store(0, Ordering::Release);
+    }
+}
+
+fn reserve_queue(
+    state: &LinkState,
+    length: usize,
+    maximum_items: usize,
+    maximum_bytes: usize,
+) -> bool {
+    if length > maximum_bytes {
+        return false;
+    }
+    let mut items = state.queued_items.load(Ordering::Acquire);
+    loop {
+        if items >= maximum_items {
+            return false;
+        }
+        match state.queued_items.compare_exchange_weak(
+            items,
+            items + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => break,
+            Err(current) => items = current,
+        }
+    }
+
+    let mut bytes = state.queued_bytes.load(Ordering::Acquire);
+    loop {
+        let Some(next) = bytes.checked_add(length) else {
+            state.queued_items.fetch_sub(1, Ordering::AcqRel);
+            return false;
+        };
+        if next > maximum_bytes {
+            state.queued_items.fetch_sub(1, Ordering::AcqRel);
+            return false;
+        }
+        match state.queued_bytes.compare_exchange_weak(
+            bytes,
+            next,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(current) => bytes = current,
+        }
+    }
+}
+
+async fn read_once_bounded<R>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    idle: Duration,
+    cancellation: &CancellationToken,
+) -> Result<usize, ExactIoError>
+where
+    R: AsyncRead + Unpin,
+{
+    if cancellation.is_cancelled() {
+        return Err(ExactIoError {
+            kind: IoErrorKind::Cancelled,
+        });
+    }
+    if idle.is_zero() {
+        return Err(ExactIoError {
+            kind: IoErrorKind::Deadline,
+        });
+    }
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Err(ExactIoError { kind: IoErrorKind::Cancelled }),
+        result = tokio::time::timeout(idle, reader.read(buffer)) => match result {
+            Ok(Ok(length)) => Ok(length),
+            Ok(Err(_)) => Err(ExactIoError { kind: IoErrorKind::Failed }),
+            Err(_) => Err(ExactIoError { kind: IoErrorKind::Deadline }),
+        },
+    }
 }
 
 /// An owned link façade backed by supervised reader/writer children.
@@ -1150,10 +1509,11 @@ pub struct LinkHandle {
     id: u64,
     family: AddressFamily,
     cancellation: CancellationToken,
-    sender: mpsc::Sender<Vec<u8>>,
+    sender: mpsc::Sender<QueuedFrame>,
     state: Arc<LinkState>,
     maximum_items: usize,
     maximum_bytes: usize,
+    _active_permit: Option<ActiveLinkPermit>,
 }
 
 impl fmt::Debug for LinkHandle {
@@ -1176,7 +1536,53 @@ impl LinkHandle {
         id: u64,
         limits: Ntcp2RuntimeLimits,
     ) -> Result<Self, ChildScopeError> {
-        let (sender, mut receiver): (mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>) =
+        Self::start_with_deadlines(
+            scope,
+            stream,
+            family,
+            id,
+            limits,
+            Ntcp2RuntimeDeadlines::default(),
+        )
+    }
+
+    /// Starts a link whose actual child I/O uses the supplied deadlines.
+    pub fn start_with_deadlines(
+        scope: &ChildScope,
+        stream: TcpStream,
+        family: AddressFamily,
+        id: u64,
+        limits: Ntcp2RuntimeLimits,
+        deadlines: Ntcp2RuntimeDeadlines,
+    ) -> Result<Self, ChildScopeError> {
+        Self::start_inner(scope, stream, family, id, limits, deadlines, None)
+    }
+
+    /// Starts a link while retaining an active-link lease until link drop.
+    pub fn start_with_admission(
+        scope: &ChildScope,
+        stream: TcpStream,
+        family: AddressFamily,
+        id: u64,
+        limits: Ntcp2RuntimeLimits,
+        deadlines: Ntcp2RuntimeDeadlines,
+        admission: &ActiveLinkAdmission,
+    ) -> Result<Self, LinkStartError> {
+        let permit = admission.admit().map_err(LinkStartError::ActiveLink)?;
+        Self::start_inner(scope, stream, family, id, limits, deadlines, Some(permit))
+            .map_err(LinkStartError::ChildScope)
+    }
+
+    fn start_inner(
+        scope: &ChildScope,
+        stream: TcpStream,
+        family: AddressFamily,
+        id: u64,
+        limits: Ntcp2RuntimeLimits,
+        deadlines: Ntcp2RuntimeDeadlines,
+        active_permit: Option<ActiveLinkPermit>,
+    ) -> Result<Self, ChildScopeError> {
+        let (sender, mut receiver): (mpsc::Sender<QueuedFrame>, mpsc::Receiver<QueuedFrame>) =
             mpsc::channel(limits.max_link_queue_items);
         let cancellation = CancellationToken::new();
         let shared = Arc::new(LinkState {
@@ -1185,6 +1591,7 @@ impl LinkHandle {
             queued_bytes: AtomicUsize::new(0),
             read_bytes: AtomicU64::new(0),
             written_bytes: AtomicU64::new(0),
+            queue_release_underflows: AtomicU64::new(0),
         });
         let (mut reader, mut writer) = stream.into_split();
         let reader_cancel = cancellation.clone();
@@ -1195,9 +1602,15 @@ impl LinkHandle {
             let mut buffer = [0_u8; 4096];
             loop {
                 tokio::select! {
+                    biased;
                     _ = child.cancelled() => break,
                     _ = reader_cancel.cancelled() => break,
-                    result = reader.read(&mut buffer) => match result {
+                    result = read_once_bounded(
+                        &mut reader,
+                        &mut buffer,
+                        deadlines.read_idle,
+                        &reader_cancel,
+                    ) => match result {
                         Ok(0) => {
                             reader_state.closed.store(true, Ordering::Release);
                             let _ = reader_cancel.cancel(CancellationReason::ParentScope);
@@ -1216,28 +1629,40 @@ impl LinkHandle {
             }
             Ok(())
         })?;
-        scope.spawn(move |child| async move {
+        if let Err(error) = scope.spawn(move |child| async move {
             loop {
                 tokio::select! {
+                    biased;
                     _ = child.cancelled() => break,
                     _ = writer_cancel.cancelled() => break,
                     item = receiver.recv() => match item {
-                        Some(bytes) => {
-                            if writer.write_all(&bytes).await.is_err() {
+                        Some(entry) => {
+                            let length = entry.bytes.len();
+                            let write_result = match Ntcp2Deadline::after(deadlines.write) {
+                                Ok(deadline) => write_all_exact(
+                                    &mut writer,
+                                    &entry.bytes,
+                                    deadline,
+                                    &writer_cancel,
+                                ).await,
+                                Err(_) => Err(ExactIoError { kind: IoErrorKind::Deadline }),
+                            };
+                            if write_result.is_err() {
                                 writer_state.closed.store(true, Ordering::Release);
                                 let _ = writer_cancel.cancel(CancellationReason::ParentScope);
                                 break;
                             }
-                            writer_state.written_bytes.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-                            writer_state.queued_items.fetch_sub(1, Ordering::Relaxed);
-                            writer_state.queued_bytes.fetch_sub(bytes.len(), Ordering::Relaxed);
+                            writer_state.written_bytes.fetch_add(length as u64, Ordering::Relaxed);
                         }
                         None => break,
                     }
                 }
             }
             Ok(())
-        })?;
+        }) {
+            let _ = cancellation.cancel(CancellationReason::ParentScope);
+            return Err(error);
+        }
         Ok(Self {
             id,
             family,
@@ -1246,6 +1671,7 @@ impl LinkHandle {
             state: shared,
             maximum_items: limits.max_link_queue_items,
             maximum_bytes: limits.max_link_queue_bytes,
+            _active_permit: active_permit,
         })
     }
 
@@ -1263,19 +1689,18 @@ impl LinkHandle {
             return Err(LinkSendError::Closed);
         }
         let length = bytes.len();
-        let previous_items = self.state.queued_items.fetch_add(1, Ordering::AcqRel);
-        let previous_bytes = self.state.queued_bytes.fetch_add(length, Ordering::AcqRel);
-        if previous_items >= self.maximum_items
-            || previous_bytes.saturating_add(length) > self.maximum_bytes
-        {
-            self.state.queued_items.fetch_sub(1, Ordering::AcqRel);
-            self.state.queued_bytes.fetch_sub(length, Ordering::AcqRel);
+        if !reserve_queue(&self.state, length, self.maximum_items, self.maximum_bytes) {
             return Err(LinkSendError::QueueFull);
         }
+        let entry = QueuedFrame {
+            bytes,
+            state: Arc::clone(&self.state),
+        };
         let send = tokio::select! {
+            biased;
             _ = cancellation.cancelled() => Err(LinkSendError::Cancelled),
             _ = self.cancellation.cancelled() => Err(LinkSendError::Closed),
-            result = tokio::time::timeout(deadline.remaining(), self.sender.send(bytes)) => {
+            result = tokio::time::timeout(deadline.remaining(), self.sender.send(entry)) => {
                 match result {
                     Ok(Ok(())) => Ok(WriteOutcome::Accepted),
                     Ok(Err(_)) => Err(LinkSendError::Closed),
@@ -1283,11 +1708,19 @@ impl LinkHandle {
                 }
             }
         };
-        if send.is_err() {
-            self.state.queued_items.fetch_sub(1, Ordering::AcqRel);
-            self.state.queued_bytes.fetch_sub(length, Ordering::AcqRel);
-        }
         send
+    }
+
+    /// Queues one bounded write using the configured queue-wait deadline.
+    pub async fn send_with_deadlines(
+        &self,
+        bytes: Vec<u8>,
+        deadlines: Ntcp2RuntimeDeadlines,
+        cancellation: &CancellationToken,
+    ) -> Result<WriteOutcome, LinkSendError> {
+        let deadline =
+            Ntcp2Deadline::after(deadlines.queue_wait).map_err(|_| LinkSendError::QueueFull)?;
+        self.send(bytes, deadline, cancellation).await
     }
 
     /// Requests cancellation; the service scope remains responsible for join.
@@ -1308,6 +1741,7 @@ impl LinkHandle {
             read_bytes: self.state.read_bytes.load(Ordering::Acquire),
             written_bytes: self.state.written_bytes.load(Ordering::Acquire),
             closed: self.state.closed.load(Ordering::Acquire),
+            queue_release_underflows: self.state.queue_release_underflows.load(Ordering::Acquire),
         }
     }
 }
@@ -1331,6 +1765,30 @@ pub enum Ntcp2EventKind {
     LinkReplaced,
     /// Link closed.
     LinkClosed,
+    /// The bounded handshake deadline elapsed.
+    HandshakeTimeout,
+    /// Replay admission rejected the handshake token.
+    ReplayRejected,
+    /// Peer timestamp was outside the configured skew window.
+    SkewRejected,
+    /// Authenticated peer identity, static key, or network did not match.
+    PeerMismatch,
+    /// A handshake message was malformed or outside its bounds.
+    MalformedHandshake,
+    /// Handshake or frame authentication failed.
+    AuthenticationFailed,
+    /// An authenticated frame or block was malformed.
+    FrameRejected,
+    /// A bounded queue or resource could not admit work.
+    QueueDenied,
+    /// A read-idle deadline elapsed.
+    ReadDeadline,
+    /// A write deadline elapsed.
+    WriteDeadline,
+    /// The link closed through a typed orderly termination.
+    OrderlyTermination,
+    /// Cleanup did not complete within the owning scope.
+    CleanupFailure,
 }
 
 /// Privacy-safe runtime event.
@@ -1349,6 +1807,8 @@ pub struct Ntcp2Event {
 pub struct RuntimeSnapshot {
     /// Admission counters.
     pub admission: AdmissionSnapshot,
+    /// Active-link lease counters.
+    pub active_links: ActiveLinkSnapshot,
     /// Replay counters.
     pub replay: ReplayCacheSnapshot,
     /// Backoff counters.
@@ -1360,6 +1820,7 @@ pub struct RuntimeSnapshot {
 pub struct Ntcp2RuntimeService {
     config: Ntcp2RuntimeConfig,
     admission: InboundAdmission,
+    active_links: ActiveLinkAdmission,
     replay: ReplayCache,
     backoff: DialAdmission,
 }
@@ -1376,6 +1837,7 @@ impl Ntcp2RuntimeService {
         config.validate()?;
         Ok(Self {
             admission: InboundAdmission::new(config)?,
+            active_links: ActiveLinkAdmission::new(config.limits.max_active_links)?,
             replay: ReplayCache::new(config.limits.max_replay_entries)?,
             backoff: DialAdmission::new(
                 DialBackoffConfig::default(),
@@ -1403,15 +1865,52 @@ impl Ntcp2RuntimeService {
         address: SocketAddr,
         cancellation: &CancellationToken,
     ) -> Result<DialAttempt, DialOutcome> {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        address.hash(&mut hasher);
+        let digest = hasher.finish().to_be_bytes();
+        let mut key_bytes = [0_u8; 32];
+        for chunk in key_bytes.chunks_exact_mut(digest.len()) {
+            chunk.copy_from_slice(&digest);
+        }
+        self.dial_with_key(address, DialKey::new(key_bytes), cancellation)
+            .await
+    }
+
+    /// Dials one target after consulting the caller-supplied retry key.
+    ///
+    /// A connected [`DialAttempt`] retains the key and backoff owner. The
+    /// caller must call [`DialAttempt::mark_authenticated`] after the
+    /// complete handshake; TCP connect alone never clears retry state.
+    pub async fn dial_with_key(
+        &self,
+        address: SocketAddr,
+        key: DialKey,
+        cancellation: &CancellationToken,
+    ) -> Result<DialAttempt, DialOutcome> {
+        if !matches!(self.backoff.check(key), DialBackoffDecision::Allowed) {
+            return Err(DialOutcome::ResourceDenied);
+        }
         let deadline = Ntcp2Deadline::after(self.config.deadlines.connect)
             .map_err(|_| DialOutcome::Deadline)?;
         tokio::select! {
+            biased;
             _ = cancellation.cancelled() => Err(DialOutcome::Cancelled),
             result = tokio::time::timeout(deadline.remaining(), TcpStream::connect(address)) => {
                 match result {
-                    Ok(Ok(stream)) => Ok(DialAttempt { stream, family: AddressFamily::of(address.ip()) }),
-                    Ok(Err(_)) => Err(DialOutcome::Failed),
-                    Err(_) => Err(DialOutcome::Deadline),
+                    Ok(Ok(stream)) => Ok(DialAttempt {
+                        stream,
+                        family: AddressFamily::of(address.ip()),
+                        key,
+                        backoff: self.backoff.clone(),
+                    }),
+                    Ok(Err(_)) => {
+                        let _ = self.backoff.record_failure(key);
+                        Err(DialOutcome::Failed)
+                    }
+                    Err(_) => {
+                        let _ = self.backoff.record_failure(key);
+                        Err(DialOutcome::Deadline)
+                    }
                 }
             }
         }
@@ -1432,10 +1931,37 @@ impl Ntcp2RuntimeService {
         &self.backoff
     }
 
+    /// Starts a supervised link while enforcing the configured active-link
+    /// limit. The supplied socket must already have completed authentication
+    /// in the caller's runtime-owned handshake driver.
+    pub fn start_link(
+        &self,
+        scope: &ChildScope,
+        stream: TcpStream,
+        family: AddressFamily,
+        id: u64,
+    ) -> Result<LinkHandle, LinkStartError> {
+        LinkHandle::start_with_admission(
+            scope,
+            stream,
+            family,
+            id,
+            self.config.limits,
+            self.config.deadlines,
+            &self.active_links,
+        )
+    }
+
+    /// Returns active-link lease counters.
+    pub fn active_link_snapshot(&self) -> ActiveLinkSnapshot {
+        self.active_links.snapshot()
+    }
+
     /// Returns aggregate privacy-safe counters.
     pub fn snapshot(&self) -> RuntimeSnapshot {
         RuntimeSnapshot {
             admission: self.admission.snapshot(),
+            active_links: self.active_links.snapshot(),
             replay: self.replay.snapshot(),
             backoff: self.backoff.snapshot(),
         }
@@ -1534,6 +2060,7 @@ mod tests {
         let mut client = client.expect("connect");
         let incoming = listener.next().await.expect("incoming");
         let mut server = incoming.into_stream();
+        assert_eq!(service.snapshot().admission.pending, 1);
         let deadline = Ntcp2Deadline::after(Duration::from_secs(5)).expect("deadline");
         client.write_all(b"ok").await.expect("write");
         let mut bytes = [0; 2];
@@ -1541,6 +2068,7 @@ mod tests {
             .await
             .expect("read");
         assert_eq!(&bytes, b"ok");
+        drop(server);
         listener.shutdown();
         let _ = children.shutdown().await;
         assert_eq!(service.snapshot().admission.pending, 0);
@@ -1588,5 +2116,71 @@ mod tests {
         let report = children.shutdown().await;
         assert_eq!(report.joined(), 2);
         assert!(link.snapshot().closed);
+        assert_eq!(link.snapshot().queued_items, 0);
+        assert_eq!(link.snapshot().queued_bytes, 0);
+        assert_eq!(link.snapshot().queue_release_underflows, 0);
+    }
+
+    #[test]
+    fn queue_entry_drop_releases_exactly_once() {
+        let state = Arc::new(LinkState {
+            closed: AtomicBool::new(false),
+            queued_items: AtomicUsize::new(0),
+            queued_bytes: AtomicUsize::new(0),
+            read_bytes: AtomicU64::new(0),
+            written_bytes: AtomicU64::new(0),
+            queue_release_underflows: AtomicU64::new(0),
+        });
+        assert!(reserve_queue(&state, 7, 1, 7));
+        let entry = QueuedFrame {
+            bytes: vec![0; 7],
+            state: Arc::clone(&state),
+        };
+        assert_eq!(state.queued_items.load(Ordering::Acquire), 1);
+        assert_eq!(state.queued_bytes.load(Ordering::Acquire), 7);
+        drop(entry);
+        assert_eq!(state.queued_items.load(Ordering::Acquire), 0);
+        assert_eq!(state.queued_bytes.load(Ordering::Acquire), 0);
+        assert_eq!(state.queue_release_underflows.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn active_link_admission_is_exact_and_raii() {
+        let admission = ActiveLinkAdmission::new(1).expect("admission");
+        let permit = admission.admit().expect("first link");
+        assert_eq!(admission.snapshot().active, 1);
+        assert!(matches!(
+            admission.admit(),
+            Err(ActiveLinkAdmissionError::LimitReached { maximum: 1 })
+        ));
+        drop(permit);
+        assert_eq!(admission.snapshot().active, 0);
+        let _replacement = admission.admit().expect("replacement link");
+    }
+
+    #[test]
+    fn queue_and_active_link_teardown_repeat_without_underflow() {
+        let active = ActiveLinkAdmission::new(1).expect("active admission");
+        let state = Arc::new(LinkState {
+            closed: AtomicBool::new(false),
+            queued_items: AtomicUsize::new(0),
+            queued_bytes: AtomicUsize::new(0),
+            read_bytes: AtomicU64::new(0),
+            written_bytes: AtomicU64::new(0),
+            queue_release_underflows: AtomicU64::new(0),
+        });
+        for _ in 0..100 {
+            let permit = active.admit().expect("active slot");
+            assert!(reserve_queue(&state, 3, 1, 3));
+            drop(QueuedFrame {
+                bytes: vec![0; 3],
+                state: Arc::clone(&state),
+            });
+            drop(permit);
+        }
+        assert_eq!(active.snapshot().active, 0);
+        assert_eq!(state.queued_items.load(Ordering::Acquire), 0);
+        assert_eq!(state.queued_bytes.load(Ordering::Acquire), 0);
+        assert_eq!(state.queue_release_underflows.load(Ordering::Acquire), 0);
     }
 }

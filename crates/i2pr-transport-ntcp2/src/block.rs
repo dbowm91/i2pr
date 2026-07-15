@@ -613,7 +613,6 @@ pub fn encode_blocks(blocks: Vec<Block>) -> Result<Vec<u8>, BlockError> {
     let mut output = Vec::new();
     let mut padding_seen = false;
     let mut termination_seen = false;
-    let mut controls = [false; 5];
     for block in blocks {
         if block.kind() == BLOCK_PADDING {
             if padding_seen || output.len() + block.encoded_len() > constants::MAX_FRAME_PLAINTEXT {
@@ -628,22 +627,12 @@ pub fn encode_blocks(blocks: Vec<Block>) -> Result<Vec<u8>, BlockError> {
             return Err(BlockError::InvalidOrder);
         }
         if block.kind() == BLOCK_TERMINATION {
-            if termination_seen || controls[usize::from(BLOCK_TERMINATION)] {
+            if termination_seen {
                 return Err(BlockError::DuplicateBlock);
-            }
-            if !output.is_empty() {
-                return Err(BlockError::InvalidOrder);
             }
             termination_seen = true;
         } else if termination_seen && block.kind() != BLOCK_PADDING {
             return Err(BlockError::InvalidOrder);
-        }
-        if (block.kind() as usize) < controls.len() && block.kind() != BLOCK_I2NP {
-            let slot = usize::from(block.kind());
-            if controls[slot] {
-                return Err(BlockError::DuplicateBlock);
-            }
-            controls[slot] = true;
         }
         if output.len() + block.encoded_len() > constants::MAX_FRAME_PLAINTEXT {
             return Err(BlockError::PayloadTooLarge);
@@ -777,7 +766,13 @@ impl<'a> ParsedBlocks<'a> {
     }
 }
 
-/// Strictly parses one authenticated plaintext block sequence.
+/// Parses one general data-phase authenticated plaintext block sequence.
+///
+/// This parser intentionally has different sequencing rules from the strict
+/// [`crate::handshake::ConfirmedPayload`] parser: specification-permitted
+/// non-padding blocks may repeat, and Termination may follow earlier valid
+/// blocks. Padding remains at most once and final; Termination remains the
+/// final non-padding block.
 pub fn parse_blocks(input: &[u8]) -> Result<ParsedBlocks<'_>, BlockError> {
     if input.len() > constants::MAX_FRAME_PLAINTEXT {
         return Err(BlockError::PayloadTooLarge);
@@ -787,7 +782,6 @@ pub fn parse_blocks(input: &[u8]) -> Result<ParsedBlocks<'_>, BlockError> {
     let mut unknown_bytes: usize = 0;
     let mut padding_seen = false;
     let mut termination_seen = false;
-    let mut controls = [false; 5];
     while offset < input.len() {
         if blocks.len() == MAX_BLOCK_COUNT {
             return Err(BlockError::ExcessiveBlockCount);
@@ -823,13 +817,6 @@ pub fn parse_blocks(input: &[u8]) -> Result<ParsedBlocks<'_>, BlockError> {
             termination_seen = true;
         } else if termination_seen && block_type != BLOCK_PADDING {
             return Err(BlockError::InvalidOrder);
-        }
-        if block_type <= BLOCK_TERMINATION && block_type != BLOCK_I2NP {
-            let slot = usize::from(block_type);
-            if controls[slot] {
-                return Err(BlockError::DuplicateBlock);
-            }
-            controls[slot] = true;
         }
         let decoded = match block_type {
             BLOCK_DATETIME => {
@@ -886,19 +873,6 @@ pub fn parse_blocks(input: &[u8]) -> Result<ParsedBlocks<'_>, BlockError> {
         blocks.push(decoded);
         offset = body_end;
     }
-    if termination_seen
-        && blocks.iter().any(|block| {
-            matches!(
-                block,
-                DecodedBlock::Timestamp(_)
-                    | DecodedBlock::Options(_)
-                    | DecodedBlock::RouterInfo(_)
-                    | DecodedBlock::I2np(_)
-            )
-        })
-    {
-        return Err(BlockError::InvalidOrder);
-    }
     Ok(ParsedBlocks {
         blocks,
         unknown_bytes,
@@ -948,6 +922,56 @@ mod tests {
     }
 
     #[test]
+    fn data_phase_accepts_repeated_non_padding_and_late_termination() {
+        let bytes = [
+            // DateTime, repeated.
+            0, 0, 4, 0, 0, 0, 9, 0, 0, 4, 0, 0, 0, 10, // Options, repeated.
+            1, 0, 12, 0, 16, 1, 32, 0, 7, 0, 8, 0, 9, 0, 10, 1, 0, 12, 0, 16, 1, 32, 0, 7, 0, 8, 0,
+            9, 0, 10, // I2NP, repeated.
+            3, 0, 10, 3, 0, 0, 0, 7, 0, 0, 0, 9, 0xaa, 3, 0, 10, 3, 0, 0, 0, 8, 0, 0, 0, 10, 0xbb,
+            // Unknown blocks, mixed with known blocks and bounded in aggregate.
+            200, 0, 1, 0xcc, 201, 0, 2, 0xdd, 0xee,
+            // Termination may follow earlier valid blocks; Padding is allowed after it.
+            4, 0, 9, 0, 0, 0, 0, 0, 0, 0, 7, 0, 254, 0, 2, 0x55, 0x66,
+        ];
+        let parsed = parse_blocks(&bytes).expect("general data-phase sequence");
+
+        assert_eq!(parsed.blocks().len(), 10);
+        assert_eq!(parsed.unknown_bytes(), 3);
+        assert!(matches!(parsed.blocks()[0], DecodedBlock::Timestamp(_)));
+        assert!(matches!(parsed.blocks()[1], DecodedBlock::Timestamp(_)));
+        assert!(matches!(parsed.blocks()[2], DecodedBlock::Options(_)));
+        assert!(matches!(parsed.blocks()[3], DecodedBlock::Options(_)));
+        assert!(matches!(parsed.blocks()[4], DecodedBlock::I2np(_)));
+        assert!(matches!(parsed.blocks()[5], DecodedBlock::I2np(_)));
+        assert!(matches!(parsed.blocks()[6], DecodedBlock::Unknown { .. }));
+        assert!(matches!(parsed.blocks()[7], DecodedBlock::Unknown { .. }));
+        assert!(matches!(parsed.blocks()[8], DecodedBlock::Termination(_)));
+        assert!(matches!(
+            parsed.blocks()[9],
+            DecodedBlock::Padding { length: 2 }
+        ));
+    }
+
+    #[test]
+    fn data_phase_encoder_accepts_repeated_non_padding_blocks() {
+        let encoded = encode_blocks(vec![
+            Block::Timestamp(TimestampBlock::new(9)),
+            Block::Timestamp(TimestampBlock::new(10)),
+            Block::Termination(TerminationBlock::new(7, TerminationReason::Normal)),
+            Block::Padding(PaddingBlock::new(vec![0x55, 0x66]).expect("padding")),
+        ])
+        .expect("general data-phase sequence");
+        assert_eq!(
+            encoded,
+            [
+                0, 0, 4, 0, 0, 0, 9, 0, 0, 4, 0, 0, 0, 10, 4, 0, 9, 0, 0, 0, 0, 0, 0, 0, 7, 0, 254,
+                0, 2, 0x55, 0x66,
+            ]
+        );
+    }
+
+    #[test]
     fn malformed_order_duplicates_and_trailing_headers_are_rejected() {
         let duplicate_padding = [BLOCK_PADDING, 0, 0, BLOCK_PADDING, 0, 0];
         assert!(matches!(
@@ -958,6 +982,61 @@ mod tests {
         assert!(matches!(
             parse_blocks(&after_padding),
             Err(BlockError::InvalidOrder)
+        ));
+        let invalid_after_termination = [
+            BLOCK_TERMINATION,
+            0,
+            9,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            7,
+            0,
+            BLOCK_DATETIME,
+            0,
+            4,
+            0,
+            0,
+            0,
+            1,
+        ];
+        assert!(matches!(
+            parse_blocks(&invalid_after_termination),
+            Err(BlockError::InvalidOrder)
+        ));
+        let duplicate_termination = [
+            BLOCK_TERMINATION,
+            0,
+            9,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            7,
+            0,
+            BLOCK_TERMINATION,
+            0,
+            9,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            8,
+            0,
+        ];
+        assert!(matches!(
+            parse_blocks(&duplicate_termination),
+            Err(BlockError::DuplicateBlock)
         ));
         assert!(matches!(
             parse_blocks(&[BLOCK_DATETIME, 0]),
@@ -983,11 +1062,24 @@ mod tests {
         assert_eq!(value.reason(), TerminationReason::AeadFailure);
         assert_eq!(value.additional_length(), 1);
 
-        let terminal_with_padding = encode_blocks(vec![
-            Block::Termination(TerminationBlock::new(7, TerminationReason::Normal)),
-            Block::Padding(PaddingBlock::new(vec![0]).expect("padding")),
-        ])
-        .expect("terminal padding");
+        let terminal_with_padding = [
+            BLOCK_TERMINATION,
+            0,
+            9,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            7,
+            0,
+            BLOCK_PADDING,
+            0,
+            1,
+            0,
+        ];
         assert_eq!(
             parse_blocks(&terminal_with_padding)
                 .expect("terminal padding parse")
