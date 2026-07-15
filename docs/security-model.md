@@ -6,10 +6,11 @@ security.
 
 ## Assets
 
-Future assets include router identity keys, peer and destination metadata,
+Current and future assets include router identity keys, peer and destination metadata,
 RouterInfo/LeaseSet data, tunnel state, client traffic, configuration, local
 service endpoints, resource capacity, and diagnostic output. The bootstrap has
-no persistent identity and does not create network state.
+an explicit persistent identity path but does not create one during validation,
+dry-run, or live runtime startup.
 
 ## Adversaries and trust boundaries
 
@@ -40,7 +41,21 @@ writes must be atomic or recoverable.
 Secret-bearing types must avoid accidental `Debug`, `Display`, unrestricted
 serialization, and unnecessary cloning. Production cryptography must use
 reviewed implementations; deterministic randomness belongs only to tests and
-explicit reproducibility tooling.
+explicit reproducibility tooling. Plan 013's private Ed25519 and X25519
+wrappers zeroize on drop and expose bytes only to explicit storage methods.
+
+The initial identity storage threat model is permission hardening rather than
+encryption at rest. On Unix, the data directory must have no group/world mode
+bits and generated identity files are mode 0600. Storage uses a versioned
+fixed-format record, SHA-256 integrity, strict revalidation, and atomic
+create-only installation. A checksum cannot protect against an attacker with
+write access to both the file and its directory, so operators must protect
+ownership and backups; passphrase encryption is deferred to a separate ADR.
+Corrupt or unsupported identity state fails closed and is never silently
+replaced.
+
+`identity inspect` reports only the storage path and public algorithm IDs. It
+does not print private seeds, a private serialization, or a full router hash.
 
 ## Observability and non-claims
 
@@ -50,6 +65,7 @@ traffic, or unbounded identity-bearing labels. Detailed identity-rich tracing
 requires an explicit unsafe-debug mode and warning.
 
 Nothing in the bootstrap proves anonymity, resistance to traffic analysis,
-correctness against hostile peers, secure identity persistence, protocol
-interoperability, or safe public-network operation. Malformed and stress tests
-must run only in an authorized isolated testnet.
+correctness against hostile peers, complete identity interoperability, secure
+recovery/rotation, protocol interoperability, or safe public-network
+operation. Local crypto/storage tests do not replace mixed-router evidence.
+Malformed and stress tests must run only in an authorized isolated testnet.

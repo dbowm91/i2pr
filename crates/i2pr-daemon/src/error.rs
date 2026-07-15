@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use crate::config::ConfigError;
+use i2pr_crypto::CryptoError;
+use i2pr_storage::StorageError;
 
 /// Stable initial exit-code categories.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,6 +23,10 @@ pub enum ExitCode {
     ConfigSemantic = 12,
     /// The requested live router capability is not in this milestone.
     RuntimeNotImplemented = 20,
+    /// Identity persistence failed validation or an operating-system operation.
+    IdentityStorage = 30,
+    /// Identity cryptographic execution failed.
+    IdentityCrypto = 31,
     /// An unexpected internal failure occurred.
     Internal = 70,
 }
@@ -52,6 +58,12 @@ pub enum DaemonError {
         "router runtime is not implemented in this milestone; use --dry-run to validate configuration"
     )]
     RuntimeNotImplemented,
+    /// Identity persistence failed.
+    #[error(transparent)]
+    IdentityStorage(#[from] StorageError),
+    /// Identity cryptographic execution failed.
+    #[error(transparent)]
+    IdentityCrypto(#[from] CryptoError),
 }
 
 impl DaemonError {
@@ -61,6 +73,8 @@ impl DaemonError {
             Self::ConfigUnavailable { .. } => ExitCode::ConfigUnavailable,
             Self::Config(error) => error.exit_code(),
             Self::RuntimeNotImplemented => ExitCode::RuntimeNotImplemented,
+            Self::IdentityStorage(_) => ExitCode::IdentityStorage,
+            Self::IdentityCrypto(_) => ExitCode::IdentityCrypto,
         }
     }
 }

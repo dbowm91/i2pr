@@ -8,9 +8,9 @@ router behavior or an interoperability claim.
 
 The intended modular monolith is organized into four conceptual planes:
 
-| Plane | Responsibility | Milestone 0 status |
+| Plane | Responsibility | Current bounded status |
 | --- | --- | --- |
-| Data | Protocol representations, authenticated links, messages, and network tunnel traffic | Bounded common-structure model plus primitive codecs; no crypto, socket, or network behavior |
+| Data | Protocol representations, authenticated links, messages, and network tunnel traffic | Bounded common-structure model plus Ed25519/X25519 wrappers and local RouterInfo signing; no sockets or network behavior |
 | Control | Configuration, lifecycle, health, cancellation, supervision, and resource budgets | CLI validation plus runtime-neutral core contracts |
 | Client | Destinations, LeaseSets, streaming, SAM, and I2CP adapters | Not implemented |
 | Service | HTTP, SOCKS5, IRC, generic TCP, and local service-tunnel composition | Not implemented |
@@ -20,18 +20,18 @@ application service tunnels, which eventually connect a local application to a
 destination. The latter must not import transport internals or peer-profile
 storage.
 
-## Initial crate graph
+## Current crate graph
 
-The bootstrap has only four crates:
+The current bounded workspace has six crates:
 
 ```text
-i2pr-proto   (sha2 for fixed hash derivation; no workspace dependencies)
-      ^                 ^
-      |                 |
-i2pr-core  <------ i2pr-testkit
-      ^
-      |
-i2pr-daemon  (composition root; also depends on i2pr-proto)
+i2pr-proto  <- i2pr-crypto <- i2pr-storage
+     ^              ^               ^
+     |              |               |
+ i2pr-core <------ i2pr-daemon  (composition root)
+     ^
+     |
+ i2pr-testkit (test/simulation dependency only)
 ```
 
 The arrows show dependency direction. `i2pr-proto` owns protocol-facing names,
@@ -49,7 +49,9 @@ tests. The daemon owns CLI/configuration and is the future composition root.
 
 The direction is mechanically checked by
 `scripts/check-dependency-direction.sh`. Production crates do not depend on
-`i2pr-testkit`.
+`i2pr-testkit`, and `i2pr-proto` does not depend on filesystem or crypto
+execution. The daemon is the only crate that composes configuration, explicit
+identity lifecycle commands, crypto randomness, and storage.
 
 ### Common-structure boundary
 
@@ -59,6 +61,31 @@ boundaries. It does not verify signatures, generate secrets, decide timestamp
 freshness, interpret transport options, publish RouterInfo, or construct
 LeaseSet2-family records. Those responsibilities belong to later crypto,
 storage, NetDB, and client plans.
+
+### Cryptographic boundary
+
+`i2pr-crypto` implements only the concrete Plan 013 profile: I2P type-7
+Ed25519 signatures, type-4 X25519 router public-key derivation, SHA-256
+wrappers, constant-time comparisons, and zeroizing private wrappers. Generation
+accepts an injected `TryCryptoRng`; production uses the operating-system source
+at the daemon boundary, while deterministic RNGs remain test-only inputs. The
+crate exposes no generalized provider or plugin API and does not add crypto
+operations to `i2pr-proto`.
+
+It can construct a no-capability local RouterInfo, sign the exact retained
+`RouterInfo::signed_bytes()` region, and verify that region through the public
+identity. Timestamp freshness, transport interpretation, capability policy,
+publication, and network interoperability remain outside this boundary.
+
+### Identity storage boundary
+
+`i2pr-storage` stores only the private router identity format described by ADR
+0006. It is not a NetDB or public RouterInfo store. It rejects symlinks,
+overly-permissive Unix paths, malformed/trailing/oversized data, unsupported
+versions and integrity failures; it never regenerates an existing identity.
+The explicit create-only operation uses a same-directory temporary file,
+flush/sync, an atomic no-replace install, cleanup, and directory sync where the
+platform supports it.
 
 ### Cancellation scope
 
@@ -74,6 +101,11 @@ generalized runtime abstraction.
 The daemon will eventually compose supervised services and pass each service
 only the narrow handles or capabilities it needs. A global mutable router
 context or unrestricted service locator is not an architectural default.
+
+The current identity CLI is deliberately not a runtime service: `identity
+generate` is the only operation allowed to create the private identity file,
+`identity inspect` only loads and summarizes it, and `run --dry-run` remains
+side-effect-free. No identity command opens a listener or publishes a record.
 
 The planned service model classifies work as essential, restartable,
 degradable, or optional. Each long-lived service will declare startup

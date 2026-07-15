@@ -1,0 +1,24 @@
+[package]
+name = "i2pr-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Protocol-specific cryptographic wrappers for i2pr identity operations"
+publish = false
+
+[dependencies]
+ed25519-dalek.workspace = true
+i2pr-proto = { path = "../i2pr-proto" }
+rand_core = { workspace = true, features = ["os_rng"] }
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+rand_chacha.workspace = true
+
+[lints]
+workspace = true

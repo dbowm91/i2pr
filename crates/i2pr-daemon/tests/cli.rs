@@ -12,6 +12,17 @@ fn valid_config(path: &std::path::Path) {
         .expect("write valid config");
 }
 
+fn config_with_data_dir(path: &std::path::Path, data_dir: &std::path::Path) {
+    fs::write(
+        path,
+        format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n",
+            data_dir.to_string_lossy()
+        ),
+    )
+    .expect("write valid config");
+}
+
 #[test]
 fn help_and_version_are_available() {
     let help = binary().arg("--help").output().expect("run help");
@@ -105,4 +116,48 @@ fn dry_run_succeeds_and_live_run_is_not_implemented() {
         .expect("run live command");
     assert_eq!(live.status.code(), Some(20));
     assert!(String::from_utf8_lossy(&live.stderr).contains("not implemented"));
+}
+
+#[test]
+fn identity_lifecycle_is_explicit_and_inspection_redacts_private_material() {
+    let directory = tempdir().expect("temp directory");
+    let config = directory.path().join("config.toml");
+    let data_dir = directory.path().join("state");
+    config_with_data_dir(&config, &data_dir);
+
+    let generated = binary()
+        .args(["identity", "generate", "--config"])
+        .arg(&config)
+        .output()
+        .expect("run identity generate");
+    assert!(generated.status.success());
+    assert!(data_dir.join("router.identity").is_file());
+
+    let inspected = binary()
+        .args(["identity", "inspect", "--config"])
+        .arg(&config)
+        .output()
+        .expect("run identity inspect");
+    assert!(inspected.status.success());
+    let output = String::from_utf8_lossy(&inspected.stdout);
+    assert!(output.contains("signing algorithm type 7"));
+    assert!(output.contains("encryption algorithm type 4"));
+    assert!(output.contains("private material was not displayed"));
+}
+
+#[test]
+fn dry_run_does_not_create_identity_state() {
+    let directory = tempdir().expect("temp directory");
+    let config = directory.path().join("config.toml");
+    let data_dir = directory.path().join("not-created");
+    config_with_data_dir(&config, &data_dir);
+
+    let output = binary()
+        .args(["run", "--config"])
+        .arg(&config)
+        .arg("--dry-run")
+        .output()
+        .expect("run dry-run");
+    assert!(output.status.success());
+    assert!(!data_dir.exists());
 }

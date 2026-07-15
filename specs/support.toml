@@ -63,8 +63,8 @@ id = "crypto.protocol-wrappers"
 protocol = "cryptography"
 structure = "protocol-specific-key-signature-and-hash-wrappers"
 scope = "required"
-status = "not-implemented"
-evidence = []
+status = "experimental"
+evidence = ["crates/i2pr-crypto/src/lib.rs", "plans/013-closure.md"]
 advertised = false
 
 [[surface]]
@@ -72,8 +72,8 @@ id = "identity.generation-signing"
 protocol = "common-structures"
 structure = "router-identity-generation-and-router-info-signing"
 scope = "required"
-status = "not-implemented"
-evidence = []
+status = "experimental"
+evidence = ["crates/i2pr-crypto/src/lib.rs", "plans/013-closure.md"]
 advertised = false
 
 [[surface]]
@@ -81,8 +81,8 @@ id = "storage.router-identity"
 protocol = "storage"
 structure = "versioned-atomic-router-identity-store"
 scope = "required"
-status = "not-implemented"
-evidence = []
+status = "experimental"
+evidence = ["crates/i2pr-storage/src/lib.rs", "plans/013-closure.md"]
 advertised = false
 
 [[surface]]

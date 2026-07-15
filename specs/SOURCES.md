@@ -95,7 +95,13 @@ RouterAddress, RouterInfo, Lease, and classic LeaseSet. Hash derivation uses the
 reviewed `sha2` crate and is covered by locally authored fixed primitive bytes;
 no external router implementation code or opaque fixture corpus was copied.
 
-The same module records the deliberate deviations: signed records preserve
+Plan 013's crypto/storage implementation uses the same pinned protocol source
+for type identifiers and signed-byte boundaries; RustCrypto/dalek crate
+versions and feature decisions are recorded in
+`docs/adr/0005-crypto-dependency-selection.md`. No external router
+implementation code or private fixture was copied.
+
+The proto module records the deliberate deviations: signed records preserve
 their parsed signed region, timestamp freshness and signature verification are
 deferred, only classic LeaseSet is decoded, and LeaseSet2, MetaLeaseSet, and
 EncryptedLeaseSet are explicit unsupported paths pending their later crypto and

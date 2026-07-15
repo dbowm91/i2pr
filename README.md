@@ -9,15 +9,18 @@ The initial compatibility target is the current I2P network as implemented by I2
 ## Project status
 
 Milestone 0 workspace bootstrap and its corrective closure are implemented. The
-repository contains a buildable four-crate Rust workspace, strict
-side-effect-free configuration validation, a deterministic testkit foundation,
-and a non-networked CLI shell. Plans 011 and 012 now provide bounded primitive
-codec mechanics plus an experimental structural model for common I2P
-identities, mappings, certificates, RouterInfo, RouterAddress, Lease, and the
-classic LeaseSet. Cryptographic execution, LeaseSet2-family records,
-interoperability, and router behavior remain unimplemented. Normal development and CI use pinned Rust
-1.95.0; the declared Rust 1.85 MSRV is checked by a dedicated Ubuntu CI job.
-The router runtime and all I2P protocol implementations remain unimplemented.
+repository contains a buildable six-crate Rust workspace, strict
+side-effect-free configuration validation, bounded common-structure codecs,
+reviewed Ed25519/X25519 identity wrappers, permission-hardened identity
+storage, a deterministic testkit foundation, and a non-networked CLI shell.
+Plans 011–013 provide the structural and local cryptographic foundation for
+common I2P identities, mappings, certificates, RouterInfo, RouterAddress,
+Lease, classic LeaseSet, explicit identity generation, atomic reload, and
+local RouterInfo signing. Cryptographic interoperability, LeaseSet2-family
+records, transports, networking, and router behavior remain unimplemented.
+Normal development and CI use pinned Rust 1.95.0; the declared Rust 1.85 MSRV
+is checked by a dedicated Ubuntu CI job. The router runtime and all I2P
+protocol implementations remain unimplemented.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
@@ -93,16 +96,20 @@ crates/
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
 ```
 
-The bootstrap intentionally creates only `i2pr-proto`, `i2pr-core`,
-`i2pr-daemon`, and `i2pr-testkit`. Later plans will add protocol and service
-crates when their contracts are understood; empty placeholder crates are not
-created in advance.
+The current workspace contains `i2pr-proto`, `i2pr-crypto`, `i2pr-storage`,
+`i2pr-core`, `i2pr-daemon`, and `i2pr-testkit`. Later plans will add protocol
+and service crates when their contracts are understood; empty placeholder
+crates are not created in advance.
 
 The current `i2pr-proto` API uses borrowed cursors and caller-visible maximums,
 strict exact-consumption decoding, canonical immutable mappings, typed
-algorithm/length validation, and preserved signed-byte regions. It contains no
-cryptographic signing or verification, transport behavior, runtime integration,
-filesystem I/O, or capability advertisement.
+algorithm/length validation, and preserved signed-byte regions. The separate
+`i2pr-crypto` crate implements only type-7 Ed25519 signing/verification,
+type-4 X25519 public-key derivation, SHA-256 wrappers, constant-time equality,
+and zeroizing private wrappers. `i2pr-storage` implements the version-1
+permission-hardened private identity file. None of these crates introduce
+transport behavior, runtime integration, network publication, or capability
+advertisement.
 
 ## External integration direction
 
@@ -117,6 +124,7 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Workspace and skeleton pre-plan](plans/001-preplan-workspace-skeleton.md)
 - [Milestone 0 closure record](plans/001-closure.md)
 - [Milestone 1 common-structures closure record](plans/012-closure.md)
+- [Milestone 1 identity/crypto/storage closure record](plans/013-closure.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)
@@ -145,11 +153,15 @@ bash scripts/check-dependency-direction.sh
 cargo deny check advisories bans sources
 ```
 
-The CLI currently exposes only `--help`, `--version`,
-`check-config --config <path>`, and `run --config <path> --dry-run`. A live
+The CLI exposes `--help`, `--version`,
+`check-config --config <path>`, `identity generate --config <path>`,
+`identity inspect --config <path>`, and `run --config <path> --dry-run`. Identity
+generation is explicit, create-only, and permission-hardened. Inspection
+loads and validates the file without displaying private material. Config
+validation and dry-run do not create directories or identity files. A live
 `run` deliberately exits with code 20 and explains that the router runtime is
-not implemented. No bootstrap command opens a socket, creates a router
-identity, creates a data directory, or writes network state.
+not implemented. No command opens a socket, publishes RouterInfo, or writes
+network state.
 
 The project should favor incremental, reviewable changes. A protocol feature is not complete merely because it compiles or communicates with one peer. Completion requires negative tests, malformed-input handling, lifecycle cleanup, bounded resource behavior, and interoperability evidence.
 

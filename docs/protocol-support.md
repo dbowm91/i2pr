@@ -12,7 +12,9 @@ ledger does not itself publish protocol capabilities.
 
 | Protocol area | Status | Planned milestone | Specification/source starting point | Test-vector status | Interoperability status |
 | --- | --- | --- | --- | --- | --- |
-| Common identity, keys, and certificates | Experimental structural subset | 1 | `specs/protocols/01-common-identity-crypto.md`, pinned source in `specs/SOURCES.md` | Locally authored fixed bytes and malformed/boundary tests; no independent router vectors | None |
+| Common identity, keys, and certificates | Experimental structural subset plus local type-4/type-7 execution | 1 | `specs/protocols/01-common-identity-crypto.md`, pinned source in `specs/SOURCES.md` | Locally authored structural bytes, Ed25519 mutation tests, and X25519 derivation tests; no independent router vectors | None |
+| Router identity generation and local RouterInfo signing | Experimental local lifecycle | 1 | `plans/013-m1-identity-crypto-storage.md`, ADRs 0004 and 0007 | Deterministic injected-RNG generation, exact signed-region verification, save/reload and mutation tests | None |
+| Private router identity storage | Experimental local persistence | 1 | `plans/013-m1-identity-crypto-storage.md`, ADR 0006 | Version/length/truncation/integrity/permission/concurrency tests; no external storage interoperability claim | None |
 | I2NP message envelope and message types | Not implemented | 1 | `specs/protocols/02-i2np.md` | None imported | None |
 | NTCP2 | Not implemented | 3 | `specs/protocols/03-ntcp2.md` | None imported | None |
 | Reseed and RouterInfo publication | Not implemented | 4 | `specs/protocols/04-reseed-netdb.md` | None imported | None |
@@ -23,11 +25,12 @@ ledger does not itself publish protocol capabilities.
 | SSU2 | Not implemented | 9 | `specs/protocols/09-ssu2.md` | None imported | None |
 | I2CP and service tunnels | Not implemented | 10 | `specs/protocols/10-i2cp-service-tunnels.md` | None imported | None |
 
-The four-crate bootstrap may name the `common` and `i2np` namespaces, but only
-the exact structural common subset described above has codecs. No signature or
-encryption operation, transport support, network compatibility, or capability
-advertisement follows from those codecs. Legacy NTCP and SSU1 are outside the
-MVP target unless a later plan explicitly changes scope.
+The six-crate workspace may name the `common` and `i2np` namespaces, and Plan
+013 adds local type-4/type-7 execution plus a private identity file. These
+local operations do not establish mixed-router protocol support, complete
+signature/encryption coverage, transport support, network compatibility, or
+capability advertisement. Legacy NTCP and SSU1 are outside the MVP target
+unless a later plan explicitly changes scope.
 
 Each future protocol row must be updated with exact targeted proposal/spec
 revisions, limits, malformed-input behavior, vectors, and mixed-router evidence

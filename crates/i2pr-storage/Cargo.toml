@@ -1,0 +1,20 @@
+[package]
+name = "i2pr-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Versioned, atomic, permission-hardened i2pr identity storage"
+publish = false
+
+[dependencies]
+i2pr-crypto = { path = "../i2pr-crypto" }
+thiserror.workspace = true
+
+[dev-dependencies]
+rand_chacha.workspace = true
+rand_core.workspace = true
+tempfile = "3.14"
+
+[lints]
+workspace = true

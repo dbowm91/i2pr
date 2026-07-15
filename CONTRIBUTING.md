@@ -17,9 +17,11 @@ Protocol changes require a plan covering acceptance criteria, limits, negative
 tests, dependency changes, security implications, sources, and documentation.
 Do not add empty future crates or claim interoperability without evidence.
 The current common-structure subset in `i2pr-proto` is structural only: keep
-signed byte regions intact, use the pinned source ledger, and leave signing,
-freshness policy, transport interpretation, and LeaseSet2-family behavior to
-their later plans.
+signed byte regions intact, use the pinned source ledger, and leave freshness
+policy, transport interpretation, and LeaseSet2-family behavior to their later
+plans. Plan 013's concrete Ed25519/X25519 wrappers and private identity store
+must remain outside `i2pr-proto`; update ADRs and the support ledger when
+crypto/storage scope changes.
 
 ## Local quality checks
 
@@ -48,7 +50,9 @@ stress, mutation, malformed-traffic, and adversarial tests belong only in an
 authorized isolated testnet.
 
 Report security issues privately to the project owner rather than publishing
-exploit details in an issue or pull request.
+exploit details in an issue or pull request. Treat router identity files and
+backups as private key material; do not add private fixtures or print secret
+bytes in tests and diagnostics.
 
 ## Dependencies, provenance, and commits
 

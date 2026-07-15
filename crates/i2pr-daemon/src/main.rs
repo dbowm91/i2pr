@@ -20,6 +20,19 @@ fn main() -> ProcessExitCode {
             }
             ProcessExitCode::SUCCESS
         }
+        Ok(i2pr_daemon::CommandOutcome::IdentityGenerated { path }) => {
+            println!("router identity generated and stored at {}", path.display());
+            ProcessExitCode::SUCCESS
+        }
+        Ok(i2pr_daemon::CommandOutcome::IdentityInspected { path, summary }) => {
+            println!(
+                "router identity is valid at {}; signing algorithm type {}, encryption algorithm type {}; private material was not displayed",
+                path.display(),
+                summary.signing_algorithm,
+                summary.encryption_algorithm
+            );
+            ProcessExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("error: {error}");
             process_exit(error.exit_code())
@@ -35,6 +48,7 @@ fn process_exit(code: ExitCode) -> ProcessExitCode {
 fn _command_name(command: &Command) -> &'static str {
     match command {
         Command::CheckConfig(_) => "check-config",
+        Command::Identity { .. } => "identity",
         Command::Run(_) => "run",
     }
 }

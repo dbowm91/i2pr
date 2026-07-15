@@ -123,3 +123,17 @@ rejected explicitly until later plans define their crypto and NetDB semantics.
 Local fixed bytes and malformed/boundary tests are not interoperability
 evidence; the support ledger therefore remains `experimental` and
 `advertised = false`.
+
+## Plan 013 execution boundary
+
+Plan 013 selects I2P signature type 7 (Ed25519) and router encryption type 4
+(X25519) for newly generated identities. `crates/i2pr-crypto` wraps reviewed
+Rust implementations, accepts an injected cryptographic RNG, zeroizes private
+wrappers, signs the exact retained RouterInfo signed region, and verifies it
+through the public identity. `crates/i2pr-storage` persists only the explicit
+version-1 private identity format documented by ADR 0006.
+
+This is local execution evidence only. No RouterInfo capability or version is
+advertised, no transport or NetDB behavior is enabled, and the support ledger
+remains non-advertised and experimental until authoritative vectors and mixed
+router interoperability evidence exist.
