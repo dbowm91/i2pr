@@ -75,10 +75,11 @@ Plan 014 to promote into maintained fuzz infrastructure.
 
 ## CI evidence and known limitations
 
-The local quality matrix is complete. Remote CI evidence for the commit is
-recorded as soon as the commit is pushed because the workflow cannot run
-against an unpushed Git object. The repository workflow remains the source of
-truth for the post-push Linux/macOS and MSRV jobs.
+The local quality matrix is complete. The pushed commit `d55b582` passed
+[GitHub Actions CI run 29387346895](https://github.com/dbowm91/i2pr/actions/runs/29387346895).
+The run passed dependency policy, Ubuntu and macOS quality, and Ubuntu MSRV
+jobs. GitHub reported only non-blocking Node.js 20 deprecation annotations for
+`actions/checkout@v4`; no job failed.
 
 Known limitations at this handoff are intentional:
 
