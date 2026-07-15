@@ -104,9 +104,11 @@ The local validation matrix for this closure is:
 
 ## CI evidence and known limitations
 
-Remote CI evidence is pending the final commit and push. Until the remote
-quality jobs pass, this change must be treated as an experimental structural
-model only. No public-network malformed-traffic or stress testing was run.
+The implementation commit `c9699b7` passed
+[GitHub Actions CI run 29388301426](https://github.com/dbowm91/i2pr/actions/runs/29388301426):
+MSRV, dependency policy, Ubuntu quality, and macOS quality all passed. GitHub
+reported only non-blocking `actions/checkout@v4` Node.js 20 deprecation
+annotations. No public-network malformed-traffic or stress testing was run.
 
 The support ledger remains non-advertised and marks the exact structural
 surfaces `experimental`; code presence is not an interoperability claim.
