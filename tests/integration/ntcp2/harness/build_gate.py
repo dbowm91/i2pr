@@ -54,6 +54,10 @@ GATE_SCENARIOS: dict[str, tuple[str, ...]] = {
         "i2pd-ipv6-inbound-outbound",
         "i2pd-adversarial-and-resource",
         "i2pd-duplicate-link-race",
+        "i2pr-to-java-ipv4",
+        "java-to-i2pr-ipv4",
+        "i2pr-to-i2pd-ipv4",
+        "i2pd-to-i2pr-ipv4",
     ),
 }
 

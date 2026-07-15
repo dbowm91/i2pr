@@ -27,7 +27,7 @@ case "$profile" in
 esac
 case "$profile" in
   environment-smoke) ids=(smoke-java-ipv4 smoke-i2pd-ipv4) ;;
-  handshake-smoke) ids=(java-ipv4-inbound-outbound i2pd-ipv4-inbound-outbound) ;;
+  handshake-smoke) mixed_ids=(i2pr-to-java-ipv4 java-to-i2pr-ipv4 i2pr-to-i2pd-ipv4 i2pd-to-i2pr-ipv4) ;;
   reference-crosscheck-ipv4)
     status=0
     for scenario in reference-java-i2pd-ipv4 reference-i2pd-java-ipv4; do
@@ -38,15 +38,30 @@ case "$profile" in
     done
     exit "$status"
     ;;
-  full) ids=(java-ipv4-inbound-outbound java-ipv6-inbound-outbound java-adversarial-and-resource java-duplicate-link-race i2pd-ipv4-inbound-outbound i2pd-ipv6-inbound-outbound i2pd-adversarial-and-resource i2pd-duplicate-link-race) ;;
+  full)
+    ids=(java-ipv4-inbound-outbound java-ipv6-inbound-outbound java-adversarial-and-resource java-duplicate-link-race i2pd-ipv4-inbound-outbound i2pd-ipv6-inbound-outbound i2pd-adversarial-and-resource i2pd-duplicate-link-race)
+    mixed_ids=(i2pr-to-java-ipv4 java-to-i2pr-ipv4 i2pr-to-i2pd-ipv4 i2pd-to-i2pr-ipv4)
+    ;;
 esac
 status=0
-for scenario in "${ids[@]}"; do
-  reference=java_i2p
-  [[ "$scenario" == i2pd-* ]] && reference=i2pd
-  args=(--scenario "$scenario" --reference "$reference")
-  [[ "$offline" == "1" ]] && args+=(--offline)
-  [[ "$keep" == "1" ]] && args+=(--keep-failed-sanitized)
-  if ! bash "$root/scripts/interop/run-scenario.sh" "${args[@]}"; then status=1; fi
-done
+if [[ "${#ids[@]:-0}" -gt 0 ]]; then
+  for scenario in "${ids[@]}"; do
+    reference=java_i2p
+    [[ "$scenario" == i2pd-* ]] && reference=i2pd
+    args=(--scenario "$scenario" --reference "$reference")
+    [[ "$offline" == "1" ]] && args+=(--offline)
+    [[ "$keep" == "1" ]] && args+=(--keep-failed-sanitized)
+    if ! bash "$root/scripts/interop/run-scenario.sh" "${args[@]}"; then status=1; fi
+  done
+fi
+if [[ "${#mixed_ids[@]:-0}" -gt 0 ]]; then
+  for scenario in "${mixed_ids[@]}"; do
+    reference=java_i2p
+    [[ "$scenario" == i2pd-* ]] && reference=i2pd
+    args=(--scenario "$scenario" --reference "$reference")
+    [[ "$offline" == "1" ]] && args+=(--offline)
+    [[ "$keep" == "1" ]] && args+=(--keep-failed-sanitized)
+    if ! python3 "$root/tests/integration/ntcp2/harness/mixed_runner.py" "${args[@]}"; then status=1; fi
+  done
+fi
 exit "$status"
