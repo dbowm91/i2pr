@@ -184,10 +184,31 @@ router's network cleanup behavior.
 
 ## Observability and non-claims
 
-Default logs and metrics must not expose full router hashes, destination
-identities, keys, session material, LeaseSet secrets, packet bodies, user
-traffic, or unbounded identity-bearing labels. Detailed identity-rich tracing
-requires an explicit unsafe-debug mode and warning.
+Plan 024 makes the default diagnostic boundary explicit. Fixed event names are
+used for service registration/start/ready/failure/restart/stop, shutdown,
+channel rejection, resource denial, and testkit fault/completion events. Safe
+fields are validated static service/channel identifiers, classifications,
+lifecycle and typed failure categories, bounded restart/counter values,
+capacity/depth/usage values with units, monotonic durations, and synthetic
+simulation link/sequence/rule metadata. The daemon owns subscriber
+initialization; runtime and testkit crates never install global subscribers.
+
+`HealthDetail` remains bounded for internal control flow, but its `Debug`
+implementation is redacted. Aggregate runtime snapshots use a service
+projection that omits detail text and retain only sorted, bounded channel and
+resource snapshots. Snapshot generation performs no await while holding a
+mutable runtime lock and is documented as an eventually coherent point-in-time
+observation. No default event or snapshot retains full router hashes,
+destination identities, keys, session material, LeaseSet secrets, packet
+bodies, user traffic, filesystem paths, arbitrary error/panic text, precise
+per-peer timing histories, or unbounded identity-bearing labels.
+
+Plan 024's integrated scenarios validate clean startup/shutdown, bounded
+overload, deterministic restart recovery, essential failure with forced
+cleanup, and stream/datagram fault replay. They use only synthetic services,
+manual time, fixed seeds, and bounded step counts. They do not prove anonymity,
+privacy against traffic analysis, resilience, transport authentication,
+interoperability, or safe public-network operation.
 
 Nothing in the bootstrap proves anonymity, resistance to traffic analysis,
 correctness against hostile peers, complete identity interoperability, secure

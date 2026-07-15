@@ -363,6 +363,7 @@ dependencies = [
  "i2pr-core",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]

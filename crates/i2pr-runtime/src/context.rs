@@ -14,6 +14,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::cancel::CancellationToken;
+use crate::observability::TaskCounters;
 
 /// Maximum child tasks owned by one service scope.
 pub const MAX_CHILD_TASKS: usize = 64;
@@ -227,7 +228,10 @@ impl SharedHealth {
             state.clock.now(),
             state.detail.clone(),
         );
-        let _ = state.sender.send(snapshot);
+        // `send` leaves a watch channel unchanged when there are no
+        // subscribers. `send_replace` keeps the latest-state snapshot valid
+        // for direct supervisor inspection as well as subscribers.
+        let _ = state.sender.send_replace(snapshot);
     }
 
     pub(crate) fn report(&self, health: HealthState, detail: Option<HealthDetail>) {
@@ -347,6 +351,7 @@ struct ChildScopeInner {
     closed: AtomicBool,
     cancellation: CancellationToken,
     tasks: Mutex<Option<JoinSet<ChildTaskOutput>>>,
+    counters: Arc<TaskCounters>,
 }
 
 impl std::fmt::Debug for ChildScopeInner {
@@ -363,7 +368,11 @@ impl Drop for ChildScopeInner {
         self.closed.store(true, Ordering::Release);
         if let Ok(mut tasks) = self.tasks.lock() {
             if let Some(tasks) = tasks.as_mut() {
+                let remaining = tasks.len();
                 tasks.abort_all();
+                for _ in 0..remaining {
+                    self.counters.child_finished();
+                }
             }
         }
     }
@@ -377,12 +386,17 @@ pub struct ChildScope {
 }
 
 impl ChildScope {
-    pub(crate) fn new(parent: &CancellationToken, policy: ChildFailurePolicy) -> Self {
+    pub(crate) fn new(
+        parent: &CancellationToken,
+        policy: ChildFailurePolicy,
+        counters: Arc<TaskCounters>,
+    ) -> Self {
         Self {
             inner: Arc::new(ChildScopeInner {
                 closed: AtomicBool::new(false),
                 cancellation: parent.child_token(),
                 tasks: Mutex::new(Some(JoinSet::new())),
+                counters,
             }),
             policy,
         }
@@ -419,6 +433,7 @@ impl ChildScope {
                 Err(_) => Err(ChildTaskFailure::Panic),
             })
         });
+        self.inner.counters.child_started();
         Ok(())
     }
 
@@ -441,6 +456,7 @@ impl ChildScope {
         let mut report = ChildShutdownReport::default();
         while let Some(result) = tasks.join_next().await {
             report.joined += 1;
+            self.inner.counters.child_finished();
             match result {
                 Ok(ChildTaskOutput(Err(_))) | Err(_) => report.failed = true,
                 Ok(ChildTaskOutput(Ok(()))) => {}

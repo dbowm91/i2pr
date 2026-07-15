@@ -203,6 +203,46 @@ graceful versus forced cleanup, final typed completions, joined-task count, and
 zero remaining owned tasks. No runtime service opens sockets or adds protocol,
 NetDB, tunnel, client, API, or plugin behavior.
 
+### Privacy-aware observability and aggregate snapshots
+
+Plan 024 adds a diagnostic boundary without adding a diagnostic data store.
+`i2pr-runtime::event` defines fixed event names for service lifecycle,
+shutdown, channel/resource outcomes, and simulation completion. Runtime and
+testkit code may emit structured events through `tracing`, but only
+`i2pr-daemon` installs a subscriber. Fields are limited to validated static
+identifiers, typed categories, bounded counters with units, monotonic timing,
+and synthetic simulation link/sequence/rule metadata.
+
+`SupervisorSnapshot` projects each service into lifecycle, readiness, health,
+classification, restart count, failure category, transition sequence, and
+monotonic transition time. It deliberately excludes `HealthDetail` text.
+`RuntimeSnapshot::try_new` combines that projection with sorted, capped
+`ChannelSnapshot` and `ResourceUsage` values plus optional aggregate testkit
+counters. Snapshot assembly is synchronous and does not hold mutable state
+across an await; independent owners make the result eventually coherent rather
+than transactional. Default `Debug` for health detail is redacted.
+
+The supervisor keeps the latest health value even when no receiver is attached,
+so direct snapshots and watch subscribers observe the same state. Service
+manager and child-task counters are decremented on every join and forced
+cleanup path. A final stopped snapshot must report zero owned service and child
+tasks; callers add channel, resource, timer, and synthetic-link invariants from
+the same bounded observation boundary.
+
+### Integrated deterministic validation
+
+`crates/i2pr-testkit/tests/milestone_2.rs` exercises five named scenarios:
+clean startup/shutdown, bounded overload, restart recovery, essential failure
+with a forced non-cooperative optional service, and stream/datagram fault
+replay. The scenarios use fixed service graphs, paused Tokio time, the manual
+clock, explicit budgets, and bounded yield/step counts. The replay matrix runs
+32 fixed root seeds and compares complete privacy-safe `ReplayRecord` values;
+it never includes payloads, identities, addresses, or full protocol records.
+
+This validation proves ownership and determinism of the local foundation only.
+It does not create a transport adapter, socket, protocol exchange, peer label,
+NetDB action, tunnel, client/API listener, or capability advertisement.
+
 ## Composition and communication
 
 The daemon will eventually compose supervised services and pass each service
@@ -218,9 +258,10 @@ The implemented service model classifies work as essential, restartable,
 degradable, or optional. Each long-lived service declares startup dependencies,
 readiness, health signals, owned resources, cancellation, and graceful/forced
 shutdown behavior through `i2pr-runtime`. Plan 022 now provides the bounded
-communication and resource-governor foundation; later plans may add
-deterministic network simulation and observability while preserving this
-ownership boundary.
+communication and resource-governor foundation, Plan 023 provides the
+deterministic simulation boundary, and Plan 024 provides privacy-aware
+snapshots/events and integrated validation while preserving this ownership
+boundary.
 
 ### Bounded communication and resource ownership
 

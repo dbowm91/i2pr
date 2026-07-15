@@ -334,8 +334,17 @@ impl HealthState {
 }
 
 /// Bounded diagnostic context for a health snapshot.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct HealthDetail(String);
+
+impl fmt::Debug for HealthDetail {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HealthDetail")
+            .field("redacted", &true)
+            .finish()
+    }
+}
 
 impl HealthDetail {
     /// Creates context after enforcing the bounded diagnostic limit.
@@ -1344,6 +1353,14 @@ mod tests {
     fn bounded_types_reject_oversized_values() {
         assert!(ServiceName::new("x".repeat(MAX_SERVICE_NAME_BYTES + 1)).is_err());
         assert!(HealthDetail::new("x".repeat(MAX_HEALTH_DETAIL_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn health_detail_debug_is_redacted() {
+        let detail = HealthDetail::new("attacker-controlled diagnostic text").expect("detail");
+        let debug = format!("{detail:?}");
+        assert!(!debug.contains("attacker-controlled"));
+        assert!(debug.contains("redacted"));
     }
 
     #[test]

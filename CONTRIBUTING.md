@@ -74,6 +74,23 @@ real sockets, DNS, or public-network fault injection. The focused lane is:
 cargo test -p i2pr-testkit --all-targets
 ```
 
+Plan 024's integrated lane contains named clean-startup, bounded-overload,
+restart-recovery, essential-failure, and simulated-link-fault scenarios plus
+a fixed 32-seed replay matrix. Run it with paused Tokio time and the manual
+clock; failures must retain the printed scenario and seed context. The
+mechanical boundary lane is:
+
+```text
+bash scripts/check-runtime-boundaries.sh
+```
+
+Runtime snapshots are aggregate, eventually coherent observations assembled
+without awaiting. Lower crates may emit the documented fixed-name tracing
+events but must not install a subscriber. Event fields must stay within the
+allowlist in `docs/security-model.md`; do not log health detail text, payloads,
+identity/destination encodings, addresses, panic payloads, or dynamic
+peer-derived labels.
+
 Simulation assertions must include bounded pending deliveries and bytes,
 receiver backpressure, cancellation/deadline outcomes, and teardown snapshots
 for queued units, timers, and resource leases. Link leases are owned by the

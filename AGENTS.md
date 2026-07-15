@@ -112,3 +112,24 @@ the manifest schema in `tests/fixtures/i2np/manifest.tsv`, include provenance,
 classification, deterministic inputs, hashes, and independence status, and be
 consumed by tests rather than only hash-checked. New identity directories must
 use creation-time restrictive modes; do not reintroduce create-then-chmod.
+
+Plan 024 observability rules are mandatory: use the fixed event names exported
+by `i2pr-runtime::event`; event fields must be validated service/channel
+identifiers, typed lifecycle/failure categories, bounded counters, units,
+monotonic durations, or synthetic link/sequence metadata. Never log payloads,
+private or reply keys, session tags, RouterIdentity/Destination bytes, full
+hashes, addresses, arbitrary error or panic text, filesystem paths, or
+peer-derived metric labels. Lower crates may emit events but only
+`i2pr-daemon` may install the subscriber. Aggregate snapshots must omit health
+detail text, sort bounded entries deterministically, and document eventual
+coherence.
+
+Plan 024 integration tests belong below the transport boundary and must use
+paused Tokio time or `ManualClock`, fixed root seeds, stable scenario names,
+and explicit step limits. The minimum local matrix is the five named service
+graph/link scenarios plus 32 fixed seeds, capacities 1/2/normal, exact and
+over-limit resources, recovery and restart exhaustion, graceful and forced
+shutdown, and teardown assertions for tasks, waiters, timers, links, queues,
+and resource usage. Closure work must record exact commands/results, CI
+evidence or its absence, dependencies, security decisions, deviations, and
+Milestone 3 prerequisites.

@@ -22,6 +22,10 @@ use crate::context::{
 use crate::graph::{
     MAX_SERVICE_TIMEOUT, RestartExhaustion, ServiceGraph, ServiceResult, ServiceSpec,
 };
+use crate::observability::{
+    RouterLifecycle, RuntimeSnapshot, SimulationSnapshot, SupervisorSnapshot, TaskCounters, event,
+    service_event, shutdown_event,
+};
 
 /// The maximum router-wide graceful shutdown deadline.
 pub const MAX_SHUTDOWN_DEADLINE: Duration = MAX_SERVICE_TIMEOUT;
@@ -161,6 +165,9 @@ impl std::error::Error for SupervisorError {}
 #[derive(Clone, Debug)]
 pub struct SupervisorHandle {
     cancellation: CancellationToken,
+    state: Arc<TaskCounters>,
+    health: Arc<BTreeMap<ServiceName, Arc<SharedHealth>>>,
+    clock: Arc<RuntimeClock>,
 }
 
 impl SupervisorHandle {
@@ -179,6 +186,11 @@ impl SupervisorHandle {
     /// Returns whether a shutdown request has been recorded.
     pub fn is_shutdown_requested(&self) -> bool {
         self.cancellation.is_cancelled()
+    }
+
+    /// Returns a bounded, redacted supervisor snapshot without awaiting.
+    pub fn snapshot(&self) -> SupervisorSnapshot {
+        self.state.snapshot(&self.health, &self.clock)
     }
 }
 
@@ -213,6 +225,7 @@ pub struct Supervisor {
     shutdown_deadline: Duration,
     clock: Arc<RuntimeClock>,
     health: BTreeMap<ServiceName, Arc<SharedHealth>>,
+    state: Arc<TaskCounters>,
 }
 
 impl std::fmt::Debug for Supervisor {
@@ -239,7 +252,8 @@ impl Supervisor {
         }
         let root = CancellationToken::new();
         let clock = Arc::new(RuntimeClock::new());
-        let health = graph
+        let state = TaskCounters::new();
+        let health: BTreeMap<ServiceName, Arc<SharedHealth>> = graph
             .services()
             .iter()
             .map(|(name, service)| {
@@ -254,12 +268,26 @@ impl Supervisor {
                 )
             })
             .collect();
+        for (name, service) in &health {
+            service_event(
+                name,
+                service
+                    .snapshot()
+                    .classification()
+                    .expect("service classification"),
+                LifecycleState::Registered,
+                0,
+                None,
+                event::SERVICE_REGISTERED,
+            );
+        }
         Ok(Self {
             graph,
             root,
             shutdown_deadline,
             clock,
             health,
+            state,
         })
     }
 
@@ -267,7 +295,26 @@ impl Supervisor {
     pub fn handle(&self) -> SupervisorHandle {
         SupervisorHandle {
             cancellation: self.root.clone(),
+            state: Arc::clone(&self.state),
+            health: Arc::new(self.health.clone()),
+            clock: Arc::clone(&self.clock),
         }
+    }
+
+    /// Returns a bounded, redacted supervisor snapshot without awaiting.
+    pub fn snapshot(&self) -> SupervisorSnapshot {
+        self.state.snapshot(&self.health, &self.clock)
+    }
+
+    /// Assembles a bounded aggregate snapshot with caller-owned channels,
+    /// resources, and optional deterministic simulation counters.
+    pub fn runtime_snapshot(
+        &self,
+        channels: Vec<crate::ChannelSnapshot>,
+        resources: Vec<i2pr_core::ResourceUsage>,
+        simulation: SimulationSnapshot,
+    ) -> Result<RuntimeSnapshot, crate::SnapshotError> {
+        RuntimeSnapshot::try_new(self.snapshot(), channels, resources, simulation)
     }
 
     /// Subscribes to one service's bounded latest-state health snapshot.
@@ -278,6 +325,7 @@ impl Supervisor {
     /// Starts the graph in deterministic dependency order and owns all managers
     /// until graceful completion or forced abort.
     pub async fn run(self) -> Result<ShutdownReport, SupervisorError> {
+        self.state.set_lifecycle(RouterLifecycle::Starting);
         let mut tasks = JoinSet::new();
         let mut active = BTreeMap::<ServiceName, ActiveManager>::new();
         let mut completions = BTreeMap::new();
@@ -322,6 +370,7 @@ impl Supervisor {
                             CancellationReason::StartupFailure,
                         )
                         .await;
+                    self.state.set_lifecycle(RouterLifecycle::Failed);
                     return Err(SupervisorError::StartupFailed {
                         service: name.clone(),
                         completion,
@@ -330,6 +379,8 @@ impl Supervisor {
                 }
             }
         }
+
+        self.state.set_lifecycle(RouterLifecycle::Ready);
 
         loop {
             if active.is_empty() {
@@ -353,6 +404,7 @@ impl Supervisor {
                     ).await);
                 }
                 joined = tasks.join_next() => {
+                    self.state.service_finished();
                     let Some(joined) = joined else {
                         let report = self.shutdown(
                             &mut tasks,
@@ -400,6 +452,7 @@ impl Supervisor {
                                 &mut completions,
                                 CancellationReason::EssentialServiceFailure,
                             ).await;
+                            self.state.set_lifecycle(RouterLifecycle::Failed);
                             completions.insert(output.name.clone(), output.completion.clone());
                             return Err(SupervisorError::EssentialServiceFailed {
                                 service: output.name,
@@ -431,6 +484,7 @@ impl Supervisor {
                                     &mut completions,
                                     CancellationReason::EssentialServiceFailure,
                                 ).await;
+                                self.state.set_lifecycle(RouterLifecycle::Failed);
                                 completions.insert(output.name.clone(), output.completion);
                                 return Err(SupervisorError::RestartBudgetExhausted {
                                     service: output.name,
@@ -487,6 +541,7 @@ impl Supervisor {
         let graceful_period = spec.shutdown_grace();
         let manager_name = spec.name().clone();
         let clock = Arc::clone(&self.clock);
+        let state = Arc::clone(&self.state);
         let manager_token_for_task = manager_token.clone();
         tasks.spawn(async move {
             match AssertUnwindSafe(run_manager(
@@ -494,6 +549,7 @@ impl Supervisor {
                 manager_token_for_task,
                 health,
                 clock,
+                state,
                 ready_sender,
             ))
             .catch_unwind()
@@ -506,6 +562,7 @@ impl Supervisor {
                 },
             }
         });
+        self.state.service_started();
         (
             ActiveManager {
                 cancellation: manager_token,
@@ -530,6 +587,7 @@ impl Supervisor {
                     changed = receiver.changed() => {
                         if changed.is_err() {
                             loop {
+                                self.state.service_finished();
                                 match tasks.join_next().await {
                                     Some(Ok(output)) if output.name == *current => {
                                         let reached_ready = self
@@ -588,6 +646,7 @@ impl Supervisor {
                         }
                     }
                     joined = tasks.join_next() => {
+                        self.state.service_finished();
                         match joined {
                             Some(Ok(output)) if output.name == *current => {
                                 let reached_ready = self
@@ -660,6 +719,22 @@ impl Supervisor {
     ) {
         if let Some(health_state) = self.health.get(name) {
             health_state.set(lifecycle, health, restart_count, failure, detail);
+            let event_name = match health {
+                HealthState::Degraded(_) => Some(event::SERVICE_DEGRADED),
+                HealthState::Stopping => Some(event::SERVICE_STOPPING),
+                HealthState::Failed => Some(event::SERVICE_FAILED),
+                HealthState::Starting | HealthState::Ready => None,
+            };
+            if let Some(event_name) = event_name {
+                service_event(
+                    name,
+                    self.graph.service(name).classification(),
+                    lifecycle,
+                    restart_count,
+                    failure,
+                    event_name,
+                );
+            }
         }
     }
 
@@ -753,6 +828,9 @@ impl Supervisor {
         completions: &mut BTreeMap<ServiceName, ServiceCompletion>,
         reason: CancellationReason,
     ) -> ShutdownReport {
+        self.state.set_lifecycle(RouterLifecycle::Stopping);
+        self.state.request_shutdown();
+        shutdown_event(event::SHUTDOWN_REQUESTED, 0);
         let _ = self.root.cancel(reason);
         for manager in active.values() {
             let _ = manager.cancellation.cancel(reason);
@@ -774,6 +852,7 @@ impl Supervisor {
         while !tasks.is_empty() {
             tokio::select! {
                 joined = tasks.join_next() => {
+                    self.state.service_finished();
                     let Some(joined) = joined else { break };
                     joined_tasks += 1;
                     match joined {
@@ -793,6 +872,9 @@ impl Supervisor {
                 }
                 _ = &mut deadline => {
                     forced_services.extend(active.keys().cloned());
+                    for _ in 0..active.len() {
+                        self.state.forced_abort();
+                    }
                     for name in &forced_services {
                         let completion = ServiceCompletion::ForcedAbort;
                         self.set_health(
@@ -807,12 +889,14 @@ impl Supervisor {
                     }
                     active.clear();
                     tasks.abort_all();
+                    shutdown_event(event::SHUTDOWN_FORCED, forced_services.len());
                     aborted = true;
                     break;
                 }
             }
         }
         while let Some(joined) = tasks.join_next().await {
+            self.state.service_finished();
             joined_tasks += 1;
             if joined.is_err() && !aborted {
                 cleanup_failed = true;
@@ -826,6 +910,8 @@ impl Supervisor {
         } else {
             ShutdownOutcome::PartiallyForced
         };
+        self.state.set_lifecycle(RouterLifecycle::Stopped);
+        shutdown_event(event::SERVICE_STOPPED, forced_services.len());
         ShutdownReport {
             outcome,
             forced_services: forced_services.into_iter().collect(),
@@ -841,6 +927,7 @@ async fn run_manager(
     token: CancellationToken,
     health: Arc<SharedHealth>,
     clock: Arc<RuntimeClock>,
+    state: Arc<TaskCounters>,
     startup_sender: watch::Sender<bool>,
 ) -> ManagerOutput {
     let name = spec.name().clone();
@@ -853,12 +940,21 @@ async fn run_manager(
             None,
             None,
         );
+        service_event(
+            &name,
+            spec.classification(),
+            LifecycleState::Starting,
+            restart_count,
+            None,
+            event::SERVICE_STARTING,
+        );
         let attempt = run_attempt(
             &spec,
             &token,
             restart_count,
             &health,
             &clock,
+            &state,
             &startup_sender,
         )
         .await;
@@ -871,6 +967,14 @@ async fn run_manager(
                 restart_count,
                 None,
                 None,
+            );
+            service_event(
+                &name,
+                spec.classification(),
+                LifecycleState::Stopping,
+                restart_count,
+                None,
+                event::SERVICE_STOPPING,
             );
             return ManagerOutput {
                 name,
@@ -887,6 +991,14 @@ async fn run_manager(
         if spec.classification() != ServiceClassification::Restartable
             || !attempt.completion.is_failure()
         {
+            service_event(
+                &name,
+                spec.classification(),
+                LifecycleState::Failed,
+                restart_count,
+                attempt.completion.category(),
+                event::SERVICE_FAILED,
+            );
             return ManagerOutput {
                 name,
                 completion: attempt.completion,
@@ -909,10 +1021,29 @@ async fn run_manager(
                 completion.category(),
                 None,
             );
+            service_event(
+                &name,
+                spec.classification(),
+                match policy.exhaustion() {
+                    RestartExhaustion::Degrade => LifecycleState::Degraded,
+                    RestartExhaustion::Shutdown => LifecycleState::Failed,
+                },
+                restart_count,
+                completion.category(),
+                event::SERVICE_FAILED,
+            );
             return ManagerOutput { name, completion };
         }
         restart_count += 1;
         let delay = policy.delay_for(restart_count);
+        service_event(
+            &name,
+            spec.classification(),
+            LifecycleState::Starting,
+            restart_count,
+            attempt.completion.category(),
+            event::SERVICE_RESTARTING,
+        );
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
             _ = token.cancelled() => {
@@ -938,12 +1069,13 @@ async fn run_attempt(
     restart_count: u32,
     health: &Arc<SharedHealth>,
     clock: &Arc<RuntimeClock>,
+    state: &Arc<TaskCounters>,
     startup_sender: &watch::Sender<bool>,
 ) -> AttemptOutput {
     let service_token = token.child_token();
     let (readiness, mut readiness_receiver) = Readiness::new();
     let readiness_observer = readiness.clone();
-    let children = ChildScope::new(&service_token, spec.child_policy());
+    let children = ChildScope::new(&service_token, spec.child_policy(), Arc::clone(state));
     let context = ServiceContext::new(
         spec.name().clone(),
         service_token.clone(),
@@ -970,6 +1102,14 @@ async fn run_attempt(
                             restart_count,
                             None,
                             None,
+                        );
+                        service_event(
+                            spec.name(),
+                            spec.classification(),
+                            LifecycleState::Ready,
+                            restart_count,
+                            None,
+                            event::SERVICE_READY,
                         );
                         ReadinessPhase::Ready
                     } else {
@@ -1097,6 +1237,38 @@ mod tests {
         let report = task.await.expect("supervisor joined").expect("graceful");
         assert!(report.was_graceful());
         assert_eq!(report.remaining_tasks(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn supervisor_snapshot_tracks_readiness_and_owned_tasks() {
+        let supervisor = Supervisor::new(
+            graph(forever_service("core", ServiceClassification::Essential)),
+            Duration::from_secs(5),
+        )
+        .expect("supervisor");
+        let handle = supervisor.handle();
+        assert_eq!(handle.snapshot().lifecycle, RouterLifecycle::Registered);
+        assert!(!handle.snapshot().ready);
+        let task = tokio::spawn(supervisor.run());
+        for _ in 0..32 {
+            tokio::task::yield_now().await;
+            if handle.snapshot().ready {
+                break;
+            }
+        }
+        let running = handle.snapshot();
+        assert_eq!(running.lifecycle, RouterLifecycle::Ready);
+        assert!(running.ready, "running snapshot: {running:?}");
+        assert_eq!(running.owned_service_tasks, 1);
+        assert_eq!(running.owned_child_tasks, 0);
+        assert!(!format!("{running:?}").contains("private"));
+        handle.shutdown(ShutdownReason::Test);
+        let report = task.await.expect("supervisor joined").expect("graceful");
+        assert!(report.was_graceful());
+        let stopped = handle.snapshot();
+        assert_eq!(stopped.lifecycle, RouterLifecycle::Stopped);
+        assert_eq!(stopped.owned_service_tasks, 0);
+        assert_eq!(stopped.owned_child_tasks, 0);
     }
 
     #[tokio::test(start_paused = true)]

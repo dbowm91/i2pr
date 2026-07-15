@@ -40,6 +40,12 @@ links, executable fault scripts, ephemeral peer/topology factories, and
 privacy-safe replay records. The testkit is a manual simulation pump only: it
 opens no sockets, performs no DNS, persists no private identities, and does not
 provide transport interoperability evidence.
+Plan 024 now adds fixed-name, privacy-aware runtime events; redacted aggregate
+supervisor/channel/resource snapshots; latest-state health correctness when no
+subscriber is attached; integrated clean, overload, restart, essential-failure,
+and stream/datagram fault scenarios; and a fixed 32-seed deterministic replay
+matrix. These are bounded local validation artifacts, not protocol, anonymity,
+resilience, or public-network evidence.
 
 No production-ready router functionality exists yet. Do not use `i2pr` for anonymity, privacy, censorship resistance, or security-sensitive workloads until the project has completed protocol interoperability, adversarial testing, and an independent security review.
 
@@ -154,12 +160,15 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 021 supervision and cancellation closure record](plans/021-closure.md)
 - [Plan 022 bounded channels and resource governor closure record](plans/022-closure.md)
 - [Plan 023 deterministic network testkit closure record](plans/023-closure.md)
+- [Aggregate Milestone 2 closure record](plans/020-milestone-2-closure.md)
+- [Plan 024 observability and validation plan](plans/024-m2-observability-validation-closure.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
 - [Architecture](docs/architecture.md)
 - [Protocol support matrix](docs/protocol-support.md)
 - [Security model](docs/security-model.md)
 - [Architecture decision records](docs/adr/0000-adr-process.md)
 - [Runtime and supervision ADR](docs/adr/0008-runtime-supervision-and-cancellation.md)
+- [Runtime observability and validation ADR](docs/adr/0009-runtime-observability-and-validation.md)
 - [Contribution guide](CONTRIBUTING.md)
 - [Protocol specification index and source ledger](specs/README.md)
 
@@ -191,6 +200,14 @@ Runtime changes must use deterministic Tokio test time (`start_paused` or
 explicit `time::advance`) rather than wall-clock sleeps. Every spawned task
 must be owned by the supervisor or a service child scope and must be joined or
 explicitly aborted before the runtime returns.
+
+The Plan 024 integrated validation lane is `cargo test -p i2pr-testkit
+--all-targets`; it runs the five named scenarios and the fixed 32-seed replay
+matrix. Run `rtk bash scripts/check-runtime-boundaries.sh` for the mechanical
+runtime/testkit guardrails. Runtime snapshots and tracing events may contain
+only validated service/channel identifiers, typed categories, counters,
+bounded monotonic timing, and synthetic simulation metadata; health detail
+text is redacted from default `Debug` output and aggregate snapshots.
 
 The CLI exposes `--help`, `--version`,
 `check-config --config <path>`, `identity generate --config <path>`,

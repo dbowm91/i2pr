@@ -17,6 +17,7 @@ use i2pr_core::{
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::CancellationToken;
+use crate::observability::{channel_event, event};
 
 /// Hard ceiling for one infrastructure channel.
 pub const MAX_CHANNEL_CAPACITY: usize = 4_096;
@@ -734,10 +735,12 @@ impl<T> CommandSenderInner<T> {
             Ok(permit) => permit,
             Err(mpsc::error::TrySendError::Full(())) => {
                 increment(&self.state.counters.rejected_full);
+                channel_event(&self.state.snapshot(), event::CHANNEL_REJECTED, "full");
                 return Err(SendError::Full(value));
             }
             Err(mpsc::error::TrySendError::Closed(())) => {
                 increment(&self.state.counters.closed);
+                channel_event(&self.state.snapshot(), event::CHANNEL_REJECTED, "closed");
                 return Err(SendError::Closed(value));
             }
         };
@@ -750,6 +753,7 @@ impl<T> CommandSenderInner<T> {
             Ok(lease) => lease,
             Err(error) => {
                 increment(&self.state.counters.resource_denied);
+                channel_event(&self.state.snapshot(), event::RESOURCE_DENIED, "resource");
                 return Err(map_admission_error(value, error));
             }
         };
@@ -782,16 +786,19 @@ impl<T> CommandSenderInner<T> {
             biased;
             _ = cancellation.cancelled() => {
                 increment(&self.state.counters.cancellations);
+                channel_event(&self.state.snapshot(), event::CHANNEL_REJECTED, "cancelled");
                 return Err(SendError::Cancelled(value));
             }
             _ = tokio::time::sleep_until(deadline) => {
                 increment(&self.state.counters.deadlines);
+                channel_event(&self.state.snapshot(), event::CHANNEL_REJECTED, "deadline");
                 return Err(SendError::DeadlineElapsed(value));
             }
             result = sender.reserve_owned() => match result {
                 Ok(permit) => permit,
                 Err(_) => {
                     increment(&self.state.counters.closed);
+                    channel_event(&self.state.snapshot(), event::CHANNEL_REJECTED, "closed");
                     return Err(SendError::Closed(value));
                 }
             }
@@ -805,6 +812,7 @@ impl<T> CommandSenderInner<T> {
             Ok(lease) => lease,
             Err(error) => {
                 increment(&self.state.counters.resource_denied);
+                channel_event(&self.state.snapshot(), event::RESOURCE_DENIED, "resource");
                 return Err(map_admission_error(value, error));
             }
         };

@@ -12,6 +12,7 @@ futures-util.workspace = true
 i2pr-core = { path = "../i2pr-core" }
 tokio.workspace = true
 tokio-util.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

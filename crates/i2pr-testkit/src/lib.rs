@@ -4,6 +4,9 @@
 //! It opens no sockets, performs no DNS lookups, and never contacts the I2P
 //! network. Simulation is a controllable model of queues and failures, not a
 //! transport-interoperability claim.
+//!
+//! The Milestone 2 integration lane lives in `tests/milestone_2.rs` and keeps
+//! all scenarios bounded by fixed seeds, manual time, and explicit step caps.
 
 #![forbid(unsafe_code)]
 
