@@ -60,9 +60,25 @@ if [[ -r /proc/sys/kernel/unprivileged_userns_clone ]]; then
   fi
 fi
 
-# Run the actual bounded probe inside the sandbox.
-if ! python3 "$repo_root/tests/integration/ntcp2/harness/rootless_supervisor.py" --probe; then
+if ! probe_outcome=$(python3 "$repo_root/tests/integration/ntcp2/harness/rootless_supervisor.py" --probe 2>&1); then
   rc=$?
+  # Surface the supervised typed blocker regardless of success-path status.
+  printf '%s\n' "$probe_outcome"
+  if [[ -n "$attestation_path" ]]; then
+    mkdir -p "$(dirname "$attestation_path")" 2>/dev/null || true
+    first_outcome=$(printf '%s\n' "$probe_outcome" | grep -o '"outcome":"[a-z_]*"' | head -1 | cut -d'"' -f4 || true)
+    if [[ -z "$first_outcome" ]]; then
+      first_outcome="blocked_unprivileged_user_namespace"
+    fi
+    python3 -c "
+import json, sys
+print(json.dumps({
+    'schema': 1,
+    'type': 'rootless-sandbox-probe',
+    'outcome': '$first_outcome',
+}))
+" > "$attestation_path" 2>/dev/null || true
+  fi
   if [[ $rc -eq 1 ]]; then
     exit 1
   fi

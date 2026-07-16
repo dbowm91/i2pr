@@ -88,9 +88,14 @@ parse_args() {
         require_string "$profile" "profile"
         shift 2
         ;;
+      --attestation-output)
+        attestation_output="${2:-}"
+        require_string "$attestation_output" "attestation-output"
+        shift 2
+        ;;
       --help|-h)
         cat <<EOF
-usage: bash scripts/interop/rootless-enter.sh [--probe | --scenario <id> --reference <ref> [--build-cache <path>] [--run-root <path>] | --profile <id>]
+usage: bash scripts/interop/rootless-enter.sh [--probe | --scenario <id> --reference <ref> [--build-cache <path>] [--run-root <path>] [--attestation-output <path>] | --profile <id> [--attestation-output <path>]]
 EOF
         exit 0
         ;;
@@ -211,7 +216,11 @@ run_probe() {
     # `unshare` failed before reaching the supervisor (e.g. the host does
     # not allow writing /proc/self/uid_map). Surface the typed blocker so
     # callers can fail closed without sudo.
-    printf '{"schema":1,"type":"rootless-sandbox-probe","outcome":"blocked_unprivileged_user_namespace"}\n'
+    local blocker='{"schema":1,"type":"rootless-sandbox-probe","outcome":"blocked_unprivileged_user_namespace"}'
+    printf '%s\n' "$blocker"
+    if [[ -n "$attestation_output" ]]; then
+      printf '%s\n' "$blocker" > "$attestation_output" || true
+    fi
     return 1
   fi
   # Surface the inner supervisor's typed outcome to stdout.
@@ -229,10 +238,22 @@ run_scenario() {
   if [[ -n "$run_root" ]]; then
     inner_args+=(--run-root "$run_root")
   fi
-  build_unshare_command "python3 $repo_root/tests/integration/ntcp2/harness/rootless_inner_runner.py ${inner_args[*]}"
-  if ! "${UNSHARE_COMMAND[@]}"; then
-    die "rootless-inner-runner-failed"
+  if [[ -n "$attestation_output" ]]; then
+    inner_args+=(--attestation-output "$attestation_output")
   fi
+  build_unshare_command "python3 $repo_root/tests/integration/ntcp2/harness/rootless_inner_runner.py ${inner_args[*]}"
+  if "${UNSHARE_COMMAND[@]}"; then
+    return 0
+  fi
+  local rc=$?
+  # Distinguish "inner runner itself failed after running" from "the unshare
+  # call never reached Python". We can tell by whether the inner runner had a
+  # chance to write the attestation file; if not, the host is blocked.
+  if [[ -n "$attestation_output" && ! -s "$attestation_output" ]]; then
+    local blocker='{"schema":1,"type":"rootless-sandbox-probe","outcome":"blocked_unprivileged_user_namespace"}'
+    printf '%s\n' "$blocker" > "$attestation_output" || true
+  fi
+  die "rootless-inner-runner-failed:exit=$rc"
 }
 
 run_profile() {
