@@ -6,10 +6,10 @@ Plan 044 is implementation-complete locally: every deterministic corrective
 defect, the mixed-router composition, the strict launcher renderer, the
 non-echo data-phase oracle, the gate-staging archival design, and the
 documentation reconciliation are wired and tested. Privileged external
-execution is not closed on this host: the Ubuntu 24.04 amd64 host contract
-rejects the current environment before namespace creation or reference-cache
-use. No authenticated mixed-router result is claimed and no sanitized mixed
-evidence record is committed.
+execution returned supplementary shell-integration defects that were
+corrected in the same record. The Ubuntu 24.04 amd64 host contract
+ultimately blocks execution on this host, so no authenticated mixed-router
+result is claimed and no sanitized mixed evidence record is committed.
 
 The Plan 044 typed blocker is replaced: `handshake-smoke` no longer returns
 `i2pr-mixed-router-profile-not-wired` for the four allowlisted directional
@@ -38,6 +38,14 @@ mixed-router execution still terminates at `blocked_host_contract` from
   `rustc --version --verbose` and `cargo --version --verbose`. The
   `validate-build-contract.py` validator structurally verifies those
   requirements and rejects unbounded workflow inputs.
+- `scripts/interop/ubuntu/check-host.sh` removes a read-only
+  `host-metadata.json` before rewriting it so a stale 0600-owned file from
+  a prior invocation cannot block a later `sudo` write.
+- `scripts/interop/run-matrix.sh` declares `ids` and `mixed_ids` arrays
+  unconditionally before `set -u`-safe case assignment, and routes each
+  scenario through a `reference_for()` helper that derives `java_i2p` or
+  `i2pd` from the scenario name (covering both the original `-java-` /
+  `-i2pd-` scenarios and the four `*-to-*-ipv4` mixed directions).
 
 ## Mixed-run composition
 

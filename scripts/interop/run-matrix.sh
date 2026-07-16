@@ -25,6 +25,8 @@ case "$profile" in
   environment-smoke|handshake-smoke|reference-crosscheck-ipv4|full) ;;
   *) printf 'invalid profile: %s\n' "$profile" >&2; exit 2 ;;
 esac
+ids=()
+mixed_ids=()
 case "$profile" in
   environment-smoke) ids=(smoke-java-ipv4 smoke-i2pd-ipv4) ;;
   handshake-smoke) mixed_ids=(i2pr-to-java-ipv4 java-to-i2pr-ipv4 i2pr-to-i2pd-ipv4 i2pd-to-i2pr-ipv4) ;;
@@ -44,20 +46,27 @@ case "$profile" in
     ;;
 esac
 status=0
-if [[ "${#ids[@]:-0}" -gt 0 ]]; then
+reference_for() {
+  local scenario=$1
+  case "$scenario" in
+    *-java-*|java-to-*) echo java_i2p ;;
+    *-i2pd-*|i2pd-to-*) echo i2pd ;;
+    *) echo i2pd ;;
+  esac
+}
+
+if [[ ${#ids[@]} -gt 0 ]]; then
   for scenario in "${ids[@]}"; do
-    reference=java_i2p
-    [[ "$scenario" == i2pd-* ]] && reference=i2pd
+    reference=$(reference_for "$scenario")
     args=(--scenario "$scenario" --reference "$reference")
     [[ "$offline" == "1" ]] && args+=(--offline)
     [[ "$keep" == "1" ]] && args+=(--keep-failed-sanitized)
     if ! bash "$root/scripts/interop/run-scenario.sh" "${args[@]}"; then status=1; fi
   done
 fi
-if [[ "${#mixed_ids[@]:-0}" -gt 0 ]]; then
+if [[ ${#mixed_ids[@]} -gt 0 ]]; then
   for scenario in "${mixed_ids[@]}"; do
-    reference=java_i2p
-    [[ "$scenario" == i2pd-* ]] && reference=i2pd
+    reference=$(reference_for "$scenario")
     args=(--scenario "$scenario" --reference "$reference")
     [[ "$offline" == "1" ]] && args+=(--offline)
     [[ "$keep" == "1" ]] && args+=(--keep-failed-sanitized)

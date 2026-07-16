@@ -119,6 +119,7 @@ json_escape() {
 metadata_parent=$(dirname "$metadata_path")
 mkdir -p "$metadata_parent"
 [[ -w "$metadata_parent" ]] || die "host metadata parent is not writable"
+[[ -e "$metadata_path" && ! -w "$metadata_path" ]] && rm -f "$metadata_path" || true
 cat >"$metadata_path" <<EOF
 {"schema":1,"mode":"$(json_escape "$mode")","os_id":"$(json_escape "${ID:-unknown}")","os_version":"$(json_escape "${VERSION_ID:-unknown}")","architecture":"$(json_escape "$(uname -m)")","kernel":"$(json_escape "$(uname -r)")","locale":"$(json_escape "$locale_output")","python":"$(json_escape "$python_version")","java":"$(json_escape "$java_version")","ant":"$(json_escape "$ant_version")","cmake":"$(json_escape "$cmake_version")","compiler":"$(json_escape "$compiler_version")","nft":"$(json_escape "$nft_version")","iproute2":"$(json_escape "$iproute2_version")","free_kb":$free_kb,"host_contract":"$HOST_CONTRACT"}
 EOF
