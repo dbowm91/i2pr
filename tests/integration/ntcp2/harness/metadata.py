@@ -94,12 +94,25 @@ def _sha256_file(path: Path) -> str:
 
 
 def hash_runtime_tree(cache_root: Path) -> str:
-    """Hash every runtime file in stable path order, excluding metadata itself."""
+    """Hash every runtime file in stable path order, excluding metadata itself.
+
+    Sort order matches the bash ``sort -z`` default used by the canonical
+    Plan 038 ``hash_tree`` helper that records ``installed_tree_sha256``
+    during build: paths are compared as NUL-delimited byte strings with
+    the default POSIX locale, which orders ``-`` (0x2D) before ``/`` (0x2F)
+    before any other path separator. Python's default ``str`` sort uses
+    Unicode code points and orders ``/`` before ``-``, which produces a
+    different ordering for paths containing both characters (for example
+    ``eepsite-jetty9.3/...`` vs ``eepsite/...``) and a different overall
+    hash. Sort by encoded bytes to match the recorded hash exactly.
+    """
 
     if not cache_root.is_dir():
         raise MetadataError("cache root is not a directory")
+    files = [path for path in cache_root.rglob("*") if path.is_file()]
+    files.sort(key=lambda path: path.relative_to(cache_root).as_posix().encode("utf-8"))
     entries: list[tuple[str, str]] = []
-    for path in sorted(path for path in cache_root.rglob("*") if path.is_file()):
+    for path in files:
         if path.name == "build-metadata.txt":
             continue
         relative = path.relative_to(cache_root).as_posix()

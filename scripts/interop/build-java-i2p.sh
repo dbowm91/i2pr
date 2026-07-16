@@ -71,9 +71,17 @@ izpack_options="$log_dir/izpack-install.properties"
 printf '# Verified IzPack 5.2.4\nINSTALL_PATH=%s\n' "$izpack_root" >"$izpack_options"
 java -jar "$izpack" -options-auto "$izpack_options" >"$log_dir/izpack-install.log" 2>&1
 export IZPACK_HOME="$izpack_root"
+# IzPack 5.2.4's installer always extracts a com/izforge/izpack tree into
+# its working directory regardless of INSTALL_PATH; remove it so the source
+# checkout is not dirtied before the ant build's git status check.
+rm -rf "$source_dir/com"
 auto_options="$log_dir/auto-install.properties"
 cat >"$auto_options" <<EOF
 sys.installationDir=$install_dir
+INSTALL_PATH=$install_dir
+sys.language.selected=eng
+sys.pack.selected.Base=true
+sys.pack.selected.Windows Service=false
 EOF
 printf 'reference=%s\nrevision=%s\ncommand=ant distclean pkg5\n' "$JAVA_REFERENCE" "$JAVA_REVISION" \
   >"$log_dir/build-command.txt"
@@ -85,10 +93,13 @@ install -m 0644 "$source_dir/install.jar" "$log_dir/install.jar"
 java -jar "$source_dir/install.jar" -options-auto "$auto_options" >"$log_dir/install.log" 2>&1
 
 launcher=""
-for candidate in "$install_dir/i2psvc" "$install_dir/i2prouter" "$install_dir/runplain.sh"; do
-  if [[ -x "$candidate" ]]; then launcher="$candidate"; break; fi
+for candidate in "$install_dir/runplain.sh" "$install_dir/i2prouter"; do
+  if [[ -x "$candidate" ]] && head -n 1 "$candidate" | grep -q '^#!'; then
+    launcher="$candidate"
+    break
+  fi
 done
-[[ -n "$launcher" ]] || die "Java I2P staged runtime has no approved headless launcher"
+[[ -n "$launcher" ]] || die "Java I2P staged runtime has no reviewed headless shell launcher"
 mkdir -p "$cache_dir"
 cp -a "$install_dir/." "$cache_dir/"
 mkdir -p "$cache_dir/artifacts"
