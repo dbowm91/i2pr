@@ -29,6 +29,8 @@ def tree_hash(root: Path) -> str:
             continue
         if relative == ".opencode/node_modules" or relative.startswith(".opencode/node_modules/"):
             continue
+        if relative.endswith("/__pycache__") or relative.startswith("__pycache__/") or "/__pycache__/" in relative:
+            continue
         if path.is_symlink():
             raise ValueError(f"source archive refuses symlink: {relative}")
         if path.is_file():
