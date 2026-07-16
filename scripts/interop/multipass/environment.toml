@@ -1,4 +1,6 @@
 schema = 1
+# Stable reviewed environment contract; this is not a Multipass instance name.
+environment_id = "i2pr-plan048-rootless-v1"
 instance_name = "i2pr-interop-rootless"
 image = "24.04"
 cpus = 4

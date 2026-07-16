@@ -227,11 +227,15 @@ gate catalog omits `handshake-smoke-rootless`, or when the evidence
 validation does not require the sandbox attestation. Plan 046 does not
 advertise NTCP2 support and does not close Milestone 3 by itself.
 
-## Plan 048 Multipass recovery operations
+## Plan 048/049 Multipass recovery operations
 
 The host-level `blocked_unprivileged_user_namespace` result remains the
-negative baseline. The recovery lane is a disposable Multipass guest and must
-use the checked-in manifest and fixed wrapper:
+negative baseline. The recovery lane is a disposable Multipass guest. Its
+reviewed environment ID is distinct from the safe run ID, concrete instance
+name, and generation. The default path reserves host lifecycle state
+atomically before launch and uses a fresh bounded instance name; the legacy
+`i2pr-interop-rootless` name is not authoritative. Use the checked-in manifest
+and lifecycle-owned wrapper:
 
 ```text
 bash scripts/interop/multipass/run-evidence-lane.sh --create
@@ -239,7 +243,8 @@ bash scripts/interop/multipass/run-evidence-lane.sh --prepare
 bash scripts/interop/multipass/run-evidence-lane.sh --probe
 bash scripts/interop/multipass/run-evidence-lane.sh --run
 bash scripts/interop/multipass/run-evidence-lane.sh --export --run-id <safe-id>
-bash scripts/interop/multipass/run-evidence-lane.sh --destroy
+bash scripts/interop/multipass/run-evidence-lane.sh --destroy-owned \
+  --run-id <safe-id>
 ```
 
 The one-command lane is:
@@ -249,16 +254,44 @@ bash scripts/interop/multipass/run-evidence-lane.sh --all \
   --run-id <safe-id> --destroy-after-export
 ```
 
+Read-only inspection and recovery are explicit:
+
+```text
+bash scripts/interop/multipass/run-evidence-lane.sh --inspect --run-id <safe-id>
+bash scripts/interop/multipass/run-evidence-lane.sh --all --resume-owned \
+  --run-id <safe-id>
+bash scripts/interop/multipass/run-evidence-lane.sh --all --adopt-owned \
+  --run-id <safe-id>
+bash scripts/interop/multipass/run-evidence-lane.sh --all --recreate-owned \
+  --run-id <safe-id>
+bash scripts/interop/multipass/run-evidence-lane.sh --destroy-owned \
+  --run-id <safe-id>
+```
+
+`--adopt-owned`, `--resume-owned`, `--recreate-owned`, and `--destroy-owned`
+require matching host/guest ownership records, ownership-token hash,
+environment/cloud-init/source/cache digests, generation, guest policy,
+execution-user privileges, mounts, snapshots, and process state. A name-only
+match is not ownership. Normal execution never silently adopts, recreates,
+deletes, stops, or purges an existing resource; global `multipass purge` is
+forbidden. Unknown, ambiguous, and deleted-but-unpurged states are typed
+blockers. Per-run/per-instance locks serialize state transitions.
+
 Cloud-init is the administrative preparation phase. Source transfer requires
 a clean exact commit and deterministic archive; cache transfer requires the
 verified canonical `target/interop/cache` and its build sidecar manifest.
 After `prepare-offline.sh`, guest nftables denies non-loopback egress and all
-scenario commands run as `i2ptest`. The probe must pass before any router.
-Snapshot names are only `provisioned` and `source-and-cache-ready`; host
-mounts, arbitrary guest commands, and privileged fallback are forbidden.
+scenario commands run as `i2ptest`. The host baseline probe is informational;
+the guest probe must pass after ownership/policy verification and again before
+any router. Snapshot names are only `provisioned` and `source-and-cache-ready`
+and are bound to the environment contract and generation; host mounts,
+arbitrary guest commands, and privileged fallback are forbidden.
 
-Export accepts only the fixed sanitized bundle and atomically installs it at
+Export accepts only the sanitized bundle and atomically installs it at
 `target/interop/evidence/multipass/<run-id>/`. Preserve that directory before
-destroying the VM. Missing Multipass, guest policy, source/cache, probe,
-offline, cleanup, or evidence requirements are typed blockers, not protocol
-passes; no support row or Milestone 3 claim changes automatically.
+owned destruction. Environment and directional records must share the
+environment ID, run ID, generation, ownership/contract digests, separate host
+and guest probe results, and environment evidence hash. Missing Multipass,
+guest policy, source/cache, probe, offline, cleanup, or evidence requirements
+are typed blockers; pre-router blockers are never protocol passes and no
+support row or Milestone 3 claim changes automatically.

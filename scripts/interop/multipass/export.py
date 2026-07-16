@@ -50,14 +50,40 @@ def validate(source: Path) -> None:
         if value != [digest(source / name), name]:
             raise ValueError(f"sidecar digest mismatch: {name}")
     environment = json.loads((source / "environment.json").read_text(encoding="utf-8"))
-    if environment.get("rootless_probe_outcome") != "rootless_sandbox_available" or environment.get("execution_user_privileged") is not False:
+    if environment.get("guest_rootless_probe_outcome") != "rootless_sandbox_available" or environment.get("execution_user_privileged") is not False:
         raise ValueError("environment contract is not successful")
+    lifecycle = json.loads((source / "lifecycle.json").read_text(encoding="utf-8"))
+    for field in ("schema_version", "environment_id", "run_id", "instance_generation", "instance_name_digest", "state", "environment_manifest_sha256", "cloud_init_sha256"):
+        if field not in lifecycle:
+            raise ValueError(f"lifecycle attribution is missing: {field}")
+    if "instance_name" in lifecycle or "owner_token_sha256" in lifecycle:
+        raise ValueError("lifecycle export contains host-only identity material")
+    if lifecycle["run_id"] != environment.get("run_id") or lifecycle["instance_generation"] != environment.get("instance_generation"):
+        raise ValueError("lifecycle and environment identity differ")
+    attribution = None
     for name in ("i2pr-to-java-ipv4.json", "java-to-i2pr-ipv4.json", "i2pr-to-i2pd-ipv4.json", "i2pd-to-i2pr-ipv4.json"):
         path = source / name
         validate_file(path)
         value = json.loads(path.read_text(encoding="utf-8"))
         if value.get("actual_typed_result") != "passed" or value.get("cleanup_result") != "clean":
             raise ValueError(f"direction is not a passing clean record: {name}")
+        current = tuple(value.get(field) for field in (
+            "environment_id", "run_id", "instance_generation", "environment_evidence_sha256",
+            "instance_name_digest", "lifecycle_schema_version", "ownership_record_sha256",
+            "environment_manifest_sha256", "cloud_init_sha256", "host_baseline_probe_outcome",
+            "guest_rootless_probe_outcome", "adoption_mode",
+        ))
+        if any(item in (None, "") for item in current):
+            raise ValueError(f"direction attribution is missing: {name}")
+        if attribution is not None and current != attribution:
+            raise ValueError("direction attribution differs")
+        attribution = current
+    if attribution is None or attribution[0] != environment.get("environment_id") or attribution[1] != environment.get("run_id"):
+        raise ValueError("environment attribution differs")
+    if attribution[2] != environment.get("instance_generation") or attribution[4] != environment.get("instance_name_digest"):
+        raise ValueError("environment generation/name attribution differs")
+    if attribution[7] != environment.get("environment_manifest_sha256") or attribution[8] != environment.get("cloud_init_sha256"):
+        raise ValueError("environment contract attribution differs")
 
 
 def main() -> int:

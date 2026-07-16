@@ -71,21 +71,36 @@ typed outcomes, bounded metadata, and artifact/configuration hashes. Raw
 addresses, identities, RouterInfo, I2NP, keys, transcripts, logs, and arbitrary
 remote error text are not retained.
 
-## Plan 048 Multipass evidence environment
+## Plan 048/049 Multipass evidence environment
 
 Plan 048 is an orchestration boundary around the Plan 046 rootless topology,
-not a production crate or a support claim. The current host remains the
-AppArmor-restricted negative baseline. A disposable Multipass Ubuntu 24.04
-amd64 guest provides the `host.apparmor-restrict-off` recovery category with
-guest-only user-namespace policy, fixed resources, immutable source/cache
-transfer, and ordinary-user execution as `i2ptest`.
+not a production crate or a support claim. Plan 049 makes its lifecycle
+ownership explicit. The current host remains the AppArmor-restricted negative
+baseline. A disposable Multipass Ubuntu 24.04 amd64 guest provides the
+`host.apparmor-restrict-off` recovery category with guest-only user-namespace
+policy, fixed resources, immutable source/cache transfer, and ordinary-user
+execution as `i2ptest`.
 
-Preparation may use the network; guest nftables egress denial and a fresh
-rootless probe are mandatory before the four directional Plan 045 scenarios.
-The canonical reference cache remains `target/interop/cache`. Only the
-validated sanitized evidence bundle crosses back to the host, and destroying
-the guest does not remove the host evidence directory. See [ADR 0018](../adr/0018-multipass-rootless-interop-environment.md)
-and [`interop-apparatus.md`](interop-apparatus.md).
+The reviewed environment contract has a stable environment ID, separate from
+the safe run ID and the concrete instance name/generation. Host lifecycle
+state is reserved atomically before launch and protected by a per-run/
+per-instance lock. Names are collision-resistant by default; the legacy
+`i2pr-interop-rootless` name is not authoritative. Ownership requires a
+cryptographically linked host/guest contract, not a name match. Adoption,
+resume, recreation, destruction, and inspection are explicit operations; no
+normal path silently mutates an existing or deleted resource, and global
+`multipass purge` is forbidden.
+
+Preparation may use the network; guest nftables egress denial and both early
+and final guest rootless probes are mandatory before the four directional Plan
+045 scenarios. The host baseline probe is recorded separately and does not
+substitute for the guest gate. The canonical reference cache remains
+`target/interop/cache`. Only validated sanitized evidence crosses back to the
+host, and destroying an owned guest does not remove the host evidence directory.
+Environment and directional records carry run/generation and contract digests;
+pre-router blockers remain environment outcomes, not protocol evidence. See
+[ADR 0018](../adr/0018-multipass-rootless-interop-environment.md) and
+[`interop-apparatus.md`](interop-apparatus.md).
 
 ## Crate graph
 

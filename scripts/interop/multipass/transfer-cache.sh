@@ -11,11 +11,13 @@ while (($#)); do
   esac
   shift
 done
-require_instance
+require_owned_instance
 require_command python3
 require_command gzip
 require_command tar
 ensure_dirs
+acquire_lifecycle_lock
+require_owned_instance
 
 host_cache="$repo_root/target/interop/cache"
 host_build="$repo_root/target/interop/build"
@@ -74,5 +76,21 @@ print(json.dumps({
 PY
 )
 write_json "$instance_state_dir/cache-import.json" "$receipt"
+current_state=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])' <"$instance_lifecycle_path")
+if [[ "$current_state" == source_ready ]]; then
+  next_state=source_and_cache_ready
+elif [[ "$current_state" == provisioned ]]; then
+  next_state=cache_ready
+else
+  next_state=""
+fi
+if [[ -n "$next_state" ]]; then
+  python3 "$lifecycle_py" update --state-file "$instance_lifecycle_path" --state "$next_state" \
+    --operation cache-transfer --outcome "$next_state" --updates-json "$(python3 - "$cache_manifest_sha256" <<'PY'
+import json, sys
+print(json.dumps({"reference_cache_manifest_sha256": sys.argv[1]}))
+PY
+  )" >/dev/null
+fi
 guest_root_exec install -d -o "$guest_execution_user" -g "$guest_execution_user" -m 0700 "$guest_evidence_root/environment-probe"
 printf '%s\n' "$receipt"

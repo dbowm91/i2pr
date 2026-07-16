@@ -19,9 +19,11 @@ while (($#)); do
 done
 [[ -n "$run_id" ]] || die "--run-id is required"
 validate_run_id "$run_id"
-require_instance
+require_owned_instance
 require_command python3
 ensure_dirs
+acquire_lifecycle_lock
+require_owned_instance
 
 source_dir="$instance_state_dir/export-$run_id"
 rm -rf "$source_dir"
@@ -50,4 +52,6 @@ for name in environment.json environment.json.sha256 probe.json probe.json.sha25
 done
 destination="$host_evidence_root/$run_id"
 python3 "$script_dir/export.py" --source "$source_dir" --destination "$destination"
+python3 "$lifecycle_py" update --state-file "$instance_lifecycle_path" --state exported \
+  --operation export --outcome export-validated >/dev/null
 printf '%s\n' "$destination"

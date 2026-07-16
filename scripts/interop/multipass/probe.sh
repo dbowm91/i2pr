@@ -11,8 +11,16 @@ while (($#)); do
   esac
   shift
 done
-require_instance
+require_owned_instance
 require_command python3
+ensure_dirs
+acquire_lifecycle_lock
+require_owned_instance
+if ! guest_admin_exec id -u "$guest_execution_user" >/dev/null 2>&1; then
+  write_environment_blocker blocked_guest_execution_user_contract guest-probe inspect-owned-instance
+  typed_blocker blocked_guest_execution_user_contract
+  exit 2
+fi
 guest_exec mkdir -p "$guest_evidence_root/environment-probe"
 
 probe_status=0
@@ -40,9 +48,12 @@ print(json.loads(sys.argv[1]).get("outcome", "blocked_unprivileged_user_namespac
 PY
 )
 if [[ "$probe_status" != 0 || "$probe_outcome" != rootless_sandbox_available ]]; then
+  write_environment_blocker "$probe_outcome" guest-probe guest-probe-required "$probe_outcome"
   typed_blocker "$probe_outcome"
   exit 2
 fi
+guest_rootless_probe_outcome="$probe_outcome"
+export guest_rootless_probe_outcome
 
 attestation_path="$guest_evidence_root/environment-probe/wrapper-attestation.json"
 wrapper_status=0
@@ -106,4 +117,9 @@ print(json.dumps({
 PY
 )
 write_json "$instance_state_dir/probe-receipt.json" "$receipt"
+current_state=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])' <"$instance_lifecycle_path")
+if [[ "$current_state" == source_and_cache_ready ]]; then
+  python3 "$lifecycle_py" update --state-file "$instance_lifecycle_path" --state probe_passed \
+    --operation guest-probe --outcome rootless_sandbox_available >/dev/null
+fi
 printf '%s\n' "$receipt"

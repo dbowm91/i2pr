@@ -11,8 +11,11 @@ while (($#)); do
   esac
   shift
 done
-require_instance
+require_owned_instance
 require_command python3
+ensure_dirs
+acquire_lifecycle_lock
+require_owned_instance
 
 if ! guest_exec python3 "$guest_repo_root/scripts/interop/multipass/source_tree.py" \
     --root "$guest_repo_root" --commit "$(python3 - "$instance_state_dir/source-transfer.json" <<'PY'
@@ -71,4 +74,6 @@ print(json.dumps({
 PY
 )
 write_json "$instance_state_dir/offline-transition.json" "$receipt"
+python3 "$lifecycle_py" update --state-file "$instance_lifecycle_path" --state offline_ready \
+  --operation offline-enforcement --outcome guest-nft-egress-deny >/dev/null
 printf '%s\n' "$receipt"

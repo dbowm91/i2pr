@@ -587,20 +587,42 @@ lane is runnable by an ordinary user on hosts where the AppArmor
 restriction is `0` (or AppArmor is unloaded); cross-host recovery is
 recorded in `plans/047-cross-host-rootless-lane-expansion.md`.
 
-## Plan 048 VM recovery boundary
+## Plan 048/049 VM recovery boundary
 
-The host-level Plan 046 AppArmor restriction remains unchanged. Plan 048
-places the permissive user-namespace policy only in a disposable Ubuntu 24.04
-amd64 Multipass guest. Cloud-init is administrative provisioning; the actual
-probe and four-direction evidence run as the capability-free, non-sudo
+The host-level Plan 046 AppArmor restriction remains unchanged. Plans 048 and
+049 place the permissive user-namespace policy only in a disposable Ubuntu
+24.04 amd64 Multipass guest. Cloud-init is administrative provisioning; the
+actual probe and four-direction evidence run as the capability-free, non-sudo
 `i2ptest` user. The source archive and pinned cache are transferred, never
 mounted, and execution is offline after the guest-only egress policy is
 installed.
 
-The export boundary permits only the fixed sanitized bundle, independently
-recomputes hashes, rejects links/devices/FIFOs/sockets/hardlinks and oversized
-or unexpected files, and atomically places evidence under
-`target/interop/evidence/multipass/<run-id>/`. VM destruction preserves that
-directory. A source/cache mismatch, failed rootless probe, offline-control
-failure, cleanup failure, or evidence-validation failure is a typed blocker;
-no privileged fallback or support-ledger advance is permitted.
+Plan 049 separates the stable environment ID from the run ID and concrete
+instance name/generation. The host writes a versioned lifecycle reservation
+atomically before launch and serializes operations with a per-run/per-instance
+lock. A root-owned guest contract contains the environment/run/generation
+identity and ownership-token hash; the host retains only the token digest.
+Ownership requires matching host and guest contracts, environment/cloud-init
+digests, phase-specific source/cache digests, guest policy, execution-user
+privileges, mounts, snapshots, and process state. A name match is never enough.
+
+Inspection is read-only. Adoption, resume, recreation, and destruction require
+explicit operator intent and proven ownership. Existing unowned, incompatible,
+ambiguous, or deleted-but-unpurged instances are not mutated. Global
+`multipass purge` is forbidden in the normal lifecycle. Recreated instances
+increment a generation, and snapshots are allowlisted and bound to that
+generation and environment contract.
+
+The host baseline probe and guest rootless probe are separate security facts.
+The host `blocked_unprivileged_user_namespace` result remains informational;
+guest execution requires `rootless_sandbox_available` after provisioning and
+again before routers start. The export boundary permits only the sanitized
+bundle, independently recomputes hashes, rejects links/devices/FIFOs/sockets/
+hardlinks and oversized or unexpected files, and atomically places evidence
+under `target/interop/evidence/multipass/<run-id>/`. VM destruction preserves
+that directory. Every directional record carries environment, run/generation,
+ownership, and probe attribution; a pre-router blocker writes environment
+blocker evidence and cannot become a protocol pass. A source/cache mismatch,
+failed rootless probe, offline-control failure, cleanup failure, or
+evidence-validation failure is a typed blocker; no privileged fallback or
+support-ledger advance is permitted.

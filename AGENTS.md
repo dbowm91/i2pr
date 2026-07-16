@@ -286,6 +286,7 @@ bash scripts/check-fixture-manifest.sh   # when I2NP fixture bytes change
 bash scripts/check-ntcp2-vectors.sh      # when NTCP2 vector bytes change
 bash scripts/check-ntcp2-interoperability.sh   # when ntcp2 evidence/manifest change
 bash scripts/check-rootless-interop-boundary.sh   # when rootless files change
+bash scripts/check-multipass-interop-boundary.sh # when Multipass lifecycle files change
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
 bash scripts/fuzz-smoke.sh               # opt-in, requires cargo-fuzz + nightly
 ```
@@ -339,7 +340,7 @@ evidence per `specs/CONFORMANCE.md` — namespace presence is not evidence.
 - Don't update git config, skip hooks, force-push, or amend someone else's
   commit. If a hook rejects, fix the issue and add a new commit.
 
-## Plan 048 Multipass rootless recovery lane
+## Plan 049 Multipass lifecycle-owned rootless recovery lane
 
 The current host remains the Plan 046 `host.apparmor-restrict-on` negative
 baseline. Plan 048 uses only the disposable Multipass guest for the
@@ -351,16 +352,35 @@ user-namespace policy. The canonical manifest is
 
 Preparation may use network access for cloud-init and verified input transfer.
 Execution must follow `prepare-offline.sh`, pass `probe.sh`, then run the four
-Plan 045 directions through `run-matrix.sh` as `i2ptest`. Use
-`run-evidence-lane.sh --all` for the fixed lifecycle. Do not use host mounts,
-arbitrary guest commands, privileged containers, or silent fallback to the
-privileged topology. Export only the validated sanitized bundle with
-`export-evidence.sh`; destroying the guest must preserve
+Plan 045 directions through `run-matrix.sh` as `i2ptest`. The reviewed
+environment ID is distinct from the generated run ID and concrete instance
+name/generation. `run-evidence-lane.sh --all` must reserve lifecycle state
+atomically before launch and allocate a fresh collision-resistant name; the
+legacy `i2pr-interop-rootless` name is never authoritative.
+
+Record the host baseline separately from the guest probe. The host
+`blocked_unprivileged_user_namespace` outcome is informational for this lane;
+the guest `rootless_sandbox_available` outcome is required after provisioning
+and immediately before any router process. Do not use host mounts, arbitrary
+guest commands, privileged containers, or silent fallback to the privileged
+topology. Export only the validated sanitized bundle with `export-evidence.sh`;
+destroying an owned guest must preserve
 `target/interop/evidence/multipass/<run-id>/`.
+
+Adoption, resume, recreation, and destruction are explicit operations:
+`--adopt-owned`, `--resume-owned`, `--recreate-owned`, `--destroy-owned`, and
+`--inspect`. They require a cryptographically linked host/guest ownership
+contract and validated lifecycle state. Name-only matches, unowned collisions,
+unknown/deleted-but-unpurged state, and contract mismatches are typed blockers;
+no normal path may issue a global `multipass purge` or implicitly mutate an
+existing instance. Lifecycle locks serialize per-run/per-instance state
+changes, and generation-bound snapshots/evidence cannot be mixed.
 
 The Multipass layer has its own static/simulated tests in
 `tests/integration/ntcp2/harness/test_multipass.py`. A missing Multipass
 daemon, guest policy mismatch, failed rootless probe, offline-enforcement
 failure, cache/source mismatch, cleanup failure, or evidence-validation
-failure is a typed blocker, never an interoperability pass. Plan 048 does not
-advance `specs/support.toml` or close Milestone 3.
+failure is a typed blocker, never an interoperability pass. Plan 049 does not
+advance `specs/support.toml` or close Milestone 3. A pre-router blocker is
+written as sanitized environment-blocker evidence and can never satisfy
+protocol conformance.

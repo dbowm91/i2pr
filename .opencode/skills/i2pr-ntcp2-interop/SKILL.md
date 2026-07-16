@@ -5,12 +5,13 @@ description: Operate, diagnose, or extend the repository's Ubuntu 24.04 referenc
 
 # I2PR NTCP2 interoperability
 
-Use this skill from the repository root for the manual, opt-in Plan 038/040/041/042/043/044/046/047/048
+Use this skill from the repository root for the manual, opt-in Plan 038/040/041/042/043/044/046/047/048/049
 harness. Read `AGENTS.md`, `plans/043-ubuntu-build-system-interop-gates.md`,
 `plans/044-ntcp2-interop-final-integration-corrective-pass.md`,
 `plans/046-rootless-sealed-namespace-evidence-lane.md`,
 `plans/047-cross-host-rootless-lane-expansion.md`,
 `plans/048-multipass-permissive-rootless-evidence-environment.md`,
+`plans/049-multipass-lifecycle-ownership-corrective-pass.md`,
 `plans/038-ubuntu-reference-router-interoperability-harness.md`,
 `tests/integration/ntcp2/README.md`, and the relevant architecture/ADR files
 before changing the apparatus.
@@ -236,32 +237,64 @@ forbids `sudo`. Plan 047 (`plans/047-cross-host-rootless-lane-expansion.md`)
 records cross-host recovery for hosts where the AppArmor restriction is
 `0` (or AppArmor is unloaded).
 
-## Plan 048 Multipass recovery environment
+## Plan 048/049 Multipass recovery environment
 
 The host-level Plan 046 blocker is the negative baseline, not a universal
 failure. On a host with Multipass, Plan 048 uses the disposable Ubuntu 24.04
 amd64 instance described by `scripts/interop/multipass/environment.toml` to
-exercise the `host.apparmor-restrict-off` recovery category. The host's
-AppArmor and user-namespace policy must remain unchanged.
+exercise the `host.apparmor-restrict-off` recovery category. Plan 049 corrects
+its lifecycle ownership contract. The host's AppArmor and user-namespace
+policy must remain unchanged.
 
-Use the fixed command surface from the repository root:
+The reviewed environment contract has a stable environment ID, separate from
+the generated run ID, concrete instance name, and instance generation. The
+default path allocates a collision-resistant name and reserves a versioned
+host lifecycle record atomically before launch; the legacy
+`i2pr-interop-rootless` name is not authoritative.
+
+Use the lifecycle-owned command surface from the repository root:
 
 ```text
 bash scripts/interop/multipass/run-evidence-lane.sh --all
 bash scripts/interop/multipass/run-evidence-lane.sh --all \
   --run-id <safe-id> --destroy-after-export
+bash scripts/interop/multipass/run-evidence-lane.sh --inspect --run-id <safe-id>
+bash scripts/interop/multipass/run-evidence-lane.sh --all --resume-owned \
+  --run-id <safe-id>
+bash scripts/interop/multipass/run-evidence-lane.sh --all --adopt-owned \
+  --run-id <safe-id>
+bash scripts/interop/multipass/run-evidence-lane.sh --all --recreate-owned \
+  --run-id <safe-id>
+bash scripts/interop/multipass/run-evidence-lane.sh --destroy-owned \
+  --run-id <safe-id>
 ```
 
-The phase order is cloud-init/provisioning, exact source archive transfer,
-verified cache transfer from `target/interop/cache`, source/cache snapshot,
-rootless probe, guest-only offline transition, four fixed mixed directions,
-validation, sanitized export, and explicit destruction. Scenario execution is
-as `i2ptest`; the execution user has no sudo or capabilities. Never use a
-host mount as authoritative source or evidence, never accept an arbitrary
-guest command, and never fall back to the privileged topology.
+`--inspect` is read-only. Adoption, resume, recreation, and destruction are
+explicit and require complete host/guest ownership proof, including the
+root-owned guest contract, ownership-token hash, environment/cloud-init/source/
+cache digests, generation, policy, execution-user, mount, snapshot, and process
+checks. A name match alone is never ownership. Existing unowned, incompatible,
+ambiguous, or deleted-but-unpurged instances are left untouched. Normal
+execution never invokes global `multipass purge` and never silently mutates an
+existing resource.
 
-`export-evidence.sh` independently validates the fixed bundle and atomically
-places it under `target/interop/evidence/multipass/<run-id>/`. Missing
-Multipass, guest policy, probe, cache/source, offline, cleanup, or evidence
-requirements are typed blockers. A VM run, reference-only control, or typed
-blocker does not advertise NTCP2 or close Milestone 3.
+The phase order is lifecycle reservation and name allocation, cloud-init/
+provisioning, guest ownership and policy verification, early guest rootless
+probe, exact source archive transfer, verified cache transfer from
+`target/interop/cache`, source/cache snapshot, guest-only offline transition,
+final guest probe, four fixed mixed directions, validation, sanitized export,
+and explicit owned destruction. Scenario execution is as `i2ptest`; the
+execution user has no sudo or capabilities. Never use a host mount as
+authoritative source or evidence, never accept an arbitrary guest command, and
+never fall back to the privileged topology.
+
+`export-evidence.sh` independently validates the sanitized bundle and
+atomically places it under `target/interop/evidence/multipass/<run-id>/`.
+Lifecycle and directional records carry environment ID, run ID, instance
+generation, ownership/contract digests, separate host-baseline and guest-probe
+outcomes, and a common environment evidence hash. A pre-router failure writes
+sanitized environment-blocker evidence; it cannot become a protocol record.
+Mixed run IDs or generations are rejected. Missing Multipass, guest policy,
+probe, cache/source, offline, cleanup, or evidence requirements are typed
+blockers. A VM run, reference-only control, or typed blocker does not advertise
+NTCP2 or close Milestone 3.

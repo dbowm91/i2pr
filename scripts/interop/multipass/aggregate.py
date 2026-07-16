@@ -34,6 +34,7 @@ def aggregate(evidence: Path, environment: Path, probe: Path) -> dict[str, objec
         raise ValueError("rootless probe is not successful")
     records = []
     attestation = ""
+    attribution: tuple[object, ...] | None = None
     for scenario, reference in EXPECTED.items():
         path = evidence / f"{scenario}.json"
         if not path.is_file():
@@ -50,6 +51,21 @@ def aggregate(evidence: Path, environment: Path, probe: Path) -> dict[str, objec
             raise ValueError("direction attestation is missing")
         if value.get("parent_network_state_unchanged") is not True:
             raise ValueError("direction changed parent network state")
+        required_attribution = (
+            value.get("environment_id"), value.get("run_id"), value.get("instance_generation"),
+            value.get("environment_evidence_sha256"), value.get("instance_name_digest"),
+            value.get("lifecycle_schema_version"), value.get("ownership_record_sha256"),
+            value.get("environment_manifest_sha256"), value.get("cloud_init_sha256"),
+            value.get("host_baseline_probe_outcome"), value.get("guest_rootless_probe_outcome"),
+            value.get("adoption_mode"),
+        )
+        if any(item in (None, "") for item in required_attribution):
+            raise ValueError("direction is missing Plan 049 attribution")
+        if attribution is not None and required_attribution != attribution:
+            raise ValueError("direction attribution differs")
+        attribution = required_attribution
+        if value.get("guest_rootless_probe_outcome") != "rootless_sandbox_available":
+            raise ValueError("direction guest probe did not pass")
         current = value["sandbox_attestation_sha256"]
         if attestation and attestation != current:
             raise ValueError("direction attestations differ")
@@ -60,7 +76,17 @@ def aggregate(evidence: Path, environment: Path, probe: Path) -> dict[str, objec
             "sha256": sha256(path),
             "actual_typed_result": value["actual_typed_result"],
             "cleanup_result": value["cleanup_result"],
+            "environment_evidence_sha256": value["environment_evidence_sha256"],
         })
+    assert attribution is not None
+    if attribution[0] != environment_value.get("environment_id") or attribution[1] != environment_value.get("run_id"):
+        raise ValueError("direction environment identity differs")
+    if attribution[2] != environment_value.get("instance_generation"):
+        raise ValueError("direction generation differs")
+    if attribution[4] != environment_value.get("instance_name_digest"):
+        raise ValueError("direction instance attribution differs")
+    if attribution[7] != environment_value.get("environment_manifest_sha256") or attribution[8] != environment_value.get("cloud_init_sha256"):
+        raise ValueError("direction environment contract differs")
     return {
         "schema": 1,
         "type": "multipass-interop-aggregate",
@@ -74,6 +100,17 @@ def aggregate(evidence: Path, environment: Path, probe: Path) -> dict[str, objec
         "sandbox_attestation_sha256": attestation,
         "directions": records,
         "matrix_result": "passed",
+        "environment_id": attribution[0],
+        "run_id": attribution[1],
+        "instance_generation": attribution[2],
+        "instance_name_digest": attribution[4],
+        "lifecycle_schema_version": attribution[5],
+        "ownership_record_sha256": attribution[6],
+        "environment_manifest_sha256": attribution[7],
+        "cloud_init_sha256": attribution[8],
+        "host_baseline_probe_outcome": attribution[9],
+        "guest_rootless_probe_outcome": attribution[10],
+        "adoption_mode": attribution[11],
     }
 
 

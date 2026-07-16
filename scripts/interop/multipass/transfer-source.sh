@@ -19,11 +19,13 @@ while (($#)); do
 done
 [[ -n "$commit" ]] || die "--commit is required"
 validate_commit "$commit"
-require_instance
+require_owned_instance
 require_command git
 require_command gzip
 require_command tar
 ensure_dirs
+acquire_lifecycle_lock
+require_owned_instance
 
 [[ "$(git -C "$repo_root" rev-parse HEAD)" == "$commit" ]] || {
   typed_blocker blocked_source_commit_mismatch
@@ -80,4 +82,20 @@ print(json.dumps({
 PY
 )
 write_json "$instance_state_dir/source-transfer.json" "$receipt"
+current_state=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])' <"$instance_lifecycle_path")
+if [[ "$current_state" == provisioned ]]; then
+  next_state=source_ready
+elif [[ "$current_state" == cache_ready ]]; then
+  next_state=source_and_cache_ready
+else
+  next_state=""
+fi
+if [[ -n "$next_state" ]]; then
+  python3 "$lifecycle_py" update --state-file "$instance_lifecycle_path" --state "$next_state" \
+    --operation source-transfer --outcome "$next_state" --updates-json "$(python3 - "$archive" <<'PY'
+import hashlib, json, sys
+print(json.dumps({"source_archive_sha256": hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()}))
+PY
+)" >/dev/null
+fi
 printf '%s\n' "$receipt"

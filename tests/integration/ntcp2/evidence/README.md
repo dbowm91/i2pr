@@ -105,18 +105,32 @@ carrying `{"schema":1,"type":"rootless-sandbox-probe","outcome":"blocked_unprivi
 The Plan 046 closure is `plans/046-closure.md`; cross-host recovery
 lives in `plans/047-cross-host-rootless-lane-expansion.md`.
 
-## Plan 048 Multipass bundle
+## Plan 048/049 Multipass bundle
 
 Plan 048 keeps the host blocker as a negative baseline and runs the recovery
-lane inside a disposable Ubuntu 24.04 amd64 Multipass guest. The environment
-record links the fixed manifest, cloud-init, provisioning, exact source/tree,
-and canonical `target/interop/cache` hashes. The guest runs as `i2ptest` only
-after the rootless probe and offline egress policy pass.
+lane inside a disposable Ubuntu 24.04 amd64 Multipass guest. Plan 049 requires
+the environment record to identify the stable environment contract separately
+from the run ID, concrete instance name digest, and instance generation. It
+also links the lifecycle schema, ownership record, environment manifest,
+cloud-init, exact source/tree, and canonical `target/interop/cache` hashes.
+The guest runs as `i2ptest` only after ownership/policy checks, the guest probe,
+and offline egress policy pass; the final guest probe is mandatory before
+routers start. The host baseline probe is recorded separately and cannot
+substitute for the guest result.
 
-The exporter accepts exactly `environment.json`, `probe.json`, their sidecar
-hashes, four directional records, `aggregate.json`, `manifest.json`, and
-`lifecycle.json`. It rejects unsafe filesystem objects, oversized or
-unexpected files, hash mismatches, non-clean cleanup, and any direction that
-does not satisfy the existing Plan 045/046 pass predicates. The host evidence
-directory survives VM destruction. No bundle advances NTCP2 support or
-Milestone 3 by itself.
+The sanitized bundle includes the environment record, lifecycle record, probe
+records, their approved sidecar hashes, four directional records,
+`aggregate.json`, and `manifest.json` only when the allowlist and current
+schema permit them. Lifecycle state is authoritative for run/generation
+attribution. Adoption, resume, recreation, destruction, and inspection are
+explicit; a name-only match, unknown state, ownership mismatch, or
+deleted-but-unpurged instance is a blocker. Global purge and silent mutation
+are forbidden.
+
+The exporter rejects unsafe filesystem objects, oversized or unexpected files,
+hash mismatches, mixed run IDs or generations, missing environment attribution,
+non-clean cleanup, and any direction that does not satisfy the existing Plan
+045/046 pass predicates. A pre-router failure is written as sanitized
+`environment-blocker.json`; it is not a protocol record and cannot satisfy
+interoperability closure. The host evidence directory survives owned VM
+destruction. No bundle advances NTCP2 support or Milestone 3 by itself.

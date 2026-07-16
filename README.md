@@ -579,7 +579,7 @@ Completion requires negative tests, malformed-input handling, lifecycle
 cleanup, bounded resource behavior, fuzz coverage, fixture provenance, and
 interoperability evidence.
 
-### Plan 048 Multipass permissive rootless evidence environment
+### Plan 049 Multipass lifecycle-owned permissive rootless evidence environment
 
 The current host remains the Plan 046 negative baseline because
 `kernel.apparmor_restrict_unprivileged_userns=1`. Plan 048 provides a
@@ -590,20 +590,42 @@ permissive sysctls only inside the VM, and runs the evidence lane as the
 non-sudo `i2ptest` user.
 
 Preparation transfers an exact clean source archive and the pinned reference
-cache from the canonical `target/interop/cache` path. After guest-only
-offline enforcement, `probe.sh` must pass before the four Plan 045 directions
-run. Use the fixed lifecycle entrypoint:
+cache from the canonical `target/interop/cache` path. The reviewed environment
+has a stable environment ID, separate from each generated run ID and concrete
+Multipass instance generation. The default path reserves host lifecycle state
+atomically before launch and allocates a collision-resistant instance name; the
+legacy `i2pr-interop-rootless` name is not authoritative.
+
+The host baseline probe is recorded separately from the guest rootless probe.
+The host's `blocked_unprivileged_user_namespace` result remains a negative
+baseline and does not gate guest launch. After ownership and guest policy
+verification, and again immediately before any router process, `probe.sh` must
+return `rootless_sandbox_available` before the four Plan 045 directions run.
+Use the lifecycle-owned entrypoint:
 
 ```text
 bash scripts/interop/multipass/run-evidence-lane.sh --all
 bash scripts/interop/multipass/run-evidence-lane.sh --all \
-  --run-id plan048-example --destroy-after-export
+  --run-id plan049-example --destroy-after-export
+bash scripts/interop/multipass/run-evidence-lane.sh --inspect --run-id <run-id>
+bash scripts/interop/multipass/run-evidence-lane.sh --all --resume-owned \
+  --run-id <run-id>
 ```
 
+Adoption, recreation, and destruction require explicit flags and a complete
+host/guest ownership proof. No operation silently adopts, mutates, deletes, or
+purges an existing instance; global `multipass purge` is forbidden in the
+normal lifecycle. An interruption may be resumed only through a validated
+state transition, and a retained blocker is marked `blocked` without exporting
+raw diagnostics.
+
 Exported evidence is independently hashed and atomically placed under
-`target/interop/evidence/multipass/<run-id>/`; destroying the VM preserves it.
-Multipass blockers, reference-only control results, and partial matrices are
-not NTCP2 support evidence and do not advance the support ledger.
+`target/interop/evidence/multipass/<run-id>/`; destroying an owned VM preserves
+it. Directional records identify the environment contract, run ID, instance
+generation, ownership and contract digests, and the environment evidence hash.
+Mixed generations or run IDs cannot form one passing manifest. Multipass
+blockers, reference-only control results, and partial matrices are not NTCP2
+support evidence and do not advance the support ledger.
 
 ## License
 

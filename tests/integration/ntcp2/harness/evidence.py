@@ -54,6 +54,24 @@ RECORD_FIELDS = (
     "parent_network_state_unchanged",
 )
 
+# Plan 049 Multipass attribution is an opt-in suffix so existing reference
+# and local harness records remain schema-compatible.  Multipass direction
+# records must carry the complete suffix before they can enter a VM bundle.
+MULTIPASS_RECORD_FIELDS = (
+    "environment_id",
+    "run_id",
+    "instance_generation",
+    "environment_evidence_sha256",
+    "instance_name_digest",
+    "lifecycle_schema_version",
+    "ownership_record_sha256",
+    "environment_manifest_sha256",
+    "cloud_init_sha256",
+    "host_baseline_probe_outcome",
+    "guest_rootless_probe_outcome",
+    "adoption_mode",
+)
+
 REFERENCE_PAIR_RECORD_FIELDS = (
     "schema",
     "scenario_id",
@@ -161,14 +179,16 @@ def validate_record(record: dict[str, Any]) -> None:
     if record.get("schema") == 2:
         _validate_reference_pair_record(record)
         return
-    if tuple(record) != RECORD_FIELDS:
+    multipass_record = tuple(record) == RECORD_FIELDS + MULTIPASS_RECORD_FIELDS
+    if tuple(record) not in {RECORD_FIELDS, RECORD_FIELDS + MULTIPASS_RECORD_FIELDS}:
         raise EvidenceError("record fields do not match the locked schema")
     if record["schema"] != 1:
         raise EvidenceError("unsupported evidence schema")
-    for field in RECORD_FIELDS:
+    fields = RECORD_FIELDS + (MULTIPASS_RECORD_FIELDS if multipass_record else ())
+    for field in fields:
         if field not in record:
             raise EvidenceError(f"missing evidence field: {field}")
-    for field in RECORD_FIELDS:
+    for field in fields:
         if field not in {"expected", "actual_typed_result"}:
             _scan(record[field], field=field)
     if record["expected"] not in _ALLOWED_EXPECTED:
@@ -246,6 +266,32 @@ def validate_record(record: dict[str, Any]) -> None:
         "no-data-phase-required",
     }:
         raise EvidenceError("expected_observation is not a typed selector")
+    if multipass_record:
+        if not re.fullmatch(r"[a-z0-9-]{8,48}", str(record["run_id"])):
+            raise EvidenceError("Multipass run ID is not safe")
+        if not re.fullmatch(r"[a-z0-9-]+", str(record["environment_id"])):
+            raise EvidenceError("Multipass environment ID is not safe")
+        if not isinstance(record["instance_generation"], int) or record["instance_generation"] < 1:
+            raise EvidenceError("Multipass generation is invalid")
+        for field in (
+            "environment_evidence_sha256",
+            "instance_name_digest",
+            "ownership_record_sha256",
+            "environment_manifest_sha256",
+            "cloud_init_sha256",
+        ):
+            if not _HEX64.fullmatch(str(record[field])):
+                raise EvidenceError(f"Multipass {field} is not a SHA-256 digest")
+        if record["lifecycle_schema_version"] != 1:
+            raise EvidenceError("unsupported Multipass lifecycle schema")
+        if record["guest_rootless_probe_outcome"] != "rootless_sandbox_available":
+            raise EvidenceError("Multipass guest probe did not pass")
+        if record["adoption_mode"] not in {"fresh", "adopted", "resumed", "recreated"}:
+            raise EvidenceError("unknown Multipass adoption mode")
+        if record["actual_typed_result"] == "passed" and record["host_baseline_probe_outcome"] == "rootless_sandbox_available":
+            # A permissive host baseline is allowed, but it is never the
+            # guest execution proof; the guest field above remains mandatory.
+            pass
 
 
 def _require_sha256(record: dict[str, Any], field: str, *, nonzero: bool) -> None:

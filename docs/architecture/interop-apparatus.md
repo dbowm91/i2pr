@@ -301,27 +301,53 @@ canonical typed blocker `blocked_unprivileged_user_namespace` recorded
 on this host, and `plans/047-cross-host-rootless-lane-expansion.md`
 takes on cross-host recovery.
 
-## Plan 048 Multipass recovery environment
+## Plan 048/049 Multipass recovery environment
 
 The host-level Plan 046 AppArmor restriction remains unchanged as the negative
 baseline. Plan 048 adds a disposable Multipass Ubuntu 24.04 amd64 guest for
-the `host.apparmor-restrict-off` recovery category. Its contract is defined by
-[`scripts/interop/multipass/environment.toml`](../../scripts/interop/multipass/environment.toml)
-and ADR 0018: fixed `i2pr-interop-rootless` resources, guest-only sysctls,
-immutable source/cache transfer, and an ordinary `i2ptest` execution user.
+the `host.apparmor-restrict-off` recovery category. Plan 049 corrects its
+lifecycle ownership model. The reviewed environment contract is identified by
+a stable environment ID, while each execution has a separate run ID and each
+realization has a generation-bound concrete instance name. The legacy
+`i2pr-interop-rootless` name is not authoritative.
 
-Cloud-init and source/cache preparation may use the network; `prepare-offline.sh`
-installs a guest-only nftables egress-deny policy before `run-matrix.sh`.
-`probe.sh` must obtain `rootless_sandbox_available` and a non-zero validated
-`IsolationAttestation` before any directional runner. The matrix runs the four
-Plan 045 directions in fixed order and requires the existing topology,
-privilege, attestation, cleanup, and parent-network predicates.
+The host reserves a versioned lifecycle record atomically before launch under
+`target/interop/multipass/state/<run-id>/lifecycle.json`. A per-run/
+per-instance lock serializes transitions through explicit states such as
+`reserved`, `launching`, `provisioned`, `source_and_cache_ready`, `probe_passed`,
+`offline_ready`, `running`, `exported`, `blocked`, and `destroyed`. Structured
+Multipass state is normalized; unknown and deleted-but-unpurged states fail
+closed. A generated name collision causes bounded reallocation, never mutation
+of the colliding resource.
+
+Each managed guest carries a root-owned environment contract and ownership
+token. Ownership is proven by matching host and guest records, token hash,
+environment/cloud-init/source/cache digests, generation, policy, execution
+user, mounts, snapshots, and process state. A name match alone is insufficient.
+`--inspect` is read-only. `--adopt-owned`, `--resume-owned`,
+`--recreate-owned`, and `--destroy-owned` are explicit and require proof;
+normal execution never silently adopts, recreates, stops, deletes, or purges an
+existing instance. Global `multipass purge` is not a lifecycle operation.
+
+Cloud-init and source/cache preparation may use the network;
+`prepare-offline.sh` installs a guest-only nftables egress-deny policy before
+`run-matrix.sh`. The host baseline probe is recorded independently and does not
+gate guest launch. After ownership/policy verification and immediately before
+router start, `probe.sh` must obtain `rootless_sandbox_available` and a
+non-zero validated `IsolationAttestation`. The matrix runs the four Plan 045
+directions in fixed order and requires the existing topology, privilege,
+attestation, cleanup, and parent-network predicates.
 
 The canonical cache is `target/interop/cache`, matching `build-references.sh`,
 `offline-reuse.sh`, and the Python cache resolver. The older Plan 047 example
 `target/interop/build/cache` is not an executable path. Host mounts are not
-authoritative inputs. `export-evidence.sh` transfers only the fixed sanitized
-bundle, independently hashes it, validates the guest manifest, and atomically
-places it under `target/interop/evidence/multipass/<run-id>/`. Destroying the
-VM preserves that directory. A typed blocker or reference-only result never
-advances the support ledger or closes Milestone 3.
+authoritative inputs. Snapshots are allowlisted and bound to the instance
+generation and environment/source/cache contract. `export-evidence.sh`
+transfers only the sanitized bundle, independently hashes it, validates the
+guest manifest, and atomically places it under
+`target/interop/evidence/multipass/<run-id>/`. Every directional record refers
+to the same environment evidence hash; mixed runs or generations are rejected.
+Pre-router failures produce sanitized environment-blocker records and never
+become protocol evidence. Destroying an owned VM preserves the host evidence
+directory. A typed blocker or reference-only result never advances the support
+ledger or closes Milestone 3.

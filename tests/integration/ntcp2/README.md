@@ -292,23 +292,46 @@ rootless-owned files. The Plan 046 manual no-escalation GitHub Actions
 workflow (`.github/workflows/ntcp2-interop-rootless.yml`) is opt-in only.
 Plan 046 does not advertise NTCP2 support and does not close Milestone 3.
 
-## Plan 048 Multipass recovery environment
+## Plan 048/049 Multipass recovery environment
 
-The host blocker is intentionally retained. On a compatible host, use the
-disposable Multipass lane:
+The host blocker is intentionally retained. On a compatible host, the
+disposable Multipass lane uses a stable environment ID separate from each safe
+run ID and concrete instance generation. The default path allocates a fresh
+collision-resistant instance name; the legacy `i2pr-interop-rootless` name is
+not authoritative. Use the lane as follows:
 
 ```text
 bash scripts/interop/multipass/run-evidence-lane.sh --all
 bash scripts/interop/multipass/run-evidence-lane.sh --all \
-  --run-id plan048-example --destroy-after-export
+  --run-id plan049-example --destroy-after-export
+bash scripts/interop/multipass/run-evidence-lane.sh --inspect --run-id <run-id>
+bash scripts/interop/multipass/run-evidence-lane.sh --all --resume-owned \
+  --run-id <run-id>
 ```
 
 The checked-in environment manifest fixes the Ubuntu 24.04 amd64 image,
-`i2pr-interop-rootless` resources, guest-only sysctls, and
+reviewed environment contract, guest-only sysctls, and
 `/home/i2ptest/i2pr/target/interop/cache`. Preparation transfers an exact
-source archive and verified cache. `probe.sh` must pass before
-`prepare-offline.sh` and the fixed four-direction matrix run as `i2ptest`.
+source archive and verified cache. The host baseline probe is recorded but does
+not gate the guest. Ownership and guest policy must pass, then `probe.sh` must
+return `rootless_sandbox_available` both before expensive execution and again
+before any router process. Only then may `prepare-offline.sh` and the fixed
+four-direction matrix run as `i2ptest`.
+
+Lifecycle state is reserved atomically before launch and protected by a
+per-run/per-instance lock. `--inspect` is read-only; `--adopt-owned`,
+`--resume-owned`, `--recreate-owned`, and `--destroy-owned` require a complete
+host/guest ownership proof. Name-only matches, unowned collisions, unknown
+states, contract mismatches, and deleted-but-unpurged instances are typed
+blockers. No normal path silently adopts, recreates, deletes, or globally
+purges an instance. Recreated instances increment the generation, and snapshots
+are bound to that generation and the environment contract.
+
 The exporter atomically validates and places only sanitized evidence under
 `target/interop/evidence/multipass/<run-id>/`; VM destruction preserves it.
-Multipass, guest policy, offline, cleanup, and evidence failures are typed
-blockers, not protocol passes.
+Every directional record identifies the environment ID, run ID, instance
+generation, ownership/contract digests, separate host and guest probe outcomes,
+and the environment evidence hash. Mixed run IDs or generations are rejected.
+Pre-router failures are written as sanitized environment blockers and cannot
+satisfy protocol conformance. Multipass, guest policy, offline, cleanup, and
+evidence failures are typed blockers, not protocol passes.

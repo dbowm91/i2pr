@@ -16,6 +16,7 @@ from typing import Any
 REQUIRED_KEYS = frozenset(
     {
         "schema",
+        "environment_id",
         "instance_name",
         "image",
         "cpus",
@@ -65,6 +66,7 @@ def load_manifest(path: Path | None = None) -> dict[str, Any]:
         raise EnvironmentManifestError("environment manifest keys do not match schema")
     expected_types = {
         "schema": int,
+        "environment_id": str,
         "instance_name": str,
         "image": str,
         "cpus": int,
@@ -88,6 +90,8 @@ def load_manifest(path: Path | None = None) -> dict[str, Any]:
             raise EnvironmentManifestError(f"{key} has the wrong type")
     if values["schema"] != 1:
         raise EnvironmentManifestError("unsupported environment manifest schema")
+    if values["environment_id"] != "i2pr-plan048-rootless-v1":
+        raise EnvironmentManifestError("environment ID drifted from the reviewed Plan 048 contract")
     if not _SAFE_NAME.fullmatch(values["instance_name"]):
         raise EnvironmentManifestError("instance name is not a safe canonical name")
     if values["image"] != "24.04":

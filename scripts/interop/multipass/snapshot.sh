@@ -19,6 +19,9 @@ while (($#)); do
 done
 case "$snapshot_name" in provisioned|source-and-cache-ready) ;; *) die "unknown snapshot name" ;; esac
 require_instance
+ensure_dirs
+acquire_lifecycle_lock
+bash "$script_dir/create.sh" --run-id "$run_id" --instance-name "$instance_name" --generation "$instance_generation" --adopt-owned >/dev/null
 status_json=$(bash "$script_dir/status.sh" --json)
 if ! python3 - "$snapshot_name" "$status_json" <<'PY'
 import json
@@ -43,16 +46,19 @@ if guest_exec find "$guest_repo_root/target/interop/runs" -mindepth 1 -print -qu
   typed_blocker blocked_snapshot_secret_state
   exit 2
 fi
-commit=unknown
-if [[ -f "$instance_state_dir/source-transfer.json" ]]; then
-  commit=$(python3 - "$instance_state_dir/source-transfer.json" <<'PY'
+commit=$(python3 - "$instance_lifecycle_path" <<'PY'
 import json
 import sys
 print(json.load(open(sys.argv[1], encoding="utf-8")).get("source_commit", "unknown"))
 PY
 )
-fi
-comment="plan-048;environment-manifest=$environment_manifest_sha256;source-commit=$commit"
+cache_manifest=$(python3 - "$instance_lifecycle_path" <<'PY'
+import json
+import sys
+print(json.load(open(sys.argv[1], encoding="utf-8")).get("reference_cache_manifest_sha256", "pending"))
+PY
+)
+comment="plan-049;environment-id=$environment_id;generation=$instance_generation;environment-manifest=$environment_manifest_sha256;cloud-init=$cloud_init_sha256;snapshot=$snapshot_name;source-commit=$commit;cache-manifest=$cache_manifest"
 was_running=0
 restart_needed=0
 restart_if_needed() {
@@ -81,11 +87,15 @@ fi
 receipt=$(python3 - "$snapshot_name" "$comment" <<'PY'
 import datetime as dt
 import json
+import os
 import sys
 print(json.dumps({
     "schema": 1,
     "type": "multipass-snapshot",
     "snapshot_name": sys.argv[1],
+    "environment_id": os.environ.get("I2PR_MULTIPASS_ENVIRONMENT_ID", ""),
+    "instance_generation": int(os.environ.get("I2PR_MULTIPASS_GENERATION", "1")),
+    "environment_manifest_sha256": os.environ.get("I2PR_MULTIPASS_ENVIRONMENT_MANIFEST_SHA256", ""),
     "comment": sys.argv[2],
     "created_at": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
 }, sort_keys=True, separators=(",", ":")))
