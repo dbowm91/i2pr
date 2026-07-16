@@ -89,10 +89,11 @@ make_cache_user_readable() {
   local exec_user="$guest_execution_user"
   if guest_exec_root bash -c "
     set +e
-    chown -R '${exec_user}:${exec_user}' '${cache_root}'
+    chown -R '${exec_user}:${exec_user}' '${cache_root}' '${build_root}'
     chmod -R u+rwX,g+rX,o+rX '${cache_root}'
+    chmod 0755 '${build_root}'
     for f in '${build_root}'/*.json '${build_root}'/*.txt; do
-      [[ -f \"\$f\" ]] && chown '${exec_user}:${exec_user}' \"\$f\" && chmod 0644 \"\$f\"
+      [[ -f \"\$f\" ]] && chmod 0644 \"\$f\"
     done
     exit 0
   " >"$instance_state_dir/$profile-make-cache-user-readable.log" 2>&1; then
