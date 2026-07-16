@@ -25,6 +25,8 @@ def tree_hash(root: Path) -> str:
             continue
         if relative == "target" or relative.startswith("target/"):
             continue
+        if relative == ".agents" or relative.startswith(".agents/"):
+            continue
         if path.is_symlink():
             raise ValueError(f"source archive refuses symlink: {relative}")
         if path.is_file():
