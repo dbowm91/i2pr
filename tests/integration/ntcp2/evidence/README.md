@@ -104,3 +104,19 @@ probe attestations (host shell and `ssh i2ptest@localhost` shell)
 carrying `{"schema":1,"type":"rootless-sandbox-probe","outcome":"blocked_unprivileged_user_namespace"}`.
 The Plan 046 closure is `plans/046-closure.md`; cross-host recovery
 lives in `plans/047-cross-host-rootless-lane-expansion.md`.
+
+## Plan 048 Multipass bundle
+
+Plan 048 keeps the host blocker as a negative baseline and runs the recovery
+lane inside a disposable Ubuntu 24.04 amd64 Multipass guest. The environment
+record links the fixed manifest, cloud-init, provisioning, exact source/tree,
+and canonical `target/interop/cache` hashes. The guest runs as `i2ptest` only
+after the rootless probe and offline egress policy pass.
+
+The exporter accepts exactly `environment.json`, `probe.json`, their sidecar
+hashes, four directional records, `aggregate.json`, `manifest.json`, and
+`lifecycle.json`. It rejects unsafe filesystem objects, oversized or
+unexpected files, hash mismatches, non-clean cleanup, and any direction that
+does not satisfy the existing Plan 045/046 pass predicates. The host evidence
+directory survives VM destruction. No bundle advances NTCP2 support or
+Milestone 3 by itself.

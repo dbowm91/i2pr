@@ -489,6 +489,10 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [NTCP2 handshake state-machines ADR](docs/adr/0012-ntcp2-handshake-state-machines.md)
 - [NTCP2 data-phase and blocks ADR](docs/adr/0013-ntcp2-data-phase-and-blocks.md)
 - [NTCP2 runtime link manager and address policy ADR](docs/adr/0014-ntcp2-runtime-link-manager-and-address-policy.md)
+- [Ubuntu reference-router harness ADR](docs/adr/0015-ubuntu-reference-router-harness.md)
+- [Ubuntu build-system interoperability gates ADR](docs/adr/0016-ubuntu-build-system-interop-gates.md)
+- [Rootless sealed-namespace interoperability evidence ADR](docs/adr/0017-rootless-sealed-namespace-interop-evidence.md)
+- [Multipass rootless interoperability environment ADR](docs/adr/0018-multipass-rootless-interop-environment.md)
 - [Contribution guide](CONTRIBUTING.md)
 - [Protocol specification index and source ledger](specs/README.md)
 
@@ -574,6 +578,32 @@ is not complete merely because it compiles or communicates with one peer.
 Completion requires negative tests, malformed-input handling, lifecycle
 cleanup, bounded resource behavior, fuzz coverage, fixture provenance, and
 interoperability evidence.
+
+### Plan 048 Multipass permissive rootless evidence environment
+
+The current host remains the Plan 046 negative baseline because
+`kernel.apparmor_restrict_unprivileged_userns=1`. Plan 048 provides a
+disposable Ubuntu 24.04 amd64 Multipass recovery guest without changing that
+host policy. The guest uses fixed resources from
+[`environment.toml`](scripts/interop/multipass/environment.toml), applies the
+permissive sysctls only inside the VM, and runs the evidence lane as the
+non-sudo `i2ptest` user.
+
+Preparation transfers an exact clean source archive and the pinned reference
+cache from the canonical `target/interop/cache` path. After guest-only
+offline enforcement, `probe.sh` must pass before the four Plan 045 directions
+run. Use the fixed lifecycle entrypoint:
+
+```text
+bash scripts/interop/multipass/run-evidence-lane.sh --all
+bash scripts/interop/multipass/run-evidence-lane.sh --all \
+  --run-id plan048-example --destroy-after-export
+```
+
+Exported evidence is independently hashed and atomically placed under
+`target/interop/evidence/multipass/<run-id>/`; destroying the VM preserves it.
+Multipass blockers, reference-only control results, and partial matrices are
+not NTCP2 support evidence and do not advance the support ledger.
 
 ## License
 

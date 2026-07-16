@@ -286,3 +286,19 @@ Capability publication is a security and interoperability contract. Before chang
 ## Evidence retention
 
 Store stable protocol vectors and minimized malformed fixtures in the repository. Store large captures, generated testnets and sensitive operational logs outside Git history, with scripts and hashes sufficient to reproduce them. Redact live peer identities, IP addresses, destination keys, session keys and potentially identifying timing data before retaining or publishing artifacts.
+
+## Plan 048 Multipass recovery category
+
+The Plan 046 host blocker remains a negative baseline. Plan 048 targets the
+`host.apparmor-restrict-off` category through a disposable Ubuntu 24.04 amd64
+Multipass guest whose permissive sysctls are guest-only. The cache root is the
+existing `target/interop/cache`; source and cache are transferred and verified,
+not mounted. The guest runs the rootless probe and all four Plan 045
+directions as the non-sudo `i2ptest` user only after offline enforcement.
+
+The environment record must link source/tree/cache/environment hashes and the
+rootless attestation. Export requires independent host hashing, a fixed
+sanitized file allowlist, clean cleanup, identical topology/privilege and
+attestation fields, and parent-network-state equivalence. This environment
+does not change advertisement or support status and cannot close Milestone 3
+without the existing mixed-router conformance predicates.

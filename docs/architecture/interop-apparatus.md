@@ -301,3 +301,27 @@ canonical typed blocker `blocked_unprivileged_user_namespace` recorded
 on this host, and `plans/047-cross-host-rootless-lane-expansion.md`
 takes on cross-host recovery.
 
+## Plan 048 Multipass recovery environment
+
+The host-level Plan 046 AppArmor restriction remains unchanged as the negative
+baseline. Plan 048 adds a disposable Multipass Ubuntu 24.04 amd64 guest for
+the `host.apparmor-restrict-off` recovery category. Its contract is defined by
+[`scripts/interop/multipass/environment.toml`](../../scripts/interop/multipass/environment.toml)
+and ADR 0018: fixed `i2pr-interop-rootless` resources, guest-only sysctls,
+immutable source/cache transfer, and an ordinary `i2ptest` execution user.
+
+Cloud-init and source/cache preparation may use the network; `prepare-offline.sh`
+installs a guest-only nftables egress-deny policy before `run-matrix.sh`.
+`probe.sh` must obtain `rootless_sandbox_available` and a non-zero validated
+`IsolationAttestation` before any directional runner. The matrix runs the four
+Plan 045 directions in fixed order and requires the existing topology,
+privilege, attestation, cleanup, and parent-network predicates.
+
+The canonical cache is `target/interop/cache`, matching `build-references.sh`,
+`offline-reuse.sh`, and the Python cache resolver. The older Plan 047 example
+`target/interop/build/cache` is not an executable path. Host mounts are not
+authoritative inputs. `export-evidence.sh` transfers only the fixed sanitized
+bundle, independently hashes it, validates the guest manifest, and atomically
+places it under `target/interop/evidence/multipass/<run-id>/`. Destroying the
+VM preserves that directory. A typed blocker or reference-only result never
+advances the support ledger or closes Milestone 3.

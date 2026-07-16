@@ -291,3 +291,24 @@ policy: it forbids `sudo`, `ip netns`, `nft`, `setcap`, `--privileged`,
 rootless-owned files. The Plan 046 manual no-escalation GitHub Actions
 workflow (`.github/workflows/ntcp2-interop-rootless.yml`) is opt-in only.
 Plan 046 does not advertise NTCP2 support and does not close Milestone 3.
+
+## Plan 048 Multipass recovery environment
+
+The host blocker is intentionally retained. On a compatible host, use the
+disposable Multipass lane:
+
+```text
+bash scripts/interop/multipass/run-evidence-lane.sh --all
+bash scripts/interop/multipass/run-evidence-lane.sh --all \
+  --run-id plan048-example --destroy-after-export
+```
+
+The checked-in environment manifest fixes the Ubuntu 24.04 amd64 image,
+`i2pr-interop-rootless` resources, guest-only sysctls, and
+`/home/i2ptest/i2pr/target/interop/cache`. Preparation transfers an exact
+source archive and verified cache. `probe.sh` must pass before
+`prepare-offline.sh` and the fixed four-direction matrix run as `i2ptest`.
+The exporter atomically validates and places only sanitized evidence under
+`target/interop/evidence/multipass/<run-id>/`; VM destruction preserves it.
+Multipass, guest policy, offline, cleanup, and evidence failures are typed
+blockers, not protocol passes.

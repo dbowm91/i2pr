@@ -361,7 +361,23 @@ meet `specs/CONFORMANCE.md`. The current checkout has not met those gates.
  11. NTCP2 remains experimental and non-advertised; Milestone 3 remains open.
      Plan 046 is closed with a typed host-level blocker; the closure
      record is `plans/046-closure.md`. Cross-host recovery lives in
-     `plans/047-cross-host-rootless-lane-expansion.md`.
+    `plans/047-cross-host-rootless-lane-expansion.md`.
+
+## Plan 048 Multipass recovery boundary
+
+The current host's AppArmor-restricted `blocked_unprivileged_user_namespace`
+result remains a negative baseline. Plan 048 may use a disposable Multipass
+Ubuntu 24.04 amd64 guest, but all permissive user-namespace policy changes
+must stay inside that guest. The checked-in environment manifest fixes the
+instance name/resources and the canonical cache path `target/interop/cache`.
+
+Cloud-init is the administrative provisioning phase. The evidence lane runs
+only as the locked-down `i2ptest` user, transfers immutable source/cache
+inputs, applies the guest-only offline egress policy, and runs the rootless
+probe before the four Plan 045 directions. Host mounts, arbitrary guest
+commands, privileged containers, and silent privileged-topology fallback are
+forbidden. Evidence export is a separate sanitized, hash-checked atomic
+boundary; destroying the guest must not delete exported evidence.
 
 ## 13. Synvoid and eggsec integration
 

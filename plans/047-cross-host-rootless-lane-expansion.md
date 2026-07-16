@@ -124,12 +124,15 @@ privilege at execution time once the offline caches exist.
 
 ### Reference-cache reuse
 
-Plan 043 produced the offline reference build cache path:
+Plan 043's executable offline reference cache path is the canonical
+`target/interop/cache` root:
 
 ```text
 target/interop/build/
   reference-build-summary.json    # overall build summary
-  cache/                          # pinned reference tree, hash-indexed
+target/interop/cache/
+  current-cache.json              # strict selected-cache index
+  <reference>/<cache-key>/        # pinned reference tree, hash-indexed
 ```
 
 Plan 047 *reuses* these caches where possible. The reuse is purely an
@@ -137,7 +140,8 @@ offline step and does not require any privilege. The reference-build
 cache can be moved from a privileged builder host to the recovery host
 without ever touching the public network. The Plan 043
 `references.lock.toml` carries the locked source and build inputs so
-that Plan 047 can verify the cache by re-hash.
+that Plan 047 can verify the cache by re-hash. `target/interop/build/cache` is
+not a canonical or executable path.
 
 ### Evidence retention
 

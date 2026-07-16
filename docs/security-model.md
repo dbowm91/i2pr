@@ -586,3 +586,21 @@ carries that blocker plus a kernel/sysctl/capability snapshot. The
 lane is runnable by an ordinary user on hosts where the AppArmor
 restriction is `0` (or AppArmor is unloaded); cross-host recovery is
 recorded in `plans/047-cross-host-rootless-lane-expansion.md`.
+
+## Plan 048 VM recovery boundary
+
+The host-level Plan 046 AppArmor restriction remains unchanged. Plan 048
+places the permissive user-namespace policy only in a disposable Ubuntu 24.04
+amd64 Multipass guest. Cloud-init is administrative provisioning; the actual
+probe and four-direction evidence run as the capability-free, non-sudo
+`i2ptest` user. The source archive and pinned cache are transferred, never
+mounted, and execution is offline after the guest-only egress policy is
+installed.
+
+The export boundary permits only the fixed sanitized bundle, independently
+recomputes hashes, rejects links/devices/FIFOs/sockets/hardlinks and oversized
+or unexpected files, and atomically places evidence under
+`target/interop/evidence/multipass/<run-id>/`. VM destruction preserves that
+directory. A source/cache mismatch, failed rootless probe, offline-control
+failure, cleanup failure, or evidence-validation failure is a typed blocker;
+no privileged fallback or support-ledger advance is permitted.

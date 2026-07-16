@@ -13,6 +13,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -121,6 +122,22 @@ def _host_check(repo_root: Path, run_root: Path) -> None:
 
 
 def _git_identity(repo_root: Path) -> str:
+    source_manifest = repo_root / ".i2pr-source-manifest.json"
+    if source_manifest.is_file():
+        try:
+            value = json.loads(source_manifest.read_text(encoding="utf-8"))
+            commit = value.get("commit", "")
+            if re.fullmatch(r"[0-9a-f]{40}", str(commit)):
+                checker = repo_root / "scripts/interop/multipass/source_tree.py"
+                verified = subprocess.run(
+                    [sys.executable, str(checker), "--root", str(repo_root), "--verify"],
+                    capture_output=True,
+                    check=False,
+                )
+                if verified.returncode == 0:
+                    return f"{commit};clean"
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            pass
     commit = subprocess.run(["git", "-C", str(repo_root), "rev-parse", "HEAD"], capture_output=True, text=True, check=False)
     if commit.returncode != 0 or not __import__("re").fullmatch(r"[0-9a-f]{40}", commit.stdout.strip()):
         raise HarnessBlocked("missing-i2pr-commit", "blocked_host_contract")

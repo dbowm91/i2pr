@@ -169,6 +169,22 @@ class RootlessSealedTopology:
     def create(self) -> None:
         # Structural checks only. The outer entrypoint is responsible for
         # ``unshare --user --net --mount --pid --propagation private``.
+        if subprocess.run(["ip", "link", "set", "lo", "up"], capture_output=True, check=False).returncode != 0:
+            raise RootlessTopologyError("blocked_loopback_configuration")
+        addresses = [(self.i2pr_address, "-4", "32"), (self.reference_address, "-4", "32")]
+        if self.ipv6:
+            addresses.extend([(self.i2pr_ipv6, "-6", "128"), (self.reference_ipv6, "-6", "128")])
+        for address, family, prefix in addresses:
+            if address is None:
+                continue
+            configured = subprocess.run(
+                ["ip", family, "addr", "add", f"{address}/{prefix}", "dev", "lo"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if configured.returncode != 0 and "File exists" not in configured.stderr:
+                raise RootlessTopologyError("blocked_synthetic_address_configuration")
         if not _can_bind(self.i2pr_address, 0):
             raise RootlessTopologyError("blocked_loopback_configuration")
         if not _can_bind(self.reference_address, 0):

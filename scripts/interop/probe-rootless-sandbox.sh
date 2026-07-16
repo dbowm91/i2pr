@@ -60,8 +60,11 @@ if [[ -r /proc/sys/kernel/unprivileged_userns_clone ]]; then
   fi
 fi
 
-if ! probe_outcome=$(python3 "$repo_root/tests/integration/ntcp2/harness/rootless_supervisor.py" --probe 2>&1); then
-  rc=$?
+probe_status=0
+if probe_outcome=$(python3 "$repo_root/tests/integration/ntcp2/harness/rootless_supervisor.py" --probe 2>&1); then
+  :
+else
+  probe_status=$?
   # Surface the supervised typed blocker regardless of success-path status.
   printf '%s\n' "$probe_outcome"
   if [[ -n "$attestation_path" ]]; then
@@ -79,16 +82,16 @@ print(json.dumps({
 }))
 " > "$attestation_path" 2>/dev/null || true
   fi
-  if [[ $rc -eq 1 ]]; then
+  if [[ $probe_status -eq 1 ]]; then
     exit 1
   fi
-  exit "$rc"
+  exit "$probe_status"
 fi
 
 if [[ -n "$attestation_path" ]]; then
   mkdir -p "$(dirname "$attestation_path")" 2>/dev/null || true
   cat > "$attestation_path" <<'EOF'
-{"schema":"i2pr-rootless-sandbox-attestation-v1","record_type":"rootless-sandbox-attestation","attestation_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}
+{"schema":1,"type":"rootless-sandbox-probe","outcome":"rootless_sandbox_available"}
 EOF
 fi
 

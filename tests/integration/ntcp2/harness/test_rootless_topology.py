@@ -451,6 +451,7 @@ class ProbeOutcomeTests(unittest.TestCase):
             "blocked_gid_map",
             "blocked_setgroups_contract",
             "blocked_network_namespace",
+            "blocked_pid_namespace",
             "blocked_namespace_local_net_admin",
             "blocked_mount_namespace",
             "blocked_private_proc",
@@ -567,6 +568,13 @@ class RealRootlessProcessProbeTests(unittest.TestCase):
             "I2PR_INTEROP_ROOTLESS_INNER": "1",
             "I2PR_INTEROP_ROOTLESS_PARENT_DIGEST_PRE": "a" * 64,
         }
+        for namespace, variable in (
+            ("user", "I2PR_INTEROP_PARENT_USER_NS_INODE"),
+            ("net", "I2PR_INTEROP_PARENT_NET_NS_INODE"),
+            ("mnt", "I2PR_INTEROP_PARENT_MNT_NS_INODE"),
+            ("pid", "I2PR_INTEROP_PARENT_PID_NS_INODE"),
+        ):
+            env[variable] = str(os.stat(f"/proc/self/ns/{namespace}").st_ino)
         result = subprocess.run(
             [
                 "unshare",

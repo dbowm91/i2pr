@@ -30,6 +30,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -119,6 +120,7 @@ ALLOWED_PROBE_OUTCOMES = frozenset(
         "blocked_gid_map",
         "blocked_setgroups_contract",
         "blocked_network_namespace",
+        "blocked_pid_namespace",
         "blocked_namespace_local_net_admin",
         "blocked_mount_namespace",
         "blocked_private_proc",
@@ -183,25 +185,40 @@ def _read_setgroups() -> str:
 # --- Sandbox verification helpers ---
 
 
+_PARENT_NAMESPACE_ENV = {
+    "user": "I2PR_INTEROP_PARENT_USER_NS_INODE",
+    "net": "I2PR_INTEROP_PARENT_NET_NS_INODE",
+    "mnt": "I2PR_INTEROP_PARENT_MNT_NS_INODE",
+    "pid": "I2PR_INTEROP_PARENT_PID_NS_INODE",
+}
+
+
+def _namespace_is_distinct(namespace: str) -> bool:
+    """Compare an inner namespace inode with the outer inode captured by the launcher."""
+
+    try:
+        expected = int(os.environ.get(_PARENT_NAMESPACE_ENV[namespace], ""))
+        return os.stat(f"/proc/self/ns/{namespace}").st_ino != expected
+    except (KeyError, OSError, ValueError):
+        return False
+
+
 def verify_in_user_namespace() -> bool:
     """Return True when the current process is in a distinct user namespace."""
 
-    own = os.stat("/proc/self/ns/user")
-    parent_inode = Path("/proc/1/ns/user")
-    try:
-        parent_stat = parent_inode.stat()
-    except OSError:
-        return False
-    return own.st_ino != parent_stat.st_ino
+    return _namespace_is_distinct("user")
 
 
 def verify_in_network_namespace() -> bool:
-    own = os.stat("/proc/self/ns/net")
-    try:
-        parent_stat = Path("/proc/1/ns/net").stat()
-    except OSError:
-        return False
-    return own.st_ino != parent_stat.st_ino
+    return _namespace_is_distinct("net")
+
+
+def verify_in_mount_namespace() -> bool:
+    return _namespace_is_distinct("mnt")
+
+
+def verify_in_pid_namespace() -> bool:
+    return _namespace_is_distinct("pid")
 
 
 def verify_uid_map() -> str:
@@ -245,6 +262,26 @@ def verify_loopback_is_up() -> bool:
             return False
     finally:
         sock.close()
+
+
+def configure_synthetic_addresses(policy: SandboxPolicy) -> bool:
+    """Configure only loopback and the two synthetic addresses in this netns."""
+
+    if subprocess.run(["ip", "link", "set", "lo", "up"], capture_output=True, check=False).returncode != 0:
+        return False
+    addresses = [("-4", policy.i2pr_address), ("-4", policy.reference_address)]
+    if policy.i2pr_ipv6 and policy.reference_ipv6:
+        addresses.extend([("-6", policy.i2pr_ipv6), ("-6", policy.reference_ipv6)])
+    for family, address in addresses:
+        result = subprocess.run(
+            ["ip", family, "addr", "add", f"{address}/{'128' if family == '-6' else '32'}", "dev", "lo"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0 and "File exists" not in result.stderr:
+            return False
+    return True
 
 
 def verify_synthetic_address(address: str) -> bool:
@@ -433,6 +470,10 @@ def run(
         raise SandboxError("blocked_unprivileged_user_namespace")
     if not verify_in_network_namespace():
         raise SandboxError("blocked_network_namespace")
+    if not verify_in_mount_namespace():
+        raise SandboxError("blocked_mount_namespace")
+    if not verify_in_pid_namespace():
+        raise SandboxError("blocked_pid_namespace")
     if verify_uid_map() != "single-id":
         raise SandboxError("blocked_uid_map")
     if verify_gid_map() != "single-id":
@@ -441,6 +482,8 @@ def run(
         raise SandboxError("blocked_setgroups_contract")
     if not verify_no_new_privs():
         raise SandboxError("blocked_no_new_privs")
+    if not configure_synthetic_addresses(policy):
+        raise SandboxError("blocked_loopback_configuration")
     if not verify_loopback_is_up():
         raise SandboxError("blocked_loopback_configuration")
     if not verify_synthetic_address(policy.i2pr_address):
@@ -479,7 +522,7 @@ def run(
 # --- CLI -----------------------------------------------------------------
 
 
-def _probe_main() -> int:
+def _probe_main(attestation_output: str | None = None) -> int:
     parent_digest_pre = os.environ.get("I2PR_INTEROP_ROOTLESS_PARENT_DIGEST_PRE", "")
     if not HEX64.fullmatch(parent_digest_pre):
         emit_probe_status("blocked_unprivileged_user_namespace")
@@ -497,7 +540,7 @@ def _probe_main() -> int:
         parent_digest_pre=parent_digest_pre,
     )
     try:
-        run(
+        attestation = run(
             policy=policy,
             i2pr_commit="",
             socket_inventory_sha256="0" * 64,
@@ -507,6 +550,8 @@ def _probe_main() -> int:
             child_reap_result="clean",
             sandbox_cleanup_result="clean",
         )
+        if attestation_output:
+            write_attestation(Path(attestation_output), attestation)
     except SandboxError as exc:
         emit_probe_status(exc.code)
         return 1
@@ -522,7 +567,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--attestation-output")
     args = parser.parse_args(argv)
     if args.probe:
-        return _probe_main()
+        return _probe_main(args.attestation_output)
     emit_probe_status("blocked_unprivileged_user_namespace")
     return 1
 

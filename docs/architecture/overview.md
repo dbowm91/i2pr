@@ -71,6 +71,22 @@ typed outcomes, bounded metadata, and artifact/configuration hashes. Raw
 addresses, identities, RouterInfo, I2NP, keys, transcripts, logs, and arbitrary
 remote error text are not retained.
 
+## Plan 048 Multipass evidence environment
+
+Plan 048 is an orchestration boundary around the Plan 046 rootless topology,
+not a production crate or a support claim. The current host remains the
+AppArmor-restricted negative baseline. A disposable Multipass Ubuntu 24.04
+amd64 guest provides the `host.apparmor-restrict-off` recovery category with
+guest-only user-namespace policy, fixed resources, immutable source/cache
+transfer, and ordinary-user execution as `i2ptest`.
+
+Preparation may use the network; guest nftables egress denial and a fresh
+rootless probe are mandatory before the four directional Plan 045 scenarios.
+The canonical reference cache remains `target/interop/cache`. Only the
+validated sanitized evidence bundle crosses back to the host, and destroying
+the guest does not remove the host evidence directory. See [ADR 0018](../adr/0018-multipass-rootless-interop-environment.md)
+and [`interop-apparatus.md`](interop-apparatus.md).
+
 ## Crate graph
 
 The dependency direction is enforced by `scripts/check-dependency-direction.sh`

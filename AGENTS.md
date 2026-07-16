@@ -338,3 +338,29 @@ evidence per `specs/CONFORMANCE.md` — namespace presence is not evidence.
   attach the closure record with that evidence.
 - Don't update git config, skip hooks, force-push, or amend someone else's
   commit. If a hook rejects, fix the issue and add a new commit.
+
+## Plan 048 Multipass rootless recovery lane
+
+The current host remains the Plan 046 `host.apparmor-restrict-on` negative
+baseline. Plan 048 uses only the disposable Multipass guest for the
+`host.apparmor-restrict-off` recovery category; never change host AppArmor or
+user-namespace policy. The canonical manifest is
+`scripts/interop/multipass/environment.toml`, the canonical guest cache is
+`/home/i2ptest/i2pr/target/interop/cache`, and the guest execution user is
+`i2ptest` with no sudo or capabilities.
+
+Preparation may use network access for cloud-init and verified input transfer.
+Execution must follow `prepare-offline.sh`, pass `probe.sh`, then run the four
+Plan 045 directions through `run-matrix.sh` as `i2ptest`. Use
+`run-evidence-lane.sh --all` for the fixed lifecycle. Do not use host mounts,
+arbitrary guest commands, privileged containers, or silent fallback to the
+privileged topology. Export only the validated sanitized bundle with
+`export-evidence.sh`; destroying the guest must preserve
+`target/interop/evidence/multipass/<run-id>/`.
+
+The Multipass layer has its own static/simulated tests in
+`tests/integration/ntcp2/harness/test_multipass.py`. A missing Multipass
+daemon, guest policy mismatch, failed rootless probe, offline-enforcement
+failure, cache/source mismatch, cleanup failure, or evidence-validation
+failure is a typed blocker, never an interoperability pass. Plan 048 does not
+advance `specs/support.toml` or close Milestone 3.

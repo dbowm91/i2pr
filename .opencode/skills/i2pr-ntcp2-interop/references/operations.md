@@ -226,3 +226,39 @@ It fails when rootless-owned files contain prohibited patterns, when the
 gate catalog omits `handshake-smoke-rootless`, or when the evidence
 validation does not require the sandbox attestation. Plan 046 does not
 advertise NTCP2 support and does not close Milestone 3 by itself.
+
+## Plan 048 Multipass recovery operations
+
+The host-level `blocked_unprivileged_user_namespace` result remains the
+negative baseline. The recovery lane is a disposable Multipass guest and must
+use the checked-in manifest and fixed wrapper:
+
+```text
+bash scripts/interop/multipass/run-evidence-lane.sh --create
+bash scripts/interop/multipass/run-evidence-lane.sh --prepare
+bash scripts/interop/multipass/run-evidence-lane.sh --probe
+bash scripts/interop/multipass/run-evidence-lane.sh --run
+bash scripts/interop/multipass/run-evidence-lane.sh --export --run-id <safe-id>
+bash scripts/interop/multipass/run-evidence-lane.sh --destroy
+```
+
+The one-command lane is:
+
+```text
+bash scripts/interop/multipass/run-evidence-lane.sh --all \
+  --run-id <safe-id> --destroy-after-export
+```
+
+Cloud-init is the administrative preparation phase. Source transfer requires
+a clean exact commit and deterministic archive; cache transfer requires the
+verified canonical `target/interop/cache` and its build sidecar manifest.
+After `prepare-offline.sh`, guest nftables denies non-loopback egress and all
+scenario commands run as `i2ptest`. The probe must pass before any router.
+Snapshot names are only `provisioned` and `source-and-cache-ready`; host
+mounts, arbitrary guest commands, and privileged fallback are forbidden.
+
+Export accepts only the fixed sanitized bundle and atomically installs it at
+`target/interop/evidence/multipass/<run-id>/`. Preserve that directory before
+destroying the VM. Missing Multipass, guest policy, source/cache, probe,
+offline, cleanup, or evidence requirements are typed blockers, not protocol
+passes; no support row or Milestone 3 claim changes automatically.

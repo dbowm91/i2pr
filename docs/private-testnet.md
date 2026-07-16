@@ -167,3 +167,21 @@ whenever rootless-owned files contain sudo, host-network-state mutation,
 capability grants, privileged containers, or any fallback. NTCP2 remains
 experimental and non-advertised; Milestone 3 is still open.
 
+## Plan 048 Multipass recovery environment
+
+The host remains the Plan 046 negative baseline; Plan 048 does not change its
+AppArmor or user-namespace policy. On a host with Multipass, the disposable
+Ubuntu 24.04 amd64 guest described by
+`scripts/interop/multipass/environment.toml` supplies the
+`host.apparmor-restrict-off` recovery category. Cloud-init applies the
+permissive sysctls inside the guest only and creates the non-sudo `i2ptest`
+execution user.
+
+Use `bash scripts/interop/multipass/run-evidence-lane.sh --all` for the fixed
+create, immutable source/cache transfer, snapshot, probe, offline transition,
+four-direction matrix, validation, and export sequence. The cache root is
+`target/interop/cache`, not `target/interop/build/cache`; host mounts are not
+authoritative. `export-evidence.sh` preserves only sanitized records under
+`target/interop/evidence/multipass/<run-id>/`, and explicit destruction leaves
+that directory intact. Multipass, guest-policy, rootless-probe, offline,
+cleanup, and evidence failures are typed blockers, never support claims.

@@ -387,3 +387,17 @@ not selected yet.
 Make focused commits that explain behavior and tests. Handoffs should list
 changed files, commands and results, dependency changes, security-relevant
 decisions, deviations, and remaining risks.
+
+## Plan 048 Multipass evidence environment
+
+The host-local Plan 046 blocker is retained as a negative baseline. Use the
+Plan 048 Multipass guest for recovery; its guest-only sysctl relaxation and
+fixed resources are defined in `scripts/interop/multipass/environment.toml`.
+Transfer a clean exact source archive and the verified cache at
+`target/interop/cache`; do not use `multipass mount` for authoritative inputs.
+
+Run cloud-init and input preparation before installing the guest offline
+egress policy. As `i2ptest`, run the rootless probe before any router and then
+the four fixed directions. Export only the sanitized bundle and verify it
+before destroying the VM. `destroy.sh` must preserve host evidence. A typed
+blocker, reference-only result, or cleanup failure is not support evidence.

@@ -1,0 +1,151 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - build-essential
+  - clang
+  - cmake
+  - pkg-config
+  - git
+  - curl
+  - ca-certificates
+  - python3
+  - python3-venv
+  - openjdk-21-jdk-headless
+  - ant
+  - iproute2
+  - nftables
+  - util-linux
+  - jq
+  - rsync
+  - openssh-client
+  - tar
+  - xz-utils
+  - gettext
+  - wget
+  - unzip
+  - zip
+  - coreutils
+  - findutils
+  - procps
+  - openssl
+  - libboost-all-dev
+  - libssl-dev
+  - zlib1g-dev
+
+write_files:
+  - path: /etc/sysctl.d/90-i2pr-rootless-interop.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      kernel.unprivileged_userns_clone = 1
+      kernel.apparmor_restrict_unprivileged_userns = 0
+  - path: /var/lib/i2pr-interop/package-list
+    owner: root:root
+    permissions: '0600'
+    content: |
+      build-essential
+      clang
+      cmake
+      pkg-config
+      git
+      curl
+      ca-certificates
+      python3
+      python3-venv
+      openjdk-21-jdk-headless
+      ant
+      iproute2
+      nftables
+      util-linux
+      jq
+      rsync
+      openssh-client
+      tar
+      xz-utils
+      gettext
+      wget
+      unzip
+      zip
+      coreutils
+      findutils
+      procps
+      openssl
+      libboost-all-dev
+      libssl-dev
+      zlib1g-dev
+  - path: /usr/local/sbin/i2pr-multipass-provision
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      sysctl --system >/dev/null
+      [[ "$(sysctl -n kernel.unprivileged_userns_clone)" == "1" ]]
+      [[ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" == "0" ]]
+
+      if ! id i2ptest >/dev/null 2>&1; then
+        useradd --create-home --shell /bin/bash --password '!*' i2ptest
+      fi
+      usermod --shell /bin/bash --password '!*' i2ptest
+      usermod --groups '' i2ptest
+      for group in sudo adm docker lxd; do
+        gpasswd --delete i2ptest "$group" >/dev/null 2>&1 || true
+      done
+      install -d -o i2ptest -g i2ptest -m 0700 /home/i2ptest
+      rm -rf /home/i2ptest/.ssh
+      install -d -o i2ptest -g i2ptest -m 0700 /home/i2ptest/.config
+
+      if [[ ! -x /home/i2ptest/.cargo/bin/rustup ]]; then
+        runuser -u i2ptest -- env HOME=/home/i2ptest \
+          sh -c 'curl --fail --silent --show-error --proto =https --tlsv1.2 https://sh.rustup.rs | sh -s -- -y --default-toolchain none'
+      fi
+      runuser -u i2ptest -- env HOME=/home/i2ptest \
+        /home/i2ptest/.cargo/bin/rustup toolchain install 1.95.0 --profile minimal
+      runuser -u i2ptest -- env HOME=/home/i2ptest \
+        /home/i2ptest/.cargo/bin/rustup component add rustfmt clippy --toolchain 1.95.0
+
+      install -d -o root -g root -m 0700 /var/lib/i2pr-interop
+      package_sha256=$(sha256sum /var/lib/i2pr-interop/package-list | awk '{print $1}')
+      rustc_version=$(runuser -u i2ptest -- env HOME=/home/i2ptest /home/i2ptest/.cargo/bin/rustc +1.95.0 --version)
+      java_version=$(java -version 2>&1 | head -n 1)
+      ant_version=$(ant -version 2>&1 | head -n 1)
+      cmake_version=$(cmake --version | head -n 1)
+      compiler_version=$(cc --version | head -n 1)
+      python3 - "$package_sha256" "$rustc_version" "$java_version" "$ant_version" "$cmake_version" "$compiler_version" <<'PY'
+      import datetime as dt
+      import json
+      import os
+      import platform
+      import sys
+      from pathlib import Path
+
+      value = {
+          "schema": 1,
+          "cloud_init_schema": 1,
+          "image_release": "24.04",
+          "architecture": platform.machine(),
+          "package_list_sha256": sys.argv[1],
+          "effective_sysctls": {
+              "kernel.unprivileged_userns_clone": 1,
+              "kernel.apparmor_restrict_unprivileged_userns": 0,
+          },
+          "rust_toolchain": sys.argv[2],
+          "java": sys.argv[3],
+          "ant": sys.argv[4],
+          "cmake": sys.argv[5],
+          "compiler": sys.argv[6],
+          "completed_at": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+      }
+      path = Path("/var/lib/i2pr-interop/provisioning.json")
+      temporary = path.with_suffix(".tmp")
+      temporary.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+      os.chown(temporary, 0, 0)
+      os.chmod(temporary, 0o600)
+      os.replace(temporary, path)
+      PY
+      chattr +i /var/lib/i2pr-interop/provisioning.json
+
+runcmd:
+  - [bash, /usr/local/sbin/i2pr-multipass-provision]

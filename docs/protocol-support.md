@@ -97,3 +97,13 @@ behavior.
 Each future protocol row must be updated with exact targeted proposal/spec
 revisions, limits, malformed-input behavior, vectors, and mixed-router evidence
 before its status changes.
+
+### Plan 048 evidence-environment notice
+
+Plan 048 adds only a disposable Multipass recovery environment for the Plan
+046 rootless lane. The current host remains the AppArmor-restricted negative
+baseline, the guest applies permissive policy only inside its VM, and the
+canonical cache is `target/interop/cache`. A guest probe, matrix, or exported
+reference control result does not advance any support row. NTCP2 remains
+experimental and non-advertised until sanitized mixed-router conformance
+evidence satisfies `specs/CONFORMANCE.md`.

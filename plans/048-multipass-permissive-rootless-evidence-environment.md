@@ -118,6 +118,12 @@ multipass launch 24.04 \
 
 Multipass supports named instances, explicit CPU, memory, disk, timeout, and cloud-init inputs. Plan 048 must use those explicit values and must not rely on Multipass defaults.
 
+The installed Multipass 1.16 client does not provide the listed `wait-ready`
+subcommand. The implementation therefore uses bounded polling of
+`multipass info --format json` for the Running state followed by the guest
+cloud-init completion marker; this is the supported equivalent for the
+readiness boundary.
+
 ## Deliverable 1: Add a Multipass environment ADR
 
 Create:

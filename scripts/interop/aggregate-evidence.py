@@ -27,6 +27,22 @@ def _sha256(path: Path) -> str:
 
 
 def _commit(repo_root: Path) -> str:
+    source_manifest = repo_root / ".i2pr-source-manifest.json"
+    if source_manifest.is_file():
+        try:
+            value = json.loads(source_manifest.read_text(encoding="utf-8"))
+            commit = str(value.get("commit", ""))
+            if re.fullmatch(r"[0-9a-f]{40}", commit):
+                checker = repo_root / "scripts/interop/multipass/source_tree.py"
+                verified = subprocess.run(
+                    [sys.executable, str(checker), "--root", str(repo_root), "--verify"],
+                    capture_output=True,
+                    check=False,
+                )
+                if verified.returncode == 0:
+                    return commit
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            pass
     result = subprocess.run(
         ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
         capture_output=True,

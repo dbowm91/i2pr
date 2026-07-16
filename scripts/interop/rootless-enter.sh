@@ -42,6 +42,7 @@ reference=""
 profile=""
 build_cache=""
 run_root=""
+attestation_output=""
 
 die() {
   echo "rootless-enter: $1" >&2
@@ -60,35 +61,44 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --probe)
+        [[ -z "$operation" ]] || die "duplicate-or-conflicting-operation"
         operation="probe"
         shift
         ;;
       --scenario)
+        [[ -z "$operation" ]] || die "duplicate-or-conflicting-operation"
         scenario="${2:-}"
         require_string "$scenario" "scenario"
+        operation="scenario"
         shift 2
         ;;
       --reference)
+        [[ -z "$reference" ]] || die "duplicate-reference"
         reference="${2:-}"
         require_string "$reference" "reference"
         shift 2
         ;;
       --build-cache)
+        [[ -z "$build_cache" ]] || die "duplicate-build-cache"
         build_cache="${2:-}"
         require_string "$build_cache" "build-cache"
         shift 2
         ;;
       --run-root)
+        [[ -z "$run_root" ]] || die "duplicate-run-root"
         run_root="${2:-}"
         require_string "$run_root" "run-root"
         shift 2
         ;;
       --profile)
+        [[ -z "$operation" ]] || die "duplicate-or-conflicting-operation"
         profile="${2:-}"
         require_string "$profile" "profile"
+        operation="profile"
         shift 2
         ;;
       --attestation-output)
+        [[ -z "$attestation_output" ]] || die "duplicate-attestation-output"
         attestation_output="${2:-}"
         require_string "$attestation_output" "attestation-output"
         shift 2
@@ -122,10 +132,17 @@ validate_choice() {
   die "$label-not-allowed:$needle"
 }
 
+namespace_inode() {
+  case "$1" in
+    user|net|mnt|pid) stat -Lc '%i' "/proc/self/ns/$1" || die "parent-namespace-read-failed:$1" ;;
+    *) die "unknown-parent-namespace:$1" ;;
+  esac
+}
+
 # Build the strictly-fixed `unshare` invocation. No shell eval, no command
 # interpolation, no sudo, no host-network-state mutation.
 build_unshare_command() {
-  local inner_command="$1"
+  local mode="$1"
   local i2pr_commit="${I2PR_INTEROP_COMMIT:-}"
   UNSHARE_COMMAND=(
     unshare
@@ -141,9 +158,26 @@ build_unshare_command() {
     /usr/bin/env
     "I2PR_INTEROP_ROOTLESS_INNER=1"
     "I2PR_INTEROP_ROOTLESS_PARENT_DIGEST_PRE=$parent_digest_pre"
+    "I2PR_INTEROP_PARENT_USER_NS_INODE=$(namespace_inode user)"
+    "I2PR_INTEROP_PARENT_NET_NS_INODE=$(namespace_inode net)"
+    "I2PR_INTEROP_PARENT_MNT_NS_INODE=$(namespace_inode mnt)"
+    "I2PR_INTEROP_PARENT_PID_NS_INODE=$(namespace_inode pid)"
     "I2PR_INTEROP_COMMIT=$i2pr_commit"
-    "$inner_command"
   )
+  case "$mode" in
+    probe)
+      UNSHARE_COMMAND+=(python3 "$repo_root/tests/integration/ntcp2/harness/rootless_supervisor.py" --probe)
+      if [[ -n "$attestation_output" ]]; then
+        UNSHARE_COMMAND+=(--attestation-output "$attestation_output")
+      fi
+      ;;
+    scenario)
+      UNSHARE_COMMAND+=(python3 "$repo_root/tests/integration/ntcp2/harness/rootless_inner_runner.py" "${INNER_ARGS[@]}")
+      ;;
+    *)
+      die "unknown-inner-mode:$mode"
+      ;;
+  esac
 }
 
 # Compute a non-secret parent-host network digest. We deliberately avoid
@@ -201,7 +235,7 @@ run_probe() {
   local parent_digest
   parent_digest=$(compute_parent_digest)
   record_digest pre "$parent_digest"
-  build_unshare_command "python3 $repo_root/tests/integration/ntcp2/harness/rootless_supervisor.py --probe"
+  build_unshare_command probe
   local probe_status
   local probe_outcome
   probe_status=0
@@ -231,21 +265,23 @@ run_probe() {
 }
 
 run_scenario() {
-  local inner_args=(--scenario "$scenario" --reference "$reference")
+  INNER_ARGS=(--scenario "$scenario" --reference "$reference")
   if [[ -n "$build_cache" ]]; then
-    inner_args+=(--build-cache "$build_cache")
+    INNER_ARGS+=(--build-cache "$build_cache")
   fi
   if [[ -n "$run_root" ]]; then
-    inner_args+=(--run-root "$run_root")
+    INNER_ARGS+=(--run-root "$run_root")
   fi
   if [[ -n "$attestation_output" ]]; then
-    inner_args+=(--attestation-output "$attestation_output")
+    INNER_ARGS+=(--attestation-output "$attestation_output")
   fi
-  build_unshare_command "python3 $repo_root/tests/integration/ntcp2/harness/rootless_inner_runner.py ${inner_args[*]}"
+  build_unshare_command scenario
+  local rc
   if "${UNSHARE_COMMAND[@]}"; then
     return 0
+  else
+    rc=$?
   fi
-  local rc=$?
   # Distinguish "inner runner itself failed after running" from "the unshare
   # call never reached Python". We can tell by whether the inner runner had a
   # chance to write the attestation file; if not, the host is blocked.

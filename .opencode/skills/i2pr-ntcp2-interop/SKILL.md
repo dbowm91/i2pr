@@ -5,10 +5,12 @@ description: Operate, diagnose, or extend the repository's Ubuntu 24.04 referenc
 
 # I2PR NTCP2 interoperability
 
-Use this skill from the repository root for the manual, opt-in Plan 038/040/041/042/043/044/046
+Use this skill from the repository root for the manual, opt-in Plan 038/040/041/042/043/044/046/047/048
 harness. Read `AGENTS.md`, `plans/043-ubuntu-build-system-interop-gates.md`,
 `plans/044-ntcp2-interop-final-integration-corrective-pass.md`,
 `plans/046-rootless-sealed-namespace-evidence-lane.md`,
+`plans/047-cross-host-rootless-lane-expansion.md`,
+`plans/048-multipass-permissive-rootless-evidence-environment.md`,
 `plans/038-ubuntu-reference-router-interoperability-harness.md`,
 `tests/integration/ntcp2/README.md`, and the relevant architecture/ADR files
 before changing the apparatus.
@@ -233,3 +235,33 @@ unprivileged user namespace to a restrictive AppArmor policy even though
 forbids `sudo`. Plan 047 (`plans/047-cross-host-rootless-lane-expansion.md`)
 records cross-host recovery for hosts where the AppArmor restriction is
 `0` (or AppArmor is unloaded).
+
+## Plan 048 Multipass recovery environment
+
+The host-level Plan 046 blocker is the negative baseline, not a universal
+failure. On a host with Multipass, Plan 048 uses the disposable Ubuntu 24.04
+amd64 instance described by `scripts/interop/multipass/environment.toml` to
+exercise the `host.apparmor-restrict-off` recovery category. The host's
+AppArmor and user-namespace policy must remain unchanged.
+
+Use the fixed command surface from the repository root:
+
+```text
+bash scripts/interop/multipass/run-evidence-lane.sh --all
+bash scripts/interop/multipass/run-evidence-lane.sh --all \
+  --run-id <safe-id> --destroy-after-export
+```
+
+The phase order is cloud-init/provisioning, exact source archive transfer,
+verified cache transfer from `target/interop/cache`, source/cache snapshot,
+rootless probe, guest-only offline transition, four fixed mixed directions,
+validation, sanitized export, and explicit destruction. Scenario execution is
+as `i2ptest`; the execution user has no sudo or capabilities. Never use a
+host mount as authoritative source or evidence, never accept an arbitrary
+guest command, and never fall back to the privileged topology.
+
+`export-evidence.sh` independently validates the fixed bundle and atomically
+places it under `target/interop/evidence/multipass/<run-id>/`. Missing
+Multipass, guest policy, probe, cache/source, offline, cleanup, or evidence
+requirements are typed blockers. A VM run, reference-only control, or typed
+blocker does not advertise NTCP2 or close Milestone 3.
