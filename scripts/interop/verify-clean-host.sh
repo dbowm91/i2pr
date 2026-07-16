@@ -41,8 +41,8 @@ mapfile -t namespaces < <(root_run ip netns list 2>/dev/null | awk '$1 ~ /^(i2pr
 ((${#namespaces[@]} == 0)) || failures+=("residual-namespace")
 mapfile -t interfaces < <(root_run ip -o link show 2>/dev/null | awk -F': ' '$2 ~ /^(i2pr-v|ref-v|jv[0-9a-f]{8}a|iv[0-9a-f]{8}b)/ {print $2}')
 ((${#interfaces[@]} == 0)) || failures+=("residual-veth")
-processes=$(ps -eo pid=,args= | grep -E '[i]2pd|[i]2pr-interop|[i]2prouter|[j]ava.*(i2psvc|runplain|i2prouter)' || true)
-[[ -z "$processes" ]] || failures+=("residual-router-process")
+processes=$(ps -eo pid=,comm= | awk '$2 ~ /^(i2pd|i2pr-interop|i2prouter|java)$/' || true)
+  [[ -z "$processes" ]] || failures+=("residual-router-process")
 if [[ -d "$RUNS_ROOT" ]] && find "$RUNS_ROOT" -mindepth 1 -print -quit | grep -q .; then
   failures+=("secret-bearing-run-root")
 fi
