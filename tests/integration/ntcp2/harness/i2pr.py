@@ -6,6 +6,7 @@ import hashlib
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 try:
     from .launcher_protocol import LauncherStatusError, parse_status_line
@@ -14,14 +15,55 @@ except ImportError:  # pragma: no cover - direct harness-module execution
     from launcher_protocol import LauncherStatusError, parse_status_line  # type: ignore
     from process import BoundedProcess, ProcessError  # type: ignore
 
+try:
+    from .interop_topology import ProcessPlacement, TopologyContractError
+except ImportError:  # pragma: no cover - direct harness-module execution
+    from interop_topology import ProcessPlacement, TopologyContractError  # type: ignore
+
+
+def _legacy_privileged_prefix() -> list[str]:
+    """Build the legacy privileged ``ip netns exec <namespace>`` prefix.
+
+    Used only when a caller passes a ``namespace`` string instead of a
+    ``ProcessPlacement``. New code must pass ``ProcessPlacement`` directly.
+    """
+
+    return [] if os.geteuid() == 0 else ["sudo", "-n"]
+
 
 class I2prAdapter:
-    """Invoke the dedicated launcher, never the normal daemon."""
+    """Invoke the dedicated launcher, never the normal daemon.
 
-    def __init__(self, repo_root: Path, run_root: Path, namespace: str):
+    The adapter executes inside the topology's sealed execution context
+    (``ProcessPlacement``). For backwards compatibility, callers may pass a
+    ``namespace`` string, which the adapter interprets as the legacy
+    privileged ``ip netns exec <namespace>`` placement. New code should
+    pass ``placement=`` directly.
+    """
+
+    def __init__(
+        self,
+        repo_root: Path,
+        run_root: Path,
+        namespace: str | None = None,
+        *,
+        placement: ProcessPlacement | None = None,
+    ):
+        if placement is None:
+            if namespace is None:
+                raise RuntimeError("i2pr-adapter-needs-placement-or-namespace")
+            placement = ProcessPlacement(
+                topology_kind="privileged-dual-netns-veth",
+                actor="i2pr",
+                command_prefix=tuple(_legacy_privileged_prefix() + ["ip", "netns", "exec", namespace]),
+            )
+        elif namespace is not None:
+            raise RuntimeError("i2pr-adapter-placement-and-namespace-mutually-exclusive")
+        if placement.actor != "i2pr":
+            raise RuntimeError("i2pr-adplacement-must-be-i2pr")
         self.repo_root = repo_root
         self.run_root = run_root
-        self.namespace = namespace
+        self.placement = placement
         self.process: BoundedProcess | None = None
         self.mode: str | None = None
         self.last_status: dict[str, object] | None = None
@@ -32,17 +74,12 @@ class I2prAdapter:
         binary = self.repo_root / "target" / "debug" / "i2pr-interop"
         if not binary.is_file():
             raise RuntimeError("missing-i2pr-interop-launcher")
-        command = ([] if os.geteuid() == 0 else ["sudo", "-n"]) + [
-            "ip",
-            "netns",
-            "exec",
-            self.namespace,
-            str(binary),
-            "ntcp2",
-            mode,
-            "--scenario-config",
-            str(self.run_root / "scenario.toml"),
-        ]
+        try:
+            command = self.placement.command(
+                [str(binary), "ntcp2", mode, "--scenario-config", str(self.run_root / "scenario.toml")]
+            )
+        except TopologyContractError as exc:
+            raise RuntimeError(exc.code) from exc
         self.process = BoundedProcess(command, self.run_root / "raw" / "i2pr.log")
         self.mode = mode
         self.process.start()

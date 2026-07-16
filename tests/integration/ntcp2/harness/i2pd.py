@@ -13,12 +13,14 @@ try:
     from .process import BoundedProcess, ProcessError
     from .router_info import RouterInfoPathError, netdb_filename
     from .topology import EndpointDescription
+    from .interop_topology import ProcessPlacement, TopologyContractError
 except ImportError:  # unittest discovery loads this directory as a flat path.
     from metadata import CacheMetadata, MetadataError, parse_metadata  # type: ignore
     from config_contract import ConfigurationContractError, assert_i2pd_private_configuration  # type: ignore
     from process import BoundedProcess, ProcessError  # type: ignore
     from router_info import RouterInfoPathError, netdb_filename  # type: ignore
     from topology import EndpointDescription  # type: ignore
+    from interop_topology import ProcessPlacement, TopologyContractError  # type: ignore
 
 
 class I2pdError(RuntimeError):
@@ -44,6 +46,7 @@ class I2pdAdapter:
         repo_root: Path,
         *,
         shared_data_dir: Path | None = None,
+        placement: ProcessPlacement | None = None,
     ):
         self.cache = cache.resolve()
         self.run_root = run_root.resolve()
@@ -60,11 +63,18 @@ class I2pdAdapter:
             if not (self.data_dir == self.run_root or self.run_root in self.data_dir.parents):
                 raise I2pdError("shared-data-dir-outside-run-root")
         self.config_dir = self.run_root / "config"
+        self.placement: ProcessPlacement | None = placement
         self.process: BoundedProcess | None = None
         self.metadata: CacheMetadata | None = None
         self.configuration_sha256 = ""
 
     def _prefix(self) -> list[str]:
+        """Backwards-compatible legacy prefix construction.
+
+        Used only when an explicit ``placement`` was not supplied to the
+        adapter. New callers must pass ``placement`` through ``select_topology``.
+        """
+
         return [] if os.geteuid() == 0 else ["sudo", "-n"]
 
     def _inside_run_root(self, path: Path) -> bool:
@@ -120,7 +130,15 @@ class I2pdAdapter:
 
     def start(self) -> None:
         binary = self.prepare()
-        command = self._prefix() + ["ip", "netns", "exec", self.endpoint.namespace, str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
+        if self.placement is None:
+            command = self._prefix() + ["ip", "netns", "exec", self.endpoint.namespace, str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
+        else:
+            try:
+                command = self.placement.command(
+                    [str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
+                )
+            except TopologyContractError as exc:
+                raise I2pdError(exc.code) from exc
         self.process = BoundedProcess(command, self.run_root / "raw" / "i2pd.log")
         try:
             self.process.start()

@@ -1,7 +1,9 @@
 # ADR 0015: Ubuntu reference-router interoperability harness boundary
 
-- Status: accepted for Plan 040 corrective apparatus; extended by Plan 041
-- Date: 2026-07-15
+- Status: accepted for Plan 040 corrective apparatus; extended by Plan 041,
+  Plan 042, Plan 044; further amended by Plan 046 rootless sealed-namespace
+  evidence lane
+- Date: 2026-07-15 (last revised 2026-07-16)
 - Decision owners: repository maintainers
 
 ## Context
@@ -103,3 +105,47 @@ and the current host blocker is `blocked_host_contract`.
 - A launcher in `i2pr-daemon` or a Tokio dependency in transport crates: it
   would weaken the existing runtime ownership boundary before the adapter is
   complete.
+
+## Plan 046 rootless sealed-namespace amendment
+
+The primary mixed-router evidence path is now a rootless,
+process-scoped sandbox that an ordinary user can run on Ubuntu 24.04
+amd64 hosts that permit unprivileged user namespaces. The primary
+topology is `rootless-sealed-single-netns` with privilege model
+`unprivileged-userns`. The legacy privileged dual-namespace veth
+topology is renamed `privileged-dual-netns-veth`, kept as an
+explicit later qualification lane, and is never the default and never
+a silent fallback. The new ownership boundary:
+
+- `tests/integration/ntcp2/harness/interop_topology.py` owns the
+  topology contract (`InteropTopology`, `ProcessPlacement`,
+  `select_topology`).
+- `tests/integration/ntcp2/harness/rootless_topology.py` owns the
+  `RootlessSealedTopology` backend.
+- `tests/integration/ntcp2/harness/rootless_supervisor.py` owns
+  the inner sandbox verification and writes a sanitized
+  `IsolationAttestation` whose sha256 is bound to every passed
+  mixed-router evidence record.
+- `scripts/interop/rootless-enter.sh` is the only outer entrypoint
+  for the rootless lane; it creates the sandbox via
+  `unshare --user --net --mount --pid --fork --propagation
+  private --mount-proc --map-root-user` and execs the inner
+  runner. It has no shell `eval`, no `sudo`, no fallback to the
+  privileged backend, and rejects any non-allowlisted operation.
+- `scripts/check-rootless-interop-boundary.sh` enforces the
+  static boundary on every change.
+
+The mixed-router evidence schema now carries `topology_kind`,
+`privilege_model`, `sandbox_attestation_sha256`, and
+`parent_network_state_unchanged`. A passed record that violates
+any of these is rejected. The sandbox-only verify command is:
+
+```text
+bash scripts/interop/rootless-enter.sh --probe
+```
+
+A typed probe blocker such as `blocked_unprivileged_user_namespace`,
+`blocked_loopback_unconfigured`, `blocked_synthetic_bind_failed`,
+or `blocked_external_connect_succeeded` is a hard stop, not a
+fallback. Plan 046 does not advertise NTCP2 support and does not
+close Milestone 3 by itself.

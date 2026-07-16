@@ -313,6 +313,53 @@ meet `specs/CONFORMANCE.md`. The current checkout has not met those gates.
 7. Protocol success never overrides cleanup failure, even after a positive
    mixed-router result.
 
+## Plan 046 rootless sealed-namespace guardrails
+
+1. The primary NTCP2 mixed-router evidence topology is
+   `rootless-sealed-single-netns` with privilege model `unprivileged-userns`.
+   The legacy `privileged-dual-netns-veth` topology is preserved as an
+   explicit later qualification lane; it is never the default and never a
+   silent fallback.
+2. No rootless code path may use `sudo`, `setcap`, setuid helpers, file
+   capabilities, ambient host capabilities, `--privileged` containers,
+   `--network host` containers, privileged sidecars, `ip netns add`, host
+   link mutation, host route mutation, or host nftables mutation. The
+   static boundary checker `scripts/check-rootless-interop-boundary.sh`
+   enforces this on every change.
+3. The user namespace must have a single-ID UID/GID mapping with `setgroups
+   deny` and `no_new_privs`. Broader maps or missing denials are typed
+   blockers; they are not silently accepted.
+4. The sandbox contains only `lo` plus the synthetic `192.0.2.{1,2}/32`
+   addresses (and optional `2001:db8:36::{1,2}/128`). No default route,
+   no host interface, no forwarded port, and no public-network path are
+   permitted.
+5. The mixed-router evidence schema requires `topology_kind`,
+   `privilege_model`, `sandbox_attestation_sha256`, and
+   `parent_network_state_unchanged` on every record. A passed record that
+   violates any of these is rejected. The aggregate manifest verifies that
+   all four handshake-smoke scenario records reference the same gate
+   attestation, that the attestation validates, and that the parent-network
+   state pre/post digests are byte-equal.
+6. A typed probe blocker such as `blocked_unprivileged_user_namespace`,
+   `blocked_loopback_unconfigured`, `blocked_synthetic_bind_failed`, or
+   `blocked_external_connect_succeeded` is a hard stop, not a fallback.
+7. The rootless lane does not install system packages. It verifies
+   dependencies and emits a typed blocker when the environment is incomplete.
+   Preparation (network-enabled) and execution (offline) remain separate.
+8. Public I2P reseed, discovery, RouterInfo publication, transit, tunnels,
+   proxy services, SAM exposure outside the sandbox, I2CP exposure outside
+   the sandbox, console exposure, and SSU2 remain prohibited.
+9. Cleanup failure overrides protocol success in the rootless lane exactly
+   as it does in the privileged lane. Sandbox attestation must include a
+   cleanup result; a missing or failed cleanup converts the entire mixed-
+   router record set to failure.
+10. The retained evidence claim is intentionally narrower than the
+    privileged topology: the rootless lane proves protocol compatibility
+    inside a single process-scoped network namespace, not separate-stack
+    network behavior, asymmetric firewall semantics, packet loss, route
+    mutation, or interface-failure semantics.
+11. NTCP2 remains experimental and non-advertised; Milestone 3 remains open.
+
 ## 13. Synvoid and eggsec integration
 
 Synvoid integration should normally occur through a local service boundary:

@@ -1,7 +1,8 @@
 # ADR 0016: Ubuntu build-system interoperability gates
 
-- Status: accepted for Plan 043
-- Date: 2026-07-15
+- Status: accepted for Plan 043; amended by Plan 046 rootless sealed-namespace
+  evidence lane
+- Date: 2026-07-15 (last revised 2026-07-16)
 - Decision owners: repository maintainers
 
 ## Context
@@ -58,6 +59,46 @@ repeated clean-checkout and cache-reuse success, a current successful run at
 Milestone 3 closure, and only then a separate decision about any reduced
 trusted-pull-request lane. Privileged execution is never automatically exposed
 to forked or untrusted pull-request code.
+
+## Plan 046 rootless gate amendment
+
+Plan 046 inserts a parallel rootless evidence path whose primary topology
+is `rootless-sealed-single-netns` with privilege model `unprivileged-userns`.
+The legacy `privileged-dual-netns-veth` topology is preserved as an
+opt-in qualification lane and is never the default and never a silent
+fallback. The gate catalog is extended with:
+
+```text
+handshake-smoke-rootless
+```
+
+This gate reuses the existing reference-build, reference-offline-reuse,
+and evidence-validation gates; it adds `handshake-smoke-rootless` between
+the reference control gate and any future rootless full-matrix expansion.
+The gate catalog is enforced statically by
+`scripts/check-rootless-interop-boundary.sh`, which fails the change when:
+
+- any rootless-owned file contains `sudo`, `ip netns`, `nft`, `setcap`,
+  `--privileged`, `--network host`, or fallback to the privileged
+  backend;
+- the gate catalog omits `handshake-smoke-rootless` or the privileged
+  profile name `privileged-dual-netns-veth`;
+- the evidence validation does not require the sandbox attestation
+  field on passed records.
+
+The aggregate manifest for the rootless gate must include exactly the
+expected records, each with `topology_kind = "rootless-sealed-single-netns"`,
+`privilege_model = "unprivileged-userns"`, a non-zero
+`sandbox_attestation_sha256`, and `parent_network_state_unchanged = true`.
+A missing or mismatched sandbox attestation is a hard stop, not a fallback.
+
+A typed probe blocker such as `blocked_unprivileged_user_namespace` is a
+hard stop. Promotion of the rootless gate is staged identically to the
+privileged gate: manual dispatch first, scheduled control only after
+repeated clean-checkout and cache-reuse success, a current successful run
+at Milestone 3 closure, and a separate later decision about any reduced
+trusted-pull-request lane. Plan 046 does not advertise NTCP2 support and
+does not close Milestone 3 by itself.
 
 ## Consequences
 

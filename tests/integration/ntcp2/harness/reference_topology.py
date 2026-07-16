@@ -1,4 +1,10 @@
-"""Dedicated namespace and one-way firewall owner for Plan 041."""
+"""Privileged reference-pair topology owner for Plan 041.
+
+The Plan 041 reference-pair topology is the privileged dual-namespace/veth
+backend (``privileged-dual-netns-veth``) restricted to reference-only control
+runs. Plan 046 keeps this backend for explicit qualification work but it is
+never the default evidence lane for the i2pr mixed-router evidence path.
+"""
 
 from __future__ import annotations
 
@@ -9,10 +15,21 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 try:
+    from .interop_topology import (
+        PRIVILEGED_PRIVILEGE_MODEL,
+        PRIVILEGED_TOPOLOGY_KIND,
+        ProcessPlacement,
+    )
     from .reference_scenario import ReferencePairScenario
 except ImportError:  # unittest discovery loads this directory as a flat path.
+    from interop_topology import (  # type: ignore
+        PRIVILEGED_PRIVILEGE_MODEL,
+        PRIVILEGED_TOPOLOGY_KIND,
+        ProcessPlacement,
+    )
     from reference_scenario import ReferencePairScenario  # type: ignore
 
 
@@ -83,6 +100,9 @@ class ReferenceTopologyDescription:
 class ReferencePairTopology:
     """Create exactly Java and i2pd namespaces joined by one synthetic veth."""
 
+    topology_kind = PRIVILEGED_TOPOLOGY_KIND
+    privilege_model = PRIVILEGED_PRIVILEGE_MODEL
+
     def __init__(self, scenario: ReferencePairScenario, run_id: str):
         if not run_id or len(run_id) > 80 or not all(c.isalnum() or c == "-" for c in run_id):
             raise ReferenceTopologyError("invalid-reference-run-id")
@@ -138,6 +158,21 @@ class ReferencePairTopology:
     @property
     def _prefix(self) -> list[str]:
         return [] if os.geteuid() == 0 else ["sudo", "-n"]
+
+    def placement(self, actor: str) -> ProcessPlacement:
+        """Return the ``ip netns exec <ns>`` placement for this backend."""
+
+        if actor == "java_i2p":
+            namespace = self.java_namespace
+        elif actor == "i2pd":
+            namespace = self.i2pd_namespace
+        else:
+            raise ReferenceTopologyError("unknown-actor")
+        return ProcessPlacement(
+            topology_kind=self.topology_kind,
+            actor=actor,
+            command_prefix=tuple(self._prefix + ["ip", "netns", "exec", namespace]),
+        )
 
     def _run(self, args: list[str], *, input_text: str | None = None, capture: bool = False) -> str:
         completed = subprocess.run(

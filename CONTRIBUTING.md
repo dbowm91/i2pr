@@ -273,6 +273,53 @@ closure. Any trusted pull-request lane requires a separate decision and must
 not expose privileged execution to forked or untrusted code. The current lane
 has no mixed-router i2pr evidence and remains experimental/non-advertised.
 
+### Plan 046 rootless sealed-namespace responsibilities
+
+Plan 046 replaces the host-global namespace requirement for the primary
+NTCP2 interoperability evidence path with a rootless, process-scoped
+sandbox. The primary evidence topology is `rootless-sealed-single-netns`
+with privilege model `unprivileged-userns`. The legacy
+`privileged-dual-netns-veth` topology is preserved as an explicit later
+qualification lane; it is never the default and never a silent fallback.
+
+When changing rootless code paths:
+
+1. Do not introduce `sudo`, `setcap`, setuid helpers, file capabilities,
+   ambient host capabilities, `--privileged` containers, `--network host`
+   containers, privileged sidecars, `ip netns add`, host link mutation,
+   host route mutation, or host nftables mutation. The static boundary
+   checker `scripts/check-rootless-interop-boundary.sh` enforces this on
+   every change.
+2. Verify the single-ID UID/GID mapping with `setgroups deny` and
+   `no_new_privs`. Broader maps or missing denials are typed blockers.
+3. Use only the synthetic `192.0.2.{1,2}/32` addresses (and optional
+   `2001:db8:36::{1,2}/128`) inside the sandbox. No default route, no host
+   interface, no forwarded port, no public-network path.
+4. Extend the mixed-router evidence schema with `topology_kind`,
+   `privilege_model`, `sandbox_attestation_sha256`, and
+   `parent_network_state_unchanged`. A passed record that violates any of
+   these is rejected.
+5. Treat a typed probe blocker such as
+   `blocked_unprivileged_user_namespace`, `blocked_loopback_unconfigured`,
+   `blocked_synthetic_bind_failed`, or `blocked_external_connect_succeeded`
+   as a hard stop. Never fall back to the privileged backend silently.
+6. Keep the outer entrypoint (`scripts/interop/rootless-enter.sh`)
+   shell-`eval`-free and allowlist-only. Never remove the
+   `I2PR_INTEROP_ROOTLESS_INNER=1` requirement or the explicit
+   topology-kind check before exec.
+7. Add negative-path tests for any new topology, sandbox, attestation, or
+   probe outcome. The 40 tests under `test_rootless_topology.py` are the
+   starting point.
+8. The rootless lane does not install system packages. It verifies
+   dependencies and emits a typed blocker when the environment is
+   incomplete. Preparation (network-enabled) and execution (offline)
+   remain separate.
+
+Run the full validation ladder before handoff (see `AGENTS.md`). Plan 046
+does not advertise NTCP2 support and does not close Milestone 3 by
+itself; do not describe the gate chain as passing or present reference-
+only control records as i2pr mixed-router evidence.
+
 Plan 024's integrated lane contains named clean-startup, bounded-overload,
 restart-recovery, essential-failure, and simulated-link-fault scenarios plus
 a fixed 32-seed replay matrix. Run it with paused Tokio time and the manual

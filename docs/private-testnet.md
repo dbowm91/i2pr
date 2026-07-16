@@ -121,3 +121,49 @@ cache-reuse success, then a current successful run at Milestone 3 closure. A
 trusted pull-request lane requires a separate decision and must not expose
 privileged execution to forked or untrusted code. The current checkout has no
 mixed-router evidence and remains experimental/non-advertised.
+
+## Plan 046 rootless sealed-namespace evidence lane
+
+Plan 046 replaces the host-global namespace requirement for the primary NTCP2
+interoperability evidence path with a **rootless, process-scoped sandbox**.
+The primary mixed-router evidence topology is `rootless-sealed-single-netns`
+with privilege model `unprivileged-userns`. The legacy
+`privileged-dual-netns-veth` topology is renamed and reserved for explicit
+later qualification work; it is never the default and never a silent
+fallback.
+
+The rootless topology is sufficient for the primary protocol compatibility
+proof because it exercises real TCP sockets, exact local/peer address
+binding, RouterInfo validation, NTCP2 obfuscation and Noise handshakes,
+authenticated link promotion, encrypted frame write/read paths, directional
+I2NP send/receive behavior, and process lifecycle/deadline/cancellation/
+cleanup. It does not claim separate-stack network behavior, asymmetric
+firewall semantics, packet loss, route mutation, or interface-failure
+semantics. The retained claim is intentionally narrow.
+
+The sandbox contains only `lo` plus the synthetic `192.0.2.{1,2}/32`
+addresses (and optional `2001:db8:36::{1,2}/128`). The structural isolation
+basis is the freshly created user, network, mount, and PID namespaces with a
+single-ID UID/GID mapping, `setgroups deny`, and `no_new_privs`. No
+host-visible named namespace, veth, or firewall mutation occurs. The
+topology is runnable by an ordinary user as long as the host allows
+unprivileged user namespaces.
+
+The new command surface is:
+
+```text
+bash scripts/interop/probe-rootless-sandbox.sh            # strict typed probe
+bash scripts/interop/rootless-enter.sh --probe           # sandbox-only verify
+bash scripts/interop/rootless-enter.sh --scenario <id>   # bounded direction
+```
+
+The lane forbids automatic fallback to the privileged topology. A missing
+rootless capability is a typed blocker, not a skipped success. The mixed-
+router evidence schema now carries `topology_kind`, `privilege_model`,
+`sandbox_attestation_sha256`, and `parent_network_state_unchanged`. A passed
+record that violates any of those is rejected. The static rootless boundary
+checker (`scripts/check-rootless-interop-boundary.sh`) fails the change
+whenever rootless-owned files contain sudo, host-network-state mutation,
+capability grants, privileged containers, or any fallback. NTCP2 remains
+experimental and non-advertised; Milestone 3 is still open.
+

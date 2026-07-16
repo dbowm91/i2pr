@@ -13,12 +13,14 @@ try:
     from .process import BoundedProcess, ProcessError
     from .router_info import RouterInfoPathError, netdb_filename
     from .topology import EndpointDescription
+    from .interop_topology import ProcessPlacement, TopologyContractError
 except ImportError:  # unittest discovery loads this directory as a flat path.
     from metadata import CacheMetadata, MetadataError, parse_metadata  # type: ignore
     from config_contract import ConfigurationContractError, assert_java_private_configuration  # type: ignore
     from process import BoundedProcess, ProcessError  # type: ignore
     from router_info import RouterInfoPathError, netdb_filename  # type: ignore
     from topology import EndpointDescription  # type: ignore
+    from interop_topology import ProcessPlacement, TopologyContractError  # type: ignore
 
 
 class JavaI2pError(RuntimeError):
@@ -44,6 +46,7 @@ class JavaI2pAdapter:
         repo_root: Path,
         *,
         shared_data_dir: Path | None = None,
+        placement: ProcessPlacement | None = None,
     ):
         self.cache = cache.resolve()
         self.run_root = run_root.resolve()
@@ -63,11 +66,18 @@ class JavaI2pAdapter:
             if not (self.data_dir == self.run_root or self.run_root in self.data_dir.parents):
                 raise JavaI2pError("shared-data-dir-outside-run-root")
         self.config_dir = self.run_root / "config"
+        self.placement: ProcessPlacement | None = placement
         self.process: BoundedProcess | None = None
         self.metadata: CacheMetadata | None = None
         self.configuration_sha256 = ""
 
     def _prefix(self) -> list[str]:
+        """Backwards-compatible legacy prefix construction.
+
+        Used only when an explicit ``placement`` was not supplied to the
+        adapter. New callers must pass ``placement`` through ``select_topology``.
+        """
+
         return [] if os.geteuid() == 0 else ["sudo", "-n"]
 
     def _inside_run_root(self, path: Path) -> bool:
@@ -123,7 +133,13 @@ class JavaI2pAdapter:
 
     def start(self) -> None:
         launcher = self.prepare()
-        command = self._prefix() + ["ip", "netns", "exec", self.endpoint.namespace, str(launcher)]
+        if self.placement is None:
+            command = self._prefix() + ["ip", "netns", "exec", self.endpoint.namespace, str(launcher)]
+        else:
+            try:
+                command = self.placement.command([str(launcher)])
+            except TopologyContractError as exc:
+                raise JavaI2pError(exc.code) from exc
         environment = os.environ.copy()
         environment["JAVA_TOOL_OPTIONS"] = f"-Di2p.dir.base={self.runtime_dir} -Di2p.dir.config={self.config_dir} -Di2p.dir.router={self.data_dir} -Xmx256m"
         self.process = BoundedProcess(command, self.run_root / "raw" / "java-i2p.log", environment=environment)

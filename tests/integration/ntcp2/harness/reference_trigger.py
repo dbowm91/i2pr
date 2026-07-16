@@ -31,6 +31,11 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 
+try:
+    from .interop_topology import ProcessPlacement, TopologyContractError
+except ImportError:  # pragma: no cover - direct harness-module execution
+    from interop_topology import ProcessPlacement, TopologyContractError  # type: ignore
+
 
 class TriggerKind(Enum):
     JAVA_SAM_DIAL = "java-sam-dial"
@@ -63,6 +68,7 @@ class ReferenceTrigger:
         i2pr_is_initiator: bool,
         ref_endpoint: object,
         run_dir: "object",
+        placement: ProcessPlacement | None = None,
     ) -> TriggerResult:
         """Plan 045 D4: per-direction SAM/HTTP dial within the namespace."""
         raise NotImplementedError
@@ -113,6 +119,7 @@ class JavaReferenceTrigger(ReferenceTrigger):
         i2pr_is_initiator: bool,
         ref_endpoint: object,
         run_dir: "object",
+        placement: ProcessPlacement | None = None,
     ) -> TriggerResult:
         if i2pr_is_initiator:
             return TriggerResult(
@@ -122,22 +129,33 @@ class JavaReferenceTrigger(ReferenceTrigger):
                 timed_out=False,
             )
         try:
-            namespace = getattr(ref_endpoint, "namespace", None)
-            if namespace is None:
-                return TriggerResult(
-                    kind=self.trigger_kind,
-                    observed=False,
-                    description="java reference namespace missing",
-                )
             port = int(os.environ.get("I2PR_JAVA_SAM_PORT", str(self.DEFAULT_SAM_PORT)))
             host = getattr(ref_endpoint, "local_address", "127.0.0.1")
             payload = (
                 'HELLO VERSION MIN=3.0 MAX=3.0\n'
                 'SESSION CREATE STYLE=STREAM ID=i2pr-interop DESTINATION=TRANSIENT\n'
             ).encode("ascii")
-            prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
+            if placement is None:
+                namespace = getattr(ref_endpoint, "namespace", None)
+                if namespace is None:
+                    return TriggerResult(
+                        kind=self.trigger_kind,
+                        observed=False,
+                        description="java reference namespace missing",
+                    )
+                prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
+                command = prefix + ["ip", "netns", "exec", str(namespace), "python3", "-c", _SAM_PROBE]
+            else:
+                try:
+                    command = placement.command(["python3", "-c", _SAM_PROBE])
+                except TopologyContractError as exc:
+                    return TriggerResult(
+                        kind=self.trigger_kind,
+                        observed=False,
+                        description=f"java-sam-trigger-placement-error: {exc.code}",
+                    )
             completed = subprocess.run(
-                prefix + ["ip", "netns", "exec", str(namespace), "python3", "-c", _SAM_PROBE],
+                command,
                 input=json.dumps({"host": host, "port": port, "payload": payload.decode("ascii")}),
                 capture_output=True,
                 text=True,
@@ -208,6 +226,7 @@ class I2pdReferenceTrigger(ReferenceTrigger):
         i2pr_is_initiator: bool,
         ref_endpoint: object,
         run_dir: "object",
+        placement: ProcessPlacement | None = None,
     ) -> TriggerResult:
         if i2pr_is_initiator:
             return TriggerResult(
@@ -216,13 +235,6 @@ class I2pdReferenceTrigger(ReferenceTrigger):
                 description="i2pd-i2pr direction auto-dials from i2pr side; HTTP trigger not required",
             )
         try:
-            namespace = getattr(ref_endpoint, "namespace", None)
-            if namespace is None:
-                return TriggerResult(
-                    kind=self.trigger_kind,
-                    observed=False,
-                    description="i2pd reference namespace missing",
-                )
             port = int(os.environ.get("I2PR_I2PD_HTTP_PORT", str(self.DEFAULT_HTTP_PORT)))
             host = getattr(ref_endpoint, "local_address", "127.0.0.1")
             payload = json.dumps(
@@ -232,9 +244,53 @@ class I2pdReferenceTrigger(ReferenceTrigger):
                     "params": {"b32": ""},
                 }
             )
-            prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
+            if placement is None:
+                namespace = getattr(ref_endpoint, "namespace", None)
+                if namespace is None:
+                    return TriggerResult(
+                        kind=self.trigger_kind,
+                        observed=False,
+                        description="i2pd reference namespace missing",
+                    )
+                prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
+                command = prefix + [
+                    "ip",
+                    "netns",
+                    "exec",
+                    str(namespace),
+                    "curl",
+                    "-fsS",
+                    "-m",
+                    "5",
+                    "-H",
+                    "Content-Type: application/json",
+                    "-d",
+                    payload,
+                    f"http://{host}:{port}/jsonrpc",
+                ]
+            else:
+                try:
+                    command = placement.command(
+                        [
+                            "curl",
+                            "-fsS",
+                            "-m",
+                            "5",
+                            "-H",
+                            "Content-Type: application/json",
+                            "-d",
+                            payload,
+                            f"http://{host}:{port}/jsonrpc",
+                        ]
+                    )
+                except TopologyContractError as exc:
+                    return TriggerResult(
+                        kind=self.trigger_kind,
+                        observed=False,
+                        description=f"i2pd-http-trigger-placement-error: {exc.code}",
+                    )
             completed = subprocess.run(
-                prefix + ["ip", "netns", "exec", str(namespace), "curl", "-fsS", "-m", "5", "-H", "Content-Type: application/json", "-d", payload, f"http://{host}:{port}/jsonrpc"],
+                command,
                 capture_output=True,
                 text=True,
                 timeout=6.0,
@@ -297,6 +353,7 @@ class _UnsupportedTrigger(ReferenceTrigger):
         i2pr_is_initiator: bool,
         ref_endpoint: object,
         run_dir: "object",
+        placement: ProcessPlacement | None = None,
     ) -> TriggerResult:
         return TriggerResult(
             kind=self.trigger_kind,

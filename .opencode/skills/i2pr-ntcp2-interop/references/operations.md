@@ -1,4 +1,4 @@
-# Plans 038–044 operations reference
+# Plans 038–046 operations reference
 
 Run commands from the repository root. The authoritative harness instructions
 are in `tests/integration/ntcp2/README.md`; this reference is a compact routing
@@ -67,6 +67,9 @@ sudo -E bash scripts/interop/run-matrix.sh --profile environment-smoke
 sudo -E bash scripts/interop/run-matrix.sh --profile reference-crosscheck-ipv4
 sudo -E bash scripts/interop/run-matrix.sh --profile handshake-smoke
 sudo -E bash scripts/interop/run-matrix.sh --profile full
+bash scripts/interop/probe-rootless-sandbox.sh
+bash scripts/interop/rootless-enter.sh --probe
+bash scripts/interop/run-matrix.sh --profile handshake-smoke-rootless
 ```
 
 `environment-smoke` checks reference startup, disposable RouterInfo production,
@@ -141,3 +144,59 @@ design, but the authorized Plan 044 mixed-router execution has not been
 performed. Do not describe the gate chain as passing, do not present
 reference-only control records as i2pr mixed-router evidence, and do not
 advertise NTCP2 or close Milestone 3.
+
+## Plan 046 rootless operations
+
+The primary evidence topology for the Plan 046 lane is
+`rootless-sealed-single-netns` with privilege model `unprivileged-userns`.
+The legacy `privileged-dual-netns-veth` topology is reserved for explicit
+later qualification work and is never the default and never a silent
+fallback. Run the probe before any mixed-router run on a candidate host:
+
+```text
+bash scripts/interop/probe-rootless-sandbox.sh
+```
+
+A typed blocker such as `blocked_unprivileged_user_namespace`,
+`blocked_loopback_unconfigured`, `blocked_synthetic_bind_failed`, or
+`blocked_external_connect_succeeded` is a hard stop, not a fallback. The
+sandbox-only verify path is:
+
+```text
+bash scripts/interop/rootless-enter.sh --probe
+```
+
+A bounded direction run from the inner runner is:
+
+```text
+bash scripts/interop/rootless-enter.sh --scenario i2pr-to-java-ipv4 \
+    --reference java_i2p --build-cache <path> --run-root <path>
+```
+
+Outer entrypoint invariants:
+
+- Creates the sandbox via
+  `unshare --user --net --mount --pid --fork --propagation private --mount-proc --map-root-user`.
+- Sets `I2PR_INTEROP_ROOTLESS_INNER=1` before `exec`.
+- Forbids `sudo`, `ip netns`, `nft`, `setcap`, `--privileged`,
+  `--network host`, and any fallback to the privileged backend.
+- Allowlists the active operation and scenario kind; rejects everything else
+  before exec.
+
+A passed mixed-router record requires all of:
+
+- `topology_kind == "rootless-sealed-single-netns"`.
+- `privilege_model == "unprivileged-userns"`.
+- non-zero `sandbox_attestation_sha256`.
+- `parent_network_state_unchanged == True`.
+
+The static rootless boundary checker is:
+
+```text
+bash scripts/check-rootless-interop-boundary.sh
+```
+
+It fails when rootless-owned files contain prohibited patterns, when the
+gate catalog omits `handshake-smoke-rootless`, or when the evidence
+validation does not require the sandbox attestation. Plan 046 does not
+advertise NTCP2 support and does not close Milestone 3 by itself.

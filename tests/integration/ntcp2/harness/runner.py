@@ -185,6 +185,13 @@ def _record(
         "resource_counters": {"tasks": 0, "queues": 0, "permits": 0, "links": 0, "handshakes": 0, "i2np_sent": 0, "i2np_received": 0},
         "process_counters": process_counters, "cleanup_result": cleanup, "evidence_sha256": "",
         "known_deviation": reason, "reproduction": "bash scripts/interop/run-scenario.sh --scenario " + str(scenario["id"]) + " --reference " + reference,
+        "i2pr_router_info_sha256": "0" * 64, "reference_router_info_sha256": "0" * 64,
+        "data_phase_mode": "handshake-only",
+        "expected_observation": "no-data-phase-required",
+        "topology_kind": "privileged-dual-netns-veth",
+        "privilege_model": "host-capabilities",
+        "sandbox_attestation_sha256": "0" * 64,
+        "parent_network_state_unchanged": False,
     }
 
 

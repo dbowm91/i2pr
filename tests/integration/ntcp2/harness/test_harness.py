@@ -212,6 +212,10 @@ class HarnessContractTests(unittest.TestCase):
             "reference_router_info_sha256": "0" * 64,
             "data_phase_mode": "round-trip-delivery-status",
             "expected_observation": "i2pr-sent-and-acknowledged",
+            "topology_kind": "privileged-dual-netns-veth",
+            "privilege_model": "host-capabilities",
+            "sandbox_attestation_sha256": "9" * 64,
+            "parent_network_state_unchanged": False,
         }
         validate_record(base)
         base["known_deviation"] = "10.0.0.1:45678"
@@ -249,6 +253,10 @@ class HarnessContractTests(unittest.TestCase):
             "reference_router_info_sha256": "6" * 64,
             "data_phase_mode": "round-trip-delivery-status",
             "expected_observation": "i2pr-sent-and-acknowledged",
+            "topology_kind": "privileged-dual-netns-veth",
+            "privilege_model": "host-capabilities",
+            "sandbox_attestation_sha256": "9" * 64,
+            "parent_network_state_unchanged": False,
         }
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "record.json"
@@ -285,6 +293,10 @@ class HarnessContractTests(unittest.TestCase):
             "reference_router_info_sha256": "0" * 64,
             "data_phase_mode": "round-trip-delivery-status",
             "expected_observation": "i2pr-sent-and-acknowledged",
+            "topology_kind": "privileged-dual-netns-veth",
+            "privilege_model": "host-capabilities",
+            "sandbox_attestation_sha256": "0" * 64,
+            "parent_network_state_unchanged": False,
         }
         for expected in (
             "authenticated-handshake-and-bounded-i2np-exchange",
@@ -324,6 +336,10 @@ class HarnessContractTests(unittest.TestCase):
             "reference_router_info_sha256": "0" * 64,
             "data_phase_mode": "round-trip-delivery-status",
             "expected_observation": "i2pr-sent-and-acknowledged",
+            "topology_kind": "privileged-dual-netns-veth",
+            "privilege_model": "host-capabilities",
+            "sandbox_attestation_sha256": "0" * 64,
+            "parent_network_state_unchanged": False,
         }
         base["expected"] = "arbitrary-free-text"
         with self.assertRaises(EvidenceError):
@@ -361,6 +377,10 @@ class HarnessContractTests(unittest.TestCase):
             "reference_router_info_sha256": "0" * 64,
             "data_phase_mode": "round-trip-delivery-status",
             "expected_observation": "i2pr-sent-and-acknowledged",
+            "topology_kind": "privileged-dual-netns-veth",
+            "privilege_model": "host-capabilities",
+            "sandbox_attestation_sha256": "0" * 64,
+            "parent_network_state_unchanged": False,
         }
         for pattern, field in (
             ("-----BEGIN PRIVATE KEY-----", "known_deviation"),
@@ -407,6 +427,10 @@ class HarnessContractTests(unittest.TestCase):
             "reference_router_info_sha256": "0" * 64,
             "data_phase_mode": "round-trip-delivery-status",
             "expected_observation": "i2pr-sent-and-acknowledged",
+            "topology_kind": "privileged-dual-netns-veth",
+            "privilege_model": "host-capabilities",
+            "sandbox_attestation_sha256": "0" * 64,
+            "parent_network_state_unchanged": False,
         }
         base["deterministic_parameters"] = "seed=1;path=/home/user/state"
         with self.assertRaises(EvidenceError):
@@ -441,6 +465,10 @@ class HarnessContractTests(unittest.TestCase):
             "reference_router_info_sha256": "0" * 64,
             "data_phase_mode": "round-trip-delivery-status",
             "expected_observation": "i2pr-sent-and-acknowledged",
+            "topology_kind": "privileged-dual-netns-veth",
+            "privilege_model": "host-capabilities",
+            "sandbox_attestation_sha256": "0" * 64,
+            "parent_network_state_unchanged": False,
         }
         base["reproduction"] = "arbitrary-command"
         with self.assertRaises(EvidenceError):
@@ -476,6 +504,10 @@ class HarnessContractTests(unittest.TestCase):
             "reference_router_info_sha256": "6" * 64,
             "data_phase_mode": "round-trip-delivery-status",
             "expected_observation": "i2pr-sent-and-acknowledged",
+            "topology_kind": "privileged-dual-netns-veth",
+            "privilege_model": "host-capabilities",
+            "sandbox_attestation_sha256": "9" * 64,
+            "parent_network_state_unchanged": False,
         }
         base["artifact_sha256"] = "0" * 64
         with self.assertRaises(EvidenceError):
@@ -511,6 +543,10 @@ class HarnessContractTests(unittest.TestCase):
             "reference_router_info_sha256": "6" * 64,
             "data_phase_mode": "round-trip-delivery-status",
             "expected_observation": "i2pr-sent-and-acknowledged",
+            "topology_kind": "privileged-dual-netns-veth",
+            "privilege_model": "host-capabilities",
+            "sandbox_attestation_sha256": "9" * 64,
+            "parent_network_state_unchanged": False,
         }
         base["i2pr_commit"] = "record-at-execution"
         with self.assertRaises(EvidenceError):
@@ -544,6 +580,10 @@ class HarnessContractTests(unittest.TestCase):
             "reference_router_info_sha256": "6" * 64,
             "data_phase_mode": "round-trip-delivery-status",
             "expected_observation": "i2pr-sent-and-acknowledged",
+            "topology_kind": "privileged-dual-netns-veth",
+            "privilege_model": "host-capabilities",
+            "sandbox_attestation_sha256": "9" * 64,
+            "parent_network_state_unchanged": False,
         }
         evidence_only = dict(base)
         evidence_only["actual_typed_result"] = "blocked"
@@ -750,6 +790,10 @@ class SequentialGateArchivalTests(unittest.TestCase):
             "reference_router_info_sha256": "6" * 64,
             "data_phase_mode": "round-trip-delivery-status",
             "expected_observation": "i2pr-sent-and-acknowledged",
+            "topology_kind": "privileged-dual-netns-veth",
+            "privilege_model": "host-capabilities",
+            "sandbox_attestation_sha256": "0" * 64,
+            "parent_network_state_unchanged": False,
         }
 
     def _write_record(self, evidence_dir: Path, filename: str, record: dict) -> Path:

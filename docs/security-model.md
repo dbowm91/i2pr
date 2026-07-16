@@ -523,3 +523,48 @@ successful session is a test failure.
 No completed mixed-router i2pr record is present in this checkout. These are
 explicit blockers, not skipped successes. NTCP2 remains experimental and
 non-advertised.
+
+## Plan 046 rootless sealed-namespace evidence boundary
+
+Plan 046 replaces the host-global namespace requirement for the primary NTCP2
+interoperability evidence path with a rootless, process-scoped sandbox that
+an ordinary user can run without `sudo`, passwordless elevation, host
+capabilities, setuid helpers, host-visible namespaces, host-visible veths, or
+host nftables mutation. The primary evidence topology is
+`rootless-sealed-single-netns` with privilege model `unprivileged-userns`;
+the legacy `privileged-dual-netns-veth` topology is renamed and reserved
+for explicit later qualification work, never the default and never a silent
+fallback.
+
+The lane refuses the entire host-privilege surface that the privileged
+topology required: no `sudo`, no `setcap`, no file capability, no ambient
+host capability, no `--privileged` container, no `--network host` container,
+no `ip netns add`, no host link mutation, no host route mutation, no host
+nftables mutation. The single-ID UID/GID mapping with `setgroups deny` and
+`no_new_privs` makes the inner user namespace structurally equivalent to
+the invoking host user. Any deviation is a typed blocker, not a fallback.
+
+The mixed-router evidence schema now carries `topology_kind`,
+`privilege_model`, `sandbox_attestation_sha256`, and
+`parent_network_state_unchanged`. A passed record that violates any of these
+is rejected. The aggregate manifest verifies that all four handshake-smoke
+scenario records reference the same gate attestation, that the attestation
+exists, validates, and matches the scenario-record commit, and that the
+parent-network state digest pre/post is byte-equal. Cleanup failure overrides
+protocol success in the rootless lane exactly as it does in the privileged
+lane.
+
+The retained evidence claim is intentionally narrower than the privileged
+topology: the rootless lane proves protocol compatibility (real TCP
+sockets, exact bind addresses, RouterInfo validation, NTCP2 obfuscation and
+Noise handshakes, authenticated link promotion, encrypted frame write/read
+paths, directional I2NP send/receive, process lifecycle/deadline/cancellation/
+cleanup) inside a single process-scoped network namespace, not separate-stack
+network behavior, asymmetric firewall semantics, packet loss, route mutation,
+or interface-failure semantics. Those remain explicit later qualification
+work for the privileged dual-namespace backend or a future rootless dual-
+namespace supervisor. A typed probe blocker such as
+`blocked_unprivileged_user_namespace`, `blocked_loopback_unconfigured`,
+`blocked_synthetic_bind_failed`, or `blocked_external_connect_succeeded`
+is a hard stop. NTCP2 remains experimental and non-advertised; Milestone 3
+remains open.

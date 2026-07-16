@@ -46,6 +46,12 @@ RECORD_FIELDS = (
     "reference_router_info_sha256",
     "data_phase_mode",
     "expected_observation",
+    # Plan 046: bind each mixed-router record to the sandbox attestation
+    # that authorized its execution.
+    "topology_kind",
+    "privilege_model",
+    "sandbox_attestation_sha256",
+    "parent_network_state_unchanged",
 )
 
 REFERENCE_PAIR_RECORD_FIELDS = (
@@ -139,6 +145,16 @@ def _scan(value: Any, *, field: str | None = None) -> None:
             _scan(child)
 
 
+_ALLOWED_TOPOLOGY_KIND = {
+    "rootless-sealed-single-netns",
+    "privileged-dual-netns-veth",
+}
+_ALLOWED_PRIVILEGE_MODEL = {
+    "unprivileged-userns",
+    "host-capabilities",
+}
+
+
 def validate_record(record: dict[str, Any]) -> None:
     """Validate the exact typed-record shape and sanitation rules."""
 
@@ -188,17 +204,31 @@ def validate_record(record: dict[str, Any]) -> None:
         "namespace_topology_sha256",
         "i2pr_router_info_sha256",
         "reference_router_info_sha256",
+        "sandbox_attestation_sha256",
     ):
         value = str(record[field])
         if not _HEX64.fullmatch(value):
             raise EvidenceError(f"{field} is not a SHA-256 digest")
         if record["actual_typed_result"] == "passed" and value == "0" * 64:
             raise EvidenceError(f"passed record contains a zero-filled {field}")
+    if record["topology_kind"] not in _ALLOWED_TOPOLOGY_KIND:
+        raise EvidenceError("topology_kind is not a typed selector")
+    if record["privilege_model"] not in _ALLOWED_PRIVILEGE_MODEL:
+        raise EvidenceError("privilege_model is not a typed selector")
+    if not isinstance(record["parent_network_state_unchanged"], bool):
+        raise EvidenceError("parent_network_state_unchanged is not a boolean")
     if record["actual_typed_result"] == "passed":
         if record["cleanup_result"] not in {"clean", "forced"}:
             raise EvidenceError("passed record did not clean up")
         if record["i2pr_commit"] == "record-at-execution":
             raise EvidenceError("passed record contains an execution placeholder")
+        if record["topology_kind"] == "rootless-sealed-single-netns":
+            if record["privilege_model"] != "unprivileged-userns":
+                raise EvidenceError("rootless record requires unprivileged-userns")
+            if record["sandbox_attestation_sha256"] == "0" * 64:
+                raise EvidenceError("passed rootless record requires a non-zero sandbox attestation")
+            if not record["parent_network_state_unchanged"]:
+                raise EvidenceError("passed rootless record requires parent state unchanged")
     if record["evidence_sha256"] and not _HEX64.fullmatch(str(record["evidence_sha256"])):
         raise EvidenceError("evidence digest is not a SHA-256 digest")
     if record["data_phase_mode"] not in {

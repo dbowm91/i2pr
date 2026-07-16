@@ -252,6 +252,66 @@ record the Plan 045 supersession. No completed mixed-router i2pr
 record is present in this checkout; these remain typed blockers. NTCP2
 remains experimental and non-advertised.
 
+### Plan 046 rootless sealed-namespace evidence lane
+
+Plan 046 replaces the host-global namespace requirement for the primary
+NTCP2 interoperability evidence path with a **rootless, process-scoped
+sandbox**. The primary evidence topology is now:
+
+```text
+rootless-sealed-single-netns
+```
+
+with privilege model `unprivileged-userns`. It is runnable by an ordinary
+user without `sudo`, passwordless elevation, host capabilities, setuid
+helpers, host-visible named network namespaces, host-visible veth
+devices, or host nftables mutation. The legacy
+`privileged-dual-netns-veth` topology is preserved as an explicit
+optional qualification lane; it is never the default and is never a
+silent fallback.
+
+The rootless lane proves protocol compatibility. It does not claim
+separate-stack network behavior, asymmetric firewall semantics, packet
+loss, route mutation, or interface-failure semantics. The retained claim
+is intentionally narrow:
+
+> The pinned i2pr and reference-router processes completed the declared
+> NTCP2 direction inside a process-scoped, rootless user/network
+> namespace whose canonical isolation checks passed and whose creation
+> and teardown did not alter the parent host's canonical network state.
+
+A passing rootless run requires a sanitized sandbox attestation and an
+unchanged parent-host network digest. The mixed-router evidence schema
+now carries `topology_kind`, `privilege_model`,
+`sandbox_attestation_sha256`, and `parent_network_state_unchanged`. A
+passed record that fails any of these checks is rejected. NTCP2 remains
+experimental and non-advertised; Milestone 3 is still open.
+
+The new rootless entrypoint, probe, supervisor, and topology modules
+live under:
+
+- `scripts/interop/rootless-enter.sh` — outer entrypoint; the only path
+  that creates the sandbox.
+- `scripts/interop/probe-rootless-sandbox.sh` — bounded create /
+  configure / connect / teardown probe with strict typed outcomes.
+- `tests/integration/ntcp2/harness/rootless_supervisor.py` — inner
+  namespace verification.
+- `tests/integration/ntcp2/harness/rootless_topology.py` — sealed
+  in-sandbox topology backend.
+- `tests/integration/ntcp2/harness/rootless_inner_runner.py` — inner
+  scenario dispatch.
+- `tests/integration/ntcp2/harness/interop_topology.py` — backend
+  contract (`ProcessPlacement`, `InteropTopology`, topology registry).
+- `docs/adr/0017-rootless-sealed-namespace-interop-evidence.md` —
+  architectural decision record.
+- `scripts/check-rootless-interop-boundary.sh` — static boundary
+  checker (no `sudo`, no host network mutation, no fallback).
+- `.github/workflows/ntcp2-interop-rootless.yml` — manual,
+  no-escalation workflow.
+
+The Plan 046 status file (`plans/046-status.md`) records the
+implementation-completion and evidence-completion stages.
+
 ## MVP direction
 
 The feature MVP is expected to include:

@@ -199,6 +199,12 @@ def _record_mixed(
         "evidence_sha256": "",
         "known_deviation": reason,
         "reproduction": f"bash scripts/interop/run-scenario.sh --scenario {direction.execution_id} --reference {direction.reference}",
+        "data_phase_mode": data_phase_mode,
+        "expected_observation": expected_observation,
+        "topology_kind": getattr(topology, "topology_kind", "privileged-dual-netns-veth"),
+        "privilege_model": getattr(topology, "privilege_model", "host-capabilities"),
+        "sandbox_attestation_sha256": zero,
+        "parent_network_state_unchanged": False,
     }
 
 

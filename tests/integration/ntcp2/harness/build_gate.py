@@ -33,6 +33,21 @@ PROFILE_GATES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Plan 046: explicit rootless profiles that route through
+# `rootless-sealed-single-netns` and require `unprivileged-userns`.
+ROOTLESS_PROFILE_GATES: dict[str, tuple[str, ...]] = {
+    "rootless-environment-smoke": ("rootless-environment-smoke",),
+    "rootless-reference-crosscheck-ipv4": (
+        "rootless-environment-smoke",
+        "rootless-reference-crosscheck-ipv4",
+    ),
+    "rootless-handshake-smoke": (
+        "rootless-environment-smoke",
+        "rootless-reference-crosscheck-ipv4",
+        "handshake-smoke-rootless",
+    ),
+}
+
 GATE_SCENARIOS: dict[str, tuple[str, ...]] = {
     "environment-smoke": ("java-ipv4-inbound-outbound", "i2pd-ipv4-inbound-outbound"),
     "reference-crosscheck-ipv4": (
@@ -40,6 +55,12 @@ GATE_SCENARIOS: dict[str, tuple[str, ...]] = {
         "reference-i2pd-java-ipv4",
     ),
     "handshake-smoke": (
+        "i2pr-to-java-ipv4",
+        "java-to-i2pr-ipv4",
+        "i2pr-to-i2pd-ipv4",
+        "i2pd-to-i2pr-ipv4",
+    ),
+    "handshake-smoke-rootless": (
         "i2pr-to-java-ipv4",
         "java-to-i2pr-ipv4",
         "i2pr-to-i2pd-ipv4",
@@ -59,6 +80,34 @@ GATE_SCENARIOS: dict[str, tuple[str, ...]] = {
         "i2pr-to-i2pd-ipv4",
         "i2pd-to-i2pr-ipv4",
     ),
+}
+
+# Plan 046: gate catalog. Each entry declares the allowed topologies,
+# required privilege model, sandbox attestation requirement, and the
+# scenarios that gate must produce. The rootless gate is the primary
+# evidence path; the privileged gate remains explicit and opt-in.
+GATE_CATALOG: dict[str, dict[str, object]] = {
+    "handshake-smoke-rootless": {
+        "runner_type": "mixed",
+        "allowed_topologies": ("rootless-sealed-single-netns",),
+        "required_privilege_models": ("unprivileged-userns",),
+        "requires_sandbox_attestation": True,
+        "scenario_ids": GATE_SCENARIOS["handshake-smoke-rootless"],
+        "allowed_evidence_schemas": (1,),
+        "predecessor_gates": (
+            "rootless-environment-smoke",
+            "rootless-reference-crosscheck-ipv4",
+        ),
+    },
+    "handshake-smoke": {
+        "runner_type": "mixed",
+        "allowed_topologies": ("privileged-dual-netns-veth",),
+        "required_privilege_models": ("host-capabilities",),
+        "requires_sandbox_attestation": False,
+        "scenario_ids": GATE_SCENARIOS["handshake-smoke"],
+        "allowed_evidence_schemas": (1,),
+        "predecessor_gates": ("environment-smoke", "reference-crosscheck-ipv4"),
+    },
 }
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")

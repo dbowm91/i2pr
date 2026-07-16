@@ -5,9 +5,10 @@ description: Operate, diagnose, or extend the repository's Ubuntu 24.04 referenc
 
 # I2PR NTCP2 interoperability
 
-Use this skill from the repository root for the manual, opt-in Plan 038/040/041/042/043/044
+Use this skill from the repository root for the manual, opt-in Plan 038/040/041/042/043/044/046
 harness. Read `AGENTS.md`, `plans/043-ubuntu-build-system-interop-gates.md`,
 `plans/044-ntcp2-interop-final-integration-corrective-pass.md`,
+`plans/046-rootless-sealed-namespace-evidence-lane.md`,
 `plans/038-ubuntu-reference-router-interoperability-harness.md`,
 `tests/integration/ntcp2/README.md`, and the relevant architecture/ADR files
 before changing the apparatus.
@@ -156,3 +157,64 @@ Before handoff, run the repository's required Rust, boundary, fixture/vector,
 interoperability, Python harness, and shell syntax checks. Record commands,
 results, host constraints, and any blocked stop condition in a closure record;
 do not report a blocked profile as a passing interoperability result.
+
+## Plan 046 rootless sealed-namespace lane
+
+Plan 046 replaces the host-global namespace requirement for the primary NTCP2
+interoperability evidence path with a **rootless, process-scoped sandbox**.
+The primary mixed-router evidence topology is `rootless-sealed-single-netns`
+with privilege model `unprivileged-userns`. The legacy
+`privileged-dual-netns-veth` topology is renamed and reserved for explicit
+later qualification work; it is never the default and never a silent
+fallback.
+
+The lane introduces:
+
+- `tests/integration/ntcp2/harness/interop_topology.py` — topology contract
+  with `InteropTopology`, `ProcessPlacement`, `select_topology`, and a
+  registry locked to the two allowed topology kinds.
+- `tests/integration/ntcp2/harness/rootless_topology.py` —
+  `RootlessSealedTopology` backend (`topology_kind =
+  "rootless-sealed-single-netns"`, `privilege_model = "unprivileged-userns"`).
+  Adapter `placement()` returns an empty prefix; the inner process is
+  required to set `I2PR_INTEROP_ROOTLESS_INNER=1`; the structural checks
+  (`_can_bind`, `_external_connect_attempt`) gate passed records.
+- `tests/integration/ntcp2/harness/rootless_supervisor.py` — inner
+  supervisor that verifies single-ID UID/GID maps, `no_new_privs`, distinct
+  user/network/mount/PID namespaces, `lo` readiness, synthetic bind,
+  absence of default/external routes, and a bounded external connect probe.
+  Writes a sanitized `IsolationAttestation` whose sha256 is bound to every
+  passed mixed-router evidence record. Emits typed `probe-status` JSON.
+- `scripts/interop/rootless-enter.sh` — outer entrypoint that creates the
+  sandbox via `unshare --user --net --mount --pid --fork --propagation
+  private --mount-proc --map-root-user`, accepts only allowlisted
+  operations, has no shell `eval`, and never falls back to the privileged
+  backend.
+- `scripts/interop/probe-rootless-sandbox.sh` — capability probe that
+  validates host capability to run the sandbox without `sudo`/host capability
+  grants and emits a typed JSON blocker on failure.
+- `scripts/check-rootless-interop-boundary.sh` — static boundary checker
+  that fails the change when rootless-owned files contain prohibited
+  patterns (sudo, `ip netns add`, `nft`, `setcap`, `--privileged`,
+  `--network host`, fallback to privileged backend) or omit required
+  contracts (gate catalog entries, sandbox attestation requirement).
+- `.github/workflows/ntcp2-interop-rootless.yml` — manual no-escalation
+  workflow with `permissions: contents: read` and `workflow_dispatch`
+  trigger only.
+
+The new command surface is:
+
+```text
+bash scripts/interop/probe-rootless-sandbox.sh                       # typed blocker or usable
+bash scripts/interop/rootless-enter.sh --probe                       # sandbox-only verify
+bash scripts/interop/rootless-enter.sh --scenario <id> --reference <ref> \
+    --build-cache <path> --run-root <path>
+bash scripts/interop/run-matrix.sh --profile handshake-smoke-rootless
+```
+
+Mixed-router evidence records now carry `topology_kind`, `privilege_model`,
+`sandbox_attestation_sha256`, and `parent_network_state_unchanged`. A passed
+record that violates any of these is rejected. The lane forbids automatic
+fallback to the privileged topology; a missing rootless capability is a
+typed blocker, not a skipped success. NTCP2 remains experimental and
+non-advertised; Milestone 3 is still open.

@@ -235,3 +235,65 @@ The current checkout contains the mixed-scenario definitions, the mixed-runner
 composition, the strict launcher renderer, and the non-echo data-phase oracle.
 No completed mixed-router i2pr record is present; these are explicit blockers,
 not skipped successes. NTCP2 remains experimental and non-advertised.
+
+## Plan 046 rootless sealed-namespace evidence lane
+
+Plan 046 replaces the host-global namespace requirement for the primary NTCP2
+interoperability evidence path with a **rootless, process-scoped user/
+network/mount/PID sandbox** that an ordinary user can run without sudo,
+passwordless elevation, host capabilities, setuid helpers, host-visible
+namespaces, host veth creation, or host firewall mutation. The primary
+evidence topology is `rootless-sealed-single-netns` with privilege model
+`unprivileged-userns`. The legacy `privileged-dual-netns-veth` topology is
+renamed and kept for explicit later qualification only.
+
+The sandbox contains only `lo`. Both routers bind distinct synthetic RFC 5737
+addresses (`192.0.2.1/32` and `192.0.2.2/32`) and an optional synthetic IPv6
+pair (`2001:db8:36::1/128` and `2001:db8:36::2/128`). The structural
+isolation basis is the freshly created network namespace plus the
+single-ID UID/GID maps, `no_new_privs`, `setgroups deny`, and the
+absence of default or external routes. Namespace-local nftables are not
+required.
+
+The lane defends against accidental public-network contact, an adapter
+binding wildcard, an adapter attempting DNS or external connect, a stale
+host-global namespace, a sandbox process surviving the supervisor, a
+broader-than-one UID/GID map, a passing record generated outside the
+sandbox, a successful rootless probe that lacked a usable namespace, and
+any evidence that retains raw namespaces, UIDs, paths, endpoints, logs,
+RouterInfo, or I2NP contents.
+
+The topology backend contract (`tests/integration/ntcp2/harness/interop_topology.py`)
+defines `InteropTopology` and the `ProcessPlacement` value object. Adapters
+and runners select the topology through `select_topology("rootless-sealed-single-netns", ...)`
+and never inspect effective UID or construct `sudo` / `ip netns` prefixes.
+
+The outer entrypoint (`scripts/interop/rootless-enter.sh`) creates the
+sandbox and execs the inner supervisor. It accepts only a strictly
+allowlisted set of operations, has no shell `eval`, and never falls back
+to the privileged backend. The inner supervisor
+(`tests/integration/ntcp2/harness/rootless_supervisor.py`) verifies the
+sandbox via:
+
+- single-ID UID/GID maps;
+- `setgroups` denial;
+- `no_new_privs`;
+- distinct user, network, mount, and PID namespaces;
+- `lo` readiness;
+- exact synthetic bind and connect behavior;
+- the absence of any default or external route;
+- a bounded external connect probe.
+
+On success it writes a sanitized `IsolationAttestation` record whose
+sha256 is bound to every mixed-router evidence record, and whose
+parent-network state pre/post digests must be byte-equal for the run
+to be considered passing.
+
+A static rootless boundary checker (`scripts/check-rootless-interop-boundary.sh`)
+fails the change whenever rootless-owned files contain prohibited
+patterns or omit required contracts. The mixed-router evidence schema
+adds `topology_kind`, `privilege_model`, `sandbox_attestation_sha256`,
+and `parent_network_state_unchanged`. A passed record that violates any
+of these is rejected. The status file `plans/046-status.md` tracks the
+stages of implementation completion and external evidence completion.
+

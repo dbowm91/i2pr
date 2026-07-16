@@ -257,7 +257,11 @@ fn run_wire_command(mode: &'static str, scenario_config: &Path) -> ExitCode {
 async fn execute_wire(
     scenario: Scenario,
     mut status: StatusWriter,
-) -> (StatusWriter, Result<StatusCounters, LauncherError>, DataPhaseMode) {
+) -> (
+    StatusWriter,
+    Result<StatusCounters, LauncherError>,
+    DataPhaseMode,
+) {
     let data_phase_mode = scenario.data_phase_mode;
     let local = match prepare_local_state(&scenario) {
         Ok(local) => local,
@@ -353,7 +357,11 @@ async fn finish_scope(
     scope: i2pr_runtime::ChildScope,
     result: Result<StatusCounters, LauncherError>,
     data_phase_mode: DataPhaseMode,
-) -> (StatusWriter, Result<StatusCounters, LauncherError>, DataPhaseMode) {
+) -> (
+    StatusWriter,
+    Result<StatusCounters, LauncherError>,
+    DataPhaseMode,
+) {
     let cleanup = scope.shutdown().await;
     if cleanup.failed() || cleanup.remaining() != 0 {
         return (status, Err(LauncherError::CleanupFailed), data_phase_mode);
@@ -974,7 +982,7 @@ status_path = "status.jsonl"
         fs::remove_dir_all(root).expect("test cleanup");
     }
 
-#[test]
+    #[test]
     fn data_phase_modes_complete_typed_terminal_reason() {
         for (data_phase_mode, expected_reason, expected_marker) in [
             (
@@ -1017,9 +1025,11 @@ status_path = "status.jsonl"
                     StatusCounters::default(),
                 )
                 .expect("status record");
-            let contents =
-                std::fs::read_to_string(&scenario.status_path).expect("status file");
-            assert!(contents.contains(expected_marker), "missing marker {expected_marker}");
+            let contents = std::fs::read_to_string(&scenario.status_path).expect("status file");
+            assert!(
+                contents.contains(expected_marker),
+                "missing marker {expected_marker}"
+            );
             fs::remove_dir_all(root).expect("test cleanup");
         }
     }

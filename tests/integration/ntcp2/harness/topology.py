@@ -1,4 +1,14 @@
-"""Fail-closed Linux network namespace topology owner."""
+"""Privileged dual-network-namespace/veth topology owner.
+
+This module owns the Plan 038/040/044/045 privileged topology. Plan 046
+introduces ``rootless-sealed-single-netns`` as the primary evidence lane and
+renames the legacy topology to ``privileged-dual-netns-veth``. The legacy
+backend remains explicit and opt-in; it is never the default fallback.
+
+Adapters and runners must not import this module directly for process
+placement. Use ``interop_topology.select_topology`` and
+``ProcessPlacement.command`` instead.
+"""
 
 from __future__ import annotations
 
@@ -9,11 +19,24 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 try:
     from .firewall import canonical_firewall_rules, normalize_ruleset, policy_digest
+    from .interop_topology import (
+        PRIVILEGED_PRIVILEGE_MODEL,
+        PRIVILEGED_TOPOLOGY_KIND,
+        ProcessPlacement,
+        register_topology,
+    )
 except ImportError:  # unittest discovery loads this directory as a flat path.
     from firewall import canonical_firewall_rules, normalize_ruleset, policy_digest  # type: ignore
+    from interop_topology import (  # type: ignore
+        PRIVILEGED_PRIVILEGE_MODEL,
+        PRIVILEGED_TOPOLOGY_KIND,
+        ProcessPlacement,
+        register_topology,
+    )
 
 
 class IsolationError(RuntimeError):
@@ -88,8 +111,18 @@ class TopologyDescription:
         return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-class NamespaceTopology:
-    """Create exactly two namespaces joined by one private veth pair."""
+class PrivilegedDualNamespaceTopology:
+    """Create exactly two namespaces joined by one private veth pair.
+
+    This is the Plan 038/040/044/045 privileged topology. It is renamed
+    ``privileged-dual-netns-veth`` in Plan 046 and is no longer the default
+    evidence lane. New code paths should select ``rootless-sealed-single-netns``
+    through ``select_topology`` instead. ``NamespaceTopology`` is preserved as
+    an alias for backwards compatibility with the existing test suite.
+    """
+
+    topology_kind = PRIVILEGED_TOPOLOGY_KIND
+    privilege_model = PRIVILEGED_PRIVILEGE_MODEL
 
     def __init__(
         self,
@@ -99,6 +132,7 @@ class NamespaceTopology:
         *,
         reference_port: int = 45678,
         i2pr_port: int = 45680,
+        **_unused: Any,
     ):
         if not run_id or not all(character.isalnum() or character == "-" for character in run_id):
             raise IsolationError("invalid-namespace-run-id")
@@ -145,6 +179,21 @@ class NamespaceTopology:
     @property
     def _prefix(self) -> list[str]:
         return [] if os.geteuid() == 0 else ["sudo", "-n"]
+
+    def placement(self, actor: str) -> ProcessPlacement:
+        """Return the ``ip netns exec <ns>`` placement for this backend."""
+
+        if actor == "i2pr":
+            namespace = self.i2pr_namespace
+        elif actor == "reference":
+            namespace = self.reference_namespace
+        else:
+            raise IsolationError("unknown-actor")
+        return ProcessPlacement(
+            topology_kind=self.topology_kind,
+            actor=actor,
+            command_prefix=tuple(self._prefix + ["ip", "netns", "exec", namespace]),
+        )
 
     def _run(self, args: list[str], *, input_text: str | None = None, capture: bool = False) -> str:
         result = subprocess.run(
@@ -264,3 +313,51 @@ class NamespaceTopology:
                 failures += 1
         self.created = False
         return "failed" if failures else "clean"
+
+
+# Backwards-compatible alias for the Plan 038/040/044/045 callers that still
+# import ``NamespaceTopology``. New code should select the topology through
+# ``select_topology`` instead.
+NamespaceTopology = PrivilegedDualNamespaceTopology
+
+
+def _build_privileged(
+    *,
+    repo_root: Path,
+    run_id: str,
+    ipv6: bool,
+    reference_port: int,
+    i2pr_port: int,
+    **_unused: Any,
+) -> "PrivilegedDualNamespaceTopology":
+    return PrivilegedDualNamespaceTopology(
+        repo_root=repo_root,
+        run_id=run_id,
+        ipv6=ipv6,
+        reference_port=reference_port,
+        i2pr_port=i2pr_port,
+    )
+
+
+register_topology(PRIVILEGED_TOPOLOGY_KIND, _build_privileged)
+
+
+def _digest(self: Any) -> str:
+    return self.description.digest()
+
+
+PrivilegedDualNamespaceTopology.digest = _digest  # type: ignore[attr-defined]
+
+
+def _verify_before_start(self: Any) -> dict[str, Any]:
+    self.verify()
+    self.firewall_self_test()
+    return {"status": "verified", "topology_kind": self.topology_kind}
+
+
+def _verify_during_run(self: Any) -> dict[str, Any]:
+    return {"status": "verified-during-run", "topology_kind": self.topology_kind}
+
+
+PrivilegedDualNamespaceTopology.verify_before_start = _verify_before_start  # type: ignore[attr-defined]
+PrivilegedDualNamespaceTopology.verify_during_run = _verify_during_run  # type: ignore[attr-defined]

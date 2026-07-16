@@ -1,0 +1,112 @@
+name: NTCP2 rootless interop evidence (manual)
+
+# Plan 046: the primary NTCP2 interoperability evidence lane is runnable by
+# an ordinary user inside a process-scoped rootless user/network namespace.
+# This workflow is the no-escalation path. It must never invoke sudo,
+# capability grants, host-network-state mutation, privileged containers,
+# or privileged host networking, and it must fail closed when
+# unprivileged user namespaces are unavailable.
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Profile to execute."
+        type: choice
+        required: true
+        default: rootless-handshake-smoke
+        options:
+          - rootless-environment-smoke
+          - rootless-reference-crosscheck-ipv4
+          - rootless-handshake-smoke
+      run_root:
+        description: "Disposable run root inside the runner."
+        type: string
+        required: true
+        default: "target/interop/runs/rootless"
+      build_cache:
+        description: "Verified cache root."
+        type: string
+        required: true
+        default: "target/interop/cache"
+    # Intentionally no pull_request target. Privileged workflows must never
+    # automatically execute on forked pull requests.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rootless-interop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4.1.7
+      - name: rust-toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+      - name: cargo-fmt
+        run: cargo +1.95.0 fmt --all --check
+      - name: cargo-check
+        run: cargo +1.95.0 check --locked --workspace --all-targets
+      - name: cargo-clippy
+        run: cargo +1.95.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: rustdoc
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo +1.95.0 doc --locked --workspace --no-deps
+      - name: dependency-direction
+        run: bash scripts/check-dependency-direction.sh
+      - name: runtime-boundaries
+        run: bash scripts/check-runtime-boundaries.sh
+      - name: rootless-boundary
+        run: bash scripts/check-rootless-interop-boundary.sh
+      - name: ntcp2-interoperability
+        run: bash scripts/check-ntcp2-interoperability.sh
+      - name: scenario-validation
+        run: python3 scripts/interop/validate-scenarios.py
+      - name: build-contract
+        run: python3 scripts/interop/validate-build-contract.py
+      - name: python-harness-tests
+        run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
+
+  rootless-lane:
+    needs: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4.1.7
+      - name: rust-toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+      - name: rootless-dependency-contract
+        run: bash scripts/check-rootless-interop-boundary.sh
+      - name: rootless-sandbox-probe
+        id: probe
+        run: bash scripts/interop/probe-rootless-sandbox.sh
+      - name: gate-on-probe-outcome
+        if: steps.probe.outcome == 'success'
+        run: echo "probe unavailable on this runner; typed blocker recorded"
+      - name: build-references
+        run: bash scripts/interop/build-references.sh --force-rebuild
+      - name: cache-manifest
+        run: python3 scripts/interop/cache-manifest.py --verify
+      - name: rootless-environment-smoke
+        if: github.event.inputs.profile == 'rootless-environment-smoke' || github.event.inputs.profile == 'rootless-reference-crosscheck-ipv4' || github.event.inputs.profile == 'rootless-handshake-smoke'
+        run: bash scripts/interop/rootless-enter.sh --scenario i2pr-to-java-ipv4 --reference java_i2p
+      - name: validate-evidence
+        if: always()
+        run: python3 scripts/interop/validate-evidence.py
+      - name: upload-sanitized-evidence
+        if: always()
+        uses: actions/upload-artifact@v4.4.0
+        with:
+          name: ntcp2-rootless-evidence
+          path: |
+            target/interop/evidence/*.json
+            target/interop/build/*.json
+          if-no-files-found: ignore
+          retention-days: 14

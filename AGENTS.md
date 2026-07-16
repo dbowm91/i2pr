@@ -47,6 +47,17 @@ These are checked on CI and will reject the change:
   evidence must stay sanitized; the manifest under
   `tests/integration/ntcp2/manifest.toml` must list exactly eight bounded
   scenarios with the required disclaimer lines.
+- Rootless interop boundary (`scripts/check-rootless-interop-boundary.sh`):
+  rootless-owned files (`scripts/interop/rootless-enter.sh`,
+  `scripts/interop/probe-rootless-sandbox.sh`,
+  `tests/integration/ntcp2/harness/rootless_supervisor.py`,
+  `tests/integration/ntcp2/harness/rootless_topology.py`,
+  `tests/integration/ntcp2/harness/rootless_inner_runner.py`,
+  `tests/integration/ntcp2/harness/interop_topology.py`, and
+  `.github/workflows/ntcp2-interop-rootless.yml`) must contain no
+  `sudo`, `ip netns`, `nft`, `setcap`, `--privileged`, `--network host`,
+  or fallback to the privileged backend. The checker enforces the gate
+  catalog and the sandbox-attestation requirement in the evidence module.
 
 If a check fails, fix the boundary, don't suppress the script.
 
@@ -56,6 +67,40 @@ strict launcher rendering, and the non-echo data-phase oracle. Plan 045
 is the active mixed-router closure plan and supersedes Plan 044 for
 closure purposes: it closes the ten Plan 045 defects (D1–D10) that
 invalidate Plan 044's prior "implementation-complete locally" status.
+
+Plan 046 is the active rootless sealed-namespace evidence lane. It
+replaces the host-global namespace requirement with a rootless,
+process-scoped user/network sandbox that an ordinary user can run. The
+primary mixed-router evidence topology is `rootless-sealed-single-netns`
+with privilege model `unprivileged-userns`. The legacy
+`privileged-dual-netns-veth` topology is renamed, kept as an explicit
+opt-in qualification lane, and never used as a silent fallback. The
+plan introduces:
+
+- a topology backend contract (`tests/integration/ntcp2/harness/interop_topology.py`)
+  with `ProcessPlacement`, `InteropTopology`, and a topology
+  registry;
+- a rootless inner supervisor
+  (`tests/integration/ntcp2/harness/rootless_supervisor.py`) that
+  verifies single-ID UID/GID maps, `no_new_privs`, distinct user,
+  network, mount, and PID namespaces, loopback readiness, synthetic
+  address binding, and the absence of external routes;
+- a rootless sealed topology
+  (`tests/integration/ntcp2/harness/rootless_topology.py`) that the
+  adapters consume through `select_topology` and `ProcessPlacement`;
+- the no-escalation outer entrypoint (`scripts/interop/rootless-enter.sh`)
+  and a typed sandbox capability probe
+  (`scripts/interop/probe-rootless-sandbox.sh`);
+- a sandbox attestation record and parent-network state equivalence
+  requirement for every passed mixed-router record;
+- the static rootless boundary checker
+  (`scripts/check-rootless-interop-boundary.sh`);
+- the no-escalation GitHub Actions workflow
+  (`.github/workflows/ntcp2-interop-rootless.yml`);
+- ADR 0017 and the reconciliation of every relevant design document.
+
+Plan 046 does not advertise NTCP2 support and does not close Milestone 3
+by itself. Milestone 3 remains open until separate evidence review.
 
 - D1: ``ref-gen``/``ref`` and ``i2pr-gen``/``i2pr`` share one disposable
   data directory so the live phase restarts from the identity that
@@ -230,6 +275,8 @@ bash scripts/check-runtime-boundaries.sh
 bash scripts/check-fixture-manifest.sh   # when I2NP fixture bytes change
 bash scripts/check-ntcp2-vectors.sh      # when NTCP2 vector bytes change
 bash scripts/check-ntcp2-interoperability.sh   # when ntcp2 evidence/manifest change
+bash scripts/check-rootless-interop-boundary.sh   # when rootless files change
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
 bash scripts/fuzz-smoke.sh               # opt-in, requires cargo-fuzz + nightly
 ```
 
