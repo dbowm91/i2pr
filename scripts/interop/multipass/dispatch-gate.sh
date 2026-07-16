@@ -84,7 +84,18 @@ profile_step() {
 
 make_cache_user_readable() {
   printf '[%s] %s\n' "$profile" "make-cache-user-readable"
-  if guest_exec_root bash -c "chown -R '$guest_execution_user:$guest_execution_user' '$guest_target/cache' && chmod -R u+rwX,g+rX,o+rX '$guest_target/cache' && for f in '$guest_target/build'/*.json '$guest_target/build'/*.txt; do [[ -f \"\$f\" ]] && chown '$guest_execution_user:$guest_execution_user' \"\$f\" && chmod 0644 \"\$f\"; done; true" >"$instance_state_dir/$profile-make-cache-user-readable.log" 2>&1; then
+  local cache_root="$guest_target/cache"
+  local build_root="$guest_target/build"
+  local exec_user="$guest_execution_user"
+  if guest_exec_root bash -c "
+    set +e
+    chown -R '${exec_user}:${exec_user}' '${cache_root}'
+    chmod -R u+rwX,g+rX,o+rX '${cache_root}'
+    for f in '${build_root}'/*.json '${build_root}'/*.txt; do
+      [[ -f \"\$f\" ]] && chown '${exec_user}:${exec_user}' \"\$f\" && chmod 0644 \"\$f\"
+    done
+    exit 0
+  " >"$instance_state_dir/$profile-make-cache-user-readable.log" 2>&1; then
     printf '  %s ok\n' "make-cache-user-readable"
     return 0
   fi
