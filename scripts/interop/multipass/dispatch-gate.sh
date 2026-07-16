@@ -141,14 +141,21 @@ case "$profile" in
     profile_step reference-crosscheck-ipv4 run-gate.sh --profile reference-crosscheck-ipv4 --offline || exit $?
     profile_step handshake-smoke run-gate.sh --profile handshake-smoke --offline || exit $?
     ;;
-  handshake-smoke-rootless)
+handshake-smoke-rootless)
     install_guest_rust_toolchain || exit $?
     reset_reference_artifacts || exit $?
     profile_step reference-build build-references.sh --force-rebuild || exit $?
     make_cache_user_readable || exit $?
     profile_step cache-manifest cache-manifest.py --verify || exit $?
     profile_step offline-reuse offline-reuse.sh || exit $?
-    profile_step handshake-smoke-rootless run-gate.sh --profile handshake-smoke-rootless --offline || exit $?
+    printf '[%s] %s\n' "$profile" "handshake-smoke-rootless"
+    if guest_exec_root bash "$guest_repo_root/scripts/interop/run-matrix.sh" --profile handshake-smoke-rootless --offline --topology-kind rootless-sealed-single-netns >"$instance_state_dir/$profile-rootless-matrix.log" 2>&1; then
+      printf '  %s ok\n' "handshake-smoke-rootless"
+    else
+      printf '  %s failed\n' "handshake-smoke-rootless"
+      cat "$instance_state_dir/$profile-rootless-matrix.log" >&2 || true
+      exit 1
+    fi
     ;;
   full)
     profile_step pre-install ubuntu/check-host.sh --pre-install \
