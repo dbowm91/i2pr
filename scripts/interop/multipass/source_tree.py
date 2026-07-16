@@ -27,6 +27,8 @@ def tree_hash(root: Path) -> str:
             continue
         if relative == ".agents" or relative.startswith(".agents/"):
             continue
+        if relative == ".opencode/node_modules" or relative.startswith(".opencode/node_modules/"):
+            continue
         if path.is_symlink():
             raise ValueError(f"source archive refuses symlink: {relative}")
         if path.is_file():
