@@ -5,7 +5,8 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 profile=""
 offline=0
 keep=0
-usage='usage: run-matrix.sh --profile <environment-smoke|handshake-smoke|reference-crosscheck-ipv4|full> [--offline] [--keep-failed-sanitized]'
+topology_kind=""
+usage='usage: run-matrix.sh --profile <environment-smoke|handshake-smoke|handshake-smoke-rootless|reference-crosscheck-ipv4|full> [--offline] [--keep-failed-sanitized] [--topology-kind <kind>]'
 while (($#)); do
   case "$1" in
     --profile)
@@ -16,20 +17,25 @@ while (($#)); do
       ;;
     --offline) offline=1 ;;
     --keep-failed-sanitized) keep=1 ;;
+    --topology-kind)
+      (($# >= 2)) || { printf '%s\n' "$usage" >&2; exit 2; }
+      topology_kind=$2
+      shift
+      ;;
     *) printf 'unknown run-matrix option: %s\n%s\n' "$1" "$usage" >&2; exit 2 ;;
   esac
   shift
 done
 [[ -n "$profile" ]] || { printf '%s\n' "$usage" >&2; exit 2; }
 case "$profile" in
-  environment-smoke|handshake-smoke|reference-crosscheck-ipv4|full) ;;
+  environment-smoke|handshake-smoke|handshake-smoke-rootless|reference-crosscheck-ipv4|full) ;;
   *) printf 'invalid profile: %s\n' "$profile" >&2; exit 2 ;;
 esac
 ids=()
 mixed_ids=()
 case "$profile" in
   environment-smoke) ids=(smoke-java-ipv4 smoke-i2pd-ipv4) ;;
-  handshake-smoke) mixed_ids=(i2pr-to-java-ipv4 java-to-i2pr-ipv4 i2pr-to-i2pd-ipv4 i2pd-to-i2pr-ipv4) ;;
+  handshake-smoke|handshake-smoke-rootless) mixed_ids=(i2pr-to-java-ipv4 java-to-i2pr-ipv4 i2pr-to-i2pd-ipv4 i2pd-to-i2pr-ipv4) ;;
   reference-crosscheck-ipv4)
     status=0
     for scenario in reference-java-i2pd-ipv4 reference-i2pd-java-ipv4; do
@@ -70,6 +76,7 @@ if [[ ${#mixed_ids[@]} -gt 0 ]]; then
     args=(--scenario "$scenario" --reference "$reference")
     [[ "$offline" == "1" ]] && args+=(--offline)
     [[ "$keep" == "1" ]] && args+=(--keep-failed-sanitized)
+    [[ -n "$topology_kind" ]] && args+=(--topology-kind "$topology_kind")
     if ! python3 "$root/tests/integration/ntcp2/harness/mixed_runner.py" "${args[@]}"; then status=1; fi
   done
 fi

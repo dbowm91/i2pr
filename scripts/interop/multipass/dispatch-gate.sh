@@ -28,7 +28,7 @@ while (($#)); do
     --online) offline=0 ;;
     --help|-h)
       printf 'usage: dispatch-gate.sh --profile <name> --run-id <safe-id> --instance-name <name> [--online]\n'
-      printf 'profiles: environment-smoke reference-crosscheck-ipv4 handshake-smoke full evidence-validation cleanup-verification\n'
+      printf 'profiles: environment-smoke reference-crosscheck-ipv4 handshake-smoke handshake-smoke-rootless full evidence-validation cleanup-verification\n'
       exit 0
       ;;
     *) die "unknown argument: $1" ;;
@@ -41,7 +41,7 @@ done
 [[ -n "$instance_name" ]] || die "--instance-name is required"
 
 case "$profile" in
-  environment-smoke|reference-crosscheck-ipv4|handshake-smoke|full|evidence-validation|cleanup-verification) ;;
+  environment-smoke|reference-crosscheck-ipv4|handshake-smoke|handshake-smoke-rootless|full|evidence-validation|cleanup-verification) ;;
   *) die "unknown profile: $profile" ;;
 esac
 
@@ -140,6 +140,15 @@ case "$profile" in
     profile_step offline-reuse offline-reuse.sh || exit $?
     profile_step reference-crosscheck-ipv4 run-gate.sh --profile reference-crosscheck-ipv4 --offline || exit $?
     profile_step handshake-smoke run-gate.sh --profile handshake-smoke --offline || exit $?
+    ;;
+  handshake-smoke-rootless)
+    install_guest_rust_toolchain || exit $?
+    reset_reference_artifacts || exit $?
+    profile_step reference-build build-references.sh --force-rebuild || exit $?
+    make_cache_user_readable || exit $?
+    profile_step cache-manifest cache-manifest.py --verify || exit $?
+    profile_step offline-reuse offline-reuse.sh || exit $?
+    profile_step handshake-smoke-rootless run-gate.sh --profile handshake-smoke-rootless --offline || exit $?
     ;;
   full)
     profile_step pre-install ubuntu/check-host.sh --pre-install \

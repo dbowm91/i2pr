@@ -14,11 +14,11 @@ while (($#)); do
       shift
       ;;
     --offline) offline=1 ;;
-    *) die "usage: run-gate.sh --profile <environment-smoke|reference-crosscheck-ipv4|handshake-smoke|full> --offline" ;;
+    *) die "usage: run-gate.sh --profile <environment-smoke|reference-crosscheck-ipv4|handshake-smoke|handshake-smoke-rootless|full> --offline" ;;
   esac
   shift
 done
-[[ "$profile" =~ ^(environment-smoke|reference-crosscheck-ipv4|handshake-smoke|full)$ ]] || die "invalid gate profile"
+[[ "$profile" =~ ^(environment-smoke|reference-crosscheck-ipv4|handshake-smoke|handshake-smoke-rootless|full)$ ]] || die "invalid gate profile"
 ((offline == 1)) || die "Plan 043 execution gates require --offline"
 
 cleanup_and_verify() {
@@ -92,6 +92,10 @@ if [[ -d "$staging_dir" ]]; then
         ;;
       handshake-smoke)
         [[ "$scenario_id" =~ ^(java-ipv4-inbound-outbound|i2pd-ipv4-inbound-outbound)$ ]] \
+          || die "scenario $scenario_id not allowed for gate $profile"
+        ;;
+      handshake-smoke-rootless)
+        [[ "$scenario_id" =~ ^(i2pr-to-java-ipv4|java-to-i2pr-ipv4|i2pr-to-i2pd-ipv4|i2pd-to-i2pr-ipv4)$ ]] \
           || die "scenario $scenario_id not allowed for gate $profile"
         ;;
       full)
