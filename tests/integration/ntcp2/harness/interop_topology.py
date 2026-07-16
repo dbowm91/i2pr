@@ -110,6 +110,7 @@ def select_topology(
     scenario: Any = None,
     shared_data_dir: Path | None = None,
     shared_state_dir: Path | None = None,
+    reference_kind: str | None = None,
 ) -> InteropTopology:
     """Construct the requested topology backend.
 
@@ -132,6 +133,7 @@ def select_topology(
         scenario=scenario,
         shared_data_dir=shared_data_dir,
         shared_state_dir=shared_state_dir,
+        reference_kind=reference_kind or "java_i2p",
     )
 
 
