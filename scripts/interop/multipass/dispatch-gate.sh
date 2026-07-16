@@ -84,7 +84,7 @@ profile_step() {
 
 make_cache_user_readable() {
   printf '[%s] %s\n' "$profile" "make-cache-user-readable"
-  if guest_exec_root bash -c "chown -R '$guest_execution_user:$guest_execution_user' '$guest_target/cache' && chmod -R u+rwX,g+rX,o+rX '$guest_target/cache'" >"$instance_state_dir/$profile-make-cache-user-readable.log" 2>&1; then
+  if guest_exec_root bash -c "chown -R '$guest_execution_user:$guest_execution_user' '$guest_target/cache' && chmod -R u+rwX,g+rX,o+rX '$guest_target/cache' && for f in '$guest_target/build'/*.json '$guest_target/build'/*.txt; do [[ -f \"\$f\" ]] && chown '$guest_execution_user:$guest_execution_user' \"\$f\" && chmod 0644 \"\$f\"; done; true" >"$instance_state_dir/$profile-make-cache-user-readable.log" 2>&1; then
     printf '  %s ok\n' "make-cache-user-readable"
     return 0
   fi
@@ -148,7 +148,7 @@ handshake-smoke-rootless)
     make_cache_user_readable || exit $?
     profile_step cache-manifest cache-manifest.py --verify || exit $?
     profile_step offline-reuse offline-reuse.sh || exit $?
-    profile_step prepare-offline prepare-offline.sh || exit $?
+    profile_step prepare-offline multipass/prepare-offline.sh || exit $?
     for scenario in i2pr-to-java-ipv4 java-to-i2pr-ipv4 i2pr-to-i2pd-ipv4 i2pd-to-i2pr-ipv4; do
       printf '[%s] %s\n' "$profile" "direction-$scenario"
       if bash "$script_dir/run-direction.sh" --scenario "$scenario" >"$instance_state_dir/$profile-direction-$scenario.log" 2>&1; then
