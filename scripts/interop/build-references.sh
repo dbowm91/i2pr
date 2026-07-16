@@ -28,6 +28,17 @@ from pathlib import Path
 
 root, cache_root, build_root = map(Path, sys.argv[1:])
 entries = []
+existing_summary_path = cache_root / "current-cache.json"
+existing_entries = {}
+if existing_summary_path.is_file():
+    try:
+        existing = json.loads(existing_summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    if isinstance(existing, dict):
+        for prior in existing.get("references", []):
+            if isinstance(prior, dict) and isinstance(prior.get("reference"), str):
+                existing_entries[prior["reference"]] = prior
 for reference, summary_name in (("java_i2p", "java-i2p-summary.txt"), ("i2pd", "i2pd-summary.txt")):
     values = {}
     for line in (build_root / summary_name).read_text(encoding="utf-8").splitlines():
@@ -40,14 +51,19 @@ for reference, summary_name in (("java_i2p", "java-i2p-summary.txt"), ("i2pd", "
         for line in metadata.read_text(encoding="utf-8").splitlines()
         if "=" in line
     }
+    prior_entry = existing_entries.get(reference, {})
     entries.append({
         "reference": reference,
         "cache_key": values["cache_key"],
         "metadata": metadata.relative_to(root).as_posix(),
         "source_revision": metadata_values["source_revision"],
         "build_command_version": metadata_values["build_command_version"],
-        "artifact_sha256": values["artifact_sha256"],
-        "installed_tree_sha256": values["installed_tree_sha256"],
+        "artifact_sha256": values.get(
+            "artifact_sha256", prior_entry.get("artifact_sha256")
+        ),
+        "installed_tree_sha256": values.get(
+            "installed_tree_sha256", prior_entry.get("installed_tree_sha256")
+        ),
         "disposition": values.get("disposition", "built"),
     })
 summary = {
