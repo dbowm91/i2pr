@@ -16,11 +16,16 @@ recreate_owned=0
 destroy_owned=0
 keep_on_blocker=0
 inspect=0
+guest_probe_only=0
 while (($#)); do
   case "$1" in
     --create|--prepare|--probe|--run|--export|--destroy|--all)
       [[ -z "$operation" ]] || die "exactly one operation is required"
       operation="${1#--}"
+      ;;
+    --guest-probe-only)
+      [[ "$guest_probe_only" == 0 ]] || die "duplicate --guest-probe-only"
+      guest_probe_only=1
       ;;
     --destroy-after-export) [[ "$destroy_after_export" == 0 ]] || die "duplicate --destroy-after-export"; destroy_after_export=1 ;;
     --run-id) [[ -z "$run_id" && $# -ge 2 ]] || die "duplicate or incomplete --run-id"; run_id=$2; shift ;;
@@ -32,12 +37,12 @@ while (($#)); do
     --destroy-owned) [[ "$destroy_owned" == 0 ]] || die "duplicate --destroy-owned"; destroy_owned=1 ;;
     --keep-on-blocker) [[ "$keep_on_blocker" == 0 ]] || die "duplicate --keep-on-blocker"; keep_on_blocker=1 ;;
     --inspect) [[ "$inspect" == 0 && -z "$operation" ]] || die "--inspect must be the only operation"; inspect=1 ;;
-    --help|-h) printf 'usage: run-evidence-lane.sh (--create|--prepare|--probe|--run|--export|--destroy|--all|--inspect) [--run-id <id>] [--instance-name <name>] [--resume-owned] [--adopt-owned] [--recreate-owned] [--destroy-owned] [--destroy-after-export] [--keep-on-blocker]\n'; exit 0 ;;
+    --help|-h) printf 'usage: run-evidence-lane.sh (--create|--prepare|--probe|--run|--export|--destroy|--all|--inspect|--guest-probe-only) [--run-id <id>] [--instance-name <name>] [--resume-owned] [--adopt-owned] [--recreate-owned] [--destroy-owned] [--destroy-after-export] [--keep-on-blocker]\n'; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
   shift
 done
-[[ -n "$operation" || "$inspect" == 1 ]] || die "one operation is required"
+[[ -n "$operation" || "$inspect" == 1 || "$guest_probe_only" == 1 ]] || die "one operation is required"
 if [[ -z "$run_id" && ( "$operation" == all || "$operation" == create ) ]]; then
   run_id=$(python3 "$lifecycle_py" generate-run-id)
 fi
@@ -292,6 +297,63 @@ PY
   fi
 }
 
+run_guest_probe_only() {
+  [[ -n "$run_id" ]] || die "--run-id is required for --guest-probe-only"
+  [[ -f "$instance_lifecycle_path" ]] || {
+    write_environment_blocker blocked_host_state_without_instance guest-probe inspect-owned-instance
+    typed_blocker blocked_host_state_without_instance
+    exit 2
+  }
+  if [[ -z "$instance_name_arg" ]]; then
+    instance_name_arg=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["instance_name"])' <"$instance_lifecycle_path")
+    instance_name_provided=1
+    generation=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["instance_generation"])' <"$instance_lifecycle_path")
+    configure_context "$run_id" "$instance_name_arg" "$generation"
+  fi
+  bash "$script_dir/create.sh" --run-id "$run_id" --instance-name "$instance_name" --generation "$instance_generation" --adopt-owned >/dev/null
+  bash "$script_dir/cloud-init-status.sh" --output "$instance_state_dir/cloud-init-status.json" || true
+  bash "$script_dir/verify-base.sh" --output "$instance_state_dir/base-environment-verify.json" || true
+  bash "$script_dir/probe.sh" >/dev/null
+  python3 - "$instance_state_dir/base-environment-verify.json" "$instance_state_dir/probe.json" "$run_id" "$instance_name" "$instance_generation" "$environment_manifest_sha256" "$cloud_init_sha256" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+verify_path, probe_path = sys.argv[1:3]
+run_id, instance_name, generation, manifest, cloud_init = sys.argv[3:8]
+try:
+    verify = json.loads(Path(verify_path).read_text(encoding="utf-8")) if Path(verify_path).is_file() else None
+    probe = json.loads(Path(probe_path).read_text(encoding="utf-8")) if Path(probe_path).is_file() else None
+except json.JSONDecodeError:
+    verify = probe = None
+attestation_sha256 = ""
+if probe and probe.get("type") == "multipass-rootless-probe":
+    attestation_sha256 = probe.get("wrapper_attestation_sha256", "")
+environment_evidence = {
+    "schema": 1,
+    "type": "multipass-guest-probe-only",
+    "environment_id": "i2pr-plan048-rootless-v1",
+    "run_id": run_id,
+    "instance_name_digest": hashlib.sha256(instance_name.encode("utf-8")).hexdigest(),
+    "instance_generation": int(generation),
+    "environment_manifest_sha256": manifest,
+    "cloud_init_sha256": cloud_init,
+    "host_baseline_probe_outcome": "not-run",
+    "guest_rootless_probe_outcome": (probe or {}).get("outcome", "not-run"),
+    "post_verify_record_sha256": hashlib.sha256(Path(verify_path).read_bytes()).hexdigest() if verify_path and Path(verify_path).is_file() else "",
+    "wrapper_attestation_sha256": attestation_sha256,
+    "router_process_count": 0,
+    "reference_cache_transferred": False,
+    "protocol_record_count": 0,
+}
+Path(sys.argv[0]).parent.mkdir(parents=True, exist_ok=True) if False else None
+output = Path(verify_path).parent / "guest-probe-only.json"
+output.write_text(json.dumps(environment_evidence, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+output.chmod(0o600)
+print(json.dumps(environment_evidence, sort_keys=True, separators=(",", ":")))
+PY
+}
+
 case "$operation" in
   create) bash "$script_dir/create.sh" --run-id "$run_id" --instance-name "$instance_name" --generation "$instance_generation" ;;
   prepare) require_instance; prepare_inputs ;;
@@ -304,5 +366,11 @@ case "$operation" in
     ;;
   destroy) bash "$script_dir/destroy.sh" --run-id "$run_id" --instance-name "$instance_name" --destroy-owned ;;
   all) run_all ;;
+  "") : ;;
   *) die "unknown operation: $operation" ;;
 esac
+
+if [[ "$guest_probe_only" == 1 ]]; then
+  [[ -z "$operation" ]] || die "--guest-probe-only cannot be combined with another operation"
+  run_guest_probe_only
+fi

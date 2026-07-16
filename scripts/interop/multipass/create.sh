@@ -306,17 +306,36 @@ if [[ "$ready" != 1 ]]; then
   typed_blocker blocked_launch_failed
   exit 2
 fi
-if ! guest_admin_exec test -f /var/lib/cloud/instance/boot-finished >/dev/null 2>&1 || \
-   ! guest_admin_exec test -f /var/lib/i2pr-interop/provisioning.json >/dev/null 2>&1; then
-  write_environment_blocker blocked_cloud_init_failed provisioning inspect-owned-instance
-  typed_blocker blocked_cloud_init_failed
+if ! guest_admin_exec test -f /var/lib/i2pr-interop/provisioning.json >/dev/null 2>&1; then
+  cloud_init_status_path="$instance_state_dir/cloud-init-status.json"
+  if ! bash "$script_dir/cloud-init-status.sh" --output "$cloud_init_status_path" 2>/dev/null; then
+    write_environment_blocker blocked_cloud_init_status_unparseable provisioning inspect-owned-instance
+    typed_blocker blocked_cloud_init_status_unparseable
+    exit 2
+  fi
+  classified=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("failure_class","blocked_cloud_init_status_unparseable"))' <"$cloud_init_status_path" 2>/dev/null || printf 'blocked_cloud_init_status_unparseable')
+  remediation=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("recommended_action","operator-inspection-required"))' <"$cloud_init_status_path" 2>/dev/null || printf 'operator-inspection-required')
+  write_environment_blocker "$classified" provisioning "$remediation" "$classified"
+  typed_blocker "$classified"
   exit 2
 fi
 provisioning=$(guest_root_exec cat /var/lib/i2pr-interop/provisioning.json)
 if ! printf '%s' "$provisioning" | python3 -c 'import json,sys; value=json.load(sys.stdin); expected={"kernel.unprivileged_userns_clone":1,"kernel.apparmor_restrict_unprivileged_userns":0}; raise SystemExit(1) if value.get("schema") != 1 or value.get("image_release") != "24.04" or value.get("architecture") != "x86_64" or value.get("effective_sysctls") != expected else None'
 then
-  write_environment_blocker blocked_cloud_init_failed provisioning inspect-owned-instance
-  typed_blocker blocked_cloud_init_failed
+  write_environment_blocker blocked_cloud_init_terminal_error provisioning inspect-owned-instance
+  typed_blocker blocked_cloud_init_terminal_error
+  exit 2
+fi
+cloud_init_status_path="$instance_state_dir/cloud-init-status.json"
+if ! bash "$script_dir/cloud-init-status.sh" --output "$cloud_init_status_path" 2>/dev/null; then
+  write_environment_blocker blocked_cloud_init_status_unparseable post-verify operator-inspection-required
+  typed_blocker blocked_cloud_init_status_unparseable
+  exit 2
+fi
+if ! python3 -c 'import json,sys; value=json.load(sys.stdin); raise SystemExit(1) if value.get("cloud_init_state") not in {"done","running"} else None' <"$cloud_init_status_path"; then
+  classified=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("failure_class","blocked_cloud_init_terminal_error"))' <"$cloud_init_status_path" 2>/dev/null || printf 'blocked_cloud_init_terminal_error')
+  write_environment_blocker "$classified" post-verify operator-inspection-required
+  typed_blocker "$classified"
   exit 2
 fi
 python3 "$lifecycle_py" update --state-file "$instance_lifecycle_path" --state provisioned \

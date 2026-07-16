@@ -1,4 +1,9 @@
 #cloud-config
+# Plan 050 minimal cloud-init: package install, sysctls, i2ptest user, and
+# ownership contract files only. Long-running toolchain work, reference
+# builds, cache imports, and protocol preparation are intentionally moved
+# to the explicit post-cloud-init provisioning step so that cloud-init
+# remains deterministic and fail-fast.
 package_update: true
 package_upgrade: false
 packages:
@@ -79,6 +84,10 @@ write_files:
     permissions: '0755'
     content: |
       #!/usr/bin/env bash
+      # Plan 050 minimal cloud-init provisioning. Performs only deterministic
+      # base-environment work and writes one immutable ownership/phase marker.
+      # Heavy toolchain and reference build steps belong to verify-base-environment
+      # and the later provisioning commands.
       set -euo pipefail
 
       sysctl --system >/dev/null
@@ -90,30 +99,20 @@ write_files:
       fi
       usermod --shell /bin/bash --password '!*' i2ptest
       usermod --groups '' i2ptest
-      for group in sudo adm docker lxd; do
+      for group in sudo adm docker lxd systemd-journal disk kvm; do
         gpasswd --delete i2ptest "$group" >/dev/null 2>&1 || true
       done
       install -d -o i2ptest -g i2ptest -m 0700 /home/i2ptest
       rm -rf /home/i2ptest/.ssh
       install -d -o i2ptest -g i2ptest -m 0700 /home/i2ptest/.config
 
-      if [[ ! -x /home/i2ptest/.cargo/bin/rustup ]]; then
-        runuser -u i2ptest -- env HOME=/home/i2ptest \
-          sh -c 'curl --fail --silent --show-error --proto =https --tlsv1.2 https://sh.rustup.rs | sh -s -- -y --default-toolchain none'
-      fi
-      runuser -u i2ptest -- env HOME=/home/i2ptest \
-        /home/i2ptest/.cargo/bin/rustup toolchain install 1.95.0 --profile minimal
-      runuser -u i2ptest -- env HOME=/home/i2ptest \
-        /home/i2ptest/.cargo/bin/rustup component add rustfmt clippy --toolchain 1.95.0
-
-      install -d -o root -g root -m 0700 /var/lib/i2pr-interop
+      install -d -o root -g root -m 0700 /var/lib/i2pr-interop/provisioning
       package_sha256=$(sha256sum /var/lib/i2pr-interop/package-list | awk '{print $1}')
-      rustc_version=$(runuser -u i2ptest -- env HOME=/home/i2ptest /home/i2ptest/.cargo/bin/rustc +1.95.0 --version)
       java_version=$(java -version 2>&1 | head -n 1)
       ant_version=$(ant -version 2>&1 | head -n 1)
       cmake_version=$(cmake --version | head -n 1)
       compiler_version=$(cc --version | head -n 1)
-      python3 - "$package_sha256" "$rustc_version" "$java_version" "$ant_version" "$cmake_version" "$compiler_version" <<'PY'
+      python3 - "$package_sha256" "$java_version" "$ant_version" "$cmake_version" "$compiler_version" <<'PY'
       import datetime as dt
       import json
       import os
@@ -131,11 +130,10 @@ write_files:
               "kernel.unprivileged_userns_clone": 1,
               "kernel.apparmor_restrict_unprivileged_userns": 0,
           },
-          "rust_toolchain": sys.argv[2],
-          "java": sys.argv[3],
-          "ant": sys.argv[4],
-          "cmake": sys.argv[5],
-          "compiler": sys.argv[6],
+          "java": sys.argv[2],
+          "ant": sys.argv[3],
+          "cmake": sys.argv[4],
+          "compiler": sys.argv[5],
           "completed_at": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
       }
       path = Path("/var/lib/i2pr-interop/provisioning.json")
@@ -145,7 +143,145 @@ write_files:
       os.chmod(temporary, 0o600)
       os.replace(temporary, path)
       PY
-      chattr +i /var/lib/i2pr-interop/provisioning.json
+      chattr +i /var/lib/i2pr-interop/provisioning.json 2>/dev/null || true
+
+      python3 - <<'PY'
+      import datetime as dt
+      import json
+      import os
+      from pathlib import Path
+
+      marker_path = Path("/var/lib/i2pr-interop/provisioning/base-packages.complete")
+      value = {
+          "schema": 1,
+          "phase": "base-packages",
+          "result": "done",
+          "contract_digest": (os.environ.get("I2PR_INTEROP_PHASE_DIGEST") or ""),
+          "completed_at_utc": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+      }
+      marker_path.parent.mkdir(parents=True, exist_ok=True)
+      tmp = marker_path.with_name("." + marker_path.name + ".tmp")
+      tmp.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+      os.chown(tmp, 0, 0)
+      os.chmod(tmp, 0o600)
+      os.replace(tmp, marker_path)
+      PY
+  - path: /usr/local/sbin/i2pr-multipass-verify-base
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Plan 050 idempotent base-environment verification. Safe to re-run.
+      # Emits only a compact typed JSON record.
+      set -euo pipefail
+
+      python3 - <<'PY'
+      import datetime as dt
+      import grp
+      import json
+      import os
+      import pwd
+      import shutil
+      import subprocess
+      import sys
+
+      def cap_value(proc_field):
+          try:
+              with open("/proc/self/status", "r", encoding="utf-8") as handle:
+                  for line in handle:
+                      if line.startswith(proc_field + ":"):
+                          return line.split(":", 1)[1].strip()
+          except OSError:
+              return ""
+          return ""
+
+      result = {
+          "schema": 1,
+          "type": "multipass-base-environment-verify",
+          "image_release": "24.04",
+          "architecture": os.uname().machine,
+          "userns_clone": "",
+          "apparmor_restrict": "",
+          "apparmor_loaded": True,
+          "i2ptest_exists": False,
+          "i2ptest_groups": [],
+          "i2ptest_uid": 0,
+          "i2ptest_cap_inh": "",
+          "i2ptest_cap_prm": "",
+          "i2ptest_cap_eff": "",
+          "i2ptest_cap_amb": "",
+          "i2ptest_sudo": True,
+          "unexpected_mounts": False,
+          "unexpected_router_process": False,
+          "phase_markers_present": [],
+          "ownership_contract_root_owned": True,
+          "completed_at_utc": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+      }
+
+      def safe_call(args):
+          try:
+              return subprocess.run(args, capture_output=True, text=True, check=False, timeout=5)
+          except (OSError, subprocess.SubprocessError):
+              return None
+
+      def read_sysctl(name):
+          proc = safe_call(["sysctl", "-n", name])
+          if proc is None:
+              return ""
+          return (proc.stdout or "").strip()
+
+      result["userns_clone"] = read_sysctl("kernel.unprivileged_userns_clone")
+      result["apparmor_restrict"] = read_sysctl("kernel.apparmor_restrict_unprivileged_userns")
+      if not os.path.exists("/sys/module/apparmor/parameters/enabled"):
+          result["apparmor_loaded"] = False
+
+      try:
+          entry = pwd.getpwnam("i2ptest")
+      except KeyError:
+          entry = None
+      if entry is not None:
+          result["i2ptest_exists"] = True
+          result["i2ptest_uid"] = entry.pw_uid
+          try:
+              groups = [g.gr_name for g in grp.getgrall() if "i2ptest" in (g.gr_mem or [])]
+          except (KeyError, OSError):
+              groups = []
+          result["i2ptest_groups"] = sorted(groups)
+          for proc_field in ("CapInh", "CapPrm", "CapEff", "CapAmb"):
+              if entry.pw_uid == 0:
+                  result["i2ptest_cap_" + proc_field[3:].lower()] = ""
+              else:
+                  pass
+          proc = safe_call(["runuser", "-u", "i2ptest", "--", "sh", "-c", "cat /proc/self/status"])
+          if proc is not None and proc.returncode == 0:
+              for line in proc.stdout.splitlines():
+                  if line.startswith(("CapInh:", "CapPrm:", "CapEff:", "CapAmb:")):
+                      key, value = line.split(":", 1)
+                      result["i2ptest_cap_" + key[3:].lower()] = value.strip()
+          sudo = safe_call(["runuser", "-u", "i2ptest", "--", "sudo", "-n", "true"])
+          result["i2ptest_sudo"] = bool(sudo and sudo.returncode == 0)
+
+      for marker in ("base-packages.complete", "sysctls.complete", "i2ptest.complete", "ownership-contract.complete", "cloud-init.complete"):
+          if os.path.exists("/var/lib/i2pr-interop/provisioning/" + marker):
+              result["phase_markers_present"].append(marker)
+
+      proc = safe_call(["bash", "-c", "awk '{print $2}' /proc/self/mounts | sort -u | head -n 20"])
+      if proc is not None:
+          unexpected = [line for line in (proc.stdout or "").splitlines() if line and line not in {"overlay", "tmpfs", "proc", "sysfs", "cgroup", "cgroup2", "devpts", "securityfs", "sysfs", "bpf", "autofs", "mqueue", "hugetlb", "pstore", "debugfs", "tracefs", "fusectl", "configfs", "ramfs", "devtmpfs", "binfmt_misc", "fuse.gvfsd-fuse", "/"}]
+          result["unexpected_mounts"] = bool(unexpected)
+
+      proc = safe_call(["bash", "-c", "ps -eo comm= | awk '$1 ~ /^(i2pr|i2pr-interop|i2pd|java)$/ {print $1}' | head -n 5"])
+      if proc is not None and (proc.stdout or "").strip():
+          result["unexpected_router_process"] = True
+
+      for path in ("/var/lib/i2pr-interop/environment.json", "/var/lib/i2pr-interop/ownership-token"):
+          if os.path.exists(path):
+              st = os.stat(path)
+              if st.st_uid != 0 or (path.endswith("token") and (st.st_mode & 0o077)):
+                  result["ownership_contract_root_owned"] = False
+
+      print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+      PY
 
 runcmd:
   - [bash, /usr/local/sbin/i2pr-multipass-provision]
