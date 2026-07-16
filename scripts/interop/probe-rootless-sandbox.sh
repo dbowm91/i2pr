@@ -146,4 +146,5 @@ if [[ -n "$attestation_path" ]]; then
 EOF
 fi
 
+printf '%s\n' '{"schema":1,"type":"rootless-sandbox-probe","outcome":"rootless_sandbox_available"}'
 exit 0
