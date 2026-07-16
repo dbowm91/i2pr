@@ -66,12 +66,28 @@ profile_step() {
   local gate_script=$2
   shift 2
   printf '[%s] %s\n' "$profile" "$step_name"
-  if guest_exec_root bash "$guest_scripts/$gate_script" "$@" >"$instance_state_dir/$profile-$step_name.log" 2>&1; then
+  local interpreter
+  case "$gate_script" in
+    *.py) interpreter="python3" ;;
+    *) interpreter="bash" ;;
+  esac
+  if guest_exec_root "$interpreter" "$guest_scripts/$gate_script" "$@" >"$instance_state_dir/$profile-$step_name.log" 2>&1; then
     printf '  %s ok\n' "$step_name"
     return 0
   fi
   local status=$?
   printf '  %s failed (exit %d)\n' "$step_name" "$status"
+  return "$status"
+}
+
+make_cache_user_readable() {
+  printf '[%s] %s\n' "$profile" "make-cache-user-readable"
+  if guest_exec_root bash -c "chown -R '$guest_execution_user:$guest_execution_user' '$guest_target/cache' '$guest_target/build' && chmod -R u+rwX,g+rX,o+rX '$guest_target/cache' '$guest_target/build'" >"$instance_state_dir/$profile-make-cache-user-readable.log" 2>&1; then
+    printf '  %s ok\n' "make-cache-user-readable"
+    return 0
+  fi
+  local status=$?
+  printf '  %s failed (exit %d)\n' "make-cache-user-readable" "$status"
   return "$status"
 }
 
@@ -84,12 +100,14 @@ case "$profile" in
     ;;
   reference-crosscheck-ipv4)
     profile_step reference-build build-references.sh --force-rebuild || exit $?
+    make_cache_user_readable || exit $?
     profile_step cache-manifest cache-manifest.py --verify || exit $?
     profile_step offline-reuse offline-reuse.sh || exit $?
     profile_step reference-crosscheck-ipv4 run-gate.sh --profile reference-crosscheck-ipv4 --offline || exit $?
     ;;
   handshake-smoke)
     profile_step reference-build build-references.sh --force-rebuild || exit $?
+    make_cache_user_readable || exit $?
     profile_step cache-manifest cache-manifest.py --verify || exit $?
     profile_step offline-reuse offline-reuse.sh || exit $?
     profile_step reference-crosscheck-ipv4 run-gate.sh --profile reference-crosscheck-ipv4 --offline || exit $?
@@ -103,6 +121,7 @@ case "$profile" in
     profile_step setup-host ubuntu/setup-host.sh || exit $?
     profile_step record-baseline verify-clean-host.sh --record-baseline || exit $?
     profile_step reference-build build-references.sh --force-rebuild || exit $?
+    make_cache_user_readable || exit $?
     profile_step cache-manifest cache-manifest.py --verify || exit $?
     profile_step offline-reuse offline-reuse.sh || exit $?
     profile_step environment-smoke run-gate.sh --profile environment-smoke --offline || exit $?
