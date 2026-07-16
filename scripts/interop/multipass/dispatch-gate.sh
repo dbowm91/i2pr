@@ -95,7 +95,7 @@ make_cache_user_readable() {
 
 reset_reference_artifacts() {
   printf '[%s] %s\n' "$profile" "reset-reference-artifacts"
-  if guest_exec_root bash -c "rm -rf '$guest_target/build/sources' '$guest_target/cache' '$guest_target/build/reference-cache-manifest.json' '$guest_target/build/reference-build-summary.json' '$guest_target/build/host-metadata.json' '$guest_target/build/java-i2p-summary.txt' '$guest_target/build/i2pd-summary.txt' '$guest_target/build/objects' '$guest_target/build/install' '$guest_target/build/downloads' '$guest_target/build/logs' '$guest_target/build/tools'" >"$instance_state_dir/$profile-reset-reference-artifacts.log" 2>&1; then
+  if guest_exec_root bash -c "rm -rf '$guest_target/build/sources' '$guest_target/cache' '$guest_target/build/reference-cache-manifest.json' '$guest_target/build/reference-build-summary.json' '$guest_target/build/host-metadata.json' '$guest_target/build/java-i2p-summary.txt' '$guest_target/build/i2pd-summary.txt' '$guest_target/build/objects' '$guest_target/build/install' '$guest_target/build/downloads' '$guest_target/build/logs' '$guest_target/build/tools' '$guest_repo_root/tests/integration/ntcp2/harness/__pycache__'" >"$instance_state_dir/$profile-reset-reference-artifacts.log" 2>&1; then
     printf '  %s ok\n' "reset-reference-artifacts"
     return 0
   fi
