@@ -13,6 +13,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from typing import Any
 
@@ -621,6 +622,153 @@ def _host_supports_unshare() -> bool:
         check=False,
     )
     return result.returncode == 0
+
+
+class MixedRunnerTopologyDispatchTests(unittest.TestCase):
+    """The mixed runner must accept ``--topology-kind`` and route through
+    ``select_topology`` rather than constructing a privileged namespace.
+    """
+
+    def test_mixed_runner_exposes_topology_kind_argument(self) -> None:
+        """The CLI parser must accept ``--topology-kind rootless-sealed-single-netns``
+        and route the run through the rootless topology backend.
+        """
+
+        from mixed_runner import main as mixed_main
+
+        captured: dict[str, Any] = {}
+
+        def _fake_run(args: Any) -> int:
+            captured["topology_kind"] = args.topology_kind
+            return 0
+
+        original_run = mixed_main.__globals__.get("run")
+        mixed_main.__globals__["run"] = _fake_run  # type: ignore[index]
+        try:
+            argv = [
+                "--scenario", "i2pr-to-java-ipv4",
+                "--reference", "java_i2p",
+                "--topology-kind", ROOTLESS_TOPOLOGY_KIND,
+            ]
+            with unittest.mock.patch.dict(
+                os.environ,
+                {
+                    "I2PR_INTEROP_ROOTLESS_ATTESTATION_SHA256": "1" * 64,
+                    "I2PR_INTEROP_ROOTLESS_PARENT_STATE_UNCHANGED": "1",
+                },
+                clear=False,
+            ):
+                with unittest.mock.patch("sys.argv", ["mixed_runner"] + argv):
+                    rc = mixed_main()
+        finally:
+            mixed_main.__globals__["run"] = original_run  # type: ignore[index]
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured.get("topology_kind"), ROOTLESS_TOPOLOGY_KIND)
+
+
+class RootlessInnerRunnerDispatchTests(unittest.TestCase):
+    """The inner runner must propagate the attestation SHA into the mixed
+    runner's environment so the resulting evidence record is bound to the
+    sandbox.
+    """
+
+    def test_inner_runner_propagates_attestation_env(self) -> None:
+        """When invoked with a synthetic attestation, the inner runner must
+        forward ``I2PR_INTEROP_ROOTLESS_ATTESTATION_SHA256`` and
+        ``I2PR_INTEROP_ROOTLESS_PARENT_STATE_UNCHANGED`` to ``mixed_runner``.
+        """
+
+        from rootless_inner_runner import _scenario_main
+        import rootless_inner_runner
+        from rootless_supervisor import IsolationAttestation
+
+        sentinel_sha = "1" * 64
+        captured_env: dict[str, str] = {}
+
+        class _Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def _fake_run(command: list[str], env: dict[str, str] | None = None, **_kwargs: Any) -> _Completed:
+            captured_env.update(env or {})
+            return _Completed()
+
+        attestation = IsolationAttestation(
+            schema="i2pr-rootless-sandbox-attestation-v1",
+            record_type="rootless-sandbox-attestation",
+            date_utc="1970-01-01T00:00:00Z",
+            i2pr_commit="0" * 40 + ";clean",
+            topology_kind=ROOTLESS_TOPOLOGY_KIND,
+            privilege_model=ROOTLESS_PRIVILEGE_MODEL,
+            user_namespace_distinct=True,
+            network_namespace_distinct=True,
+            mount_namespace_distinct=True,
+            pid_namespace_distinct=True,
+            uid_map_class="single-id",
+            gid_map_class="single-id",
+            setgroups_policy="deny",
+            no_new_privs=True,
+            external_interface_count=0,
+            default_route_count=0,
+            synthetic_ipv4_ready=True,
+            synthetic_ipv6_disposition="absent",
+            external_route_probe="blocked",
+            external_connect_probe="blocked",
+            socket_inventory_sha256="0" * 64,
+            sandbox_policy_sha256="0" * 64,
+            parent_network_state_pre_sha256=sentinel_sha,
+            parent_network_state_post_sha256=sentinel_sha,
+            parent_network_state_unchanged=True,
+            child_reap_result="clean",
+            sandbox_cleanup_result="clean",
+            attestation_sha256=sentinel_sha,
+            known_deviation="",
+            reproduction="bash scripts/interop/rootless-enter.sh --probe",
+        )
+
+        original_subprocess_run = subprocess.run
+        original_select = rootless_inner_runner.select_topology
+        original_supervisor_run = rootless_inner_runner.run_supervisor
+
+        rootless_inner_runner.subprocess.run = _fake_run  # type: ignore[attr-defined]
+        rootless_inner_runner.select_topology = lambda *_a, **_kw: _FakeTopology()  # type: ignore[attr-defined]
+        rootless_inner_runner.run_supervisor = lambda **_kw: attestation  # type: ignore[attr-defined]
+        try:
+            args = rootless_inner_runner.argparse.Namespace(
+                scenario="i2pr-to-java-ipv4",
+                reference="java_i2p",
+                ipv6=False,
+                attestation_output=None,
+                build_cache=None,
+                run_root=None,
+            )
+            rc = _scenario_main(args)
+        finally:
+            rootless_inner_runner.subprocess.run = original_subprocess_run  # type: ignore[attr-defined]
+            rootless_inner_runner.select_topology = original_select  # type: ignore[attr-defined]
+            rootless_inner_runner.run_supervisor = original_supervisor_run  # type: ignore[attr-defined]
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured_env.get("I2PR_INTEROP_ROOTLESS_ATTESTATION_SHA256"), sentinel_sha)
+        self.assertEqual(captured_env.get("I2PR_INTEROP_ROOTLESS_PARENT_STATE_UNCHANGED"), "1")
+        self.assertEqual(captured_env.get("I2PR_INTEROP_ROOTLESS_INNER"), "1")
+
+
+class _FakeTopology:
+    topology_kind = ROOTLESS_TOPOLOGY_KIND
+    privilege_model = ROOTLESS_PRIVILEGE_MODEL
+
+    def create(self) -> None:
+        return None
+
+    def placement(self, actor: str) -> ProcessPlacement:
+        return ProcessPlacement(topology_kind=self.topology_kind, actor=actor)
+
+    def endpoint_for_i2pr(self) -> Any:
+        return None
+
+    def endpoint_for_reference(self) -> Any:
+        return None
 
 
 if __name__ == "__main__":

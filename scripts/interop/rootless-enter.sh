@@ -29,6 +29,7 @@ allowed_scenarios=(
   i2pr-to-i2pd-ipv4
   i2pd-to-i2pr-ipv4
 )
+allowed_references=(java_i2p i2pd)
 allowed_profiles=(
   rootless-environment-smoke
   rootless-reference-crosscheck-ipv4
@@ -37,7 +38,10 @@ allowed_profiles=(
 
 operation=""
 scenario=""
+reference=""
 profile=""
+build_cache=""
+run_root=""
 
 die() {
   echo "rootless-enter: $1" >&2
@@ -64,6 +68,21 @@ parse_args() {
         require_string "$scenario" "scenario"
         shift 2
         ;;
+      --reference)
+        reference="${2:-}"
+        require_string "$reference" "reference"
+        shift 2
+        ;;
+      --build-cache)
+        build_cache="${2:-}"
+        require_string "$build_cache" "build-cache"
+        shift 2
+        ;;
+      --run-root)
+        run_root="${2:-}"
+        require_string "$run_root" "run-root"
+        shift 2
+        ;;
       --profile)
         profile="${2:-}"
         require_string "$profile" "profile"
@@ -71,7 +90,7 @@ parse_args() {
         ;;
       --help|-h)
         cat <<EOF
-usage: bash scripts/interop/rootless-enter.sh [--probe | --scenario <id> | --profile <id>]
+usage: bash scripts/interop/rootless-enter.sh [--probe | --scenario <id> --reference <ref> [--build-cache <path>] [--run-root <path>] | --profile <id>]
 EOF
         exit 0
         ;;
@@ -102,6 +121,7 @@ validate_choice() {
 # interpolation, no sudo, no host-network-state mutation.
 build_unshare_command() {
   local inner_command="$1"
+  local i2pr_commit="${I2PR_INTEROP_COMMIT:-}"
   UNSHARE_COMMAND=(
     unshare
     --user
@@ -116,6 +136,7 @@ build_unshare_command() {
     /usr/bin/env
     "I2PR_INTEROP_ROOTLESS_INNER=1"
     "I2PR_INTEROP_ROOTLESS_PARENT_DIGEST_PRE=$parent_digest_pre"
+    "I2PR_INTEROP_COMMIT=$i2pr_commit"
     "$inner_command"
   )
 }
@@ -201,7 +222,14 @@ run_probe() {
 }
 
 run_scenario() {
-  build_unshare_command "python3 $repo_root/tests/integration/ntcp2/harness/rootless_inner_runner.py --scenario $scenario --reference java_i2p"
+  local inner_args=(--scenario "$scenario" --reference "$reference")
+  if [[ -n "$build_cache" ]]; then
+    inner_args+=(--build-cache "$build_cache")
+  fi
+  if [[ -n "$run_root" ]]; then
+    inner_args+=(--run-root "$run_root")
+  fi
+  build_unshare_command "python3 $repo_root/tests/integration/ntcp2/harness/rootless_inner_runner.py ${inner_args[*]}"
   if ! "${UNSHARE_COMMAND[@]}"; then
     die "rootless-inner-runner-failed"
   fi
@@ -219,6 +247,7 @@ main() {
       ;;
     scenario)
       validate_choice scenario "$scenario" "${allowed_scenarios[@]}"
+      validate_choice reference "$reference" "${allowed_references[@]}"
       run_scenario
       ;;
     profile)

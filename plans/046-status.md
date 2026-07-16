@@ -55,12 +55,22 @@ gates. The added and changed files are:
   router evidence record and whose parent-network state pre/post digests
   must be byte-equal for a passed run.
 - `tests/integration/ntcp2/harness/rootless_inner_runner.py` — bounded
-  inner runner CLI.
+  inner runner CLI. Plan 046 dispatch: builds the `IsolationAttestation`,
+  propagates `I2PR_INTEROP_ROOTLESS_ATTESTATION_SHA256` and
+  `I2PR_INTEROP_ROOTLESS_PARENT_STATE_UNCHANGED` through the environment,
+  and invokes `mixed_runner.py --topology-kind rootless-sealed-single-netns`
+  so the resulting evidence record is bound to the sandbox.
+- `tests/integration/ntcp2/harness/mixed_runner.py` — extended with
+  `--topology-kind` (`rootless-sealed-single-netns` or
+  `privileged-dual-netns-veth`); routes through `select_topology` and
+  propagates `placement` to every adapter and reference trigger; populates
+  `sandbox_attestation_sha256` and `parent_network_state_unchanged` from
+  the environment when running under the rootless topology.
 - `scripts/interop/rootless-enter.sh` — outer entrypoint; uses
   `unshare --user --net --mount --pid --fork --propagation private
-  --mount-proc --map-root-user`; allowlists operations and scenarios;
-  fails closed with a typed blocker on a host that does not allow
-  unprivileged user namespaces; has no shell `eval`.
+  --mount-proc --map-root-user`; allowlists operations, scenarios, and
+  references; forwards `I2PR_INTEROP_COMMIT` into the sandbox; has no
+  shell `eval`.
 - `scripts/interop/probe-rootless-sandbox.sh` — typed sandbox capability
   probe.
 - `.github/workflows/ntcp2-interop-rootless.yml` — manual no-escalation
@@ -109,8 +119,8 @@ checkout:
 - `bash scripts/check-ntcp2-interoperability.sh` passes.
 - `bash scripts/check-rootless-interop-boundary.sh` passes.
 - `python3 -m unittest discover -s tests/integration/ntcp2/harness -p
-  'test_*.py'` passes (144 tests, including 40 in
-  `test_rootless_topology.py`).
+  'test_*.py'` passes (146 tests, including 42 in
+  `test_rootless_topology.py` covering the dispatch wiring).
 
 ## Host-blocked evidence completion
 

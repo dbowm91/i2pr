@@ -23,26 +23,42 @@ if __package__ in {None, ""}:
     from harness.evidence import write_record  # type: ignore
     from harness.i2pd import I2pdAdapter, I2pdError  # type: ignore
     from harness.i2pr import I2prAdapter  # type: ignore
+    from harness.interop_topology import (  # type: ignore
+        PRIVILEGED_PRIVILEGE_MODEL,
+        PRIVILEGED_TOPOLOGY_KIND,
+        ROOTLESS_PRIVILEGE_MODEL,
+        ROOTLESS_TOPOLOGY_KIND,
+        select_topology,
+    )
     from harness.java_i2p import JavaI2pAdapter, JavaI2pError  # type: ignore
     from harness.launcher_renderer import RenderError, render_and_validate  # type: ignore
     from harness.launcher_protocol import LauncherScenarioError  # type: ignore
     from harness.metadata import CacheMetadata  # type: ignore
     from harness.reference_trigger import select_trigger  # type: ignore
     from harness.router_info import RouterInfoPathError, strict_validate_router_info  # type: ignore
-    from harness.topology import EndpointDescription, IsolationError, NamespaceTopology  # type: ignore
+    from harness.topology import EndpointDescription, IsolationError  # type: ignore
+    from harness.rootless_topology import RootlessTopologyError  # type: ignore
     from harness.runner import HarnessBlocked, _cache_for, _git_identity, _host_check  # type: ignore
 else:
     from .data_oracle import select_oracle
     from .evidence import write_record
     from .i2pd import I2pdAdapter, I2pdError
     from .i2pr import I2prAdapter
+    from .interop_topology import (
+        PRIVILEGED_PRIVILEGE_MODEL,
+        PRIVILEGED_TOPOLOGY_KIND,
+        ROOTLESS_PRIVILEGE_MODEL,
+        ROOTLESS_TOPOLOGY_KIND,
+        select_topology,
+    )
     from .java_i2p import JavaI2pAdapter, JavaI2pError
     from .launcher_renderer import RenderError, render_and_validate
     from .launcher_protocol import LauncherScenarioError
     from .metadata import CacheMetadata
     from .reference_trigger import select_trigger
     from .router_info import RouterInfoPathError, strict_validate_router_info
-    from .topology import EndpointDescription, IsolationError, NamespaceTopology
+    from .topology import EndpointDescription, IsolationError
+    from .rootless_topology import RootlessTopologyError
     from .runner import HarnessBlocked, _cache_for, _git_identity, _host_check
 
 
@@ -149,7 +165,7 @@ def _record_mixed(
     cleanup: str,
     i2pr_commit: str,
     metadata: CacheMetadata | None,
-    topology: NamespaceTopology | None,
+    topology: Any | None,
     router_validation: dict[str, str],
     observations: dict[str, str],
     process_counters: dict[str, dict[str, int]],
@@ -161,6 +177,8 @@ def _record_mixed(
     reference_router_info_sha256: str = "",
     data_phase_mode: str = "round-trip-delivery-status",
     expected_observation: str = "i2pr-sent-and-acknowledged",
+    sandbox_attestation_sha256: str = "",
+    parent_network_state_unchanged: bool = False,
 ) -> dict[str, Any]:
     zero = "0" * 64
     deterministic = (
@@ -174,6 +192,12 @@ def _record_mixed(
     }
     if runtime_counters:
         resource.update(runtime_counters)
+    topology_kind = getattr(topology, "topology_kind", PRIVILEGED_TOPOLOGY_KIND)
+    privilege_model = getattr(topology, "privilege_model", PRIVILEGED_PRIVILEGE_MODEL)
+    if topology is not None and hasattr(topology, "digest"):
+        namespace_topology_sha256 = topology.digest()
+    else:
+        namespace_topology_sha256 = zero
     return {
         "schema": 1,
         "scenario_id": direction.execution_id,
@@ -187,7 +211,7 @@ def _record_mixed(
         "configuration_sha256": configuration_sha256 or zero,
         "i2pr_router_info_sha256": i2pr_router_info_sha256 or zero,
         "reference_router_info_sha256": reference_router_info_sha256 or zero,
-        "namespace_topology_sha256": topology.description.digest() if topology is not None else zero,
+        "namespace_topology_sha256": namespace_topology_sha256,
         "direction": direction.direction,
         "address_family": direction.address_family,
         "deterministic_parameters": deterministic,
@@ -201,10 +225,10 @@ def _record_mixed(
         "reproduction": f"bash scripts/interop/run-scenario.sh --scenario {direction.execution_id} --reference {direction.reference}",
         "data_phase_mode": data_phase_mode,
         "expected_observation": expected_observation,
-        "topology_kind": getattr(topology, "topology_kind", "privileged-dual-netns-veth"),
-        "privilege_model": getattr(topology, "privilege_model", "host-capabilities"),
-        "sandbox_attestation_sha256": zero,
-        "parent_network_state_unchanged": False,
+        "topology_kind": topology_kind,
+        "privilege_model": privilege_model,
+        "sandbox_attestation_sha256": sandbox_attestation_sha256 or zero,
+        "parent_network_state_unchanged": parent_network_state_unchanged,
     }
 
 
@@ -220,14 +244,20 @@ def _emit(direction_id: str, reference: str, result: str, reason: str, cleanup: 
     }, separators=(",", ":")))
 
 
-def _no_residual_state(topology: NamespaceTopology) -> bool:
+def _no_residual_state(topology: Any) -> bool:
+    """True when no host-visible namespaces or veths from this topology remain."""
+
+    if getattr(topology, "topology_kind", "") == ROOTLESS_TOPOLOGY_KIND:
+        return True
     prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
     namespaces = subprocess.run(
         prefix + ["ip", "netns", "list"], capture_output=True, text=True, check=False,
     )
     if namespaces.returncode != 0:
         return False
-    for name in (topology.i2pr_namespace, topology.reference_namespace):
+    for name in (getattr(topology, "i2pr_namespace", ""), getattr(topology, "reference_namespace", "")):
+        if not name:
+            continue
         for line in namespaces.stdout.splitlines():
             if line.split() and line.split()[0] == name:
                 return False
@@ -236,7 +266,11 @@ def _no_residual_state(topology: NamespaceTopology) -> bool:
     )
     if links.returncode != 0:
         return False
-    return not any(name in links.stdout for name in (topology.i2pr_if, topology.reference_if))
+    return not any(
+        name in links.stdout
+        for name in (getattr(topology, "i2pr_if", ""), getattr(topology, "reference_if", ""))
+        if name
+    )
 
 
 def _stop_adapter(adapter: Any, timeout: float = 10.0) -> str:
@@ -285,7 +319,17 @@ def run(args: argparse.Namespace) -> int:
     run_dir = base / _run_id()
     run_dir.mkdir(mode=0o700)
     evidence_root = Path(os.environ.get("INTEROP_EVIDENCE_DIR", str(repo_root / "target/interop/evidence")))
-    topology: NamespaceTopology | None = None
+    topology_kind = getattr(args, "topology_kind", PRIVILEGED_TOPOLOGY_KIND) or PRIVILEGED_TOPOLOGY_KIND
+    sandbox_attestation_sha256 = os.environ.get("I2PR_INTEROP_ROOTLESS_ATTESTATION_SHA256", "")
+    parent_state_unchanged_env = os.environ.get(
+        "I2PR_INTEROP_ROOTLESS_PARENT_STATE_UNCHANGED", "0"
+    )
+    parent_network_state_unchanged = (
+        topology_kind == ROOTLESS_TOPOLOGY_KIND
+        and parent_state_unchanged_env == "1"
+        and bool(sandbox_attestation_sha256)
+    )
+    topology: Any | None = None
     i2pr_adapter: I2prAdapter | None = None
     ref_adapter: JavaI2pAdapter | I2pdAdapter | None = None
     metadata: CacheMetadata | None = None
@@ -316,11 +360,12 @@ def run(args: argparse.Namespace) -> int:
     expected_observation = "i2pr-sent-and-acknowledged"
     oracle_state = {"sender_observed": "not-observed", "receiver_observed": "not-observed"}
     try:
-        _host_check(repo_root, run_dir)
+        if topology_kind != ROOTLESS_TOPOLOGY_KIND:
+            _host_check(repo_root, run_dir)
         i2pr_commit = _git_identity(repo_root)
         cache, metadata = _cache_for(cache_base, reference, repo_root)
         ipv6 = direction.address_family == "ipv6"
-        if ipv6:
+        if ipv6 and topology_kind != ROOTLESS_TOPOLOGY_KIND:
             disabled = Path("/proc/sys/net/ipv6/conf/all/disable_ipv6")
             capability = subprocess.run(
                 ["ip", "-6", "route", "show"], capture_output=True, text=True, check=False,
@@ -328,29 +373,40 @@ def run(args: argparse.Namespace) -> int:
             if capability.returncode != 0 or (disabled.is_file() and disabled.read_text().strip() != "0"):
                 raise MixedRunError("ipv6-capability-unavailable", "skipped_ipv6")
         ref_port = _reference_port_for(reference)
-        topology = NamespaceTopology(
-            repo_root, run_dir.name.removeprefix("mixed-"), ipv6,
-            reference_port=ref_port, i2pr_port=45680,
+        topology = select_topology(
+            topology_kind,
+            repo_root=repo_root,
+            run_id=run_dir.name.removeprefix("mixed-"),
+            ipv6=ipv6,
+            reference_port=ref_port,
+            i2pr_port=45680,
+            reference_kind=reference,
         )
         topology.create()
-        i2pr_endpoint = EndpointDescription(
-            local_address="192.0.2.1" if not ipv6 else "2001:db8:36::1",
-            peer_address="192.0.2.2" if not ipv6 else "2001:db8:36::2",
-            local_port=45680,
-            peer_port=ref_port,
-            address_family=direction.address_family,
-            namespace=topology.i2pr_namespace,
-            network_id="99",
-        )
-        ref_endpoint = EndpointDescription(
-            local_address="192.0.2.2" if not ipv6 else "2001:db8:36::2",
-            peer_address="192.0.2.1" if not ipv6 else "2001:db8:36::1",
-            local_port=ref_port,
-            peer_port=45680,
-            address_family=direction.address_family,
-            namespace=topology.reference_namespace,
-            network_id="99",
-        )
+        i2pr_placement = topology.placement("i2pr")
+        ref_placement = topology.placement("reference")
+        if topology_kind == ROOTLESS_TOPOLOGY_KIND:
+            i2pr_endpoint = topology.endpoint_for_i2pr()
+            ref_endpoint = topology.endpoint_for_reference()
+        else:
+            i2pr_endpoint = EndpointDescription(
+                local_address="192.0.2.1" if not ipv6 else "2001:db8:36::1",
+                peer_address="192.0.2.2" if not ipv6 else "2001:db8:36::2",
+                local_port=45680,
+                peer_port=ref_port,
+                address_family=direction.address_family,
+                namespace=topology.i2pr_namespace,
+                network_id="99",
+            )
+            ref_endpoint = EndpointDescription(
+                local_address="192.0.2.2" if not ipv6 else "2001:db8:36::2",
+                peer_address="192.0.2.1" if not ipv6 else "2001:db8:36::1",
+                local_port=ref_port,
+                peer_port=45680,
+                address_family=direction.address_family,
+                namespace=topology.reference_namespace,
+                network_id="99",
+            )
         # Plan 045 D1: the ``-gen`` adapter and the live adapter share the
         # same ``reference-data`` directory and the same i2pr ``state``
         # directory so the live phase restarts from the identity that
@@ -372,15 +428,17 @@ def run(args: argparse.Namespace) -> int:
                 router_validation=router_validation,
                 observations=observations,
                 shared_reference_data=shared_reference_data,
+                ref_placement=ref_placement,
             )
             reference_router_info_sha256 = hashlib.sha256(ref_info_path.read_bytes()).hexdigest()
             ref_adapter = _make_ref_adapter(
                 direction.reference, cache, run_dir / "ref", ref_endpoint, repo_root,
                 shared_data_dir=shared_reference_data,
+                placement=ref_placement,
             )
             ref_adapter.start()
             ref_adapter.wait_ready()
-            i2pr_adapter = I2prAdapter(repo_root, run_dir / "i2pr", topology.i2pr_namespace)
+            i2pr_adapter = I2prAdapter(repo_root, run_dir / "i2pr", placement=i2pr_placement)
             scenario_toml = render_and_validate(
                 run_dir / "i2pr",
                 execution_id=direction.execution_id,
@@ -406,7 +464,9 @@ def run(args: argparse.Namespace) -> int:
             observations["i2pr"] = "authenticated"
             ref_observation = ref_adapter.authenticated_observation()
             observations[direction.reference] = ref_observation
-            trigger_result = trigger.send(direction.i2pr_is_initiator, ref_endpoint, run_dir)
+            trigger_result = trigger.send(
+                direction.i2pr_is_initiator, ref_endpoint, run_dir, placement=ref_placement,
+            )
             oracle_state = oracle.observe_directional(
                 role="initiator" if direction.i2pr_is_initiator else "responder",
                 ref_endpoint=ref_endpoint,
@@ -444,9 +504,11 @@ def run(args: argparse.Namespace) -> int:
                 router_validation=router_validation,
                 observations=observations,
                 shared_i2pr_state=shared_i2pr_state,
+                i2pr_placement=i2pr_placement,
+                ref_placement=ref_placement,
             )
             i2pr_router_info_sha256 = hashlib.sha256(i2pr_info_path.read_bytes()).hexdigest()
-            i2pr_adapter = I2prAdapter(repo_root, run_dir / "i2pr", topology.i2pr_namespace)
+            i2pr_adapter = I2prAdapter(repo_root, run_dir / "i2pr", placement=i2pr_placement)
             scenario_toml = render_and_validate(
                 run_dir / "i2pr",
                 execution_id=direction.execution_id,
@@ -470,10 +532,13 @@ def run(args: argparse.Namespace) -> int:
             ref_adapter = _make_ref_adapter(
                 direction.reference, cache, run_dir / "ref", ref_endpoint, repo_root,
                 shared_data_dir=shared_reference_data,
+                placement=ref_placement,
             )
             ref_adapter.start()
             ref_adapter.wait_ready()
-            trigger_result = trigger.send(direction.i2pr_is_initiator, ref_endpoint, run_dir)
+            trigger_result = trigger.send(
+                direction.i2pr_is_initiator, ref_endpoint, run_dir, placement=ref_placement,
+            )
             terminal = i2pr_adapter.wait_terminal(timeout_seconds=30.0)
             if terminal["result"] != "passed":
                 raise MixedRunError("i2pr-responder-handshake-failed")
@@ -507,6 +572,8 @@ def run(args: argparse.Namespace) -> int:
     except (HarnessBlocked,) as exc:
         result, reason = exc.result, exc.code
     except (IsolationError, JavaI2pError, I2pdError) as exc:
+        result, reason = "rejected", exc.code
+    except RootlessTopologyError as exc:
         result, reason = "rejected", exc.code
     except (OSError, ValueError, RuntimeError):
         result, reason = "rejected", "typed-harness-operation-failed"
@@ -543,6 +610,10 @@ def run(args: argparse.Namespace) -> int:
             cleanup = "clean"
         if cleanup == "failed":
             result = "failed_cleanup"
+        if topology_kind == ROOTLESS_TOPOLOGY_KIND and not sandbox_attestation_sha256:
+            result = "rejected"
+            reason = reason or "sandbox-attestation-missing"
+            cleanup = "clean"
         if metadata is not None and result in {"passed", "skipped_ipv6"}:
             evidence_root.mkdir(mode=0o700, parents=True, exist_ok=True)
             evidence_path = evidence_root / f"{run_dir.name}-{reference}.json"
@@ -556,6 +627,8 @@ def run(args: argparse.Namespace) -> int:
                 reference_router_info_sha256=reference_router_info_sha256,
                 data_phase_mode=data_phase_mode,
                 expected_observation=expected_observation,
+                sandbox_attestation_sha256=sandbox_attestation_sha256,
+                parent_network_state_unchanged=parent_network_state_unchanged,
             )
             try:
                 write_record(evidence_path, record)
@@ -620,12 +693,13 @@ def _run_initiator_first(
     repo_root: Path,
     cache: Path,
     metadata: CacheMetadata | None,
-    topology: NamespaceTopology,
+    topology: Any,
     i2pr_endpoint: EndpointDescription,
     ref_endpoint: EndpointDescription,
     router_validation: dict[str, str],
     observations: dict[str, str],
     shared_reference_data: Path,
+    ref_placement: Any = None,
 ) -> tuple[str, Path, str]:
     """Generate the reference identity and export its RouterInfo.
 
@@ -640,6 +714,7 @@ def _run_initiator_first(
     ref_adapter = _make_ref_adapter(
         direction.reference, cache, gen_root, ref_endpoint, repo_root,
         shared_data_dir=shared_reference_data,
+        placement=ref_placement,
     )
     ref_adapter.start()
     ref_adapter.wait_ready()
@@ -662,12 +737,14 @@ def _run_responder_first(
     repo_root: Path,
     cache: Path,
     metadata: CacheMetadata | None,
-    topology: NamespaceTopology,
+    topology: Any,
     i2pr_endpoint: EndpointDescription,
     ref_endpoint: EndpointDescription,
     router_validation: dict[str, str],
     observations: dict[str, str],
     shared_i2pr_state: Path,
+    i2pr_placement: Any = None,
+    ref_placement: Any = None,
 ) -> tuple[str, Path, str]:
     """Generate the i2pr identity and export its RouterInfo.
 
@@ -681,7 +758,7 @@ def _run_responder_first(
     gen_root = run_dir / "i2pr-gen"
     gen_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     shared_i2pr_state.mkdir(mode=0o700, parents=True, exist_ok=True)
-    i2pr_adapter = I2prAdapter(repo_root, gen_root, topology.i2pr_namespace)
+    i2pr_adapter = I2prAdapter(repo_root, gen_root, placement=i2pr_placement)
     gen_toml = render_and_validate(
         gen_root,
         execution_id=direction.execution_id + "-gen",
@@ -713,7 +790,10 @@ def _run_responder_first(
     if not ri_path.is_file():
         raise MixedRunError("i2pr-router-info-not-produced", "rejected")
     router_validation["i2pr"] = "validated-and-bound"
-    ref_adapter = _make_ref_adapter(direction.reference, cache, run_dir / "ref-import", ref_endpoint, repo_root)
+    ref_adapter = _make_ref_adapter(
+        direction.reference, cache, run_dir / "ref-import", ref_endpoint, repo_root,
+        placement=ref_placement,
+    )
     ref_adapter.start()
     ref_adapter.wait_ready()
     if ri_path.is_file():
@@ -730,10 +810,17 @@ def _make_ref_adapter(
     repo_root: Path,
     *,
     shared_data_dir: Path | None = None,
+    placement: Any = None,
 ) -> JavaI2pAdapter | I2pdAdapter:
     if reference == "java_i2p":
-        return JavaI2pAdapter(cache, run_root, endpoint, repo_root, shared_data_dir=shared_data_dir)
-    return I2pdAdapter(cache, run_root, endpoint, repo_root, shared_data_dir=shared_data_dir)
+        return JavaI2pAdapter(
+            cache, run_root, endpoint, repo_root,
+            shared_data_dir=shared_data_dir, placement=placement,
+        )
+    return I2pdAdapter(
+        cache, run_root, endpoint, repo_root,
+        shared_data_dir=shared_data_dir, placement=placement,
+    )
 
 
 def main() -> int:
@@ -744,6 +831,11 @@ def main() -> int:
     parser.add_argument("--run-root")
     parser.add_argument("--keep-failed-sanitized", action="store_true")
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument(
+        "--topology-kind",
+        choices=(PRIVILEGED_TOPOLOGY_KIND, ROOTLESS_TOPOLOGY_KIND),
+        default=PRIVILEGED_TOPOLOGY_KIND,
+    )
     args = parser.parse_args()
     try:
         return run(args)
