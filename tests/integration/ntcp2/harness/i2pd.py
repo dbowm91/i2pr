@@ -36,12 +36,29 @@ class I2pdAdapter:
     revision = "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
     authenticated_phrases = ("NTCP2 session established", "Established NTCP2 session")
 
-    def __init__(self, cache: Path, run_root: Path, endpoint: EndpointDescription, repo_root: Path):
+    def __init__(
+        self,
+        cache: Path,
+        run_root: Path,
+        endpoint: EndpointDescription,
+        repo_root: Path,
+        *,
+        shared_data_dir: Path | None = None,
+    ):
         self.cache = cache.resolve()
         self.run_root = run_root.resolve()
         self.endpoint = endpoint
         self.repo_root = repo_root.resolve()
-        self.data_dir = self.run_root / "reference-data"
+        # Plan 045 D1: an explicit ``shared_data_dir`` keeps the i2pd
+        # identity alive across a ``-gen`` generation pass and the live
+        # phase, so the RouterInfo consumed by i2pr belongs to the same
+        # router the live reference restarted from.
+        if shared_data_dir is None:
+            self.data_dir = self.run_root / "reference-data"
+        else:
+            self.data_dir = shared_data_dir.resolve()
+            if not (self.data_dir == self.run_root or self.run_root in self.data_dir.parents):
+                raise I2pdError("shared-data-dir-outside-run-root")
         self.config_dir = self.run_root / "config"
         self.process: BoundedProcess | None = None
         self.metadata: CacheMetadata | None = None

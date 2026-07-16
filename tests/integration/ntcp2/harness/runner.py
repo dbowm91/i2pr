@@ -129,6 +129,23 @@ def _git_identity(repo_root: Path) -> str:
     return f"{commit.stdout.strip()};{disposition}"
 
 
+def _make_reference_adapter(
+    reference: str,
+    cache: Path,
+    run_dir: Path,
+    endpoint: "EndpointDescription",
+    repo_root: Path,
+) -> "JavaI2pAdapter | I2pdAdapter":
+    # Plan 045 D10: an unknown reference kind must fail closed rather
+    # than fall through to the i2pd adapter, which would silently pass
+    # any non-canonical scenario.
+    if reference == "java_i2p":
+        return JavaI2pAdapter(cache, run_dir, endpoint, repo_root)
+    if reference == "i2pd":
+        return I2pdAdapter(cache, run_dir, endpoint, repo_root)
+    raise HarnessBlocked("unknown-reference-kind", "rejected")
+
+
 def _no_residual_state(topology: NamespaceTopology) -> bool:
     prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
     namespaces = subprocess.run(prefix + ["ip", "netns", "list"], capture_output=True, text=True, check=False)
@@ -216,7 +233,7 @@ def run(args: argparse.Namespace) -> int:
         topology = NamespaceTopology(repo_root, run_dir.name.removeprefix("run-"), ipv6, reference_port=reference_port)
         topology.create()
         endpoint = topology.description.endpoint_for_reference()
-        adapter = JavaI2pAdapter(cache, run_dir, endpoint, repo_root) if reference == "java_i2p" else I2pdAdapter(cache, run_dir, endpoint, repo_root)
+        adapter = _make_reference_adapter(reference, cache, run_dir, endpoint, repo_root)
         adapter.start()
         adapter.wait_ready()
         adapter.export_router_info()

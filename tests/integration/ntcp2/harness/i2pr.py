@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import shutil
 from pathlib import Path
 
 try:
@@ -68,10 +70,42 @@ class I2prAdapter:
         self.last_status = status
         return status
 
+    def export_router_info(self, *, state_dir: str = "state") -> Path:
+        """Copy the i2pr launcher's persisted RouterInfo into the run-root exchange dir.
+
+        The Rust launcher writes ``state_dir/router.info``; the previous
+        ``exchange/router.info`` path did not exist after a generation pass
+        and was the source of Plan 045 D2.
+        """
+        source = (self.run_root / state_dir / "router.info").resolve()
+        if not self._inside_run_root(source):
+            raise RuntimeError("router-info-outside-run-root")
+        if not source.is_file():
+            raise RuntimeError("router-info-not-produced")
+        target = (self.run_root / "exchange" / "i2pr-router.info").resolve()
+        if not self._inside_run_root(target):
+            raise RuntimeError("exported-router-info-outside-run-root")
+        target.parent.mkdir(mode=0o700, exist_ok=True)
+        shutil.copyfile(source, target)
+        return target
+
+    def public_digest(self, *, state_dir: str = "state") -> str:
+        """Return a SHA-256 of the persisted RouterInfo bytes for evidence."""
+
+        path = self.run_root / state_dir / "router.info"
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return ""
+
     def stop(self, timeout_seconds: float = 5.0) -> str:
         if self.process is None:
             return "not-started"
         return self.process.stop(timeout_seconds)
+
+    def _inside_run_root(self, path: Path) -> bool:
+        resolved = path.resolve()
+        return resolved == self.run_root or self.run_root in resolved.parents
 
 
 def _parse_status(line: str) -> dict[str, object] | None:

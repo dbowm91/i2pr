@@ -42,6 +42,19 @@ SCENARIO_FIELDS = frozenset(
         "status_path",
     }
 )
+# Optional fields a renderer may add to a Plan 045 scenario schema. They are
+# allowlisted explicitly; any other unknown field is rejected. The pair of
+# directional data-phase selectors replaces the prior round-trip DeliveryStatus
+# expectation that Java I2P and i2pd do not implement for inbound smoke
+# scenarios.
+ACCEPTED_OPTIONAL_SCENARIO_FIELDS = frozenset(
+    {
+        "data_phase_mode",
+        "data_phase_required_peer_action",
+        "data_phase_timeout_ms",
+        "expected_observation",
+    }
+)
 STATUS_FIELDS = frozenset(
     {"schema", "type", "scenario_id", "phase", "result", "reason_code", "counters"}
 )
@@ -53,10 +66,39 @@ SCENARIO_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 PADDING_PROFILES = frozenset(
     {"minimum-variable-maximum", "representative", "boundary-and-maximum-plus-one"}
 )
+# Plan 045 directional data-phase modes. `initiator-data-only` means the
+# i2pr initiator sends exactly one fixed I2NP message and records
+# observation on its side; the reference responder is not required to send
+# back a DeliveryStatus. `responder-data-only` means i2pr only receives
+# the data phase that the reference initiator sends; i2pr does not echo.
+DATA_PHASE_MODES = frozenset(
+    {
+        "handshake-only",
+        "initiator-data-only",
+        "responder-data-only",
+        "round-trip-delivery-status",
+    }
+)
+DATA_PHASE_PEER_ACTIONS = frozenset(
+    {"observe-receive", "ignore-receive", "non-echo-completion"}
+)
+EXPECTED_OBSERVATIONS = frozenset(
+    {
+        "i2pr-sent-and-acknowledged",
+        "i2pr-received-from-peer",
+        "i2pr-sent-only",
+        "i2pr-received-only",
+        "no-data-phase-required",
+    }
+)
+SMOKE_MESSAGE_PROFILES = frozenset(
+    {"delivery-status", "fixed-12-byte-payload"}
+)
 EXPECTED_RESULTS = frozenset(
     {
         "authenticated-handshake-and-bounded-i2np-exchange",
         "authenticated-handshake-and-bounded-i2np-exchange-or-explicit-environment-skip",
+        "authenticated-handshake-and-directional-data-phase",
         "typed-rejection-with-bounded-cleanup",
         "deterministic-winner-and-loser-drain",
     }
@@ -74,9 +116,12 @@ STATUS_REASONS = frozenset(
         "listener_failed",
         "handshake_authenticated",
         "i2np_exchange_complete",
+        "directional_data_phase_complete",
         "handshake_failed",
         "dial_failed",
         "data_phase_failed",
+        "data_phase_timeout",
+        "data_phase_observation_incomplete",
         "timeout",
         "cleanup_complete",
         "invalid_scenario_config",
@@ -118,6 +163,10 @@ class LauncherScenario:
     deterministic_seed: int | None
     expected_result_class: str
     status_path: Path
+    data_phase_mode: str = "round-trip-delivery-status"
+    data_phase_required_peer_action: str = "non-echo-completion"
+    data_phase_timeout_ms: int | None = None
+    expected_observation: str = "i2pr-sent-and-acknowledged"
 
 
 def load_launcher_scenario(path: Path) -> LauncherScenario:
@@ -134,7 +183,11 @@ def load_launcher_scenario(path: Path) -> LauncherScenario:
     if set(raw) != {"scenario"} or not isinstance(raw["scenario"], dict):
         raise LauncherScenarioError("scenario-table-invalid")
     value = raw["scenario"]
-    if frozenset(value) != SCENARIO_FIELDS:
+    fields = frozenset(value)
+    if not fields.issuperset(SCENARIO_FIELDS):
+        raise LauncherScenarioError("scenario-fields-missing")
+    extra = fields - SCENARIO_FIELDS
+    if not extra.issubset(ACCEPTED_OPTIONAL_SCENARIO_FIELDS):
         raise LauncherScenarioError("scenario-fields-invalid")
     if value["schema"] != SCENARIO_SCHEMA:
         raise LauncherScenarioError("scenario-schema-unsupported")
@@ -189,13 +242,30 @@ def load_launcher_scenario(path: Path) -> LauncherScenario:
     }
     if value["padding_profile"] not in PADDING_PROFILES:
         raise LauncherScenarioError("padding-profile-invalid")
-    if value["smoke_message_profile"] != "delivery-status":
+    if value["smoke_message_profile"] not in SMOKE_MESSAGE_PROFILES:
         raise LauncherScenarioError("smoke-message-profile-invalid")
     seed = value["deterministic_seed"]
     if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int) or seed < 0):
         raise LauncherScenarioError("deterministic-seed-invalid")
     if value["expected_result_class"] not in EXPECTED_RESULTS:
         raise LauncherScenarioError("expected-result-invalid")
+    data_phase_mode = value.get("data_phase_mode", "round-trip-delivery-status")
+    if data_phase_mode not in DATA_PHASE_MODES:
+        raise LauncherScenarioError("data-phase-mode-invalid")
+    peer_action = value.get("data_phase_required_peer_action", "non-echo-completion")
+    if peer_action not in DATA_PHASE_PEER_ACTIONS:
+        raise LauncherScenarioError("data-phase-peer-action-invalid")
+    observation = value.get("expected_observation", "i2pr-sent-and-acknowledged")
+    if observation not in EXPECTED_OBSERVATIONS:
+        raise LauncherScenarioError("expected-observation-invalid")
+    timeout_ms = value.get("data_phase_timeout_ms")
+    if timeout_ms is not None and (
+        isinstance(timeout_ms, bool)
+        or not isinstance(timeout_ms, int)
+        or timeout_ms <= 0
+        or timeout_ms > MAX_DEADLINE_MILLISECONDS
+    ):
+        raise LauncherScenarioError("data-phase-timeout-invalid")
     status_path = _confined_path(run_root, value["status_path"])
     if status_path.exists() and status_path.is_dir():
         raise LauncherScenarioError("status-path-is-directory")
@@ -222,6 +292,10 @@ def load_launcher_scenario(path: Path) -> LauncherScenario:
         deterministic_seed=seed,
         expected_result_class=value["expected_result_class"],
         status_path=status_path,
+        data_phase_mode=data_phase_mode,
+        data_phase_required_peer_action=peer_action,
+        data_phase_timeout_ms=timeout_ms,
+        expected_observation=observation,
     )
 
 

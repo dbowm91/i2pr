@@ -2,14 +2,19 @@
 
 ## Status
 
-Plan 044 is implementation-complete locally: every deterministic corrective
-defect, the mixed-router composition, the strict launcher renderer, the
-non-echo data-phase oracle, the gate-staging archival design, and the
-documentation reconciliation are wired and tested. Privileged external
-execution returned supplementary shell-integration defects that were
-corrected in the same record. The Ubuntu 24.04 amd64 host contract
-ultimately blocks execution on this host, so no authenticated mixed-router
-result is claimed and no sanitized mixed evidence record is committed.
+**Plan 045 amendment (2026-07-16).** Plan 044's plan-of-record status above
+is amended: the local implementation now contains ten outstanding
+corrective defects that prevent any Plan 044 success criterion from being
+validated. The amended status is
+
+> Plan 044 is implementation-complete locally in its earlier corrected form
+> but contains ten remediation defects (Plan 045 D1–D10) that invalidate
+> the prior "implementation-complete locally" claim. The plan-of-record is
+> now `plans/045-ntcp2-mixed-router-proof-closure-corrective-pass.md`;
+> Plan 044 itself does not close Milestone 3 and is superseded for
+> closure purposes by Plan 045.
+
+The Plan 044 typed blocker is replaced: `handshake-smoke` no longer returns
 
 The Plan 044 typed blocker is replaced: `handshake-smoke` no longer returns
 `i2pr-mixed-router-profile-not-wired` for the four allowlisted directional

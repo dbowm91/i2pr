@@ -41,7 +41,7 @@ use i2pr_transport_ntcp2::handshake::ClockSkewPolicy;
 use i2pr_transport_ntcp2::state_machine::{InitiatorState, ResponderState};
 use i2pr_transport_ntcp2::{Ntcp2Endpoint, Ntcp2RouterAddress};
 
-use crate::scenario::{Role, Scenario};
+use crate::scenario::{DataPhaseMode, Role, Scenario};
 use crate::status::{
     StatusCounters, StatusPhase, StatusReason, StatusResult, StatusWriter, emit_stdout_status,
 };
@@ -224,13 +224,18 @@ fn run_wire_command(mode: &'static str, scenario_config: &Path) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (mut status, outcome) = run_blocking(execute_wire(scenario, status));
+    let (mut status, outcome, data_phase_mode) = run_blocking(execute_wire(scenario, status));
     let (result, reason, counters) = match outcome {
-        Ok(counters) => (
-            StatusResult::Passed,
-            StatusReason::I2npExchangeComplete,
-            counters,
-        ),
+        Ok(counters) => {
+            let reason = match data_phase_mode {
+                DataPhaseMode::HandshakeOnly => StatusReason::HandshakeAuthenticated,
+                DataPhaseMode::InitiatorDataOnly | DataPhaseMode::ResponderDataOnly => {
+                    StatusReason::DirectionalDataPhaseComplete
+                }
+                DataPhaseMode::RoundTripDeliveryStatus => StatusReason::I2npExchangeComplete,
+            };
+            (StatusResult::Passed, reason, counters)
+        }
         Err(error) => {
             let (result, reason) = terminal_status(error);
             (result, reason, StatusCounters::default())
@@ -252,21 +257,22 @@ fn run_wire_command(mode: &'static str, scenario_config: &Path) -> ExitCode {
 async fn execute_wire(
     scenario: Scenario,
     mut status: StatusWriter,
-) -> (StatusWriter, Result<StatusCounters, LauncherError>) {
+) -> (StatusWriter, Result<StatusCounters, LauncherError>, DataPhaseMode) {
+    let data_phase_mode = scenario.data_phase_mode;
     let local = match prepare_local_state(&scenario) {
         Ok(local) => local,
-        Err(error) => return (status, Err(error)),
+        Err(error) => return (status, Err(error), data_phase_mode),
     };
     let peer = match scenario.role {
         Role::Initiator => match prepare_peer_state(&scenario) {
             Ok(peer) => Some(peer),
-            Err(error) => return (status, Err(error)),
+            Err(error) => return (status, Err(error), data_phase_mode),
         },
         Role::Responder => None,
     };
     let padding = match driver_padding(scenario.padding_profile) {
         Ok(padding) => padding,
-        Err(error) => return (status, Err(error)),
+        Err(error) => return (status, Err(error), data_phase_mode),
     };
     let deadlines = runtime_deadlines(&scenario);
     let service = match Ntcp2RuntimeService::new(Ntcp2RuntimeConfig {
@@ -274,7 +280,7 @@ async fn execute_wire(
         ..Ntcp2RuntimeConfig::default()
     }) {
         Ok(service) => service,
-        Err(_) => return (status, Err(LauncherError::StateInvalid)),
+        Err(_) => return (status, Err(LauncherError::StateInvalid), data_phase_mode),
     };
     let root = CancellationToken::new();
     let scope = service.child_scope(&root);
@@ -285,7 +291,13 @@ async fn execute_wire(
         let mut listener = match service.listen(address, &scope).await {
             Ok(listener) => listener,
             Err(_) => {
-                return finish_scope(status, scope, Err(LauncherError::ListenerFailed)).await;
+                return finish_scope(
+                    status,
+                    scope,
+                    Err(LauncherError::ListenerFailed),
+                    data_phase_mode,
+                )
+                .await;
             }
         };
         counters.listener_ready = 1;
@@ -298,7 +310,13 @@ async fn execute_wire(
             )
             .is_err()
         {
-            return finish_scope(status, scope, Err(LauncherError::StatusOutputUnavailable)).await;
+            return finish_scope(
+                status,
+                scope,
+                Err(LauncherError::StatusOutputUnavailable),
+                data_phase_mode,
+            )
+            .await;
         }
         let result = execute_responder(
             &service,
@@ -306,12 +324,13 @@ async fn execute_wire(
             &root,
             &mut listener,
             local,
+            &scenario,
             deadlines,
             padding,
             &mut counters,
         )
         .await;
-        finish_scope(status, scope, result.map(|_| counters)).await
+        finish_scope(status, scope, result.map(|_| counters), data_phase_mode).await
     } else {
         let result = execute_initiator(
             &service,
@@ -325,7 +344,7 @@ async fn execute_wire(
             &mut counters,
         )
         .await;
-        finish_scope(status, scope, result.map(|_| counters)).await
+        finish_scope(status, scope, result.map(|_| counters), data_phase_mode).await
     }
 }
 
@@ -333,12 +352,13 @@ async fn finish_scope(
     status: StatusWriter,
     scope: i2pr_runtime::ChildScope,
     result: Result<StatusCounters, LauncherError>,
-) -> (StatusWriter, Result<StatusCounters, LauncherError>) {
+    data_phase_mode: DataPhaseMode,
+) -> (StatusWriter, Result<StatusCounters, LauncherError>, DataPhaseMode) {
     let cleanup = scope.shutdown().await;
     if cleanup.failed() || cleanup.remaining() != 0 {
-        return (status, Err(LauncherError::CleanupFailed));
+        return (status, Err(LauncherError::CleanupFailed), data_phase_mode);
     }
-    (status, result)
+    (status, result, data_phase_mode)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -348,6 +368,7 @@ async fn execute_responder(
     cancellation: &CancellationToken,
     listener: &mut i2pr_runtime::ListenerHandle,
     local: LocalState,
+    scenario: &Scenario,
     deadlines: Ntcp2RuntimeDeadlines,
     padding: DriverPaddingProfile,
     counters: &mut StatusCounters,
@@ -394,7 +415,14 @@ async fn execute_responder(
     let mut link = service
         .promote_authenticated_inbound(scope, inbound, handshake, 1)
         .map_err(|_| LauncherError::DataPhaseFailed)?;
-    let result = exchange_delivery_status(&mut link, cancellation, deadlines, counters).await;
+    let result = exchange_directional(
+        &mut link,
+        cancellation,
+        deadlines,
+        counters,
+        scenario.data_phase_mode,
+    )
+    .await;
     link.close();
     result
 }
@@ -457,12 +485,44 @@ async fn execute_initiator(
     let mut link = service
         .promote_authenticated_dial(scope, attempt, handshake, 1)
         .map_err(|_| LauncherError::DataPhaseFailed)?;
-    let result = exchange_delivery_status(&mut link, cancellation, deadlines, counters).await;
+    let result = exchange_directional(
+        &mut link,
+        cancellation,
+        deadlines,
+        counters,
+        scenario.data_phase_mode,
+    )
+    .await;
     link.close();
     result
 }
 
-async fn exchange_delivery_status(
+/// Plan 045 D6: dispatch the data-phase exchange to the typed behavior
+/// selected by the scenario.
+async fn exchange_directional(
+    link: &mut i2pr_runtime::AuthenticatedLink,
+    cancellation: &CancellationToken,
+    deadlines: Ntcp2RuntimeDeadlines,
+    counters: &mut StatusCounters,
+    mode: DataPhaseMode,
+) -> Result<(), LauncherError> {
+    match mode {
+        DataPhaseMode::HandshakeOnly => Ok(()),
+        DataPhaseMode::InitiatorDataOnly | DataPhaseMode::RoundTripDeliveryStatus => {
+            send_i2np_block(link, cancellation, deadlines, counters).await?;
+            if matches!(mode, DataPhaseMode::RoundTripDeliveryStatus) {
+                receive_delivery_status(link, cancellation, deadlines, counters).await
+            } else {
+                Ok(())
+            }
+        }
+        DataPhaseMode::ResponderDataOnly => {
+            receive_delivery_status(link, cancellation, deadlines, counters).await
+        }
+    }
+}
+
+async fn send_i2np_block(
     link: &mut i2pr_runtime::AuthenticatedLink,
     cancellation: &CancellationToken,
     deadlines: Ntcp2RuntimeDeadlines,
@@ -499,6 +559,15 @@ async fn exchange_delivery_status(
     .map_err(|_| LauncherError::DataPhaseFailed)?;
     counters.frames_sent = 1;
     counters.i2np_sent = 1;
+    Ok(())
+}
+
+async fn receive_delivery_status(
+    link: &mut i2pr_runtime::AuthenticatedLink,
+    cancellation: &CancellationToken,
+    deadlines: Ntcp2RuntimeDeadlines,
+    counters: &mut StatusCounters,
+) -> Result<(), LauncherError> {
     let lease = bounded_timeout(deadlines.read_idle, link.recv(cancellation))
         .await
         .map_err(|_| LauncherError::Timeout)?
@@ -903,5 +972,55 @@ status_path = "status.jsonl"
             .is_ok()
         );
         fs::remove_dir_all(root).expect("test cleanup");
+    }
+
+#[test]
+    fn data_phase_modes_complete_typed_terminal_reason() {
+        for (data_phase_mode, expected_reason, expected_marker) in [
+            (
+                scenario::DataPhaseMode::HandshakeOnly,
+                StatusReason::HandshakeAuthenticated,
+                "handshake_authenticated",
+            ),
+            (
+                scenario::DataPhaseMode::InitiatorDataOnly,
+                StatusReason::DirectionalDataPhaseComplete,
+                "directional_data_phase_complete",
+            ),
+            (
+                scenario::DataPhaseMode::ResponderDataOnly,
+                StatusReason::DirectionalDataPhaseComplete,
+                "directional_data_phase_complete",
+            ),
+            (
+                scenario::DataPhaseMode::RoundTripDeliveryStatus,
+                StatusReason::I2npExchangeComplete,
+                "i2np_exchange_complete",
+            ),
+        ] {
+            let root = std::env::temp_dir().join(format!(
+                "i2pr-launcher-dpm-{}-{}",
+                std::process::id(),
+                unix_millis()
+            ));
+            fs::create_dir(&root).expect("test root");
+            let mut scenario = test_scenario(&root);
+            scenario.data_phase_mode = data_phase_mode;
+            scenario.expected_result_class =
+                scenario::ExpectedResultClass::AuthenticatedHandshakeAndDirectionalDataPhase;
+            let mut writer = StatusWriter::new(&scenario).expect("status writer");
+            writer
+                .emit(
+                    StatusPhase::Terminal,
+                    StatusResult::Passed,
+                    expected_reason,
+                    StatusCounters::default(),
+                )
+                .expect("status record");
+            let contents =
+                std::fs::read_to_string(&scenario.status_path).expect("status file");
+            assert!(contents.contains(expected_marker), "missing marker {expected_marker}");
+            fs::remove_dir_all(root).expect("test cleanup");
+        }
     }
 }

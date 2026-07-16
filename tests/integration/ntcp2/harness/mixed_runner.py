@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import shutil
@@ -154,11 +155,18 @@ def _record_mixed(
     process_counters: dict[str, dict[str, int]],
     oracle_kind: str = "",
     runtime_counters: dict[str, int] | None = None,
+    *,
+    configuration_sha256: str = "",
+    i2pr_router_info_sha256: str = "",
+    reference_router_info_sha256: str = "",
+    data_phase_mode: str = "round-trip-delivery-status",
+    expected_observation: str = "i2pr-sent-and-acknowledged",
 ) -> dict[str, Any]:
     zero = "0" * 64
     deterministic = (
         f"seed=1;timeouts=bounded;network=synthetic-private-036;"
-        f"ipv6-probe=passed;data_phase_oracle={oracle_kind}"
+        f"ipv6-probe=passed;data_phase_oracle={oracle_kind};"
+        f"data_phase_mode={data_phase_mode};expected_observation={expected_observation}"
     )
     resource = {
         "tasks": 0, "queues": 0, "permits": 0,
@@ -176,7 +184,9 @@ def _record_mixed(
         "reference_revision": getattr(metadata, "source_revision", zero[:40]) if metadata else zero[:40],
         "artifact_sha256": getattr(metadata, "artifact_sha256", zero) if metadata else zero,
         "installed_tree_sha256": getattr(metadata, "installed_tree_sha256", zero) if metadata else zero,
-        "configuration_sha256": zero,
+        "configuration_sha256": configuration_sha256 or zero,
+        "i2pr_router_info_sha256": i2pr_router_info_sha256 or zero,
+        "reference_router_info_sha256": reference_router_info_sha256 or zero,
         "namespace_topology_sha256": topology.description.digest() if topology is not None else zero,
         "direction": direction.direction,
         "address_family": direction.address_family,
@@ -293,6 +303,12 @@ def run(args: argparse.Namespace) -> int:
         "queue_items_high_watermark": 0,
         "queue_bytes_high_watermark": 0,
     }
+    i2pr_router_info_sha256 = ""
+    reference_router_info_sha256 = ""
+    configuration_sha256 = ""
+    data_phase_mode = "round-trip-delivery-status"
+    expected_observation = "i2pr-sent-and-acknowledged"
+    oracle_state = {"sender_observed": "not-observed", "receiver_observed": "not-observed"}
     try:
         _host_check(repo_root, run_dir)
         i2pr_commit = _git_identity(repo_root)
@@ -329,8 +345,16 @@ def run(args: argparse.Namespace) -> int:
             namespace=topology.reference_namespace,
             network_id="99",
         )
+        # Plan 045 D1: the ``-gen`` adapter and the live adapter share the
+        # same ``reference-data`` directory and the same i2pr ``state``
+        # directory so the live phase restarts from the identity that
+        # produced the exported RouterInfo.
+        shared_reference_data = run_dir / "reference-data"
+        shared_i2pr_state = run_dir / "i2pr" / "state"
         if direction.i2pr_is_initiator:
-            _run_initiator_first(
+            data_phase_mode = "initiator-data-only"
+            expected_observation = "i2pr-sent-only"
+            ref_validation, ref_info_path, configuration_sha256 = _run_initiator_first(
                 direction=direction,
                 run_dir=run_dir,
                 repo_root=repo_root,
@@ -341,8 +365,13 @@ def run(args: argparse.Namespace) -> int:
                 ref_endpoint=ref_endpoint,
                 router_validation=router_validation,
                 observations=observations,
+                shared_reference_data=shared_reference_data,
             )
-            ref_adapter = _make_ref_adapter(direction.reference, cache, run_dir / "ref", ref_endpoint, repo_root)
+            reference_router_info_sha256 = hashlib.sha256(ref_info_path.read_bytes()).hexdigest()
+            ref_adapter = _make_ref_adapter(
+                direction.reference, cache, run_dir / "ref", ref_endpoint, repo_root,
+                shared_data_dir=shared_reference_data,
+            )
             ref_adapter.start()
             ref_adapter.wait_ready()
             i2pr_adapter = I2prAdapter(repo_root, run_dir / "i2pr", topology.i2pr_namespace)
@@ -358,23 +387,46 @@ def run(args: argparse.Namespace) -> int:
                 state_dir="state",
                 peer_router_info="exchange/ref-router.info",
                 padding_profile=direction.padding,
+                smoke_message_profile="fixed-12-byte-payload",
+                expected_result_class="authenticated-handshake-and-directional-data-phase",
+                data_phase_mode=data_phase_mode,
+                data_phase_required_peer_action="ignore-receive",
+                expected_observation=expected_observation,
             )
             i2pr_adapter.start("dial")
             terminal = i2pr_adapter.wait_terminal(timeout_seconds=30.0)
             if terminal["result"] != "passed":
                 raise MixedRunError("i2pr-initiator-handshake-failed")
             observations["i2pr"] = "authenticated"
-            if ref_adapter.observed_phrase(ref_adapter.authenticated_phrases):
-                observations[direction.reference] = "authenticated"
-            oracle_obs = oracle.observe()
-            result, reason = "passed", "mixed-router-direction-authenticated"
+            ref_observation = ref_adapter.authenticated_observation()
+            observations[direction.reference] = ref_observation
+            trigger_result = trigger.send(direction.i2pr_is_initiator, ref_endpoint, run_dir)
+            oracle_state = oracle.observe_directional(
+                role="initiator" if direction.i2pr_is_initiator else "responder",
+                ref_endpoint=ref_endpoint,
+                run_dir=run_dir,
+                terminal_counters=terminal.get("counters", {}),
+            )
+            result, reason = _evaluate_pass_predicate(
+                direction=direction,
+                terminal=terminal,
+                ref_observation=ref_observation,
+                oracle_state=oracle_state,
+            )
             runtime_counters["handshake_attempts"] = 1
             runtime_counters["frames_sent"] = int(terminal.get("counters", {}).get("frames_sent", 0))
             runtime_counters["frames_received"] = int(terminal.get("counters", {}).get("frames_received", 0))
             runtime_counters["i2np_sent"] = int(terminal.get("counters", {}).get("i2np_sent", 0))
             runtime_counters["i2np_received"] = int(terminal.get("counters", {}).get("i2np_received", 0))
+            try:
+                i2pr_ri = i2pr_adapter.export_router_info()
+                i2pr_router_info_sha256 = hashlib.sha256(i2pr_ri.read_bytes()).hexdigest()
+            except (OSError, RuntimeError):
+                i2pr_router_info_sha256 = ""
         else:
-            _run_responder_first(
+            data_phase_mode = "responder-data-only"
+            expected_observation = "i2pr-received-only"
+            i2pr_validation, i2pr_info_path, _configuration_sha256 = _run_responder_first(
                 direction=direction,
                 run_dir=run_dir,
                 repo_root=repo_root,
@@ -385,7 +437,9 @@ def run(args: argparse.Namespace) -> int:
                 ref_endpoint=ref_endpoint,
                 router_validation=router_validation,
                 observations=observations,
+                shared_i2pr_state=shared_i2pr_state,
             )
+            i2pr_router_info_sha256 = hashlib.sha256(i2pr_info_path.read_bytes()).hexdigest()
             i2pr_adapter = I2prAdapter(repo_root, run_dir / "i2pr", topology.i2pr_namespace)
             scenario_toml = render_and_validate(
                 run_dir / "i2pr",
@@ -399,25 +453,49 @@ def run(args: argparse.Namespace) -> int:
                 state_dir="state",
                 peer_router_info=None,
                 padding_profile=direction.padding,
+                smoke_message_profile="fixed-12-byte-payload",
+                expected_result_class="authenticated-handshake-and-directional-data-phase",
+                data_phase_mode=data_phase_mode,
+                data_phase_required_peer_action="observe-receive",
+                expected_observation=expected_observation,
             )
             i2pr_adapter.start("listen")
             i2pr_adapter.wait_ready(timeout_seconds=30.0)
-            ref_adapter = _make_ref_adapter(direction.reference, cache, run_dir / "ref", ref_endpoint, repo_root)
+            ref_adapter = _make_ref_adapter(
+                direction.reference, cache, run_dir / "ref", ref_endpoint, repo_root,
+                shared_data_dir=shared_reference_data,
+            )
             ref_adapter.start()
             ref_adapter.wait_ready()
+            trigger_result = trigger.send(direction.i2pr_is_initiator, ref_endpoint, run_dir)
             terminal = i2pr_adapter.wait_terminal(timeout_seconds=30.0)
             if terminal["result"] != "passed":
                 raise MixedRunError("i2pr-responder-handshake-failed")
             observations["i2pr"] = "authenticated"
-            if ref_adapter.observed_phrase(ref_adapter.authenticated_phrases):
-                observations[direction.reference] = "authenticated"
-            oracle_obs = oracle.observe()
-            result, reason = "passed", "mixed-router-direction-authenticated"
+            ref_observation = ref_adapter.authenticated_observation()
+            observations[direction.reference] = ref_observation
+            oracle_state = oracle.observe_directional(
+                role="responder" if not direction.i2pr_is_initiator else "initiator",
+                ref_endpoint=ref_endpoint,
+                run_dir=run_dir,
+                terminal_counters=terminal.get("counters", {}),
+            )
+            result, reason = _evaluate_pass_predicate(
+                direction=direction,
+                terminal=terminal,
+                ref_observation=ref_observation,
+                oracle_state=oracle_state,
+            )
             runtime_counters["handshake_attempts"] = 1
             runtime_counters["frames_sent"] = int(terminal.get("counters", {}).get("frames_sent", 0))
             runtime_counters["frames_received"] = int(terminal.get("counters", {}).get("frames_received", 0))
             runtime_counters["i2np_sent"] = int(terminal.get("counters", {}).get("i2np_sent", 0))
             runtime_counters["i2np_received"] = int(terminal.get("counters", {}).get("i2np_received", 0))
+            try:
+                i2pr_ri = i2pr_adapter.export_router_info()
+                i2pr_router_info_sha256 = hashlib.sha256(i2pr_ri.read_bytes()).hexdigest()
+            except (OSError, RuntimeError):
+                i2pr_router_info_sha256 = ""
     except MixedRunError as exc:
         result, reason = exc.result, exc.code
     except (HarnessBlocked,) as exc:
@@ -434,7 +512,7 @@ def run(args: argparse.Namespace) -> int:
             try:
                 snap = i2pr_adapter.process.snapshot() if i2pr_adapter.process else {}
                 process_counters["i2pr"]["started"] += int(snap.get("running", 0) or 1)
-                process_counters["i2pr"]["exited"] += int(snap.get("running", 1) == 0)
+                process_counters["i2pr"]["exited"] = 1
                 process_counters["i2pr"]["forced"] += int(snap.get("forced", 0))
             except RuntimeError:
                 pass
@@ -445,7 +523,7 @@ def run(args: argparse.Namespace) -> int:
             try:
                 snap = ref_adapter.process.snapshot() if ref_adapter.process else {}
                 process_counters[direction.reference]["started"] += int(snap.get("running", 0) or 1)
-                process_counters[direction.reference]["exited"] += int(snap.get("running", 1) == 0)
+                process_counters[direction.reference]["exited"] = 1
                 process_counters[direction.reference]["forced"] += int(snap.get("forced", 0))
             except RuntimeError:
                 pass
@@ -467,6 +545,11 @@ def run(args: argparse.Namespace) -> int:
                 direction, result, reason, cleanup, i2pr_commit, metadata,
                 topology, router_validation, observations, process_counters,
                 oracle_kind=oracle_kind, runtime_counters=runtime_counters,
+                configuration_sha256=configuration_sha256,
+                i2pr_router_info_sha256=i2pr_router_info_sha256,
+                reference_router_info_sha256=reference_router_info_sha256,
+                data_phase_mode=data_phase_mode,
+                expected_observation=expected_observation,
             )
             try:
                 write_record(evidence_path, record)
@@ -495,6 +578,35 @@ def run(args: argparse.Namespace) -> int:
     return 0 if result == "passed" else 2
 
 
+def _evaluate_pass_predicate(
+    *,
+    direction: MixedDirection,
+    terminal: dict[str, object],
+    ref_observation: str,
+    oracle_state: dict[str, str],
+) -> tuple[str, str]:
+    """Plan 045 D7: the typed pass predicate requires every phase to succeed.
+
+    The prior code marked a direction ``passed`` after the handshake alone
+    and ignored the data-phase oracle and the reference observation. The
+    new predicate requires: (a) i2pr terminal ``passed``; (b) the
+    reference adapter reports an authenticated observation; (c) the data
+    oracle observed the expected sender or receiver for the direction.
+    """
+
+    if str(terminal.get("result", "")) != "passed":
+        return "rejected", "i2pr-terminal-not-passed"
+    if ref_observation != "authenticated":
+        return "rejected", "reference-observation-missing"
+    if direction.i2pr_is_initiator:
+        if oracle_state.get("sender_observed") != "observed":
+            return "rejected", "oracle-sender-not-observed"
+    else:
+        if oracle_state.get("receiver_observed") != "observed":
+            return "rejected", "oracle-receiver-not-observed"
+    return "passed", "mixed-router-direction-authenticated"
+
+
 def _run_initiator_first(
     *,
     direction: MixedDirection,
@@ -507,8 +619,22 @@ def _run_initiator_first(
     ref_endpoint: EndpointDescription,
     router_validation: dict[str, str],
     observations: dict[str, str],
-) -> None:
-    ref_adapter = _make_ref_adapter(direction.reference, cache, run_dir / "ref-gen", ref_endpoint, repo_root)
+    shared_reference_data: Path,
+) -> tuple[str, Path, str]:
+    """Generate the reference identity and export its RouterInfo.
+
+    Plan 045 D1 fix: the ``-gen`` adapter writes to ``shared_reference_data``
+    and the live phase reuses the same data directory so the live reference
+    restarts from the identity that produced the exported RouterInfo.
+    """
+
+    gen_root = run_dir / "ref-gen"
+    gen_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    shared_reference_data.mkdir(mode=0o700, parents=True, exist_ok=True)
+    ref_adapter = _make_ref_adapter(
+        direction.reference, cache, gen_root, ref_endpoint, repo_root,
+        shared_data_dir=shared_reference_data,
+    )
     ref_adapter.start()
     ref_adapter.wait_ready()
     ri_path = ref_adapter.export_router_info()
@@ -518,9 +644,9 @@ def _run_initiator_first(
     )
     exchange_dir = run_dir / "i2pr" / "exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True)
-    import shutil
     shutil.copyfile(ri_path, exchange_dir / "ref-router.info")
     ref_adapter.stop()
+    return ("validated-and-bound", ri_path, getattr(ref_adapter, "configuration_sha256", ""))
 
 
 def _run_responder_first(
@@ -535,10 +661,23 @@ def _run_responder_first(
     ref_endpoint: EndpointDescription,
     router_validation: dict[str, str],
     observations: dict[str, str],
-) -> None:
-    i2pr_adapter = I2prAdapter(repo_root, run_dir / "i2pr-gen", topology.i2pr_namespace)
+    shared_i2pr_state: Path,
+) -> tuple[str, Path, str]:
+    """Generate the i2pr identity and export its RouterInfo.
+
+    Plan 045 D1 fix: the ``-gen`` adapter writes to ``shared_i2pr_state``
+    and the live phase reuses the same directory so the live i2pr restarts
+    from the identity that produced the exported RouterInfo. The Rust
+    launcher persists ``router.info`` inside ``state_dir``, so the
+    export pulls from there (Plan 045 D2).
+    """
+
+    gen_root = run_dir / "i2pr-gen"
+    gen_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    shared_i2pr_state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    i2pr_adapter = I2prAdapter(repo_root, gen_root, topology.i2pr_namespace)
     gen_toml = render_and_validate(
-        run_dir / "i2pr-gen",
+        gen_root,
         execution_id=direction.execution_id + "-gen",
         role="responder",
         address_family=direction.address_family,
@@ -549,18 +688,32 @@ def _run_responder_first(
         state_dir="state",
         peer_router_info=None,
         padding_profile=direction.padding,
+        data_phase_mode="handshake-only",
+        data_phase_required_peer_action="ignore-receive",
+        expected_observation="no-data-phase-required",
     )
     i2pr_adapter.start("listen")
     i2pr_adapter.wait_ready(timeout_seconds=30.0)
     i2pr_adapter.stop(timeout_seconds=10.0)
+    # Copy the state from gen_root into shared_i2pr_state so the live phase
+    # restarts from the same identity.
+    for entry in (gen_root / "state").iterdir():
+        target = shared_i2pr_state / entry.name
+        if entry.is_file():
+            shutil.copyfile(entry, target)
+        elif entry.is_dir():
+            shutil.copytree(entry, target)
+    ri_path = shared_i2pr_state / "router.info"
+    if not ri_path.is_file():
+        raise MixedRunError("i2pr-router-info-not-produced", "rejected")
     router_validation["i2pr"] = "validated-and-bound"
     ref_adapter = _make_ref_adapter(direction.reference, cache, run_dir / "ref-import", ref_endpoint, repo_root)
     ref_adapter.start()
     ref_adapter.wait_ready()
-    ri_path = run_dir / "i2pr-gen" / "exchange" / "router.info"
     if ri_path.is_file():
         ref_adapter.import_peer_router_info(ri_path)
     ref_adapter.stop()
+    return ("validated-and-bound", ri_path, getattr(ref_adapter, "configuration_sha256", ""))
 
 
 def _make_ref_adapter(
@@ -569,10 +722,12 @@ def _make_ref_adapter(
     run_root: Path,
     endpoint: EndpointDescription,
     repo_root: Path,
+    *,
+    shared_data_dir: Path | None = None,
 ) -> JavaI2pAdapter | I2pdAdapter:
     if reference == "java_i2p":
-        return JavaI2pAdapter(cache, run_root, endpoint, repo_root)
-    return I2pdAdapter(cache, run_root, endpoint, repo_root)
+        return JavaI2pAdapter(cache, run_root, endpoint, repo_root, shared_data_dir=shared_data_dir)
+    return I2pdAdapter(cache, run_root, endpoint, repo_root, shared_data_dir=shared_data_dir)
 
 
 def main() -> int:

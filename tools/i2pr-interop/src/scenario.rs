@@ -34,12 +34,44 @@ pub enum PaddingProfile {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SmokeMessageProfile {
     DeliveryStatus,
+    Fixed12BytePayload,
+}
+
+/// Plan 045 directional data-phase selector. The four allowlisted values map
+/// one-to-one to the Python harness enum. The default matches the prior
+/// round-trip `DeliveryStatus` behavior so a renderer that does not yet emit
+/// the field still passes the strict parser.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DataPhaseMode {
+    HandshakeOnly,
+    InitiatorDataOnly,
+    ResponderDataOnly,
+    RoundTripDeliveryStatus,
+}
+
+/// Required peer behavior during the data phase. The default value
+/// `NonEchoCompletion` documents the no-echo-required behavior explicitly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DataPhasePeerAction {
+    ObserveReceive,
+    IgnoreReceive,
+    NonEchoCompletion,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpectedObservation {
+    I2prSentAndAcknowledged,
+    I2prReceivedFromPeer,
+    I2prSentOnly,
+    I2prReceivedOnly,
+    NoDataPhaseRequired,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExpectedResultClass {
     AuthenticatedHandshakeAndBoundedI2npExchange,
     AuthenticatedHandshakeAndBoundedI2npExchangeOrEnvironmentSkip,
+    AuthenticatedHandshakeAndDirectionalDataPhase,
     TypedRejectionWithBoundedCleanup,
     DeterministicWinnerAndLoserDrain,
 }
@@ -72,6 +104,10 @@ pub struct Scenario {
     pub deterministic_seed: Option<u64>,
     pub expected_result_class: ExpectedResultClass,
     pub status_path: PathBuf,
+    pub data_phase_mode: DataPhaseMode,
+    pub data_phase_required_peer_action: DataPhasePeerAction,
+    pub data_phase_timeout_ms: Option<u64>,
+    pub expected_observation: ExpectedObservation,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -98,6 +134,10 @@ pub enum ScenarioError {
     InvalidPaddingProfile,
     InvalidSmokeMessageProfile,
     InvalidExpectedResultClass,
+    InvalidDataPhaseMode,
+    InvalidDataPhasePeerAction,
+    InvalidDataPhaseTimeout,
+    InvalidExpectedObservation,
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,6 +170,10 @@ struct RawScenario {
     deterministic_seed: Option<u64>,
     expected_result_class: String,
     status_path: String,
+    data_phase_mode: Option<String>,
+    data_phase_required_peer_action: Option<String>,
+    data_phase_timeout_ms: Option<u64>,
+    expected_observation: Option<String>,
 }
 
 impl Scenario {
@@ -227,6 +271,7 @@ impl Scenario {
         };
         let smoke_message_profile = match raw.smoke_message_profile.as_str() {
             "delivery-status" => SmokeMessageProfile::DeliveryStatus,
+            "fixed-12-byte-payload" => SmokeMessageProfile::Fixed12BytePayload,
             _ => return Err(ScenarioError::InvalidSmokeMessageProfile),
         };
         let expected_result_class = match raw.expected_result_class.as_str() {
@@ -236,6 +281,9 @@ impl Scenario {
             "authenticated-handshake-and-bounded-i2np-exchange-or-explicit-environment-skip" => {
                 ExpectedResultClass::AuthenticatedHandshakeAndBoundedI2npExchangeOrEnvironmentSkip
             }
+            "authenticated-handshake-and-directional-data-phase" => {
+                ExpectedResultClass::AuthenticatedHandshakeAndDirectionalDataPhase
+            }
             "typed-rejection-with-bounded-cleanup" => {
                 ExpectedResultClass::TypedRejectionWithBoundedCleanup
             }
@@ -243,6 +291,45 @@ impl Scenario {
                 ExpectedResultClass::DeterministicWinnerAndLoserDrain
             }
             _ => return Err(ScenarioError::InvalidExpectedResultClass),
+        };
+        let data_phase_mode = match raw
+            .data_phase_mode
+            .as_deref()
+            .unwrap_or("round-trip-delivery-status")
+        {
+            "handshake-only" => DataPhaseMode::HandshakeOnly,
+            "initiator-data-only" => DataPhaseMode::InitiatorDataOnly,
+            "responder-data-only" => DataPhaseMode::ResponderDataOnly,
+            "round-trip-delivery-status" => DataPhaseMode::RoundTripDeliveryStatus,
+            _ => return Err(ScenarioError::InvalidDataPhaseMode),
+        };
+        let data_phase_required_peer_action = match raw
+            .data_phase_required_peer_action
+            .as_deref()
+            .unwrap_or("non-echo-completion")
+        {
+            "observe-receive" => DataPhasePeerAction::ObserveReceive,
+            "ignore-receive" => DataPhasePeerAction::IgnoreReceive,
+            "non-echo-completion" => DataPhasePeerAction::NonEchoCompletion,
+            _ => return Err(ScenarioError::InvalidDataPhasePeerAction),
+        };
+        let expected_observation = match raw
+            .expected_observation
+            .as_deref()
+            .unwrap_or("i2pr-sent-and-acknowledged")
+        {
+            "i2pr-sent-and-acknowledged" => ExpectedObservation::I2prSentAndAcknowledged,
+            "i2pr-received-from-peer" => ExpectedObservation::I2prReceivedFromPeer,
+            "i2pr-sent-only" => ExpectedObservation::I2prSentOnly,
+            "i2pr-received-only" => ExpectedObservation::I2prReceivedOnly,
+            "no-data-phase-required" => ExpectedObservation::NoDataPhaseRequired,
+            _ => return Err(ScenarioError::InvalidExpectedObservation),
+        };
+        let data_phase_timeout_ms = match raw.data_phase_timeout_ms {
+            Some(value) if value == 0 || value > MAX_DEADLINE_MILLIS => {
+                return Err(ScenarioError::InvalidDataPhaseTimeout);
+            }
+            other => other,
         };
         let status_path = confined_path(&run_root, &raw.status_path)?;
         if status_path.exists() && status_path.is_dir() {
@@ -267,6 +354,10 @@ impl Scenario {
             deterministic_seed: raw.deterministic_seed,
             expected_result_class,
             status_path,
+            data_phase_mode,
+            data_phase_required_peer_action,
+            data_phase_timeout_ms,
+            expected_observation,
         })
     }
 }
@@ -399,6 +490,18 @@ status_path = "status.jsonl"
         assert_eq!(scenario.network_id, 99);
         assert_eq!(scenario.peer_port, Some(45678));
         assert!(scenario.status_path.starts_with(root));
+        assert_eq!(
+            scenario.data_phase_mode,
+            DataPhaseMode::RoundTripDeliveryStatus
+        );
+        assert_eq!(
+            scenario.data_phase_required_peer_action,
+            DataPhasePeerAction::NonEchoCompletion
+        );
+        assert_eq!(
+            scenario.expected_observation,
+            ExpectedObservation::I2prSentAndAcknowledged
+        );
     }
 
     #[test]
@@ -427,6 +530,77 @@ status_path = "status.jsonl"
         assert_eq!(
             Scenario::parse_str(&public, &std::env::temp_dir()),
             Err(ScenarioError::AddressOutsideSyntheticRange)
+        );
+    }
+
+    #[test]
+    fn accepts_optional_plan_045_data_phase_fields() {
+        let input = r#"
+[scenario]
+schema = 1
+scenario_id = "plan045-direction"
+role = "initiator"
+address_family = "ipv4"
+local_address = "192.0.2.1"
+local_port = 45680
+peer_address = "192.0.2.2"
+peer_port = 45678
+network_id = 99
+state_dir = "secrets"
+peer_router_info = "exchange/peer.info"
+handshake_deadline_ms = 30000
+read_deadline_ms = 1000
+write_deadline_ms = 1000
+queue_deadline_ms = 1000
+drain_deadline_ms = 1000
+padding_profile = "representative"
+smoke_message_profile = "fixed-12-byte-payload"
+deterministic_seed = 1
+expected_result_class = "authenticated-handshake-and-directional-data-phase"
+status_path = "status.jsonl"
+data_phase_mode = "initiator-data-only"
+data_phase_required_peer_action = "ignore-receive"
+data_phase_timeout_ms = 4000
+expected_observation = "i2pr-sent-only"
+"#;
+        let scenario = Scenario::parse_str(input, &std::env::temp_dir()).expect("plan045 scenario");
+        assert_eq!(scenario.data_phase_mode, DataPhaseMode::InitiatorDataOnly);
+        assert_eq!(
+            scenario.data_phase_required_peer_action,
+            DataPhasePeerAction::IgnoreReceive
+        );
+        assert_eq!(scenario.data_phase_timeout_ms, Some(4000));
+        assert_eq!(
+            scenario.expected_observation,
+            ExpectedObservation::I2prSentOnly
+        );
+        assert_eq!(
+            scenario.expected_result_class,
+            ExpectedResultClass::AuthenticatedHandshakeAndDirectionalDataPhase
+        );
+        assert_eq!(
+            scenario.smoke_message_profile,
+            SmokeMessageProfile::Fixed12BytePayload
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_optional_plan_045_fields() {
+        let input = VALID.replace(
+            "status_path = \"status.jsonl\"",
+            "status_path = \"status.jsonl\"\ndata_phase_mode = \"bogus\"",
+        );
+        assert_eq!(
+            Scenario::parse_str(&input, &std::env::temp_dir()),
+            Err(ScenarioError::InvalidDataPhaseMode)
+        );
+        let input = VALID.replace(
+            "status_path = \"status.jsonl\"",
+            "status_path = \"status.jsonl\"\ndata_phase_timeout_ms = 0",
+        );
+        assert_eq!(
+            Scenario::parse_str(&input, &std::env::temp_dir()),
+            Err(ScenarioError::InvalidDataPhaseTimeout)
         );
     }
 }

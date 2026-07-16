@@ -199,24 +199,58 @@ successful aggregate run or mixed-router i2pr evidence is present in this
 checkout; these are blockers, not skipped successes. NTCP2 remains experimental
 and non-advertised.
 
-### Plan 044 mixed-router integration status
+### Plan 045 mixed-router integration status
 
-The checkout now contains a runtime-owned NTCP2 wire adapter implemented and
-locally validated; mixed-router harness composition and authorized evidence
-pending; NTCP2 remains experimental and non-advertised.
+Plan 045 supersedes Plan 044 as the plan of record. Plan 044's
+"implementation-complete locally" status is amended: ten Plan 045
+defects (D1–D10) invalidated the prior claim. Plan 045 closes those
+defects as a structured corrective pass.
 
-Plan 044 adds the four directional i2pr/reference mixed-scenario definitions
-under `tests/integration/ntcp2/mixed-scenarios/`, the mixed-runner that
-composes `I2prAdapter` with each reference adapter, a strict launcher
-scenario renderer, and a data-phase oracle that does not rely on an echo
-assumption. The aggregate evidence schema now carries real counters for
-authenticated-link count, frames sent/received, I2NP message aggregates,
-admission/replay counters, process lifecycle counters, and cleanup
-disposition. The gate archival model prevents cross-gate record relabeling.
+- D1: the ``-gen`` and live reference adapters share one disposable
+  ``reference-data`` directory so the live reference restarts from the
+  identity that produced the exported RouterInfo; the i2pr side shares
+  the same ``state`` directory across the ``-gen`` and live phases.
+- D2: the Rust launcher persists RouterInfo inside the scenario's
+  ``state_dir``; the mixed-runner exports it from there to the
+  ``exchange`` directory and records a real SHA-256 digest in the
+  evidence record. The reference RouterInfo digest is recorded too.
+- D3, D6: the strict launcher scenario schema now allows an explicit
+  allowlist of optional fields (``data_phase_mode``,
+  ``data_phase_required_peer_action``, ``data_phase_timeout_ms``,
+  ``expected_observation``) and supports the
+  ``fixed-12-byte-payload`` smoke profile alongside
+  ``delivery-status``. The Rust launcher parses the same schema.
+- D4: the reference trigger performs the per-direction SAM v3 (Java)
+  or HTTP JSON-RPC (i2pd) dial inside the disposable namespace.
+- D5: the data-phase oracle records per-side observation code keyed
+  by the i2pr launcher's authenticated-frame counters; no echo
+  assumption is made.
+- D6 (Rust): the launcher dispatches ``DataPhaseMode::HandshakeOnly``,
+  ``InitiatorDataOnly``, ``ResponderDataOnly``, and the prior
+  ``RoundTripDeliveryStatus`` mode with distinct typed terminal
+  reasons. Initiator and responder scenarios can complete without
+  requiring the peer to echo a ``DeliveryStatus``.
+- D7: the mixed-runner requires the i2pr terminal result to be
+  ``passed``, the reference observation to be ``authenticated``, and
+  the data-phase oracle's per-side observation to be ``observed``
+  before marking a direction ``passed``. The prior pass-after-handshake
+  predicate is removed.
+- D8: the sanitized evidence record now carries
+  ``i2pr_router_info_sha256``, ``reference_router_info_sha256``,
+  ``data_phase_mode``, and ``expected_observation`` typed fields
+  populated by the runner.
+- D9: ``run-matrix.sh`` continues to route the four directional mixed
+  scenario IDs through ``mixed_runner.py``. The Plan 045 typed
+  blocker for "i2pr-mixed-router-profile-not-wired" remains reserved
+  for scenario IDs that are not allowlisted for the active gate.
+- D10: an unknown reference kind now fails closed with a typed
+  ``unknown-reference-kind`` rejection; it does not silently fall
+  through to the i2pd adapter.
 
-No completed mixed-router i2pr record is present in this checkout. These are
-explicit implementation blockers, not skipped successes. NTCP2 remains
-experimental and non-advertised.
+The Plan 044 closure document (`plans/044-closure.md`) is amended to
+record the Plan 045 supersession. No completed mixed-router i2pr
+record is present in this checkout; these remain typed blockers. NTCP2
+remains experimental and non-advertised.
 
 ## MVP direction
 

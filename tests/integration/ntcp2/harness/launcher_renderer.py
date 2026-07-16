@@ -33,10 +33,31 @@ _DEFAULT_DRAIN_MS = 2_000
 _VALID_ROLES = frozenset({"initiator", "responder"})
 _VALID_FAMILIES = frozenset({"ipv4", "ipv6"})
 _VALID_PADDING = frozenset({"minimum-variable-maximum"})
-_VALID_SMOKES = frozenset({"delivery-status"})
+_VALID_SMOKES = frozenset({"delivery-status", "fixed-12-byte-payload"})
 _VALID_RESULTS = frozenset({
     "authenticated-handshake-and-bounded-i2np-exchange",
+    "authenticated-handshake-and-directional-data-phase",
 })
+_VALID_DATA_PHASE_MODES = frozenset(
+    {
+        "handshake-only",
+        "initiator-data-only",
+        "responder-data-only",
+        "round-trip-delivery-status",
+    }
+)
+_VALID_PEER_ACTIONS = frozenset(
+    {"observe-receive", "ignore-receive", "non-echo-completion"}
+)
+_VALID_OBSERVATIONS = frozenset(
+    {
+        "i2pr-sent-and-acknowledged",
+        "i2pr-received-from-peer",
+        "i2pr-sent-only",
+        "i2pr-received-only",
+        "no-data-phase-required",
+    }
+)
 _MIXED_SCENARIO_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,60}[a-z0-9])?$")
 
 
@@ -65,6 +86,10 @@ def render_scenario_toml(
     write_deadline_ms: int = _DEFAULT_WRITE_MS,
     queue_deadline_ms: int = _DEFAULT_QUEUE_MS,
     drain_deadline_ms: int = _DEFAULT_DRAIN_MS,
+    data_phase_mode: str = "round-trip-delivery-status",
+    data_phase_required_peer_action: str = "non-echo-completion",
+    data_phase_timeout_ms: int | None = None,
+    expected_observation: str = "i2pr-sent-and-acknowledged",
 ) -> str:
     _validate_inputs(
         execution_id=execution_id,
@@ -81,6 +106,10 @@ def render_scenario_toml(
         deterministic_seed=deterministic_seed,
         expected_result_class=expected_result_class,
         status_path=status_path,
+        data_phase_mode=data_phase_mode,
+        data_phase_required_peer_action=data_phase_required_peer_action,
+        data_phase_timeout_ms=data_phase_timeout_ms,
+        expected_observation=expected_observation,
     )
     lines = [
         "[scenario]",
@@ -116,6 +145,11 @@ def render_scenario_toml(
         lines.append("deterministic_seed = 0")
     lines.append(f'expected_result_class = "{expected_result_class}"')
     lines.append(f'status_path = "{status_path}"')
+    lines.append(f'data_phase_mode = "{data_phase_mode}"')
+    lines.append(f'data_phase_required_peer_action = "{data_phase_required_peer_action}"')
+    if data_phase_timeout_ms is not None:
+        lines.append(f"data_phase_timeout_ms = {data_phase_timeout_ms}")
+    lines.append(f'expected_observation = "{expected_observation}"')
     return "\n".join(lines) + "\n"
 
 
@@ -151,6 +185,10 @@ def _validate_inputs(
     deterministic_seed: int | None,
     expected_result_class: str,
     status_path: str,
+    data_phase_mode: str,
+    data_phase_required_peer_action: str,
+    data_phase_timeout_ms: int | None,
+    expected_observation: str,
 ) -> None:
     if not isinstance(execution_id, str) or not _MIXED_SCENARIO_ID.fullmatch(execution_id):
         raise RenderError("execution-id-invalid")
@@ -183,6 +221,16 @@ def _validate_inputs(
         raise RenderError("deterministic-seed-invalid")
     if expected_result_class not in _VALID_RESULTS:
         raise RenderError("unsupported-expected-result")
+    if data_phase_mode not in _VALID_DATA_PHASE_MODES:
+        raise RenderError("unsupported-data-phase-mode")
+    if data_phase_required_peer_action not in _VALID_PEER_ACTIONS:
+        raise RenderError("unsupported-data-phase-peer-action")
+    if expected_observation not in _VALID_OBSERVATIONS:
+        raise RenderError("unsupported-expected-observation")
+    if data_phase_timeout_ms is not None and (
+        not isinstance(data_phase_timeout_ms, int) or data_phase_timeout_ms <= 0
+    ):
+        raise RenderError("data-phase-timeout-invalid")
     _validate_relative_path(status_path, "status_path")
 
 

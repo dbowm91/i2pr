@@ -36,9 +36,12 @@ pub enum StatusReason {
     ListenerFailed,
     HandshakeAuthenticated,
     I2npExchangeComplete,
+    DirectionalDataPhaseComplete,
     HandshakeFailed,
     DialFailed,
     DataPhaseFailed,
+    DataPhaseTimeout,
+    DataPhaseObservationIncomplete,
     Timeout,
     CleanupComplete,
     InvalidScenarioConfig,
@@ -161,6 +164,9 @@ fn reason_name(value: StatusReason) -> &'static str {
         StatusReason::ListenerFailed => "listener_failed",
         StatusReason::HandshakeAuthenticated => "handshake_authenticated",
         StatusReason::I2npExchangeComplete => "i2np_exchange_complete",
+        StatusReason::DirectionalDataPhaseComplete => "directional_data_phase_complete",
+        StatusReason::DataPhaseTimeout => "data_phase_timeout",
+        StatusReason::DataPhaseObservationIncomplete => "data_phase_observation_incomplete",
         StatusReason::HandshakeFailed => "handshake_failed",
         StatusReason::DialFailed => "dial_failed",
         StatusReason::DataPhaseFailed => "data_phase_failed",
@@ -194,8 +200,8 @@ fn set_private_directory_permissions(path: &std::path::Path) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::scenario::{
-        AddressFamily, DeadlineMillis, ExpectedResultClass, PaddingProfile, Role,
-        SmokeMessageProfile,
+        AddressFamily, DataPhaseMode, DataPhasePeerAction, DeadlineMillis, ExpectedObservation,
+        ExpectedResultClass, PaddingProfile, Role, SmokeMessageProfile,
     };
     use std::net::IpAddr;
 
@@ -251,6 +257,10 @@ mod tests {
             deterministic_seed: None,
             expected_result_class: ExpectedResultClass::TypedRejectionWithBoundedCleanup,
             status_path: root.join("status/status.jsonl"),
+            data_phase_mode: DataPhaseMode::RoundTripDeliveryStatus,
+            data_phase_required_peer_action: DataPhasePeerAction::NonEchoCompletion,
+            data_phase_timeout_ms: None,
+            expected_observation: ExpectedObservation::I2prSentAndAcknowledged,
         };
         let mut writer = StatusWriter::new(&scenario).expect("status writer");
         writer

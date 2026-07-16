@@ -36,13 +36,32 @@ class JavaI2pAdapter:
     revision = "2800040deee9bb376567b671ef2e9c34cf3e30b6"
     authenticated_phrases = ("NTCP2 connection established", "Established NTCP2 connection")
 
-    def __init__(self, cache: Path, run_root: Path, endpoint: EndpointDescription, repo_root: Path):
+    def __init__(
+        self,
+        cache: Path,
+        run_root: Path,
+        endpoint: EndpointDescription,
+        repo_root: Path,
+        *,
+        shared_data_dir: Path | None = None,
+    ):
         self.cache = cache.resolve()
         self.run_root = run_root.resolve()
         self.endpoint = endpoint
         self.repo_root = repo_root.resolve()
         self.runtime_dir = self.run_root / "reference-runtime"
-        self.data_dir = self.run_root / "reference-data"
+        # Plan 045 D1: a Plan 044 mixed-runner created a fresh
+        # ``reference-data`` directory for the live phase, losing the
+        # identity and RouterInfo produced by the generation pass. The
+        # default keeps the historical isolation; an explicit
+        # ``shared_data_dir`` lets a pair of adapters share one disposable
+        # identity root across the ``-gen`` and live phases.
+        if shared_data_dir is None:
+            self.data_dir = self.run_root / "reference-data"
+        else:
+            self.data_dir = shared_data_dir.resolve()
+            if not (self.data_dir == self.run_root or self.run_root in self.data_dir.parents):
+                raise JavaI2pError("shared-data-dir-outside-run-root")
         self.config_dir = self.run_root / "config"
         self.process: BoundedProcess | None = None
         self.metadata: CacheMetadata | None = None

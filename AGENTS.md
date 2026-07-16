@@ -51,9 +51,40 @@ These are checked on CI and will reject the change:
 If a check fails, fix the boundary, don't suppress the script.
 
 Plan 042 is the active runtime-owned NTCP2 wire-driver plan. Plan 044
-composes the mixed-router execution model, directional scenario expansion,
-strict launcher rendering, and the non-echo data-phase oracle. Keep accepted
-inbound streams paired with their non-cloneable pending-handshake permit until
+composed the mixed-router execution model, directional scenario expansion,
+strict launcher rendering, and the non-echo data-phase oracle. Plan 045
+is the active mixed-router closure plan and supersedes Plan 044 for
+closure purposes: it closes the ten Plan 045 defects (D1–D10) that
+invalidate Plan 044's prior "implementation-complete locally" status.
+
+- D1: ``ref-gen``/``ref`` and ``i2pr-gen``/``i2pr`` share one disposable
+  data directory so the live phase restarts from the identity that
+  produced the exported RouterInfo.
+- D2: the Rust launcher persists RouterInfo inside ``state_dir``; the
+  mixed-runner exports the bytes from there and records real SHA-256
+  digests.
+- D3, D6: the strict launcher scenario schema allows the allowlisted
+  optional fields ``data_phase_mode``,
+  ``data_phase_required_peer_action``, ``data_phase_timeout_ms``,
+  ``expected_observation``; the Rust launcher parses the same schema
+  and dispatches typed ``DataPhaseMode`` variants.
+- D4: the reference trigger performs the per-direction SAM v3 (Java) or
+  HTTP JSON-RPC (i2pd) dial inside the disposable namespace.
+- D5: the data-phase oracle records per-side observation code keyed by
+  the i2pr launcher's authenticated-frame counters; no echo assumption
+  is made.
+- D7: the mixed-runner requires ``passed`` i2pr terminal,
+  ``authenticated`` reference observation, and the oracle's per-side
+  observation to be ``observed`` before marking a direction ``passed``.
+- D8: the sanitized evidence record carries
+  ``i2pr_router_info_sha256``, ``reference_router_info_sha256``,
+  ``data_phase_mode``, and ``expected_observation`` typed fields.
+- D9: ``run-matrix.sh`` continues to route the four directional mixed
+  scenario IDs through ``mixed_runner.py``.
+- D10: an unknown reference kind now fails closed with a typed
+  ``unknown-reference-kind`` rejection.
+
+Keep accepted inbound streams paired with their non-cloneable pending-handshake permit until
 authentication or a terminal handshake outcome. Runtime link queue entries
 must own their item/byte accounting and release it on write success, failure,
 cancellation, receiver closure, or supervisor teardown. Reader and writer

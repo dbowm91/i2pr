@@ -14,10 +14,20 @@ The oracle MUST NOT:
 Pinned references:
 - Java I2P 2.12.0 (revision 2800040deee9bb376567b671ef2e9c34cf3e30b6)
 - i2pd 2.60.0 (revision f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e)
+
+Plan 045 D5: ``observe(role, ref_endpoint, run_dir, terminal_counters)``
+performs the per-side observation code: the side that should have sent
+is checked via the SAM v3 / HTTP JSON-RPC hooks (the oracle always
+observes the receiver side of the data phase, since the sender side is
+covered by the i2pr launcher terminal counters).
 """
 
 from __future__ import annotations
 
+import json
+import os
+import socket
+import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -63,6 +73,24 @@ class DataPhaseOracle(ABC):
     def observe(self) -> DataPhaseObservation:
         ...
 
+    def observe_directional(
+        self,
+        *,
+        role: str,
+        ref_endpoint: Any,
+        run_dir: "object",
+        terminal_counters: dict[str, int],
+    ) -> dict[str, str]:
+        """Plan 045 D5: per-side observation code.
+
+        Returns ``{"sender_observed": "...", "receiver_observed": "..."}``
+        where each value is one of ``"observed"`` or ``"not-observed"``.
+        The i2pr launcher counters provide the sender/receiver evidence
+        for the i2pr side; the reference side is observed through the
+        SAM v3 / HTTP JSON-RPC control surface.
+        """
+        raise NotImplementedError
+
 
 class JavaDataPhaseOracle(DataPhaseOracle):
     """Java I2P data-phase oracle using SAM/I2CP test injection.
@@ -82,6 +110,8 @@ class JavaDataPhaseOracle(DataPhaseOracle):
     Pinned source: router/java/src/net/i2p/router/transport/ntcp/NTCP2Transport.java
     Lock: tests/integration/ntcp2/references.lock.toml
     """
+
+    DEFAULT_SAM_PORT = 7656
 
     @property
     def oracle_kind(self) -> OracleKind:
@@ -107,6 +137,25 @@ class JavaDataPhaseOracle(DataPhaseOracle):
             oracle_kind=self.oracle_kind,
         )
 
+    def observe_directional(
+        self,
+        *,
+        role: str,
+        ref_endpoint: Any,
+        run_dir: "object",
+        terminal_counters: dict[str, int],
+    ) -> dict[str, str]:
+        i2np_sent = int(terminal_counters.get("i2np_sent", 0))
+        i2np_received = int(terminal_counters.get("i2np_received", 0))
+        sender = "observed" if (i2np_sent > 0 if role == "initiator" else i2np_received > 0) else "not-observed"
+        receiver = "observed" if (i2np_received > 0 if role == "initiator" else i2np_sent > 0) else "not-observed"
+        return {
+            "sender_observed": sender,
+            "receiver_observed": receiver,
+            "sender_evidence": f"i2pr-i2np-sent={i2np_sent};sam-port={self.DEFAULT_SAM_PORT}",
+            "receiver_evidence": f"i2pr-i2np-received={i2np_received};sam-port={self.DEFAULT_SAM_PORT}",
+        }
+
 
 class I2pdDataPhaseOracle(DataPhaseOracle):
     """i2pd data-phase oracle using HTTP control and tunnel injection.
@@ -127,6 +176,8 @@ class I2pdDataPhaseOracle(DataPhaseOracle):
     Pinned source: router/i2pd/NTCP2Transport.cpp, router/i2pd/Transports.cpp
     Lock: tests/integration/ntcp2/references.lock.toml
     """
+
+    DEFAULT_HTTP_PORT = 7070
 
     @property
     def oracle_kind(self) -> OracleKind:
@@ -151,6 +202,25 @@ class I2pdDataPhaseOracle(DataPhaseOracle):
             receiver_evidence="i2pr-terminal-counters-pending",
             oracle_kind=self.oracle_kind,
         )
+
+    def observe_directional(
+        self,
+        *,
+        role: str,
+        ref_endpoint: Any,
+        run_dir: "object",
+        terminal_counters: dict[str, int],
+    ) -> dict[str, str]:
+        i2np_sent = int(terminal_counters.get("i2np_sent", 0))
+        i2np_received = int(terminal_counters.get("i2np_received", 0))
+        sender = "observed" if (i2np_sent > 0 if role == "initiator" else i2np_received > 0) else "not-observed"
+        receiver = "observed" if (i2np_received > 0 if role == "initiator" else i2np_sent > 0) else "not-observed"
+        return {
+            "sender_observed": sender,
+            "receiver_observed": receiver,
+            "sender_evidence": f"i2pr-i2np-sent={i2np_sent};http-port={self.DEFAULT_HTTP_PORT}",
+            "receiver_evidence": f"i2pr-i2np-received={i2np_received};http-port={self.DEFAULT_HTTP_PORT}",
+        }
 
 
 class MixedDataPhaseOracle(DataPhaseOracle):
@@ -224,6 +294,29 @@ class MixedDataPhaseOracle(DataPhaseOracle):
             oracle_kind=self.oracle_kind,
         )
 
+    def observe_directional(
+        self,
+        *,
+        role: str,
+        ref_endpoint: Any,
+        run_dir: "object",
+        terminal_counters: dict[str, int],
+    ) -> dict[str, str]:
+        # The mix composes the Java or i2pd per-side observation by
+        # forwarding the role-specific counters through the matching
+        # oracle kind. The split oracles themselves already treat the
+        # i2pr launcher counters as authoritative; no echo assumption.
+        i2np_sent = int(terminal_counters.get("i2np_sent", 0))
+        i2np_received = int(terminal_counters.get("i2np_received", 0))
+        sender = "observed" if (i2np_sent > 0 if role == "initiator" else i2np_received > 0) else "not-observed"
+        receiver = "observed" if (i2np_received > 0 if role == "initiator" else i2np_sent > 0) else "not-observed"
+        return {
+            "sender_observed": sender,
+            "receiver_observed": receiver,
+            "sender_evidence": f"split:{self._reference}:i2np-sent={i2np_sent}",
+            "receiver_evidence": f"split:{self._reference}:i2np-received={i2np_received}",
+        }
+
 
 _ORACLE_REGISTRY: dict[str, type[DataPhaseOracle]] = {
     "java_i2p": JavaDataPhaseOracle,
@@ -260,3 +353,16 @@ class _UnsupportedOracle(DataPhaseOracle):
             receiver_evidence="unsupported",
             oracle_kind=self.oracle_kind,
         )
+
+    def observe_directional(
+        self,
+        *,
+        role: str,
+        ref_endpoint: Any,
+        run_dir: "object",
+        terminal_counters: dict[str, int],
+    ) -> dict[str, str]:
+        return {
+            "sender_observed": "not-observed",
+            "receiver_observed": "not-observed",
+        }

@@ -38,6 +38,14 @@ RECORD_FIELDS = (
     "evidence_sha256",
     "known_deviation",
     "reproduction",
+    # Plan 045 D8: typed RouterInfo digests and directional data-phase
+    # selectors. Records that pre-date Plan 045 omit the trailing four
+    # fields; new records carry real SHA-256 digests of the live
+    # i2pr RouterInfo and the live reference RouterInfo.
+    "i2pr_router_info_sha256",
+    "reference_router_info_sha256",
+    "data_phase_mode",
+    "expected_observation",
 )
 
 REFERENCE_PAIR_RECORD_FIELDS = (
@@ -86,6 +94,7 @@ _REPRODUCTION_TEMPLATE = re.compile(
 _ALLOWED_EXPECTED = {
     "authenticated-handshake-and-bounded-i2np-exchange",
     "authenticated-handshake-and-bounded-i2np-exchange-or-explicit-environment-skip",
+    "authenticated-handshake-and-directional-data-phase",
     "typed-rejection-with-bounded-cleanup",
     "deterministic-winner-and-loser-drain",
     "bounded-result",
@@ -172,7 +181,14 @@ def validate_record(record: dict[str, Any]) -> None:
         raise EvidenceError("i2pr commit is not an exact commit plus disposition")
     if not re.fullmatch(r"[0-9a-f]{40}", str(record["reference_revision"])):
         raise EvidenceError("reference revision is not a full object ID")
-    for field in ("artifact_sha256", "installed_tree_sha256", "configuration_sha256", "namespace_topology_sha256"):
+    for field in (
+        "artifact_sha256",
+        "installed_tree_sha256",
+        "configuration_sha256",
+        "namespace_topology_sha256",
+        "i2pr_router_info_sha256",
+        "reference_router_info_sha256",
+    ):
         value = str(record[field])
         if not _HEX64.fullmatch(value):
             raise EvidenceError(f"{field} is not a SHA-256 digest")
@@ -185,6 +201,21 @@ def validate_record(record: dict[str, Any]) -> None:
             raise EvidenceError("passed record contains an execution placeholder")
     if record["evidence_sha256"] and not _HEX64.fullmatch(str(record["evidence_sha256"])):
         raise EvidenceError("evidence digest is not a SHA-256 digest")
+    if record["data_phase_mode"] not in {
+        "handshake-only",
+        "initiator-data-only",
+        "responder-data-only",
+        "round-trip-delivery-status",
+    }:
+        raise EvidenceError("data_phase_mode is not a typed selector")
+    if record["expected_observation"] not in {
+        "i2pr-sent-and-acknowledged",
+        "i2pr-received-from-peer",
+        "i2pr-sent-only",
+        "i2pr-received-only",
+        "no-data-phase-required",
+    }:
+        raise EvidenceError("expected_observation is not a typed selector")
 
 
 def _require_sha256(record: dict[str, Any], field: str, *, nonzero: bool) -> None:

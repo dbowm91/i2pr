@@ -13,10 +13,21 @@ Each trigger:
 Pinned references:
 - Java I2P 2.12.0 (revision 2800040deee9bb376567b671ef2e9c34cf3e30b6)
 - i2pd 2.60.0 (revision f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e)
+
+Plan 045 D4: ``send()`` performs the per-direction SAM v3 or HTTP
+JSON-RPC dial inside the disposable namespace, returning a typed
+observation. ``verify_auto_dial`` and ``issue_trigger`` remain typed
+placeholders for callers that still want the auto/manual detection
+helper surface.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import socket
+import subprocess
+import time
 from dataclasses import dataclass
 from enum import Enum
 
@@ -33,6 +44,7 @@ class TriggerResult:
     kind: TriggerKind
     observed: bool
     description: str
+    timed_out: bool = False
 
 
 class ReferenceTrigger:
@@ -44,6 +56,15 @@ class ReferenceTrigger:
         raise NotImplementedError
 
     def issue_trigger(self) -> TriggerResult:
+        raise NotImplementedError
+
+    def send(
+        self,
+        i2pr_is_initiator: bool,
+        ref_endpoint: object,
+        run_dir: "object",
+    ) -> TriggerResult:
+        """Plan 045 D4: per-direction SAM/HTTP dial within the namespace."""
         raise NotImplementedError
 
 
@@ -62,6 +83,9 @@ class JavaReferenceTrigger(ReferenceTrigger):
 
     Pinned source: router/java/src/net/i2p/router/transport/ntcp/NTCP2Transport.java
     """
+
+    # SAM v3 port the Java I2P router exposes in the disposable namespace.
+    DEFAULT_SAM_PORT = 7656
 
     @property
     def trigger_kind(self) -> TriggerKind:
@@ -84,6 +108,61 @@ class JavaReferenceTrigger(ReferenceTrigger):
             ),
         )
 
+    def send(
+        self,
+        i2pr_is_initiator: bool,
+        ref_endpoint: object,
+        run_dir: "object",
+    ) -> TriggerResult:
+        if i2pr_is_initiator:
+            return TriggerResult(
+                kind=self.trigger_kind,
+                observed=False,
+                description="java-i2pr direction auto-dials from i2pr side; SAM trigger not required",
+                timed_out=False,
+            )
+        try:
+            namespace = getattr(ref_endpoint, "namespace", None)
+            if namespace is None:
+                return TriggerResult(
+                    kind=self.trigger_kind,
+                    observed=False,
+                    description="java reference namespace missing",
+                )
+            port = int(os.environ.get("I2PR_JAVA_SAM_PORT", str(self.DEFAULT_SAM_PORT)))
+            host = getattr(ref_endpoint, "local_address", "127.0.0.1")
+            payload = (
+                'HELLO VERSION MIN=3.0 MAX=3.0\n'
+                'SESSION CREATE STYLE=STREAM ID=i2pr-interop DESTINATION=TRANSIENT\n'
+            ).encode("ascii")
+            prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
+            completed = subprocess.run(
+                prefix + ["ip", "netns", "exec", str(namespace), "python3", "-c", _SAM_PROBE],
+                input=json.dumps({"host": host, "port": port, "payload": payload.decode("ascii")}),
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return TriggerResult(
+                kind=self.trigger_kind,
+                observed=False,
+                description=f"java-sam-trigger-error: {exc.__class__.__name__}",
+                timed_out=isinstance(exc, subprocess.TimeoutExpired),
+            )
+        if completed.returncode != 0:
+            return TriggerResult(
+                kind=self.trigger_kind,
+                observed=False,
+                description=f"java-sam-trigger-failed: {completed.stderr.strip()[:64] or 'no-stderr'}",
+            )
+        return TriggerResult(
+            kind=self.trigger_kind,
+            observed=True,
+            description="java-sam-trigger-stream-session-issued",
+        )
+
 
 class I2pdReferenceTrigger(ReferenceTrigger):
     """i2pd auto-dial verification via HTTP control interface.
@@ -100,6 +179,8 @@ class I2pdReferenceTrigger(ReferenceTrigger):
 
     Pinned source: router/i2pd/Transports.cpp, router/i2pd/NTCP2Transport.cpp
     """
+
+    DEFAULT_HTTP_PORT = 7070
 
     @property
     def trigger_kind(self) -> TriggerKind:
@@ -120,6 +201,62 @@ class I2pdReferenceTrigger(ReferenceTrigger):
                 "HTTP ConnectPeer trigger pending; "
                 "exercises authenticated NTCP2 transport"
             ),
+        )
+
+    def send(
+        self,
+        i2pr_is_initiator: bool,
+        ref_endpoint: object,
+        run_dir: "object",
+    ) -> TriggerResult:
+        if i2pr_is_initiator:
+            return TriggerResult(
+                kind=self.trigger_kind,
+                observed=False,
+                description="i2pd-i2pr direction auto-dials from i2pr side; HTTP trigger not required",
+            )
+        try:
+            namespace = getattr(ref_endpoint, "namespace", None)
+            if namespace is None:
+                return TriggerResult(
+                    kind=self.trigger_kind,
+                    observed=False,
+                    description="i2pd reference namespace missing",
+                )
+            port = int(os.environ.get("I2PR_I2PD_HTTP_PORT", str(self.DEFAULT_HTTP_PORT)))
+            host = getattr(ref_endpoint, "local_address", "127.0.0.1")
+            payload = json.dumps(
+                {
+                    "id": 1,
+                    "method": "ConnectPeer",
+                    "params": {"b32": ""},
+                }
+            )
+            prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
+            completed = subprocess.run(
+                prefix + ["ip", "netns", "exec", str(namespace), "curl", "-fsS", "-m", "5", "-H", "Content-Type: application/json", "-d", payload, f"http://{host}:{port}/jsonrpc"],
+                capture_output=True,
+                text=True,
+                timeout=6.0,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return TriggerResult(
+                kind=self.trigger_kind,
+                observed=False,
+                description=f"i2pd-http-trigger-error: {exc.__class__.__name__}",
+                timed_out=isinstance(exc, subprocess.TimeoutExpired),
+            )
+        if completed.returncode != 0:
+            return TriggerResult(
+                kind=self.trigger_kind,
+                observed=False,
+                description=f"i2pd-http-trigger-failed: {completed.stderr.strip()[:64] or 'no-stderr'}",
+            )
+        return TriggerResult(
+            kind=self.trigger_kind,
+            observed=True,
+            description="i2pd-http-connect-peer-issued",
         )
 
 
@@ -154,3 +291,44 @@ class _UnsupportedTrigger(ReferenceTrigger):
             observed=False,
             description="unsupported reference implementation",
         )
+
+    def send(
+        self,
+        i2pr_is_initiator: bool,
+        ref_endpoint: object,
+        run_dir: "object",
+    ) -> TriggerResult:
+        return TriggerResult(
+            kind=self.trigger_kind,
+            observed=False,
+            description="unsupported reference implementation",
+        )
+
+
+_SAM_PROBE = """
+import json
+import socket
+import sys
+
+config = json.loads(sys.stdin.read())
+host = config["host"]
+port = int(config["port"])
+payload = config["payload"].encode("ascii")
+sock = socket.create_connection((host, port), timeout=3)
+sock.sendall(payload)
+sock.settimeout(3)
+chunks = []
+while True:
+    try:
+        chunk = sock.recv(4096)
+    except socket.timeout:
+        break
+    if not chunk:
+        break
+    chunks.append(chunk)
+    if len(b"".join(chunks)) >= 256:
+        break
+response = b"".join(chunks).decode("ascii", errors="replace")
+sock.close()
+sys.stdout.write(json.dumps({"response": response}))
+"""

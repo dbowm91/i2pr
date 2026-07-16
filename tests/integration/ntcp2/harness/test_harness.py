@@ -208,6 +208,10 @@ class HarnessContractTests(unittest.TestCase):
             "evidence_sha256": "",
             "known_deviation": "driver-absent",
             "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+            "i2pr_router_info_sha256": "0" * 64,
+            "reference_router_info_sha256": "0" * 64,
+            "data_phase_mode": "round-trip-delivery-status",
+            "expected_observation": "i2pr-sent-and-acknowledged",
         }
         validate_record(base)
         base["known_deviation"] = "10.0.0.1:45678"
@@ -241,6 +245,10 @@ class HarnessContractTests(unittest.TestCase):
             "evidence_sha256": "",
             "known_deviation": "environment-smoke-only",
             "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+            "i2pr_router_info_sha256": "5" * 64,
+            "reference_router_info_sha256": "6" * 64,
+            "data_phase_mode": "round-trip-delivery-status",
+            "expected_observation": "i2pr-sent-and-acknowledged",
         }
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "record.json"
@@ -273,6 +281,10 @@ class HarnessContractTests(unittest.TestCase):
             "evidence_sha256": "",
             "known_deviation": "driver-absent",
             "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+            "i2pr_router_info_sha256": "0" * 64,
+            "reference_router_info_sha256": "0" * 64,
+            "data_phase_mode": "round-trip-delivery-status",
+            "expected_observation": "i2pr-sent-and-acknowledged",
         }
         for expected in (
             "authenticated-handshake-and-bounded-i2np-exchange",
@@ -308,6 +320,10 @@ class HarnessContractTests(unittest.TestCase):
             "evidence_sha256": "",
             "known_deviation": "driver-absent",
             "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+            "i2pr_router_info_sha256": "0" * 64,
+            "reference_router_info_sha256": "0" * 64,
+            "data_phase_mode": "round-trip-delivery-status",
+            "expected_observation": "i2pr-sent-and-acknowledged",
         }
         base["expected"] = "arbitrary-free-text"
         with self.assertRaises(EvidenceError):
@@ -341,6 +357,10 @@ class HarnessContractTests(unittest.TestCase):
             "evidence_sha256": "",
             "known_deviation": "driver-absent",
             "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+            "i2pr_router_info_sha256": "0" * 64,
+            "reference_router_info_sha256": "0" * 64,
+            "data_phase_mode": "round-trip-delivery-status",
+            "expected_observation": "i2pr-sent-and-acknowledged",
         }
         for pattern, field in (
             ("-----BEGIN PRIVATE KEY-----", "known_deviation"),
@@ -383,6 +403,10 @@ class HarnessContractTests(unittest.TestCase):
             "evidence_sha256": "",
             "known_deviation": "driver-absent",
             "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+            "i2pr_router_info_sha256": "0" * 64,
+            "reference_router_info_sha256": "0" * 64,
+            "data_phase_mode": "round-trip-delivery-status",
+            "expected_observation": "i2pr-sent-and-acknowledged",
         }
         base["deterministic_parameters"] = "seed=1;path=/home/user/state"
         with self.assertRaises(EvidenceError):
@@ -413,6 +437,10 @@ class HarnessContractTests(unittest.TestCase):
             "evidence_sha256": "",
             "known_deviation": "driver-absent",
             "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+            "i2pr_router_info_sha256": "0" * 64,
+            "reference_router_info_sha256": "0" * 64,
+            "data_phase_mode": "round-trip-delivery-status",
+            "expected_observation": "i2pr-sent-and-acknowledged",
         }
         base["reproduction"] = "arbitrary-command"
         with self.assertRaises(EvidenceError):
@@ -444,6 +472,10 @@ class HarnessContractTests(unittest.TestCase):
             "evidence_sha256": "",
             "known_deviation": "environment-smoke-only",
             "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+            "i2pr_router_info_sha256": "5" * 64,
+            "reference_router_info_sha256": "6" * 64,
+            "data_phase_mode": "round-trip-delivery-status",
+            "expected_observation": "i2pr-sent-and-acknowledged",
         }
         base["artifact_sha256"] = "0" * 64
         with self.assertRaises(EvidenceError):
@@ -475,6 +507,10 @@ class HarnessContractTests(unittest.TestCase):
             "evidence_sha256": "",
             "known_deviation": "environment-smoke-only",
             "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+            "i2pr_router_info_sha256": "5" * 64,
+            "reference_router_info_sha256": "6" * 64,
+            "data_phase_mode": "round-trip-delivery-status",
+            "expected_observation": "i2pr-sent-and-acknowledged",
         }
         base["i2pr_commit"] = "record-at-execution"
         with self.assertRaises(EvidenceError):
@@ -504,6 +540,10 @@ class HarnessContractTests(unittest.TestCase):
             "evidence_sha256": "",
             "known_deviation": "environment-smoke-only",
             "reproduction": "bash scripts/interop/run-scenario.sh --scenario synthetic --reference i2pd",
+            "i2pr_router_info_sha256": "5" * 64,
+            "reference_router_info_sha256": "6" * 64,
+            "data_phase_mode": "round-trip-delivery-status",
+            "expected_observation": "i2pr-sent-and-acknowledged",
         }
         evidence_only = dict(base)
         evidence_only["actual_typed_result"] = "blocked"
@@ -706,6 +746,10 @@ class SequentialGateArchivalTests(unittest.TestCase):
             "evidence_sha256": "",
             "known_deviation": "environment-smoke-only",
             "reproduction": f"bash scripts/interop/run-scenario.sh --scenario {scenario_id} --reference {reference}",
+            "i2pr_router_info_sha256": "5" * 64,
+            "reference_router_info_sha256": "6" * 64,
+            "data_phase_mode": "round-trip-delivery-status",
+            "expected_observation": "i2pr-sent-and-acknowledged",
         }
 
     def _write_record(self, evidence_dir: Path, filename: str, record: dict) -> Path:
