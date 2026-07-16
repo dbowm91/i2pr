@@ -91,6 +91,28 @@ make_cache_user_readable() {
   return "$status"
 }
 
+reset_reference_artifacts() {
+  printf '[%s] %s\n' "$profile" "reset-reference-artifacts"
+  if guest_exec_root bash -c "rm -rf '$guest_target/build/sources' '$guest_target/cache' '$guest_target/build/reference-cache-manifest.json' '$guest_target/build/reference-build-summary.json' '$guest_target/build/host-metadata.json' '$guest_target/build/java-i2p-summary.txt' '$guest_target/build/i2pd-summary.txt' '$guest_target/build/objects' '$guest_target/build/install' '$guest_target/build/downloads' '$guest_target/build/logs' '$guest_target/build/tools'" >"$instance_state_dir/$profile-reset-reference-artifacts.log" 2>&1; then
+    printf '  %s ok\n' "reset-reference-artifacts"
+    return 0
+  fi
+  local status=$?
+  printf '  %s failed (exit %d)\n' "reset-reference-artifacts" "$status"
+  return "$status"
+}
+
+install_guest_rust_toolchain() {
+  printf '[%s] %s\n' "$profile" "install-guest-rust-toolchain"
+  if guest_exec_root bash -c "set -euo pipefail; if ! command -v cargo >/dev/null 2>&1; then install -d -m 0755 /usr/local/bin; ln -sf /home/$guest_execution_user/.cargo/bin/cargo /usr/local/bin/cargo; ln -sf /home/$guest_execution_user/.cargo/bin/rustc /usr/local/bin/rustc; install -d -m 0755 /etc/sudoers.d; printf 'Defaults env_keep += \"CARGO_HOME RUSTUP_HOME\"\n' > /etc/sudoers.d/i2pr-rust; chmod 0440 /etc/sudoers.d/i2pr-rust; visudo -c -f /etc/sudoers.d/i2pr-rust >/dev/null; fi" >"$instance_state_dir/$profile-install-guest-rust-toolchain.log" 2>&1; then
+    printf '  %s ok\n' "install-guest-rust-toolchain"
+    return 0
+  fi
+  local status=$?
+  printf '  %s failed (exit %d)\n' "install-guest-rust-toolchain" "$status"
+  return "$status"
+}
+
 case "$profile" in
   environment-smoke)
     profile_step pre-install ubuntu/check-host.sh --pre-install \
@@ -99,6 +121,8 @@ case "$profile" in
       --metadata "$guest_target/build/host-metadata.json" || exit $?
     ;;
   reference-crosscheck-ipv4)
+    install_guest_rust_toolchain || exit $?
+    reset_reference_artifacts || exit $?
     profile_step reference-build build-references.sh --force-rebuild || exit $?
     make_cache_user_readable || exit $?
     profile_step cache-manifest cache-manifest.py --verify || exit $?
@@ -106,6 +130,8 @@ case "$profile" in
     profile_step reference-crosscheck-ipv4 run-gate.sh --profile reference-crosscheck-ipv4 --offline || exit $?
     ;;
   handshake-smoke)
+    install_guest_rust_toolchain || exit $?
+    reset_reference_artifacts || exit $?
     profile_step reference-build build-references.sh --force-rebuild || exit $?
     make_cache_user_readable || exit $?
     profile_step cache-manifest cache-manifest.py --verify || exit $?
@@ -120,6 +146,8 @@ case "$profile" in
       --metadata "$guest_target/build/host-metadata.json" || exit $?
     profile_step setup-host ubuntu/setup-host.sh || exit $?
     profile_step record-baseline verify-clean-host.sh --record-baseline || exit $?
+    install_guest_rust_toolchain || exit $?
+    reset_reference_artifacts || exit $?
     profile_step reference-build build-references.sh --force-rebuild || exit $?
     make_cache_user_readable || exit $?
     profile_step cache-manifest cache-manifest.py --verify || exit $?
