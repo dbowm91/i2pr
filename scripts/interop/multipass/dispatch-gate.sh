@@ -84,7 +84,7 @@ profile_step() {
 
 make_cache_user_readable() {
   printf '[%s] %s\n' "$profile" "make-cache-user-readable"
-  if guest_exec_root bash -c "chown -R '$guest_execution_user:$guest_execution_user' '$guest_target/cache' '$guest_target/build' && chmod -R u+rwX,g+rX,o+rX '$guest_target/cache' '$guest_target/build'" >"$instance_state_dir/$profile-make-cache-user-readable.log" 2>&1; then
+  if guest_exec_root bash -c "chown -R '$guest_execution_user:$guest_execution_user' '$guest_target/cache' && chmod -R u+rwX,g+rX,o+rX '$guest_target/cache'" >"$instance_state_dir/$profile-make-cache-user-readable.log" 2>&1; then
     printf '  %s ok\n' "make-cache-user-readable"
     return 0
   fi
