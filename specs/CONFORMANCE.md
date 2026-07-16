@@ -97,6 +97,23 @@ authorized mixed-router execution has been completed. Therefore NTCP2 remains
 success, loopback, vectors, testkit output, and Plan 041 reference-control
 records cannot change that status.
 
+### Plan 046 rootless-lane gate notice
+
+Plan 046 introduces the rootless sealed-namespace lane as the primary
+evidence path. The lane is fail-closed: on a host that does not permit
+unprivileged user namespaces, the sandbox capability probe emits the
+canonical typed blocker `blocked_unprivileged_user_namespace` and writes it
+to the `--attestation-output` path on disk. This is the correct closure on a
+host that activates `kernel.apparmor_restrict_unprivileged_userns=1` even
+when `kernel.unprivileged_userns_clone=1` is also set, because AppArmor
+confines every unprivileged user namespace to a restrictive policy and the
+ordinary invoking user cannot lift that policy. The lane remains runnable
+by an ordinary user; it just returns a typed blocker on hosts whose
+kernel/AppArmor policy refuses unprivileged namespacing. Plan 047 takes on
+cross-host portability. No rootless-lane typed blocker is a protocol pass,
+and the blocker does not advance any `[[surface]]` row or any
+`advertised = true` flag.
+
 ## Source-to-code traceability
 
 Every protocol module should identify:

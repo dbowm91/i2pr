@@ -99,8 +99,18 @@ plan introduces:
   (`.github/workflows/ntcp2-interop-rootless.yml`);
 - ADR 0017 and the reconciliation of every relevant design document.
 
-Plan 046 does not advertise NTCP2 support and does not close Milestone 3
-by itself. Milestone 3 remains open until separate evidence review.
+Plan 046 closed with a typed host-level blocker. The closure record is
+`plans/046-closure.md`. The closure is the existence of a re-producable
+typed probe blocker that any ordinary user can produce on this host. The
+on-host evidence at
+`target/interop/evidence/handshake-smoke-rootless--host-blocked/`
+contains a kernel/sysctl/capability snapshot and two identical probe
+attestations (host shell and `ssh i2ptest@localhost` shell) carrying
+the canonical typed blocker
+`blocked_unprivileged_user_namespace`. The lane remains runnable by an
+ordinary user; it just returns a typed blocker on this particular
+kernel configuration. Cross-host portability is deferred to
+`plans/047-cross-host-rootless-lane-expansion.md`.
 
 - D1: ``ref-gen``/``ref`` and ``i2pr-gen``/``i2pr`` share one disposable
   data directory so the live phase restarts from the identity that

@@ -310,7 +310,13 @@ live under:
   no-escalation workflow.
 
 The Plan 046 status file (`plans/046-status.md`) records the
-implementation-completion and evidence-completion stages.
+implementation-completion stage; the closure record is
+`plans/046-closure.md`. Plan 046 closed with a typed host-level blocker
+on this checkout (`blocked_unprivileged_user_namespace`); the on-host
+evidence is at
+`target/interop/evidence/handshake-smoke-rootless--host-blocked/`.
+Cross-host recovery is recorded in
+`plans/047-cross-host-rootless-lane-expansion.md`.
 
 ## MVP direction
 

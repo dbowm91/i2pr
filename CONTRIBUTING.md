@@ -318,7 +318,9 @@ When changing rootless code paths:
 Run the full validation ladder before handoff (see `AGENTS.md`). Plan 046
 does not advertise NTCP2 support and does not close Milestone 3 by
 itself; do not describe the gate chain as passing or present reference-
-only control records as i2pr mixed-router evidence.
+only control records as i2pr mixed-router evidence. The Plan 046
+closure record is `plans/046-closure.md`; cross-host recovery lives in
+`plans/047-cross-host-rootless-lane-expansion.md`.
 
 Plan 024's integrated lane contains named clean-startup, bounded-overload,
 restart-recovery, essential-failure, and simulated-link-fault scenarios plus

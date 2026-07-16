@@ -568,3 +568,21 @@ namespace supervisor. A typed probe blocker such as
 `blocked_synthetic_bind_failed`, or `blocked_external_connect_succeeded`
 is a hard stop. NTCP2 remains experimental and non-advertised; Milestone 3
 remains open.
+
+### Plan 046 closure
+
+Plan 046 is closed with a typed host-level blocker on this checkout.
+`unshare -U -r --map-root-user` returns `Operation not permitted` on
+`/proc/self/uid_map` because `kernel.apparmor_restrict_unprivileged_userns=1`
+confines every unprivileged user namespace to a restrictive AppArmor
+policy, even though `kernel.unprivileged_userns_clone=1` permits the
+namespace itself. The ordinary invoking user has no `CAP_MAC_ADMIN` and
+no other lever to lift that policy, and Plan 046 forbids `sudo`. The
+probe and the wrapper write the canonical typed blocker
+`blocked_unprivileged_user_namespace` to the `--attestation-output`
+path on disk, and the on-host evidence directory
+`target/interop/evidence/handshake-smoke-rootless--host-blocked/`
+carries that blocker plus a kernel/sysctl/capability snapshot. The
+lane is runnable by an ordinary user on hosts where the AppArmor
+restriction is `0` (or AppArmor is unloaded); cross-host recovery is
+recorded in `plans/047-cross-host-rootless-lane-expansion.md`.

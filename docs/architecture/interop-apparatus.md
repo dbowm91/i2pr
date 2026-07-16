@@ -292,8 +292,12 @@ to be considered passing.
 A static rootless boundary checker (`scripts/check-rootless-interop-boundary.sh`)
 fails the change whenever rootless-owned files contain prohibited
 patterns or omit required contracts. The mixed-router evidence schema
-adds `topology_kind`, `privilege_model`, `sandbox_attestation_sha256`,
+ adds `topology_kind`, `privilege_model`, `sandbox_attestation_sha256`,
 and `parent_network_state_unchanged`. A passed record that violates any
 of these is rejected. The status file `plans/046-status.md` tracks the
-stages of implementation completion and external evidence completion.
+stages of implementation completion and external evidence completion;
+the closure record is `plans/046-closure.md`. Plan 046 closed with the
+canonical typed blocker `blocked_unprivileged_user_namespace` recorded
+on this host, and `plans/047-cross-host-rootless-lane-expansion.md`
+takes on cross-host recovery.
 

@@ -218,3 +218,18 @@ record that violates any of these is rejected. The lane forbids automatic
 fallback to the privileged topology; a missing rootless capability is a
 typed blocker, not a skipped success. NTCP2 remains experimental and
 non-advertised; Milestone 3 is still open.
+
+### Plan 046 closure and Plan 047 follow-up
+
+Plan 046 is closed with a typed host-level blocker. On this checkout the
+probe (host shell and `ssh i2ptest@localhost`) emits the canonical typed
+blocker `blocked_unprivileged_user_namespace` and writes it to the
+attestation path; the on-host evidence is at
+`target/interop/evidence/handshake-smoke-rootless--host-blocked/`. The
+cause is `kernel.apparmor_restrict_unprivileged_userns=1` confining every
+unprivileged user namespace to a restrictive AppArmor policy even though
+`kernel.unprivileged_userns_clone=1`. The ordinary user has no
+`CAP_MAC_ADMIN` and no other lever to lift that policy, and Plan 046
+forbids `sudo`. Plan 047 (`plans/047-cross-host-rootless-lane-expansion.md`)
+records cross-host recovery for hosts where the AppArmor restriction is
+`0` (or AppArmor is unloaded).

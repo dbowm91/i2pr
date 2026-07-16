@@ -358,7 +358,10 @@ meet `specs/CONFORMANCE.md`. The current checkout has not met those gates.
     inside a single process-scoped network namespace, not separate-stack
     network behavior, asymmetric firewall semantics, packet loss, route
     mutation, or interface-failure semantics.
-11. NTCP2 remains experimental and non-advertised; Milestone 3 remains open.
+ 11. NTCP2 remains experimental and non-advertised; Milestone 3 remains open.
+     Plan 046 is closed with a typed host-level blocker; the closure
+     record is `plans/046-closure.md`. Cross-host recovery lives in
+     `plans/047-cross-host-rootless-lane-expansion.md`.
 
 ## 13. Synvoid and eggsec integration
 

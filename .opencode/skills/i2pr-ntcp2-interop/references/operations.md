@@ -96,6 +96,32 @@ assumption with a typed oracle probe and split send/receive observations;
 no reference echo behavior is currently proven, so this remains a bounded
 plan scope rather than interoperability evidence.
 
+## Plan 046 rootless sealed-namespace lane
+
+```text
+bash scripts/interop/probe-rootless-sandbox.sh --attestation-path <att>
+bash scripts/interop/rootless-enter.sh --probe --attestation-output <att>
+bash scripts/interop/rootless-enter.sh --scenario <id> --reference <ref> \
+    --build-cache <path> --run-root <path> --attestation-output <att>
+bash scripts/check-rootless-interop-boundary.sh
+```
+
+The probe emits a typed outcome; the outer wrapper writes the typed
+blocker to `--attestation-output` even when the `unshare` call cannot
+reach the inner runner (host-level blocker). The lane forbids `sudo`,
+`setcap`, `--privileged`, `--network host`, `ip netns`, and any fallback
+to the privileged backend. The static boundary checker
+`scripts/check-rootless-interop-boundary.sh` enforces the privilege
+surface independently of the host-level kernel policy.
+
+The Plan 046 closure on this checkout is a typed host-level blocker.
+The cause is `kernel.apparmor_restrict_unprivileged_userns=1`, which
+confines every unprivileged user namespace to a restrictive AppArmor
+policy even when `kernel.unprivileged_userns_clone=1`. The probe
+records the canonical typed blocker
+`blocked_unprivileged_user_namespace` on disk. Cross-host recovery is
+recorded in `plans/047-cross-host-rootless-lane-expansion.md`.
+
 The launcher status meanings are fixed: schema-1 `i2pr-interop-status` records
 use fixed phase, result, reason-code, and aggregate counters; `listen` readiness
 is separate from a later authenticated terminal result, `dial` has one

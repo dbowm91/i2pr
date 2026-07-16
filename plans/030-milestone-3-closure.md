@@ -116,6 +116,23 @@ The operator decision is to keep live daemon activation disabled. No reseed,
 NetDB mutation, RouterInfo publication, tunnel behavior, SSU2, client API, or
 public-network operation was introduced.
 
+### Plan 046 closure on this checkout
+
+The Plan 046 rootless sealed-namespace lane is closed with a typed
+host-level blocker. The host's kernel activates
+`kernel.apparmor_restrict_unprivileged_userns=1`, which confines every
+unprivileged user namespace to a restrictive AppArmor policy and
+prevents `unshare -U -r --map-root-user` from writing `/proc/self/uid_map`.
+The ordinary invoking user has no `CAP_MAC_ADMIN` and no other lever to
+lift that policy, and Plan 046 forbids `sudo`. The probe writes the
+canonical typed blocker `blocked_unprivileged_user_namespace` to the
+attestation path; the on-host evidence directory
+`target/interop/evidence/handshake-smoke-rootless--host-blocked/`
+carries that blocker plus a kernel/sysctl/capability snapshot and the
+identical `ssh i2ptest@localhost` result. Plan 046 does not advance
+Milestone 3 and does not advertise NTCP2 support. Cross-host recovery is
+recorded in `plans/047-cross-host-rootless-lane-expansion.md`.
+
 ## Exact validation evidence
 
 The final handoff ran the commands below. All listed local commands passed;

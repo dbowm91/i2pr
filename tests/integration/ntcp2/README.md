@@ -251,3 +251,43 @@ The current checkout contains the mixed-scenario definitions, the mixed-runner
 composition, the strict launcher renderer, and the non-echo data-phase oracle.
 No completed mixed-router i2pr record is present; these are explicit blockers,
 not skipped successes. NTCP2 remains experimental and non-advertised.
+
+## Plan 046 rootless sealed-namespace evidence lane
+
+Plan 046 is closed with a typed host-level blocker. The lane is a
+process-scoped user/network/mount/PID namespace that an ordinary user can
+run without `sudo`, passwordless elevation, host capabilities, setuid helpers,
+host-visible namespaces, host-visible veths, or host nftables mutation. The
+primary evidence topology is `rootless-sealed-single-netns` with privilege
+model `unprivileged-userns`; the legacy `privileged-dual-netns-veth`
+backend is renamed, kept as an explicit opt-in qualification lane, and
+never a silent fallback.
+
+The sandbox capability probe (`scripts/interop/probe-rootless-sandbox.sh`)
+emits a typed outcome, and on hosts that refuse unprivileged user
+namespaces the wrapper writes the canonical typed blocker
+`blocked_unprivileged_user_namespace` to the `--attestation-output` path.
+Mixed-router evidence records carry `topology_kind`, `privilege_model`,
+`sandbox_attestation_sha256`, and `parent_network_state_unchanged`. A
+passed record that violates any of these is rejected.
+
+The current host (`deadpool`, Ubuntu 24.04 amd64) activates
+`kernel.apparmor_restrict_unprivileged_userns=1`, which confines every
+unprivileged user namespace to a restrictive AppArmor policy even though
+`kernel.unprivileged_userns_clone=1`. The ordinary invoking user has no
+`CAP_MAC_ADMIN` and no other lever to lift that policy, and Plan 046
+forbids `sudo`. The probe (host shell and `ssh i2ptest@localhost`) emits
+the typed blocker; the on-host evidence directory
+`target/interop/evidence/handshake-smoke-rootless--host-blocked/`
+carries that blocker plus a kernel/sysctl/capability snapshot. Plan 047
+(`plans/047-cross-host-rootless-lane-expansion.md`) records cross-host
+recovery for hosts where the AppArmor restriction is `0` (or AppArmor is
+unloaded).
+
+The static boundary checker (`scripts/check-rootless-interop-boundary.sh`)
+enforces the privilege surface independently of the host-level kernel
+policy: it forbids `sudo`, `ip netns`, `nft`, `setcap`, `--privileged`,
+`--network host`, and any fallback to the privileged backend from the
+rootless-owned files. The Plan 046 manual no-escalation GitHub Actions
+workflow (`.github/workflows/ntcp2-interop-rootless.yml`) is opt-in only.
+Plan 046 does not advertise NTCP2 support and does not close Milestone 3.

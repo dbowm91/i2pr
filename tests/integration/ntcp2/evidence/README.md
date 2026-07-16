@@ -80,3 +80,27 @@ records fail the gate.
 
 No completed mixed-router i2pr record is present in this checkout. These are
 explicit blockers, not skipped successes.
+
+## Plan 046 rootless sealed-namespace evidence
+
+Plan 046 adds four fields to the mixed-router evidence record:
+`topology_kind`, `privilege_model`, `sandbox_attestation_sha256`, and
+`parent_network_state_unchanged`. The schema-2 field list is unchanged
+otherwise. A passed record that violates any of the four new fields is
+rejected.
+
+The Plan 046 lane produces an `IsolationAttestation` containing the
+sandbox sha256, the parent-network state digest pre/post, the kernel /
+sysctl / capability snapshot at probe time, and the bounded probe
+results. The sha256 of the attestation binds every passed mixed-router
+record in the same run; aggregate validation requires all four
+directional records to share the same attestation sha256 and byte-equal
+parent-network-state pre/post digests.
+
+Plan 046 closed with a typed host-level blocker on this checkout. The
+on-host evidence directory `target/interop/evidence/handshake-smoke-rootless--host-blocked/`
+records the kernel/sysctl/capability snapshot and the two identical
+probe attestations (host shell and `ssh i2ptest@localhost` shell)
+carrying `{"schema":1,"type":"rootless-sandbox-probe","outcome":"blocked_unprivileged_user_namespace"}`.
+The Plan 046 closure is `plans/046-closure.md`; cross-host recovery
+lives in `plans/047-cross-host-rootless-lane-expansion.md`.
