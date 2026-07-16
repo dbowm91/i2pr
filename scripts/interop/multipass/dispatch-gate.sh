@@ -55,10 +55,12 @@ guest_target="$guest_repo_root/target/interop"
 guest_scripts="$guest_repo_root/scripts/interop"
 
 guest_exec_root() {
-  multipass exec "$instance_name" -- sudo -n "$@"
+  multipass exec "$instance_name" -- sudo -n \
+    env "CARGO_HOME=/home/$guest_execution_user/.cargo" "RUSTUP_HOME=/home/$guest_execution_user/.rustup" "$@"
 }
 guest_exec_user() {
-  multipass exec "$instance_name" -- sudo -n -u "$guest_execution_user" "$@"
+  multipass exec "$instance_name" -- sudo -n -u "$guest_execution_user" \
+    env "CARGO_HOME=/home/$guest_execution_user/.cargo" "RUSTUP_HOME=/home/$guest_execution_user/.rustup" "$@"
 }
 
 profile_step() {
