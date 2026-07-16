@@ -28,6 +28,8 @@ import datetime as dt
 import hashlib
 import json
 import os
+import ctypes
+import ctypes.util
 import re
 import socket
 import subprocess
@@ -39,6 +41,27 @@ INNER_MARKER = "I2PR_INTEROP_ROOTLESS_INNER"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _enable_no_new_privs() -> bool:
+    """Set ``PR_SET_NO_NEW_PRIVS`` so the no-new-privs verifier passes.
+
+    The supervisor must run with no-new-privs asserted so that no descendant
+    can regain capabilities via setuid binaries. The canonical rootless
+    entrypoint expects this state at supervisor entry; if we are invoked
+    without it (for example because the outer unshare did not set it), we
+    set it here before continuing. The operation is irreversible for the
+    current process, which is the desired invariant.
+    """
+
+    libc_name = ctypes.util.find_library("c") or "libc.so.6"
+    try:
+        libc = ctypes.CDLL(libc_name, use_errno=True)
+    except OSError:
+        return False
+    PR_SET_NO_NEW_PRIVS = 38
+    result = libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+    return result == 0
 
 
 class SandboxError(RuntimeError):
@@ -171,11 +194,23 @@ def _parse_id_map(text: str) -> list[tuple[int, int, int]]:
 
 
 def _is_single_id_map(entries: list[tuple[int, int, int]]) -> bool:
-    """A single-ID map has exactly one entry covering one ID inside."""
+    """A single-ID map has exactly one entry covering one ID inside.
 
-    return entries == [(0, 0, 1)] or any(
-        length == 1 and outside == 0 for _, outside, length in entries
-    )
+    Accepts both the privileged form ``(0, 0, 1)`` (inside UID 0 maps to outer
+    UID 0, used when running as root) and the canonical rootless form
+    ``(0, outside_uid, 1)`` (inside UID 0 maps to the outer non-root UID, used
+    when ``unshare --map-root-user`` runs from a non-root execution user).
+    The single-id invariant is that the map covers exactly one inside ID with
+    a single contiguous range; the outer UID only identifies the calling user
+    and is irrelevant to the security boundary.
+    """
+
+    if entries == [(0, 0, 1)]:
+        return True
+    if len(entries) == 1:
+        inside, _outside, length = entries[0]
+        return inside == 0 and length == 1
+    return any(length == 1 and outside == 0 for _, outside, length in entries)
 
 
 def _read_setgroups() -> str:
@@ -466,6 +501,8 @@ def run(
 
     if not HEX40.fullmatch(i2pr_commit) and i2pr_commit != "":
         raise SandboxError("invalid-i2pr-commit")
+    if not _enable_no_new_privs():
+        raise SandboxError("blocked_no_new_privs")
     if not verify_in_user_namespace():
         raise SandboxError("blocked_unprivileged_user_namespace")
     if not verify_in_network_namespace():

@@ -61,13 +61,64 @@ if [[ -r /proc/sys/kernel/unprivileged_userns_clone ]]; then
 fi
 
 probe_status=0
-if probe_outcome=$(python3 "$repo_root/tests/integration/ntcp2/harness/rootless_supervisor.py" --probe 2>&1); then
+parent_digest_pre=$(python3 - <<'PYEOF' 2>/dev/null || echo "0000000000000000000000000000000000000000000000000000000000000000"
+import hashlib
+import json
+import os
+import socket
+
+try:
+    hostname = socket.gethostname()
+except OSError:
+    hostname = ""
+
+try:
+    uid = os.getuid()
+    gid = os.getgid()
+    groups = os.getgroups()
+except (AttributeError, OSError):
+    uid = gid = -1
+    groups = []
+
+payload = {
+    "hostname": hostname,
+    "uid": uid,
+    "gid": gid,
+    "groups_count": len(groups),
+}
+print(hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
+PYEOF
+)
+probe_command=(
+  unshare
+  --user
+  --net
+  --mount
+  --pid
+  --fork
+  --propagation
+  private
+  --mount-proc
+  --map-root-user
+  /usr/bin/env
+  "I2PR_INTEROP_ROOTLESS_INNER=1"
+  "I2PR_INTEROP_ROOTLESS_PARENT_DIGEST_PRE=$parent_digest_pre"
+  "I2PR_INTEROP_PARENT_USER_NS_INODE=$(stat -Lc %i /proc/self/ns/user)"
+  "I2PR_INTEROP_PARENT_NET_NS_INODE=$(stat -Lc %i /proc/self/ns/net)"
+  "I2PR_INTEROP_PARENT_MNT_NS_INODE=$(stat -Lc %i /proc/self/ns/mnt)"
+  "I2PR_INTEROP_PARENT_PID_NS_INODE=$(stat -Lc %i /proc/self/ns/pid)"
+  python3 "$repo_root/tests/integration/ntcp2/harness/rootless_supervisor.py" --probe
+)
+if [[ -n "$attestation_path" ]]; then
+  probe_command+=(--attestation-output "$attestation_path")
+fi
+if probe_outcome=$("${probe_command[@]}" 2>&1); then
   :
 else
   probe_status=$?
   # Surface the supervised typed blocker regardless of success-path status.
   printf '%s\n' "$probe_outcome"
-  if [[ -n "$attestation_path" ]]; then
+  if [[ -n "$attestation_path" && ! -f "$attestation_path" ]]; then
     mkdir -p "$(dirname "$attestation_path")" 2>/dev/null || true
     first_outcome=$(printf '%s\n' "$probe_outcome" | grep -o '"outcome":"[a-z_]*"' | head -1 | cut -d'"' -f4 || true)
     if [[ -z "$first_outcome" ]]; then
