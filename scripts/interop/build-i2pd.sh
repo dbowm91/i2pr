@@ -15,9 +15,9 @@ for arg in "$@"; do
 done
 assert_lock_contract
 ensure_target_dirs
-for command in git cmake c++ sha256sum python3 openssl sed; do require_command "$command"; done
+for command in git make c++ g++ sha256sum python3 openssl sed; do require_command "$command"; done
 
-command_version="i2pd-cmake-relwithdebinfo-v1"
+command_version="i2pd-make-relwithdebinfo-v1"
 cache_key=$(cache_key_for i2pd "$I2PD_REVISION" "$command_version")
 cache_dir="$CACHE_ROOT/$I2PD_REFERENCE/$cache_key"
 metadata="$cache_dir/build-metadata.txt"
@@ -46,21 +46,22 @@ fi
 git -C "$source_dir" checkout --detach --quiet "$I2PD_REVISION"
 verify_git_revision "$source_dir" "$I2PD_REVISION"
 verify_git_remote "$source_dir" "$I2PD_REPOSITORY"
-(cd "$build_dir" && cmake -DWITH_GIT_VERSION=ON -DWITH_UPNP=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo "$source_dir") \
-  >"$log_dir/cmake-configure.log" 2>&1
 cpus=$(nproc 2>/dev/null || printf '1')
 memory_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo)
 jobs=$((cpus < 4 ? cpus : 4))
 if [[ "$memory_kb" =~ ^[0-9]+$ && "$memory_kb" -lt 8388608 ]]; then jobs=1; fi
 (( jobs > 0 )) || jobs=1
-(cd "$build_dir" && cmake --build . --parallel "$jobs") >"$log_dir/build.log" 2>&1
+# i2pd 2.60.0 ships a plain GNU Makefile (no CMakeLists.txt); build from
+# the source directory using the canonical make-based recipe and stage
+# the resulting binary into the build_dir for downstream validation.
+(cd "$source_dir" && make -j"$jobs" USE_UPNP=no DEBUG=0) >"$log_dir/build.log" 2>&1
+binary="$source_dir/i2pd"
+[[ -x "$binary" ]] || die "i2pd build did not produce an executable"
+install -m 0755 "$binary" "$build_dir/i2pd"
 test_disposition="not-available"
-if cmake --build "$build_dir" --target help 2>/dev/null | grep -Eq '(^|[[:space:]])test([[:space:]]|$)'; then
-  (cd "$build_dir" && cmake --build . --target test) >"$log_dir/tests.log" 2>&1
-  test_disposition="target-test-ran"
-elif [[ -f "$build_dir/CTestTestfile.cmake" ]]; then
-  (cd "$build_dir" && ctest --output-on-failure) >"$log_dir/tests.log" 2>&1
-  test_disposition="ctest-ran"
+if make -n -C "$source_dir" test 2>/dev/null | grep -Eq '(^|[[:space:]])test([[:space:]]|$)'; then
+  (cd "$source_dir" && make -j"$jobs" test) >"$log_dir/tests.log" 2>&1
+  test_disposition="make-test-ran"
 fi
 binary="$build_dir/i2pd"
 [[ -x "$binary" ]] || binary=$(find "$build_dir" -type f -name i2pd -perm -u+x -print -quit)
@@ -97,8 +98,8 @@ write_metadata_header "$metadata" "$I2PD_REFERENCE" "$I2PD_REVISION" "$command_v
   printf 'installed_tree_sha256=%s\n' "$installed_tree_sha256"
   printf 'launcher=bin/i2pd\n'
   printf 'execution_network=forbidden\n'
-  printf 'toolchain=compiler:%s;cmake:%s;boost:%s;openssl:%s;zlib:%s\n' \
-    "$(c++ --version | head -n 1)" "$(cmake --version | head -n 1)" \
+  printf 'toolchain=compiler:%s;make:%s;boost:%s;openssl:%s;zlib:%s\n' \
+    "$(c++ --version | head -n 1)" "$(make --version | head -n 1)" \
     "$boost_version" "$openssl_version" "$zlib_version"
   printf 'launcher_probe=version-nonpersistent\n'
   printf 'version_check=%s\n' "$version_check"
