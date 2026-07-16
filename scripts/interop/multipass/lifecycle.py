@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed host lifecycle primitives for the Plan 049 Multipass lane.
+"""Fail-closed host lifecycle primitives for the Plan 048/049/050 Multipass lane.
 
 This module deliberately contains no Multipass or guest execution calls.  It
 owns the small, deterministic part of the lifecycle contract that can be

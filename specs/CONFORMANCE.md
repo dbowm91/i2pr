@@ -287,7 +287,7 @@ Capability publication is a security and interoperability contract. Before chang
 
 Store stable protocol vectors and minimized malformed fixtures in the repository. Store large captures, generated testnets and sensitive operational logs outside Git history, with scripts and hashes sufficient to reproduce them. Redact live peer identities, IP addresses, destination keys, session keys and potentially identifying timing data before retaining or publishing artifacts.
 
-## Plan 048/049 Multipass recovery category
+## Plan 048/049/050 Multipass recovery category
 
 The Plan 046 host blocker remains a negative baseline. Plan 048 targets the
 `host.apparmor-restrict-off` category through a disposable Ubuntu 24.04 amd64

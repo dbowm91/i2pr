@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Static fail-closed checks for the Plan 049 Multipass lifecycle boundary.
+# Static fail-closed checks for the Plan 048/049/050 Multipass lifecycle boundary.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)

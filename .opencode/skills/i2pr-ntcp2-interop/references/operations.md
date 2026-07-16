@@ -227,7 +227,7 @@ gate catalog omits `handshake-smoke-rootless`, or when the evidence
 validation does not require the sandbox attestation. Plan 046 does not
 advertise NTCP2 support and does not close Milestone 3 by itself.
 
-## Plan 048/049 Multipass recovery operations
+## Plan 048/049/050 Multipass recovery operations
 
 The host-level `blocked_unprivileged_user_namespace` result remains the
 negative baseline. The recovery lane is a disposable Multipass guest. Its
@@ -295,3 +295,75 @@ and guest probe results, and environment evidence hash. Missing Multipass,
 guest policy, source/cache, probe, offline, cleanup, or evidence requirements
 are typed blockers; pre-router blockers are never protocol passes and no
 support row or Milestone 3 claim changes automatically.
+
+### Plan 050 cloud-init recovery and guest-probe pass
+
+Cloud-init failure classification is sanitized and typed:
+
+```text
+bash scripts/interop/multipass/cloud-init-status.sh --instance-name <name>
+```
+
+It captures `cloud-init status --long`, the four canonical services, and
+the boot-finished marker, classifies via
+`scripts/interop/multipass/cloud_init_status.py`, and emits sanitized
+JSON. Failure classes are
+`blocked_cloud_init_post_verify_failure`,
+`blocked_cloud_init_service_failure`,
+`blocked_cloud_init_boot_timeout`,
+`blocked_cloud_init_status_unparseable`,
+`blocked_cloud_init_user_incomplete`, and
+`blocked_cloud_init_phase_missing`. Each record carries `retry_safe`
+and `recommended_action` fields. The compatibility alias
+`blocked_cloud_init_failed` is retained only for transition consumers.
+
+The base cloud-init no longer installs `rustup` or any host toolchain
+inside the guest. After provisioning, post-verify the base environment:
+
+```text
+bash scripts/interop/multipass/verify-base.sh \
+  --run-id <safe-id> --instance-name <name> \
+  --output <evidence-output.json>
+```
+
+`verify-base.sh` runs `/usr/local/sbin/i2pr-multipass-verify-base` via
+`multipass exec`, parses the JSON, writes a sanitized
+`multipass-base-verify` record, and verifies the ownership contract file
+ownership/mode.
+
+The minimum probe-only flow runs create-adopt + cloud-init-status +
+verify-base + probe and writes a single `multipass-guest-probe-only`
+record:
+
+```text
+bash scripts/interop/multipass/run-evidence-lane.sh \
+  --guest-probe-only --run-id <safe-id>
+```
+
+`--guest-probe-only` is mutually exclusive with `--create`,
+`--prepare`, `--probe`, `--run`, `--export`, `--all`, `--inspect`,
+`--adopt-owned`, `--resume-owned`, `--recreate-owned`, and
+`--destroy-owned`. The flag forbids router launch, cache transfer, and
+`run-matrix.sh` execution.
+
+Deleted-but-unpurged instances owned by the active contract can be
+cleaned with:
+
+```text
+bash scripts/interop/multipass/selective-purge.sh \
+  --run-id <safe-id> --instance-name <name>
+```
+
+`selective-purge.sh` validates the ownership contract against
+`environment_manifest_sha256`, confirms the instance is in `Deleted`
+state via `multipass list --format json`, and only invokes
+`multipass purge <instance>` (per-instance) when supported by the
+installed client. Unowned collisions, unsupported client versions, or
+missing manifests return typed blockers
+(`ownership_not_proven`, `selective_purge_not_supported`,
+`resource_already_absent`) without mutating global Multipass state.
+The static boundary check
+`bash scripts/check-multipass-interop-boundary.sh` enforces the new
+artifacts, sanitized taxonomy, phase markers, absence of `rustup` in
+cloud-init, absence of `eval`, and absence of any global `multipass
+purge` form in normal paths.

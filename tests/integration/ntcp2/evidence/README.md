@@ -105,7 +105,7 @@ carrying `{"schema":1,"type":"rootless-sandbox-probe","outcome":"blocked_unprivi
 The Plan 046 closure is `plans/046-closure.md`; cross-host recovery
 lives in `plans/047-cross-host-rootless-lane-expansion.md`.
 
-## Plan 048/049 Multipass bundle
+## Plan 048/049/050 Multipass bundle
 
 Plan 048 keeps the host blocker as a negative baseline and runs the recovery
 lane inside a disposable Ubuntu 24.04 amd64 Multipass guest. Plan 049 requires

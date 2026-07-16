@@ -1,4 +1,4 @@
-# Plan 049 Multipass recovery environment lifecycle
+# Plan 048/049/050 Multipass recovery environment lifecycle
 
 This directory is the disposable recovery lane for the Plan 046 rootless
 sealed-namespace evidence harness. It is not a production router setup and it
@@ -107,3 +107,44 @@ probes, offline enforcement, all four sanitized Plan 045 records, aggregate
 validation, atomic export, clean destruction, a fresh rebuild, and snapshot
 restore before it can contribute evidence. A blocked or reference-only run is
 not NTCP2 support evidence.
+
+## Plan 050 cloud-init recovery and guest-probe pass
+
+Cloud-init failures are classified into a sanitized typed taxonomy via
+`scripts/interop/multipass/cloud_init_status.py`:
+
+- `blocked_cloud_init_post_verify_failure`
+- `blocked_cloud_init_service_failure`
+- `blocked_cloud_init_boot_timeout`
+- `blocked_cloud_init_status_unparseable`
+- `blocked_cloud_init_user_incomplete`
+- `blocked_cloud_init_phase_missing`
+
+Each record carries `retry_safe` and `recommended_action` fields. The
+compatibility alias `blocked_cloud_init_failed` is retained only for
+transition consumers. The shell wrapper
+`scripts/interop/multipass/cloud-init-status.sh` captures
+`cloud-init status --long`, the four canonical services, and the
+boot-finished marker, classifies, and emits sanitized JSON.
+
+The base cloud-init no longer installs `rustup` or any host toolchain
+inside the guest. It installs the declared system packages, writes
+`provisioning.json`, drops a `base-packages.complete` phase marker,
+and exposes `/usr/local/sbin/i2pr-multipass-verify-base`. The host
+`verify-base.sh` command runs that script via `multipass exec`,
+parses the JSON, writes a sanitized `multipass-base-verify` record,
+and verifies the ownership contract file ownership/mode before any
+router work.
+
+`run-evidence-lane.sh --guest-probe-only` runs create-adopt +
+cloud-init-status + verify-base + probe and emits a
+`multipass-guest-probe-only` record. The flag forbids router launch,
+cache transfer, and `run-matrix.sh` execution.
+
+The selective-purge remediation in `selective-purge.sh` confirms the
+instance is in `Deleted` state and the ownership contract matches
+`environment_manifest_sha256` before any `multipass purge <instance>`;
+unowned collisions, unsupported client versions, or missing manifests
+return typed blockers (`ownership_not_proven`,
+`selective_purge_not_supported`, `resource_already_absent`) without
+mutating global Multipass state.

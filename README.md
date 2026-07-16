@@ -318,6 +318,18 @@ evidence is at
 Cross-host recovery is recorded in
 `plans/047-cross-host-rootless-lane-expansion.md`.
 
+### Plan 050 cloud-init recovery and guest-probe pass
+
+Plan 050 minimizes the Multipass cloud-init unit (no `rustup` or host
+toolchain inside the guest), adds a sanitized cloud-init failure
+taxonomy in `scripts/interop/multipass/cloud_init_status.py`, exposes
+`--guest-probe-only` in `run-evidence-lane.sh`, and adds a
+`selective-purge.sh` remediation that only invokes
+`multipass purge <instance>` when an ownership contract is proven. The
+implementation is local-only; the Plan 048/049 external evidence
+remains the negative baseline on this host. Implementation status is
+recorded in `plans/050-status.md`.
+
 ## MVP direction
 
 The feature MVP is expected to include:
@@ -579,7 +591,7 @@ Completion requires negative tests, malformed-input handling, lifecycle
 cleanup, bounded resource behavior, fuzz coverage, fixture provenance, and
 interoperability evidence.
 
-### Plan 049 Multipass lifecycle-owned permissive rootless evidence environment
+### Plan 048/049/050 Multipass lifecycle-owned permissive rootless evidence environment
 
 The current host remains the Plan 046 negative baseline because
 `kernel.apparmor_restrict_unprivileged_userns=1`. Plan 048 provides a
@@ -626,6 +638,17 @@ generation, ownership and contract digests, and the environment evidence hash.
 Mixed generations or run IDs cannot form one passing manifest. Multipass
 blockers, reference-only control results, and partial matrices are not NTCP2
 support evidence and do not advance the support ledger.
+
+Plan 050 minimizes the cloud-init unit (no `rustup` or host toolchain inside
+the guest), adds a sanitized cloud-init failure taxonomy, a
+`--guest-probe-only` flow, and a selective-purge remediation that requires
+a verified ownership contract. Cloud-init failures are classified via
+`scripts/interop/multipass/cloud_init_status.py` and the
+`cloud-init-status.sh` shell wrapper; the base environment is
+post-verified via `verify-base.sh`; and `selective-purge.sh` only invokes
+`multipass purge <instance>` (per-instance) when the ownership contract is
+proven. The static boundary check
+`scripts/check-multipass-interop-boundary.sh` enforces these additions.
 
 ## License
 

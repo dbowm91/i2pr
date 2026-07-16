@@ -384,3 +384,40 @@ failure is a typed blocker, never an interoperability pass. Plan 049 does not
 advance `specs/support.toml` or close Milestone 3. A pre-router blocker is
 written as sanitized environment-blocker evidence and can never satisfy
 protocol conformance.
+
+## Plan 050 Multipass cloud-init recovery and guest-probe pass
+
+The host cloud-init failure surface is now classified into a sanitized
+typed taxonomy in `scripts/interop/multipass/cloud_init_status.py`
+(`blocked_cloud_init_post_verify_failure`,
+`blocked_cloud_init_service_failure`, `blocked_cloud_init_boot_timeout`,
+`blocked_cloud_init_status_unparseable`,
+`blocked_cloud_init_user_incomplete`,
+`blocked_cloud_init_phase_missing`). The compatibility alias
+`blocked_cloud_init_failed` is retained only for transition consumers.
+`cloud-init-status.sh` captures `cloud-init status --long`, the four
+canonical services, and the boot-finished marker, classifies, and emits
+sanitized JSON.
+
+The base cloud-init unit no longer installs `rustup` or any host
+toolchain inside the guest; it installs the declared system packages,
+writes `provisioning.json`, drops a `base-packages.complete` phase
+marker, and exposes `/usr/local/sbin/i2pr-multipass-verify-base`. The
+host `verify-base.sh` command runs that script via `multipass exec`,
+parses the JSON, writes a sanitized `multipass-base-verify` record, and
+verifies the ownership contract file ownership/mode before any router
+work.
+
+`run-evidence-lane.sh --guest-probe-only` runs create-adopt +
+cloud-init-status + verify-base + probe and emits a
+`multipass-guest-probe-only` record. The flag forbids router launch,
+cache transfer, and `run-matrix.sh` execution. The selective-purge
+remediation in `selective-purge.sh` confirms the instance is in
+`Deleted` state and the ownership contract matches
+`environment_manifest_sha256` before any `multipass purge <instance>`;
+unowned collisions, unsupported client versions, or missing manifests
+return typed blockers without mutating global Multipass state. The
+static boundary check `check-multipass-interop-boundary.sh` enforces
+the new artifacts, sanitized taxonomy, phase markers, absence of
+`rustup` in cloud-init, absence of `eval`, and absence of any global
+`multipass purge` form in normal paths.

@@ -71,11 +71,14 @@ typed outcomes, bounded metadata, and artifact/configuration hashes. Raw
 addresses, identities, RouterInfo, I2NP, keys, transcripts, logs, and arbitrary
 remote error text are not retained.
 
-## Plan 048/049 Multipass evidence environment
+## Plan 048/049/050 Multipass evidence environment
 
 Plan 048 is an orchestration boundary around the Plan 046 rootless topology,
 not a production crate or a support claim. Plan 049 makes its lifecycle
-ownership explicit. The current host remains the AppArmor-restricted negative
+ownership explicit. Plan 050 minimizes the cloud-init unit and adds a
+sanitized failure taxonomy, a `--guest-probe-only` flow, and a
+selective-purge remediation that requires a verified ownership contract.
+The current host remains the AppArmor-restricted negative
 baseline. A disposable Multipass Ubuntu 24.04 amd64 guest provides the
 `host.apparmor-restrict-off` recovery category with guest-only user-namespace
 policy, fixed resources, immutable source/cache transfer, and ordinary-user

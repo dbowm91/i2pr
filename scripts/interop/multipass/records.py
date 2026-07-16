@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create and finalize sanitized Plan 049 Multipass records."""
+"""Create and finalize sanitized Plan 048/049/050 Multipass records."""
 
 from __future__ import annotations
 

@@ -598,7 +598,11 @@ mounted, and execution is offline after the guest-only egress policy is
 installed.
 
 Plan 049 separates the stable environment ID from the run ID and concrete
-instance name/generation. The host writes a versioned lifecycle reservation
+instance name/generation. Plan 050 minimizes the cloud-init unit (no
+`rustup` or host toolchain inside the guest), adds a sanitized cloud-init
+failure taxonomy, a `--guest-probe-only` flow, and a selective-purge
+remediation that requires a verified ownership contract.
+The host writes a versioned lifecycle reservation
 atomically before launch and serializes operations with a per-run/per-instance
 lock. A root-owned guest contract contains the environment/run/generation
 identity and ownership-token hash; the host retains only the token digest.

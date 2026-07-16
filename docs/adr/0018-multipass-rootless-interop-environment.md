@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-16
-- Plans: 046, 047, 048, 049
+- Plans: 046, 047, 048, 049, 050
 
 ## Context
 
@@ -110,3 +110,42 @@ closure; the support ledger remains experimental and non-advertised until the
 existing conformance requirements are independently satisfied. Plan 049
 corrects lifecycle ownership and collision recovery; it does not weaken any
 protocol or isolation predicate.
+
+### Plan 050 cloud-init recovery and guest-probe pass
+
+The host guest-probe pipeline now classifies `cloud-init` failures into a
+sanitized typed taxonomy (`blocked_cloud_init_post_verify_failure`,
+`blocked_cloud_init_service_failure`, `blocked_cloud_init_boot_timeout`,
+`blocked_cloud_init_status_unparseable`, `blocked_cloud_init_user_incomplete`,
+`blocked_cloud_init_phase_missing`) with explicit `retry_safe` and
+`recommended_action` fields. The compatibility alias
+`blocked_cloud_init_failed` is retained only for transition consumers.
+The host parser lives in `scripts/interop/multipass/cloud_init_status.py`;
+the shell wrapper `cloud-init-status.sh` captures `cloud-init status --long`
+and the four canonical services, classifies, and writes sanitized JSON.
+
+The base cloud-init unit no longer installs `rustup` or any host toolchain
+inside the guest; instead it installs the declared system packages, writes
+`provisioning.json`, drops a `base-packages.complete` phase marker, and
+exposes `/usr/local/sbin/i2pr-multipass-verify-base`. The host
+`verify-base.sh` command runs that script via `multipass exec`, parses the
+JSON, writes a sanitized `multipass-base-verify` record, and verifies the
+ownership contract file ownership/mode before any router work.
+
+`run-evidence-lane.sh` accepts a mutually exclusive `--guest-probe-only`
+flag that runs create-adopt + cloud-init-status + verify-base + probe and
+emits a `multipass-guest-probe-only` record. The flag forbids router launch,
+cache transfer, or `run-matrix.sh` execution. The selective-purge
+remediation in `selective-purge.sh` confirms the instance is in
+`Deleted` state and the ownership contract matches the
+`environment_manifest_sha256` before issuing any `multipass purge
+<instance>`; unowned collisions, unsupported client versions, or missing
+manifests return typed blockers without mutating global Multipass state.
+The static boundary check `check-multipass-interop-boundary.sh` enforces
+the new artifacts, sanitized taxonomy, phase markers, absence of `rustup`
+in cloud-init, absence of `eval`, and absence of any global `multipass
+purge` form in normal paths.
+
+Plan 050 minimizes what cloud-init is responsible for, isolates toolchain
+and cache work to the offline cache-transfer step, and tightens failure
+classification. It does not relax isolation, ownership, or sanitization.

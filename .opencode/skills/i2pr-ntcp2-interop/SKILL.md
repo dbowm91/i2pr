@@ -237,14 +237,17 @@ forbids `sudo`. Plan 047 (`plans/047-cross-host-rootless-lane-expansion.md`)
 records cross-host recovery for hosts where the AppArmor restriction is
 `0` (or AppArmor is unloaded).
 
-## Plan 048/049 Multipass recovery environment
+## Plan 048/049/050 Multipass recovery environment
 
 The host-level Plan 046 blocker is the negative baseline, not a universal
 failure. On a host with Multipass, Plan 048 uses the disposable Ubuntu 24.04
 amd64 instance described by `scripts/interop/multipass/environment.toml` to
 exercise the `host.apparmor-restrict-off` recovery category. Plan 049 corrects
-its lifecycle ownership contract. The host's AppArmor and user-namespace
-policy must remain unchanged.
+its lifecycle ownership contract. Plan 050 minimizes the cloud-init unit
+(no `rustup` or host toolchain inside the guest), adds a sanitized
+cloud-init failure taxonomy, a `--guest-probe-only` flow, and a
+selective-purge remediation that requires a verified ownership contract.
+The host's AppArmor and user-namespace policy must remain unchanged.
 
 The reviewed environment contract has a stable environment ID, separate from
 the generated run ID, concrete instance name, and instance generation. The

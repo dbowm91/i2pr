@@ -301,15 +301,19 @@ canonical typed blocker `blocked_unprivileged_user_namespace` recorded
 on this host, and `plans/047-cross-host-rootless-lane-expansion.md`
 takes on cross-host recovery.
 
-## Plan 048/049 Multipass recovery environment
+## Plan 048/049/050 Multipass recovery environment
 
 The host-level Plan 046 AppArmor restriction remains unchanged as the negative
 baseline. Plan 048 adds a disposable Multipass Ubuntu 24.04 amd64 guest for
 the `host.apparmor-restrict-off` recovery category. Plan 049 corrects its
-lifecycle ownership model. The reviewed environment contract is identified by
-a stable environment ID, while each execution has a separate run ID and each
-realization has a generation-bound concrete instance name. The legacy
-`i2pr-interop-rootless` name is not authoritative.
+lifecycle ownership model. Plan 050 minimizes the cloud-init unit (no
+`rustup` or host toolchain inside the guest), adds a sanitized cloud-init
+failure taxonomy, a `--guest-probe-only` flow, and a selective-purge
+remediation that requires a verified ownership contract. The reviewed
+environment contract is identified by a stable environment ID, while each
+execution has a separate run ID and each realization has a generation-bound
+concrete instance name. The legacy `i2pr-interop-rootless` name is not
+authoritative.
 
 The host reserves a versioned lifecycle record atomically before launch under
 `target/interop/multipass/state/<run-id>/lifecycle.json`. A per-run/
