@@ -367,3 +367,51 @@ The static boundary check
 artifacts, sanitized taxonomy, phase markers, absence of `rustup` in
 cloud-init, absence of `eval`, and absence of any global `multipass
 purge` form in normal paths.
+
+### Plan 051 external-validation troubleshooting
+
+The Plan 051 troubleshooting document
+(`plans/051-external-validation-troubleshooting.md`) records the
+exact reason this host alone cannot produce Plan 045 directional
+evidence and what is required to produce it inside a disposable
+Multipass guest. The short version:
+
+- The on-host `apparmor_restrict_unprivileged_userns=1` and the
+  missing `sudo -n` permission together fail the Plan 040 host
+  contract on this host.
+- A Multipass guest with the Plan 048 permissive sysctls and
+  cloud-init-installed `NOPASSWD sudo` for `ubuntu` does satisfy
+  the Plan 040 host contract; the existing
+  `i2pr-interop-plan049-20260716-guestfix3-g1-a1` guest already has
+  every required tool and policy.
+- The canonical Plan 040/043 gate scripts
+  (`check-host.sh`, `build-references.sh`, `cache-manifest.py`,
+  `offline-reuse.sh`, `run-gate.sh`, `validate-evidence.py`,
+  `aggregate-evidence.py`, `cleanup.sh`, `verify-clean-host.sh`)
+  can be wrapped inside a Multipass guest through the new
+  `scripts/interop/multipass/dispatch-gate.sh` script, which is
+  owned by the Multipass lifecycle lock and uses `sudo -n` inside
+  the guest.
+- After a successful `handshake-smoke` profile run inside the
+  guest, the Plan 045 directional predicates can be re-evaluated
+  against the sanitized records. Until then, Milestone 3 remains
+  blocked.
+
+The `dispatch-gate.sh --profile <profile>` flag accepts the
+canonical Plan 040/043 profile names
+(`environment-smoke`, `reference-crosscheck-ipv4`,
+`handshake-smoke`, `full`, `evidence-validation`,
+`cleanup-verification`) and dispatches each step through
+`multipass exec`. Each step's stdout/stderr is captured to
+`target/interop/multipass/state/<run-id>/<profile>-<step>.log`.
+
+```text
+bash scripts/interop/multipass/dispatch-gate.sh \
+  --profile reference-crosscheck-ipv4 \
+  --run-id <safe-id> \
+  --instance-name <name>
+bash scripts/interop/multipass/dispatch-gate.sh \
+  --profile handshake-smoke \
+  --run-id <safe-id> \
+  --instance-name <name>
+```

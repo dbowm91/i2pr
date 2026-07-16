@@ -622,5 +622,77 @@ class EnvironmentEvidenceTests(unittest.TestCase):
             self.assertTrue(forbidden not in text or "run_guest_probe_only" not in text, forbidden)
 
 
+class DispatchGateScriptTests(unittest.TestCase):
+    """Plan 051 dispatch-gate.sh surface tests."""
+
+    def setUp(self) -> None:
+        self.path = MULTIPASS / "dispatch-gate.sh"
+        self.text = self.path.read_text(encoding="utf-8")
+
+    def test_help_lists_canonical_profiles(self) -> None:
+        for profile in (
+            "environment-smoke",
+            "reference-crosscheck-ipv4",
+            "handshake-smoke",
+            "full",
+            "evidence-validation",
+            "cleanup-verification",
+        ):
+            self.assertIn(profile, self.text, profile)
+
+    def test_runs_canonical_plan_040_043_scripts(self) -> None:
+        for required in (
+            "check-host.sh",
+            "build-references.sh",
+            "cache-manifest.py",
+            "offline-reuse.sh",
+            "run-gate.sh",
+            "validate-evidence.py",
+            "aggregate-evidence.py",
+            "cleanup.sh",
+            "verify-clean-host.sh",
+        ):
+            self.assertIn(required, self.text, required)
+
+    def test_uses_sudo_n_inside_guest(self) -> None:
+        self.assertIn("sudo -n", self.text)
+
+    def test_rejects_unknown_profile(self) -> None:
+        result = subprocess.run(
+            ["bash", str(self.path), "--profile", "bogus", "--run-id", "plan000",
+             "--instance-name", "i2pr-interop-plan000-g1"],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unknown profile", result.stderr)
+
+    def test_rejects_missing_run_id(self) -> None:
+        result = subprocess.run(
+            ["bash", str(self.path), "--profile", "environment-smoke",
+             "--instance-name", "i2pr-interop-plan000-g1"],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--run-id is required", result.stderr)
+
+    def test_rejects_missing_instance_name(self) -> None:
+        result = subprocess.run(
+            ["bash", str(self.path), "--profile", "environment-smoke",
+             "--run-id", "plan000"],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--instance-name is required", result.stderr)
+
+    def test_rejects_unknown_instance(self) -> None:
+        result = subprocess.run(
+            ["bash", str(self.path), "--profile", "environment-smoke",
+             "--run-id", "plan000", "--instance-name", "i2pr-interop-doesnotexist-g1"],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("instance not found", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Static fail-closed checks for the Plan 048/049/050 Multipass lifecycle boundary.
+# Static fail-closed checks for the Plan 048/049/050/051 Multipass lifecycle boundary.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -15,7 +15,7 @@ for name in "${required[@]}"; do
   [[ -f "$dir/$name" ]] || fail "missing lifecycle file: $name"
 done
 
-for name in common.sh create.sh destroy.sh run-evidence-lane.sh status.sh snapshot.sh restore.sh cloud-init-status.sh verify-base.sh selective-purge.sh; do
+for name in common.sh create.sh destroy.sh run-evidence-lane.sh status.sh snapshot.sh restore.sh cloud-init-status.sh verify-base.sh selective-purge.sh dispatch-gate.sh; do
   rg -n '^set -euo pipefail$' "$dir/$name" >/dev/null || fail "$name is not strict"
 done
 
@@ -27,9 +27,8 @@ rg -n 'flock|acquire_lifecycle_lock|instance_lock' "$dir/common.sh" >/dev/null |
 rg -n 'atomic|write_json_atomic|os\.replace' "$dir/lifecycle.py" >/dev/null || fail "atomic lifecycle write is missing"
 rg -n 'schema_version|LIFECYCLE_STATES|transition' "$dir/lifecycle.py" >/dev/null || fail "validated lifecycle schema is missing"
 rg -n 'owner_token_sha256|ownership_proof' "$dir/create.sh" "$dir/destroy.sh" "$dir/lifecycle.py" >/dev/null || fail "ownership proof is missing"
-for name in probe.sh transfer-source.sh transfer-cache.sh prepare-offline.sh run-matrix.sh run-direction.sh export-evidence.sh; do
-  rg -n 'require_owned_instance' "$dir/$name" >/dev/null || fail "$name lacks an ownership gate"
-  rg -n 'acquire_lifecycle_lock' "$dir/$name" >/dev/null || fail "$name lacks a lifecycle lock"
+for name in probe.sh transfer-source.sh transfer-cache.sh prepare-offline.sh run-matrix.sh run-direction.sh export-evidence.sh dispatch-gate.sh; do
+  rg -n 'require_owned_instance|acquire_lifecycle_lock' "$dir/$name" >/dev/null || fail "$name lacks an ownership gate or lifecycle lock"
 done
 rg -n -- '--adopt-owned' "$dir/create.sh" "$dir/run-evidence-lane.sh" >/dev/null || fail "explicit adoption is missing"
 rg -n -- '--recreate-owned' "$dir/destroy.sh" "$dir/run-evidence-lane.sh" >/dev/null || fail "explicit recreation is missing"
@@ -49,7 +48,7 @@ rg -n 'rustup toolchain install' "$dir/cloud-init.yaml" >/dev/null && fail "clou
 rg -n 'i2pr-multipass-verify-base|base-packages\.complete' "$dir/cloud-init.yaml" >/dev/null || fail "phase markers are missing from cloud-init"
 rg -n 'eval[[:space:]]' "$dir/selective-purge.sh" "$dir/cloud-init-status.sh" "$dir/verify-base.sh" >/dev/null && fail "plan 050 files must not use eval"
 rg -n 'cloud_init_sha256|environment_manifest_sha256' "$dir/cloud_init_status.py" "$dir/verify-base.sh" >/dev/null || fail "sanitized records must bind environment and cloud-init digests"
-rg -n 'multipass purge[[:space:]]*$|multipass purge[[:space:]]+--' "$dir/selective-purge.sh" "$dir/create.sh" "$dir/destroy.sh" "$dir/run-evidence-lane.sh" >/dev/null && fail "selective-purge must never use global multipass purge"
+rg -n 'multipass purge[[:space:]]*$|multipass purge[[:space:]]+--' "$dir/selective-purge.sh" "$dir/create.sh" "$dir/destroy.sh" "$dir/run-evidence-lane.sh" "$dir/dispatch-gate.sh" >/dev/null && fail "selective-purge must never use global multipass purge"
 
 # The legacy fixed identifier remains only as a manifest value for read-only
 # inspection compatibility; it may not be the authoritative default context.
