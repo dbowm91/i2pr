@@ -60,9 +60,10 @@ fi
 verify_sha256 "$izpack" "$IZPACK_SHA256"
 
 override="$source_dir/override.properties"
-cat >"$override" <<'EOF'
+cat >"$override" <<EOF
 build.built-by=Plan 038 harness
 noExe=true
+izpack5.home=$BUILD_ROOT/tools/izpack/$cache_key
 EOF
 izpack_root="$BUILD_ROOT/tools/izpack/$cache_key"
 mkdir -p "$izpack_root"
