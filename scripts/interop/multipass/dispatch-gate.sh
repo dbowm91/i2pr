@@ -133,32 +133,32 @@ case "$profile" in
     profile_step post-install ubuntu/check-host.sh --post-install \
       --metadata "$guest_target/build/host-metadata.json" || exit $?
     ;;
-  reference-crosscheck-ipv4)
+reference-crosscheck-ipv4)
     install_guest_rust_toolchain || exit $?
     reset_reference_artifacts || exit $?
     profile_step reference-build build-references.sh --force-rebuild || exit $?
-    make_cache_user_readable || exit $?
     profile_step cache-manifest cache-manifest.py --verify || exit $?
     profile_step offline-reuse offline-reuse.sh || exit $?
+    make_cache_user_readable || exit $?
     profile_step reference-crosscheck-ipv4 run-gate.sh --profile reference-crosscheck-ipv4 --offline || exit $?
     ;;
   handshake-smoke)
     install_guest_rust_toolchain || exit $?
     reset_reference_artifacts || exit $?
     profile_step reference-build build-references.sh --force-rebuild || exit $?
-    make_cache_user_readable || exit $?
     profile_step cache-manifest cache-manifest.py --verify || exit $?
     profile_step offline-reuse offline-reuse.sh || exit $?
+    make_cache_user_readable || exit $?
     profile_step reference-crosscheck-ipv4 run-gate.sh --profile reference-crosscheck-ipv4 --offline || exit $?
     profile_step handshake-smoke run-gate.sh --profile handshake-smoke --offline || exit $?
     ;;
-handshake-smoke-rootless)
+  handshake-smoke-rootless)
     install_guest_rust_toolchain || exit $?
     reset_reference_artifacts || exit $?
     profile_step reference-build build-references.sh --force-rebuild || exit $?
-    make_cache_user_readable || exit $?
     profile_step cache-manifest cache-manifest.py --verify || exit $?
     profile_step offline-reuse offline-reuse.sh || exit $?
+    make_cache_user_readable || exit $?
     profile_step prepare-offline multipass/prepare-offline.sh || exit $?
     for scenario in i2pr-to-java-ipv4 java-to-i2pr-ipv4 i2pr-to-i2pd-ipv4 i2pd-to-i2pr-ipv4; do
       printf '[%s] %s\n' "$profile" "direction-$scenario"
