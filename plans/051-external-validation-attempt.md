@@ -171,6 +171,41 @@ go through `rootless-enter.sh`. The most recent typed result seen was:
 That result is informational only — `rejected` for the wrong reason. It
 confirms the matrix wiring and the schema but not the protocol outcome.
 
+## Post-closure follow-up: prepare-offline hangs
+
+After the closure commit, additional investigation uncovered a second
+defect in `scripts/interop/multipass/prepare-offline.sh` that
+prevented step 7 (the nft egress lockdown) from completing:
+
+- `prepare-offline.sh` invoked
+  `/home/i2ptest/.cargo/bin/cargo +1.95.0 build --locked --package i2pr-interop`
+  *after* the nft OUTPUT chain had been added with `policy drop`. The
+  `+1.95.0` rustup toolchain selector triggers a toolchain sync against
+  the rustup distribution index, which needs DNS — but DNS egress is
+  already denied by the nft rule. The build therefore hangs indefinitely
+  and the guest's SSH connection becomes unreachable in the meantime.
+- The fix (`a921e0d multipass: drop redundant cargo build from prepare-offline`)
+  removes the redundant build (it is already produced by
+  `offline-reuse.sh` with `CARGO_NET_OFFLINE=true` and
+  `RUSTUP_TOOLCHAIN=1.95.0` + `RUSTUP_AUTO_INSTALL=0`) and replaces it
+  with a presence check on `target/debug/i2pr-interop`.
+- The fix was verified manually. `prepare-offline.sh` then proceeded past
+  the cargo step but the subsequent nft OUTPUT lockdown itself was found
+  to break `multipass exec` (host → guest SSH responses traverse the
+  guest OUTPUT chain). That is a Plan 046 design defect, not a Plan 051
+  bridge defect: Plan 046 was never run end-to-end on this host and the
+  nft OUTPUT `policy drop` was never exercised against an active SSH
+  session. Adding `ct state established,related accept` permits
+  pre-existing SSH replies but the multipassd daemon on this host became
+  unresponsive mid-investigation and cannot be recovered without
+  non-interactive sudo (which this host does not grant).
+
+This second-order finding reinforces the Plan 051 decision: the bridge
+is correct but the host is too constrained (memory + sudo + multipassd
+recovery) and the underlying Plan 046 enforcement model assumes a host
+where SSH-from-host can survive the egress lockdown, which this host
+does not provide.
+
 ## Decision
 
 Stop the lane here and document it. The bridge is wired end-to-end and
