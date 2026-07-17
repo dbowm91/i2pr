@@ -68,6 +68,16 @@ profile_step() {
   local gate_script=$2
   shift 2
   printf '[%s] %s\n' "$profile" "$step_name"
+  if [[ "$gate_script" == local:* ]]; then
+    local local_script="${gate_script#local:}"
+    if bash "$script_dir/$local_script" "$@" >"$instance_state_dir/$profile-$step_name.log" 2>&1; then
+      printf '  %s ok\n' "$step_name"
+      return 0
+    fi
+    local status=$?
+    printf '  %s failed (exit %d)\n' "$step_name" "$status"
+    return "$status"
+  fi
   local interpreter
   case "$gate_script" in
     *.py) interpreter="python3" ;;
@@ -160,7 +170,7 @@ reference-crosscheck-ipv4)
     profile_step cache-manifest cache-manifest.py --verify || exit $?
     profile_step offline-reuse offline-reuse.sh || exit $?
     make_cache_user_readable || exit $?
-    profile_step prepare-offline multipass/prepare-offline.sh || exit $?
+    profile_step prepare-offline local:prepare-offline.sh || exit $?
     for scenario in i2pr-to-java-ipv4 java-to-i2pr-ipv4 i2pr-to-i2pd-ipv4 i2pd-to-i2pr-ipv4; do
       printf '[%s] %s\n' "$profile" "direction-$scenario"
       if bash "$script_dir/run-direction.sh" --scenario "$scenario" >"$instance_state_dir/$profile-direction-$scenario.log" 2>&1; then
@@ -170,7 +180,7 @@ reference-crosscheck-ipv4)
         cat "$instance_state_dir/$profile-direction-$scenario.log" >&2 || true
       fi
     done
-    profile_step export-evidence export-evidence.sh || exit $?
+    profile_step export-evidence local:export-evidence.sh || exit $?
     ;;
   full)
     profile_step pre-install ubuntu/check-host.sh --pre-install \
