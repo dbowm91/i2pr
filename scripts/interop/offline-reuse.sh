@@ -19,6 +19,7 @@ export CARGO_NET_OFFLINE=true
 export CARGO_HTTP_DEBUG=false
 export RUSTUP_TOOLCHAIN=1.95.0
 export RUSTUP_AUTO_INSTALL=0
+export CARGO_BUILD_JOBS=2
 cd "$repo_root"
 bash "$repo_root/scripts/interop/build-references.sh" --offline
 cargo build --locked --package i2pr-interop
