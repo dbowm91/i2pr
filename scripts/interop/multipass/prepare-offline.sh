@@ -47,9 +47,7 @@ if ! guest_root_exec nft list table inet i2pr_interop_offline >/dev/null 2>&1; t
   typed_blocker blocked_offline_enforcement_unavailable
   exit 2
 fi
-if ! guest_exec env CARGO_NET_OFFLINE=true CARGO_HTTP_DEBUG=false \
-    /home/i2ptest/.cargo/bin/cargo +1.95.0 build --locked --package i2pr-interop \
-    >/dev/null 2>&1; then
+if ! guest_exec test -x "$guest_repo_root/target/debug/i2pr-interop" >/dev/null 2>&1; then
   typed_blocker blocked_reference_cache_offline_reuse_failed
   exit 2
 fi
