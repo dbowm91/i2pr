@@ -71,7 +71,7 @@ def _build_policy(scenario_id: str, reference: str, *, ipv6: bool) -> SandboxPol
 
 
 def _scenario_main(args: argparse.Namespace) -> int:
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[4]
     policy = _build_policy(args.scenario, args.reference, ipv6=args.ipv6)
     try:
         topology = select_topology(
