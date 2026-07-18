@@ -58,7 +58,8 @@ def environment_record(args: argparse.Namespace) -> dict[str, object]:
         "guest_rootless_probe_outcome": args.guest_rootless_probe_outcome,
         "rootless_probe_outcome": args.guest_rootless_probe_outcome,
         "adoption_mode": args.adoption_mode,
-        "offline_enforcement": "guest-nft-egress-deny",
+        "offline_enforcement": "namespace-only",
+        "guest_nft_role": "marker",
     }
 
 

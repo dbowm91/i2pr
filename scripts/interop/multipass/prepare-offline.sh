@@ -39,7 +39,7 @@ fi
 
 guest_root_exec nft delete table inet i2pr_interop_offline >/dev/null 2>&1 || true
 guest_root_exec nft add table inet i2pr_interop_offline
-guest_root_exec nft add chain inet i2pr_interop_offline output '{ type filter hook output priority -100; policy drop; }'
+guest_root_exec nft add chain inet i2pr_interop_offline output '{ type filter hook output priority -100; policy accept; }'
 guest_root_exec nft add rule inet i2pr_interop_offline output oifname lo accept
 guest_root_exec nft add rule inet i2pr_interop_offline output ip daddr 127.0.0.0/8 accept
 guest_root_exec nft add rule inet i2pr_interop_offline output ip6 daddr ::1 accept
@@ -64,8 +64,9 @@ import sys
 print(json.dumps({
     "schema": 1,
     "type": "multipass-offline-transition",
-    "offline_enforcement": "guest-nft-egress-deny",
-    "execution_network": "forbidden",
+    "offline_enforcement": "namespace-only",
+    "guest_nft_role": "marker",
+    "execution_network": "forbidden-inside-namespace",
     "environment_manifest_sha256": sys.argv[1],
     "completed_at": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
 }, sort_keys=True, separators=(",", ":")))
@@ -73,5 +74,5 @@ PY
 )
 write_json "$instance_state_dir/offline-transition.json" "$receipt"
 python3 "$lifecycle_py" update --state-file "$instance_lifecycle_path" --state offline_ready \
-  --operation offline-enforcement --outcome guest-nft-egress-deny >/dev/null
+  --operation offline-enforcement --outcome namespace-only-marker >/dev/null
 printf '%s\n' "$receipt"
