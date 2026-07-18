@@ -96,7 +96,7 @@ def load_manifest(path: Path | None = None) -> dict[str, Any]:
         raise EnvironmentManifestError("instance name is not a safe canonical name")
     if values["image"] != "24.04":
         raise EnvironmentManifestError("environment image must be Ubuntu 24.04")
-    if values["cpus"] != 4 or values["memory"] != "8G" or values["disk"] != "40G":
+    if values["cpus"] != 2 or values["memory"] != "2G" or values["disk"] != "30G":
         raise EnvironmentManifestError("resource profile drifted from Plan 048")
     if values["launch_timeout_seconds"] != 1800:
         raise EnvironmentManifestError("launch timeout drifted from Plan 048")
