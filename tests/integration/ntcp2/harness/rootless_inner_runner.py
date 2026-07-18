@@ -30,6 +30,7 @@ if __package__ in {None, ""}:
         ROOTLESS_TOPOLOGY_KIND,
         select_topology,
     )
+    import harness.rootless_topology  # type: ignore  # noqa: F401  # module-level register_topology side-effect
     from harness.rootless_supervisor import (  # type: ignore
         SandboxError,
         SandboxPolicy,
@@ -43,6 +44,7 @@ else:
         ROOTLESS_TOPOLOGY_KIND,
         select_topology,
     )
+    from . import rootless_topology  # noqa: F401  # module-level register_topology side-effect
     from .rootless_supervisor import (
         SandboxError,
         SandboxPolicy,
