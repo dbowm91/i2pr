@@ -299,6 +299,9 @@ def verify_loopback_is_up() -> bool:
         sock.close()
 
 
+_IP_ADDR_ALREADY_EXISTS = frozenset({"File exists", "Address already assigned"})
+
+
 def configure_synthetic_addresses(policy: SandboxPolicy) -> bool:
     """Configure only loopback and the two synthetic addresses in this netns."""
 
@@ -314,7 +317,9 @@ def configure_synthetic_addresses(policy: SandboxPolicy) -> bool:
             text=True,
             check=False,
         )
-        if result.returncode != 0 and "File exists" not in result.stderr:
+        if result.returncode != 0 and not any(
+            marker in result.stderr for marker in _IP_ADDR_ALREADY_EXISTS
+        ):
             return False
     return True
 

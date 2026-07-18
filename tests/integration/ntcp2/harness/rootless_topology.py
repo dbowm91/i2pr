@@ -183,7 +183,10 @@ class RootlessSealedTopology:
                 text=True,
                 check=False,
             )
-            if configured.returncode != 0 and "File exists" not in configured.stderr:
+            if configured.returncode != 0 and not any(
+                marker in configured.stderr
+                for marker in ("File exists", "Address already assigned")
+            ):
                 raise RootlessTopologyError("blocked_synthetic_address_configuration")
         if not _can_bind(self.i2pr_address, 0):
             raise RootlessTopologyError("blocked_loopback_configuration")
