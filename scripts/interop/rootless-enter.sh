@@ -265,6 +265,9 @@ run_probe() {
 }
 
 run_scenario() {
+  local parent_digest
+  parent_digest=$(compute_parent_digest)
+  record_digest pre "$parent_digest"
   INNER_ARGS=(--scenario "$scenario" --reference "$reference")
   if [[ -n "$build_cache" ]]; then
     INNER_ARGS+=(--build-cache "$build_cache")
