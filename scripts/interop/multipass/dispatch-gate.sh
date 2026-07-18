@@ -96,15 +96,18 @@ make_cache_user_readable() {
   printf '[%s] %s\n' "$profile" "make-cache-user-readable"
   local cache_root="$guest_target/cache"
   local build_root="$guest_target/build"
+  local evidence_root="$guest_target/evidence"
+  local runs_root="$guest_target/runs"
   local exec_user="$guest_execution_user"
   if guest_exec_root bash -c "
     set +e
-    chown -R '${exec_user}:${exec_user}' '${cache_root}' '${build_root}'
+    chown -R '${exec_user}:${exec_user}' '${cache_root}' '${build_root}' '${evidence_root}' '${runs_root}'
     chmod -R u+rwX,g+rX,o+rX '${cache_root}'
     chmod 0755 '${build_root}'
     for f in '${build_root}'/*.json '${build_root}'/*.txt; do
       [[ -f \"\$f\" ]] && chmod 0644 \"\$f\"
     done
+    install -d -o '${exec_user}' -g '${exec_user}' -m 0700 '${evidence_root}' '${runs_root}'
     exit 0
   " >"$instance_state_dir/$profile-make-cache-user-readable.log" 2>&1; then
     printf '  %s ok\n' "make-cache-user-readable"
@@ -114,6 +117,7 @@ make_cache_user_readable() {
   printf '  %s failed (exit %d)\n' "make-cache-user-readable" "$status"
   return "$status"
 }
+
 
 reset_reference_artifacts() {
   printf '[%s] %s\n' "$profile" "reset-reference-artifacts"
