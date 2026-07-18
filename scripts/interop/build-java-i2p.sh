@@ -48,6 +48,7 @@ verify_git_revision "$source_dir" "$JAVA_REVISION"
 verify_git_remote "$source_dir" "$JAVA_REPOSITORY"
 cleanup_generated_source() {
   rm -f "$source_dir/override.properties" "$source_dir/install.jar"
+  rm -rf "$source_dir/com"
 }
 trap cleanup_generated_source EXIT
 
