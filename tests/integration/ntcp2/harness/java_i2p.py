@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import platform
 import shutil
 import time
+import zipfile
 from pathlib import Path
 
 try:
@@ -114,6 +116,10 @@ class JavaI2pAdapter:
         # The cached tree is read-only because cp preserves the build tree
         # modes. The router writes its eventlog, logs, and key store under
         # the staged runtime dir, so widen the modes inside the namespace.
+        # Additionally, the JVM extracts bundled native libraries
+        # (libjbigi.so, libjcpuid.so) at first start with default umask
+        # modes that strip execute permission, so always re-walk regardless
+        # of whether the staged tree existed before this call.
         for root, dirs, files in os.walk(self.runtime_dir):
             for entry in dirs:
                 (Path(root) / entry).chmod(0o700)
@@ -169,6 +175,13 @@ class JavaI2pAdapter:
 
     def start(self) -> None:
         launcher = self.prepare()
+        # The JVM extracts bundled native libraries (libjbigi.so,
+        # libjcpuid.so) from jar resources at first start with default umask
+        # modes that strip the executable bit, breaking later dlopen calls.
+        # Pre-extract the bundled shared objects into the staged runtime
+        # tree with executable permissions so dlopen picks them up rather
+        # than re-extracting them at startup.
+        self._extract_native_libraries()
         if self.placement is None:
             command = self._prefix() + ["ip", "netns", "exec", self.endpoint.namespace, str(launcher)]
         else:
@@ -195,6 +208,93 @@ class JavaI2pAdapter:
             self._wait_for_eventlog_started(timeout_seconds)
         except ProcessError as exc:
             raise JavaI2pError(exc.code) from exc
+        # The JVM extracts bundled native libraries (libjbigi.so,
+        # libjcpuid.so) into the staged runtime tree with default umask
+        # modes that strip the executable bit. Re-walk the tree after the
+        # router has reached the started event so newly extracted shared
+        # objects become executable for any subsequent dlopen.
+        self._widen_native_lib_permissions()
+
+    def _widen_native_lib_permissions(self) -> None:
+        for root, dirs, files in os.walk(self.runtime_dir):
+            for entry in dirs:
+                (Path(root) / entry).chmod(0o700)
+            for entry in files:
+                entry_path = Path(root) / entry
+                if entry_path.suffix in {".jar", ".war"}:
+                    entry_path.chmod(0o700)
+                else:
+                    entry_path.chmod(0o755)
+
+    # The JVM extracts bundled native libraries (libjbigi.so,
+    # libjcpuid.so) from ``jbigi.jar``/``jcpuid.jar`` at first start with
+    # default umask modes that strip the executable bit, breaking later
+    # dlopen calls. Pre-extract the bundled shared objects into the staged
+    # runtime tree with executable permissions so dlopen picks them up
+    # rather than re-extracting them at startup.
+    _JBIGI_CANDIDATES_X86_64 = (
+        "libjbigi-linux-zen2_64.so",
+        "libjbigi-linux-skylake_64.so",
+        "libjbigi-linux-coreibwl_64.so",
+        "libjbigi-linux-coreihwl_64.so",
+        "libjbigi-linux-coreisbr_64.so",
+        "libjbigi-linux-corei_64.so",
+        "libjbigi-linux-core2_64.so",
+    )
+    _JBIGI_CANDIDATES_X86 = (
+        "libjbigi-linux-coreisbr.so",
+        "libjbigi-linux-corei.so",
+        "libjbigi-linux-core2.so",
+        "libjbigi-linux-athlon64.so",
+        "libjbigi-linux-athlon.so",
+    )
+    _JCPUID_CANDIDATES_X86_64 = ("libjcpuid-x86_64-linux.so",)
+    _JCPUID_CANDIDATES_X86 = ("libjcpuid-x86-linux.so",)
+
+    def _select_native_library(self, jar_entries: set[str], candidates: tuple[str, ...]) -> str | None:
+        for candidate in candidates:
+            if candidate in jar_entries:
+                return candidate
+        return None
+
+    def _extract_native_libraries(self) -> None:
+        machine = platform.machine().lower()
+        jbigi_candidates = (
+            self._JBIGI_CANDIDATES_X86_64 if machine in {"x86_64", "amd64"} else self._JBIGI_CANDIDATES_X86
+        )
+        jcpuid_candidates = (
+            self._JCPUID_CANDIDATES_X86_64 if machine in {"x86_64", "amd64"} else self._JCPUID_CANDIDATES_X86
+        )
+        jars = {
+            "jbigi": self.runtime_dir / "lib" / "jbigi.jar",
+            "jcpuid": self.runtime_dir / "lib" / "jcpuid.jar",
+        }
+        targets = {
+            "jbigi": self.runtime_dir / "libjbigi.so",
+            "jcpuid": self.runtime_dir / "libjcpuid.so",
+        }
+        candidate_lists = {
+            "jbigi": jbigi_candidates,
+            "jcpuid": jcpuid_candidates,
+        }
+        for name, jar_path in jars.items():
+            if not jar_path.is_file():
+                continue
+            try:
+                with zipfile.ZipFile(jar_path) as zf:
+                    entries = set(zf.namelist())
+            except (OSError, zipfile.BadZipFile):
+                continue
+            chosen = self._select_native_library(entries, candidate_lists[name])
+            if chosen is None:
+                continue
+            target = targets[name]
+            if target.exists():
+                target.unlink()
+            with zipfile.ZipFile(jar_path) as zf:
+                with zf.open(chosen) as src, target.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+            target.chmod(0o755)
 
     def _wait_for_eventlog_started(self, timeout_seconds: float) -> None:
         deadline = time.monotonic() + timeout_seconds
