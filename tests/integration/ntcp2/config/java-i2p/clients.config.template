@@ -1,5 +1,5 @@
-# No client tunnels or proxy listeners are enabled for Plan 038.
-clientApp.0.main=net.i2p.router.clientRouterClient
-clientApp.0.args=
-clientApp.0.startOnLoad=false
-clientApp.0.stopargs=
+# Plan 038 stub client configuration.
+# Plan 045 references use a separate per-direction trigger that does not
+# rely on the embedded SAM/HTTP client. The router must still start
+# cleanly without an active client tunnel, so leave the file empty of
+# clientApp entries (I2P's migrate path NPEs on the legacy stub above).
