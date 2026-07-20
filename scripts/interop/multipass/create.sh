@@ -320,7 +320,8 @@ if ! guest_admin_exec test -f /var/lib/i2pr-interop/provisioning.json >/dev/null
   exit 2
 fi
 provisioning=$(guest_root_exec cat /var/lib/i2pr-interop/provisioning.json)
-if ! printf '%s' "$provisioning" | python3 -c 'import json,sys; value=json.load(sys.stdin); expected={"kernel.unprivileged_userns_clone":1,"kernel.apparmor_restrict_unprivileged_userns":0}; raise SystemExit(1) if value.get("schema") != 1 or value.get("image_release") != "24.04" or value.get("architecture") != "x86_64" or value.get("effective_sysctls") != expected else None'
+if ! printf '%s' "$provisioning" | python3 -c 'import json,sys; value=json.load(sys.stdin); expected={"kernel.unprivileged_userns_clone":1,"kernel.apparmor_restrict_unprivileged_userns":0};
+if value.get("schema") != 1 or value.get("image_release") != "24.04" or value.get("architecture") != "x86_64" or value.get("effective_sysctls") != expected: raise SystemExit(1)'
 then
   write_environment_blocker blocked_cloud_init_terminal_error provisioning inspect-owned-instance
   typed_blocker blocked_cloud_init_terminal_error
@@ -332,7 +333,8 @@ if ! bash "$script_dir/cloud-init-status.sh" --output "$cloud_init_status_path" 
   typed_blocker blocked_cloud_init_status_unparseable
   exit 2
 fi
-if ! python3 -c 'import json,sys; value=json.load(sys.stdin); raise SystemExit(1) if value.get("cloud_init_state") not in {"done","running"} else None' <"$cloud_init_status_path"; then
+if ! python3 -c 'import json,sys; value=json.load(sys.stdin)
+if value.get("cloud_init_state") not in {"done","running"}: raise SystemExit(1)' <"$cloud_init_status_path"; then
   classified=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("failure_class","blocked_cloud_init_terminal_error"))' <"$cloud_init_status_path" 2>/dev/null || printf 'blocked_cloud_init_terminal_error')
   write_environment_blocker "$classified" post-verify operator-inspection-required
   typed_blocker "$classified"
