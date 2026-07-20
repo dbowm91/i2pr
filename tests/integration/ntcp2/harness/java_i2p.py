@@ -197,7 +197,7 @@ class JavaI2pAdapter:
         except OSError as exc:
             raise JavaI2pError("process-start-failed") from exc
 
-    def wait_ready(self, timeout_seconds: float = 30.0) -> None:
+    def wait_ready(self, timeout_seconds: float = 120.0) -> None:
         if self.process is None:
             raise JavaI2pError("not-started")
         try:
