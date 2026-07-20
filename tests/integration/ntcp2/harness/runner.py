@@ -129,8 +129,12 @@ def _git_identity(repo_root: Path) -> str:
             commit = value.get("commit", "")
             if re.fullmatch(r"[0-9a-f]{40}", str(commit)):
                 checker = repo_root / "scripts/interop/multipass/source_tree.py"
+                listing_path = repo_root / ".source-listing.txt"
+                listing_arg = []
+                if listing_path.is_file():
+                    listing_arg = ["--archive-listing", str(listing_path)]
                 verified = subprocess.run(
-                    [sys.executable, str(checker), "--root", str(repo_root), "--verify"],
+                    [sys.executable, str(checker), "--root", str(repo_root), "--verify", *listing_arg],
                     capture_output=True,
                     check=False,
                 )
