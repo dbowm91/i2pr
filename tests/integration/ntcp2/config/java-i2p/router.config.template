@@ -15,9 +15,7 @@ router.floodfillParticipant=false
 router.sharePercentage=0
 router.maxParticipatingTunnels=0
 router.newsRefreshFrequency=0
-# Plan 045: disable the embedded router console and NTP for the
-# interop namespace so the harness observes readiness quickly and
-# never tries to reach the public Internet.
-routerconsole.enable=false
-time.sntpServerList=
-time.disabled=true
+i2np.udp.enable=false
+i2np.udp.address=
+i2np.udp.port=0
+i2np.udp.autoip=false

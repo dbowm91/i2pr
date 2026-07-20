@@ -139,7 +139,7 @@ for jar in \${I2P}/lib/*.jar; do
     CP="\${CP}:\${jar}"
   fi
 done
-JAVAOPTS="-Djava.net.preferIPv4Stack=false -Djava.awt.headless=true -Djava.library.path=\${I2P}:\${I2P}/lib -Di2p.dir.base=\${I2P} -DloggerFilenameOverride=logs/log-router-@.txt"
+JAVAOPTS="-Djava.net.preferIPv4Stack=false -Djava.awt.headless=true -Djava.library.path=\${I2P}:\${I2P}/lib -Di2p.dir.base=\${I2P} -DloggerFilenameOverride=logs/log-router-@.txt -Drouterconsole.enable=false -Dtime.disabled=true"
 exec "\$JAVA" -cp "\$CP" \${JAVAOPTS} net.i2p.router.RouterLaunch
 EOF
   chmod 0755 "$1"
