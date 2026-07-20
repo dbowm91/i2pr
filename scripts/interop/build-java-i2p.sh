@@ -108,18 +108,45 @@ chmod 0777 "$install_dir/tmp" "$cache_dir/tmp"
 cp -a "$install_dir/." "$cache_dir/"
 mkdir -p "$cache_dir/artifacts"
 install -m 0644 "$source_dir/install.jar" "$cache_dir/artifacts/install.jar"
-# IzPack 5.2.4's -options-auto path leaves the literal "%SYSTEM_java_io_tmpdir"
-# placeholder in runplain.sh and i2prouter. Substitute it in the cached copies
-# with the script's own directory so the headless launcher writes its pid
-# file under its own runtime tmp dir, which the harness always creates with
-# 0o700.
-for staged in "$install_dir/runplain.sh" "$install_dir/i2prouter" "$cache_dir/runplain.sh" "$cache_dir/i2prouter"; do
-  if [[ -f "$staged" ]] && grep -q '%SYSTEM_java_io_tmpdir' "$staged"; then
-    sed -i "s|%SYSTEM_java_io_tmpdir|\$(cd \$(dirname \$0) \&\& pwd)/tmp|g" "$staged"
+# Replace the headless launcher with a foreground exec so the harness
+# ``BoundedProcess`` owns the long-lived Java VM directly and can observe
+# its stdout/stderr for the ready token (the upstream ``nohup ... &`` form
+# exits immediately, producing spurious ``process-exited-before-ready``
+# results). The staged launcher also gets a private tmp dir relative to
+# the launcher path so the router pid file lands in the runtime dir, which
+# the harness always creates with 0o700.
+write_harness_launcher() {
+  cat > "$1" <<EOF
+#!/bin/sh
+# Plan 045 harness-compatible headless launcher. Substituted from upstream
+# runplain.sh / i2prouter: JAVAOPTS keeps the I2P defaults so the router
+# still honours i2p.dir.base, the logger filename, and headless mode.
+# I2PTEMP is per-launcher so the pid file lands inside this dir. The
+# router is exec'd in the foreground instead of being nohup-backgrounded
+# so the harness BoundedProcess owns the long-lived JVM directly.
+I2P="\$(cd "\$(dirname "\$0")" && pwd)"
+I2PTEMP="\$(cd "\$(dirname "\$0")" && pwd)/tmp"
+mkdir -p "\$I2PTEMP"
+JAVA="\$(which java 2>/dev/null || command -v java 2>/dev/null)"
+if [[ -z "\$JAVA" || ! -x "\$JAVA" ]]; then
+  JAVA="/usr/lib/jvm/java-21-openjdk-amd64/bin/java"
+fi
+CP=""
+for jar in \${I2P}/lib/*.jar; do
+  if [[ -z "\$CP" ]]; then
+    CP="\$jar"
+  else
+    CP="\${CP}:\${jar}"
   fi
 done
-chmod 0755 "$install_dir/runplain.sh" "$install_dir/i2prouter" \
-         "$cache_dir/runplain.sh" "$cache_dir/i2prouter" 2>/dev/null || true
+JAVAOPTS="-Djava.net.preferIPv4Stack=false -Djava.awt.headless=true -Djava.library.path=\${I2P}:\${I2P}/lib -Di2p.dir.base=\${I2P} -DloggerFilenameOverride=logs/log-router-@.txt"
+exec "\$JAVA" -cp "\$CP" \${JAVAOPTS} net.i2p.router.RouterLaunch
+EOF
+  chmod 0755 "$1"
+}
+mkdir -p "$cache_dir"
+write_harness_launcher "$install_dir/runplain.sh"
+write_harness_launcher "$cache_dir/runplain.sh"
 if head -n 1 "$launcher" | grep -q '^#!'; then
   bash -n "$launcher" >"$log_dir/launcher-inspection.txt"
 else
