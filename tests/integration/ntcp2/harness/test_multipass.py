@@ -67,11 +67,34 @@ class MultipassEnvironmentTests(unittest.TestCase):
             (root / "target/interop/other").write_text("ignored\n")
             self.assertEqual(first, tree_hash(root))
             manifest = root / ".i2pr-source-manifest.json"
-            write_manifest(root, "a" * 40, "b" * 64, manifest)
-            self.assertEqual(verify_manifest(root, manifest)["tree_sha256"], first)
+            listing = "src/main.rs\n"
+            write_manifest(root, "a" * 40, "b" * 64, manifest, listing)
+            self.assertEqual(verify_manifest(root, manifest, listing)["tree_sha256"], first)
             (root / "bad-link").symlink_to(root / "src/main.rs")
             with self.assertRaises(ValueError):
                 tree_hash(root)
+
+    def test_source_tree_hash_matches_archive_members_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "src/main.rs").write_text("fn main() {}\n")
+            (root / ".pytest_cache").mkdir()
+            (root / ".pytest_cache/CACHEDIR.TAG").write_text("not in archive\n")
+            (root / "docs").mkdir()
+            (root / "docs/README.md").write_text("# readme\n")
+            # Host tree hash includes .pytest_cache, archive listing excludes it
+            host_hash = tree_hash(root)
+            listing = "src/main.rs\ndocs\ndocs/README.md\n"
+            archive_hash = tree_hash(root, listing)
+            self.assertNotEqual(host_hash, archive_hash)
+            manifest = root / ".i2pr-source-manifest.json"
+            write_manifest(root, "a" * 40, "b" * 64, manifest, listing)
+            self.assertEqual(verify_manifest(root, manifest, listing)["tree_sha256"], archive_hash)
+            # Removing the .pytest_cache should make host_hash match
+            (root / ".pytest_cache/CACHEDIR.TAG").unlink()
+            (root / ".pytest_cache").rmdir()
+            self.assertEqual(tree_hash(root), tree_hash(root, listing))
 
     def test_fake_multipass_rejects_unowned_collision_before_launch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

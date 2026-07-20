@@ -42,28 +42,37 @@ archive="$instance_state_dir/source/$commit.tar.gz"
 mkdir -p "$(dirname "$archive")"
 git -C "$repo_root" archive --format=tar --mtime='UTC 1970-01-01' "$commit" | gzip -n >"$archive"
 archive_sha256=$(sha256_file "$archive")
-tree_sha256=$(python3 - "$repo_root" <<'PY'
+archive_listing="$instance_state_dir/source/$commit.listing.txt"
+tar -tzf "$archive" | LC_ALL=C sort >"$archive_listing"
+tree_sha256=$(python3 - "$repo_root" "$archive_listing" <<'PY'
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "scripts/interop/multipass"))
 from source_tree import tree_hash
-print(tree_hash(Path(sys.argv[1])))
+listing = Path(sys.argv[2]).read_text(encoding="utf-8")
+print(tree_hash(Path(sys.argv[1]), listing))
 PY
 )
-
 guest_archive="/tmp/i2pr-source-$commit.tar.gz"
+guest_listing="/tmp/i2pr-source-$commit.listing.txt"
 multipass transfer "$archive" "$instance_name:$guest_archive" >/dev/null
+multipass transfer "$archive_listing" "$instance_name:$guest_listing" >/dev/null
 guest_root_exec rm -rf "$guest_repo_root"
 guest_root_exec install -d -o "$guest_execution_user" -g "$guest_execution_user" -m 0700 "$guest_repo_root"
 guest_root_exec install -o "$guest_execution_user" -g "$guest_execution_user" -m 0600 "$guest_archive" "$guest_repo_root/.staging-source.tar.gz"
-guest_root_exec rm -f "$guest_archive"
+guest_root_exec install -o "$guest_execution_user" -g "$guest_execution_user" -m 0600 "$guest_listing" "$guest_repo_root/.staging-source.listing.txt"
+guest_root_exec rm -f "$guest_archive" "$guest_listing"
 guest_archive="$guest_repo_root/.staging-source.tar.gz"
+guest_listing_local="$guest_repo_root/.staging-source.listing.txt"
 guest_exec tar -xzf "$guest_archive" -C "$guest_repo_root"
 guest_exec rm -f "$guest_archive"
+guest_exec mv "$guest_listing_local" "$guest_repo_root/.source-listing.txt"
 guest_exec python3 "$guest_repo_root/scripts/interop/multipass/source_tree.py" \
-  --root "$guest_repo_root" --commit "$commit" --archive-sha256 "$archive_sha256"
+  --root "$guest_repo_root" --commit "$commit" --archive-sha256 "$archive_sha256" \
+  --archive-listing "$guest_repo_root/.source-listing.txt"
 guest_exec python3 "$guest_repo_root/scripts/interop/multipass/source_tree.py" \
-  --root "$guest_repo_root" --commit "$commit" --archive-sha256 "$archive_sha256" --verify
+  --root "$guest_repo_root" --commit "$commit" --archive-sha256 "$archive_sha256" --verify \
+  --archive-listing "$guest_repo_root/.source-listing.txt"
 
 receipt=$(python3 - "$commit" "$archive_sha256" "$tree_sha256" "$environment_manifest_sha256" <<'PY'
 import datetime as dt

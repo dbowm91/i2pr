@@ -15,25 +15,64 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 MANIFEST_NAME = ".i2pr-source-manifest.json"
 
 
-def tree_hash(root: Path) -> str:
-    if not root.is_dir():
-        raise ValueError("source root is not a directory")
-    entries: list[tuple[str, str, int]] = []
-    for path in sorted(root.rglob("*")):
-        relative = path.relative_to(root).as_posix()
-        if relative == MANIFEST_NAME or relative == ".git" or relative.startswith(".git/"):
+def _is_excluded(relative: str) -> bool:
+    if relative == MANIFEST_NAME or relative == ".git" or relative.startswith(".git/"):
+        return True
+    if relative == "target" or relative.startswith("target/"):
+        return True
+    if relative == ".agents" or relative.startswith(".agents/"):
+        return True
+    if relative == ".opencode/node_modules" or relative.startswith(".opencode/node_modules/"):
+        return True
+    if relative.endswith("/__pycache__") or relative.startswith("__pycache__/") or "/__pycache__/" in relative:
+        return True
+    return False
+
+
+def _archive_member_paths(root: Path, archive_listing: str) -> list[str]:
+    members: list[str] = []
+    for raw in archive_listing.splitlines():
+        relative = raw.strip()
+        if not relative:
             continue
-        if relative == "target" or relative.startswith("target/"):
+        if _is_excluded(relative):
             continue
-        if relative == ".agents" or relative.startswith(".agents/"):
-            continue
-        if relative == ".opencode/node_modules" or relative.startswith(".opencode/node_modules/"):
-            continue
-        if relative.endswith("/__pycache__") or relative.startswith("__pycache__/") or "/__pycache__/" in relative:
-            continue
+        path = root / relative
         if path.is_symlink():
             raise ValueError(f"source archive refuses symlink: {relative}")
         if path.is_file():
+            members.append(relative)
+    if not members:
+        raise ValueError("source archive has no enumerable files")
+    return sorted(members)
+
+
+def tree_hash(root: Path, archive_listing: str | None = None) -> str:
+    if not root.is_dir():
+        raise ValueError("source root is not a directory")
+    if archive_listing is None:
+        members: list[str] = []
+        for path in root.rglob("*"):
+            relative = path.relative_to(root).as_posix()
+            if _is_excluded(relative):
+                continue
+            if path.is_symlink():
+                raise ValueError(f"source archive refuses symlink: {relative}")
+            if path.is_file():
+                members.append(relative)
+        if not members:
+            raise ValueError("source root has no enumerable files")
+        members.sort()
+        entries: list[tuple[str, str, int]] = []
+        for relative in members:
+            path = root / relative
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            mode = path.stat().st_mode & 0o111
+            entries.append((relative, digest, mode))
+    else:
+        entries = []
+        for relative in _archive_member_paths(root, archive_listing):
+            path = root / relative
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             mode = path.stat().st_mode & 0o111
             entries.append((relative, digest, mode))
@@ -41,7 +80,7 @@ def tree_hash(root: Path) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def write_manifest(root: Path, commit: str, archive_sha256: str, output: Path) -> dict[str, str | int]:
+def write_manifest(root: Path, commit: str, archive_sha256: str, output: Path, archive_listing: str) -> dict[str, str | int]:
     if not HEX40.fullmatch(commit):
         raise ValueError("source commit is not a full object ID")
     if not HEX64.fullmatch(archive_sha256):
@@ -50,7 +89,7 @@ def write_manifest(root: Path, commit: str, archive_sha256: str, output: Path) -
         "schema": 1,
         "commit": commit,
         "archive_sha256": archive_sha256,
-        "tree_sha256": tree_hash(root),
+        "tree_sha256": tree_hash(root, archive_listing),
         "archive_format": "git-archive-tar-gzip",
     }
     output.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
@@ -58,7 +97,7 @@ def write_manifest(root: Path, commit: str, archive_sha256: str, output: Path) -
     return value
 
 
-def verify_manifest(root: Path, manifest_path: Path) -> dict[str, str | int]:
+def verify_manifest(root: Path, manifest_path: Path, archive_listing: str) -> dict[str, str | int]:
     value = json.loads(manifest_path.read_text(encoding="utf-8"))
     if set(value) != {"schema", "commit", "archive_sha256", "tree_sha256", "archive_format"}:
         raise ValueError("source manifest shape mismatch")
@@ -70,7 +109,7 @@ def verify_manifest(root: Path, manifest_path: Path) -> dict[str, str | int]:
         raise ValueError("source manifest archive hash is invalid")
     if not isinstance(value["tree_sha256"], str) or not HEX64.fullmatch(value["tree_sha256"]):
         raise ValueError("source manifest tree hash is invalid")
-    if tree_hash(root) != value["tree_sha256"]:
+    if tree_hash(root, archive_listing) != value["tree_sha256"]:
         raise ValueError("source tree hash mismatch")
     return value
 
@@ -80,16 +119,20 @@ def main() -> int:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--commit", default="")
     parser.add_argument("--archive-sha256", default="")
+    parser.add_argument("--archive-listing", type=argparse.FileType("r", encoding="utf-8"), default=None)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--verify", action="store_true")
     args = parser.parse_args()
     output = args.output or args.root / MANIFEST_NAME
+    archive_listing = args.archive_listing.read() if args.archive_listing is not None else None
     if args.verify:
-        verify_manifest(args.root, output)
+        verify_manifest(args.root, output, archive_listing)
     else:
         if not args.commit or not args.archive_sha256:
             parser.error("--commit and --archive-sha256 are required when writing a manifest")
-        write_manifest(args.root, args.commit, args.archive_sha256, output)
+        if archive_listing is None:
+            raise SystemExit("--archive-listing is required when writing a manifest")
+        write_manifest(args.root, args.commit, args.archive_sha256, output, archive_listing)
     return 0
 
 

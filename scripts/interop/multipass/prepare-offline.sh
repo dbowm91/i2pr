@@ -28,7 +28,7 @@ import json
 import sys
 print(json.load(open(sys.argv[1], encoding="utf-8"))["source_archive_sha256"])
 PY
-)" --verify >/dev/null 2>&1; then
+)" --verify --archive-listing "$guest_repo_root/.source-listing.txt" >/dev/null 2>&1; then
   typed_blocker blocked_source_tree_hash_mismatch
   exit 2
 fi
