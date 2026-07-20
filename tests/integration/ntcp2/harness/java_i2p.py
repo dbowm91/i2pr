@@ -107,6 +107,7 @@ class JavaI2pAdapter:
         launcher = self.runtime_dir / self.metadata.launcher
         if not self._inside_run_root(launcher) or not launcher.is_file() or not os.access(launcher, os.X_OK):
             raise JavaI2pError("invalid-staged-launcher")
+        (self.runtime_dir / "tmp").mkdir(mode=0o700, parents=True, exist_ok=True)
         self.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.config_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         template = self.repo_root / "tests/integration/ntcp2/config/java-i2p/router.config.template"

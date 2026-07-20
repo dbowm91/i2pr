@@ -80,6 +80,7 @@ auto_options="$log_dir/auto-install.properties"
 cat >"$auto_options" <<EOF
 sys.installationDir=$install_dir
 INSTALL_PATH=$install_dir
+SYSTEM_java_io_tmpdir=$install_dir/tmp
 sys.language.selected=eng
 sys.pack.selected.Base=true
 sys.pack.selected.Windows Service=false
@@ -102,6 +103,7 @@ for candidate in "$install_dir/runplain.sh" "$install_dir/i2prouter"; do
 done
 [[ -n "$launcher" ]] || die "Java I2P staged runtime has no reviewed headless shell launcher"
 mkdir -p "$cache_dir"
+mkdir -p "$install_dir/tmp" "$cache_dir/tmp"
 cp -a "$install_dir/." "$cache_dir/"
 mkdir -p "$cache_dir/artifacts"
 install -m 0644 "$source_dir/install.jar" "$cache_dir/artifacts/install.jar"
