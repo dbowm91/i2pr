@@ -115,8 +115,14 @@ class JavaI2pAdapter:
         # modes. The router writes its eventlog, logs, and key store under
         # the staged runtime dir, so widen the modes inside the namespace.
         for root, dirs, files in os.walk(self.runtime_dir):
-            for entry in dirs + files:
+            for entry in dirs:
                 (Path(root) / entry).chmod(0o700)
+            for entry in files:
+                entry_path = Path(root) / entry
+                if entry_path.suffix in {".jar", ".war"}:
+                    entry_path.chmod(0o700)
+                else:
+                    entry_path.chmod(0o755)
         # The cached "tmp" directory is read-only because cp preserves the
         # build tree modes. The launcher writes the router pid file there,
         # so ensure it is writable inside the namespace.
