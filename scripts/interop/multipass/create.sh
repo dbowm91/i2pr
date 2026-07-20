@@ -220,6 +220,12 @@ PY
     exit 2
   fi
   adopted_state=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])' <"$instance_lifecycle_path")
+  case "$adopted_state" in
+    provisioned|source_ready|cache_ready|source_and_cache_ready|probe_passed|offline_ready|running|exporting|exported) ;;
+    *)
+      adopted_state=provisioned
+      ;;
+  esac
   python3 "$lifecycle_py" update --state-file "$instance_lifecycle_path" --state "$adopted_state" --operation adopt-owned \
     --outcome ownership_verified --updates-json '{"adoption_mode":"adopted"}' >/dev/null
   printf '%s\n' '{"schema":1,"type":"multipass-lifecycle","outcome":"ownership_verified","adoption_mode":"adopted"}'
