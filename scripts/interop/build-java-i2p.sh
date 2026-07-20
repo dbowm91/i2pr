@@ -117,7 +117,7 @@ install -m 0644 "$source_dir/install.jar" "$cache_dir/artifacts/install.jar"
 # the harness always creates with 0o700.
 write_harness_launcher() {
   cat > "$1" <<EOF
-#!/bin/sh
+#!/bin/bash
 # Plan 045 harness-compatible headless launcher. Substituted from upstream
 # runplain.sh / i2prouter: JAVAOPTS keeps the I2P defaults so the router
 # still honours i2p.dir.base, the logger filename, and headless mode.
@@ -128,12 +128,12 @@ I2P="\$(cd "\$(dirname "\$0")" && pwd)"
 I2PTEMP="\$(cd "\$(dirname "\$0")" && pwd)/tmp"
 mkdir -p "\$I2PTEMP"
 JAVA="\$(which java 2>/dev/null || command -v java 2>/dev/null)"
-if [[ -z "\$JAVA" || ! -x "\$JAVA" ]]; then
+if [ -z "\$JAVA" ] || [ ! -x "\$JAVA" ]; then
   JAVA="/usr/lib/jvm/java-21-openjdk-amd64/bin/java"
 fi
 CP=""
 for jar in \${I2P}/lib/*.jar; do
-  if [[ -z "\$CP" ]]; then
+  if [ -z "\$CP" ]; then
     CP="\$jar"
   else
     CP="\${CP}:\${jar}"
