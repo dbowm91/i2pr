@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import time
 from pathlib import Path
 
 try:
@@ -169,9 +170,34 @@ class JavaI2pAdapter:
         if self.process is None:
             raise JavaI2pError("not-started")
         try:
-            self.process.wait_ready(("Router is ready", "I2P Router ready"), timeout_seconds)
+            self.process.wait_ready(("Starting I2P ",), timeout_seconds)
+        except ProcessError:
+            pass
+        try:
+            self._wait_for_eventlog_started(timeout_seconds)
         except ProcessError as exc:
             raise JavaI2pError(exc.code) from exc
+
+    def _wait_for_eventlog_started(self, timeout_seconds: float) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        eventlog = self.data_dir / "eventlog.txt"
+        while time.monotonic() < deadline:
+            if self.process is not None and self.process.poll() is not None:
+                raise ProcessError("process-exited-before-ready")
+            try:
+                if eventlog.is_file() and eventlog.stat().st_size > 0:
+                    try:
+                        lines = eventlog.read_text(encoding="utf-8", errors="replace").splitlines()
+                    except OSError:
+                        lines = []
+                    started = [line for line in lines if line.endswith(" started 2.12.0-0")]
+                    crashed = [line for line in lines if " crashed " in line]
+                    if started and len(started) > len(crashed):
+                        return
+            except OSError:
+                pass
+            time.sleep(0.25)
+        raise ProcessError("java-eventlog-started-timeout")
 
     def export_router_info(self) -> Path:
         allowed_names = ("router.info", "router.info.su3")
