@@ -639,7 +639,16 @@ def run(args: argparse.Namespace) -> int:
                 evidence_path = None
         try:
             if run_dir.exists():
-                shutil.rmtree(run_dir)
+                if os.environ.get("I2PR_INTEROP_DUMP_RUN_LOGS") == "1":
+                    try:
+                        evidence_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        logs_dest = evidence_root / f"{run_dir.name}-{reference}-raw-logs"
+                        if run_dir.resolve() != logs_dest.resolve():
+                            shutil.copytree(run_dir / "raw", logs_dest / "raw", dirs_exist_ok=True)
+                    except OSError:
+                        pass
+                if os.environ.get("I2PR_INTEROP_KEEP_RUN_DIR") != "1":
+                    shutil.rmtree(run_dir)
         except OSError:
             cleanup = "failed"
             result = "failed_cleanup"
