@@ -75,7 +75,13 @@ class JavaI2pAdapter:
             )
             if not (live_under_run_root or sibling_under_run_root):
                 raise JavaI2pError("shared-data-dir-outside-run-root")
-        self.config_dir = self.run_root / "config"
+        # Java I2P only honours ``i2p.dir.config`` and ``i2p.dir.base``; it
+        # always writes its key store, ``router.info``, eventlog, and logger
+        # under the working directory computed from ``i2p.dir.config``. We
+        # therefore point ``i2p.dir.config`` at ``data_dir`` so the Plan 045
+        # D1 shared directory produces both the live config and the
+        # RouterInfo export.
+        self.config_dir = self.data_dir
         self.placement: ProcessPlacement | None = placement
         self.process: BoundedProcess | None = None
         self.metadata: CacheMetadata | None = None
