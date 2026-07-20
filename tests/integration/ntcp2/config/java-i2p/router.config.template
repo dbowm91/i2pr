@@ -1,4 +1,4 @@
-# Plan 038 Java I2P 2.12.0 template; values are generated per namespace.
+# Plan 045 Java I2P 2.12.0 template; values are generated per namespace.
 i2p.dir.config=@CONFIG_DIR@
 i2np.allowLocal=true
 i2np.ntcp.enable=true
@@ -15,7 +15,9 @@ router.floodfillParticipant=false
 router.sharePercentage=0
 router.maxParticipatingTunnels=0
 router.newsRefreshFrequency=0
-i2np.udp.enable=false
-i2np.udp.address=
-i2np.udp.port=0
-i2np.udp.autoip=false
+# Plan 045: disable the embedded router console and NTP for the
+# interop namespace so the harness observes readiness quickly and
+# never tries to reach the public Internet.
+routerconsole.enable=false
+time.sntpServerList=
+time.disabled=true
