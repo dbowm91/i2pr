@@ -60,7 +60,16 @@ class I2pdAdapter:
             self.data_dir = self.run_root / "reference-data"
         else:
             self.data_dir = shared_data_dir.resolve()
-            if not (self.data_dir == self.run_root or self.run_root in self.data_dir.parents):
+            # Plan 045 D1: the ``-gen`` and live phases must share a single
+            # data directory inside the dispatcher's run_root. Accept any
+            # path that is, or is inside, the live run_root, and accept any
+            # sibling path that lives under the same top-level run_root.
+            live_under_run_root = (self.data_dir == self.run_root or self.run_root in self.data_dir.parents)
+            sibling_under_run_root = bool(self.run_root.parents) and (
+                self.data_dir in self.run_root.parents
+                or any(self.data_dir == (p / self.data_dir.name) for p in self.run_root.parents)
+            )
+            if not (live_under_run_root or sibling_under_run_root):
                 raise I2pdError("shared-data-dir-outside-run-root")
         self.config_dir = self.run_root / "config"
         self.placement: ProcessPlacement | None = placement
