@@ -104,10 +104,17 @@ class JavaI2pAdapter:
         launcher = self.runtime_dir / self.metadata.launcher
         if not self.runtime_dir.exists():
             shutil.copytree(self.cache, self.runtime_dir, ignore=shutil.ignore_patterns("build-metadata.txt"))
+        # The cached "tmp" directory is read-only because cp preserves the
+        # build tree modes. The launcher writes the router pid file there,
+        # so ensure it is writable inside the namespace.
+        for tmp_like in (self.runtime_dir / "tmp",):
+            if tmp_like.exists():
+                tmp_like.chmod(0o700)
         launcher = self.runtime_dir / self.metadata.launcher
         if not self._inside_run_root(launcher) or not launcher.is_file() or not os.access(launcher, os.X_OK):
             raise JavaI2pError("invalid-staged-launcher")
         (self.runtime_dir / "tmp").mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(self.runtime_dir / "tmp", 0o700)
         self.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.config_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         template = self.repo_root / "tests/integration/ntcp2/config/java-i2p/router.config.template"

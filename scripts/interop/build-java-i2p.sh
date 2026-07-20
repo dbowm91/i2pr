@@ -104,17 +104,22 @@ done
 [[ -n "$launcher" ]] || die "Java I2P staged runtime has no reviewed headless shell launcher"
 mkdir -p "$cache_dir"
 mkdir -p "$install_dir/tmp" "$cache_dir/tmp"
+chmod 0777 "$install_dir/tmp" "$cache_dir/tmp"
 cp -a "$install_dir/." "$cache_dir/"
 mkdir -p "$cache_dir/artifacts"
 install -m 0644 "$source_dir/install.jar" "$cache_dir/artifacts/install.jar"
 # IzPack 5.2.4's -options-auto path leaves the literal "%SYSTEM_java_io_tmpdir"
 # placeholder in runplain.sh and i2prouter. Substitute it in the cached copies
-# so the headless launcher can write its pid file to the install tmp dir.
+# with the script's own directory so the headless launcher writes its pid
+# file under its own runtime tmp dir, which the harness always creates with
+# 0o700.
 for staged in "$install_dir/runplain.sh" "$install_dir/i2prouter" "$cache_dir/runplain.sh" "$cache_dir/i2prouter"; do
   if [[ -f "$staged" ]] && grep -q '%SYSTEM_java_io_tmpdir' "$staged"; then
-    sed -i "s|%SYSTEM_java_io_tmpdir|$install_dir/tmp|g" "$staged"
+    sed -i "s|%SYSTEM_java_io_tmpdir|\$(cd \$(dirname \$0) \&\& pwd)/tmp|g" "$staged"
   fi
 done
+chmod 0755 "$install_dir/runplain.sh" "$install_dir/i2prouter" \
+         "$cache_dir/runplain.sh" "$cache_dir/i2prouter" 2>/dev/null || true
 if head -n 1 "$launcher" | grep -q '^#!'; then
   bash -n "$launcher" >"$log_dir/launcher-inspection.txt"
 else
