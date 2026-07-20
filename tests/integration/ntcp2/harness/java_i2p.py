@@ -201,7 +201,13 @@ class JavaI2pAdapter:
         allowed_names = ("router.info", "router.info.su3")
         for name in allowed_names:
             candidate = self.data_dir / name
-            if not (self.run_root == candidate or self.run_root in candidate.parents):
+            live_under_run_root = (self.run_root == candidate or self.run_root in candidate.parents)
+            sibling_under_run_root = bool(self.run_root.parents) and (
+                self.data_dir == self.run_root.parent
+                or self.data_dir in self.run_root.parents
+                or any(self.data_dir == (p / self.data_dir.name) for p in self.run_root.parents)
+            )
+            if not (live_under_run_root or sibling_under_run_root):
                 raise JavaI2pError("router-info-outside-run-root")
             if candidate.is_symlink():
                 raise JavaI2pError("router-info-symlink-rejected")
