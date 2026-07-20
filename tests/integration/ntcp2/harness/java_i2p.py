@@ -182,8 +182,6 @@ class JavaI2pAdapter:
         deadline = time.monotonic() + timeout_seconds
         eventlog = self.data_dir / "eventlog.txt"
         while time.monotonic() < deadline:
-            if self.process is not None and self.process.poll() is not None:
-                raise ProcessError("process-exited-before-ready")
             try:
                 if eventlog.is_file() and eventlog.stat().st_size > 0:
                     try:
