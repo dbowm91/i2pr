@@ -634,7 +634,7 @@ def run(args: argparse.Namespace) -> int:
                 write_record(evidence_path, record)
             except (OSError, ValueError) as exc:
                 import sys, traceback
-                print(f"[mixed_runner DEBUG] write_record failed: {exc}", file=sys.stderr, flush=True)
+                print(f"[mixed_runner DEBUG] write_record failed: result={result!r} reason={reason!r} known_deviation={record.get('known_deviation')!r}", file=sys.stderr, flush=True)
                 traceback.print_exc(file=sys.stderr)
                 result = "failed_cleanup"
                 cleanup = "failed"
