@@ -113,6 +113,7 @@ class JavaI2pAdapter:
         launcher = self.runtime_dir / self.metadata.launcher
         if not self.runtime_dir.exists():
             shutil.copytree(self.cache, self.runtime_dir, ignore=shutil.ignore_patterns("build-metadata.txt"))
+            self._rewrite_host_paths()
         # The cached tree is read-only because cp preserves the build tree
         # modes. The router writes its eventlog, logs, and key store under
         # the staged runtime dir, so widen the modes inside the namespace.
@@ -268,6 +269,26 @@ class JavaI2pAdapter:
             if candidate in jar_entries:
                 return candidate
         return None
+
+    def _rewrite_host_paths(self) -> None:
+        cache_root = self.cache.resolve()
+        host_marker = str(cache_root)
+        runtime_root = self.runtime_dir.resolve()
+        replacement = str(runtime_root)
+        targets = []
+        wrapper_config = self.runtime_dir / "wrapper.config"
+        if wrapper_config.is_file():
+            targets.append(wrapper_config)
+        i2prouter_script = self.runtime_dir / self.metadata.launcher
+        if i2prouter_script.is_file():
+            targets.append(i2prouter_script)
+        for path in targets:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if host_marker in text:
+                path.write_text(text.replace(host_marker, replacement), encoding="utf-8")
 
     def _extract_native_libraries(self) -> None:
         machine = platform.machine().lower()
