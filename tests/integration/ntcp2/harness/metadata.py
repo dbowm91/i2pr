@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import locale
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,30 +96,22 @@ def _sha256_file(path: Path) -> str:
 def hash_runtime_tree(cache_root: Path) -> str:
     """Hash every runtime file in stable path order, excluding metadata itself.
 
-    Sort order matches the bash ``sort -z`` default used by the canonical
+    Sort order matches the bash ``LC_ALL=C sort -z`` used by the canonical
     Plan 038 ``hash_tree`` helper that records ``installed_tree_sha256``
-    during build. The build shell invokes ``sort -z`` without overriding
-    ``LC_COLLATE``, so the production sort uses the host's active locale
-    (typically ``en_US.UTF-8``). Under that locale lowercase letters sort
-    before uppercase letters and ``-`` (0x2D) sorts before ``/`` (0x2F),
-    matching the bash behaviour. Python's default ``sorted`` always uses
-    raw Unicode code points, which sorts uppercase before lowercase and
-    ``/`` before ``-``. Use ``locale.strxfrm`` (with the active POSIX/
-    UTF-8 locale set) so the Python sort produces the same order as the
-    build shell.
+    during build: paths are compared as NUL-delimited byte strings using
+    byte-level ordering (``-`` at 0x2D before ``/`` at 0x2F before uppercase
+    letters at 0x41 before lowercase at 0x61). Python's default ``sorted`` on
+    ``str`` uses Unicode code points, which orders ``/`` before ``-`` and
+    uppercase before lowercase. Sort the encoded bytes (which gives the same
+    byte-level ordering as ``LC_ALL=C``) so the Python verifier produces the
+    same hash as the build shell on every host.
     """
 
     if not cache_root.is_dir():
         raise MetadataError("cache root is not a directory")
-    try:
-        locale.setlocale(locale.LC_ALL, "")
-    except locale.Error:
-        pass
     files = [path for path in cache_root.rglob("*") if path.is_file()]
     files.sort(
-        key=lambda path: locale.strxfrm(
-            path.relative_to(cache_root).as_posix().lstrip("./")
-        )
+        key=lambda path: path.relative_to(cache_root).as_posix().encode("utf-8")
     )
     entries: list[tuple[str, str]] = []
     for path in files:

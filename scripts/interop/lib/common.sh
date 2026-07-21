@@ -77,7 +77,7 @@ hash_tree() {
   [[ -d "$directory" ]] || die "cannot hash missing tree: $directory"
   (
     cd "$directory"
-    find . -type f ! -path './build-metadata.txt' -printf '%P\0' | sort -z | while IFS= read -r -d '' path; do
+    find . -type f ! -path './build-metadata.txt' -printf '%P\0' | LC_ALL=C.UTF-8 sort -z | while IFS= read -r -d '' path; do
       sha256sum "$path"
     done
   ) | sha256sum | awk '{print $1}'
