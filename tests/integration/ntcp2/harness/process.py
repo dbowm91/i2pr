@@ -163,7 +163,31 @@ class BoundedProcess:
         }
 
     def observed_phrase(self, phrases: Sequence[str]) -> bool:
-        """Return whether a bounded, implementation-specific status phrase appeared."""
+        """Return whether a bounded, implementation-specific status phrase appeared.
+
+        Checks the bounded ``_ready_lines`` deque first (fast, in-memory), then
+        falls back to a bounded scan of the log file. The fallback matters
+        because debug-level i2pd logs fill the 32-line deque quickly and
+        rotate the authenticated phrase out before ``authenticated_observation``
+        is queried.
+        """
 
         with self._line_lock:
-            return any(phrase in line for line in self._ready_lines for phrase in phrases)
+            if any(phrase in line for line in self._ready_lines for phrase in phrases):
+                return True
+        try:
+            with self.log_path.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                tail_size = min(self._log_bytes, 131_072)
+                if tail_size > 0:
+                    handle.seek(-tail_size, os.SEEK_END)
+                    chunk = handle.read(tail_size)
+                else:
+                    return False
+        except OSError:
+            return False
+        try:
+            text = chunk.decode("utf-8", errors="replace")
+        except LookupError:
+            text = chunk.decode("utf-8", errors="replace")
+        return any(phrase in line for line in text.splitlines() for phrase in phrases)
