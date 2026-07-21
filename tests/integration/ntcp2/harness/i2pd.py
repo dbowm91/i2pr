@@ -198,8 +198,21 @@ class I2pdAdapter:
 
     def import_peer_router_info(self, source: Path) -> None:
         source = source.resolve()
+        # Plan 045 D1: the live-phase reference imports the i2pr RouterInfo
+        # that lives at ``run_dir/i2pr/state/router.info`` -- a sibling of the
+        # reference's own run_root (``run_dir/ref-import``). Accept any path
+        # whose nearest non-root ancestor matches an ancestor of ``run_root``,
+        # matching the ``shared_data_dir`` confinement already enforced in
+        # ``__init__``.
         if not self._inside_run_root(source):
-            raise I2pdError("peer-router-info-outside-run-root")
+            run_root_parents = [p for p in self.run_root.resolve().parents if str(p) != "/"]
+            accepted = False
+            for parent in run_root_parents:
+                if source == parent or parent in source.parents:
+                    accepted = True
+                    break
+            if not accepted:
+                raise I2pdError("peer-router-info-outside-run-root")
         try:
             target = self.data_dir / "netDb" / netdb_filename(source)
         except RouterInfoPathError as exc:

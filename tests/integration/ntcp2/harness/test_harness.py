@@ -707,34 +707,38 @@ status_path = "status.jsonl"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             run_root = root / "run"
-            outside = root / "outside.info"
-            outside.write_bytes(b"not-a-router-info")
-            java_endpoint = EndpointDescription(
-                local_address=scenario.java.address,
-                peer_address=scenario.i2pd.address,
-                local_port=scenario.java.port,
-                peer_port=scenario.i2pd.port,
-                address_family="ipv4",
-                namespace="java-test",
-                network_id="99",
-            )
-            i2pd_endpoint = EndpointDescription(
-                local_address=scenario.i2pd.address,
-                peer_address=scenario.java.address,
-                local_port=scenario.i2pd.port,
-                peer_port=scenario.java.port,
-                address_family="ipv4",
-                namespace="i2pd-test",
-                network_id="99",
-            )
-            java = JavaI2pAdapter(root / "java-cache", run_root / "java", java_endpoint, ROOT)
-            i2pd = I2pdAdapter(root / "i2pd-cache", run_root / "i2pd", i2pd_endpoint, ROOT)
-            with self.assertRaises(JavaI2pError) as java_error:
-                java.import_peer_router_info(outside)
-            with self.assertRaises(I2pdError) as i2pd_error:
-                i2pd.import_peer_router_info(outside)
-            self.assertEqual(java_error.exception.code, "peer-router-info-outside-run-root")
-            self.assertEqual(i2pd_error.exception.code, "peer-router-info-outside-run-root")
+            far_outside = Path("/run/lock") / "i2pr-plan-041-outside.info"
+            try:
+                far_outside.write_bytes(b"not-a-router-info")
+                java_endpoint = EndpointDescription(
+                    local_address=scenario.java.address,
+                    peer_address=scenario.i2pd.address,
+                    local_port=scenario.java.port,
+                    peer_port=scenario.i2pd.port,
+                    address_family="ipv4",
+                    namespace="java-test",
+                    network_id="99",
+                )
+                i2pd_endpoint = EndpointDescription(
+                    local_address=scenario.i2pd.address,
+                    peer_address=scenario.java.address,
+                    local_port=scenario.i2pd.port,
+                    peer_port=scenario.java.port,
+                    address_family="ipv4",
+                    namespace="i2pd-test",
+                    network_id="99",
+                )
+                java = JavaI2pAdapter(root / "java-cache", run_root / "java", java_endpoint, ROOT)
+                i2pd = I2pdAdapter(root / "i2pd-cache", run_root / "i2pd", i2pd_endpoint, ROOT)
+                with self.assertRaises(JavaI2pError) as java_error:
+                    java.import_peer_router_info(far_outside)
+                with self.assertRaises(I2pdError) as i2pd_error:
+                    i2pd.import_peer_router_info(far_outside)
+                self.assertEqual(java_error.exception.code, "peer-router-info-outside-run-root")
+                self.assertEqual(i2pd_error.exception.code, "peer-router-info-outside-run-root")
+            finally:
+                if far_outside.exists():
+                    far_outside.unlink()
 
     def test_plan_041_pair_evidence_requires_dual_authentication_and_cleanup(self) -> None:
         pair = {
