@@ -53,6 +53,8 @@ if ! guest_exec test -x "$guest_repo_root/target/debug/i2pr-interop" >/dev/null 
 fi
 
 guest_root_exec install -d -o root -g root -m 0700 /var/lib/i2pr-interop
+guest_root_exec install -d -o "$guest_execution_user" -g "$guest_execution_user" -m 0700 "$guest_evidence_root"
+guest_root_exec chown -R "$guest_execution_user:$guest_execution_user" "$guest_repo_root/target"
 offline_file=/tmp/i2pr-offline-enforcement.json
 multipass transfer "$script_dir/offline-enforcement.json" "$instance_name:$offline_file" >/dev/null
 guest_root_exec install -o root -g root -m 0600 "$offline_file" /var/lib/i2pr-interop/offline-enforcement.json
