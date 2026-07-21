@@ -35,6 +35,7 @@ const HOST_OPTION: &str = "host";
 const PORT_OPTION: &str = "port";
 const VERSION_OPTION: &str = "v";
 const CAPS_OPTION: &str = "caps";
+const PQ_OPTION: &str = "pq";
 
 /// A bounded failure while parsing or constructing NTCP2 address data.
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -710,6 +711,11 @@ impl<'a> ParsedOptions<'a> {
                 IV_OPTION => store(&mut parsed.obfuscation_iv, value, IV_OPTION)?,
                 VERSION_OPTION => store(&mut parsed.version, value, VERSION_OPTION)?,
                 CAPS_OPTION => store(&mut parsed.capabilities, value, CAPS_OPTION)?,
+                // The ``pq`` option carries the I2P padding-queue protocol
+                // version; i2pr does not negotiate padding but other
+                // routers (notably I2P 2.12.0+) publish it, so accept and
+                // ignore it rather than rejecting the whole address.
+                PQ_OPTION => continue,
                 _ => return Err(Ntcp2AddressError::UnknownOption),
             }
         }
