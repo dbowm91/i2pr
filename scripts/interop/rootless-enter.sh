@@ -163,6 +163,7 @@ build_unshare_command() {
     "I2PR_INTEROP_PARENT_MNT_NS_INODE=$(namespace_inode mnt)"
     "I2PR_INTEROP_PARENT_PID_NS_INODE=$(namespace_inode pid)"
     "I2PR_INTEROP_COMMIT=$i2pr_commit"
+    "I2PR_INTEROP_KEEP_RUN_DIR=${I2PR_INTEROP_KEEP_RUN_DIR:-}"
   )
   case "$mode" in
     probe)
