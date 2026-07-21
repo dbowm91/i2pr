@@ -65,8 +65,8 @@ def assert_java_private_configuration(
         "i2np.udp.address": "",
         "i2np.udp.port": "0",
         "i2np.udp.autoip": "false",
-        "crypto.edh.precalc.min": "0",
-        "crypto.edh.precalc.max": "0",
+        "crypto.edh.precalc.min": "1",
+        "crypto.edh.precalc.max": "4",
         "crypto.edh.precalc.delay": "999999",
     }
     if values != {**expected, "i2p.dir.config": values.get("i2p.dir.config", "")}:
