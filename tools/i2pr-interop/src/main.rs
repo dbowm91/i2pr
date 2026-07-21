@@ -738,12 +738,18 @@ fn signed_router_info(
         options,
     )
     .map_err(|_| LauncherError::StateInvalid)?;
+    let ri_options = Mapping::from_entries(vec![
+        ("caps".to_owned(), "L".to_owned()),
+        ("netId".to_owned(), "2".to_owned()),
+        ("router.version".to_owned(), "0.9.69".to_owned()),
+    ])
+    .map_err(|_| LauncherError::StateInvalid)?;
     identity
         .sign_router_info(
             Date::from_millis(unix_millis()),
             vec![router_address],
             Vec::new(),
-            Mapping::empty(),
+            ri_options,
         )
         .map_err(|_| LauncherError::StateInvalid)
 }
