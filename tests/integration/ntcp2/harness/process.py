@@ -178,19 +178,28 @@ class BoundedProcess:
                 return True
         try:
             file_size = self.log_path.stat().st_size
-        except OSError:
+        except OSError as exc:
+            import sys
+            print(f"[observed_phrase DEBUG] stat failed for {self.log_path}: {exc}", file=sys.stderr)
             return False
         tail_size = min(file_size, 131_072)
         if tail_size <= 0:
+            import sys
+            print(f"[observed_phrase DEBUG] empty log: {self.log_path}", file=sys.stderr)
             return False
         try:
             with self.log_path.open("rb") as handle:
                 handle.seek(-tail_size, os.SEEK_END)
                 chunk = handle.read(tail_size)
-        except OSError:
+        except OSError as exc:
+            import sys
+            print(f"[observed_phrase DEBUG] read failed for {self.log_path}: {exc}", file=sys.stderr)
             return False
         try:
             text = chunk.decode("utf-8", errors="replace")
         except LookupError:
             text = chunk.decode("utf-8", errors="replace")
-        return any(phrase in line for line in text.splitlines() for phrase in phrases)
+        result = any(phrase in line for line in text.splitlines() for phrase in phrases)
+        import sys
+        print(f"[observed_phrase DEBUG] path={self.log_path} size={file_size} tail_size={tail_size} result={result} phrases={phrases}", file=sys.stderr)
+        return result
