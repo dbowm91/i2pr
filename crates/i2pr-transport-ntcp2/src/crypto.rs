@@ -398,7 +398,6 @@ pub struct Transcript {
     hash: TranscriptHash,
     chaining_key: ChainKey,
     cipher: Option<CipherState>,
-    message1_cipher: Option<CipherState>,
     stage: TranscriptStage,
 }
 
@@ -415,7 +414,6 @@ impl Transcript {
             hash: TranscriptHash(hash),
             chaining_key: ChainKey(protocol_hash),
             cipher: None,
-            message1_cipher: None,
             stage: TranscriptStage::Initial,
         }
     }
@@ -570,12 +568,11 @@ impl Transcript {
         let mut state = self;
         let associated_data = state.hash.0;
         let cipher = state
-            .message1_cipher
+            .cipher
             .as_mut()
             .ok_or(Ntcp2CryptoError::InvalidState)?;
         let ciphertext = cipher.seal(static_public.as_bytes(), &associated_data)?;
         state.hash = TranscriptHash(sha256_concat(&associated_data, &ciphertext));
-        state.message1_cipher = None;
         let mut state = state.mix_key(shared_secret)?;
         state.stage = TranscriptStage::StaticEncrypted;
         Ok((state, ciphertext))
@@ -598,12 +595,11 @@ impl Transcript {
         let mut state = self;
         let associated_data = state.hash.0;
         let cipher = state
-            .message1_cipher
+            .cipher
             .as_mut()
             .ok_or(Ntcp2CryptoError::InvalidState)?;
         let plaintext = cipher.open(ciphertext, &associated_data)?;
         state.hash = TranscriptHash(sha256_concat(&associated_data, ciphertext));
-        state.message1_cipher = None;
         let bytes: [u8; constants::KEY_LENGTH] = plaintext
             .as_slice()
             .try_into()
@@ -637,12 +633,11 @@ impl Transcript {
         let mut state = self;
         let associated_data = state.hash.0;
         let cipher = state
-            .message1_cipher
+            .cipher
             .as_mut()
             .ok_or(Ntcp2CryptoError::InvalidState)?;
         let plaintext = cipher.open(ciphertext, &associated_data)?;
         state.hash = TranscriptHash(sha256_concat(&associated_data, ciphertext));
-        state.message1_cipher = None;
         let bytes: [u8; constants::KEY_LENGTH] = plaintext
             .as_slice()
             .try_into()
@@ -752,9 +747,6 @@ impl Transcript {
     }
 
     fn mix_key(mut self, shared_secret: X25519SharedSecret) -> Result<Self, Ntcp2CryptoError> {
-        if self.stage == TranscriptStage::Message1Padded {
-            self.message1_cipher = self.cipher.take();
-        }
         let temp_key = hmac_sha256(&self.chaining_key.0, shared_secret.as_bytes())?;
         let next_chain = hmac_sha256(&temp_key, &[1])?;
         let mut cipher_input = Vec::with_capacity(constants::HASH_LENGTH + 1);
@@ -1037,7 +1029,6 @@ mod tests {
             hash: TranscriptHash(split_vectors[1].as_slice().try_into().expect("hash")),
             chaining_key: ChainKey(split_vectors[0].as_slice().try_into().expect("chain")),
             cipher: Some(CipherState::new(AeadKey::from_bytes([0_u8; 32]))),
-            message1_cipher: None,
             stage: TranscriptStage::Confirmed,
         };
         let split = transcript.split().expect("split");

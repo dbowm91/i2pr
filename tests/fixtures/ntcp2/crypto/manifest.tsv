@@ -1,5 +1,5 @@
 # id	path	category	provenance	sha256
-crypto-vectors	tests/fixtures/ntcp2/crypto/vectors.tsv	positive	independent-python-cryptography-41.0.7	760a1dc4830a08727b17f8377fe31b60b02a7e794602e43db1fd9dfdf1bc122f
+crypto-vectors	tests/fixtures/ntcp2/crypto/vectors.tsv	positive	independent-python-cryptography-41.0.7	e6f2f23cf7d159b88e6b566da5c5e58c0e3511b22d39c42b6396b53a0a3a1054
 storage-static-key	tests/fixtures/ntcp2/crypto/storage-static-key.hex	positive	local-format-seed-25	671647672608989864e210a6aca0399e3002839f8790e13d169701d78c28dc01
 data-phase-blocks	tests/fixtures/ntcp2/crypto/data-phase-blocks.hex	positive	local-plan-034-block-encoding	ef6dbf2ccdeb309cb389ed041117e60162e7e809df55e13d530cc4f43bb5728c
 data-phase-frame	tests/fixtures/ntcp2/crypto/data-phase-frame.hex	positive	local-plan-034-fixed-key-frame	e046d384096fa76ee762487c5cd2af9fcecfca74b32a6edf6509c56e9cc3ee18

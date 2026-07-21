@@ -261,12 +261,12 @@ integrity is enforced by `scripts/check-ntcp2-vectors.sh`.
    (`crypto.rs:658-672`) completes the SE DH. Required by the XK
    pattern: the responder must recover the static key before
    computing the SE shared secret.
-2. **Message 1 cipher promotion** — `mix_key` (`crypto.rs:754-767`)
-   stashes the current handshake cipher into `message1_cipher` when
-   transitioning from `Message1Padded` to `Message2Complete`. The
-   saved cipher is later used to encrypt the static key, matching
-   the dossier requirement that `SessionConfirmed` part 1 uses the
-   earlier AEAD key.
+2. **Post-KDF2 cipher for SessionConfirmed part one** —
+   `encrypt_static`, `decrypt_static`, and `decrypt_static_unchecked`
+   all use the current handshake cipher at `Message2Padded`, which is
+   the post-KDF2 key. The NTCP2 dossier specifies that part one
+   reuses the same AEAD key as SessionCreated options, matching
+   both Java I2P and i2pd.
 3. **Forbidden nonce safety** — counter increments *after* emitting
    the current value; the check fires before producing `2^64 - 1`.
 4. **Bespoke two-block AES-CBC** — `AesObfuscationState`
