@@ -22,7 +22,8 @@ enabled = false
 published = false
 
 [http]
-enabled = false
+enabled = true
+port = 7070
 
 [httpproxy]
 enabled = false

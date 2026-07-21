@@ -128,7 +128,9 @@ def assert_i2pd_private_configuration(
         raise ConfigurationContractError("i2pd service sections drifted")
     if parsed.sections["ntcp2"] != {"enabled": "true", "published": "true", "port": str(port)}:
         raise ConfigurationContractError("i2pd NTCP2 listener contract is not exact")
-    for section in expected_sections - {"ntcp2", "reseed"}:
+    if parsed.sections["http"] != {"enabled": "true", "port": "7070"}:
+        raise ConfigurationContractError("i2pd HTTP control contract is not exact (used for ConnectPeer trigger)")
+    for section in expected_sections - {"ntcp2", "reseed", "http"}:
         values = parsed.sections[section]
         if values.get("enabled") != "false":
             raise ConfigurationContractError(f"unexpected enabled i2pd service: {section}")
