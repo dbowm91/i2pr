@@ -53,6 +53,7 @@ guest_root_exec rm -rf "$guest_repo_root/target/interop/cache" \
 guest_root_exec install -d -o "$guest_execution_user" -g "$guest_execution_user" -m 0700 "$guest_repo_root/target/interop/build"
 guest_exec tar -xzf "$guest_archive" -C "$guest_repo_root/target/interop"
 guest_root_exec rm -f "$guest_archive"
+guest_root_exec chown -R "$guest_execution_user:$guest_execution_user" "$guest_repo_root/target"
 if ! guest_exec python3 "$guest_repo_root/scripts/interop/cache-manifest.py" --verify >/dev/null 2>&1; then
   typed_blocker blocked_reference_cache_offline_reuse_failed
   exit 2
