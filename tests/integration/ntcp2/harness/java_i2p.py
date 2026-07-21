@@ -194,6 +194,16 @@ class JavaI2pAdapter:
             stale_ping.unlink()
         except FileNotFoundError:
             pass
+        # The Java router appends to ``eventlog.txt`` indefinitely. Plan 045
+        # D1 reuses the same data directory between the ref-gen and live
+        # phases, so the prior run's ``crashed`` line would fail the live
+        # phase's readiness check. Truncate the eventlog here so each phase
+        # starts with an empty log.
+        eventlog = self.data_dir / "eventlog.txt"
+        try:
+            eventlog.unlink()
+        except FileNotFoundError:
+            pass
         if self.placement is None:
             command = self._prefix() + ["ip", "netns", "exec", self.endpoint.namespace, str(launcher)]
         else:
