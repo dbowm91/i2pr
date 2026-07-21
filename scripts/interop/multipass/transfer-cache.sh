@@ -47,6 +47,8 @@ summary_sha256=$(sha256_file "$host_build/reference-build-summary.json")
 guest_archive="/tmp/i2pr-reference-cache.tar.gz"
 multipass transfer "$archive" "$instance_name:$guest_archive" >/dev/null
 guest_root_exec install -d -o "$guest_execution_user" -g "$guest_execution_user" -m 0700 "$guest_repo_root/target/interop"
+guest_root_exec install -d -o "$guest_execution_user" -g "$guest_execution_user" -m 0700 "$guest_repo_root/target/interop/evidence"
+guest_root_exec install -d -o "$guest_execution_user" -g "$guest_execution_user" -m 0700 "$guest_repo_root/target/interop/runs"
 guest_root_exec rm -rf "$guest_repo_root/target/interop/cache" \
   "$guest_repo_root/target/interop/build/reference-cache-manifest.json" \
   "$guest_repo_root/target/interop/build/reference-build-summary.json"
