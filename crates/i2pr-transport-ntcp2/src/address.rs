@@ -825,7 +825,12 @@ fn i2p_base64_digit(byte: u8) -> Option<u8> {
 }
 
 fn parse_capabilities(value: &str) -> Result<Ntcp2Capabilities, Ntcp2AddressError> {
-    if value.is_empty() {
+    if value.is_empty() || value.len() > 12 {
+        return Err(Ntcp2AddressError::InvalidOptionValue {
+            option: CAPS_OPTION,
+        });
+    }
+    if !value.bytes().all(|byte| byte.is_ascii_graphic()) {
         return Err(Ntcp2AddressError::InvalidOptionValue {
             option: CAPS_OPTION,
         });
@@ -835,11 +840,7 @@ fn parse_capabilities(value: &str) -> Result<Ntcp2Capabilities, Ntcp2AddressErro
         let flag = match byte {
             b'4' => Ntcp2Capabilities::IPV4,
             b'6' => Ntcp2Capabilities::IPV6,
-            _ => {
-                return Err(Ntcp2AddressError::InvalidOptionValue {
-                    option: CAPS_OPTION,
-                });
-            }
+            _ => continue,
         };
         if bits & flag != 0 {
             return Err(Ntcp2AddressError::InvalidOptionValue {
@@ -1102,20 +1103,32 @@ mod tests {
     #[test]
     fn rejects_invalid_caps_and_endpoint_mismatch() {
         let mut entries = complete_entries();
-        entries[5].1 = "44".to_owned();
+        entries[5].1 = "".to_owned();
         assert!(matches!(
             Ntcp2RouterAddress::from_option_entries("NTCP2", &borrowed(&entries)),
             Err(Ntcp2AddressError::InvalidOptionValue {
                 option: CAPS_OPTION
             })
         ));
-        entries[5].1 = "7".to_owned();
+        entries[5].1 = "verylongcapsstring".to_owned();
         assert!(matches!(
             Ntcp2RouterAddress::from_option_entries("NTCP2", &borrowed(&entries)),
             Err(Ntcp2AddressError::InvalidOptionValue {
                 option: CAPS_OPTION
             })
         ));
+        entries[5].1 = "4\x01".to_owned();
+        assert!(matches!(
+            Ntcp2RouterAddress::from_option_entries("NTCP2", &borrowed(&entries)),
+            Err(Ntcp2AddressError::InvalidOptionValue {
+                option: CAPS_OPTION
+            })
+        ));
+        entries[5].1 = "LRE".to_owned();
+        let parsed = Ntcp2RouterAddress::from_option_entries("NTCP2", &borrowed(&entries))
+            .expect("complete address");
+        assert!(!parsed.capabilities().supports_ipv4());
+        assert!(!parsed.capabilities().supports_ipv6());
 
         entries[5].1 = "46".to_owned();
         let parsed = Ntcp2RouterAddress::from_option_entries("NTCP2", &borrowed(&entries))
