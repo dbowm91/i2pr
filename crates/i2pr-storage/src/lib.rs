@@ -26,7 +26,7 @@ pub const IDENTITY_FILE_NAME: &str = "router.identity";
 /// Maximum bytes read from an identity file before parsing.
 pub const MAX_IDENTITY_FILE_SIZE: usize = 4096;
 /// Version of the explicit private identity format.
-pub const IDENTITY_FORMAT_VERSION: u16 = 1;
+pub const IDENTITY_FORMAT_VERSION: u16 = 2;
 
 /// The private NTCP2 static-key and obfuscation-IV filename.
 pub const NTCP2_TRANSPORT_KEY_FILE_NAME: &str = "ntcp2.static.key";
@@ -40,7 +40,9 @@ const CHECKSUM_LENGTH: usize = 32;
 const PUBLIC_KEY_LENGTH: usize = 32;
 const HEADER_LENGTH: usize = 24;
 const PAYLOAD_LENGTH: usize = PRIVATE_KEY_LENGTH * 4;
-const IDENTITY_FILE_LENGTH: usize = HEADER_LENGTH + PAYLOAD_LENGTH + CHECKSUM_LENGTH;
+const IDENTITY_PADDING_LENGTH: usize = 384 - PRIVATE_KEY_LENGTH - PRIVATE_KEY_LENGTH;
+const IDENTITY_FILE_LENGTH: usize =
+    HEADER_LENGTH + PAYLOAD_LENGTH + IDENTITY_PADDING_LENGTH + CHECKSUM_LENGTH;
 const RESERVED_HEADER: u16 = 0;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -388,6 +390,10 @@ fn encode_identity(bundle: &RouterIdentityBundle) -> Result<Zeroizing<Vec<u8>>, 
     if signing_public.len() != PUBLIC_KEY_LENGTH || encryption_public.len() != PUBLIC_KEY_LENGTH {
         return Err(StorageError::Integrity);
     }
+    let padding = bundle.identity().padding();
+    if padding.len() != IDENTITY_PADDING_LENGTH {
+        return Err(StorageError::Integrity);
+    }
 
     let mut bytes = Vec::with_capacity(IDENTITY_FILE_LENGTH);
     bytes.extend_from_slice(MAGIC);
@@ -403,6 +409,7 @@ fn encode_identity(bundle: &RouterIdentityBundle) -> Result<Zeroizing<Vec<u8>>, 
     bytes.extend_from_slice(bundle.encryption_key().secret_bytes());
     bytes.extend_from_slice(signing_public);
     bytes.extend_from_slice(encryption_public);
+    bytes.extend_from_slice(padding);
     let checksum = sha256(&bytes);
     bytes.extend_from_slice(checksum.as_bytes());
     Ok(Zeroizing::new(bytes))
@@ -458,6 +465,7 @@ fn decode_identity(bytes: &[u8]) -> Result<RouterIdentityBundle, StorageError> {
     let encryption_private = reader.array::<PRIVATE_KEY_LENGTH>()?;
     let signing_public = reader.array::<PUBLIC_KEY_LENGTH>()?;
     let encryption_public = reader.array::<PUBLIC_KEY_LENGTH>()?;
+    let padding = Zeroizing::new(reader.take(IDENTITY_PADDING_LENGTH)?.to_vec());
     let stored_checksum = reader.array::<CHECKSUM_LENGTH>()?;
     reader.finish()?;
 
@@ -466,7 +474,11 @@ fn decode_identity(bytes: &[u8]) -> Result<RouterIdentityBundle, StorageError> {
         return Err(StorageError::Integrity);
     }
 
-    let bundle = RouterIdentityBundle::from_zeroizing_bytes(signing_private, encryption_private)?;
+    let bundle = RouterIdentityBundle::from_private_bytes_with_padding(
+        *signing_private,
+        *encryption_private,
+        padding,
+    )?;
     if !constant_time_eq(bundle.identity().signing_key().as_bytes(), &*signing_public)
         || !constant_time_eq(
             bundle.identity().public_key().as_bytes(),
@@ -829,11 +841,11 @@ mod tests {
         assert!(matches!(store.load(), Err(StorageError::Integrity)));
 
         let mut unsupported = bytes.clone();
-        unsupported[8..10].copy_from_slice(&2_u16.to_be_bytes());
+        unsupported[8..10].copy_from_slice(&3_u16.to_be_bytes());
         write_fixture(store.path(), &unsupported);
         assert!(matches!(
             store.load(),
-            Err(StorageError::UnsupportedVersion { actual: 2 })
+            Err(StorageError::UnsupportedVersion { actual: 3 })
         ));
 
         let mut public_mismatch = bytes;

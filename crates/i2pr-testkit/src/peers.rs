@@ -146,7 +146,7 @@ impl PeerFactory {
         let mut encryption = [0_u8; 32];
         rng.fill_bytes(&mut signing);
         rng.fill_bytes(&mut encryption);
-        let identity = RouterIdentityBundle::from_private_bytes(signing, encryption)
+        let identity = RouterIdentityBundle::from_private_bytes(signing, encryption, &mut rng)
             .map_err(|_| PeerFactoryError::Identity)?;
         let identity_hash = identity
             .identity()

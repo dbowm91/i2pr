@@ -425,7 +425,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use i2pr_crypto::{RouterIdentityBundle, X25519PrivateKey};
+    use i2pr_crypto::{OsRng, RouterIdentityBundle, X25519PrivateKey};
     use i2pr_proto::{Date, Mapping, RouterAddress};
     use i2pr_transport_ntcp2::crypto::PublicKeyBytes;
     use i2pr_transport_ntcp2::handshake::ClockSkewPolicy;
@@ -532,10 +532,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn staged_handshake_driver_completes_on_fragmentable_duplex_streams() {
-        let alice_identity =
-            RouterIdentityBundle::from_private_bytes([1; 32], [2; 32]).expect("Alice identity");
-        let bob_identity =
-            RouterIdentityBundle::from_private_bytes([3; 32], [4; 32]).expect("Bob identity");
+        let alice_identity = RouterIdentityBundle::from_private_bytes([1; 32], [2; 32], &mut OsRng)
+            .expect("Alice identity");
+        let bob_identity = RouterIdentityBundle::from_private_bytes([3; 32], [4; 32], &mut OsRng)
+            .expect("Bob identity");
         let alice_static = X25519PrivateKey::from_bytes([0x24; 32]);
         let bob_static = X25519PrivateKey::from_bytes([0x42; 32]);
         let alice_ephemeral = X25519PrivateKey::from_bytes([0x13; 32]);

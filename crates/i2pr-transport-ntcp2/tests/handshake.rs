@@ -1,4 +1,4 @@
-use i2pr_crypto::{RouterIdentityBundle, X25519PrivateKey};
+use i2pr_crypto::{OsRng, RouterIdentityBundle, X25519PrivateKey};
 use i2pr_proto::{Date, Mapping, RouterAddress};
 use i2pr_transport_ntcp2::constants::MIN_HANDSHAKE_MESSAGE_LENGTH;
 use i2pr_transport_ntcp2::crypto::{PublicKeyBytes, Role};
@@ -101,10 +101,10 @@ fn authenticated(actions: Vec<HandshakeAction>) -> AuthenticatedHandshake {
 
 #[test]
 fn deterministic_initiator_and_responder_complete_with_matching_data_keys() {
-    let alice_identity =
-        RouterIdentityBundle::from_private_bytes([1; 32], [2; 32]).expect("Alice identity");
-    let bob_identity =
-        RouterIdentityBundle::from_private_bytes([3; 32], [4; 32]).expect("Bob identity");
+    let alice_identity = RouterIdentityBundle::from_private_bytes([1; 32], [2; 32], &mut OsRng)
+        .expect("Alice identity");
+    let bob_identity = RouterIdentityBundle::from_private_bytes([3; 32], [4; 32], &mut OsRng)
+        .expect("Bob identity");
     let alice_static = X25519PrivateKey::from_bytes([0x24; 32]);
     let bob_static = X25519PrivateKey::from_bytes([0x42; 32]);
     let alice_ephemeral = X25519PrivateKey::from_bytes([0x13; 32]);
@@ -305,7 +305,8 @@ fn cancellation_deadline_and_disconnect_are_terminal_actions() {
 
 #[test]
 fn router_info_signature_and_transport_key_binding_fail_closed() {
-    let identity = RouterIdentityBundle::from_private_bytes([7; 32], [8; 32]).expect("identity");
+    let identity =
+        RouterIdentityBundle::from_private_bytes([7; 32], [8; 32], &mut OsRng).expect("identity");
     let transport_static = X25519PrivateKey::from_bytes([0x61; 32]);
     let bytes = router_info(&identity, transport_static.public_bytes());
     let hash = identity.identity().hash().expect("identity hash");

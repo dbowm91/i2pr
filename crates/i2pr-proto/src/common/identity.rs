@@ -268,6 +268,18 @@ impl RouterIdentity {
     pub fn certificate(&self) -> &Certificate {
         self.keys.certificate()
     }
+
+    /// Returns the underlying key-and-certificate structure, including the
+    /// random padding bytes that participate in signature verification.
+    pub fn key_and_cert(&self) -> &KeyAndCert {
+        &self.keys
+    }
+
+    /// Returns the retained key-area padding bytes that participate in
+    /// signature verification.
+    pub fn padding(&self) -> &[u8] {
+        self.keys.padding()
+    }
 }
 
 impl fmt::Debug for RouterIdentity {

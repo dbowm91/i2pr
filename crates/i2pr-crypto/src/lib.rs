@@ -13,8 +13,9 @@ use std::convert::TryInto;
 
 use ed25519_dalek::Signer;
 use i2pr_proto::{
-    Certificate, CryptoKeyType, Date, Hash, KeyAndCert, KeyCertificate, Mapping, PublicKey,
-    RouterAddress, RouterIdentity, RouterInfo, SignatureValue, SigningKeyType, SigningPublicKey,
+    Certificate, CodecError, CryptoKeyType, Date, Hash, KeyAndCert, KeyCertificate, Mapping,
+    PublicKey, RouterAddress, RouterIdentity, RouterInfo, SignatureValue, SigningKeyType,
+    SigningPublicKey,
 };
 use rand_core::TryCryptoRng;
 use sha2::{Digest, Sha256};
@@ -235,28 +236,49 @@ impl RouterIdentityBundle {
         {
             return Err(CryptoError::RandomnessUnavailable);
         }
-        Self::from_zeroizing_bytes(signing, encryption)
+        Self::from_zeroizing_bytes(signing, encryption, rng)
     }
 
     /// Reconstructs an identity from explicit private key bytes.
-    pub fn from_private_bytes(
+    pub fn from_private_bytes<R: TryCryptoRng + ?Sized>(
         signing: [u8; PRIVATE_KEY_LENGTH],
         encryption: [u8; PRIVATE_KEY_LENGTH],
+        rng: &mut R,
     ) -> Result<Self, CryptoError> {
-        Self::from_zeroizing_bytes(Zeroizing::new(signing), Zeroizing::new(encryption))
+        Self::from_zeroizing_bytes(Zeroizing::new(signing), Zeroizing::new(encryption), rng)
+    }
+
+    /// Reconstructs an identity from explicit private key bytes and an exact
+    /// padding buffer. Used by the storage layer to round-trip the persisted
+    /// identity bytes (including the random padding) so peer signature
+    /// verification remains stable across process restarts.
+    pub fn from_private_bytes_with_padding(
+        signing: [u8; PRIVATE_KEY_LENGTH],
+        encryption: [u8; PRIVATE_KEY_LENGTH],
+        padding: Zeroizing<Vec<u8>>,
+    ) -> Result<Self, CryptoError> {
+        let signing_key = SigningPrivateKey::from_bytes(signing);
+        let encryption_key = EncryptionPrivateKey::from_bytes(encryption);
+        let identity = build_router_identity_with_padding(&signing_key, &encryption_key, padding)?;
+        Ok(Self {
+            identity,
+            signing_key,
+            encryption_key,
+        })
     }
 
     /// Reconstructs an identity while consuming zeroizing temporary owners.
     /// The compatibility-preserving private wrapper constructors copy the
     /// fixed-size arrays, after which the temporary owners are dropped and
     /// wiped.
-    pub fn from_zeroizing_bytes(
+    pub fn from_zeroizing_bytes<R: TryCryptoRng + ?Sized>(
         signing: Zeroizing<[u8; PRIVATE_KEY_LENGTH]>,
         encryption: Zeroizing<[u8; PRIVATE_KEY_LENGTH]>,
+        rng: &mut R,
     ) -> Result<Self, CryptoError> {
         let signing_key = SigningPrivateKey::from_bytes(*signing);
         let encryption_key = EncryptionPrivateKey::from_bytes(*encryption);
-        let identity = build_router_identity(&signing_key, &encryption_key)?;
+        let identity = build_router_identity(&signing_key, &encryption_key, rng)?;
         Ok(Self {
             identity,
             signing_key,
@@ -315,10 +337,36 @@ impl RouterIdentityBundle {
     }
 }
 
-fn build_router_identity(
+fn build_router_identity<R: TryCryptoRng + ?Sized>(
     signing_key: &SigningPrivateKey,
     encryption_key: &EncryptionPrivateKey,
+    rng: &mut R,
 ) -> Result<RouterIdentity, CryptoError> {
+    let public_key = encryption_key.public_key()?;
+    let signing_public_key = signing_key.public_key()?;
+    let certificate = Certificate::Key(KeyCertificate::for_types(
+        ROUTER_SIGNING_KEY_TYPE,
+        ROUTER_CRYPTO_KEY_TYPE,
+    )?);
+    let mut padding = vec![0_u8; IDENTITY_PADDING_LENGTH];
+    rng.try_fill_bytes(&mut padding)
+        .map_err(|_| CryptoError::RandomnessUnavailable)?;
+    let keys = KeyAndCert::new(public_key, signing_public_key, padding, certificate)?;
+    RouterIdentity::new(keys).map_err(CryptoError::Protocol)
+}
+
+fn build_router_identity_with_padding(
+    signing_key: &SigningPrivateKey,
+    encryption_key: &EncryptionPrivateKey,
+    padding: Zeroizing<Vec<u8>>,
+) -> Result<RouterIdentity, CryptoError> {
+    if padding.len() != IDENTITY_PADDING_LENGTH {
+        return Err(CryptoError::Protocol(CodecError::Truncated {
+            offset: 0,
+            needed: IDENTITY_PADDING_LENGTH,
+            remaining: padding.len(),
+        }));
+    }
     let public_key = encryption_key.public_key()?;
     let signing_public_key = signing_key.public_key()?;
     let certificate = Certificate::Key(KeyCertificate::for_types(
@@ -328,7 +376,7 @@ fn build_router_identity(
     let keys = KeyAndCert::new(
         public_key,
         signing_public_key,
-        vec![0_u8; IDENTITY_PADDING_LENGTH],
+        padding.to_vec(),
         certificate,
     )?;
     RouterIdentity::new(keys).map_err(CryptoError::Protocol)

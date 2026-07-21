@@ -2,7 +2,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use rand_chacha::ChaCha8Rng;
-use rand_core::{RngCore, SeedableRng};
+use rand_core::{RngCore, SeedableRng, TryCryptoRng};
 use sha2::{Digest, Sha256};
 
 /// Maximum domain label retained by deterministic seed derivation.
@@ -180,3 +180,19 @@ impl DeterministicRng {
         self.rng.fill_bytes(bytes);
     }
 }
+
+impl RngCore for DeterministicRng {
+    fn next_u32(&mut self) -> u32 {
+        self.rng.next_u32()
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.rng.next_u64()
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        self.rng.fill_bytes(dest)
+    }
+}
+
+impl TryCryptoRng for DeterministicRng {}
