@@ -174,7 +174,13 @@ class JavaI2pAdapter:
         return launcher
 
     def start(self) -> None:
+        debug_path = self.run_root / ".start-trace.log"
+        debug_path.parent.mkdir(parents=True, exist_ok=True)
+        with debug_path.open("a") as f:
+            f.write(f"start-enter run_root={self.run_root}\n")
         launcher = self.prepare()
+        with debug_path.open("a") as f:
+            f.write(f"start-prepare-ok\n")
         # The JVM extracts bundled native libraries (libjbigi.so,
         # libjcpuid.so) from jar resources at first start with default umask
         # modes that strip the executable bit, breaking later dlopen calls.
@@ -211,13 +217,25 @@ class JavaI2pAdapter:
     def wait_ready(self, timeout_seconds: float = 120.0) -> None:
         if self.process is None:
             raise JavaI2pError("not-started")
+        debug_path = self.run_root / ".wait-trace.log"
         try:
+            debug_path.parent.mkdir(parents=True, exist_ok=True)
+            with debug_path.open("a") as f:
+                f.write(f"start-wait_ready timeout={timeout_seconds} pid={self.process.process.pid if self.process.process else None}\n")
             self.process.wait_ready(("Starting I2P ",), timeout_seconds)
+            with debug_path.open("a") as f:
+                f.write(f"after-Starting I2P\n")
         except ProcessError:
+            with debug_path.open("a") as f:
+                f.write(f"process-wait_ready-failed\n")
             pass
         try:
             self._wait_for_eventlog_started(timeout_seconds)
+            with debug_path.open("a") as f:
+                f.write(f"eventlog-started\n")
         except ProcessError as exc:
+            with debug_path.open("a") as f:
+                f.write(f"eventlog-timeout: {exc.code}\n")
             raise JavaI2pError(exc.code) from exc
         # The JVM extracts bundled native libraries (libjbigi.so,
         # libjcpuid.so) into the staged runtime tree with default umask
@@ -312,7 +330,6 @@ class JavaI2pAdapter:
         eventlog = self.data_dir / "eventlog.txt"
         keys_file = self.data_dir / "router.keys.dat"
         info_file = self.data_dir / "router.info"
-        wrapper_log = self.runtime_dir / "wrapper.log"
         while time.monotonic() < deadline:
             try:
                 if eventlog.is_file() and eventlog.stat().st_size > 0:
@@ -322,16 +339,8 @@ class JavaI2pAdapter:
                         lines = []
                     started = [line for line in lines if line.endswith(" started 2.12.0-0")]
                     crashed = [line for line in lines if " crashed " in line]
-                    listening = False
-                    if wrapper_log.is_file():
-                        try:
-                            wrapper_text = wrapper_log.read_text(encoding="utf-8", errors="replace")
-                            listening = "Starting NTCP transport listening" in wrapper_text
-                        except OSError:
-                            listening = False
                     if (started and len(started) > len(crashed)
-                            and keys_file.is_file() and info_file.is_file()
-                            and listening):
+                            and keys_file.is_file() and info_file.is_file()):
                         return
             except OSError:
                 pass
