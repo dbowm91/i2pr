@@ -125,6 +125,29 @@ class BoundedProcess:
             self._line_event.clear()
         raise ProcessError("status-timeout")
 
+    def wait_for_phrase(self, phrases: Sequence[str], timeout_seconds: float) -> bool:
+        """Poll the bounded log for one of ``phrases`` within ``timeout_seconds``.
+
+        i2pd's Boost.Log queue can lag the i2pr adapter's terminal result by
+        tens of milliseconds, especially under debug-level logging where the
+        child process produces several KB of output before the parent's drain
+        thread catches up. A bounded poll lets ``authenticated_observation``
+        report ``authenticated`` once the phrase is on disk, instead of
+        racing the drain thread with a single instant snapshot.
+        """
+
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if self.observed_phrase(phrases):
+                return True
+            if self.process is not None and self.process.poll() is not None:
+                # Child exited; drain whatever is left and try one more time.
+                if self._reader is not None:
+                    self._reader.join(timeout=0.5)
+                return self.observed_phrase(phrases)
+            time.sleep(0.05)
+        return self.observed_phrase(phrases)
+
     def wait_ready(self, tokens: Sequence[str], timeout_seconds: float) -> None:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
@@ -173,29 +196,24 @@ class BoundedProcess:
         is queried.
         """
 
-        import sys
         with self._line_lock:
-            in_memory = any(phrase in line for line in self._ready_lines for phrase in phrases)
+            if any(phrase in line for line in self._ready_lines for phrase in phrases):
+                return True
         try:
             file_size = self.log_path.stat().st_size
-        except OSError as exc:
-            print(f"[observed_phrase DEBUG] path={self.log_path} stat-error={exc}", file=sys.stderr, flush=True)
+        except OSError:
             return False
         tail_size = min(file_size, 131_072)
         if tail_size <= 0:
-            print(f"[observed_phrase DEBUG] path={self.log_path} empty size={file_size}", file=sys.stderr, flush=True)
             return False
         try:
             with self.log_path.open("rb") as handle:
                 handle.seek(-tail_size, os.SEEK_END)
                 chunk = handle.read(tail_size)
-        except OSError as exc:
-            print(f"[observed_phrase DEBUG] path={self.log_path} read-error={exc}", file=sys.stderr, flush=True)
+        except OSError:
             return False
         try:
             text = chunk.decode("utf-8", errors="replace")
         except LookupError:
             text = chunk.decode("utf-8", errors="replace")
-        result = any(phrase in line for line in text.splitlines() for phrase in phrases)
-        print(f"[observed_phrase DEBUG] path={self.log_path} size={file_size} tail={tail_size} in_memory={in_memory} file_result={result}", file=sys.stderr, flush=True)
-        return result
+        return any(phrase in line for line in text.splitlines() for phrase in phrases)

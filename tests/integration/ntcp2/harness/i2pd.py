@@ -217,7 +217,13 @@ class I2pdAdapter:
     def authenticated_observation(self) -> str:
         if self.process is None:
             return "not-started"
-        return "authenticated" if self.process.observed_phrase(self.authenticated_phrases) else "not-observed"
+        # i2pd's Boost.Log thread writes via std::endl into std::cout, which
+        # is block-buffered when its sink is a pipe (and even under a pty the
+        # log thread's queue can fall behind). Poll the bounded drain for a
+        # short window before reporting not-observed.
+        if self.process.wait_for_phrase(self.authenticated_phrases, timeout_seconds=2.0):
+            return "authenticated"
+        return "not-observed"
 
     def counters(self) -> dict[str, int]:
         snapshot = self.process.snapshot() if self.process is not None else {"running": 0, "exit_code": -1, "forced": 0}
