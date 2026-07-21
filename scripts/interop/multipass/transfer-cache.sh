@@ -37,7 +37,7 @@ archive="$instance_state_dir/cache/reference-cache.tar.gz"
 mkdir -p "$(dirname "$archive")"
 (
   cd "$host_target"
-  tar --format=tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+  tar --format=ustar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
     -cf - cache build/reference-cache-manifest.json build/reference-build-summary.json
 ) | gzip -n >"$archive"
 archive_sha256=$(sha256_file "$archive")
