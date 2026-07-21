@@ -201,6 +201,7 @@ class JavaI2pAdapter:
             except TopologyContractError as exc:
                 raise JavaI2pError(exc.code) from exc
         environment = os.environ.copy()
+        environment["I2P"] = str(self.runtime_dir)
         environment["JAVA_TOOL_OPTIONS"] = f"-Di2p.dir.base={self.runtime_dir} -Di2p.dir.config={self.config_dir} -Di2p.dir.router={self.data_dir} -Xmx512m"
         self.process = BoundedProcess(command, self.run_root / "raw" / "java-i2p.log", environment=environment)
         try:
