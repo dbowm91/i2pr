@@ -113,7 +113,7 @@ class JavaI2pAdapter:
         launcher = self.runtime_dir / self.metadata.launcher
         if not self.runtime_dir.exists():
             shutil.copytree(self.cache, self.runtime_dir, ignore=shutil.ignore_patterns("build-metadata.txt"))
-            self._rewrite_host_paths()
+        self._rewrite_host_paths()
         # The cached tree is read-only because cp preserves the build tree
         # modes. The router writes its eventlog, logs, and key store under
         # the staged runtime dir, so widen the modes inside the namespace.
