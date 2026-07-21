@@ -182,6 +182,17 @@ class JavaI2pAdapter:
         # tree with executable permissions so dlopen picks them up rather
         # than re-extracting them at startup.
         self._extract_native_libraries()
+        # The Java router uses ``router.ping`` to detect another running
+        # instance (it aborts startup when a fresh ping is observed within
+        # 60 seconds). Plan 045 D1 shares the data directory between the
+        # ref-gen and live phases, so the prior run's ping must be removed
+        # before launching a new JVM or the new process will refuse to
+        # bind NTCP2.
+        stale_ping = self.data_dir / "router.ping"
+        try:
+            stale_ping.unlink()
+        except FileNotFoundError:
+            pass
         if self.placement is None:
             command = self._prefix() + ["ip", "netns", "exec", self.endpoint.namespace, str(launcher)]
         else:
