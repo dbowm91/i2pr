@@ -660,6 +660,7 @@ where
             scenario.local_port,
             static_public,
             obfuscation_iv,
+            scenario.network_id,
         )?;
         let bytes = info
             .encode_to_vec(MAX_LOCAL_ROUTER_INFO_BYTES)
@@ -722,6 +723,7 @@ fn signed_router_info(
     port: u16,
     static_public: [u8; 32],
     obfuscation_iv: [u8; 16],
+    network_id: u8,
 ) -> Result<RouterInfo, LauncherError> {
     let options = Mapping::from_entries(vec![
         ("host".to_owned(), address.to_string()),
@@ -740,7 +742,7 @@ fn signed_router_info(
     .map_err(|_| LauncherError::StateInvalid)?;
     let ri_options = Mapping::from_entries(vec![
         ("caps".to_owned(), "L".to_owned()),
-        ("netId".to_owned(), "2".to_owned()),
+        ("netId".to_owned(), network_id.to_string()),
         ("router.version".to_owned(), "0.9.69".to_owned()),
     ])
     .map_err(|_| LauncherError::StateInvalid)?;
