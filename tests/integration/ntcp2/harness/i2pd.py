@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shlex
 import shutil
 from pathlib import Path
 
@@ -146,20 +147,28 @@ class I2pdAdapter:
         # which only flushes the i2pd-internal stdio buffer. When stdout is a
         # pipe the libc/Boost sink falls back to block buffering and the
         # parent's drain thread sits behind an OS-level 4 KB buffer. Wrap the
-        # binary in ``script -qfc`` so i2pd runs under a pseudo-tty, which
-        # forces the kernel's tty discipline into line-buffered mode and
-        # makes each log line visible to the drain thread immediately.
+        # binary in ``script -qfc bash -c '...'`` so i2pd runs under a
+        # pseudo-tty, which forces the kernel's tty discipline into
+        # line-buffered mode and makes each log line visible to the drain
+        # thread immediately. ``script -c`` requires a single command
+        # argument, so the multi-token i2pd invocation must be passed via
+        # ``bash -c``.
         have_tty_wrap = shutil.which("script") is not None
         if self.placement is None:
-            inner = ["ip", "netns", "exec", self.endpoint.namespace, str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
+            inner_tokens = ["ip", "netns", "exec", self.endpoint.namespace, "--", str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
+            inner_command = " ".join(inner_tokens)
             if have_tty_wrap:
-                command = self._prefix() + ["script", "-qfc"] + inner + ["/dev/null"]
+                command = self._prefix() + ["script", "-qfc", f"bash -c {shlex.quote(inner_command)}", "/dev/null"]
             else:
-                command = self._prefix() + inner
+                command = self._prefix() + inner_tokens
         else:
             try:
-                inner = [str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
-                inner_with_tty = (["script", "-qfc"] + inner + ["/dev/null"]) if have_tty_wrap else inner
+                inner_tokens = [str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
+                if have_tty_wrap:
+                    inner_command = " ".join(inner_tokens)
+                    inner_with_tty = ["script", "-qfc", f"bash -c {shlex.quote(inner_command)}", "/dev/null"]
+                else:
+                    inner_with_tty = inner_tokens
                 command = self.placement.command(inner_with_tty)
             except TopologyContractError as exc:
                 raise I2pdError(exc.code) from exc
