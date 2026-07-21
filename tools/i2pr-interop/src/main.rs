@@ -27,7 +27,7 @@ use i2pr_proto::{
     MessageType, RouterAddress, RouterInfo,
 };
 use i2pr_runtime::{
-    CancellationToken, DialOutcome, HandshakeClock, HandshakeDriverConfig, Ntcp2Deadline,
+    CancellationToken, HandshakeClock, HandshakeDriverConfig, Ntcp2Deadline,
     Ntcp2RuntimeConfig, Ntcp2RuntimeDeadlines, Ntcp2RuntimeService,
     PaddingProfile as DriverPaddingProfile, bounded_timeout, run_blocking,
 };
@@ -460,10 +460,7 @@ async fn execute_initiator(
     let attempt = service
         .dial(peer_address, cancellation)
         .await
-        .map_err(|outcome| {
-            eprintln!("debug: dial outcome {:?}", outcome);
-            LauncherError::DialFailed
-        })?;
+        .map_err(|_| LauncherError::DialFailed)?;
     let ephemeral =
         X25519PrivateKey::generate(&mut OsRng).map_err(|_| LauncherError::StateInvalid)?;
     let state = InitiatorState::new(
@@ -476,10 +473,7 @@ async fn execute_initiator(
         99,
         ClockSkewPolicy::default_compatibility(),
     )
-    .map_err(|e| {
-        eprintln!("debug: InitiatorState::new failed: {:?}", e);
-        LauncherError::HandshakeFailed
-    })?;
+    .map_err(|_| LauncherError::HandshakeFailed)?;
     let config = HandshakeDriverConfig {
         deadlines,
         clock: HandshakeClock::System,
@@ -494,10 +488,7 @@ async fn execute_initiator(
             cancellation,
         )
         .await
-        .map_err(|e| {
-            eprintln!("debug: drive_initiator_handshake failed: {:?}", e);
-            LauncherError::HandshakeFailed
-        })?;
+        .map_err(|_| LauncherError::HandshakeFailed)?;
     counters.authenticated = 1;
     let mut link = service
         .promote_authenticated_dial(scope, attempt, handshake, 1)
