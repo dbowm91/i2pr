@@ -221,7 +221,7 @@ impl Scenario {
         let local_port = validate_port(raw.local_port)?;
 
         let (peer_address, peer_port) = match (raw.peer_address, raw.peer_port) {
-            (Some(address), Some(port)) => {
+            (Some(address), Some(port)) if !address.is_empty() && port != 0 => {
                 let address = parse_synthetic_address(&address, address_family)?;
                 let port = validate_port(port)?;
                 if address == local_address && port == local_port {
@@ -229,7 +229,7 @@ impl Scenario {
                 }
                 (Some(address), Some(port))
             }
-            (None, None) => (None, None),
+            (None, None) | (Some(_), Some(_)) => (None, None),
             _ => return Err(ScenarioError::MissingPeer),
         };
         match role {
