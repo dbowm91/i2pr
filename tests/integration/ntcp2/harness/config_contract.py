@@ -106,7 +106,8 @@ def assert_i2pd_private_configuration(
     parsed = parse_i2pd_ini(rendered)
     root = parsed.root
     expected_root = {
-        "daemon", "netid", "address4", "address6", "host", "port", "ipv4", "ipv6", "notransit", "floodfill"
+        "daemon", "netid", "address4", "address6", "host", "port", "ipv4", "ipv6",
+        "notransit", "floodfill", "reservedrange",
     }
     if set(root) != expected_root:
         raise ConfigurationContractError("i2pd root configuration keys drifted")
@@ -118,6 +119,8 @@ def assert_i2pd_private_configuration(
         raise ConfigurationContractError("i2pd IPv6 endpoint was not rendered explicitly")
     if root.get("notransit") != "true" or root.get("floodfill") != "false":
         raise ConfigurationContractError("i2pd transit/floodfill safety contract is missing")
+    if root.get("reservedrange") != "false":
+        raise ConfigurationContractError("i2pd reserved-range check must be disabled for sealed-namespace tests")
     expected_sections = {"ntcp2", "ssu2", "http", "httpproxy", "socksproxy", "sam", "i2cp", "i2pcontrol", "upnp", "reseed"}
     if set(parsed.sections) != expected_sections:
         raise ConfigurationContractError("i2pd service sections drifted")
