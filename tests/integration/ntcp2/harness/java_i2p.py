@@ -299,6 +299,8 @@ class JavaI2pAdapter:
     def _wait_for_eventlog_started(self, timeout_seconds: float) -> None:
         deadline = time.monotonic() + timeout_seconds
         eventlog = self.data_dir / "eventlog.txt"
+        keys_file = self.data_dir / "router.keys.dat"
+        info_file = self.data_dir / "router.info"
         while time.monotonic() < deadline:
             try:
                 if eventlog.is_file() and eventlog.stat().st_size > 0:
@@ -308,7 +310,8 @@ class JavaI2pAdapter:
                         lines = []
                     started = [line for line in lines if line.endswith(" started 2.12.0-0")]
                     crashed = [line for line in lines if " crashed " in line]
-                    if started and len(started) > len(crashed):
+                    if (started and len(started) > len(crashed)
+                            and keys_file.is_file() and info_file.is_file()):
                         return
             except OSError:
                 pass

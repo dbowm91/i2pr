@@ -726,7 +726,7 @@ def _run_initiator_first(
         placement=ref_placement,
     )
     ref_adapter.start()
-    ref_adapter.wait_ready()
+    ref_adapter.wait_ready(timeout_seconds=180.0)
     ri_path = ref_adapter.export_router_info()
     _validate_router_info_for_direction(
         ri_path, ref_endpoint.local_address, ref_endpoint.local_port,
