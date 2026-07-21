@@ -229,6 +229,7 @@ impl Scenario {
                 }
                 (Some(address), Some(port))
             }
+            (Some(address), Some(port)) if address.is_empty() || port == 0 => (None, None),
             (None, None) | (Some(_), Some(_)) => (None, None),
             _ => return Err(ScenarioError::MissingPeer),
         };
