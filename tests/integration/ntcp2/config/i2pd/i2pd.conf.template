@@ -1,5 +1,6 @@
 # Plan 038 i2pd 2.60.0 template; generated values remain in the run root.
 daemon = false
+loglevel = debug
 netid = 99
 address4 = @ADDRESS4@
 address6 = @ADDRESS6@

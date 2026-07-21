@@ -36,7 +36,10 @@ class I2pdAdapter:
 
     version = "2.60.0"
     revision = "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
-    authenticated_phrases = ("NTCP2 session established", "Established NTCP2 session")
+    authenticated_phrases = (
+        "NTCP2: SessionConfirmed from",
+        "NTCP2: SessionConfirmed sent",
+    )
 
     def __init__(
         self,
