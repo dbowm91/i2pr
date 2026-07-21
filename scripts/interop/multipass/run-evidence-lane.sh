@@ -151,7 +151,8 @@ prepare_cache() {
 }
 
 build_guest_interop() {
-  guest_exec /home/i2ptest/.cargo/bin/cargo +1.95.0 build --locked --package i2pr-interop >/dev/null
+  guest_exec /home/i2ptest/.cargo/bin/cargo +1.95.0 build --locked \
+    --manifest-path "$guest_repo_root/Cargo.toml" --package i2pr-interop >/dev/null
 }
 
 prepare_inputs() {
