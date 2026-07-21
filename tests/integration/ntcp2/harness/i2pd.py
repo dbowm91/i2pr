@@ -142,12 +142,19 @@ class I2pdAdapter:
 
     def start(self) -> None:
         binary = self.prepare()
+        # ``stdbuf -oL`` forces line-buffered stdout so the parent's drain
+        # thread sees each i2pd log line immediately. Without it i2pd uses
+        # block buffering on a pipe and the drain thread can fall behind
+        # by tens of seconds under debug-level logging.
+        stdbuf_prefix: list[str] = []
+        if shutil.which("stdbuf"):
+            stdbuf_prefix = ["stdbuf", "-oL"]
         if self.placement is None:
-            command = self._prefix() + ["ip", "netns", "exec", self.endpoint.namespace, str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
+            command = self._prefix() + stdbuf_prefix + ["ip", "netns", "exec", self.endpoint.namespace, str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
         else:
             try:
                 command = self.placement.command(
-                    [str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
+                    stdbuf_prefix + [str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
                 )
             except TopologyContractError as exc:
                 raise I2pdError(exc.code) from exc
