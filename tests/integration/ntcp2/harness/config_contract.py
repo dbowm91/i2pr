@@ -52,6 +52,7 @@ def assert_java_private_configuration(
         "i2np.ntcp.autoip": "false",
         "i2np.ntcp.autoport": "false",
         "i2np.ntcp.ipv6": "true" if ipv6 else "false",
+        "i2np.ntcp2.enable": "true",
         "i2np.upnp.enable": "false",
         "router.networkID": str(network_id),
         "router.reseedDisable": "true",
