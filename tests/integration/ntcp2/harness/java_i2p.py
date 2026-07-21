@@ -201,7 +201,7 @@ class JavaI2pAdapter:
             except TopologyContractError as exc:
                 raise JavaI2pError(exc.code) from exc
         environment = os.environ.copy()
-        environment["JAVA_TOOL_OPTIONS"] = f"-Di2p.dir.base={self.runtime_dir} -Di2p.dir.config={self.config_dir} -Di2p.dir.router={self.data_dir} -Xmx256m"
+        environment["JAVA_TOOL_OPTIONS"] = f"-Di2p.dir.base={self.runtime_dir} -Di2p.dir.config={self.config_dir} -Di2p.dir.router={self.data_dir} -Xmx512m"
         self.process = BoundedProcess(command, self.run_root / "raw" / "java-i2p.log", environment=environment)
         try:
             self.process.start()
@@ -314,13 +314,9 @@ class JavaI2pAdapter:
         info_file = self.data_dir / "router.info"
         while time.monotonic() < deadline:
             try:
-                info_has_addresses = False
-                if info_file.is_file() and info_file.stat().st_size > 512:
-                    try:
-                        data = info_file.read_bytes()
-                        info_has_addresses = b"NTCP" in data and b"192.0.2.2" in data
-                    except OSError:
-                        info_has_addresses = False
+                if self.process is not None and self.process.process is not None:
+                    if self.process.process.poll() is not None:
+                        raise ProcessError("java-eventlog-started-timeout")
                 if eventlog.is_file() and eventlog.stat().st_size > 0:
                     try:
                         lines = eventlog.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -328,9 +324,29 @@ class JavaI2pAdapter:
                         lines = []
                     started = [line for line in lines if line.endswith(" started 2.12.0-0")]
                     crashed = [line for line in lines if " crashed " in line]
-                    if (started and len(started) > len(crashed)
-                            and keys_file.is_file() and info_file.is_file()
-                            and info_has_addresses):
+                    if (crashed
+                            and (not started or len(crashed) >= len(started))):
+                        raise ProcessError("java-eventlog-started-timeout")
+                info_complete = False
+                if info_file.is_file() and info_file.stat().st_size > 600:
+                    try:
+                        data = info_file.read_bytes()
+                        info_complete = (
+                            b"NTCP" in data
+                            and b"192.0.2.2" in data
+                            and b"45678" in data
+                            and b"s=" in data
+                        )
+                    except OSError:
+                        info_complete = False
+                if eventlog.is_file() and eventlog.stat().st_size > 0:
+                    try:
+                        lines = eventlog.read_text(encoding="utf-8", errors="replace").splitlines()
+                    except OSError:
+                        lines = []
+                    started = [line for line in lines if line.endswith(" started 2.12.0-0")]
+                    if (started and keys_file.is_file() and info_file.is_file()
+                            and info_complete):
                         return
             except OSError:
                 pass
