@@ -280,6 +280,23 @@ class JavaI2pAdapter:
                 return candidate
         return None
 
+    def _ntcp2_listener_bound(self) -> bool:
+        """Return True once the Java router has bound its NTCP2 listener.
+
+        Java I2P writes ``router.info`` very early in startup, often before
+        the NTCP2 transport actually binds the configured port. i2pr dials
+        only fire after this method returns True so the harness does not
+        race a half-initialised listener.
+        """
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.25)
+                probe.connect((self.endpoint.local_address, self.endpoint.local_port))
+        except OSError:
+            return False
+        return True
+
     def _rewrite_host_paths(self) -> None:
         cache_root = self.cache.resolve()
         host_marker = str(cache_root)
@@ -378,7 +395,7 @@ class JavaI2pAdapter:
                         lines = []
                     started = [line for line in lines if line.endswith(" started 2.12.0-0")]
                     if (started and keys_file.is_file() and info_file.is_file()
-                            and info_complete):
+                            and info_complete and self._ntcp2_listener_bound()):
                         return
             except OSError:
                 pass
