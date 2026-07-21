@@ -176,14 +176,16 @@ class BoundedProcess:
             if any(phrase in line for line in self._ready_lines for phrase in phrases):
                 return True
         try:
+            file_size = self.log_path.stat().st_size
+        except OSError:
+            return False
+        tail_size = min(file_size, 131_072)
+        if tail_size <= 0:
+            return False
+        try:
             with self.log_path.open("rb") as handle:
-                handle.seek(0, os.SEEK_END)
-                tail_size = min(self._log_bytes, 131_072)
-                if tail_size > 0:
-                    handle.seek(-tail_size, os.SEEK_END)
-                    chunk = handle.read(tail_size)
-                else:
-                    return False
+                handle.seek(-tail_size, os.SEEK_END)
+                chunk = handle.read(tail_size)
         except OSError:
             return False
         try:
