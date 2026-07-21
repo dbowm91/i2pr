@@ -267,7 +267,7 @@ impl SessionCreatedOptions {
     pub fn encode(self) -> [u8; constants::OPTION_BLOCK_LENGTH] {
         let mut bytes = [0_u8; constants::OPTION_BLOCK_LENGTH];
         bytes[2..4].copy_from_slice(&self.padding_length.to_be_bytes());
-        bytes[6..10].copy_from_slice(&self.timestamp.to_be_bytes());
+        bytes[8..12].copy_from_slice(&self.timestamp.to_be_bytes());
         bytes
     }
 
@@ -281,6 +281,9 @@ impl SessionCreatedOptions {
             return Err(HandshakeError::MalformedOptions);
         }
         let padding_length = get_u16(input, &mut offset)?;
+        if get_u16(input, &mut offset)? != 0 {
+            return Err(HandshakeError::MalformedOptions);
+        }
         if get_u16(input, &mut offset)? != 0 {
             return Err(HandshakeError::MalformedOptions);
         }

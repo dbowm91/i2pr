@@ -181,7 +181,7 @@ encoding (low-order point).
 - `SessionRequestOptions::decode` (`handshake.rs:225-231`) rejects
   non-zero reserved bytes at offsets 6-7 and 12-15.
 - `SessionCreatedOptions::decode` (`handshake.rs:280-289`) rejects
-  non-zero reserved at offsets 0-1, 4-5, 10-15.
+  non-zero reserved at offsets 0-1, 4-7, 12-15.
 
 ### Transcript stage enforcement
 Every `Transcript` method checks `role` and `stage`, returning
