@@ -632,7 +632,10 @@ def run(args: argparse.Namespace) -> int:
             )
             try:
                 write_record(evidence_path, record)
-            except (OSError, ValueError):
+            except (OSError, ValueError) as exc:
+                import sys, traceback
+                print(f"[mixed_runner DEBUG] write_record failed: {exc}", file=sys.stderr, flush=True)
+                traceback.print_exc(file=sys.stderr)
                 result = "failed_cleanup"
                 cleanup = "failed"
                 reason = "evidence-finalization-failed"
