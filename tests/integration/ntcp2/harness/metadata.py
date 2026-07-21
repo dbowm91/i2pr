@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import locale
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,19 +99,29 @@ def hash_runtime_tree(cache_root: Path) -> str:
 
     Sort order matches the bash ``sort -z`` default used by the canonical
     Plan 038 ``hash_tree`` helper that records ``installed_tree_sha256``
-    during build: paths are compared as NUL-delimited byte strings with
-    the default POSIX locale, which orders ``-`` (0x2D) before ``/`` (0x2F)
-    before any other path separator. Python's default ``str`` sort uses
-    Unicode code points and orders ``/`` before ``-``, which produces a
-    different ordering for paths containing both characters (for example
-    ``eepsite-jetty9.3/...`` vs ``eepsite/...``) and a different overall
-    hash. Sort by encoded bytes to match the recorded hash exactly.
+    during build. The build shell invokes ``sort -z`` without overriding
+    ``LC_COLLATE``, so the production sort uses the host's active locale
+    (typically ``en_US.UTF-8``). Under that locale lowercase letters sort
+    before uppercase letters and ``-`` (0x2D) sorts before ``/`` (0x2F),
+    matching the bash behaviour. Python's default ``sorted`` always uses
+    raw Unicode code points, which sorts uppercase before lowercase and
+    ``/`` before ``-``. Use ``locale.strxfrm`` (with the active POSIX/
+    UTF-8 locale set) so the Python sort produces the same order as the
+    build shell.
     """
 
     if not cache_root.is_dir():
         raise MetadataError("cache root is not a directory")
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error:
+        pass
     files = [path for path in cache_root.rglob("*") if path.is_file()]
-    files.sort(key=lambda path: path.relative_to(cache_root).as_posix().encode("utf-8"))
+    files.sort(
+        key=lambda path: locale.strxfrm(
+            path.relative_to(cache_root).as_posix().lstrip("./")
+        )
+    )
     entries: list[tuple[str, str]] = []
     for path in files:
         if path.name == "build-metadata.txt":
