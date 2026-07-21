@@ -96,6 +96,7 @@ class BoundedProcess:
                 if self._log_bytes < self.max_log_bytes:
                     remaining = self.max_log_bytes - self._log_bytes
                     log.write(line[:remaining])
+                    log.flush()
                     self._log_bytes += min(len(line), remaining)
                 decoded = line[:4096].decode("utf-8", errors="replace")
                 with self._line_lock:
