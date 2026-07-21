@@ -431,16 +431,13 @@ def run(args: argparse.Namespace) -> int:
                 ref_placement=ref_placement,
             )
             reference_router_info_sha256 = hashlib.sha256(ref_info_path.read_bytes()).hexdigest()
-            (run_dir / ".debug-line-434").write_text("reached\n")
             ref_adapter = _make_ref_adapter(
                 direction.reference, cache, run_dir / "ref", ref_endpoint, repo_root,
                 shared_data_dir=shared_reference_data,
                 placement=ref_placement,
             )
-            (run_dir / ".debug-line-440").write_text(f"adapter-created\n")
             ref_adapter.start()
-            (run_dir / ".debug-line-441").write_text(f"start-done\n")
-            ref_adapter.wait_ready()
+            ref_adapter.wait_ready(timeout_seconds=240.0)
             i2pr_adapter = I2prAdapter(repo_root, run_dir / "i2pr", placement=i2pr_placement)
             scenario_toml = render_and_validate(
                 run_dir / "i2pr",
@@ -729,8 +726,7 @@ def _run_initiator_first(
         placement=ref_placement,
     )
     ref_adapter.start()
-    ref_adapter.wait_ready(timeout_seconds=180.0)
-    (gen_root / ".debug-refgen-done").write_text("ok\n")
+    ref_adapter.wait_ready(timeout_seconds=240.0)
     ri_path = ref_adapter.export_router_info()
     _validate_router_info_for_direction(
         ri_path, ref_endpoint.local_address, ref_endpoint.local_port,

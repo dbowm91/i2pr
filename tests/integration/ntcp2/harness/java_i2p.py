@@ -174,13 +174,7 @@ class JavaI2pAdapter:
         return launcher
 
     def start(self) -> None:
-        debug_path = self.run_root / ".start-trace.log"
-        debug_path.parent.mkdir(parents=True, exist_ok=True)
-        with debug_path.open("a") as f:
-            f.write(f"start-enter run_root={self.run_root}\n")
         launcher = self.prepare()
-        with debug_path.open("a") as f:
-            f.write(f"start-prepare-ok\n")
         # The JVM extracts bundled native libraries (libjbigi.so,
         # libjcpuid.so) from jar resources at first start with default umask
         # modes that strip the executable bit, breaking later dlopen calls.
@@ -214,28 +208,16 @@ class JavaI2pAdapter:
         except OSError as exc:
             raise JavaI2pError("process-start-failed") from exc
 
-    def wait_ready(self, timeout_seconds: float = 120.0) -> None:
+    def wait_ready(self, timeout_seconds: float = 240.0) -> None:
         if self.process is None:
             raise JavaI2pError("not-started")
-        debug_path = self.run_root / ".wait-trace.log"
         try:
-            debug_path.parent.mkdir(parents=True, exist_ok=True)
-            with debug_path.open("a") as f:
-                f.write(f"start-wait_ready timeout={timeout_seconds} pid={self.process.process.pid if self.process.process else None}\n")
             self.process.wait_ready(("Starting I2P ",), timeout_seconds)
-            with debug_path.open("a") as f:
-                f.write(f"after-Starting I2P\n")
         except ProcessError:
-            with debug_path.open("a") as f:
-                f.write(f"process-wait_ready-failed\n")
             pass
         try:
             self._wait_for_eventlog_started(timeout_seconds)
-            with debug_path.open("a") as f:
-                f.write(f"eventlog-started\n")
         except ProcessError as exc:
-            with debug_path.open("a") as f:
-                f.write(f"eventlog-timeout: {exc.code}\n")
             raise JavaI2pError(exc.code) from exc
         # The JVM extracts bundled native libraries (libjbigi.so,
         # libjcpuid.so) into the staged runtime tree with default umask
@@ -332,6 +314,13 @@ class JavaI2pAdapter:
         info_file = self.data_dir / "router.info"
         while time.monotonic() < deadline:
             try:
+                info_has_addresses = False
+                if info_file.is_file() and info_file.stat().st_size > 512:
+                    try:
+                        data = info_file.read_bytes()
+                        info_has_addresses = b"NTCP" in data and b"192.0.2.2" in data
+                    except OSError:
+                        info_has_addresses = False
                 if eventlog.is_file() and eventlog.stat().st_size > 0:
                     try:
                         lines = eventlog.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -340,7 +329,8 @@ class JavaI2pAdapter:
                     started = [line for line in lines if line.endswith(" started 2.12.0-0")]
                     crashed = [line for line in lines if " crashed " in line]
                     if (started and len(started) > len(crashed)
-                            and keys_file.is_file() and info_file.is_file()):
+                            and keys_file.is_file() and info_file.is_file()
+                            and info_has_addresses):
                         return
             except OSError:
                 pass
