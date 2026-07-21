@@ -237,13 +237,11 @@ class I2pdReferenceTrigger(ReferenceTrigger):
         try:
             port = int(os.environ.get("I2PR_I2PD_HTTP_PORT", str(self.DEFAULT_HTTP_PORT)))
             host = getattr(ref_endpoint, "local_address", "127.0.0.1")
-            payload = json.dumps(
-                {
-                    "id": 1,
-                    "method": "ConnectPeer",
-                    "params": {"b32": ""},
-                }
-            )
+            # Plan 045 D4: i2pd 2.60.0 has no JSON-RPC ConnectPeer endpoint.
+            # Use the webconsole ``run_peer_test`` command instead, which
+            # dispatches ``transports.PeerTest()`` and forces an NTCP2
+            # dial to the imported peer (the i2pr RouterInfo).
+            url = f"http://{host}:{port}/?cmd=run_peer_test"
             if placement is None:
                 namespace = getattr(ref_endpoint, "namespace", None)
                 if namespace is None:
@@ -262,27 +260,11 @@ class I2pdReferenceTrigger(ReferenceTrigger):
                     "-fsS",
                     "-m",
                     "5",
-                    "-H",
-                    "Content-Type: application/json",
-                    "-d",
-                    payload,
-                    f"http://{host}:{port}/jsonrpc",
+                    url,
                 ]
             else:
                 try:
-                    command = placement.command(
-                        [
-                            "curl",
-                            "-fsS",
-                            "-m",
-                            "5",
-                            "-H",
-                            "Content-Type: application/json",
-                            "-d",
-                            payload,
-                            f"http://{host}:{port}/jsonrpc",
-                        ]
-                    )
+                    command = placement.command(["curl", "-fsS", "-m", "5", url])
                 except TopologyContractError as exc:
                     return TriggerResult(
                         kind=self.trigger_kind,
@@ -312,7 +294,7 @@ class I2pdReferenceTrigger(ReferenceTrigger):
         return TriggerResult(
             kind=self.trigger_kind,
             observed=True,
-            description="i2pd-http-connect-peer-issued",
+            description="i2pd-http-run-peer-test-issued",
         )
 
 
