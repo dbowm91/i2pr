@@ -476,7 +476,10 @@ async fn execute_initiator(
         99,
         ClockSkewPolicy::default_compatibility(),
     )
-    .map_err(|_| LauncherError::HandshakeFailed)?;
+    .map_err(|e| {
+        eprintln!("debug: InitiatorState::new failed: {:?}", e);
+        LauncherError::HandshakeFailed
+    })?;
     let config = HandshakeDriverConfig {
         deadlines,
         clock: HandshakeClock::System,
@@ -491,7 +494,10 @@ async fn execute_initiator(
             cancellation,
         )
         .await
-        .map_err(|_| LauncherError::HandshakeFailed)?;
+        .map_err(|e| {
+            eprintln!("debug: drive_initiator_handshake failed: {:?}", e);
+            LauncherError::HandshakeFailed
+        })?;
     counters.authenticated = 1;
     let mut link = service
         .promote_authenticated_dial(scope, attempt, handshake, 1)
