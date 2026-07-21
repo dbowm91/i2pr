@@ -173,8 +173,7 @@ fn inspect_router_info(state_dir: &Path) -> ExitCode {
 fn run_wire_command(mode: &'static str, scenario_config: &Path) -> ExitCode {
     let scenario = match Scenario::load(scenario_config) {
         Ok(scenario) => scenario,
-        Err(err) => {
-            eprintln!("scenario load error: {:?}", err);
+        Err(_) => {
             let _ = emit_stdout_status(
                 "unknown",
                 StatusPhase::Terminal,
