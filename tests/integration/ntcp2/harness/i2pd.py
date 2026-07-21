@@ -142,20 +142,25 @@ class I2pdAdapter:
 
     def start(self) -> None:
         binary = self.prepare()
-        # ``stdbuf -oL`` forces line-buffered stdout so the parent's drain
-        # thread sees each i2pd log line immediately. Without it i2pd uses
-        # block buffering on a pipe and the drain thread can fall behind
-        # by tens of seconds under debug-level logging.
-        stdbuf_prefix: list[str] = []
-        if shutil.which("stdbuf"):
-            stdbuf_prefix = ["stdbuf", "-oL"]
+        # i2pd 2.60.0's log thread writes to ``std::cout`` with ``std::endl``,
+        # which only flushes the i2pd-internal stdio buffer. When stdout is a
+        # pipe the libc/Boost sink falls back to block buffering and the
+        # parent's drain thread sits behind an OS-level 4 KB buffer. Wrap the
+        # binary in ``script -qfc`` so i2pd runs under a pseudo-tty, which
+        # forces the kernel's tty discipline into line-buffered mode and
+        # makes each log line visible to the drain thread immediately.
+        have_tty_wrap = shutil.which("script") is not None
         if self.placement is None:
-            command = self._prefix() + stdbuf_prefix + ["ip", "netns", "exec", self.endpoint.namespace, str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
+            inner = ["ip", "netns", "exec", self.endpoint.namespace, str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
+            if have_tty_wrap:
+                command = self._prefix() + ["script", "-qfc"] + inner + ["/dev/null"]
+            else:
+                command = self._prefix() + inner
         else:
             try:
-                command = self.placement.command(
-                    stdbuf_prefix + [str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
-                )
+                inner = [str(binary), "--datadir", str(self.data_dir), "--conf", str(self.config_dir / "i2pd.conf")]
+                inner_with_tty = (["script", "-qfc"] + inner + ["/dev/null"]) if have_tty_wrap else inner
+                command = self.placement.command(inner_with_tty)
             except TopologyContractError as exc:
                 raise I2pdError(exc.code) from exc
         self.process = BoundedProcess(command, self.run_root / "raw" / "i2pd.log")
