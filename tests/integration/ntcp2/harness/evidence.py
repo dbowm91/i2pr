@@ -155,8 +155,7 @@ def _scan(value: Any, *, field: str | None = None) -> None:
         if _FORBIDDEN.search(value) or _ENDPOINT.search(value):
             raise EvidenceError("record contains forbidden secret, payload, path, or endpoint text")
     elif isinstance(value, dict):
-        for key, child in value.items():
-            _scan(key)
+        for child in value.values():
             _scan(child)
     elif isinstance(value, (list, tuple)):
         for child in value:
