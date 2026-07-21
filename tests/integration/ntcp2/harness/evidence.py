@@ -124,6 +124,7 @@ _ALLOWED_EXPECTED = {
     "bounded-result",
 }
 _ALLOWED_KNOWN_DEVIATION = {
+    "",
     "driver-absent",
     "driver-absent-with-cleanup",
     "cleanup-verification-failed",
