@@ -301,6 +301,7 @@ class JavaI2pAdapter:
         eventlog = self.data_dir / "eventlog.txt"
         keys_file = self.data_dir / "router.keys.dat"
         info_file = self.data_dir / "router.info"
+        wrapper_log = self.runtime_dir / "wrapper.log"
         while time.monotonic() < deadline:
             try:
                 if eventlog.is_file() and eventlog.stat().st_size > 0:
@@ -310,8 +311,16 @@ class JavaI2pAdapter:
                         lines = []
                     started = [line for line in lines if line.endswith(" started 2.12.0-0")]
                     crashed = [line for line in lines if " crashed " in line]
+                    listening = False
+                    if wrapper_log.is_file():
+                        try:
+                            wrapper_text = wrapper_log.read_text(encoding="utf-8", errors="replace")
+                            listening = "Starting NTCP transport listening" in wrapper_text
+                        except OSError:
+                            listening = False
                     if (started and len(started) > len(crashed)
-                            and keys_file.is_file() and info_file.is_file()):
+                            and keys_file.is_file() and info_file.is_file()
+                            and listening):
                         return
             except OSError:
                 pass
