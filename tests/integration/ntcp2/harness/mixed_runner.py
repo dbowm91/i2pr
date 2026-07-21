@@ -788,11 +788,14 @@ def _run_responder_first(
     i2pr_adapter.wait_ready(timeout_seconds=30.0)
     i2pr_adapter.stop(timeout_seconds=10.0)
     # Copy the state from gen_root into shared_i2pr_state so the live phase
-    # restarts from the same identity.
+    # restarts from the same identity. Restore the strict 0o600 mode so the
+    # live phase's IdentityStore::load / TransportStaticKeyStore::load do
+    # not reject the file for InsecurePermissions (mode & 0o077 != 0).
     for entry in (gen_root / "state").iterdir():
         target = shared_i2pr_state / entry.name
         if entry.is_file():
             shutil.copyfile(entry, target)
+            os.chmod(target, 0o600)
         elif entry.is_dir():
             shutil.copytree(entry, target)
     ri_path = shared_i2pr_state / "router.info"
