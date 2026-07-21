@@ -248,6 +248,7 @@ impl Scenario {
         }
         let peer_router_info = raw
             .peer_router_info
+            .filter(|path| !path.is_empty())
             .map(|path| confined_path(&run_root, &path))
             .transpose()?;
         if matches!(role, Role::Initiator) && peer_router_info.is_none() {
