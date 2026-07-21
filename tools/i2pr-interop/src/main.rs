@@ -27,9 +27,9 @@ use i2pr_proto::{
     MessageType, RouterAddress, RouterInfo,
 };
 use i2pr_runtime::{
-    CancellationToken, HandshakeClock, HandshakeDriverConfig, Ntcp2Deadline, Ntcp2RuntimeConfig,
-    Ntcp2RuntimeDeadlines, Ntcp2RuntimeService, PaddingProfile as DriverPaddingProfile,
-    bounded_timeout, run_blocking,
+    CancellationToken, DialOutcome, HandshakeClock, HandshakeDriverConfig, Ntcp2Deadline,
+    Ntcp2RuntimeConfig, Ntcp2RuntimeDeadlines, Ntcp2RuntimeService,
+    PaddingProfile as DriverPaddingProfile, bounded_timeout, run_blocking,
 };
 use i2pr_storage::{IdentityStore, StorageError, TransportStaticKeyStore};
 use i2pr_transport::MAX_I2NP_MESSAGE_BYTES;
@@ -460,7 +460,10 @@ async fn execute_initiator(
     let attempt = service
         .dial(peer_address, cancellation)
         .await
-        .map_err(|_| LauncherError::DialFailed)?;
+        .map_err(|outcome| {
+            eprintln!("debug: dial outcome {:?}", outcome);
+            LauncherError::DialFailed
+        })?;
     let ephemeral =
         X25519PrivateKey::generate(&mut OsRng).map_err(|_| LauncherError::StateInvalid)?;
     let state = InitiatorState::new(
