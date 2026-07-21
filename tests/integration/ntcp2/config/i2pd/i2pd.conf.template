@@ -9,6 +9,7 @@ ipv4 = @IPV4_ENABLED@
 ipv6 = @IPV6_ENABLED@
 notransit = true
 floodfill = false
+reservedrange = false
 
 [ntcp2]
 enabled = true
