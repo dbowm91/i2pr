@@ -219,7 +219,7 @@ def _record_mixed(
         "process_counters": process_counters,
         "cleanup_result": cleanup,
         "evidence_sha256": "",
-        "known_deviation": reason,
+        "known_deviation": reason if result != "passed" else "",
         "reproduction": f"bash scripts/interop/run-scenario.sh --scenario {direction.execution_id} --reference {direction.reference}",
         "i2pr_router_info_sha256": i2pr_router_info_sha256 or zero,
         "reference_router_info_sha256": reference_router_info_sha256 or zero,
@@ -632,10 +632,7 @@ def run(args: argparse.Namespace) -> int:
             )
             try:
                 write_record(evidence_path, record)
-            except (OSError, ValueError) as exc:
-                import sys, traceback
-                print(f"[mixed_runner DEBUG] write_record failed: {exc}", file=sys.stderr, flush=True)
-                traceback.print_exc(file=sys.stderr)
+            except (OSError, ValueError):
                 result = "failed_cleanup"
                 cleanup = "failed"
                 reason = "evidence-finalization-failed"
