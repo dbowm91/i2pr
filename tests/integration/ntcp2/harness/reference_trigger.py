@@ -292,7 +292,7 @@ class I2pdReferenceTrigger(ReferenceTrigger):
             )
         try:
             port = int(os.environ.get("I2PR_I2PD_SAM_PORT", str(self.DEFAULT_SAM_PORT)))
-            host = getattr(ref_endpoint, "local_address", "127.0.0.1")
+            host = "127.0.0.1"
             session_id = f"i2pr-interop-{int(time.time())}"
             payload = (
                 'HELLO VERSION MIN=3.0 MAX=3.0\n'
@@ -339,7 +339,11 @@ class I2pdReferenceTrigger(ReferenceTrigger):
             return TriggerResult(
                 kind=self.trigger_kind,
                 observed=False,
-                description=f"i2pd-sam-trigger-failed: {completed.stderr.strip()[:64] or 'no-stderr'}",
+                description=(
+                    f"i2pd-sam-trigger-failed: rc={completed.returncode} "
+                    f"err={(completed.stderr.strip()[:200] or 'no-stderr')!r} "
+                    f"out={(completed.stdout.strip()[:200] or 'no-stdout')!r}"
+                ),
             )
         if "SESSION STATUS RESULT=OK" not in completed.stdout:
             return TriggerResult(
