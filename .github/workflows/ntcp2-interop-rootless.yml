@@ -47,7 +47,7 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4.1.7
       - name: rust-toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.100.0
       - name: cargo-fmt
         run: cargo +1.95.0 fmt --all --check
       - name: cargo-check
@@ -81,7 +81,7 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4.1.7
       - name: rust-toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.100.0
       - name: rootless-dependency-contract
         run: bash scripts/check-rootless-interop-boundary.sh
       - name: rootless-sandbox-probe
