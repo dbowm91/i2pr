@@ -37,7 +37,7 @@ try:
 except ImportError:  # pragma: no cover - direct harness-module execution
     from interop_topology import ProcessPlacement, TopologyContractError  # type: ignore
 
-_I2PD_CSRF_RE = re.compile(rb"run_peer_test(?:&|&amp;|&)token=(\d+)")
+_I2PD_CSRF_RE = re.compile(r"run_peer_test(?:&|&amp;|&)token=(\d+)")
 _JAVA_SAM_HELLO = b"HELLO VERSION MIN=3.0 MAX=3.0\n"
 
 
