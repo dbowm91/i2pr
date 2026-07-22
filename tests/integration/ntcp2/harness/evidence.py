@@ -72,6 +72,22 @@ MULTIPASS_RECORD_FIELDS = (
     "adoption_mode",
 )
 
+# Plan 052 provenance binding is the second opt-in suffix. A record that
+# carries RUN_IDENTITY_BIND_FIELDS cross-checks ``source_commit``,
+# ``launcher_binary_sha256``, and ``run_identity_sha256`` against the
+# canonical run-identity file on disk. The ``run_id`` itself lives in the
+# Multipass suffix when present; the standalone Plan 052 suffix
+# (RUN_IDENTITY_BIND_FIELDS + ("run_id",)) reuses ``run_id``. Records that
+# pre-date Plan 052 (e.g., the historical Plan 045-051 handshake-smoke
+# records) remain schema-compatible; they cannot, however, count toward
+# Milestone 3 closure because they cannot satisfy ``run_identity_sha256``.
+RUN_IDENTITY_BIND_FIELDS = (
+    "source_commit",
+    "launcher_binary_sha256",
+    "run_identity_sha256",
+)
+RUN_IDENTITY_STANDALONE_FIELDS = RUN_IDENTITY_BIND_FIELDS + ("run_id",)
+
 REFERENCE_PAIR_RECORD_FIELDS = (
     "schema",
     "scenario_id",
@@ -181,11 +197,25 @@ def validate_record(record: dict[str, Any]) -> None:
         _validate_reference_pair_record(record)
         return
     multipass_record = tuple(record) == RECORD_FIELDS + MULTIPASS_RECORD_FIELDS
-    if tuple(record) not in {RECORD_FIELDS, RECORD_FIELDS + MULTIPASS_RECORD_FIELDS}:
+    standalone_run_identity_record = tuple(record) == RECORD_FIELDS + RUN_IDENTITY_STANDALONE_FIELDS
+    combined_record = (
+        tuple(record) == RECORD_FIELDS + MULTIPASS_RECORD_FIELDS + RUN_IDENTITY_BIND_FIELDS
+    )
+    if tuple(record) not in {
+        RECORD_FIELDS,
+        RECORD_FIELDS + MULTIPASS_RECORD_FIELDS,
+        RECORD_FIELDS + RUN_IDENTITY_STANDALONE_FIELDS,
+        RECORD_FIELDS + MULTIPASS_RECORD_FIELDS + RUN_IDENTITY_BIND_FIELDS,
+    }:
         raise EvidenceError("record fields do not match the locked schema")
     if record["schema"] != 1:
         raise EvidenceError("unsupported evidence schema")
-    fields = RECORD_FIELDS + (MULTIPASS_RECORD_FIELDS if multipass_record else ())
+    plan_052_record = standalone_run_identity_record or combined_record
+    fields = RECORD_FIELDS + (
+        MULTIPASS_RECORD_FIELDS if multipass_record else ()
+    ) + (
+        RUN_IDENTITY_BIND_FIELDS if plan_052_record else ()
+    )
     for field in fields:
         if field not in record:
             raise EvidenceError(f"missing evidence field: {field}")
@@ -293,6 +323,25 @@ def validate_record(record: dict[str, Any]) -> None:
             # A permissive host baseline is allowed, but it is never the
             # guest execution proof; the guest field above remains mandatory.
             pass
+    if plan_052_record:
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{6,46})[a-z0-9]$", str(record["run_id"])):
+            raise EvidenceError("Plan 052 run_id is not safe")
+        if record["schema"] != 1:
+            raise EvidenceError("Plan 052 run-identity record requires evidence schema 1")
+        if not _HEX64.fullmatch(str(record["run_identity_sha256"])):
+            raise EvidenceError("Plan 052 run_identity_sha256 is not a SHA-256 digest")
+        if not _HEX64.fullmatch(str(record["launcher_binary_sha256"])):
+            raise EvidenceError("Plan 052 launcher_binary_sha256 is not a SHA-256 digest")
+        if not re.fullmatch(r"[0-9a-f]{40}", str(record["source_commit"])):
+            raise EvidenceError("Plan 052 source_commit is not a 40-character SHA")
+        # Plan 052 forbids zero-filled provenance on passed records.
+        if record["actual_typed_result"] == "passed":
+            if record["run_identity_sha256"] == "0" * 64:
+                raise EvidenceError("Plan 052 passed record has a zero-filled run_identity_sha256")
+            if record["launcher_binary_sha256"] == "0" * 64:
+                raise EvidenceError("Plan 052 passed record has a zero-filled launcher_binary_sha256")
+            if record["source_commit"] == "0" * 40:
+                raise EvidenceError("Plan 052 passed record has a zero-filled source_commit")
 
 
 def _require_sha256(record: dict[str, Any], field: str, *, nonzero: bool) -> None:
