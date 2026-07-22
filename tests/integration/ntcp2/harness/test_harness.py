@@ -1480,6 +1480,89 @@ class ReferenceTriggerTests(unittest.TestCase):
         trigger = I2pdReferenceTrigger()
         self.assertEqual(trigger.trigger_kind, TriggerKind.I2PD_HTTP_DIAL)
 
+    def test_i2pd_trigger_default_port_is_sam(self) -> None:
+        from reference_trigger import I2pdReferenceTrigger
+        self.assertEqual(I2pdReferenceTrigger.DEFAULT_SAM_PORT, 7656)
+
+    def test_i2p_base64_encode_matches_known_vector(self) -> None:
+        from reference_trigger import _i2p_base64, _I2P_BASE64_ALPHABET
+        # Empty input
+        self.assertEqual(_i2p_base64(b""), "")
+        # I2P base64 has the SAME first 62 chars as RFC 4648 base64
+        # (just '-' instead of '+' and '~' instead of '/'), and emits
+        # no '=' padding. This means any input whose 6-bit groups
+        # never land at index 62 or 63 must encode identically under
+        # both alphabets.
+        import base64
+        for plain in (
+            b"f", b"fo", b"foo", b"foob", b"fooba", b"foobar",
+            b"\x00", b"hello world", b"The quick brown fox",
+        ):
+            ref = base64.b64encode(plain).rstrip(b"=").decode()
+            self.assertEqual(_i2p_base64(plain), ref)
+        # The I2P alphabet MUST differ from RFC 4648 on byte indices
+        # whose 6-bit groups land at 62 ('-') and 63 ('~').
+        self.assertEqual(chr(_I2P_BASE64_ALPHABET[62]), "-")
+        self.assertEqual(chr(_I2P_BASE64_ALPHABET[63]), "~")
+
+    def test_i2p_base64_alphabet_is_rfc4648_url_safe_mod(self) -> None:
+        from reference_trigger import _I2P_BASE64_ALPHABET
+        self.assertEqual(_I2P_BASE64_ALPHABET[:26], b"ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        self.assertEqual(_I2P_BASE64_ALPHABET[26:52], b"abcdefghijklmnopqrstuvwxyz")
+        self.assertEqual(_I2P_BASE64_ALPHABET[52:62], b"0123456789")
+        self.assertEqual(_I2P_BASE64_ALPHABET[62:], b"-~")
+        # Must NOT contain standard base64 '+' or '/'
+        self.assertNotIn(ord("+"), bytes(_I2P_BASE64_ALPHABET))
+        self.assertNotIn(ord("/"), bytes(_I2P_BASE64_ALPHABET))
+        # Must NOT contain padding '='
+        self.assertEqual(len(_I2P_BASE64_ALPHABET), 64)
+
+    def test_i2pd_destination_reader_returns_empty_for_missing_file(self) -> None:
+        from reference_trigger import I2pdReferenceTrigger
+        self.assertEqual(
+            I2pdReferenceTrigger._read_i2pr_destination_b64("/nonexistent"),
+            "",
+        )
+
+    def test_i2pd_destination_reader_returns_empty_when_state_dir_missing(self) -> None:
+        import tempfile
+        from reference_trigger import I2pdReferenceTrigger
+        with tempfile.TemporaryDirectory() as tmp:
+            # run_dir exists but has no i2pr/state/router.info
+            self.assertEqual(
+                I2pdReferenceTrigger._read_i2pr_destination_b64(tmp),
+                "",
+            )
+
+    def test_i2pd_destination_reader_returns_empty_for_short_file(self) -> None:
+        import os
+        import tempfile
+        from reference_trigger import I2pdReferenceTrigger
+        with tempfile.TemporaryDirectory() as tmp:
+            ri_dir = os.path.join(tmp, "i2pr", "state")
+            os.makedirs(ri_dir, mode=0o700)
+            ri_path = os.path.join(ri_dir, "router.info")
+            with open(ri_path, "wb") as f:
+                f.write(b"\x00" * 100)
+            self.assertEqual(
+                I2pdReferenceTrigger._read_i2pr_destination_b64(tmp),
+                "",
+            )
+
+    def test_i2pd_destination_reader_extracts_first_391_bytes(self) -> None:
+        import os
+        import tempfile
+        from reference_trigger import I2pdReferenceTrigger, _i2p_base64
+        with tempfile.TemporaryDirectory() as tmp:
+            ri_dir = os.path.join(tmp, "i2pr", "state")
+            os.makedirs(ri_dir, mode=0o700)
+            ri_path = os.path.join(ri_dir, "router.info")
+            payload = bytes(range(256)) * 4  # 1024 bytes
+            with open(ri_path, "wb") as f:
+                f.write(payload)
+            result = I2pdReferenceTrigger._read_i2pr_destination_b64(tmp)
+            self.assertEqual(result, _i2p_base64(payload[:391]))
+
     def test_select_trigger_returns_java_for_java(self) -> None:
         from reference_trigger import select_trigger, JavaReferenceTrigger
         trigger = select_trigger("java_i2p")

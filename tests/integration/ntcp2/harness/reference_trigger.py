@@ -25,20 +25,54 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import socket
 import subprocess
 import time
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 try:
     from .interop_topology import ProcessPlacement, TopologyContractError
 except ImportError:  # pragma: no cover - direct harness-module execution
     from interop_topology import ProcessPlacement, TopologyContractError  # type: ignore
 
-_I2PD_CSRF_RE = re.compile(r"run_peer_test(?:&|&amp;|&)token=(\d+)")
 _JAVA_SAM_HELLO = b"HELLO VERSION MIN=3.0 MAX=3.0\n"
+_I2P_BASE64_ALPHABET = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~"
+
+
+def _i2p_base64(data: bytes) -> str:
+    """Encode ``data`` using the I2P base64 alphabet (RFC 4648 §5 mod:
+    ``A-Z a-z 0-9 - ~``; no padding). Matches the destination format
+    accepted by i2pd's SAM v3 ``DESTINATION=`` parameter.
+    """
+    if not data:
+        return ""
+    out = bytearray()
+    view = memoryview(data)
+    end = len(data)
+    i = 0
+    while i + 3 <= end:
+        a = view[i]
+        b = view[i + 1]
+        c = view[i + 2]
+        out.append(_I2P_BASE64_ALPHABET[a >> 2])
+        out.append(_I2P_BASE64_ALPHABET[((a & 0x03) << 4) | (b >> 4)])
+        out.append(_I2P_BASE64_ALPHABET[((b & 0x0F) << 2) | (c >> 6)])
+        out.append(_I2P_BASE64_ALPHABET[c & 0x3F])
+        i += 3
+    rem = end - i
+    if rem == 1:
+        a = view[i]
+        out.append(_I2P_BASE64_ALPHABET[a >> 2])
+        out.append(_I2P_BASE64_ALPHABET[(a & 0x03) << 4])
+    elif rem == 2:
+        a = view[i]
+        b = view[i + 1]
+        out.append(_I2P_BASE64_ALPHABET[a >> 2])
+        out.append(_I2P_BASE64_ALPHABET[((a & 0x03) << 4) | (b >> 4)])
+        out.append(_I2P_BASE64_ALPHABET[(b & 0x0F) << 2])
+    return out.decode("ascii")
 
 
 class TriggerKind(Enum):
@@ -187,22 +221,26 @@ class JavaReferenceTrigger(ReferenceTrigger):
 
 
 class I2pdReferenceTrigger(ReferenceTrigger):
-    """i2pd auto-dial verification via HTTP control interface.
+    """i2pd auto-dial verification via SAM v3 bridge.
 
     i2pd 2.60.0 with the sole imported peer RouterInfo will auto-dial
     when the transport manager finds a reachable peer. The harness
-    verifies this by checking the HTTP /jsonrpc status endpoint for an
-    established NTCP2 session.
+    verifies this by checking the SAM v3 ``SESSION STATUS`` response.
 
-    If auto-dial is not deterministic, the harness issues an HTTP
-    /jsonrpc ConnectPeer command to initiate the connection. This
-    exercises the i2pd router's authenticated NTCP2 transport
-    without bypassing it.
+    If auto-dial is not deterministic, the harness issues a SAM v3
+    ``SESSION CREATE STYLE=STREAM DESTINATION=<base64>`` command that
+    creates a transient SAM destination and opens the authenticated
+    NTCP2 connection to the i2pr RouterInfo. This exercises i2pd's
+    authenticated NTCP2 transport without bypassing it.
+
+    Note: ``?cmd=run_peer_test`` on the i2pd webconsole calls
+    ``Transports::PeerTest`` which returns early when SSU2 is disabled;
+    that endpoint is *not* an NTCP2 dial trigger.
 
     Pinned source: router/i2pd/Transports.cpp, router/i2pd/NTCP2Transport.cpp
     """
 
-    DEFAULT_HTTP_PORT = 7070
+    DEFAULT_SAM_PORT = 7656
 
     @property
     def trigger_kind(self) -> TriggerKind:
@@ -236,23 +274,30 @@ class I2pdReferenceTrigger(ReferenceTrigger):
             return TriggerResult(
                 kind=self.trigger_kind,
                 observed=False,
-                description="i2pd-i2pr direction auto-dials from i2pr side; HTTP trigger not required",
+                description="i2pd-i2pr direction auto-dials from i2pr side; SAM trigger not required",
+            )
+        # Plan 045 D4: i2pd 2.60.0 has no I2PControl ConnectPeer endpoint
+        # and the webconsole ``run_peer_test`` is an SSU2-only command
+        # (``Transports::PeerTest`` returns early when SSU2 is disabled).
+        # The only available path to force i2pd to initiate an NTCP2 dial
+        # to an arbitrary destination is SAM v3 ``SESSION CREATE
+        # STYLE=STREAM DESTINATION=<base64>``; i2pd's SAM layer opens a
+        # transient destination and dials the target over NTCP2.
+        destination_b64 = self._read_i2pr_destination_b64(run_dir)
+        if not destination_b64:
+            return TriggerResult(
+                kind=self.trigger_kind,
+                observed=False,
+                description="i2pd-sam-trigger-destination-missing",
             )
         try:
-            port = int(os.environ.get("I2PR_I2PD_HTTP_PORT", str(self.DEFAULT_HTTP_PORT)))
+            port = int(os.environ.get("I2PR_I2PD_SAM_PORT", str(self.DEFAULT_SAM_PORT)))
             host = getattr(ref_endpoint, "local_address", "127.0.0.1")
-            # Plan 045 D4: i2pd 2.60.0 has no JSON-RPC ConnectPeer endpoint.
-            # Use the webconsole ``run_peer_test`` command. The webconsole
-            # requires a CSRF ``token`` parameter issued on a recent page
-            # render; we first GET ``/?page=commands`` to receive a token,
-            # parse it, then issue ``?cmd=run_peer_test&token=<n>`` in a
-            # second GET. ``HTTPConnection::HandleCommand`` checks
-            # ``m_Tokens`` so any token issued in the last
-            # ``TOKEN_EXPIRATION_TIMEOUT`` seconds is accepted.
-            commands_url = f"http://{host}:{port}/?page=commands"
-            peer_test_url_template = (
-                f"http://{host}:{port}/?cmd=run_peer_test&token={{token}}"
-            )
+            session_id = f"i2pr-interop-{int(time.time())}"
+            payload = (
+                'HELLO VERSION MIN=3.0 MAX=3.0\n'
+                f'SESSION CREATE STYLE=STREAM ID={session_id} DESTINATION={destination_b64}\n'
+            ).encode("ascii")
             if placement is None:
                 namespace = getattr(ref_endpoint, "namespace", None)
                 if namespace is None:
@@ -262,60 +307,74 @@ class I2pdReferenceTrigger(ReferenceTrigger):
                         description="i2pd reference namespace missing",
                     )
                 prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
-                def _curl(url: str) -> str:
-                    completed = subprocess.run(
-                        prefix + [
-                            "ip", "netns", "exec", str(namespace),
-                            "curl", "-fsS", "-m", "5", url,
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=6.0,
-                        check=False,
-                    )
-                    return "" if completed.returncode != 0 else completed.stdout
+                command = prefix + [
+                    "ip", "netns", "exec", str(namespace),
+                    "python3", "-u", "-c", _SAM_PROBE,
+                ]
             else:
-                def _curl(url: str) -> str:
-                    try:
-                        command = placement.command(["curl", "-fsS", "-m", "5", url])
-                    except TopologyContractError as exc:
-                        return f"__placement_error:{exc.code}"
-                    completed = subprocess.run(
-                        command,
-                        capture_output=True,
-                        text=True,
-                        timeout=6.0,
-                        check=False,
+                try:
+                    command = placement.command(["python3", "-u", "-c", _SAM_PROBE])
+                except TopologyContractError as exc:
+                    return TriggerResult(
+                        kind=self.trigger_kind,
+                        observed=False,
+                        description=f"i2pd-sam-trigger-placement-error: {exc.code}",
                     )
-                    return "" if completed.returncode != 0 else completed.stdout
-
-            page = _curl(commands_url)
-            token = _I2PD_CSRF_RE.search(page)
-            if not token:
-                return TriggerResult(
-                    kind=self.trigger_kind,
-                    observed=False,
-                    description="i2pd-http-csrf-token-fetch-failed",
-                )
-            response = _curl(peer_test_url_template.format(token=token.group(1)))
+            completed = subprocess.run(
+                command,
+                input=json.dumps({"host": host, "port": port, "payload": payload.decode("ascii")}),
+                capture_output=True,
+                text=True,
+                timeout=8.0,
+                check=False,
+            )
         except (subprocess.TimeoutExpired, OSError) as exc:
             return TriggerResult(
                 kind=self.trigger_kind,
                 observed=False,
-                description=f"i2pd-http-trigger-error: {exc.__class__.__name__}",
+                description=f"i2pd-sam-trigger-error: {exc.__class__.__name__}",
                 timed_out=isinstance(exc, subprocess.TimeoutExpired),
             )
-        if response.startswith("__placement_error:"):
+        if completed.returncode != 0:
             return TriggerResult(
                 kind=self.trigger_kind,
                 observed=False,
-                description=f"i2pd-http-trigger-placement-{response[len('__placement_error:'):]}",
+                description=f"i2pd-sam-trigger-failed: {completed.stderr.strip()[:64] or 'no-stderr'}",
+            )
+        if "SESSION STATUS RESULT=OK" not in completed.stdout:
+            return TriggerResult(
+                kind=self.trigger_kind,
+                observed=False,
+                description=f"i2pd-sam-trigger-rejected: {completed.stdout.strip()[:64]}",
             )
         return TriggerResult(
             kind=self.trigger_kind,
             observed=True,
-            description="i2pd-http-run-peer-test-issued",
+            description="i2pd-sam-stream-session-issued",
         )
+
+    @staticmethod
+    def _read_i2pr_destination_b64(run_dir: "object") -> str:
+        """Extract the i2pr public destination (RouterIdentity in I2P
+        base64) from ``<run_dir>/i2pr/state/router.info``. Plan 045 D4
+        requires the reference to dial an explicit destination; the SAM
+        v3 ``DESTINATION=`` parameter takes a RouterIdentity-encoded
+        string. i2pr uses Certificate::Key over X25519/Ed25519: the
+        leading 384 bytes are the key area, followed by 7 bytes of
+        ``Certificate::Key`` header (1 type-code + 2 payload length + 4
+        signing/crypto type codes), for a 391-byte identity total.
+        """
+        try:
+            ri_path = Path(run_dir) / "i2pr" / "state" / "router.info"
+            if not ri_path.exists():
+                return ""
+            data = ri_path.read_bytes()
+        except OSError:
+            return ""
+        if len(data) < 391:
+            return ""
+        identity_bytes = data[:391]
+        return _i2p_base64(identity_bytes)
 
 
 _TRIGGER_REGISTRY: dict[str, type[ReferenceTrigger]] = {

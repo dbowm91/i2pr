@@ -32,7 +32,8 @@ enabled = false
 enabled = false
 
 [sam]
-enabled = false
+enabled = true
+port = 7656
 
 [i2cp]
 enabled = false

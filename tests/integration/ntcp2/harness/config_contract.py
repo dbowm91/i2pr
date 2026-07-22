@@ -130,7 +130,9 @@ def assert_i2pd_private_configuration(
         raise ConfigurationContractError("i2pd NTCP2 listener contract is not exact")
     if parsed.sections["http"] != {"enabled": "true", "port": "7070"}:
         raise ConfigurationContractError("i2pd HTTP control contract is not exact (used for ConnectPeer trigger)")
-    for section in expected_sections - {"ntcp2", "reseed", "http"}:
+    if parsed.sections["sam"] != {"enabled": "true", "port": "7656"}:
+        raise ConfigurationContractError("i2pd SAM v3 contract is not exact (used for per-direction NTCP2 dial)")
+    for section in expected_sections - {"ntcp2", "reseed", "http", "sam"}:
         values = parsed.sections[section]
         if values.get("enabled") != "false":
             raise ConfigurationContractError(f"unexpected enabled i2pd service: {section}")
