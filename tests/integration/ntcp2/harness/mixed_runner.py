@@ -614,7 +614,10 @@ def run(args: argparse.Namespace) -> int:
             result = "rejected"
             reason = reason or "sandbox-attestation-missing"
             cleanup = "clean"
-        if metadata is not None and result in {"passed", "skipped_ipv6"}:
+        if (
+            metadata is not None
+            and result in {"passed", "skipped_ipv6", "rejected", "failed", "blocked", "failed_cleanup"}
+        ):
             evidence_root.mkdir(mode=0o700, parents=True, exist_ok=True)
             evidence_path = evidence_root / f"{run_dir.name}-{reference}.json"
             oracle_kind = oracle.oracle_kind.value if oracle is not None else ""
