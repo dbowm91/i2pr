@@ -421,3 +421,92 @@ static boundary check `check-multipass-interop-boundary.sh` enforces
 the new artifacts, sanitized taxonomy, phase markers, absence of
 `rustup` in cloud-init, absence of `eval`, and absence of any global
 `multipass purge` form in normal paths.
+
+## Plan 052 Milestone 3 evidence closure follow-up
+
+Plan 052 is the corrective execution and evidence-closure plan for
+Milestone 3. Milestone 3 remains open: NTCP2 stays experimental and
+non-advertised.
+
+### Source provenance is single-source and fail-closed
+
+One exact clean source commit, computed by `git rev-parse HEAD`, drives
+every artifact. The canonical record lives in
+`target/interop/evidence/<run-id>/run-identity.json` under schema
+`i2pr-interop-run-identity-v1`. Every direction, attestation, trigger,
+observation, cleanup, and aggregate record carries
+`run_identity_sha256` and is cross-checked by
+`tests/integration/ntcp2/harness/run_identity.py:cross_check`.
+Short SHAs, dirty trees, archive/manifest mismatches, and non-finalized
+run identities are typed blockers.
+
+### Diagnostics mode
+
+The prior `I2PR_INTEROP_DUMP_RUN_LOGS` switch is replaced by the
+tri-state `I2PR_INTEROP_DIAGNOSTICS=off|sanitized|raw-local` env var
+(`tests/integration/ntcp2/harness/mixed_runner.py:_diagnostics_mode`).
+The default is `off`. `raw-local` is forbidden under any export root;
+the probe raises `raw-local-diagnostics-forbidden-under-export-root`.
+
+### Receiver-side observation schema v2
+
+Per-side observations use `i2pr-ntcp2-direction-observation-v2` with
+bounded levels (`process_started`, `listener_ready`, `tcp_connected`,
+`ntcp2_authenticated`, `frame_emitted`,
+`frame_authenticated_and_decrypted`, `i2np_message_decoded`,
+`terminal_clean`). The directional predicate requires both sides to
+observe `ntcp2_authenticated`, the sender to emit the bounded data
+frame, the receiver to report `frame_authenticated_and_decrypted`
+AND `i2np_message_decoded`. Handshake-only markers cannot pass.
+
+### Reference observation catalog
+
+Per-reference observation markers are bound to the pinned revisions in
+`tests/integration/ntcp2/reference-observation-catalog.md`. Updating a
+marker requires updating the document, the matching adapter, and the
+locked revision line. `SessionConfirmed sent` /
+`SessionConfirmed from` / `NTCP2 connection established` are
+handshake-only and never satisfy the data phase.
+
+### Atomic evidence bundles
+
+Each Milestone 3 run produces
+`target/interop/evidence/milestone-3/<run-id>/` containing
+`run-identity.json`, the `environment/` block, the per-direction
+`attestations/`, `directions/`, `triggers/`, `observations/`, and
+`cleanup/` records, a `diagnostics/sanitized-summary.json`, and the
+sanitized manifest. `tests/integration/ntcp2/harness/evidence_bundle.py`
+handles staging, hashing, and atomic host export. An interrupted
+export leaves a typed incomplete staging directory and never overwrites
+a valid prior bundle.
+
+### Java startup probe
+
+The standalone probe at
+`tests/integration/ntcp2/harness/java_startup_probe.py` isolates Java
+startup from i2pr and NTCP2. It supports `--reference-install`,
+`--data-dir`, `--data-state {empty,config-only,fresh-unique-seed,
+initialized-snapshot}`, `--launcher {runplain,wrapper}`, `--namespace
+{outer,rootless}`, `--sequence {single,generate-live}`, `--attempts`,
+and `--output`. The probe never opens an NTCP2 peer connection and
+never asserts an interoperability result.
+
+### Reference-initiated trigger contracts
+
+The source-inspection record required by Plan 052 F2 lives at
+`tests/integration/ntcp2/reference-trigger-contracts.md`. Until both
+Java and i2pd helpers are committed and source-locked to their pinned
+revisions, the two reference-initiated directions remain typed
+blockers.
+
+### Boundary checks
+
+The new opt-in `RUN_IDENTITY_BIND_FIELDS` suffix on the existing
+evidence record (`tests/integration/ntcp2/harness/evidence.py`)
+coexists with the prior `MULTIPASS_RECORD_FIELDS` and base
+`RECORD_FIELDS`. The static boundary checkers (`check-*.sh`) are
+unchanged and continue to pass. New tests live under
+`test_plan052.py`, `test_evidence_bundle.py`, and
+`test_java_startup_probe.py` and must stay green alongside the existing
+`test_harness.py`, `test_multipass.py`, and
+`test_rootless_topology.py`.

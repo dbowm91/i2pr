@@ -330,6 +330,46 @@ implementation is local-only; the Plan 048/049 external evidence
 remains the negative baseline on this host. Implementation status is
 recorded in `plans/050-status.md`.
 
+### Plan 052 Milestone 3 evidence closure follow-up
+
+Plan 052 is the corrective execution and evidence-closure plan for
+Milestone 3. Milestone 3 remains open: NTCP2 stays experimental and
+non-advertised. Plan 052 introduces:
+
+- A single-source `run-identity.json` (`i2pr-interop-run-identity-v1`)
+  bound to every direction, attestation, trigger, observation,
+  cleanup, and aggregate record via a new `RUN_IDENTITY_BIND_FIELDS`
+  suffix on the existing evidence record schema.
+- A tri-state `I2PR_INTEROP_DIAGNOSTICS=off|sanitized|raw-local` env
+  var that replaces the prior `I2PR_INTEROP_DUMP_RUN_LOGS` switch.
+  `raw-local` is forbidden under any export root.
+- A typed per-side observation schema
+  (`i2pr-ntcp2-direction-observation-v2`) with bounded levels and
+  the new directional predicate requiring both-side
+  `ntcp2_authenticated`, sender `frame_emitted`, and receiver
+  `frame_authenticated_and_decrypted` AND `i2np_message_decoded`.
+- Atomic evidence-bundle export under
+  `target/interop/evidence/milestone-3/<run-id>/` with the
+  environment block, per-direction records, sanitized manifest, and
+  hash-verified export acknowledgement.
+- A standalone Java startup probe
+  (`tests/integration/ntcp2/harness/java_startup_probe.py`) that
+  isolates Java startup from i2pr and NTCP2.
+- Reference-trigger contracts
+  (`tests/integration/ntcp2/reference-trigger-contracts.md`) and a
+  source-derived observation catalog
+  (`tests/integration/ntcp2/reference-observation-catalog.md`).
+
+Plan 052 closes only when one exact clean source commit produces at
+least two complete sanitized bundles in the rootless sealed Multipass
+lane, each bundle contains exactly the four primary directions, every
+direction proves both-side NTCP2 authentication plus sender emission
+and receiver frame/I2NP acceptance, every record is bound to the same
+run identity and pinned references, and every run finishes with
+verified evidence export, unchanged parent network state, and no
+surviving process. Anything less remains a typed diagnostic result.
+The scaffolding status is in `plans/052-status.md`.
+
 ## MVP direction
 
 The feature MVP is expected to include:

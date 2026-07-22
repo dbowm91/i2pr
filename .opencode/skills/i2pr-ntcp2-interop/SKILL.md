@@ -79,6 +79,48 @@ inbound DeliveryStatus per direction plus orderly cleanup. Reference acceptance
 or echo behavior is not yet verified; do not claim interoperability or
 substitute padding/TCP readiness for the message exchange.
 
+## Plan 052 evidence closure constraints
+
+Plan 052 is the corrective execution plan for closing Milestone 3. It
+supersedes Plan 045 for closure purposes and introduces the following
+non-negotiable constraints:
+
+- **Single-source provenance.** Every artifact binds to one exact 40-char
+  source commit recorded in `run-identity.json`. Short SHAs, dirty
+  trees, archive/manifest mismatches, and non-finalized run identities
+  are typed blockers (`tests/integration/ntcp2/harness/run_identity.py`).
+- **Tri-state diagnostics.** The prior `I2PR_INTEROP_DUMP_RUN_LOGS`
+  switch is replaced by `I2PR_INTEROP_DIAGNOSTICS=off|sanitized|raw-local`.
+  `raw-local` is forbidden under any export root
+  (`tests/integration/ntcp2/harness/mixed_runner.py:_diagnostics_mode`).
+- **Typed observation schema v2.** Per-side observations use
+  `i2pr-ntcp2-direction-observation-v2` with bounded levels. A passed
+  direction requires both-side `ntcp2_authenticated`, sender
+  `frame_emitted`, receiver `frame_authenticated_and_decrypted` AND
+  `i2np_message_decoded` (`tests/integration/ntcp2/harness/observation.py`).
+- **Atomic evidence bundles.** Each Milestone 3 run produces
+  `target/interop/evidence/milestone-3/<run-id>/` with `run-identity.json`,
+  an `environment/` block, per-direction `attestations/`, `directions/`,
+  `triggers/`, `observations/`, and `cleanup/` records, a
+  `diagnostics/sanitized-summary.json`, and a sanitized manifest
+  (`tests/integration/ntcp2/harness/evidence_bundle.py`).
+- **Java startup probe.** Standalone at
+  `tests/integration/ntcp2/harness/java_startup_probe.py`; it isolates
+  Java startup from i2pr and NTCP2 and never asserts an interoperability
+  result.
+- **Reference-trigger contracts.** Source-inspection record at
+  `tests/integration/ntcp2/reference-trigger-contracts.md`; until the
+  helpers are committed, the two reference-initiated directions remain
+  typed blockers.
+
+A Plan 052 evidence bundle closes Milestone 3 only when (a) it contains
+exactly the four primary direction records, (b) every record binds to
+the same run identity, (c) every record satisfies the v2 observation
+predicate, and (d) two complete reproducible runs exist. Anything less
+remains a typed diagnostic result.
+
+## Companion skills (load before doing this lane)
+
 ## Plan 044 mixed-runner composition (host-side executor)
 
 The checkout contains the four directional mixed-scenario definitions under
