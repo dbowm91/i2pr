@@ -467,6 +467,14 @@ def run(args: argparse.Namespace) -> int:
             trigger_result = trigger.send(
                 direction.i2pr_is_initiator, ref_endpoint, run_dir, placement=ref_placement,
             )
+            try:
+                (run_dir / "raw").mkdir(parents=True, exist_ok=True)
+                (run_dir / "raw" / "trigger-result.json").write_text(
+                    json.dumps(_serialize_trigger(trigger_result), indent=2),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
             oracle_state = oracle.observe_directional(
                 role="initiator" if direction.i2pr_is_initiator else "responder",
                 ref_endpoint=ref_endpoint,
@@ -539,6 +547,14 @@ def run(args: argparse.Namespace) -> int:
             trigger_result = trigger.send(
                 direction.i2pr_is_initiator, ref_endpoint, run_dir, placement=ref_placement,
             )
+            try:
+                (run_dir / "raw").mkdir(parents=True, exist_ok=True)
+                (run_dir / "raw" / "trigger-result.json").write_text(
+                    json.dumps(_serialize_trigger(trigger_result), indent=2),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
             terminal = i2pr_adapter.wait_terminal(timeout_seconds=30.0)
             if terminal["result"] != "passed":
                 raise MixedRunError("i2pr-responder-handshake-failed")
@@ -667,6 +683,22 @@ def run(args: argparse.Namespace) -> int:
                 pass
     _emit(direction.execution_id, reference, result, reason, cleanup)
     return 0 if result == "passed" else 2
+
+
+def _serialize_trigger(result: object) -> dict[str, object]:
+    """Dump a :class:`TriggerResult`-shaped object to a plain dict for
+    debug capture. Used by the harness sentinel below to record why a
+    per-direction SAM/HTTP trigger succeeded or failed.
+    """
+
+    kind = getattr(result, "kind", None)
+    kind_value = getattr(kind, "value", str(kind)) if kind is not None else None
+    return {
+        "kind": kind_value,
+        "observed": bool(getattr(result, "observed", False)),
+        "description": str(getattr(result, "description", "")),
+        "timed_out": bool(getattr(result, "timed_out", False)),
+    }
 
 
 def _evaluate_pass_predicate(
