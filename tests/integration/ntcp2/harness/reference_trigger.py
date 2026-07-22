@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import time
@@ -35,6 +36,9 @@ try:
     from .interop_topology import ProcessPlacement, TopologyContractError
 except ImportError:  # pragma: no cover - direct harness-module execution
     from interop_topology import ProcessPlacement, TopologyContractError  # type: ignore
+
+_I2PD_CSRF_RE = re.compile(rb"run_peer_test(?:&|&amp;|&)token=(\d+)")
+_JAVA_SAM_HELLO = b"HELLO VERSION MIN=3.0 MAX=3.0\n"
 
 
 class TriggerKind(Enum):
@@ -238,10 +242,17 @@ class I2pdReferenceTrigger(ReferenceTrigger):
             port = int(os.environ.get("I2PR_I2PD_HTTP_PORT", str(self.DEFAULT_HTTP_PORT)))
             host = getattr(ref_endpoint, "local_address", "127.0.0.1")
             # Plan 045 D4: i2pd 2.60.0 has no JSON-RPC ConnectPeer endpoint.
-            # Use the webconsole ``run_peer_test`` command instead, which
-            # dispatches ``transports.PeerTest()`` and forces an NTCP2
-            # dial to the imported peer (the i2pr RouterInfo).
-            url = f"http://{host}:{port}/?cmd=run_peer_test"
+            # Use the webconsole ``run_peer_test`` command. The webconsole
+            # requires a CSRF ``token`` parameter issued on a recent page
+            # render; we first GET ``/?page=commands`` to receive a token,
+            # parse it, then issue ``?cmd=run_peer_test&token=<n>`` in a
+            # second GET. ``HTTPConnection::HandleCommand`` checks
+            # ``m_Tokens`` so any token issued in the last
+            # ``TOKEN_EXPIRATION_TIMEOUT`` seconds is accepted.
+            commands_url = f"http://{host}:{port}/?page=commands"
+            peer_test_url_template = (
+                f"http://{host}:{port}/?cmd=run_peer_test&token={{token}}"
+            )
             if placement is None:
                 namespace = getattr(ref_endpoint, "namespace", None)
                 if namespace is None:
@@ -251,33 +262,42 @@ class I2pdReferenceTrigger(ReferenceTrigger):
                         description="i2pd reference namespace missing",
                     )
                 prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
-                command = prefix + [
-                    "ip",
-                    "netns",
-                    "exec",
-                    str(namespace),
-                    "curl",
-                    "-fsS",
-                    "-m",
-                    "5",
-                    url,
-                ]
-            else:
-                try:
-                    command = placement.command(["curl", "-fsS", "-m", "5", url])
-                except TopologyContractError as exc:
-                    return TriggerResult(
-                        kind=self.trigger_kind,
-                        observed=False,
-                        description=f"i2pd-http-trigger-placement-error: {exc.code}",
+                def _curl(url: str) -> str:
+                    completed = subprocess.run(
+                        prefix + [
+                            "ip", "netns", "exec", str(namespace),
+                            "curl", "-fsS", "-m", "5", url,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=6.0,
+                        check=False,
                     )
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=6.0,
-                check=False,
-            )
+                    return "" if completed.returncode != 0 else completed.stdout
+            else:
+                def _curl(url: str) -> str:
+                    try:
+                        command = placement.command(["curl", "-fsS", "-m", "5", url])
+                    except TopologyContractError as exc:
+                        return f"__placement_error:{exc.code}"
+                    completed = subprocess.run(
+                        command,
+                        capture_output=True,
+                        text=True,
+                        timeout=6.0,
+                        check=False,
+                    )
+                    return "" if completed.returncode != 0 else completed.stdout
+
+            page = _curl(commands_url)
+            token = _I2PD_CSRF_RE.search(page)
+            if not token:
+                return TriggerResult(
+                    kind=self.trigger_kind,
+                    observed=False,
+                    description="i2pd-http-csrf-token-fetch-failed",
+                )
+            response = _curl(peer_test_url_template.format(token=token.group(1)))
         except (subprocess.TimeoutExpired, OSError) as exc:
             return TriggerResult(
                 kind=self.trigger_kind,
@@ -285,11 +305,11 @@ class I2pdReferenceTrigger(ReferenceTrigger):
                 description=f"i2pd-http-trigger-error: {exc.__class__.__name__}",
                 timed_out=isinstance(exc, subprocess.TimeoutExpired),
             )
-        if completed.returncode != 0:
+        if response.startswith("__placement_error:"):
             return TriggerResult(
                 kind=self.trigger_kind,
                 observed=False,
-                description=f"i2pd-http-trigger-failed: {completed.stderr.strip()[:64] or 'no-stderr'}",
+                description=f"i2pd-http-trigger-placement-{response[len('__placement_error:'):]}",
             )
         return TriggerResult(
             kind=self.trigger_kind,
