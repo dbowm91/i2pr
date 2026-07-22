@@ -196,9 +196,15 @@ fn reason_name(value: StatusReason) -> &'static str {
         StatusReason::ResponderMessage1DecodeFailed => "responder_message1_decode_failed",
         StatusReason::ResponderMessage1OptionsInvalid => "responder_message1_options_invalid",
         StatusReason::ResponderNoiseStateFailed => "responder_noise_state_failed",
-        StatusReason::ResponderSessionCreatedWriteFailed => "responder_session_created_write_failed",
-        StatusReason::ResponderSessionConfirmedPart1Failed => "responder_session_confirmed_part1_failed",
-        StatusReason::ResponderSessionConfirmedPart2Failed => "responder_session_confirmed_part2_failed",
+        StatusReason::ResponderSessionCreatedWriteFailed => {
+            "responder_session_created_write_failed"
+        }
+        StatusReason::ResponderSessionConfirmedPart1Failed => {
+            "responder_session_confirmed_part1_failed"
+        }
+        StatusReason::ResponderSessionConfirmedPart2Failed => {
+            "responder_session_confirmed_part2_failed"
+        }
         StatusReason::ResponderRouterIdentityVerificationFailed => {
             "responder_router_identity_verification_failed"
         }
