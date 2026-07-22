@@ -47,6 +47,22 @@ pub enum StatusReason {
     InvalidScenarioConfig,
     ScenarioRoleMismatch,
     StatusOutputUnavailable,
+    // Plan 052 G1: split the broad responder-handshake-failed reason
+    // into bounded responder-stage classification. These are emitted only
+    // by the responder side and only on a Terminal phase.
+    ResponderTcpAcceptMissing,
+    ResponderAdmissionRejected,
+    ResponderMessage1DecodeFailed,
+    ResponderMessage1OptionsInvalid,
+    ResponderNoiseStateFailed,
+    ResponderSessionCreatedWriteFailed,
+    ResponderSessionConfirmedPart1Failed,
+    ResponderSessionConfirmedPart2Failed,
+    ResponderRouterIdentityVerificationFailed,
+    ResponderHandshakeTimeout,
+    ResponderAuthenticatedLinkInstallFailed,
+    ResponderDataFrameReadFailed,
+    ResponderI2npDecodeFailed,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -175,6 +191,23 @@ fn reason_name(value: StatusReason) -> &'static str {
         StatusReason::InvalidScenarioConfig => "invalid_scenario_config",
         StatusReason::ScenarioRoleMismatch => "scenario_role_mismatch",
         StatusReason::StatusOutputUnavailable => "status_output_unavailable",
+        StatusReason::ResponderTcpAcceptMissing => "responder_tcp_accept_missing",
+        StatusReason::ResponderAdmissionRejected => "responder_admission_rejected",
+        StatusReason::ResponderMessage1DecodeFailed => "responder_message1_decode_failed",
+        StatusReason::ResponderMessage1OptionsInvalid => "responder_message1_options_invalid",
+        StatusReason::ResponderNoiseStateFailed => "responder_noise_state_failed",
+        StatusReason::ResponderSessionCreatedWriteFailed => "responder_session_created_write_failed",
+        StatusReason::ResponderSessionConfirmedPart1Failed => "responder_session_confirmed_part1_failed",
+        StatusReason::ResponderSessionConfirmedPart2Failed => "responder_session_confirmed_part2_failed",
+        StatusReason::ResponderRouterIdentityVerificationFailed => {
+            "responder_router_identity_verification_failed"
+        }
+        StatusReason::ResponderHandshakeTimeout => "responder_handshake_timeout",
+        StatusReason::ResponderAuthenticatedLinkInstallFailed => {
+            "responder_authenticated_link_install_failed"
+        }
+        StatusReason::ResponderDataFrameReadFailed => "responder_data_frame_read_failed",
+        StatusReason::ResponderI2npDecodeFailed => "responder_i2np_decode_failed",
     }
 }
 

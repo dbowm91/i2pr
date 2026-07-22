@@ -127,6 +127,20 @@ STATUS_REASONS = frozenset(
         "invalid_scenario_config",
         "scenario_role_mismatch",
         "status_output_unavailable",
+        # Plan 052 G1: bounded responder-stage classification.
+        "responder_tcp_accept_missing",
+        "responder_admission_rejected",
+        "responder_message1_decode_failed",
+        "responder_message1_options_invalid",
+        "responder_noise_state_failed",
+        "responder_session_created_write_failed",
+        "responder_session_confirmed_part1_failed",
+        "responder_session_confirmed_part2_failed",
+        "responder_router_identity_verification_failed",
+        "responder_handshake_timeout",
+        "responder_authenticated_link_install_failed",
+        "responder_data_frame_read_failed",
+        "responder_i2np_decode_failed",
     }
 )
 
