@@ -296,7 +296,11 @@ class I2pdReferenceTrigger(ReferenceTrigger):
             session_id = f"i2pr-interop-{int(time.time())}"
             hello = 'HELLO VERSION MIN=3.0 MAX=3.0\n'
             session_create = (
-                f'SESSION CREATE STYLE=STREAM ID={session_id} DESTINATION={destination_b64}\n'
+                f'SESSION CREATE STYLE=STREAM ID={session_id} DESTINATION=TRANSIENT\n'
+            )
+            stream_connect = (
+                f'STREAM CONNECT ID={session_id} DESTINATION={destination_b64} '
+                f'SILENT=false\n'
             )
             if placement is None:
                 namespace = getattr(ref_endpoint, "namespace", None)
@@ -327,10 +331,11 @@ class I2pdReferenceTrigger(ReferenceTrigger):
                     "port": port,
                     "hello": hello,
                     "session_create": session_create,
+                    "stream_connect": stream_connect,
                 }),
                 capture_output=True,
                 text=True,
-                timeout=8.0,
+                timeout=30.0,
                 check=False,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
@@ -357,6 +362,7 @@ class I2pdReferenceTrigger(ReferenceTrigger):
             probe_payload = {}
         session_reply = str(probe_payload.get("session_reply", ""))
         hello_reply = str(probe_payload.get("hello_reply", ""))
+        stream_reply = str(probe_payload.get("stream_reply", ""))
         if "SESSION STATUS RESULT=OK" not in session_reply:
             return TriggerResult(
                 kind=self.trigger_kind,
@@ -366,10 +372,19 @@ class I2pdReferenceTrigger(ReferenceTrigger):
                     f"session={session_reply[:128]!r}"
                 ),
             )
+        if not stream_reply or "STREAM STATUS RESULT=OK" not in stream_reply:
+            return TriggerResult(
+                kind=self.trigger_kind,
+                observed=False,
+                description=(
+                    f"i2pd-sam-trigger-stream-rejected: "
+                    f"stream={stream_reply[:128]!r}"
+                ),
+            )
         return TriggerResult(
             kind=self.trigger_kind,
             observed=True,
-            description="i2pd-sam-stream-session-issued",
+            description="i2pd-sam-stream-connect-issued",
         )
 
     @staticmethod
@@ -452,15 +467,32 @@ host = config["host"]
 port = int(config["port"])
 hello = config["hello"].encode("ascii")
 session_create = config["session_create"].encode("ascii")
+stream_connect = config["stream_connect"].encode("ascii")
 
 sock = socket.create_connection((host, port), timeout=3)
 sock.settimeout(5)
 
 
-def _recv_one_response(sock: socket.socket) -> str:
+def _read_until_blank_line(sock: socket.socket, max_bytes: int = 8192) -> str:
+    buf = bytearray()
+    while not buf.endswith(b"\\n\\n") and len(buf) < max_bytes:
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        buf.extend(chunk)
+    return buf.decode("ascii", errors="replace")
+
+
+def _read_one_line(sock: socket.socket) -> str:
     buf = bytearray()
     while not buf.endswith(b"\\n"):
-        chunk = sock.recv(4096)
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            break
         if not chunk:
             break
         buf.extend(chunk)
@@ -470,11 +502,20 @@ def _recv_one_response(sock: socket.socket) -> str:
 
 
 sock.sendall(hello)
-hello_reply = _recv_one_response(sock)
+hello_reply = _read_one_line(sock)
 
 sock.sendall(session_create)
-session_reply = _recv_one_response(sock)
+session_reply = _read_one_line(sock)
+
+stream_reply = ""
+if "RESULT=OK" in session_reply:
+    sock.sendall(stream_connect)
+    stream_reply = _read_one_line(sock)
 
 sock.close()
-sys.stdout.write(json.dumps({"hello_reply": hello_reply, "session_reply": session_reply}))
+sys.stdout.write(json.dumps({
+    "hello_reply": hello_reply,
+    "session_reply": session_reply,
+    "stream_reply": stream_reply,
+}))
 """
