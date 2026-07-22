@@ -98,8 +98,7 @@ def _scenario_main(args: argparse.Namespace) -> int:
     env["I2PR_INTEROP_ROOTLESS_INNER"] = "1"
     env["I2PR_INTEROP_ROOTLESS_ATTESTATION_SHA256"] = attestation.attestation_sha256
     env["I2PR_INTEROP_ROOTLESS_PARENT_STATE_UNCHANGED"] = "1" if attestation.parent_network_state_unchanged else "0"
-    if "I2PR_INTEROP_DUMP_RUN_LOGS" not in env:
-        env["I2PR_INTEROP_DUMP_RUN_LOGS"] = "1"
+    env.setdefault("I2PR_INTEROP_DIAGNOSTICS", "off")
     mixed_runner = repo_root / "tests/integration/ntcp2/harness/mixed_runner.py"
     evidence_dir = repo_root / "target/interop/evidence"
     evidence_dir.mkdir(mode=0o700, parents=True, exist_ok=True)

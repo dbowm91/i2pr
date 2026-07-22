@@ -129,6 +129,26 @@ def _run_id() -> str:
     return f"mixed-{dt.datetime.now(dt.UTC).strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
 
+ALLOWED_DIAGNOSTICS_MODES = frozenset({"off", "sanitized", "raw-local"})
+
+
+def _diagnostics_mode() -> str:
+    """Return the effective Plan 052 diagnostic mode.
+
+    Plan 052 narrows the prior ``I2PR_INTEROP_DUMP_RUN_LOGS`` switch into a
+    tri-state ``I2PR_INTEROP_DIAGNOSTICS`` env var. ``raw-local`` may never
+    land under an export root; the sanitizer rejects that combination.
+    """
+
+    raw = os.environ.get("I2PR_INTEROP_DIAGNOSTICS", "off")
+    if raw not in ALLOWED_DIAGNOSTICS_MODES:
+        raise MixedRunError("invalid-diagnostics-mode")
+    if raw == "raw-local" and "INTEROP_EVIDENCE_DIR" in os.environ:
+        # Plan 052 forbids raw-local capture into an evidence/export root.
+        raise MixedRunError("raw-local-diagnostics-forbidden-under-export-root")
+    return raw
+
+
 def load_mixed_scenario(repo_root: Path, scenario_id: str) -> MixedDirection:
     scenario_dir = repo_root / "tests/integration/ntcp2/mixed-scenarios"
     for path in sorted(scenario_dir.glob("*.toml")):
@@ -658,7 +678,8 @@ def run(args: argparse.Namespace) -> int:
                 evidence_path = None
         try:
             if run_dir.exists():
-                if os.environ.get("I2PR_INTEROP_DUMP_RUN_LOGS") == "1":
+                diagnostics_mode = _diagnostics_mode()
+                if diagnostics_mode == "raw-local":
                     try:
                         evidence_root.mkdir(mode=0o700, parents=True, exist_ok=True)
                         logs_dest = evidence_root / f"{run_dir.name}-{reference}-raw-logs"
