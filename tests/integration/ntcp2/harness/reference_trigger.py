@@ -168,11 +168,10 @@ class JavaReferenceTrigger(ReferenceTrigger):
             )
         try:
             port = int(os.environ.get("I2PR_JAVA_SAM_PORT", str(self.DEFAULT_SAM_PORT)))
-            host = getattr(ref_endpoint, "local_address", "127.0.0.1")
-            payload = (
-                'HELLO VERSION MIN=3.0 MAX=3.0\n'
-                'SESSION CREATE STYLE=STREAM ID=i2pr-interop DESTINATION=TRANSIENT\n'
-            ).encode("ascii")
+            host = "127.0.0.1"
+            hello = 'HELLO VERSION MIN=3.0 MAX=3.0\n'
+            session_create = 'SESSION CREATE STYLE=STREAM ID=i2pr-interop DESTINATION=TRANSIENT\n'
+            session_id_value = f"i2pr-interop-{int(time.time())}"
             if placement is None:
                 namespace = getattr(ref_endpoint, "namespace", None)
                 if namespace is None:
@@ -182,10 +181,10 @@ class JavaReferenceTrigger(ReferenceTrigger):
                         description="java reference namespace missing",
                     )
                 prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
-                command = prefix + ["ip", "netns", "exec", str(namespace), "python3", "-c", _SAM_PROBE]
+                command = prefix + ["ip", "netns", "exec", str(namespace), "python3", "-u", "-c", _SAM_PROBE]
             else:
                 try:
-                    command = placement.command(["python3", "-c", _SAM_PROBE])
+                    command = placement.command(["python3", "-u", "-c", _SAM_PROBE])
                 except TopologyContractError as exc:
                     return TriggerResult(
                         kind=self.trigger_kind,
@@ -194,7 +193,13 @@ class JavaReferenceTrigger(ReferenceTrigger):
                     )
             completed = subprocess.run(
                 command,
-                input=json.dumps({"host": host, "port": port, "payload": payload.decode("ascii")}),
+                input=json.dumps({
+                    "host": host,
+                    "port": port,
+                    "hello": hello,
+                    "session_create": session_create,
+                    "stream_connect": "",
+                }),
                 capture_output=True,
                 text=True,
                 timeout=5.0,
@@ -215,6 +220,20 @@ class JavaReferenceTrigger(ReferenceTrigger):
                     f"java-sam-trigger-failed: rc={completed.returncode} "
                     f"err={(completed.stderr.strip()[:200] or 'no-stderr')!r} "
                     f"out={(completed.stdout.strip()[:200] or 'no-stdout')!r}"
+                ),
+            )
+        probe_payload: dict[str, object] = {}
+        try:
+            probe_payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            probe_payload = {}
+        session_reply = str(probe_payload.get("session_reply", ""))
+        if "SESSION STATUS RESULT=OK" not in session_reply:
+            return TriggerResult(
+                kind=self.trigger_kind,
+                observed=False,
+                description=(
+                    f"java-sam-trigger-rejected: session={session_reply[:128]!r}"
                 ),
             )
         return TriggerResult(
