@@ -211,7 +211,11 @@ class JavaReferenceTrigger(ReferenceTrigger):
             return TriggerResult(
                 kind=self.trigger_kind,
                 observed=False,
-                description=f"java-sam-trigger-failed: {completed.stderr.strip()[:64] or 'no-stderr'}",
+                description=(
+                    f"java-sam-trigger-failed: rc={completed.returncode} "
+                    f"err={(completed.stderr.strip()[:200] or 'no-stderr')!r} "
+                    f"out={(completed.stdout.strip()[:200] or 'no-stdout')!r}"
+                ),
             )
         return TriggerResult(
             kind=self.trigger_kind,
