@@ -137,6 +137,7 @@ _ALLOWED_KNOWN_DEVIATION = {
     "typed-harness-operation-failed",
     "not-started",
     "dual-authenticated-reference-observation",
+    "i2pr-responder-handshake-failed",
     "authenticated-link-observation-missing",
     "typed-reference-pair-operation-failed",
     "run-root-delete-failed",
