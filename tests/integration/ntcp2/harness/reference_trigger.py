@@ -294,10 +294,10 @@ class I2pdReferenceTrigger(ReferenceTrigger):
             port = int(os.environ.get("I2PR_I2PD_SAM_PORT", str(self.DEFAULT_SAM_PORT)))
             host = "127.0.0.1"
             session_id = f"i2pr-interop-{int(time.time())}"
-            payload = (
-                'HELLO VERSION MIN=3.0 MAX=3.0\n'
+            hello = 'HELLO VERSION MIN=3.0 MAX=3.0\n'
+            session_create = (
                 f'SESSION CREATE STYLE=STREAM ID={session_id} DESTINATION={destination_b64}\n'
-            ).encode("ascii")
+            )
             if placement is None:
                 namespace = getattr(ref_endpoint, "namespace", None)
                 if namespace is None:
@@ -322,7 +322,12 @@ class I2pdReferenceTrigger(ReferenceTrigger):
                     )
             completed = subprocess.run(
                 command,
-                input=json.dumps({"host": host, "port": port, "payload": payload.decode("ascii")}),
+                input=json.dumps({
+                    "host": host,
+                    "port": port,
+                    "hello": hello,
+                    "session_create": session_create,
+                }),
                 capture_output=True,
                 text=True,
                 timeout=8.0,
@@ -345,11 +350,21 @@ class I2pdReferenceTrigger(ReferenceTrigger):
                     f"out={(completed.stdout.strip()[:200] or 'no-stdout')!r}"
                 ),
             )
-        if "SESSION STATUS RESULT=OK" not in completed.stdout:
+        probe_payload: dict[str, object] = {}
+        try:
+            probe_payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            probe_payload = {}
+        session_reply = str(probe_payload.get("session_reply", ""))
+        hello_reply = str(probe_payload.get("hello_reply", ""))
+        if "SESSION STATUS RESULT=OK" not in session_reply:
             return TriggerResult(
                 kind=self.trigger_kind,
                 observed=False,
-                description=f"i2pd-sam-trigger-rejected: {completed.stdout.strip()[:64]}",
+                description=(
+                    f"i2pd-sam-trigger-rejected: hello={hello_reply[:48]!r} "
+                    f"session={session_reply[:128]!r}"
+                ),
             )
         return TriggerResult(
             kind=self.trigger_kind,
@@ -435,22 +450,31 @@ import sys
 config = json.loads(sys.stdin.read())
 host = config["host"]
 port = int(config["port"])
-payload = config["payload"].encode("ascii")
+hello = config["hello"].encode("ascii")
+session_create = config["session_create"].encode("ascii")
+
 sock = socket.create_connection((host, port), timeout=3)
-sock.sendall(payload)
-sock.settimeout(3)
-chunks = []
-while True:
-    try:
+sock.settimeout(5)
+
+
+def _recv_one_response(sock: socket.socket) -> str:
+    buf = bytearray()
+    while not buf.endswith(b"\\n"):
         chunk = sock.recv(4096)
-    except socket.timeout:
-        break
-    if not chunk:
-        break
-    chunks.append(chunk)
-    if len(b"".join(chunks)) >= 256:
-        break
-response = b"".join(chunks).decode("ascii", errors="replace")
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) >= 4096:
+            break
+    return buf.decode("ascii", errors="replace")
+
+
+sock.sendall(hello)
+hello_reply = _recv_one_response(sock)
+
+sock.sendall(session_create)
+session_reply = _recv_one_response(sock)
+
 sock.close()
-sys.stdout.write(json.dumps({"response": response}))
+sys.stdout.write(json.dumps({"hello_reply": hello_reply, "session_reply": session_reply}))
 """
