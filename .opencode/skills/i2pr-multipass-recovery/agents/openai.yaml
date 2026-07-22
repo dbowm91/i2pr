@@ -1,0 +1,4 @@
+interface:
+  display_name: "I2PR Multipass Recovery"
+  short_description: "Plan 048/049/050/051 Multipass recovery lane"
+  default_prompt: "Use $i2pr-multipass-recovery to operate, diagnose, or extend the Plan 048/049/050 Multipass recovery lane for NTCP2 interoperability evidence."

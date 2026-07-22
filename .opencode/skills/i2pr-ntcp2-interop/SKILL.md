@@ -1,44 +1,59 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, typed evidence validation, cleanup, and fail-closed result interpretation. Use when Codex is asked to run Plan 038, prepare its reference routers, add scenarios or adapters, inspect interoperability outcomes, or update this apparatus.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/045 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, Plan 044 mixed-runner composition, typed evidence validation, and cleanup. Use when an agent is asked to run a Plan 038 profile on the host, prepare the reference routers, add or modify a scenario, dispatch a bounded Plan 044 mixed direction, or validate evidence. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 Multipass recovery lane.
 ---
 
-# I2PR NTCP2 interoperability
+# I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045)
 
-Use this skill from the repository root for the manual, opt-in Plan 038/040/041/042/043/044/046/047/048/049
-harness. Read `AGENTS.md`, `plans/043-ubuntu-build-system-interop-gates.md`,
+Use this skill from the repository root for the **host-side** Ubuntu 24.04
+amd64 Plan 038 reference-router NTCP2 interoperability harness. This skill
+intentionally does **not** cover the Plan 046 rootless sealed-namespace lane
+or the Plan 048/049/050/051 Multipass recovery lane — load those companion
+skills for those lanes.
+
+Read `AGENTS.md`, `plans/038-ubuntu-reference-router-interoperability-harness.md`,
+`plans/040-interop-apparatus-corrective-pass.md`,
+`plans/041-reference-router-private-crosscheck.md`,
+`plans/043-ubuntu-build-system-interop-gates.md`,
 `plans/044-ntcp2-interop-final-integration-corrective-pass.md`,
-`plans/046-rootless-sealed-namespace-evidence-lane.md`,
-`plans/047-cross-host-rootless-lane-expansion.md`,
-`plans/048-multipass-permissive-rootless-evidence-environment.md`,
-`plans/049-multipass-lifecycle-ownership-corrective-pass.md`,
-`plans/038-ubuntu-reference-router-interoperability-harness.md`,
-`tests/integration/ntcp2/README.md`, and the relevant architecture/ADR files
-before changing the apparatus.
+`plans/045-ntcp2-mixed-router-proof-closure-corrective-pass.md`,
+`plans/045-closure-attempt.md`, `tests/integration/ntcp2/README.md`, and the
+relevant `docs/adr/` records before changing the harness.
 
-The canonical reference identifiers are `java_i2p` and `i2pd`. The locked
-source objects are Java I2P
-`2800040deee9bb376567b671ef2e9c34cf3e30b6` and i2pd
-`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`; abbreviated revisions are not
+The canonical reference identifiers are `java_i2p` and `i2pd`. Locked source
+objects: Java I2P `2800040deee9bb376567b671ef2e9c34cf3e30b6` and i2pd
+`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`. Abbreviated revisions are not
 valid cache or evidence inputs.
+
+## Companion skills (load before doing this lane)
+
+- `i2pr-rootless-sandbox` — Plan 046 host-side rootless sealed-namespace lane.
+- `i2pr-multipass-recovery` — Plan 048/049/050 Multipass recovery lane
+  (atomic lifecycle, cloud-init taxonomy, base verify, four Plan 045 directions,
+  sanitized export, selective purge, and the Plan 051 dispatch-gate
+  troubleshooting bridge).
+
+If the host emits `blocked_unprivileged_user_namespace` from the Plan 046
+probe, do not try to recover inside Plan 038. Hand off to
+`i2pr-multipass-recovery`.
 
 ## Safety boundary
 
 Treat the harness as experimental infrastructure, not an anonymity or security
-tool. Never enable `i2pr-daemon`, use public egress, perform DNS/bootstrap or
-reseed, retain identities/keys/RouterInfo/raw logs/packet captures, or turn a
-local self-handshake, loopback run, vector, or testkit result into Java I2P or
-i2pd interoperability evidence. Keep support rows experimental and
+tool. **Never** enable `i2pr-daemon`, use public egress, perform DNS / bootstrap
+/ reseed, retain identities/keys/RouterInfo/raw logs/packet captures, or turn
+a local self-handshake, loopback run, vector, or testkit result into Java I2P
+or i2pd interoperability evidence. Keep support rows experimental and
 non-advertised unless sanitized evidence satisfies `specs/CONFORMANCE.md`.
 
 Run only on an authorized disposable Ubuntu 24.04 amd64 host. The namespace
 and firewall checks are mandatory and fail closed. Do not bypass a host,
 privilege, route, cleanup, or evidence validation error.
 
-The exact host contract is Ubuntu 24.04 amd64/x86_64, Bash 4+, a UTF-8 locale,
-non-interactive `sudo` when not root, Linux namespace/nftables capability, and
-at least 4 GiB free under `target/`. The declared package set and all cache
-identity inputs are authoritative in
+The exact host contract is Ubuntu 24.04 amd64/x86_64, Bash 4+, UTF-8 locale,
+non-interactive `sudo` when not root, Linux namespace/nftables capability,
+and ≥4 GiB free under `target/`. Declared package set and locked source,
+IzPack, cache, and build-command inputs are authoritative in
 `tests/integration/ntcp2/references.lock.toml`.
 
 ## Plan 042 runtime and launcher boundary
@@ -49,37 +64,34 @@ authenticated frame state, bounded queues, and child joins. The
 `i2pr-transport-ntcp2` state machines remain runtime-neutral and receive only
 complete bounded actions. `tools/i2pr-interop` is a non-production launcher
 seam: it validates bounded non-secret scenario input and composes the runtime
-driver, but it must never activate `i2pr-daemon`.
+driver, but it must **never** activate `i2pr-daemon`.
 
 The launcher status protocol has separate meanings. A completed `listen` emits
 listener readiness and then a distinct authenticated terminal result; `dial`
 emits one terminal typed result; and `inspect` emits redacted state metadata.
-Listener readiness is not authentication. The current checkout composes the
-runtime-owned handshake executor, authenticated link owner, listener/dial
-promotion, and DeliveryStatus smoke. State, handshake, data-phase, timeout,
-and cleanup failures are typed terminal results; none is evidence by itself.
+Listener readiness is not authentication.
 
 Plan 042 selects the existing fixed-size DeliveryStatus message (I2NP type 10)
 for the first data smoke: 12-byte body, 21-byte NTCP2/SSU2 short transport
-encoding, and 24-byte NTCP2 block before frame overhead and padding. A positive
-gate requires one authenticated outbound and one authenticated inbound
-DeliveryStatus per direction plus orderly cleanup. Reference acceptance or
-echo behavior is not yet verified; do not claim interoperability or substitute
-padding/TCP readiness for the message exchange.
+encoding, and 24-byte NTCP2 block before frame overhead and padding. A
+positive gate requires one authenticated outbound and one authenticated
+inbound DeliveryStatus per direction plus orderly cleanup. Reference acceptance
+or echo behavior is not yet verified; do not claim interoperability or
+substitute padding/TCP readiness for the message exchange.
 
-## Plan 044 mixed-runner composition
+## Plan 044 mixed-runner composition (host-side executor)
 
-The checkout now contains the four directional mixed-scenario definitions under
+The checkout contains the four directional mixed-scenario definitions under
 `tests/integration/ntcp2/mixed-scenarios/`: `i2pr-to-java-ipv4`,
 `java-to-i2pr-ipv4`, `i2pr-to-i2pd-ipv4`, and `i2pd-to-i2pr-ipv4`. Each
-direction has a unique execution ID, one declared initiator and responder, and
-one terminal typed result.
+direction has a unique execution ID, one declared initiator and responder,
+and one terminal typed result.
 
 The mixed runner composes `I2prAdapter` with each reference adapter through
 a strict launcher scenario renderer. The renderer populates the exact launcher
 schema with execution-specific scenario ID, role, address family, synthetic
-endpoints, private network ID 99, confined state directory, deadlines, padding
-profile, smoke-message profile, and expected-result class.
+endpoints, private network ID 99, confined state directory, deadlines,
+padding profile, smoke-message profile, and expected-result class.
 
 The data-phase oracle does not rely on an echo assumption. It uses a
 protocol-valid trigger supported by both pinned references. Evidence records
@@ -89,9 +101,12 @@ and cleanup disposition.
 
 Gate archival uses gate-specific staging to prevent cross-gate record
 relabeling. The aggregate manifest must include exactly the expected records
-for the selected profile; missing, extra, mislabeled, or zero-valued
-records fail the gate. No completed mixed-router i2pr record is present;
-these are explicit blockers, not skipped successes.
+for the selected profile; missing, extra, mislabeled, or zero-valued records
+fail the gate. **No completed mixed-router i2pr record is present; these are
+explicit blockers, not skipped successes.** The single directional record
+that landed during the Plan 045 closure attempt is described in
+`plans/045-closure-attempt.md` and exists only as a sanitized evidence file
+plus its corresponding typed blockers for the other three directions.
 
 ## Plan 043 workflow
 
@@ -111,8 +126,8 @@ contract -> reference-build -> reference-offline-reuse -> environment-smoke
    `check-host.sh --pre-install`, the declared `setup-host.sh`, and
    `check-host.sh --post-install`.
 3. Build exact reference caches with `build-references.sh --force-rebuild`.
-   This is the only network-enabled phase and records source/tool/artifact/tree
-   hashes. Resolve only through `target/interop/cache/current-cache.json`.
+   This is the only network-enabled phase and records source/tool/artifact/
+   tree hashes. Resolve only through `target/interop/cache/current-cache.json`.
 4. Restore the verified cache and run `build-references.sh --offline`.
    Re-hash the complete runtime tree. A cache miss or metadata mismatch is a
    hard failure; never fetch or choose an arbitrary cache.
@@ -126,178 +141,139 @@ contract -> reference-build -> reference-offline-reuse -> environment-smoke
    sanitized finalization, and clean state. Run `full` only afterward; it adds
    bounded adversarial/resource cases and never unbounded fuzzing.
 7. Validate every record and the aggregate manifest with
-   `validate-evidence.py` and `check-ntcp2-interoperability.sh`. Empty evidence,
-   placeholders, forbidden content, missing scenarios, extra passed records,
-   hash mismatches, or incomplete direction coverage fail the gate.
+   `validate-evidence.py` and `check-ntcp2-interoperability.sh`. Empty
+   evidence, placeholders, forbidden content, missing scenarios, extra passed
+   records, hash mismatches, or incomplete direction coverage fail the gate.
 8. Record the clean-host baseline before privileged execution with
    `sudo -E bash scripts/interop/verify-clean-host.sh --record-baseline`.
    Always run `cleanup.sh`, then verify with
    `sudo -E bash scripts/interop/verify-clean-host.sh --verify --baseline
    target/interop/build/clean-host-baseline.json`. Reject residual namespaces,
-   veths, child processes, secret-bearing run roots, forbidden retained files,
-   or attributable host nftables/routes/forwarding changes. Cleanup
+   veths, child processes, secret-bearing run roots, forbidden retained
+   files, or attributable host nftables/routes/forwarding changes. Cleanup
    verification failure overrides protocol success.
 
 The workflow and helper apparatus expose the ordered manual Plan 043 lane,
-including clean-host verification and aggregate validation, but no completed
-successful aggregate run is present. Treat that as an explicit Plan 043
+including clean-host verification and aggregate validation, but **no completed
+successful aggregate run is present.** Treat that as an explicit Plan 043
 blocker, not a skipped pass. Retain only sanitized typed records and approved
 hashes under `target/interop/evidence/`.
 
-Consult [operations.md](references/operations.md) for command routing,
-profiles, typed outcomes, and implementation-specific stop conditions.
+## Result interpretation
+
+- `blocked_host_contract` — no router process or protocol claim was made.
+- `i2pr-mixed-router-profile-not-wired` — the active scenario ID is not
+  allowlisted for the current mixed-router gate.
+- Rejected configuration/state, authentication, timeout, cleanup, or
+  evidence-validation failures remain typed and visible. **Never** convert
+  them to pass or omit them from the closure record.
+- An empty evidence directory is not success. Plan 041 reference-pair records
+  are harness controls, not i2pr mixed-router evidence.
+- For Plan 046 typed host-level blockers (e.g.,
+  `blocked_unprivileged_user_namespace`), hand off to
+  `i2pr-multipass-recovery`.
+- A blocked profile, a reference-only control record, or a typed blocker is
+  **never** an i2pr interoperability result. Do not advertise NTCP2 and do
+  not close Milestone 3.
+
+## Authoritative command surface (host-side)
+
+Run from the repository root:
+
+```text
+# Host + build gates
+bash scripts/interop/ubuntu/check-host.sh --pre-install
+sudo bash scripts/interop/ubuntu/setup-host.sh
+bash scripts/interop/ubuntu/check-host.sh --post-install
+bash scripts/interop/build-references.sh
+bash scripts/interop/build-references.sh --offline
+
+# Profiles
+sudo -E bash scripts/interop/run-matrix.sh --profile environment-smoke
+sudo -E bash scripts/interop/run-matrix.sh --profile reference-crosscheck-ipv4
+sudo -E bash scripts/interop/run-matrix.sh --profile handshake-smoke
+sudo -E bash scripts/interop/run-matrix.sh --profile full
+
+# One bounded run
+sudo -E bash scripts/interop/run-scenario.sh --scenario smoke-java-ipv4 --reference java_i2p
+sudo -E bash scripts/interop/run-scenario.sh --scenario smoke-i2pd-ipv4 --reference i2pd
+
+# Validation and cleanup
+bash scripts/interop/validate-evidence.py
+python3 scripts/interop/aggregate-evidence.py --profile <profile>
+bash scripts/check-ntcp2-interoperability.sh
+sudo -E bash scripts/interop/cleanup.sh
+sudo -E bash scripts/interop/verify-clean-host.sh --verify \
+    --baseline target/interop/build/clean-host-baseline.json
+```
+
+For the Plan 046 rootless sealed-namespace lane (`probe-rootless-sandbox.sh`,
+`rootless-enter.sh`, `check-rootless-interop-boundary.sh`), use the
+`i2pr-rootless-sandbox` skill.
+
+For the Plan 048/049/050/051 Multipass recovery lane (`run-evidence-lane.sh`,
+`create.sh`, `prepare-offline.sh`, `probe.sh`, `snapshot.sh`, `restore.sh`,
+`transfer-source.sh`, `transfer-cache.sh`, `verify-base.sh`,
+`cloud-init-status.sh`, `verify-clean-host.sh`, `selective-purge.sh`,
+`run-matrix.sh`, `run-direction.sh`, `export-evidence.sh`, `dispatch-gate.sh`,
+`check-multipass-interop-boundary.sh`), use the `i2pr-multipass-recovery`
+skill.
+
+## Files to inspect
+
+- `tests/integration/ntcp2/references.lock.toml` — Ubuntu contract, source
+  pins, build commands, exact IzPack SHA-256.
+- `tests/integration/ntcp2/scenarios/*.toml` — the eight bounded i2pr/
+  reference scenario definitions. IDs synchronized with
+  `tests/integration/ntcp2/manifest.toml`.
+- `tests/integration/ntcp2/reference-scenarios/` — Plan 041 pair schema and the
+  two directional Java I2P / i2pd control scenarios.
+- `tests/integration/ntcp2/mixed-scenarios/` — the four Plan 044 directional
+  i2pr/reference scenarios.
+- `tests/integration/ntcp2/harness/` — Python topology, adapters, process
+  bounds, runner, evidence, mixed-runner, launcher renderer, data-phase
+  oracle, reference-trigger, rootless supervisor, and multipass code.
+- `scripts/interop/` — host setup, builders, isolation, matrix, gate staging,
+  aggregate, cleanup.
+- `scripts/check-ntcp2-interoperability.sh`,
+  `scripts/check-fixture-manifest.sh`, `scripts/check-ntcp2-vectors.sh` —
+  static gate checkers.
+- `tools/i2pr-interop/` — non-production launcher seam. The current checkout
+  composes bounded state preparation, listener/dial, handshake, authenticated
+  link, and DeliveryStatus smoke through the Plan 044 mixed-runner. Its
+  success is local driver validation only.
+- `target/interop/evidence/` — sanitized records only; gate-prefixed files
+  live alongside `run-manifest.json`. `target/interop/runs/` is
+  secret-bearing and is deleted after every run.
 
 ## Development rules
 
 Keep production ownership boundaries intact: runtime owns Tokio tasks and
 sockets; transport contracts remain runtime-neutral; the launcher crate under
-`tools/i2pr-interop` is a non-production seam and must not activate the daemon.
-Add negative-path tests for new configuration, topology, process, parser, or
-evidence behavior. Prefer deterministic local checks and never add raw network
-fixtures or secrets.
+`tools/i2pr-interop` is a non-production seam and must not activate the
+daemon. Add negative-path tests for new configuration, topology, process,
+parser, or evidence behavior. Prefer deterministic local checks and never add
+raw network fixtures or secrets.
 
-Before handoff, run the repository's required Rust, boundary, fixture/vector,
-interoperability, Python harness, and shell syntax checks. Record commands,
-results, host constraints, and any blocked stop condition in a closure record;
-do not report a blocked profile as a passing interoperability result.
-
-## Plan 046 rootless sealed-namespace lane
-
-Plan 046 replaces the host-global namespace requirement for the primary NTCP2
-interoperability evidence path with a **rootless, process-scoped sandbox**.
-The primary mixed-router evidence topology is `rootless-sealed-single-netns`
-with privilege model `unprivileged-userns`. The legacy
-`privileged-dual-netns-veth` topology is renamed and reserved for explicit
-later qualification work; it is never the default and never a silent
-fallback.
-
-The lane introduces:
-
-- `tests/integration/ntcp2/harness/interop_topology.py` — topology contract
-  with `InteropTopology`, `ProcessPlacement`, `select_topology`, and a
-  registry locked to the two allowed topology kinds.
-- `tests/integration/ntcp2/harness/rootless_topology.py` —
-  `RootlessSealedTopology` backend (`topology_kind =
-  "rootless-sealed-single-netns"`, `privilege_model = "unprivileged-userns"`).
-  Adapter `placement()` returns an empty prefix; the inner process is
-  required to set `I2PR_INTEROP_ROOTLESS_INNER=1`; the structural checks
-  (`_can_bind`, `_external_connect_attempt`) gate passed records.
-- `tests/integration/ntcp2/harness/rootless_supervisor.py` — inner
-  supervisor that verifies single-ID UID/GID maps, `no_new_privs`, distinct
-  user/network/mount/PID namespaces, `lo` readiness, synthetic bind,
-  absence of default/external routes, and a bounded external connect probe.
-  Writes a sanitized `IsolationAttestation` whose sha256 is bound to every
-  passed mixed-router evidence record. Emits typed `probe-status` JSON.
-- `scripts/interop/rootless-enter.sh` — outer entrypoint that creates the
-  sandbox via `unshare --user --net --mount --pid --fork --propagation
-  private --mount-proc --map-root-user`, accepts only allowlisted
-  operations, has no shell `eval`, and never falls back to the privileged
-  backend.
-- `scripts/interop/probe-rootless-sandbox.sh` — capability probe that
-  validates host capability to run the sandbox without `sudo`/host capability
-  grants and emits a typed JSON blocker on failure.
-- `scripts/check-rootless-interop-boundary.sh` — static boundary checker
-  that fails the change when rootless-owned files contain prohibited
-  patterns (sudo, `ip netns add`, `nft`, `setcap`, `--privileged`,
-  `--network host`, fallback to privileged backend) or omit required
-  contracts (gate catalog entries, sandbox attestation requirement).
-- `.github/workflows/ntcp2-interop-rootless.yml` — manual no-escalation
-  workflow with `permissions: contents: read` and `workflow_dispatch`
-  trigger only.
-
-The new command surface is:
+Before handoff, run from the repository root, in this order:
 
 ```text
-bash scripts/interop/probe-rootless-sandbox.sh                       # typed blocker or usable
-bash scripts/interop/rootless-enter.sh --probe                       # sandbox-only verify
-bash scripts/interop/rootless-enter.sh --scenario <id> --reference <ref> \
-    --build-cache <path> --run-root <path>
-bash scripts/interop/run-matrix.sh --profile handshake-smoke-rootless
+cargo fmt --all --check
+cargo check --workspace --all-targets
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+bash scripts/check-fixture-manifest.sh        # when I2NP fixture bytes change
+bash scripts/check-ntcp2-vectors.sh           # when NTCP2 vector bytes change
+bash scripts/check-ntcp2-interoperability.sh  # when ntcp2 evidence/manifest change
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
 ```
 
-Mixed-router evidence records now carry `topology_kind`, `privilege_model`,
-`sandbox_attestation_sha256`, and `parent_network_state_unchanged`. A passed
-record that violates any of these is rejected. The lane forbids automatic
-fallback to the privileged topology; a missing rootless capability is a
-typed blocker, not a skipped success. NTCP2 remains experimental and
-non-advertised; Milestone 3 is still open.
+Record commands, results, host constraints, and any blocked stop condition
+in a closure record; do not report a blocked profile as a passing
+interoperability result.
 
-### Plan 046 closure and Plan 047 follow-up
-
-Plan 046 is closed with a typed host-level blocker. On this checkout the
-probe (host shell and `ssh i2ptest@localhost`) emits the canonical typed
-blocker `blocked_unprivileged_user_namespace` and writes it to the
-attestation path; the on-host evidence is at
-`target/interop/evidence/handshake-smoke-rootless--host-blocked/`. The
-cause is `kernel.apparmor_restrict_unprivileged_userns=1` confining every
-unprivileged user namespace to a restrictive AppArmor policy even though
-`kernel.unprivileged_userns_clone=1`. The ordinary user has no
-`CAP_MAC_ADMIN` and no other lever to lift that policy, and Plan 046
-forbids `sudo`. Plan 047 (`plans/047-cross-host-rootless-lane-expansion.md`)
-records cross-host recovery for hosts where the AppArmor restriction is
-`0` (or AppArmor is unloaded).
-
-## Plan 048/049/050 Multipass recovery environment
-
-The host-level Plan 046 blocker is the negative baseline, not a universal
-failure. On a host with Multipass, Plan 048 uses the disposable Ubuntu 24.04
-amd64 instance described by `scripts/interop/multipass/environment.toml` to
-exercise the `host.apparmor-restrict-off` recovery category. Plan 049 corrects
-its lifecycle ownership contract. Plan 050 minimizes the cloud-init unit
-(no `rustup` or host toolchain inside the guest), adds a sanitized
-cloud-init failure taxonomy, a `--guest-probe-only` flow, and a
-selective-purge remediation that requires a verified ownership contract.
-The host's AppArmor and user-namespace policy must remain unchanged.
-
-The reviewed environment contract has a stable environment ID, separate from
-the generated run ID, concrete instance name, and instance generation. The
-default path allocates a collision-resistant name and reserves a versioned
-host lifecycle record atomically before launch; the legacy
-`i2pr-interop-rootless` name is not authoritative.
-
-Use the lifecycle-owned command surface from the repository root:
-
-```text
-bash scripts/interop/multipass/run-evidence-lane.sh --all
-bash scripts/interop/multipass/run-evidence-lane.sh --all \
-  --run-id <safe-id> --destroy-after-export
-bash scripts/interop/multipass/run-evidence-lane.sh --inspect --run-id <safe-id>
-bash scripts/interop/multipass/run-evidence-lane.sh --all --resume-owned \
-  --run-id <safe-id>
-bash scripts/interop/multipass/run-evidence-lane.sh --all --adopt-owned \
-  --run-id <safe-id>
-bash scripts/interop/multipass/run-evidence-lane.sh --all --recreate-owned \
-  --run-id <safe-id>
-bash scripts/interop/multipass/run-evidence-lane.sh --destroy-owned \
-  --run-id <safe-id>
-```
-
-`--inspect` is read-only. Adoption, resume, recreation, and destruction are
-explicit and require complete host/guest ownership proof, including the
-root-owned guest contract, ownership-token hash, environment/cloud-init/source/
-cache digests, generation, policy, execution-user, mount, snapshot, and process
-checks. A name match alone is never ownership. Existing unowned, incompatible,
-ambiguous, or deleted-but-unpurged instances are left untouched. Normal
-execution never invokes global `multipass purge` and never silently mutates an
-existing resource.
-
-The phase order is lifecycle reservation and name allocation, cloud-init/
-provisioning, guest ownership and policy verification, early guest rootless
-probe, exact source archive transfer, verified cache transfer from
-`target/interop/cache`, source/cache snapshot, guest-only offline transition,
-final guest probe, four fixed mixed directions, validation, sanitized export,
-and explicit owned destruction. Scenario execution is as `i2ptest`; the
-execution user has no sudo or capabilities. Never use a host mount as
-authoritative source or evidence, never accept an arbitrary guest command, and
-never fall back to the privileged topology.
-
-`export-evidence.sh` independently validates the sanitized bundle and
-atomically places it under `target/interop/evidence/multipass/<run-id>/`.
-Lifecycle and directional records carry environment ID, run ID, instance
-generation, ownership/contract digests, separate host-baseline and guest-probe
-outcomes, and a common environment evidence hash. A pre-router failure writes
-sanitized environment-blocker evidence; it cannot become a protocol record.
-Mixed run IDs or generations are rejected. Missing Multipass, guest policy,
-probe, cache/source, offline, cleanup, or evidence requirements are typed
-blockers. A VM run, reference-only control, or typed blocker does not advertise
-NTCP2 or close Milestone 3.
+Consult [operations.md](references/operations.md) for command routing,
+profiles, typed outcomes, and implementation-specific stop conditions.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "I2PR Rootless Sandbox"
+  short_description: "Plan 046 rootless sealed-namespace lane"
+  default_prompt: "Use $i2pr-rootless-sandbox to run, diagnose, or extend the Plan 046 rootless, process-scoped, sealed-namespace sandbox lane."
