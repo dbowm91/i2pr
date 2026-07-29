@@ -146,7 +146,14 @@ def _source_tree_digest(repo_root: Path) -> tuple[str, str]:
     for entry in listing.stdout.split(b"\0"):
         if not entry:
             continue
+        meta = entry.rsplit(b"\t", 1)[0]
         name = entry.rsplit(b"\t", 1)[-1]
+        mode = meta.split(b" ", 1)[0].decode("ascii")
+        # Skip gitlinks (mode 120000, used for nested submodule references
+        # such as ``.agents/skills``) and any non-regular entries. These
+        # contribute zero bytes to the source tree digest.
+        if mode != "100644" and mode != "100755":
+            continue
         path = repo_root / name.decode("utf-8")
         if not path.is_file():
             raise PipelineError("source-tree-file-missing")
