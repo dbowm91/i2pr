@@ -264,12 +264,12 @@ def create_context(
         raise PipelineError("run-context-target-already-exists")
     identity = build_measured_identity(
         repo_root, run_id, launcher_path=launcher_path,
-        topology_kind=topology_kind, privilege_model=privilege_model,
+        topology_kind=topology_kind, privilege_model=privile_model,
     )
+    staging_root.mkdir(mode=0o700, parents=True)
     write_run_identity(run_identity_path, identity)
     loaded = load_run_identity(run_identity_path)
     identity_digest = _file_digest(run_identity_path)
-    staging_root.mkdir(mode=0o700, parents=True)
     (staging_root / "run-identity.json").write_bytes(run_identity_path.read_bytes())
     (staging_root / "run-identity.json").chmod(0o600)
     write_environment_block(staging_root, loaded)
