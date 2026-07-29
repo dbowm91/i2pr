@@ -11,6 +11,7 @@ from pathlib import Path
 try:
     from .metadata import CacheMetadata, MetadataError, parse_metadata
     from .config_contract import ConfigurationContractError, assert_i2pd_private_configuration
+    from .observation_helpers import LogCursor, build_observation
     from .process import BoundedProcess, ProcessError
     from .router_info import RouterInfoPathError, netdb_filename
     from .topology import EndpointDescription
@@ -18,6 +19,7 @@ try:
 except ImportError:  # unittest discovery loads this directory as a flat path.
     from metadata import CacheMetadata, MetadataError, parse_metadata  # type: ignore
     from config_contract import ConfigurationContractError, assert_i2pd_private_configuration  # type: ignore
+    from observation_helpers import LogCursor, build_observation  # type: ignore
     from process import BoundedProcess, ProcessError  # type: ignore
     from router_info import RouterInfoPathError, netdb_filename  # type: ignore
     from topology import EndpointDescription  # type: ignore
@@ -237,6 +239,29 @@ class I2pdAdapter:
         if self.process.wait_for_phrase(self.authenticated_phrases, timeout_seconds=2.0):
             return "authenticated"
         return "not-observed"
+
+    def collect_observation(
+        self,
+        *,
+        role: str,
+        run_id: str,
+        correlation: dict[str, str] | None = None,
+        log_cursor: LogCursor | None = None,
+        catalog: dict | None = None,
+    ) -> dict[str, object]:
+        """Build a Plan 052 observation-v2 record from a log cursor."""
+
+        if self.process is None:
+            return {"side": "i2pd", "result": "not-started", "observation_sha256": "0" * 64, "schema": "i2pr-ntcp2-direction-observation-v2", "schema_version": 2, "levels": {}}
+        cursor = log_cursor or LogCursor(run_id=run_id, log_path=self.run_root / "raw" / "i2pd.log")
+        return build_observation(
+            side="i2pd",
+            role=role,
+            run_id=run_id,
+            cursor=cursor,
+            correlation=correlation,
+            catalog=catalog,
+        )
 
     def counters(self) -> dict[str, int]:
         snapshot = self.process.snapshot() if self.process is not None else {"running": 0, "exit_code": -1, "forced": 0}
