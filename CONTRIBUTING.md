@@ -401,3 +401,30 @@ egress policy. As `i2ptest`, run the rootless probe before any router and then
 the four fixed directions. Export only the sanitized bundle and verify it
 before destroying the VM. `destroy.sh` must preserve host evidence. A typed
 blocker, reference-only result, or cleanup failure is not support evidence.
+
+## Plan 054 Java startup and reference-observation qualification
+
+Plan 054 owns the Java startup matrix, the frozen-template lifecycle, and the
+source-locked reference observation catalog. The matrix driver
+(`tests/integration/ntcp2/harness/java_matrix.py`) and the per-attempt probe
+(`tests/integration/ntcp2/harness/java_startup_probe.py`) are the single
+experiment drivers for the 16-cell matrix. The preparation-phase command
+(`scripts/interop/java-prepare-template.py`) is the only path that may
+download, install, or seed Java state; the execution phase is restricted to
+`seeded-clone` clones and must never launch the frozen template directly.
+
+The catalog (`tests/integration/ntcp2/reference-observation-catalog.toml`)
+binds every marker to its exact source path, symbol, marker text, and
+sanitization rule. Updating a marker requires editing the TOML, the matching
+adapter's `collect_observation()`, and the explanatory Markdown document; the
+static `check-ntcp2-interoperability.sh` checker rejects pending
+source-inspection entries and hardcoded rejections in the Plan 052 predicate.
+
+Adapters must never infer data acceptance from i2pr sender counters. The
+Plan 052 directional predicate now consumes the live `observation-v2`
+records from `JavaI2pAdapter.collect_observation()` and
+`I2pdAdapter.collect_observation()`. The Plan 053 pipeline accepts the live
+records through `write_direction_artifacts(... i2pr_observation=...
+reference_observation=...)`; the synthetic builder remains the typed
+fallback for blocked and rejected directions. Run the focused checks
+listed in `AGENTS.md` after touching this lane.

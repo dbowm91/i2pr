@@ -155,3 +155,41 @@ typed blocker taxonomy and the static rootless boundary checker; the
 `i2pr-multipass-recovery` skill covers Plan 048/049/050/051 lifecycle,
 cloud-init recovery, base verify, sanitized export, selective-purge
 remediation, and the `dispatch-gate.sh` Plan 051 troubleshooting bridge.
+
+## Plan 054 Java startup and reference-observation qualification
+
+Plan 054 closes the two Plan 052 evidence gates that depend on a live
+Java reference and a per-side observation marker. The local artifacts:
+
+- `tests/integration/ntcp2/harness/java_matrix.py` — 16-cell matrix
+  driver with three isolated attempts per cell and a ten-consecutive
+  qualification mode. Never launch the frozen template directly
+  (`template-launch-forbidden`).
+- `tests/integration/ntcp2/harness/java_startup_probe.py` — adds
+  the `seeded-clone` data state, the bounded entropy probe, and the
+  twelve typed failure stages.
+- `tests/integration/ntcp2/reference-observation-catalog.toml` —
+  machine-readable catalog (schema
+  `i2pr-reference-observation-catalog-v1`) binding every marker to
+  its exact source path, symbol, marker text, and sanitization rule.
+- `tests/integration/ntcp2/harness/observation_catalog.py` and
+  `observation_helpers.py` — TOML load/validate/drift and the shared
+  `LogCursor` / `build_observation` helpers.
+- `scripts/interop/java-prepare-template.py` — preparation-phase
+  command. Only this path may install Java; the execution phase is
+  restricted to `seeded-clone` clones.
+
+The Java and i2pd adapters expose `collect_observation()` and return
+finalized observation-v2 records. `mixed_runner._evaluate_plan052_predicate`
+now applies the `receiver_passes_data_phase` predicate against those
+records; the Plan 053 pipeline accepts the live records through
+`write_direction_artifacts(..., i2pr_observation=...,
+reference_observation=...)`. The synthetic builder remains the typed
+fallback for blocked and rejected directions.
+
+External qualification (the complete 48-start matrix, the ten
+consecutive rootless starts, and the seven control experiments)
+requires the pinned Java 2.12.0 and i2pd 2.60.0 references on an
+authorized Ubuntu 24.04 amd64 host or Multipass guest. Plan 054 does
+not close Milestone 3; the canonical external path is the
+`i2pr-multipass-recovery` skill.

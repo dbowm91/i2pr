@@ -541,3 +541,39 @@ bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-rootless-interop-boundary.sh
 bash scripts/check-multipass-interop-boundary.sh
 ```
+
+## Plan 054 Java startup and reference-observation qualification
+
+Plan 054 is the active local qualification pass for the Plan 052
+directional predicate. It introduces the 16-cell Java startup matrix
+(`tests/integration/ntcp2/harness/java_matrix.py`), the frozen
+template lifecycle (`scripts/interop/java-prepare-template.py` and
+the `seeded-clone` data state), and the machine-readable reference
+observation catalog
+(`tests/integration/ntcp2/reference-observation-catalog.toml`). The
+Java and i2pd adapters expose `collect_observation(role, run_id,
+correlation, log_cursor, catalog)` and return finalized
+`i2pr-ntcp2-direction-observation-v2` records. `mixed_runner.py` no
+longer hardcodes `reference-receiver-marker-not-source-locked`; the
+Plan 052 predicate now consumes the live observation. The
+`plan052_pipeline._build_observation` accepts the live `i2pr_observation`
+and `reference_observation` records; the synthetic builder remains as
+the typed fallback for blocked and rejected directions.
+
+Do not run a complete external matrix or qualification on a host that
+lacks the pinned Java 2.12.0 and i2pd 2.60.0 references. The
+Plan 046 host is the negative baseline; the Plan 048/049 Multipass
+recovery lane is the canonical external path. A local
+`diagnostic-complete-not-certificate` bundle is not Milestone 3
+closure. NTCP2 remains experimental and non-advertised.
+
+Required focused checks are:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan054.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan053.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_bundle.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+```

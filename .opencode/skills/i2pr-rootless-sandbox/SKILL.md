@@ -16,8 +16,9 @@ was obtained, and never substitute a self-loopback or testkit result for
 evidence.
 
 Read `AGENTS.md`, `plans/046-rootless-sealed-namespace-evidence-lane.md`,
-`plans/046-closure.md`, `plans/047-cross-host-rootless-lane-expansion.md`, and
-the relevant `docs/adr/` records before changing anything in this lane.
+`plans/046-closure.md`, `plans/047-cross-host-rootless-lane-expansion.md`,
+`plans/054-java-startup-and-reference-observation-qualification-pass.md`,
+and the relevant `docs/adr/` records before changing anything in this lane.
 
 ## Topology contract
 
@@ -124,3 +125,6 @@ authoritative for evidence.
 - For the recovery lane on a permissive host or a permissive Multipass guest,
   hand off to `i2pr-multipass-recovery`. For the canonical harness workflow,
   hand off to `i2pr-ntcp2-interop`.
+- For Plan 054 Java template and observation qualification, see the
+  `i2pr-ntcp2-interop` skill's Plan 054 section. The reference observation
+  catalog and the Plan 052 directional predicate both live there.

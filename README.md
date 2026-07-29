@@ -388,6 +388,56 @@ does not close Milestone 3. Java/i2pd receiver markers remain source-lock and
 external-run blockers, so NTCP2 stays experimental and non-advertised. Plan
 053 status and validation results are recorded in `plans/053-status.md`.
 
+### Plan 054 Java startup and reference-observation qualification pass
+
+Plan 054 is the local qualification corrective pass for the two Plan 052
+predicates that depend on a live reference and a per-side observation marker.
+It introduces the Plan 054 Java startup matrix, the frozen Java template
+lifecycle, and the machine-readable reference observation catalog.
+
+- The matrix driver lives in
+  `tests/integration/ntcp2/harness/java_matrix.py`. It composes
+  `java_startup_probe.py` once per cell of the 16-cell matrix
+  (namespace × data-state × launcher × sequence) with three
+  independent attempts each. The data-state `seeded-clone` is the
+  new frozen-template clone; the new
+  `java-process-spawn-failed` through `java-state-lock-invalid`
+  failure stages classify every blocked or rejected attempt.
+- The Java template preparation driver
+  (`scripts/interop/java-prepare-template.py`) is the only path that
+  may download, install, or seed Java state. It freezes the resulting
+  template into a deterministic tree SHA-256 and writes
+  `template-manifest.json` plus `template-tree.sha256`. The execution
+  phase is restricted to `seeded-clone` and never re-launches the
+  frozen template directly.
+- The machine-readable reference observation catalog
+  (`tests/integration/ntcp2/reference-observation-catalog.toml`,
+  schema `i2pr-reference-observation-catalog-v1`) is the source of
+  truth. The Markdown catalog
+  (`reference-observation-catalog.md`) is now generated, drift-checked
+  documentation; the static boundary checker rejects any pending
+  source-inspection entry.
+- The Java and i2pd adapters expose
+  `collect_observation(role, run_id, correlation, log_cursor, catalog)`
+  and return finalized
+  `i2pr-ntcp2-direction-observation-v2` records. The Plan 052
+  directional predicate (`_evaluate_plan052_predicate`) now applies
+  `receiver_passes_data_phase` against those records and is no longer
+  hardcoded to reject every direction.
+- The Plan 052 pipeline
+  (`plan052_pipeline._build_observation`) accepts the live
+  `i2pr_observation` and `reference_observation` records; the
+  synthetic builder remains as the typed fallback for blocked and
+  rejected directions.
+
+A complete 48-start matrix, the ten-consecutive-start qualification,
+and the source-locked control experiments all require the pinned
+Java 2.12.0 and i2pd 2.60.0 references on an authorized Ubuntu 24.04
+amd64 host or Multipass guest. The local checkout on the
+`apparmor_restrict_on` Plan 046 negative baseline cannot exercise the
+matrix yet; the Plan 048/049 Multipass recovery lane is the
+canonical external path. Plan 054 status is in `plans/054-status.md`.
+
 ## MVP direction
 
 The feature MVP is expected to include:
@@ -546,6 +596,8 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 042 current status](plans/042-status.md)
 - [Plan 053 evidence pipeline corrective pass](plans/053-plan052-evidence-pipeline-integration-corrective-pass.md)
 - [Plan 053 status](plans/053-status.md)
+- [Plan 054 Java startup and reference-observation qualification pass](plans/054-java-startup-and-reference-observation-qualification-pass.md)
+- [Plan 054 status](plans/054-status.md)
 - [Aggregate Milestone 3 closure record](plans/030-milestone-3-closure.md)
 - [Controlled NTCP2 interoperability lane](tests/integration/ntcp2/README.md)
 - [Machine-readable protocol support ledger](specs/support.toml)

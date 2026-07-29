@@ -371,9 +371,61 @@ direction records. Static enforcement lives in
 `tests/integration/ntcp2/harness/test_plan053.py` and
 `test_evidence_bundle.py`.
 
+## Plan 054 Java startup and reference-observation qualification
+
+Plan 054 closes the two Plan 052 evidence gates that depend on a live
+Java reference and a per-side observation marker. The new artifacts are:
+
+- `tests/integration/ntcp2/harness/java_matrix.py` — 16-cell matrix
+  driver (`namespace × data-state × launcher × sequence`) with three
+  isolated attempts per cell and a 10-consecutive-start
+  qualification.
+- `tests/integration/ntcp2/harness/java_startup_probe.py` — extended
+  with the `seeded-clone` data state, the bounded entropy probe
+  (`getrandom_result`, `latency_bucket_ms`, `seed_file_state`,
+  `seed_file_sha256`), and the twelve typed failure stages
+  (`java-process-spawn-failed` through `java-state-lock-invalid`).
+- `tests/integration/ntcp2/reference-observation-catalog.toml` —
+  machine-readable catalog
+  (`i2pr-reference-observation-catalog-v1`) binding every marker to
+  its exact source path, symbol, marker text, sanitization rule, and
+  minimum count. The Markdown companion
+  (`reference-observation-catalog.md`) is now drift-checked
+  documentation.
+- `tests/integration/ntcp2/harness/observation_catalog.py` — TOML
+  load, validation, drift detection, and exact-match helpers.
+- `tests/integration/ntcp2/harness/observation_helpers.py` —
+  `LogCursor`, exact-match scanner, `build_observation()`, and the
+  shared `sanitize_marker_line()`.
+- `scripts/interop/java-prepare-template.py` — preparation-phase
+  command that builds the frozen Java template and writes
+  `template-manifest.json` plus `template-tree.sha256`. The execution
+  phase is restricted to `seeded-clone` clones.
+
+The Java and i2pd adapters expose
+`collect_observation(role, run_id, correlation, log_cursor, catalog)`
+and return finalized `i2pr-ntcp2-direction-observation-v2` records.
+`mixed_runner._evaluate_plan052_predicate` now applies the
+`receiver_passes_data_phase` predicate against those records and is
+no longer hardcoded to reject every direction. The Plan 053 pipeline
+accepts the live records through
+`write_direction_artifacts(..., i2pr_observation=...,
+reference_observation=...)`; the synthetic builder remains the typed
+fallback for blocked and rejected directions.
+
+External qualification (the complete 48-start matrix, the ten
+consecutive rootless starts, and the seven control experiments)
+requires the pinned Java 2.12.0 and i2pd 2.60.0 references on an
+authorized Ubuntu 24.04 amd64 host or Multipass guest. The local
+checkout on the `apparmor_restrict_on` Plan 046 negative baseline
+cannot exercise the matrix yet; the Plan 048/049 Multipass recovery
+lane is the canonical external path. Plan 054 does not close
+Milestone 3. Plan 054 status is in `plans/054-status.md`.
+
 Focused checks:
 
 ```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan054.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan053.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_bundle.py'
 bash scripts/check-ntcp2-interoperability.sh

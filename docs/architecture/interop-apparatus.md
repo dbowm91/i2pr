@@ -355,3 +355,50 @@ Pre-router failures produce sanitized environment-blocker records and never
 become protocol evidence. Destroying an owned VM preserves the host evidence
 directory. A typed blocker or reference-only result never advances the support
 ledger or closes Milestone 3.
+
+## Plan 054 Java startup and reference-observation qualification
+
+Plan 054 closes the two Plan 052 evidence gates that depend on a live
+Java reference and a per-side observation marker. It adds three local
+artifacts and three new constraints:
+
+- The Java startup matrix driver
+  (`tests/integration/ntcp2/harness/java_matrix.py`) composes
+  `java_startup_probe.py` once per cell of the 16-cell matrix
+  (namespace × data-state × launcher × sequence) with three
+  independent attempts each. The new `seeded-clone` data state
+  copies a frozen template into a fresh per-attempt directory and
+  refuses to launch the template directly (`template-launch-forbidden`).
+- The frozen Java template lifecycle is anchored by
+  `scripts/interop/java-prepare-template.py`. The preparation phase
+  is the only path that may download, install, or seed Java state.
+  The execution phase is restricted to `seeded-clone` clones; the
+  template digest is verified unchanged before and after every
+  qualification start.
+- The machine-readable reference observation catalog
+  (`tests/integration/ntcp2/reference-observation-catalog.toml`)
+  binds every marker to its exact source path, symbol, marker text,
+  sanitization rule, and minimum count. The Markdown
+  (`reference-observation-catalog.md`) is now drift-checked,
+  explanatory documentation; the static
+  `check-ntcp2-interoperability.sh` checker rejects any
+  `PENDING-SOURCE-INSPECTION` entry and any hardcoded rejection in
+  the Plan 052 predicate.
+
+The Java and i2pd adapters expose
+`collect_observation(role, run_id, correlation, log_cursor, catalog)`
+and return finalized `i2pr-ntcp2-direction-observation-v2` records.
+`mixed_runner._evaluate_plan052_predicate` now applies the
+`receiver_passes_data_phase` predicate against those records. The
+Plan 053 pipeline accepts the live records through
+`write_direction_artifacts(..., i2pr_observation=...,
+reference_observation=...)`; the synthetic builder remains the typed
+fallback for blocked and rejected directions.
+
+External qualification (the complete 48-start matrix, the ten
+consecutive rootless starts, and the seven control experiments) still
+requires the pinned Java 2.12.0 and i2pd 2.60.0 references on an
+authorized Ubuntu 24.04 amd64 host or Multipass guest. The current
+host is the Plan 046 negative baseline and cannot exercise the matrix;
+the Plan 048/049 Multipass recovery lane is the canonical external
+path. Plan 054 does not close Milestone 3.
