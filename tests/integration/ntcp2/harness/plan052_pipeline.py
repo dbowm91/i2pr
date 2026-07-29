@@ -264,7 +264,7 @@ def create_context(
         raise PipelineError("run-context-target-already-exists")
     identity = build_measured_identity(
         repo_root, run_id, launcher_path=launcher_path,
-        topology_kind=topology_kind, privilege_model=privile_model,
+        topology_kind=topology_kind, privilege_model=privilege_model,
     )
     staging_root.mkdir(mode=0o700, parents=True)
     write_run_identity(run_identity_path, identity)
