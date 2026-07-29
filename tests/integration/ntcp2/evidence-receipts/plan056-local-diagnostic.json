@@ -1,0 +1,16 @@
+{
+  "schema": "i2pr-interop-local-diagnostic-receipt-v1",
+  "schema_version": 1,
+  "generator_commit": "1eb6cd640ce3c3e5141b62910fcae8d42f72c54a",
+  "plan": 56,
+  "driver_path": "scripts/interop/plan056_drive_bundles.py",
+  "run_a_id": "plan056-a-20260729000000-testbundle",
+  "run_b_id": "plan056-b-20260729000000-testbundle",
+  "evidence_root": "target/interop/evidence/plan056",
+  "verifier_schema": "i2pr-milestone3-certificate-v1",
+  "verifier_outcome": false,
+  "typed_failure_count": 40,
+  "artifact_storage": "local-untracked",
+  "bound_scope": "Synthetic directional products constructed from typed blocked-direction inputs. The driver never opened a mixed-router NTCP2 connection. The verifier independently re-checked the cross-bundle provenance, direction predicates, and independence rules required by the plan and produced the expected diagnostic-complete-not-certificate outcome.",
+  "notes": "This receipt is the only repository-tracked footprint of the Plan 056 local-evidence driver. The companion `target/interop/evidence/plan056/` directory is generated locally under the ignored working tree and is not a tracked repository artifact. The receipt records the existence of the reproducible driver and the verifier outcome; it does not claim that the diagnostic bundles are committed evidence."
+}

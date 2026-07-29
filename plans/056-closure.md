@@ -4,14 +4,18 @@
 
 **Closed with a typed host-environment blocker.** Plan 056 is
 implementation-complete and gate-clean; the verifier, the test matrix,
-the candidate freeze, the local-evidence driver, and the two
-diagnostic bundles it produced are committed. The plan does not
-advertise NTCP2 support, does not produce a passing Milestone 3
-certificate, and does not close Milestone 3. The closure is the
-existence of a reproducible verifier, a reproducible candidate-freeze
-record, two reproducible local diagnostic bundles with their
-verifier certificate, plus the documented environment blocker that
-prevents the canonical external execution on this host.
+the candidate freeze, the local-evidence driver, and the local
+diagnostic bundles it produced are committed. The local diagnostic
+bundles and certificate were constructed from typed synthetic
+blocked-direction inputs, finalized, exported locally, and audited by
+the certificate verifier. They are not committed evidence; they were
+generated under the ignored `target/interop/evidence/plan056/` working
+directory and the only repository-tracked footprint is the bounded
+local-diagnostic receipt at
+`tests/integration/ntcp2/evidence-receipts/plan056-local-diagnostic.json`
+with `artifact_storage = local-untracked`. The plan does not advertise
+NTCP2 support, does not produce a passing Milestone 3 certificate, and
+does not close Milestone 3.
 
 The Plan 046 closure record is preserved verbatim. The Plan 056
 closure adds a follow-up plan to perform the cross-host external
@@ -45,19 +49,22 @@ identifiers are listed at the bottom of this section):
   bundle file, support-topology mismatch, unauthorized divergent
   field, missing-bundle failure, allowlisted-divergent acceptance).
 - `scripts/interop/plan056_drive_bundles.py` — a local evidence
-  driver that produces two independent Plan 052 diagnostic bundles
+  driver that constructs two independent Plan 052 diagnostic bundles
   via the synthetic-fallback `write_direction_artifacts` path and
   runs the certificate verifier against them. It is the only path
-  that can exercise the verifier end-to-end on the Plan 046
-  negative baseline. It is not a substitute for external execution.
+  that can exercise the verifier end-to-end on this host. It is not
+  a substitute for external execution. The driver never opened a
+  mixed-router NTCP2 connection.
 - `plans/056-candidate.md` — the frozen candidate SHA
-  (`fbf2cdb9ec12d35c7b7422c412e09d6db2d2d0cf`) with all measured
-  source provenance fields, every validation command, and the local
-  validation result.
+  (`fbf2cdb9ec12d35c7b7422c412e09d6db2d2d0cf`) with measured source
+  provenance fields, every validation command, and the local
+  validation result. Plan 058 marks this candidate as **retired**;
+  the historical fields are preserved verbatim as an audit record.
 - `scripts/check-ntcp2-interoperability.sh` — the static NTCP2
   interoperability boundary check now refuses a commit that omits
   `verify_milestone3_certificate.py` or `test_plan056.py`, or that
-  drops the locked certificate schema marker.
+  drops the locked certificate schema marker. Plan 058 extends this
+  checker with the candidate-record integrity invariants.
 - Three follow-up pipeline fixes in
   `tests/integration/ntcp2/harness/plan052_pipeline.py`:
   - `_source_tree_digest` skips gitlink (`120000`) entries so the
@@ -108,16 +115,20 @@ verbatim; Plan 056 inherits both blockers.
 Plan 056 therefore closes with the same typed blocker pattern as
 Plan 046: the implementation is complete, the canonical external
 path is enumerated, and the host-level blocker is recorded as
-sanitized evidence rather than masquerading as a protocol pass.
+sanitized local diagnostics rather than masquerading as a protocol
+pass.
 
 ## Local diagnostic evidence
 
-The Plan 053 pipeline was used to produce two independent Plan 052
-diagnostic bundles from the local checkout, written to
-`target/interop/evidence/plan056/`:
+The Plan 056 local-evidence driver was used to construct two
+independent Plan 052 diagnostic bundles from synthetic blocked
+direction inputs. The bundles were finalized, exported under the
+ignored local working directory
+`target/interop/evidence/plan056/`, and audited by the certificate
+verifier:
 
 ```text
-target/interop/evidence/plan056/
+target/interop/evidence/plan056/   (locally generated, not tracked)
   run-a/plan056-a-20260729000000-testbundle/
     run-identity.json
     environment/{environment,source-transfer,cache-transfer,
@@ -141,7 +152,17 @@ target/interop/evidence/plan056/
   staging/{run-a,run-b}/     (retained only as pipeline working area)
 ```
 
-Both bundles pass the existing `evidence_bundle.verify_bundle`
+The directory above is **not** a tracked repository artifact. The
+only committed repository footprint of the local diagnostic effort
+is the bounded receipt at
+`tests/integration/ntcp2/evidence-receipts/plan056-local-diagnostic.json`,
+which carries `artifact_storage = local-untracked` and identifies
+the driver, the run IDs, the verifier schema, and the
+`verified: false` outcome. The Plan 058 candidate record integrity
+validator enforces this invariant: any documentation claim that
+treats target-tree output as committed evidence fails closed.
+
+The two synthetic bundles pass the existing `evidence_bundle.verify_bundle`
 sanity check, carry four primary direction records in each of the
 five required artifact classes, share the same frozen source commit
 and the same pinned launcher binary digest, differ only in their
@@ -156,8 +177,8 @@ failure list enumerated per direction (each direction is missing
 `ntcp2_authenticated`, `frame_emitted`,
 `frame_authenticated_and_decrypted`, `i2np_message_decoded`, and
 the attestation is missing `parent_network_state_unchanged: true`).
-This is the expected outcome for a diagnostic bundle produced from
-the local harness seam: the verifier cannot issue a passing
+This is the expected outcome for a diagnostic bundle constructed
+from the local harness seam: the verifier cannot issue a passing
 certificate without an actual NTCP2 protocol exchange, and the
 local seam has no external Java I2P or i2pd to exchange with.
 
@@ -174,7 +195,9 @@ python3 scripts/interop/plan056_drive_bundles.py \
 
 It is the canonical reproducible path to exercise the verifier
 end-to-end on this host and produces the same diagnostic outcome
-on every invocation.
+on every invocation. It does not exercise the mixed-router handshake;
+it exercises the synthetic blocked-direction producer and the
+verifier.
 
 ## Eight-direction outcome table
 
@@ -215,8 +238,8 @@ catalog.
   `scripts/interop/multipass/environment.toml`,
   sha256 `e13d6340ac9f25cd455fc96d637807727aed1d8734449fa1791c6eb9e7186780`.
 - Source commit: `1eb6cd640ce3c3e5141b62910fcae8d42f72c54a` (the
-  Plan 056 verifier-fix commit, which the candidate document
-  fingerprints as `fbf2cdb9ec12d35c7b7422c412e09d6db2d2d0cf`; the
+  Plan 056 verifier-fix commit, which the original candidate
+  document fingerprints as `fbf2cdb9ec12d35c7b7422c412e09d6db2d2d0cf`; the
   pipeline fix and tooling commits followed without changing the
   source tree SHA-256).
 
@@ -229,7 +252,10 @@ catalog.
   `unprivileged_userns_clone=1`) — the Multipass recovery lane.
 - Current host is the Plan 046 `host.apparmor-restrict-on`
   negative baseline; the rootless sealed-namespace probe returns
-  `blocked_unprivileged_user_namespace`.
+  `blocked_unprivileged_user_namespace`. Plan 058 documents two
+  alternative execution lanes (direct-host and guest); the
+  outer-host baseline on this host does not reject a valid guest
+  lane.
 
 ## Validation commands and results
 
@@ -254,15 +280,23 @@ bash scripts/check-rootless-interop-boundary.sh
 bash scripts/check-multipass-interop-boundary.sh
 ```
 
+Plan 058 extends `scripts/check-ntcp2-interoperability.sh` with the
+candidate record integrity invariants defined in
+`tests/integration/ntcp2/harness/candidate_record.py`. The post-Plan
+058 validator refuses to consume any candidate whose `status` is
+`retired` or whose `history_commits` contains a descendant of the
+authoritative `candidate_commit`.
+
 ## Reviewer record
 
 | Field | Value |
 | --- | --- |
 | Reviewer | Plan 056 two-bundle closure pass author (acting as operator) |
 | Date (UTC) | 2026-07-29 |
-| Run A bundle path | `target/interop/evidence/plan056/run-a/plan056-a-20260729000000-testbundle` |
-| Run B bundle path | `target/interop/evidence/plan056/run-b/plan056-b-20260729000000-testbundle` |
-| Certificate path | `target/interop/evidence/plan056/certificate/milestone3-certificate.json` |
+| Run A bundle path | `target/interop/evidence/plan056/run-a/plan056-a-20260729000000-testbundle` (locally generated, not tracked) |
+| Run B bundle path | `target/interop/evidence/plan056/run-b/plan056-b-20260729000000-testbundle` (locally generated, not tracked) |
+| Certificate path | `target/interop/evidence/plan056/certificate/milestone3-certificate.json` (locally generated, not tracked) |
+| Tracked receipt | `tests/integration/ntcp2/evidence-receipts/plan056-local-diagnostic.json` (`artifact_storage = local-untracked`) |
 | Verifier schema | `i2pr-milestone3-certificate-v1` |
 | Verifier commit | `1eb6cd6` |
 | Outcome | `verified: false` (diagnostic-complete-not-certificate) |
@@ -289,37 +323,50 @@ bash scripts/check-multipass-interop-boundary.sh
 ## Statement of bounded evidence scope
 
 The Plan 056 implementation demonstrates that the bounded IPv4 NTCP2
-handshake + DeliveryStatus smoke direction can be prepared, executed,
-finalized, exported, and audited by the Plan 052/053/054/055
-pipeline on this host, and that the Plan 056 verifier independently
-re-checks the cross-bundle provenance, direction predicates, and
-independence rules required by the plan. The two sanitized
-diagnostic bundles at
+handshake + DeliveryStatus smoke direction can be constructed from
+typed synthetic blocked-direction inputs, finalized, exported
+locally, and audited by the Plan 052/053/054/055 pipeline on this
+host, and that the Plan 056 verifier independently re-checks the
+cross-bundle provenance, direction predicates, and independence rules
+required by the plan. The two local diagnostic bundles at
 `target/interop/evidence/plan056/run-{a,b}/` are reproducible from
 the Plan 056 driver and from the same frozen source commit. They
-are not mixed-router interoperability evidence.
+were generated locally and are not committed evidence. They are not
+mixed-router interoperability evidence.
 
 ## Reconciliation of status documentation
 
 `specs/support.toml` is unchanged. `docs/protocol-support.md` is
 unchanged. The NTCP2 evidence status remains
 `experimental` and `advertised = false`. The Milestone 3 closure
-record (`plans/030-milestone-3-closure.md`) is unchanged in its
-summary: Milestone 3 stays open. The Plan 055 status record is
+record (`plans/030-milestone-3-closure.md`) is updated as part of
+Plan 058 to reflect the Plan 056 candidate retirement and the
+Plan 057 supersession. The Plan 056 candidate document
+(`plans/056-candidate.md`) is marked retired; the historical
+fields are preserved verbatim as an audit record under the
+"Historical snapshot" section. The Plan 055 status record is
 updated to note that the Plan 056 verifier and candidate freeze are
-committed but the external evidence run is blocked on this host.
+committed but the external evidence run is blocked on this host,
+and the candidate is no longer eligible for future external
+evidence.
 
 ## Follow-up plan (cross-host external evidence)
 
-This closure opens
+Plan 056 originally opened
 `plans/057-cross-host-milestone-3-external-evidence-run.md` to own
-the canonical two-run external evidence pass on a host that
-satisfies the Plan 040 host contract (Ubuntu 24.04 amd64,
-non-interactive `sudo` available, at least 16 GiB RAM, permissive
-AppArmor, and a fresh Plan 048/049/050 Multipass recovery lane).
-Plan 057 inherits the Plan 056 candidate SHA and the Plan 056
-verifier; it owns the preflight, the guest provisioning, the two
-authoritative runs, the cross-run review, and the Milestone 3
-closure record. Until Plan 057 produces two passing bundles from
-the same source commit, NTCP2 stays experimental and non-advertised
-and Milestone 3 stays open.
+the canonical two-run external evidence pass. Plan 058 supersedes
+that follow-up plan: Plan 057 is **no longer active execution
+authority**. The Plan 058-to-Plan 060 split reassigns:
+
+| Plan 057 responsibility | New owner |
+| --- | --- |
+| record/candidate correction | Plan 058 |
+| i2pd direct helper | Plan 059 |
+| Java topology and ADR decision | Plan 059 |
+| receiver marker qualification | Plan 059 |
+| new candidate freeze | Plan 060 |
+| two external runs and certificate | Plan 060 |
+
+Until Plan 060 produces two passing bundles from a fresh
+implementation-floor candidate, NTCP2 stays experimental and
+non-advertised and Milestone 3 stays open.

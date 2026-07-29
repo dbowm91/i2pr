@@ -1,85 +1,85 @@
 # Plan 056 candidate commit freeze
 
-Status: **declared; not yet executed**. The Plan 056 two-bundle
-external evidence closure pass freezes this exact source commit as the
-candidate for both Run A and Run B. The candidate SHA, all measured
-digests, and the validation command set below must remain stable for
-the duration of the execution. If any digest drifts before either run
-finalizes its bundle, the run is invalidated and a new candidate must
-be cut from `main`.
+Status: **retired; never used for an authoritative external run** (Plan 058).
 
-## Candidate SHA
+The historical candidate SHA was `fbf2cdb9ec12d35c7b7422c412e09d6db2d2d0cf`.
+It is not eligible for future Milestone 3 evidence because the supported
+execution path (Plan 059) and the new candidate freeze (Plan 060) are
+not yet closed. A successor candidate may be cut only under Plan 060
+after Plan 059 closes.
+
+This document is preserved as an audit record of the Plan 056
+implementation surface. The measured historical fields below were
+captured at the original freeze date and are not part of the current
+M3 evidence chain. The repository does not track the
+`target/interop/evidence/plan056/` diagnostic bundles; they were
+generated locally under the ignored working tree and are described by
+the bounded local-diagnostic receipt
 
 ```text
-fbf2cdb9ec12d35c7b7422c412e09d6db2d2d0cf
+tests/integration/ntcp2/evidence-receipts/plan056-local-diagnostic.json
 ```
 
-The candidate was cut on top of commit `2457b74` (the Plan 056
-verifier and tests freeze commit) plus the
-`interop: tolerate gitlinks and non-regular entries in source tree
-digest` fix that allows `plan052_pipeline.build_measured_identity`
-to run on the current checkout (the `.agents/skills` gitlink
-otherwise raises `source-tree-file-missing`). Both commits are
-immutable and the candidate SHA must remain stable for the duration
-of the run.
+with `artifact_storage = local-untracked`. The on-disk evidence
+directory is not a tracked committed artifact.
 
-Branch: `main`. Working tree status: clean.
+No external Run A or Run B was produced from this candidate. The
+candidate must not be used by Plan 060 tooling; the plan 058
+candidate record validator returns `active_candidate_record == False`
+for any record carrying `status: retired`.
 
-## Source provenance (measured)
+## Historical snapshot (preserved verbatim)
 
-| Field | Value |
-| --- | --- |
-| `source_commit` | `fbf2cdb9ec12d35c7b7422c412e09d6db2d2d0cf` |
-| `source_commit_object_sha256` | `71609e118cce7fe632ca2ed9bcd0af6bfd807c3fe0be1a79b084117769f57266` |
-| `source_tree_sha256` | `da9f8db742ad24dd325cbd3d4168365b2c792246982959819fe5fd4db1002d72` |
-| `source_archive_sha256` | `244c102caac9816f7e131ca2483d0bd7ace471ac550f9dfb062db1d982b80c2f` |
-| `source_archive_format` | `git-tar` |
-| `source_dirty` | `clean` |
-| `host_source_manifest_sha256` | `0350ac40178836ff24e972fae8240f83d8ee45c5115495a43da060e2e955b388` |
-| `reference_lock_sha256` | `943af1f7af3ba5f3df52c499cfd386be4b76cb2f650218c174981b114f4121ef` |
-| `environment_manifest_sha256` | `0cfbff8615e48f7ee17bd038a0fa852c9c0095b8fc74055214486a77197c07b4` |
-| `topology_kind` | `rootless-sealed-single-netns` |
-| `privilege_model` | `unprivileged-userns` |
-| `rustc_version` | `rustc 1.95.0 (59807616e 2026-04-14)` |
-| `cargo_version` | `cargo 1.95.0 (f2d3ce0bd 2026-03-21)` |
-| `target_triple` | `x86_64-unknown-linux-gnu` |
+The following fields were measured at the original freeze date
+(2026-07-29) and are preserved for auditability. They are not a
+candidate declaration.
 
-## Pinned reference digests
+- Retired historical SHA: `fbf2cdb9ec12d35c7b7422c412e09d6db2d2d0cf`
+- Verifier commit referenced by the original freeze document:
+  `1eb6cd640ce3c3e5141b62910fcae8d42f72c54a`
+- Historical floor commit (Plan 056 verifier and tests):
+  `2457b74a0a129e8ef2aedd3abcd4883925f5b376`
 
-- Java I2P `2.12.0` at `2800040deee9bb376567b671ef2e9c34cf3e30b6`
-  (locked in `tests/integration/ntcp2/references.lock.toml`,
-  revision `2800040deee9bb376567b671ef2e9c34cf3e30b6`).
-- i2pd `2.60.0` at `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`
-  (locked in `tests/integration/ntcp2/references.lock.toml`).
+The narrative in the Plan 056 closure record originally described
+the local diagnostic bundles as "committed" under
+`target/interop/evidence/plan056/`. The repository does not track
+this directory. The accurate description is that the bundles were
+generated locally under the ignored working tree, and the canonical
+wording is corrected in `plans/056-closure.md` as part of Plan 058.
 
-## Helper / catalog digests (to be measured at run time inside the guest)
+## Why this candidate is retired
 
-- Java template tree digest — measured by
-  `scripts/interop/java-prepare-template.py` at run time.
-- Reference observation catalog
-  (`tests/integration/ntcp2/reference-observation-catalog.toml`,
-  sha256 `92b8d2e23826877ad2e7f8b73d4f2cbc4bdd752bacebec6b90fdce43a75fb275`)
-  and reference-trigger contracts
-  (`tests/integration/ntcp2/reference-trigger-contracts.md`,
-  sha256 `145db563030642dad3ee3d2e78bb184fef852dab460e2df43bb263ca036c3c3d`).
-- i2pd and Java reference trigger helpers (Plan 055 B5 / C5 decisions) —
-  measured and finalized at run time inside the guest; their source
-  digests must be identical between Run A and Run B.
+Plan 058 identified the following defects that invalidate this
+candidate for any future external Milestone 3 evidence:
 
-## Environment contract (Multipass recovery lane)
+1. The candidate was frozen before the reference-side implementation
+   surface required by the four-direction predicate (Plan 059) was
+   implemented. A candidate frozen before the implementation floor
+   cannot be the authoritative source for a direction that the
+   implementation does not yet support.
+2. The Plan 057 execution contract inherited this candidate and
+   required missing helper and topology artifacts. It is now
+   superseded by Plan 058 and Plan 060.
+3. The Plan 056 closure narrative described locally generated
+   diagnostic bundles as committed evidence. The Plan 058 record
+   integrity invariant forbids this claim, and the corrected
+   closure record replaces the wording with the explicit
+   `local-untracked` storage classification.
 
-- `environment_id`: `i2pr-plan048-rootless-v1`
-- Image: `24.04`, amd64 / x86_64.
-- Guest execution user: `i2ptest` (no `sudo`, no ambient capabilities).
-- Required topology: `rootless-sealed-single-netns`,
-  `unprivileged-userns`.
-- Manifest: `scripts/interop/multipass/environment.toml`,
-  sha256 `e13d6340ac9f25cd455fc96d637807727aed1d8734449fa1791c6eb9e7186780`.
-- One active evidence guest at a time on the constrained host.
+The Plan 058 candidate record (`tests/integration/ntcp2/harness/candidate_record.py`)
+rejects consumption of this candidate by Plan 060 tooling: the
+`active_candidate_record` helper returns `False` for any record whose
+`status` is `retired`, and the static boundary check
+`scripts/check-ntcp2-interoperability.sh` enforces the same invariant
+for the entire repository.
 
-## Validation commands (executed at freeze)
+## Historical freeze commands (preserved verbatim)
 
-All commands are run from the repository root at the candidate commit.
+The original freeze executed every validation command listed below
+on a clean checkout at the retired candidate SHA. Plan 058 does not
+re-run those commands and does not re-affirm them as current
+validation. The current validation commands are documented in
+`AGENTS.md` and `scripts/check-ntcp2-interoperability.sh`.
 
 ```bash
 cargo fmt --all --check
@@ -105,45 +105,46 @@ bash scripts/check-rootless-interop-boundary.sh
 bash scripts/check-multipass-interop-boundary.sh
 ```
 
-## Local validation result
+## Historical measurement table (preserved verbatim)
 
-The candidate commit `2457b74` was produced on `main` after Plans
-053, 054, and 055 are merged. The full Plan 052/053/054/055/056
-pipeline (`plan052_pipeline.py`, `evidence_bundle.py`,
-`observation.py`, `trigger_record.py`, `verify_milestone3_certificate.py`)
-is committed. Every validation command listed above passes on this
-checkout:
+The historical measurement table from the original freeze is
+preserved below for auditability. Every value is a historical
+measurement that was correct on 2026-07-29; it is not a current
+candidate declaration. The candidate record validator
+(`tests/integration/ntcp2/harness/candidate_record.py`) does not
+consume this table.
 
-- `cargo fmt --all --check` passes.
-- `cargo check --workspace --all-targets` passes.
-- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-  passes.
-- `cargo test --workspace` passes (227 tests across 27 suites).
-- `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps` passes.
-- `python3 -m unittest discover -s tests/integration/ntcp2/harness -p
-  'test_*.py'` passes (390 tests across the Plan 052/053/054/055/056
-  harness surface, including the 18 new Plan 056 certificate checks).
-- All seven boundary checks (`check-dependency-direction`,
-  `check-runtime-boundaries`, `check-fixture-manifest`,
-  `check-ntcp2-vectors`, `check-ntcp2-interoperability`,
-  `check-rootless-interop-boundary`,
-  `check-multipass-interop-boundary`) pass.
-
-## Operator and date
-
-- Operator: Plan 056 two-bundle closure pass author.
-- Freeze date (UTC): 2026-07-29.
+| Field | Historical value |
+| --- | --- |
+| `source_commit` | `fbf2cdb9ec12d35c7b7422c412e09d6db2d2d0cf` |
+| `source_commit_object_sha256` | `71609e118cce7fe632ca2ed9bcd0af6bfd807c3fe0be1a79b084117769f57266` |
+| `source_tree_sha256` | `da9f8db742ad24dd325cbd3d4168365b2c792246982959819fe5fd4db1002d72` |
+| `source_archive_sha256` | `244c102caac9816f7e131ca2483d0bd7ace471ac550f9dfb062db1d982b80c2f` |
+| `source_archive_format` | `git-tar` |
+| `source_dirty` | `clean` |
+| `host_source_manifest_sha256` | `0350ac40178836ff24e972fae8240f83d8ee45c5115495a43da060e2e955b388` |
+| `reference_lock_sha256` | `943af1f7af3ba5f3df52c499cfd386be4b76cb2f650218c174981b114f4121ef` |
+| `environment_manifest_sha256` | `0cfbff8615e48f7ee17bd038a0fa852c9c0095b8fc74055214486a77197c07b4` |
+| `topology_kind` | `rootless-sealed-single-netns` |
+| `privilege_model` | `unprivileged-userns` |
+| `rustc_version` | `rustc 1.95.0 (59807616e 2026-04-14)` |
+| `cargo_version` | `cargo 1.95.0 (f2d3ce0bd 2026-03-21)` |
+| `target_triple` | `x86_64-unknown-linux-gnu` |
 
 ## Notes on this host
 
 The host is the Plan 046 `host.apparmor-restrict-on` negative
 baseline. The Plan 046 rootless sealed-namespace probe returns the
 typed blocker `blocked_unprivileged_user_namespace` on this host.
-The canonical external path is the Plan 048/049/050/051 Multipass
-recovery lane, which provisions a disposable Ubuntu 24.04 amd64
-guest with `apparmor_restrict_unprivileged_userns=0`. Any Plan 056
-run must be produced inside that lane; the host itself cannot
-satisfy the Plan 040 host contract for the Plan 046 lane.
+The Plan 058 execution-lane contract documents two alternative
+execution lanes that resolve this host-side blocker:
 
-The Plan 046 closure record is preserved verbatim; this freeze does
-not modify it.
+- Lane A (direct-host): the execution host itself must report
+  `rootless_sandbox_available`. This host does not.
+- Lane B (guest): the outer host records its baseline (this one)
+  as `blocked_unprivileged_user_namespace` and the Multipass
+  recovery guest must report `rootless_sandbox_available`. The
+  outer-host baseline does not reject a valid guest lane.
+
+The retired candidate is independent of the chosen lane: it is
+ineligible for any future external evidence regardless of lane.
