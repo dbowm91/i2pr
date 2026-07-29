@@ -69,10 +69,13 @@ def _build_diagnostic_bundle(
     result: str,
     reason_code: str,
 ) -> None:
-    if staging_root.exists():
-        shutil.rmtree(staging_root)
-    if run_identity_path.exists():
-        run_identity_path.unlink()
+    export_root = staging_root.parent / run_id
+    for path in (staging_root, run_identity_path, export_root):
+        if path.exists():
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
     context = create_context(
         repo_root=repo_root.resolve(),
         run_id=run_id,
