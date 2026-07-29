@@ -36,6 +36,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -516,8 +517,6 @@ def _write_certificate(certificate: dict[str, Any], output: Path | None) -> None
 
 
 def _main(argv: Iterable[str] | None = None) -> int:
-    import tempfile
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-a", type=Path, required=True)
     parser.add_argument("--run-b", type=Path, required=True)
