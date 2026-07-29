@@ -11,8 +11,17 @@ be cut from `main`.
 ## Candidate SHA
 
 ```text
-2457b74a0a129e8ef2aedd3abcd4883925f5b376
+fbf2cdb9ec12d35c7b7422c412e09d6db2d2d0cf
 ```
+
+The candidate was cut on top of commit `2457b74` (the Plan 056
+verifier and tests freeze commit) plus the
+`interop: tolerate gitlinks and non-regular entries in source tree
+digest` fix that allows `plan052_pipeline.build_measured_identity`
+to run on the current checkout (the `.agents/skills` gitlink
+otherwise raises `source-tree-file-missing`). Both commits are
+immutable and the candidate SHA must remain stable for the duration
+of the run.
 
 Branch: `main`. Working tree status: clean.
 
@@ -20,15 +29,15 @@ Branch: `main`. Working tree status: clean.
 
 | Field | Value |
 | --- | --- |
-| `source_commit` | `2457b74a0a129e8ef2aedd3abcd4883925f5b376` |
-| `source_commit_object_sha256` | `501e944c4611bbe8a4be3efb9f99196c93ad41987e261556f19d21a89387e994` |
-| `source_tree_sha256` | `c376850932c7b760e03128b088b23a6701e874e48b34408613d6befecc81896d` |
-| `source_archive_sha256` | `4d73691181f489ee8a9c2538036d0130d54e7beea8d9c32f6f5196feabc297e6` |
+| `source_commit` | `fbf2cdb9ec12d35c7b7422c412e09d6db2d2d0cf` |
+| `source_commit_object_sha256` | `71609e118cce7fe632ca2ed9bcd0af6bfd807c3fe0be1a79b084117769f57266` |
+| `source_tree_sha256` | `da9f8db742ad24dd325cbd3d4168365b2c792246982959819fe5fd4db1002d72` |
+| `source_archive_sha256` | `244c102caac9816f7e131ca2483d0bd7ace471ac550f9dfb062db1d982b80c2f` |
 | `source_archive_format` | `git-tar` |
 | `source_dirty` | `clean` |
-| `host_source_manifest_sha256` | `96c68a0fd1ac58ad5882204fc7e966407786e27890e66777982372688f6e88b0` |
+| `host_source_manifest_sha256` | `0350ac40178836ff24e972fae8240f83d8ee45c5115495a43da060e2e955b388` |
 | `reference_lock_sha256` | `943af1f7af3ba5f3df52c499cfd386be4b76cb2f650218c174981b114f4121ef` |
-| `environment_manifest_sha256` | `e13d6340ac9f25cd455fc96d637807727aed1d8734449fa1791c6eb9e7186780` |
+| `environment_manifest_sha256` | `0cfbff8615e48f7ee17bd038a0fa852c9c0095b8fc74055214486a77197c07b4` |
 | `topology_kind` | `rootless-sealed-single-netns` |
 | `privilege_model` | `unprivileged-userns` |
 | `rustc_version` | `rustc 1.95.0 (59807616e 2026-04-14)` |
