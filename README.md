@@ -479,9 +479,15 @@ external recovery lanes (Plan 046 sealed-namespace lane or the
 Plan 048/049 Multipass lane). On the Plan 046
 `apparmor_restrict_on` negative baseline the helpers cannot be
 exercised, so the two reference-initiated directions remain typed
-blockers until Plan 056 produces two complete reproducible
-bundles. NTCP2 remains experimental and non-advertised; Plan 055
-status is recorded in `plans/055-status.md`.
+blockers. Plan 056 (`plans/056-closure.md`) closed with the same
+typed host-environment blocker; the canonical two-bundle certificate
+verifier, the candidate freeze, and the local diagnostic bundles
+are committed under `target/interop/evidence/plan056/`. The
+canonical follow-up plan is `plans/057-cross-host-milestone-3-external-evidence-run.md`,
+which owns the two-run external evidence pass on a host that
+satisfies the Plan 040 host contract. NTCP2 remains experimental
+and non-advertised; Plan 055 status is recorded in
+`plans/055-status.md`.
 
 ## MVP direction
 

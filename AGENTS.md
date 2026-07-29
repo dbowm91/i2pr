@@ -616,13 +616,53 @@ exercised, so the directions remain typed blockers until Plan 056
 produces two complete reproducible bundles. NTCP2 remains
 experimental and non-advertised.
 
+## Plan 056 two-bundle Milestone 3 certificate verifier
+
+Plan 056 closed with a typed host-environment blocker (the Plan 046
+`apparmor_restrict_on` negative baseline plus the Plan 051 host
+resource constraints). The plan delivered the full implementation
+surface required for any future Milestone 3 certificate:
+
+- `tests/integration/ntcp2/harness/verify_milestone3_certificate.py`
+  — the canonical two-bundle verifier. Schema
+  `i2pr-milestone3-certificate-v1`. Re-verifies each bundle via the
+  existing `evidence_bundle.verify_bundle` helper, then enforces the
+  cross-bundle provenance, direction-predicate, and independence
+  rules. CLI exits `0` only when `verified == true`, `3` on a
+  denied certificate, `2` on a structural failure.
+- `tests/integration/ntcp2/harness/test_plan056.py` — the
+  certificate verification test matrix (positive + 16 negative
+  fixtures).
+- `scripts/interop/plan056_drive_bundles.py` — the local-evidence
+  driver that exercises the verifier end-to-end on the Plan 046
+  negative baseline. Produces two independent
+  `diagnostic-complete-not-certificate` bundles under
+  `target/interop/evidence/plan056/run-{a,b}/`.
+- `plans/056-candidate.md` and `plans/056-closure.md` — the frozen
+  candidate SHA and the closure record.
+- `plans/057-cross-host-milestone-3-external-evidence-run.md` —
+  the follow-up plan that owns the two-run external evidence pass
+  on a host that satisfies the Plan 040 host contract. Until Plan
+  057 produces two passing bundles from the same source commit,
+  Milestone 3 stays open and NTCP2 stays experimental and
+  non-advertised.
+
+The Plan 056 implementation surface is mandatory. Any change that
+removes or weakens the verifier, the test matrix, or the static
+boundary checks must be re-justified in a new plan-of-record and
+must not silently weaken the Milestone 3 evidence gate.
+
 Required focused checks are:
 
 ```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan056.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan055.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan054.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan053.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_bundle.py'
+python3 scripts/interop/plan056_drive_bundles.py --repo-root . \
+    --run-a-id <plan056-a-id> --run-b-id <plan056-b-id> \
+    --evidence-root target/interop/evidence/plan056
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-rootless-interop-boundary.sh
 bash scripts/check-multipass-interop-boundary.sh

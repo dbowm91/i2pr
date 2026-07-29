@@ -183,3 +183,16 @@ graphs, support-topology ADR, pipeline integration, and qualification
 tests are committed. The remaining two acceptance criteria — the
 i2pd helper implementation and the two live Plan 052 qualification
 runs — require the external lanes and are deferred to Plan 056.
+
+## Plan 056 follow-on
+
+Plan 056 is closed with a typed host-environment blocker. The
+verifier, the candidate freeze, and the local diagnostic bundles
+are committed under `target/interop/evidence/plan056/`. The
+canonical external evidence run is opened as Plan 057, which owns
+the two-run execution on a host that satisfies the Plan 040 host
+contract. Plan 055 does not advance `specs/support.toml` and does
+not claim NTCP2 advertisement. The i2pd direct helper implementation
+and the Java support topology remain unstarted; both become
+unblocked the moment Plan 057 provisions a Multipass guest with
+permissive AppArmor and at least 16 GiB of host RAM.

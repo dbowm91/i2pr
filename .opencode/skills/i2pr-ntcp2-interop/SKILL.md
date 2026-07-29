@@ -226,15 +226,23 @@ The Plan 055 helpers and the support topology live in the Plan 046
 rootless sealed-namespace lane or the Plan 048/049 Multipass
 recovery lane; this host is the negative baseline. The two
 reference-initiated directions remain typed blockers until Plan 056
-produces two complete reproducible bundles.
+produces two complete reproducible bundles. Plan 056 closed with a
+typed host-environment blocker; the canonical two-bundle certificate
+verifier, the candidate freeze, and the local diagnostic bundles
+are committed under `target/interop/evidence/plan056/`. The
+follow-up plan is `plans/057-cross-host-milestone-3-external-evidence-run.md`.
 
 Use the focused local seam with:
 
 ```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan056.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan055.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan054.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan053.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_bundle.py'
+python3 scripts/interop/plan056_drive_bundles.py --repo-root . \
+    --run-a-id <plan056-a-id> --run-b-id <plan056-b-id> \
+    --evidence-root target/interop/evidence/plan056
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-rootless-interop-boundary.sh
 bash scripts/check-multipass-interop-boundary.sh

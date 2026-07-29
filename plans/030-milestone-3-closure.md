@@ -3,7 +3,12 @@
 Date: 2026-07-15
 
 Status: **blocked; implementation phases complete for their bounded local
-scope, milestone acceptance criteria not met**.
+scope, milestone acceptance criteria not met**. Plan 056 closed with a
+typed host-environment blocker and committed the two-bundle certificate
+verifier, the candidate freeze, and two local diagnostic bundles. Plan 057
+owns the canonical two-run external evidence pass required to advance
+Milestone 3; until Plan 057 produces two passing bundles from the same
+source commit, the milestone acceptance criteria remain unmet.
 
 This aggregate record preserves the evidence boundary from Plans 031–036. It
 does not convert local vectors, self-handshakes, loopback TCP, or deterministic
