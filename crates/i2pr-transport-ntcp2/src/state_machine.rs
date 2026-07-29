@@ -932,6 +932,15 @@ impl ResponderState {
         }
     }
 
+    /// Plan 052 G1: returns the bounded responder-phase label for the
+    /// state that is about to be consumed. The label is a fixed, redacted
+    /// identifier; it never contains peer-controlled bytes. Callers
+    /// retain the label so a terminal failure can be classified by stage
+    /// without leaking protocol bytes.
+    pub fn phase_label(&self) -> &'static str {
+        responder_phase_label(&self.phase)
+    }
+
     /// Consumes this state and applies exactly one runtime result.
     pub fn transition(
         self,
@@ -1231,6 +1240,60 @@ impl ResponderState {
                 ))
             }
             _ => Err(HandshakeError::StateViolation),
+        }
+    }
+}
+
+/// Plan 052 G1: bounded, redacted label for a responder phase. Used by the
+/// runtime driver and the launcher to map a terminal responder-stage
+/// failure to one of the typed `responder_*` reasons without exposing
+/// protocol bytes. The set is closed; do not add peer-derived values.
+fn responder_phase_label(phase: &ResponderPhase) -> &'static str {
+    match phase {
+        ResponderPhase::NeedRequest { .. } => "need_request",
+        ResponderPhase::AwaitReplay { .. } => "await_replay",
+        ResponderPhase::AwaitRequestPadding { .. } => "await_request_padding",
+        ResponderPhase::NeedPeerTimestamp { .. } => "need_peer_timestamp",
+        ResponderPhase::NeedCreatedPadding { .. } => "need_created_padding",
+        ResponderPhase::AwaitConfirmed { .. } => "await_confirmed",
+        ResponderPhase::Done => "done",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Plan 052 G1: the initial responder phase label is the bounded
+    /// `need_request` identifier and the label set is closed and
+    /// redacted.
+    #[test]
+    fn responder_phase_label_is_bounded_and_redacted_for_initial_state() {
+        let state = ResponderState::new(
+            X25519PrivateKey::from_bytes([0x42; 32]),
+            X25519PrivateKey::from_bytes([0x31; 32]),
+            None,
+            [0x55; 32],
+            [0x55; 16],
+            2,
+            ClockSkewPolicy::default_compatibility(),
+        )
+        .expect("responder state");
+        assert_eq!(state.phase_label(), "need_request");
+        // The label is closed: no peer-controlled bytes appear in any
+        // known label.
+        for label in [
+            "need_request",
+            "await_replay",
+            "await_request_padding",
+            "need_peer_timestamp",
+            "need_created_padding",
+            "await_confirmed",
+            "done",
+        ] {
+            assert!(label.is_ascii());
+            assert!(!label.contains('/'));
+            assert!(!label.contains('\n'));
         }
     }
 }

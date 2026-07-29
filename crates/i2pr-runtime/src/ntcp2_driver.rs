@@ -92,6 +92,18 @@ pub enum HandshakeDriverError {
     PaddingOutOfRange,
     /// The local RouterInfo source exceeded the requested action maximum.
     RouterInfoTooLarge,
+    /// Plan 052 G1: a responder-stage failure labelled by the responder
+    /// phase that produced the terminal failure. The label is a fixed
+    /// redacted identifier; it never contains peer-controlled bytes.
+    /// Callers map the label to a bounded `responder_*` reason without
+    /// inspecting the carried `HandshakeError`.
+    ResponderStage {
+        /// The redacted phase label observed when the terminal failure
+        /// was produced. Always present; never peer-controlled.
+        phase_label: &'static str,
+        /// The underlying bounded protocol or driver failure.
+        inner: Box<HandshakeDriverError>,
+    },
 }
 
 impl fmt::Display for HandshakeDriverError {
@@ -106,6 +118,9 @@ impl fmt::Display for HandshakeDriverError {
             Self::RouterInfoTooLarge => {
                 formatter.write_str("local NTCP2 RouterInfo exceeded its bound")
             }
+            Self::ResponderStage { phase_label, inner } => formatter.write_fmt(format_args!(
+                "NTCP2 responder stage {phase_label} failed: {inner}"
+            )),
         }
     }
 }
@@ -173,6 +188,12 @@ trait HandshakeMachine: Sized {
     fn start(self) -> Result<HandshakeTransition<Self>, HandshakeError>;
     fn transition(self, input: HandshakeInput)
     -> Result<HandshakeTransition<Self>, HandshakeError>;
+    /// Plan 052 G1: returns the redacted stage label for the responder
+    /// role when this state machine is a `ResponderState`. The default
+    /// returns `None`; only the responder implementation overrides it.
+    fn phase_label(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 impl HandshakeMachine for InitiatorState {
@@ -186,6 +207,10 @@ impl HandshakeMachine for InitiatorState {
     ) -> Result<HandshakeTransition<Self>, HandshakeError> {
         Self::transition(self, input)
     }
+
+    fn phase_label(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 impl HandshakeMachine for ResponderState {
@@ -198,6 +223,10 @@ impl HandshakeMachine for ResponderState {
         input: HandshakeInput,
     ) -> Result<HandshakeTransition<Self>, HandshakeError> {
         Self::transition(self, input)
+    }
+
+    fn phase_label(&self) -> Option<&'static str> {
+        Some(ResponderState::phase_label(self))
     }
 }
 
@@ -259,8 +288,57 @@ where
     M: HandshakeMachine,
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    // Plan 052 G1: cache the latest responder phase label observed by
+    // the loop so a terminal failure can be classified by stage without
+    // leaking protocol bytes. `None` for the initiator path.
+    let mut last_responder_label: Option<&'static str> = state.phase_label();
+    let outcome = drive_inner(
+        state,
+        stream,
+        local_router_info,
+        replay,
+        config,
+        cancellation,
+        &mut last_responder_label,
+    )
+    .await;
+    match outcome {
+        Ok(run) => Ok(run),
+        Err(HandshakeDriverError::ResponderStage { .. }) => {
+            // Already labelled; do not wrap twice.
+            outcome
+        }
+        Err(inner) => {
+            if let Some(phase_label) = last_responder_label {
+                Err(HandshakeDriverError::ResponderStage {
+                    phase_label,
+                    inner: Box::new(inner),
+                })
+            } else {
+                Err(inner)
+            }
+        }
+    }
+}
+
+async fn drive_inner<M, S>(
+    state: M,
+    stream: &mut S,
+    local_router_info: &[u8],
+    replay: &ReplayCache,
+    config: HandshakeDriverConfig,
+    cancellation: &CancellationToken,
+    last_responder_label: &mut Option<&'static str>,
+) -> Result<HandshakeRun, HandshakeDriverError>
+where
+    M: HandshakeMachine,
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let budget = HandshakeBudget::new(config.deadlines)?;
     let mut transition = state.start().map_err(HandshakeDriverError::Protocol)?;
+    if let Some(label) = transition.state.phase_label() {
+        *last_responder_label = Some(label);
+    }
     let mut read_bytes = 0_u64;
     let mut written_bytes = 0_u64;
     let mut action_count = 0_u32;
@@ -272,6 +350,9 @@ where
             ));
         }
         let state = transition.state;
+        if let Some(label) = state.phase_label() {
+            *last_responder_label = Some(label);
+        }
         let mut next_transition = None;
         for action in transition.actions {
             action_count = action_count.saturating_add(1);
@@ -357,6 +438,9 @@ where
             }
         }
         transition = next_transition.ok_or(HandshakeDriverError::InvalidAction)?;
+        if let Some(label) = transition.state.phase_label() {
+            *last_responder_label = Some(label);
+        }
     }
 }
 
@@ -606,5 +690,111 @@ mod tests {
         );
         assert!(initiator_result.read_bytes > 0);
         assert!(responder_result.written_bytes > 0);
+    }
+
+    /// Plan 052 G1: when the responder driver encounters a transport
+    /// failure during the initial SessionRequest read, the returned
+    /// `HandshakeDriverError` is wrapped in `ResponderStage` with a
+    /// redacted `need_request` phase label.
+    #[tokio::test(start_paused = true)]
+    async fn responder_transport_failure_is_labelled_with_responder_phase() {
+        let bob_identity = RouterIdentityBundle::from_private_bytes([3; 32], [4; 32], &mut OsRng)
+            .expect("Bob identity");
+        let bob_static = X25519PrivateKey::from_bytes([0x42; 32]);
+        let bob_ephemeral = X25519PrivateKey::from_bytes([0x31; 32]);
+        let bob_hash = bob_identity.identity().hash().expect("Bob hash");
+        let bob_info = router_info(&bob_identity, bob_static.public_bytes());
+        let responder = ResponderState::new(
+            bob_static,
+            bob_ephemeral,
+            None,
+            *bob_hash.as_bytes(),
+            [0x55; 16],
+            2,
+            ClockSkewPolicy::default_compatibility(),
+        )
+        .expect("responder");
+        let replay = ReplayCache::new(4).expect("replay");
+        let config = HandshakeDriverConfig {
+            clock: HandshakeClock::Fixed(1_000),
+            padding: PaddingProfile::Minimum,
+            ..HandshakeDriverConfig::default()
+        };
+        let cancellation = CancellationToken::new();
+        let (initiator_stream, mut responder_stream) = tokio::io::duplex(128 * 1024);
+        // Close the initiator side immediately so the responder's
+        // first read returns EOF (ExactIoError). The responder never
+        // reaches the SessionRequest decode.
+        drop(initiator_stream);
+        let result = drive_responder_handshake(
+            responder,
+            &mut responder_stream,
+            &bob_info,
+            &replay,
+            config,
+            &cancellation,
+        )
+        .await;
+        match result {
+            Err(HandshakeDriverError::ResponderStage { phase_label, inner }) => {
+                assert_eq!(phase_label, "need_request");
+                assert!(matches!(*inner, HandshakeDriverError::Io(_)));
+            }
+            Err(other) => panic!("expected ResponderStage, got {other:?}"),
+            Ok(_) => panic!("expected a labelled failure"),
+        }
+    }
+
+    /// Plan 052 G1: the initiator path never produces a
+    /// `ResponderStage` label; its errors pass through unchanged so the
+    /// existing initiator classification is preserved.
+    #[tokio::test(start_paused = true)]
+    async fn initiator_transport_failure_is_not_responder_labelled() {
+        let alice_identity = RouterIdentityBundle::from_private_bytes([1; 32], [2; 32], &mut OsRng)
+            .expect("Alice identity");
+        let alice_static = X25519PrivateKey::from_bytes([0x24; 32]);
+        let alice_ephemeral = X25519PrivateKey::from_bytes([0x13; 32]);
+        let bob_hash = alice_identity.identity().hash().expect("Bob hash");
+        let alice_info = router_info(&alice_identity, alice_static.public_bytes());
+        let bob_public = PublicKeyBytes::new([0x99; 32]).expect("Bob public");
+        let initiator = InitiatorState::new(
+            alice_static,
+            alice_ephemeral,
+            bob_public,
+            Some(bob_hash),
+            *bob_hash.as_bytes(),
+            [0x55; 16],
+            2,
+            ClockSkewPolicy::default_compatibility(),
+        )
+        .expect("initiator");
+        let replay = ReplayCache::new(4).expect("replay");
+        let config = HandshakeDriverConfig {
+            clock: HandshakeClock::Fixed(1_000),
+            padding: PaddingProfile::Minimum,
+            ..HandshakeDriverConfig::default()
+        };
+        let cancellation = CancellationToken::new();
+        let (mut initiator_stream, responder_stream) = tokio::io::duplex(128 * 1024);
+        // Close the responder side immediately so the initiator's
+        // first read returns EOF.
+        drop(responder_stream);
+        let result = drive_initiator_handshake(
+            initiator,
+            &mut initiator_stream,
+            &alice_info,
+            &replay,
+            config,
+            &cancellation,
+        )
+        .await;
+        match result {
+            Err(HandshakeDriverError::ResponderStage { .. }) => {
+                panic!("initiator path must never produce ResponderStage")
+            }
+            Err(HandshakeDriverError::Io(_)) => {}
+            Err(other) => panic!("expected Io error from initiator, got {other:?}"),
+            Ok(_) => panic!("expected a failure"),
+        }
     }
 }

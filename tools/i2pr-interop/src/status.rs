@@ -171,7 +171,7 @@ fn result_name(value: StatusResult) -> &'static str {
     }
 }
 
-fn reason_name(value: StatusReason) -> &'static str {
+pub(crate) fn reason_name(value: StatusReason) -> &'static str {
     match value {
         StatusReason::ListenerBound => "listener_bound",
         StatusReason::StateInvalid => "state_invalid",

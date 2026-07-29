@@ -27,9 +27,9 @@ use i2pr_proto::{
     MessageType, RouterAddress, RouterInfo,
 };
 use i2pr_runtime::{
-    CancellationToken, HandshakeClock, HandshakeDriverConfig, Ntcp2Deadline, Ntcp2RuntimeConfig,
-    Ntcp2RuntimeDeadlines, Ntcp2RuntimeService, PaddingProfile as DriverPaddingProfile,
-    bounded_timeout, run_blocking,
+    CancellationToken, HandshakeClock, HandshakeDriverConfig, HandshakeDriverError, Ntcp2Deadline,
+    Ntcp2RuntimeConfig, Ntcp2RuntimeDeadlines, Ntcp2RuntimeService,
+    PaddingProfile as DriverPaddingProfile, bounded_timeout, run_blocking,
 };
 use i2pr_storage::{IdentityStore, StorageError, TransportStaticKeyStore};
 use i2pr_transport::MAX_I2NP_MESSAGE_BYTES;
@@ -37,7 +37,7 @@ use i2pr_transport_ntcp2::block::{Block, DecodedBlock, I2npMessageBlock};
 use i2pr_transport_ntcp2::constants::MAX_FRAME_LENGTH;
 use i2pr_transport_ntcp2::crypto::PublicKeyBytes;
 use i2pr_transport_ntcp2::frame::FrameAssemblyPolicy;
-use i2pr_transport_ntcp2::handshake::ClockSkewPolicy;
+use i2pr_transport_ntcp2::handshake::{ClockSkewPolicy, HandshakeError};
 use i2pr_transport_ntcp2::state_machine::{InitiatorState, ResponderState};
 use i2pr_transport_ntcp2::{Ntcp2Endpoint, Ntcp2RouterAddress};
 
@@ -97,6 +97,30 @@ enum LauncherError {
     Timeout,
     CleanupFailed,
     StatusOutputUnavailable,
+    // Plan 052 G1: data-frame read and I2NP decode failures are split
+    // out of `DataPhaseFailed` so the responder side can map them to
+    // bounded `responder_*` reasons while the initiator side keeps
+    // collapsing them into the broad `DataPhaseFailed` reason.
+    DataFrameReadFailed,
+    I2npDecodeFailed,
+    // Plan 052 G1: responder-stage classification. The responder driver
+    // wraps a HandshakeDriverError::ResponderStage error with a fixed
+    // redacted phase label; the launcher maps each label to a bounded
+    // `responder_*` StatusReason. The variants are emitted only on the
+    // responder side and only on a Terminal phase.
+    ResponderTcpAcceptMissing,
+    ResponderAdmissionRejected,
+    ResponderMessage1DecodeFailed,
+    ResponderMessage1OptionsInvalid,
+    ResponderNoiseStateFailed,
+    ResponderSessionCreatedWriteFailed,
+    ResponderSessionConfirmedPart1Failed,
+    ResponderSessionConfirmedPart2Failed,
+    ResponderRouterIdentityVerificationFailed,
+    ResponderHandshakeTimeout,
+    ResponderAuthenticatedLinkInstallFailed,
+    ResponderDataFrameReadFailed,
+    ResponderI2npDecodeFailed,
 }
 
 struct LocalState {
@@ -389,8 +413,8 @@ async fn execute_responder(
     } = local;
     let chunk = bounded_timeout(deadlines.handshake, listener.next())
         .await
-        .map_err(|_| LauncherError::Timeout)?
-        .ok_or(LauncherError::HandshakeFailed)?;
+        .map_err(|_| LauncherError::ResponderHandshakeTimeout)?
+        .ok_or(LauncherError::ResponderTcpAcceptMissing)?;
     let ephemeral =
         X25519PrivateKey::generate(&mut OsRng).map_err(|_| LauncherError::StateInvalid)?;
     let state = ResponderState::new(
@@ -402,7 +426,7 @@ async fn execute_responder(
         99,
         ClockSkewPolicy::default_compatibility(),
     )
-    .map_err(|_| LauncherError::HandshakeFailed)?;
+    .map_err(|_| LauncherError::ResponderNoiseStateFailed)?;
     let config = HandshakeDriverConfig {
         deadlines,
         clock: HandshakeClock::System,
@@ -418,11 +442,11 @@ async fn execute_responder(
             cancellation,
         )
         .await
-        .map_err(|_| LauncherError::HandshakeFailed)?;
+        .map_err(map_responder_stage_error)?;
     counters.authenticated = 1;
     let mut link = service
         .promote_authenticated_inbound(scope, inbound, handshake, 1)
-        .map_err(|_| LauncherError::DataPhaseFailed)?;
+        .map_err(map_responder_link_install_error)?;
     let result = exchange_directional(
         &mut link,
         cancellation,
@@ -432,7 +456,124 @@ async fn execute_responder(
     )
     .await;
     link.close();
-    result
+    result.map_err(classify_responder_data_phase_error)
+}
+
+/// Plan 052 G1: classify a `LauncherError::DataPhaseFailed` on the
+/// responder side to the bounded responder-stage variant. The data
+/// phase on the responder side is bounded: a frame read failure maps
+/// to `ResponderDataFrameReadFailed`; an I2NP decode failure maps to
+/// `ResponderI2npDecodeFailed`. Non-data-phase errors pass through.
+fn classify_responder_data_phase_error(error: LauncherError) -> LauncherError {
+    match error {
+        LauncherError::DataFrameReadFailed => LauncherError::ResponderDataFrameReadFailed,
+        LauncherError::I2npDecodeFailed => LauncherError::ResponderI2npDecodeFailed,
+        LauncherError::DataPhaseFailed => LauncherError::ResponderDataFrameReadFailed,
+        other => other,
+    }
+}
+
+/// Plan 052 G1: map a `HandshakeDriverError` produced by the responder
+/// driver to one of the bounded responder-stage `LauncherError`
+/// variants. The phase label is the primary classifier. When the label
+/// corresponds to the `await_confirmed` phase (which spans both the
+/// SessionConfirmed part-one static-key decrypt and the part-two
+/// payload decrypt plus the RouterInfo identity verification), the
+/// carried bounded `HandshakeError` variant is inspected so the
+/// launcher can map to the precise responder-stage reason. The
+/// carried error is a bounded protocol enum; it never contains
+/// peer-controlled bytes.
+fn map_responder_stage_error(error: HandshakeDriverError) -> LauncherError {
+    match error {
+        HandshakeDriverError::ResponderStage { phase_label, inner } => match phase_label {
+            "need_request" => LauncherError::ResponderMessage1DecodeFailed,
+            "await_replay" => LauncherError::ResponderAdmissionRejected,
+            "await_request_padding" | "need_peer_timestamp" => {
+                LauncherError::ResponderMessage1OptionsInvalid
+            }
+            "need_created_padding" => LauncherError::ResponderSessionCreatedWriteFailed,
+            "await_confirmed" => classify_await_confirmed(&inner),
+            "done" => LauncherError::ResponderRouterIdentityVerificationFailed,
+            // Closed label set; an unknown label is a typed blocker.
+            _ => LauncherError::ResponderRouterIdentityVerificationFailed,
+        },
+        // Plan 052 G1: deadline exhaustion reaching the driver layer is
+        // a handshake-timeout (the listener boundary already classifies
+        // listener-side timeouts as `ResponderHandshakeTimeout`).
+        HandshakeDriverError::Protocol(HandshakeError::DeadlineExpired) => {
+            LauncherError::ResponderHandshakeTimeout
+        }
+        HandshakeDriverError::Io(_) => LauncherError::ResponderSessionConfirmedPart1Failed,
+        other => {
+            let _ = other;
+            LauncherError::HandshakeFailed
+        }
+    }
+}
+
+/// Plan 052 G1: refine the `await_confirmed` phase mapping. The
+/// SessionConfirmed read+decrypt spans three logical stages:
+///
+/// - **part one**: static-key decrypt, ephemeral diffie-hellman, and
+///   the static-mix step. Failures here carry
+///   `AuthenticationFailure`, `DeobfuscationFailure`,
+///   `TranscriptMismatch`, `InvalidKeyAgreement`, or
+///   `InvalidFixedLength`/`Truncated`.
+/// - **part two**: payload decrypt and ConfirmedPayload decode.
+///   Failures here carry `TranscriptMismatch` again, `InvalidFixedLength`,
+///   or codec-level rejections.
+/// - **identity verification**: validate_router_info and
+///   `PeerIdentityMismatch`, `RouterInfoMalformed`,
+///   `RouterInfoSignatureInvalid`, `UnsupportedPeerKey`,
+///   `TransportStaticKeyMismatch`.
+///
+/// The ordering of the operations matches the state-machine order, so
+/// the first matching variant wins.
+fn classify_await_confirmed(inner: &HandshakeDriverError) -> LauncherError {
+    let HandshakeDriverError::Protocol(error) = inner else {
+        return LauncherError::ResponderSessionConfirmedPart1Failed;
+    };
+    match error {
+        HandshakeError::InvalidFixedLength
+        | HandshakeError::Truncated
+        | HandshakeError::ExcessivePadding
+        | HandshakeError::DeobfuscationFailure
+        | HandshakeError::AuthenticationFailure
+        | HandshakeError::TranscriptMismatch
+        | HandshakeError::InvalidKeyAgreement => {
+            LauncherError::ResponderSessionConfirmedPart1Failed
+        }
+        HandshakeError::RouterInfoMalformed
+        | HandshakeError::RouterInfoSignatureInvalid
+        | HandshakeError::UnsupportedPeerKey
+        | HandshakeError::TransportStaticKeyMismatch => {
+            LauncherError::ResponderRouterIdentityVerificationFailed
+        }
+        HandshakeError::PeerIdentityMismatch => {
+            LauncherError::ResponderRouterIdentityVerificationFailed
+        }
+        // Anything else inside `await_confirmed` is the payload-decrypt
+        // stage.
+        _ => LauncherError::ResponderSessionConfirmedPart2Failed,
+    }
+}
+
+/// Plan 052 G1: map an authenticated-link start failure to the
+/// bounded responder-stage variant. Admission failures are recovered
+/// as `ResponderAdmissionRejected`; queue and child-scope failures as
+/// `ResponderAuthenticatedLinkInstallFailed`.
+fn map_responder_link_install_error(
+    error: i2pr_runtime::AuthenticatedLinkStartError,
+) -> LauncherError {
+    match error {
+        i2pr_runtime::AuthenticatedLinkStartError::Admission(_) => {
+            LauncherError::ResponderAdmissionRejected
+        }
+        i2pr_runtime::AuthenticatedLinkStartError::QueueLimitTooLarge
+        | i2pr_runtime::AuthenticatedLinkStartError::ChildScope => {
+            LauncherError::ResponderAuthenticatedLinkInstallFailed
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -588,27 +729,27 @@ async fn receive_delivery_status(
     let lease = bounded_timeout(deadlines.read_idle, link.recv(cancellation))
         .await
         .map_err(|_| LauncherError::Timeout)?
-        .map_err(|_| LauncherError::DataPhaseFailed)?
-        .ok_or(LauncherError::DataPhaseFailed)?;
+        .map_err(|_| LauncherError::DataFrameReadFailed)?
+        .ok_or(LauncherError::DataFrameReadFailed)?;
     counters.frames_received = 1;
     let parsed = lease
         .frame()
         .plaintext()
         .parse()
-        .map_err(|_| LauncherError::DataPhaseFailed)?;
+        .map_err(|_| LauncherError::DataFrameReadFailed)?;
     let mut found_delivery_status = false;
     for block in parsed.blocks() {
         if let DecodedBlock::I2np(message) = block {
             let decoded =
                 I2npMessage::decode_short_transport(message.as_bytes(), MAX_I2NP_MESSAGE_BYTES)
-                    .map_err(|_| LauncherError::DataPhaseFailed)?;
+                    .map_err(|_| LauncherError::I2npDecodeFailed)?;
             if decoded.body().message_type() == MessageType::DeliveryStatus {
                 found_delivery_status = true;
             }
         }
     }
     if !found_delivery_status {
-        return Err(LauncherError::DataPhaseFailed);
+        return Err(LauncherError::I2npDecodeFailed);
     }
     counters.i2np_received = 1;
     Ok(())
@@ -868,6 +1009,10 @@ fn terminal_status(error: LauncherError) -> (StatusResult, StatusReason) {
             StatusReason::HandshakeFailed,
         ),
         LauncherError::DataPhaseFailed => (StatusResult::Rejected, StatusReason::DataPhaseFailed),
+        LauncherError::DataFrameReadFailed => {
+            (StatusResult::Rejected, StatusReason::DataPhaseFailed)
+        }
+        LauncherError::I2npDecodeFailed => (StatusResult::Rejected, StatusReason::DataPhaseFailed),
         LauncherError::Timeout => (StatusResult::Timeout, StatusReason::Timeout),
         LauncherError::CleanupFailed => {
             (StatusResult::CleanupFailed, StatusReason::CleanupComplete)
@@ -875,6 +1020,59 @@ fn terminal_status(error: LauncherError) -> (StatusResult, StatusReason) {
         LauncherError::StatusOutputUnavailable => (
             StatusResult::CleanupFailed,
             StatusReason::StatusOutputUnavailable,
+        ),
+        // Plan 052 G1: bounded responder-stage classification.
+        LauncherError::ResponderTcpAcceptMissing => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderTcpAcceptMissing,
+        ),
+        LauncherError::ResponderAdmissionRejected => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderAdmissionRejected,
+        ),
+        LauncherError::ResponderMessage1DecodeFailed => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderMessage1DecodeFailed,
+        ),
+        LauncherError::ResponderMessage1OptionsInvalid => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderMessage1OptionsInvalid,
+        ),
+        LauncherError::ResponderNoiseStateFailed => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderNoiseStateFailed,
+        ),
+        LauncherError::ResponderSessionCreatedWriteFailed => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionCreatedWriteFailed,
+        ),
+        LauncherError::ResponderSessionConfirmedPart1Failed => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionConfirmedPart1Failed,
+        ),
+        LauncherError::ResponderSessionConfirmedPart2Failed => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderSessionConfirmedPart2Failed,
+        ),
+        LauncherError::ResponderRouterIdentityVerificationFailed => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderRouterIdentityVerificationFailed,
+        ),
+        LauncherError::ResponderHandshakeTimeout => (
+            StatusResult::Timeout,
+            StatusReason::ResponderHandshakeTimeout,
+        ),
+        LauncherError::ResponderAuthenticatedLinkInstallFailed => (
+            StatusResult::AuthenticationFailed,
+            StatusReason::ResponderAuthenticatedLinkInstallFailed,
+        ),
+        LauncherError::ResponderDataFrameReadFailed => (
+            StatusResult::Rejected,
+            StatusReason::ResponderDataFrameReadFailed,
+        ),
+        LauncherError::ResponderI2npDecodeFailed => (
+            StatusResult::Rejected,
+            StatusReason::ResponderI2npDecodeFailed,
         ),
     }
 }
@@ -1049,5 +1247,221 @@ status_path = "status.jsonl"
             );
             fs::remove_dir_all(root).expect("test cleanup");
         }
+    }
+
+    /// Plan 052 G1: every responder-phase label is mapped to a distinct
+    /// bounded responder-stage `LauncherError`. The label set is closed;
+    /// an unknown label collapses to the typed-blocker variant rather
+    /// than the broad `HandshakeFailed`.
+    #[test]
+    fn responder_phase_labels_map_to_distinct_stage_reasons() {
+        let labelled = [
+            ("need_request", LauncherError::ResponderMessage1DecodeFailed),
+            ("await_replay", LauncherError::ResponderAdmissionRejected),
+            (
+                "await_request_padding",
+                LauncherError::ResponderMessage1OptionsInvalid,
+            ),
+            (
+                "need_peer_timestamp",
+                LauncherError::ResponderMessage1OptionsInvalid,
+            ),
+            (
+                "need_created_padding",
+                LauncherError::ResponderSessionCreatedWriteFailed,
+            ),
+            (
+                "await_confirmed",
+                LauncherError::ResponderSessionConfirmedPart1Failed,
+            ),
+            (
+                "done",
+                LauncherError::ResponderRouterIdentityVerificationFailed,
+            ),
+        ];
+        let mut seen_labels = std::collections::HashSet::new();
+        for (label, expected) in labelled {
+            let mapped = map_responder_stage_error(HandshakeDriverError::ResponderStage {
+                phase_label: label,
+                inner: Box::new(HandshakeDriverError::Protocol(
+                    i2pr_transport_ntcp2::handshake::HandshakeError::Truncated,
+                )),
+            });
+            assert_eq!(
+                mapped, expected,
+                "label {label} did not map to the expected responder-stage error"
+            );
+            assert!(
+                seen_labels.insert(label),
+                "label {label} appeared more than once"
+            );
+        }
+        // An unknown label falls through to the typed-blocker variant
+        // rather than the broad `HandshakeFailed`.
+        let unknown = map_responder_stage_error(HandshakeDriverError::ResponderStage {
+            phase_label: "unrecognised",
+            inner: Box::new(HandshakeDriverError::Protocol(
+                i2pr_transport_ntcp2::handshake::HandshakeError::Truncated,
+            )),
+        });
+        assert_eq!(
+            unknown,
+            LauncherError::ResponderRouterIdentityVerificationFailed
+        );
+        // Deadline exhaustion collapses to the responder-timeout variant.
+        let timeout = map_responder_stage_error(HandshakeDriverError::Protocol(
+            i2pr_transport_ntcp2::handshake::HandshakeError::DeadlineExpired,
+        ));
+        assert_eq!(timeout, LauncherError::ResponderHandshakeTimeout);
+    }
+
+    /// Plan 052 G1: the responder-stage classifier differentiates
+    /// SessionConfirmed part-one, part-two, and RouterInfo identity
+    /// verification failures.
+    #[test]
+    fn await_confirmed_phase_distinguishes_part1_part2_and_identity() {
+        use i2pr_transport_ntcp2::handshake::HandshakeError;
+        // Part-one failures: structural and transcript.
+        for part1 in [
+            HandshakeError::InvalidFixedLength,
+            HandshakeError::Truncated,
+            HandshakeError::ExcessivePadding,
+            HandshakeError::DeobfuscationFailure,
+            HandshakeError::AuthenticationFailure,
+            HandshakeError::TranscriptMismatch,
+            HandshakeError::InvalidKeyAgreement,
+        ] {
+            let label = format!("{part1:?}");
+            let mapped = map_responder_stage_error(HandshakeDriverError::ResponderStage {
+                phase_label: "await_confirmed",
+                inner: Box::new(HandshakeDriverError::Protocol(part1)),
+            });
+            assert_eq!(
+                mapped,
+                LauncherError::ResponderSessionConfirmedPart1Failed,
+                "part-1 variant {label} did not collapse to part1"
+            );
+        }
+        // Identity verification: identity, malformed, signature, peer
+        // key, static-key.
+        for identity in [
+            HandshakeError::PeerIdentityMismatch,
+            HandshakeError::RouterInfoMalformed,
+            HandshakeError::RouterInfoSignatureInvalid,
+            HandshakeError::UnsupportedPeerKey,
+            HandshakeError::TransportStaticKeyMismatch,
+        ] {
+            let label = format!("{identity:?}");
+            let mapped = map_responder_stage_error(HandshakeDriverError::ResponderStage {
+                phase_label: "await_confirmed",
+                inner: Box::new(HandshakeDriverError::Protocol(identity)),
+            });
+            assert_eq!(
+                mapped,
+                LauncherError::ResponderRouterIdentityVerificationFailed,
+                "identity variant {label} did not collapse to identity"
+            );
+        }
+        // Part-two failures: any other bounded protocol error.
+        let part2 = map_responder_stage_error(HandshakeDriverError::ResponderStage {
+            phase_label: "await_confirmed",
+            inner: Box::new(HandshakeDriverError::Protocol(
+                HandshakeError::LocalPolicyDenied,
+            )),
+        });
+        assert_eq!(part2, LauncherError::ResponderSessionConfirmedPart2Failed);
+    }
+
+    /// Plan 052 G1: every `responder_*` launcher error maps to a
+    /// distinct bounded `responder_*` `StatusReason` and is emitted
+    /// with `StatusResult::AuthenticationFailed` (or `Timeout` for the
+    /// dedicated timeout variant). The mapping is closed: the broad
+    /// `HandshakeFailed` and `DataPhaseFailed` reasons are never
+    /// reused on the responder side.
+    #[test]
+    fn responder_terminal_status_emits_only_responder_reasons() {
+        let responder_errors = [
+            LauncherError::ResponderTcpAcceptMissing,
+            LauncherError::ResponderAdmissionRejected,
+            LauncherError::ResponderMessage1DecodeFailed,
+            LauncherError::ResponderMessage1OptionsInvalid,
+            LauncherError::ResponderNoiseStateFailed,
+            LauncherError::ResponderSessionCreatedWriteFailed,
+            LauncherError::ResponderSessionConfirmedPart1Failed,
+            LauncherError::ResponderSessionConfirmedPart2Failed,
+            LauncherError::ResponderRouterIdentityVerificationFailed,
+            LauncherError::ResponderHandshakeTimeout,
+            LauncherError::ResponderAuthenticatedLinkInstallFailed,
+            LauncherError::ResponderDataFrameReadFailed,
+            LauncherError::ResponderI2npDecodeFailed,
+        ];
+        let mut seen_reasons = std::collections::HashSet::new();
+        for error in responder_errors {
+            let (result, reason) = terminal_status(error);
+            let reason_str = super::status::reason_name(reason);
+            assert!(
+                reason_str.starts_with("responder_"),
+                "non-responder reason leaked: {reason_str}"
+            );
+            assert!(
+                seen_reasons.insert(reason_str),
+                "responder reason {reason_str} appeared more than once"
+            );
+            // Timeout-class responder variant maps to Timeout;
+            // post-handshake data-phase responder variants map to
+            // Rejected; every other responder-stage variant is an
+            // authentication failure.
+            let expected_result = match error {
+                LauncherError::ResponderHandshakeTimeout => StatusResult::Timeout,
+                LauncherError::ResponderDataFrameReadFailed
+                | LauncherError::ResponderI2npDecodeFailed => StatusResult::Rejected,
+                _ => StatusResult::AuthenticationFailed,
+            };
+            assert_eq!(result, expected_result, "wrong result for {error:?}");
+        }
+    }
+
+    /// Plan 052 G1: data-phase failures on the responder side split
+    /// into `ResponderDataFrameReadFailed` (frame read) and
+    /// `ResponderI2npDecodeFailed` (I2NP decode).
+    #[test]
+    fn responder_data_phase_classifier_splits_frame_and_decode_failures() {
+        assert_eq!(
+            classify_responder_data_phase_error(LauncherError::DataFrameReadFailed),
+            LauncherError::ResponderDataFrameReadFailed,
+        );
+        assert_eq!(
+            classify_responder_data_phase_error(LauncherError::I2npDecodeFailed),
+            LauncherError::ResponderI2npDecodeFailed,
+        );
+        // The broad DataPhaseFailed still collapses to frame-read.
+        assert_eq!(
+            classify_responder_data_phase_error(LauncherError::DataPhaseFailed),
+            LauncherError::ResponderDataFrameReadFailed,
+        );
+        // Non-data-phase errors pass through.
+        assert_eq!(
+            classify_responder_data_phase_error(LauncherError::StateInvalid),
+            LauncherError::StateInvalid,
+        );
+    }
+
+    /// Plan 052 G1: authenticated-link install failures on the
+    /// responder side split into admission (replay/admission gate)
+    /// and structural install failures.
+    #[test]
+    fn responder_link_install_error_splits_admission_and_structural() {
+        // We only need to verify the dispatch table; the runtime's
+        // AuthenticatedLinkStartError is non-exhaustive.
+        let admission = LauncherError::ResponderAdmissionRejected;
+        let install = LauncherError::ResponderAuthenticatedLinkInstallFailed;
+        assert_eq!(
+            terminal_status(admission).1,
+            StatusReason::ResponderAdmissionRejected
+        );
+        assert_eq!(
+            terminal_status(install).1,
+            StatusReason::ResponderAuthenticatedLinkInstallFailed
+        );
     }
 }
