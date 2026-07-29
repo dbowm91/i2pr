@@ -1,6 +1,47 @@
 # Plan 057: cross-host Milestone 3 external evidence run
 
-## Status and dependencies
+## Status: superseded before execution by Plans 058, 059, and 060.
+
+Plan 057 is no longer active execution authority. It is preserved
+as an audit record of the original ordering that Plan 058
+corrected. The original defects that this plan inherited are:
+
+- the candidate was frozen before the reference-side implementation
+  surface required by the four-direction predicate was implemented;
+- the implementation floor for the candidate was undefined, so the
+  candidate could be consumed by tooling that depends on helpers
+  that do not exist;
+- the direct-host and guest execution lanes were conflated: the
+  plan required the physical host to pass the rootless probe and
+  also required a Multipass guest;
+- the Java minimal support topology (ADR 0021) was required but
+  the ADR was Proposed, not accepted.
+
+The Plan 058 record and candidate integrity closure pass splits
+this plan into three new plans:
+
+| Plan 058 responsibility | New owner |
+| --- | --- |
+| record/candidate correction | Plan 058 |
+| i2pd direct helper | Plan 059 |
+| Java topology and ADR decision | Plan 059 |
+| receiver marker qualification | Plan 059 |
+| new candidate freeze | Plan 060 |
+| two external runs and certificate | Plan 060 |
+
+Plan 058 supersedes this plan. Plan 059 is the active
+implementation and qualification pass. Plan 060 is the active
+candidate freeze and two-run certificate pass.
+
+## Original plan (preserved verbatim)
+
+The remainder of this document is preserved verbatim as an audit
+record of the original execution contract. Do not execute any
+command from this document; the commands reference the retired
+candidate SHA, the deprecated host-only-and-guest gate, and the
+unspecified implementation floor.
+
+### Status and dependencies (original)
 
 - Plan type: follow-up external execution pass.
 - Starting branch: `main` after Plan 056 is closed.
@@ -18,7 +59,7 @@
 - Milestone 3 may close only through this plan (or a successor that
   inherits every Plan 056 invariant).
 
-## Objective
+### Objective (original)
 
 Produce two independently executed, complete, sanitized Plan 052
 evidence bundles from one exact clean source commit. Each bundle
@@ -41,7 +82,7 @@ The Plan 056 candidate commit and the Plan 056 certificate verifier
 are inherited verbatim. No source edits are permitted during the
 authoritative runs.
 
-## Host contract
+## Host contract (original)
 
 The execution host must satisfy the Plan 040 host contract:
 
@@ -65,7 +106,7 @@ The execution host must NOT be the Plan 046 negative baseline
 `blocked_unprivileged_user_namespace`, this plan cannot proceed
 and the typed blocker remains the canonical answer.
 
-## Phase 1: preflight
+## Phase 1: preflight (original)
 
 1. Verify the host contract above on the candidate execution host.
 2. Verify the Plan 046 rootless probe returns
@@ -81,7 +122,7 @@ and the typed blocker remains the canonical answer.
 6. Refresh the Plan 057 candidate file at
    `plans/057-candidate.md` with the measured run-identity fields.
 
-## Phase 2: environment provisioning
+## Phase 2: environment provisioning (original)
 
 1. Provision one fresh Multipass guest under the
    `i2pr-plan048-rootless-v1` environment contract.
@@ -92,7 +133,7 @@ and the typed blocker remains the canonical answer.
    `rootless_sandbox_available`.
 5. Snapshot the `source-and-cache-ready` state.
 
-## Phase 3: authoritative Run A
+## Phase 3: authoritative Run A (original)
 
 1. Generate Run A identity from measured values (recommended ID:
    `plan057-a-YYYYMMDDhhmmss-<8hex>`).
@@ -119,7 +160,7 @@ and the typed blocker remains the canonical answer.
 6. Finalize the Run A bundle, export it via `export-evidence.sh`,
    and verify the exported bundle.
 
-## Phase 4: reset
+## Phase 4: reset (original)
 
 1. Inspect the guest for residual state. Stop or destroy any
    owned instance as required by Plan 049.
@@ -129,7 +170,7 @@ and the typed blocker remains the canonical answer.
    probe. If any source, reference, helper, or environment
    manifest digest drifts, stop; the candidate is invalidated.
 
-## Phase 5: authoritative Run B
+## Phase 5: authoritative Run B (original)
 
 1. Generate Run B identity from measured values (recommended ID:
    `plan057-b-YYYYMMDDhhmmss-<8hex>`).
@@ -146,7 +187,7 @@ and the typed blocker remains the canonical answer.
    directions.
 4. Repeat Phase 3, finalize, export, verify.
 
-## Phase 6: cross-run review
+## Phase 6: cross-run review (original)
 
 1. Run `python3 tests/integration/ntcp2/harness/verify_milestone3_certificate.py
    --run-a target/interop/evidence/milestone-3/<run-a>
@@ -158,7 +199,7 @@ and the typed blocker remains the canonical answer.
 3. Sign the sanitized reviewer record containing only name/role,
    date, bundle manifest digests, verifier commit, and outcome.
 
-## Phase 7: closure
+## Phase 7: closure (original)
 
 1. Commit the two sanitized bundles, the certificate, and the
    reviewer record under `target/interop/evidence/milestone-3/`.
@@ -178,7 +219,7 @@ and the typed blocker remains the canonical answer.
 4. Open a follow-up plan for Milestone 4 (the next plan after the
    bounded IPv4 NTCP2 evidence scope).
 
-## Failure and invalidation rules
+## Failure and invalidation rules (original)
 
 This plan inherits every Plan 056 failure rule:
 
@@ -197,7 +238,7 @@ This plan inherits every Plan 056 failure rule:
 - Bundle verification fails → treat the entire run as invalid;
   never repair finalized bundle contents in place.
 
-## Tests required before external execution
+## Tests required before external execution (original)
 
 The Plan 056 certificate verifier and its 18-test matrix must
 remain green at the Plan 057 candidate commit. Add the following
@@ -217,7 +258,7 @@ Plan 057-specific tests under
 These tests run from the canonical Plan 052 bundle fixture used by
 `test_plan056.py`; they extend rather than duplicate.
 
-## Required final handoff artifacts
+## Required final handoff artifacts (original)
 
 - `plans/057-candidate.md` — frozen candidate SHA and measured
   digests for the Plan 057 execution host.
@@ -234,7 +275,7 @@ These tests run from the canonical Plan 052 bundle fixture used by
   `specs/support.toml`, `docs/protocol-support.md`,
   `plans/056-closure.md`, `plans/051-status`.
 
-## Explicit non-claims
+## Explicit non-claims (original)
 
 - Plan 057 does not modify the Plan 056 verifier, the candidate
   freeze, the Plan 052/053/054/055 bundle pipeline, or the Plan 046
@@ -248,7 +289,7 @@ These tests run from the canonical Plan 052 bundle fixture used by
 - Plan 057 does not weaken the typed-blocker taxonomy or any
   static boundary checker.
 
-## Acceptance summary
+## Acceptance summary (original)
 
 Plan 057 closes when the Plan 056 certificate verifier reports
 `verified: true` on two independent bundles produced from the same
