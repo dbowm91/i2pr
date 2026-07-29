@@ -577,3 +577,53 @@ bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-rootless-interop-boundary.sh
 bash scripts/check-multipass-interop-boundary.sh
 ```
+
+## Plan 055 reference-initiated NTCP2 trigger and topology qualification pass
+
+Plan 055 is the qualification pass for the two reference-initiated
+directions (`java-to-i2pr-ipv4` and `i2pd-to-i2pr-ipv4`). It owns:
+
+- The locked machine-readable trigger record schema
+  `i2pr-reference-trigger-v3` in
+  `tests/integration/ntcp2/harness/trigger_record.py` with the
+  bounded `TriggerHelperKind` and `TriggerOutcome` enumerations.
+- The source-inspection record for each pinned reference under
+  `tests/integration/ntcp2/reference-trigger-contracts.md`. The
+  Plan 055 B5 decision for i2pd is
+  `i2pd-direct-helper-selected`; the Plan 055 C5 decision for Java
+  is
+  `java-direct-helper-rejected-global-context-not-isolatable`.
+- ADR 0021 (`docs/adr/0021-minimal-java-support-topology.md`)
+  governing the optional `java-minimal-support-topology` fallback
+  that may be implemented only after the ADR is approved.
+- The Plan 055 trigger schema is the only allowlisted trigger
+  schema in `tests/integration/ntcp2/harness/evidence_bundle.py`;
+  legacy `v1`/`v2` trigger records are still readable but never
+  emitted by the Plan 052/053 pipeline.
+- The Plan 052/053 pipeline (`plan052_pipeline.write_direction_artifacts`)
+  binds the trigger record digest, correlation nonce, target
+  RouterInfo hash, and run identity into the direction record
+  (Plan 055 E2). A successful trigger outcome may not mask a
+  rejected direction; the bounded responder reason from the Rust
+  launcher is preserved (Plan 055 E3).
+
+The Plan 055 helpers themselves (i2pd direct connect, Java minimal
+support topology) are external paths and may only run inside the
+Plan 046 rootless sealed-namespace lane or the Plan 048/049
+Multipass recovery lane. On this host (the Plan 046
+`apparmor_restrict_on` negative baseline) the helpers cannot be
+exercised, so the directions remain typed blockers until Plan 056
+produces two complete reproducible bundles. NTCP2 remains
+experimental and non-advertised.
+
+Required focused checks are:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan055.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan054.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan053.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_bundle.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+```

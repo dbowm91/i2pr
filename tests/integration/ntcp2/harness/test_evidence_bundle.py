@@ -42,7 +42,7 @@ def _make_environment_block(directory: Path) -> None:
 _DIRECTION_CLASS_SCHEMAS = {
     "attestations": "i2pr-mixed-router-attestation-v2",
     "directions": "i2pr-mixed-router-direction-v2",
-    "triggers": "i2pr-reference-trigger-v2",
+    "triggers": "i2pr-reference-trigger-v3",
     "observations": "i2pr-ntcp2-direction-observation-v2",
     "cleanup": "i2pr-mixed-router-cleanup-v2",
 }

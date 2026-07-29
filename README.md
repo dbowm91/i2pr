@@ -438,6 +438,51 @@ amd64 host or Multipass guest. The local checkout on the
 matrix yet; the Plan 048/049 Multipass recovery lane is the
 canonical external path. Plan 054 status is in `plans/054-status.md`.
 
+### Plan 055 reference-initiated trigger and topology qualification pass
+
+Plan 055 is the qualification pass for the two reference-initiated
+directions (`java-to-i2pr-ipv4` and `i2pd-to-i2pr-ipv4`).
+
+- The locked machine-readable trigger record schema
+  `i2pr-reference-trigger-v3` lives in
+  `tests/integration/ntcp2/harness/trigger_record.py` with the
+  bounded `TriggerHelperKind` and `TriggerOutcome` enumerations. The
+  trigger record carries helper source/binary digests, the target
+  RouterInfo hash, the public NTCP2 static-key digest, the synthetic
+  endpoint, the correlation nonce, the bounded monotonic timestamps,
+  and the typed outcome. The Plan 052/053 pipeline binds the trigger
+  digest into the per-direction record and rejects mismatches.
+- The source-inspection record at
+  `tests/integration/ntcp2/reference-trigger-contracts.md` carries
+  the Plan 055 B5 i2pd direct-helper decision
+  (`i2pd-direct-helper-selected`) and the Plan 055 C5 Java
+  decision (`java-direct-helper-rejected-global-context-not-isolatable`).
+  The i2pd helper drives `Transports::SendMessage` →
+  `ConnectToPeer` directly against the unmodified pinned libraries;
+  the Java helper would have to initialize a full
+  `RouterContext`, which the plan forbids for the qualification
+  pass.
+- The optional `java-minimal-support-topology` fallback is
+  governed by ADR 0021
+  (`docs/adr/0021-minimal-java-support-topology.md`); the ADR must
+  be approved before any support-topology helper may be
+  implemented.
+- A successful trigger record alone never marks a direction
+  passed. The Plan 052 receiver-side observation predicate
+  (`ntcp2_authenticated` + `frame_authenticated_and_decrypted` +
+  `i2np_message_decoded`) remains the source of truth. A rejected
+  i2pr responder stage preserves the bounded reason code even
+  when the trigger reports `authenticated`.
+
+The Plan 055 helpers and the support topology live in
+external recovery lanes (Plan 046 sealed-namespace lane or the
+Plan 048/049 Multipass lane). On the Plan 046
+`apparmor_restrict_on` negative baseline the helpers cannot be
+exercised, so the two reference-initiated directions remain typed
+blockers until Plan 056 produces two complete reproducible
+bundles. NTCP2 remains experimental and non-advertised; Plan 055
+status is recorded in `plans/055-status.md`.
+
 ## MVP direction
 
 The feature MVP is expected to include:

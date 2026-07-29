@@ -33,7 +33,7 @@ PIPELINE_PROFILE = "milestone-3-v2"
 DIAGNOSTIC_RESULT = "diagnostic-complete-not-certificate"
 DIRECTION_SCHEMA = "i2pr-mixed-router-direction-v2"
 ATTESTATION_SCHEMA = "i2pr-mixed-router-attestation-v2"
-TRIGGER_SCHEMA = "i2pr-reference-trigger-v2"
+TRIGGER_SCHEMA = "i2pr-reference-trigger-v3"
 CLEANUP_SCHEMA = "i2pr-mixed-router-cleanup-v2"
 DIAGNOSTICS_SCHEMA = "sanitized-summary"
 PRIMARY_DIRECTIONS = (
@@ -410,6 +410,122 @@ def _observation(context: RunContext, direction: str, reference: str, result: st
     return _build_observation(context, direction, reference, result, initiator)
 
 
+def _build_trigger_record(
+    context: RunContext,
+    direction: str,
+    reference: str,
+    initiator: str,
+    result: str,
+    reason_code: str,
+    *,
+    trigger_record: dict[str, Any] | None,
+    trigger_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the Plan 055 trigger record for one direction.
+
+    For i2pr-initiated directions, the trigger is not applicable and
+    the record is the typed-absence ``not-applicable`` form. For
+    reference-initiated directions, the harness may supply a real
+    ``trigger_record`` built by :mod:`trigger_record`. When the
+    trigger is absent, the record is written as a typed absence with
+    ``attempted = false`` and ``outcome =
+    direct-trigger-helper-failed`` so the direction stays visible.
+    """
+
+    binding = {
+        "run_id": context.run_id,
+        "source_commit": context.identity["source_commit"],
+        "launcher_binary_sha256": context.identity["launcher_binary_sha256"],
+        "run_identity_sha256": context.identity["run_identity_sha256"],
+    }
+    if trigger_record is not None:
+        try:
+            from trigger_record import finalize_trigger_record
+            from trigger_record import TRIGGER_SCHEMA as NEW_TRIGGER_SCHEMA
+            from trigger_record import TRIGGER_SCHEMA_VERSION as NEW_TRIGGER_VERSION
+        except ImportError:
+            from .trigger_record import (
+                TRIGGER_SCHEMA as NEW_TRIGGER_SCHEMA,
+                TRIGGER_SCHEMA_VERSION as NEW_TRIGGER_VERSION,
+                finalize_trigger_record,
+            )
+        if trigger_record.get("schema") != NEW_TRIGGER_SCHEMA:
+            raise PipelineError("trigger-record-schema-invalid")
+        if trigger_record.get("schema_version") != NEW_TRIGGER_VERSION:
+            raise PipelineError("trigger-record-schema-version-invalid")
+        finalize_trigger_record(
+            trigger_record, run_identity_sha256=binding["run_identity_sha256"]
+        )
+        return trigger_record
+    if initiator == "i2pr":
+        return {
+            **binding,
+            "schema": TRIGGER_SCHEMA,
+            "schema_version": 3,
+            "scenario_id": direction,
+            "mode": "not-required-i2pr-initiator",
+            "attempted": False,
+            "outcome": "not-required-i2pr-initiator",
+            "reason_code": "i2pr-is-transport-initiator",
+            "helper_kind": "not-applicable",
+            "helper_binary_sha256": "0" * 64,
+            "helper_source_sha256": "0" * 64,
+            "helper_compiler": "",
+            "helper_pinned_inputs_sha256": "0" * 64,
+            "source_inspection_record_sha256": "0" * 64,
+            "target_router_hash": "0" * 40,
+            "target_router_info_sha256": "0" * 64,
+            "target_ntcp2_static_key_sha256": "0" * 64,
+            "target_address": "192.0.2.2",
+            "target_port": 45680,
+            "correlation_nonce": "0" * 16,
+            "attempt_count": 0,
+            "transport_request_observed": False,
+            "connection_callback_observed": False,
+            "started_monotonic_ms": 0,
+            "completed_monotonic_ms": 0,
+            "sanitized_detail": "",
+            "trigger_sha256": "",
+        }
+    attempted = result not in {"blocked", "rejected"}
+    outcome = (
+        "direct-trigger-helper-failed"
+        if not attempted
+        else ("authenticated" if result == "passed" else "direct-trigger-not-source-locked")
+    )
+    return {
+        **binding,
+        "schema": TRIGGER_SCHEMA,
+        "schema_version": 3,
+        "scenario_id": direction,
+        "mode": "reference-trigger-blocked",
+        "attempted": attempted,
+        "outcome": outcome,
+        "reason_code": reason_code,
+        "helper_kind": (
+            "i2pd-direct-helper" if reference == "i2pd" else "java-direct-helper"
+        ),
+        "helper_binary_sha256": "0" * 64,
+        "helper_source_sha256": "0" * 64,
+        "helper_compiler": "",
+        "helper_pinned_inputs_sha256": "0" * 64,
+        "source_inspection_record_sha256": "0" * 64,
+        "target_router_hash": "0" * 40,
+        "target_router_info_sha256": "0" * 64,
+        "target_ntcp2_static_key_sha256": "0" * 64,
+        "target_address": "192.0.2.2",
+        "target_port": 45680,
+        "correlation_nonce": "0" * 16,
+        "attempt_count": 1 if attempted else 0,
+        "transport_request_observed": False,
+        "connection_callback_observed": False,
+        "started_monotonic_ms": 0,
+        "completed_monotonic_ms": 0,
+        "sanitized_detail": "",
+        "trigger_sha256": "",
+    }
+
+
 def write_direction_artifacts(
     context: RunContext,
     direction: str,
@@ -422,7 +538,20 @@ def write_direction_artifacts(
     terminal: dict[str, Any] | None = None,
     i2pr_observation: dict[str, Any] | None = None,
     reference_observation: dict[str, Any] | None = None,
+    trigger_record: dict[str, Any] | None = None,
+    trigger_metadata: dict[str, Any] | None = None,
 ) -> dict[str, str]:
+    """Write the Plan 052/055 per-direction artifact bundle.
+
+    When a Plan 055 ``trigger_record`` is supplied, it is validated
+    against the locked trigger schema and its digest is bound into
+    the direction record together with the correlation nonce and
+    target RouterInfo digest. When the trigger is omitted, the
+    caller is asserting that no trigger was attempted (e.g. for an
+    i2pr-initiated direction or a blocked local run); the harness
+    writes the typed absence record ``not-applicable``.
+    """
+
     context.assert_frozen()
     if direction not in PRIMARY_DIRECTIONS or reference not in {"java_i2p", "i2pd"}:
         raise PipelineError("direction-catalog-invalid")
@@ -444,16 +573,16 @@ def write_direction_artifacts(
         i2pr_observation=i2pr_observation,
         reference_observation=reference_observation,
     )
-    trigger = {
-        **binding,
-        "schema": TRIGGER_SCHEMA,
-        "schema_version": 2,
-        "scenario_id": direction,
-        "mode": "not-required-i2pr-initiator" if initiator == "i2pr" else "reference-trigger-blocked",
-        "attempted": initiator != "i2pr" and result not in {"blocked", "rejected"},
-        "outcome": "not-applicable" if initiator == "i2pr" else "blocked",
-        "reason_code": "i2pr-is-transport-initiator" if initiator == "i2pr" else reason_code,
-    }
+    trigger = _build_trigger_record(
+        context,
+        direction,
+        reference,
+        initiator,
+        result,
+        reason_code,
+        trigger_record=trigger_record,
+        trigger_metadata=trigger_metadata,
+    )
     attestation = {
         **binding,
         "schema": ATTESTATION_SCHEMA,
@@ -519,6 +648,15 @@ def finalize_diagnostic_bundle(context: RunContext) -> Path:
                 raise PipelineError(f"missing-direction-artifact:{category}:{direction}")
             payload = json.loads(path.read_text(encoding="utf-8"))
             cross_check(payload, context.identity)
+    for direction in PRIMARY_DIRECTIONS:
+        trigger_path = context.staging_root / "triggers" / f"{direction}.json"
+        trigger_payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+        direction_path = context.staging_root / "directions" / f"{direction}.json"
+        direction_payload = json.loads(direction_path.read_text(encoding="utf-8"))
+        # Plan 055 E2 binding: the direction record's trigger_sha256
+        # must agree with the on-disk trigger digest.
+        if direction_payload.get("trigger_sha256") != _sha256(trigger_path.read_bytes()):
+            raise PipelineError(f"trigger-direction-binding-mismatch:{direction}")
     write_json_atomic(context.staging_root / "diagnostics" / "sanitized-summary.json", {
         "schema": DIAGNOSTICS_SCHEMA,
         "schema_version": 1,

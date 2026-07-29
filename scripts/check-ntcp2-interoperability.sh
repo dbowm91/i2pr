@@ -132,6 +132,30 @@ if ! grep -Fq 'java-random-source-shutdown' "$root/tests/integration/ntcp2/harne
   exit 1
 fi
 
+# Plan 055: locked trigger record schema and source-inspected trigger
+# contracts must be present and the ADR for the optional Java support
+# topology must be written before the helper is implemented.
+if ! grep -Fq 'TRIGGER_SCHEMA = "i2pr-reference-trigger-v3"' "$root/tests/integration/ntcp2/harness/trigger_record.py"; then
+  echo "Plan 055 trigger schema is missing or wrong version" >&2
+  exit 1
+fi
+if ! grep -Fq '"i2pr-reference-trigger-v3"' "$root/tests/integration/ntcp2/harness/evidence_bundle.py"; then
+  echo "Plan 055 trigger schema is not allowlisted in evidence bundle" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 055 C5' "$root/tests/integration/ntcp2/reference-trigger-contracts.md"; then
+  echo "Plan 055 reference-trigger contracts are missing the C5 decision record" >&2
+  exit 1
+fi
+if ! test -f "$root/docs/adr/0021-minimal-java-support-topology.md"; then
+  echo "Plan 055 ADR 0021 (minimal Java support topology) is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_plan055.py' "$root/AGENTS.md"; then
+  echo "Plan 055 test_plan055 is not wired into AGENTS.md" >&2
+  exit 1
+fi
+
 python3 "$root/scripts/interop/validate-evidence.py"
 python3 "$root/scripts/interop/validate-scenarios.py"
 

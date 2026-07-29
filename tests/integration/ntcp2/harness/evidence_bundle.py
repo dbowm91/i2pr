@@ -105,6 +105,7 @@ SEMANTIC_SCHEMAS: dict[str, tuple[str, ...]] = {
         "i2pr-mixed-router-direction-v1",
     ),
     "triggers": (
+        "i2pr-reference-trigger-v3",
         "i2pr-reference-trigger-v2",
         "i2pr-reference-trigger-v1",
     ),

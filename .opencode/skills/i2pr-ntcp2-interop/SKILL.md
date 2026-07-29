@@ -1,9 +1,9 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/045/052/053 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, Plan 044 mixed-runner composition, typed Plan 052/053 evidence validation, and cleanup. Use when an agent is asked to run a Plan 038 profile on the host, prepare the reference routers, add or modify a scenario, dispatch a bounded mixed direction, create or validate a Plan 053 diagnostic bundle, or validate evidence. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/045/052/053/055 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, Plan 044 mixed-runner composition, typed Plan 052/053 evidence validation, Plan 055 reference-initiated trigger schema and source-inspected call graphs, and cleanup. Use when an agent is asked to run a Plan 038 profile on the host, prepare the reference routers, add or modify a scenario, dispatch a bounded mixed direction, create or validate a Plan 053 diagnostic bundle, validate the locked trigger record schema, or validate evidence. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
-# I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045)
+# I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055)
 
 Use this skill from the repository root for the **host-side** Ubuntu 24.04
 amd64 Plan 038 reference-router NTCP2 interoperability harness. This skill
@@ -19,6 +19,7 @@ Read `AGENTS.md`, `plans/038-ubuntu-reference-router-interoperability-harness.md
 `plans/045-ntcp2-mixed-router-proof-closure-corrective-pass.md`,
 `plans/045-closure-attempt.md`, `plans/052-ntcp2-milestone-3-evidence-closure-follow-up.md`,
 `plans/053-plan052-evidence-pipeline-integration-corrective-pass.md`,
+`plans/055-reference-initiated-ntcp2-trigger-and-topology-qualification-pass.md`,
 `tests/integration/ntcp2/README.md`, and the relevant `docs/adr/` records before changing the harness.
 
 The canonical reference identifiers are `java_i2p` and `i2pd`. Locked source
@@ -179,6 +180,58 @@ closure. NTCP2 remains experimental and non-advertised.
 Use the focused local seam with:
 
 ```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan054.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan053.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_bundle.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+```
+
+## Plan 055 reference-initiated trigger and topology qualification
+
+Plan 055 is the qualification pass for the two reference-initiated
+directions (`java-to-i2pr-ipv4` and `i2pd-to-i2pr-ipv4`). It owns:
+
+- The locked trigger record schema `i2pr-reference-trigger-v3` in
+  `tests/integration/ntcp2/harness/trigger_record.py`, with the
+  bounded `TriggerHelperKind` (`i2pd-direct-helper`,
+  `java-direct-helper`, `java-minimal-support-topology`) and
+  `TriggerOutcome` enumerations required by Plan 055 A2. The
+  helper build provenance, attempt count, correlation nonce,
+  bounded monotonic timestamps, and target RouterInfo / public
+  NTCP2 static-key digests are all bound into the canonical
+  trigger digest.
+- The source-inspection record at
+  `tests/integration/ntcp2/reference-trigger-contracts.md`. Plan
+  055 B5 selected the i2pd direct helper against
+  `i2pd::transports::Transports::ConnectToPeer`; Plan 055 C5
+  recorded the Java decision
+  `java-direct-helper-rejected-global-context-not-isolatable`
+  because the pinned Java 2.12.0 outbound path requires a full
+  `RouterContext` and NetDB population.
+- ADR 0021 (`docs/adr/0021-minimal-java-support-topology.md`)
+  authorizes the optional `java-minimal-support-topology` fallback
+  when a direct helper is impossible; the ADR must be approved
+  before any topology-assisted helper is implemented.
+- The Plan 052/053 pipeline
+  (`plan052_pipeline.write_direction_artifacts`) binds the
+  trigger record digest, correlation nonce, and target RouterInfo
+  hash into the direction record (Plan 055 E2). A successful
+  trigger outcome may not mask a rejected direction; the
+  bounded i2pr responder reason from the Rust launcher is
+  preserved (Plan 055 E3).
+
+The Plan 055 helpers and the support topology live in the Plan 046
+rootless sealed-namespace lane or the Plan 048/049 Multipass
+recovery lane; this host is the negative baseline. The two
+reference-initiated directions remain typed blockers until Plan 056
+produces two complete reproducible bundles.
+
+Use the focused local seam with:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan055.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan054.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan053.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_bundle.py'
