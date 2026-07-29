@@ -5,7 +5,7 @@
 - Plan type: final candidate freeze, authoritative external execution, certificate review, and Milestone 3 closure pass.
 - Starts only after Plan 058 and Plan 059 are closed.
 - Plan 058 must have retired the Plan 056 candidate and superseded Plan 057.
-- Plan 059 must have implemented and live-qualified the i2pd direct helper, Java support topology, receiver observations, Java startup model, and canonical runner integration.
+- Plan 059 must have implemented and live-qualified the i2pd direct helper, receiver observations, and canonical runner integration. The Java support topology is forbidden under ADR 0021 (Rejected by Plan 058); Plan 060 must not start under the current four-direction contract until either a future pinned Java revision is adopted or the closure contract is revised through a new ADR.
 - This plan is execution-only after candidate freeze. Any required source, helper, catalog, topology, test, or documentation-contract change invalidates the candidate and restarts the plan.
 - Milestone 3 may close only when this plan produces a verified certificate over two independent complete passing bundles.
 - NTCP2 remains non-advertised unless a separate later support-advertisement decision explicitly changes it.

@@ -480,14 +480,27 @@ Plan 048/049 Multipass lane). On the Plan 046
 `apparmor_restrict_on` negative baseline the helpers cannot be
 exercised, so the two reference-initiated directions remain typed
 blockers. Plan 056 (`plans/056-closure.md`) closed with the same
-typed host-environment blocker; the canonical two-bundle certificate
-verifier, the candidate freeze, and the local diagnostic bundles
-are committed under `target/interop/evidence/plan056/`. The
-canonical follow-up plan is `plans/057-cross-host-milestone-3-external-evidence-run.md`,
-which owns the two-run external evidence pass on a host that
-satisfies the Plan 040 host contract. NTCP2 remains experimental
-and non-advertised; Plan 055 status is recorded in
-`plans/055-status.md`.
+typed host-environment blocker, and Plan 058 record and candidate
+integrity closure pass split the previous Plan 057 follow-up plan
+into three new plans:
+
+- `plans/058-plan056-record-and-candidate-integrity-closure-pass.md`
+  — retired the Plan 056 candidate and superseded Plan 057. The
+  local diagnostic bundles under `target/interop/evidence/plan056/`
+  are locally generated and intentionally untracked; the only
+  tracked footprint is the bounded local-diagnostic receipt at
+  `tests/integration/ntcp2/evidence-receipts/plan056-local-diagnostic.json`.
+- `plans/059-reference-side-implementation-and-live-qualification-closure-pass.md`
+  — implements the reference-side helpers and qualification. Plan
+  058 rejected ADR 0021, so the `java-to-i2pr-ipv4` direction
+  remains a typed blocker for Java I2P 2.12.0 and Plan 059 must
+  close with the typed blocker `blocked_java_support_topology_rejected`.
+- `plans/060-fresh-candidate-and-two-run-milestone3-certificate-closure-pass.md`
+  — cuts a fresh candidate after Plan 059 closes and produces the
+  two-run certificate. Until Plan 060 produces two passing
+  bundles from a fresh implementation-floor candidate, NTCP2
+  stays experimental and non-advertised and Milestone 3 stays
+  open.
 
 ## MVP direction
 
@@ -649,6 +662,8 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 053 status](plans/053-status.md)
 - [Plan 054 Java startup and reference-observation qualification pass](plans/054-java-startup-and-reference-observation-qualification-pass.md)
 - [Plan 054 status](plans/054-status.md)
+- [Plan 058 record and candidate integrity closure pass](plans/058-plan056-record-and-candidate-integrity-closure-pass.md)
+- [Plan 058 status](plans/058-status.md)
 - [Aggregate Milestone 3 closure record](plans/030-milestone-3-closure.md)
 - [Controlled NTCP2 interoperability lane](tests/integration/ntcp2/README.md)
 - [Machine-readable protocol support ledger](specs/support.toml)

@@ -4,22 +4,46 @@
 
 - Plan type: corrective implementation and live qualification closure pass.
 - Starts only after Plan 058 closes.
-- Requires ADR 0021 to be explicitly Accepted. If ADR 0021 is Rejected, this plan must close with a typed blocker and Plan 060 must not start under the current four-direction contract.
-- Owns all missing reference-side implementation and qualification that Plans 054-057 deferred.
-- Does not freeze the final Milestone 3 candidate and does not produce the final two-run certificate. Plan 060 owns those actions.
-- Milestone 3 remains open. NTCP2 remains experimental and non-advertised.
+- ADR 0021 is **Rejected** by the Plan 058 repository maintainer
+  decision. The Java minimal support topology is forbidden under the
+  current four-direction contract. Plan 059 must close with the typed
+  blocker `blocked_java_support_topology_rejected` and may not start
+  any implementation work that depends on the Java support topology.
+  Plan 060 must not start under the current four-direction contract
+  until the Java reference-initiated direction is either qualified
+  through a future approved ADR or the four-direction contract is
+  revised through a new ADR.
+- The Plan 059 scope collapses to the i2pd direct helper and the
+  receiver-observation qualification that do not depend on the Java
+  support topology. The Java reference-initiated direction remains
+  a typed blocker for the pinned Java I2P 2.12.0 revision.
+- Owns the missing reference-side implementation and qualification
+  that Plans 054-057 deferred, minus the Java support topology.
+- Does not freeze the final Milestone 3 candidate and does not
+  produce the final two-run certificate. Plan 060 owns those
+  actions.
+- Milestone 3 remains open. NTCP2 remains experimental and
+  non-advertised.
 
 ## Objective
 
-Complete and qualify every reference-side mechanism needed before a clean external candidate can be frozen:
+Complete and qualify every reference-side mechanism that does not
+depend on the rejected Java support topology, before a clean
+external candidate can be frozen:
 
 1. implement a source-locked i2pd direct NTCP2 trigger helper;
-2. implement the ADR-approved minimal sealed Java support topology;
-3. replace provisional receiver-observation strings with source-verified, runtime-demonstrated observation mechanisms;
-4. execute the Java startup matrix and select one stable immutable state model;
-5. execute positive and negative trigger/observation controls for both pinned references;
-6. produce at least one complete live four-direction diagnostic bundle that exercises the canonical Plan 052/053 pipeline without claiming a Milestone 3 certificate;
-7. leave the repository implementation-complete and ready for a new Plan 060 candidate freeze.
+2. replace provisional receiver-observation strings with
+   source-verified, runtime-demonstrated observation mechanisms
+   (i2pd side; the Java side remains blocked by the ADR 0021
+   rejection);
+3. execute positive and negative trigger/observation controls for
+   the pinned i2pd reference;
+4. produce at least one complete live four-direction diagnostic
+   bundle that exercises the canonical Plan 052/053 pipeline
+   without claiming a Milestone 3 certificate; the
+   `java-to-i2pr-ipv4` direction remains blocked;
+5. leave the repository implementation-complete and ready for a
+   new Plan 060 candidate freeze.
 
 ## Why this plan is separate from Plan 060
 
@@ -199,15 +223,24 @@ The positive control need not make the full direction pass while protocol defect
 
 ### C1. ADR gate
 
-Do not start until ADR 0021 is `Accepted`.
+ADR 0021 is **Rejected** by the Plan 058 repository maintainer
+decision. Plan 059 Workstream C does not start.
 
-If the ADR is Rejected, write `plans/059-status.md` with:
+Write `plans/059-status.md` with:
 
 ```text
 blocked_java_support_topology_rejected
 ```
 
-and stop. Do not invent an unsupported direct helper.
+and do not invent an unsupported direct helper. The
+`java-to-i2pr-ipv4` direction remains a typed blocker for the
+pinned Java I2P 2.12.0 revision under the current four-direction
+contract. A future plan must either:
+
+- choose a different pinned Java revision that exposes a
+  transport-only direct seam, or
+- revise the closure contract through a new ADR that accepts a
+  different topology implementation.
 
 ### C2. Select the support-router implementation
 

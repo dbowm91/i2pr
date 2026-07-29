@@ -1,14 +1,21 @@
 # Aggregate Milestone 3 closure: NTCP2 and transport-neutral link management
 
-Date: 2026-07-15
+Date: 2026-07-15 (last updated by Plan 058)
 
 Status: **blocked; implementation phases complete for their bounded local
 scope, milestone acceptance criteria not met**. Plan 056 closed with a
 typed host-environment blocker and committed the two-bundle certificate
-verifier, the candidate freeze, and two local diagnostic bundles. Plan 057
-owns the canonical two-run external evidence pass required to advance
-Milestone 3; until Plan 057 produces two passing bundles from the same
-source commit, the milestone acceptance criteria remain unmet.
+verifier, the candidate freeze, the local-evidence driver, and the
+local diagnostic bundles it produced under the ignored
+`target/interop/evidence/plan056/` working directory. Plan 058
+retired the Plan 056 candidate, superseded Plan 057, decided
+ADR 0021 (Rejected), and split the previous Plan 057 follow-up
+into Plan 059 (reference-side implementation) and Plan 060 (fresh
+candidate + two-run certificate). Plan 060 owns the canonical
+two-run external evidence pass required to advance Milestone 3;
+until Plan 060 produces two passing bundles from a fresh
+implementation-floor candidate, the milestone acceptance criteria
+remain unmet.
 
 This aggregate record preserves the evidence boundary from Plans 031–036. It
 does not convert local vectors, self-handshakes, loopback TCP, or deterministic

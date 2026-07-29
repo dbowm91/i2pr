@@ -634,27 +634,95 @@ surface required for any future Milestone 3 certificate:
   certificate verification test matrix (positive + 16 negative
   fixtures).
 - `scripts/interop/plan056_drive_bundles.py` — the local-evidence
-  driver that exercises the verifier end-to-end on the Plan 046
-  negative baseline. Produces two independent
-  `diagnostic-complete-not-certificate` bundles under
-  `target/interop/evidence/plan056/run-{a,b}/`.
+  driver that constructs two independent Plan 052 diagnostic bundles
+  from typed synthetic blocked-direction inputs and runs the
+  certificate verifier against them. The driver does not exercise
+  a mixed-router NTCP2 connection; it exercises the verifier. The
+  two bundles are produced locally under the ignored
+  `target/interop/evidence/plan056/` working directory. The only
+  tracked repository footprint is the bounded local-diagnostic
+  receipt at `tests/integration/ntcp2/evidence-receipts/plan056-local-diagnostic.json`
+  with `artifact_storage = local-untracked`.
 - `plans/056-candidate.md` and `plans/056-closure.md` — the frozen
-  candidate SHA and the closure record.
-- `plans/057-cross-host-milestone-3-external-evidence-run.md` —
-  the follow-up plan that owns the two-run external evidence pass
-  on a host that satisfies the Plan 040 host contract. Until Plan
-  057 produces two passing bundles from the same source commit,
-  Milestone 3 stays open and NTCP2 stays experimental and
-  non-advertised.
+  candidate SHA and the closure record. Plan 058 retired the
+  candidate; the historical fields are preserved verbatim as an
+  audit record.
 
 The Plan 056 implementation surface is mandatory. Any change that
 removes or weakens the verifier, the test matrix, or the static
 boundary checks must be re-justified in a new plan-of-record and
 must not silently weaken the Milestone 3 evidence gate.
 
+## Plan 058 record and candidate integrity closure pass
+
+Plan 058 retired the Plan 056 candidate and superseded the
+Plan 057 follow-up plan. Plan 058 is the only path that creates
+the corrected candidate record and supersession markers. The plan
+delivered:
+
+- `tests/integration/ntcp2/harness/candidate_record.py` — the
+  candidate record integrity validator. Schema
+  `i2pr-interop-candidate-v1`. Refuses records with multiple
+  authoritative SHAs, retired candidates consumed by execution
+  tooling, candidates frozen before the implementation floor, and
+  `committed` evidence claims that name ignored diagnostics.
+- `tests/integration/ntcp2/harness/test_plan058.py` — the
+  candidate record, supersession, and execution-lane regression
+  matrix (positive + 14 negative fixtures).
+- Tracker markers in `plans/056-candidate.md` (retired),
+  `plans/057-cross-host-milestone-3-external-evidence-run.md`
+  (superseded), and `docs/adr/0021-minimal-java-support-topology.md`
+  (Rejected by Plan 058 repository maintainer decision; the ADR
+  forbids the Java support topology under the current four-direction
+  contract).
+- `scripts/check-ntcp2-interoperability.sh` extended to enforce
+  the candidate record integrity invariants, the supersession
+  markers, and the ADR decision marker.
+- `plans/058-status.md` — the closure record with exact
+  commands and results.
+
+### Plan 058 execution lanes
+
+Plan 058 documents two alternative execution lanes for any
+future Milestone 3 evidence run:
+
+- Lane A (direct-host): the execution host itself must report
+  `rootless_sandbox_available`. Multipass is not required.
+- Lane B (guest): the outer host may continue to report
+  `blocked_unprivileged_user_namespace` (the Plan 046 negative
+  baseline). The Multipass recovery guest must report
+  `rootless_sandbox_available`. The outer-host baseline does not
+  reject a valid guest lane.
+
+The two lanes are alternatives. Exactly one lane is selected for a
+candidate. A certificate may not combine Run A from one lane and
+Run B from another.
+
+### Plan 058 supersession of Plan 057
+
+Plan 057 is no longer active execution authority. The plan was
+superseded because it inherited the stale Plan 056 candidate and
+required missing helpers and topology artifacts while forbidding
+source edits. The Plan 058 record and candidate integrity closure
+pass split the Plan 057 responsibilities into three new plans:
+
+| Plan 057 responsibility | New owner |
+| --- | --- |
+| record/candidate correction | Plan 058 |
+| i2pd direct helper | Plan 059 |
+| Java topology and ADR decision | Plan 059 |
+| receiver marker qualification | Plan 059 |
+| new candidate freeze | Plan 060 |
+| two external runs and certificate | Plan 060 |
+
+Until Plan 060 produces two passing bundles from a fresh
+implementation-floor candidate, Milestone 3 stays open and NTCP2
+stays experimental and non-advertised.
+
 Required focused checks are:
 
 ```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan058.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan056.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan055.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan054.py'

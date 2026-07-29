@@ -229,12 +229,30 @@ reference-initiated directions remain typed blockers until Plan 056
 produces two complete reproducible bundles. Plan 056 closed with a
 typed host-environment blocker; the canonical two-bundle certificate
 verifier, the candidate freeze, and the local diagnostic bundles
-are committed under `target/interop/evidence/plan056/`. The
-follow-up plan is `plans/057-cross-host-milestone-3-external-evidence-run.md`.
+are locally generated under the ignored
+`target/interop/evidence/plan056/` working directory. Plan 058
+retired the Plan 056 candidate, superseded Plan 057, decided
+ADR 0021 (Rejected), and split the previous Plan 057 follow-up
+into Plan 059 (reference-side implementation) and Plan 060
+(fresh candidate + two-run certificate). Plan 059 closes with the
+typed blocker `blocked_java_support_topology_rejected` because the
+Java support topology is forbidden; the
+`java-to-i2pr-ipv4` direction remains a typed blocker for the
+pinned Java I2P 2.12.0 revision. Plan 060 cannot start under the
+current four-direction contract until the Java reference-initiated
+direction is qualified through a future ADR or the four-direction
+contract is revised.
+
+The only tracked footprint of the local diagnostic effort is the
+bounded local-diagnostic receipt at
+`tests/integration/ntcp2/evidence-receipts/plan056-local-diagnostic.json`
+with `artifact_storage = local-untracked`. The repository does
+not track `target/interop/evidence/plan056/`.
 
 Use the focused local seam with:
 
 ```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan058.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan056.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan055.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan054.py'
