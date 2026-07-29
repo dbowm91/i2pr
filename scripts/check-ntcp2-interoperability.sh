@@ -180,6 +180,63 @@ if ! grep -Fq 'CertificateNegativeTests' "$root/tests/integration/ntcp2/harness/
   exit 1
 fi
 
+# Plan 058: candidate record integrity, supersession, and execution-lane
+# invariants. The retired candidate must remain retired; the
+# superseded Plan 057 must remain superseded; the Plan 058 candidate
+# record validator must be present; the locked candidate record
+# schema marker must be present; ADR 0021 must carry an explicit
+# Accepted/Rejected decision.
+if ! test -f "$root/tests/integration/ntcp2/harness/candidate_record.py"; then
+  echo "Plan 058 candidate record validator is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'CANDIDATE_SCHEMA = "i2pr-interop-candidate-v1"' \
+    "$root/tests/integration/ntcp2/harness/candidate_record.py"; then
+  echo "Plan 058 candidate record schema is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan058.py"; then
+  echo "Plan 058 candidate record integrity tests are missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'CandidatePositiveTests' "$root/tests/integration/ntcp2/harness/test_plan058.py"; then
+  echo "Plan 058 tests do not include positive case" >&2
+  exit 1
+fi
+if ! grep -Fq 'CandidateRejectionTests' "$root/tests/integration/ntcp2/harness/test_plan058.py"; then
+  echo "Plan 058 tests do not include rejection case" >&2
+  exit 1
+fi
+if ! grep -Fq 'ExecutionLaneTests' "$root/tests/integration/ntcp2/harness/test_plan058.py"; then
+  echo "Plan 058 tests do not include execution-lane case" >&2
+  exit 1
+fi
+plan056_candidate="$root/plans/056-candidate.md"
+if ! grep -Eq '^#+\s*Status:\s*\*?\*?retired|^Status:\s*\*?\*?retired' "$plan056_candidate"; then
+  echo "Plan 056 candidate must declare retired status" >&2
+  exit 1
+fi
+plan057="$root/plans/057-cross-host-milestone-3-external-evidence-run.md"
+if ! grep -Eq '^#+\s*Status:\s*\*?\*?superseded|^Status:\s*\*?\*?superseded' "$plan057"; then
+  echo "Plan 057 must declare superseded status" >&2
+  exit 1
+fi
+adr_0021="$root/docs/adr/0021-minimal-java-support-topology.md"
+if ! grep -Eq '^- Status:\s*(Accepted|Rejected)\b' "$adr_0021"; then
+  echo "ADR 0021 must declare an explicit Accepted or Rejected decision" >&2
+  exit 1
+fi
+if ! grep -Fq 'target/interop/evidence/plan056' \
+    "$root/plans/056-closure.md"; then
+  echo "Plan 056 closure must describe the local diagnostics accurately" >&2
+  exit 1
+fi
+if ! grep -Eq 'local-untracked|artifacts? (under|are) (the|an?) ignored' \
+    "$root/plans/056-closure.md"; then
+  echo "Plan 056 closure must mark the local diagnostics as local-untracked" >&2
+  exit 1
+fi
+
 python3 "$root/scripts/interop/validate-evidence.py"
 python3 "$root/scripts/interop/validate-scenarios.py"
 
