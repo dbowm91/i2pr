@@ -95,6 +95,43 @@ if grep -Fq 'raise MixedRunError("i2pr-responder-handshake-failed")' "$root/test
   exit 1
 fi
 
+# Plan 054: machine-readable observation catalog must be present and consistent
+# with the explanatory Markdown document.
+catalog="$root/tests/integration/ntcp2/reference-observation-catalog.toml"
+test -f "$catalog" || { echo "Plan 054 observation catalog missing" >&2; exit 1; }
+if grep -Eq 'PENDING-SOURCE-INSPECTION|PENDING' "$catalog"; then
+  echo "Plan 054 observation catalog still has pending source entries" >&2
+  exit 1
+fi
+if ! grep -Fq 'def collect_observation' "$root/tests/integration/ntcp2/harness/java_i2p.py"; then
+  echo "Java I2P adapter missing Plan 054 collect_observation" >&2
+  exit 1
+fi
+if ! grep -Fq 'def collect_observation' "$root/tests/integration/ntcp2/harness/i2pd.py"; then
+  echo "i2pd adapter missing Plan 054 collect_observation" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-reference-observation-catalog-v1' "$catalog"; then
+  echo "Plan 054 observation catalog schema marker is missing" >&2
+  exit 1
+fi
+# The hardcoded "always reject" pattern is detectable: the predicate must
+# never unconditionally return ``reference-receiver-marker-not-source-locked``
+# as its final return. Ensure the predicate has at least one ``"passed"``
+# return.
+if ! grep -Eq 'return "passed", "mixed-router-direction-authenticated"' "$root/tests/integration/ntcp2/harness/mixed_runner.py"; then
+  echo "Plan 052 predicate is missing a passed terminal return" >&2
+  exit 1
+fi
+if ! grep -Fq 'seeded-clone' "$root/tests/integration/ntcp2/harness/java_startup_probe.py"; then
+  echo "Plan 054 Java seeded-clone data state is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'java-random-source-shutdown' "$root/tests/integration/ntcp2/harness/java_startup_probe.py"; then
+  echo "Plan 054 Java failure-stage taxonomy is missing" >&2
+  exit 1
+fi
+
 python3 "$root/scripts/interop/validate-evidence.py"
 python3 "$root/scripts/interop/validate-scenarios.py"
 
