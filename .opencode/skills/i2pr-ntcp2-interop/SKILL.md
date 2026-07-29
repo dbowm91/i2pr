@@ -1,6 +1,6 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/045 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, Plan 044 mixed-runner composition, typed evidence validation, and cleanup. Use when an agent is asked to run a Plan 038 profile on the host, prepare the reference routers, add or modify a scenario, dispatch a bounded Plan 044 mixed direction, or validate evidence. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 Multipass recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/045/052/053 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, Plan 044 mixed-runner composition, typed Plan 052/053 evidence validation, and cleanup. Use when an agent is asked to run a Plan 038 profile on the host, prepare the reference routers, add or modify a scenario, dispatch a bounded mixed direction, create or validate a Plan 053 diagnostic bundle, or validate evidence. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
 # I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045)
@@ -17,8 +17,9 @@ Read `AGENTS.md`, `plans/038-ubuntu-reference-router-interoperability-harness.md
 `plans/043-ubuntu-build-system-interop-gates.md`,
 `plans/044-ntcp2-interop-final-integration-corrective-pass.md`,
 `plans/045-ntcp2-mixed-router-proof-closure-corrective-pass.md`,
-`plans/045-closure-attempt.md`, `tests/integration/ntcp2/README.md`, and the
-relevant `docs/adr/` records before changing the harness.
+`plans/045-closure-attempt.md`, `plans/052-ntcp2-milestone-3-evidence-closure-follow-up.md`,
+`plans/053-plan052-evidence-pipeline-integration-corrective-pass.md`,
+`tests/integration/ntcp2/README.md`, and the relevant `docs/adr/` records before changing the harness.
 
 The canonical reference identifiers are `java_i2p` and `i2pd`. Locked source
 objects: Java I2P `2800040deee9bb376567b671ef2e9c34cf3e30b6` and i2pd
@@ -118,6 +119,36 @@ exactly the four primary direction records, (b) every record binds to
 the same run identity, (c) every record satisfies the v2 observation
 predicate, and (d) two complete reproducible runs exist. Anything less
 remains a typed diagnostic result.
+
+## Plan 053 integrated diagnostic lane
+
+Plan 053 is the local integration corrective pass. The canonical path uses
+`tests/integration/ntcp2/harness/plan052_pipeline.py` to measure one clean
+source identity before directions, copy that identity into immutable staging,
+write all five artifact classes for every primary direction, and finalize with
+`verify_bundle()` before any export. The explicit context arguments are
+`--run-id`, `--run-identity`, `--bundle-staging`, and
+`--evidence-profile milestone-3-v2`; they must not be inferred from the current
+working directory. Blocked or rejected directions still produce complete
+records. Their result is `diagnostic-complete-not-certificate`, never a
+Milestone 3 pass.
+
+The bundle verifier rejects unknown paths/schemas, traversal, symlinks,
+non-regular files, hidden temporary files, duplicate/case-colliding paths,
+manifest checksum errors, and mutations after finalization. Export writes the
+acknowledgement beside `milestone-3/<run-id>/`, not inside the immutable bundle.
+The current lane has no Java/i2pd source-locked receiver markers, so missing
+reference data-phase observations remain typed rejections.
+
+Use the focused local seam with:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan053.py'
+bash scripts/check-ntcp2-interoperability.sh
+```
+
+Do not present the diagnostic bundle, reference-only controls, or a blocked
+rootless/Multipass run as NTCP2 interoperability evidence.
 
 ## Companion skills (load before doing this lane)
 

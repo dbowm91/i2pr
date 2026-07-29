@@ -117,6 +117,16 @@ def _scenario_main(args: argparse.Namespace) -> int:
         command.extend(["--build-cache", args.build_cache])
     if args.run_root:
         command.extend(["--run-root", args.run_root])
+    if getattr(args, "evidence_profile", None):
+        if not all((getattr(args, "run_id", None), getattr(args, "run_identity", None), getattr(args, "bundle_staging", None))):
+            emit_probe_status("blocked_evidence_context_missing")
+            return 1
+        command.extend([
+            "--run-id", args.run_id,
+            "--run-identity", args.run_identity,
+            "--bundle-staging", args.bundle_staging,
+            "--evidence-profile", args.evidence_profile,
+        ])
     completed = subprocess.run(command, env=env, capture_output=True, text=True, check=False)
     sys.stdout.write(completed.stdout)
     sys.stderr.write(completed.stderr)
@@ -144,6 +154,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--attestation-output")
     parser.add_argument("--build-cache")
     parser.add_argument("--run-root")
+    parser.add_argument("--run-id")
+    parser.add_argument("--run-identity")
+    parser.add_argument("--bundle-staging")
+    parser.add_argument("--evidence-profile")
     args = parser.parse_args(argv)
     if not args.scenario or not args.reference:
         parser.print_help()

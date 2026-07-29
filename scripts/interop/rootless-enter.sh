@@ -43,6 +43,10 @@ profile=""
 build_cache=""
 run_root=""
 attestation_output=""
+run_identity=""
+bundle_staging=""
+evidence_profile=""
+pipeline_run_id=""
 
 die() {
   echo "rootless-enter: $1" >&2
@@ -97,12 +101,36 @@ parse_args() {
         operation="profile"
         shift 2
         ;;
-      --attestation-output)
-        [[ -z "$attestation_output" ]] || die "duplicate-attestation-output"
-        attestation_output="${2:-}"
-        require_string "$attestation_output" "attestation-output"
-        shift 2
-        ;;
+       --attestation-output)
+         [[ -z "$attestation_output" ]] || die "duplicate-attestation-output"
+         attestation_output="${2:-}"
+         require_string "$attestation_output" "attestation-output"
+         shift 2
+         ;;
+       --run-identity)
+         [[ -z "$run_identity" ]] || die "duplicate-run-identity"
+         run_identity="${2:-}"
+         require_string "$run_identity" "run-identity"
+         shift 2
+         ;;
+       --bundle-staging)
+         [[ -z "$bundle_staging" ]] || die "duplicate-bundle-staging"
+         bundle_staging="${2:-}"
+         require_string "$bundle_staging" "bundle-staging"
+         shift 2
+         ;;
+       --evidence-profile)
+         [[ -z "$evidence_profile" ]] || die "duplicate-evidence-profile"
+         evidence_profile="${2:-}"
+         require_string "$evidence_profile" "evidence-profile"
+         shift 2
+         ;;
+       --run-id)
+         [[ -z "$pipeline_run_id" ]] || die "duplicate-run-id"
+         pipeline_run_id="${2:-}"
+         require_string "$pipeline_run_id" "run-id"
+         shift 2
+         ;;
       --help|-h)
         cat <<EOF
 usage: bash scripts/interop/rootless-enter.sh [--probe | --scenario <id> --reference <ref> [--build-cache <path>] [--run-root <path>] [--attestation-output <path>] | --profile <id> [--attestation-output <path>]]
@@ -130,6 +158,34 @@ validate_choice() {
     fi
   done
   die "$label-not-allowed:$needle"
+}
+
+validate_owned_path() {
+  local value="$1"
+  local label="$2"
+  local root="$3"
+  local resolved
+  resolved=$(python3 - "$value" "$root" <<'PY'
+import pathlib
+import sys
+candidate = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[2]).resolve()
+if not candidate.is_absolute():
+    raise SystemExit(2)
+resolved = candidate.resolve(strict=False)
+try:
+    resolved.relative_to(root)
+except ValueError:
+    raise SystemExit(3)
+for parent in [resolved, *resolved.parents]:
+    if parent == root.parent:
+        break
+    if parent.is_symlink():
+        raise SystemExit(4)
+print(resolved)
+PY
+  ) || die "$label-outside-owned-run-root"
+  printf '%s\n' "$resolved"
 }
 
 namespace_inode() {
@@ -269,6 +325,11 @@ run_scenario() {
   local parent_digest
   parent_digest=$(compute_parent_digest)
   record_digest pre "$parent_digest"
+  if [[ -n "$run_identity" || -n "$bundle_staging" || -n "$evidence_profile" ]]; then
+    [[ -n "$run_identity" && -n "$bundle_staging" && -n "$evidence_profile" && -n "$pipeline_run_id" ]] || die "incomplete-evidence-context"
+    run_identity=$(validate_owned_path "$run_identity" "run-identity" "$run_root")
+    bundle_staging=$(validate_owned_path "$bundle_staging" "bundle-staging" "$run_root")
+  fi
   INNER_ARGS=(--scenario "$scenario" --reference "$reference")
   if [[ -n "$build_cache" ]]; then
     INNER_ARGS+=(--build-cache "$build_cache")
@@ -278,6 +339,9 @@ run_scenario() {
   fi
   if [[ -n "$attestation_output" ]]; then
     INNER_ARGS+=(--attestation-output "$attestation_output")
+  fi
+  if [[ -n "$evidence_profile" ]]; then
+    INNER_ARGS+=(--run-id "$pipeline_run_id" --run-identity "$run_identity" --bundle-staging "$bundle_staging" --evidence-profile "$evidence_profile")
   fi
   build_unshare_command scenario
   local rc

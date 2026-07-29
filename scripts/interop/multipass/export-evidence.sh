@@ -52,6 +52,28 @@ for name in environment.json environment.json.sha256 probe.json probe.json.sha25
 done
 destination="$host_evidence_root/$run_id"
 python3 "$script_dir/export.py" --source "$source_dir" --destination "$destination"
+plan052_guest_bundle="$guest_repo_root/target/interop/runs/$run_id/bundle-staging"
+if guest_root_exec test -f "$plan052_guest_bundle/manifest.json" >/dev/null 2>&1; then
+  mkdir -p "$source_dir/plan052-bundle"
+  multipass transfer --recursive "$instance_name:$plan052_guest_bundle" "$source_dir/plan052-bundle" >/dev/null || {
+    rm -rf "$source_dir"
+    typed_blocker blocked_plan052_bundle_transfer_failed
+    exit 2
+  }
+  plan052_staging="$source_dir/plan052-bundle/bundle-staging"
+  [[ -d "$plan052_staging" ]] || plan052_staging="$source_dir/plan052-bundle"
+  python3 - "$plan052_staging" "$host_evidence_root/milestone-3/$run_id" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd() / "tests/integration/ntcp2"))
+from harness.evidence_bundle import export_bundle_atomic, verify_bundle
+staging = Path(sys.argv[1]).resolve()
+destination = Path(sys.argv[2]).resolve()
+verify_bundle(staging)
+export_bundle_atomic(staging, destination)
+verify_bundle(destination)
+PY
+fi
 python3 "$lifecycle_py" update --state-file "$instance_lifecycle_path" --state exported \
   --operation export --outcome export-validated >/dev/null
 printf '%s\n' "$destination"

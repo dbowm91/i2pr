@@ -53,6 +53,9 @@ acquire_lifecycle_lock
 guest_repo_root="$guest_repo_root"
 guest_target="$guest_repo_root/target/interop"
 guest_scripts="$guest_repo_root/scripts/interop"
+plan052_run_root="$guest_target/runs/$run_id"
+plan052_run_identity="$plan052_run_root/run-identity.json"
+plan052_bundle_staging="$plan052_run_root/bundle-staging"
 
 guest_exec_root() {
   multipass exec "$instance_name" -- sudo -n \
@@ -141,6 +144,22 @@ install_guest_rust_toolchain() {
   return "$status"
 }
 
+create_plan052_context() {
+  printf '[%s] %s\n' "$profile" "create-plan052-context"
+  guest_exec_user python3 "$guest_repo_root/tests/integration/ntcp2/harness/plan052_pipeline.py" create \
+    --repo-root "$guest_repo_root" --run-id "$run_id" \
+    --run-identity "$plan052_run_identity" --bundle-staging "$plan052_bundle_staging" \
+    --launcher "$guest_repo_root/target/debug/i2pr-interop" \
+    >"$instance_state_dir/$profile-create-plan052-context.log" 2>&1
+}
+
+finalize_plan052_context() {
+  printf '[%s] %s\n' "$profile" "finalize-plan052-context"
+  guest_exec_user python3 "$guest_repo_root/tests/integration/ntcp2/harness/plan052_pipeline.py" finalize \
+    --run-identity "$plan052_run_identity" --bundle-staging "$plan052_bundle_staging" \
+    >"$instance_state_dir/$profile-finalize-plan052-context.log" 2>&1
+}
+
 case "$profile" in
   environment-smoke)
     profile_step pre-install ubuntu/check-host.sh --pre-install \
@@ -174,17 +193,22 @@ reference-crosscheck-ipv4)
     profile_step cache-manifest cache-manifest.py --verify || exit $?
     profile_step offline-reuse offline-reuse.sh || exit $?
     make_cache_user_readable || exit $?
-    profile_step prepare-offline local:prepare-offline.sh || exit $?
-    for scenario in i2pr-to-java-ipv4 java-to-i2pr-ipv4 i2pr-to-i2pd-ipv4 i2pd-to-i2pr-ipv4; do
-      printf '[%s] %s\n' "$profile" "direction-$scenario"
-      if bash "$script_dir/run-direction.sh" --scenario "$scenario" >"$instance_state_dir/$profile-direction-$scenario.log" 2>&1; then
+     profile_step prepare-offline local:prepare-offline.sh || exit $?
+     create_plan052_context || exit $?
+     for scenario in i2pr-to-java-ipv4 java-to-i2pr-ipv4 i2pr-to-i2pd-ipv4 i2pd-to-i2pr-ipv4; do
+       printf '[%s] %s\n' "$profile" "direction-$scenario"
+       if bash "$script_dir/run-direction.sh" --scenario "$scenario" --run-id "$run_id" \
+         --run-identity "$plan052_run_identity" --bundle-staging "$plan052_bundle_staging" \
+         --evidence-profile milestone-3-v2 >"$instance_state_dir/$profile-direction-$scenario.log" 2>&1; then
         printf '  %s ok\n' "direction-$scenario"
       else
         printf '  %s failed\n' "direction-$scenario"
         cat "$instance_state_dir/$profile-direction-$scenario.log" >&2 || true
       fi
-    done
-    profile_step export-evidence local:export-evidence.sh || exit $?
+     done
+     finalize_plan052_context || exit $?
+     profile_step export-evidence local:export-evidence.sh || exit $?
+
     ;;
   full)
     profile_step pre-install ubuntu/check-host.sh --pre-install \

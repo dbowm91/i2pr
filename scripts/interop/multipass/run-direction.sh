@@ -5,11 +5,35 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$script_dir/common.sh"
 
 scenario=""
+run_id_arg=""
+run_identity=""
+bundle_staging=""
+evidence_profile=""
 while (($#)); do
   case "$1" in
     --scenario)
       [[ -z "$scenario" && $# -ge 2 ]] || die "duplicate or incomplete --scenario"
       scenario=$2
+      shift
+      ;;
+    --run-id)
+      [[ -z "$run_id_arg" && $# -ge 2 ]] || die "duplicate or incomplete --run-id"
+      run_id_arg=$2
+      shift
+      ;;
+    --run-identity)
+      [[ -z "$run_identity" && $# -ge 2 ]] || die "duplicate or incomplete --run-identity"
+      run_identity=$2
+      shift
+      ;;
+    --bundle-staging)
+      [[ -z "$bundle_staging" && $# -ge 2 ]] || die "duplicate or incomplete --bundle-staging"
+      bundle_staging=$2
+      shift
+      ;;
+    --evidence-profile)
+      [[ -z "$evidence_profile" && $# -ge 2 ]] || die "duplicate or incomplete --evidence-profile"
+      evidence_profile=$2
       shift
       ;;
     --help|-h) printf 'usage: run-direction.sh --scenario <direction>\n'; exit 0 ;;
@@ -55,9 +79,14 @@ guest_exec python3 "$guest_repo_root/scripts/interop/multipass/collect.py" \
   --root "$guest_repo_root" --clear-scenario "$scenario"
 guest_exec rm -f "$attestation_path" "$record_path"
 runner_status=0
-runner_output=$(guest_exec bash "$guest_repo_root/scripts/interop/rootless-enter.sh" \
-  --scenario "$scenario" --reference "$reference" --build-cache "$guest_cache_root" \
-  --run-root "$guest_repo_root/target/interop/runs" --attestation-output "$attestation_path") || runner_status=$?
+runner_command=(guest_exec bash "$guest_repo_root/scripts/interop/rootless-enter.sh"
+  --scenario "$scenario" --reference "$reference" --build-cache "$guest_cache_root"
+  --run-root "$guest_repo_root/target/interop/runs" --attestation-output "$attestation_path")
+if [[ -n "$run_id_arg" ]]; then runner_command+=(--run-id "$run_id_arg"); fi
+if [[ -n "$run_identity" ]]; then runner_command+=(--run-identity "$run_identity"); fi
+if [[ -n "$bundle_staging" ]]; then runner_command+=(--bundle-staging "$bundle_staging"); fi
+if [[ -n "$evidence_profile" ]]; then runner_command+=(--evidence-profile "$evidence_profile"); fi
+runner_output=$("${runner_command[@]}") || runner_status=$?
 if ! guest_exec test -s "$attestation_path" >/dev/null 2>&1; then
   typed_blocker blocked_isolation_attestation_missing
   exit 2

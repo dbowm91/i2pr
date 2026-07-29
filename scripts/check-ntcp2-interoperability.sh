@@ -78,6 +78,23 @@ if find "$evidence" -type f ! -name README.md -print0 \
   exit 1
 fi
 
+if ! grep -Fq 'PIPELINE_PROFILE' "$root/tests/integration/ntcp2/harness/mixed_runner.py"; then
+  echo "Plan 052 pipeline profile is not wired into mixed runner" >&2
+  exit 1
+fi
+if ! grep -Fq 'write_direction_artifacts' "$root/tests/integration/ntcp2/harness/mixed_runner.py"; then
+  echo "Plan 052 direction artifact writer is not wired" >&2
+  exit 1
+fi
+if grep -Fq 'export_root / "export-acknowledgement.json"' "$root/tests/integration/ntcp2/harness/evidence_bundle.py"; then
+  echo "Plan 052 export acknowledgement must remain outside immutable bundle" >&2
+  exit 1
+fi
+if grep -Fq 'raise MixedRunError("i2pr-responder-handshake-failed")' "$root/tests/integration/ntcp2/harness/mixed_runner.py"; then
+  echo "bounded responder reason was collapsed to historical generic code" >&2
+  exit 1
+fi
+
 python3 "$root/scripts/interop/validate-evidence.py"
 python3 "$root/scripts/interop/validate-scenarios.py"
 

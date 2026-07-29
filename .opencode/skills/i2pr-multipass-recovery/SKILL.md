@@ -1,6 +1,6 @@
 ---
 name: i2pr-multipass-recovery
-description: Operate, diagnose, or extend the Plan 048/049/050 Multipass recovery lane for NTCP2 interoperability evidence, including atomic lifecycle reservation, cloud-init taxonomy, base verification, the four Plan 045 directions, sanitized export, selective-purge remediation, and the Plan 051 dispatch-gate troubleshooting bridge. Use when an agent is asked to create, adopt, resume, recreate, or destroy a Multipass guest, run the evidence lane, classify a cloud-init failure, or troubleshoot host-side Plan 046 blockers inside a disposable Ubuntu 24.04 amd64 guest.
+description: Operate, diagnose, or extend the Plan 048/049/050/051/053 Multipass recovery lane for NTCP2 interoperability evidence, including atomic lifecycle reservation, cloud-init taxonomy, base verification, the four Plan 045 directions, the Plan 053 bound diagnostic bundle, sanitized export, selective-purge remediation, and the Plan 051 dispatch-gate troubleshooting bridge. Use when an agent is asked to create, adopt, resume, recreate, or destroy a Multipass guest, run the evidence lane, classify a cloud-init failure, or troubleshoot host-side Plan 046 blockers inside a disposable Ubuntu 24.04 amd64 guest.
 ---
 
 # I2PR Multipass Recovery (Plan 048/049/050/051)
@@ -18,7 +18,8 @@ recorded and the dispatcher stops.
 Read `AGENTS.md`, `plans/048-multipass-permissive-rootless-evidence-environment.md`,
 `plans/049-multipass-lifecycle-ownership-corrective-pass.md`,
 `plans/050-multipass-cloud-init-recovery.md`,
-`plans/051-external-validation-troubleshooting.md`, the reviewed environment
+`plans/051-external-validation-troubleshooting.md`,
+`plans/053-plan052-evidence-pipeline-integration-corrective-pass.md`, the reviewed environment
 manifest at `scripts/interop/multipass/environment.toml`, and the relevant
 `docs/adr/` records before changing anything in this lane.
 
@@ -208,6 +209,23 @@ Each step's stdout/stderr is captured to
 `target/interop/multipass/state/<run-id>/<profile>-<step>.log` and the lane
 returns the failing exit status. `--online` opts back into network-enabled
 behavior inside the guest; the default is offline.
+
+## Plan 053 bundle integration
+
+The `handshake-smoke-rootless` dispatch profile creates one measured
+`run-identity.json` and one bundle staging root before the four directions.
+It passes the explicit identity, staging root, run ID, and
+`--evidence-profile milestone-3-v2` through `run-direction.sh`,
+`rootless-enter.sh`, `rootless_inner_runner.py`, and `mixed_runner.py`.
+Each blocked or rejected direction writes one attestation, direction,
+trigger, observation-v2, and cleanup record. Finalization verifies the
+catalog and identity bindings before export; the export acknowledgement is
+beside, not inside, the immutable `milestone-3/<run-id>` bundle.
+
+A complete local result may be `diagnostic-complete-not-certificate`. It is
+not a protocol pass and does not close Milestone 3. A missing source-locked
+reference receiver marker remains a typed rejection. Never reuse a legacy
+unbound direction record for the Plan 053 profile.
 
 ## Script responsibilities
 

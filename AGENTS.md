@@ -100,7 +100,9 @@ plan introduces:
 - ADR 0017 and the reconciliation of every relevant design document.
 
 Plan 046 closed with a typed host-level blocker. The closure record is
-`plans/046-closure.md`. The closure is the existence of a re-producable
+`plans/046-closure.md`. Plan 052 is the active Milestone 3 evidence
+closure follow-up; Plan 053 is the active corrective pass for
+integrating Plan 052 into the canonical execution path. The closure is the existence of a re-producable
 typed probe blocker that any ordinary user can produce on this host. The
 on-host evidence at
 `target/interop/evidence/handshake-smoke-rootless--host-blocked/`
@@ -510,3 +512,32 @@ unchanged and continue to pass. New tests live under
 `test_java_startup_probe.py` and must stay green alongside the existing
 `test_harness.py`, `test_multipass.py`, and
 `test_rootless_topology.py`.
+
+## Plan 053 evidence-pipeline integration
+
+Plan 053 is the active corrective pass for integrating Plan 052 evidence into
+the canonical rootless/Multipass path. Use
+`tests/integration/ntcp2/harness/plan052_pipeline.py` as the single owner for
+measured run identity creation, freeze checks, bound per-direction artifact
+classes, diagnostic finalization, and atomic export. Pass
+`--run-id`, `--run-identity`, `--bundle-staging`, and
+`--evidence-profile milestone-3-v2` explicitly through every launcher boundary;
+do not infer them from the working directory.
+
+Every primary direction must write exactly one attestation, direction,
+trigger, observation-v2, and cleanup record even when blocked or rejected.
+Missing reference receiver markers are typed `not-observed` rejections. Never
+write legacy unbound direction records in Plan 053 mode, collapse a bounded
+launcher responder reason, or add an export acknowledgement inside a finalized
+bundle. A local complete result is
+`diagnostic-complete-not-certificate`, never a Milestone 3 certificate.
+
+Required focused checks are:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan053.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_bundle.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+```

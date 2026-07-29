@@ -153,6 +153,7 @@ ALLOWED_PROBE_OUTCOMES = frozenset(
         "blocked_external_route_present",
         "blocked_external_connect_possible",
         "blocked_rootless_cleanup",
+        "blocked_evidence_context_missing",
     }
 )
 

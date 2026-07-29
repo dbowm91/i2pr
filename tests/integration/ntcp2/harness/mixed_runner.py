@@ -32,13 +32,19 @@ if __package__ in {None, ""}:
     )
     from harness.java_i2p import JavaI2pAdapter, JavaI2pError  # type: ignore
     from harness.launcher_renderer import RenderError, render_and_validate  # type: ignore
-    from harness.launcher_protocol import LauncherScenarioError  # type: ignore
+    from harness.launcher_protocol import LauncherScenarioError, STATUS_REASONS  # type: ignore
     from harness.metadata import CacheMetadata  # type: ignore
     from harness.reference_trigger import select_trigger  # type: ignore
     from harness.router_info import RouterInfoPathError, strict_validate_router_info  # type: ignore
     from harness.topology import EndpointDescription, IsolationError  # type: ignore
     from harness.rootless_topology import RootlessTopologyError  # type: ignore
     from harness.runner import HarnessBlocked, _cache_for, _git_identity, _host_check  # type: ignore
+    from harness.plan052_pipeline import (  # type: ignore
+        PIPELINE_PROFILE,
+        PipelineError,
+        load_context,
+        write_direction_artifacts,
+    )
 else:
     from .data_oracle import select_oracle
     from .evidence import write_record
@@ -53,14 +59,19 @@ else:
     )
     from .java_i2p import JavaI2pAdapter, JavaI2pError
     from .launcher_renderer import RenderError, render_and_validate
-    from .launcher_protocol import LauncherScenarioError
+    from .launcher_protocol import LauncherScenarioError, STATUS_REASONS
     from .metadata import CacheMetadata
     from .reference_trigger import select_trigger
     from .router_info import RouterInfoPathError, strict_validate_router_info
     from .topology import EndpointDescription, IsolationError
     from .rootless_topology import RootlessTopologyError
     from .runner import HarnessBlocked, _cache_for, _git_identity, _host_check
-
+    from .plan052_pipeline import (
+        PIPELINE_PROFILE,
+        PipelineError,
+        load_context,
+        write_direction_artifacts,
+    )
 
 MIXED_SCENARIO_FIELDS = frozenset(
     {
@@ -324,6 +335,18 @@ def _validate_router_info_for_direction(
 def run(args: argparse.Namespace) -> int:
     repo_root = _repo_root()
     direction = load_mixed_scenario(repo_root, args.scenario)
+    pipeline_context = None
+    if getattr(args, "evidence_profile", None):
+        if args.evidence_profile != PIPELINE_PROFILE:
+            raise MixedRunError("unsupported-evidence-profile", "rejected")
+        if not args.run_identity or not args.bundle_staging or not args.run_id:
+            raise MixedRunError("evidence-profile-context-missing", "blocked")
+        try:
+            pipeline_context = load_context(Path(args.run_identity), Path(args.bundle_staging))
+        except (OSError, ValueError, PipelineError) as exc:
+            raise MixedRunError(str(exc), "blocked") from exc
+        if pipeline_context.run_id != args.run_id:
+            raise MixedRunError("run-id-context-mismatch", "blocked")
     reference = args.reference
     if direction.reference != reference:
         raise MixedRunError("scenario-reference-mismatch", "rejected")
@@ -480,7 +503,7 @@ def run(args: argparse.Namespace) -> int:
             i2pr_adapter.start("dial")
             terminal = i2pr_adapter.wait_terminal(timeout_seconds=30.0)
             if terminal["result"] != "passed":
-                raise MixedRunError("i2pr-initiator-handshake-failed")
+                raise MixedRunError(_terminal_reason(terminal, "i2pr-initiator-handshake-failed"))
             observations["i2pr"] = "authenticated"
             ref_observation = ref_adapter.authenticated_observation()
             observations[direction.reference] = ref_observation
@@ -507,6 +530,8 @@ def run(args: argparse.Namespace) -> int:
                 ref_observation=ref_observation,
                 oracle_state=oracle_state,
             )
+            if pipeline_context is not None:
+                result, reason = _evaluate_plan052_predicate(terminal, ref_observation, oracle_state)
             runtime_counters["handshake_attempts"] = 1
             runtime_counters["frames_sent"] = int(terminal.get("counters", {}).get("frames_sent", 0))
             runtime_counters["frames_received"] = int(terminal.get("counters", {}).get("frames_received", 0))
@@ -577,7 +602,7 @@ def run(args: argparse.Namespace) -> int:
                 pass
             terminal = i2pr_adapter.wait_terminal(timeout_seconds=30.0)
             if terminal["result"] != "passed":
-                raise MixedRunError("i2pr-responder-handshake-failed")
+                raise MixedRunError(_terminal_reason(terminal, "i2pr-responder-handshake-failed"))
             observations["i2pr"] = "authenticated"
             ref_observation = ref_adapter.authenticated_observation()
             observations[direction.reference] = ref_observation
@@ -593,6 +618,8 @@ def run(args: argparse.Namespace) -> int:
                 ref_observation=ref_observation,
                 oracle_state=oracle_state,
             )
+            if pipeline_context is not None:
+                result, reason = _evaluate_plan052_predicate(terminal, ref_observation, oracle_state)
             runtime_counters["handshake_attempts"] = 1
             runtime_counters["frames_sent"] = int(terminal.get("counters", {}).get("frames_sent", 0))
             runtime_counters["frames_received"] = int(terminal.get("counters", {}).get("frames_received", 0))
@@ -651,7 +678,8 @@ def run(args: argparse.Namespace) -> int:
             reason = reason or "sandbox-attestation-missing"
             cleanup = "clean"
         if (
-            metadata is not None
+            pipeline_context is None
+            and metadata is not None
             and result in {"passed", "skipped_ipv6", "rejected", "failed", "blocked", "failed_cleanup"}
         ):
             evidence_root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -702,6 +730,22 @@ def run(args: argparse.Namespace) -> int:
                 write_record(evidence_path, record)
             except (OSError, ValueError):
                 pass
+        if pipeline_context is not None:
+            try:
+                write_direction_artifacts(
+                    pipeline_context,
+                    direction.execution_id,
+                    reference=direction.reference,
+                    initiator=direction.initiator,
+                    result=result,
+                    reason_code=reason or "not-started",
+                    cleanup_result=cleanup,
+                    terminal=locals().get("terminal"),
+                )
+            except (OSError, PipelineError, ValueError):
+                result = "failed_cleanup"
+                cleanup = "failed"
+                reason = "evidence-finalization-failed"
     _emit(direction.execution_id, reference, result, reason, cleanup)
     return 0 if result == "passed" else 2
 
@@ -720,6 +764,29 @@ def _serialize_trigger(result: object) -> dict[str, object]:
         "description": str(getattr(result, "description", "")),
         "timed_out": bool(getattr(result, "timed_out", False)),
     }
+
+
+def _evaluate_plan052_predicate(
+    terminal: dict[str, object],
+    ref_observation: str,
+    oracle_state: dict[str, str],
+) -> tuple[str, str]:
+    if str(terminal.get("result", "")) != "passed":
+        return "rejected", _terminal_reason(terminal, "i2pr-terminal-not-passed")
+    if ref_observation != "authenticated":
+        return "rejected", "reference-receiver-marker-not-source-locked"
+    if oracle_state.get("sender_observed") != "observed" and oracle_state.get("receiver_observed") != "observed":
+        return "rejected", "reference-receiver-marker-not-source-locked"
+    return "rejected", "reference-receiver-marker-not-source-locked"
+
+
+def _terminal_reason(terminal: dict[str, object], fallback: str) -> str:
+    reason = terminal.get("reason_code")
+    if reason is None:
+        return fallback
+    if not isinstance(reason, str) or reason not in STATUS_REASONS:
+        return "unknown-i2pr-terminal-reason"
+    return reason
 
 
 def _evaluate_pass_predicate(
@@ -897,6 +964,10 @@ def main() -> int:
     parser.add_argument("--reference", choices=("java_i2p", "i2pd"), required=True)
     parser.add_argument("--build-cache")
     parser.add_argument("--run-root")
+    parser.add_argument("--run-id")
+    parser.add_argument("--run-identity")
+    parser.add_argument("--bundle-staging")
+    parser.add_argument("--evidence-profile", choices=(PIPELINE_PROFILE,))
     parser.add_argument("--keep-failed-sanitized", action="store_true")
     parser.add_argument("--offline", action="store_true")
     parser.add_argument(

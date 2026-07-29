@@ -335,3 +335,48 @@ and the environment evidence hash. Mixed run IDs or generations are rejected.
 Pre-router failures are written as sanitized environment blockers and cannot
 satisfy protocol conformance. Multipass, guest policy, offline, cleanup, and
 evidence failures are typed blockers, not protocol passes.
+
+## Plan 052/053 evidence-pipeline integration
+
+Plan 052 introduces a single-source run identity, observation schema v2,
+atomic bundle layout, a standalone Java startup probe, and a reference
+observation catalog. Plan 053 wires those primitives into the canonical
+rootless and Multipass execution path through
+`tests/integration/ntcp2/harness/plan052_pipeline.py`.
+
+`plan052_pipeline.py` is the single owner for measured run identity
+creation, freeze checks, bound per-direction artifact classes, diagnostic
+finalization, and atomic export. The four primary directions
+(`i2pr-to-java-ipv4`, `java-to-i2pr-ipv4`, `i2pr-to-i2pd-ipv4`,
+`i2pd-to-i2pr-ipv4`) are emitted as five classes each
+(`attestation/`, `direction/`, `trigger/`, `observation/`, `cleanup/`)
+regardless of whether execution is blocked or rejected. Missing
+source-locked reference receiver markers are typed
+`reference-receiver-marker-not-source-locked` rejections; they are never
+masked by `not-applicable` or zero-filled provenance.
+
+Bundles are staged under
+`target/interop/evidence/milestone-3/<run-id>/`. Export writes the
+acknowledgement beside the bundle using a bundle-relative path. The
+local accepted result is `diagnostic-complete-not-certificate`; it is
+not a Milestone 3 certificate and does not advertise NTCP2.
+
+External callers must pass `--run-id`, `--run-identity`,
+`--bundle-staging`, and `--evidence-profile milestone-3-v2` explicitly
+through every launcher boundary (`dispatch-gate.sh`,
+`run-direction.sh`, `rootless-enter.sh`, `rootless_inner_runner.py`,
+`mixed_runner.py`). The Plan 053 profile rejects legacy unbound
+direction records. Static enforcement lives in
+`scripts/check-ntcp2-interoperability.sh`, with focused tests under
+`tests/integration/ntcp2/harness/test_plan053.py` and
+`test_evidence_bundle.py`.
+
+Focused checks:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan053.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_bundle.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+```

@@ -370,6 +370,24 @@ verified evidence export, unchanged parent network state, and no
 surviving process. Anything less remains a typed diagnostic result.
 The scaffolding status is in `plans/052-status.md`.
 
+### Plan 053 evidence-pipeline integration corrective pass
+
+Plan 053 wires the Plan 052 evidence primitives into the canonical rootless and
+Multipass dispatch path. `plan052_pipeline.py` measures one clean source
+identity before directions, freezes it, binds all four directions to that
+identity, and writes complete attestation, direction, trigger, observation-v2,
+and cleanup classes even for blocked or rejected outcomes. The hardened bundle
+writer verifies exact JSON bytes, manifest checksums, semantic schemas, safe
+paths, regular-file trees, and immutable finalization before atomic export.
+Export acknowledgements are written beside, never inside, the immutable
+`target/interop/evidence/milestone-3/<run-id>/` bundle.
+
+A local blocked/rejected bundle is classified as
+`diagnostic-complete-not-certificate`; it is not interoperability evidence and
+does not close Milestone 3. Java/i2pd receiver markers remain source-lock and
+external-run blockers, so NTCP2 stays experimental and non-advertised. Plan
+053 status and validation results are recorded in `plans/053-status.md`.
+
 ## MVP direction
 
 The feature MVP is expected to include:
@@ -526,6 +544,8 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 038 Ubuntu reference-router interoperability harness](plans/038-ubuntu-reference-router-interoperability-harness.md)
 - [Plan 042 runtime-owned NTCP2 wire driver](plans/042-runtime-owned-ntcp2-wire-driver.md)
 - [Plan 042 current status](plans/042-status.md)
+- [Plan 053 evidence pipeline corrective pass](plans/053-plan052-evidence-pipeline-integration-corrective-pass.md)
+- [Plan 053 status](plans/053-status.md)
 - [Aggregate Milestone 3 closure record](plans/030-milestone-3-closure.md)
 - [Controlled NTCP2 interoperability lane](tests/integration/ntcp2/README.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
@@ -545,6 +565,7 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Ubuntu build-system interoperability gates ADR](docs/adr/0016-ubuntu-build-system-interop-gates.md)
 - [Rootless sealed-namespace interoperability evidence ADR](docs/adr/0017-rootless-sealed-namespace-interop-evidence.md)
 - [Multipass rootless interoperability environment ADR](docs/adr/0018-multipass-rootless-interop-environment.md)
+- [Plan 053 evidence-pipeline integrity ADR](docs/adr/0020-plan053-evidence-pipeline-integrity.md)
 - [Contribution guide](CONTRIBUTING.md)
 - [Protocol specification index and source ledger](specs/README.md)
 

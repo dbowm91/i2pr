@@ -57,14 +57,19 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 
 BUNDLE_SCHEMA = "i2pr-interop-evidence-bundle-v1"
 BUNDLE_SCHEMA_VERSION = 1
+
+BUNDLE_EXPORT_ACK_SCHEMA = "i2pr-interop-bundle-export-ack-v1"
+BUNDLE_EXPORT_ACK_VERSION = 1
 
 PRIMARY_DIRECTIONS: tuple[str, ...] = (
     "i2pr-to-java-ipv4",
@@ -89,6 +94,31 @@ ENVIRONMENT_CLASSES: tuple[str, ...] = (
     "parent-network-before.sha256",
     "parent-network-after.sha256",
 )
+
+SEMANTIC_SCHEMAS: dict[str, tuple[str, ...]] = {
+    "attestations": (
+        "i2pr-mixed-router-attestation-v2",
+        "i2pr-mixed-router-attestation-v1",
+    ),
+    "directions": (
+        "i2pr-mixed-router-direction-v2",
+        "i2pr-mixed-router-direction-v1",
+    ),
+    "triggers": (
+        "i2pr-reference-trigger-v2",
+        "i2pr-reference-trigger-v1",
+    ),
+    "observations": (
+        "i2pr-ntcp2-direction-observation-v2",
+    ),
+    "cleanup": (
+        "i2pr-mixed-router-cleanup-v2",
+        "i2pr-mixed-router-cleanup-v1",
+    ),
+    "run-identity.json": (
+        "i2pr-interop-run-identity-v1",
+    ),
+}
 
 
 class BundleError(ValueError):
@@ -141,23 +171,84 @@ def _validate_run_id(run_id: str) -> None:
         raise BundleError(f"run_id {run_id!r} is not a safe identifier")
 
 
-def _classify(path: Path) -> tuple[str, str]:
-    """Return ``(record_type, schema)`` for a file under the staging tree."""
+def classify_bundle_file(
+    staging_root: Path, path: Path, *, exists: bool = True,
+) -> tuple[str, str]:
+    """Return ``(record_type, schema)`` for a file under the staging tree.
 
-    rel = path.relative_to(path.parents[len(path.relative_to(path)) - 1] if False else path)
-    rel_str = str(rel)
-    if rel.name in {"manifest.json", "manifest.sha256", "run-identity.json"}:
-        record_type = rel.name
-        schema = "manifest" if rel.name.startswith("manifest") else "run-identity"
-        return record_type, schema
+    Validates that *path* is inside *staging_root*, is a single-level or
+    two-level relative path matching the allowlisted layout, and raises
+    ``BundleError`` for traversal, absolute, unknown, or too-deep paths.
+    """
+    root = staging_root.resolve()
+    if exists:
+        candidate = path.resolve(strict=True)
+    else:
+        candidate = path.resolve()
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        raise BundleError(f"path is not inside staging root: {path}")
+
+    rel_str = relative.as_posix()
+    if rel_str.startswith("/"):
+        raise BundleError(f"absolute path rejected: {rel_str}")
+
+    parts = relative.parts
+    name = relative.name
+
+    if name in {"manifest.json", "manifest.sha256"}:
+        return "manifest", "manifest"
+    if name == "run-identity.json" and len(parts) == 1:
+        return "run-identity", "run-identity"
     if rel_str.startswith("environment/"):
         return "environment", "environment-record"
-    parts = rel.parts
     if len(parts) == 2 and parts[0] in DIRECTION_CLASSES:
-        return parts[0], f"{parts[0]}-record"
+        if name.endswith(".json"):
+            return parts[0], f"{parts[0]}-record"
+        raise BundleError(
+            f"non-JSON file in direction class {parts[0]}: {rel_str}"
+        )
     if len(parts) == 2 and parts[0] == "diagnostics":
         return "diagnostics", "sanitized-summary"
-    return "unknown", "unknown"
+
+    raise BundleError(f"unknown bundle path: {rel_str}")
+
+
+def _validate_file_tree(staging_root: Path) -> None:
+    """Reject symlinks, non-regular files, hard links >1, hidden temp files,
+    and case-colliding paths in the staging tree."""
+    staging_root = staging_root.resolve()
+    seen_lower: dict[str, str] = {}
+    for path in sorted(staging_root.rglob("*")):
+        rel = path.relative_to(staging_root).as_posix()
+
+        if path.is_symlink():
+            raise BundleError(f"symlink rejected: {rel}")
+
+        if path.is_dir():
+            continue
+
+        try:
+            stat_result = path.stat()
+        except OSError as exc:
+            raise BundleError(f"cannot stat {rel}: {exc}") from exc
+
+        if not stat.S_ISREG(stat_result.st_mode):
+            raise BundleError(f"non-regular file rejected: {rel}")
+
+        if stat_result.st_nlink > 1:
+            raise BundleError(f"hard link count >1 rejected: {rel}")
+
+        if rel.startswith(".") or "/." in rel:
+            raise BundleError(f"hidden/temp file rejected: {rel}")
+
+        lower_rel = rel.lower()
+        if lower_rel in seen_lower:
+            raise BundleError(
+                f"case-colliding paths rejected: {rel} vs {seen_lower[lower_rel]}"
+            )
+        seen_lower[lower_rel] = rel
 
 
 def _record_schema(payload: dict[str, Any]) -> str:
@@ -190,12 +281,16 @@ def _scan_bundle_value(value: Any) -> None:
 
 
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> str:
+    """Serialize *payload* to JSON, write atomically, return SHA-256 of exact bytes."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    digest = _sha256_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+    encoded = (
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, sort_keys=False, separators=(",", ":")) + "\n")
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(temporary, 0o600)
@@ -231,40 +326,26 @@ def load_bundle_manifest(path: Path) -> BundleManifest:
         size = entry.get("size", 0)
         if not isinstance(rel, str) or not isinstance(sha, str) or not isinstance(size, int):
             raise BundleError("bundle entry has invalid types")
+        record_type = entry.get("record_type", "unknown")
+        schema = entry.get("schema", "unknown")
+        if record_type == "unknown":
+            raise BundleError(f"manifest entry {rel} has unknown record_type")
+        if schema == "unknown":
+            raise BundleError(f"manifest entry {rel} has unknown schema")
+        if not rel or Path(rel).is_absolute() or "\\" in rel:
+            raise BundleError(f"bundle entry {rel!r} is not a normalized relative path")
+        try:
+            classify_bundle_file(path.parent, path.parent / rel, exists=False)
+        except BundleError as exc:
+            raise BundleError(f"invalid bundle entry path: {rel}") from exc
+        if rel in {"manifest.json", "manifest.sha256"}:
+            raise BundleError("manifest cannot declare itself")
+        if any(part in {"", ".", ".."} for part in Path(rel).parts):
+            raise BundleError(f"bundle entry {rel} contains traversal")
+        if any(existing.relative_path == rel for existing in manifest.files):
+            raise BundleError(f"duplicate bundle entry: {rel}")
         if not _HEX64.fullmatch(sha):
             raise BundleError(f"bundle entry {rel} has invalid sha256")
-        manifest.files.append(BundleFile(
-            relative_path=rel,
-            size=size,
-            sha256=sha,
-            record_type=entry.get("record_type", "unknown"),
-            schema=entry.get("schema", "unknown"),
-        ))
-    return manifest
-
-
-def build_bundle_manifest(staging_root: Path, run_id: str) -> BundleManifest:
-    """Walk the staging directory and produce a BundleManifest."""
-
-    _validate_run_id(run_id)
-    manifest = BundleManifest(run_id=run_id)
-    for path in sorted(staging_root.rglob("*")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(staging_root).as_posix()
-        if rel in {"manifest.json", "manifest.sha256"}:
-            continue
-        try:
-            size = path.stat().st_size
-        except OSError as exc:
-            raise BundleError(f"cannot stat {rel}: {exc}") from exc
-        sha = hash_file(path)
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            schema = _record_schema(payload)
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            schema = "binary-or-text"
-        record_type, _ = _classify(path)
         manifest.files.append(BundleFile(
             relative_path=rel,
             size=size,
@@ -273,6 +354,83 @@ def build_bundle_manifest(staging_root: Path, run_id: str) -> BundleManifest:
             schema=schema,
         ))
     return manifest
+
+
+def _validate_manifest_sha256(staging_root: Path) -> None:
+    """Verify ``manifest.sha256`` contains the correct digest of ``manifest.json``."""
+    sha_path = staging_root / "manifest.sha256"
+    manifest_path = staging_root / "manifest.json"
+    try:
+        sha_text = sha_path.read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise BundleError("manifest.sha256 is not valid ASCII") from exc
+    lines = sha_text.splitlines()
+    if len(lines) != 1:
+        raise BundleError("manifest.sha256 must contain exactly one line")
+    line = lines[0]
+    expected_format = re.compile(r"^[0-9a-f]{64}  manifest\.json$")
+    if not expected_format.fullmatch(line):
+        raise BundleError("manifest.sha256 has invalid format")
+    declared_digest = line[:64]
+    actual_digest = _sha256_bytes(manifest_path.read_bytes())
+    if declared_digest != actual_digest:
+        raise BundleError(
+            f"manifest.sha256 digest mismatch: declared={declared_digest} actual={actual_digest}"
+        )
+
+
+def build_bundle_manifest(staging_root: Path, run_id: str) -> BundleManifest:
+    """Walk the staging directory and produce a BundleManifest."""
+
+    _validate_run_id(run_id)
+    _validate_file_tree(staging_root)
+    manifest = BundleManifest(run_id=run_id)
+    seen_rels: set[str] = set()
+    for path in sorted(staging_root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(staging_root).as_posix()
+        if rel in {"manifest.json", "manifest.sha256"}:
+            continue
+        if rel in seen_rels:
+            raise BundleError(f"duplicate manifest entry: {rel}")
+        seen_rels.add(rel)
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise BundleError(f"cannot stat {rel}: {exc}") from exc
+        sha = hash_file(path)
+        record_type, _ = classify_bundle_file(staging_root, path)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            schema = _record_schema(payload)
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            if record_type in SEMANTIC_SCHEMAS:
+                raise BundleError(
+                    f"{rel} is in class {record_type} but is not valid JSON"
+                )
+            schema = "binary-or-text"
+        manifest.files.append(BundleFile(
+            relative_path=rel,
+            size=size,
+            sha256=sha,
+            record_type=record_type,
+            schema=schema,
+        ))
+    return manifest
+
+
+def _validate_semantic_schemas(staging_root: Path, manifest: BundleManifest) -> None:
+    """For direction-class JSON files, compare path class to payload schema/type."""
+    for entry in manifest.files:
+        if entry.record_type not in SEMANTIC_SCHEMAS:
+            continue
+        allowed = SEMANTIC_SCHEMAS[entry.record_type]
+        if entry.schema not in allowed:
+            raise BundleError(
+                f"{entry.relative_path} is in class {entry.record_type} "
+                f"but declares schema {entry.schema!r}; expected one of {allowed}"
+            )
 
 
 def write_bundle_manifest(staging_root: Path, manifest: BundleManifest) -> Path:
@@ -291,7 +449,10 @@ def write_bundle_manifest(staging_root: Path, manifest: BundleManifest) -> Path:
 def verify_bundle(staging_root: Path) -> BundleManifest:
     """Verify every file in the staging directory matches the manifest."""
 
+    _validate_file_tree(staging_root)
+    _validate_manifest_sha256(staging_root)
     manifest = load_bundle_manifest(staging_root / "manifest.json")
+    _validate_semantic_schemas(staging_root, manifest)
     declared = {entry.relative_path: entry for entry in manifest.files}
     on_disk = set()
     for path in sorted(staging_root.rglob("*")):
@@ -327,7 +488,7 @@ def export_bundle_atomic(staging_root: Path, export_root: Path) -> Path:
     2. Copy to a temporary directory under ``export_root.parent``.
     3. Verify hashes against the staging manifest.
     4. Atomically rename the temporary directory to the final ``export_root``.
-    5. Write an export acknowledgement containing the final manifest digest.
+    5. Write an export acknowledgement BESIDE (not inside) the bundle.
 
     Returns the final exported bundle path.
     """
@@ -348,7 +509,6 @@ def export_bundle_atomic(staging_root: Path, export_root: Path) -> Path:
         temp_dir.unlink()
     try:
         shutil.copytree(staging_root, temp_dir)
-        # Verify the copied bundle hashes match the staging manifest.
         for entry in manifest.files:
             src = staging_root / entry.relative_path
             dst = temp_dir / entry.relative_path
@@ -362,13 +522,22 @@ def export_bundle_atomic(staging_root: Path, export_root: Path) -> Path:
     finally:
         if temp_dir.exists():
             shutil.rmtree(temp_dir, ignore_errors=True)
+    export_ack_path = parent / f"{export_root.name}.export-ack.json"
+    try:
+        bundle_path = export_root.relative_to(parent.parent).as_posix()
+    except ValueError:
+        bundle_path = export_root.name
     acknowledgement = {
-        "schema": "i2pr-interop-bundle-export-ack-v1",
+        "schema": BUNDLE_EXPORT_ACK_SCHEMA,
+        "schema_version": BUNDLE_EXPORT_ACK_VERSION,
         "run_id": manifest.run_id,
-        "export_path": str(export_root),
+        "bundle_path": bundle_path,
         "manifest_sha256": _sha256_bytes((export_root / "manifest.json").read_bytes()),
+        "export_timestamp": datetime.now(timezone.utc).isoformat(),
+        "verifier": "evidence_bundle.verify_bundle",
+        "verifier_result": "passed",
     }
-    write_json_atomic(export_root / "export-acknowledgement.json", acknowledgement)
+    write_json_atomic(export_ack_path, acknowledgement)
     return export_root
 
 
@@ -415,9 +584,12 @@ def finalize_bundle(staging_root: Path, run_id: str) -> BundleManifest:
     """Verify the staging tree, write the manifest, and return the manifest."""
 
     _validate_run_id(run_id)
+    if (staging_root / "manifest.json").exists() or (staging_root / "manifest.sha256").exists():
+        raise BundleError("finalized bundle is immutable")
     validate_environment_block(staging_root)
     validate_direction_catalog(staging_root)
     manifest = build_bundle_manifest(staging_root, run_id)
+    _validate_semantic_schemas(staging_root, manifest)
     write_bundle_manifest(staging_root, manifest)
     return manifest
 
