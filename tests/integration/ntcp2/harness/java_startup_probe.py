@@ -33,8 +33,10 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -56,9 +58,23 @@ PROBE_SCHEMA_VERSION = 1
 
 ALLOWED_NAMESPACE = {"outer", "rootless"}
 ALLOWED_LAUNCHER = {"runplain", "wrapper"}
-ALLOWED_DATA_STATE = {"empty", "config-only", "fresh-unique-seed", "initialized-snapshot"}
+ALLOWED_DATA_STATE = {"empty", "config-only", "fresh-unique-seed", "initialized-snapshot", "seeded-clone"}
 ALLOWED_SEQUENCE = {"single", "generate-live"}
 ALLOWED_ENTROPY = {"ok", "degraded", "unavailable", "not-tested"}
+FAILURE_STAGES = (
+    "java-process-spawn-failed",
+    "java-wrapper-bootstrap-failed",
+    "java-router-start-marker-missing",
+    "java-random-source-shutdown",
+    "java-key-generation-failed",
+    "java-ntcp2-configuration-failed",
+    "java-listener-readiness-timeout",
+    "java-premature-process-exit",
+    "java-graceful-shutdown-timeout",
+    "java-residual-process",
+    "java-state-permission-invalid",
+    "java-state-lock-invalid",
+)
 
 
 class ProbeError(RuntimeError):
@@ -78,14 +94,73 @@ def _attempt_id() -> str:
 def _entropy_class() -> str:
     """Classify ``/dev/urandom`` and ``/dev/random`` accessibility."""
 
+    return _entropy_probe()["class"]
+
+
+def _latency_bucket(milliseconds: float) -> str:
+    if milliseconds < 10:
+        return "0-10"
+    if milliseconds < 100:
+        return "10-100"
+    if milliseconds < 1000:
+        return "100-1000"
+    return "1000+"
+
+
+def _entropy_probe(seed_file: Path | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "class": "unavailable",
+        "getrandom_result": "failure",
+        "latency_bucket_ms": "unknown",
+        "urandom_readable": False,
+        "random_readable": False,
+        "seed_file_state": "absent",
+        "seed_file_sha256": "",
+    }
     try:
         with open("/dev/urandom", "rb") as handle:
-            data = handle.read(32)
-        if len(data) < 32:
-            return "degraded"
+            result["urandom_readable"] = len(handle.read(32)) == 32
     except OSError:
-        return "unavailable"
-    return "ok"
+        pass
+    try:
+        with open("/dev/random", "rb") as handle:
+            result["random_readable"] = len(handle.read(1)) == 1
+    except OSError:
+        pass
+    started = time.monotonic()
+    try:
+        secrets.token_bytes(1)
+        result["getrandom_result"] = "success"
+        result["latency_bucket_ms"] = _latency_bucket((time.monotonic() - started) * 1000)
+    except OSError:
+        result["latency_bucket_ms"] = _latency_bucket((time.monotonic() - started) * 1000)
+    if seed_file and seed_file.is_file():
+        try:
+            size = seed_file.stat().st_size
+            result["seed_file_state"] = "present-empty" if size == 0 else "present-nonempty"
+            result["seed_file_sha256"] = hashlib.sha256(seed_file.read_bytes()).hexdigest()
+        except OSError:
+            result["seed_file_state"] = "unreadable"
+    result["class"] = "ok" if result["getrandom_result"] == "success" and result["urandom_readable"] else "degraded"
+    return result
+
+
+def _classify_failure(code: str, *, launcher: str = "runplain", exit_code: int | None = None) -> str:
+    if code in FAILURE_STAGES:
+        return code
+    if code in {"process-start-failed", "launcher-missing"}:
+        return "java-process-spawn-failed"
+    if launcher == "wrapper" and code in {"java-eventlog-started-timeout", "premature-exit"}:
+        return "java-wrapper-bootstrap-failed"
+    if code in {"java-eventlog-started-timeout", "readiness-timeout"}:
+        return "java-listener-readiness-timeout"
+    if code in {"java-premature-exit", "premature-exit"} or exit_code not in (None, 0):
+        return "java-premature-process-exit"
+    if code in {"java-state-file-mode-not-private", "java-state-permission-invalid"}:
+        return "java-state-permission-invalid"
+    if code in {"java-state-lock-invalid", "router-ping-stale"}:
+        return "java-state-lock-invalid"
+    return "java-router-start-marker-missing"
 
 
 def _inventory_allowlisted(data_dir: Path) -> list[dict[str, str]]:
@@ -146,6 +221,13 @@ def _ensure_data_state(
             raise ProbeError("template-missing")
         shutil.copytree(template, data_dir)
         return
+    if data_state == "seeded-clone":
+        if not template.is_dir():
+            raise ProbeError("template-missing")
+        if data_dir.resolve() == template.resolve():
+            raise ProbeError("template-launch-forbidden")
+        shutil.copytree(template, data_dir)
+        return
     raise ProbeError("unknown-data-state")
 
 
@@ -156,7 +238,7 @@ def _run_attempt(
     launcher: str,
     namespace_placement: str,
     sequence: str,
-    entropy: str,
+    entropy: dict[str, Any],
     inventory: list[dict[str, str]],
     timeout_seconds: float,
 ) -> dict[str, Any]:
@@ -173,28 +255,38 @@ def _run_attempt(
     env = os.environ.copy()
     env["I2PHOME"] = str(data_dir)
     started_at = time.monotonic()
+    failure_stage: str | None = None
     process = BoundedProcess(
         [str(launcher_path)],
         raw_log,
         environment=env,
     )
-    process.start()
+    try:
+        process.start()
+    except OSError as exc:
+        raise ProbeError("process-start-failed") from exc
     readiness_marker = "Starting I2P"
     readiness_at = None
     try:
         try:
             process.wait_ready((readiness_marker,), timeout_seconds)
             readiness_at = time.monotonic() - started_at
-        except ProcessError:
+        except ProcessError as exc:
+            failure_stage = _classify_failure(exc.code, launcher=launcher)
             readiness_at = None
     finally:
+        if process.process is not None and process.process.poll() is not None and failure_stage is None:
+            failure_stage = _classify_failure("java-premature-exit", launcher=launcher, exit_code=process.process.returncode)
         cleanup = process.stop(timeout_seconds=5.0)
+        if cleanup == "failed":
+            failure_stage = failure_stage or "java-graceful-shutdown-timeout"
     return {
         "process_started": True,
         "readiness_marker": readiness_marker,
         "readiness_observed": readiness_at is not None,
         "readiness_monotonic_seconds": readiness_at,
         "cleanup_result": cleanup,
+        "failure_stage": failure_stage or "",
         "log_bytes": process.snapshot().get("log_bytes", 0),
         "entropy": entropy,
         "data_state_inventory": inventory,
@@ -202,6 +294,10 @@ def _run_attempt(
         "launcher": launcher,
         "sequence": sequence,
     }
+
+
+def _cell_id(launcher: str, data_state: str, namespace_placement: str, sequence: str) -> str:
+    return f"{namespace_placement}__{data_state}__{launcher}__{sequence}"
 
 
 def main() -> int:
@@ -216,17 +312,22 @@ def main() -> int:
     parser.add_argument("--timeout-seconds", type=float, default=60.0)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--state-template", type=Path, default=Path(""))
+    parser.add_argument("--matrix-run-id", default="")
+    parser.add_argument("--qualification-mode", action="store_true")
     args = parser.parse_args()
     if args.attempts < 1:
         raise SystemExit(2)
-    entropy = _entropy_class()
+    seed_file = args.state_template / "prngseed.rnd" if args.state_template.is_dir() else None
+    entropy = _entropy_probe(seed_file=seed_file)
     template = args.state_template if args.state_template else Path("")
     attempts: list[dict[str, Any]] = []
     failures: list[str] = []
     for index in range(args.attempts):
         attempt_id = _attempt_id()
+        cell_id = _cell_id(args.launcher, args.data_state, args.namespace, args.sequence)
         with tempfile.TemporaryDirectory(prefix=f"i2pr-probe-{attempt_id}-") as directory:
-            data_dir = Path(directory)
+            data_dir = Path(directory) / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
             try:
                 _ensure_data_state(
                     template=template,
@@ -250,15 +351,24 @@ def main() -> int:
                 )
                 attempt["attempt_id"] = attempt_id
                 attempt["attempt_index"] = index + 1
+                attempt["cell_id"] = cell_id
+                attempt["qualification_mode"] = bool(args.qualification_mode)
                 attempts.append(attempt)
             except ProbeError as exc:
-                failures.append(f"{attempt_id}: {exc.code}")
+                failures.append(f"{attempt_id}: {_classify_failure(exc.code, launcher=args.launcher)}")
     ready_count = sum(1 for attempt in attempts if attempt.get("readiness_observed"))
     record = {
         "schema": PROBE_SCHEMA,
         "schema_version": PROBE_SCHEMA_VERSION,
         "type": "java-startup-probe",
         "created_at_utc": _now(),
+        "matrix_run_id": args.matrix_run_id or None,
+        "qualification_mode": bool(args.qualification_mode),
+        "cell_id": _cell_id(args.launcher, args.data_state, args.namespace, args.sequence),
+        "data_state": args.data_state,
+        "launcher": args.launcher,
+        "namespace_placement": args.namespace,
+        "sequence": args.sequence,
         "attempts_total": args.attempts,
         "attempts_recorded": len(attempts),
         "attempts_ready": ready_count,
