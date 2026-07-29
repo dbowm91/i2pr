@@ -491,7 +491,8 @@ status_path = "status.jsonl"
         let scenario = Scenario::parse_str(VALID, &root).expect("valid scenario");
         assert_eq!(scenario.network_id, 99);
         assert_eq!(scenario.peer_port, Some(45678));
-        assert!(scenario.status_path.starts_with(root));
+        let canonical_root = std::fs::canonicalize(&root).unwrap_or(root.clone());
+        assert!(scenario.status_path.starts_with(&canonical_root));
         assert_eq!(
             scenario.data_phase_mode,
             DataPhaseMode::RoundTripDeliveryStatus
