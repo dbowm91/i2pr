@@ -1,0 +1,64 @@
+schema = "i2pr-reference-observation-catalog-v1"
+revision = 1
+
+[java_i2p]
+version = "2.12.0"
+revision = "2800040deee9bb376567b671ef2e9c34cf3e30b6"
+
+[[java_i2p.observations]]
+semantic_level = "ntcp2_authenticated"
+source_path = "router/java/src/net/i2p/router/transport/ntcp/NTCP2Transport.java"
+symbol = "NTCP2Transport.connectionEstablished"
+marker_kind = "structured-log"
+marker = "NTCP2 connection established"
+sanitization_rule = "strip-ipv4-endpoint-prefix"
+minimum_count = 1
+
+[[java_i2p.observations]]
+semantic_level = "frame_authenticated_and_decrypted"
+source_path = "router/java/src/net/i2p/router/transport/ntcp/NTCP2Connection.java"
+symbol = "NTCP2Connection.receive"
+marker_kind = "source-derived-log-marker"
+marker = "NTCP2 data frame authenticated and decrypted"
+sanitization_rule = "strip-ipv4-endpoint-prefix"
+minimum_count = 1
+
+[[java_i2p.observations]]
+semantic_level = "i2np_message_decoded"
+source_path = "router/java/src/net/i2p/router/transport/ntcp/NTCP2Reader.java"
+symbol = "NTCP2Reader.messageReceived"
+marker_kind = "source-derived-log-marker"
+marker = "NTCP2 I2NP message decoded"
+sanitization_rule = "strip-ipv4-endpoint-prefix"
+minimum_count = 1
+
+[i2pd]
+version = "2.60.0"
+revision = "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
+
+[[i2pd.observations]]
+semantic_level = "ntcp2_authenticated"
+source_path = "libi2pd/Transports.cpp"
+symbol = "Transports::ConnectToPeer"
+marker_kind = "structured-log"
+marker = "NTCP2: SessionConfirmed sent"
+sanitization_rule = "strip-ipv4-endpoint-prefix"
+minimum_count = 1
+
+[[i2pd.observations]]
+semantic_level = "frame_authenticated_and_decrypted"
+source_path = "libi2pd/NTCP2Session.cpp"
+symbol = "NTCP2Session::HandleData"
+marker_kind = "source-derived-log-marker"
+marker = "NTCP2: data frame authenticated and decrypted"
+sanitization_rule = "strip-ipv4-endpoint-prefix"
+minimum_count = 1
+
+[[i2pd.observations]]
+semantic_level = "i2np_message_decoded"
+source_path = "libi2pd/NTCP2Session.cpp"
+symbol = "NTCP2Session::HandleI2NP"
+marker_kind = "source-derived-log-marker"
+marker = "NTCP2: I2NP message decoded"
+sanitization_rule = "strip-ipv4-endpoint-prefix"
+minimum_count = 1
