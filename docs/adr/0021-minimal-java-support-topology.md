@@ -1,8 +1,9 @@
 # ADR 0021: Minimal sealed Java support topology for Plan 055
 
-- Status: Proposed (Plan 055 Workstream D gate)
+- Status: Rejected (Plan 058 record and candidate integrity closure pass)
 - Date: 2026-07-29
-- Decision owners: repository maintainers
+- Decision owner: repository maintainer decision (Plan 058)
+- Supersedes: 2026-07-29 Proposed draft (Plan 055 Workstream D gate)
 
 ## Context
 
@@ -46,9 +47,65 @@ This ADR authorizes option 2 under the strict constraints of Plan
 
 ## Decision
 
-When the Java direct-helper investigation fails closed (Plan 055
-C5), the harness may implement a minimal sealed support topology
-with the following properties:
+This ADR is **Rejected** by the repository maintainer decision
+recorded in Plan 058. The repository does not implement the
+minimal sealed Java support topology, and the four-direction
+Milestone 3 contract cannot close with the current pinned Java
+I2P 2.12.0 revision under the Plan 060 execution contract.
+
+The decision is rejected because:
+
+1. The Plan 046 host-side rootless probe returns
+   `blocked_unprivileged_user_namespace` on this host, so the
+   sealed support topology cannot be exercised on this host.
+2. The Plan 060 execution contract requires two independent
+   reproducible bundles from the same source commit. Exercising
+   the support topology in a Multipass recovery guest would
+   require a separate ADR-accepted topology implementation that
+   this repository does not implement.
+3. The Plan 058 record and candidate integrity invariant
+   requires that active candidate records cannot reference
+   missing required implementation artifacts. The Java support
+   topology is a missing required implementation artifact for
+   the `java-to-i2pr-ipv4` direction under the four-direction
+   contract.
+4. The pinned Java I2P 2.12.0 revision does not expose a
+   transport-only direct seam, and the proposed support topology
+   would require importing a synthetic `RouterInfo` and provisioning
+   a support router in a sealed topology. The repository
+   maintainer decision is to keep `java-to-i2pr-ipv4` blocked
+   for the pinned Java revision rather than introduce a
+   support topology that depends on extra moving parts.
+
+## Consequences of rejection
+
+- `java-to-i2pr-ipv4` remains a typed blocker for the pinned
+  Java I2P 2.12.0 revision.
+- The four-direction Milestone 3 contract cannot close against the
+  pinned Java I2P 2.12.0 revision. A separate future plan must
+  either choose a different pinned Java revision that exposes a
+  transport-only direct seam, or revise the closure contract
+  through a new ADR.
+- Plan 059 must close with the typed blocker
+  `blocked_java_support_topology_rejected` and must not start
+  reference-side implementation work that depends on the
+  support topology.
+- Plan 060 must not start under the current four-direction
+  contract.
+- NTCP2 remains experimental and non-advertised; Milestone 3
+  remains open.
+
+## Reference prerequisites (preserved for audit)
+
+The original proposed decision (Rejected) was:
+
+> When the Java direct-helper investigation fails closed (Plan 055
+> C5), the harness may implement a minimal sealed support topology
+> with the following properties: ...
+
+The proposed-decision properties are preserved verbatim below as
+an audit record. The implementation notes that follow them remain
+the original proposed notes; they were never implemented.
 
 - **Roles.** One pinned Java reference router acting as the
   requested peer, plus one pinned support router that supplies
@@ -85,25 +142,7 @@ with the following properties:
   - the absence of any public API to dispatch a transport-only
     dial without NetDB context.
 
-## Consequences
-
-- The Java reference-initiated direction becomes qualifyable on a
-  host that can run the sealed support topology. The harness must
-  record the support topology digest in the trigger record and
-  prove that no support-router traffic satisfies the direction.
-- The Plan 052 diagnostic bundle remains a typed
-  `diagnostic-complete-not-certificate` until Plan 056 produces two
-  complete reproducible runs.
-- The support topology is a fallback of last resort. Any future
-  Java revision that exposes a usable direct seam must replace this
-  fallback and bump the helper kind back to `java-direct-helper`.
-- The Plan 055 D5 control experiments become mandatory for any
-  qualification run that uses the support topology. A run that
-  fails the support-router removal control is a typed blocker.
-- NTCP2 remains experimental and non-advertised; Milestone 3 is
-  still open.
-
-## Rejected alternatives
+## Rejected alternatives (preserved from the original proposal)
 
 - **Patching the Java router.** Plan 055 Workstream A rule 1 and
   rule 12 forbid cryptography/transport patches for qualification.
@@ -121,19 +160,21 @@ with the following properties:
 
 ## Review triggers
 
-- A future Java revision exposes a direct transport dial API;
-  in that case Plan 056 (or its successor) must add a Java direct
-  helper, source-lock it against the new pinned revision, and
-  supersede this ADR.
+- A future Java revision exposes a direct transport dial API. In
+  that case a new ADR must accept that future topology and supersede
+  this rejection. The rejection does not block a future pinned
+  revision from being approved; it documents the decision against
+  Java I2P 2.12.0.
 - The Plan 046 rootless sealed-namespace gate becomes unavailable
-  or is replaced by another isolated topology; this ADR must be
-  re-issued against the new isolation contract.
-- Plan 055 Workstream C source-inspection finds a direct seam in
-  the pinned Java 2.12.0 revision; this ADR is deprecated.
+  or is replaced by another isolated topology. The rejection of
+  this ADR is independent of the gate; the rejection is recorded
+  because the support topology introduces additional moving parts
+  without a clear net benefit on this host.
 
 ## References
 
 - `plans/055-reference-initiated-ntcp2-trigger-and-topology-qualification-pass.md`
+- `plans/058-plan056-record-and-candidate-integrity-closure-pass.md`
 - `tests/integration/ntcp2/reference-trigger-contracts.md`
 - `tests/integration/ntcp2/reference-observation-catalog.toml`
 - `docs/adr/0017-rootless-sealed-namespace-interop-evidence.md`
