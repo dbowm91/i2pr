@@ -109,34 +109,44 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reason-code", default="blocked_host_contract")
     args = parser.parse_args(argv)
     evidence_root = args.evidence_root.resolve()
-    run_a_staging = evidence_root / "run-a" / args.run_a_id
-    run_b_staging = evidence_root / "run-b" / args.run_b_id
-    run_a_identity = run_a_staging.parent / f"{args.run_a_id}.identity.json"
-    run_b_identity = run_b_staging.parent / f"{args.run_b_id}.identity.json"
+    staging_root_a = evidence_root / "staging" / args.run_a_id
+    staging_root_b = evidence_root / "staging" / args.run_b_id
+    run_a_export = evidence_root / "run-a" / args.run_a_id
+    run_b_export = evidence_root / "run-b" / args.run_b_id
+    run_a_identity = staging_root_a / "run-identity.json"
+    run_b_identity = staging_root_b / "run-identity.json"
+
+    if run_a_export.exists():
+        if run_a_export.is_dir():
+            shutil.rmtree(run_a_export)
+        else:
+            run_a_export.unlink()
+    if run_b_export.exists():
+        if run_b_export.is_dir():
+            shutil.rmtree(run_b_export)
+        else:
+            run_b_export.unlink()
 
     _build_diagnostic_bundle(
         repo_root=args.repo_root,
         run_id=args.run_a_id,
-        staging_root=run_a_staging,
+        staging_root=staging_root_a,
         run_identity_path=run_a_identity,
         result=args.result,
         reason_code=args.reason_code,
     )
-    export_bundle_atomic(run_a_staging, evidence_root / "run-a" / args.run_a_id)
+    export_bundle_atomic(staging_root_a, run_a_export)
     _build_diagnostic_bundle(
         repo_root=args.repo_root,
         run_id=args.run_b_id,
-        staging_root=run_b_staging,
+        staging_root=staging_root_b,
         run_identity_path=run_b_identity,
         result=args.result,
         reason_code=args.reason_code,
     )
-    export_bundle_atomic(run_b_staging, evidence_root / "run-b" / args.run_b_id)
+    export_bundle_atomic(staging_root_b, run_b_export)
 
-    certificate = verify_certificate(
-        evidence_root / "run-a" / args.run_a_id,
-        evidence_root / "run-b" / args.run_b_id,
-    )
+    certificate = verify_certificate(run_a_export, run_b_export)
     certificate_path = evidence_root / "certificate" / "milestone3-certificate.json"
     certificate_path.parent.mkdir(parents=True, exist_ok=True)
     import json as _json
@@ -147,7 +157,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     certificate_path.chmod(0o600)
     print(
-        f"wrote {run_a_staging}, {run_b_staging}, {certificate_path}; "
+        f"wrote {run_a_export}, {run_b_export}, {certificate_path}; "
         f"verified={certificate['verified']} failures={len(certificate['failures'])}"
     )
     return 0 if certificate["verified"] else 3
