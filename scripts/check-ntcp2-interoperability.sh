@@ -156,6 +156,30 @@ if ! grep -Fq 'test_plan055.py' "$root/AGENTS.md"; then
   exit 1
 fi
 
+# Plan 056: two-bundle Milestone 3 certificate verifier and its test
+# matrix must be present.
+if ! test -f "$root/tests/integration/ntcp2/harness/verify_milestone3_certificate.py"; then
+  echo "Plan 056 certificate verifier is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'CERTIFICATE_SCHEMA = "i2pr-milestone3-certificate-v1"' \
+    "$root/tests/integration/ntcp2/harness/verify_milestone3_certificate.py"; then
+  echo "Plan 056 certificate verifier schema is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan056.py"; then
+  echo "Plan 056 certificate verification test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'CertificatePositiveTests' "$root/tests/integration/ntcp2/harness/test_plan056.py"; then
+  echo "Plan 056 certificate verification tests do not include positive case" >&2
+  exit 1
+fi
+if ! grep -Fq 'CertificateNegativeTests' "$root/tests/integration/ntcp2/harness/test_plan056.py"; then
+  echo "Plan 056 certificate verification tests do not include negative case" >&2
+  exit 1
+fi
+
 python3 "$root/scripts/interop/validate-evidence.py"
 python3 "$root/scripts/interop/validate-scenarios.py"
 
