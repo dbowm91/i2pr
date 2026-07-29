@@ -34,6 +34,9 @@ if __package__ in {None, ""}:
     from harness.launcher_renderer import RenderError, render_and_validate  # type: ignore
     from harness.launcher_protocol import LauncherScenarioError, STATUS_REASONS  # type: ignore
     from harness.metadata import CacheMetadata  # type: ignore
+    from harness.observation import OBSERVATION_SCHEMA, build_level, finalize_observation  # type: ignore
+    from harness.observation_helpers import LogCursor  # type: ignore
+    from harness.observation_catalog import load_catalog  # type: ignore
     from harness.reference_trigger import select_trigger  # type: ignore
     from harness.router_info import RouterInfoPathError, strict_validate_router_info  # type: ignore
     from harness.topology import EndpointDescription, IsolationError  # type: ignore
@@ -61,6 +64,9 @@ else:
     from .launcher_renderer import RenderError, render_and_validate
     from .launcher_protocol import LauncherScenarioError, STATUS_REASONS
     from .metadata import CacheMetadata
+    from .observation import OBSERVATION_SCHEMA, build_level, finalize_observation
+    from .observation_helpers import LogCursor
+    from .observation_catalog import load_catalog
     from .reference_trigger import select_trigger
     from .router_info import RouterInfoPathError, strict_validate_router_info
     from .topology import EndpointDescription, IsolationError
@@ -141,6 +147,16 @@ def _run_id() -> str:
 
 
 ALLOWED_DIAGNOSTICS_MODES = frozenset({"off", "sanitized", "raw-local"})
+
+
+_observation_catalog: dict[str, object] = {}
+
+
+def _load_observation_catalog() -> dict[str, object]:
+    try:
+        return load_catalog()
+    except (OSError, ValueError):
+        return {}
 
 
 def _diagnostics_mode() -> str:
@@ -335,6 +351,8 @@ def _validate_router_info_for_direction(
 def run(args: argparse.Namespace) -> int:
     repo_root = _repo_root()
     direction = load_mixed_scenario(repo_root, args.scenario)
+    global _observation_catalog
+    _observation_catalog = _load_observation_catalog()
     pipeline_context = None
     if getattr(args, "evidence_profile", None):
         if args.evidence_profile != PIPELINE_PROFILE:
@@ -505,8 +523,14 @@ def run(args: argparse.Namespace) -> int:
             if terminal["result"] != "passed":
                 raise MixedRunError(_terminal_reason(terminal, "i2pr-initiator-handshake-failed"))
             observations["i2pr"] = "authenticated"
-            ref_observation = ref_adapter.authenticated_observation()
-            observations[direction.reference] = ref_observation
+            ref_observation = ref_adapter.collect_observation(
+                role="responder",
+                run_id=run_dir.name,
+                correlation={"delivery_status_message_id": "mixed-router", "bounded_test_nonce": run_dir.name},
+                log_cursor=LogCursor(run_id=run_dir.name, log_path=run_dir / "ref" / "raw" / "i2pd.log" if reference == "i2pd" else run_dir / "ref" / "raw" / "java-i2p.log"),
+                catalog=_observation_catalog,
+            )
+            observations[direction.reference] = ref_observation.get("observation_sha256", "")
             trigger_result = trigger.send(
                 direction.i2pr_is_initiator, ref_endpoint, run_dir, placement=ref_placement,
             )
@@ -604,8 +628,14 @@ def run(args: argparse.Namespace) -> int:
             if terminal["result"] != "passed":
                 raise MixedRunError(_terminal_reason(terminal, "i2pr-responder-handshake-failed"))
             observations["i2pr"] = "authenticated"
-            ref_observation = ref_adapter.authenticated_observation()
-            observations[direction.reference] = ref_observation
+            ref_observation = ref_adapter.collect_observation(
+                role="initiator",
+                run_id=run_dir.name,
+                correlation={"delivery_status_message_id": "mixed-router", "bounded_test_nonce": run_dir.name},
+                log_cursor=LogCursor(run_id=run_dir.name, log_path=run_dir / "ref" / "raw" / "i2pd.log" if reference == "i2pd" else run_dir / "ref" / "raw" / "java-i2p.log"),
+                catalog=_observation_catalog,
+            )
+            observations[direction.reference] = ref_observation.get("observation_sha256", "")
             oracle_state = oracle.observe_directional(
                 role="responder" if not direction.i2pr_is_initiator else "initiator",
                 ref_endpoint=ref_endpoint,
@@ -732,6 +762,10 @@ def run(args: argparse.Namespace) -> int:
                 pass
         if pipeline_context is not None:
             try:
+                reference_observation = locals().get("ref_observation")
+                i2pr_observation = None
+                if isinstance(reference_observation, dict):
+                    i2pr_observation = _i2pr_synthetic_observation(context=pipeline_context, result=result, initiator=direction.initiator)
                 write_direction_artifacts(
                     pipeline_context,
                     direction.execution_id,
@@ -741,6 +775,8 @@ def run(args: argparse.Namespace) -> int:
                     reason_code=reason or "not-started",
                     cleanup_result=cleanup,
                     terminal=locals().get("terminal"),
+                    i2pr_observation=i2pr_observation,
+                    reference_observation=reference_observation if isinstance(reference_observation, dict) else None,
                 )
             except (OSError, PipelineError, ValueError):
                 result = "failed_cleanup"
@@ -768,16 +804,25 @@ def _serialize_trigger(result: object) -> dict[str, object]:
 
 def _evaluate_plan052_predicate(
     terminal: dict[str, object],
-    ref_observation: str,
+    ref_observation: dict[str, object] | str,
     oracle_state: dict[str, str],
 ) -> tuple[str, str]:
     if str(terminal.get("result", "")) != "passed":
         return "rejected", _terminal_reason(terminal, "i2pr-terminal-not-passed")
-    if ref_observation != "authenticated":
+    if not isinstance(ref_observation, dict):
         return "rejected", "reference-receiver-marker-not-source-locked"
-    if oracle_state.get("sender_observed") != "observed" and oracle_state.get("receiver_observed") != "observed":
+    if ref_observation.get("schema") != OBSERVATION_SCHEMA:
         return "rejected", "reference-receiver-marker-not-source-locked"
-    return "rejected", "reference-receiver-marker-not-source-locked"
+    levels = ref_observation.get("levels", {})
+    if not isinstance(levels, dict):
+        return "rejected", "reference-receiver-marker-not-source-locked"
+    if levels.get("ntcp2_authenticated", {}).get("state") != "observed":
+        return "rejected", "reference-handshake-marker-not-observed"
+    if levels.get("frame_authenticated_and_decrypted", {}).get("state") != "observed":
+        return "rejected", "reference-receiver-marker-not-source-locked"
+    if levels.get("i2np_message_decoded", {}).get("state") != "observed":
+        return "rejected", "reference-i2np-marker-not-source-locked"
+    return "passed", "mixed-router-direction-authenticated"
 
 
 def _terminal_reason(terminal: dict[str, object], fallback: str) -> str:
@@ -789,11 +834,33 @@ def _terminal_reason(terminal: dict[str, object], fallback: str) -> str:
     return reason
 
 
+def _i2pr_synthetic_observation(*, context, result: str, initiator: str) -> dict[str, Any]:
+    """Build a minimal i2pr-side observation-v2 record from a pipeline context."""
+
+    from plan052_pipeline import _i2pr_synthetic_observation_levels
+    return {
+        "schema": OBSERVATION_SCHEMA,
+        "schema_version": 2,
+        "side": "i2pr",
+        "levels": _i2pr_synthetic_observation_levels(result=result, initiator=initiator),
+        "run_id": context.run_id,
+        "run_identity_sha256": context.identity["run_identity_sha256"],
+    }
+
+
+def _ref_observation_authenticated(ref_observation: dict[str, object] | str) -> bool:
+    if isinstance(ref_observation, str):
+        return ref_observation == "authenticated"
+    if not isinstance(ref_observation, dict):
+        return False
+    return ref_observation.get("levels", {}).get("ntcp2_authenticated", {}).get("state") == "observed"
+
+
 def _evaluate_pass_predicate(
     *,
     direction: MixedDirection,
     terminal: dict[str, object],
-    ref_observation: str,
+    ref_observation: dict[str, object] | str,
     oracle_state: dict[str, str],
 ) -> tuple[str, str]:
     """Plan 045 D7: the typed pass predicate requires every phase to succeed.
@@ -807,7 +874,7 @@ def _evaluate_pass_predicate(
 
     if str(terminal.get("result", "")) != "passed":
         return "rejected", "i2pr-terminal-not-passed"
-    if ref_observation != "authenticated":
+    if not _ref_observation_authenticated(ref_observation):
         return "rejected", "reference-observation-missing"
     if direction.i2pr_is_initiator:
         if oracle_state.get("sender_observed") != "observed":

@@ -344,10 +344,29 @@ def _levels(*, side: str, authenticated: bool, emitted: bool, decoded: bool, mar
     return levels
 
 
-def _observation(context: RunContext, direction: str, reference: str, result: str, initiator: str) -> dict[str, Any]:
+def _i2pr_synthetic_observation_levels(*, result: str, initiator: str) -> dict[str, Any]:
     authenticated = result == "passed"
     i2pr_sender = initiator == "i2pr"
-    payload = {
+    return _levels(
+        side="i2pr",
+        authenticated=authenticated,
+        emitted=authenticated and i2pr_sender,
+        decoded=authenticated and not i2pr_sender,
+        marker_missing=False,
+    )
+
+
+def _build_observation(
+    context: RunContext,
+    direction: str,
+    reference: str,
+    result: str,
+    initiator: str,
+    *,
+    i2pr_observation: dict[str, Any] | None = None,
+    reference_observation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "schema": OBSERVATION_SCHEMA,
         "schema_version": OBSERVATION_SCHEMA_VERSION,
         "run_id": context.run_id,
@@ -356,18 +375,54 @@ def _observation(context: RunContext, direction: str, reference: str, result: st
         "run_identity_sha256": context.identity["run_identity_sha256"],
         "scenario_id": direction,
         "sides": {
-            "i2pr": {"schema": OBSERVATION_SCHEMA, "schema_version": OBSERVATION_SCHEMA_VERSION, "side": "i2pr", "levels": _levels(side="i2pr", authenticated=authenticated, emitted=authenticated and i2pr_sender, decoded=authenticated and not i2pr_sender, marker_missing=False)},
-            reference: {"schema": OBSERVATION_SCHEMA, "schema_version": OBSERVATION_SCHEMA_VERSION, "side": reference, "levels": _levels(side=reference, authenticated=authenticated, emitted=authenticated and not i2pr_sender, decoded=False, marker_missing=not authenticated)},
+            "i2pr": i2pr_observation
+            or {
+                "schema": OBSERVATION_SCHEMA,
+                "schema_version": OBSERVATION_SCHEMA_VERSION,
+                "side": "i2pr",
+                "levels": _i2pr_synthetic_observation_levels(result=result, initiator=initiator),
+            },
+            reference: reference_observation
+            or {
+                "schema": OBSERVATION_SCHEMA,
+                "schema_version": OBSERVATION_SCHEMA_VERSION,
+                "side": reference,
+                "levels": _levels(
+                    side=reference,
+                    authenticated=result == "passed",
+                    emitted=result == "passed" and initiator != "i2pr",
+                    decoded=False,
+                    marker_missing=result != "passed",
+                ),
+            },
         },
         "observation_sha256": "",
     }
     for side, value in payload["sides"].items():
         finalize_observation(side, value)
-    payload["observation_sha256"] = _sha256(json.dumps({**payload, "observation_sha256": ""}, sort_keys=True, separators=(",", ":")).encode())
+    payload["observation_sha256"] = _sha256(
+        json.dumps({**payload, "observation_sha256": ""}, sort_keys=True, separators=(",", ":")).encode()
+    )
     return payload
 
 
-def write_direction_artifacts(context: RunContext, direction: str, *, reference: str, initiator: str, result: str, reason_code: str, cleanup_result: str = "clean", terminal: dict[str, Any] | None = None) -> dict[str, str]:
+def _observation(context: RunContext, direction: str, reference: str, result: str, initiator: str) -> dict[str, Any]:
+    return _build_observation(context, direction, reference, result, initiator)
+
+
+def write_direction_artifacts(
+    context: RunContext,
+    direction: str,
+    *,
+    reference: str,
+    initiator: str,
+    result: str,
+    reason_code: str,
+    cleanup_result: str = "clean",
+    terminal: dict[str, Any] | None = None,
+    i2pr_observation: dict[str, Any] | None = None,
+    reference_observation: dict[str, Any] | None = None,
+) -> dict[str, str]:
     context.assert_frozen()
     if direction not in PRIMARY_DIRECTIONS or reference not in {"java_i2p", "i2pd"}:
         raise PipelineError("direction-catalog-invalid")
@@ -380,7 +435,15 @@ def write_direction_artifacts(context: RunContext, direction: str, *, reference:
         "launcher_binary_sha256": context.identity["launcher_binary_sha256"],
         "run_identity_sha256": context.identity["run_identity_sha256"],
     }
-    observation = _observation(context, direction, reference, result, initiator)
+    observation = _build_observation(
+        context,
+        direction,
+        reference,
+        result,
+        initiator,
+        i2pr_observation=i2pr_observation,
+        reference_observation=reference_observation,
+    )
     trigger = {
         **binding,
         "schema": TRIGGER_SCHEMA,
