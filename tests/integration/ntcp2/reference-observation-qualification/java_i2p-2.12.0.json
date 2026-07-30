@@ -1,0 +1,71 @@
+{
+  "schema": "i2pr-reference-observation-qualification-v1",
+  "schema_version": 1,
+  "reference": "java_i2p",
+  "reference_version": "2.12.0",
+  "reference_revision": "2800040deee9bb376567b671ef2e9c34cf3e30b6",
+  "qualification_status": "blocked-runtime-demonstration-requires-external-lane",
+  "qualification_blocker": "blocked_java_support_topology_rejected",
+  "qualification_lane_required": "Plan 046 rootless sealed-namespace lane OR Plan 048/049 Multipass recovery lane",
+  "qualification_blocker_note": "This host is the Plan 046 apparmor_restrict_on negative baseline; the Java receiver observations cannot be exercised on this host. The Plan 058 ADR 0021 rejection means the Java support topology is forbidden under the current four-direction contract; the Java reference-initiated direction remains a typed blocker. The qualification receipt records the catalog metadata only. A future Plan 060 candidate may not consume this receipt as proof of qualification; the receipt is a typed absence until the Plan 059 runtime-control evidence is produced in the authorized external lane AND a future ADR accepts the Java support topology (or a different revision exposes a transport-only direct seam).",
+  "qualifications": [
+    {
+      "semantic_level": "ntcp2_authenticated",
+      "source_path": "router/java/src/net/i2p/router/transport/ntcp/NTCP2Transport.java",
+      "symbol": "NTCP2Transport.connectionEstablished",
+      "observation_kind": "structured-log",
+      "exact_marker_or_counter": "NTCP2 connection established",
+      "source_excerpt_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "runtime_control_run_id": "",
+      "positive_count": 0,
+      "negative_control_count": 0,
+      "sanitization_rule": "strip-ipv4-endpoint-prefix",
+      "qualified": false
+    },
+    {
+      "semantic_level": "frame_authenticated_and_decrypted",
+      "source_path": "router/java/src/net/i2p/router/transport/ntcp/NTCP2Connection.java",
+      "symbol": "NTCP2Connection.receive",
+      "observation_kind": "source-derived-log-marker",
+      "exact_marker_or_counter": "NTCP2 data frame authenticated and decrypted",
+      "source_excerpt_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "runtime_control_run_id": "",
+      "positive_count": 0,
+      "negative_control_count": 0,
+      "sanitization_rule": "strip-ipv4-endpoint-prefix",
+      "qualified": false
+    },
+    {
+      "semantic_level": "i2np_message_decoded",
+      "source_path": "router/java/src/net/i2p/router/transport/ntcp/NTCP2Reader.java",
+      "symbol": "NTCP2Reader.messageReceived",
+      "observation_kind": "source-derived-log-marker",
+      "exact_marker_or_counter": "NTCP2 I2NP message decoded",
+      "source_excerpt_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "runtime_control_run_id": "",
+      "positive_count": 0,
+      "negative_control_count": 0,
+      "sanitization_rule": "strip-ipv4-endpoint-prefix",
+      "qualified": false
+    }
+  ],
+  "provenance": {
+    "catalog_path": "tests/integration/ntcp2/reference-observation-catalog.toml",
+    "catalog_schema": "i2pr-reference-observation-catalog-v1",
+    "catalog_revision": 1
+  },
+  "adr_dependency": {
+    "adr_path": "docs/adr/0021-minimal-java-support-topology.md",
+    "adr_decision": "Rejected (Plan 058 record and candidate integrity closure pass)",
+    "implication": "java-to-i2pr-ipv4 direction remains a typed blocker; the runtime receiver observations cannot be qualified under the current four-direction contract"
+  },
+  "required_external_controls": [
+    "valid decrypt+decode positive (handshake + data frame + I2NP decode observed)",
+    "handshake-only negative (no data frame observed)",
+    "malformed-frame negative (AEAD failure observed)",
+    "valid frame carrying invalid I2NP negative (decrypt observed, decode not)",
+    "stale pre-run log marker ignored by cursor",
+    "wrong correlation nonce/message ID does not satisfy the run",
+    "duplicate unrelated messages do not satisfy the correlation"
+  ]
+}

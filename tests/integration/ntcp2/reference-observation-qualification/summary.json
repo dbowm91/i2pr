@@ -1,0 +1,37 @@
+{
+  "schema": "i2pr-reference-observation-qualification-summary-v1",
+  "schema_version": 1,
+  "summary_status": "blocked",
+  "plan": "059",
+  "qualification_receipts": [
+    {
+      "reference": "i2pd",
+      "reference_version": "2.60.0",
+      "reference_revision": "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e",
+      "path": "tests/integration/ntcp2/reference-observation-qualification/i2pd-2.60.0.json",
+      "blocker": "blocked_unprivileged_user_namespace",
+      "qualified_markers": 0,
+      "unqualified_markers": 3
+    },
+    {
+      "reference": "java_i2p",
+      "reference_version": "2.12.0",
+      "reference_revision": "2800040deee9bb376567b671ef2e9c34cf3e30b6",
+      "path": "tests/integration/ntcp2/reference-observation-qualification/java_i2p-2.12.0.json",
+      "blocker": "blocked_java_support_topology_rejected",
+      "qualified_markers": 0,
+      "unqualified_markers": 3
+    }
+  ],
+  "negative_controls_required": [
+    "valid decrypt+decode positive",
+    "handshake-only negative",
+    "malformed-frame negative",
+    "valid frame carrying invalid I2NP",
+    "stale cursor rejection",
+    "correlation mismatch rejection",
+    "unqualified marker rejection"
+  ],
+  "negative_controls_status": "blocked-external-lane-required",
+  "close_blocker": "All observation markers remain unqualified; the Plan 060 candidate cannot claim receiver-observation qualification under this receipt."
+}
