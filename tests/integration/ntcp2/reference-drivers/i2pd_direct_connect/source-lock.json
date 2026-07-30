@@ -1,0 +1,63 @@
+{
+  "$schema": "i2pr-i2pd-helper-source-lock-v1",
+  "schema_version": 1,
+  "helper_kind": "i2pd-direct-helper",
+  "schema_marker": "i2pr-reference-trigger-v3",
+  "reference": {
+    "name": "i2pd",
+    "version": "2.60.0",
+    "revision": "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e",
+    "source_repository": "https://github.com/PurpleI2P/i2pd.git",
+    "source_revision_locked": true,
+    "installed_tree_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "build_contract": {
+    "compiler": "g++-13",
+    "cxx_standard": 17,
+    "cmake_minimum": "3.20",
+    "required_boost_components": ["system", "thread", "filesystem"],
+    "required_openssl": true,
+    "required_threads": true
+  },
+  "linked_libraries": {
+    "boost_system_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
+    "boost_filesystem_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
+    "boost_thread_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
+    "openssl_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "helper": {
+    "source_path": "tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/i2pd_direct_connect.cpp",
+    "cmake_path": "tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/CMakeLists.txt",
+    "source_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
+    "binary_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "call_graph": {
+    "entry_path": "i2pd::transports::Transports::SendMessage",
+    "transports_header": "libi2pd/Transports.h",
+    "transports_implementation": "libi2pd/Transports.cpp",
+    "ntcp2_server_connect": "libi2pd/NTCP2.cpp:Connect",
+    "handshake_marker": "NTCP2: SessionConfirmed sent",
+    "source_inspection_record": "tests/integration/ntcp2/reference-trigger-contracts.md"
+  },
+  "constraints": [
+    "no cryptography or handshake state mutation",
+    "no SSU2 enablement",
+    "exactly one outbound dial per invocation",
+    "bounded monotonic timeout (default 15 seconds, max 600)",
+    "no retries, no sleeps, no DNS, no public network egress",
+    "no streaming destination, no tunnel pool, no client destination",
+    "disposable data directory is mode 0700 and never inherited",
+    "shutdown is mandatory before exit",
+    "nonzero exit code on every rejected or blocked outcome"
+  ],
+  "verification_required": [
+    "valid source-lock record",
+    "helper digest binding",
+    "correct target positive fixture",
+    "wrong RouterInfo rejection",
+    "wrong endpoint rejection",
+    "no-listener timeout",
+    "duplicate attempt rejection",
+    "cleanup failure override"
+  ]
+}
