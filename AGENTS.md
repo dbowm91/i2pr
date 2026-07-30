@@ -802,3 +802,136 @@ bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-rootless-interop-boundary.sh
 bash scripts/check-multipass-interop-boundary.sh
 ```
+
+## Plan 060 fresh-candidate and two-run Milestone 3 certificate closure pass
+
+Plan 060 is the execution-only pass that cuts one fresh candidate
+after Plan 058 and Plan 059 close, selects exactly one execution
+lane (direct-host or guest), runs the four primary IPv4 mixed-router
+directions twice on independent mutable state, and produces a
+verified Milestone 3 certificate over the two sanitized bundles.
+
+The plan cannot start under the current four-direction contract
+until either a future pinned Java revision is adopted or the
+closure contract is revised through a new ADR (because ADR 0021 is
+Rejected by Plan 058). The host in the Plan 046
+`apparmor_restrict_on` negative baseline cannot exercise the Plan
+046 sealed-namespace lane; the Plan 048/049 Multipass recovery
+lane is the canonical external path but cannot complete on this
+constrained host (per Plan 051). Plan 060 therefore closes on
+this host with the typed environment blocker
+`blocked_execution_lane_unavailable`; the candidate is
+`declared-not-executable` on this host.
+
+The plan delivered:
+
+- `tests/integration/ntcp2/harness/plan060.py` — the Plan 060
+  helper module. Exports `plan060_typed_blocker() ->
+  "blocked_execution_lane_unavailable"`, `plan060_close_status()
+  -> "declared-not-executable"`, `execution_lane_lock(...)` for
+  the Plan 058 two-lane contract, `candidate_record_digests()`
+  for the bounded digest table, `freeze_readiness_report()` for
+  the freeze-readiness checklist,
+  `assert_plan060_freeze_invariants()` for the typed blocker
+  enforcement, and `plan060_two_bundle_independence(...)` for the
+  cross-run independence rules.
+- `tests/integration/ntcp2/harness/test_plan060.py` — the Plan 060
+  test matrix (35 cases across the Plan 060 surface).
+- `scripts/check-ntcp2-interoperability.sh` extended to enforce
+  the Plan 060 artifacts, the Plan 060 test matrix coverage, and
+  the candidate/closure marker invariants.
+- `plans/060-candidate.md` — the Plan 060 candidate record. Status
+  `declared-not-executable`. Implements the executed source
+  commit, the implementation floor, the bounded digest table,
+  the lane lock, the typed blockers, and the schema marker.
+- `plans/060-closure.md` — the Plan 060 closure record with the
+  typed blocker and the close-status.
+
+### Plan 060 execution lanes
+
+The Plan 060 plan-of-record inherits the Plan 058 two-lane
+contract: Lane A (direct-host, requires `rootless_sandbox_available`
+on the execution host) and Lane B (guest, the outer host may
+continue to report `blocked_unprivileged_user_namespace` but the
+Multipass recovery guest must report `rootless_sandbox_available`).
+Exactly one lane is selected per candidate; a certificate may not
+combine Run A from one lane with Run B from another.
+
+On this host the lane lock is `lane_kind = guest`,
+`outer_host_baseline = blocked_unprivileged_user_namespace`,
+`guest_probe_outcome = blocked_execution_lane_unavailable`. The
+Plan 046 direct-host probe and the Plan 048/049 Multipass guest
+probe both return typed blockers on this host. Plan 060 therefore
+closes with the typed environment blocker
+`blocked_execution_lane_unavailable` and refuses to advance to a
+two-run certificate.
+
+### Plan 060 freeze-readiness invariants
+
+`plan060.freeze_readiness_report()` produces the bounded checklist:
+
+```text
+plan058_candidate_record_validator
+plan058_test_matrix
+plan056_candidate_retired
+plan057_superseded
+adr_0021_rejected
+plan059_helper_source_lock
+plan059_cpp_helper
+plan059_python_driver
+plan059_cmake_contract
+plan059_i2pd_qualification_receipt
+plan059_java_qualification_receipt
+plan059_qualification_summary
+plan059_test_matrix
+plan059_canonical_pipeline_live_mode
+plan059_typed_blocker_marker
+plan060_test_matrix
+plan060_helper_module
+plan060_typed_blocker_marker
+plan060_close_status_marker
+execution_lane_available
+```
+
+Every item must be `True` for the candidate to advance. On this
+host the `execution_lane_available` row is `False` and the
+checklist reports `blocked_execution_lane_unavailable` plus any
+missing prerequisites. `assert_plan060_freeze_invariants` raises
+`Plan060Error` listing every failing invariant.
+
+### Plan 060 supersession of Plan 057
+
+Plan 057 is no longer active execution authority. Plan 058
+superseded it; Plan 060 inherits the supersession. The Plan 057
+document is preserved verbatim under `## Original plan
+(preserved verbatim)` and every original section is suffixed
+`(original)`.
+
+| Plan 057 responsibility | New owner |
+| --- | --- |
+| record/candidate correction | Plan 058 (closed) |
+| i2pd direct helper | Plan 059 (closed) |
+| Java topology and ADR decision | Plan 059 (closed; ADR 0021 Rejected) |
+| receiver marker qualification | Plan 059 (closed; receipts carry `qualified = false`) |
+| new candidate freeze | Plan 060 (closed with `declared-not-executable` on this host) |
+| two external runs and certificate | Plan 060 (blocked by `blocked_execution_lane_unavailable`) |
+
+Until the Plan 046 rootless sealed-namespace lane or the Plan
+048/049 Multipass recovery lane becomes runnable on a host with
+the resources Plan 051 required, Milestone 3 stays open and NTCP2
+stays experimental and non-advertised. A future pinned Java
+revision that exposes a transport-only direct seam may trigger an
+ADR re-issue that supersedes the ADR 0021 rejection and unblocks
+the `java-to-i2pr-ipv4` direction.
+
+### Plan 060 focused checks
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan060.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan059.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan058.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_bundle.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+```

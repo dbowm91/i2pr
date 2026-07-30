@@ -1,6 +1,6 @@
 # Aggregate Milestone 3 closure: NTCP2 and transport-neutral link management
 
-Date: 2026-07-15 (last updated by Plan 059)
+Date: 2026-07-15 (last updated by Plan 060)
 
 Status: **blocked; implementation phases complete for their bounded local
 scope, milestone acceptance criteria not met**. Plan 056 closed with a
@@ -15,9 +15,16 @@ candidate + two-run certificate). Plan 059 closed with the typed
 blocker `blocked_java_support_topology_rejected` and committed the
 i2pd direct helper, the per-reference observation qualification
 receipts, and the canonical pipeline live-mode wiring. Plan 060
-owns the canonical two-run external evidence pass required to
-advance Milestone 3; until Plan 060 produces two passing bundles
-from a fresh implementation-floor candidate (and the four-direction
+closed on this host with the typed blocker
+`blocked_execution_lane_unavailable`; the Plan 060 candidate is
+`declared-not-executable` on this host because the Plan 046 rootless
+sealed-namespace probe returns
+`blocked_unprivileged_user_namespace`, the Plan 048/049 Multipass
+recovery lane cannot complete on this constrained host (per
+Plan 051), and ADR 0021 remains Rejected. Plan 060 owns the
+canonical two-run external evidence pass required to advance
+Milestone 3; until Plan 060 produces two passing bundles from a
+fresh implementation-floor candidate (and the four-direction
 contract is restored through a new ADR or future pinned Java
 revision), the milestone acceptance criteria remain unmet.
 

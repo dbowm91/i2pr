@@ -57,10 +57,10 @@ advertisement requirements in `specs/CONFORMANCE.md`.
 | I2NP envelope and header variants | Experimental structural subset; not advertised | 1, 3–6 | `specs/protocols/02-i2np.md`, pinned 0.9.69 source in `specs/SOURCES.md` | Locally authored standard/short vectors, truncation, size, checksum, and trailing-byte tests; hashed fixture manifest | None |
 | I2NP type registry and selected body codecs | Experimental structural subset; NetDB body semantics deferred | 1, 4 | `specs/protocols/02-i2np.md`, `crates/i2pr-proto/src/i2np/mod.rs` | Fixed and malformed local vectors for DatabaseLookup, DatabaseSearchReply, DeliveryStatus, DatabaseStore framing, and fixed tunnel framing | None |
 | I2NP tunnel, garlic, data, and later record semantics | Deferred or framing-only | 1, 5–6 | `specs/protocols/02-i2np.md`, `specs/protocols/05-tunnels.md`, `specs/protocols/06-garlic-ecies-leasesets.md` | Bounded `Deferred`/`Opaque` retention and shape checks only; no crypto or state-machine vectors | None |
-| NTCP2 crypto/transcript foundation | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0011, `plans/036-closure.md`, `plans/037-closure.md` | Independent deterministic primitive/transcript vectors and corrective review; no router interoperability run | `tests/integration/ntcp2/manifest.toml` pinned but execution blocked; the Plan 046 rootless variant reports `blocked_unprivileged_user_namespace` on the host recorded in `plans/046-closure.md` |
-| NTCP2 handshake codecs and state machines | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0012, `plans/036-closure.md`, `plans/037-closure.md` | Fixed/malformed/bounded state and policy tests plus local corrective campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; see `tests/integration/ntcp2/evidence/README.md`. Plan 046 rootless lane is closed with `blocked_unprivileged_user_namespace`; see `plans/046-closure.md` and `specs/CONFORMANCE.md` |
-| NTCP2 authenticated data frames and payload blocks | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0013, `plans/036-closure.md`, `plans/037-closure.md` | Deterministic frame/block vectors, corrected repeated-block/termination ordering tests, partial-I/O cleanup, and local campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`) |
-| NTCP2 runtime link manager, addresses, and controlled TCP lifecycle | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0014, `plans/036-closure.md`, `plans/037-closure.md` | Bounded address/admission/replay/backoff/duplicate/RAII cleanup tests plus loopback lifecycle and preflight; runtime-owned wire adapter implemented and locally validated, mixed-router evidence pending | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`) |
+| NTCP2 crypto/transcript foundation | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0011, `plans/036-closure.md`, `plans/037-closure.md` | Independent deterministic primitive/transcript vectors and corrective review; no router interoperability run | `tests/integration/ntcp2/manifest.toml` pinned but execution blocked; the Plan 046 rootless variant reports `blocked_unprivileged_user_namespace` on the host recorded in `plans/046-closure.md`; the Plan 060 fresh-candidate pass is `declared-not-executable` on this host, see `plans/060-closure.md` |
+| NTCP2 handshake codecs and state machines | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0012, `plans/036-closure.md`, `plans/037-closure.md` | Fixed/malformed/bounded state and policy tests plus local corrective campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; see `tests/integration/ntcp2/evidence/README.md`. Plan 046 rootless lane is closed with `blocked_unprivileged_user_namespace`; Plan 060 fresh-candidate pass is `declared-not-executable` on this host with the typed blocker `blocked_execution_lane_unavailable`; see `plans/060-closure.md` and `specs/CONFORMANCE.md` |
+| NTCP2 authenticated data frames and payload blocks | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0013, `plans/036-closure.md`, `plans/037-closure.md` | Deterministic frame/block vectors, corrected repeated-block/termination ordering tests, partial-I/O cleanup, and local campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`); Plan 060 fresh-candidate pass is `declared-not-executable` on this host, see `plans/060-closure.md` |
+| NTCP2 runtime link manager, addresses, and controlled TCP lifecycle | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0014, `plans/036-closure.md`, `plans/037-closure.md` | Bounded address/admission/replay/backoff/duplicate/RAII cleanup tests plus loopback lifecycle and preflight; runtime-owned wire adapter implemented and locally validated, mixed-router evidence pending | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`); Plan 060 fresh-candidate pass is `declared-not-executable` on this host, see `plans/060-closure.md` |
 | Reseed and RouterInfo publication | Not implemented | 4 | `specs/protocols/04-reseed-netdb.md` | None imported | None |
 | Network tunnels and transit participation | Not implemented | 5 | `specs/protocols/05-tunnels.md` | None imported | None |
 | Classic LeaseSet structural codec | Experimental structural subset; LeaseSet2-family deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Local Lease/LeaseSet vectors and negative tests; no independent router vectors | None |
@@ -107,3 +107,25 @@ canonical cache is `target/interop/cache`. A guest probe, matrix, or exported
 reference control result does not advance any support row. NTCP2 remains
 experimental and non-advertised until sanitized mixed-router conformance
 evidence satisfies `specs/CONFORMANCE.md`.
+
+### Plan 060 fresh-candidate and two-run Milestone 3 certificate closure pass
+
+Plan 060 commits the fresh-candidate and two-run Milestone 3
+certificate closure pass implementation surface and closes on this
+host with the typed blocker `blocked_execution_lane_unavailable`
+(candidate status `declared-not-executable`). The Plan 046
+rootless sealed-namespace probe reports
+`blocked_unprivileged_user_namespace` on this host; the Plan
+048/049 Multipass recovery lane is the canonical external path
+but cannot complete on this constrained host (per Plan 051);
+ADR 0021 was Rejected by Plan 058 so the four-direction contract
+cannot close with the pinned Java I2P 2.12.0 revision. The
+implementation surface (`tests/integration/ntcp2/harness/plan060.py`,
+the Plan 060 test matrix, the static boundary checker extension,
+the candidate record `plans/060-candidate.md`, and the closure
+record `plans/060-closure.md`) is mandatory regardless of close
+outcome. NTCP2 remains experimental and non-advertised until a
+future pinned Java revision exposes a transport-only direct seam
+(or ADR 0021 is re-issued) and either the Plan 046 rootless
+sealed-namespace lane or the Plan 048/049 Multipass guest lane
+becomes runnable on a host with the resources Plan 051 required.

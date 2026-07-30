@@ -506,11 +506,65 @@ is forbidden under the current four-direction contract.
 
 The Plan 059 plan-of-record is
 `plans/059-reference-side-implementation-and-live-qualification-closure-pass.md`;
-the closure record is `plans/059-status.md`. The Plan 060
-follow-up is the future fresh-candidate and two-run certificate
-pass; it cannot start under the current four-direction contract
-until either a future pinned Java revision is adopted or the
-closure contract is revised through a new ADR. Until Plan 060
-produces two passing bundles from a fresh implementation-floor
-candidate, NTCP2 stays experimental and non-advertised and
-Milestone 3 stays open.
+the closure record is `plans/059-status.md`.
+
+## Plan 060 fresh-candidate and two-run Milestone 3 certificate closure pass
+
+Plan 060 is the execution-only pass that cuts one fresh candidate
+from the fully implemented and qualified repository, selects
+exactly one execution lane (direct-host or guest), runs the four
+primary IPv4 mixed-router directions twice on independent mutable
+state, and produces a verified Milestone 3 certificate over the
+two sanitized bundles.
+
+On this host the plan closes with the typed blocker
+`blocked_execution_lane_unavailable`. The Plan 046 rootless
+sealed-namespace probe returns `blocked_unprivileged_user_namespace`
+(the host's kernel activates
+`kernel.apparmor_restrict_unprivileged_userns=1`, which confines
+every unprivileged user namespace to a restrictive AppArmor policy
+and prevents `unshare -U -r --map-root-user` from writing
+`/proc/self/uid_map`). The Plan 048/049 Multipass recovery lane is
+the canonical external path but cannot complete on this
+constrained host (per Plan 051; the bridge is wired end-to-end but
+the host's 15 GiB physical RAM plus four reserved qemu guests
+repeatedly destabilize the guest SSH endpoint mid-dispatch, and the
+host's multipassd became unresponsive mid-investigation).
+ADR 0021 was Rejected by Plan 058; the Java support topology is
+forbidden under the current four-direction contract; the
+`java-to-i2pr-ipv4` direction remains a typed blocker for the
+pinned Java I2P 2.12.0 revision.
+
+The Plan 060 candidate is `declared-not-executable` on this host
+(`plans/060-candidate.md`). The Plan 060 implementation surface is
+mandatory regardless of close outcome:
+
+- `tests/integration/ntcp2/harness/plan060.py` — Plan 060 helper
+  module. Exports `plan060_typed_blocker() ->
+  "blocked_execution_lane_unavailable"`, `plan060_close_status()
+  -> "declared-not-executable"`, `execution_lane_lock(...)` for
+  the Plan 058 two-lane contract, `candidate_record_digests()`
+  for the bounded digest table, `freeze_readiness_report()` for
+  the freeze-readiness checklist,
+  `assert_plan060_freeze_invariants()` for the typed blocker
+  enforcement, and `plan060_two_bundle_independence(...)` for the
+  cross-run independence rules.
+- `tests/integration/ntcp2/harness/test_plan060.py` — Plan 060
+  test matrix (35 cases across the Plan 060 surface).
+- `scripts/check-ntcp2-interoperability.sh` extended to enforce
+  the Plan 060 artifacts, the Plan 060 test matrix coverage, and
+  the candidate/closure marker invariants.
+- `plans/060-candidate.md` and `plans/060-closure.md` — the
+  candidate and closure records.
+
+The Plan 060 plan-of-record is
+`plans/060-fresh-candidate-and-two-run-milestone3-certificate-closure-pass.md`;
+the candidate record is `plans/060-candidate.md`; the closure
+record is `plans/060-closure.md`. The aggregate Milestone 3
+closure (`plans/030-milestone-3-closure.md`) is amended by Plan 060
+to record the close outcome. NTCP2 stays experimental and
+non-advertised; Milestone 3 stays open until a future pinned Java
+revision exposes a transport-only direct seam or the closure
+contract is revised through a new ADR, and until either the Plan
+046 rootless sealed-namespace lane or the Plan 048/049 Multipass
+guest lane becomes runnable.

@@ -318,6 +318,68 @@ bash scripts/check-rootless-interop-boundary.sh
 bash scripts/check-multipass-interop-boundary.sh
 ```
 
+## Plan 060 fresh-candidate and two-run Milestone 3 certificate closure pass
+
+Plan 060 is the execution-only pass that cuts one fresh candidate
+after Plan 058 and Plan 059 close, selects exactly one execution
+lane (direct-host or guest), runs the four primary IPv4 mixed-router
+directions twice on independent mutable state, and produces a
+verified Milestone 3 certificate over the two sanitized bundles.
+
+The plan cannot start under the current four-direction contract
+until either a future pinned Java revision is adopted or the
+closure contract is revised through a new ADR (ADR 0021 is
+Rejected by Plan 058). The Plan 046 rootless sealed-namespace
+lane returns `blocked_unprivileged_user_namespace` on this host;
+the Plan 048/049 Multipass recovery lane is the canonical external
+path but cannot complete on this constrained host (per Plan 051).
+Plan 060 therefore closes on this host with the typed environment
+blocker `blocked_execution_lane_unavailable`; the candidate is
+`declared-not-executable`.
+
+The plan delivered:
+
+- `tests/integration/ntcp2/harness/plan060.py` — Plan 060 helper
+  module. Exports `plan060_typed_blocker() ->
+  "blocked_execution_lane_unavailable"`, `plan060_close_status()
+  -> "declared-not-executable"`, `execution_lane_lock(...)` for
+  the Plan 058 two-lane contract, `candidate_record_digests()`
+  for the bounded digest table, `freeze_readiness_report()` for
+  the freeze-readiness checklist,
+  `assert_plan060_freeze_invariants()` for the typed blocker
+  enforcement, and `plan060_two_bundle_independence(...)` for the
+  cross-run independence rules.
+- `tests/integration/ntcp2/harness/test_plan060.py` — Plan 060
+  test matrix (35 cases across the Plan 060 surface).
+- `scripts/check-ntcp2-interoperability.sh` extended to enforce
+  the Plan 060 artifacts, the Plan 060 test matrix coverage, and
+  the candidate/closure marker invariants.
+- `plans/060-candidate.md` — Plan 060 candidate record. Status
+  `declared-not-executable`. Implements the executed source
+  commit, the implementation floor, the bounded digest table,
+  the lane lock, the typed blockers, and the schema marker.
+- `plans/060-closure.md` — Plan 060 closure record with the
+  typed blocker and the close-status.
+
+Use the focused local seam with:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan060.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan059.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan058.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_bundle.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+```
+
+A future pinned Java revision that exposes a transport-only direct
+seam may trigger an ADR re-issue that supersedes the ADR 0021
+rejection and unblocks the `java-to-i2pr-ipv4` direction. Until
+Plan 060 produces two passing bundles from a fresh
+implementation-floor candidate, NTCP2 stays experimental and
+non-advertised and Milestone 3 stays open.
+
 ## Companion skills (load before doing this lane)
 
 ## Plan 044 mixed-runner composition (host-side executor)

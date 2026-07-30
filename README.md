@@ -609,6 +609,77 @@ Plan 060 cannot start under the current four-direction contract.
 The Plan 059 status and validation commands are recorded in
 `plans/059-status.md`.
 
+### Plan 060 fresh-candidate and two-run Milestone 3 certificate closure pass
+
+Plan 060 is the execution-only pass that cuts one fresh candidate
+after Plan 058 and Plan 059 close, selects exactly one execution
+lane (direct-host or guest), runs the four primary IPv4 mixed-router
+directions twice on independent mutable state, and produces a
+verified Milestone 3 certificate over the two sanitized bundles.
+
+On this host the plan closes with the typed blocker
+`blocked_execution_lane_unavailable` and the candidate is
+`declared-not-executable`. The Plan 046 rootless sealed-namespace
+probe returns `blocked_unprivileged_user_namespace` (the host's
+kernel activates `kernel.apparmor_restrict_unprivileged_userns=1`,
+which confines every unprivileged user namespace to a restrictive
+AppArmor policy). The Plan 048/049 Multipass recovery lane is the
+canonical external path but cannot complete on this constrained
+host (per Plan 051: 15 GiB physical RAM, three reserved qemu
+guests, multipassd unresponsive). ADR 0021 remains Rejected by
+Plan 058, so the `java-to-i2pr-ipv4` direction is a typed blocker
+under the four-direction contract; Plan 060 cannot start under
+the current four-direction contract until either a future pinned
+Java revision is adopted or the closure contract is revised
+through a new ADR.
+
+The Plan 060 implementation surface is mandatory regardless of
+the close outcome:
+
+- `tests/integration/ntcp2/harness/plan060.py` — the Plan 060
+  helper module. Exports the typed blocker
+  (`blocked_execution_lane_unavailable`), the close-status
+  classifier (`declared-not-executable`), the lane-lock helper
+  for the Plan 058 two-lane contract, the candidate-record digest
+  table, the freeze-readiness checklist, the
+  `assert_plan060_freeze_invariants` enforcer, and the
+  cross-bundle independence checker
+  (`plan060_two_bundle_independence`).
+- `tests/integration/ntcp2/harness/test_plan060.py` — the Plan 060
+  test matrix (35 cases across the retired/superseded markers,
+  candidate ordering, candidate digest binding, ADR decision,
+  execution lanes, cross-lane combination, mutable state
+  independence, correlation nonces, live observations, synthetic
+  fallback, helper/topology digests, source commit drift,
+  direction-order independence, bundle mutation, untracked raw
+  diagnostics, the two-bundle positive fixture, the Plan 060
+  typed blocker, freeze readiness, the Plan 060 helper contract,
+  and the Plan 059 artifacts).
+- `scripts/check-ntcp2-interoperability.sh` extended to enforce
+  the Plan 060 artifacts, the Plan 060 test matrix coverage, and
+  the candidate/closure marker invariants
+  (`TYPED_BLOCKER_EXECUTION_LANE_UNAVAILABLE`,
+  `plan060_close_status`, `execution_lane_lock`, `test_plan060.py`
+  class coverage, `AGENTS.md` reference, candidate and closure
+  record presence and the
+  `blocked_execution_lane_unavailable` typed blocker marker).
+- `plans/060-candidate.md` — the Plan 060 candidate record
+  (status `declared-not-executable`). Implements the executed
+  source commit, the implementation floor, the bounded digest
+  table, the lane lock, the typed blockers
+  (`blocked_execution_lane_unavailable`,
+  `blocked_java_support_topology_rejected`), and the schema
+  marker (`i2pr-interop-candidate-v1`).
+- `plans/060-closure.md` — the Plan 060 closure record with the
+  typed blocker, the close-status, the validation commands, and
+  the remaining work.
+
+A future pinned Java revision that exposes a transport-only
+direct seam may trigger an ADR re-issue that supersedes the ADR
+0021 rejection and unblocks the `java-to-i2pr-ipv4` direction.
+Until then, NTCP2 stays experimental and non-advertised and
+Milestone 3 stays open.
+
 ## MVP direction
 
 The feature MVP is expected to include:
@@ -773,6 +844,9 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 058 status](plans/058-status.md)
 - [Plan 059 reference-side implementation and live qualification closure pass](plans/059-reference-side-implementation-and-live-qualification-closure-pass.md)
 - [Plan 059 status](plans/059-status.md)
+- [Plan 060 fresh candidate and two-run Milestone 3 certificate closure pass](plans/060-fresh-candidate-and-two-run-milestone3-certificate-closure-pass.md)
+- [Plan 060 candidate record](plans/060-candidate.md)
+- [Plan 060 closure record](plans/060-closure.md)
 - [Aggregate Milestone 3 closure record](plans/030-milestone-3-closure.md)
 - [Controlled NTCP2 interoperability lane](tests/integration/ntcp2/README.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
