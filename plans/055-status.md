@@ -187,12 +187,33 @@ runs — require the external lanes and are deferred to Plan 056.
 ## Plan 056 follow-on
 
 Plan 056 is closed with a typed host-environment blocker. The
-verifier, the candidate freeze, and the local diagnostic bundles
-are committed under `target/interop/evidence/plan056/`. The
-canonical external evidence run is opened as Plan 057, which owns
-the two-run execution on a host that satisfies the Plan 040 host
-contract. Plan 055 does not advance `specs/support.toml` and does
-not claim NTCP2 advertisement. The i2pd direct helper implementation
-and the Java support topology remain unstarted; both become
-unblocked the moment Plan 057 provisions a Multipass guest with
-permissive AppArmor and at least 16 GiB of host RAM.
+verifier and the candidate freeze are committed; the local
+diagnostic bundles were generated under the ignored
+`target/interop/evidence/plan056/` working directory and are
+intentionally untracked. The only repository-tracked footprint is
+the bounded local-diagnostic receipt at
+`tests/integration/ntcp2/evidence-receipts/plan056-local-diagnostic.json`
+with `artifact_storage = local-untracked`.
+
+Plan 058 retired the Plan 056 candidate, superseded Plan 057, and
+decided ADR 0021 (Rejected). The follow-up split is now:
+
+- `plans/058-plan056-record-and-candidate-integrity-closure-pass.md`
+  — retired the Plan 056 candidate, superseded Plan 057, added
+  the candidate record integrity validator and the two-lane
+  contract, and recorded the closure.
+- `plans/059-reference-side-implementation-and-live-qualification-closure-pass.md`
+  — implements the i2pd direct helper and qualifies receiver
+  observations. Plan 058 rejected ADR 0021, so the
+  `java-to-i2pr-ipv4` direction remains a typed blocker for the
+  pinned Java I2P 2.12.0 revision and Plan 059 must close with
+  the typed blocker `blocked_java_support_topology_rejected`.
+- `plans/060-fresh-candidate-and-two-run-milestone3-certificate-closure-pass.md`
+  — cuts a fresh implementation-floor candidate after Plan 059
+  closes and produces the two-run certificate. Until Plan 060
+  produces two passing bundles from a fresh candidate, NTCP2
+  stays experimental and non-advertised and Milestone 3 stays
+  open.
+
+Plan 055 does not advance `specs/support.toml` and does not claim
+NTCP2 advertisement.

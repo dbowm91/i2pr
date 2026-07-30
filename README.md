@@ -502,6 +502,60 @@ into three new plans:
   stays experimental and non-advertised and Milestone 3 stays
   open.
 
+### Plan 058 record and candidate integrity closure pass
+
+Plan 058 is a documentation, provenance, and execution-contract
+closure pass that retires the Plan 056 candidate, supersedes the
+Plan 057 follow-up plan, decides ADR 0021 (Rejected), and splits
+the previous Plan 057 responsibilities into Plan 059 (reference-side
+implementation) and Plan 060 (fresh candidate + two-run
+certificate). Plan 058 does not implement the i2pd direct helper,
+the Java support topology, or external mixed-router execution.
+
+- The candidate record integrity validator
+  (`tests/integration/ntcp2/harness/candidate_record.py`, schema
+  `i2pr-interop-candidate-v1`) refuses records with multiple
+  authoritative SHAs, retired candidates consumed by execution
+  tooling, candidates frozen before the implementation floor, and
+  `committed` evidence claims that name ignored diagnostics.
+- The Plan 058 test matrix (`test_plan058.py`) covers the positive
+  and 14 negative fixtures, the on-disk
+  candidate/ADR/Plan 057 supersession markers, the locked field
+  set, and the two-lane contract.
+- The static boundary checker
+  (`scripts/check-ntcp2-interoperability.sh`) enforces the
+  candidate record integrity invariants, the supersession markers,
+  and the ADR decision marker.
+- The Plan 058 record and candidate integrity closure pass defines
+  two alternative execution lanes for any future Milestone 3
+  evidence run: Lane A (direct-host, requires
+  `rootless_sandbox_available` on the execution host) and Lane B
+  (guest, the outer host may continue to report
+  `blocked_unprivileged_user_namespace` but the guest must report
+  `rootless_sandbox_available`). Exactly one lane is selected per
+  candidate; a certificate may not combine Run A from one lane
+  with Run B from another.
+- The Plan 056 candidate is marked
+  `retired; never used for an authoritative external run`. The
+  historical SHA `fbf2cdb9ec12d35c7b7422c412e09d6db2d2d0cf` is
+  preserved verbatim as an audit record. The Plan 056 closure
+  record describes the locally generated diagnostic bundles under
+  the ignored `target/interop/evidence/plan056/` directory and
+  names the bounded local-diagnostic receipt at
+  `tests/integration/ntcp2/evidence-receipts/plan056-local-diagnostic.json`
+  with `artifact_storage = local-untracked`. Plan 057 is
+  superseded before execution.
+- ADR 0021
+  (`docs/adr/0021-minimal-java-support-topology.md`) is Rejected.
+  The repository does not implement the Java support topology; the
+  `java-to-i2pr-ipv4` direction remains a typed blocker for the
+  pinned Java I2P 2.12.0 revision; Plan 059 must close with the
+  typed blocker `blocked_java_support_topology_rejected`; Plan 060
+  must not start under the current four-direction contract.
+
+The Plan 058 status and validation commands are recorded in
+`plans/058-status.md`.
+
 ## MVP direction
 
 The feature MVP is expected to include:
