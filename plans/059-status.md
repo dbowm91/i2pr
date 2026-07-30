@@ -43,9 +43,23 @@ and must not silently weaken the Milestone 3 evidence gate.
 
 ## Implementation floor
 
-The implementation floor for Plan 060 is the commit that closes
-this plan. The exact commit digest is recorded in the closure
-section below.
+The implementation floor for Plan 060 is the first commit in this
+Plan 059 closure series — `interop: add source-locked i2pd direct
+trigger helper`. The full Plan 059 closure is recorded across the
+following commits (most recent first):
+
+```text
+ae76595 docs: record Plan 059 live qualification closure
+80cbe30 tests: add Plan 059 full regression matrix
+8b31549 interop: wire live reference records into canonical pipeline
+4696d5c interop: qualify i2pd and Java receiver observations
+359f408 interop: add source-locked i2pd direct trigger helper
+```
+
+The earliest implementation commit is `359f408`; the closure
+record commit is `ae76595`. A future Plan 060 candidate must
+descend from `359f408` (or a successor commit) and may not
+inherit any pre-`359f408` source state.
 
 ## Phase-by-phase inventory of corrections
 
@@ -295,19 +309,22 @@ The Plan 059 closure criteria are met:
 
 ## Implementation commit
 
-Plan 059 closes on the commit that lands the i2pd helper, the
-qualification receipts, the canonical pipeline live-mode wiring,
-the Plan 059 test matrix, and the documentation updates. The
-exact commit digest is the HEAD digest at the time of the
-Plan 059 closure:
+Plan 059 closes on the closure documentation commit that lands
+the i2pd helper, the qualification receipts, the canonical
+pipeline live-mode wiring, the Plan 059 test matrix, and the
+documentation updates. The exact implementation floor commit is:
 
 ```text
-implementation_floor_commit = <HEAD digest recorded at commit time>
+implementation_floor_commit = 359f408ae9d99ed8c2a3c8bb06f6e1e5cb84ef0b
+closure_record_commit      = ae76595
 ```
 
-The implementation floor digest is recorded in the
-`plans/059-status.md` closure commit; a future Plan 060 candidate
-must descend from this digest.
+The implementation floor commit is the earliest commit containing
+the Plan 059 implementation surface; the closure record commit
+records the closure rationale, the validation commands, the
+artifact digests, and the remaining work. A future Plan 060
+candidate must descend from `359f408` (or a successor commit)
+and may not inherit any pre-`359f408` source state.
 
 ## Remaining work
 
