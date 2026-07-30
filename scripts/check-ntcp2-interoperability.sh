@@ -330,6 +330,86 @@ if ! grep -Fq 'helper_digest_sha256' \
   exit 1
 fi
 
+# Plan 060: fresh candidate and two-run Milestone 3 certificate
+# closure pass. The Plan 060 helper module, the Plan 060 test
+# matrix, the typed blocker, and the close-status classifier must be
+# committed and the static boundary checker must refuse to allow a
+# freeze while Plan 058/059 prerequisites are absent.
+if ! test -f "$root/tests/integration/ntcp2/harness/plan060.py"; then
+  echo "Plan 060 helper module is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'TYPED_BLOCKER_EXECUTION_LANE_UNAVAILABLE = "blocked_execution_lane_unavailable"' \
+    "$root/tests/integration/ntcp2/harness/plan060.py"; then
+  echo "Plan 060 typed blocker marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'def plan060_close_status' \
+    "$root/tests/integration/ntcp2/harness/plan060.py"; then
+  echo "Plan 060 close-status classifier is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'def execution_lane_lock' \
+    "$root/tests/integration/ntcp2/harness/plan060.py"; then
+  echo "Plan 060 execution-lane lock helper is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan060.py"; then
+  echo "Plan 060 test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'RetiredAndSupersededMarkerTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan060.py"; then
+  echo "Plan 060 test matrix must include the retired/superseded markers" >&2
+  exit 1
+fi
+if ! grep -Fq 'ExecutionLaneTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan060.py"; then
+  echo "Plan 060 test matrix must include the execution-lane cases" >&2
+  exit 1
+fi
+if ! grep -Fq 'TwoBundlePositiveFixtureTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan060.py"; then
+  echo "Plan 060 test matrix must include the two-bundle positive fixture" >&2
+  exit 1
+fi
+if ! grep -Fq 'FreezeReadinessTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan060.py"; then
+  echo "Plan 060 test matrix must include the freeze-readiness cases" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_plan060.py' "$root/AGENTS.md"; then
+  echo "Plan 060 test matrix is not wired into AGENTS.md" >&2
+  exit 1
+fi
+if ! test -f "$root/plans/060-candidate.md"; then
+  echo "Plan 060 candidate record is missing" >&2
+  exit 1
+fi
+if ! grep -Eq 'declared-not-executable|i2pr-interop-candidate-v1' \
+    "$root/plans/060-candidate.md"; then
+  echo "Plan 060 candidate must declare declared-not-executable status or embed a candidate record" >&2
+  exit 1
+fi
+if ! grep -Fq 'blocked_execution_lane_unavailable' \
+    "$root/plans/060-candidate.md"; then
+  echo "Plan 060 candidate must carry the typed blocker marker" >&2
+  exit 1
+fi
+if ! test -f "$root/plans/060-closure.md"; then
+  echo "Plan 060 closure record is missing" >&2
+  exit 1
+fi
+if ! grep -Eq 'declared-not-executable|blocked_execution_lane_unavailable' \
+    "$root/plans/060-closure.md"; then
+  echo "Plan 060 closure must record the typed blocker and the close-status" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 060' "$root/AGENTS.md"; then
+  echo "AGENTS.md must record the Plan 060 closure section" >&2
+  exit 1
+fi
+
 python3 "$root/scripts/interop/validate-evidence.py"
 python3 "$root/scripts/interop/validate-scenarios.py"
 
