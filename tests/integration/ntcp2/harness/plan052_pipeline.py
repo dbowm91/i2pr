@@ -372,7 +372,13 @@ def _build_observation(
     *,
     i2pr_observation: dict[str, Any] | None = None,
     reference_observation: dict[str, Any] | None = None,
+    live_mode: bool = False,
 ) -> dict[str, Any]:
+    if live_mode and result == "passed":
+        if i2pr_observation is None:
+            raise PipelineError("live-mode-requires-i2pr-observation")
+        if reference_observation is None:
+            raise PipelineError("live-mode-requires-reference-observation")
     payload: dict[str, Any] = {
         "schema": OBSERVATION_SCHEMA,
         "schema_version": OBSERVATION_SCHEMA_VERSION,
@@ -427,6 +433,7 @@ def _build_trigger_record(
     *,
     trigger_record: dict[str, Any] | None,
     trigger_metadata: dict[str, Any] | None,
+    live_mode: bool = False,
 ) -> dict[str, Any]:
     """Build the Plan 055 trigger record for one direction.
 
@@ -437,6 +444,15 @@ def _build_trigger_record(
     trigger is absent, the record is written as a typed absence with
     ``attempted = false`` and ``outcome =
     direct-trigger-helper-failed`` so the direction stays visible.
+
+    Plan 059 Workstream F: when ``live_mode`` is True, a passed
+    reference-initiated direction requires a real ``trigger_record``;
+    the synthetic ``direct-trigger-not-source-locked`` absence
+    cannot satisfy a passed direction. Helper and catalog digests
+    bind into the direction record (not the locked Plan 055 trigger
+    record) so a drift between the declared helper/catalog and the
+    runtime inputs fails the bundle cross-check without changing the
+    locked trigger schema.
     """
 
     binding = {
@@ -547,6 +563,11 @@ def write_direction_artifacts(
     reference_observation: dict[str, Any] | None = None,
     trigger_record: dict[str, Any] | None = None,
     trigger_metadata: dict[str, Any] | None = None,
+    live_mode: bool = False,
+    helper_digest_sha256: str = "0" * 64,
+    helper_source_sha256: str = "0" * 64,
+    catalog_digest_sha256: str = "0" * 64,
+    observation_qualification_receipt_sha256: str = "0" * 64,
 ) -> dict[str, str]:
     """Write the Plan 052/055 per-direction artifact bundle.
 
@@ -557,6 +578,15 @@ def write_direction_artifacts(
     caller is asserting that no trigger was attempted (e.g. for an
     i2pr-initiated direction or a blocked local run); the harness
     writes the typed absence record ``not-applicable``.
+
+    Plan 059 Workstream F: when ``live_mode`` is True, a passed
+    reference-initiated direction requires a real ``trigger_record``
+    and live sender/receiver observation records. Helper, source,
+    catalog, and observation-qualification-receipt digests bind
+    into the trigger record and the direction record so drift
+    between the declared helper/catalog/receipts and the runtime
+    inputs fails the bundle cross-check. The synthetic fallback is
+    reserved for blocked/diagnostic fixture runs.
     """
 
     context.assert_frozen()
@@ -564,6 +594,10 @@ def write_direction_artifacts(
         raise PipelineError("direction-catalog-invalid")
     if reason_code not in _ALLOWED_REASONS:
         raise PipelineError("unknown-i2pr-terminal-reason")
+    if cleanup_result == "failed" and result == "passed":
+        raise PipelineError("cleanup-failure-overrides-pass")
+    if live_mode and result == "passed" and initiator != "i2pr" and trigger_record is None:
+        raise PipelineError("live-mode-requires-trigger-record")
     terminal = terminal or {}
     binding = {
         "run_id": context.run_id,
@@ -579,6 +613,7 @@ def write_direction_artifacts(
         initiator,
         i2pr_observation=i2pr_observation,
         reference_observation=reference_observation,
+        live_mode=live_mode,
     )
     trigger = _build_trigger_record(
         context,
@@ -589,6 +624,7 @@ def write_direction_artifacts(
         reason_code,
         trigger_record=trigger_record,
         trigger_metadata=trigger_metadata,
+        live_mode=live_mode,
     )
     attestation = {
         **binding,
@@ -627,6 +663,11 @@ def write_direction_artifacts(
         "trigger_sha256": "",
         "attestation_sha256": "",
         "cleanup_sha256": "",
+        "helper_digest_sha256": helper_digest_sha256,
+        "helper_source_sha256": helper_source_sha256,
+        "catalog_digest_sha256": catalog_digest_sha256,
+        "observation_qualification_receipt_sha256": observation_qualification_receipt_sha256,
+        "live_mode": live_mode,
     }
     paths = {
         "observation": context.staging_root / "observations" / f"{direction}.json",

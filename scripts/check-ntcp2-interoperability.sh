@@ -237,6 +237,99 @@ if ! grep -Eq 'local-untracked|artifacts? (under|are) (the|an?) ignored' \
   exit 1
 fi
 
+# Plan 059: reference-side implementation and qualification closure
+# pass. The i2pd direct helper source, build contract, and source-lock
+# record must be present; the per-reference observation qualification
+# receipts and the typed-absence summary must be present; the Plan 059
+# test matrix must be present with positive, rejection, execution-lane,
+# pipeline, and ADR-decision cases; the canonical pipeline must consume
+# live trigger and observation records under ``live_mode`` and refuse
+# the synthetic fallback for a passed reference-initiated direction.
+if ! test -f "$root/tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/CMakeLists.txt"; then
+  echo "Plan 059 i2pd direct helper CMakeLists.txt is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/i2pd_direct_connect.cpp"; then
+  echo "Plan 059 i2pd direct helper C++ source is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/source-lock.json"; then
+  echo "Plan 059 i2pd direct helper source-lock record is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-i2pd-helper-source-lock-v1' \
+    "$root/tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/source-lock.json"; then
+  echo "Plan 059 i2pd direct helper source-lock schema marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pd-direct-helper' \
+    "$root/tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/source-lock.json"; then
+  echo "Plan 059 i2pd direct helper kind marker is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/reference-observation-qualification/i2pd-2.60.0.json"; then
+  echo "Plan 059 i2pd observation qualification receipt is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/reference-observation-qualification/java_i2p-2.12.0.json"; then
+  echo "Plan 059 Java observation qualification receipt is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-reference-observation-qualification-v1' \
+    "$root/tests/integration/ntcp2/reference-observation-qualification/i2pd-2.60.0.json"; then
+  echo "Plan 059 i2pd qualification receipt schema marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'blocked_java_support_topology_rejected' \
+    "$root/tests/integration/ntcp2/reference-observation-qualification/java_i2p-2.12.0.json"; then
+  echo "Plan 059 Java qualification receipt must carry the typed blocker" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/plan059.py"; then
+  echo "Plan 059 helper module is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan059.py"; then
+  echo "Plan 059 test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'I2pdHelperSourceLockTests' "$root/tests/integration/ntcp2/harness/test_plan059.py"; then
+  echo "Plan 059 test matrix must include the i2pd helper cases" >&2
+  exit 1
+fi
+if ! grep -Fq 'JavaSupportTopologyGateTests' "$root/tests/integration/ntcp2/harness/test_plan059.py"; then
+  echo "Plan 059 test matrix must include the Java support-topology gate" >&2
+  exit 1
+fi
+if ! grep -Fq 'ReceiverObservationTests' "$root/tests/integration/ntcp2/harness/test_plan059.py"; then
+  echo "Plan 059 test matrix must include the receiver-observation cases" >&2
+  exit 1
+fi
+if ! grep -Fq 'PipelineLiveModeTests' "$root/tests/integration/ntcp2/harness/test_plan059.py"; then
+  echo "Plan 059 test matrix must include the pipeline live-mode cases" >&2
+  exit 1
+fi
+if ! grep -Fq 'live-mode-requires-trigger-record' \
+    "$root/tests/integration/ntcp2/harness/plan052_pipeline.py"; then
+  echo "Plan 059 pipeline must refuse the synthetic trigger fallback in live mode" >&2
+  exit 1
+fi
+if ! grep -Fq 'live-mode-requires-i2pr-observation' \
+    "$root/tests/integration/ntcp2/harness/plan052_pipeline.py"; then
+  echo "Plan 059 pipeline must require live i2pr observation in live mode" >&2
+  exit 1
+fi
+if ! grep -Fq 'cleanup-failure-overrides-pass' \
+    "$root/tests/integration/ntcp2/harness/plan052_pipeline.py"; then
+  echo "Plan 059 pipeline must override pass when cleanup fails" >&2
+  exit 1
+fi
+if ! grep -Fq 'helper_digest_sha256' \
+    "$root/tests/integration/ntcp2/harness/plan052_pipeline.py"; then
+  echo "Plan 059 pipeline must bind helper digest into the direction record" >&2
+  exit 1
+fi
+
 python3 "$root/scripts/interop/validate-evidence.py"
 python3 "$root/scripts/interop/validate-scenarios.py"
 
