@@ -719,9 +719,76 @@ Until Plan 060 produces two passing bundles from a fresh
 implementation-floor candidate, Milestone 3 stays open and NTCP2
 stays experimental and non-advertised.
 
+## Plan 059 reference-side implementation and live qualification closure pass
+
+Plan 059 implements the i2pd direct helper, the per-reference
+observation qualification receipts, and the canonical pipeline
+live-mode wiring that Plans 055-057 deferred. ADR 0021 was
+Rejected by the Plan 058 record and candidate integrity closure
+pass, so Plan 059 closes with the typed blocker
+`blocked_java_support_topology_rejected` and the
+`java-to-i2pr-ipv4` direction remains blocked for the pinned
+Java I2P 2.12.0 revision. Plan 060 cannot start under the
+current four-direction contract until either a future pinned
+Java revision is adopted or the closure contract is revised
+through a new ADR.
+
+The plan delivered:
+
+- `tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/`
+  — the i2pd direct helper. `i2pd_direct_connect.cpp` is the
+  production helper that links against the pinned i2pd 2.60.0
+  libraries and exercises the documented
+  `Transports::SendMessage` seam. `i2pd_direct_connect.py` is
+  the bounded local Python driver used by the Plan 059 tests
+  when the C++ helper cannot be built. `CMakeLists.txt` is the
+  build contract. `source-lock.json` records the pinned revision,
+  the helper build inputs, and the locked constraints. `README.md`
+  documents the helper interface and the eight Plan 055 B4
+  controls.
+- `tests/integration/ntcp2/reference-observation-qualification/`
+  — the per-reference qualification receipts. `i2pd-2.60.0.json`
+  carries the blocker `blocked_unprivileged_user_namespace`;
+  `java_i2p-2.12.0.json` carries the blocker
+  `blocked_java_support_topology_rejected` because ADR 0021 is
+  Rejected. `summary.json` is the typed-absence summary. The
+  receipts mark every semantic level as `qualified = false` until
+  the Plan 046 rootless sealed-namespace lane or the Plan 048/049
+  Multipass recovery lane exercises the runtime controls.
+- `tests/integration/ntcp2/harness/plan059.py` — the Plan 059
+  helper module that loads the source-lock record, the
+  qualification receipts, and the qualification summary, and
+  exposes `i2pd_helper_invocation` for the test matrix.
+- `tests/integration/ntcp2/harness/plan052_pipeline.py` — the
+  canonical Plan 052/053 pipeline now accepts a `live_mode` flag
+  and binds helper, source, catalog, and qualification-receipt
+  digests into the direction record. Live mode rejects the
+  synthetic fallback for passed reference-initiated directions
+  and refuses to mask i2pr terminal failures or cleanup failures.
+- `tests/integration/ntcp2/harness/test_plan059.py` — the Plan 059
+  test matrix (36 cases: i2pd helper, Java support-topology gate,
+  receiver observations, Java startup gate, pipeline live mode).
+- `scripts/check-ntcp2-interoperability.sh` extended to enforce the
+  Plan 059 artifacts, the test matrix coverage, the canonical
+  pipeline live-mode enforcement, and the ADR 0021 rejection.
+- `plans/059-status.md` — the closure record.
+
+### Plan 059 Plan 055-058 supersession of Plan 057
+
+| Plan 057 responsibility | New owner |
+| --- | --- |
+| i2pd direct helper | Plan 059 |
+| Java topology and ADR decision | Plan 059 |
+| receiver marker qualification | Plan 059 |
+
+The Java support topology remains forbidden because ADR 0021 is
+Rejected; the `java-to-i2pr-ipv4` direction is a typed blocker
+under the current four-direction contract.
+
 Required focused checks are:
 
 ```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan059.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan058.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan056.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan055.py'

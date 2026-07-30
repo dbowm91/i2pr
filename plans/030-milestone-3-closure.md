@@ -1,6 +1,6 @@
 # Aggregate Milestone 3 closure: NTCP2 and transport-neutral link management
 
-Date: 2026-07-15 (last updated by Plan 058)
+Date: 2026-07-15 (last updated by Plan 059)
 
 Status: **blocked; implementation phases complete for their bounded local
 scope, milestone acceptance criteria not met**. Plan 056 closed with a
@@ -11,11 +11,15 @@ local diagnostic bundles it produced under the ignored
 retired the Plan 056 candidate, superseded Plan 057, decided
 ADR 0021 (Rejected), and split the previous Plan 057 follow-up
 into Plan 059 (reference-side implementation) and Plan 060 (fresh
-candidate + two-run certificate). Plan 060 owns the canonical
-two-run external evidence pass required to advance Milestone 3;
-until Plan 060 produces two passing bundles from a fresh
-implementation-floor candidate, the milestone acceptance criteria
-remain unmet.
+candidate + two-run certificate). Plan 059 closed with the typed
+blocker `blocked_java_support_topology_rejected` and committed the
+i2pd direct helper, the per-reference observation qualification
+receipts, and the canonical pipeline live-mode wiring. Plan 060
+owns the canonical two-run external evidence pass required to
+advance Milestone 3; until Plan 060 produces two passing bundles
+from a fresh implementation-floor candidate (and the four-direction
+contract is restored through a new ADR or future pinned Java
+revision), the milestone acceptance criteria remain unmet.
 
 This aggregate record preserves the evidence boundary from Plans 031–036. It
 does not convert local vectors, self-handshakes, loopback TCP, or deterministic

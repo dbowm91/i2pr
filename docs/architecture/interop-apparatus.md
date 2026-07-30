@@ -455,9 +455,62 @@ Java support topology, or external mixed-router execution.
 
 The Plan 058 plan-of-record is
 `plans/058-plan056-record-and-candidate-integrity-closure-pass.md`;
-the closure record is `plans/058-status.md`. The Plan 059 follow-up
-is the active reference-side implementation and live qualification
-pass; Plan 060 is the future fresh-candidate and two-run certificate
-pass. Until Plan 060 produces two passing bundles from a fresh
-implementation-floor candidate, NTCP2 stays experimental and
-non-advertised and Milestone 3 stays open.
+the closure record is `plans/058-status.md`.
+
+## Plan 059 reference-side implementation and live qualification closure pass
+
+Plan 059 implements the i2pd direct helper, the per-reference
+observation qualification receipts, and the canonical pipeline
+live-mode wiring that Plans 055-057 deferred. Plan 058 rejected
+ADR 0021, so Plan 059 closes with the typed blocker
+`blocked_java_support_topology_rejected`; the Java support topology
+is forbidden under the current four-direction contract.
+
+- The i2pd direct helper source, build contract, and source-lock
+  record are committed under
+  `tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/`.
+  The C++ helper (`i2pd_direct_connect.cpp`) links against the
+  pinned i2pd 2.60.0 libraries and exercises the documented
+  `i2pd::transports::Transports::SendMessage` call graph recorded
+  in `tests/integration/ntcp2/reference-trigger-contracts.md`. The
+  Python bounded driver (`i2pd_direct_connect.py`) provides the
+  local qualification seam when the C++ helper cannot be built.
+  `source-lock.json` records the pinned revision, the helper build
+  inputs, and the locked constraints required by Plan 055 B2.
+- The per-reference observation qualification receipts
+  (`i2pd-2.60.0.json` and `java_i2p-2.12.0.json`) record the
+  catalog metadata, the runtime-control blocker, and the typed
+  absence per semantic level. The summary at `summary.json`
+  tracks the overall qualification status. Both receipts mark every
+  semantic level as `qualified = false` until the Plan 046
+  rootless sealed-namespace lane or the Plan 048/049 Multipass
+  recovery lane exercises the runtime controls.
+- The Plan 052 pipeline now exposes a `live_mode` flag; in live
+  mode a passed reference-initiated direction requires a real
+  trigger record and live sender/receiver observation-v2 records.
+  Helper, source, catalog, and qualification-receipt digests bind
+  into the direction record so drift fails the bundle cross-check.
+  Cleanup failure overrides pass. The synthetic fallback remains
+  available for blocked/diagnostic fixture runs only.
+- The Plan 059 test matrix
+  (`tests/integration/ntcp2/harness/test_plan059.py`) covers 36
+  cases across the five required surfaces: i2pd helper, Java
+  support-topology gate, receiver observations, Java startup gate,
+  and pipeline live mode.
+- The Plan 059 closure contract is the typed blocker
+  `blocked_java_support_topology_rejected` because ADR 0021 is
+  Rejected. The Java receiver observations and the Java support
+  topology remain blocked; the runtime qualification requires the
+  Plan 046 rootless sealed-namespace lane or the Plan 048/049
+  Multipass recovery lane.
+
+The Plan 059 plan-of-record is
+`plans/059-reference-side-implementation-and-live-qualification-closure-pass.md`;
+the closure record is `plans/059-status.md`. The Plan 060
+follow-up is the future fresh-candidate and two-run certificate
+pass; it cannot start under the current four-direction contract
+until either a future pinned Java revision is adopted or the
+closure contract is revised through a new ADR. Until Plan 060
+produces two passing bundles from a fresh implementation-floor
+candidate, NTCP2 stays experimental and non-advertised and
+Milestone 3 stays open.

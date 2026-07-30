@@ -491,10 +491,16 @@ into three new plans:
   tracked footprint is the bounded local-diagnostic receipt at
   `tests/integration/ntcp2/evidence-receipts/plan056-local-diagnostic.json`.
 - `plans/059-reference-side-implementation-and-live-qualification-closure-pass.md`
-  — implements the reference-side helpers and qualification. Plan
-  058 rejected ADR 0021, so the `java-to-i2pr-ipv4` direction
-  remains a typed blocker for Java I2P 2.12.0 and Plan 059 must
-  close with the typed blocker `blocked_java_support_topology_rejected`.
+  — implements the i2pd direct helper, the per-reference
+  observation qualification receipts, and the canonical pipeline
+  live-mode wiring. The helper source, build contract, and
+  source-lock record are committed under
+  `tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/`;
+  the qualification receipts live under
+  `tests/integration/ntcp2/reference-observation-qualification/`.
+  Plan 058 rejected ADR 0021, so the `java-to-i2pr-ipv4` direction
+  remains a typed blocker for Java I2P 2.12.0 and Plan 059 closes
+  with the typed blocker `blocked_java_support_topology_rejected`.
 - `plans/060-fresh-candidate-and-two-run-milestone3-certificate-closure-pass.md`
   — cuts a fresh candidate after Plan 059 closes and produces the
   two-run certificate. Until Plan 060 produces two passing
@@ -555,6 +561,53 @@ the Java support topology, or external mixed-router execution.
 
 The Plan 058 status and validation commands are recorded in
 `plans/058-status.md`.
+
+### Plan 059 reference-side implementation and live qualification closure pass
+
+Plan 059 implements the i2pd direct helper, the per-reference
+observation qualification receipts, and the canonical pipeline
+live-mode wiring that Plans 055-057 deferred. ADR 0021 was Rejected
+by the Plan 058 record and candidate integrity closure pass, so
+Plan 059 closes with the typed blocker
+`blocked_java_support_topology_rejected` and the `java-to-i2pr-ipv4`
+direction remains blocked for the pinned Java I2P 2.12.0 revision.
+Plan 060 cannot start under the current four-direction contract.
+
+- The i2pd direct helper source, build contract, and source-lock
+  record are committed under
+  `tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/`.
+  The C++ helper (`i2pd_direct_connect.cpp`) links against the
+  pinned i2pd 2.60.0 libraries and exercises the documented
+  `i2pd::transports::Transports::SendMessage` call graph recorded
+  in `tests/integration/ntcp2/reference-trigger-contracts.md`. The
+  Python bounded driver
+  (`i2pd_direct_connect.py`) provides the local qualification seam
+  when the C++ helper cannot be built.
+- The per-reference observation qualification receipts
+  (`i2pd-2.60.0.json` and `java_i2p-2.12.0.json`) record the
+  catalog metadata, the runtime-control blocker, and the typed
+  absence per semantic level. The summary at
+  `summary.json` tracks the overall qualification status.
+- The Plan 052 pipeline now exposes a `live_mode` flag; in live
+  mode a passed reference-initiated direction requires a real
+  trigger record and live sender/receiver observation-v2 records.
+  Helper, source, catalog, and qualification-receipt digests bind
+  into the direction record so drift fails the bundle cross-check.
+  Cleanup failure overrides pass.
+- The Plan 059 test matrix
+  (`tests/integration/ntcp2/harness/test_plan059.py`) covers 36
+  cases grouped into the five Plan 059 surfaces: i2pd helper,
+  Java support-topology gate, receiver observations, Java startup
+  gate, and pipeline live mode.
+- The Plan 059 closure contract is the typed blocker
+  `blocked_java_support_topology_rejected` because ADR 0021 is
+  Rejected. The Java receiver observations and the Java support
+  topology remain blocked; the runtime qualification requires the
+  Plan 046 rootless sealed-namespace lane or the Plan 048/049
+  Multipass recovery lane.
+
+The Plan 059 status and validation commands are recorded in
+`plans/059-status.md`.
 
 ## MVP direction
 
@@ -718,6 +771,8 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 054 status](plans/054-status.md)
 - [Plan 058 record and candidate integrity closure pass](plans/058-plan056-record-and-candidate-integrity-closure-pass.md)
 - [Plan 058 status](plans/058-status.md)
+- [Plan 059 reference-side implementation and live qualification closure pass](plans/059-reference-side-implementation-and-live-qualification-closure-pass.md)
+- [Plan 059 status](plans/059-status.md)
 - [Aggregate Milestone 3 closure record](plans/030-milestone-3-closure.md)
 - [Controlled NTCP2 interoperability lane](tests/integration/ntcp2/README.md)
 - [Machine-readable protocol support ledger](specs/support.toml)

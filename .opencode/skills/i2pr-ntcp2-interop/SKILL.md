@@ -1,9 +1,9 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/056/058 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, Plan 044 mixed-runner composition, typed Plan 052/053 evidence validation, Plan 055 reference-initiated trigger schema and source-inspected call graphs, Plan 056 certificate verifier, and Plan 058 record and candidate integrity closure. Use when an agent is asked to run a Plan 038 profile on the host, prepare the reference routers, add or modify a scenario, dispatch a bounded mixed direction, create or validate a Plan 053 diagnostic bundle, validate the locked trigger record schema, audit Plan 056 candidate and supersession markers, or validate evidence. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/056/058/059 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, Plan 044 mixed-runner composition, typed Plan 052/053 evidence validation, Plan 055 reference-initiated trigger schema and source-inspected call graphs, Plan 056 certificate verifier, Plan 058 record and candidate integrity closure, Plan 059 i2pd direct helper, per-reference observation qualification receipts, and canonical pipeline live-mode wiring. Use when an agent is asked to run a Plan 038 profile on the host, prepare the reference routers, add or modify a scenario, dispatch a bounded mixed direction, create or validate a Plan 053 diagnostic bundle, validate the locked trigger record schema, audit Plan 056 candidate and supersession markers, run the Plan 059 i2pd helper controls, validate the Plan 059 qualification receipts, or validate evidence. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
-# I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058)
+# I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059)
 
 Use this skill from the repository root for the **host-side** Ubuntu 24.04
 amd64 Plan 038 reference-router NTCP2 interoperability harness. This skill
@@ -24,6 +24,8 @@ Read `AGENTS.md`, `plans/038-ubuntu-reference-router-interoperability-harness.md
 `plans/056-ntcp2-milestone-3-two-run-external-evidence-closure-pass.md`,
 `plans/058-plan056-record-and-candidate-integrity-closure-pass.md`,
 `plans/058-status.md`,
+`plans/059-reference-side-implementation-and-live-qualification-closure-pass.md`,
+`plans/059-status.md`,
 `tests/integration/ntcp2/README.md`, and the relevant `docs/adr/` records before changing the harness.
 
 The canonical reference identifiers are `java_i2p` and `i2pd`. Locked source
@@ -253,9 +255,55 @@ bounded local-diagnostic receipt at
 with `artifact_storage = local-untracked`. The repository does
 not track `target/interop/evidence/plan056/`.
 
+## Plan 059 reference-side implementation and live qualification closure pass
+
+Plan 059 implements the i2pd direct helper, the per-reference
+observation qualification receipts, and the canonical pipeline
+live-mode wiring that Plans 055-057 deferred. ADR 0021 was
+Rejected by the Plan 058 record and candidate integrity closure
+pass, so Plan 059 closes with the typed blocker
+`blocked_java_support_topology_rejected` and the
+`java-to-i2pr-ipv4` direction remains blocked for the pinned
+Java I2P 2.12.0 revision. Plan 060 cannot start under the
+current four-direction contract.
+
+The plan delivered:
+
+- `tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/`
+  — the i2pd direct helper source (`i2pd_direct_connect.cpp`),
+  the bounded local Python driver (`i2pd_direct_connect.py`),
+  the CMake build contract (`CMakeLists.txt`), the source-lock
+  record (`source-lock.json`), and the helper README. The C++
+  helper links against the pinned i2pd 2.60.0 libraries and
+  exercises the documented `Transports::SendMessage` call graph.
+- `tests/integration/ntcp2/reference-observation-qualification/`
+  — the per-reference qualification receipts and summary. Both
+  pinned references carry `qualified = false` for every semantic
+  level until the Plan 046 rootless sealed-namespace lane or the
+  Plan 048/049 Multipass recovery lane exercises the runtime
+  controls. The Java receipt carries the
+  `blocked_java_support_topology_rejected` blocker because ADR
+  0021 is Rejected.
+- `tests/integration/ntcp2/harness/plan059.py` — the Plan 059
+  helper module that loads the source-lock record, the
+  qualification receipts, and the qualification summary, and
+  exposes `i2pd_helper_invocation` for the test matrix.
+- `tests/integration/ntcp2/harness/plan052_pipeline.py` — the
+  canonical Plan 052/053 pipeline now accepts a `live_mode` flag
+  and binds helper, source, catalog, and qualification-receipt
+  digests into the direction record. Live mode rejects the
+  synthetic fallback for passed reference-initiated directions.
+- `tests/integration/ntcp2/harness/test_plan059.py` — the Plan 059
+  test matrix (36 cases: i2pd helper, Java support-topology gate,
+  receiver observations, Java startup gate, pipeline live mode).
+- `scripts/check-ntcp2-interoperability.sh` extended to enforce the
+  Plan 059 artifacts, the test matrix coverage, the canonical
+  pipeline live-mode enforcement, and the ADR 0021 rejection.
+
 Use the focused local seam with:
 
 ```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan059.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan058.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan056.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan055.py'
