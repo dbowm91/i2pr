@@ -1,5 +1,21 @@
 # Plan 069 closure — host-compatible NTCP2 loopback smoke lane
 
+> **Supersession note (Plan 074, registered 2026-07-31).** This
+> closure record is preserved as a snapshot of the scaffolding and
+> fake-process test coverage that the Plan 069 runner implemented at
+> the time of the Plan 074 amendment. The runner was structurally
+> incapable of producing a mixed-router pass because it selected the
+> i2pr launcher for both process handles, did not invoke the supplied
+> i2pd binary as the reference process, and could promote protocol
+> milestones without consuming real structured reference events. The
+> Plan 064 i2pd listen/dial paths were terminal stubs when real
+> pinned i2pd libraries were not linked. The Plan 069 lane is **not
+> valid mixed-router evidence**; the corrected runner and the real
+> i2pd driver are the responsibility of Plan 075 and Plan 076
+> respectively. Plan 070 and Plan 071 are no longer active execution
+> authority. The historical implementation record below is
+> preserved verbatim.
+
 ## Implementation commit
 
 The Plan 069 implementation lands in the same commit as this
@@ -95,8 +111,10 @@ Milestone 3 status update based on the Level 1 outcomes.
 
 ## Next plan
 
-The next plan is **Plan 070** — repeated i2pd development
-validation. Plan 070 owns the Level 1 lane execution and the
-Level 2 development-validation rollup for i2pd; the Plan 046
-rootless sealed-namespace lane and the Plan 048/049 Multipass
-recovery lane remain the canonical external paths.
+The next plan is **Plan 075** — Plan 069 runner integrity and
+evidence correction. Plan 075 owns the runner integrity fixes
+required for the Plan 075-079 mixed-router sequence. Plan 070 and
+Plan 071 are no longer active execution authority; the active
+sequence is **Plan 075 → Plan 076 → Plan 077 → Plan 078 → Plan 079**.
+The Plan 046 rootless sealed-namespace lane and the Plan 048/049
+Multipass recovery lane remain the canonical external paths.

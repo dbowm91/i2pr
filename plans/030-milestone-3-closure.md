@@ -2,13 +2,16 @@
 
 Date: 2026-07-31 (last updated by Plan 068)
 
-Status (Plan 068 active correction): **implementation phases complete
+Status (Plan 074 active correction): **implementation phases complete
 for their bounded local scope; milestone acceptance criteria not met;
 NTCP2 remains experimental and non-advertised.** The implementation
 record from Plans 056 through 066 is preserved verbatim below. The
-**active** Milestone 3 roadmap is Plan 067 (with Plan 068 as the
-authority correction) and the staged-evidence tiers defined by
-ADR 0023 (Accepted by Plan 068).
+**active** Milestone 3 roadmap is Plan 074 (with Plan 067 as the
+parent staged-evidence model and Plan 068 as the authority correction)
+and the staged-evidence tiers defined by ADR 0023 (Accepted by
+Plan 068). Plan 074 reclassifies the implemented Plan 069 lane as
+orchestration scaffolding and fake-process test coverage only; it is
+not valid mixed-router evidence until Plan 075 closes.
 
 ```text
 implementation_status   = externally-testable
@@ -28,6 +31,16 @@ lane on the constrained host; Plan 066's certificate verifier and
 candidate freeze machinery remain a Level 3 release-qualification tool
 and must not gate Level 1 (host-loopback smoke) or Level 2 (repeated
 development interoperability) runs.
+
+Plan 074 is the active corrective roadmap for Milestone 3 NTCP2
+interoperability. Plan 074 supersedes Plan 070 as the next executable
+plan and reclassifies the implemented Plan 069 lane as orchestration
+scaffolding and fake-process test coverage only; it is not valid
+mixed-router evidence until Plan 075 closes. Plan 074 is the parent
+authority for the active sequence **Plan 075 → Plan 076 → Plan 077 →
+Plan 078 → Plan 079**. Plan 070 and Plan 071 are no longer active
+execution authority. Zero real mixed-router attempts remain until Plan
+078 executes. NTCP2 remains experimental and non-advertised.
 
 Plan 068 is the staged-evidence and authority correction pass that
 implements ADR 0023 (Accepted). Plan 068 separates NTCP2 interoperability

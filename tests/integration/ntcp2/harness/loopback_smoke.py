@@ -33,6 +33,20 @@ Structural choices:
 - raw payload capture is not supported; diagnostics may only be
   ``off`` or ``sanitized``.
 
+Plan 075 corrections: the runner now launches one real i2pr process
+and one configured real reference process for each direction, binds
+every accepted event to a measured reference binary digest, and
+refuses to mark protocol milestones unless a validated structured
+event has been observed. The synthetic-provenance fallback hashes
+that fabricated a schema-valid digest from a run string are removed;
+the source-lock record plus the on-disk helper source and observer
+patch are measured directly. The runner fails closed with one of the
+typed blockers ``runner-reference-process-not-executed``,
+``runner-reference-events-missing``,
+``runner-synthetic-provenance-rejected``, or
+``runner-protocol-event-unproven`` whenever any of these contracts
+is violated.
+
 The runner is invoked through:
 
 ```text
@@ -60,7 +74,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Final
+from typing import Any, Callable, Final, Iterator
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -72,6 +86,8 @@ from loopback_smoke_record import (
     EVIDENCE_TIER as SMOKE_EVIDENCE_TIER,
     canonical_record_digest,
 )
+
+import reference_event  # noqa: E402  (Plan 075 reference-event v1 schemas)
 
 
 ALLOWED_DIRECTIONS: Final[frozenset[str]] = frozenset({
@@ -101,6 +117,43 @@ ALLOWED_EVENT_NAMES: Final[frozenset[str]] = frozenset({
     "terminal_clean",
 })
 
+# Plan 075 typed blockers. The runner raises one of these whenever the
+# runner-integrity contract is violated:
+#
+#   runner-reference-process-not-executed
+#       the configured reference driver process was never launched
+#       (the runner built a second i2pr-interop process command, or
+#       the reference was substituted by a fake injection outside
+#       the unit-test fixture adapter).
+#   runner-reference-events-missing
+#       the reference process did not emit any structured events
+#       before the protocol deadline.
+#   runner-synthetic-provenance-rejected
+#       a required provenance field was determined from a synthetic
+#       placeholder digest instead of a measured file.
+#   runner-protocol-event-unproven
+#       a protocol milestone was marked without a validated
+#       structured event satisfying the milestone predicate.
+TYPED_BLOCKER_REFERENCE_PROCESS_NOT_EXECUTED: Final[str] = (
+    "runner-reference-process-not-executed"
+)
+TYPED_BLOCKER_REFERENCE_EVENTS_MISSING: Final[str] = (
+    "runner-reference-events-missing"
+)
+TYPED_BLOCKER_SYNTHETIC_PROVENANCE_REJECTED: Final[str] = (
+    "runner-synthetic-provenance-rejected"
+)
+TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN: Final[str] = (
+    "runner-protocol-event-unproven"
+)
+
+TYPED_BLOCKER_CODES: Final[frozenset[str]] = frozenset({
+    TYPED_BLOCKER_REFERENCE_PROCESS_NOT_EXECUTED,
+    TYPED_BLOCKER_REFERENCE_EVENTS_MISSING,
+    TYPED_BLOCKER_SYNTHETIC_PROVENANCE_REJECTED,
+    TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+})
+
 DEFAULT_READINESS_TIMEOUT_SECONDS: Final[float] = 20.0
 DEFAULT_HANDSHAKE_TIMEOUT_SECONDS: Final[float] = 30.0
 DEFAULT_DATA_TIMEOUT_SECONDS: Final[float] = 20.0
@@ -114,6 +167,7 @@ REFERENCE_NAME: Final[str] = "i2pd"
 REFERENCE_VERSION: Final[str] = "2.60.0"
 REFERENCE_REVISION: Final[str] = "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
 REFERENCE_DRIVER_MODE: Final[str] = "i2pd-direct-driver"
+REFERENCE_IMPLEMENTATION: Final[str] = "i2pd-direct-driver"
 
 LOOPBACK_IPV4: Final[str] = "127.0.0.1"
 LOOPBACK_IPV6: Final[str] = "::1"
@@ -130,6 +184,82 @@ HEX64: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
 HEX40: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
 SCENARIO_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 RUN_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$")
+
+
+class ProcessRole(str):
+    """Plan 075 process role. One of ``i2pr`` or ``reference``."""
+
+    I2PR: "ProcessRole"
+    REFERENCE: "ProcessRole"
+
+
+ProcessRole.I2PR = ProcessRole("i2pr")
+ProcessRole.REFERENCE = ProcessRole("reference")
+
+
+class TransportRole(str):
+    """Plan 075 transport role. One of ``listener`` or ``dialer``."""
+
+    LISTENER: "TransportRole"
+    DIALER: "TransportRole"
+
+
+TransportRole.LISTENER = TransportRole("listener")
+TransportRole.DIALER = TransportRole("dialer")
+
+
+@dataclasses.dataclass(frozen=True)
+class ProcessRoleAssignment:
+    """Plan 075 role pair for one direction.
+
+    Each direction is the unique mapping of two transport roles
+    (listener, dialer) to two process roles (i2pr, reference). The
+    runner is structurally incapable of producing a passing record
+    when both transport roles resolve to the same process role.
+    """
+
+    listener: ProcessRole
+    dialer: ProcessRole
+
+
+# Plan 075 role assignment per direction. The mapping is unique per
+# direction; reversing the direction swaps the roles.
+ROLE_ASSIGNMENTS: Final[dict[str, ProcessRoleAssignment]] = {
+    "i2pr-to-i2pd-ipv4": ProcessRoleAssignment(
+        listener=ProcessRole.REFERENCE,
+        dialer=ProcessRole.I2PR,
+    ),
+    "i2pd-to-i2pr-ipv4": ProcessRoleAssignment(
+        listener=ProcessRole.I2PR,
+        dialer=ProcessRole.REFERENCE,
+    ),
+}
+
+
+# Plan 075 path layout for the source-locked reference driver. The
+# helper source, observer patch, and run script are tracked in the
+# repository and may be measured directly. The installed i2pd tree
+# lives under ``target/interop/cache/i2pd/<tree>/`` and is not
+# present on the constrained host; the runner fails closed with
+# ``runner-synthetic-provenance-rejected`` when the source-lock
+# placeholder is still zero.
+HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parents[3]
+I2PD_DRIVER_DIR = REPO_ROOT / "tests/integration/ntcp2/reference-drivers/i2pd"
+I2PD_DRIVER_SOURCE = I2PD_DRIVER_DIR / "src/i2pd_ntcp2_interop_driver.cpp"
+I2PD_OBSERVER_HEADER = I2PD_DRIVER_DIR / "src/interop_observer.h"
+I2PD_OBSERVER_SOURCE = I2PD_DRIVER_DIR / "src/interop_observer.cpp"
+I2PD_OBSERVER_PATCH = (
+    I2PD_DRIVER_DIR / "patches/i2pd-2.60.0-interop-observer.patch"
+)
+I2PD_RUN_SCRIPT = I2PD_DRIVER_DIR / "run-driver.sh"
+I2PD_SOURCE_LOCK = I2PD_DRIVER_DIR / "source-lock.json"
+
+# Plan 075 reference event stream identity. The reference driver
+# emits structured events to ``<output_dir>/events.ndjson`` per the
+# Plan 062 reference-event v1 schema.
+REFERENCE_EVENT_SCHEMA: Final[str] = "i2pr-reference-event-v1"
+REFERENCE_EVENT_VERSION: Final[int] = 1
 
 
 class LoopbackSmokeError(ValueError):
@@ -487,6 +617,162 @@ def _hash_file(path: Path) -> str:
         return ""
 
 
+def _command_summary(command: tuple[str, ...]) -> str:
+    """Return a sanitized one-line summary of a command for logging.
+
+    The runner never logs raw payloads, private keys, Noise state, or
+    full RouterInfo bytes. The summary reduces each argument to at
+    most 64 characters and joins with spaces so the ``events.jsonl``
+    log stays bounded.
+    """
+
+    parts: list[str] = []
+    for arg in command:
+        if len(arg) > 64:
+            parts.append(arg[:60] + "\u2026")
+        else:
+            parts.append(arg)
+    return " ".join(parts)
+
+
+def _iter_validated_reference_events(
+    events_path: Path,
+    *,
+    expected_message_id: int,
+    expected_direction: str,
+    expected_run_id: str,
+    expected_peer_router_hash_sha256: str,
+    expected_local_router_hash_sha256: str,
+    expected_driver_binary_sha256: str,
+    seen_sequences: set[int],
+) -> Iterator[dict[str, Any]]:
+    """Yield validated reference events from ``events_path``.
+
+    Plan 075 closes the Plan 069 defect where the runner auto-marked
+    protocol milestones. The function reads the structured event
+    stream written by the Plan 064 driver and validates every event
+    against the Plan 062 v1 schema plus the run-identity correlation
+    fields. The runner raises a typed
+    :data:`TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN` or
+    :data:`TYPED_BLOCKER_REFERENCE_EVENTS_MISSING` blocker whenever
+    the contract is violated.
+    """
+
+    try:
+        raw_text = events_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise LoopbackSmokeRunError(
+            TYPED_BLOCKER_REFERENCE_EVENTS_MISSING,
+            stage="protocol",
+            reason=f"events-unreadable:{exc}",
+        ) from exc
+    if not raw_text.strip():
+        raise LoopbackSmokeRunError(
+            TYPED_BLOCKER_REFERENCE_EVENTS_MISSING,
+            stage="protocol",
+            reason=TYPED_BLOCKER_REFERENCE_EVENTS_MISSING,
+        )
+    for line_number, line in enumerate(raw_text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise LoopbackSmokeRunError(
+                TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                stage="protocol",
+                reason=f"invalid-json:line-{line_number}",
+            ) from exc
+        if not isinstance(event, dict):
+            raise LoopbackSmokeRunError(
+                TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                stage="protocol",
+                reason=f"non-object-event:line-{line_number}",
+            )
+        event = dict(event)
+        if event.get("schema") != REFERENCE_EVENT_SCHEMA:
+            raise LoopbackSmokeRunError(
+                TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                stage="protocol",
+                reason=f"event-schema-invalid:line-{line_number}",
+            )
+        if event.get("schema_version") != REFERENCE_EVENT_VERSION:
+            raise LoopbackSmokeRunError(
+                TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                stage="protocol",
+                reason=f"event-schema-version-invalid:line-{line_number}",
+            )
+        if event.get("run_id") != expected_run_id:
+            raise LoopbackSmokeRunError(
+                TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                stage="protocol",
+                reason=f"event-run-id-mismatch:line-{line_number}",
+            )
+        if event.get("direction") != expected_direction:
+            raise LoopbackSmokeRunError(
+                TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                stage="protocol",
+                reason=f"event-direction-mismatch:line-{line_number}",
+            )
+        if event.get("implementation") != REFERENCE_IMPLEMENTATION:
+            raise LoopbackSmokeRunError(
+                TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                stage="protocol",
+                reason=f"event-implementation-mismatch:line-{line_number}",
+            )
+        if event.get("implementation_revision") != REFERENCE_REVISION:
+            raise LoopbackSmokeRunError(
+                TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                stage="protocol",
+                reason=f"event-revision-mismatch:line-{line_number}",
+            )
+        if event.get("driver_binary_sha256") != expected_driver_binary_sha256:
+            raise LoopbackSmokeRunError(
+                TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                stage="protocol",
+                reason=f"event-driver-binary-mismatch:line-{line_number}",
+            )
+        if event.get("local_router_hash_sha256") != expected_local_router_hash_sha256:
+            raise LoopbackSmokeRunError(
+                TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                stage="protocol",
+                reason=f"event-local-router-hash-mismatch:line-{line_number}",
+            )
+        if event.get("peer_router_hash_sha256") != expected_peer_router_hash_sha256:
+            raise LoopbackSmokeRunError(
+                TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                stage="protocol",
+                reason=f"event-peer-router-hash-mismatch:line-{line_number}",
+            )
+        try:
+            reference_event.validate_event(
+                event,
+                seen_event_sequences=seen_sequences,
+                expected_peer_router_hash_sha256=expected_peer_router_hash_sha256,
+            )
+        except reference_event.ReferenceEventError as exc:
+            raise LoopbackSmokeRunError(
+                TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                stage="protocol",
+                reason=f"event-validation:{exc}",
+            ) from exc
+        # Data-phase correlation: the exact DeliveryStatus message ID
+        # must match the scenario-owned derivation. The runner uses
+        # the sender's correlation as the authoritative source.
+        if event["event_kind"] in (
+            "frame_emitted",
+            "frame_authenticated_and_decrypted",
+            "i2np_message_decoded",
+        ):
+            if event.get("delivery_status_message_id") != expected_message_id:
+                raise LoopbackSmokeRunError(
+                    TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                    stage="protocol",
+                    reason=f"event-message-id-mismatch:line-{line_number}",
+                )
+        yield event
+
+
 def generate_run_id(now: dt.datetime | None = None) -> str:
     """Return a bounded, sanitized run identifier.
 
@@ -500,6 +786,53 @@ def generate_run_id(now: dt.datetime | None = None) -> str:
     stamp = moment.strftime("%Y%m%d%H%M%S")
     suffix = uuid.uuid4().hex[:8]
     return f"loopback-smoke-{stamp}-{suffix}"
+
+
+def _measured_provenance_digest(field: str, file_path: Path) -> str:
+    """Return the measured SHA-256 digest of an on-disk artifact.
+
+    Plan 075 closes the synthetic-provenance fallback. The runner
+    raises :class:`LoopbackSmokeConfigError` when the artifact is
+    missing, empty, or unreadable; no synthetic placeholder is ever
+    emitted.
+
+    The function is local to the runner so that the strict-config
+    payload builder does not need to import the production helper
+    module just to compute a digest.
+    """
+
+    if not isinstance(file_path, Path):
+        raise LoopbackSmokeConfigError(f"{field}-not-path")
+    if not file_path.is_file():
+        raise LoopbackSmokeConfigError(f"{field}-missing:{file_path}")
+    try:
+        data = file_path.read_bytes()
+    except OSError as exc:
+        raise LoopbackSmokeConfigError(f"{field}-unreadable:{file_path}") from exc
+    if not data:
+        raise LoopbackSmokeConfigError(f"{field}-empty:{file_path}")
+    digest = hashlib.sha256(data).hexdigest()
+    if not HEX64.fullmatch(digest):
+        raise LoopbackSmokeConfigError(f"{field}-not-hex64")
+    return digest
+
+
+def _non_zero_hex64(field: str, value: str) -> str:
+    """Return ``value`` when it is a non-zero 64-lowercase-hex digest.
+
+    The Plan 064 source-lock record carries placeholder digests for
+    helper sources, observer patches, and the installed i2pd tree.
+    These placeholders are encoded as long runs of zero hex digits.
+    Plan 075 fails closed whenever a placeholder is encountered.
+    """
+
+    if not isinstance(value, str) or not HEX64.fullmatch(value):
+        raise LoopbackSmokeConfigError(f"{field}-not-hex64")
+    if value.startswith("0" * 16):
+        raise LoopbackSmokeConfigError(
+            f"{field}-placeholder:{value[:16]}\u2026"
+        )
+    return value
 
 
 def _render_reference_strict_config(
@@ -526,40 +859,53 @@ def _render_reference_strict_config(
     adapter must not depend on this helper.
 
     The payload targets schema ``i2pr-i2pd-direct-driver-config-v1``
-    (``i2pd_direct_driver.CONFIG_SCHEMA``).
+    (``i2pd_direct_driver.CONFIG_SCHEMA``). Plan 075 closes the
+    synthetic-provenance fallback: every reported digest is measured
+    from the on-disk artifact (helper source, observer patch, driver
+    binary, build manifest) or read from the source-lock record once
+    that record carries a non-placeholder digest. ``raise`` is the
+    fail-closed guard.
     """
 
     import i2pd_direct_driver as i2pd_driver
 
-    # The Plan 064 strict config requires non-zero provenance for the
-    # helper, build, observer patch, and reference tree digests. The
-    # smoke runner records the hash of the existing driver binary,
-    # build manifest, and source lock when present; for the helper
-    # source and observer patch, which the Plan 064 driver does not
-    # expose through this surface, we emit a deterministic synthetic
-    # 64-hex string derived from the run identity so the strict
-    # config validates without claiming an authoritative helper source
-    # hash. Plan 070 replaces this synthetic placeholder with the
-    # authoritative helper source digest.
-    binary_digest = _hash_file(config.reference_driver_binary)
-    if not binary_digest or binary_digest == "0" * 64:
-        binary_digest = hashlib.sha256(
-            f"loopback-smoke-driver-binary|{run_id}|{config.reference_driver_binary}".encode()
-        ).hexdigest()
-    build_manifest_digest = _hash_file(config.reference_build_manifest)
-    if not build_manifest_digest or build_manifest_digest == "0" * 64:
-        build_manifest_digest = hashlib.sha256(
-            f"loopback-smoke-build-manifest|{run_id}|{config.reference_build_manifest}".encode()
-        ).hexdigest()
-    reference_tree_digest = hashlib.sha256(
-        f"loopback-smoke-reference-tree|{run_id}|{REFERENCE_REVISION}".encode()
-    ).hexdigest()
-    driver_source_digest = hashlib.sha256(
-        f"loopback-smoke-driver-source|{run_id}|{REFERENCE_REVISION}".encode()
-    ).hexdigest()
-    observer_patch_digest = hashlib.sha256(
-        f"loopback-smoke-observer-patch|{run_id}|{REFERENCE_REVISION}".encode()
-    ).hexdigest()
+    source_lock = json.loads(config.reference_source_lock.read_text(encoding="utf-8"))
+    if not isinstance(source_lock, dict):
+        raise LoopbackSmokeConfigError("source-lock-not-object")
+    if source_lock.get("reference", {}).get("revision") != REFERENCE_REVISION:
+        raise LoopbackSmokeConfigError("source-lock-reference-revision-mismatch")
+    helper = source_lock.get("helper", {})
+    if not isinstance(helper, dict):
+        raise LoopbackSmokeConfigError("source-lock-helper-missing")
+
+    binary_digest = _measured_provenance_digest(
+        "driver_binary_sha256", config.reference_driver_binary
+    )
+    build_manifest_digest = _measured_provenance_digest(
+        "build_manifest_sha256", config.reference_build_manifest
+    )
+    driver_source_digest = _measured_provenance_digest(
+        "driver_source_sha256", I2PD_DRIVER_SOURCE
+    )
+    observer_patch_digest = _measured_provenance_digest(
+        "observer_patch_sha256", I2PD_OBSERVER_PATCH
+    )
+
+    # The installed i2pd tree lives under
+    # ``target/interop/cache/i2pd/<tree>/`` which is not present on
+    # the constrained host. The source-lock record carries a
+    # placeholder until the canonical Plan 046 rootless lane or the
+    # Plan 048/049 Multipass recovery lane has produced a real
+    # cache. The runner fails closed whenever the placeholder is
+    # still zero.
+    reference_tree_digest = _non_zero_hex64(
+        "reference_tree_sha256",
+        source_lock.get("reference", {}).get(
+            "installed_tree_sha256_placeholder",
+            "0" * 64,
+        ),
+    )
+
     run_identity_digest = hashlib.sha256(
         f"loopback-smoke-run-identity|{run_id}|{config.direction}".encode()
     ).hexdigest()
@@ -982,13 +1328,51 @@ class LoopbackSmokeRunner:
             raise LoopbackSmokeConfigError("network_audit_mode-not-allowlisted")
         self._log_event("network-audit", "ok", self.network_audit_outcome)
 
-    def _launch_listener(self) -> None:
+    def _role_pair(self) -> ProcessRoleAssignment:
+        """Return the unique role mapping for the configured direction."""
+
+        try:
+            return ROLE_ASSIGNMENTS[self.config.direction]
+        except KeyError as exc:
+            raise LoopbackSmokeConfigError(
+                "direction-not-allowlisted"
+            ) from exc
+
+    def _listener_process_role(self) -> ProcessRole:
+        return self._role_pair().listener
+
+    def _dialer_process_role(self) -> ProcessRole:
+        return self._role_pair().dialer
+
+    def _build_command(
+        self,
+        process_role: ProcessRole,
+        transport_role: TransportRole,
+    ) -> tuple[str, ...]:
+        """Return the bounded command for the requested role pair.
+
+        Plan 075 corrects the Plan 069 defect where the runner
+        selected the i2pr launcher for both transport roles. The
+        helper-source and observer-patch digests are measured inline
+        so the launched process is bound to the exact on-disk
+        artifacts through the strict driver config.
+        """
+
         if self.run_root is None:
             raise LoopbackSmokeRunError(
                 "run-root-not-set",
                 stage="preflight",
                 reason="run-root-not-set",
             )
+        if process_role == ProcessRole.I2PR:
+            return self._build_i2pr_command(transport_role)
+        if process_role == ProcessRole.REFERENCE:
+            return self._build_reference_command(transport_role)
+        raise LoopbackSmokeConfigError(
+            f"process-role-not-allowlisted:{process_role}"
+        )
+
+    def _build_i2pr_command(self, transport_role: TransportRole) -> tuple[str, ...]:
         binary = self.repo_root / "target/debug/i2pr-interop"
         if not binary.is_file():
             raise LoopbackSmokeRunError(
@@ -996,68 +1380,162 @@ class LoopbackSmokeRunner:
                 stage="build",
                 reason="i2pr-launcher-missing",
             )
-        if self.config.is_i2pr_initiator:
-            scenario = self.run_root / "scenarios" / "dialer.toml"
-        else:
-            scenario = self.run_root / "scenarios" / "listener.toml"
-        command: tuple[str, ...] = (
+        scenario = self.run_root / "scenarios" / f"{transport_role}.toml"
+        if not scenario.is_file():
+            raise LoopbackSmokeRunError(
+                "i2pr-scenario-missing",
+                stage="build",
+                reason=f"i2pr-scenario-{transport_role}-missing",
+            )
+        return (
             str(binary),
             "ntcp2",
-            "listen",
+            str(transport_role),
             "--scenario-config",
             str(scenario),
         )
-        self.i2pr_handle = _ProcessHandle(
-            label="i2pr-listener",
-            command=command,
-            log_path=self.run_root / "i2pr-logs" / "listener.log",
+
+    def _build_reference_command(self, transport_role: TransportRole) -> tuple[str, ...]:
+        if not I2PD_RUN_SCRIPT.is_file():
+            raise LoopbackSmokeRunError(
+                "reference-run-script-missing",
+                stage="build",
+                reason="reference-run-script-missing",
+            )
+        if not os.access(I2PD_RUN_SCRIPT, os.X_OK):
+            raise LoopbackSmokeRunError(
+                "reference-run-script-not-executable",
+                stage="build",
+                reason="reference-run-script-not-executable",
+            )
+        if not self.config.reference_driver_binary.is_file():
+            raise LoopbackSmokeRunError(
+                "reference-driver-binary-missing",
+                stage="build",
+                reason="reference-driver-binary-missing",
+            )
+        ref_config = self.run_root / "ref-config.json"
+        if not ref_config.is_file():
+            raise LoopbackSmokeRunError(
+                "reference-strict-config-missing",
+                stage="build",
+                reason="reference-strict-config-missing",
+            )
+        # The Plan 064 strict driver config already encodes the
+        # transport role; the run script is the committed runtime
+        # seam. The driver mode is set inside the strict config.
+        _ = transport_role
+        return (
+            "bash",
+            str(I2PD_RUN_SCRIPT),
+            "--driver-binary",
+            str(self.config.reference_driver_binary),
+            "--strict-config",
+            str(ref_config),
         )
-        self.i2pr_handle.start()
-        self._record_pid("i2pr-listener", self.i2pr_handle.pid())
-        self.protocol.mark("process_started")
-        self._log_event("listener-spawn", "ok", str(command))
+
+    def _launch_listener(self) -> None:
+        listener_role = self._listener_process_role()
+        if self.run_root is None:
+            raise LoopbackSmokeRunError(
+                "run-root-not-set",
+                stage="preflight",
+                reason="run-root-not-set",
+            )
+        command = self._build_command(listener_role, TransportRole.LISTENER)
+        handle = self._instantiate_process_handle(
+            listener_role, TransportRole.LISTENER, command
+        )
+        self._install_handle(listener_role, TransportRole.LISTENER, handle)
+        if listener_role == ProcessRole.I2PR:
+            self.protocol.mark("process_started")
+        self._log_event(
+            "listener-spawn" if listener_role == ProcessRole.I2PR
+            else "reference-listener-spawn",
+            "ok",
+            f"role={listener_role} cmd={_command_summary(command)}",
+        )
 
     def _launch_dialer(self) -> None:
+        dialer_role = self._dialer_process_role()
         if self.run_root is None:
             raise LoopbackSmokeRunError(
                 "run-root-not-set",
                 stage="preflight",
                 reason="run-root-not-set",
             )
-        binary = self.repo_root / "target/debug/i2pr-interop"
-        if not binary.is_file():
+        command = self._build_command(dialer_role, TransportRole.DIALER)
+        handle = self._instantiate_process_handle(
+            dialer_role, TransportRole.DIALER, command
+        )
+        self._install_handle(dialer_role, TransportRole.DIALER, handle)
+        self._log_event(
+            "dialer-spawn" if dialer_role == ProcessRole.I2PR
+            else "reference-dialer-spawn",
+            "ok",
+            f"role={dialer_role} cmd={_command_summary(command)}",
+        )
+
+    def _instantiate_process_handle(
+        self,
+        process_role: ProcessRole,
+        transport_role: TransportRole,
+        command: tuple[str, ...],
+    ) -> _ProcessHandle:
+        if self.run_root is None:
             raise LoopbackSmokeRunError(
-                "i2pr-launcher-missing",
-                stage="build",
-                reason="i2pr-launcher-missing",
+                "run-root-not-set",
+                stage="preflight",
+                reason="run-root-not-set",
             )
-        if self.config.is_i2pr_initiator:
-            scenario = self.run_root / "scenarios" / "listener.toml"
-        else:
-            scenario = self.run_root / "scenarios" / "dialer.toml"
-        command: tuple[str, ...] = (
-            str(binary),
-            "ntcp2",
-            "dial",
-            "--scenario-config",
-            str(scenario),
+        label = f"{process_role}-{transport_role}"
+        log_path = (
+            self.run_root / "i2pr-logs"
+            / f"{transport_role}.log"
+            if process_role == ProcessRole.I2PR
+            else self.run_root / "ref-logs"
+            / f"{transport_role}.log"
         )
-        self.reference_handle = _ProcessHandle(
-            label="i2pr-dialer",
-            command=command,
-            log_path=self.run_root / "i2pr-logs" / "dialer.log",
+        handle = _ProcessHandle(label=label, command=command, log_path=log_path)
+        handle.start()
+        self._record_pid(label, handle.pid())
+        return handle
+
+    def _install_handle(
+        self,
+        process_role: ProcessRole,
+        transport_role: TransportRole,
+        handle: _ProcessHandle,
+    ) -> None:
+        if process_role == ProcessRole.I2PR and transport_role == TransportRole.LISTENER:
+            self.i2pr_handle = handle
+            return
+        if process_role == ProcessRole.I2PR and transport_role == TransportRole.DIALER:
+            self.i2pr_handle = handle
+            return
+        if process_role == ProcessRole.REFERENCE and transport_role == TransportRole.LISTENER:
+            self.reference_handle = handle
+            return
+        if process_role == ProcessRole.REFERENCE and transport_role == TransportRole.DIALER:
+            self.reference_handle = handle
+            return
+        raise LoopbackSmokeConfigError(
+            "role-pair-not-allowlisted"
         )
-        self.reference_handle.start()
-        self._record_pid("i2pr-dialer", self.reference_handle.pid())
-        self._log_event("dialer-spawn", "ok", str(command))
 
     def _monitor_protocol(self) -> None:
         """Drive the protocol monitoring loop.
 
-        The default implementation drives a deterministic loop on
-        :pyattr:`run_root` events and TCP loopback checks. Tests
-        override this method to inject success and failure outcomes
-        without launching the actual binaries.
+        The Plan 075 implementation binds protocol milestones to
+        validated structured events from the reference driver. The
+        TCP loopback probe is a non-authoritative diagnostic that
+        only feeds ``tcp_connected``. The protocol milestones
+        (``ntcp2_authenticated``, ``frame_emitted``,
+        ``frame_authenticated_and_decrypted``, ``i2np_message_decoded``)
+        are derived solely from validated events.
+
+        Tests override this method to inject success and failure
+        outcomes without launching the actual binaries.
         """
 
         if self.run_root is None:
@@ -1070,7 +1548,7 @@ class LoopbackSmokeRunner:
         while time.monotonic() < deadline:
             if self._check_listener_ready():
                 break
-            if self.i2pr_handle is None or self.i2pr_handle.exit_code() is not None:
+            if self._listener_exited_prematurely():
                 raise LoopbackSmokeRunError(
                     "listener-exited-before-ready",
                     stage="process-start",
@@ -1085,10 +1563,7 @@ class LoopbackSmokeRunner:
             )
         tcp_deadline = time.monotonic() + self.config.handshake_timeout_seconds
         while time.monotonic() < tcp_deadline:
-            if check_loopback_listening(
-                int(self.peer_listen_port or 0),
-                timeout_seconds=0.5,
-            ):
+            if self._await_tcp_connected():
                 self.protocol.mark("tcp_connected")
                 break
             time.sleep(0.05)
@@ -1098,11 +1573,106 @@ class LoopbackSmokeRunner:
                 stage="connect",
                 reason="tcp-connect-timeout",
             )
-        self.protocol.mark("ntcp2_authenticated")
-        self.protocol.mark("frame_emitted")
-        self.protocol.mark("frame_authenticated_and_decrypted")
-        self.protocol.mark("i2np_message_decoded")
-        self._log_event("protocol", "ok", "milestones-reached")
+        self._consume_reference_events()
+
+    def _listener_exited_prematurely(self) -> bool:
+        """Return ``True`` when the listener process has exited."""
+
+        handle = self._listener_handle()
+        if handle is None or handle.exit_code() is None:
+            return False
+        return True
+
+    def _listener_handle(self) -> _ProcessHandle | None:
+        if self._listener_process_role() == ProcessRole.I2PR:
+            return self.i2pr_handle
+        return self.reference_handle
+
+    def _await_tcp_connected(self) -> bool:
+        peer_port = int(self.peer_listen_port or 0)
+        if peer_port <= 0:
+            return False
+        return check_loopback_listening(peer_port, timeout_seconds=0.5)
+
+    def _consume_reference_events(self) -> None:
+        """Read the reference event stream and validate every milestone.
+
+        Plan 075 closes the Plan 069 defect where the runner auto-
+        marked protocol milestones after a TCP loopback probe. The
+        milestone set is now derived solely from validated structured
+        events emitted by the reference driver. The runner fails
+        closed with :data:`TYPED_BLOCKER_REFERENCE_EVENTS_MISSING`
+        when the event stream is missing, and with
+        :data:`TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN` when a
+        milestone lacks a validated event.
+        """
+
+        if self.run_root is None:
+            raise LoopbackSmokeRunError(
+                "run-root-not-set",
+                stage="preflight",
+                reason="run-root-not-set",
+            )
+        events_path = self.run_root / "ref-events" / "events.ndjson"
+        if not events_path.is_file():
+            raise LoopbackSmokeRunError(
+                TYPED_BLOCKER_REFERENCE_EVENTS_MISSING,
+                stage="protocol",
+                reason=TYPED_BLOCKER_REFERENCE_EVENTS_MISSING,
+            )
+        expected_message_id = derive_delivery_status_message_id(
+            run_id=self.run_id,
+            scenario_id=self.config.scenario_id,
+            correlation_nonce=self.run_id,
+        )
+        driver_binary_digest = _measured_provenance_digest(
+            "driver_binary_sha256", self.config.reference_driver_binary
+        )
+        seen_sequences: set[int] = set()
+        validated = 0
+        for event in _iter_validated_reference_events(
+            events_path,
+            expected_message_id=expected_message_id,
+            expected_direction=self.config.direction,
+            expected_run_id=self.run_id,
+            expected_peer_router_hash_sha256=self.local_router_hash_sha256,
+            expected_local_router_hash_sha256=self.peer_router_hash_sha256,
+            expected_driver_binary_sha256=driver_binary_digest,
+            seen_sequences=seen_sequences,
+        ):
+            validated += 1
+            kind = event["event_kind"]
+            if kind == "ntcp2_authenticated":
+                self.protocol.mark("ntcp2_authenticated")
+            elif kind == "frame_emitted":
+                self.protocol.mark("frame_emitted")
+            elif kind == "frame_authenticated_and_decrypted":
+                self.protocol.mark("frame_authenticated_and_decrypted")
+            elif kind == "i2np_message_decoded":
+                self.protocol.mark("i2np_message_decoded")
+        if validated == 0:
+            raise LoopbackSmokeRunError(
+                TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                stage="protocol",
+                reason=TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+            )
+        # Plan 075 closes the loopback-probe defect: every protocol
+        # milestone must be backed by a validated event. The runner
+        # raises only when a milestone is missing a backing event,
+        # not when the run produced a strictly stronger subset.
+        for milestone in (
+            "ntcp2_authenticated",
+            "frame_emitted",
+            "frame_authenticated_and_decrypted",
+            "i2np_message_decoded",
+        ):
+            if not getattr(self.protocol, milestone):
+                raise LoopbackSmokeRunError(
+                    TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN,
+                    stage="protocol",
+                    reason=f"{milestone}-no-event",
+                )
+        self._log_event("protocol", "ok", "events-validated")
 
     def _check_listener_ready(self) -> bool:
         if self.run_root is None:
@@ -1111,8 +1681,11 @@ class LoopbackSmokeRunner:
                 stage="preflight",
                 reason="run-root-not-set",
             )
-        if self.config.is_i2pr_initiator:
-            return self._probe_loopback(int(self.local_listen_port or 0))
+        if self._listener_process_role() == ProcessRole.I2PR:
+            return self._probe_i2pr_listener_ready()
+        return self._probe_loopback_listener_ready()
+
+    def _probe_i2pr_listener_ready(self) -> bool:
         status_path = self.run_root / "i2pr-state-listener" / "status.jsonl"
         if not status_path.is_file():
             return False
@@ -1122,7 +1695,10 @@ class LoopbackSmokeRunner:
                 return True
         return False
 
-    def _probe_loopback(self, port: int) -> bool:
+    def _probe_loopback_listener_ready(self) -> bool:
+        port = int(self.peer_listen_port or 0)
+        if port <= 0:
+            return False
         try:
             with socket.create_connection((LOOPBACK_IPV4, port), timeout=0.25):
                 self.protocol.mark("listener_ready")
@@ -1485,6 +2061,11 @@ __all__ = [
     "DEFAULT_TOTAL_TIMEOUT_SECONDS",
     "HEX40",
     "HEX64",
+    "I2PD_DRIVER_DIR",
+    "I2PD_DRIVER_SOURCE",
+    "I2PD_OBSERVER_PATCH",
+    "I2PD_RUN_SCRIPT",
+    "I2PD_SOURCE_LOCK",
     "LOOPBACK_IPV4",
     "LOOPBACK_IPV6",
     "LoopbackSmokeConfig",
@@ -1494,11 +2075,24 @@ __all__ = [
     "LoopbackSmokeRunner",
     "MAX_DEADLINE_SECONDS",
     "MIN_DEADLINE_SECONDS",
+    "ProcessRole",
+    "ProcessRoleAssignment",
     "REFERENCE_DRIVER_MODE",
+    "REFERENCE_EVENT_SCHEMA",
+    "REFERENCE_EVENT_VERSION",
+    "REFERENCE_IMPLEMENTATION",
     "REFERENCE_NAME",
     "REFERENCE_REVISION",
     "REFERENCE_VERSION",
+    "ROLE_ASSIGNMENTS",
+    "REPO_ROOT",
     "SmokeProtocol",
+    "TransportRole",
+    "TYPED_BLOCKER_CODES",
+    "TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN",
+    "TYPED_BLOCKER_REFERENCE_EVENTS_MISSING",
+    "TYPED_BLOCKER_REFERENCE_PROCESS_NOT_EXECUTED",
+    "TYPED_BLOCKER_SYNTHETIC_PROVENANCE_REJECTED",
     "allocate_loopback_port",
     "check_loopback_listening",
     "cli_main",

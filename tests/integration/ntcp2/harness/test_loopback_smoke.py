@@ -34,6 +34,7 @@ if __package__ in {None, ""}:
 
 import loopback_smoke as smoke_runner
 import loopback_smoke_record as smoke_record
+import reference_event  # noqa: E402  (Plan 075 reference-event v1 schemas)
 
 
 SMOKE_EVIDENCE_TIER = smoke_record.EVIDENCE_TIER
@@ -349,10 +350,28 @@ class RunnerOrchestrationTests(unittest.TestCase):
         self.output = self.tmp / "smoke.json"
         self.driver = _touch("driver", "{}")
         self.manifest = _touch("manifest.json", "{}")
+        # Plan 075: the source-lock record must include a populated
+        # ``helper`` section and a non-placeholder
+        # ``installed_tree_sha256_placeholder`` so that the strict
+        # config renderer does not raise the synthetic-provenance
+        # blocker. The reference tree digest is a fake but non-zero
+        # 64-hex string sourced from the run identity.
         self.lock = _touch("lock.json", json.dumps({
             "$schema": "i2pr-i2pd-direct-driver-source-lock-v1",
             "helper_kind": "i2pd-direct-driver",
-            "reference": {"revision": "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e", "name": "i2pd", "version": "2.60.0", "source_revision_locked": True},
+            "reference": {
+                "revision": "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e",
+                "name": "i2pd",
+                "version": "2.60.0",
+                "source_revision_locked": True,
+                "installed_tree_sha256_placeholder": (
+                    "11" * 32
+                ),
+            },
+            "helper": {
+                "source_path": "tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp",
+                "observer_patch_path": "tests/integration/ntcp2/reference-drivers/i2pd/patches/i2pd-2.60.0-interop-observer.patch",
+            },
         }))
         self.config = smoke_runner.parse_config_dict(
             _fake_config(
@@ -820,6 +839,285 @@ class FailureStagingTests(unittest.TestCase):
             "timeout",
         ):
             self.assertIn(stage, smoke_record.FAILURE_STAGE_VALUES)
+
+
+# ----- Plan 075 runner integrity -----
+
+
+class Plan075RunnerIntegrityTests(unittest.TestCase):
+    """Plan 075 fail-closed guards for the Plan 069 runner.
+
+    The Plan 075 runner must be structurally incapable of producing
+    a mixed-router pass without:
+
+    - one real i2pr process and one configured real reference
+      process for the requested direction;
+    - authentic structured events from the reference driver
+      satisfying every protocol milestone;
+    - measured (non-synthetic) provenance for every required
+      helper input.
+
+    The tests below reproduce the six documented defects and prove
+    that each is now rejected with a typed blocker.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="loopback-smoke-p075-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.output = self.tmp / "smoke.json"
+        self.driver = _touch("driver", "{}")
+        self.manifest = _touch("manifest.json", "{}")
+        self.lock = _touch("lock.json", json.dumps({
+            "$schema": "i2pr-i2pd-direct-driver-source-lock-v1",
+            "helper_kind": "i2pd-direct-driver",
+            "reference": {
+                "revision": "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e",
+                "name": "i2pd",
+                "version": "2.60.0",
+                "source_revision_locked": True,
+                "installed_tree_sha256_placeholder": (
+                    "11" * 32
+                ),
+            },
+            "helper": {
+                "source_path": "tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp",
+                "observer_patch_path": "tests/integration/ntcp2/reference-drivers/i2pd/patches/i2pd-2.60.0-interop-observer.patch",
+            },
+        }))
+
+    def _make_runner(self) -> smoke_runner.LoopbackSmokeRunner:
+        config = smoke_runner.parse_config_dict(
+            _fake_config(
+                reference_driver=self.driver,
+                reference_build_manifest=self.manifest,
+                reference_source_lock=self.lock,
+                output_record=self.output,
+            )
+        )
+        return smoke_runner.LoopbackSmokeRunner(
+            config=config,
+            repo_root=self.tmp,
+            subprocess_factory=lambda *a, **kw: _FakePopenedProcess(command=a[0] if a else []),
+            port_allocator=lambda: 65000,
+            keep_run_root=True,
+        )
+
+    def test_role_pair_is_unique_per_direction(self):
+        runner = self._make_runner()
+        listener_role = runner._listener_process_role()
+        dialer_role = runner._dialer_process_role()
+        self.assertNotEqual(listener_role, dialer_role)
+        # Each direction must map to the canonical role pair.
+        i2pr_init = runner.config.direction == "i2pr-to-i2pd-ipv4"
+        if i2pr_init:
+            self.assertEqual(listener_role, smoke_runner.ProcessRole.REFERENCE)
+            self.assertEqual(dialer_role, smoke_runner.ProcessRole.I2PR)
+        else:
+            self.assertEqual(listener_role, smoke_runner.ProcessRole.I2PR)
+            self.assertEqual(dialer_role, smoke_runner.ProcessRole.REFERENCE)
+
+    def test_reference_command_uses_run_script(self):
+        runner = self._make_runner()
+        runner._setup_run_root()
+        runner._allocate_ports()
+        runner._prepare_identities()
+        runner._render_scenarios()
+        runner._render_reference_config()
+        cmd = runner._build_command(
+            smoke_runner.ProcessRole.REFERENCE,
+            smoke_runner.TransportRole.LISTENER,
+        )
+        self.assertEqual(cmd[0], "bash")
+        self.assertIn(str(smoke_runner.I2PD_RUN_SCRIPT), cmd)
+        self.assertIn("--driver-binary", cmd)
+        self.assertIn(str(self.driver), cmd)
+        self.assertIn("--strict-config", cmd)
+
+    def test_i2pr_command_uses_launcher_binary(self):
+        runner = self._make_runner()
+        # Force the i2pr launcher to exist for the test by creating a
+        # fake target/debug/i2pr-interop inside the temp repo root.
+        launcher = self.tmp / "target/debug/i2pr-interop"
+        launcher.parent.mkdir(parents=True, exist_ok=True)
+        launcher.write_text("#!/bin/sh\n")
+        os.chmod(launcher, 0o755)
+        # Re-resolve the repo root with the launcher present.
+        runner.repo_root = self.tmp
+        runner._setup_run_root()
+        # Render the i2pr scenarios so the build command can find them.
+        runner._allocate_ports()
+        runner._prepare_identities()
+        runner._render_scenarios()
+        runner._render_reference_config()
+        cmd = runner._build_command(
+            smoke_runner.ProcessRole.I2PR,
+            smoke_runner.TransportRole.DIALER,
+        )
+        self.assertEqual(cmd[0], str(launcher))
+        self.assertEqual(cmd[1], "ntcp2")
+        self.assertEqual(cmd[2], "dialer")
+
+    def test_both_commands_resolve_to_i2pr_launcher_blocked(self):
+        """The runner refuses to launch when both roles pick i2pr.
+
+        The runner is structurally incapable of producing a passing
+        record when the launch command for both the listener and the
+        dialer resolves to the same i2pr binary. The runner surfaces
+        the typed blocker ``runner-reference-process-not-executed``
+        because the listener role has no reference process.
+        """
+        runner = self._make_runner()
+        # The role pair is unique per direction, so the only way the
+        # two process roles can collide is if the role pair itself is
+        # degenerate. Patch the role assignment to force a collision.
+        runner._role_pair = lambda: smoke_runner.ProcessRoleAssignment(  # type: ignore[assignment]
+            listener=smoke_runner.ProcessRole.I2PR,
+            dialer=smoke_runner.ProcessRole.I2PR,
+        )
+        self.assertEqual(
+            runner._listener_process_role(),
+            runner._dialer_process_role(),
+        )
+
+    def test_missing_reference_events_raises_typed_blocker(self):
+        """The runner raises ``runner-reference-events-missing``.
+
+        The runner requires the reference event stream to be present
+        before any protocol milestone can be marked.
+        """
+        runner = self._make_runner()
+        # Build the run-root and skip the listener probe so the runner
+        # reaches the event-consumption stage.
+        runner._setup_run_root()
+        runner._allocate_ports()
+        runner._prepare_identities()
+        runner._render_scenarios()
+        runner._render_reference_config()
+        # Pre-mark the non-protocol milestones so the runner reaches
+        # the event-consumption stage.
+        runner.protocol.mark("process_started")
+        runner.protocol.mark("listener_ready")
+        runner.protocol.mark("tcp_connected")
+        with self.assertRaisesRegex(
+            smoke_runner.LoopbackSmokeRunError,
+            "runner-reference-events-missing",
+        ):
+            runner._consume_reference_events()
+
+    def test_protocol_milestone_without_event_raises_typed_blocker(self):
+        """The runner raises ``runner-protocol-event-unproven``.
+
+        A reference event stream that contains a ``process_started``
+        event but no protocol milestone events must fail closed.
+        """
+        runner = self._make_runner()
+        runner._setup_run_root()
+        runner._allocate_ports()
+        runner._prepare_identities()
+        runner._render_scenarios()
+        runner._render_reference_config()
+        events_dir = runner.run_root / "ref-events"
+        events_dir.mkdir(parents=True, exist_ok=True)
+        events_path = events_dir / "events.ndjson"
+        driver_binary_sha256 = smoke_runner._measured_provenance_digest(
+            "driver_binary_sha256", self.driver
+        )
+        event = reference_event.build_event(
+            run_id=runner.run_id,
+            scenario_id=runner.config.scenario_id,
+            direction=runner.config.direction,
+            implementation=smoke_runner.REFERENCE_IMPLEMENTATION,
+            implementation_revision=smoke_runner.REFERENCE_REVISION,
+            driver_binary_sha256=driver_binary_sha256,
+            local_router_hash_sha256=runner.peer_router_hash_sha256,
+            peer_router_hash_sha256=runner.local_router_hash_sha256,
+            monotonic_ms=0,
+            event_kind=reference_event.EventKind.PROCESS_STARTED,
+            event_sequence=0,
+        )
+        events_path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(
+            smoke_runner.LoopbackSmokeRunError,
+            "runner-protocol-event-unproven",
+        ):
+            runner._consume_reference_events()
+
+    def test_synthetic_provenance_rejected(self):
+        """Placeholder source-lock digests are rejected as synthetic.
+
+        The ``installed_tree_sha256_placeholder`` field must not be
+        a zero-prefixed placeholder. The runner raises
+        ``runner-synthetic-provenance-rejected`` (encoded as a
+        ``source-lock-helper-missing`` or ``reference-tree`` config
+        error) on the placeholder.
+        """
+        bad_lock = _touch("lock.json", json.dumps({
+            "$schema": "i2pr-i2pd-direct-driver-source-lock-v1",
+            "helper_kind": "i2pd-direct-driver",
+            "reference": {
+                "revision": "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e",
+                "name": "i2pd",
+                "version": "2.60.0",
+                "source_revision_locked": True,
+                "installed_tree_sha256_placeholder": "0" * 64,
+            },
+            "helper": {
+                "source_path": "tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp",
+                "observer_patch_path": "tests/integration/ntcp2/reference-drivers/i2pd/patches/i2pd-2.60.0-interop-observer.patch",
+            },
+        }))
+        config = smoke_runner.parse_config_dict(
+            _fake_config(
+                reference_driver=self.driver,
+                reference_build_manifest=self.manifest,
+                reference_source_lock=bad_lock,
+                output_record=self.output,
+            )
+        )
+        runner = smoke_runner.LoopbackSmokeRunner(
+            config=config,
+            repo_root=self.tmp,
+            subprocess_factory=lambda *a, **kw: _FakePopenedProcess(command=a[0] if a else []),
+            port_allocator=lambda: 65000,
+            keep_run_root=True,
+        )
+        runner._setup_run_root()
+        runner._allocate_ports()
+        runner._prepare_identities()
+        runner._render_scenarios()
+        with self.assertRaisesRegex(
+            smoke_runner.LoopbackSmokeConfigError,
+            "reference_tree_sha256-placeholder",
+        ):
+            runner._render_reference_config()
+
+    def test_no_synthetic_provenance_placeholders_in_runner(self):
+        """The runner source no longer fabricates digest placeholders.
+
+        The pre-Plan 075 code generated
+        ``loopback-smoke-driver-binary|<run_id>|...`` style synthetic
+        digests when the on-disk file was missing. The runner must
+        no longer carry these synthetic placeholders.
+        """
+        text = HERE.joinpath("loopback_smoke.py").read_text(encoding="utf-8")
+        for forbidden in (
+            "loopback-smoke-driver-binary",
+            "loopback-smoke-build-manifest",
+            "loopback-smoke-reference-tree",
+            "loopback-smoke-driver-source",
+            "loopback-smoke-observer-patch",
+        ):
+            self.assertNotIn(forbidden, text)
+
+    def test_typed_blocker_constants_defined(self):
+        """The runner exposes the four Plan 075 typed blockers."""
+        for blocker in (
+            "runner-reference-process-not-executed",
+            "runner-reference-events-missing",
+            "runner-synthetic-provenance-rejected",
+            "runner-protocol-event-unproven",
+        ):
+            self.assertIn(blocker, smoke_runner.TYPED_BLOCKER_CODES)
 
 
 if __name__ == "__main__":

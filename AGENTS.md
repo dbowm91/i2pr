@@ -1502,7 +1502,57 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_develop
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan068.py'
 ```
 
+## Plan 074 real-driver and constrained-host corrective roadmap
+
+Plan 074 is the active corrective roadmap for Milestone 3 NTCP2
+interoperability. Plan 074 supersedes Plan 070 as the next executable
+plan and reclassifies the implemented Plan 069 lane as orchestration
+scaffolding and fake-process test coverage only; it is not valid
+mixed-router evidence until Plan 075 closes. Plan 074 is the parent
+authority for the active sequence **Plan 075 → Plan 076 → Plan 077 →
+Plan 078 → Plan 079**. Plan 070 and Plan 071 are no longer active
+execution authority.
+
+The corrected repository state is:
+
+```text
+plan_068_staged_evidence = implemented
+plan_069_runner_scaffolding = implemented_but_not_valid_mixed_router_lane
+real_i2pd_driver = not_implemented
+real_i2pd_library_linkage = absent
+real_reference_process_in_plan069_runner = absent
+real_mixed_router_attempts = 0
+current_rootless_namespace_lane = unavailable
+multipass_lane = unreliable_or_unavailable
+support = experimental
+advertised = false
+normal_daemon_activation = disabled
+```
+
+The constrained-host lane decision is ordered: existing accessible
+rootful Docker daemon (`--network none`), QEMU TCG guest (`-nic none`),
+inherited connected TCP descriptors plus `no_new_privs`/seccomp for
+reduced-scope protocol diagnostics, manually triggered dedicated
+remote Linux runner, and a typed no-full-runtime-lane blocker.
+Rootless namespaces, bubblewrap, rootless Podman/Docker, user-level
+systemd `PrivateNetwork`, and repeated Multipass recovery are not
+active work items on the known host.
+
 ## Plan 069 host-compatible NTCP2 loopback smoke lane
+
+> **Reclassification (Plan 074, supersession note).** Plan 069
+> implements the Plan 067 Level 1 host-loopback smoke runner and its
+> static boundary check, but at the time Plan 074 was registered the
+> runner was scaffolding/fake-process coverage only. The Plan 069
+> runner selected the i2pr launcher for both process handles, did not
+> invoke the supplied i2pd binary as the reference process, and could
+> promote protocol milestones without consuming real structured
+> reference events. The Plan 064 i2pd helper's listen/dial paths were
+> terminal stubs when real pinned i2pd libraries were not linked. The
+> Plan 069 closure record (`plans/069-status.md`) is preserved as a
+> snapshot of that scaffolding state. Plan 075 is the runner integrity
+> and evidence correction pass; the Plan 069 lane is not valid
+> mixed-router evidence until Plan 075 closes.
 
 Plan 069 implements the Plan 067 Level 1 host-loopback smoke lane.
 The lane is a non-production composition that exercises a single
@@ -1564,11 +1614,60 @@ Plan 069 delivers:
 - `plans/069-status.md` — the closure record with exact commands,
   results, and no fabricated live pass.
 
-Plan 069 does not claim mixed-router interoperability by itself; it
-creates the lane used by Plan 070. Plan 069 also does not modify
-production NTCP2 code or the i2pd direct driver.
+Plan 069 does not claim mixed-router interoperability by itself; the
+implementation surface is **scaffolding and fake-process test coverage
+only** under Plan 074 until Plan 075 restores direction-aware process
+roles, structured reference events, measured provenance, and
+fail-closed guards. Plan 069 also does not modify production NTCP2
+code or the i2pd direct driver.
 
-Required focused checks for Plan 069:
+## Plan 075 Plan 069 runner integrity and evidence correction
+
+Plan 075 corrects the Plan 069 runner so it is structurally
+incapable of producing a mixed-router pass unless it launches one
+real i2pr process and one configured real reference process and
+consumes authentic structured events from both.
+
+The corrected runner must:
+
+- launch the reference role through the configured reference driver
+  via `tests/integration/ntcp2/reference-drivers/i2pd/run-driver.sh`,
+  not a second `i2pr-interop` process;
+- bind every accepted event to a measured reference process binary
+  digest, implementation name, run ID, direction, Router Hash pair,
+  and exact DeliveryStatus message ID;
+- derive milestones only from validated structured events
+  (`ntcp2_authenticated`, `frame_emitted`,
+  `frame_authenticated_and_decrypted`, `i2np_message_decoded`), never
+  from a TCP loopback probe alone;
+- refuse synthetic provenance fallback hashes that fabricate a
+  schema-valid digest from a run string;
+- fail closed with one of the typed blockers
+  `runner-reference-process-not-executed`,
+  `runner-reference-events-missing`,
+  `runner-synthetic-provenance-rejected`, or
+  `runner-protocol-event-unproven` whenever any of the above
+  contracts is violated.
+
+Required focused checks for Plan 075:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_loopback_smoke.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_loopback_smoke_record.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_event.py'
+bash scripts/check-ntcp2-loopback-smoke-boundary.sh
+cargo fmt --all --check
+cargo check --workspace --all-targets
+cargo test --workspace
+git diff --check
+```
+
+Plan 075 does not build i2pd, run a real mixed-router direction, add
+Docker/QEMU/namespaces/CI, change NTCP2 protocol code, or produce a
+Level 2 or Level 3 record.
+
+Required focused checks for Plan 069 (after the Plan 075 fix
+lands):
 
 ```text
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_loopback_smoke.py'

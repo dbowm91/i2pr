@@ -38,6 +38,19 @@ required_markers=(
   "i2pr-i2pd-direct-driver-config-v1"
   "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
   "i2pd-direct-driver"
+  # Plan 075 runner integrity markers
+  "TYPED_BLOCKER_REFERENCE_PROCESS_NOT_EXECUTED"
+  "TYPED_BLOCKER_REFERENCE_EVENTS_MISSING"
+  "TYPED_BLOCKER_SYNTHETIC_PROVENANCE_REJECTED"
+  "TYPED_BLOCKER_PROTOCOL_EVENT_UNPROVEN"
+  "ProcessRole"
+  "TransportRole"
+  "ROLE_ASSIGNMENTS"
+  "I2PD_RUN_SCRIPT"
+  "I2PD_DRIVER_SOURCE"
+  "I2PD_OBSERVER_PATCH"
+  "_consume_reference_events"
+  "REFERENCE_EVENT_SCHEMA"
 )
 for needle in "${required_markers[@]}"; do
   if ! grep -Fq -- "$needle" "$runner"; then
@@ -106,6 +119,7 @@ required_test_markers=(
   "TypedBlockerTests"
   "CorrelationAuthorityTests"
   "FailureStagingTests"
+  "Plan075RunnerIntegrityTests"
 )
 for marker in "${required_test_markers[@]}"; do
   if ! grep -Fq -- "$marker" "$tests"; then
@@ -129,5 +143,11 @@ fi
 # --- Plan 069 must be documented ---
 [[ -f "$root/plans/069-host-compatible-ntcp2-loopback-smoke-lane.md" ]] \
   || fail "Plan 069 plan-of-record is missing"
+
+# --- Plan 075 plan-of-record and closure status must be documented ---
+[[ -f "$root/plans/075-plan-069-runner-integrity-and-evidence-correction.md" ]] \
+  || fail "Plan 075 plan-of-record is missing"
+[[ -f "$root/plans/075-status.md" ]] \
+  || fail "Plan 075 closure status is missing"
 
 echo "Plan 069 loopback smoke boundary checks passed"

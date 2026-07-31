@@ -631,3 +631,53 @@ bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-rootless-interop-boundary.sh
 bash scripts/check-multipass-interop-boundary.sh
 ```
+
+## Plan 074 real-driver and constrained-host corrective roadmap
+
+Plan 074 is the active corrective roadmap for Milestone 3 NTCP2
+interoperability. Plan 074 supersedes Plan 070 as the next executable
+plan and reclassifies the implemented Plan 069 lane as orchestration
+scaffolding and fake-process test coverage only; it is not valid
+mixed-router evidence until Plan 075 closes. Plan 074 is the parent
+authority for the active sequence **Plan 075 → Plan 076 → Plan 077 →
+Plan 078 → Plan 079**. Plan 070 and Plan 071 are no longer active
+execution authority.
+
+The Plan 064 i2pd direct driver requires real library linkage and
+genuine transport implementation. The Plan 064 helper's listen/dial
+paths are terminal stubs when real pinned i2pd libraries are not
+linked. The Plan 069 runner was scaffolding/fake-process coverage
+only: it launched the i2pr launcher for both process handles and
+could promote protocol milestones without consuming real structured
+reference events. Zero real mixed-router attempts remain until Plan
+078 executes.
+
+The constrained-host lane decision is ordered: existing accessible
+rootful Docker daemon (`--network none`), QEMU TCG guest (`-nic none`),
+inherited connected TCP descriptors plus `no_new_privs`/seccomp for
+reduced-scope protocol diagnostics, manually triggered dedicated
+remote Linux runner, and a typed no-full-runtime-lane blocker.
+Rootless namespaces, bubblewrap, rootless Podman/Docker, user-level
+systemd `PrivateNetwork`, and repeated Multipass recovery are not
+active work items on the known host.
+
+## Plan 075 Plan 069 runner integrity and evidence correction
+
+Plan 075 corrects the Plan 069 runner so it is structurally incapable
+of producing a mixed-router pass unless it launches one real i2pr
+process and one configured real reference process and consumes
+authentic structured events from both. The corrected runner must
+launch the reference role through the configured reference driver
+via `tests/integration/ntcp2/reference-drivers/i2pd/run-driver.sh`,
+bind every accepted event to a measured reference process binary
+digest, implementation name, run ID, direction, Router Hash pair,
+and exact DeliveryStatus message ID, derive milestones only from
+validated structured events, refuse synthetic provenance fallback
+hashes, and fail closed with one of the typed blockers
+`runner-reference-process-not-executed`,
+`runner-reference-events-missing`,
+`runner-synthetic-provenance-rejected`, or
+`runner-protocol-event-unproven`. Plan 075 does not build i2pd, run
+a real mixed-router direction, add Docker/QEMU/namespaces/CI, change
+NTCP2 protocol code, or produce a Level 2 or Level 3 record. NTCP2
+remains experimental and non-advertised.
