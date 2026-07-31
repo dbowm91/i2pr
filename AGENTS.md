@@ -1501,3 +1501,78 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_loopbac
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_development_validation.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan068.py'
 ```
+
+## Plan 069 host-compatible NTCP2 loopback smoke lane
+
+Plan 069 implements the Plan 067 Level 1 host-loopback smoke lane.
+The lane is a non-production composition that exercises a single
+two-process NTCP2 direction (one i2pr launcher process, one Plan 064
+i2pd direct driver process) on the host loopback, without sudo,
+namespaces, Multipass, or any public-network access. The runner is
+structurally incapable of producing a Level 3 release bundle or
+certificate.
+
+The runner lives in
+`tests/integration/ntcp2/harness/loopback_smoke.py` and the shell
+entry point lives in `scripts/interop/run-ntcp2-loopback-smoke.sh`.
+The runner is invoked through:
+
+```text
+bash scripts/interop/run-ntcp2-loopback-smoke.sh \
+  --direction <i2pr-to-i2pd-ipv4|i2pd-to-i2pr-ipv4> \
+  --reference-driver <path> \
+  --reference-build-manifest <path> \
+  --reference-source-lock <path> \
+  --output <smoke-record.json> \
+  --source-commit <40-lowercase-hex> \
+  [--network-audit-mode auto|strace|configuration-only] \
+  [--diagnostics-mode off|sanitized]
+```
+
+The runner accepts only the two i2pd directions; the Java and
+Emissary directions are explicitly out of scope for the lane. The
+diagnostics mode accepts only `off` or `sanitized`; raw payload
+capture is structurally unsupported.
+
+Plan 069 delivers:
+
+- `tests/integration/ntcp2/harness/loopback_smoke.py` — the runner
+  module. Owns the strict CLI/config parser, the run-root lifecycle,
+  the loopback port allocator, the Plan 065 strict scenario
+  renderer, the Plan 064 strict driver config builder, the
+  listener/dialer process ownership and cleanup, the network-audit
+  probe (strace-allowlist or configuration-only), the
+  failure-stage classifier, and the Plan 068 smoke record writer.
+  The runner must not import or call Plan 056/066 candidate,
+  bundle, certificate, rootless-topology, or Multipass authority.
+- `scripts/interop/run-ntcp2-loopback-smoke.sh` — the thin shell
+  entry point. Locates the repository root, validates the required
+  inputs are present, invokes the Python runner, and forwards its
+  exit status. The wrapper must never invoke sudo, namespaces,
+  containers, VMs, or public-network access.
+- `tests/integration/ntcp2/harness/test_loopback_smoke.py` — the
+  Plan 069 test matrix (42 cases). Exercises the strict config
+  parser, the failure staging, the cleanup contract, the
+  network-audit degradation, the listener-before-dialer ordering,
+  the exact DeliveryStatus correlation, the typed-blocker rules,
+  the runner ownership invariants, and the static shell wrapper
+  contract.
+- `scripts/check-ntcp2-loopback-smoke-boundary.sh` — the static
+  Plan 069 boundary check. Verifies the runner/shell/test artifacts
+  are present, the allowlist markers are committed, and the runner
+  is free of release/rootless/Multipass authority.
+- `plans/069-status.md` — the closure record with exact commands,
+  results, and no fabricated live pass.
+
+Plan 069 does not claim mixed-router interoperability by itself; it
+creates the lane used by Plan 070. Plan 069 also does not modify
+production NTCP2 code or the i2pd direct driver.
+
+Required focused checks for Plan 069:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_loopback_smoke.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_loopback_smoke_record.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan065.py'
+bash scripts/check-ntcp2-loopback-smoke-boundary.sh
+```

@@ -1132,4 +1132,41 @@ if grep -Eq 'i2pr-ntcp2-loopback-smoke-v1|i2pr-ntcp2-development-validation-v1' 
   exit 1
 fi
 
+# Plan 069: host-compatible NTCP2 loopback smoke lane. The runner
+# module, the shell entry point, the focused test matrix, and the
+# static boundary checker must all be present and reference the
+# expected markers. The runner must remain free of
+# Plan 056/066 candidate/bundle/certificate/rootless/Multipass
+# authority.
+if ! test -f "$root/tests/integration/ntcp2/harness/loopback_smoke.py"; then
+  echo "Plan 069 loopback smoke runner module is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/scripts/interop/run-ntcp2-loopback-smoke.sh"; then
+  echo "Plan 069 shell entry point is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-ntcp2-loopback-smoke-v1' \
+    "$root/tests/integration/ntcp2/harness/loopback_smoke.py"; then
+  echo "Plan 069 loopback runner must reference the smoke record schema" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 069' "$root/AGENTS.md"; then
+  echo "AGENTS.md must record the Plan 069 closure section" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_loopback_smoke.py' "$root/AGENTS.md"; then
+  echo "Plan 069 test matrix is not wired into AGENTS.md" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_loopback_smoke.py"; then
+  echo "Plan 069 test matrix is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/scripts/check-ntcp2-loopback-smoke-boundary.sh"; then
+  echo "Plan 069 static boundary checker is missing" >&2
+  exit 1
+fi
+bash "$root/scripts/check-ntcp2-loopback-smoke-boundary.sh"
+
 echo "NTCP2 interoperability manifest and sanitized evidence boundary are valid (${scenario_count} scenarios)."

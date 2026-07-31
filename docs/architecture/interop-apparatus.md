@@ -1125,3 +1125,61 @@ test suite plus `cargo fmt --all --check`, `cargo check --workspace
 matrices, rootless checks, and Multipass checks remain available
 for explicit integration checkpoints but are not required for
 Level 1 or Level 2 closures.
+
+## Plan 069 host-compatible NTCP2 loopback smoke lane
+
+Plan 069 implements the Plan 067 Level 1 host-loopback smoke lane.
+The lane is a non-production composition that exercises a single
+two-process NTCP2 direction (one i2pr launcher process, one Plan 064
+i2pd direct driver process) on the host loopback, without sudo,
+namespaces, Multipass, or any public-network access. The runner is
+structurally incapable of producing a Level 3 release bundle or
+certificate. A passed Level 1 record satisfies the Plan 068 smoke
+schema (`i2pr-ntcp2-loopback-smoke-v1`) and the evidence tier
+`external-loopback-smoke`; it never satisfies a release-qualification
+predicate.
+
+Plan 069 lands:
+
+- `tests/integration/ntcp2/harness/loopback_smoke.py` — the runner
+  module. Owns the strict CLI/config parser, the run-root lifecycle,
+  the loopback port allocator, the Plan 065 strict scenario
+  renderer, the Plan 064 strict driver config builder, the
+  listener/dialer process ownership and cleanup, the network-audit
+  probe (strace-allowlist or configuration-only), the
+  failure-stage classifier, and the Plan 068 smoke record writer.
+  The runner must not import or call Plan 056/066 candidate,
+  bundle, certificate, rootless-topology, or Multipass authority.
+- `scripts/interop/run-ntcp2-loopback-smoke.sh` — the thin shell
+  entry point. The wrapper must never invoke sudo, namespaces,
+  containers, VMs, or public-network access.
+- `tests/integration/ntcp2/harness/test_loopback_smoke.py` — the
+  Plan 069 test matrix (42 cases). Exercises the strict config
+  parser, the failure staging, the cleanup contract, the
+  network-audit degradation, the listener-before-dialer ordering,
+  the exact DeliveryStatus correlation, the typed-blocker rules,
+  the runner ownership invariants, and the static shell wrapper
+  contract.
+- `scripts/check-ntcp2-loopback-smoke-boundary.sh` — the static
+  Plan 069 boundary check. Verifies the runner/shell/test artifacts
+  are present, the allowlist markers are committed, and the runner
+  is free of release/rootless/Multipass authority.
+- `plans/069-status.md` — the closure record with exact commands,
+  results, and no fabricated live pass.
+
+The Plan 068 Level 1 smoke record schema
+(`i2pr-ntcp2-loopback-smoke-v1`) remains the canonical record
+contract. Plan 069 consumes it without modifying the schema. A
+Level 1 passed record requires every positive boolean to be `True`,
+`cleanup_clean = True`, and `network_audit != not-run`. Raw payload,
+private key, Noise state, and full RouterInfo bytes are forbidden.
+
+Plan 069 does not claim mixed-router interoperability by itself; it
+creates the lane used by Plan 070. Plan 069 also does not modify
+production NTCP2 code, the i2pd direct driver, or the Plan 065 strict
+launcher scenario contract.
+
+The Plan 046 `apparmor_restrict_on` host remains the Plan 046
+negative baseline; the Plan 048/049 Multipass recovery lane is
+the canonical external path. Plan 070 will execute the Plan 069
+lane and update Milestone 3 status based on the Level 1 outcomes.

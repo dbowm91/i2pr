@@ -475,6 +475,38 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_develop
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan068.py'
 ```
 
+## Plan 069 host-compatible NTCP2 loopback smoke lane
+
+Plan 069 implements the Plan 067 Level 1 host-loopback smoke lane.
+The lane is a non-production composition that exercises a single
+two-process NTCP2 direction (one i2pr launcher process, one Plan 064
+i2pd direct driver process) on the host loopback, without sudo,
+namespaces, Multipass, or any public-network access. The runner is
+structurally incapable of producing a Level 3 release bundle or
+certificate.
+
+Use the Plan 069 focused seam with:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_loopback_smoke.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_loopback_smoke_record.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan065.py'
+bash scripts/check-ntcp2-loopback-smoke-boundary.sh
+bash scripts/interop/run-ntcp2-loopback-smoke.sh \
+  --direction i2pr-to-i2pd-ipv4 \
+  --reference-driver <path> \
+  --reference-build-manifest <path> \
+  --reference-source-lock <path> \
+  --output <smoke-record.json> \
+  --source-commit <40-lowercase-hex>
+```
+
+The runner is the lane Plan 070 will exercise for the first real
+external i2pr/i2pd direction execution on a host where unprivileged
+namespaces are unavailable. Plan 070 owns the execution outcome and
+the Milestone 3 status update; Plan 069 builds the lane and proves
+it fails closed under the focused tests.
+
 ## Companion skills (load before doing this lane)
 
 ## Plan 044 mixed-runner composition (host-side executor)
