@@ -1,0 +1,132 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "i2pr-i2pd-direct-driver-build-manifest-v1",
+  "title": "Plan 064 i2pd direct NTCP2 driver build manifest",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "reference_name",
+    "reference_version",
+    "reference_revision",
+    "reference_source_tree_sha256",
+    "i2pd_archive_sha256",
+    "observer_patch_sha256",
+    "driver_source_sha256",
+    "driver_binary_sha256",
+    "instrumented_binary_sha256",
+    "uninstrumented_binary_sha256",
+    "linked_library_manifest_sha256",
+    "cmake_version",
+    "compiler_version",
+    "build_timestamp_utc"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "i2pr-i2pd-direct-driver-build-manifest-v1"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "reference_name": {
+      "type": "string",
+      "enum": ["i2pd"]
+    },
+    "reference_version": {
+      "type": "string",
+      "const": "2.60.0"
+    },
+    "reference_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "const": "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
+    },
+    "reference_source_tree_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "i2pd_archive_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "observer_patch_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "driver_source_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "driver_binary_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "instrumented_binary_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "uninstrumented_binary_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "linked_library_manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "cmake_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "compiler_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cmake_build_type": {
+      "type": "string"
+    },
+    "cmake_link_command": {
+      "type": "string"
+    },
+    "boost_library_digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "boost_system_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "boost_filesystem_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "boost_thread_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "openssl_library_digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "libssl_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "libcrypto_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "build_timestamp_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "build_command_version": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

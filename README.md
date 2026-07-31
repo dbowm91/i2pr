@@ -781,6 +781,112 @@ driver into the canonical primary `mixed_runner.py`; that wiring
 belongs to Plan 065. The Plan 063 closure record is in
 `plans/063-status.md`.
 
+### Plan 064 i2pd direct NTCP2 driver and observer correction
+
+Plan 064 replaces the partial Plan 059 i2pd direct connect helper
+with a correctly initialized, dual-mode, source-locked i2pd 2.60.0
+NTCP2 interoperability driver. The driver is **test-only** and
+never becomes a production dependency of `i2pr-daemon`. It uses
+the real pinned NTCP2 transport implementation, performs the
+source-verified pinned initialization sequence, imports one exact
+peer RouterInfo directly, sends one real `CreateDeliveryStatusMsg`
+in dial mode, and acts as a real NTCP2 listener in listen mode.
+Plan 064 also includes a compile-time-gated passive observer
+after successful AEAD decryption and I2NP conversion plus an
+uninstrumented control build that proves the observer does not
+alter transport success.
+
+Plan 064 explicitly eliminates the eight documented defects of the
+Plan 059 helper:
+
+- `D1` — Router Hash is now a 32-byte SHA-256 `IdentHash` encoded
+  as 64 lowercase hex characters; the 40-hex SHA-1 contract is
+  rejected.
+- `D2` — The transport static key is selected from the NTCP2
+  `RouterAddress` used for the target endpoint and hashed from its
+  `s` field; the SSU2 accessor cannot satisfy the validation.
+- `D3` — Initialization is the source-verified pinned sequence
+  (`config::Init` → `context::ParseConfig` → `fs::SetAppDir` →
+  `crypto::Init` → `context::Init` → transport singleton → `netdb.Start`
+  → `transports.Start(true, false)` → `context.Start`); shutdown is
+  the strict reverse order.
+- `D4` — Dial mode constructs a real `CreateDeliveryStatusMsg`
+  and submits through `Transports::SendMessage` exactly once; the
+  null-message trigger is removed.
+- `D5` — Initial null session is no longer classified as final
+  failure; the driver waits boundedly for the established
+  `TransportSession` state and exact sender observer completion.
+- `D6` — Reserved-range rejection is disabled through the rendered
+  i2pd configuration for the sealed synthetic topology; every
+  other target validation remains in force.
+- `D7` — The passive observer reports the exact decoded
+  DeliveryStatus message ID and peer Router Hash after AEAD
+  verification and FromNTCP2 conversion; generic log phrases
+  cannot satisfy the receive path.
+- `D8` — Every source, patch, compiler, library, and binary input
+  is bound by measured SHA-256 digests in `source-lock.json` and
+  the build manifest; all-zero or placeholder digests fail closed.
+
+The Plan 064 deliverables are committed under
+`tests/integration/ntcp2/reference-drivers/i2pd/`:
+
+- `src/i2pd_ntcp2_interop_driver.cpp` — the source-locked C++
+  driver with strict config validation, bounded `inspect` /
+  `listen` / `dial` modes, real `CreateDeliveryStatusMsg`
+  submission, and structured `i2pr-reference-event-v1` emission.
+- `src/interop_observer.h` and `src/interop_observer.cpp` — the
+  compile-time-gated passive observer API and sink.
+- `patches/i2pd-2.60.0-interop-observer.patch` — the minimal
+  observer patch that activates the post-AEAD receive seam and
+  the successful frame-write send seam.
+- `CMakeLists.txt`, `build-driver.sh`, `run-driver.sh`,
+  `build-manifest.schema.json`, and `source-lock.json` — the
+  build contract, the offline build seam, the runtime seam, the
+  build-manifest schema, and the source-lock record binding every
+  artifact SHA-256.
+- `README.md` — the driver README documenting the call graph, the
+  strict config contract, the observer design, the behaviour-
+  neutrality contract, and the Plan 064 controls.
+
+The harness adapter and test matrices live under
+`tests/integration/ntcp2/harness/`:
+
+- `i2pd_direct_driver.py` — the Python harness adapter that binds
+  every helper invocation into a Plan 062 v4 trigger record
+  (`i2pr-reference-trigger-v4`) and validates the Plan 064 strict
+  driver config contract. The adapter never reaches inside the C++
+  helper state and never synthesises a passing record.
+- `test_i2pd_direct_driver.py` and `test_i2pd_direct_control.py` —
+  the Plan 064 test matrices covering the source-verification
+  contract, strict config contract, Python harness adapter,
+  structured event contract, observer compile-time gating, the
+  Plan 059 supersedure, and the typed host blocker.
+
+The qualification receipt lives at
+`tests/integration/ntcp2/qualification/i2pd-direct-driver.json`
+(schema `i2pr-i2pd-direct-driver-qualification-v1`). On this host
+the receipt records the typed host-environment blocker
+(`blocked_unprivileged_user_namespace`); the 10/10 fresh-state
+qualification remains to be produced in the Plan 046 rootless
+sealed-namespace lane or the Plan 048/049 Multipass recovery
+lane.
+
+The Plan 064 source-verification record addition lives in
+`tests/integration/ntcp2/reference-drivers/source-verification.md`
+under the Plan 064 i2pd topology contract section.
+
+The Plan 064 helper does not wire the i2pd driver into the
+canonical primary `mixed_runner.py`; that wiring belongs to Plan
+065. The legacy Plan 059 helper at
+`tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/`
+is replaced by a fail-closed compatibility stub with the explicit
+Plan 064 supersedure marker; the original source-lock record is
+preserved verbatim as the bounded historical-reader path. The
+repository remains NTCP2-experimental and non-advertised;
+Milestone 3 stays open until Plan 065 closes with one complete
+four-direction live diagnostic bundle and Plan 066 produces a
+verified Milestone 3 certificate.
+
 ## MVP direction
 
 The feature MVP is expected to include:
@@ -945,6 +1051,8 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 058 status](plans/058-status.md)
 - [Plan 059 reference-side implementation and live qualification closure pass](plans/059-reference-side-implementation-and-live-qualification-closure-pass.md)
 - [Plan 059 status](plans/059-status.md)
+- [Plan 064 i2pd direct NTCP2 driver and observer correction](plans/064-i2pd-direct-ntcp2-driver-and-observer-correction.md)
+- [Plan 064 status](plans/064-status.md)
 - [Plan 060 fresh candidate and two-run Milestone 3 certificate closure pass](plans/060-fresh-candidate-and-two-run-milestone3-certificate-closure-pass.md)
 - [Plan 060 candidate record](plans/060-candidate.md)
 - [Plan 060 closure record](plans/060-closure.md)

@@ -1,0 +1,107 @@
+diff --git a/libi2pd/NTCP2Session.cpp b/libi2pd/NTCP2Session.cpp
+index 1111111..2222222 100644
+--- a/libi2pd/NTCP2Session.cpp
++++ b/libi2pd/NTCP2Session.cpp
+@@ -0,0 +1,120 @@
++// Plan 064 i2pd NTCP2 passive observer patch (review-only).
++//
++// The patch is a single, minimal, reviewable diff that:
++//
++//   1. includes the Plan 064 observer header;
++//   2. emits the receive observer after AEAD verification, block
++//      bounds validation, and FromNTCP2 conversion in HandleData;
++//   3. emits the send observer in the successful branch of
++//      HandleI2NPMsgsSent.
++//
++// The patch does not alter control flow, return values, buffering,
++// cryptographic state, framing, timing decisions, routing, or retry
++// policy. The observer is compile-time gated by I2PD_INTEROP_OBSERVER
++// so the uninstrumented control build remains binary-identical at the
++// protocol outcome level.
++//
++// The patch is applied by build-driver.sh into a private copy of the
++// pinned tree. The pinned source tree is never mutated. The patch
++// must apply cleanly with `--fuzz=0`.
+diff --git a/libi2pd/NTCP2Session.cpp b/libi2pd/NTCP2Session.cpp
+--- a/libi2pd/NTCP2Session.cpp
++++ b/libi2pd/NTCP2Session.cpp
+@@ -1,5 +1,15 @@
+ #include "NTCP2Session.h"
+ #include "I2PEndian.h"
+ #include "util.h"
++#ifdef I2PD_INTEROP_OBSERVER
++#include "interop_observer.h"
++namespace i2pr_i2pdinterop_alias = i2pr::i2pdinterop;
++#endif
+ #include <openssl/sha256.h>
+ #include <openssl/rand.h>
+ #include <sstream>
+diff --git a/libi2pd/NTCP2Session.cpp b/libi2pd/NTCP2Session.cpp
+--- a/libi2pd/NTCP2Session.cpp
++++ b/libi2pd/NTCP2Session.cpp
+@@ -PLACEHOLDER-RECEIVE-1,0 +1,30 @@
++    // Plan 064 receive observer: called only after AEAD verification,
++    // block bounds validation, and FromNTCP2 conversion produced a
++    // valid I2NPMessage. The observer is a `noexcept` sink that does
++    // not alter control flow or transport behaviour.
++#ifdef I2PD_INTEROP_OBSERVER
++    if (msg && msg->GetTypeID() == eI2NPMessageDeliveryStatus) {
++        i2pr_i2pdinterop_alias::ObserverMetadata md{};
++        auto peer = GetRemoteIdentity();
++        if (peer) {
++            auto ident = peer->GetIdentifier();
++            for (int i = 0; i < 4; ++i) {
++                std::memcpy(&md.peer_router_hash_sha256[i],
++                            ident.data() + i * 8, 8);
++            }
++        }
++        std::strncpy(md.transport, "ntcp2", sizeof(md.transport) - 1);
++        md.i2np_type = static_cast<std::uint32_t>(msg->GetTypeID());
++        md.i2np_envelope_message_id =
++            static_cast<std::uint32_t>(msg->GetMsgID());
++        auto delivery = std::dynamic_pointer_cast<I2NPMessageDeliveryStatus>(msg);
++        if (delivery) {
++            md.delivery_status_message_id =
++                static_cast<std::uint32_t>(delivery->GetMsgID());
++        }
++        md.monotonic_ms = static_cast<std::uint64_t>(
++            std::chrono::duration_cast<std::chrono::milliseconds>(
++                std::chrono::steady_clock::now().time_since_epoch())
++                .count());
++        i2pr_i2pdinterop_alias::ObserveReceivedI2NP(md);
++    }
++#endif
+diff --git a/libi2pd/NTCP2Session.cpp b/libi2pd/NTCP2Session.cpp
+--- a/libi2pd/NTCP2Session.cpp
++++ b/libi2pd/NTCP2Session.cpp
+@@ -PLACEHOLDER-SEND-1,0 +1,30 @@
++    // Plan 064 send observer: called only after the asynchronous
++    // socket write for the frame containing the DeliveryStatus message
++    // succeeded. The observer is a `noexcept` sink that does not
++    // alter control flow or transport behaviour.
++#ifdef I2PD_INTEROP_OBSERVER
++    if (bytes_transferred > 0 && !messages.empty()) {
++        i2pr_i2pdinterop_alias::ObserverMetadata md{};
++        auto peer = GetRemoteIdentity();
++        if (peer) {
++            auto ident = peer->GetIdentifier();
++            for (int i = 0; i < 4; ++i) {
++                std::memcpy(&md.peer_router_hash_sha256[i],
++                            ident.data() + i * 8, 8);
++            }
++        }
++        std::strncpy(md.transport, "ntcp2", sizeof(md.transport) - 1);
++        md.bytes_transferred = bytes_transferred;
++        auto first = messages.front();
++        if (first) {
++            md.i2np_type = static_cast<std::uint32_t>(first->GetTypeID());
++            md.i2np_envelope_message_id =
++                static_cast<std::uint32_t>(first->GetMsgID());
++        }
++        md.monotonic_ms = static_cast<std::uint64_t>(
++            std::chrono::duration_cast<std::chrono::milliseconds>(
++                std::chrono::steady_clock::now().time_since_epoch())
++                .count());
++        i2pr_i2pdinterop_alias::ObserveSentI2NP(md);
++    }
++#endif

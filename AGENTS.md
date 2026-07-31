@@ -1062,6 +1062,91 @@ bash scripts/check-rootless-interop-boundary.sh
 bash scripts/check-multipass-interop-boundary.sh
 ```
 
+## Plan 064 i2pd direct NTCP2 driver and observer correction
+
+Plan 064 replaces the partial Plan 059 i2pd direct connect helper
+with a correctly initialized, dual-mode, source-locked i2pd 2.60.0
+NTCP2 interoperability driver. The driver is **test-only** and
+never becomes a production dependency of `i2pr-daemon`. Plan 064
+explicitly eliminates the eight documented Plan 064 defects
+(`D1`–`D8`): 64-hex SHA-256 Router Hash, NTCP2-address
+static-key binding, source-verified pinned initialization, real
+`CreateDeliveryStatusMsg` dispatch, bounded `SendMessage`
+asynchronous semantics, sealed-topology reserved-range disable,
+exact post-AEAD receive correlation, and measured provenance
+for every helper input.
+
+Plan 064 lands:
+
+- `tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp`
+  — the source-locked C++ driver with strict config validation,
+  bounded `inspect` / `listen` / `dial` modes, real
+  `CreateDeliveryStatusMsg` submission, and structured
+  `i2pr-reference-event-v1` emission.
+- `tests/integration/ntcp2/reference-drivers/i2pd/src/interop_observer.h`
+  and `interop_observer.cpp` — the compile-time-gated passive
+  observer API and sink.
+- `tests/integration/ntcp2/reference-drivers/i2pd/patches/i2pd-2.60.0-interop-observer.patch`
+  — the minimal observer patch that activates the post-AEAD
+  receive seam and the successful frame-write send seam.
+- `tests/integration/ntcp2/reference-drivers/i2pd/source-lock.json`
+  — the source-lock record
+  (`i2pr-i2pd-direct-driver-source-lock-v1`) binding the pinned
+  i2pd revision `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`, the
+  helper source path, the build contract, and the locked
+  constraints.
+- `tests/integration/ntcp2/reference-drivers/i2pd/build-manifest.schema.json`
+  — the build-manifest schema
+  (`i2pr-i2pd-direct-driver-build-manifest-v1`) that requires
+  measured digests for the i2pd source tree, the observer patch,
+  the helper source and binaries, the linked library manifest,
+  the CMake version, and the compiler version.
+- `tests/integration/ntcp2/reference-drivers/i2pd/CMakeLists.txt`,
+  `build-driver.sh`, `run-driver.sh`, and `README.md` — the
+  offline build contract, the runtime seam, and the driver
+  README.
+- `tests/integration/ntcp2/harness/i2pd_direct_driver.py` — the
+  Python harness adapter that binds every helper invocation into
+  a Plan 062 v4 trigger record (`i2pr-reference-trigger-v4`) and
+  validates the Plan 064 strict driver config contract. The
+  adapter never reaches inside the C++ helper state and never
+  synthesises a passing record.
+- `tests/integration/ntcp2/harness/test_i2pd_direct_driver.py`
+  and `test_i2pd_direct_control.py` — the Plan 064 test matrices
+  covering the source-verification contract, strict config
+  contract, Python harness adapter, structured event contract,
+  observer compile-time gating, the Plan 059 supersedure, and the
+  typed host blocker.
+- `tests/integration/ntcp2/qualification/i2pd-direct-driver.json`
+  — the Plan 064 qualification receipt
+  (`i2pr-i2pd-direct-driver-qualification-v1`). On this host the
+  receipt records the typed host-environment blocker
+  (`blocked_unprivileged_user_namespace`); the 10/10 fresh-state
+  qualification remains to be produced in the Plan 046 rootless
+  sealed-namespace lane or the Plan 048/049 Multipass recovery
+  lane.
+
+The Plan 064 source-verification record addition lives in
+`tests/integration/ntcp2/reference-drivers/source-verification.md`
+under the Plan 064 i2pd topology contract section. The Plan 059
+helper at `tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/`
+is replaced by a fail-closed compatibility stub with the explicit
+Plan 064 supersedure marker; the original source-lock record is
+preserved verbatim as the bounded historical-reader path.
+
+### Plan 064 focused checks
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_driver.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_control.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan062.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_trigger_v4.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_event.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+```
+
 ### Plan 062 focused checks
 
 ```text

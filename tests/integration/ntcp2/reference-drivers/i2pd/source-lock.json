@@ -1,0 +1,91 @@
+{
+  "$schema": "i2pr-i2pd-direct-driver-source-lock-v1",
+  "schema_version": 1,
+  "helper_kind": "i2pd-direct-driver",
+  "schema_marker": "i2pr-reference-trigger-v4",
+  "reference": {
+    "name": "i2pd",
+    "version": "2.60.0",
+    "revision": "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e",
+    "source_repository": "https://github.com/PurpleI2P/i2pd.git",
+    "source_revision_locked": true,
+    "installed_tree_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "build_contract": {
+    "cmake_minimum": "3.20",
+    "cxx_standard": 17,
+    "cxx_extensions": false,
+    "compiler": "g++-13 (Ubuntu 24.04 toolchain)",
+    "required_boost_components": ["system", "thread", "filesystem"],
+    "required_openssl": true,
+    "required_threads": true,
+    "observer_macro": "I2PD_INTEROP_OBSERVER",
+    "observer_compile_time_gated": true,
+    "build_manifest_schema": "build-manifest.schema.json"
+  },
+  "linked_libraries": {
+    "boost_system_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
+    "boost_filesystem_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
+    "boost_thread_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
+    "openssl_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "helper": {
+    "source_path": "tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp",
+    "observer_header_path": "tests/integration/ntcp2/reference-drivers/i2pd/src/interop_observer.h",
+    "observer_source_path": "tests/integration/ntcp2/reference-drivers/i2pd/src/interop_observer.cpp",
+    "observer_patch_path": "tests/integration/ntcp2/reference-drivers/i2pd/patches/i2pd-2.60.0-interop-observer.patch",
+    "cmake_path": "tests/integration/ntcp2/reference-drivers/i2pd/CMakeLists.txt",
+    "build_script_path": "tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh",
+    "run_script_path": "tests/integration/ntcp2/reference-drivers/i2pd/run-driver.sh",
+    "source_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
+    "instrumented_binary_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
+    "uninstrumented_binary_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
+    "observer_patch_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "call_graph": {
+    "entry_path": "main(int, char**)",
+    "transports_header": "libi2pd/Transports.h",
+    "transports_implementation": "libi2pd/Transports.cpp",
+    "ntcp2_session": "libi2pd/NTCP2Session.cpp",
+    "delivery_status_helper": "libi2pd/DeliveryStatus.cpp:CreateDeliveryStatusMsg",
+    "router_info_accessor": "libi2pd/RouterInfo.h:GetNTCP2StaticPublicKey, GetNTCP2IV, GetIdentHash",
+    "netdb_accessor": "libi2pd/NetDb.h:AddRouterInfo, FindRouter",
+    "passive_observer_seam_receive": "libi2pd/NTCP2Session.cpp:HandleData post-AEAD and post-FromNTCP2",
+    "passive_observer_seam_send": "libi2pd/NTCP2Session.cpp:HandleI2NPMsgsSent success branch",
+    "source_inspection_record": "tests/integration/ntcp2/reference-drivers/source-verification.md"
+  },
+  "constraints": [
+    "no NTCP2 cryptography, handshake, framing, or signature verification patches",
+    "no SSU2 enablement; SSU2 disabled in the rendered config",
+    "exactly one outbound dial or inbound listener per invocation (one-shot contract)",
+    "bounded monotonic timeout per phase (default 15s, max 600s)",
+    "no retries, no sleeps-as-state-readiness, no DNS, no public network egress",
+    "no SAM, no I2CP, no HTTP/I2PControl, no streaming destination, no tunnel pool",
+    "no reseed; no NetDB public lookups; reserved-range rejection disabled through the rendered config only for the sealed synthetic topology",
+    "disposable data directory is mode 0700 and never inherited",
+    "shutdown is mandatory before exit; reverse-ownership order",
+    "nonzero exit code on every rejected or blocked outcome",
+    "passive observer is compile-time gated by I2PD_INTEROP_OBSERVER; uninstrumented build must omit every observer call site",
+    "behavior neutrality: instrumented and uninstrumented builds must produce identical protocol outcomes",
+    "no 40-hex SHA-1 Router Hash; 64-lowercase-hex SHA-256 only",
+    "no SSU2 accessor may satisfy NTCP2 static-key/IV validation",
+    "real DeliveryStatus I2NP message is the only outbound primary path",
+    "exactly one outbound DeliveryStatus is dispatched per dial invocation",
+    "structured event emission matches the Plan 062 reference-event v1 schema"
+  ],
+  "verification_required": [
+    "valid source-lock record",
+    "build manifest digest binding for both instrumented and uninstrumented binaries",
+    "linked library manifest SHA-256 binding",
+    "observer patch SHA-256 binding",
+    "correct peer RouterInfo validation (signature, network ID, hash, NTCP2 address, NTCP2 s key, NTCP2 i IV)",
+    "wired NetDB lookup returns the imported peer",
+    "successful NTCP2 listener bound to synthetic endpoint before delivery",
+    "successful NTCP2 dial within the bounded timeout for one real DeliveryStatus",
+    "exact DeliveryStatus message ID correlation on send and receive",
+    "structured event emission validates against the Plan 062 reference-event v1 schema",
+    "behavior neutrality between instrumented and uninstrumented builds",
+    "no listener port, lock file, or writable state survives outside owned roots",
+    "no SAM, no HTTP, no floodfill topology, no support router, no reseed"
+  ]
+}

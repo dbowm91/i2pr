@@ -3,6 +3,7 @@
   "schema_version": 1,
   "helper_kind": "i2pd-direct-helper",
   "schema_marker": "i2pr-reference-trigger-v3",
+  "supersedure": "This source-lock record is preserved verbatim as the Plan 059 historical-reader path. The canonical Plan 064 i2pd direct NTCP2 driver source-lock lives at tests/integration/ntcp2/reference-drivers/i2pd/source-lock.json (schema i2pr-i2pd-direct-driver-source-lock-v1, helper_kind i2pd-direct-driver, schema_marker i2pr-reference-trigger-v4). The Plan 059 helper carries the eight Plan 064 defects (D1-D8) and is replaced by the Plan 064 driver.",
   "reference": {
     "name": "i2pd",
     "version": "2.60.0",

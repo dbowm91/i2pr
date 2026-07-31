@@ -494,11 +494,77 @@ Plan 063 does not wire the Java driver into the canonical primary
 `mixed_runner.py`; that wiring belongs to Plan 065. Plan 063 status
 is in `plans/063-status.md`.
 
+## Plan 064 i2pd direct NTCP2 driver and observer correction
+
+Plan 064 replaces the partial Plan 059 i2pd direct connect helper
+with a correctly initialized, dual-mode, source-locked i2pd 2.60.0
+NTCP2 interoperability driver. The driver is **test-only** and
+never becomes a production dependency of `i2pr-daemon`. Plan 064
+explicitly eliminates the eight documented defects of the Plan 059
+helper (`D1`–`D8`): 64-hex SHA-256 Router Hash, NTCP2-address
+static-key binding, source-verified pinned initialization, real
+`CreateDeliveryStatusMsg` dispatch, bounded `SendMessage`
+asynchronous semantics, sealed-topology reserved-range disable,
+exact post-AEAD receive correlation, and measured provenance for
+every helper input.
+
+The Plan 064 deliverables are committed under
+`tests/integration/ntcp2/reference-drivers/i2pd/`:
+
+- `src/i2pd_ntcp2_interop_driver.cpp` — the source-locked C++
+  driver with strict config validation, bounded `inspect` /
+  `listen` / `dial` modes, real `CreateDeliveryStatusMsg`
+  submission, and structured `i2pr-reference-event-v1` emission.
+- `src/interop_observer.h` and `src/interop_observer.cpp` — the
+  compile-time-gated passive observer API and sink.
+- `patches/i2pd-2.60.0-interop-observer.patch` — the minimal
+  observer patch that activates the post-AEAD receive seam and
+  the successful frame-write send seam.
+- `CMakeLists.txt`, `build-driver.sh`, `run-driver.sh`,
+  `build-manifest.schema.json`, `source-lock.json`, and `README.md`
+  — the build contract, the offline build seam, the runtime
+  seam, the build-manifest schema, the source-lock record binding
+  every artifact SHA-256, and the driver README.
+
+The harness adapter and test matrices live under
+`tests/integration/ntcp2/harness/`:
+
+- `i2pd_direct_driver.py` — the Python harness adapter that binds
+  every helper invocation into a Plan 062 v4 trigger record
+  (`i2pr-reference-trigger-v4`) and validates the Plan 064 strict
+  driver config contract.
+- `test_i2pd_direct_driver.py` and `test_i2pd_direct_control.py` —
+  the Plan 064 test matrices covering the source-verification
+  contract, strict config contract, Python harness adapter,
+  structured event contract, observer compile-time gating, the
+  Plan 059 supersedure, and the typed host blocker.
+
+The qualification receipt lives at
+`tests/integration/ntcp2/qualification/i2pd-direct-driver.json`
+(schema `i2pr-i2pd-direct-driver-qualification-v1`). On this host
+the receipt records the typed host-environment blocker
+(`blocked_unprivileged_user_namespace`); the 10/10 fresh-state
+qualification remains to be produced in the Plan 046 rootless
+sealed-namespace lane or the Plan 048/049 Multipass recovery
+lane.
+
+The Plan 064 source-verification record addition lives in
+`tests/integration/ntcp2/reference-drivers/source-verification.md`
+under the Plan 064 i2pd topology contract section. The legacy
+Plan 059 helper at
+`tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/`
+is replaced by a fail-closed compatibility stub with the explicit
+Plan 064 supersedure marker; the original source-lock record is
+preserved verbatim as the bounded historical-reader path.
+
+Plan 064 does not wire the i2pd driver into the canonical primary
+`mixed_runner.py`; that wiring belongs to Plan 065.
+
 Focused checks:
 
 ```text
-python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_java_direct_driver.py'
-python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_java_direct_control.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_driver.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_control.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan062.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_trigger_v4.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_event.py'

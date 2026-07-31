@@ -667,6 +667,143 @@ if ! grep -Fq 'test_java_direct_control.py' "$root/AGENTS.md"; then
   exit 1
 fi
 
+# Plan 064: i2pd direct NTCP2 driver. The Plan 064 driver source, the
+# observer header, the observer source, the observer patch, the
+# source-lock record, the build-manifest schema, the build/run
+# scripts, the CMakeLists, the Python adapter, the test matrices, and
+# the qualification receipt must all be committed. The driver is
+# source-locked to the pinned i2pd 2.60.0 revision; the 64-hex SHA-256
+# Router Hash contract remains active.
+i2pd_helper_dir="$root/tests/integration/ntcp2/reference-drivers/i2pd"
+if ! test -f "$i2pd_helper_dir/src/i2pd_ntcp2_interop_driver.cpp"; then
+  echo "Plan 064 i2pd direct driver source is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pd-direct-driver' "$i2pd_helper_dir/src/i2pd_ntcp2_interop_driver.cpp"; then
+  echo "Plan 064 i2pd direct driver implementation marker is missing" >&2
+  exit 1
+fi
+if ! test -f "$i2pd_helper_dir/src/interop_observer.h"; then
+  echo "Plan 064 i2pd observer header is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'I2PD_INTEROP_OBSERVER' "$i2pd_helper_dir/src/interop_observer.h"; then
+  echo "Plan 064 i2pd observer header macro gate is missing" >&2
+  exit 1
+fi
+if ! test -f "$i2pd_helper_dir/src/interop_observer.cpp"; then
+  echo "Plan 064 i2pd observer source is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'I2PD_INTEROP_OBSERVER' "$i2pd_helper_dir/src/interop_observer.cpp"; then
+  echo "Plan 064 i2pd observer source macro gate is missing" >&2
+  exit 1
+fi
+if ! test -f "$i2pd_helper_dir/patches/i2pd-2.60.0-interop-observer.patch"; then
+  echo "Plan 064 i2pd observer patch is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'I2PD_INTEROP_OBSERVER' "$i2pd_helper_dir/patches/i2pd-2.60.0-interop-observer.patch"; then
+  echo "Plan 064 i2pd observer patch macro gate is missing" >&2
+  exit 1
+fi
+if ! test -f "$i2pd_helper_dir/source-lock.json"; then
+  echo "Plan 064 i2pd direct driver source-lock record is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-i2pd-direct-driver-source-lock-v1' "$i2pd_helper_dir/source-lock.json"; then
+  echo "Plan 064 i2pd direct driver source-lock schema marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pd-direct-driver' "$i2pd_helper_dir/source-lock.json"; then
+  echo "Plan 064 i2pd direct driver helper-kind marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e' "$i2pd_helper_dir/source-lock.json"; then
+  echo "Plan 064 i2pd direct driver pinned revision marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-reference-trigger-v4' "$i2pd_helper_dir/source-lock.json"; then
+  echo "Plan 064 i2pd direct driver v4 trigger binding marker is missing" >&2
+  exit 1
+fi
+if ! test -f "$i2pd_helper_dir/build-manifest.schema.json"; then
+  echo "Plan 064 i2pd direct driver build-manifest schema is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-i2pd-direct-driver-build-manifest-v1' "$i2pd_helper_dir/build-manifest.schema.json"; then
+  echo "Plan 064 i2pd direct driver build-manifest schema marker is missing" >&2
+  exit 1
+fi
+if ! test -f "$i2pd_helper_dir/CMakeLists.txt"; then
+  echo "Plan 064 i2pd direct driver CMake build contract is missing" >&2
+  exit 1
+fi
+if ! test -f "$i2pd_helper_dir/build-driver.sh"; then
+  echo "Plan 064 i2pd direct driver build script is missing" >&2
+  exit 1
+fi
+if ! test -f "$i2pd_helper_dir/run-driver.sh"; then
+  echo "Plan 064 i2pd direct driver run script is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/i2pd_direct_driver.py"; then
+  echo "Plan 064 i2pd direct driver Python adapter is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-reference-trigger-v4' "$root/tests/integration/ntcp2/harness/i2pd_direct_driver.py"; then
+  echo "Plan 064 i2pd direct driver Python adapter v4 trigger binding is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pd-direct-driver' "$root/tests/integration/ntcp2/harness/i2pd_direct_driver.py"; then
+  echo "Plan 064 i2pd direct driver Python adapter implementation marker is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_i2pd_direct_driver.py"; then
+  echo "Plan 064 i2pd direct driver test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'I2pdDriverArtifactsPresentTests' "$root/tests/integration/ntcp2/harness/test_i2pd_direct_driver.py"; then
+  echo "Plan 064 i2pd direct driver artifact tests are missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'I2pdStrictConfigValidationTests' "$root/tests/integration/ntcp2/harness/test_i2pd_direct_driver.py"; then
+  echo "Plan 064 i2pd direct driver strict config validation tests are missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'I2pdStructuredEventContractTests' "$root/tests/integration/ntcp2/harness/test_i2pd_direct_driver.py"; then
+  echo "Plan 064 i2pd direct driver structured event contract tests are missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_i2pd_direct_control.py"; then
+  echo "Plan 064 i2pd direct driver control test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'ControlTopologyContractTests' "$root/tests/integration/ntcp2/harness/test_i2pd_direct_control.py"; then
+  echo "Plan 064 i2pd direct driver control topology contract tests are missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/qualification/i2pd-direct-driver.json"; then
+  echo "Plan 064 i2pd direct driver qualification receipt is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-i2pd-direct-driver-qualification-v1' "$root/tests/integration/ntcp2/qualification/i2pd-direct-driver.json"; then
+  echo "Plan 064 i2pd direct driver qualification receipt schema marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 064' "$root/AGENTS.md"; then
+  echo "AGENTS.md must record the Plan 064 closure section" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_i2pd_direct_driver.py' "$root/AGENTS.md"; then
+  echo "Plan 064 i2pd direct driver test matrix is not wired into AGENTS.md" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_i2pd_direct_control.py' "$root/AGENTS.md"; then
+  echo "Plan 064 i2pd direct driver control test matrix is not wired into AGENTS.md" >&2
+  exit 1
+fi
+
 python3 "$root/scripts/interop/validate-evidence.py"
 python3 "$root/scripts/interop/validate-scenarios.py"
 

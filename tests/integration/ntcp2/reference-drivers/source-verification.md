@@ -474,3 +474,59 @@ pinned Java I2P 2.12.0 revision under the current four-direction
 contract until an authorized Plan 046 rootless sealed-namespace
 lane or Plan 048/049 Multipass recovery lane produces a passing
 10/10 qualification bundle.
+
+## Plan 064 i2pd direct NTCP2 driver
+
+The Plan 064 i2pd direct driver is the test-only, source-locked
+i2pd 2.60.0 NTCP2 reference helper. It supersedes the partial
+Plan 059 helper at
+`tests/integration/ntcp2/reference-drivers/i2pd_direct_connect/`
+and explicitly eliminates the eight documented Plan 064 defects
+(`D1`-`D8`). The driver follows the same two-process direct
+transport pattern as the Plan 063 Java driver:
+
+```text
+reference router (192.0.2.1) <---- NTCP2 ----> i2pr-interop (192.0.2.2)
+```
+
+The Plan 064 i2pd-to-i2pd control topology is the same shape, with
+two i2pd driver instances running as `listen` and `dial` inside a
+sealed namespace or Multipass recovery guest. The topology is:
+
+- one fixed synthetic IPv4 address per peer (`192.0.2.1`,
+  `192.0.2.2`);
+- one fixed per-scenario port allocation;
+- private network ID `99`;
+- no default route, no DNS, no reseed, no floodfill integration;
+- no support router, no SAM, no I2CP, no HTTP/I2PControl, no
+  tunnel pool;
+- direct signed RouterInfo exchange through the owned run root;
+- one real correlated DeliveryStatus I2NP message per direction;
+- fresh mutable identity and runtime state per direction and per run.
+
+The Plan 064 driver source, the source-lock record, the observer
+header, the observer source, the observer patch, the build contract,
+the Python harness adapter, the test matrix, the control test
+matrix, and the qualification receipt are authoritative artifacts.
+The Plan 064 driver exposes `inspect`, `listen`, and `dial` modes
+through a strict config contract, a compile-time-gated passive
+observer after successful AEAD verification and I2NP conversion,
+and an uninstrumented control build proving the observer does not
+alter transport success. The Plan 062 v4 trigger schema, the Plan
+062 reference-event v1 schema, and the Plan 062 v3 observation
+schema remain the authoritative schemas for the direction records.
+The `i2pd-to-i2pr-ipv4` direction remains a typed blocker for the
+pinned i2pd 2.60.0 revision on the Plan 046 `apparmor_restrict_on`
+negative baseline until an authorized Plan 046 rootless
+sealed-namespace lane or Plan 048/049 Multipass recovery lane
+produces a passing 10/10 qualification bundle.
+
+The Plan 064 driver never reaches inside the NTCP2 transport state,
+never bypasses authentication, never invents success markers, and
+never relies on a generic log phrase. The Plan 064 helper does not
+implement, bypass, or patch NTCP2 cryptography, Noise transcript
+state, framing, RouterInfo signature verification, or transport
+acceptance policy. The Plan 064 observer patch observes only after
+successful protocol operations; it does not alter control flow,
+return values, buffering, cryptographic state, framing, timing
+decisions, routing, or retry policy.
