@@ -1,9 +1,9 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/056/058/059 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, Plan 044 mixed-runner composition, typed Plan 052/053 evidence validation, Plan 055 reference-initiated trigger schema and source-inspected call graphs, Plan 056 certificate verifier, Plan 058 record and candidate integrity closure, Plan 059 i2pd direct helper, per-reference observation qualification receipts, and canonical pipeline live-mode wiring. Use when an agent is asked to run a Plan 038 profile on the host, prepare the reference routers, add or modify a scenario, dispatch a bounded mixed direction, create or validate a Plan 053 diagnostic bundle, validate the locked trigger record schema, audit Plan 056 candidate and supersession markers, run the Plan 059 i2pd helper controls, validate the Plan 059 qualification receipts, or validate evidence. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/056/058/059/074/075 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, Plan 044 mixed-runner composition, typed Plan 052/053 evidence validation, Plan 055 reference-initiated trigger schema and source-inspected call graphs, Plan 056 certificate verifier, Plan 058 record and candidate integrity closure, Plan 059 i2pd direct helper, per-reference observation qualification receipts, canonical pipeline live-mode wiring, the Plan 074 real-driver and constrained-host corrective roadmap, and the Plan 075 runner integrity and evidence correction. Use when an agent is asked to run a Plan 038 profile on the host, prepare the reference routers, add or modify a scenario, dispatch a bounded mixed direction, create or validate a Plan 053 diagnostic bundle, validate the locked trigger record schema, audit Plan 056 candidate and supersession markers, run the Plan 059 i2pd helper controls, validate the Plan 059 qualification receipts, exercise the Plan 075 runner integrity contract, or validate evidence. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
-# I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059)
+# I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/074/075)
 
 Use this skill from the repository root for the **host-side** Ubuntu 24.04
 amd64 Plan 038 reference-router NTCP2 interoperability harness. This skill
@@ -26,6 +26,9 @@ Read `AGENTS.md`, `plans/038-ubuntu-reference-router-interoperability-harness.md
 `plans/058-status.md`,
 `plans/059-reference-side-implementation-and-live-qualification-closure-pass.md`,
 `plans/059-status.md`,
+`plans/074-milestone-3-real-driver-and-constrained-host-corrective-roadmap.md`,
+`plans/075-plan-069-runner-integrity-and-evidence-correction.md`,
+`plans/075-status.md`,
 `tests/integration/ntcp2/README.md`, and the relevant `docs/adr/` records before changing the harness.
 
 The canonical reference identifiers are `java_i2p` and `i2pd`. Locked source
