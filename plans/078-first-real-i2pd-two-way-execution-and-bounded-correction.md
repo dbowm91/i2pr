@@ -2,7 +2,7 @@
 
 ## Status and dependencies
 
-- Status: planned.
+- Status: blocked-preflight (2026-07-31 host result recorded in `plans/078-status.md`).
 - Parent roadmap: Plan 074.
 - Requires Plans 075, 076, and 077 closed with a qualified full-runtime lane.
 - Must close before Plan 079.

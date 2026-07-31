@@ -1295,3 +1295,21 @@ with `full_runtime_lane = unavailable`; no Docker/QEMU packaging was added
 speculatively and Plan 078 remains blocked. See
 [ADR 0024](../adr/0024-constrained-host-ntcp2-execution-lanes.md) and
 [the Plan 077 closure](../../plans/077-status.md).
+
+## Plan 078 first real i2pd two-way execution
+
+Plan 078 is currently a preflight-only stop. The Plan 077 qualification
+record selects `inherited-descriptors-seccomp` with
+`full_runtime_lane = unavailable`, so the reduced descriptor capability cannot
+authorize either real direction. Docker daemon access and QEMU are unavailable
+on the current host; a manually defined remote workflow is not a qualification
+record. The stale Plan 049 guest is not reused when ownership or source
+continuity fails.
+
+Accordingly, no real reference process was launched, no Level 1 record was
+written, and no protocol failure or pass was inferred. Future execution must
+use fresh state and unique ports/message IDs, validate exact i2pr/i2pd binary
+digests and Router Hash continuity, consume structured authentication/frame/
+post-AEAD/I2NP events, verify the private network boundary, and prove cleanup.
+The exact preflight evidence and stop result are in
+[`plans/078-status.md`](../../plans/078-status.md).

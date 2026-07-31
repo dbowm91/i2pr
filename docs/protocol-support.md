@@ -408,3 +408,9 @@ system emulator; `PR_SET_NO_NEW_PRIVS` is available only for the explicitly
 reduced inherited-descriptor diagnostic. No protocol run occurred, so the
 support row remains experimental and non-advertised. Plan 078 requires a
 separately qualified full-runtime lane.
+
+Plan 078 was stopped before protocol execution on the current host with
+`full_runtime_lane_unavailable`; the reduced-scope capability selected by Plan
+077 is not interoperability evidence. No support-ledger status changed and
+NTCP2 remains experimental and non-advertised. See
+[`plans/078-status.md`](../plans/078-status.md).

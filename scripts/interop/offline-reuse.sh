@@ -22,7 +22,7 @@ export RUSTUP_AUTO_INSTALL=0
 export CARGO_BUILD_JOBS=2
 cd "$repo_root"
 bash "$repo_root/scripts/interop/build-references.sh" --offline
-cargo build --locked --package i2pr-interop
+cargo +1.95.0 build --locked --package i2pr-interop
 EOF
 
 python3 "$script_dir/cache-manifest.py" --verify

@@ -241,3 +241,10 @@ Linux, then a typed no-full-runtime-lane result. The probe and strict
 qualification contracts live in `execution_lane.py`; a capability or tool
 definition is not interoperability evidence. The current host closes Plan
 077 with `full_runtime_lane = unavailable` and leaves Plan 078 blocked.
+
+Plan 078 records that preflight stop in
+[`plans/078-status.md`](../../plans/078-status.md). The selected
+`inherited-descriptors-seccomp` capability is diagnostic-only, so neither
+i2pr-to-i2pd nor i2pd-to-i2pr may start until a current full-runtime
+qualification proves the lane's network boundary, exact binaries, two-process
+control, result export, and cleanup.

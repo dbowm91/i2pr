@@ -193,3 +193,19 @@ requires the pinned Java 2.12.0 and i2pd 2.60.0 references on an
 authorized Ubuntu 24.04 amd64 host or Multipass guest. Plan 054 does
 not close Milestone 3; the canonical external path is the
 `i2pr-multipass-recovery` skill.
+
+## Plan 078 preflight gate
+
+Run the constrained-host preflight before any protocol process:
+
+```text
+bash scripts/interop/probe-constrained-host-lanes.sh
+bash scripts/check-constrained-host-lane-boundary.sh
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'
+```
+
+Only a current qualification record with `full_runtime_lane = available` may
+authorize the two real i2pd directions. A reduced-scope selection, a remote
+workflow definition, a stale Multipass guest, or a loopback contract test is a
+typed preflight blocker, not protocol evidence. See `plans/078-status.md` for
+the current host result.

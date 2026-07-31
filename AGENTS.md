@@ -1808,3 +1808,15 @@ QEMU is absent, and the reduced descriptor capability is available but is not
 a full-runtime qualification. `target/interop/lane/qualification.json` must
 therefore retain `qualified = false` and `full_runtime_lane = unavailable`.
 Plan 078 must not run until a full-runtime qualification record exists.
+
+## Plan 078 first real i2pd two-way execution
+
+Plan 078 stops at preflight unless a current Plan 077 qualification record
+proves a full-runtime lane. On this host the selected
+`inherited-descriptors-seccomp` capability is reduced-scope only;
+`target/interop/lane/qualification.json` must remain
+`qualified = false` and `full_runtime_lane = unavailable`. Docker daemon
+access is unavailable, QEMU is absent, and the manual remote workflow is not
+qualification evidence. Do not launch either direction, reuse the stale
+Plan 049 Multipass instance, or emit a protocol result from a reduced-scope
+capability. The closure record is [plans/078-status.md](plans/078-status.md).

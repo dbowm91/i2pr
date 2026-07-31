@@ -1643,6 +1643,17 @@ The closure is [Plan 077 status](plans/077-status.md), and the architecture
 decision is [ADR 0024](docs/adr/0024-constrained-host-ntcp2-execution-lanes.md).
 NTCP2 remains experimental and non-advertised.
 
+### Plan 078 first real i2pd two-way execution
+
+Plan 078 was stopped at preflight on this host with the typed blocker
+`full_runtime_lane_unavailable`. The selected
+`inherited-descriptors-seccomp` capability is reduced-scope diagnostics only;
+it is not authorization for the normal listener/dial transport-manager lane.
+Docker daemon access is unavailable, QEMU is absent, and the manual remote
+workflow has no qualification record. No i2pr or i2pd protocol process was
+started, no Level 1 direction record exists, and no interoperability result is
+claimed. See [the Plan 078 status](plans/078-status.md).
+
 ## License
 
 A project license has not yet been selected. Do not copy implementation code from I2P+, i2pd, Emissary, or another router into this repository until license compatibility and provenance have been reviewed. Specifications and observed interoperability behavior may be used for clean-room implementation, subject to their applicable terms.
