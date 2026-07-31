@@ -2,6 +2,53 @@
 
 ## Status
 
+**Superseded by Plan 062.**
+
+Plan 062 (`plans/062-ntcp2-evidence-contract-and-architecture-correction.md`)
+supersedes the Plan 060 execution authority. The Plan 060 candidate
+is retired (`plans/060-candidate.md`) and may not be re-pinned or
+re-executed. The Plan 060 implementation surface
+(`tests/integration/ntcp2/harness/plan060.py`,
+`tests/integration/ntcp2/harness/test_plan060.py`, the Plan 060
+static boundary checks) is preserved as an audit record.
+
+The historical Plan 060 closure record (preserved verbatim below
+under "Historical Plan 060 closure") described the
+`declared-not-executable` typed blocker
+`blocked_execution_lane_unavailable` for this host. Plan 062 makes
+the blocker durable by retiring the Plan 060 candidate from all
+future candidate validators and the static boundary checker. Future
+candidate freezes must descend from the Plan 065 implementation
+floor or later, must use the Plan 062 v4 trigger schema, the Plan 062
+reference-event v1 schema, the Plan 062 v3 observation schema, and
+the 64-hex SHA-256 Router Hash contract.
+
+## Plan 062 supersession summary
+
+The Plan 062 evidence-contract correction retires the Plan 060
+candidate because:
+
+- the Plan 060 candidate was frozen before the Plan 062 schema
+  corrections and the 64-hex SHA-256 Router Hash contract;
+- the Plan 060 candidate inherited the rejected Java
+  support-topology premise (ADR 0021 Rejected); Plan 062 ADR 0022
+  (Accepted) replaces that premise with two-process direct transport
+  drivers;
+- the Plan 060 candidate was built on top of the Plan 059
+  implementation floor; the Plan 062 implementation floor for
+  future candidates is Plan 065 closure or later;
+- v3 trigger records and v2 observation records remain readable
+  for historical inspection but cannot contribute to a new passing
+  bundle; only Plan 062 v4 trigger records and v3 observation
+  records may contribute.
+
+The Plan 060 implementation surface remains mandatory; any change
+that removes or weakens the Plan 060 helper module, the Plan 060 test
+matrix, the static boundary checker extension, or the freeze-
+readiness invariants must be re-justified in a new plan-of-record.
+
+## Historical Plan 060 closure
+
 **Closed with the typed blocker `blocked_execution_lane_unavailable`.**
 
 Plan 060 closed on this host without producing a verified Milestone

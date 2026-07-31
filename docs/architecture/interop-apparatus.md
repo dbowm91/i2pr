@@ -568,3 +568,83 @@ revision exposes a transport-only direct seam or the closure
 contract is revised through a new ADR, and until either the Plan
 046 rootless sealed-namespace lane or the Plan 048/049 Multipass
 guest lane becomes runnable.
+
+## Plan 062 NTCP2 evidence-contract and architecture correction
+
+Plan 062 is the evidence-contract and architecture correction
+pass that supersedes the Plan 060 execution authority. Plan 062
+corrects the repository's mixed-router architecture and evidence
+contract before new reference drivers are implemented.
+
+Plan 062 lands:
+
+- `docs/adr/0022-direct-reference-router-ntcp2-interop-drivers.md`
+  (Accepted) — two-process direct transport drivers for Java I2P
+  and i2pd. ADR 0022 replaces the rejected Java-support-topology
+  premise (ADR 0021, Rejected by Plan 058) without rewriting
+  ADR 0021. The primary topology is one reference router plus
+  one i2pr process inside a rootless sealed network namespace or
+  an equivalently isolated guest; there is no support router,
+  floodfill, reseed, SAM, I2CP, HTTP/I2PControl, or tunnel pool
+  in the primary path.
+- `tests/integration/ntcp2/reference-drivers/source-verification.md`
+  — the source-locked API inspection record for the pinned Java
+  I2P 2.12.0 revision
+  (`2800040deee9bb376567b671ef2e9c34cf3e30b6`) and the pinned
+  i2pd 2.60.0 revision
+  (`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`).
+- `tests/integration/ntcp2/harness/reference_trigger_v4.py` — the
+  Plan 062 v4 trigger schema (`i2pr-reference-trigger-v4`). The
+  schema uses 64-lowercase-hex Router Hash for both local and
+  peer sides, mandates the per-run DeliveryStatus `message_id`
+  in `1..=0xffffffff`, binds the helper, source, build manifest,
+  observer patch, source inspection record, and run identity
+  digests, and rejects v3 trigger records for new bundles. The
+  historical v3 module remains the bounded historical-reader
+  path.
+- `tests/integration/ntcp2/harness/reference_event.py` — the
+  Plan 062 reference-event v1 schema
+  (`i2pr-reference-event-v1`). The schema records per-driver
+  structured events (`process_started`, `listener_ready`,
+  `router_info_exported`, `peer_router_info_validated`,
+  `tcp_connected`, `ntcp2_authenticated`, `frame_emitted`,
+  `frame_authenticated_and_decrypted`, `i2np_message_decoded`,
+  `terminal_clean`, `terminal_rejected`) with strict
+  per-process sequence ordering, exact DeliveryStatus message ID
+  correlation for data-phase events, and continuous Router Hash
+  binding.
+- `tests/integration/ntcp2/harness/observation_v3.py` — the Plan
+  062 v3 observation schema
+  (`i2pr-ntcp2-direction-observation-v3`). The schema adds the
+  mandatory correlation fields `delivery_status_message_id`,
+  `peer_router_hash_sha256`, `local_router_hash_sha256`, and
+  `source_event_sha256`. The receiver pass predicate requires
+  nonzero decrypt and decode counts and rejects
+  generic-phrase-only sources. The historical v2 module remains
+  the bounded historical-reader path.
+
+Plan 062 retires the Plan 060 candidate from all future
+candidate validators and the static boundary checker. The
+Plan 060 candidate record (`plans/060-candidate.md`) is preserved
+verbatim for audit; the Plan 060 closure record
+(`plans/060-closure.md`) carries the explicit "Superseded by
+Plan 062" marker. The future candidate implementation floor is
+Plan 065 closure or later. v3 trigger records and v2 observation
+records remain readable for historical inspection but cannot
+contribute to a new passing bundle; only Plan 062 v4 trigger
+records, v3 observation records, and reference-event v1 records
+may contribute.
+
+Plan 062 extends
+`scripts/check-ntcp2-interoperability.sh` to enforce the v4
+trigger schema, the v3 observation schema, the reference-event v1
+schema, the source-verification record, ADR 0022 (Accepted),
+the Plan 060 retirement markers, and the absence of active 40-hex
+SHA-1 Router Hash width in the active schemas. Plan 062 does not
+implement the Java or i2pd drivers; those belong to Plan 063 and
+Plan 064.
+
+NTCP2 stays experimental and non-advertised; Milestone 3 stays
+open until Plan 065 closes with one complete four-direction live
+diagnostic bundle and Plan 066 produces a verified Milestone 3
+certificate.

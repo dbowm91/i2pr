@@ -410,6 +410,159 @@ if ! grep -Fq 'Plan 060' "$root/AGENTS.md"; then
   exit 1
 fi
 
+# Plan 062: NTCP2 evidence-contract and architecture correction. The
+# v4 trigger schema, the reference-event v1 schema, the v3 observation
+# schema, ADR 0022, the Plan 062 source-verification record, the
+# Plan 062 test matrix, and the Plan 060 retirement marker must all
+# be committed. Active code must not carry the 40-hex SHA-1 Router
+# Hash width; the v3 trigger schema must remain a bounded
+# historical-reader path.
+if ! test -f "$root/tests/integration/ntcp2/harness/reference_trigger_v4.py"; then
+  echo "Plan 062 v4 trigger schema module is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'TRIGGER_SCHEMA = "i2pr-reference-trigger-v4"' \
+    "$root/tests/integration/ntcp2/harness/reference_trigger_v4.py"; then
+  echo "Plan 062 v4 trigger schema is missing or wrong version" >&2
+  exit 1
+fi
+if ! grep -Fq '"i2pr-reference-trigger-v4"' \
+    "$root/tests/integration/ntcp2/harness/evidence_bundle.py"; then
+  echo "Plan 062 v4 trigger schema is not allowlisted in evidence bundle" >&2
+  exit 1
+fi
+if ! grep -Fq 'delivery_status_message_id' \
+    "$root/tests/integration/ntcp2/harness/reference_trigger_v4.py"; then
+  echo "Plan 062 v4 trigger schema is missing the per-run DeliveryStatus message ID" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/reference_event.py"; then
+  echo "Plan 062 reference event schema module is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'EVENT_SCHEMA = "i2pr-reference-event-v1"' \
+    "$root/tests/integration/ntcp2/harness/reference_event.py"; then
+  echo "Plan 062 reference event schema is missing or wrong version" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/observation_v3.py"; then
+  echo "Plan 062 v3 observation schema module is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'OBSERVATION_SCHEMA = "i2pr-ntcp2-direction-observation-v3"' \
+    "$root/tests/integration/ntcp2/harness/observation_v3.py"; then
+  echo "Plan 062 v3 observation schema is missing or wrong version" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-ntcp2-direction-observation-v3' \
+    "$root/tests/integration/ntcp2/harness/evidence_bundle.py"; then
+  echo "Plan 062 v3 observation schema is not allowlisted in evidence bundle" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/reference-drivers/source-verification.md"; then
+  echo "Plan 062 source-verification record is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/docs/adr/0022-direct-reference-router-ntcp2-interop-drivers.md"; then
+  echo "Plan 062 ADR 0022 (direct reference router NTCP2 interop drivers) is missing" >&2
+  exit 1
+fi
+if ! grep -Eq '^- Status:\s*Accepted\b' \
+    "$root/docs/adr/0022-direct-reference-router-ntcp2-interop-drivers.md"; then
+  echo "Plan 062 ADR 0022 must be Accepted after source verification" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 062' "$root/docs/adr/0022-direct-reference-router-ntcp2-interop-drivers.md"; then
+  echo "ADR 0022 must reference Plan 062" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 062' "$root/plans/061-ntcp2-direct-reference-driver-corrective-roadmap.md"; then
+  echo "Plan 061 must reference Plan 062" >&2
+  exit 1
+fi
+if ! test -f "$root/plans/062-ntcp2-evidence-contract-and-architecture-correction.md"; then
+  echo "Plan 062 plan-of-record is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/plans/063-java-i2p-stripped-router-direct-ntcp2-driver.md"; then
+  echo "Plan 063 plan-of-record is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/plans/064-i2pd-direct-ntcp2-driver-and-observer-correction.md"; then
+  echo "Plan 064 plan-of-record is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/plans/065-ntcp2-canonical-integration-and-live-qualification.md"; then
+  echo "Plan 065 plan-of-record is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/plans/066-fresh-candidate-and-authoritative-ntcp2-two-run-closure.md"; then
+  echo "Plan 066 plan-of-record is missing" >&2
+  exit 1
+fi
+if ! grep -Eq 'Status:.*retired|Status:\*\*retired' "$root/plans/060-candidate.md"; then
+  echo "Plan 060 candidate must be retired by Plan 062" >&2
+  exit 1
+fi
+if ! grep -Fqi 'retired by Plan 062' "$root/plans/060-candidate.md"; then
+  echo "Plan 060 candidate must carry the explicit Plan 062 retirement marker" >&2
+  exit 1
+fi
+if ! grep -Fq 'Superseded by Plan 062' "$root/plans/060-closure.md"; then
+  echo "Plan 060 closure must carry the Plan 062 supersession marker" >&2
+  exit 1
+fi
+# Plan 062: the active v4 trigger schema must use 64-hex Router Hash
+# fields. The historical v3 trigger schema remains readable but is
+# the bounded historical-reader path.
+if grep -nE 're\.compile\(r"\^\\[0-9a-f\\]\\{40\\}\\$"\)|_HEX40' \
+    "$root/tests/integration/ntcp2/harness/reference_trigger_v4.py"; then
+  echo "Plan 062 v4 trigger schema must not use 40-hex Router Hash width" >&2
+  exit 1
+fi
+if grep -nE 're\.compile\(r"\^\\[0-9a-f\\]\\{40\\}\\$"\)|_HEX40' \
+    "$root/tests/integration/ntcp2/harness/observation_v3.py"; then
+  echo "Plan 062 v3 observation schema must not use 40-hex Router Hash width" >&2
+  exit 1
+fi
+if grep -nE 're\.compile\(r"\^\\[0-9a-f\\]\\{40\\}\\$"\)|_HEX40' \
+    "$root/tests/integration/ntcp2/harness/reference_event.py"; then
+  echo "Plan 062 reference event schema must not use 40-hex Router Hash width" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_reference_trigger_v4.py"; then
+  echo "Plan 062 v4 trigger schema test matrix is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_reference_event.py"; then
+  echo "Plan 062 reference event schema test matrix is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_observation_v3.py"; then
+  echo "Plan 062 v3 observation schema test matrix is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan062.py"; then
+  echo "Plan 062 plan matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_plan062.py' "$root/AGENTS.md"; then
+  echo "Plan 062 test matrix is not wired into AGENTS.md" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_reference_trigger_v4.py' "$root/AGENTS.md"; then
+  echo "Plan 062 v4 trigger schema test matrix is not wired into AGENTS.md" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_reference_event.py' "$root/AGENTS.md"; then
+  echo "Plan 062 reference event schema test matrix is not wired into AGENTS.md" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_observation_v3.py' "$root/AGENTS.md"; then
+  echo "Plan 062 v3 observation schema test matrix is not wired into AGENTS.md" >&2
+  exit 1
+fi
+
 python3 "$root/scripts/interop/validate-evidence.py"
 python3 "$root/scripts/interop/validate-scenarios.py"
 

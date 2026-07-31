@@ -365,6 +365,11 @@ def _write_bundle(root: Path, identity: dict[str, object], *, nonce_seed: str) -
                 payload = _trigger_record(
                     scenario_id=direction, run_id=identity_payload["run_id"], nonce=nonce,
                 )
+            elif direction_class == "events":
+                # The Plan 062 reference-event class is optional in
+                # the test bundle; the certificate verifier only
+                # requires the four mandatory direction classes.
+                continue
             else:
                 raise AssertionError(f"unknown direction class: {direction_class}")
             path.write_text(

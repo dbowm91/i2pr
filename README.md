@@ -611,30 +611,38 @@ The Plan 059 status and validation commands are recorded in
 
 ### Plan 060 fresh-candidate and two-run Milestone 3 certificate closure pass
 
-Plan 060 is the execution-only pass that cuts one fresh candidate
-after Plan 058 and Plan 059 close, selects exactly one execution
-lane (direct-host or guest), runs the four primary IPv4 mixed-router
-directions twice on independent mutable state, and produces a
-verified Milestone 3 certificate over the two sanitized bundles.
+**Plan 060 is retired by Plan 062** (Plan 062 evidence-contract and
+architecture correction pass). Plan 060 is no longer active
+execution authority. The Plan 060 candidate record is preserved
+verbatim at `plans/060-candidate.md` for audit. The Plan 060 closure
+record at `plans/060-closure.md` carries the explicit "Superseded
+by Plan 062" marker. Future candidates must descend from the Plan 065
+implementation floor or later and must use the Plan 062 v4 trigger
+schema, the Plan 062 reference-event v1 schema, the Plan 062 v3
+observation schema, and the 64-hex SHA-256 Router Hash contract.
 
-On this host the plan closes with the typed blocker
+Plan 060 inherited the rejected Java-support-topology premise (ADR
+0021 Rejected by Plan 058); Plan 062 ADR 0022 (Accepted) replaces
+that premise with two-process direct transport drivers. The
+Plan 060 candidate was frozen before the Plan 062 schema
+corrections and the 64-hex SHA-256 Router Hash contract, so it is
+not the authoritative source for the four-direction Milestone 3
+closure.
+
+On this host the historical Plan 060 typed blocker is
 `blocked_execution_lane_unavailable` and the candidate is
 `declared-not-executable`. The Plan 046 rootless sealed-namespace
 probe returns `blocked_unprivileged_user_namespace` (the host's
-kernel activates `kernel.apparmor_restrict_unprivileged_userns=1`,
-which confines every unprivileged user namespace to a restrictive
-AppArmor policy). The Plan 048/049 Multipass recovery lane is the
-canonical external path but cannot complete on this constrained
-host (per Plan 051: 15 GiB physical RAM, three reserved qemu
-guests, multipassd unresponsive). ADR 0021 remains Rejected by
-Plan 058, so the `java-to-i2pr-ipv4` direction is a typed blocker
-under the four-direction contract; Plan 060 cannot start under
-the current four-direction contract until either a future pinned
-Java revision is adopted or the closure contract is revised
-through a new ADR.
+kernel activates
+`kernel.apparmor_restrict_unprivileged_userns=1`, which confines
+every unprivileged user namespace to a restrictive AppArmor
+policy). The Plan 048/049 Multipass recovery lane is the canonical
+external path but cannot complete on this constrained host (per
+Plan 051: 15 GiB physical RAM, three reserved qemu guests,
+multipassd unresponsive). The Plan 060 implementation surface is
+preserved as an audit record.
 
-The Plan 060 implementation surface is mandatory regardless of
-the close outcome:
+The Plan 060 implementation surface remains mandatory:
 
 - `tests/integration/ntcp2/harness/plan060.py` — the Plan 060
   helper module. Exports the typed blocker
@@ -646,37 +654,74 @@ the close outcome:
   cross-bundle independence checker
   (`plan060_two_bundle_independence`).
 - `tests/integration/ntcp2/harness/test_plan060.py` — the Plan 060
-  test matrix (35 cases across the retired/superseded markers,
-  candidate ordering, candidate digest binding, ADR decision,
-  execution lanes, cross-lane combination, mutable state
-  independence, correlation nonces, live observations, synthetic
-  fallback, helper/topology digests, source commit drift,
-  direction-order independence, bundle mutation, untracked raw
-  diagnostics, the two-bundle positive fixture, the Plan 060
-  typed blocker, freeze readiness, the Plan 060 helper contract,
-  and the Plan 059 artifacts).
-- `scripts/check-ntcp2-interoperability.sh` extended to enforce
-  the Plan 060 artifacts, the Plan 060 test matrix coverage, and
-  the candidate/closure marker invariants
-  (`TYPED_BLOCKER_EXECUTION_LANE_UNAVAILABLE`,
-  `plan060_close_status`, `execution_lane_lock`, `test_plan060.py`
-  class coverage, `AGENTS.md` reference, candidate and closure
-  record presence and the
-  `blocked_execution_lane_unavailable` typed blocker marker).
+  test matrix (35 cases).
+- `scripts/check-ntcp2-interoperability.sh` enforces the Plan 060
+  artifacts and the Plan 060 test matrix coverage as historical
+  invariants.
 - `plans/060-candidate.md` — the Plan 060 candidate record
-  (status `declared-not-executable`). Implements the executed
-  source commit, the implementation floor, the bounded digest
-  table, the lane lock, the typed blockers
-  (`blocked_execution_lane_unavailable`,
-  `blocked_java_support_topology_rejected`), and the schema
-  marker (`i2pr-interop-candidate-v1`).
+  (status `retired`).
 - `plans/060-closure.md` — the Plan 060 closure record with the
-  typed blocker, the close-status, the validation commands, and
-  the remaining work.
+  Plan 062 supersession marker.
 
 A future pinned Java revision that exposes a transport-only
 direct seam may trigger an ADR re-issue that supersedes the ADR
 0021 rejection and unblocks the `java-to-i2pr-ipv4` direction.
+
+### Plan 062 NTCP2 evidence-contract and architecture correction
+
+Plan 062 is the evidence-contract and architecture correction pass
+that supersedes the Plan 060 execution authority. The plan does
+not implement the Java or i2pd drivers and does not perform an
+authoritative external interoperability run; those belong to
+Plans 063 and 064.
+
+Plan 062 lands:
+
+- `docs/adr/0022-direct-reference-router-ntcp2-interop-drivers.md`
+  (Accepted) replacing the rejected Java-support-topology
+  premise with two-process direct transport drivers for Java I2P
+  and i2pd. ADR 0022 explicitly supersedes the conclusion of
+  ADR 0021 without rewriting ADR 0021.
+- `tests/integration/ntcp2/reference-drivers/source-verification.md`
+  — the source-locked API inspection record for the pinned Java
+  I2P 2.12.0 and i2pd 2.60.0 revisions.
+- `tests/integration/ntcp2/harness/reference_trigger_v4.py` — the
+  Plan 062 v4 trigger schema (`i2pr-reference-trigger-v4`) with
+  64-lowercase-hex Router Hash, per-run DeliveryStatus
+  `message_id` (`1..=0xffffffff`), and full provenance digests.
+- `tests/integration/ntcp2/harness/reference_event.py` — the
+  Plan 062 reference-event v1 schema (`i2pr-reference-event-v1`)
+  recording per-driver structured events with exact DeliveryStatus
+  message ID correlation for data-phase events.
+- `tests/integration/ntcp2/harness/observation_v3.py` — the
+  Plan 062 v3 observation schema (`i2pr-ntcp2-direction-observation-v3`)
+  with the mandatory correlation fields
+  `delivery_status_message_id`, `peer_router_hash_sha256`,
+  `local_router_hash_sha256`, and `source_event_sha256`. The v3
+  receiver pass predicate requires nonzero decrypt and decode
+  counts and rejects generic-phrase-only sources.
+- The historical `trigger_record.py` (v3) and `observation.py`
+  (v2) modules remain readable for historical inspection but
+  cannot contribute to a new passing bundle.
+- Retirement of the Plan 060 candidate from all future candidate
+  validators and the static boundary checker. The future
+  candidate implementation floor is Plan 065 closure or later.
+
+Plan 062 documentation updates:
+
+- `README.md` records the Plan 060 retirement and the Plan 062
+  supersession.
+- `docs/architecture/interop-apparatus.md` records the Plan 062
+  evidence-contract correction.
+- `.opencode/skills/i2pr-ntcp2-interop/SKILL.md` records the
+  Plan 062 workstream summary.
+- `plans/030-milestone-3-closure.md` records the Plan 062
+  supersession in the aggregate Milestone 3 status.
+
+NTCP2 stays experimental and non-advertised; Milestone 3 stays
+open until Plan 065 closes with one complete four-direction live
+diagnostic bundle and Plan 066 produces a verified Milestone 3
+certificate.
 Until then, NTCP2 stays experimental and non-advertised and
 Milestone 3 stays open.
 

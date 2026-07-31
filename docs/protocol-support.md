@@ -110,22 +110,79 @@ evidence satisfies `specs/CONFORMANCE.md`.
 
 ### Plan 060 fresh-candidate and two-run Milestone 3 certificate closure pass
 
-Plan 060 commits the fresh-candidate and two-run Milestone 3
-certificate closure pass implementation surface and closes on this
-host with the typed blocker `blocked_execution_lane_unavailable`
-(candidate status `declared-not-executable`). The Plan 046
-rootless sealed-namespace probe reports
+Plan 060 was the execution-only fresh-candidate and two-run
+Milestone 3 certificate closure pass. Plan 060 is now **retired
+by Plan 062** (Plan 062 evidence-contract and architecture
+correction pass). The Plan 060 candidate record
+(`plans/060-candidate.md`) is preserved verbatim for audit; the
+Plan 060 closure record (`plans/060-closure.md`) carries the
+explicit "Superseded by Plan 062" marker. Future candidates must
+descend from the Plan 065 implementation floor or later and must
+use the Plan 062 v4 trigger schema, the Plan 062 reference-event
+v1 schema, the Plan 062 v3 observation schema, and the 64-hex
+SHA-256 Router Hash contract.
+
+Plan 060 inherited the rejected Java-support-topology premise
+(ADR 0021 Rejected by Plan 058). Plan 062 ADR 0022 (Accepted)
+replaces that premise with two-process direct transport drivers.
+The historical Plan 060 typed blocker on this host is
+`blocked_execution_lane_unavailable` and the historical candidate
+status is `declared-not-executable`. The Plan 046 rootless
+sealed-namespace probe reports
 `blocked_unprivileged_user_namespace` on this host; the Plan
 048/049 Multipass recovery lane is the canonical external path
-but cannot complete on this constrained host (per Plan 051);
-ADR 0021 was Rejected by Plan 058 so the four-direction contract
-cannot close with the pinned Java I2P 2.12.0 revision. The
-implementation surface (`tests/integration/ntcp2/harness/plan060.py`,
-the Plan 060 test matrix, the static boundary checker extension,
-the candidate record `plans/060-candidate.md`, and the closure
-record `plans/060-closure.md`) is mandatory regardless of close
-outcome. NTCP2 remains experimental and non-advertised until a
-future pinned Java revision exposes a transport-only direct seam
-(or ADR 0021 is re-issued) and either the Plan 046 rootless
-sealed-namespace lane or the Plan 048/049 Multipass guest lane
-becomes runnable on a host with the resources Plan 051 required.
+but cannot complete on this constrained host (per Plan 051).
+
+The Plan 060 implementation surface
+(`tests/integration/ntcp2/harness/plan060.py`, the Plan 060 test
+matrix, the static boundary checker extension, the candidate
+record `plans/060-candidate.md`, and the closure record
+`plans/060-closure.md`) is preserved as an audit record. NTCP2
+remains experimental and non-advertised until a future pinned
+Java revision exposes a transport-only direct seam (or ADR 0021
+is re-issued) and either the Plan 046 rootless sealed-namespace
+lane or the Plan 048/049 Multipass guest lane becomes runnable
+on a host with the resources Plan 051 required.
+
+### Plan 062 NTCP2 evidence-contract and architecture correction
+
+Plan 062 is the evidence-contract and architecture correction
+pass. Plan 062 does not implement the Java or i2pd drivers and
+does not perform an authoritative external interoperability run;
+those belong to Plans 063 and 064.
+
+Plan 062 lands:
+
+- `docs/adr/0022-direct-reference-router-ntcp2-interop-drivers.md`
+  (Accepted) replacing the rejected Java-support-topology
+  premise with two-process direct transport drivers for Java I2P
+  and i2pd. ADR 0022 explicitly supersedes the conclusion of
+  ADR 0021 without rewriting ADR 0021.
+- `tests/integration/ntcp2/reference-drivers/source-verification.md`
+  — the source-locked API inspection record for the pinned Java
+  I2P 2.12.0 and i2pd 2.60.0 revisions.
+- `tests/integration/ntcp2/harness/reference_trigger_v4.py` — the
+  Plan 062 v4 trigger schema (`i2pr-reference-trigger-v4`) with
+  64-lowercase-hex Router Hash, per-run DeliveryStatus
+  `message_id` (`1..=0xffffffff`), and full provenance digests.
+- `tests/integration/ntcp2/harness/reference_event.py` — the
+  Plan 062 reference-event v1 schema
+  (`i2pr-reference-event-v1`) recording per-driver structured
+  events with exact DeliveryStatus message ID correlation for
+  data-phase events.
+- `tests/integration/ntcp2/harness/observation_v3.py` — the Plan
+  062 v3 observation schema
+  (`i2pr-ntcp2-direction-observation-v3`) with the mandatory
+  correlation fields `delivery_status_message_id`,
+  `peer_router_hash_sha256`, `local_router_hash_sha256`, and
+  `source_event_sha256`. The v3 receiver pass predicate requires
+  nonzero decrypt and decode counts and rejects
+  generic-phrase-only sources.
+- The historical `trigger_record.py` (v3) and `observation.py`
+  (v2) modules remain readable for historical inspection but
+  cannot contribute to a new passing bundle.
+
+Plan 062 does not close any interoperability claim. NTCP2 stays
+experimental and non-advertised; Milestone 3 stays open until
+Plan 065 closes with one complete four-direction live diagnostic
+bundle and Plan 066 produces a verified Milestone 3 certificate.

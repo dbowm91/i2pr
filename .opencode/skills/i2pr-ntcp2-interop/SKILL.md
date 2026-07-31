@@ -578,5 +578,84 @@ Record commands, results, host constraints, and any blocked stop condition
 in a closure record; do not report a blocked profile as a passing
 interoperability result.
 
+## Plan 062 NTCP2 evidence-contract and architecture correction
+
+Plan 062 is the evidence-contract and architecture correction
+pass. The plan does not implement the Java or i2pd drivers and
+does not perform an authoritative external interoperability run;
+those belong to Plans 063 and 064.
+
+The plan lands:
+
+- `docs/adr/0022-direct-reference-router-ntcp2-interop-drivers.md`
+  (Accepted) — two-process direct transport drivers for Java
+  I2P and i2pd. ADR 0022 supersedes the conclusion of ADR 0021
+  (Rejected by Plan 058) without rewriting ADR 0021. The primary
+  topology forbids support routers, floodfill, reseed, SAM,
+  I2CP, HTTP/I2PControl, and tunnels.
+- `tests/integration/ntcp2/reference-drivers/source-verification.md`
+  — the source-locked API surface for the pinned Java I2P
+  2.12.0 and i2pd 2.60.0 revisions.
+- `tests/integration/ntcp2/harness/reference_trigger_v4.py` — the
+  v4 trigger schema (`i2pr-reference-trigger-v4`). Replaces the
+  40-hex SHA-1 Router Hash with the 64-hex SHA-256 Router Hash
+  and binds the per-run DeliveryStatus `message_id`
+  (`1..=0xffffffff`).
+- `tests/integration/ntcp2/harness/reference_event.py` — the
+  reference-event v1 schema (`i2pr-reference-event-v1`)
+  recording per-driver structured events with exact DeliveryStatus
+  message ID correlation for data-phase events.
+- `tests/integration/ntcp2/harness/observation_v3.py` — the v3
+  observation schema (`i2pr-ntcp2-direction-observation-v3`)
+  with the mandatory correlation fields
+  `delivery_status_message_id`, `peer_router_hash_sha256`,
+  `local_router_hash_sha256`, and `source_event_sha256`.
+- Retirement of the Plan 060 candidate from all future
+  candidate validators and the static boundary checker. The
+  Plan 060 candidate record is preserved verbatim; the Plan 060
+  closure record carries the explicit "Superseded by Plan 062"
+  marker.
+
+The v3 trigger schema and the v2 observation schema remain
+readable for historical inspection but cannot contribute to a
+new passing bundle. The future candidate implementation floor is
+Plan 065 closure or later.
+
+The Plan 062 static boundary checker extension in
+`scripts/check-ntcp2-interoperability.sh` fails when:
+
+- the v4 trigger schema, reference-event v1 schema, or v3
+  observation schema files are absent;
+- ADR 0022 is absent or not Accepted after source verification;
+- the Plan 060 candidate is not retired;
+- the active code uses `_HEX40` for Router Hash;
+- the Plan 062 documentation is absent.
+
+Focused tests:
+
+- `tests/integration/ntcp2/harness/test_reference_trigger_v4.py`
+  — v4 trigger schema validator cases (40-hex rejection,
+  63/65-hex rejection, uppercase rejection, all-zero provenance
+  rejection, message ID bounds, v3 schema rejection, unknown
+  fields).
+- `tests/integration/ntcp2/harness/test_reference_event.py` —
+  reference-event v1 schema cases (data-phase event fields,
+  duplicate event sequence rejection, peer Router Hash mismatch
+  rejection, terminal-event data-phase field rejection,
+  forbidden payload text rejection).
+- `tests/integration/ntcp2/harness/test_observation_v3.py` — v3
+  observation schema cases (v2 rejection, mandatory correlation
+  fields, receiver pass predicate, generic-phrase rejection,
+  sender-only and wrong-message fixtures).
+- `tests/integration/ntcp2/harness/test_plan062.py` — WP1-WP5
+  surface tests covering the source-verification record, ADR
+  0022 Accepted status, schema migration, Plan 060 retirement,
+  and the Plan 061-066 roadmap chain.
+
+Plan 062 does not advance any support row. NTCP2 remains
+experimental and non-advertised; Milestone 3 stays open until
+Plan 065 closes with one complete four-direction live diagnostic
+bundle and Plan 066 produces a verified Milestone 3 certificate.
+
 Consult [operations.md](references/operations.md) for command routing,
 profiles, typed outcomes, and implementation-specific stop conditions.

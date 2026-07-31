@@ -2,10 +2,22 @@
 
 ## Status and dependencies
 
+- Status: retired (Plan 062 evidence-contract and architecture
+  correction pass).
 - Plan type: final candidate freeze, authoritative external execution, certificate review, and Milestone 3 closure pass.
 - Starts only after Plan 058 and Plan 059 are closed.
 - Plan 058 must have retired the Plan 056 candidate and superseded Plan 057.
 - Plan 059 must have implemented and live-qualified the i2pd direct helper, receiver observations, and canonical runner integration. The Java support topology is forbidden under ADR 0021 (Rejected by Plan 058); Plan 060 must not start under the current four-direction contract until either a future pinned Java revision is adopted or the closure contract is revised through a new ADR.
+- **Plan 062 supersession:** Plan 060 is no longer active execution
+  authority. Plan 062 (`plans/062-ntcp2-evidence-contract-and-architecture-correction.md`)
+  retires the Plan 060 candidate from all future candidate
+  validators and the static boundary checker. The Plan 060 candidate
+  record is preserved verbatim at `plans/060-candidate.md` for
+  audit. Future candidates must descend from the Plan 065
+  implementation floor or later and must use the Plan 062 v4
+  trigger schema, the Plan 062 reference-event v1 schema, the Plan
+  062 v3 observation schema, and the 64-hex SHA-256 Router Hash
+  contract.
 - This plan is execution-only after candidate freeze. Any required source, helper, catalog, topology, test, or documentation-contract change invalidates the candidate and restarts the plan.
 - Milestone 3 may close only when this plan produces a verified certificate over two independent complete passing bundles.
 - NTCP2 remains non-advertised unless a separate later support-advertisement decision explicitly changes it.

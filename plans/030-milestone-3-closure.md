@@ -1,6 +1,6 @@
 # Aggregate Milestone 3 closure: NTCP2 and transport-neutral link management
 
-Date: 2026-07-15 (last updated by Plan 060)
+Date: 2026-07-15 (last updated by Plan 062)
 
 Status: **blocked; implementation phases complete for their bounded local
 scope, milestone acceptance criteria not met**. Plan 056 closed with a
@@ -14,19 +14,35 @@ into Plan 059 (reference-side implementation) and Plan 060 (fresh
 candidate + two-run certificate). Plan 059 closed with the typed
 blocker `blocked_java_support_topology_rejected` and committed the
 i2pd direct helper, the per-reference observation qualification
-receipts, and the canonical pipeline live-mode wiring. Plan 060
-closed on this host with the typed blocker
-`blocked_execution_lane_unavailable`; the Plan 060 candidate is
-`declared-not-executable` on this host because the Plan 046 rootless
-sealed-namespace probe returns
+receipts, and the canonical pipeline live-mode wiring.
+
+Plan 062 is the evidence-contract and architecture correction pass
+that supersedes the Plan 060 execution authority. Plan 062 lands
+ADR 0022 (Accepted) — two-process direct transport drivers for
+Java I2P and i2pd — and replaces the rejected Java-support-topology
+premise with the Plan 061 two-process direct topology. Plan 062
+retires the Plan 060 candidate from all future candidate
+validators and the static boundary checker; the Plan 060 candidate
+record is preserved verbatim at `plans/060-candidate.md` for
+audit; the Plan 060 closure record carries the explicit
+"Superseded by Plan 062" marker. Plan 062 introduces the v4
+trigger schema, the reference-event v1 schema, and the v3
+observation schema; v3 trigger records and v2 observation records
+remain readable for historical inspection but cannot contribute to
+a new passing bundle. The future candidate implementation floor
+is Plan 065 closure or later.
+
+The historical Plan 060 typed blocker on this host is
+`blocked_execution_lane_unavailable`; the historical Plan 060
+candidate status is `declared-not-executable`. The Plan 046
+rootless sealed-namespace probe returns
 `blocked_unprivileged_user_namespace`, the Plan 048/049 Multipass
 recovery lane cannot complete on this constrained host (per
-Plan 051), and ADR 0021 remains Rejected. Plan 060 owns the
-canonical two-run external evidence pass required to advance
-Milestone 3; until Plan 060 produces two passing bundles from a
-fresh implementation-floor candidate (and the four-direction
-contract is restored through a new ADR or future pinned Java
-revision), the milestone acceptance criteria remain unmet.
+Plan 051), and ADR 0021 remains Rejected. Plan 065 (canonical
+integration and live qualification) and Plan 066 (fresh
+candidate and two-run certificate) own the path to Milestone 3
+closure once the Plan 063 Java driver and Plan 064 i2pd driver
+are implemented and the external lane becomes runnable.
 
 This aggregate record preserves the evidence boundary from Plans 031–036. It
 does not convert local vectors, self-handshakes, loopback TCP, or deterministic

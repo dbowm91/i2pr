@@ -1,48 +1,67 @@
 # Plan 060 candidate record
 
-Status: declared-not-executable on this host (Plan 060).
+Status: retired by Plan 062.
 
-The Plan 060 candidate SHA is the implementation-floor commit
-`359f408a73882bdd5bf03f21da4f4bd7e7feb878` (`interop: add
+Plan 060 is no longer active execution authority. The Plan 060
+candidate was `declared-not-executable` on this host and is now
+retired by the Plan 062 evidence-contract and architecture
+correction pass. Future candidates must descend from the Plan 065
+implementation floor or later, must use the Plan 062 v4 trigger
+schema, the Plan 062 reference-event v1 schema, the Plan 062 v3
+observation schema, and the 64-hex SHA-256 Router Hash contract.
+
+The historical Plan 060 candidate SHA was the implementation-floor
+commit `359f408a73882bdd5bf03f21da4f4bd7e7feb878` (`interop: add
 source-locked i2pd direct trigger helper`) plus every committed
 Plan 058, Plan 059, and Plan 060 documentation, helper, and test
-addition through the closure commit. The candidate is a descendant
-of the Plan 059 implementation floor and is declared but not
-executable on this host.
+addition through the closure commit. That historical candidate is
+preserved for audit only. It is **not** an `executed` candidate
+and cannot produce a verified Milestone 3 certificate.
 
-This host is the Plan 046 `apparmor_restrict_on` negative baseline.
-The Plan 046 rootless sealed-namespace probe returns
-`blocked_unprivileged_user_namespace`. The Plan 048/049 Multipass
-recovery lane is the canonical external path but cannot complete on
-this constrained host (per Plan 051). Plan 060 therefore closes
-with the typed environment blocker
-`blocked_execution_lane_unavailable`; the in-scope four directions
-remain typed blockers until either a different execution host
-satisfies the Plan 046 rootless contract or the Plan 048/049
-Multipass guest lane is exercised on a host with the resources
-Plan 051 required. The Plan 060 plan-of-record
-(`plans/060-fresh-candidate-and-two-run-milestone3-certificate-closure-pass.md`)
-explicitly states that Plan 060 cannot start under the current
-four-direction contract until either a future pinned Java revision
-is adopted or the closure contract is revised through a new ADR.
+Plan 060 inherited the rejected Java support-topology premise
+recorded by Plan 058 in `docs/adr/0021-minimal-java-support-topology.md`.
+ADR 0021 (`Rejected`) and ADR 0022 (`Accepted`, Plan 062) supersede
+that premise with the Plan 062 two-process direct transport driver
+architecture. The Plan 060 declared-not-executable candidate was
+frozen before the Plan 062 schema corrections, the 64-hex SHA-256
+Router Hash contract, the v4 trigger schema, the reference-event
+v1 schema, and the v3 observation schema were committed. A
+candidate frozen before that implementation floor cannot be the
+authoritative source for the four-direction Milestone 3 closure.
 
-The candidate is **declared-not-executable** on this host. It is
-not an `executed` candidate and cannot produce a verified
-Milestone 3 certificate. The Plan 058 candidate record validator
-schema (`i2pr-interop-candidate-v1`) remains the source of truth
-for any future `executed` candidate; this record carries the same
-schema-marker for consistency, but the on-disk status is the
-explicit Plan 060 close-status `declared-not-executable` rather
-than the validator's `declared`/`executed` enum. Plan 060 tooling
-refuses to consume this record as an `active_candidate_record`
-because the typed blocker is recorded alongside it.
+Plan 062 WP5 documents the retirement:
 
-A future candidate may be cut from this commit only after Plan 046
-becomes runnable here, a Plan 048/049 Multipass guest is provisioned
-on a host that can complete the bridge, or the closure contract is
-revised through a new ADR that authorizes a different execution
-path. Until then, NTCP2 remains experimental and non-advertised
-and Milestone 3 stays open.
+- the Plan 060 candidate is rejected as a future execution
+  authority by the candidate record validator and the static
+  boundary checker;
+- the Plan 062 v4 trigger schema, v3 observation schema, and
+  reference-event v1 schema are the only allowlisted active
+  schemas for new bundles;
+- the future candidate implementation floor is Plan 065 closure
+  or later (per Plan 066);
+- v3 trigger records and generic-phrase observations remain
+  readable for historical inspection but cannot contribute to a
+  new passing bundle.
+
+The historical Plan 060 implementation surface
+(`tests/integration/ntcp2/harness/plan060.py`,
+`tests/integration/ntcp2/harness/test_plan060.py`, the Plan 060
+static boundary checks) is preserved as an audit record. Any change
+that re-enables Plan 060 as active execution authority must be
+re-justified in a new plan-of-record.
+
+The Plan 058 candidate record validator schema
+(`i2pr-interop-candidate-v1`) and the Plan 060 declared-not-executable
+status remain accurate historical records. The candidate cannot
+produce a verified Milestone 3 certificate and is not an
+`active_candidate_record`. NTCP2 remains experimental and
+non-advertised; Milestone 3 stays open.
+
+A future candidate may be cut only after the Plan 065
+implementation floor closes, the Plan 046 rootless sealed-namespace
+lane or the Plan 048/049 Multipass recovery lane becomes runnable,
+and ADR 0021 is either Accepted by a future pinned Java revision or
+superseded by an ADR that authorizes a different execution path.
 
 ## Implementation floor and executed source commit
 
@@ -190,11 +209,12 @@ close-status is the Plan 060 typed absence marker.
 
 ## Status
 
-The Plan 060 candidate is `declared-not-executable` on this host.
-The closure record is `plans/060-closure.md`. NTCP2 remains
+The Plan 060 candidate is **retired** by Plan 062. The Plan 060
+declared-not-executable record is preserved verbatim as an audit
+trail. The closure record is `plans/060-closure.md`. NTCP2 remains
 experimental and non-advertised; Milestone 3 remains open. A
-future candidate may be cut only after the Plan 046 rootless
-sealed-namespace lane or the Plan 048/049 Multipass recovery lane
-becomes runnable and either ADR 0021 is Accepted (with the Java
-support topology) or the pinned Java I2P 2.12.0 revision is
-superseded by a revision that exposes a transport-only direct seam.
+future candidate may be cut only after the Plan 065 implementation
+floor closes, the Plan 046 rootless sealed-namespace lane or the
+Plan 048/049 Multipass recovery lane becomes runnable, and ADR 0021
+is either Accepted by a future pinned Java revision or superseded
+by an ADR that authorizes a different execution path.

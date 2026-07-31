@@ -16,6 +16,27 @@ from typing import Any
 try:
     from .evidence_bundle import BundleError, export_bundle_atomic, finalize_bundle, verify_bundle, write_json_atomic
     from .observation import OBSERVATION_SCHEMA, OBSERVATION_SCHEMA_VERSION, build_level, finalize_observation
+    from .observation_v3 import (
+        OBSERVATION_SCHEMA as OBSERVATION_SCHEMA_V3_NAME,
+        OBSERVATION_SCHEMA_VERSION as OBSERVATION_SCHEMA_V3_VERSION,
+        finalize_observation as finalize_observation_v3,
+        validate_observation as validate_observation_v3,
+    )
+    from .reference_event import (
+        EVENT_SCHEMA,
+        EVENT_SCHEMA_VERSION,
+        EventKind,
+        build_event,
+        validate_event,
+    )
+    from .reference_trigger_v4 import (
+        TRIGGER_SCHEMA as TRIGGER_SCHEMA_V4_NAME,
+        TRIGGER_SCHEMA_VERSION as TRIGGER_SCHEMA_V4_VERSION,
+        TriggerHelperKind as V4HelperKind,
+        TriggerOutcome as V4TriggerOutcome,
+        finalize_trigger_record as finalize_trigger_record_v4,
+        validate_trigger_record as validate_trigger_record_v4,
+    )
     from .run_identity import (
         RUN_IDENTITY_SCHEMA,
         build_run_identity,
@@ -26,6 +47,27 @@ try:
 except ImportError:
     from evidence_bundle import BundleError, export_bundle_atomic, finalize_bundle, verify_bundle, write_json_atomic
     from observation import OBSERVATION_SCHEMA, OBSERVATION_SCHEMA_VERSION, build_level, finalize_observation
+    from observation_v3 import (
+        OBSERVATION_SCHEMA as OBSERVATION_SCHEMA_V3_NAME,
+        OBSERVATION_SCHEMA_VERSION as OBSERVATION_SCHEMA_V3_VERSION,
+        finalize_observation as finalize_observation_v3,
+        validate_observation as validate_observation_v3,
+    )
+    from reference_event import (
+        EVENT_SCHEMA,
+        EVENT_SCHEMA_VERSION,
+        EventKind,
+        build_event,
+        validate_event,
+    )
+    from reference_trigger_v4 import (
+        TRIGGER_SCHEMA as TRIGGER_SCHEMA_V4_NAME,
+        TRIGGER_SCHEMA_VERSION as TRIGGER_SCHEMA_V4_VERSION,
+        TriggerHelperKind as V4HelperKind,
+        TriggerOutcome as V4TriggerOutcome,
+        finalize_trigger_record as finalize_trigger_record_v4,
+        validate_trigger_record as validate_trigger_record_v4,
+    )
     from run_identity import RUN_IDENTITY_SCHEMA, build_run_identity, cross_check, load_run_identity, write_run_identity
 
 
@@ -34,6 +76,9 @@ DIAGNOSTIC_RESULT = "diagnostic-complete-not-certificate"
 DIRECTION_SCHEMA = "i2pr-mixed-router-direction-v2"
 ATTESTATION_SCHEMA = "i2pr-mixed-router-attestation-v2"
 TRIGGER_SCHEMA = "i2pr-reference-trigger-v3"
+TRIGGER_SCHEMA_V4 = "i2pr-reference-trigger-v4"
+OBSERVATION_SCHEMA_V2 = "i2pr-ntcp2-direction-observation-v2"
+OBSERVATION_SCHEMA_V3 = "i2pr-ntcp2-direction-observation-v3"
 CLEANUP_SCHEMA = "i2pr-mixed-router-cleanup-v2"
 DIAGNOSTICS_SCHEMA = "sanitized-summary"
 PRIMARY_DIRECTIONS = (
@@ -435,24 +480,25 @@ def _build_trigger_record(
     trigger_metadata: dict[str, Any] | None,
     live_mode: bool = False,
 ) -> dict[str, Any]:
-    """Build the Plan 055 trigger record for one direction.
+    """Build the Plan 062 trigger record for one direction.
 
     For i2pr-initiated directions, the trigger is not applicable and
     the record is the typed-absence ``not-applicable`` form. For
     reference-initiated directions, the harness may supply a real
-    ``trigger_record`` built by :mod:`trigger_record`. When the
-    trigger is absent, the record is written as a typed absence with
+    ``trigger_record`` built by :mod:`trigger_record` (v3) or
+    :mod:`reference_trigger_v4` (v4). When the trigger is absent,
+    the record is written as a typed absence with
     ``attempted = false`` and ``outcome =
     direct-trigger-helper-failed`` so the direction stays visible.
 
-    Plan 059 Workstream F: when ``live_mode`` is True, a passed
-    reference-initiated direction requires a real ``trigger_record``;
-    the synthetic ``direct-trigger-not-source-locked`` absence
-    cannot satisfy a passed direction. Helper and catalog digests
-    bind into the direction record (not the locked Plan 055 trigger
-    record) so a drift between the declared helper/catalog and the
-    runtime inputs fails the bundle cross-check without changing the
-    locked trigger schema.
+    Plan 062 WP3: a live reference-initiated direction requires a
+    real v4 trigger record (or a real v3 record when the harness
+    explicitly opts into the historical v3 path). The v4 record is
+    the active authority for new bundles; the v3 record is
+    accepted only when the v3 record carries the schema marker
+    ``i2pr-reference-trigger-v3``. v4 records carry the
+    64-hex Router Hash, the per-run DeliveryStatus message ID, the
+    per-direction correlation, and the full provenance digests.
     """
 
     binding = {
@@ -462,6 +508,12 @@ def _build_trigger_record(
         "run_identity_sha256": context.identity["run_identity_sha256"],
     }
     if trigger_record is not None:
+        schema = trigger_record.get("schema")
+        if schema == TRIGGER_SCHEMA_V4_NAME:
+            finalize_trigger_record_v4(
+                trigger_record, run_identity_sha256=binding["run_identity_sha256"]
+            )
+            return trigger_record
         try:
             from trigger_record import finalize_trigger_record
             from trigger_record import TRIGGER_SCHEMA as NEW_TRIGGER_SCHEMA
@@ -472,7 +524,7 @@ def _build_trigger_record(
                 TRIGGER_SCHEMA_VERSION as NEW_TRIGGER_VERSION,
                 finalize_trigger_record,
             )
-        if trigger_record.get("schema") != NEW_TRIGGER_SCHEMA:
+        if schema != NEW_TRIGGER_SCHEMA:
             raise PipelineError("trigger-record-schema-invalid")
         if trigger_record.get("schema_version") != NEW_TRIGGER_VERSION:
             raise PipelineError("trigger-record-schema-version-invalid")

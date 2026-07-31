@@ -211,6 +211,12 @@ def _load_bundle(root: Path) -> tuple[BundleDigest, list[str]]:
     for direction in PRIMARY_DIRECTIONS:
         digest.directions[direction] = {}
         for direction_class in DIRECTION_CLASSES:
+            if direction_class == "events":
+                # Plan 062 structured reference events are optional
+                # and never required for the four primary direction
+                # records. The certificate verifier consumes only
+                # the four mandatory direction classes.
+                continue
             class_root = root / direction_class
             record_path = class_root / f"{direction}.json"
             if not record_path.is_file():

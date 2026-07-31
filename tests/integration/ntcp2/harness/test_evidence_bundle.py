@@ -45,6 +45,7 @@ _DIRECTION_CLASS_SCHEMAS = {
     "triggers": "i2pr-reference-trigger-v3",
     "observations": "i2pr-ntcp2-direction-observation-v2",
     "cleanup": "i2pr-mixed-router-cleanup-v2",
+    "events": "i2pr-reference-event-v1",
 }
 
 
@@ -271,7 +272,7 @@ class BundleSchemaTests(unittest.TestCase):
     def test_direction_classes_locked(self):
         self.assertEqual(
             DIRECTION_CLASSES,
-            ("attestations", "directions", "triggers", "observations", "cleanup"),
+            ("attestations", "directions", "triggers", "observations", "cleanup", "events"),
         )
 
     def test_environment_classes_include_parent_digests(self):

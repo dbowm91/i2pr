@@ -84,6 +84,7 @@ DIRECTION_CLASSES: tuple[str, ...] = (
     "triggers",
     "observations",
     "cleanup",
+    "events",
 )
 
 ENVIRONMENT_CLASSES: tuple[str, ...] = (
@@ -105,16 +106,21 @@ SEMANTIC_SCHEMAS: dict[str, tuple[str, ...]] = {
         "i2pr-mixed-router-direction-v1",
     ),
     "triggers": (
+        "i2pr-reference-trigger-v4",
         "i2pr-reference-trigger-v3",
         "i2pr-reference-trigger-v2",
         "i2pr-reference-trigger-v1",
     ),
     "observations": (
+        "i2pr-ntcp2-direction-observation-v3",
         "i2pr-ntcp2-direction-observation-v2",
     ),
     "cleanup": (
         "i2pr-mixed-router-cleanup-v2",
         "i2pr-mixed-router-cleanup-v1",
+    ),
+    "events": (
+        "i2pr-reference-event-v1",
     ),
     "run-identity.json": (
         "i2pr-interop-run-identity-v1",
@@ -547,10 +553,17 @@ def validate_direction_catalog(staging_root: Path) -> None:
 
     Raises BundleError if any direction class has a missing, extra, or
     substituted scenario id, or if the bundle lacks any of the four
-    primary directions.
+    primary directions. The ``events`` class is allowlisted as
+    optional because blocked or rejected directions may not emit any
+    structured reference events and the certificate verifier only
+    consumes the four mandatory direction classes.
     """
 
     for direction_class in DIRECTION_CLASSES:
+        if direction_class == "events":
+            # Plan 062 structured reference events are optional and
+            # never required for the four primary direction records.
+            continue
         directory = staging_root / direction_class
         if not directory.exists():
             raise BundleError(f"bundle is missing the {direction_class} directory")

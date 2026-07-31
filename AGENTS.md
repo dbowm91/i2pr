@@ -935,3 +935,70 @@ bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-rootless-interop-boundary.sh
 bash scripts/check-multipass-interop-boundary.sh
 ```
+
+## Plan 062 NTCP2 evidence-contract and architecture correction
+
+Plan 062 is the evidence-contract and architecture correction pass
+that supersedes the Plan 060 execution authority. Plan 062:
+
+- lands `docs/adr/0022-direct-reference-router-ntcp2-interop-drivers.md`
+  (Accepted) replacing the rejected Java-support-topology premise
+  with two-process direct transport drivers for Java I2P and i2pd;
+- retires the Plan 060 candidate (`plans/060-candidate.md` is now
+  `retired`; `plans/060-closure.md` carries the explicit Plan 062
+  supersession marker);
+- introduces the Plan 062 v4 trigger schema
+  (`tests/integration/ntcp2/harness/reference_trigger_v4.py`,
+  schema `i2pr-reference-trigger-v4`) which replaces the 40-hex
+  SHA-1 Router Hash width with the 64-hex SHA-256 Router Hash and
+  binds the per-run DeliveryStatus `message_id`
+  (`1..=0xffffffff`);
+- introduces the Plan 062 reference-event v1 schema
+  (`tests/integration/ntcp2/harness/reference_event.py`, schema
+  `i2pr-reference-event-v1`) which records per-driver structured
+  events (`process_started`, `listener_ready`,
+  `router_info_exported`, `peer_router_info_validated`,
+  `tcp_connected`, `ntcp2_authenticated`, `frame_emitted`,
+  `frame_authenticated_and_decrypted`, `i2np_message_decoded`,
+  `terminal_clean`, `terminal_rejected`) with strict
+  per-process sequence ordering and exact DeliveryStatus message
+  ID correlation for data-phase events;
+- introduces the Plan 062 v3 observation schema
+  (`tests/integration/ntcp2/harness/observation_v3.py`, schema
+  `i2pr-ntcp2-direction-observation-v3`) which adds the mandatory
+  correlation fields `delivery_status_message_id`,
+  `peer_router_hash_sha256`, `local_router_hash_sha256`, and
+  `source_event_sha256` and rejects generic-phrase-only sources;
+- records the source-locked API surface for both references in
+  `tests/integration/ntcp2/reference-drivers/source-verification.md`;
+- leaves `trigger_record.py` (v3) and `observation.py` (v2) in place
+  as the bounded historical-reader path; v3 trigger records and v2
+  observation records remain readable but cannot contribute to a
+  new passing bundle.
+
+The future candidate implementation floor is Plan 065 closure or
+later; any candidate frozen before that floor is rejected by the
+Plan 062 retire-P060 invariant in
+`scripts/check-ntcp2-interoperability.sh`. The Plan 060 helper
+module, test matrix, and freeze-readiness checks are preserved as
+an audit record and remain mandatory for any change that would
+re-enable Plan 060 as active execution authority.
+
+Plan 062 does not implement the Java or i2pd drivers; the Plan 063
+Java driver and Plan 064 i2pd driver plans implement the
+source-locked drivers after Plan 062 closes.
+
+### Plan 062 focused checks
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan062.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_trigger_v4.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_event.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_observation_v3.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_bundle.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan056.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan060.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+```
