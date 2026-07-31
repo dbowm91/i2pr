@@ -599,7 +599,22 @@ git diff --check
 
 Plan 075 does not build i2pd, run a real mixed-router direction,
 add Docker/QEMU/namespaces/CI, change NTCP2 protocol code, or
-produce a Level 2 or Level 3 record.
+produce a Level 2 or Level 3 record. Plan 075 closes the runner
+integrity surface only. The next active plan is Plan 076; do not
+attempt a real mixed-router run until the real i2pd driver and a
+qualified Plan 077 execution lane exist.
+
+## Plan 076 real pinned i2pd driver
+
+Plan 076 is the next executable plan. It must build and link the exact pinned i2pd 2.60.0 source, remove terminal listen/dial stubs, prove real symbols and genuine inspect behavior, and produce measured instrumented/control manifests. Stop on unavailable or private APIs rather than substituting mocks or synthetic provenance.
+
+## Plan 077 constrained-host lane
+
+Plan 077 follows only after Plan 076 closes. Probe existing rootful Docker (`--network none`), then QEMU TCG (`-nic none`), then the explicitly reduced inherited-descriptor lane or a manually triggered remote runner. Do not install privileged services, retry rootless/Multipass lanes, or claim protocol evidence from a typed no-lane result.
+
+## Plan 078 first real two-way run
+
+Plan 078 is blocked until Plans 076 and 077 close. It owns one fresh instrumented `i2pr-to-i2pd-ipv4` run and one fresh instrumented `i2pd-to-i2pr-ipv4` run, exact DeliveryStatus/Router Hash correlation, control comparison, cleanup, and Level 1 records only. Plan 079 owns later repeated validation.
 
 ## Companion skills (load before doing this lane)
 

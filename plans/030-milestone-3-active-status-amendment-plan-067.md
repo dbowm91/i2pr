@@ -58,7 +58,7 @@ Any active candidate/readiness code or planning documentation that still treats 
 
 ### Development continuation gate
 
-The development continuation gate is Plan 071 Level 2:
+The development continuation gate is Plan 079 Level 2:
 
 - pinned i2pd;
 - both directions;

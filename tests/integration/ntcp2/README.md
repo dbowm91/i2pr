@@ -679,5 +679,8 @@ hashes, and fail closed with one of the typed blockers
 `runner-synthetic-provenance-rejected`, or
 `runner-protocol-event-unproven`. Plan 075 does not build i2pd, run
 a real mixed-router direction, add Docker/QEMU/namespaces/CI, change
-NTCP2 protocol code, or produce a Level 2 or Level 3 record. NTCP2
-remains experimental and non-advertised.
+NTCP2 protocol code, or produce a Level 2 or Level 3 record. Plan 075
+closes the runner-integrity surface only; the next active plan is
+Plan 076 and a real mixed-router run remains blocked until the real
+driver and a qualified Plan 077 execution lane exist. NTCP2 remains
+experimental and non-advertised.

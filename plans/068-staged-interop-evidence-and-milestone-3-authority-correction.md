@@ -293,7 +293,7 @@ failed
 blocked
 ```
 
-A passed summary requires Plan 071 criteria and cannot be consumed by the Level 3 verifier.
+A passed summary requires Plan 079 criteria and cannot be consumed by the Level 3 verifier.
 
 ### D7. Static-check simplification
 

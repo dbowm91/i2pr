@@ -5,7 +5,7 @@
 - Status: planned-deferred.
 - Parent roadmap: Plan 067.
 - Requires Plan 068 closed.
-- Requires Plan 071 closed for normal execution.
+- Requires Plan 079 closed for normal execution.
 - May incorporate Plan 072 results when Plan 072 was activated.
 - Activates only when a suitable isolated Ubuntu host or guest is available.
 - Plan type: final Java/i2pd interoperability qualification, release-grade evidence, and Milestone 3 support decision.
@@ -161,11 +161,11 @@ Required prequalification:
 - clean JVM/router shutdown with no residual threads/locks/listeners;
 - no SAM/I2CP/SSU2/tunnel/floodfill/reseed path.
 
-Fix bounded pinned-API/build defects before candidate freeze. Any protocol behavior correction to i2pr returns to the owning source and requires rerunning Plan 071.
+Fix bounded pinned-API/build defects before candidate freeze. Any protocol behavior correction to i2pr returns to the owning source and requires rerunning Plan 079.
 
 ### i2pd
 
-Use the Plan 070/071 driver and development results.
+Use the Plan 078/079 driver and development results.
 
 Required selected-host prequalification:
 

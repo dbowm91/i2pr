@@ -168,7 +168,12 @@ Negative:
 - Plan 068: this ADR, the staged evidence tier types, the smoke and
   development schemas, and the static-check simplification.
 - Plan 069: Level 1 host-compatible loopback smoke lane.
-- Plan 070: first real i2pd two-way execution.
-- Plan 071: Level 2 repeated i2pd validation and negative controls.
+- Plans 070 and 071: historical execution plans superseded by Plan 074.
+- Plan 074: corrective roadmap and active execution-order authority.
+- Plan 075: runner integrity and evidence correction.
+- Plan 076: real pinned i2pd library and direct-driver construction.
+- Plan 077: constrained-host execution-lane provisioning.
+- Plan 078: first real i2pd two-way execution.
+- Plan 079: Level 2 repeated i2pd validation and negative controls.
 - Plan 072: conditional Emissary differential lane.
 - Plan 073: deferred Java and release qualification closure (Level 3).

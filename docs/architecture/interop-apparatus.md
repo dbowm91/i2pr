@@ -1267,3 +1267,7 @@ the typed environment blocker `runner-reference-events-missing`
 or `runner-synthetic-provenance-rejected` because the pinned i2pd
 build cache is not present and the Plan 064 driver is not
 linked against the pinned libraries.
+
+The next active plan is Plan 076, which must produce a real
+source-linked i2pd driver before Plan 077 lane qualification or
+Plan 078 execution. No real mixed-router attempt has occurred.

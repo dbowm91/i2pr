@@ -209,7 +209,7 @@ class PerDirectionTests(unittest.TestCase):
 
 
 class PassedSummaryTests(unittest.TestCase):
-    """A passed summary must meet every Plan 071 criterion."""
+    """A passed summary must meet every Plan 079 criterion."""
 
     def test_passed_requires_required_passes_per_direction(self):
         record = _positive_fixture()
@@ -269,7 +269,7 @@ class PassedSummaryTests(unittest.TestCase):
 
 
 class BlockedSummaryTests(unittest.TestCase):
-    """A blocked or failed summary does not require the Plan 071 passes."""
+    """A blocked or failed summary does not require the Plan 079 passes."""
 
     def test_blocked_with_zero_passes_accepted(self):
         record = _positive_fixture()

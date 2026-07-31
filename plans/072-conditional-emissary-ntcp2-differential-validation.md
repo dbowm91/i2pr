@@ -5,9 +5,9 @@
 - Status: planned-conditional.
 - Parent roadmap: Plan 067.
 - Requires Plan 068 and Plan 069 closed.
-- Normally evaluated after Plan 071.
+- Normally evaluated after Plan 079.
 - This plan is not on the mandatory development-validation critical path.
-- Execute only when Plan 071 status explicitly activates it or the maintainer explicitly requests a third-implementation comparison.
+- Execute only when Plan 079 status explicitly activates it or the maintainer explicitly requests a third-implementation comparison.
 - Plan type: bounded source-locked differential interoperability lane.
 
 ## Objective
@@ -29,7 +29,7 @@ At least one must be true:
 1. i2pr fails reproducibly against i2pd at a stage where specification/source review does not identify the owner;
 2. one i2pd direction passes and the reverse direction fails repeatedly with ambiguous peer behavior;
 3. i2pd instrumented/control behavior disagrees and Emissary can separate an i2pr defect from an i2pd observer/driver defect;
-4. Plan 071 passes and the maintainer explicitly requests a third implementation before further development.
+4. Plan 079 passes and the maintainer explicitly requests a third implementation before further development.
 
 If none are true, create a short status record marking:
 
@@ -248,7 +248,7 @@ For executed plan, record:
 
 For skipped plan, record:
 
-- Plan 071 passed or ambiguity resolved;
+- Plan 079 passed or ambiguity resolved;
 - activation criteria not met;
 - status `not-needed-for-current-development-gate`;
 - no code changes required.
@@ -338,7 +338,7 @@ Stop and record a typed blocker when:
 - a required patch changes protocol behavior;
 - the work expands beyond the diagnostic question;
 - i2pd ambiguity is already resolved and Emissary no longer provides decision value;
-- the lane begins delaying mandatory Plan 071 closure without an activation reason.
+- the lane begins delaying mandatory Plan 079 closure without an activation reason.
 
 ## Closure criteria
 

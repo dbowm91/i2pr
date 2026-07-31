@@ -1222,10 +1222,7 @@ The corrected runner must:
   `runner-protocol-event-unproven` whenever any of the above
   contracts is violated.
 
-Plan 075 does not build i2pd, run a real mixed-router direction,
-add Docker/QEMU/namespaces/CI, change NTCP2 protocol code, or
-produce a Level 2 or Level 3 record. Plan 075 lands
-`plans/075-status.md` as a truthful closure record.
+Plan 075 closes the runner-integrity work only; it does not build i2pd, run a real mixed-router direction, add Docker/QEMU/namespaces/CI, change NTCP2 protocol code, or produce a Level 2 or Level 3 record. The next active plan is Plan 076, followed by Plans 077, 078, and 079. The current repository therefore has no real mixed-router attempt and remains experimental and non-advertised.
 
 ## MVP direction
 
