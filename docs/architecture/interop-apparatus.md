@@ -1268,6 +1268,30 @@ or `runner-synthetic-provenance-rejected` because the pinned i2pd
 build cache is not present and the Plan 064 driver is not
 linked against the pinned libraries.
 
-The next active plan is Plan 076, which must produce a real
-source-linked i2pd driver before Plan 077 lane qualification or
-Plan 078 execution. No real mixed-router attempt has occurred.
+Plan 077 has selected and documented the constrained-host capability state;
+Plan 078 remains blocked because no full-runtime lane is qualified. No real
+mixed-router attempt has occurred.
+
+## Plan 077 constrained-host execution lane
+
+Plan 077 adds a separate capability-selection boundary for hosts that cannot
+use the Plan 046 rootless or Plan 048/049 Multipass paths. The probe at
+`scripts/interop/probe-constrained-host-lanes.sh` is inspection-only. It
+records Docker CLI/daemon access, QEMU system/TCG availability,
+`no_new_privs` support, and the presence of a manual remote workflow.
+
+Selection is fail-closed and ordered: existing Docker with `--network none`,
+QEMU TCG with `-nic none`, inherited connected descriptors plus seccomp as a
+reduced-scope diagnostic, manual remote Linux, and finally no full-runtime
+lane. The common manifest and qualification record are validated by
+`tests/integration/ntcp2/harness/execution_lane.py`. A tool, workflow, or
+reduced-scope capability is not a qualification; a full-runtime record must
+prove loopback-only communication, no public interface or route, exact
+artifact digests, the two-process control, result export, and cleanup.
+
+On the current host the Docker daemon is inaccessible, QEMU is absent, and
+the reduced descriptor capability is available. Plan 077 therefore closes
+with `full_runtime_lane = unavailable`; no Docker/QEMU packaging was added
+speculatively and Plan 078 remains blocked. See
+[ADR 0024](../adr/0024-constrained-host-ntcp2-execution-lanes.md) and
+[the Plan 077 closure](../../plans/077-status.md).

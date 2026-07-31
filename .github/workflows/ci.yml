@@ -53,6 +53,12 @@ jobs:
       - name: Check NTCP2 interoperability evidence boundary
         if: runner.os == 'Linux'
         run: bash scripts/check-ntcp2-interoperability.sh
+      - name: Check constrained-host lane boundary
+        if: runner.os == 'Linux'
+        run: bash scripts/check-constrained-host-lane-boundary.sh
+      - name: Test constrained-host lane contracts
+        if: runner.os == 'Linux'
+        run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'
 
   msrv:
     name: MSRV (Ubuntu)

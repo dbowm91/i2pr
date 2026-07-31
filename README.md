@@ -1617,6 +1617,32 @@ post-verified via `verify-base.sh`; and `selective-purge.sh` only invokes
 proven. The static boundary check
 `scripts/check-multipass-interop-boundary.sh` enforces these additions.
 
+### Plan 077 constrained-host execution lane
+
+Plan 077 adds a read-only capability probe and strict execution/qualification
+contracts for the constrained host. Selection is ordered as existing
+rootful Docker with `--network none`, QEMU TCG with `-nic none`, the explicitly
+reduced inherited-descriptor/seccomp diagnostic, a manual remote Linux lane,
+then a typed no-full-runtime-lane result. The probe never installs Docker or
+QEMU, changes host policy, invokes privilege escalation, retries rootless or
+Multipass lanes, or starts a router.
+
+Run:
+
+```text
+bash scripts/interop/probe-constrained-host-lanes.sh
+bash scripts/check-constrained-host-lane-boundary.sh
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'
+```
+
+The current host has no accessible Docker daemon and no QEMU system emulator.
+It exposes `PR_SET_NO_NEW_PRIVS`, so the probe selects
+`inherited-descriptors-seccomp` as a reduced-scope capability. The resulting
+record is `full_runtime_lane = unavailable`, not a Plan 078 authorization.
+The closure is [Plan 077 status](plans/077-status.md), and the architecture
+decision is [ADR 0024](docs/adr/0024-constrained-host-ntcp2-execution-lanes.md).
+NTCP2 remains experimental and non-advertised.
+
 ## License
 
 A project license has not yet been selected. Do not copy implementation code from I2P+, i2pd, Emissary, or another router into this repository until license compatibility and provenance have been reviewed. Specifications and observed interoperability behavior may be used for clean-room implementation, subject to their applicable terms.

@@ -399,3 +399,12 @@ Plan 075 does not build i2pd, run a real mixed-router direction,
 add Docker/QEMU/namespaces/CI, change NTCP2 protocol code, or
 produce a Level 2 or Level 3 record. Zero real mixed-router
 attempts remain until Plan 078 executes.
+
+### Plan 077 constrained-host execution lane
+
+Plan 077 closes its provisioning work with a typed no-full-runtime-lane
+record. The current host cannot access its Docker daemon and has no QEMU
+system emulator; `PR_SET_NO_NEW_PRIVS` is available only for the explicitly
+reduced inherited-descriptor diagnostic. No protocol run occurred, so the
+support row remains experimental and non-advertised. Plan 078 requires a
+separately qualified full-runtime lane.

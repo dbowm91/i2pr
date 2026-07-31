@@ -1,9 +1,9 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/056/058/059/074/075/076 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, Plan 044 mixed-runner composition, typed Plan 052/053 evidence validation, Plan 055 reference-initiated trigger schema and source-inspected call graphs, Plan 056 certificate verifier, Plan 058 record and candidate integrity closure, Plan 059 i2pd direct helper, per-reference observation qualification receipts, canonical pipeline live-mode wiring, the Plan 074 real-driver and constrained-host corrective roadmap, the Plan 075 runner integrity and evidence correction, and the Plan 076 real pinned i2pd library and direct driver construction. Use when an agent is asked to run a Plan 038 profile on the host, prepare the reference routers, add or modify a scenario, dispatch a bounded mixed direction, create or validate a Plan 053 diagnostic bundle, validate the locked trigger record schema, audit Plan 056 candidate and supersession markers, run the Plan 059 i2pd helper controls, validate the Plan 059 qualification receipts, exercise the Plan 075 runner integrity contract, build or validate the Plan 076 i2pd driver against the pinned i2pd libraries, or validate evidence. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/056/058/059/074/075/076/077 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, Plan 044 mixed-runner composition, typed Plan 052/053 evidence validation, Plan 055 reference-initiated trigger schema and source-inspected call graphs, Plan 056 certificate verifier, Plan 058 record and candidate integrity closure, Plan 059 i2pd direct helper, per-reference observation qualification receipts, canonical pipeline live-mode wiring, the Plan 074 real-driver and constrained-host corrective roadmap, the Plan 075 runner integrity and evidence correction, the Plan 076 real pinned i2pd library and direct driver construction, and Plan 077 constrained-host lane selection and qualification. Use when an agent is asked to run a Plan 038 profile on the host, prepare the reference routers, add or modify a scenario, dispatch a bounded mixed direction, create or validate a Plan 053 diagnostic bundle, validate the locked trigger record schema, audit Plan 056 candidate and supersession markers, run the Plan 059 i2pd helper controls, validate the Plan 059 qualification receipts, exercise the Plan 075 runner integrity contract, build or validate the Plan 076 i2pd driver against the pinned i2pd libraries, probe or qualify a Plan 077 constrained-host lane, or validate evidence. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
-# I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/074/075/076)
+# I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/074/075/076/077)
 
 Use this skill from the repository root for the **host-side** Ubuntu 24.04
 amd64 Plan 038 reference-router NTCP2 interoperability harness. This skill
@@ -1358,3 +1358,22 @@ by an ADR that authorizes a different execution path for the
 `java-to-i2pr-ipv4` direction, Milestone 3 stays open and NTCP2
 stays experimental and non-advertised. The Plan 066 implementation
 surface is mandatory regardless of close outcome.
+
+## Plan 077 constrained-host lane provisioning
+
+Plan 077 is closed on the current host with a typed no-full-runtime-lane
+result. Use `bash scripts/interop/probe-constrained-host-lanes.sh` before
+constrained-host work. The probe is read-only and selects, in order, an
+accessible rootful Docker daemon with `--network none`, QEMU TCG with
+`-nic none`, inherited descriptors plus `no_new_privs`/seccomp as a
+reduced-scope diagnostic, a manual remote workflow, or no lane. It must not
+install tools, change host policy, invoke privilege escalation, retry
+rootless/Multipass, or start a router.
+
+The strict common execution manifest and sanitized qualification record are
+owned by `tests/integration/ntcp2/harness/execution_lane.py`. Run
+`bash scripts/check-constrained-host-lane-boundary.sh` and
+`python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'`.
+On this host Docker is inaccessible, QEMU is absent, and only the reduced
+scope is available; Plan 078 remains blocked until a full-runtime
+qualification record exists. See `plans/077-status.md` and ADR 0024.

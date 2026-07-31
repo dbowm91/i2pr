@@ -680,7 +680,25 @@ hashes, and fail closed with one of the typed blockers
 `runner-protocol-event-unproven`. Plan 075 does not build i2pd, run
 a real mixed-router direction, add Docker/QEMU/namespaces/CI, change
 NTCP2 protocol code, or produce a Level 2 or Level 3 record. Plan 075
-closes the runner-integrity surface only; the next active plan is
-Plan 076 and a real mixed-router run remains blocked until the real
-driver and a qualified Plan 077 execution lane exist. NTCP2 remains
+closes the runner-integrity surface only; Plan 076 and Plan 077 must provide
+the real driver and a qualified full-runtime lane before a real mixed-router
+run. NTCP2 remains
 experimental and non-advertised.
+
+## Plan 077 constrained-host execution lane
+
+Plan 077 provides the read-only constrained-host capability probe at
+`scripts/interop/probe-constrained-host-lanes.sh`, the strict common
+execution manifest and qualification schema in
+`harness/execution_lane.py`, and the boundary check at
+`scripts/check-constrained-host-lane-boundary.sh`. Selection is ordered as
+existing Docker with `--network none`, QEMU TCG with `-nic none`, the
+reduced inherited-descriptor/seccomp diagnostic, manual remote Linux, and a
+typed no-full-runtime-lane result. Tool presence is never treated as lane
+qualification.
+
+The current host closes Plan 077 with
+`selected_lane = inherited-descriptors-seccomp`,
+`full_runtime_lane = unavailable`, and `qualified = false`. Plan 078 must
+not execute until a full-runtime record proves the network, artifact,
+loopback-control, export, and cleanup predicates.

@@ -231,3 +231,13 @@ script gates, and review.
 - Conformance: [`specs/CONFORMANCE.md`](../../specs/CONFORMANCE.md)
 - Plan-of-record: latest active `plans/NNN-*.md`
 - Workspace guidelines: [`AGENTS.md`](../../AGENTS.md)
+
+## Plan 077 constrained-host execution lane
+
+The constrained-host lane is a separate, inspection-first boundary. Its
+selection order is accessible rootful Docker with `--network none`, QEMU TCG
+with `-nic none`, reduced inherited descriptors plus seccomp, manual remote
+Linux, then a typed no-full-runtime-lane result. The probe and strict
+qualification contracts live in `execution_lane.py`; a capability or tool
+definition is not interoperability evidence. The current host closes Plan
+077 with `full_runtime_lane = unavailable` and leaves Plan 078 blocked.

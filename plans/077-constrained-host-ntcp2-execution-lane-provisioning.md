@@ -2,7 +2,7 @@
 
 ## Status and dependencies
 
-- Status: planned.
+- Status: closed with a typed no-full-runtime-lane result.
 - Parent roadmap: Plan 074.
 - Requires Plans 075 and 076 closed.
 - Must close before Plan 078 live execution.

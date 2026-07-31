@@ -1789,3 +1789,22 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
+## Plan 077 constrained-host execution lane
+
+Plan 077 is closed with a typed no-full-runtime-lane result on the current
+host. Use `bash scripts/interop/probe-constrained-host-lanes.sh` before any
+future constrained-host work. Its order is existing accessible rootful
+Docker (`--network none`), QEMU TCG (`-nic none`), reduced inherited
+descriptors plus `no_new_privs`/seccomp, manual remote Linux, then no lane.
+The probe is read-only and must not install software, invoke privilege
+escalation, modify host policy/networking, retry rootless or Multipass, or
+start a router.
+
+The common manifest and sanitized qualification schema live in
+`tests/integration/ntcp2/harness/execution_lane.py`. The static boundary is
+`scripts/check-constrained-host-lane-boundary.sh`; focused tests are
+`test_execution_lane.py`. On this host Docker daemon access is unavailable,
+QEMU is absent, and the reduced descriptor capability is available but is not
+a full-runtime qualification. `target/interop/lane/qualification.json` must
+therefore retain `qualified = false` and `full_runtime_lane = unavailable`.
+Plan 078 must not run until a full-runtime qualification record exists.
