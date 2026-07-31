@@ -935,6 +935,112 @@ if ! grep -Fq 'test_plan065.py' "$root/AGENTS.md"; then
   exit 1
 fi
 
+# Plan 066: fresh candidate and authoritative NTCP2 two-run closure
+# pass. The Plan 066 helper module, the Plan 066 test matrix, the
+# typed blocker, the close-status classifier, the execution-lane
+# lock helper, and the candidate/closure marker invariants must be
+# committed; AGENTS.md must record the Plan 066 closure section and
+# wire the Plan 066 test matrix; the support rustdoc build must
+# remain warning-clean.
+if ! test -f "$root/tests/integration/ntcp2/harness/plan066.py"; then
+  echo "Plan 066 helper module is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'TYPED_BLOCKER_EXECUTION_LANE_UNAVAILABLE' \
+    "$root/tests/integration/ntcp2/harness/plan066.py"; then
+  echo "Plan 066 typed blocker marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'blocked_execution_lane_unavailable' \
+    "$root/tests/integration/ntcp2/harness/plan066.py"; then
+  echo "Plan 066 typed blocker string marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'def plan066_close_status' \
+    "$root/tests/integration/ntcp2/harness/plan066.py"; then
+  echo "Plan 066 close-status classifier is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'def plan066_execution_lane_lock' \
+    "$root/tests/integration/ntcp2/harness/plan066.py"; then
+  echo "Plan 066 execution-lane lock helper is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'def plan066_freeze_readiness_report' \
+    "$root/tests/integration/ntcp2/harness/plan066.py"; then
+  echo "Plan 066 freeze-readiness helper is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'def plan066_two_bundle_independence' \
+    "$root/tests/integration/ntcp2/harness/plan066.py"; then
+  echo "Plan 066 two-bundle independence helper is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan066.py"; then
+  echo "Plan 066 test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'FreezeReadinessTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan066.py"; then
+  echo "Plan 066 test matrix must include the freeze-readiness cases" >&2
+  exit 1
+fi
+if ! grep -Fq 'TwoBundlePositiveFixtureTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan066.py"; then
+  echo "Plan 066 test matrix must include the two-bundle positive fixture" >&2
+  exit 1
+fi
+if ! grep -Fq 'PrerequisiteAndAdrTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan066.py"; then
+  echo "Plan 066 test matrix must include the prerequisite and ADR cases" >&2
+  exit 1
+fi
+if ! grep -Fq 'DirectionOrderIndependenceTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan066.py"; then
+  echo "Plan 066 test matrix must include the direction-order independence cases" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan066TypedBlockerTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan066.py"; then
+  echo "Plan 066 test matrix must include the typed blocker / close-status cases" >&2
+  exit 1
+fi
+if ! test -f "$root/plans/066-candidate.md"; then
+  echo "Plan 066 candidate record is missing" >&2
+  exit 1
+fi
+if ! grep -Eq 'declared-not-executable|i2pr-interop-candidate-v1' \
+    "$root/plans/066-candidate.md"; then
+  echo "Plan 066 candidate must declare declared-not-executable status or embed a candidate record" >&2
+  exit 1
+fi
+if ! grep -Fq 'blocked_execution_lane_unavailable' \
+    "$root/plans/066-candidate.md"; then
+  echo "Plan 066 candidate must carry the typed blocker marker" >&2
+  exit 1
+fi
+if ! test -f "$root/plans/066-closure.md"; then
+  echo "Plan 066 closure record is missing" >&2
+  exit 1
+fi
+if ! grep -Eq 'declared-not-executable|blocked_execution_lane_unavailable' \
+    "$root/plans/066-closure.md"; then
+  echo "Plan 066 closure must record the typed blocker and the close-status" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 066' "$root/AGENTS.md"; then
+  echo "AGENTS.md must record the Plan 066 closure section" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_plan066.py' "$root/AGENTS.md"; then
+  echo "Plan 066 test matrix is not wired into AGENTS.md" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 066' "$root/.opencode/skills/i2pr-ntcp2-interop/SKILL.md"; then
+  echo "i2pr-ntcp2-interop skill must record the Plan 066 section" >&2
+  exit 1
+fi
+
 python3 "$root/scripts/interop/validate-evidence.py"
 python3 "$root/scripts/interop/validate-scenarios.py"
 

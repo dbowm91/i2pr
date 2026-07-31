@@ -973,3 +973,82 @@ environment blocker `blocked_execution_lane_unavailable`.
 Plan 065 does not advance any support row. NTCP2 stays experimental
 and non-advertised; Milestone 3 stays open until Plan 066
 produces a verified Milestone 3 certificate.
+
+## Plan 066 fresh-candidate and authoritative NTCP2 two-run closure pass
+
+Plan 066 is the execution-only pass that cuts one fresh candidate
+descended from the Plan 065 implementation floor, selects exactly
+one execution lane (direct-host or guest), runs the four primary
+IPv4 mixed-router directions twice on independent mutable state,
+and produces a verified Milestone 3 certificate over the two
+sanitized bundles.
+
+The plan inherits the Plan 058/060 two-lane contract: Lane A
+(direct-host, requires `rootless_sandbox_available` on the
+execution host) and Lane B (guest, the outer host may continue to
+report `blocked_unprivileged_user_namespace` but the Multipass
+recovery guest must report `rootless_sandbox_available`). The two
+lanes are alternatives; cross-lane combinations are forbidden.
+
+The Plan 066 plan-of-record cannot start under the current
+four-direction contract until either a future pinned Java revision
+is adopted or the closure contract is revised through a new ADR
+(because ADR 0021 is Rejected by Plan 058). The host in the Plan
+046 `apparmor_restrict_on` negative baseline cannot exercise the
+Plan 046 sealed-namespace lane; the Plan 048/049 Multipass
+recovery lane is the canonical external path but cannot complete
+on this constrained host (per Plan 051). Plan 066 therefore closes
+on this host with the typed environment blocker
+`blocked_execution_lane_unavailable`; the candidate is
+`declared-not-executable` on this host.
+
+The Plan 066 implementation surface is mandatory:
+
+- `tests/integration/ntcp2/harness/plan066.py` — the Plan 066
+  helper module. Exports `plan066_typed_blocker() ->
+  "blocked_execution_lane_unavailable"`, `plan066_close_status()
+  -> "declared-not-executable"`, `plan066_execution_lane_lock(...)`
+  for the Plan 058/060 two-lane contract,
+  `plan066_candidate_record_digests()` for the bounded 23-row
+  digest table, `plan066_freeze_readiness_report()` for the
+  freeze-readiness checklist,
+  `assert_plan066_freeze_invariants()` for the typed blocker
+  enforcement, `plan066_directional_record(...)` for the per-
+  direction record skeleton, `plan066_two_bundle_independence(...)`
+  for the cross-run independence rules, and
+  `plan066_finalized_bundle_marker()` for the bundle mutation
+  guard.
+- `tests/integration/ntcp2/harness/test_plan066.py` — the Plan 066
+  test matrix (41 cases covering the 30 enumerated Plan 066
+  Phase 12 cases plus the typed-blocker, freeze-readiness,
+  helper-contract, and Plan 065 plan-of-record helpers).
+- `scripts/check-ntcp2-interoperability.sh` extended to enforce
+  the Plan 066 artifacts, the Plan 066 test matrix coverage, and
+  the candidate/closure marker invariants.
+- `plans/066-candidate.md` — the Plan 066 candidate record. Status
+  `declared-not-executable`. Implements the executed source
+  commit (the Plan 065 implementation floor), the bounded 23-row
+  digest table, the lane lock, the typed blockers, and the schema
+  marker.
+- `plans/066-closure.md` — the Plan 066 closure record with the
+  typed blocker and the close-status.
+
+### Plan 066 supersession of Plan 060
+
+Plan 060 was retired by Plan 062. Plan 066 supersedes the Plan 060
+two-run certificate authority. The Plan 060 helper module, test
+matrix, freeze-readiness checks, candidate record, and closure
+record remain mandatory as an audit trail and a Plan 066
+prerequisite. Future candidates must descend from the Plan 065
+implementation floor or later, must use the Plan 062 v4 trigger
+schema, the Plan 062 reference-event v1 schema, the Plan 062 v3
+observation schema, and the 64-hex SHA-256 Router Hash contract.
+
+The Plan 066 implementation surface is mandatory regardless of
+close outcome. Any change that removes or weakens the Plan 066
+helper module, the Plan 066 test matrix, the static boundary
+checker extension, or the freeze-readiness invariants must be
+re-justified in a new plan-of-record and must not silently weaken
+the Milestone 3 evidence gate. NTCP2 stays experimental and
+non-advertised; Milestone 3 stays open until a future candidate
+produces two independent verified bundles.

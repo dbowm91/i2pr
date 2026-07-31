@@ -1247,3 +1247,153 @@ bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-rootless-interop-boundary.sh
 bash scripts/check-multipass-interop-boundary.sh
 ```
+
+## Plan 066 fresh-candidate and authoritative NTCP2 two-run closure pass
+
+Plan 066 is the execution-only pass that cuts one fresh candidate
+descended from the Plan 065 implementation floor, selects exactly
+one execution lane (direct-host or guest), runs the four primary
+IPv4 mixed-router directions twice on independent mutable state,
+and produces a verified Milestone 3 certificate over the two
+sanitized bundles.
+
+The plan cannot start under the current four-direction contract
+until either a future pinned Java revision is adopted or the
+closure contract is revised through a new ADR (because ADR 0021 is
+Rejected by Plan 058). The host in the Plan 046
+`apparmor_restrict_on` negative baseline cannot exercise the Plan
+046 sealed-namespace lane; the Plan 048/049 Multipass recovery
+lane is the canonical external path but cannot complete on this
+constrained host (per Plan 051). Plan 066 therefore closes on
+this host with the typed environment blocker
+`blocked_execution_lane_unavailable`; the candidate is
+`declared-not-executable` on this host.
+
+The plan delivered:
+
+- `tests/integration/ntcp2/harness/plan066.py` — the Plan 066
+  helper module. Exports `plan066_typed_blocker() ->
+  "blocked_execution_lane_unavailable"`, `plan066_close_status()
+  -> "declared-not-executable"`, `plan066_execution_lane_lock(...)`
+  for the Plan 058/060 two-lane contract,
+  `plan066_candidate_record_digests()` for the bounded 23-row
+  digest table, `plan066_freeze_readiness_report()` for the
+  freeze-readiness checklist,
+  `assert_plan066_freeze_invariants()` for the typed blocker
+  enforcement, `plan066_directional_record(...)` for the per-
+  direction record skeleton, `plan066_two_bundle_independence(...)`
+  for the cross-run independence rules, and
+  `plan066_finalized_bundle_marker()` for the bundle mutation
+  guard.
+- `tests/integration/ntcp2/harness/test_plan066.py` — the Plan 066
+  test matrix (41 cases covering the 30 enumerated Plan 066
+  Phase 12 cases plus the typed-blocker, freeze-readiness,
+  helper-contract, and Plan 065 plan-of-record helpers).
+- `scripts/check-ntcp2-interoperability.sh` extended to enforce
+  the Plan 066 artifacts, the Plan 066 test matrix coverage, and
+  the candidate/closure marker invariants.
+- `plans/066-candidate.md` — the Plan 066 candidate record. Status
+  `declared-not-executable`. Implements the executed source
+  commit (the Plan 065 implementation floor), the bounded 23-row
+  digest table, the lane lock, the typed blockers, and the schema
+  marker.
+- `plans/066-closure.md` — the Plan 066 closure record with the
+  typed blocker and the close-status.
+
+### Plan 066 execution lanes
+
+The Plan 066 plan-of-record inherits the Plan 058/060 two-lane
+contract: Lane A (direct-host, requires `rootless_sandbox_available`
+on the execution host) and Lane B (guest, the outer host may
+continue to report `blocked_unprivileged_user_namespace` but the
+Multipass recovery guest must report `rootless_sandbox_available`).
+Exactly one lane is selected per candidate; a certificate may not
+combine Run A from one lane with Run B from another.
+
+On this host the lane lock is `lane_kind = guest`,
+`outer_host_baseline = blocked_unprivileged_user_namespace`,
+`guest_probe_outcome = blocked_execution_lane_unavailable`. The
+Plan 046 direct-host probe and the Plan 048/049 Multipass guest
+probe both return typed blockers on this host. Plan 066 therefore
+closes with the typed environment blocker
+`blocked_execution_lane_unavailable` and refuses to advance to a
+two-run certificate.
+
+### Plan 066 freeze-readiness invariants
+
+`plan066.plan066_freeze_readiness_report()` produces the bounded
+checklist:
+
+```text
+plan062_v4_trigger_schema
+plan062_reference_event_schema
+plan062_v3_observation_schema
+plan062_source_verification_record
+adr_0022_accepted
+plan063_java_driver_artifacts
+plan064_i2pd_driver_artifacts
+plan065_strict_scenario_schema_v2
+plan065_directional_predicate_contract
+plan065_canonical_mixed_runner
+plan060_helper_module_present
+plan060_typed_blocker_marker
+plan060_candidate_retired
+plan056_candidate_retired
+plan057_superseded
+adr_0021_rejected
+plan059_typed_blocker_marker
+plan065_test_matrix_present
+plan066_helper_module_present
+plan066_test_matrix_present
+execution_lane_available
+```
+
+Every item must be `True` for the candidate to advance. On this
+host the `execution_lane_available` row is `False` and the
+checklist reports `blocked_execution_lane_unavailable` plus any
+missing prerequisites. `assert_plan066_freeze_invariants` raises
+`Plan066Error` listing every failing invariant.
+
+### Plan 066 supersession
+
+Plan 066 supersedes the Plan 060 two-run certificate authority
+(Plan 060 was retired by Plan 062). Plan 066 cannot start under
+the current four-direction contract until either a future pinned
+Java revision is adopted or the closure contract is revised
+through a new ADR (because ADR 0021 is Rejected by Plan 058).
+Future candidates must descend from the Plan 065 implementation
+floor or later, must use the Plan 062 v4 trigger schema, the
+Plan 062 reference-event v1 schema, the Plan 062 v3 observation
+schema, and the 64-hex SHA-256 Router Hash contract.
+
+The Plan 066 implementation surface is mandatory regardless of
+close outcome. Any change that removes or weakens the Plan 066
+helper module, the Plan 066 test matrix, the static boundary
+checker extension, or the freeze-readiness invariants must be
+re-justified in a new plan-of-record and must not silently weaken
+the Milestone 3 evidence gate.
+
+### Plan 066 focused checks
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan066.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan065.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_trigger_v4.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_event.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_observation_v3.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_bundle.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_java_direct_driver.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_driver.py'
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+bash scripts/check-fixture-manifest.sh
+bash scripts/check-ntcp2-vectors.sh
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+cargo fmt --all --check
+cargo check --workspace --all-targets
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+```

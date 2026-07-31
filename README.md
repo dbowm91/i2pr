@@ -965,6 +965,59 @@ four-direction live diagnostic bundle and Plan 066 produces a
 verified Milestone 3 certificate. NTCP2 remains experimental and
 non-advertised.
 
+### Plan 066 fresh-candidate and authoritative NTCP2 two-run closure pass
+
+Plan 066 is the execution-only pass that cuts one fresh candidate
+descended from the Plan 065 implementation floor, selects exactly
+one execution lane (direct-host or guest), runs the four primary
+IPv4 mixed-router directions twice on independent mutable state,
+and produces a verified Milestone 3 certificate over the two
+sanitized bundles. The Plan 066 plan-of-record is
+`plans/066-fresh-candidate-and-authoritative-ntcp2-two-run-closure.md`.
+
+The plan cannot start under the current four-direction contract
+until either a future pinned Java revision is adopted or the
+closure contract is revised through a new ADR (because ADR 0021 is
+Rejected by Plan 058). The Plan 046 rootless sealed-namespace
+lane returns `blocked_unprivileged_user_namespace` on this host;
+the Plan 048/049 Multipass recovery lane is the canonical external
+path but cannot complete on this constrained host (per Plan 051).
+Plan 066 therefore closes on this host with the typed environment
+blocker `blocked_execution_lane_unavailable`; the candidate is
+`declared-not-executable`.
+
+The Plan 066 implementation surface is mandatory:
+
+- `tests/integration/ntcp2/harness/plan066.py` — the Plan 066
+  helper module. Exports the typed blocker
+  (`blocked_execution_lane_unavailable`), the close-status
+  classifier (`declared-not-executable`), the
+  `plan066_execution_lane_lock(...)` lane-lock helper for the
+  Plan 058/060 two-lane contract, the 23-row candidate-record
+  digest table, the freeze-readiness checklist, the
+  `assert_plan066_freeze_invariants` enforcer, the
+  `plan066_directional_record` per-direction skeleton, the
+  cross-bundle independence checker
+  (`plan066_two_bundle_independence`), and the bundle mutation
+  guard (`plan066_finalized_bundle_marker`).
+- `tests/integration/ntcp2/harness/test_plan066.py` — the Plan 066
+  test matrix (41 cases covering the 30 enumerated Plan 066
+  Phase 12 cases plus the typed-blocker, freeze-readiness,
+  helper-contract, and Plan 065 plan-of-record helpers).
+- `scripts/check-ntcp2-interoperability.sh` enforces the Plan 066
+  artifacts, the Plan 066 test matrix coverage, and the
+  candidate/closure marker invariants.
+- `plans/066-candidate.md` — the Plan 066 candidate record
+  (status `declared-not-executable`).
+- `plans/066-closure.md` — the Plan 066 closure record with the
+  typed blocker and the close-status.
+
+A future pinned Java revision that exposes a transport-only
+direct seam may trigger an ADR re-issue that supersedes the ADR
+0021 rejection and unblocks the `java-to-i2pr-ipv4` direction.
+Until then, NTCP2 stays experimental and non-advertised and
+Milestone 3 stays open.
+
 ## MVP direction
 
 The feature MVP is expected to include:
@@ -1133,6 +1186,9 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 064 status](plans/064-status.md)
 - [Plan 065 NTCP2 canonical integration and live qualification](plans/065-ntcp2-canonical-integration-and-live-qualification.md)
 - [Plan 065 status](plans/065-status.md)
+- [Plan 066 fresh candidate and authoritative NTCP2 two-run closure](plans/066-fresh-candidate-and-authoritative-ntcp2-two-run-closure.md)
+- [Plan 066 candidate record](plans/066-candidate.md)
+- [Plan 066 closure record](plans/066-closure.md)
 - [Plan 060 fresh candidate and two-run Milestone 3 certificate closure pass](plans/060-fresh-candidate-and-two-run-milestone3-certificate-closure-pass.md)
 - [Plan 060 candidate record](plans/060-candidate.md)
 - [Plan 060 closure record](plans/060-closure.md)

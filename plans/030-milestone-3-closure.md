@@ -1,6 +1,6 @@
 # Aggregate Milestone 3 closure: NTCP2 and transport-neutral link management
 
-Date: 2026-07-15 (last updated by Plan 062)
+Date: 2026-07-31 (last updated by Plan 066)
 
 Status: **blocked; implementation phases complete for their bounded local
 scope, milestone acceptance criteria not met**. Plan 056 closed with a
@@ -32,17 +32,37 @@ remain readable for historical inspection but cannot contribute to
 a new passing bundle. The future candidate implementation floor
 is Plan 065 closure or later.
 
-The historical Plan 060 typed blocker on this host is
-`blocked_execution_lane_unavailable`; the historical Plan 060
+Plan 063 implements the source-locked Java I2P 2.12.0
+stripped-router direct NTCP2 driver; Plan 064 implements the
+source-locked i2pd 2.60.0 direct NTCP2 driver and observer
+correction. Plan 065 wires the corrected Java and i2pd drivers
+into the canonical four-direction mixed-router lane, enforces the
+exact DeliveryStatus correlation on the i2pr side, and produces
+one complete four-direction live diagnostic bundle from a clean
+implementation commit. Plan 065 establishes the implementation
+floor from which Plan 066 may cut a candidate.
+
+Plan 066 is the fresh-candidate and authoritative NTCP2 two-run
+closure pass. Plan 066 closes on this host with the typed
+environment blocker `blocked_execution_lane_unavailable`; the
 candidate status is `declared-not-executable`. The Plan 046
 rootless sealed-namespace probe returns
 `blocked_unprivileged_user_namespace`, the Plan 048/049 Multipass
 recovery lane cannot complete on this constrained host (per
-Plan 051), and ADR 0021 remains Rejected. Plan 065 (canonical
-integration and live qualification) and Plan 066 (fresh
-candidate and two-run certificate) own the path to Milestone 3
-closure once the Plan 063 Java driver and Plan 064 i2pd driver
-are implemented and the external lane becomes runnable.
+Plan 051), and ADR 0021 remains Rejected. Plan 066 therefore cannot
+start under the current four-direction contract until either a
+future pinned Java revision is adopted or the closure contract is
+revised through a new ADR. The Plan 066 implementation surface is
+mandatory regardless of close outcome.
+
+The historical Plan 060 typed blocker on this host is
+`blocked_execution_lane_unavailable`; the historical Plan 060
+candidate status is `declared-not-executable`. The Plan 066
+candidate record (`plans/066-candidate.md`) is the active
+authoritative Plan 066 candidate declaration on this host; the
+Plan 066 closure record (`plans/066-closure.md`) carries the
+explicit `blocked_execution_lane_unavailable` marker and the
+`declared-not-executable` close-status.
 
 This aggregate record preserves the evidence boundary from Plans 031–036. It
 does not convert local vectors, self-handshakes, loopback TCP, or deterministic
