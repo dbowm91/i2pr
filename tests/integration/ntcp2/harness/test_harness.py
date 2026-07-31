@@ -625,8 +625,10 @@ class HarnessContractTests(unittest.TestCase):
             scenario_path = root / "scenario.toml"
             scenario_path.write_text(
                 """[scenario]
-schema = 1
-scenario_id = "synthetic-run"
+schema = "i2pr-launcher-scenario-v2"
+schema_version = 2
+scenario_id = "i2pr-to-java-ipv4"
+run_id = "contract-run"
 role = "initiator"
 address_family = "ipv4"
 local_address = "192.0.2.1"
@@ -646,6 +648,11 @@ smoke_message_profile = "delivery-status"
 deterministic_seed = 1
 expected_result_class = "authenticated-handshake-and-bounded-i2np-exchange"
 status_path = "status.jsonl"
+delivery_status_message_id = 4242
+expected_sender_router_hash_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+expected_receiver_router_hash_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+reference_driver_mode = "java-direct-driver"
+run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 """,
                 encoding="utf-8",
             )
@@ -659,7 +666,9 @@ status_path = "status.jsonl"
                 '"phase":"terminal","result":"rejected",'
                 '"reason_code":"state_invalid",'
                 '"counters":{"listener_ready":0,"authenticated":0,"frames_sent":0,'
-                '"frames_received":0,"i2np_sent":0,"i2np_received":0}}'
+                '"frames_received":0,"i2np_sent":0,"i2np_received":0,'
+                '"delivery_status_message_id":0,'
+                '"expected_peer_router_hash_sha256":""}}'
             )
             self.assertEqual(status["result"], "rejected")
             with self.assertRaises(LauncherStatusError):
@@ -668,7 +677,9 @@ status_path = "status.jsonl"
                     '"phase":"listener_ready","result":"rejected",'
                     '"reason_code":"state_invalid",'
                     '"counters":{"listener_ready":0,"authenticated":0,"frames_sent":0,'
-                    '"frames_received":0,"i2np_sent":0,"i2np_received":0}}'
+                    '"frames_received":0,"i2np_sent":0,"i2np_received":0,'
+                    '"delivery_status_message_id":0,'
+                    '"expected_peer_router_hash_sha256":""}}'
                 )
 
     def test_plan_041_reference_pair_scenarios_are_strict_and_directional(self) -> None:
@@ -1132,6 +1143,27 @@ class MixedScenarioTests(unittest.TestCase):
 
 
 class LauncherRendererTests(unittest.TestCase):
+    def _plan065_defaults(self, execution_id: str) -> dict:
+        """Return the Plan 065 required primary fields for a renderer test."""
+
+        if "java" in execution_id:
+            mode = "java-direct-driver"
+        elif "i2pd" in execution_id:
+            mode = "i2pd-direct-driver"
+        else:
+            mode = "java-direct-driver"
+        return {
+            "run_id": "renderer-run",
+            "delivery_status_message_id": 1,
+            "expected_sender_router_hash_sha256":
+                "1111111111111111111111111111111111111111111111111111111111111111",
+            "expected_receiver_router_hash_sha256":
+                "2222222222222222222222222222222222222222222222222222222222222222",
+            "reference_driver_mode": mode,
+            "run_identity_sha256":
+                "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        }
+
     def test_render_valid_initiator_scenario(self) -> None:
         from launcher_renderer import render_scenario_toml, RenderError
         content = render_scenario_toml(
@@ -1144,6 +1176,7 @@ class LauncherRendererTests(unittest.TestCase):
             peer_port=45678,
             state_dir="state",
             peer_router_info="exchange/peer.info",
+            **self._plan065_defaults("i2pr-to-java-ipv4"),
         )
         self.assertIn('role = "initiator"', content)
         self.assertIn('peer_address = "192.0.2.2"', content)
@@ -1162,6 +1195,7 @@ class LauncherRendererTests(unittest.TestCase):
             peer_port=None,
             state_dir="state",
             peer_router_info=None,
+            **self._plan065_defaults("java-to-i2pr-ipv4"),
         )
         self.assertIn('role = "responder"', content)
         self.assertIn('peer_address = ""', content)
@@ -1176,6 +1210,7 @@ class LauncherRendererTests(unittest.TestCase):
                 local_address="192.0.2.1", local_port=45680,
                 peer_address=None, peer_port=None,
                 state_dir="/etc/state", peer_router_info=None,
+                **self._plan065_defaults("test"),
             )
 
     def test_render_rejects_parent_traversal(self) -> None:
@@ -1186,6 +1221,7 @@ class LauncherRendererTests(unittest.TestCase):
                 local_address="192.0.2.1", local_port=45680,
                 peer_address=None, peer_port=None,
                 state_dir="../escape", peer_router_info=None,
+                **self._plan065_defaults("test"),
             )
 
     def test_render_rejects_address_outside_synthetic_range(self) -> None:
@@ -1196,6 +1232,7 @@ class LauncherRendererTests(unittest.TestCase):
                 local_address="10.0.0.1", local_port=45680,
                 peer_address=None, peer_port=None,
                 state_dir="state", peer_router_info=None,
+                **self._plan065_defaults("test"),
             )
 
     def test_render_rejects_mismatched_address_family(self) -> None:
@@ -1206,6 +1243,7 @@ class LauncherRendererTests(unittest.TestCase):
                 local_address="2001:db8:36::1", local_port=45680,
                 peer_address=None, peer_port=None,
                 state_dir="state", peer_router_info=None,
+                **self._plan065_defaults("test"),
             )
 
     def test_render_rejects_missing_peer_for_initiator(self) -> None:
@@ -1216,6 +1254,7 @@ class LauncherRendererTests(unittest.TestCase):
                 local_address="192.0.2.1", local_port=45680,
                 peer_address=None, peer_port=None,
                 state_dir="state", peer_router_info="exchange/peer.info",
+                **self._plan065_defaults("test"),
             )
 
     def test_render_rejects_peer_for_responder(self) -> None:
@@ -1226,6 +1265,7 @@ class LauncherRendererTests(unittest.TestCase):
                 local_address="192.0.2.1", local_port=45680,
                 peer_address="192.0.2.2", peer_port=45678,
                 state_dir="state", peer_router_info=None,
+                **self._plan065_defaults("test"),
             )
 
     def test_render_rejects_unsupported_padding(self) -> None:
@@ -1237,6 +1277,7 @@ class LauncherRendererTests(unittest.TestCase):
                 peer_address=None, peer_port=None,
                 state_dir="state", peer_router_info=None,
                 padding_profile="arbitrary",
+                **self._plan065_defaults("test"),
             )
 
     def test_render_rejects_unsupported_smoke_profile(self) -> None:
@@ -1248,6 +1289,7 @@ class LauncherRendererTests(unittest.TestCase):
                 peer_address=None, peer_port=None,
                 state_dir="state", peer_router_info=None,
                 smoke_message_profile="arbitrary",
+                **self._plan065_defaults("test"),
             )
 
     def test_render_rejects_duplicate_endpoint(self) -> None:
@@ -1258,6 +1300,7 @@ class LauncherRendererTests(unittest.TestCase):
                 local_address="192.0.2.1", local_port=45680,
                 peer_address="192.0.2.1", peer_port=45680,
                 state_dir="state", peer_router_info="exchange/peer.info",
+                **self._plan065_defaults("test"),
             )
 
     def test_render_rejects_unsupported_expected_result(self) -> None:
@@ -1269,6 +1312,7 @@ class LauncherRendererTests(unittest.TestCase):
                 peer_address=None, peer_port=None,
                 state_dir="state", peer_router_info=None,
                 expected_result_class="arbitrary-result",
+                **self._plan065_defaults("test"),
             )
 
     def test_render_and_validate_writes_valid_toml(self) -> None:
@@ -1286,6 +1330,7 @@ class LauncherRendererTests(unittest.TestCase):
                 peer_port=None,
                 state_dir="state",
                 peer_router_info=None,
+                **self._plan065_defaults("i2pr-to-java-ipv4"),
             )
             self.assertTrue(path.is_file())
             loaded = load_launcher_scenario(path)
@@ -1319,7 +1364,9 @@ class MixedRunnerTerminalStatusTests(unittest.TestCase):
                 '"phase":"terminal","result":"rejected",'
                 '"reason_code":"arbitrary-reason",'
                 '"counters":{"listener_ready":0,"authenticated":0,"frames_sent":0,'
-                '"frames_received":0,"i2np_sent":0,"i2np_received":0}}'
+                '"frames_received":0,"i2np_sent":0,"i2np_received":0,'
+                '"delivery_status_message_id":0,'
+                '"expected_peer_router_hash_sha256":""}}'
             )
 
     def test_parse_status_line_rejects_multi_terminal(self) -> None:
@@ -1329,7 +1376,9 @@ class MixedRunnerTerminalStatusTests(unittest.TestCase):
                 '"phase":"terminal","result":"ready",'
                 '"reason_code":"listener_bound",'
                 '"counters":{"listener_ready":0,"authenticated":0,"frames_sent":0,'
-                '"frames_received":0,"i2np_sent":0,"i2np_received":0}}'
+                '"frames_received":0,"i2np_sent":0,"i2np_received":0,'
+                '"delivery_status_message_id":0,'
+                '"expected_peer_router_hash_sha256":""}}'
             )
 
     def test_parse_status_line_rejects_unknown_counter(self) -> None:
@@ -1339,7 +1388,9 @@ class MixedRunnerTerminalStatusTests(unittest.TestCase):
                 '"phase":"terminal","result":"rejected",'
                 '"reason_code":"handshake_failed",'
                 '"counters":{"listener_ready":0,"authenticated":0,"frames_sent":0,'
-                '"frames_received":0,"i2np_sent":0,"i2np_received":0,"unknown":1}}'
+                '"frames_received":0,"i2np_sent":0,"i2np_received":0,'
+                '"delivery_status_message_id":0,'
+                '"expected_peer_router_hash_sha256":"","unknown":1}}'
             )
 
     def test_parse_status_line_rejects_extra_json_fields(self) -> None:
@@ -1349,7 +1400,9 @@ class MixedRunnerTerminalStatusTests(unittest.TestCase):
                 '"phase":"terminal","result":"rejected",'
                 '"reason_code":"handshake_failed",'
                 '"counters":{"listener_ready":0,"authenticated":0,"frames_sent":0,'
-                '"frames_received":0,"i2np_sent":0,"i2np_received":0},'
+                '"frames_received":0,"i2np_sent":0,"i2np_received":0,'
+                '"delivery_status_message_id":0,'
+                '"expected_peer_router_hash_sha256":""},'
                 '"extra_field":"value"}'
             )
 

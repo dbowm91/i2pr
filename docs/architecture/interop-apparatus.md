@@ -855,3 +855,121 @@ with one complete four-direction live diagnostic bundle and Plan
 066 produces a verified Milestone 3 certificate. Plan 064 does not
 wire the i2pd driver into the canonical primary `mixed_runner.py`;
 that wiring belongs to Plan 065.
+
+## Plan 065 NTCP2 canonical integration and live qualification
+
+Plan 065 wires the corrected Java and i2pd direct drivers into the
+canonical four-direction mixed-router lane, enforces the exact
+DeliveryStatus correlation on the i2pr side, and produces one
+complete four-direction live diagnostic bundle from a clean
+implementation commit. Plan 065 establishes the implementation
+floor from which Plan 066 may cut a candidate.
+
+### Workstream A: i2pr scenario contract
+
+The strict launcher scenario schema is bumped to
+`i2pr-launcher-scenario-v2` (schema name string) / 2 (schema version
+integer). The strict parser requires the per-run DeliveryStatus
+`message_id` in `1..=0xffffffff`, the 64-lowercase-hex expected sender
+and receiver Router Hashes, the `reference_driver_mode` field
+allowlisted to `java-direct-driver` or `i2pd-direct-driver`, and the
+`run_identity_sha256` 64-lowercase-hex digest. The strict parser
+refuses the historical schema 1 path, refuses zero message IDs,
+refuses uppercase or short Router Hashes, refuses all-zero
+provenance, and refuses a reference driver mode that does not match
+the direction encoded by `scenario_id`.
+
+The Rust strict parser lives in `tools/i2pr-interop/src/scenario.rs`;
+the Python strict parser lives in
+`tests/integration/ntcp2/harness/launcher_protocol.py`. The strict
+renderer lives in `tests/integration/ntcp2/harness/launcher_renderer.py`.
+
+### Workstream B: i2pr launcher send correction
+
+The `send_i2np_block` helper no longer hard-codes the
+`0x0420_0001` DeliveryStatus authority. The helper accepts the
+scenario-owned message ID, rejects a zero ID with
+`SenderDeliveryStatusMessageIdZero`, constructs the DeliveryStatus
+envelope using the exact ID, decodes the constructed message and
+verifies the round-trip envelope and payload message IDs before
+frame emission, and records the per-run DeliveryStatus
+`message_id` and the expected peer Router Hash in the typed
+counters. The hard-coded `0x0420_0001` is removed from the active
+primary code path.
+
+### Workstream C: i2pr launcher receive correction
+
+The `receive_delivery_status` helper requires the exact envelope
+message ID and the DeliveryStatus payload message ID before any
+other condition. A type-only DeliveryStatus match is rejected with
+`ReceiverDeliveryStatusIdMismatch`. A missing DeliveryStatus is
+rejected with `ReceiverDeliveryStatusMissing`. A duplicate is
+rejected with `ReceiverDeliveryStatusDuplicate`. The helper records
+the per-run DeliveryStatus `message_id` and the expected peer
+Router Hash in the typed counters.
+
+### Workstream D: reference adapter integration
+
+The canonical mixed-runner wires the new scenario primary fields
+through `render_and_validate` for both the i2pr initiator and
+responder paths. The `_plan065_primary_fields` helper derives the
+DeliveryStatus `message_id` from the run identity and the
+correlation nonce; the `_reference_driver_mode_for` helper returns
+the source-locked driver mode for a reference kind. The renderer
+rejects SAM, HTTP, I2PControl, support-topology, and
+synthetic-fallback helpers for any primary direction.
+
+### Workstream E: canonical two-process topology
+
+The canonical two-process topology enforces exactly one i2pr
+process and exactly one reference driver process per primary
+direction. The Plan 046 rootless sealed-namespace lane owns the
+canonical external lane; the Plan 048/049 Multipass recovery lane
+owns the canonical recovery lane. The Plan 058 deprecated the
+privileged dual-netns-veth lane as an opt-in qualification lane.
+
+### Workstream F: pass predicate
+
+The Plan 065 pass predicate requires both-side
+`ntcp2_authenticated`, sender `frame_emitted`, receiver
+`frame_authenticated_and_decrypted` AND `i2np_message_decoded`, a
+matching `delivery_status_message_id` between scenario, trigger,
+sender, and receiver, and a matching `peer_router_hash_sha256` /
+`local_router_hash_sha256` between trigger, sender, receiver, and
+direction record. The reference observation v3 schema carries the
+exact correlation fields and the canonical mixed-runner refuses
+to mark a direction as `passed` when the synthetic fallback is
+used.
+
+### Workstream G: evidence model and durability
+
+The Plan 052 evidence bundle and the Plan 053 pipeline integration
+remain the canonical evidence model. The Plan 065 evidence
+retention requires every primary direction to write exactly one
+`run-identity`, `environment-manifest`, `direction`, `trigger`,
+`observation-v3`, `cleanup`, and `diagnostics/sanitized-summary`
+record. The Plan 060 candidate is retired and the
+`declared-not-executable` status marker is preserved; the Plan 060
+candidate record is preserved verbatim as the bounded
+historical-reader path. The Plan 066 implementation floor is the
+Plan 065 closure commit or later.
+
+### Workstream H: live qualification sequence
+
+The Plan 065 live qualification sequence is documented in the plan
+of record. The Plan 046 rootless sealed-namespace lane is the
+canonical external lane; the Plan 048/049 Multipass recovery lane
+is the canonical recovery lane. Plan 066 cannot start under the
+current four-direction contract until either a future pinned Java
+revision is adopted or the closure contract is revised through a
+new ADR (because ADR 0021 is Rejected by Plan 058). The Plan 046
+rootless sealed-namespace lane returns
+`blocked_unprivileged_user_namespace` on this host; the Plan
+048/049 Multipass recovery lane is the canonical external path
+but cannot complete on this constrained host (per Plan 051).
+Plan 066 therefore closes on this host with the typed
+environment blocker `blocked_execution_lane_unavailable`.
+
+Plan 065 does not advance any support row. NTCP2 stays experimental
+and non-advertised; Milestone 3 stays open until Plan 066
+produces a verified Milestone 3 certificate.

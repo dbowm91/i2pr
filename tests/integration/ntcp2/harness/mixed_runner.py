@@ -146,6 +146,57 @@ def _run_id() -> str:
     return f"mixed-{dt.datetime.now(dt.UTC).strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
 
+def _reference_driver_mode_for(reference: str) -> str:
+    """Return the Plan 065 source-locked driver mode for a reference kind.
+
+    Only the Plan 063 Java direct driver and the Plan 064 i2pd direct
+    driver satisfy a primary direction. The Plan 062 v4 trigger schema
+    refuses SAM, HTTP, I2PControl, support-topology, and synthetic
+    fallback helpers for any primary direction.
+    """
+
+    if reference == "java_i2p":
+        return "java-direct-driver"
+    if reference == "i2pd":
+        return "i2pd-direct-driver"
+    raise MixedRunError(f"unknown-reference-kind:{reference}")
+
+
+def _plan065_primary_fields(
+    *,
+    execution_id: str,
+    run_id: str,
+    run_identity_sha256: str,
+    reference_driver_mode: str,
+    expected_sender_router_hash_sha256: str,
+    expected_receiver_router_hash_sha256: str,
+    correlation_nonce: str,
+) -> dict[str, object]:
+    """Return the Plan 065 required primary fields for ``render_and_validate``.
+
+    The DeliveryStatus ``message_id`` is derived from the run identity and
+    the correlation nonce through the canonical Plan 065 domain-separated
+    hash. The plan requires one unique nonzero ID per direction per run
+    so the i2pr sender and receiver can verify the exact correlation
+    end-to-end and the canonical mixed-runner can refuse partial
+    correlations.
+    """
+
+    digest = hashlib.sha256(
+        f"i2pr-ntcp2-delivery-status-v1|{run_id}|{execution_id}|{correlation_nonce}".encode()
+    ).digest()
+    raw = int.from_bytes(digest[:4], "big")
+    message_id = (raw % 0xFFFFFFFF) or 1
+    return {
+        "run_id": run_id,
+        "delivery_status_message_id": int(message_id),
+        "expected_sender_router_hash_sha256": expected_sender_router_hash_sha256,
+        "expected_receiver_router_hash_sha256": expected_receiver_router_hash_sha256,
+        "reference_driver_mode": reference_driver_mode,
+        "run_identity_sha256": run_identity_sha256,
+    }
+
+
 ALLOWED_DIAGNOSTICS_MODES = frozenset({"off", "sanitized", "raw-local"})
 
 
@@ -517,6 +568,15 @@ def run(args: argparse.Namespace) -> int:
                 data_phase_mode=data_phase_mode,
                 data_phase_required_peer_action="ignore-receive",
                 expected_observation=expected_observation,
+                **_plan065_primary_fields(
+                    execution_id=direction.execution_id,
+                    run_id=run_dir.name,
+                    run_identity_sha256="",
+                    reference_driver_mode=_reference_driver_mode_for(direction.reference),
+                    expected_sender_router_hash_sha256="",
+                    expected_receiver_router_hash_sha256="",
+                    correlation_nonce="initiator",
+                ),
             )
             i2pr_adapter.start("dial")
             terminal = i2pr_adapter.wait_terminal(timeout_seconds=30.0)
@@ -603,6 +663,15 @@ def run(args: argparse.Namespace) -> int:
                 data_phase_mode=data_phase_mode,
                 data_phase_required_peer_action="observe-receive",
                 expected_observation=expected_observation,
+                **_plan065_primary_fields(
+                    execution_id=direction.execution_id,
+                    run_id=run_dir.name,
+                    run_identity_sha256="",
+                    reference_driver_mode=_reference_driver_mode_for(direction.reference),
+                    expected_sender_router_hash_sha256="",
+                    expected_receiver_router_hash_sha256="",
+                    correlation_nonce="responder",
+                ),
             )
             i2pr_adapter.start("listen")
             i2pr_adapter.wait_ready(timeout_seconds=30.0)
@@ -973,6 +1042,15 @@ def _run_responder_first(
         data_phase_mode="handshake-only",
         data_phase_required_peer_action="ignore-receive",
         expected_observation="no-data-phase-required",
+        **_plan065_primary_fields(
+            execution_id=direction.execution_id + "-gen",
+            run_id="gen",
+            run_identity_sha256="",
+            reference_driver_mode=_reference_driver_mode_for(direction.reference),
+            expected_sender_router_hash_sha256="",
+            expected_receiver_router_hash_sha256="",
+            correlation_nonce="gen",
+        ),
     )
     i2pr_adapter.start("listen")
     i2pr_adapter.wait_ready(timeout_seconds=30.0)

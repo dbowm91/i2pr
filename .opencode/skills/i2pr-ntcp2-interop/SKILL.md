@@ -836,3 +836,81 @@ bash scripts/check-multipass-interop-boundary.sh
 
 Consult [operations.md](references/operations.md) for command routing,
 profiles, typed outcomes, and implementation-specific stop conditions.
+
+## Plan 065 NTCP2 canonical integration and live qualification
+
+Plan 065 wires the corrected Java and i2pd direct drivers into the
+canonical four-direction mixed-router lane, enforces the exact
+DeliveryStatus correlation on the i2pr side, and produces one
+complete four-direction live diagnostic bundle from a clean
+implementation commit. Plan 065 establishes the implementation
+floor from which Plan 066 may cut a candidate.
+
+The Plan 065 implementation ships:
+
+- `tools/i2pr-interop/src/scenario.rs` — the strict scenario
+  schema bumped to `i2pr-launcher-scenario-v2` with the per-run
+  DeliveryStatus `message_id`, the 64-lowercase-hex expected sender
+  and receiver Router Hashes, the `reference_driver_mode` field,
+  and the `run_identity_sha256` field. Legacy schema 1 records
+  are rejected by the strict parser.
+- `tools/i2pr-interop/src/main.rs` — the i2pr sender uses the
+  scenario-owned message ID and verifies the round-trip envelope
+  message ID and the DeliveryStatus payload message ID before
+  frame emission. The i2pr receiver requires the exact envelope
+  and payload message ID, rejects duplicates, and emits the
+  bounded Plan 065 typed failure categories
+  (`SenderDeliveryStatusMessageIdZero`,
+  `SenderRouterIdentityMismatch`,
+  `SenderDeliveryStatusConstructionFailed`,
+  `SenderFrameQueueAmbiguous`, `SenderFrameWriteFailed`,
+  `SenderMultiplePrimaryDeliveryStatusEmitted`,
+  `SenderCancellationObserved`, `ReceiverFrameReadFailed`,
+  `ReceiverFrameAuthenticationFailed`, `ReceiverI2npDecodeFailed`,
+  `ReceiverDeliveryStatusMissing`,
+  `ReceiverDeliveryStatusIdMismatch`,
+  `ReceiverDeliveryStatusDuplicate`,
+  `ReceiverPeerIdentityMismatch`,
+  `ReceiverDeliveryStatusTimestampInvalid`). The hard-coded
+  `0x0420_0001` DeliveryStatus authority is removed.
+- `tools/i2pr-interop/src/status.rs` — the status counter carries
+  the per-run DeliveryStatus `message_id` and the expected peer
+  Router Hash. The typed failure categories are added to the
+  bounded `StatusReason` allowlist.
+- `tests/integration/ntcp2/harness/launcher_protocol.py` and
+  `tests/integration/ntcp2/harness/launcher_renderer.py` — the
+  Python strict schema and renderer mirror the Rust schema with
+  the same v2 marker and the same required primary fields.
+- `tests/integration/ntcp2/harness/mixed_runner.py` — the canonical
+  mixed-runner wires the new scenario primary fields through
+  `render_and_validate` for both the i2pr initiator and responder
+  paths. The `_plan065_primary_fields` helper derives the
+  DeliveryStatus `message_id` from the run identity and the
+  correlation nonce; the `_reference_driver_mode_for` helper
+  returns the source-locked driver mode for a reference kind. The
+  runner rejects SAM, HTTP, I2PControl, support-topology, and
+  synthetic-fallback helpers for any primary direction.
+- `tests/integration/ntcp2/harness/test_plan065.py` — the Plan 065
+  test matrix covering scenario v2 acceptance and rejection (zero
+  message ID, 40-hex Router Hash, unknown reference driver mode,
+  direction-helper mismatch), DeliveryStatus message ID
+  derivation uniqueness, status counter contract, reference
+  trigger v4 correlation, observation v3 correlation, pass
+  predicate exact message ID and Router Hash correlation,
+  support-router rejection, Plan 060 candidate retirement, and the
+  Plan 066 implementation floor marker.
+
+### Plan 065 focused checks
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan065.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_trigger_v4.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_event.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_observation_v3.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_bundle.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_java_direct_driver.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_driver.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+```

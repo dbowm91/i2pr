@@ -63,9 +63,32 @@ pub enum StatusReason {
     ResponderAuthenticatedLinkInstallFailed,
     ResponderDataFrameReadFailed,
     ResponderI2npDecodeFailed,
+    // Plan 065: bounded sender-side typed failures. The launcher maps
+    // every sender-side typed error to the exact bounded category; the
+    // broad `DataPhaseFailed` reason is no longer emitted on the
+    // sender side.
+    SenderDeliveryStatusMessageIdZero,
+    SenderRouterIdentityMismatch,
+    SenderDeliveryStatusConstructionFailed,
+    SenderFrameQueueAmbiguous,
+    SenderFrameWriteFailed,
+    SenderMultiplePrimaryDeliveryStatusEmitted,
+    SenderCancellationObserved,
+    // Plan 065: bounded receiver-side typed failures. The launcher
+    // maps every receiver-side typed error to the exact bounded
+    // category; the broad `DataPhaseFailed` and `DataFrameReadFailed`
+    // reasons are no longer emitted on the receiver side.
+    ReceiverFrameReadFailed,
+    ReceiverFrameAuthenticationFailed,
+    ReceiverI2npDecodeFailed,
+    ReceiverDeliveryStatusMissing,
+    ReceiverDeliveryStatusIdMismatch,
+    ReceiverDeliveryStatusDuplicate,
+    ReceiverPeerIdentityMismatch,
+    ReceiverDeliveryStatusTimestampInvalid,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StatusCounters {
     pub listener_ready: u32,
     pub authenticated: u32,
@@ -73,6 +96,16 @@ pub struct StatusCounters {
     pub frames_received: u32,
     pub i2np_sent: u32,
     pub i2np_received: u32,
+    /// Plan 065: the exact DeliveryStatus ``message_id`` the i2pr launcher
+    /// constructed on the sender side or received on the receiver side.
+    /// The canonical mixed-runner cross-checks this counter against the
+    /// scenario and trigger records to refuse partial correlations.
+    pub delivery_status_message_id: u32,
+    /// Plan 065: the 64-lowercase-hex peer Router Hash the launcher
+    /// expects on the data-phase side. The canonical mixed-runner
+    /// cross-checks this counter against the trigger and observation
+    /// records to refuse wrong-identity correlations.
+    pub expected_peer_router_hash_sha256: String,
 }
 
 pub struct StatusWriter {
@@ -139,7 +172,7 @@ fn status_json(
     counters: StatusCounters,
 ) -> String {
     format!(
-        "{{\"schema\":{STATUS_SCHEMA},\"type\":\"i2pr-interop-status\",\"scenario_id\":\"{scenario_id}\",\"phase\":\"{}\",\"result\":\"{}\",\"reason_code\":\"{}\",\"counters\":{{\"listener_ready\":{},\"authenticated\":{},\"frames_sent\":{},\"frames_received\":{},\"i2np_sent\":{},\"i2np_received\":{}}}}}",
+        "{{\"schema\":{STATUS_SCHEMA},\"type\":\"i2pr-interop-status\",\"scenario_id\":\"{scenario_id}\",\"phase\":\"{}\",\"result\":\"{}\",\"reason_code\":\"{}\",\"counters\":{{\"listener_ready\":{},\"authenticated\":{},\"frames_sent\":{},\"frames_received\":{},\"i2np_sent\":{},\"i2np_received\":{},\"delivery_status_message_id\":{},\"expected_peer_router_hash_sha256\":\"{}\"}}}}",
         phase_name(phase),
         result_name(result),
         reason_name(reason),
@@ -149,6 +182,8 @@ fn status_json(
         counters.frames_received,
         counters.i2np_sent,
         counters.i2np_received,
+        counters.delivery_status_message_id,
+        counters.expected_peer_router_hash_sha256,
     )
 }
 
@@ -214,6 +249,27 @@ pub(crate) fn reason_name(value: StatusReason) -> &'static str {
         }
         StatusReason::ResponderDataFrameReadFailed => "responder_data_frame_read_failed",
         StatusReason::ResponderI2npDecodeFailed => "responder_i2np_decode_failed",
+        StatusReason::SenderDeliveryStatusMessageIdZero => "sender_delivery_status_message_id_zero",
+        StatusReason::SenderRouterIdentityMismatch => "sender_router_identity_mismatch",
+        StatusReason::SenderDeliveryStatusConstructionFailed => {
+            "sender_delivery_status_construction_failed"
+        }
+        StatusReason::SenderFrameQueueAmbiguous => "sender_frame_queue_ambiguous",
+        StatusReason::SenderFrameWriteFailed => "sender_frame_write_failed",
+        StatusReason::SenderMultiplePrimaryDeliveryStatusEmitted => {
+            "sender_multiple_primary_delivery_status_emitted"
+        }
+        StatusReason::SenderCancellationObserved => "sender_cancellation_observed",
+        StatusReason::ReceiverFrameReadFailed => "receiver_frame_read_failed",
+        StatusReason::ReceiverFrameAuthenticationFailed => "receiver_frame_authentication_failed",
+        StatusReason::ReceiverI2npDecodeFailed => "receiver_i2np_decode_failed",
+        StatusReason::ReceiverDeliveryStatusMissing => "receiver_delivery_status_missing",
+        StatusReason::ReceiverDeliveryStatusIdMismatch => "receiver_delivery_status_id_mismatch",
+        StatusReason::ReceiverDeliveryStatusDuplicate => "receiver_delivery_status_duplicate",
+        StatusReason::ReceiverPeerIdentityMismatch => "receiver_peer_identity_mismatch",
+        StatusReason::ReceiverDeliveryStatusTimestampInvalid => {
+            "receiver_delivery_status_timestamp_invalid"
+        }
     }
 }
 
@@ -274,6 +330,7 @@ mod tests {
         std::fs::create_dir(&root).expect("test root");
         let scenario = Scenario {
             scenario_id: "synthetic-run".to_owned(),
+            run_id: "synthetic-run-run".to_owned(),
             role: Role::Responder,
             address_family: AddressFamily::Ipv4,
             local_address: "192.0.2.1".parse::<IpAddr>().expect("address"),
@@ -300,6 +357,14 @@ mod tests {
             data_phase_required_peer_action: DataPhasePeerAction::NonEchoCompletion,
             data_phase_timeout_ms: None,
             expected_observation: ExpectedObservation::I2prSentAndAcknowledged,
+            delivery_status_message_id: 1,
+            expected_sender_router_hash_sha256:
+                "1111111111111111111111111111111111111111111111111111111111111111".to_owned(),
+            expected_receiver_router_hash_sha256:
+                "2222222222222222222222222222222222222222222222222222222222222222".to_owned(),
+            reference_driver_mode: crate::scenario::ReferenceDriverMode::JavaDirectDriver,
+            run_identity_sha256: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+                .to_owned(),
         };
         let mut writer = StatusWriter::new(&scenario).expect("status writer");
         writer

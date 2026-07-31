@@ -85,6 +85,7 @@ enum Ntcp2Command {
     },
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LauncherError {
     StateInvalid,
@@ -121,6 +122,28 @@ enum LauncherError {
     ResponderAuthenticatedLinkInstallFailed,
     ResponderDataFrameReadFailed,
     ResponderI2npDecodeFailed,
+    // Plan 065: bounded sender-side typed failures. The launcher must
+    // emit the exact bounded category rather than the broad
+    // `DataPhaseFailed` whenever the typed predicate is available.
+    SenderDeliveryStatusMessageIdZero,
+    SenderRouterIdentityMismatch,
+    SenderDeliveryStatusConstructionFailed,
+    SenderFrameQueueAmbiguous,
+    SenderFrameWriteFailed,
+    SenderMultiplePrimaryDeliveryStatusEmitted,
+    SenderCancellationObserved,
+    // Plan 065: bounded receiver-side typed failures. The launcher must
+    // map every data-phase failure to the exact bounded category and
+    // must never collapse them into the broad `DataFrameReadFailed`
+    // or `I2npDecodeFailed` reasons when a precise category applies.
+    ReceiverFrameReadFailed,
+    ReceiverFrameAuthenticationFailed,
+    ReceiverI2npDecodeFailed,
+    ReceiverDeliveryStatusMissing,
+    ReceiverDeliveryStatusIdMismatch,
+    ReceiverDeliveryStatusDuplicate,
+    ReceiverPeerIdentityMismatch,
+    ReceiverDeliveryStatusTimestampInvalid,
 }
 
 struct LocalState {
@@ -334,7 +357,7 @@ async fn execute_wire(
                 StatusPhase::ListenerReady,
                 StatusResult::Ready,
                 StatusReason::ListenerBound,
-                counters,
+                counters.clone(),
             )
             .is_err()
         {
@@ -411,6 +434,12 @@ async fn execute_responder(
         static_key,
         obfuscation_iv,
     } = local;
+    // Plan 065: the local i2pr router identity must match the scenario's
+    // expected sender Router Hash before any handshake or frame reception.
+    let router_hash_hex = hex_lower(router_hash.as_bytes());
+    if router_hash_hex != scenario.expected_sender_router_hash_sha256 {
+        return Err(LauncherError::SenderRouterIdentityMismatch);
+    }
     let chunk = bounded_timeout(deadlines.handshake, listener.next())
         .await
         .map_err(|_| LauncherError::ResponderHandshakeTimeout)?
@@ -453,22 +482,53 @@ async fn execute_responder(
         deadlines,
         counters,
         scenario.data_phase_mode,
+        scenario.delivery_status_message_id,
+        &scenario.expected_sender_router_hash_sha256,
+        &scenario.expected_receiver_router_hash_sha256,
     )
     .await;
     link.close();
     result.map_err(classify_responder_data_phase_error)
 }
 
-/// Plan 052 G1: classify a `LauncherError::DataPhaseFailed` on the
+/// Plan 052 G1 + Plan 065: classify a data-phase failure on the
 /// responder side to the bounded responder-stage variant. The data
 /// phase on the responder side is bounded: a frame read failure maps
-/// to `ResponderDataFrameReadFailed`; an I2NP decode failure maps to
-/// `ResponderI2npDecodeFailed`. Non-data-phase errors pass through.
+/// to ``ResponderDataFrameReadFailed``; an I2NP decode failure maps
+/// to ``ResponderI2npDecodeFailed``. Plan 065 adds the
+/// receiver-stage typed categories (``ReceiverDeliveryStatusIdMismatch``,
+/// ``ReceiverDeliveryStatusMissing``, etc.). On the responder side
+/// the receiver categories are the terminal state; the launcher does
+/// not collapse them into the broad ``DataPhaseFailed`` reason. The
+/// responder-side variants are emitted only on the responder side
+/// and only on a Terminal phase.
 fn classify_responder_data_phase_error(error: LauncherError) -> LauncherError {
     match error {
         LauncherError::DataFrameReadFailed => LauncherError::ResponderDataFrameReadFailed,
         LauncherError::I2npDecodeFailed => LauncherError::ResponderI2npDecodeFailed,
         LauncherError::DataPhaseFailed => LauncherError::ResponderDataFrameReadFailed,
+        LauncherError::ReceiverFrameReadFailed => LauncherError::ResponderDataFrameReadFailed,
+        LauncherError::ReceiverI2npDecodeFailed => LauncherError::ResponderI2npDecodeFailed,
+        // Plan 065: receiver-side correlation failures pass through as
+        // the responder-side correlation failure so the harness and the
+        // verifier can apply the bounded predicate without re-classifying
+        // by hand.
+        LauncherError::ReceiverDeliveryStatusIdMismatch => {
+            LauncherError::ReceiverDeliveryStatusIdMismatch
+        }
+        LauncherError::ReceiverDeliveryStatusMissing => {
+            LauncherError::ReceiverDeliveryStatusMissing
+        }
+        LauncherError::ReceiverDeliveryStatusDuplicate => {
+            LauncherError::ReceiverDeliveryStatusDuplicate
+        }
+        LauncherError::ReceiverDeliveryStatusTimestampInvalid => {
+            LauncherError::ReceiverDeliveryStatusTimestampInvalid
+        }
+        LauncherError::ReceiverFrameAuthenticationFailed => {
+            LauncherError::ReceiverFrameAuthenticationFailed
+        }
+        LauncherError::ReceiverPeerIdentityMismatch => LauncherError::ReceiverPeerIdentityMismatch,
         other => other,
     }
 }
@@ -590,10 +650,16 @@ async fn execute_initiator(
 ) -> Result<(), LauncherError> {
     let LocalState {
         router_info,
-        router_hash: _,
+        router_hash,
         static_key,
         obfuscation_iv: _,
     } = local;
+    // Plan 065: the local i2pr router identity must match the scenario's
+    // expected sender Router Hash before any handshake or frame emission.
+    let router_hash_hex = hex_lower(router_hash.as_bytes());
+    if router_hash_hex != scenario.expected_sender_router_hash_sha256 {
+        return Err(LauncherError::SenderRouterIdentityMismatch);
+    }
     let peer_address = SocketAddr::new(
         scenario.peer_address.expect("peer address validated"),
         scenario.peer_port.expect("peer port validated"),
@@ -649,6 +715,9 @@ async fn execute_initiator(
         deadlines,
         counters,
         scenario.data_phase_mode,
+        scenario.delivery_status_message_id,
+        &scenario.expected_sender_router_hash_sha256,
+        &scenario.expected_receiver_router_hash_sha256,
     )
     .await;
     link.close();
@@ -656,26 +725,60 @@ async fn execute_initiator(
 }
 
 /// Plan 045 D6: dispatch the data-phase exchange to the typed behavior
-/// selected by the scenario.
+/// selected by the scenario. Plan 065: pass the scenario-owned
+/// DeliveryStatus ``message_id`` and the expected 64-hex Router Hashes
+/// through the typed helpers; the sender and receiver each validate
+/// the correlation end-to-end and emit bounded typed failures.
+#[allow(clippy::too_many_arguments)]
 async fn exchange_directional(
     link: &mut i2pr_runtime::AuthenticatedLink,
     cancellation: &CancellationToken,
     deadlines: Ntcp2RuntimeDeadlines,
     counters: &mut StatusCounters,
     mode: DataPhaseMode,
+    delivery_status_message_id: u32,
+    expected_sender_router_hash_sha256: &str,
+    expected_receiver_router_hash_sha256: &str,
 ) -> Result<(), LauncherError> {
     match mode {
         DataPhaseMode::HandshakeOnly => Ok(()),
         DataPhaseMode::InitiatorDataOnly | DataPhaseMode::RoundTripDeliveryStatus => {
-            send_i2np_block(link, cancellation, deadlines, counters).await?;
+            send_i2np_block(
+                link,
+                cancellation,
+                deadlines,
+                counters,
+                delivery_status_message_id,
+                expected_sender_router_hash_sha256,
+                expected_receiver_router_hash_sha256,
+            )
+            .await?;
             if matches!(mode, DataPhaseMode::RoundTripDeliveryStatus) {
-                receive_delivery_status(link, cancellation, deadlines, counters).await
+                receive_delivery_status(
+                    link,
+                    cancellation,
+                    deadlines,
+                    counters,
+                    delivery_status_message_id,
+                    expected_sender_router_hash_sha256,
+                    expected_receiver_router_hash_sha256,
+                )
+                .await
             } else {
                 Ok(())
             }
         }
         DataPhaseMode::ResponderDataOnly => {
-            receive_delivery_status(link, cancellation, deadlines, counters).await
+            receive_delivery_status(
+                link,
+                cancellation,
+                deadlines,
+                counters,
+                delivery_status_message_id,
+                expected_sender_router_hash_sha256,
+                expected_receiver_router_hash_sha256,
+            )
+            .await
         }
     }
 }
@@ -685,8 +788,17 @@ async fn send_i2np_block(
     cancellation: &CancellationToken,
     deadlines: Ntcp2RuntimeDeadlines,
     counters: &mut StatusCounters,
+    message_id: u32,
+    _expected_sender_router_hash_sha256: &str,
+    expected_receiver_router_hash_sha256: &str,
 ) -> Result<(), LauncherError> {
-    let message_id = 0x0420_0001;
+    // Plan 065: refuse to send a zero message ID. A zero ID would let
+    // the receiver silently accept any DeliveryStatus regardless of
+    // correlation, which is exactly the false-positive class Plan 065
+    // must prevent.
+    if message_id == 0 {
+        return Err(LauncherError::SenderDeliveryStatusMessageIdZero);
+    }
     let seconds = unix_seconds();
     let message = I2npMessage::new_short_transport(
         message_id,
@@ -696,17 +808,40 @@ async fn send_i2np_block(
             Date::from_millis(unix_millis()),
         )),
     )
-    .map_err(|_| LauncherError::DataPhaseFailed)?;
+    .map_err(|_| LauncherError::SenderDeliveryStatusConstructionFailed)?;
+    // Plan 065: re-decode the constructed message and verify the
+    // declared message_id round-trips through the envelope before any
+    // frame emission. Any mismatch is a typed sender construction
+    // failure rather than the broad DataPhaseFailed.
+    let decoded = I2npMessage::decode_short_transport(
+        message
+            .encode_short_transport_to_vec(MAX_I2NP_MESSAGE_BYTES)
+            .map_err(|_| LauncherError::SenderDeliveryStatusConstructionFailed)?
+            .as_slice(),
+        MAX_I2NP_MESSAGE_BYTES,
+    )
+    .map_err(|_| LauncherError::SenderDeliveryStatusConstructionFailed)?;
+    if decoded.header().message_id() != Some(message_id)
+        || match decoded.body() {
+            I2npBody::DeliveryStatus(inner) => inner.message_id != message_id,
+            _ => true,
+        }
+    {
+        return Err(LauncherError::SenderDeliveryStatusConstructionFailed);
+    }
     let block = I2npMessageBlock::from_bytes(
         message
             .encode_short_transport_to_vec(MAX_I2NP_MESSAGE_BYTES)
-            .map_err(|_| LauncherError::DataPhaseFailed)?,
+            .map_err(|_| LauncherError::SenderDeliveryStatusConstructionFailed)?,
     )
-    .map_err(|_| LauncherError::DataPhaseFailed)?;
+    .map_err(|_| LauncherError::SenderDeliveryStatusConstructionFailed)?;
     let policy = FrameAssemblyPolicy::new(MAX_FRAME_LENGTH, 0, 0, 0, false)
-        .map_err(|_| LauncherError::DataPhaseFailed)?;
-    let queue_deadline =
-        Ntcp2Deadline::after(deadlines.queue_wait).map_err(|_| LauncherError::DataPhaseFailed)?;
+        .map_err(|_| LauncherError::SenderFrameQueueAmbiguous)?;
+    let queue_deadline = Ntcp2Deadline::after(deadlines.queue_wait)
+        .map_err(|_| LauncherError::SenderFrameQueueAmbiguous)?;
+    if cancellation.is_cancelled() {
+        return Err(LauncherError::SenderCancellationObserved);
+    }
     link.send_blocks(
         vec![Block::I2np(block)],
         policy,
@@ -714,9 +849,15 @@ async fn send_i2np_block(
         cancellation,
     )
     .await
-    .map_err(|_| LauncherError::DataPhaseFailed)?;
+    .map_err(|_| LauncherError::SenderFrameWriteFailed)?;
     counters.frames_sent = 1;
     counters.i2np_sent = 1;
+    // Plan 065: record the bounded message_id and the expected peer
+    // Router Hash in the counters so the harness and the post-run
+    // verifier can confirm the exact correlation. The plan052 pipeline
+    // reads these counters to build the directional correlation record.
+    counters.delivery_status_message_id = message_id;
+    counters.expected_peer_router_hash_sha256 = expected_receiver_router_hash_sha256.to_owned();
     Ok(())
 }
 
@@ -725,33 +866,58 @@ async fn receive_delivery_status(
     cancellation: &CancellationToken,
     deadlines: Ntcp2RuntimeDeadlines,
     counters: &mut StatusCounters,
+    expected_message_id: u32,
+    _expected_sender_router_hash_sha256: &str,
+    expected_receiver_router_hash_sha256: &str,
 ) -> Result<(), LauncherError> {
     let lease = bounded_timeout(deadlines.read_idle, link.recv(cancellation))
         .await
         .map_err(|_| LauncherError::Timeout)?
-        .map_err(|_| LauncherError::DataFrameReadFailed)?
-        .ok_or(LauncherError::DataFrameReadFailed)?;
+        .map_err(|_| LauncherError::ReceiverFrameReadFailed)?
+        .ok_or(LauncherError::ReceiverFrameReadFailed)?;
     counters.frames_received = 1;
     let parsed = lease
         .frame()
         .plaintext()
         .parse()
-        .map_err(|_| LauncherError::DataFrameReadFailed)?;
+        .map_err(|_| LauncherError::ReceiverFrameReadFailed)?;
     let mut found_delivery_status = false;
     for block in parsed.blocks() {
         if let DecodedBlock::I2np(message) = block {
             let decoded =
                 I2npMessage::decode_short_transport(message.as_bytes(), MAX_I2NP_MESSAGE_BYTES)
-                    .map_err(|_| LauncherError::I2npDecodeFailed)?;
-            if decoded.body().message_type() == MessageType::DeliveryStatus {
-                found_delivery_status = true;
+                    .map_err(|_| LauncherError::ReceiverI2npDecodeFailed)?;
+            if decoded.body().message_type() != MessageType::DeliveryStatus {
+                continue;
             }
+            let envelope_id = decoded.header().message_id().unwrap_or(0);
+            let payload_id = match decoded.body() {
+                I2npBody::DeliveryStatus(inner) => inner.message_id,
+                _ => unreachable!(),
+            };
+            // Plan 065: the envelope message ID and the DeliveryStatus
+            // payload message ID must both equal the scenario-owned
+            // correlation ID. A type-only match (DeliveryStatus type
+            // present but wrong ID) is rejected with the bounded
+            // `ReceiverDeliveryStatusIdMismatch` reason.
+            if envelope_id != expected_message_id || payload_id != expected_message_id {
+                return Err(LauncherError::ReceiverDeliveryStatusIdMismatch);
+            }
+            if found_delivery_status {
+                // Plan 065: a duplicate DeliveryStatus with the exact
+                // correlation ID is a bounded rejection. The data phase
+                // must observe exactly one relevant DeliveryStatus.
+                return Err(LauncherError::ReceiverDeliveryStatusDuplicate);
+            }
+            found_delivery_status = true;
+            counters.delivery_status_message_id = payload_id;
         }
     }
     if !found_delivery_status {
-        return Err(LauncherError::I2npDecodeFailed);
+        return Err(LauncherError::ReceiverDeliveryStatusMissing);
     }
     counters.i2np_received = 1;
+    counters.expected_peer_router_hash_sha256 = expected_receiver_router_hash_sha256.to_owned();
     Ok(())
 }
 
@@ -1074,6 +1240,73 @@ fn terminal_status(error: LauncherError) -> (StatusResult, StatusReason) {
             StatusResult::Rejected,
             StatusReason::ResponderI2npDecodeFailed,
         ),
+        // Plan 065: bounded sender-side typed failures. The launcher
+        // refuses to collapse the typed predicate into the broad
+        // `DataPhaseFailed` reason; every sender-side typed error maps
+        // to the exact bounded category.
+        LauncherError::SenderDeliveryStatusMessageIdZero => (
+            StatusResult::Rejected,
+            StatusReason::SenderDeliveryStatusMessageIdZero,
+        ),
+        LauncherError::SenderRouterIdentityMismatch => (
+            StatusResult::Rejected,
+            StatusReason::SenderRouterIdentityMismatch,
+        ),
+        LauncherError::SenderDeliveryStatusConstructionFailed => (
+            StatusResult::Rejected,
+            StatusReason::SenderDeliveryStatusConstructionFailed,
+        ),
+        LauncherError::SenderFrameQueueAmbiguous => (
+            StatusResult::Rejected,
+            StatusReason::SenderFrameQueueAmbiguous,
+        ),
+        LauncherError::SenderFrameWriteFailed => {
+            (StatusResult::Rejected, StatusReason::SenderFrameWriteFailed)
+        }
+        LauncherError::SenderMultiplePrimaryDeliveryStatusEmitted => (
+            StatusResult::Rejected,
+            StatusReason::SenderMultiplePrimaryDeliveryStatusEmitted,
+        ),
+        LauncherError::SenderCancellationObserved => (
+            StatusResult::Rejected,
+            StatusReason::SenderCancellationObserved,
+        ),
+        // Plan 065: bounded receiver-side typed failures. The launcher
+        // maps every receiver-side typed error to the exact bounded
+        // category; the broad `DataPhaseFailed` reason is no longer
+        // emitted on the receiver side.
+        LauncherError::ReceiverFrameReadFailed => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverFrameReadFailed,
+        ),
+        LauncherError::ReceiverFrameAuthenticationFailed => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverFrameAuthenticationFailed,
+        ),
+        LauncherError::ReceiverI2npDecodeFailed => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverI2npDecodeFailed,
+        ),
+        LauncherError::ReceiverDeliveryStatusMissing => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverDeliveryStatusMissing,
+        ),
+        LauncherError::ReceiverDeliveryStatusIdMismatch => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverDeliveryStatusIdMismatch,
+        ),
+        LauncherError::ReceiverDeliveryStatusDuplicate => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverDeliveryStatusDuplicate,
+        ),
+        LauncherError::ReceiverPeerIdentityMismatch => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverPeerIdentityMismatch,
+        ),
+        LauncherError::ReceiverDeliveryStatusTimestampInvalid => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverDeliveryStatusTimestampInvalid,
+        ),
     }
 }
 
@@ -1091,6 +1324,19 @@ fn unix_millis() -> u64 {
         .unwrap_or_default()
         .as_millis()
         .min(u128::from(u64::MAX)) as u64
+}
+
+/// Plan 065: 32-byte Router Hash to lowercase 64-hex string. The strict
+/// scenario parser uses the same lowercase-hex contract so the i2pr
+/// launcher and the Python pipeline agree on the per-run correlation.
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn encode_i2p_base64(bytes: &[u8]) -> String {
@@ -1143,8 +1389,10 @@ mod tests {
         Scenario::parse_str(
             r#"
 [scenario]
-schema = 1
-scenario_id = "launcher-state"
+schema = "i2pr-launcher-scenario-v2"
+schema_version = 2
+scenario_id = "java-to-i2pr-ipv4"
+run_id = "launcher-state-run"
 role = "responder"
 address_family = "ipv4"
 local_address = "192.0.2.1"
@@ -1161,6 +1409,11 @@ smoke_message_profile = "delivery-status"
 deterministic_seed = 7
 expected_result_class = "typed-rejection-with-bounded-cleanup"
 status_path = "status.jsonl"
+delivery_status_message_id = 4242
+expected_sender_router_hash_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+expected_receiver_router_hash_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+reference_driver_mode = "java-direct-driver"
+run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 "#,
             root,
         )

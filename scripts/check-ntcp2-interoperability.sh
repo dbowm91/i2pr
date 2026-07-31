@@ -804,6 +804,137 @@ if ! grep -Fq 'test_i2pd_direct_control.py' "$root/AGENTS.md"; then
   exit 1
 fi
 
+# Plan 065: NTCP2 canonical integration and live qualification. The
+# strict launcher scenario schema must be bumped to v2 with the
+# per-run DeliveryStatus message_id, expected 64-hex Router Hashes,
+# reference_driver_mode, and run_identity_sha256 fields. The active
+# primary code must not hard-code a DeliveryStatus authority, must
+# not use a type-only DeliveryStatus success path, must not select
+# SAM/HTTP/I2PControl/support-topology helpers for a primary
+# direction, must not use a 40-hex Router Hash, must not rely on
+# a generic phrase catalog as sole receiver evidence, must not reuse
+# the retired Plan 060 candidate as the active candidate, and must
+# not let a synthetic fallback reach the `passed` outcome.
+if ! grep -Fq 'i2pr-launcher-scenario-v2' "$root/tools/i2pr-interop/src/scenario.rs"; then
+  echo "Plan 065 strict launcher scenario schema v2 marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'delivery_status_message_id' "$root/tools/i2pr-interop/src/scenario.rs"; then
+  echo "Plan 065 strict launcher scenario schema v2 must require delivery_status_message_id" >&2
+  exit 1
+fi
+if ! grep -Fq 'expected_sender_router_hash_sha256' "$root/tools/i2pr-interop/src/scenario.rs"; then
+  echo "Plan 065 strict launcher scenario schema v2 must require expected_sender_router_hash_sha256" >&2
+  exit 1
+fi
+if ! grep -Fq 'expected_receiver_router_hash_sha256' "$root/tools/i2pr-interop/src/scenario.rs"; then
+  echo "Plan 065 strict launcher scenario schema v2 must require expected_receiver_router_hash_sha256" >&2
+  exit 1
+fi
+if ! grep -Fq 'reference_driver_mode' "$root/tools/i2pr-interop/src/scenario.rs"; then
+  echo "Plan 065 strict launcher scenario schema v2 must require reference_driver_mode" >&2
+  exit 1
+fi
+if ! grep -Fq 'run_identity_sha256' "$root/tools/i2pr-interop/src/scenario.rs"; then
+  echo "Plan 065 strict launcher scenario schema v2 must require run_identity_sha256" >&2
+  exit 1
+fi
+if ! grep -Fq 'SenderDeliveryStatusMessageIdZero' "$root/tools/i2pr-interop/src/main.rs"; then
+  echo "Plan 065 bounded sender DeliveryStatusMessageIdZero reason is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'ReceiverDeliveryStatusIdMismatch' "$root/tools/i2pr-interop/src/main.rs"; then
+  echo "Plan 065 bounded receiver DeliveryStatusIdMismatch reason is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'ReceiverDeliveryStatusMissing' "$root/tools/i2pr-interop/src/main.rs"; then
+  echo "Plan 065 bounded receiver DeliveryStatusMissing reason is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'ReceiverDeliveryStatusDuplicate' "$root/tools/i2pr-interop/src/main.rs"; then
+  echo "Plan 065 bounded receiver DeliveryStatusDuplicate reason is missing" >&2
+  exit 1
+fi
+if grep -Fq 'message_id = 0x0420_0001' "$root/tools/i2pr-interop/src/main.rs"; then
+  echo "Plan 065 forbids the hard-coded 0x0420_0001 DeliveryStatus authority" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-launcher-scenario-v2' "$root/tests/integration/ntcp2/harness/launcher_protocol.py"; then
+  echo "Plan 065 Python launcher scenario schema v2 marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'delivery_status_message_id' "$root/tests/integration/ntcp2/harness/launcher_protocol.py"; then
+  echo "Plan 065 Python launcher scenario schema v2 must require delivery_status_message_id" >&2
+  exit 1
+fi
+if ! grep -Fq 'expected_sender_router_hash_sha256' "$root/tests/integration/ntcp2/harness/launcher_protocol.py"; then
+  echo "Plan 065 Python launcher scenario schema v2 must require expected_sender_router_hash_sha256" >&2
+  exit 1
+fi
+if ! grep -Fq 'reference_driver_mode' "$root/tests/integration/ntcp2/harness/launcher_protocol.py"; then
+  echo "Plan 065 Python launcher scenario schema v2 must require reference_driver_mode" >&2
+  exit 1
+fi
+if ! grep -Fq 'REFERENCE_DRIVER_MODE_BY_DIRECTION' "$root/tests/integration/ntcp2/harness/launcher_protocol.py"; then
+  echo "Plan 065 Python launcher scenario direction-to-helper map is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'REFERENCE_DRIVER_MODES' "$root/tests/integration/ntcp2/harness/launcher_renderer.py"; then
+  echo "Plan 065 Python renderer reference_driver_mode allowlist is missing" >&2
+  exit 1
+fi
+if ! grep -Fq '_plan065_primary_fields' "$root/tests/integration/ntcp2/harness/mixed_runner.py"; then
+  echo "Plan 065 canonical mixed-runner primary-fields helper is missing" >&2
+  exit 1
+fi
+if ! grep -Fq '_reference_driver_mode_for' "$root/tests/integration/ntcp2/harness/mixed_runner.py"; then
+  echo "Plan 065 canonical mixed-runner reference-driver-mode helper is missing" >&2
+  exit 1
+fi
+if grep -Fq '"reference" not in {"java_i2p", "i2pd"}' "$root/tests/integration/ntcp2/harness/mixed_runner.py"; then
+  : # legacy line tolerated
+fi
+if grep -E '^[^#]*"sam-trigger"' "$root/tests/integration/ntcp2/harness/mixed_runner.py" >/dev/null; then
+  echo "Plan 065 canonical mixed-runner must not select sam-trigger helpers" >&2
+  exit 1
+fi
+if grep -E '^[^#]*"http-trigger"' "$root/tests/integration/ntcp2/harness/mixed_runner.py" >/dev/null; then
+  echo "Plan 065 canonical mixed-runner must not select http-trigger helpers" >&2
+  exit 1
+fi
+if grep -E '^[^#]*"support-topology"' "$root/tests/integration/ntcp2/harness/mixed_runner.py" >/dev/null; then
+  echo "Plan 065 canonical mixed-runner must not select support-topology helpers" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan065.py"; then
+  echo "Plan 065 test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'DeliveryStatusMessageIdDerivationTests' "$root/tests/integration/ntcp2/harness/test_plan065.py"; then
+  echo "Plan 065 DeliveryStatus message ID derivation tests are missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'PassPredicateTests' "$root/tests/integration/ntcp2/harness/test_plan065.py"; then
+  echo "Plan 065 pass predicate tests are missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'ReferenceTriggerCorrelationTests' "$root/tests/integration/ntcp2/harness/test_plan065.py"; then
+  echo "Plan 065 reference trigger correlation tests are missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'SupportRouterRejectionTests' "$root/tests/integration/ntcp2/harness/test_plan065.py"; then
+  echo "Plan 065 support-router rejection tests are missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 065' "$root/AGENTS.md"; then
+  echo "AGENTS.md must record the Plan 065 closure section" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_plan065.py' "$root/AGENTS.md"; then
+  echo "Plan 065 test matrix is not wired into AGENTS.md" >&2
+  exit 1
+fi
+
 python3 "$root/scripts/interop/validate-evidence.py"
 python3 "$root/scripts/interop/validate-scenarios.py"
 

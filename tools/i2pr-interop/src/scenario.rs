@@ -6,7 +6,13 @@ use std::str::FromStr;
 
 use serde::Deserialize;
 
-pub const SCENARIO_SCHEMA: u16 = 1;
+/// Plan 065 scenario contract. The schema is named "i2pr-launcher-scenario-v2";
+/// it requires the per-run DeliveryStatus ``message_id`` and the exact
+/// 64-lowercase-hex sender/receiver Router Hashes that the i2pr sender and
+/// receiver use to validate the data phase. The plan closes the historical
+/// schema 1 path; primary directions must use schema v2.
+pub const SCENARIO_SCHEMA: &str = "i2pr-launcher-scenario-v2";
+pub const SCENARIO_SCHEMA_VERSION: u16 = 2;
 pub const MAX_SCENARIO_BYTES: u64 = 64 * 1024;
 pub const MAX_SCENARIO_ID_BYTES: usize = 64;
 pub const PRIVATE_NETWORK_ID: u16 = 99;
@@ -76,6 +82,16 @@ pub enum ExpectedResultClass {
     DeterministicWinnerAndLoserDrain,
 }
 
+/// Plan 065 reference driver mode. Only the source-locked direct helpers
+/// from Plan 063 (Java) and Plan 064 (i2pd) satisfy a primary direction;
+/// SAM, HTTP, I2PControl, support-topology, and synthetic-fallback modes
+/// are explicitly rejected for a primary direction by the strict parser.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReferenceDriverMode {
+    JavaDirectDriver,
+    I2pdDirectDriver,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeadlineMillis {
     pub handshake: u64,
@@ -88,6 +104,7 @@ pub struct DeadlineMillis {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Scenario {
     pub scenario_id: String,
+    pub run_id: String,
     pub role: Role,
     pub address_family: AddressFamily,
     pub local_address: IpAddr,
@@ -108,6 +125,21 @@ pub struct Scenario {
     pub data_phase_required_peer_action: DataPhasePeerAction,
     pub data_phase_timeout_ms: Option<u64>,
     pub expected_observation: ExpectedObservation,
+    /// Plan 065: per-run DeliveryStatus message ID; the i2pr sender and
+    /// receiver verify the exact value during the data phase.
+    pub delivery_status_message_id: u32,
+    /// Plan 065: 64-lowercase-hex Router Hash of the local i2pr router.
+    pub expected_sender_router_hash_sha256: String,
+    /// Plan 065: 64-lowercase-hex Router Hash of the reference driver.
+    pub expected_receiver_router_hash_sha256: String,
+    /// Plan 065: reference driver mode. Only the source-locked direct
+    /// helpers from Plan 063 (Java) and Plan 064 (i2pd) satisfy a primary
+    /// direction; SAM/HTTP/I2PControl/support-topology modes are rejected
+    /// by the strict parser for primary directions.
+    pub reference_driver_mode: ReferenceDriverMode,
+    /// Plan 065: per-run identity digest. The plan052 pipeline cross-checks
+    /// every direction record against the recorded run identity.
+    pub run_identity_sha256: String,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -116,7 +148,9 @@ pub enum ScenarioError {
     TooLarge,
     InvalidToml,
     UnsupportedSchema,
+    InvalidSchemaVersion,
     InvalidScenarioId,
+    InvalidRunId,
     InvalidRole,
     InvalidAddressFamily,
     InvalidAddress,
@@ -138,6 +172,16 @@ pub enum ScenarioError {
     InvalidDataPhasePeerAction,
     InvalidDataPhaseTimeout,
     InvalidExpectedObservation,
+    /// Plan 065: DeliveryStatus message ID is zero or out of range.
+    InvalidDeliveryStatusMessageId,
+    /// Plan 065: expected sender/receiver Router Hash is not 64 lowercase hex.
+    InvalidExpectedRouterHash,
+    /// Plan 065: reference_driver_mode is not a known source-locked helper.
+    InvalidReferenceDriverMode,
+    /// Plan 065: reference_driver_mode does not match the scenario direction.
+    ReferenceDriverModeDirectionMismatch,
+    /// Plan 065: run_identity_sha256 is not a 64-lowercase-hex digest.
+    InvalidRunIdentitySha256,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,8 +193,10 @@ struct RawDocument {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawScenario {
-    schema: u16,
+    schema: String,
+    schema_version: u16,
     scenario_id: String,
+    run_id: String,
     role: String,
     address_family: String,
     local_address: String,
@@ -174,6 +220,11 @@ struct RawScenario {
     data_phase_required_peer_action: Option<String>,
     data_phase_timeout_ms: Option<u64>,
     expected_observation: Option<String>,
+    delivery_status_message_id: u32,
+    expected_sender_router_hash_sha256: String,
+    expected_receiver_router_hash_sha256: String,
+    reference_driver_mode: String,
+    run_identity_sha256: String,
 }
 
 impl Scenario {
@@ -206,7 +257,11 @@ impl Scenario {
         if raw.schema != SCENARIO_SCHEMA {
             return Err(ScenarioError::UnsupportedSchema);
         }
+        if raw.schema_version != SCENARIO_SCHEMA_VERSION {
+            return Err(ScenarioError::InvalidSchemaVersion);
+        }
         validate_scenario_id(&raw.scenario_id)?;
+        validate_run_id(&raw.run_id)?;
         let role = match raw.role.as_str() {
             "initiator" => Role::Initiator,
             "responder" => Role::Responder,
@@ -337,9 +392,40 @@ impl Scenario {
         if status_path.exists() && status_path.is_dir() {
             return Err(ScenarioError::StatusPathIsDirectory);
         }
+        if raw.delivery_status_message_id == 0 {
+            return Err(ScenarioError::InvalidDeliveryStatusMessageId);
+        }
+        let expected_sender_router_hash_sha256 =
+            validate_router_hash(&raw.expected_sender_router_hash_sha256)?;
+        let expected_receiver_router_hash_sha256 =
+            validate_router_hash(&raw.expected_receiver_router_hash_sha256)?;
+        if raw.expected_sender_router_hash_sha256 == raw.expected_receiver_router_hash_sha256 {
+            return Err(ScenarioError::InvalidExpectedRouterHash);
+        }
+        let reference_driver_mode = match raw.reference_driver_mode.as_str() {
+            "java-direct-driver" => ReferenceDriverMode::JavaDirectDriver,
+            "i2pd-direct-driver" => ReferenceDriverMode::I2pdDirectDriver,
+            _ => return Err(ScenarioError::InvalidReferenceDriverMode),
+        };
+        // Plan 065: the reference driver mode must match the direction
+        // encoded by ``scenario_id``. The four canonical directions end
+        // with ``-java-ipv4`` (Java reference) or ``-i2pd-ipv4`` (i2pd
+        // reference); any other suffix is rejected because primary
+        // directions may not use SAM, HTTP, I2PControl, support-topology,
+        // or synthetic fallback helpers.
+        let direction_helper_kind = match raw.scenario_id.as_str() {
+            "i2pr-to-java-ipv4" | "java-to-i2pr-ipv4" => ReferenceDriverMode::JavaDirectDriver,
+            "i2pr-to-i2pd-ipv4" | "i2pd-to-i2pr-ipv4" => ReferenceDriverMode::I2pdDirectDriver,
+            _ => return Err(ScenarioError::InvalidReferenceDriverMode),
+        };
+        if direction_helper_kind != reference_driver_mode {
+            return Err(ScenarioError::ReferenceDriverModeDirectionMismatch);
+        }
+        let run_identity_sha256 = validate_run_identity(&raw.run_identity_sha256)?;
 
         Ok(Self {
             scenario_id: raw.scenario_id,
+            run_id: raw.run_id,
             role,
             address_family,
             local_address,
@@ -360,6 +446,11 @@ impl Scenario {
             data_phase_required_peer_action,
             data_phase_timeout_ms,
             expected_observation,
+            delivery_status_message_id: raw.delivery_status_message_id,
+            expected_sender_router_hash_sha256,
+            expected_receiver_router_hash_sha256,
+            reference_driver_mode,
+            run_identity_sha256,
         })
     }
 }
@@ -376,6 +467,57 @@ fn validate_scenario_id(value: &str) -> Result<(), ScenarioError> {
         return Err(ScenarioError::InvalidScenarioId);
     }
     Ok(())
+}
+
+/// Plan 065: the per-run identity is bound into the scenario record. The
+/// strict parser enforces the same lowercase hex pattern as the Python
+/// harness so the Rust launcher and the Python pipeline agree on the
+/// run identifier that the canonical mixed-runner assigns.
+fn validate_run_id(value: &str) -> Result<(), ScenarioError> {
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(ScenarioError::InvalidRunId);
+    }
+    Ok(())
+}
+
+/// Plan 065: 64-lowercase-hex validation for expected Router Hash fields.
+/// The strict parser refuses any uppercase or non-hex input and any
+/// all-zero provenance digest. The helper returns the validated string
+/// so the caller can move it into the typed scenario record without
+/// re-parsing.
+fn validate_router_hash(value: &str) -> Result<String, ScenarioError> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ScenarioError::InvalidExpectedRouterHash);
+    }
+    if value.chars().any(|ch| ch.is_ascii_uppercase()) {
+        return Err(ScenarioError::InvalidExpectedRouterHash);
+    }
+    if value.chars().all(|ch| ch == '0') {
+        return Err(ScenarioError::InvalidExpectedRouterHash);
+    }
+    Ok(value.to_owned())
+}
+
+/// Plan 065: 64-lowercase-hex validation for the per-run identity digest.
+/// The strict parser refuses uppercase, non-hex, all-zero, or empty input.
+/// The Plan 052 run-identity record carries the same shape; the launcher
+/// rejects any value that does not round-trip through the Python pipeline.
+fn validate_run_identity(value: &str) -> Result<String, ScenarioError> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ScenarioError::InvalidRunIdentitySha256);
+    }
+    if value.chars().any(|ch| ch.is_ascii_uppercase()) {
+        return Err(ScenarioError::InvalidRunIdentitySha256);
+    }
+    if value.chars().all(|ch| ch == '0') {
+        return Err(ScenarioError::InvalidRunIdentitySha256);
+    }
+    Ok(value.to_owned())
 }
 
 fn parse_synthetic_address(value: &str, family: AddressFamily) -> Result<IpAddr, ScenarioError> {
@@ -462,8 +604,10 @@ mod tests {
 
     const VALID: &str = r#"
 [scenario]
-schema = 1
-scenario_id = "synthetic-run"
+schema = "i2pr-launcher-scenario-v2"
+schema_version = 2
+scenario_id = "i2pr-to-java-ipv4"
+run_id = "test-run-id"
 role = "initiator"
 address_family = "ipv4"
 local_address = "192.0.2.1"
@@ -483,6 +627,11 @@ smoke_message_profile = "delivery-status"
 deterministic_seed = 1
 expected_result_class = "authenticated-handshake-and-bounded-i2np-exchange"
 status_path = "status.jsonl"
+delivery_status_message_id = 12345
+expected_sender_router_hash_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+expected_receiver_router_hash_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+reference_driver_mode = "java-direct-driver"
+run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 "#;
 
     #[test]
@@ -504,6 +653,20 @@ status_path = "status.jsonl"
         assert_eq!(
             scenario.expected_observation,
             ExpectedObservation::I2prSentAndAcknowledged
+        );
+        assert_eq!(scenario.delivery_status_message_id, 12345);
+        assert_eq!(scenario.run_id, "test-run-id");
+        assert_eq!(
+            scenario.reference_driver_mode,
+            ReferenceDriverMode::JavaDirectDriver
+        );
+        assert_eq!(
+            scenario.expected_sender_router_hash_sha256,
+            "1111111111111111111111111111111111111111111111111111111111111111"
+        );
+        assert_eq!(
+            scenario.expected_receiver_router_hash_sha256,
+            "2222222222222222222222222222222222222222222222222222222222222222"
         );
     }
 
@@ -540,8 +703,10 @@ status_path = "status.jsonl"
     fn accepts_optional_plan_045_data_phase_fields() {
         let input = r#"
 [scenario]
-schema = 1
-scenario_id = "plan045-direction"
+schema = "i2pr-launcher-scenario-v2"
+schema_version = 2
+scenario_id = "i2pr-to-java-ipv4"
+run_id = "test-run-id"
 role = "initiator"
 address_family = "ipv4"
 local_address = "192.0.2.1"
@@ -565,6 +730,11 @@ data_phase_mode = "initiator-data-only"
 data_phase_required_peer_action = "ignore-receive"
 data_phase_timeout_ms = 4000
 expected_observation = "i2pr-sent-only"
+delivery_status_message_id = 42
+expected_sender_router_hash_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+expected_receiver_router_hash_sha256 = "3333333333333333333333333333333333333333333333333333333333333333"
+reference_driver_mode = "java-direct-driver"
+run_identity_sha256 = "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface"
 "#;
         let scenario = Scenario::parse_str(input, &std::env::temp_dir()).expect("plan045 scenario");
         assert_eq!(scenario.data_phase_mode, DataPhaseMode::InitiatorDataOnly);
@@ -585,6 +755,7 @@ expected_observation = "i2pr-sent-only"
             scenario.smoke_message_profile,
             SmokeMessageProfile::Fixed12BytePayload
         );
+        assert_eq!(scenario.delivery_status_message_id, 42);
     }
 
     #[test]
@@ -604,6 +775,99 @@ expected_observation = "i2pr-sent-only"
         assert_eq!(
             Scenario::parse_str(&input, &std::env::temp_dir()),
             Err(ScenarioError::InvalidDataPhaseTimeout)
+        );
+    }
+
+    #[test]
+    fn rejects_zero_delivery_status_message_id() {
+        let input = VALID.replace(
+            "delivery_status_message_id = 12345",
+            "delivery_status_message_id = 0",
+        );
+        assert_eq!(
+            Scenario::parse_str(&input, &std::env::temp_dir()),
+            Err(ScenarioError::InvalidDeliveryStatusMessageId)
+        );
+    }
+
+    #[test]
+    fn rejects_short_router_hash() {
+        let input = VALID.replace(
+            "expected_sender_router_hash_sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"",
+            "expected_sender_router_hash_sha256 = \"abc\"",
+        );
+        assert_eq!(
+            Scenario::parse_str(&input, &std::env::temp_dir()),
+            Err(ScenarioError::InvalidExpectedRouterHash)
+        );
+    }
+
+    #[test]
+    fn rejects_uppercase_router_hash() {
+        let input = VALID.replace(
+            "expected_sender_router_hash_sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"",
+            "expected_sender_router_hash_sha256 = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"",
+        );
+        assert_eq!(
+            Scenario::parse_str(&input, &std::env::temp_dir()),
+            Err(ScenarioError::InvalidExpectedRouterHash)
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_reference_driver_mode() {
+        let input = VALID.replace(
+            "reference_driver_mode = \"java-direct-driver\"",
+            "reference_driver_mode = \"sam-trigger\"",
+        );
+        assert_eq!(
+            Scenario::parse_str(&input, &std::env::temp_dir()),
+            Err(ScenarioError::InvalidReferenceDriverMode)
+        );
+    }
+
+    #[test]
+    fn rejects_reference_driver_mode_direction_mismatch() {
+        let input = VALID.replace(
+            "scenario_id = \"i2pr-to-java-ipv4\"",
+            "scenario_id = \"i2pr-to-i2pd-ipv4\"",
+        );
+        assert_eq!(
+            Scenario::parse_str(&input, &std::env::temp_dir()),
+            Err(ScenarioError::ReferenceDriverModeDirectionMismatch)
+        );
+    }
+
+    #[test]
+    fn rejects_all_zero_run_identity() {
+        let input = VALID.replace(
+            "run_identity_sha256 = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"",
+            "run_identity_sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"",
+        );
+        assert_eq!(
+            Scenario::parse_str(&input, &std::env::temp_dir()),
+            Err(ScenarioError::InvalidRunIdentitySha256)
+        );
+    }
+
+    #[test]
+    fn rejects_legacy_schema_marker() {
+        let input = VALID.replace(
+            "schema = \"i2pr-launcher-scenario-v2\"",
+            "schema = \"i2pr-legacy-scenario-v1\"",
+        );
+        assert_eq!(
+            Scenario::parse_str(&input, &std::env::temp_dir()),
+            Err(ScenarioError::UnsupportedSchema)
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_schema_version() {
+        let input = VALID.replace("schema_version = 2", "schema_version = 1");
+        assert_eq!(
+            Scenario::parse_str(&input, &std::env::temp_dir()),
+            Err(ScenarioError::InvalidSchemaVersion)
         );
     }
 }

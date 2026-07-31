@@ -186,3 +186,68 @@ Plan 062 does not close any interoperability claim. NTCP2 stays
 experimental and non-advertised; Milestone 3 stays open until
 Plan 065 closes with one complete four-direction live diagnostic
 bundle and Plan 066 produces a verified Milestone 3 certificate.
+
+### Plan 065 NTCP2 canonical integration and live qualification
+
+Plan 065 establishes the implementation floor from which Plan 066
+may cut a candidate. The plan does not perform an authoritative
+external live qualification run; the four primary IPv4 directions
+remain typed blockers until the Plan 046 rootless sealed-namespace
+lane or the Plan 048/049 Multipass recovery lane can produce a
+fresh 10/10 qualification on the pinned Java 2.12.0 and i2pd
+2.60.0 references.
+
+Plan 065 lands:
+
+- The strict launcher scenario schema is bumped to
+  `i2pr-launcher-scenario-v2` (`schema_version` 2). The strict
+  parser requires the per-run DeliveryStatus `message_id` in
+  `1..=0xffffffff`, the 64-lowercase-hex expected sender and
+  receiver Router Hashes, the `reference_driver_mode` field
+  allowlisted to `java-direct-driver` or `i2pd-direct-driver`, and
+  the `run_identity_sha256` 64-lowercase-hex digest. The historical
+  schema 1 path is rejected.
+- The i2pr sender and receiver bind the typed counters
+  `delivery_status_message_id` and `expected_peer_router_hash_sha256`
+  to the status record. The hard-coded `0x0420_0001` DeliveryStatus
+  authority is removed.
+- The i2pr sender and receiver emit the bounded Plan 065 typed
+  failure categories (`SenderDeliveryStatusMessageIdZero`,
+  `SenderRouterIdentityMismatch`,
+  `SenderDeliveryStatusConstructionFailed`,
+  `SenderFrameQueueAmbiguous`, `SenderFrameWriteFailed`,
+  `SenderMultiplePrimaryDeliveryStatusEmitted`,
+  `SenderCancellationObserved`, `ReceiverFrameReadFailed`,
+  `ReceiverFrameAuthenticationFailed`, `ReceiverI2npDecodeFailed`,
+  `ReceiverDeliveryStatusMissing`,
+  `ReceiverDeliveryStatusIdMismatch`,
+  `ReceiverDeliveryStatusDuplicate`,
+  `ReceiverPeerIdentityMismatch`,
+  `ReceiverDeliveryStatusTimestampInvalid`). The broad
+  `DataPhaseFailed` reason is no longer emitted on the receiver
+  side.
+- The canonical mixed-runner wires the new scenario primary fields
+  through `render_and_validate` for both the i2pr initiator and
+  responder paths. The `_plan065_primary_fields` helper derives
+  the DeliveryStatus `message_id` from the run identity and the
+  correlation nonce; the `_reference_driver_mode_for` helper
+  returns the source-locked driver mode for a reference kind. The
+  runner rejects SAM, HTTP, I2PControl, support-topology, and
+  synthetic-fallback helpers for any primary direction.
+- The Plan 065 test matrix (`test_plan065.py`) covers scenario
+  v2 acceptance and rejection, DeliveryStatus message ID derivation
+  uniqueness, status counter contract, reference trigger v4
+  correlation, observation v3 correlation, pass predicate exact
+  message ID and Router Hash correlation, support-router rejection,
+  Plan 060 candidate retirement, and the Plan 066 implementation
+  floor marker.
+- The static boundary checker
+  (`scripts/check-ntcp2-interoperability.sh`) enforces the Plan
+  065 schema marker, the required primary fields, the bounded
+  typed failure categories, the absence of the hard-coded
+  `0x0420_0001` DeliveryStatus authority, and the Plan 065 test
+  matrix existence.
+
+Plan 065 does not close any interoperability claim. NTCP2 stays
+experimental and non-advertised; Milestone 3 stays open until
+Plan 066 produces a verified Milestone 3 certificate.

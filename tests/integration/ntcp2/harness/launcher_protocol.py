@@ -11,16 +11,23 @@ from pathlib import Path
 from typing import Any
 
 
-SCENARIO_SCHEMA = 1
+SCENARIO_SCHEMA = "i2pr-launcher-scenario-v2"
+SCENARIO_SCHEMA_VERSION = 2
 STATUS_SCHEMA = 1
 MAX_SCENARIO_BYTES = 64 * 1024
 MAX_DEADLINE_MILLISECONDS = 3_600_000
 PRIVATE_NETWORK_ID = 99
 
+# Plan 065: required primary fields for a Plan 065 primary direction.
+# The strict parser refuses any scenario that is missing the
+# DeliveryStatus message ID, the expected Router Hashes, the
+# reference_driver_mode, or the run_identity_sha256 fields.
 SCENARIO_FIELDS = frozenset(
     {
         "schema",
+        "schema_version",
         "scenario_id",
+        "run_id",
         "role",
         "address_family",
         "local_address",
@@ -40,6 +47,11 @@ SCENARIO_FIELDS = frozenset(
         "deterministic_seed",
         "expected_result_class",
         "status_path",
+        "delivery_status_message_id",
+        "expected_sender_router_hash_sha256",
+        "expected_receiver_router_hash_sha256",
+        "reference_driver_mode",
+        "run_identity_sha256",
     }
 )
 # Optional fields a renderer may add to a Plan 045 scenario schema. They are
@@ -55,13 +67,37 @@ ACCEPTED_OPTIONAL_SCENARIO_FIELDS = frozenset(
         "expected_observation",
     }
 )
+# Plan 065: the allowlisted reference driver mode set. Only the
+# source-locked direct helpers from Plan 063 (Java) and Plan 064 (i2pd)
+# satisfy a primary direction; SAM, HTTP, I2PControl, support-topology,
+# and synthetic-fallback modes are explicitly rejected.
+REFERENCE_DRIVER_MODES = frozenset({"java-direct-driver", "i2pd-direct-driver"})
+REFERENCE_DRIVER_MODE_BY_DIRECTION = {
+    "i2pr-to-java-ipv4": "java-direct-driver",
+    "java-to-i2pr-ipv4": "java-direct-driver",
+    "i2pr-to-i2pd-ipv4": "i2pd-direct-driver",
+    "i2pd-to-i2pr-ipv4": "i2pd-direct-driver",
+}
 STATUS_FIELDS = frozenset(
     {"schema", "type", "scenario_id", "phase", "result", "reason_code", "counters"}
 )
 COUNTER_FIELDS = frozenset(
-    {"listener_ready", "authenticated", "frames_sent", "frames_received", "i2np_sent", "i2np_received"}
+    {
+        "listener_ready",
+        "authenticated",
+        "frames_sent",
+        "frames_received",
+        "i2np_sent",
+        "i2np_received",
+        # Plan 065: the per-run DeliveryStatus correlation counters. The
+        # canonical mixed-runner cross-checks the message ID and the
+        # expected peer Router Hash against the trigger record.
+        "delivery_status_message_id",
+        "expected_peer_router_hash_sha256",
+    }
 )
 SCENARIO_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 PADDING_PROFILES = frozenset(
     {"minimum-variable-maximum", "representative", "boundary-and-maximum-plus-one"}
@@ -141,6 +177,22 @@ STATUS_REASONS = frozenset(
         "responder_authenticated_link_install_failed",
         "responder_data_frame_read_failed",
         "responder_i2np_decode_failed",
+        # Plan 065: bounded sender-side and receiver-side typed failures.
+        "sender_delivery_status_message_id_zero",
+        "sender_router_identity_mismatch",
+        "sender_delivery_status_construction_failed",
+        "sender_frame_queue_ambiguous",
+        "sender_frame_write_failed",
+        "sender_multiple_primary_delivery_status_emitted",
+        "sender_cancellation_observed",
+        "receiver_frame_read_failed",
+        "receiver_frame_authentication_failed",
+        "receiver_i2np_decode_failed",
+        "receiver_delivery_status_missing",
+        "receiver_delivery_status_id_mismatch",
+        "receiver_delivery_status_duplicate",
+        "receiver_peer_identity_mismatch",
+        "receiver_delivery_status_timestamp_invalid",
     }
 )
 
@@ -155,8 +207,10 @@ class LauncherStatusError(ValueError):
 
 @dataclass(frozen=True)
 class LauncherScenario:
-    schema: int
+    schema: str
+    schema_version: int
     scenario_id: str
+    run_id: str
     role: str
     address_family: str
     local_address: str
@@ -181,6 +235,11 @@ class LauncherScenario:
     data_phase_required_peer_action: str = "non-echo-completion"
     data_phase_timeout_ms: int | None = None
     expected_observation: str = "i2pr-sent-and-acknowledged"
+    delivery_status_message_id: int = 0
+    expected_sender_router_hash_sha256: str = ""
+    expected_receiver_router_hash_sha256: str = ""
+    reference_driver_mode: str = ""
+    run_identity_sha256: str = ""
 
 
 def load_launcher_scenario(path: Path) -> LauncherScenario:
@@ -205,9 +264,14 @@ def load_launcher_scenario(path: Path) -> LauncherScenario:
         raise LauncherScenarioError("scenario-fields-invalid")
     if value["schema"] != SCENARIO_SCHEMA:
         raise LauncherScenarioError("scenario-schema-unsupported")
+    if value["schema_version"] != SCENARIO_SCHEMA_VERSION:
+        raise LauncherScenarioError("scenario-schema-version-unsupported")
     scenario_id = value["scenario_id"]
     if not isinstance(scenario_id, str) or len(scenario_id.encode()) > 64 or not SCENARIO_ID.fullmatch(scenario_id):
         raise LauncherScenarioError("scenario-id-invalid")
+    run_id = value["run_id"]
+    if not isinstance(run_id, str) or len(run_id.encode()) > 64 or not SCENARIO_ID.fullmatch(run_id):
+        raise LauncherScenarioError("run-id-invalid")
     role = value["role"]
     family = value["address_family"]
     if role not in {"initiator", "responder"} or family not in {"ipv4", "ipv6"}:
@@ -283,9 +347,62 @@ def load_launcher_scenario(path: Path) -> LauncherScenario:
     status_path = _confined_path(run_root, value["status_path"])
     if status_path.exists() and status_path.is_dir():
         raise LauncherScenarioError("status-path-is-directory")
+    # Plan 065: DeliveryStatus message ID is mandatory and nonzero for
+    # every primary direction. The strict parser refuses zero or
+    # negative IDs and any value outside ``1..=0xffffffff``.
+    message_id = value["delivery_status_message_id"]
+    if (
+        isinstance(message_id, bool)
+        or not isinstance(message_id, int)
+        or message_id < 1
+        or message_id > 0xFFFFFFFF
+    ):
+        raise LauncherScenarioError("delivery-status-message-id-invalid")
+    # Plan 065: expected sender and receiver Router Hashes are mandatory
+    # and must be 64 lowercase hex characters.
+    expected_sender = value["expected_sender_router_hash_sha256"]
+    expected_receiver = value["expected_receiver_router_hash_sha256"]
+    if (
+        not isinstance(expected_sender, str)
+        or not HEX64.fullmatch(expected_sender)
+        or expected_sender == "0" * 64
+    ):
+        raise LauncherScenarioError("expected-sender-router-hash-invalid")
+    if (
+        not isinstance(expected_receiver, str)
+        or not HEX64.fullmatch(expected_receiver)
+        or expected_receiver == "0" * 64
+    ):
+        raise LauncherScenarioError("expected-receiver-router-hash-invalid")
+    if expected_sender == expected_receiver:
+        raise LauncherScenarioError("expected-router-hash-self-reference")
+    # Plan 065: reference_driver_mode must be one of the two
+    # source-locked direct helpers and must match the direction encoded
+    # by ``scenario_id``. SAM, HTTP, I2PControl, support-topology, and
+    # synthetic-fallback modes are explicitly rejected for primary
+    # directions.
+    reference_driver_mode = value["reference_driver_mode"]
+    if reference_driver_mode not in REFERENCE_DRIVER_MODES:
+        raise LauncherScenarioError("reference-driver-mode-invalid")
+    expected_mode_for_direction = REFERENCE_DRIVER_MODE_BY_DIRECTION.get(scenario_id)
+    if expected_mode_for_direction is None:
+        raise LauncherScenarioError("scenario-id-not-allowlisted")
+    if reference_driver_mode != expected_mode_for_direction:
+        raise LauncherScenarioError("reference-driver-mode-direction-mismatch")
+    # Plan 065: run_identity_sha256 is mandatory and must be 64
+    # lowercase hex characters.
+    run_identity = value["run_identity_sha256"]
+    if (
+        not isinstance(run_identity, str)
+        or not HEX64.fullmatch(run_identity)
+        or run_identity == "0" * 64
+    ):
+        raise LauncherScenarioError("run-identity-sha256-invalid")
     return LauncherScenario(
         schema=value["schema"],
+        schema_version=value["schema_version"],
         scenario_id=scenario_id,
+        run_id=run_id,
         role=role,
         address_family=family,
         local_address=str(local_address),
@@ -310,6 +427,11 @@ def load_launcher_scenario(path: Path) -> LauncherScenario:
         data_phase_required_peer_action=peer_action,
         data_phase_timeout_ms=timeout_ms,
         expected_observation=observation,
+        delivery_status_message_id=message_id,
+        expected_sender_router_hash_sha256=expected_sender,
+        expected_receiver_router_hash_sha256=expected_receiver,
+        reference_driver_mode=reference_driver_mode,
+        run_identity_sha256=run_identity,
     )
 
 
@@ -338,7 +460,30 @@ def parse_status_line(line: str) -> dict[str, Any]:
     counters = value["counters"]
     if not isinstance(counters, dict) or frozenset(counters) != COUNTER_FIELDS:
         raise LauncherStatusError("status-counters-invalid")
-    for counter in counters.values():
+    # Plan 065: the per-run DeliveryStatus message ID counter is an
+    # unsigned 32-bit integer. The strict parser refuses bool, negative,
+    # or out-of-range values; the canonical mixed-runner cross-checks
+    # the counter against the trigger record.
+    message_id = counters["delivery_status_message_id"]
+    if (
+        isinstance(message_id, bool)
+        or not isinstance(message_id, int)
+        or message_id < 0
+        or message_id > 0xFFFFFFFF
+    ):
+        raise LauncherStatusError("status-counter-delivery-status-message-id-out-of-range")
+    peer_hash = counters["expected_peer_router_hash_sha256"]
+    if not isinstance(peer_hash, str) or (peer_hash and not HEX64.fullmatch(peer_hash)):
+        raise LauncherStatusError("status-counter-expected-peer-router-hash-invalid")
+    for counter_name in (
+        "listener_ready",
+        "authenticated",
+        "frames_sent",
+        "frames_received",
+        "i2np_sent",
+        "i2np_received",
+    ):
+        counter = counters[counter_name]
         if isinstance(counter, bool) or not isinstance(counter, int) or not 0 <= counter <= 1_000_000:
             raise LauncherStatusError("status-counter-out-of-range")
     return value

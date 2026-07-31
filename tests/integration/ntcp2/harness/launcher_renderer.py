@@ -10,14 +10,20 @@ from typing import Any
 try:
     from .launcher_protocol import (
         PRIVATE_NETWORK_ID,
+        REFERENCE_DRIVER_MODE_BY_DIRECTION,
+        REFERENCE_DRIVER_MODES,
         SCENARIO_SCHEMA,
+        SCENARIO_SCHEMA_VERSION,
         LauncherScenarioError,
         load_launcher_scenario,
     )
 except ImportError:
     from launcher_protocol import (  # type: ignore
         PRIVATE_NETWORK_ID,
+        REFERENCE_DRIVER_MODE_BY_DIRECTION,
+        REFERENCE_DRIVER_MODES,
         SCENARIO_SCHEMA,
+        SCENARIO_SCHEMA_VERSION,
         LauncherScenarioError,
         load_launcher_scenario,
     )
@@ -59,6 +65,8 @@ _VALID_OBSERVATIONS = frozenset(
     }
 )
 _MIXED_SCENARIO_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,60}[a-z0-9])?$")
+_RUN_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$")
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class RenderError(ValueError):
@@ -68,6 +76,7 @@ class RenderError(ValueError):
 def render_scenario_toml(
     *,
     execution_id: str,
+    run_id: str,
     role: str,
     address_family: str,
     local_address: str,
@@ -90,9 +99,15 @@ def render_scenario_toml(
     data_phase_required_peer_action: str = "non-echo-completion",
     data_phase_timeout_ms: int | None = None,
     expected_observation: str = "i2pr-sent-and-acknowledged",
+    delivery_status_message_id: int,
+    expected_sender_router_hash_sha256: str,
+    expected_receiver_router_hash_sha256: str,
+    reference_driver_mode: str,
+    run_identity_sha256: str,
 ) -> str:
     _validate_inputs(
         execution_id=execution_id,
+        run_id=run_id,
         role=role,
         address_family=address_family,
         local_address=local_address,
@@ -110,11 +125,18 @@ def render_scenario_toml(
         data_phase_required_peer_action=data_phase_required_peer_action,
         data_phase_timeout_ms=data_phase_timeout_ms,
         expected_observation=expected_observation,
+        delivery_status_message_id=delivery_status_message_id,
+        expected_sender_router_hash_sha256=expected_sender_router_hash_sha256,
+        expected_receiver_router_hash_sha256=expected_receiver_router_hash_sha256,
+        reference_driver_mode=reference_driver_mode,
+        run_identity_sha256=run_identity_sha256,
     )
     lines = [
         "[scenario]",
-        f"schema = {SCENARIO_SCHEMA}",
+        f'schema = "{SCENARIO_SCHEMA}"',
+        f"schema_version = {SCENARIO_SCHEMA_VERSION}",
         f'scenario_id = "{execution_id}"',
+        f'run_id = "{run_id}"',
         f'role = "{role}"',
         f'address_family = "{address_family}"',
         f'local_address = "{local_address}"',
@@ -150,6 +172,11 @@ def render_scenario_toml(
     if data_phase_timeout_ms is not None:
         lines.append(f"data_phase_timeout_ms = {data_phase_timeout_ms}")
     lines.append(f'expected_observation = "{expected_observation}"')
+    lines.append(f"delivery_status_message_id = {delivery_status_message_id}")
+    lines.append(f'expected_sender_router_hash_sha256 = "{expected_sender_router_hash_sha256}"')
+    lines.append(f'expected_receiver_router_hash_sha256 = "{expected_receiver_router_hash_sha256}"')
+    lines.append(f'reference_driver_mode = "{reference_driver_mode}"')
+    lines.append(f'run_identity_sha256 = "{run_identity_sha256}"')
     return "\n".join(lines) + "\n"
 
 
@@ -172,6 +199,7 @@ def render_and_validate(
 def _validate_inputs(
     *,
     execution_id: str,
+    run_id: str,
     role: str,
     address_family: str,
     local_address: str,
@@ -189,9 +217,16 @@ def _validate_inputs(
     data_phase_required_peer_action: str,
     data_phase_timeout_ms: int | None,
     expected_observation: str,
+    delivery_status_message_id: int,
+    expected_sender_router_hash_sha256: str,
+    expected_receiver_router_hash_sha256: str,
+    reference_driver_mode: str,
+    run_identity_sha256: str,
 ) -> None:
     if not isinstance(execution_id, str) or not _MIXED_SCENARIO_ID.fullmatch(execution_id):
         raise RenderError("execution-id-invalid")
+    if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id):
+        raise RenderError("run-id-invalid")
     if role not in _VALID_ROLES:
         raise RenderError("role-invalid")
     if address_family not in _VALID_FAMILIES:
@@ -232,6 +267,49 @@ def _validate_inputs(
     ):
         raise RenderError("data-phase-timeout-invalid")
     _validate_relative_path(status_path, "status_path")
+    # Plan 065: DeliveryStatus message ID is mandatory and must be a
+    # nonzero unsigned 32-bit integer.
+    if (
+        isinstance(delivery_status_message_id, bool)
+        or not isinstance(delivery_status_message_id, int)
+        or delivery_status_message_id < 1
+        or delivery_status_message_id > 0xFFFFFFFF
+    ):
+        raise RenderError("delivery-status-message-id-invalid")
+    # Plan 065: expected sender and receiver Router Hashes are
+    # mandatory and must be 64 lowercase hex characters with nonzero
+    # provenance and no self-reference.
+    _validate_router_hash("expected_sender_router_hash_sha256", expected_sender_router_hash_sha256)
+    _validate_router_hash(
+        "expected_receiver_router_hash_sha256", expected_receiver_router_hash_sha256
+    )
+    if expected_sender_router_hash_sha256 == expected_receiver_router_hash_sha256:
+        raise RenderError("expected-router-hash-self-reference")
+    # Plan 065: reference_driver_mode must be one of the two
+    # source-locked direct helpers and must match the direction encoded
+    # by ``execution_id``.
+    if reference_driver_mode not in REFERENCE_DRIVER_MODES:
+        raise RenderError("unsupported-reference-driver-mode")
+    expected_mode_for_direction = REFERENCE_DRIVER_MODE_BY_DIRECTION.get(execution_id)
+    if expected_mode_for_direction is None:
+        raise RenderError("scenario-id-not-allowlisted")
+    if reference_driver_mode != expected_mode_for_direction:
+        raise RenderError("reference-driver-mode-direction-mismatch")
+    if (
+        not isinstance(run_identity_sha256, str)
+        or not _HEX64.fullmatch(run_identity_sha256)
+        or run_identity_sha256 == "0" * 64
+    ):
+        raise RenderError("run-identity-sha256-invalid")
+
+
+def _validate_router_hash(label: str, value: str) -> None:
+    if (
+        not isinstance(value, str)
+        or not _HEX64.fullmatch(value)
+        or value == "0" * 64
+    ):
+        raise RenderError(f"{label}-invalid")
 
 
 def _validate_address(value: str, family: str, label: str) -> None:
