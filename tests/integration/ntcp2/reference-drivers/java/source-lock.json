@@ -1,0 +1,79 @@
+{
+  "$schema": "i2pr-java-helper-source-lock-v1",
+  "schema_version": 1,
+  "helper_kind": "java-direct-helper",
+  "schema_marker": "i2pr-reference-trigger-v4",
+  "reference": {
+    "name": "java_i2p",
+    "version": "2.12.0",
+    "revision": "2800040deee9bb376567b671ef2e9c34cf3e30b6",
+    "source_repository": "https://github.com/i2p/i2p.i2p.git",
+    "source_revision_locked": true,
+    "installed_tree_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
+    "i2p_jar_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
+    "router_jar_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "build_contract": {
+    "javac_minimum": "17",
+    "ant_minimum": "1.10.2",
+    "java_runtime_minimum": "17",
+    "classpath_source": "classpath-manifest.json",
+    "build_manifest_schema": "build-manifest.schema.json",
+    "required_jvm_args": []
+  },
+  "classpath": {
+    "jars_placeholder": [
+      "0000000000000000000000000000000000000000000000000000000000000000"
+    ],
+    "classpath_manifest_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "helper": {
+    "source_path": "tests/integration/ntcp2/reference-drivers/java/src/JavaNtcp2InteropDriver.java",
+    "build_script_path": "tests/integration/ntcp2/reference-drivers/java/build-driver.sh",
+    "run_script_path": "tests/integration/ntcp2/reference-drivers/java/run-driver.sh",
+    "source_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
+    "binary_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "call_graph": {
+    "entry_path": "JavaNtcp2InteropDriver.main",
+    "embedded_router_class": "net.i2p.router.Router",
+    "embedded_router_context_class": "net.i2p.router.RouterContext",
+    "ntcp2_transport_class": "net.i2p.router.transport.ntcp.NTCPTransport",
+    "outbound_message_pool_class": "net.i2p.router.OutNetMessagePool",
+    "outbound_message_class": "net.i2p.router.OutNetMessage",
+    "delivery_status_message_class": "net.i2p.data.i2np.DeliveryStatusMessage",
+    "dummy_netdb_class": "net.i2p.router.dummy.DummyNetworkDatabaseFacade",
+    "handler_job_builder_class": "net.i2p.router.HandlerJobBuilder",
+    "source_inspection_record": "tests/integration/ntcp2/reference-drivers/source-verification.md"
+  },
+  "constraints": [
+    "no NTCP2 cryptography or handshake state mutation",
+    "no SSU2 enablement",
+    "exactly one outbound dial per invocation when in dial mode",
+    "bounded monotonic timeout per phase (default 15 s, max 600)",
+    "no retries, no sleeps-as-state-readiness, no DNS, no public network egress",
+    "no streaming destination, no tunnel pool, no client destination",
+    "no SAM, no I2CP, no floodfill integration",
+    "disposable data directory is mode 0700 and never inherited",
+    "shutdown is mandatory before exit",
+    "nonzero exit code on every rejected or blocked outcome",
+    "real embedded Router is constructed exactly once",
+    "real Router.shutdown() is invoked through the embedded lifecycle",
+    "DeliveryStatus is the only I2NP message type emitted by the data-phase path",
+    "exactly one synthesized DeliveryStatus is dispatched per dial invocation"
+  ],
+  "verification_required": [
+    "valid source-lock record",
+    "classpath manifest digest binding",
+    "build manifest digest binding",
+    "helper binary digest binding",
+    "correct RouterInfo validation against the local router identity",
+    "exact peer RouterInfo validation (signature, network ID, hash, address)",
+    "wired RouterContext dummy NetDB lookup returns the imported peer",
+    "successful embedded router lifecycle (start, listener, shutdown)",
+    "exact DeliveryStatus message ID correlation on send and receive",
+    "no listener port, lock file, or writable state survives outside owned roots",
+    "structured event emission matches the Plan 062 reference-event v1 schema",
+    "no SAM, no HTTP, no floodfill topology, no support router"
+  ]
+}

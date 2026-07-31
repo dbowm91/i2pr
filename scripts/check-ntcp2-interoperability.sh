@@ -563,6 +563,110 @@ if ! grep -Fq 'test_observation_v3.py' "$root/AGENTS.md"; then
   exit 1
 fi
 
+# Plan 063: Java I2P stripped-router direct NTCP2 driver. The Java
+# direct helper source, the source-lock record, the classpath
+# manifest, the build-manifest schema, the build/run scripts, the
+# Python adapter, the test matrix, and the qualification receipt must
+# all be committed and the locked 64-hex SHA-256 Router Hash contract
+# must remain active.
+java_helper_dir="$root/tests/integration/ntcp2/reference-drivers/java"
+if ! test -f "$java_helper_dir/src/JavaNtcp2InteropDriver.java"; then
+  echo "Plan 063 Java direct driver source is missing" >&2
+  exit 1
+fi
+if ! test -f "$java_helper_dir/source-lock.json"; then
+  echo "Plan 063 Java direct driver source-lock record is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-java-helper-source-lock-v1' "$java_helper_dir/source-lock.json"; then
+  echo "Plan 063 Java helper source-lock schema marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'java-direct-helper' "$java_helper_dir/source-lock.json"; then
+  echo "Plan 063 Java direct helper kind marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq '2800040deee9bb376567b671ef2e9c34cf3e30b6' "$java_helper_dir/source-lock.json"; then
+  echo "Plan 063 Java direct helper pinned revision marker is missing" >&2
+  exit 1
+fi
+if ! test -f "$java_helper_dir/classpath-manifest.json"; then
+  echo "Plan 063 Java direct driver classpath manifest is missing" >&2
+  exit 1
+fi
+if ! test -f "$java_helper_dir/build-manifest.schema.json"; then
+  echo "Plan 063 Java direct driver build-manifest schema is missing" >&2
+  exit 1
+fi
+if ! test -f "$java_helper_dir/build-driver.sh"; then
+  echo "Plan 063 Java direct driver build script is missing" >&2
+  exit 1
+fi
+if ! test -f "$java_helper_dir/run-driver.sh"; then
+  echo "Plan 063 Java direct driver run script is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/java_direct_driver.py"; then
+  echo "Plan 063 Java direct driver Python adapter is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_java_direct_driver.py"; then
+  echo "Plan 063 Java direct driver test matrix is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_java_direct_control.py"; then
+  echo "Plan 063 Java direct driver control test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'JavaHelperArtifactsPresentTests' "$root/tests/integration/ntcp2/harness/test_java_direct_driver.py"; then
+  echo "Plan 063 Java helper artifact tests are missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'JavaStrictConfigValidationTests' "$root/tests/integration/ntcp2/harness/test_java_direct_driver.py"; then
+  echo "Plan 063 strict config validation tests are missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'ControlTopologyContractTests' "$root/tests/integration/ntcp2/harness/test_java_direct_control.py"; then
+  echo "Plan 063 control topology contract tests are missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/qualification/java-direct-driver.json"; then
+  echo "Plan 063 Java direct driver qualification receipt is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-java-direct-driver-qualification-v1' "$root/tests/integration/ntcp2/qualification/java-direct-driver.json"; then
+  echo "Plan 063 Java direct driver qualification receipt schema marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'java-direct-driver' "$java_helper_dir/src/JavaNtcp2InteropDriver.java"; then
+  echo "Plan 063 Java direct driver implementation marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-reference-event-v1' "$java_helper_dir/src/JavaNtcp2InteropDriver.java"; then
+  echo "Plan 063 Java direct driver reference-event v1 marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-reference-trigger-v4' "$root/tests/integration/ntcp2/harness/java_direct_driver.py"; then
+  echo "Plan 063 Java direct driver Python adapter v4 trigger binding is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'java-direct-driver' "$root/tests/integration/ntcp2/harness/java_direct_driver.py"; then
+  echo "Plan 063 Java direct driver Python adapter implementation marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 063' "$root/AGENTS.md"; then
+  echo "AGENTS.md must record the Plan 063 closure section" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_java_direct_driver.py' "$root/AGENTS.md"; then
+  echo "Plan 063 Java direct driver test matrix is not wired into AGENTS.md" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_java_direct_control.py' "$root/AGENTS.md"; then
+  echo "Plan 063 Java direct driver control test matrix is not wired into AGENTS.md" >&2
+  exit 1
+fi
+
 python3 "$root/scripts/interop/validate-evidence.py"
 python3 "$root/scripts/interop/validate-scenarios.py"
 

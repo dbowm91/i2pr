@@ -988,6 +988,80 @@ Plan 062 does not implement the Java or i2pd drivers; the Plan 063
 Java driver and Plan 064 i2pd driver plans implement the
 source-locked drivers after Plan 062 closes.
 
+## Plan 063 Java I2P stripped-router direct NTCP2 driver
+
+Plan 063 implements the source-locked Java I2P 2.12.0 stripped-router
+direct NTCP2 driver. The driver is **test-only**, source-locked to
+revision `2800040deee9bb376567b671ef2e9c34cf3e30b6`, and never
+becomes a production dependency of `i2pr-daemon`. It uses the
+upstream embedded `net.i2p.router.Router` and `RouterContext` with
+the pinned dummy facades (`DummyNetworkDatabaseFacade`,
+`DummyClientManagerFacade`, `DummyPeerManagerFacade`,
+`DummyTunnelManagerFacade`), the real NTCP/NTCP2 transport
+(`net.i2p.router.transport.ntcp.NTCPTransport`), the real outbound
+message pool, and the real inbound message pool. Plan 063 does not
+patch NTCP2 cryptography, the Noise handshake, framing, or
+RouterInfo signature verification.
+
+Plan 063 lands:
+
+- `tests/integration/ntcp2/reference-drivers/java/src/JavaNtcp2InteropDriver.java`
+  — the source-locked Java driver with strict config validation,
+  bounded `inspect`/`listen`/`dial` modes, real `OutNetMessage`
+  DeliveryStatus submission, and structured `i2pr-reference-event-v1`
+  emission.
+- `tests/integration/ntcp2/reference-drivers/java/source-lock.json`
+  — the source-lock record
+  (`i2pr-java-helper-source-lock-v1`) binding the pinned Java
+  revision, the helper source path, and the locked constraints.
+- `tests/integration/ntcp2/reference-drivers/java/classpath-manifest.json`
+  — the runtime classpath binding every pinned jar in
+  `target/interop/cache/java_i2p/<tree>/lib/` to its purpose.
+- `tests/integration/ntcp2/reference-drivers/java/build-manifest.schema.json`
+  — the build-manifest schema
+  (`i2pr-java-helper-build-manifest-v1`).
+- `tests/integration/ntcp2/reference-drivers/java/build-driver.sh`
+  and `run-driver.sh` — the offline build and runtime seams.
+- `tests/integration/ntcp2/harness/java_direct_driver.py` — the
+  Python harness adapter that binds every helper invocation into a
+  Plan 062 v4 trigger record (`i2pr-reference-trigger-v4`) and
+  validates the Plan 063 strict driver config contract.
+- `tests/integration/ntcp2/harness/test_java_direct_driver.py` and
+  `test_java_direct_control.py` — the Plan 063 test matrix
+  covering the source-verification contract, strict config
+  contract, Python harness adapter, structured event contract, and
+  the local inspect-mode round-trip where the pinned Java cache is
+  available.
+- `tests/integration/ntcp2/qualification/java-direct-driver.json` —
+  the Plan 063 qualification receipt
+  (`i2pr-java-direct-driver-qualification-v1`). On this host the
+  receipt records the typed host-environment blocker
+  (`blocked_unprivileged_user_namespace`); the 10/10 fresh-state
+  qualification remains to be produced in the Plan 046 rootless
+  sealed-namespace lane or the Plan 048/049 Multipass recovery lane.
+
+`tests/integration/ntcp2/reference-drivers/source-verification.md`
+gains the Plan 063 topology contract section. The repository
+remains NTCP2-experimental and non-advertised; Milestone 3 stays
+open until Plan 065 closes with one complete four-direction live
+diagnostic bundle and Plan 066 produces a verified Milestone 3
+certificate. Plan 063 does not wire the Java driver into the
+canonical primary `mixed_runner.py`; that wiring belongs to Plan
+065.
+
+### Plan 063 focused checks
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_java_direct_driver.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_java_direct_control.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan062.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_trigger_v4.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_event.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+```
+
 ### Plan 062 focused checks
 
 ```text

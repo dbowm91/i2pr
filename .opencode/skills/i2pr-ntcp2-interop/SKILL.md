@@ -657,5 +657,94 @@ experimental and non-advertised; Milestone 3 stays open until
 Plan 065 closes with one complete four-direction live diagnostic
 bundle and Plan 066 produces a verified Milestone 3 certificate.
 
+## Plan 063 Java I2P stripped-router direct NTCP2 driver
+
+Plan 063 implements the source-locked Java I2P 2.12.0 stripped-router
+direct NTCP2 driver. The driver is the test-only counterpart to the
+Plan 064 i2pd driver; together they form the source-locked pair
+required by the Plan 061 roadmap.
+
+The plan delivered:
+
+- `tests/integration/ntcp2/reference-drivers/java/src/JavaNtcp2InteropDriver.java`
+  — the source-locked Java driver. It embeds the upstream
+  `net.i2p.router.Router` and `RouterContext`, activates the
+  pinned dummy facades, uses the real
+  `net.i2p.router.transport.ntcp.NTCPTransport` (no patch, no
+  SSU2, no `VMCommSystem`), and submits a real correlated
+  `DeliveryStatusMessage` through `OutNetMessagePool`. The driver
+  exposes `inspect`, `listen`, and `dial` modes through a strict
+  config contract. The receive handler is a `HandlerJobBuilder`
+  registered for `DeliveryStatusMessage.MESSAGE_TYPE` (constant
+  value 10); the data-phase events (`frame_emitted`,
+  `frame_authenticated_and_decrypted`, `i2np_message_decoded`)
+  are emitted from the receive handler invocation, never from a
+  generic log phrase.
+- `tests/integration/ntcp2/reference-drivers/java/source-lock.json`
+  — the source-lock record
+  (`i2pr-java-helper-source-lock-v1`) binding the pinned Java
+  revision `2800040deee9bb376567b671ef2e9c34cf3e30b6`, the helper
+  source path, the build contract, and the locked constraints.
+- `tests/integration/ntcp2/reference-drivers/java/classpath-manifest.json`
+  — the runtime classpath binding every pinned jar in
+  `target/interop/cache/java_i2p/<tree>/lib/` to its purpose. No
+  Maven Central dependency may be introduced.
+- `tests/integration/ntcp2/reference-drivers/java/build-manifest.schema.json`
+  — the build-manifest schema
+  (`i2pr-java-helper-build-manifest-v1`) that requires measured
+  digests for every pinned artifact, the driver source and
+  binary, the classpath manifest, and the JDK versions.
+- `tests/integration/ntcp2/reference-drivers/java/build-driver.sh`
+  and `run-driver.sh` — the offline build and runtime seams. The
+  build script requires the exact pinned source/build cache, uses
+  a deterministic sorted source list, uses an explicit classpath,
+  and emits no download.
+- `tests/integration/ntcp2/harness/java_direct_driver.py` — the
+  Python harness adapter that binds every helper invocation into a
+  Plan 062 v4 trigger record (`i2pr-reference-trigger-v4`) and
+  validates the Plan 063 strict driver config contract. The
+  adapter never reaches inside the Java helper state and never
+  synthesises a passing record.
+- `tests/integration/ntcp2/harness/test_java_direct_driver.py` and
+  `test_java_direct_control.py` — the Plan 063 test matrix
+  covering the source-verification contract, strict config
+  contract, Python harness adapter, structured event contract, and
+  the local inspect-mode round-trip where the pinned Java cache is
+  available.
+- `tests/integration/ntcp2/qualification/java-direct-driver.json` —
+  the Plan 063 qualification receipt
+  (`i2pr-java-direct-driver-qualification-v1`). On this host the
+  receipt records the typed host-environment blocker
+  (`blocked_unprivileged_user_namespace`); the 10/10 fresh-state
+  qualification remains to be produced in the Plan 046 rootless
+  sealed-namespace lane or the Plan 048/049 Multipass recovery
+  lane.
+
+The Plan 063 source-verification record addition lives in
+`tests/integration/ntcp2/reference-drivers/source-verification.md`
+under the Plan 063 topology contract section. The active v4 trigger
+schema, v3 observation schema, and reference-event v1 schema
+continue to enforce the 64-hex SHA-256 Router Hash contract.
+
+Plan 063 does not wire the Java driver into the canonical primary
+`mixed_runner.py`; that wiring belongs to Plan 065. The Plan 063
+closure contract is the typed host-environment blocker
+`blocked_unprivileged_user_namespace` on the Plan 046 negative
+baseline; the canonical external lane is the Plan 048/049
+Multipass recovery lane.
+
+### Plan 063 focused checks
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_java_direct_driver.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_java_direct_control.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan062.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_trigger_v4.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_event.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+```
+
 Consult [operations.md](references/operations.md) for command routing,
 profiles, typed outcomes, and implementation-specific stop conditions.

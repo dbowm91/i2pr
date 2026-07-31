@@ -1,0 +1,52 @@
+{
+  "$schema": "i2pr-java-helper-classpath-manifest-v1",
+  "schema_version": 1,
+  "reference": {
+    "name": "java_i2p",
+    "version": "2.12.0",
+    "revision": "2800040deee9bb376567b671ef2e9c34cf3e30b6"
+  },
+  "runtime_classpath": [
+    {
+      "jar": "lib/i2p.jar",
+      "purpose": "I2P data and message primitives",
+      "sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "jar": "lib/router.jar",
+      "purpose": "embedded Router, RouterContext, NTCP/NTCP2 transport, dummy facades, I2NP pools",
+      "sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "jar": "lib/streaming.jar",
+      "purpose": "streaming destination primitives (unused on the data-phase path)",
+      "sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "jar": "lib/mstreaming.jar",
+      "purpose": "managed streaming primitives (unused on the data-phase path)",
+      "sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "jar": "lib/addressbook.jar",
+      "purpose": "address-book subscription primitives (unused on the data-phase path)",
+      "sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "build_classpath": [
+    {
+      "purpose": "JDK standard library only",
+      "modules": ["java.base", "java.logging", "java.security", "java.xml"]
+    }
+  ],
+  "third_party_libraries": [],
+  "native_libraries": {
+    "jbigi": "optional; selected at runtime from lib/jbigi.jar if present",
+    "jcpuid": "optional; selected at runtime from lib/jcpuid.jar if present"
+  },
+  "notes": [
+    "The runtime classpath uses the pinned Java I2P 2.12.0 jar set; no Maven Central dependency may be introduced.",
+    "No SSU2, I2CP, SAM, or HTTP/I2PControl endpoint is enabled by the helper.",
+    "The native library entries are recorded for completeness; the helper remains pure Java when the native jars are absent."
+  ]
+}

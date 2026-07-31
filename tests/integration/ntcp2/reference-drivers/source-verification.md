@@ -438,3 +438,39 @@ renamed, or restricted in a later pinned revision, the future
 revision must trigger a new source-verification record before any
 Plan 063/064 implementation starts. The Plan 062 v4 schema cannot
 be silently relaxed to fit a future upstream change.
+
+## Plan 063 topology contract
+
+The Plan 063 Java direct driver implements the upstream two-process
+direct transport driver pattern. The primary four-direction
+topology is:
+
+```text
+reference router (192.0.2.1) <---- NTCP2 ----> i2pr-interop (192.0.2.2)
+```
+
+The Plan 063 Java-to-Java control topology is the same shape, with
+two Java driver instances running as `listen` and `dial` inside a
+sealed namespace or Multipass recovery guest. The topology is:
+
+- one fixed synthetic IPv4 address per peer (`192.0.2.1`,
+  `192.0.2.2`);
+- one fixed per-scenario port allocation;
+- private network ID `99`;
+- no default route, no DNS, no reseed, no floodfill integration;
+- no support router, no SAM, no I2CP, no HTTP/I2PControl, no
+  tunnel pool;
+- direct signed RouterInfo exchange through the owned run root;
+- one real correlated DeliveryStatus I2NP message per direction;
+- fresh mutable identity and runtime state per direction and per run.
+
+The Plan 063 driver source, the source-lock record, and the
+qualification receipt are authoritative artifacts. The Plan 064
+i2pd driver mirrors the same topology contract. ADR 0022 governs
+this two-process topology and explicitly forbids the
+`java-minimal-support-topology` fallback that Plan 058 retired.
+The `java-to-i2pr-ipv4` direction remains a typed blocker for the
+pinned Java I2P 2.12.0 revision under the current four-direction
+contract until an authorized Plan 046 rootless sealed-namespace
+lane or Plan 048/049 Multipass recovery lane produces a passing
+10/10 qualification bundle.
