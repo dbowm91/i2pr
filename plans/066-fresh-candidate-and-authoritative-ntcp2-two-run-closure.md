@@ -2,10 +2,22 @@
 
 ## Status and dependencies
 
-- Status: planned.
-- Parent roadmap: Plan 061.
-- Starts only after Plan 065 closes with one complete independently verified four-direction live diagnostic bundle.
-- Plan type: final candidate freeze, authoritative Run A/Run B execution, certificate verification, independent review, and Milestone 3 closure decision.
+> **Supersession notice (Plan 068, ADR 0023 Accepted).** Plan 066 is
+> the historical record of the failed release-qualification environment
+> on the constrained host. Plan 067 (with Plan 068 as the authority
+> correction) is the active Milestone 3 roadmap. The Plan 066
+> implementation surface (plan066.py, test_plan066.py,
+> candidate/closure markers, static boundary checks for the historical
+> freeze-readiness invariants) is mandatory regardless of close outcome
+> as an audit record, but the Plan 066 two-run certificate is no longer
+> the active gate for the first external protocol run; that role
+> belongs to Plan 069 under ADR 0023. The historical text below is
+> preserved verbatim.
+
+- Status: historical (superseded by Plan 067 + Plan 068).
+- Parent roadmap: Plan 061 (historical); Plan 067 (active).
+- The Plan 066 candidate was `declared-not-executable` on this host.
+- Plan type: final candidate freeze, authoritative Run A/Run B execution, certificate verification, independent review, and Milestone 3 release-qualification decision (Level 3 tool under ADR 0023).
 - Execution-only after freeze. Any implementation/configuration/reference/driver/schema/observer/verifier change retires the candidate and returns work to the owning earlier plan.
 - NTCP2 remains experimental and `advertised = false` unless a separate later product-readiness plan changes that status.
 

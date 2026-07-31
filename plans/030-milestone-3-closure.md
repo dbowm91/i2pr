@@ -1,20 +1,77 @@
 # Aggregate Milestone 3 closure: NTCP2 and transport-neutral link management
 
-Date: 2026-07-31 (last updated by Plan 066)
+Date: 2026-07-31 (last updated by Plan 068)
 
-Status: **blocked; implementation phases complete for their bounded local
-scope, milestone acceptance criteria not met**. Plan 056 closed with a
-typed host-environment blocker and committed the two-bundle certificate
-verifier, the candidate freeze, the local-evidence driver, and the
-local diagnostic bundles it produced under the ignored
-`target/interop/evidence/plan056/` working directory. Plan 058
-retired the Plan 056 candidate, superseded Plan 057, decided
-ADR 0021 (Rejected), and split the previous Plan 057 follow-up
-into Plan 059 (reference-side implementation) and Plan 060 (fresh
-candidate + two-run certificate). Plan 059 closed with the typed
-blocker `blocked_java_support_topology_rejected` and committed the
-i2pd direct helper, the per-reference observation qualification
-receipts, and the canonical pipeline live-mode wiring.
+Status (Plan 068 active correction): **implementation phases complete
+for their bounded local scope; milestone acceptance criteria not met;
+NTCP2 remains experimental and non-advertised.** The implementation
+record from Plans 056 through 066 is preserved verbatim below. The
+**active** Milestone 3 roadmap is Plan 067 (with Plan 068 as the
+authority correction) and the staged-evidence tiers defined by
+ADR 0023 (Accepted by Plan 068).
+
+```text
+implementation_status   = externally-testable
+development_validation = pending-i2pd-loopback
+release_qualification  = blocked-environment
+support                = experimental
+advertised             = false
+active_roadmap         = Plan 067
+active_authority       = Plan 068
+next_plan              = Plan 069
+```
+
+Plan 067 is the active Milestone 3 corrective roadmap. Plan 067
+supersedes Plan 066 as the active execution authority. Plan 066 remains
+an immutable historical record of the unavailable release-qualification
+lane on the constrained host; Plan 066's certificate verifier and
+candidate freeze machinery remain a Level 3 release-qualification tool
+and must not gate Level 1 (host-loopback smoke) or Level 2 (repeated
+development interoperability) runs.
+
+Plan 068 is the staged-evidence and authority correction pass that
+implements ADR 0023 (Accepted). Plan 068 separates NTCP2 interoperability
+evidence into four bounded tiers (local-conformance,
+external-loopback-smoke, repeated-development-interop,
+conditional-differential, release-qualification), removes the stale
+ADR 0021 Java support-topology blocker from the active Java path (the
+rejected support topology remains forbidden; the ADR 0022 direct Java
+driver is the active Java architecture), and narrows the static-check
+scope for Plans 069-073.
+
+ADR 0021 remains Rejected (per Plan 058). The Java support topology
+remains forbidden. The direct Java stripped-router driver from Plan 063
+(integrated by Plan 065) is the active Java architecture. Java may
+still be unavailable because of build, runtime, or host-environment
+defects, but not because ADR 0021 forbids the already accepted
+replacement architecture. The `blocked_java_support_topology_rejected`
+interpretation is **historical for Plans 058-060**; it is not an active
+direct-Java blocker.
+
+No external pass has yet occurred. The repository is ready to attempt
+Level 1 (external loopback smoke) on the current host. Level 3
+(release qualification) remains blocked on this host: the Plan 046
+rootless sealed-namespace lane is closed with
+`blocked_unprivileged_user_namespace` and the Plan 048/049 Multipass
+recovery lane cannot complete on this constrained host (per Plan 051).
+Milestone 4 production activation remains closed. Later design and
+development work may continue after Level 2 without treating that
+continuation as release qualification.
+
+Plan 056 closed with a typed host-environment blocker and committed the
+two-bundle certificate verifier, the candidate freeze, the local
+diagnostic bundles under the ignored
+`target/interop/evidence/plan056/` working directory, and the bounded
+local-diagnostic receipt at
+`tests/integration/ntcp2/evidence-receipts/plan056-local-diagnostic.json`.
+Plan 058 retired the Plan 056 candidate, superseded Plan 057, decided
+ADR 0021 (Rejected), and split the previous Plan 057 follow-up into
+Plan 059 (reference-side implementation) and Plan 060 (fresh candidate +
+two-run certificate). Plan 059 closed with the historical typed
+blocker `blocked_java_support_topology_rejected` (now superseded by
+ADR 0022 and ADR 0023) and committed the i2pd direct helper, the
+per-reference observation qualification receipts, and the canonical
+pipeline live-mode wiring.
 
 Plan 062 is the evidence-contract and architecture correction pass
 that supersedes the Plan 060 execution authority. Plan 062 lands
@@ -42,8 +99,8 @@ one complete four-direction live diagnostic bundle from a clean
 implementation commit. Plan 065 establishes the implementation
 floor from which Plan 066 may cut a candidate.
 
-Plan 066 is the fresh-candidate and authoritative NTCP2 two-run
-closure pass. Plan 066 closes on this host with the typed
+Plan 066 is the historical fresh-candidate and authoritative NTCP2
+two-run closure pass. Plan 066 closes on this host with the typed
 environment blocker `blocked_execution_lane_unavailable`; the
 candidate status is `declared-not-executable`. The Plan 046
 rootless sealed-namespace probe returns
@@ -52,20 +109,16 @@ recovery lane cannot complete on this constrained host (per
 Plan 051), and ADR 0021 remains Rejected. Plan 066 therefore cannot
 start under the current four-direction contract until either a
 future pinned Java revision is adopted or the closure contract is
-revised through a new ADR. The Plan 066 implementation surface is
-mandatory regardless of close outcome.
+revised through a new ADR. The Plan 066 implementation surface
+(plan066.py, test_plan066.py, candidate/closure markers, static
+boundary checks for the historical freeze-readiness invariants) is
+mandatory regardless of close outcome as an audit record. Plan 066
+is **not** the active gate for the first external protocol run; that
+role belongs to Plan 069 under ADR 0023.
 
-The historical Plan 060 typed blocker on this host is
-`blocked_execution_lane_unavailable`; the historical Plan 060
-candidate status is `declared-not-executable`. The Plan 066
-candidate record (`plans/066-candidate.md`) is the active
-authoritative Plan 066 candidate declaration on this host; the
-Plan 066 closure record (`plans/066-closure.md`) carries the
-explicit `blocked_execution_lane_unavailable` marker and the
-`declared-not-executable` close-status.
-
-This aggregate record preserves the evidence boundary from Plans 031–036. It
-does not convert local vectors, self-handshakes, loopback TCP, or deterministic
+This aggregate record preserves the evidence boundary from Plans 031–036
+and the historical Plan 056-066 closure records. It does not convert
+local vectors, self-handshakes, loopback TCP, or deterministic
 simulation into mixed-router support.
 
 ## Implementation sequence and changed surfaces

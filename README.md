@@ -564,6 +564,12 @@ The Plan 058 status and validation commands are recorded in
 
 ### Plan 059 reference-side implementation and live qualification closure pass
 
+> **Note (Plan 068).** Plan 059 is a historical closure pass. The
+> `blocked_java_support_topology_rejected` blocker in the original
+> Plan 059 closure text is superseded by ADR 0022 (Accepted direct
+> Java driver) and ADR 0023 (Accepted staged-evidence tiers); the
+> historical text below is preserved verbatim for audit.
+
 Plan 059 implements the i2pd direct helper, the per-reference
 observation qualification receipts, and the canonical pipeline
 live-mode wiring that Plans 055-057 deferred. ADR 0021 was Rejected
@@ -599,12 +605,15 @@ Plan 060 cannot start under the current four-direction contract.
   cases grouped into the five Plan 059 surfaces: i2pd helper,
   Java support-topology gate, receiver observations, Java startup
   gate, and pipeline live mode.
-- The Plan 059 closure contract is the typed blocker
-  `blocked_java_support_topology_rejected` because ADR 0021 is
-  Rejected. The Java receiver observations and the Java support
-  topology remain blocked; the runtime qualification requires the
-  Plan 046 rootless sealed-namespace lane or the Plan 048/049
-  Multipass recovery lane.
+- The Plan 059 closure contract recorded the typed blocker
+  `blocked_java_support_topology_rejected` because Plan 058 had
+  Rejected ADR 0021. The Java support topology remains forbidden
+  per that ADR rejection, but the
+  `blocked_java_support_topology_rejected` interpretation is
+  superseded by ADR 0022 (Accepted direct Java driver) and ADR
+  0023 (Accepted staged-evidence tiers); the historical plan text
+  is preserved verbatim. The active Java path is the Plan 063
+  direct stripped-router driver integrated by Plan 065.
 
 The Plan 059 status and validation commands are recorded in
 `plans/059-status.md`.
@@ -967,6 +976,15 @@ non-advertised.
 
 ### Plan 066 fresh-candidate and authoritative NTCP2 two-run closure pass
 
+> **Supersession notice (Plan 068, ADR 0023 Accepted).** Plan 066 is
+> the historical record of the failed release-qualification
+> environment on the constrained host. Plan 067 is the active
+> Milestone 3 roadmap. The Plan 066 implementation surface remains
+> mandatory as an audit record, but the Plan 066 two-run certificate
+> is no longer the active gate for the first external protocol run;
+> that role belongs to Plan 069 under ADR 0023. The historical text
+> below is preserved verbatim.
+
 Plan 066 is the execution-only pass that cuts one fresh candidate
 descended from the Plan 065 implementation floor, selects exactly
 one execution lane (direct-host or guest), runs the four primary
@@ -1017,6 +1035,66 @@ direct seam may trigger an ADR re-issue that supersedes the ADR
 0021 rejection and unblocks the `java-to-i2pr-ipv4` direction.
 Until then, NTCP2 stays experimental and non-advertised and
 Milestone 3 stays open.
+
+### Plan 067 staged interoperability corrective roadmap
+
+Plan 067 is the **active** Milestone 3 corrective roadmap. Plan 067
+supersedes Plan 066 as the active execution authority. Plan 066
+remains an immutable historical record of the unavailable
+release-qualification lane on the constrained host.
+
+Plan 067 separates NTCP2 interoperability evidence into four bounded
+tiers: local-conformance (Level 0), external-loopback-smoke
+(Level 1), repeated-development-interop (Level 2),
+conditional-differential (Level 2D), and release-qualification
+(Level 3). Level 1 and Level 2 are host-compatible manual
+integration lanes; they require the pinned i2pd driver (and
+optionally the pinned Java direct driver when available) but they
+do not require a rootless namespace, a Multipass guest, a frozen
+candidate, a two-bundle certificate, or a reviewer record.
+Emissary is the conditional secondary implementation. Java and i2pd
+remain required for Level 3 release qualification.
+
+### Plan 068 staged evidence and authority correction
+
+Plan 068 implements the staged-evidence and authority correction.
+Plan 068 lands:
+
+- `docs/adr/0023-staged-ntcp2-interoperability-evidence.md`
+  (Accepted). ADR 0023 separates evidence into four bounded tiers
+  and forbids lower-tier promotion into release bundles.
+- `tests/integration/ntcp2/harness/evidence_tier.py` — the
+  evidence-tier constants and tier-separation rules.
+- `tests/integration/ntcp2/harness/loopback_smoke_record.py` —
+  the Level 1 smoke record schema
+  (`i2pr-ntcp2-loopback-smoke-v1`).
+- `tests/integration/ntcp2/harness/development_validation.py` —
+  the Level 2 development-validation summary schema
+  (`i2pr-ntcp2-development-validation-v1`).
+- The Plan 068 test matrices (`test_evidence_tier.py`,
+  `test_loopback_smoke_record.py`,
+  `test_development_validation.py`).
+- The static boundary checker
+  (`scripts/check-ntcp2-interoperability.sh`) now enforces the new
+  schemas and rejects lower-tier records in release bundles while
+  leaving the historical plan surfaces and freeze-readiness
+  invariants intact.
+
+Plan 068 also removes the stale `blocked_java_support_topology_rejected`
+interpretation from the active Java path: ADR 0021 remains Rejected
+and the Java support topology remains forbidden, but the ADR 0022
+direct Java driver is the active Java architecture. Java may still be
+unavailable because of host/runtime/build defects, but not because
+ADR 0021 forbids the already accepted replacement architecture.
+
+The focused closure baseline for Plans 069-073 is the touched-code
+test suite plus `cargo fmt --all --check`, `cargo check --workspace
+--all-targets`, `cargo test --workspace`,
+`scripts/check-dependency-direction.sh`, and
+`scripts/check-runtime-boundaries.sh`. Full historical harness
+matrices, rootless checks, and Multipass checks remain available for
+explicit integration checkpoints but are not required for Level 1
+or Level 2 closures.
 
 ## MVP direction
 
@@ -1192,6 +1270,9 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 060 fresh candidate and two-run Milestone 3 certificate closure pass](plans/060-fresh-candidate-and-two-run-milestone3-certificate-closure-pass.md)
 - [Plan 060 candidate record](plans/060-candidate.md)
 - [Plan 060 closure record](plans/060-closure.md)
+- [Plan 067 Milestone 3 staged interoperability corrective roadmap](plans/067-milestone-3-staged-interoperability-corrective-roadmap.md)
+- [Plan 068 staged evidence and Milestone 3 authority correction](plans/068-staged-interop-evidence-and-milestone-3-authority-correction.md)
+- [ADR 0023 staged NTCP2 interoperability evidence](docs/adr/0023-staged-ntcp2-interoperability-evidence.md)
 - [Aggregate Milestone 3 closure record](plans/030-milestone-3-closure.md)
 - [Controlled NTCP2 interoperability lane](tests/integration/ntcp2/README.md)
 - [Machine-readable protocol support ledger](specs/support.toml)

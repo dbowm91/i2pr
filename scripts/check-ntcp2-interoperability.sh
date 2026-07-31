@@ -1044,4 +1044,92 @@ fi
 python3 "$root/scripts/interop/validate-evidence.py"
 python3 "$root/scripts/interop/validate-scenarios.py"
 
+# Plan 068: staged evidence tier separation. The evidence-tier module, the
+# smoke record schema, and the development validation summary schema must be
+# committed, and the smoke/development schemas must never be accepted inside a
+# release bundle.
+if ! test -f "$root/tests/integration/ntcp2/harness/evidence_tier.py"; then
+  echo "Plan 068 evidence_tier module is missing" >&2
+  exit 1
+fi
+if ! grep -Eq 'RELEASE_QUALIFICATION[[:space:]]*:[[:space:]]*Final\[str\][[:space:]]*=[[:space:]]*"release-qualification"|RELEASE_QUALIFICATION[[:space:]]*=[[:space:]]*"release-qualification"' \
+    "$root/tests/integration/ntcp2/harness/evidence_tier.py"; then
+  echo "Plan 068 evidence_tier release-qualification marker is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/loopback_smoke_record.py"; then
+  echo "Plan 068 smoke record schema module is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-ntcp2-loopback-smoke-v1' \
+    "$root/tests/integration/ntcp2/harness/loopback_smoke_record.py"; then
+  echo "Plan 068 smoke record schema marker is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/development_validation.py"; then
+  echo "Plan 068 development validation summary schema module is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-ntcp2-development-validation-v1' \
+    "$root/tests/integration/ntcp2/harness/development_validation.py"; then
+  echo "Plan 068 development validation summary schema marker is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_evidence_tier.py"; then
+  echo "Plan 068 evidence_tier test matrix is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_loopback_smoke_record.py"; then
+  echo "Plan 068 smoke record schema test matrix is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_development_validation.py"; then
+  echo "Plan 068 development validation summary schema test matrix is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/docs/adr/0023-staged-ntcp2-interoperability-evidence.md"; then
+  echo "Plan 068 ADR 0023 (staged NTCP2 interoperability evidence) is missing" >&2
+  exit 1
+fi
+if ! grep -Eq '^- Status:\s*Accepted\b' \
+    "$root/docs/adr/0023-staged-ntcp2-interoperability-evidence.md"; then
+  echo "Plan 068 ADR 0023 must be Accepted after tests pass" >&2
+  exit 1
+fi
+if grep -Eq '^- Status:\s*Rejected\b' \
+    "$root/docs/adr/0023-staged-ntcp2-interoperability-evidence.md"; then
+  echo "Plan 068 ADR 0023 cannot also be Rejected" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 068' "$root/AGENTS.md"; then
+  echo "AGENTS.md must record the Plan 068 section" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 068' "$root/.opencode/skills/i2pr-ntcp2-interop/SKILL.md"; then
+  echo "i2pr-ntcp2-interop skill must record the Plan 068 section" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 068' "$root/docs/architecture/interop-apparatus.md"; then
+  echo "docs/architecture/interop-apparatus.md must record the Plan 068 section" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 068' "$root/docs/protocol-support.md"; then
+  echo "docs/protocol-support.md must record the Plan 068 section" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 068' "$root/README.md"; then
+  echo "README.md must record the Plan 068 section" >&2
+  exit 1
+fi
+# Plan 068 release-bundle smoke/development rejection. The release bundle
+# validators must refuse smoke and development records. The Plan 066
+# freeze-readiness table may continue to require historical plan surfaces but
+# must not reference the smoke/development schemas inside the release-only
+# v1-v3 bundle code paths.
+if grep -Eq 'i2pr-ntcp2-loopback-smoke-v1|i2pr-ntcp2-development-validation-v1' \
+    "$root/tests/integration/ntcp2/harness/evidence_bundle.py"; then
+  echo "Plan 068 release bundle cannot reference the smoke/development schemas" >&2
+  exit 1
+fi
+
 echo "NTCP2 interoperability manifest and sanitized evidence boundary are valid (${scenario_count} scenarios)."

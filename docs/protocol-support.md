@@ -57,10 +57,10 @@ advertisement requirements in `specs/CONFORMANCE.md`.
 | I2NP envelope and header variants | Experimental structural subset; not advertised | 1, 3–6 | `specs/protocols/02-i2np.md`, pinned 0.9.69 source in `specs/SOURCES.md` | Locally authored standard/short vectors, truncation, size, checksum, and trailing-byte tests; hashed fixture manifest | None |
 | I2NP type registry and selected body codecs | Experimental structural subset; NetDB body semantics deferred | 1, 4 | `specs/protocols/02-i2np.md`, `crates/i2pr-proto/src/i2np/mod.rs` | Fixed and malformed local vectors for DatabaseLookup, DatabaseSearchReply, DeliveryStatus, DatabaseStore framing, and fixed tunnel framing | None |
 | I2NP tunnel, garlic, data, and later record semantics | Deferred or framing-only | 1, 5–6 | `specs/protocols/02-i2np.md`, `specs/protocols/05-tunnels.md`, `specs/protocols/06-garlic-ecies-leasesets.md` | Bounded `Deferred`/`Opaque` retention and shape checks only; no crypto or state-machine vectors | None |
-| NTCP2 crypto/transcript foundation | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0011, `plans/036-closure.md`, `plans/037-closure.md` | Independent deterministic primitive/transcript vectors and corrective review; no router interoperability run | `tests/integration/ntcp2/manifest.toml` pinned but execution blocked; the Plan 046 rootless variant reports `blocked_unprivileged_user_namespace` on the host recorded in `plans/046-closure.md`; the Plan 060 fresh-candidate pass is `declared-not-executable` on this host, see `plans/060-closure.md` |
-| NTCP2 handshake codecs and state machines | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0012, `plans/036-closure.md`, `plans/037-closure.md` | Fixed/malformed/bounded state and policy tests plus local corrective campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; see `tests/integration/ntcp2/evidence/README.md`. Plan 046 rootless lane is closed with `blocked_unprivileged_user_namespace`; Plan 060 fresh-candidate pass is `declared-not-executable` on this host with the typed blocker `blocked_execution_lane_unavailable`; see `plans/060-closure.md` and `specs/CONFORMANCE.md` |
-| NTCP2 authenticated data frames and payload blocks | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0013, `plans/036-closure.md`, `plans/037-closure.md` | Deterministic frame/block vectors, corrected repeated-block/termination ordering tests, partial-I/O cleanup, and local campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`); Plan 060 fresh-candidate pass is `declared-not-executable` on this host, see `plans/060-closure.md` |
-| NTCP2 runtime link manager, addresses, and controlled TCP lifecycle | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0014, `plans/036-closure.md`, `plans/037-closure.md` | Bounded address/admission/replay/backoff/duplicate/RAII cleanup tests plus loopback lifecycle and preflight; runtime-owned wire adapter implemented and locally validated, mixed-router evidence pending | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`); Plan 060 fresh-candidate pass is `declared-not-executable` on this host, see `plans/060-closure.md` |
+| NTCP2 crypto/transcript foundation | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0011, `plans/036-closure.md`, `plans/037-closure.md` | Independent deterministic primitive/transcript vectors and corrective review; no router interoperability run | `tests/integration/ntcp2/manifest.toml` pinned but execution blocked; the Plan 046 rootless variant reports `blocked_unprivileged_user_namespace` on the host recorded in `plans/046-closure.md`; the Plan 066 fresh-candidate pass is `declared-not-executable` on this host under the historical Plan 058/060 two-lane contract, see `plans/066-closure.md`; the Plan 067 active roadmap records Level 1 smoke and Level 2 development validation lanes for the host loopback |
+| NTCP2 handshake codecs and state machines | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0012, `plans/036-closure.md`, `plans/037-closure.md` | Fixed/malformed/bounded state and policy tests plus local corrective campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with `blocked_unprivileged_user_namespace`; Plan 066 fresh-candidate pass is `declared-not-executable` on this host with the typed blocker `blocked_execution_lane_unavailable`; see `plans/066-closure.md` and `specs/CONFORMANCE.md`; the Plan 067/068 active roadmap separates evidence into local-conformance, external-loopback-smoke, repeated-development-interop, conditional-differential, and release-qualification tiers (ADR 0023) |
+| NTCP2 authenticated data frames and payload blocks | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0013, `plans/036-closure.md`, `plans/037-closure.md` | Deterministic frame/block vectors, corrected repeated-block/termination ordering tests, partial-I/O cleanup, and local campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`); the Plan 066 fresh-candidate pass is `declared-not-executable` on this host, see `plans/066-closure.md`; the Plan 067/068 active roadmap defines Plan 069 (host-loopback smoke) and Plan 071 (repeated i2pd validation) for development interoperability |
+| NTCP2 runtime link manager, addresses, and controlled TCP lifecycle | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0014, `plans/036-closure.md`, `plans/037-closure.md` | Bounded address/admission/replay/backoff/duplicate/RAII cleanup tests plus loopback lifecycle and preflight; runtime-owned wire adapter implemented and locally validated, mixed-router evidence pending | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`); the Plan 066 fresh-candidate pass is `declared-not-executable` on this host, see `plans/066-closure.md`; the Plan 067/068 active roadmap keeps NTCP2 experimental and non-advertised |
 | Reseed and RouterInfo publication | Not implemented | 4 | `specs/protocols/04-reseed-netdb.md` | None imported | None |
 | Network tunnels and transit participation | Not implemented | 5 | `specs/protocols/05-tunnels.md` | None imported | None |
 | Classic LeaseSet structural codec | Experimental structural subset; LeaseSet2-family deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Local Lease/LeaseSet vectors and negative tests; no independent router vectors | None |
@@ -183,9 +183,9 @@ Plan 062 lands:
   cannot contribute to a new passing bundle.
 
 Plan 062 does not close any interoperability claim. NTCP2 stays
-experimental and non-advertised; Milestone 3 stays open until
-Plan 065 closes with one complete four-direction live diagnostic
-bundle and Plan 066 produces a verified Milestone 3 certificate.
+experimental and non-advertised; Milestone 3 stays open until a
+verified Milestone 3 certificate is produced under ADR 0023 Level 3
+release qualification.
 
 ### Plan 065 NTCP2 canonical integration and live qualification
 
@@ -249,5 +249,92 @@ Plan 065 lands:
   matrix existence.
 
 Plan 065 does not close any interoperability claim. NTCP2 stays
-experimental and non-advertised; Milestone 3 stays open until
-Plan 066 produces a verified Milestone 3 certificate.
+experimental and non-advertised; Milestone 3 stays open until a
+verified Milestone 3 certificate is produced under ADR 0023 Level 3
+release qualification.
+
+### Plan 067 staged interoperability corrective roadmap
+
+Plan 067 is the **active** Milestone 3 corrective roadmap. Plan 067
+supersedes Plan 066 as the active execution authority. Plan 066
+remains an immutable historical record of the unavailable
+release-qualification lane on the constrained host.
+
+Plan 067 separates NTCP2 interoperability evidence into four bounded
+tiers:
+
+- **Level 0 — local conformance.** Deterministic local protocol and
+  runtime ownership.
+- **Level 1 — external loopback smoke.** Two real processes on the
+  host loopback. i2pd is the primary initial validator. Emissary is
+  conditional. No rootless namespace, no Multipass, no candidate
+  freeze, no two-bundle certificate, no reviewer record.
+- **Level 2 — repeated development interoperability.** Both
+  directions against the primary independent validator (pinned i2pd
+  2.60.0), three fresh-state repetitions per direction, exact
+  message and identity correlation, bounded negative controls.
+- **Level 3 — release qualification.** Java I2P 2.12.0 and i2pd
+  2.60.0, isolated no-public-egress lane, reproducible
+  source/reference provenance, exact authenticated data-phase
+  message correlation, independent fresh state, sanitized durable
+  evidence. The Plan 066 certificate verifier may be reused at Level
+  3.
+
+Java and i2pd remain required for release qualification. NTCP2 stays
+experimental and non-advertised; Milestone 3 stays open until a Level
+3 run produces a verified certificate.
+
+### Plan 068 staged evidence and authority correction
+
+Plan 068 implements the staged-evidence and authority correction
+that Plan 067 proposes. Plan 068 lands:
+
+- `docs/adr/0023-staged-ntcp2-interoperability-evidence.md`
+  (Accepted). ADR 0023 separates evidence into four bounded tiers
+  and forbids lower-tier promotion into release bundles. ADR 0023
+  does not supersede ADR 0022's direct-driver decision.
+- `tests/integration/ntcp2/harness/evidence_tier.py` — the
+  evidence-tier constants (`local-conformance`,
+  `external-loopback-smoke`, `repeated-development-interop`,
+  `conditional-differential`, `release-qualification`) and
+  tier-separation rules. The release bundle validators refuse every
+  record whose tier is missing or lower than `release-qualification`.
+- `tests/integration/ntcp2/harness/loopback_smoke_record.py` — the
+  Level 1 smoke record schema
+  (`i2pr-ntcp2-loopback-smoke-v1`). A passed record requires every
+  positive boolean, `cleanup_clean = true`, and `network_audit` not
+  equal to `not-run`. Raw payload, private key, Noise state, and
+  full RouterInfo bytes are forbidden.
+- `tests/integration/ntcp2/harness/development_validation.py` —
+  the Level 2 development-validation summary schema
+  (`i2pr-ntcp2-development-validation-v1`). A passed summary
+  requires three fresh-state passes per direction, four named
+  negative controls reporting `rejected`, `cleanup_passed = true`,
+  and an explicit network audit per direction.
+- The Plan 068 test matrices (`test_evidence_tier.py`,
+  `test_loopback_smoke_record.py`,
+  `test_development_validation.py`).
+- `scripts/check-ntcp2-interoperability.sh` extended to enforce
+  the new schema modules, the new test matrices, the ADR 0023
+  acceptance marker, and the release-bundle smoke/development
+  rejection. The historical plan surfaces (Plan 055/056/058/059/060
+  /062/063/064/065/066 freeze-readiness invariants) remain intact.
+
+Plan 068 also removes the stale `blocked_java_support_topology_rejected`
+interpretation from the active Java path: ADR 0021 remains Rejected
+and the Java support topology remains forbidden, but the ADR 0022
+direct Java driver is the active Java architecture. Java may still be
+unavailable because of host/runtime/build defects, but not because
+ADR 0021 forbids the already accepted replacement architecture.
+
+The focused closure baseline for Plans 069-073 is the touched-code
+test suite plus `cargo fmt --all --check`, `cargo check --workspace
+--all-targets`, `cargo test --workspace`,
+`scripts/check-dependency-direction.sh`, and
+`scripts/check-runtime-boundaries.sh`. Full historical harness
+matrices, rootless checks, and Multipass checks remain available for
+explicit integration checkpoints but are not required for Level 1
+or Level 2 closures.
+
+NTCP2 stays experimental and non-advertised. No external pass has
+yet occurred.

@@ -2,9 +2,22 @@
 
 ## Status
 
-Plan 066 is the active execution authority for the fresh-candidate
-and authoritative NTCP2 two-run closure pass on this host. The
-Plan 066 plan-of-record is
+> **Supersession notice (Plan 068, ADR 0023 Accepted).** Plan 066 is
+> the historical record of the failed release-qualification
+> environment on the constrained host. Plan 067 (with Plan 068 as the
+> authority correction) is the active Milestone 3 roadmap. The Plan
+> 066 candidate remains `declared-not-executable`. The Plan 066
+> certificate verifier and candidate freeze machinery remain a Level
+> 3 release-qualification tool and must not gate Level 1
+> (host-loopback smoke) or Level 2 (repeated development
+> interoperability) runs. The `blocked_java_support_topology_rejected`
+> interpretation in the historical Plan 058-060 closure text is
+> superseded by ADR 0022 (Accepted direct Java driver) and ADR 0023
+> (Accepted staged-evidence tiers). The historical Plan 066 closure
+> text below is preserved verbatim for audit.
+
+Plan 066 is the historical fresh-candidate and authoritative NTCP2
+two-run closure pass. The Plan 066 plan-of-record is
 `plans/066-fresh-candidate-and-authoritative-ntcp2-two-run-closure.md`.
 
 **Plan 066 closes with the typed blocker

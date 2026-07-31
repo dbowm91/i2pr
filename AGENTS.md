@@ -1397,3 +1397,107 @@ cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
+
+## Plan 067 Milestone 3 staged interoperability corrective roadmap
+
+Plan 067 is the **active** Milestone 3 corrective roadmap. Plan 067
+supersedes Plan 066 as the active execution authority. Plan 066
+remains an immutable historical record of the unavailable
+release-qualification lane on the constrained host. Plan 067
+corrects the active planning premise that release-grade isolation
+and two-run certification are prerequisites for the first external
+protocol test, and it corrects the stale active use of the ADR 0021
+Java support-topology rejection after ADR 0022 accepted the direct
+Java stripped-router driver.
+
+Plan 067 separates NTCP2 interoperability evidence into four bounded
+tiers:
+
+- **Level 0 — local conformance.** Deterministic local protocol and
+  runtime ownership.
+- **Level 1 — external loopback smoke.** Two real processes on the
+  host loopback. i2pd is the primary initial validator. Emissary is
+  conditional. No rootless namespace, no Multipass, no candidate
+  freeze, no two-bundle certificate, no reviewer record, no Java I2P
+  required.
+- **Level 2 — repeated development interoperability.** Both
+  directions against the primary independent validator (pinned i2pd
+  2.60.0), three fresh-state repetitions per direction, exact
+  message and identity correlation, bounded negative controls.
+- **Level 3 — release qualification.** Java I2P 2.12.0 and i2pd
+  2.60.0, isolated no-public-egress lane, reproducible
+  source/reference provenance, exact authenticated data-phase
+  message correlation, independent fresh state, sanitized durable
+  evidence.
+
+Java and i2pd remain required for release qualification. NTCP2 stays
+experimental and non-advertised. Later design and development work
+may continue after Level 2 without treating that continuation as
+release qualification.
+
+## Plan 068 staged evidence and Milestone 3 authority correction
+
+Plan 068 implements the staged-evidence and authority correction
+that Plan 067 proposes. Plan 068 is the only path that produces the
+Plan 030/066 active-status correction, the Plan 066 supersession
+notice, the evidence-tier constants and tests, the smoke and
+development-validation record schemas and tests, the
+static-check-scope simplification for Plans 069-073, and the
+documentation propagation.
+
+Plan 068 delivers:
+
+- `docs/adr/0023-staged-ntcp2-interoperability-evidence.md`
+  (Accepted). ADR 0023 separates evidence into four bounded tiers
+  and forbids lower-tier promotion into release bundles. ADR 0023
+  does not supersede ADR 0022's direct-driver decision.
+- `tests/integration/ntcp2/harness/evidence_tier.py` — the
+  evidence-tier constants and tier-separation rules. The release
+  bundle validators refuse every record whose tier is missing or
+  lower than `release-qualification`.
+- `tests/integration/ntcp2/harness/loopback_smoke_record.py` — the
+  Level 1 smoke record schema
+  (`i2pr-ntcp2-loopback-smoke-v1`). A passed record requires every
+  positive boolean, `cleanup_clean = true`, and `network_audit`
+  not equal to `not-run`. Raw payload, private key, Noise state, and
+  full RouterInfo bytes are forbidden.
+- `tests/integration/ntcp2/harness/development_validation.py` —
+  the Level 2 development-validation summary schema
+  (`i2pr-ntcp2-development-validation-v1`). A passed summary
+  requires three fresh-state passes per direction, four named
+  negative controls reporting `rejected`, `cleanup_passed = true`,
+  and an explicit network audit per direction.
+- The Plan 068 test matrices (`test_evidence_tier.py`,
+  `test_loopback_smoke_record.py`,
+  `test_development_validation.py`).
+- `scripts/check-ntcp2-interoperability.sh` extended to enforce
+  the new schema modules, the new test matrices, the ADR 0023
+  acceptance marker, and the release-bundle smoke/development
+  rejection. The historical plan surfaces (Plan 055/056/058/059/060
+  /062/063/064/065/066 freeze-readiness invariants) remain intact.
+
+Plan 068 also removes the stale
+`blocked_java_support_topology_rejected` interpretation from the
+active Java path: ADR 0021 remains Rejected and the Java support
+topology remains forbidden, but the ADR 0022 direct Java driver is
+the active Java architecture. Java may still be unavailable because
+of host/runtime/build defects, but not because ADR 0021 forbids the
+already accepted replacement architecture.
+
+The focused closure baseline for Plans 069-073 is the touched-code
+test suite plus `cargo fmt --all --check`, `cargo check --workspace
+--all-targets`, `cargo test --workspace`,
+`scripts/check-dependency-direction.sh`, and
+`scripts/check-runtime-boundaries.sh`. Full historical harness
+matrices, rootless checks, and Multipass checks remain available
+for explicit integration checkpoints but are not required for
+Level 1 or Level 2 closures.
+
+Required focused checks for Plan 068:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidence_tier.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_loopback_smoke_record.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_development_validation.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan068.py'
+```
