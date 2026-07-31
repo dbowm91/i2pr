@@ -1,9 +1,9 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/056/058/059/074/075 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, Plan 044 mixed-runner composition, typed Plan 052/053 evidence validation, Plan 055 reference-initiated trigger schema and source-inspected call graphs, Plan 056 certificate verifier, Plan 058 record and candidate integrity closure, Plan 059 i2pd direct helper, per-reference observation qualification receipts, canonical pipeline live-mode wiring, the Plan 074 real-driver and constrained-host corrective roadmap, and the Plan 075 runner integrity and evidence correction. Use when an agent is asked to run a Plan 038 profile on the host, prepare the reference routers, add or modify a scenario, dispatch a bounded mixed direction, create or validate a Plan 053 diagnostic bundle, validate the locked trigger record schema, audit Plan 056 candidate and supersession markers, run the Plan 059 i2pd helper controls, validate the Plan 059 qualification receipts, exercise the Plan 075 runner integrity contract, or validate evidence. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/056/058/059/074/075/076 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, Plan 044 mixed-runner composition, typed Plan 052/053 evidence validation, Plan 055 reference-initiated trigger schema and source-inspected call graphs, Plan 056 certificate verifier, Plan 058 record and candidate integrity closure, Plan 059 i2pd direct helper, per-reference observation qualification receipts, canonical pipeline live-mode wiring, the Plan 074 real-driver and constrained-host corrective roadmap, the Plan 075 runner integrity and evidence correction, and the Plan 076 real pinned i2pd library and direct driver construction. Use when an agent is asked to run a Plan 038 profile on the host, prepare the reference routers, add or modify a scenario, dispatch a bounded mixed direction, create or validate a Plan 053 diagnostic bundle, validate the locked trigger record schema, audit Plan 056 candidate and supersession markers, run the Plan 059 i2pd helper controls, validate the Plan 059 qualification receipts, exercise the Plan 075 runner integrity contract, build or validate the Plan 076 i2pd driver against the pinned i2pd libraries, or validate evidence. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
-# I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/074/075)
+# I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/074/075/076)
 
 Use this skill from the repository root for the **host-side** Ubuntu 24.04
 amd64 Plan 038 reference-router NTCP2 interoperability harness. This skill
@@ -29,6 +29,8 @@ Read `AGENTS.md`, `plans/038-ubuntu-reference-router-interoperability-harness.md
 `plans/074-milestone-3-real-driver-and-constrained-host-corrective-roadmap.md`,
 `plans/075-plan-069-runner-integrity-and-evidence-correction.md`,
 `plans/075-status.md`,
+`plans/076-real-pinned-i2pd-library-and-direct-driver-construction.md`,
+`plans/076-status.md`,
 `tests/integration/ntcp2/README.md`, and the relevant `docs/adr/` records before changing the harness.
 
 The canonical reference identifiers are `java_i2p` and `i2pd`. Locked source
@@ -1059,6 +1061,124 @@ preserved verbatim as the bounded historical-reader path.
 
 Plan 064 does not wire the i2pd driver into the canonical primary
 `mixed_runner.py`; that wiring belongs to Plan 065.
+
+## Plan 076 real pinned i2pd library and direct driver construction
+
+Plan 076 replaces the Plan 064 terminal-stub helper with a real
+source-locked i2pd 2.60.0 test executable that links against the
+unmodified pinned i2pd 2.60.0 libraries built from the pinned
+CMake project. The Plan 076 implementation surface is mandatory
+for the canonical mixed-router lane in Plan 065.
+
+Plan 076 lands:
+
+- `tests/integration/ntcp2/reference-drivers/i2pd/CMakeLists.txt`
+  — the driver CMake project. Drives the instrumented and control
+  driver binaries against the freshly built pinned i2pd libraries
+  via the `I2PD_PATCHED_TREE`, `I2PD_PRISTINE_TREE`, and
+  `I2PD_LIB_DIR` cache variables. Defines
+  `-DI2PD_PLAN076_LINKED=1` for both binaries; defines
+  `-DI2PD_INTEROP_OBSERVER=1` only for the instrumented binary.
+  The driver CMake project fails closed when `I2PD_LIB_DIR` is
+  not supplied or when no `libi2pd*.a` archives are present.
+- `tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh`
+  — the two-stage build script. Builds the pinned i2pd CMake
+  project with `WITH_LIBRARY=ON` and `WITH_BINARY=OFF`; applies
+  the observer patch with `patch -p1 --fuzz=0`; drives both
+  driver binaries; writes the build manifest with measured
+  digests under `reference_source_tree_sha256`,
+  `i2pd_libraries_sha256`, `linked_library_manifest_sha256`,
+  `observer_patch_sha256`, `driver_source_sha256`, and both binary
+  digests; sets `linked_i2pd_sources: true` and
+  `observer_compile_time_gated: true`.
+- `tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp`
+  — the real C++ driver. Initializes the pinned i2pd context in
+  the source-verified order from
+  `tests/integration/ntcp2/reference-drivers/source-verification.md`,
+  uses the real NTCP2 transport, imports one peer RouterInfo
+  directly via `i2p::data::netdb.AddRouterInfo`, and submits a real
+  `i2p::CreateDeliveryStatusMsg` through
+  `i2p::transport::Transports::SendMessage`. The
+  `pinned_libraries_linked()` runtime gate fails closed with exit
+  66 when `I2PD_PLAN076_LINKED` is not defined.
+- `tests/integration/ntcp2/reference-drivers/i2pd/patches/i2pd-2.60.0-interop-observer.patch`
+  — the receive observer seam is placed immediately after
+  `nextMsg->FromNTCP2()` inside the
+  `case eNTCP2BlkI2NPMessage:` block of
+  `NTCP2Session::ProcessNextFrame` in `libi2pd/NTCP2.cpp`. The
+  send observer seam is placed at the top of
+  `NTCP2Session::HandleI2NPMsgsSent`. Both seams are compile-time
+  gated by `I2PD_INTEROP_OBSERVER`; the control build uses the
+  pristine tree with the patch reverted.
+- `tests/integration/ntcp2/reference-drivers/i2pd/source-lock.json`
+  — records the `linked_marker_macro`,
+  `linked_marker_required`, and `pinned_i2pd_cmake_options`
+  fields, plus the measured `libi2pd`, `libi2pdclient`, and
+  `libi2pdlang` archive digests.
+- `tests/integration/ntcp2/reference-drivers/i2pd/build-manifest.schema.json`
+  — requires `i2pd_libraries_sha256`,
+  `linked_i2pd_sources: true`, and
+  `observer_compile_time_gated: true` on every manifest.
+- `tests/integration/ntcp2/reference-drivers/source-verification.md`
+  — the Plan 076 verified call graph section documents every
+  symbol, file path, and line number used by the driver against
+  the pinned i2pd 2.60.0 tree.
+- `tests/integration/ntcp2/qualification/i2pd-direct-driver.json`
+  — the qualification receipt carries the measured
+  `reference_tree_sha256`, `libi2pd_sha256`, `libi2pdclient_sha256`,
+  `libi2pdlang_sha256`, `cmake_lists_sha256`,
+  `build_driver_script_sha256`, and the
+  `plan_076_local_build_complete: true` invariant.
+- `tests/integration/ntcp2/harness/test_i2pd_direct_driver.py` —
+  adds six Plan 076 contracts: source-lock linked-marker,
+  source-lock measured library digests, build-manifest schema
+  library-digest requirement, CMake `I2PD_PLAN076_LINKED` +
+  `I2PD_LIB_DIR` requirement, build-driver library-build
+  commands, and driver source real i2pd API surface.
+
+Plan 076 explicitly eliminates the six Plan 076 defects (`P1`-`P6`)
+from the Plan 064 implementation surface:
+
+- `P1`: helper `CMakeLists.txt` saw i2pd headers but did not
+  compile or link the actual pinned i2pd library targets.
+- `P2`: `I2PD_PLAN076_LINKED` was not defined by the build.
+- `P3`: `run_listen()` and `run_dial()` were terminal rejection
+  stubs.
+- `P4`: inspect mode did not prove real i2pd initialization or
+  RouterInfo production.
+- `P5`: build manifests described linked i2pd behaviour the
+  current binary did not contain.
+- `P6`: a control binary that omits observer calls was not
+  sufficient unless both binaries execute the same genuine
+  transport path.
+
+The Plan 076 closure boundary does **not** require a mixed-router
+pass; the closure is a real binary with verifiable source linkage
+and locally testable inspect / control behaviour. On this host
+(the Plan 046 `apparmor_restrict_on` negative baseline) the
+qualification receipt records the typed host blocker and an
+all-zero attempt count. NTCP2 stays experimental and
+non-advertised.
+
+### Plan 076 focused checks
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_driver.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_control.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_loopback_smoke.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan065.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+bash scripts/check-ntcp2-loopback-smoke-boundary.sh
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+cargo fmt --all --check
+cargo check --workspace --all-targets
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+```
 
 ### Plan 064 focused checks
 

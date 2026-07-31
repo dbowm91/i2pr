@@ -896,6 +896,55 @@ Milestone 3 stays open until Plan 065 closes with one complete
 four-direction live diagnostic bundle and Plan 066 produces a
 verified Milestone 3 certificate.
 
+### Plan 076 real pinned i2pd library and direct driver construction
+
+Plan 076 replaces the Plan 064 terminal-stub helper with a real
+source-locked i2pd 2.60.0 test executable that links against the
+unmodified pinned i2pd 2.60.0 libraries built from the pinned
+CMake project. The Plan 076 implementation surface is mandatory
+for the canonical mixed-router lane in Plan 065.
+
+Plan 076 explicitly eliminates the six documented defects
+(`P1`-`P6`) from the Plan 064 implementation surface:
+
+- `P1` — `CMakeLists.txt` linked headers but did not compile or
+  link the actual pinned i2pd library targets. Plan 076 builds
+  `libi2pd`, `libi2pdclient`, `libi2pdlang` from the pinned i2pd
+  CMake project with `WITH_LIBRARY=ON` and `WITH_BINARY=OFF`,
+  then links the driver against the produced archives.
+- `P2` — `I2PD_PLAN076_LINKED` was not defined by the build. Plan
+  076 defines the marker through the driver CMake project; the
+  runtime `pinned_libraries_linked()` gate fails closed with
+  exit 66 when the marker is absent.
+- `P3` — `run_listen()` and `run_dial()` were terminal rejection
+  stubs. Plan 076 implements both with the real i2pd NTCP2
+  transport.
+- `P4` — Inspect mode did not prove real i2pd initialization or
+  RouterInfo production. Plan 076 inspect mode initialises the
+  full i2pd context, captures the local Router Hash from
+  `i2p::context.GetIdentity()->GetIdentHash()`, and emits a
+  `router_info_exported` event carrying the measured hash.
+- `P5` — Build manifests described linked i2pd behaviour the
+  current binary did not contain. Plan 076 records the measured
+  SHA-256 of every linked i2pd archive under
+  `i2pd_libraries_sha256`; the build script refuses to write a
+  manifest that omits these digests.
+- `P6` — A control binary that omits observer calls was not
+  sufficient unless both binaries execute the same genuine
+  transport path. Plan 076 builds both binaries from the same
+  pinned tree via the `I2PD_PATCHED_TREE` / `I2PD_PRISTINE_TREE`
+  / `I2PD_LIB_DIR` CMake cache variables; `nm` confirms the
+  instrumented binary has the observer call sites and the control
+  binary has zero reachable observer call sites.
+
+The Plan 076 closure boundary does **not** require a mixed-router
+pass; the closure is a real binary with verifiable source linkage
+and locally testable inspect / listen / dial behaviour. On this
+host (the Plan 046 `apparmor_restrict_on` negative baseline) the
+qualification receipt records the typed host blocker and an
+all-zero attempt count. NTCP2 stays experimental and
+non-advertised.
+
 ### Plan 065 NTCP2 canonical integration and live qualification
 
 Plan 065 wires the corrected Java and i2pd direct drivers into the
@@ -1390,6 +1439,8 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 059 status](plans/059-status.md)
 - [Plan 064 i2pd direct NTCP2 driver and observer correction](plans/064-i2pd-direct-ntcp2-driver-and-observer-correction.md)
 - [Plan 064 status](plans/064-status.md)
+- [Plan 076 real pinned i2pd library and direct driver construction](plans/076-real-pinned-i2pd-library-and-direct-driver-construction.md)
+- [Plan 076 status](plans/076-status.md)
 - [Plan 065 NTCP2 canonical integration and live qualification](plans/065-ntcp2-canonical-integration-and-live-qualification.md)
 - [Plan 065 status](plans/065-status.md)
 - [Plan 066 fresh candidate and authoritative NTCP2 two-run closure](plans/066-fresh-candidate-and-authoritative-ntcp2-two-run-closure.md)

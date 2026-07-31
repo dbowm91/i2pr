@@ -9,25 +9,37 @@
     "revision": "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e",
     "source_repository": "https://github.com/PurpleI2P/i2pd.git",
     "source_revision_locked": true,
-    "installed_tree_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+    "installed_tree_sha256_placeholder": "03fc4834aaf3a4e33da6952a316b0fa5ff077b222f72beecba006a1122137044"
   },
   "build_contract": {
     "cmake_minimum": "3.20",
     "cxx_standard": 17,
     "cxx_extensions": false,
     "compiler": "g++-13 (Ubuntu 24.04 toolchain)",
-    "required_boost_components": ["system", "thread", "filesystem"],
+    "required_boost_components": ["system", "thread", "filesystem", "program_options"],
     "required_openssl": true,
     "required_threads": true,
     "observer_macro": "I2PD_INTEROP_OBSERVER",
     "observer_compile_time_gated": true,
-    "build_manifest_schema": "build-manifest.schema.json"
+    "linked_marker_macro": "I2PD_PLAN076_LINKED",
+    "linked_marker_required": true,
+    "build_manifest_schema": "build-manifest.schema.json",
+    "pinned_i2pd_cmake_options": {
+      "WITH_LIBRARY": "ON",
+      "WITH_BINARY": "OFF",
+      "WITH_HARDENING": "OFF",
+      "WITH_UPNP": "OFF",
+      "BUILD_TESTING": "OFF",
+      "CMAKE_BUILD_TYPE": "Release"
+    }
   },
   "linked_libraries": {
-    "boost_system_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
-    "boost_filesystem_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
-    "boost_thread_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
-    "openssl_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+    "pinned_i2pd_lib_dir": "build-time mktemp directory under /tmp; see linked-library-manifest.txt for measured digests",
+    "libi2pd_sha256": "50042c72c2080842531600395a183a9d91d189f7ee89d8097542fac9746c23cd",
+    "libi2pdclient_sha256": "c6368790c66777ad74b0b824a0cbaf24d34dd2d4ec54485ffa1e662746a1c986",
+    "libi2pdlang_sha256": "c3881a526f0bee7385f336289bf6c846889d90661c665065de898be52565b997",
+    "boost_components": ["system", "thread", "filesystem", "program_options"],
+    "openssl": "3.0.x (system package on Ubuntu 24.04 amd64)"
   },
   "helper": {
     "source_path": "tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp",
@@ -37,21 +49,22 @@
     "cmake_path": "tests/integration/ntcp2/reference-drivers/i2pd/CMakeLists.txt",
     "build_script_path": "tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh",
     "run_script_path": "tests/integration/ntcp2/reference-drivers/i2pd/run-driver.sh",
-    "source_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
+    "source_sha256_placeholder": "f3ec66d8defb8d2bf05cd417b922f9eaa771ee7fd5c9a19b63758318adb2edf2",
     "instrumented_binary_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
     "uninstrumented_binary_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000",
-    "observer_patch_sha256_placeholder": "0000000000000000000000000000000000000000000000000000000000000000"
+    "observer_patch_sha256_placeholder": "e1feef9cca60d3c184db3b79ee56f073e5916938d38be48ba7f462b0875b9595",
+    "linked_library_manifest_sha256_placeholder": "757503da1d1eee997da9062a753ecc372ad4ddfd6fc905f536710b19e944231e"
   },
   "call_graph": {
     "entry_path": "main(int, char**)",
     "transports_header": "libi2pd/Transports.h",
     "transports_implementation": "libi2pd/Transports.cpp",
     "ntcp2_session": "libi2pd/NTCP2Session.cpp",
-    "delivery_status_helper": "libi2pd/DeliveryStatus.cpp:CreateDeliveryStatusMsg",
-    "router_info_accessor": "libi2pd/RouterInfo.h:GetNTCP2StaticPublicKey, GetNTCP2IV, GetIdentHash",
-    "netdb_accessor": "libi2pd/NetDb.h:AddRouterInfo, FindRouter",
-    "passive_observer_seam_receive": "libi2pd/NTCP2Session.cpp:HandleData post-AEAD and post-FromNTCP2",
-    "passive_observer_seam_send": "libi2pd/NTCP2Session.cpp:HandleI2NPMsgsSent success branch",
+    "delivery_status_helper": "libi2pd/I2NPProtocol.cpp:CreateDeliveryStatusMsg",
+    "router_info_accessor": "libi2pd/RouterInfo.h:GetNTCP2V4Address, GetIdentity, GetIdentHash",
+    "netdb_accessor": "libi2pd/NetDb.hpp:AddRouterInfo, FindRouter",
+    "passive_observer_seam_receive": "libi2pd/NTCP2Session.cpp:ProcessNextFrame after nextMsg->FromNTCP2() inside case eNTCP2BlkI2NPMessage",
+    "passive_observer_seam_send": "libi2pd/NTCP2Session.cpp:HandleI2NPMsgsSent successful write branch",
     "source_inspection_record": "tests/integration/ntcp2/reference-drivers/source-verification.md"
   },
   "constraints": [
@@ -66,6 +79,7 @@
     "shutdown is mandatory before exit; reverse-ownership order",
     "nonzero exit code on every rejected or blocked outcome",
     "passive observer is compile-time gated by I2PD_INTEROP_OBSERVER; uninstrumented build must omit every observer call site",
+    "linked-marker gate: I2PD_PLAN076_LINKED must be defined when the driver binary was produced by build-driver.sh against the freshly built pinned i2pd libraries",
     "behavior neutrality: instrumented and uninstrumented builds must produce identical protocol outcomes",
     "no 40-hex SHA-1 Router Hash; 64-lowercase-hex SHA-256 only",
     "no SSU2 accessor may satisfy NTCP2 static-key/IV validation",
@@ -76,7 +90,7 @@
   "verification_required": [
     "valid source-lock record",
     "build manifest digest binding for both instrumented and uninstrumented binaries",
-    "linked library manifest SHA-256 binding",
+    "linked library manifest SHA-256 binding with measured i2pd library digests",
     "observer patch SHA-256 binding",
     "correct peer RouterInfo validation (signature, network ID, hash, NTCP2 address, NTCP2 s key, NTCP2 i IV)",
     "wired NetDB lookup returns the imported peer",

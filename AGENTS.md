@@ -1673,3 +1673,119 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_loopbac
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan065.py'
 bash scripts/check-ntcp2-loopback-smoke-boundary.sh
 ```
+
+## Plan 076 real pinned i2pd library and direct driver construction
+
+Plan 076 replaces the Plan 064 terminal-stub helper with a real
+source-locked i2pd 2.60.0 test executable that links against the
+unmodified pinned i2pd 2.60.0 libraries built from the pinned CMake
+project. Plan 076 explicitly eliminates the six documented defects
+(`P1`-`P6`) from the Plan 064 implementation surface:
+
+- `P1`: helper `CMakeLists.txt` saw i2pd headers but did not compile
+  or link the actual pinned i2pd library targets.
+- `P2`: `I2PD_PLAN076_LINKED` was not defined by the build.
+- `P3`: `run_listen()` and `run_dial()` were terminal rejection
+  stubs.
+- `P4`: inspect mode did not prove real i2pd initialization or
+  RouterInfo production.
+- `P5`: build manifests described linked i2pd behaviour that the
+  produced binary did not contain.
+- `P6`: a control binary that omits observer call sites was
+  insufficient to prove behaviour neutrality when both binaries
+  must execute the same genuine transport path.
+
+Plan 076 lands the corrected artefacts:
+
+- `tests/integration/ntcp2/reference-drivers/i2pd/CMakeLists.txt`
+  — links the driver against the freshly built pinned i2pd
+  libraries via the `I2PD_PATCHED_TREE`, `I2PD_PRISTINE_TREE`, and
+  `I2PD_LIB_DIR` cache variables; both driver binaries are
+  defined with `-DI2PD_PLAN076_LINKED=1` and the instrumented
+  binary additionally carries `-DI2PD_INTEROP_OBSERVER=1`.
+- `tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh`
+  — drives the two-stage build: pin the i2pd source tree digest,
+  configure and build the pinned i2pd CMake project with
+  `WITH_LIBRARY=ON` and `WITH_BINARY=OFF`, apply the observer
+  patch to a private copy of the pinned tree, build both driver
+  binaries, and write every measured digest into the build
+  manifests (`reference_source_tree_sha256`,
+  `i2pd_libraries_sha256`, `linked_library_manifest_sha256`,
+  `observer_patch_sha256`, `driver_source_sha256`, `observer_header_sha256`,
+  `observer_source_sha256`, `source_lock_sha256`,
+  `instrumented_binary_sha256`, `uninstrumented_binary_sha256`,
+  `linked_i2pd_sources: true`).
+- `tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp`
+  — exercises the real i2pd 2.60.0 API in `inspect`, `listen`, and
+  `dial` modes. Initialization follows the source-verified pinned
+  order (`config::Init` → `fs::DetectDataDir` →
+  `config::SetOption` block → `crypto::InitCrypto(false)` →
+  `context.Init` → `netdb.Start` → `transports.Start(true, false)`
+  → `context.Start`); shutdown reverses ownership.
+- `tests/integration/ntcp2/reference-drivers/i2pd/patches/i2pd-2.60.0-interop-observer.patch`
+  — the receive seam is placed immediately after
+  `nextMsg->FromNTCP2()` inside the `case eNTCP2BlkI2NPMessage`
+  block of `NTCP2Session::ProcessNextFrame`; the send seam is
+  placed at the top of `HandleI2NPMsgsSent`. Both seams are
+  compile-time gated by `I2PD_INTEROP_OBSERVER`; the control build
+  uses the pristine tree with the patch reverted.
+- `tests/integration/ntcp2/reference-drivers/i2pd/source-lock.json`
+  — records the new `linked_marker_macro`,
+  `linked_marker_required`, and `pinned_i2pd_cmake_options`
+  fields, plus the measured `libi2pd`, `libi2pdclient`, and
+  `libi2pdlang` archive digests.
+- `tests/integration/ntcp2/reference-drivers/i2pd/build-manifest.schema.json`
+  — requires `i2pd_libraries_sha256`,
+  `linked_i2pd_sources: true`, and
+  `observer_compile_time_gated: true` on every manifest.
+- `tests/integration/ntcp2/reference-drivers/source-verification.md`
+  — the Plan 076 verified call graph section documents every
+  symbol, file path, and line number used by the driver against
+  the pinned i2pd 2.60.0 tree.
+- `tests/integration/ntcp2/qualification/i2pd-direct-driver.json`
+  — the qualification receipt carries the measured
+  `reference_tree_sha256`, `libi2pd_sha256`, `libi2pdclient_sha256`,
+  `libi2pdlang_sha256`, `cmake_lists_sha256`,
+  `build_driver_script_sha256`, and the
+  `plan_076_local_build_complete: true` invariant.
+- `tests/integration/ntcp2/harness/test_i2pd_direct_driver.py` —
+  adds six Plan 076 contracts: source-lock linked-marker,
+  source-lock measured library digests, build-manifest schema
+  library-digest requirement, CMake `I2PD_PLAN076_LINKED` +
+  `I2PD_LIB_DIR` requirement, build-driver library-build
+  commands, and driver source real i2pd API surface.
+
+The Plan 076 closure boundary does **not** require a mixed-router
+pass; the closure is a real binary with verifiable source linkage
+and locally testable inspect / listen / dial behaviour. On the
+host in this checkout the inspection path succeeds locally with a
+real signed RouterInfo, the listen path binds a real NTCP2
+listener, and the dial path reaches the real
+`Transports::SendMessage` surface. The
+`10/10 fresh-state qualification` remains to be produced in the
+Plan 046 rootless sealed-namespace lane or the Plan 048/049
+Multipass recovery lane; on this host (the Plan 046
+`apparmor_restrict_on` negative baseline) the qualification
+receipt records the typed host blocker and an all-zero attempt
+count. NTCP2 stays experimental and non-advertised.
+
+Required focused checks for Plan 076:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_driver.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_control.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_loopback_smoke.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan065.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+bash scripts/check-ntcp2-loopback-smoke-boundary.sh
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+cargo fmt --all --check
+cargo check --workspace --all-targets
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+```
+

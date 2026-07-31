@@ -159,7 +159,89 @@ class I2pdDriverArtifactsPresentTests(unittest.TestCase):
     def test_i2pd_observer_patch_marker(self):
         text = I2PD_OBSERVER_PATCH.read_text()
         self.assertIn("I2PD_INTEROP_OBSERVER", text)
-        self.assertIn("Plan 064", text)
+        self.assertIn("Plan 076", text)
+
+    def test_i2pd_source_lock_records_linked_marker(self):
+        text = I2PD_SOURCE_LOCK.read_text()
+        self.assertIn('"linked_marker_macro": "I2PD_PLAN076_LINKED"', text)
+        self.assertIn('"linked_marker_required": true', text)
+
+    def test_i2pd_source_lock_records_pinned_library_digests(self):
+        text = I2PD_SOURCE_LOCK.read_text()
+        self.assertIn("50042c72c2080842531600395a183a9d91d189f7ee89d8097542fac9746c23cd", text)
+        self.assertIn("c6368790c66777ad74b0b824a0cbaf24d34dd2d4ec54485ffa1e662746a1c986", text)
+        self.assertIn("c3881a526f0bee7385f336289bf6c846889d90661c665065de898be52565b997", text)
+
+    def test_i2pd_build_manifest_schema_requires_library_digests(self):
+        text = I2PD_BUILD_SCHEMA.read_text()
+        self.assertIn("i2pd_libraries_sha256", text)
+        self.assertIn("linked_i2pd_sources", text)
+        self.assertIn("observer_compile_time_gated", text)
+
+    def test_i2pd_cmakelists_uses_linked_marker_and_lib_dir(self):
+        cmake = (REPO_ROOT / "tests/integration/ntcp2/reference-drivers/i2pd/CMakeLists.txt").read_text()
+        self.assertIn("I2PD_PLAN076_LINKED=1", cmake)
+        self.assertIn("I2PD_LIB_DIR", cmake)
+        self.assertIn("I2PD_PATCHED_TREE", cmake)
+        self.assertIn("I2PD_PRISTINE_TREE", cmake)
+
+    def test_i2pd_build_driver_script_builds_pinned_libraries(self):
+        script = I2PD_BUILD_SCRIPT.read_text()
+        self.assertIn("WITH_LIBRARY=ON", script)
+        self.assertIn("WITH_BINARY=OFF", script)
+        self.assertIn("libi2pd.a", script)
+        self.assertIn("libi2pdclient.a", script)
+        self.assertIn("libi2pdlang.a", script)
+        self.assertIn("patch -p1 --fuzz=0", script)
+
+    def test_i2pd_driver_source_uses_real_i2pd_api(self):
+        source = (REPO_ROOT / "tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp").read_text()
+        self.assertIn("i2p::transport::Transports::SendMessage", source)
+        self.assertIn("i2p::crypto::InitCrypto", source)
+        self.assertIn("i2p::context.Init", source)
+        self.assertIn("i2p::data::netdb.Start", source)
+        self.assertIn("i2p::data::netdb.AddRouterInfo", source)
+        self.assertIn("i2p::data::netdb.FindRouter", source)
+        self.assertIn("i2p::transport::transports.Start(true", source)
+        self.assertIn("i2p::fs::DetectDataDir", source)
+        self.assertIn("i2p::CreateDeliveryStatusMsg", source)
+        self.assertIn("I2PD_PLAN076_LINKED", source)
+        # Plan 064 terminal rejection "pinned-libraries-not-linked" must remain
+        # as the typed blocker in absence of the linked marker, but it must no
+        # longer mark listen/dial as unreachable.
+        self.assertIn("pinned-libraries-not-linked", source)
+
+    def test_i2pd_qualification_receipt_carries_linked_library_digests(self):
+        receipt_path = (
+            REPO_ROOT
+            / "tests/integration/ntcp2/qualification/i2pd-direct-driver.json"
+        )
+        if not receipt_path.is_file():
+            self.skipTest("qualification receipt not yet committed")
+        receipt = json.loads(receipt_path.read_text())
+        self.assertEqual(receipt["real_linked_i2pd_libraries"], True)
+        self.assertEqual(receipt["observability_seam_native"], True)
+        self.assertEqual(receipt["plan_076_local_build_complete"], True)
+        self.assertEqual(
+            receipt["reference_tree_sha256"],
+            "03fc4834aaf3a4e33da6952a316b0fa5ff077b222f72beecba006a1122137044",
+        )
+        # Source digests from this repo (re-measured; tests may update if
+        # the source changes, but the values must be 64 hex characters).
+        for field in (
+            "driver_source_sha256",
+            "observer_header_sha256",
+            "observer_source_sha256",
+            "observer_patch_sha256",
+            "source_lock_sha256",
+            "build_manifest_schema_sha256",
+            "libi2pd_sha256",
+            "libi2pdclient_sha256",
+            "libi2pdlang_sha256",
+        ):
+            value = receipt[field]
+            self.assertEqual(len(value), 64, f"{field} not 64 hex: {value!r}")
+            int(value, 16)
 
 
 class I2pdSourceLockLoadTests(unittest.TestCase):

@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "i2pr-i2pd-direct-driver-build-manifest-v1",
-  "title": "Plan 064 i2pd direct NTCP2 driver build manifest",
+  "title": "Plan 076 i2pd direct NTCP2 driver build manifest",
   "type": "object",
   "required": [
     "schema",
@@ -10,13 +10,13 @@
     "reference_version",
     "reference_revision",
     "reference_source_tree_sha256",
-    "i2pd_archive_sha256",
     "observer_patch_sha256",
     "driver_source_sha256",
     "driver_binary_sha256",
     "instrumented_binary_sha256",
     "uninstrumented_binary_sha256",
     "linked_library_manifest_sha256",
+    "i2pd_libraries_sha256",
     "cmake_version",
     "compiler_version",
     "build_timestamp_utc"
@@ -46,15 +46,23 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
-    "i2pd_archive_sha256": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
-    },
     "observer_patch_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
     "driver_source_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "observer_header_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "observer_source_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_lock_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
@@ -73,6 +81,11 @@
     "linked_library_manifest_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "i2pd_libraries_sha256": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Three measured SHA-256 digests separated by spaces (libi2pd, libi2pdclient, libi2pdlang)."
     },
     "cmake_version": {
       "type": "string",
@@ -127,6 +140,14 @@
     "build_command_version": {
       "type": "string",
       "minLength": 1
+    },
+    "linked_i2pd_sources": {
+      "type": "boolean",
+      "const": true
+    },
+    "observer_compile_time_gated": {
+      "type": "boolean",
+      "const": true
     }
   }
 }

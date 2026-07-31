@@ -530,3 +530,117 @@ acceptance policy. The Plan 064 observer patch observes only after
 successful protocol operations; it does not alter control flow,
 return values, buffering, cryptographic state, framing, timing
 decisions, routing, or retry policy.
+
+## Plan 076 verified call graph
+
+Plan 076 corrects the Plan 064 implementation artefacts. The driver
+is now a real source-locked C++ executable that links against the
+unmodified pinned i2pd 2.60.0 libraries built from the pinned CMake
+project. The Plan 064 review-only observer patch is replaced by an
+applied, compile-time-gated observer seam that runs only after AEAD
+verification, block bounds validation, and `FromNTCP2()` conversion.
+
+### Build contract (verified)
+
+The Plan 076 driver is built by
+`tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh`
+in two stages:
+
+1. The pinned i2pd CMake project at `i2pd/build/CMakeLists.txt`
+   builds three static archives `libi2pd`, `libi2pdclient`, and
+   `libi2pdlang` with `WITH_LIBRARY=ON`, `WITH_BINARY=OFF`,
+   `WITH_HARDENING=OFF`, `WITH_UPNP=OFF`, and `BUILD_TESTING=OFF`.
+   The pinned source tree is never mutated; the pristine tree
+   digest is measured before the build and recorded as
+   `reference_source_tree_sha256` in the build manifest.
+2. The Plan 076 driver CMake project builds the instrumented
+   (`-DI2PD_INTEROP_OBSERVER=1 -DI2PD_PLAN076_LINKED=1`) and
+   uninstrumented control (no observer macro, `-DI2PD_PLAN076_LINKED=1`)
+   driver binaries against the freshly built pinned i2pd archives
+   via `${I2PD_LIB_DIR}`. The driver CMake project (under
+   `tests/integration/ntcp2/reference-drivers/i2pd/CMakeLists.txt`)
+   rejects invocations that do not supply `I2PD_LIB_DIR`.
+
+### Verified source-locked symbols
+
+The Plan 076 driver links against the following symbols, each
+verified at build time through `nm -C` against the produced
+instrumented binary:
+
+| Symbol | Source file | Pinned declaration |
+| --- | --- | --- |
+| `i2p::transport::Transports::Start(bool, bool)` | `libi2pd/Transports.cpp` | `void Start (bool enableNTCP2=true, bool enableSSU2=true);` (line 141) |
+| `i2p::transport::Transports::Stop()` | `libi2pd/Transports.cpp` | `void Stop ();` (line 142) |
+| `i2p::transport::Transports::IsBoundNTCP2` | `libi2pd/Transports.h` (line 146) | `bool IsBoundNTCP2() const { return m_NTCP2Server != nullptr; }` |
+| `i2p::transport::Transports::SendMessage` | `libi2pd/Transports.h` (line 157) | `std::future<std::shared_ptr<TransportSession>> SendMessage (const i2p::data::IdentHash& ident, std::shared_ptr<i2p::I2NPMessage> msg);` |
+| `i2p::context` | `libi2pd/RouterContext.h` (line 277) | `extern RouterContext context;` with `void Init ();`, `void Start ();`, `void Stop ();` |
+| `i2p::data::netdb` | `libi2pd/NetDb.hpp` (line 207) | `extern NetDb netdb;` with `std::shared_ptr<const RouterInfo> AddRouterInfo (const uint8_t * buf, int len);` |
+| `i2p::data::netdb.FindRouter` | `libi2pd/NetDb.hpp` (line 89) | `std::shared_ptr<RouterInfo> FindRouter (const IdentHash& ident) const;` |
+| `i2p::CreateDeliveryStatusMsg` | `libi2pd/I2NPProtocol.h` (line 296) | `std::shared_ptr<I2NPMessage> CreateDeliveryStatusMsg (uint32_t msgID);` (in `i2p::` namespace, line 24) |
+| `i2p::crypto::InitCrypto` | `libi2pd/Crypto.h` (line 273) | `void InitCrypto (bool precomputation);` |
+| `i2p::fs::DetectDataDir` | `libi2pd/FS.h` (line 107) | `void DetectDataDir(const std::string & cmdline_datadir, bool isService = false);` |
+
+### Verified NTCP2 receive observer seam
+
+The Plan 076 observer patch
+(`patches/i2pd-2.60.0-interop-observer.patch`) inserts an include
+and adds a guarded observer call inside the
+`case eNTCP2BlkI2NPMessage:` block of
+`NTCP2Session::ProcessNextFrame` in `libi2pd/NTCP2.cpp`. The
+seam fires only after:
+
+1. `m_Handler.m_Decryptor.AEADChaCha20Poly1305Decrypt` (the
+   `HandleReceived` callsite in `NTCP2Session::HandleReceived`,
+   `NTCP2.cpp` line 1253) has returned success;
+2. `ProcessNextFrame` has validated block bounds and read the
+   `eNTCP2BlkI2NPMessage` block header (NTCP2.cpp line 1322);
+3. `nextMsg->FromNTCP2()` (NTCP2.cpp line 1335) has converted the
+   NTCP2 short-header representation into a valid `I2NPMessage`;
+4. `m_Handler.PutNextMessage (std::move (nextMsg))` would be called
+   on the same instance (NTCP2.cpp line 1336).
+
+The patch is verified to apply cleanly with `patch -p1 --fuzz=0`
+against the pinned tree.
+
+### Verified NTCP2 send observer seam
+
+The Plan 076 observer patch adds a guarded observer call at the
+top of `NTCP2Session::HandleI2NPMsgsSent` in `libi2pd/NTCP2.cpp`
+(line 1452). The seam fires only after the asynchronous socket
+write completes successfully (`ecode` is unset and
+`bytes_transferred > 0`); the existing `HandleNextFrameSent` call
+is preserved unchanged.
+
+### Behaviour neutrality contract (verified)
+
+The `build-driver.sh` driver CMake target defines
+`I2PD_PLAN076_LINKED=1` for both the instrumented and control
+binaries but defines `I2PD_INTEROP_OBSERVER=1` only for the
+instrumented binary. The observer patch is applied to a private
+copy of the pinned tree for the instrumented build; the control
+build uses the pristine tree with no patch applied.
+
+The instrumented binary contains exactly two reachable observer
+call sites (`ObserveReceivedI2NP`, `ObserveSentI2NP`); the control
+binary contains zero reachable observer call sites
+(verified through `nm` against the produced binaries).
+
+### Manifest provenance (verified)
+
+The build manifest for each binary records:
+
+- the pinned i2pd source tree digest (`reference_source_tree_sha256`);
+- the observer patch digest (`observer_patch_sha256`);
+- the driver source digest (`driver_source_sha256`);
+- the observer header and observer source digests;
+- the source-lock record digest;
+- the **measured SHA-256 of each linked pinned i2pd archive**
+  under `i2pd_libraries_sha256`;
+- the linked library manifest digest (`linked_library_manifest_sha256`);
+- the build timestamp, CMake version, compiler version, and
+  `linked_i2pd_sources: true`.
+
+No placeholder or all-zero digest is permitted. The Python
+harness adapter loads every required digest from the on-disk
+build manifest and source-lock record and refuses to substitute
+synthetic values.

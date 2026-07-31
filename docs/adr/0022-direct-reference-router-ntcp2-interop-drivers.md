@@ -240,6 +240,7 @@ topology. Triggers include:
 - `plans/062-ntcp2-evidence-contract-and-architecture-correction.md`
 - `plans/063-java-i2p-stripped-router-direct-ntcp2-driver.md`
 - `plans/064-i2pd-direct-ntcp2-driver-and-observer-correction.md`
+- `plans/076-real-pinned-i2pd-library-and-direct-driver-construction.md`
 - `plans/065-ntcp2-canonical-integration-and-live-qualification.md`
 - `plans/066-fresh-candidate-and-authoritative-ntcp2-two-run-closure.md`
 - `docs/adr/0021-minimal-java-support-topology.md`
