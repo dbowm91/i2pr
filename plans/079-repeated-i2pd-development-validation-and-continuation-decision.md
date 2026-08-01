@@ -2,17 +2,39 @@
 
 ## Status and dependencies
 
-- Status: planned (blocked by Plan 078 closed-as-blocked-protocol-defect; see `plans/080-status.md`).
-- Parent roadmap: Plan 074.
-- Requires Plan 078 closed with one genuine pass in each direction.
+- Status: planned (blocked pending Plan 084 decision `two-way-development-probe-passed`).
+- Active parent roadmap: Plan 081; historical parent sequence: Plan 074.
+- Requires Plans 082 and 083 closed and Plan 084 closed with one genuine passing compact probe in each direction plus behavior-neutral control comparisons.
+- The Plan 078/080 attempt stopped pre-protocol and cannot satisfy this prerequisite; see `plans/080-diagnostic-correction-amendment-plan-081.md`.
 - Supersedes Plan 071 as the active repeated i2pd development-validation plan.
 - Plan type: repeated fresh-state validation, bounded negative controls, and Milestone 3 development-continuation decision.
 
 ## Objective
 
-Establish that the first two-way i2pd result is reproducible and that major rejection/correlation controls fail for the correct reasons, without expanding into release-grade certification.
+Establish that the minimal two-way i2pd result from Plans 083-084 is reproducible and that major rejection/correlation controls fail for the correct reasons, without expanding into release-grade certification.
 
 A passing Plan 079 permits continued later implementation work while NTCP2 remains experimental, non-advertised, and disabled in normal daemon operation. It does not close Java compatibility or final Milestone 3 release qualification.
+
+## Entry gate
+
+Plan 079 must not begin unless `plans/084-status.md` records exactly:
+
+```text
+decision = two-way-development-probe-passed
+```
+
+The entry record must bind:
+
+```text
+one passing i2pr-to-i2pd compact probe
+one passing i2pd-to-i2pr compact probe
+one behavior-neutral control-build result per direction
+exact i2pr/i2pd Router Hash and DeliveryStatus correlation
+valid lane qualification
+clean teardown
+```
+
+Any other Plan 084 decision keeps Plan 079 blocked.
 
 ## Positive matrix
 
@@ -49,13 +71,15 @@ Each pass must independently prove:
 - successful encrypted frame write;
 - receiver frame authentication/decryption;
 - exact DeliveryStatus I2NP decode;
-- exact message ID and sender Router Hash;
+- exact message ID and peer Router Hash;
 - no public network interface/route in execution lane;
 - clean process/socket/state teardown.
 
+The compact stage/event records introduced by Plans 083-084 are the immediate execution authority. A broader development summary may aggregate them, but may not infer missing stages.
+
 ## Negative controls
 
-Run at least these bounded controls using fresh state:
+Run at least these bounded controls using fresh state.
 
 ### N1. Network ID mismatch
 
@@ -91,7 +115,7 @@ Use a controlled fake/stubborn child in harness tests to prove cleanup failure o
 
 ## Development-validation summary
 
-Use the Plan 068 development-validation schema or a compatible corrected version.
+Use the Plan 068 development-validation schema or a small compatible correction that can aggregate the compact Plan 083/084 records without changing their stage authority.
 
 The summary must bind:
 
@@ -103,6 +127,8 @@ lane_qualification_sha256
 i2pr_binary_sha256
 i2pd_instrumented_binary_sha256
 i2pd_control_binary_sha256
+plan083_entry_record_sha256
+plan084_entry_record_sha256
 positive_run_record_sha256[]
 negative_control_record_sha256[]
 all_positive_runs_passed
@@ -192,6 +218,7 @@ advertised = false
 
 Plan 079 closes as passed only when:
 
+- Plan 084 admitted the plan through `two-way-development-probe-passed`;
 - 3/3 fresh-state runs pass in each direction;
 - exact authenticated data-phase correlation is proven in every run;
 - all required negative controls reject correctly;
@@ -203,10 +230,11 @@ Plan 079 closes as passed only when:
 
 ## Validation commands
 
-Use Plan 077/078 exact lane commands plus:
+Use the exact Plan 083/084 lane and compact-probe commands plus:
 
 ```bash
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_development_validation.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_minimal_i2pd_probe.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_loopback_smoke_record.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_reference_event.py'
 bash scripts/check-ntcp2-vectors.sh
@@ -228,12 +256,14 @@ Plan 079 does not:
 - enable production NTCP2 by default;
 - advertise support;
 - add recurring CI or release automation;
-- benchmark throughput or anonymity properties.
+- benchmark throughput or anonymity properties;
+- repair pre-protocol preparation or scenario rendering defects owned by Plan 082.
 
 ## Stop rules
 
 Stop and record a blocker when:
 
+- Plan 084 did not admit Plan 079;
 - lane qualification changes or becomes invalid;
 - binary/image/guest digests drift;
 - a pass depends on observer instrumentation;
@@ -243,9 +273,10 @@ Stop and record a blocker when:
 
 ## Small-model execution guidance
 
+- Confirm the exact Plan 084 admission decision before doing any work.
 - Finish all six positive runs before optional controls.
 - Keep a run ledger with immutable record hashes.
 - Never delete failed attempts.
 - Restart a direction's 3/3 count after any implementation or lane change.
 - Implement one negative control at a time.
-- Do not broaden Plan 079 into Java, Emissary, load, or public-network testing.
+- Do not broaden Plan 079 into Java, Emissary, load, public-network testing, or pre-protocol harness redesign.
