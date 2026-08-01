@@ -1169,4 +1169,66 @@ if ! test -f "$root/scripts/check-ntcp2-loopback-smoke-boundary.sh"; then
 fi
 bash "$root/scripts/check-ntcp2-loopback-smoke-boundary.sh"
 
+# Plan 080: Multipass lane prequalification for Plan 078.  The plan doc,
+# the status doc, the helper module, and the test matrix must be committed
+# and the public surface must be present.
+if ! test -f "$root/tests/integration/ntcp2/harness/plan080.py"; then
+  echo "Plan 080 helper module is missing" >&2
+  exit 1
+fi
+if ! test -s "$root/tests/integration/ntcp2/harness/plan080.py"; then
+  echo "Plan 080 helper module is empty" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan080.py"; then
+  echo "Plan 080 test matrix is missing" >&2
+  exit 1
+fi
+if ! test -s "$root/tests/integration/ntcp2/harness/test_plan080.py"; then
+  echo "Plan 080 test matrix is empty" >&2
+  exit 1
+fi
+if ! (cd "$root/tests/integration/ntcp2/harness" && PYTHONPATH="$root/tests/integration/ntcp2/harness" python3 -c '
+from plan080 import (
+    SCHEMA, SCHEMA_VERSION, TYPED_BLOCKER,
+    CLOSE_STATUS_IN_PROGRESS, CLOSE_STATUS_QUALIFIED, CLOSE_STATUS_BLOCKED,
+    plan080_typed_blocker, plan080_close_status,
+    plan080_lane_qualification_digest, plan080_guest_inspect_record,
+    plan080_qualification_writer,
+)
+assert SCHEMA == "i2pr-plan080-closure-v1", f"SCHEMA={SCHEMA}"
+assert SCHEMA_VERSION == 1, f"SCHEMA_VERSION={SCHEMA_VERSION}"
+assert TYPED_BLOCKER == "blocked_execution_lane_unavailable", f"TYPED_BLOCKER={TYPED_BLOCKER}"
+'); then
+  echo "Plan 080 helper module public surface is missing or wrong" >&2
+  exit 1
+fi
+if ! grep -q -- '--lane-from-guest' "$root/scripts/interop/probe-constrained-host-lanes.sh"; then
+  echo "probe wrapper is missing --lane-from-guest flag" >&2
+  exit 1
+fi
+if ! grep -q -- '--artifact-digest' "$root/scripts/interop/probe-constrained-host-lanes.sh"; then
+  echo "probe wrapper is missing --artifact-digest flag" >&2
+  exit 1
+fi
+if ! test -f "$root/plans/080-multipass-lane-prequalification-for-plan-078.md"; then
+  echo "Plan 080 plan doc is missing" >&2
+  exit 1
+fi
+if ! test -s "$root/plans/080-multipass-lane-prequalification-for-plan-078.md"; then
+  echo "Plan 080 plan doc is empty" >&2
+  exit 1
+fi
+if ! test -f "$root/plans/080-status.md"; then
+  echo "Plan 080 status doc is missing" >&2
+  exit 1
+fi
+# Verify the status line still carries an in-progress marker (do not require closed).
+if grep -q '## Status' "$root/plans/080-status.md"; then
+  if ! grep -Eq '(in-progress|in.progress|active|superseded|closed|blocked|retired)' "$root/plans/080-status.md"; then
+    echo "Plan 080 status doc has a Status line but no recognized marker" >&2
+    exit 1
+  fi
+fi
+
 echo "NTCP2 interoperability manifest and sanitized evidence boundary are valid (${scenario_count} scenarios)."

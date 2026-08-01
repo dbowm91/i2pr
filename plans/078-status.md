@@ -1,14 +1,30 @@
-# Plan 078 status — preflight blocked
+# Plan 078 status — closed-as-blocked-protocol-defect
 
 ## Status
 
-Plan 078 stops at preflight with the typed blocker
-`full_runtime_lane_unavailable`. No protocol process was started, no Level 1
-direction record was emitted, and no NTCP2 interoperability result is claimed.
-The plan remains open for a future host or manually qualified remote lane;
-Plan 079 must not start from this result.
+Plan 078 closes as `blocked-protocol-defect` per its acceptance criteria,
+with the first divergent protocol stage recorded. The Plan 080 Multipass
+lane prequalification promoted the host from `inherited-descriptors-seccomp`
+to `remote-manual` (`qualified = true`, `scope = full-runtime`,
+`full_runtime_lane = available`); inside that qualified lane, the
+`i2pr-to-i2pd-ipv4` direction produced a typed `rejected` outcome at the
+i2pr-launcher pre-protocol stage. The `i2pd-to-i2pr-ipv4` direction was
+not attempted because the first direction blocked. Plan 079 must not
+start from this result.
 
-The selected capability was:
+The selected capability after Plan 080:
+
+```text
+selected_lane = remote-manual
+scope = full-runtime
+full_runtime_lane = available
+qualified = true
+reason_code = lane-qualified
+plan080_qualification_record_sha256 = 2ba91fe1a7f2c2309359d8e3fb2de199fac765b387272ef13d668a7ddb14063d
+```
+
+The selected capability before Plan 080 (preserved as the historical
+preflight record):
 
 ```text
 selected_lane = inherited-descriptors-seccomp
@@ -17,6 +33,44 @@ full_runtime_lane = unavailable
 qualified = false
 reason_code = full_runtime_lane_unavailable
 ```
+
+## Blocked-protocol-defect evidence
+
+The sanitized direction record is at
+`target/interop/evidence/multipass/plan080-20260801034138-c8bec3f5/directions/i2pr-to-i2pd-ipv4.json`.
+
+```text
+scenario_id = i2pr-to-i2pd-ipv4
+direction = i2pr-to-reference
+reference = i2pd
+reference_version = 2.60.0
+reference_revision = f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e
+data_phase_mode = initiator-data-only
+expected_observation = i2pr-sent-only
+actual_typed_result = rejected
+known_deviation = typed-harness-operation-failed
+process_counters.i2pr = {started: 1, exited: 1, forced: 0}
+process_counters.i2pd = {started: 1, exited: 1, forced: 0}
+resource_counters = {handshakes: 0, i2np_sent: 0, i2np_received: 0, frames_sent: 0, frames_received: 0}
+i2pr_router_info_sha256 = 0000000000000000000000000000000000000000000000000000000000000000
+reference_router_info_sha256 = 6c76a28033048ad189460d4cc444c2500900562814ef60a7bfd98734d3c5fb1c
+cleanup_result = clean
+```
+
+The first divergent protocol stage is `i2pr_adapter_export_router_info`
+inside the Plan 045 mixed-runner. The i2pd side produced a real signed
+RouterInfo; the i2pr side never produced one. The harness swallowed the
+underlying exception as `typed-harness-operation-failed`. Reproduction
+from fresh state was confirmed by a direct `mixed_runner.py` invocation
+that returned `actual_typed_result=failed_cleanup,
+reason_code=evidence-finalization-failed`.
+
+The Plan 074/078 bounded-correction policy restricts changes to the
+owning i2pr or test-driver surface and forbids refactors that expand
+into NetDB, tunnels, SAM/I2CP, SSU2, or public-network behaviour. The
+i2pr-launcher side is owned by the Plan 042 wire-driver plan and is
+explicitly out of scope for Plan 078. Plan 078 therefore closes as
+`blocked-protocol-defect` without a passing record.
 
 ## Preflight evidence
 

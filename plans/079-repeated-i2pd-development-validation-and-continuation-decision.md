@@ -2,7 +2,7 @@
 
 ## Status and dependencies
 
-- Status: planned.
+- Status: planned (blocked by Plan 078 closed-as-blocked-protocol-defect; see `plans/080-status.md`).
 - Parent roadmap: Plan 074.
 - Requires Plan 078 closed with one genuine pass in each direction.
 - Supersedes Plan 071 as the active repeated i2pd development-validation plan.

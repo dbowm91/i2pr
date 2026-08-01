@@ -2,7 +2,7 @@
 
 ## Status and dependencies
 
-- Status: blocked-preflight (2026-07-31 host result recorded in `plans/078-status.md`).
+- Status: closed-as-blocked-protocol-defect (2026-08-01: i2pr-side pre-protocol RouterInfo failure inside the qualified Plan 080 Multipass lane; see `plans/080-status.md` and `target/interop/evidence/multipass/plan080-20260801034138-c8bec3f5/directions/i2pr-to-i2pd-ipv4.json`).
 - Parent roadmap: Plan 074.
 - Requires Plans 075, 076, and 077 closed with a qualified full-runtime lane.
 - Must close before Plan 079.
