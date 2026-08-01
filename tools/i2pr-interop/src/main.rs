@@ -71,6 +71,19 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum Ntcp2Command {
+    /// Prepare one local identity and signed RouterInfo without opening a socket.
+    Prepare {
+        #[arg(long = "state-dir")]
+        state_dir: PathBuf,
+        #[arg(long = "local-address")]
+        local_address: IpAddr,
+        #[arg(long = "local-port")]
+        local_port: u16,
+        #[arg(long = "network-id")]
+        network_id: u16,
+        #[arg(long = "deterministic-seed")]
+        deterministic_seed: Option<u64>,
+    },
     Listen {
         #[arg(long = "scenario-config")]
         scenario_config: PathBuf,
@@ -214,6 +227,73 @@ fn inspect_router_info(state_dir: &Path) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(2)
+    }
+}
+
+fn emit_preparation(result: &str, reason: &str, local: Option<&LocalState>) -> ExitCode {
+    let line = if let Some(local) = local {
+        let router_info_sha256 = hex_lower(i2pr_crypto::sha256(&local.router_info).as_bytes());
+        let router_hash_sha256 = hex_lower(local.router_hash.as_bytes());
+        format!(
+            "{{\"schema\":\"i2pr-interop-state-prepared-v1\",\"result\":\"prepared\",\"router_hash_sha256\":\"{router_hash_sha256}\",\"router_info_sha256\":\"{router_info_sha256}\",\"ntcp2_address_count\":1}}"
+        )
+    } else {
+        format!(
+            "{{\"schema\":\"i2pr-interop-state-prepared-v1\",\"result\":\"{result}\",\"reason_code\":\"{reason}\"}}"
+        )
+    };
+    let mut stdout = io::stdout().lock();
+    let write_result = stdout
+        .write_all(line.as_bytes())
+        .and_then(|_| stdout.write_all(b"\n"))
+        .and_then(|_| stdout.flush());
+    if write_result.is_err() || local.is_none() {
+        ExitCode::from(2)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn prepare_state_command(
+    state_dir: &Path,
+    local_address: IpAddr,
+    local_port: u16,
+    network_id: u16,
+    deterministic_seed: Option<u64>,
+) -> ExitCode {
+    if network_id != scenario::PRIVATE_NETWORK_ID
+        || local_port == 0
+        || !is_synthetic_address(local_address)
+        || !state_dir.is_absolute()
+        || state_dir
+            .symlink_metadata()
+            .map(|metadata| !metadata.file_type().is_dir())
+            .unwrap_or(false)
+    {
+        return emit_preparation("rejected", "prepare_input_invalid", None);
+    }
+    if state_dir.exists() && state_dir.is_symlink() {
+        return emit_preparation("rejected", "prepare_state_path_invalid", None);
+    }
+    if IdentityStore::prepare_directory(state_dir).is_err() {
+        return emit_preparation("rejected", "prepare_state_path_invalid", None);
+    }
+    let prepared = if let Some(seed) = deterministic_seed {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        prepare_local_state_with_rng(state_dir, local_address, local_port, &mut rng)
+    } else {
+        prepare_local_state_with_rng(state_dir, local_address, local_port, &mut OsRng)
+    };
+    match prepared {
+        Ok(local) => emit_preparation("prepared", "", Some(&local)),
+        Err(_) => emit_preparation("rejected", "prepare_router_info_verify_failed", None),
+    }
+}
+
+fn is_synthetic_address(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => address.octets()[0..3] == [192, 0, 2],
+        IpAddr::V6(address) => address.segments()[0..4] == [0x2001, 0x0db8, 0x0036, 0],
     }
 }
 
@@ -922,23 +1002,35 @@ async fn receive_delivery_status(
 }
 
 fn prepare_local_state(scenario: &Scenario) -> Result<LocalState, LauncherError> {
-    IdentityStore::prepare_directory(&scenario.state_dir).map_err(map_storage_error)?;
     if let Some(seed) = scenario.deterministic_seed {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        prepare_local_state_with_rng(scenario, &mut rng)
+        prepare_local_state_with_rng(
+            &scenario.state_dir,
+            scenario.local_address,
+            scenario.local_port,
+            &mut rng,
+        )
     } else {
-        prepare_local_state_with_rng(scenario, &mut OsRng)
+        prepare_local_state_with_rng(
+            &scenario.state_dir,
+            scenario.local_address,
+            scenario.local_port,
+            &mut OsRng,
+        )
     }
 }
 
 fn prepare_local_state_with_rng<R>(
-    scenario: &Scenario,
+    state_dir: &Path,
+    local_address: IpAddr,
+    local_port: u16,
     rng: &mut R,
 ) -> Result<LocalState, LauncherError>
 where
     R: rand_core::TryCryptoRng + ?Sized,
 {
-    let identity_store = IdentityStore::in_data_dir(&scenario.state_dir);
+    IdentityStore::prepare_directory(state_dir).map_err(map_storage_error)?;
+    let identity_store = IdentityStore::in_data_dir(state_dir);
     let identity = if identity_store.path().exists() {
         identity_store.load().map_err(map_storage_error)?
     } else {
@@ -949,7 +1041,7 @@ where
             .map_err(map_storage_error)?;
         identity
     };
-    let key_store = TransportStaticKeyStore::in_data_dir(&scenario.state_dir);
+    let key_store = TransportStaticKeyStore::in_data_dir(state_dir);
     let static_material = if key_store.path().exists() {
         key_store.load().map_err(map_storage_error)?
     } else {
@@ -957,17 +1049,17 @@ where
     };
     let (static_key, obfuscation_iv) = static_material.into_parts();
     let static_public = static_key.public_bytes();
-    let router_info_path = scenario.state_dir.join("router.info");
+    let router_info_path = state_dir.join("router.info");
     let router_info_bytes = if router_info_path.exists() {
         read_private_file(&router_info_path).map_err(|_| LauncherError::StateInvalid)?
     } else {
         let info = signed_router_info(
             &identity,
-            scenario.local_address,
-            scenario.local_port,
+            local_address,
+            local_port,
             static_public,
             obfuscation_iv,
-            scenario.network_id,
+            scenario::PRIVATE_NETWORK_ID as u8,
         )?;
         let bytes = info
             .encode_to_vec(MAX_LOCAL_ROUTER_INFO_BYTES)
@@ -977,7 +1069,7 @@ where
     };
     let info =
         decode_verified_router_info(&router_info_bytes).map_err(|_| LauncherError::StateInvalid)?;
-    let expected = SocketAddr::new(scenario.local_address, scenario.local_port);
+    let expected = SocketAddr::new(local_address, local_port);
     let parsed = exact_ntcp2_address(&info, expected).map_err(|_| LauncherError::StateInvalid)?;
     if parsed.static_public_key().as_bytes() != &static_public
         || parsed.obfuscation_iv().map(|iv| iv.as_bytes()) != Some(&obfuscation_iv)
@@ -1366,6 +1458,19 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Ntcp2 { command } => match command {
+            Ntcp2Command::Prepare {
+                state_dir,
+                local_address,
+                local_port,
+                network_id,
+                deterministic_seed,
+            } => prepare_state_command(
+                &state_dir,
+                local_address,
+                local_port,
+                network_id,
+                deterministic_seed,
+            ),
             Ntcp2Command::Listen { scenario_config } => {
                 run_wire_command("listen", &scenario_config)
             }

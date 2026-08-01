@@ -1296,6 +1296,24 @@ speculatively and Plan 078 remains blocked. See
 [ADR 0024](../adr/0024-constrained-host-ntcp2-execution-lanes.md) and
 [the Plan 077 closure](../../plans/077-status.md).
 
+## Active correction: Plan 082 pre-protocol state preparation
+
+The current execution authority is Plan 081 and its Plan 082 child, not the
+historical Plan 078 close label. The qualified Plan 080 guest and real Plan
+076 i2pd driver are valid prerequisites, while the Plan 078/080 attempt
+stopped before TCP. The i2pr launcher therefore has a separate test-only
+`ntcp2 prepare` operation that reuses the existing identity, NTCP2 static-key,
+RouterInfo-signing, and endpoint-verification code without creating a runtime
+service.
+
+The mixed runner prepares i2pr and the pinned reference before rendering a
+strict Plan 065 scenario, validates both RouterInfos and Router Hashes, and
+freezes `i2pr-minimal-run-identity-v1` before any live process. A primary
+scenario never uses a generated suffix or empty correlation fields. Preparation
+and local scenario parsing are pre-protocol diagnostics only; they cannot claim
+TCP, authentication, frame, or I2NP progress. Plans 083 and 084 own the first
+minimal i2pd wire probes, and Plan 079 is blocked until their decision.
+
 ## Plan 078 first real i2pd two-way execution
 
 Plan 078 is currently a preflight-only stop. The Plan 077 qualification

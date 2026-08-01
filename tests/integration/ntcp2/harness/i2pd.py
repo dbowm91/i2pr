@@ -59,15 +59,14 @@ class I2pdAdapter:
         self.endpoint = endpoint
         self.repo_root = repo_root.resolve()
         # Plan 045 D1: an explicit ``shared_data_dir`` keeps the i2pd
-        # identity alive across a ``-gen`` generation pass and the live
-        # phase, so the RouterInfo consumed by i2pr belongs to the same
-        # router the live reference restarted from.
+        # identity alive across the preparation pass and the live phase, so
+        # the RouterInfo consumed by i2pr belongs to the same router.
         if shared_data_dir is None:
             self.data_dir = self.run_root / "reference-data"
         else:
             self.data_dir = shared_data_dir.resolve()
-            # Plan 045 D1: the ``-gen`` and live phases must share a single
-            # data directory inside the dispatcher's run_root. Accept any
+            # The preparation and live phases must share a single data
+            # directory inside the dispatcher's run_root. Accept any
             # path that is, or is inside, the live run_root, and accept any
             # sibling path that lives under the same top-level run_root.
             live_under_run_root = (self.data_dir == self.run_root or self.run_root in self.data_dir.parents)

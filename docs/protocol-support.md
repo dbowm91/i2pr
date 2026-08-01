@@ -414,3 +414,14 @@ Plan 078 was stopped before protocol execution on the current host with
 077 is not interoperability evidence. No support-ledger status changed and
 NTCP2 remains experimental and non-advertised. See
 [`plans/078-status.md`](../plans/078-status.md).
+
+## Active status correction (2026-08-01)
+
+The current Milestone 3 sequence is Plan 082 → Plan 083 → Plan 084. The Plan
+080 lane qualification and Plan 076 real i2pd driver remain valid, but the
+Plan 078/080 attempt stopped pre-protocol and did not produce a TCP, NTCP2,
+authenticated-frame, or I2NP result. Plan 082 prepares authentic i2pr state
+and real RouterInfo/hash/run-identity fields before strict live rendering.
+This changes diagnostic ownership only; it does not change any support row.
+NTCP2 remains experimental and non-advertised, and Plan 079 remains blocked
+pending the Plan 084 development decision.

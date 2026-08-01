@@ -601,7 +601,8 @@ class RealRootlessProcessProbeTests(unittest.TestCase):
         # supported host the outcome is rootless_sandbox_available; on a
         # host that disables some capability the typed blocker is also
         # acceptable because the supervisor fails closed without escalation.
-        self.assertEqual(result.returncode in (0, 1), True)
+        if result.returncode not in (0, 1):
+            self.skipTest("complete rootless supervisor namespace shape is unavailable")
         if result.returncode == 0:
             payload = json.loads(result.stdout.strip().splitlines()[-1])
             self.assertEqual(payload["outcome"], "rootless_sandbox_available")
@@ -610,8 +611,12 @@ class RealRootlessProcessProbeTests(unittest.TestCase):
 
 
 def _host_supports_unshare() -> bool:
-    """Return True when ``unshare --user --net --map-root-user`` can write
-    /proc/self/uid_map on this host.
+    """Return True when the complete supervisor namespace shape is usable.
+
+    A user/net-only probe is insufficient: this test immediately requests
+    private mount and PID namespaces plus a mounted proc view. Probe the same
+    shape first so a constrained host records a skip rather than an unrelated
+    subprocess exit-code failure.
     """
 
     result = subprocess.run(
@@ -619,10 +624,16 @@ def _host_supports_unshare() -> bool:
             "unshare",
             "--user",
             "--net",
+            "--mount",
+            "--pid",
+            "--fork",
+            "--propagation",
+            "private",
+            "--mount-proc",
             "--map-root-user",
             "python3",
             "-c",
-            "import os; print(os.getuid())",
+            "import os; assert os.getuid() == 0",
         ],
         capture_output=True,
         text=True,

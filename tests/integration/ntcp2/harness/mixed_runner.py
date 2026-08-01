@@ -102,6 +102,24 @@ KNOWN_POSITIVE_SCENARIO_IDS = frozenset(
     }
 )
 
+PRE_PROTOCOL_REASONS = frozenset(
+    {
+        "i2pr-preparation-start-failed",
+        "i2pr-state-preparation-failed",
+        "i2pr-router-info-missing",
+        "i2pr-router-info-validation-failed",
+        "i2pr-router-hash-invalid",
+        "i2pr-preparation-record-invalid",
+        "prepare-input-invalid",
+        "reference-router-info-missing",
+        "reference-router-info-validation-failed",
+        "reference-router-hash-invalid",
+        "run-identity-freeze-failed",
+        "i2pr-binary-missing",
+        "i2pd-binary-missing",
+    }
+)
+
 
 def _reject_negative_before_primary(scenario_id: str) -> None:
     if scenario_id not in KNOWN_POSITIVE_SCENARIO_IDS:
@@ -195,6 +213,71 @@ def _plan065_primary_fields(
         "reference_driver_mode": reference_driver_mode,
         "run_identity_sha256": run_identity_sha256,
     }
+
+
+def _router_hash_sha256(path: Path) -> str:
+    """Hash the exact RouterIdentity prefix, matching the Router Hash rule."""
+
+    data = path.read_bytes()
+    if len(data) < 387 or data[384] != 5:
+        raise MixedRunError("router-hash-invalid")
+    certificate_length = int.from_bytes(data[385:387], "big")
+    identity_length = 387 + certificate_length
+    if certificate_length < 4 or identity_length > len(data):
+        raise MixedRunError("router-hash-invalid")
+    return hashlib.sha256(data[:identity_length]).hexdigest()
+
+
+def _sha256_file(path: Path, reason: str) -> str:
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise MixedRunError(reason) from exc
+    if digest == "0" * 64:
+        raise MixedRunError(reason)
+    return digest
+
+
+def _freeze_minimal_run_identity(
+    *,
+    run_dir: Path,
+    run_id: str,
+    source_commit: str,
+    direction: MixedDirection,
+    metadata: CacheMetadata,
+    i2pr_router_info_sha256: str,
+    i2pd_router_info_sha256: str,
+    i2pr_router_hash_sha256: str,
+    i2pd_router_hash_sha256: str,
+    i2pr_binary_sha256: str,
+    i2pd_binary_sha256: str,
+    delivery_status_message_id: int,
+) -> str:
+    payload = {
+        "schema": "i2pr-minimal-run-identity-v1",
+        "run_id": run_id,
+        "source_commit": source_commit,
+        "direction": direction.execution_id,
+        "reference": "i2pd",
+        "reference_revision": metadata.source_revision,
+        "topology_kind": "rootless-sealed-single-netns",
+        "lane_qualification_sha256": os.environ.get("I2PR_INTEROP_LANE_QUALIFICATION_SHA256", metadata.artifact_sha256),
+        "i2pr_binary_sha256": i2pr_binary_sha256,
+        "i2pd_binary_sha256": i2pd_binary_sha256,
+        "i2pr_router_info_sha256": i2pr_router_info_sha256,
+        "i2pd_router_info_sha256": i2pd_router_info_sha256,
+        "i2pr_router_hash_sha256": i2pr_router_hash_sha256,
+        "i2pd_router_hash_sha256": i2pd_router_hash_sha256,
+        "delivery_status_message_id": delivery_status_message_id,
+    }
+    if any(not isinstance(value, str) or not value for value in payload.values() if isinstance(value, str)):
+        raise MixedRunError("run-identity-freeze-failed")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    try:
+        (run_dir / "run-identity.json").write_bytes(encoded + b"\n")
+    except OSError as exc:
+        raise MixedRunError("run-identity-freeze-failed") from exc
+    return hashlib.sha256(encoded + b"\n").hexdigest()
 
 
 ALLOWED_DIAGNOSTICS_MODES = frozenset({"off", "sanitized", "raw-local"})
@@ -466,7 +549,9 @@ def run(args: argparse.Namespace) -> int:
         "queue_bytes_high_watermark": 0,
     }
     i2pr_router_info_sha256 = ""
+    i2pr_router_hash_sha256 = ""
     reference_router_info_sha256 = ""
+    reference_router_hash_sha256 = ""
     configuration_sha256 = ""
     data_phase_mode = "round-trip-delivery-status"
     expected_observation = "i2pr-sent-and-acknowledged"
@@ -519,12 +604,16 @@ def run(args: argparse.Namespace) -> int:
                 namespace=topology.reference_namespace,
                 network_id="99",
             )
-        # Plan 045 D1: the ``-gen`` adapter and the live adapter share the
-        # same ``reference-data`` directory and the same i2pr ``state``
-        # directory so the live phase restarts from the identity that
-        # produced the exported RouterInfo.
         shared_reference_data = run_dir / "reference-data"
         shared_i2pr_state = run_dir / "i2pr" / "state"
+        i2pr_adapter = I2prAdapter(repo_root, run_dir / "i2pr", placement=i2pr_placement)
+        prepared_i2pr = i2pr_adapter.prepare_state(
+            local_address=i2pr_endpoint.local_address,
+            local_port=i2pr_endpoint.local_port,
+            deterministic_seed=1,
+        )
+        i2pr_router_info_sha256 = prepared_i2pr.router_info_sha256
+        i2pr_router_hash_sha256 = prepared_i2pr.router_hash_sha256
         if direction.i2pr_is_initiator:
             data_phase_mode = "initiator-data-only"
             expected_observation = "i2pr-sent-only"
@@ -550,7 +639,30 @@ def run(args: argparse.Namespace) -> int:
             )
             ref_adapter.start()
             ref_adapter.wait_ready(timeout_seconds=240.0)
-            i2pr_adapter = I2prAdapter(repo_root, run_dir / "i2pr", placement=i2pr_placement)
+            reference_router_hash_sha256 = _router_hash_sha256(ref_info_path)
+            fields = _plan065_primary_fields(
+                execution_id=direction.execution_id,
+                run_id=run_dir.name,
+                run_identity_sha256="0" * 64,
+                reference_driver_mode=_reference_driver_mode_for(direction.reference),
+                expected_sender_router_hash_sha256=i2pr_router_hash_sha256,
+                expected_receiver_router_hash_sha256=reference_router_hash_sha256,
+                correlation_nonce="initiator",
+            )
+            run_identity_sha256 = _freeze_minimal_run_identity(
+                run_dir=run_dir,
+                run_id=run_dir.name,
+                source_commit=i2pr_commit,
+                direction=direction,
+                metadata=metadata,
+                i2pr_router_info_sha256=i2pr_router_info_sha256,
+                i2pd_router_info_sha256=reference_router_info_sha256,
+                i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                i2pd_router_hash_sha256=reference_router_hash_sha256,
+                i2pr_binary_sha256=_sha256_file(repo_root / "target/debug/i2pr-interop", "i2pr-binary-missing"),
+                i2pd_binary_sha256=_sha256_file(cache / metadata.launcher, "i2pd-binary-missing"),
+                delivery_status_message_id=int(fields["delivery_status_message_id"]),
+            )
             scenario_toml = render_and_validate(
                 run_dir / "i2pr",
                 execution_id=direction.execution_id,
@@ -571,10 +683,10 @@ def run(args: argparse.Namespace) -> int:
                 **_plan065_primary_fields(
                     execution_id=direction.execution_id,
                     run_id=run_dir.name,
-                    run_identity_sha256="",
+                    run_identity_sha256=run_identity_sha256,
                     reference_driver_mode=_reference_driver_mode_for(direction.reference),
-                    expected_sender_router_hash_sha256="",
-                    expected_receiver_router_hash_sha256="",
+                    expected_sender_router_hash_sha256=i2pr_router_hash_sha256,
+                    expected_receiver_router_hash_sha256=reference_router_hash_sha256,
                     correlation_nonce="initiator",
                 ),
             )
@@ -621,11 +733,6 @@ def run(args: argparse.Namespace) -> int:
             runtime_counters["frames_received"] = int(terminal.get("counters", {}).get("frames_received", 0))
             runtime_counters["i2np_sent"] = int(terminal.get("counters", {}).get("i2np_sent", 0))
             runtime_counters["i2np_received"] = int(terminal.get("counters", {}).get("i2np_received", 0))
-            try:
-                i2pr_ri = i2pr_adapter.export_router_info()
-                i2pr_router_info_sha256 = hashlib.sha256(i2pr_ri.read_bytes()).hexdigest()
-            except (OSError, RuntimeError):
-                i2pr_router_info_sha256 = ""
         else:
             data_phase_mode = "responder-data-only"
             expected_observation = "i2pr-received-only"
@@ -644,8 +751,37 @@ def run(args: argparse.Namespace) -> int:
                 i2pr_placement=i2pr_placement,
                 ref_placement=ref_placement,
             )
-            i2pr_router_info_sha256 = hashlib.sha256(i2pr_info_path.read_bytes()).hexdigest()
-            i2pr_adapter = I2prAdapter(repo_root, run_dir / "i2pr", placement=i2pr_placement)
+            reference_info_path = run_dir / "ref-preparation" / "exchange" / "i2pd-router.info"
+            if not reference_info_path.is_file():
+                candidates = list((run_dir / "ref-preparation" / "exchange").glob("*-router.info"))
+                if not candidates:
+                    raise MixedRunError("reference-router-info-missing")
+                reference_info_path = candidates[0]
+            reference_router_info_sha256 = _sha256_file(reference_info_path, "reference-router-info-missing")
+            reference_router_hash_sha256 = _router_hash_sha256(reference_info_path)
+            fields = _plan065_primary_fields(
+                execution_id=direction.execution_id,
+                run_id=run_dir.name,
+                run_identity_sha256="0" * 64,
+                reference_driver_mode=_reference_driver_mode_for(direction.reference),
+                expected_sender_router_hash_sha256=i2pr_router_hash_sha256,
+                expected_receiver_router_hash_sha256=reference_router_hash_sha256,
+                correlation_nonce="responder",
+            )
+            run_identity_sha256 = _freeze_minimal_run_identity(
+                run_dir=run_dir,
+                run_id=run_dir.name,
+                source_commit=i2pr_commit,
+                direction=direction,
+                metadata=metadata,
+                i2pr_router_info_sha256=i2pr_router_info_sha256,
+                i2pd_router_info_sha256=reference_router_info_sha256,
+                i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                i2pd_router_hash_sha256=reference_router_hash_sha256,
+                i2pr_binary_sha256=_sha256_file(repo_root / "target/debug/i2pr-interop", "i2pr-binary-missing"),
+                i2pd_binary_sha256=_sha256_file(cache / metadata.launcher, "i2pd-binary-missing"),
+                delivery_status_message_id=int(fields["delivery_status_message_id"]),
+            )
             scenario_toml = render_and_validate(
                 run_dir / "i2pr",
                 execution_id=direction.execution_id,
@@ -666,10 +802,10 @@ def run(args: argparse.Namespace) -> int:
                 **_plan065_primary_fields(
                     execution_id=direction.execution_id,
                     run_id=run_dir.name,
-                    run_identity_sha256="",
+                    run_identity_sha256=run_identity_sha256,
                     reference_driver_mode=_reference_driver_mode_for(direction.reference),
-                    expected_sender_router_hash_sha256="",
-                    expected_receiver_router_hash_sha256="",
+                    expected_sender_router_hash_sha256=i2pr_router_hash_sha256,
+                    expected_receiver_router_hash_sha256=reference_router_hash_sha256,
                     correlation_nonce="responder",
                 ),
             )
@@ -733,11 +869,16 @@ def run(args: argparse.Namespace) -> int:
         result, reason = exc.result, exc.code
     except (HarnessBlocked,) as exc:
         result, reason = exc.result, exc.code
+    except RenderError:
+        result, reason = "rejected", "live-scenario-render-failed"
     except (IsolationError, JavaI2pError, I2pdError) as exc:
         result, reason = "rejected", exc.code
     except RootlessTopologyError as exc:
         result, reason = "rejected", exc.code
-    except (OSError, ValueError, RuntimeError):
+    except RuntimeError as exc:
+        code = str(exc)
+        result, reason = "rejected", code if code in PRE_PROTOCOL_REASONS else "typed-harness-operation-failed"
+    except (OSError, ValueError):
         result, reason = "rejected", "typed-harness-operation-failed"
     finally:
         if i2pr_adapter is not None:
@@ -746,8 +887,8 @@ def run(args: argparse.Namespace) -> int:
                 cleanup = "failed"
             try:
                 snap = i2pr_adapter.process.snapshot() if i2pr_adapter.process else {}
-                process_counters["i2pr"]["started"] += int(snap.get("running", 0) or 1)
-                process_counters["i2pr"]["exited"] = 1
+                process_counters["i2pr"]["started"] = int(i2pr_adapter.process is not None)
+                process_counters["i2pr"]["exited"] = int(i2pr_adapter.process is not None)
                 process_counters["i2pr"]["forced"] += int(snap.get("forced", 0))
             except RuntimeError:
                 pass
@@ -757,8 +898,8 @@ def run(args: argparse.Namespace) -> int:
                 cleanup = "failed"
             try:
                 snap = ref_adapter.process.snapshot() if ref_adapter.process else {}
-                process_counters[direction.reference]["started"] += int(snap.get("running", 0) or 1)
-                process_counters[direction.reference]["exited"] = 1
+                process_counters[direction.reference]["started"] = int(ref_adapter.process is not None)
+                process_counters[direction.reference]["exited"] = int(ref_adapter.process is not None)
                 process_counters[direction.reference]["forced"] += int(snap.get("forced", 0))
             except RuntimeError:
                 pass
@@ -971,16 +1112,15 @@ def _run_initiator_first(
 ) -> tuple[str, Path, str]:
     """Generate the reference identity and export its RouterInfo.
 
-    Plan 045 D1 fix: the ``-gen`` adapter writes to ``shared_reference_data``
-    and the live phase reuses the same data directory so the live reference
-    restarts from the identity that produced the exported RouterInfo.
+    The preparation adapter writes to ``shared_reference_data`` and the live
+    phase reuses the same data directory as the exported RouterInfo.
     """
 
-    gen_root = run_dir / "ref-gen"
-    gen_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    prep_root = run_dir / "ref-preparation"
+    prep_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     shared_reference_data.mkdir(mode=0o700, parents=True, exist_ok=True)
     ref_adapter = _make_ref_adapter(
-        direction.reference, cache, gen_root, ref_endpoint, repo_root,
+        direction.reference, cache, prep_root, ref_endpoint, repo_root,
         shared_data_dir=shared_reference_data,
         placement=ref_placement,
     )
@@ -1016,69 +1156,36 @@ def _run_responder_first(
 ) -> tuple[str, Path, str]:
     """Generate the i2pr identity and export its RouterInfo.
 
-    Plan 045 D1 fix: the ``-gen`` adapter writes to ``shared_i2pr_state``
-    and the live phase reuses the same directory so the live i2pr restarts
-    from the identity that produced the exported RouterInfo. The Rust
-    launcher persists ``router.info`` inside ``state_dir``, so the
-    export pulls from there (Plan 045 D2).
+    The dedicated preparation command writes to ``shared_i2pr_state`` and the
+    live phase reuses that identity. The Rust launcher persists
+    ``router.info`` inside ``state_dir``.
     """
 
-    gen_root = run_dir / "i2pr-gen"
-    gen_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     shared_i2pr_state.mkdir(mode=0o700, parents=True, exist_ok=True)
-    i2pr_adapter = I2prAdapter(repo_root, gen_root, placement=i2pr_placement)
-    gen_toml = render_and_validate(
-        gen_root,
-        execution_id=direction.execution_id + "-gen",
-        role="responder",
-        address_family=direction.address_family,
-        local_address=i2pr_endpoint.local_address,
-        local_port=i2pr_endpoint.local_port,
-        peer_address=None,
-        peer_port=None,
-        state_dir="state",
-        peer_router_info=None,
-        padding_profile=direction.padding,
-        data_phase_mode="handshake-only",
-        data_phase_required_peer_action="ignore-receive",
-        expected_observation="no-data-phase-required",
-        **_plan065_primary_fields(
-            execution_id=direction.execution_id + "-gen",
-            run_id="gen",
-            run_identity_sha256="",
-            reference_driver_mode=_reference_driver_mode_for(direction.reference),
-            expected_sender_router_hash_sha256="",
-            expected_receiver_router_hash_sha256="",
-            correlation_nonce="gen",
-        ),
-    )
-    i2pr_adapter.start("listen")
-    i2pr_adapter.wait_ready(timeout_seconds=30.0)
-    i2pr_adapter.stop(timeout_seconds=10.0)
-    # Copy the state from gen_root into shared_i2pr_state so the live phase
-    # restarts from the same identity. Restore the strict 0o600 mode so the
-    # live phase's IdentityStore::load / TransportStaticKeyStore::load do
-    # not reject the file for InsecurePermissions (mode & 0o077 != 0).
-    for entry in (gen_root / "state").iterdir():
-        target = shared_i2pr_state / entry.name
-        if entry.is_file():
-            shutil.copyfile(entry, target)
-            os.chmod(target, 0o600)
-        elif entry.is_dir():
-            shutil.copytree(entry, target)
+    # State is prepared by I2prAdapter.prepare_state() before this helper.
     ri_path = shared_i2pr_state / "router.info"
     if not ri_path.is_file():
-        raise MixedRunError("i2pr-router-info-not-produced", "rejected")
+        raise MixedRunError("i2pr-router-info-missing")
     router_validation["i2pr"] = "validated-and-bound"
     ref_adapter = _make_ref_adapter(
-        direction.reference, cache, run_dir / "ref-import", ref_endpoint, repo_root,
+        direction.reference, cache, run_dir / "ref-preparation", ref_endpoint, repo_root,
         placement=ref_placement,
     )
-    ref_adapter.start()
-    ref_adapter.wait_ready()
-    if ri_path.is_file():
+    try:
+        ref_adapter.start()
+        ref_adapter.wait_ready()
         ref_adapter.import_peer_router_info(ri_path)
-    ref_adapter.stop()
+        reference_info = ref_adapter.export_router_info()
+        _validate_router_info_for_direction(
+            reference_info,
+            ref_endpoint.local_address,
+            ref_endpoint.local_port,
+            repo_root,
+            router_validation,
+            direction.reference,
+        )
+    finally:
+        ref_adapter.stop()
     return ("validated-and-bound", ri_path, getattr(ref_adapter, "configuration_sha256", ""))
 
 

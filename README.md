@@ -1654,6 +1654,21 @@ workflow has no qualification record. No i2pr or i2pd protocol process was
 started, no Level 1 direction record exists, and no interoperability result is
 claimed. See [the Plan 078 status](plans/078-status.md).
 
+### Current active sequence: Plan 081 → Plan 082 → Plan 083 → Plan 084
+
+As of 2026-08-01, the active interpretation is governed by [the Plan 067
+amendment](plans/067-active-sequence-amendment-plan-081.md) and [Plan
+081](plans/081-milestone-3-pre-protocol-and-minimal-i2pd-corrective-roadmap.md).
+The Plan 080 Multipass lane is qualified and the Plan 076 i2pd driver is real;
+the Plan 078/080 attempt stopped before TCP and established neither protocol
+conformance nor non-conformance. Plan 082 prepares authentic i2pr state and
+freezes real correlation fields before any live scenario is rendered.
+
+Plans 083 and 084 are the next minimal i2pr↔i2pd wire probes. Plan 079 remains
+blocked pending the Plan 084 decision. NTCP2 remains experimental,
+non-advertised, and disabled in normal daemon operation. Local preparation is
+not interoperability evidence; see [the Plan 082 status](plans/082-status.md).
+
 ## License
 
 A project license has not yet been selected. Do not copy implementation code from I2P+, i2pd, Emissary, or another router into this repository until license compatibility and provenance have been reviewed. Specifications and observed interoperability behavior may be used for clean-room implementation, subject to their applicable terms.

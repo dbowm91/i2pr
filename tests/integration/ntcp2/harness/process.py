@@ -125,6 +125,20 @@ class BoundedProcess:
             self._line_event.clear()
         raise ProcessError("status-timeout")
 
+    def wait_for_exit(self, timeout_seconds: float) -> int:
+        """Wait for a short-lived child to exit without fabricating success."""
+
+        if self.process is None:
+            raise ProcessError("not-started")
+        try:
+            returncode = self.process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            raise ProcessError("process-exit-timeout") from exc
+        if self._reader is not None:
+            self._reader.join(timeout=timeout_seconds)
+        self._remove_pid()
+        return int(returncode)
+
     def wait_for_phrase(self, phrases: Sequence[str], timeout_seconds: float) -> bool:
         """Poll the bounded log for one of ``phrases`` within ``timeout_seconds``.
 

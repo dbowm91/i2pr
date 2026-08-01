@@ -617,6 +617,21 @@ Plan 076 is the next executable plan. It must build and link the exact pinned i2
 
 Plan 077 follows only after Plan 076 closes. Probe existing rootful Docker (`--network none`), then QEMU TCG (`-nic none`), then the explicitly reduced inherited-descriptor lane or a manually triggered remote runner. Do not install privileged services, retry rootless/Multipass lanes, or claim protocol evidence from a typed no-lane result.
 
+## Plan 081/082 active sequence correction
+
+Plan 080's Multipass lane qualification and Plan 076's real pinned i2pd
+driver are valid. Plan 078/080 stopped before TCP, so it is not protocol
+rejection evidence. The active sequence is Plan 082 → Plan 083 → Plan 084;
+Plan 079 is blocked pending the Plan 084 decision.
+
+Plan 082 uses the test-only `i2pr-interop ntcp2 prepare` command to create and
+validate i2pr state before strict Plan 065 scenario rendering. The mixed runner
+must bind real RouterInfo/hash values and a frozen
+`i2pr-minimal-run-identity-v1` record, and must not construct a generated
+scenario ID or use empty correlation fields. Preparation is pre-protocol
+diagnostics only. Do not run the i2pd wire probe in the Plan 082 pass; Plan 083
+owns the first minimal `i2pr → i2pd` attempt.
+
 ## Plan 078 first real two-way run
 
 Plan 078 is preflight-gated by the Plan 077 qualification record. On the

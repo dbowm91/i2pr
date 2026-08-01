@@ -1809,6 +1809,22 @@ a full-runtime qualification. `target/interop/lane/qualification.json` must
 therefore retain `qualified = false` and `full_runtime_lane = unavailable`.
 Plan 078 must not run until a full-runtime qualification record exists.
 
+## Current active sequence amendment (2026-08-01)
+
+The active authority is [Plan 067's Plan 081 amendment](plans/067-active-sequence-amendment-plan-081.md),
+followed by Plans 082, 083, and 084. The Plan 080 Multipass lane is qualified
+and the Plan 076 i2pd driver is real, but Plan 078 stopped before protocol
+execution; no real TCP connection, NTCP2 handshake, authenticated frame, or
+I2NP DeliveryStatus attempt is retained. Its historical
+`blocked-protocol-defect` label must not be used as the current diagnosis.
+
+Plan 082 adds the test-only `i2pr-interop ntcp2 prepare` operation, authentic
+RouterInfo/hash preparation, canonical pre-launch run identity, precise
+pre-protocol errors, and truthful process accounting. It does not run i2pd
+over the wire or produce interoperability evidence. Plan 079 remains blocked
+until `plans/084-status.md` records `decision = two-way-development-probe-passed`.
+NTCP2 stays experimental and non-advertised.
+
 ## Plan 078 first real i2pd two-way execution
 
 Plan 078 stops at preflight unless a current Plan 077 qualification record

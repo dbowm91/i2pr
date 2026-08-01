@@ -702,3 +702,15 @@ The current host closes Plan 077 with
 `full_runtime_lane = unavailable`, and `qualified = false`. Plan 078 must
 not execute until a full-runtime record proves the network, artifact,
 loopback-control, export, and cleanup predicates.
+
+## Active Plan 082 correction
+
+The current active sequence is Plan 082 → Plan 083 → Plan 084. Plan 080
+qualified the owned lane and Plan 076 supplies a real pinned i2pd driver, but
+Plan 078/080 stopped before TCP and is not protocol rejection evidence. Plan
+082 introduces `i2pr-interop ntcp2 prepare`, validates the signed RouterInfo
+and Router Hash, freezes a compact run identity, and only then renders the
+strict Plan 065 live scenario. The old `-gen` live-scenario path is retired.
+Preparation and scenario parsing cannot claim protocol progress; Plan 083 owns
+the first minimal i2pr-to-i2pd wire attempt. Plan 079 remains blocked until
+Plan 084 records its required decision.
