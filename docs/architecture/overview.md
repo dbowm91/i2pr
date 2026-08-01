@@ -239,12 +239,12 @@ selection order is accessible rootful Docker with `--network none`, QEMU TCG
 with `-nic none`, reduced inherited descriptors plus seccomp, manual remote
 Linux, then a typed no-full-runtime-lane result. The probe and strict
 qualification contracts live in `execution_lane.py`; a capability or tool
-definition is not interoperability evidence. The current host closes Plan
-077 with `full_runtime_lane = unavailable` and leaves Plan 078 blocked.
+definition is not interoperability evidence. Plan 080 later qualified an
+owned full-runtime guest for the single Plan 078 attempt.
 
-Plan 078 records that preflight stop in
-[`plans/078-status.md`](../../plans/078-status.md). The selected
-`inherited-descriptors-seccomp` capability is diagnostic-only, so neither
-i2pr-to-i2pd nor i2pd-to-i2pr may start until a current full-runtime
-qualification proves the lane's network boundary, exact binaries, two-process
-control, result export, and cleanup.
+Plan 078 records a pre-protocol i2pr RouterInfo stop in
+[`plans/078-status.md`](../../plans/078-status.md), not a protocol pass or
+failure. Plans 082-084 are now the active minimal-probe sequence. Plan 072
+remains inactive until Plan 084 records
+`decision = ambiguous-reference-divergence` for a precise unresolved
+wire-stage question.

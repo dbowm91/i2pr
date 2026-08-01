@@ -1635,24 +1635,21 @@ bash scripts/check-constrained-host-lane-boundary.sh
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'
 ```
 
-The current host has no accessible Docker daemon and no QEMU system emulator.
-It exposes `PR_SET_NO_NEW_PRIVS`, so the probe selects
-`inherited-descriptors-seccomp` as a reduced-scope capability. The resulting
-record is `full_runtime_lane = unavailable`, not a Plan 078 authorization.
-The closure is [Plan 077 status](plans/077-status.md), and the architecture
-decision is [ADR 0024](docs/adr/0024-constrained-host-ntcp2-execution-lanes.md).
+The original Plan 077 probe selected
+`inherited-descriptors-seccomp` as a reduced-scope capability. Plan 080 later
+qualified the owned Multipass guest as the full-runtime lane used for the
+single Plan 078 attempt; the historical Plan 077 probe remains preserved in
+[Plan 077 status](plans/077-status.md). The architecture decision is
+[ADR 0024](docs/adr/0024-constrained-host-ntcp2-execution-lanes.md).
 NTCP2 remains experimental and non-advertised.
 
 ### Plan 078 first real i2pd two-way execution
 
-Plan 078 was stopped at preflight on this host with the typed blocker
-`full_runtime_lane_unavailable`. The selected
-`inherited-descriptors-seccomp` capability is reduced-scope diagnostics only;
-it is not authorization for the normal listener/dial transport-manager lane.
-Docker daemon access is unavailable, QEMU is absent, and the manual remote
-workflow has no qualification record. No i2pr or i2pd protocol process was
-started, no Level 1 direction record exists, and no interoperability result is
-claimed. See [the Plan 078 status](plans/078-status.md).
+Plan 078 used the later-qualified Plan 080 guest, but its first direction
+stopped before TCP at the i2pr pre-protocol RouterInfo stage. No NTCP2
+handshake, authenticated frame, or I2NP DeliveryStatus result exists, and the
+stop is not protocol rejection evidence. See [the Plan 078 status](plans/078-status.md)
+and [Plan 080 status](plans/080-status.md).
 
 ### Current active sequence: Plan 081 → Plan 082 → Plan 083 → Plan 084
 
@@ -1668,6 +1665,12 @@ Plans 083 and 084 are the next minimal i2pr↔i2pd wire probes. Plan 079 remains
 blocked pending the Plan 084 decision. NTCP2 remains experimental,
 non-advertised, and disabled in normal daemon operation. Local preparation is
 not interoperability evidence; see [the Plan 082 status](plans/082-status.md).
+
+Plan 072 is not active. It may be activated only if Plan 084 records
+`decision = ambiguous-reference-divergence` after a real wire-stage
+i2pr/i2pd disagreement and names one exact role/stage diagnostic question.
+The current pre-protocol stop does not satisfy that gate; see
+[Plan 084 status](plans/084-status.md).
 
 ## License
 

@@ -7,6 +7,19 @@
 - Applies to `plans/072-conditional-emissary-ntcp2-differential-validation.md`.
 - Parent authority: Plan 081 and the Plan 067 active-sequence amendment for Plan 081.
 
+## Current gate assessment (2026-08-01)
+
+Plan 082 is implemented, but Plan 083 remains `planned` and no retained
+evidence reaches `tcp_connected`. Plan 084 therefore cannot issue one of its
+development decisions yet. Plan 072 is not activated: neither a wire-stage
+reference divergence nor the required exact diagnostic question exists.
+
+The next authority is Plan 083. A preparation result, scenario-rendering
+success, process lifetime, or evidence bookkeeping result cannot activate this
+plan. Preserve this gate until Plan 084 records
+`decision = ambiguous-reference-divergence` with one precise role/stage
+question.
+
 ## Corrected activation point
 
 Plan 072 remains conditional and non-mandatory.

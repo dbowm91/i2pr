@@ -1803,11 +1803,11 @@ start a router.
 The common manifest and sanitized qualification schema live in
 `tests/integration/ntcp2/harness/execution_lane.py`. The static boundary is
 `scripts/check-constrained-host-lane-boundary.sh`; focused tests are
-`test_execution_lane.py`. On this host Docker daemon access is unavailable,
-QEMU is absent, and the reduced descriptor capability is available but is not
-a full-runtime qualification. `target/interop/lane/qualification.json` must
-therefore retain `qualified = false` and `full_runtime_lane = unavailable`.
-Plan 078 must not run until a full-runtime qualification record exists.
+`test_execution_lane.py`. The historical Plan 077 probe was reduced-scope,
+but Plan 080 later qualified the owned Multipass guest used for the single
+Plan 078 attempt. Do not treat either capability probing or a stale guest as
+protocol evidence; consult `plans/080-status.md` for the qualified-lane
+record.
 
 ## Current active sequence amendment (2026-08-01)
 
@@ -1827,12 +1827,19 @@ NTCP2 stays experimental and non-advertised.
 
 ## Plan 078 first real i2pd two-way execution
 
-Plan 078 stops at preflight unless a current Plan 077 qualification record
-proves a full-runtime lane. On this host the selected
-`inherited-descriptors-seccomp` capability is reduced-scope only;
-`target/interop/lane/qualification.json` must remain
-`qualified = false` and `full_runtime_lane = unavailable`. Docker daemon
-access is unavailable, QEMU is absent, and the manual remote workflow is not
-qualification evidence. Do not launch either direction, reuse the stale
-Plan 049 Multipass instance, or emit a protocol result from a reduced-scope
-capability. The closure record is [plans/078-status.md](plans/078-status.md).
+Plan 078 used the Plan 080-qualified owned guest, then stopped before TCP at
+the i2pr pre-protocol RouterInfo stage. The retained result is not protocol
+rejection evidence and does not authorize Plan 079. Do not reuse stale or
+unowned guests, and do not infer protocol progress from process lifetime or a
+port probe. The closure record is [plans/078-status.md](plans/078-status.md);
+the qualified-lane record is [plans/080-status.md](plans/080-status.md).
+
+## Plan 072 activation gate
+
+Plan 072 remains inactive. It may be activated only after Plan 084 reaches a
+real wire stage, source/specification review cannot identify ownership, and
+`plans/084-status.md` records exactly
+`decision = ambiguous-reference-divergence` plus one precise role/stage
+question. Plan 082 preparation and any pre-protocol failure do not satisfy
+this gate. Emissary driver code and general qualification work are out of
+scope until then.

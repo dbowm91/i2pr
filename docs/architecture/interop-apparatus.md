@@ -1289,12 +1289,11 @@ reduced-scope capability is not a qualification; a full-runtime record must
 prove loopback-only communication, no public interface or route, exact
 artifact digests, the two-process control, result export, and cleanup.
 
-On the current host the Docker daemon is inaccessible, QEMU is absent, and
-the reduced descriptor capability is available. Plan 077 therefore closes
-with `full_runtime_lane = unavailable`; no Docker/QEMU packaging was added
-speculatively and Plan 078 remains blocked. See
-[ADR 0024](../adr/0024-constrained-host-ntcp2-execution-lanes.md) and
-[the Plan 077 closure](../../plans/077-status.md).
+The historical Plan 077 probe found only the reduced descriptor capability.
+Plan 080 later qualified the owned Multipass guest used for the single Plan
+078 attempt; no Docker/QEMU packaging was added speculatively. See [ADR
+0024](../adr/0024-constrained-host-ntcp2-execution-lanes.md), [the Plan 077
+record](../../plans/077-status.md), and [the Plan 080 closure](../../plans/080-status.md).
 
 ## Active correction: Plan 082 pre-protocol state preparation
 
@@ -1316,18 +1315,17 @@ minimal i2pd wire probes, and Plan 079 is blocked until their decision.
 
 ## Plan 078 first real i2pd two-way execution
 
-Plan 078 is currently a preflight-only stop. The Plan 077 qualification
-record selects `inherited-descriptors-seccomp` with
-`full_runtime_lane = unavailable`, so the reduced descriptor capability cannot
-authorize either real direction. Docker daemon access and QEMU are unavailable
-on the current host; a manually defined remote workflow is not a qualification
-record. The stale Plan 049 guest is not reused when ownership or source
-continuity fails.
+Plan 078 used the Plan 080-qualified guest and stopped before TCP at the i2pr
+pre-protocol RouterInfo stage. No protocol pass or failure was inferred. The
+exact stop result is in [`plans/078-status.md`](../../plans/078-status.md),
+with the qualified-lane record in [`plans/080-status.md`](../../plans/080-status.md).
 
-Accordingly, no real reference process was launched, no Level 1 record was
-written, and no protocol failure or pass was inferred. Future execution must
-use fresh state and unique ports/message IDs, validate exact i2pr/i2pd binary
-digests and Router Hash continuity, consume structured authentication/frame/
-post-AEAD/I2NP events, verify the private network boundary, and prove cleanup.
-The exact preflight evidence and stop result are in
-[`plans/078-status.md`](../../plans/078-status.md).
+## Plan 072 activation gate
+
+Plan 072 is a conditional differential lane, not the next executable plan. It
+may start only after Plan 084 reaches a real wire stage, i2pr and i2pd disagree
+at a precise stage that source/specification review cannot own, and
+[`plans/084-status.md`](../../plans/084-status.md) records
+`decision = ambiguous-reference-divergence` plus one exact diagnostic
+question. Preparation, rendering, cleanup, and generic pre-protocol failures
+never satisfy this gate.

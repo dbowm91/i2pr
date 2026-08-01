@@ -409,11 +409,11 @@ reduced inherited-descriptor diagnostic. No protocol run occurred, so the
 support row remains experimental and non-advertised. Plan 078 requires a
 separately qualified full-runtime lane.
 
-Plan 078 was stopped before protocol execution on the current host with
-`full_runtime_lane_unavailable`; the reduced-scope capability selected by Plan
-077 is not interoperability evidence. No support-ledger status changed and
-NTCP2 remains experimental and non-advertised. See
-[`plans/078-status.md`](../plans/078-status.md).
+Plan 078 used the Plan 080-qualified guest but stopped before TCP at the i2pr
+pre-protocol RouterInfo stage. That result is not protocol evidence. No
+support-ledger status changed and NTCP2 remains experimental and
+non-advertised. See [`plans/078-status.md`](../plans/078-status.md) and
+[`plans/080-status.md`](../plans/080-status.md).
 
 ## Active status correction (2026-08-01)
 
@@ -425,3 +425,9 @@ and real RouterInfo/hash/run-identity fields before strict live rendering.
 This changes diagnostic ownership only; it does not change any support row.
 NTCP2 remains experimental and non-advertised, and Plan 079 remains blocked
 pending the Plan 084 development decision.
+
+Plan 072 remains inactive. It requires a real wire-stage i2pr/i2pd
+disagreement that source/specification review cannot own, plus
+`decision = ambiguous-reference-divergence` and one exact diagnostic question
+in [`plans/084-status.md`](../plans/084-status.md). Preparation-only and
+pre-protocol results cannot activate Emissary or change this support ledger.

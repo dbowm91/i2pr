@@ -697,11 +697,11 @@ reduced inherited-descriptor/seccomp diagnostic, manual remote Linux, and a
 typed no-full-runtime-lane result. Tool presence is never treated as lane
 qualification.
 
-The current host closes Plan 077 with
-`selected_lane = inherited-descriptors-seccomp`,
-`full_runtime_lane = unavailable`, and `qualified = false`. Plan 078 must
-not execute until a full-runtime record proves the network, artifact,
-loopback-control, export, and cleanup predicates.
+The historical Plan 077 probe selected
+`inherited-descriptors-seccomp` as a reduced-scope capability. Plan 080 later
+qualified the owned Multipass guest used for the single Plan 078 attempt.
+Capability output alone is not protocol evidence; use the Plan 080 status and
+its ownership record for the qualified lane.
 
 ## Active Plan 082 correction
 
@@ -713,4 +713,6 @@ and Router Hash, freezes a compact run identity, and only then renders the
 strict Plan 065 live scenario. The old `-gen` live-scenario path is retired.
 Preparation and scenario parsing cannot claim protocol progress; Plan 083 owns
 the first minimal i2pr-to-i2pd wire attempt. Plan 079 remains blocked until
-Plan 084 records its required decision.
+Plan 084 records its required decision. Plan 072 remains inactive until Plan
+084 records `decision = ambiguous-reference-divergence` after a real
+wire-stage disagreement and states one exact role/stage question.
