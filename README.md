@@ -1659,17 +1659,36 @@ and [Plan 080 status](plans/080-status.md).
 ### Current active sequence: Plan 081 → Plan 082 → Plan 083 → Plan 084
 
 As of 2026-08-01, the active interpretation is governed by [the Plan 067
-amendment](plans/067-active-sequence-amendment-plan-081.md) and [Plan
-081](plans/081-milestone-3-pre-protocol-and-minimal-i2pd-corrective-roadmap.md).
+amendment](plans/067-active-sequence-amendment-plan-081.md),
+[Plan 074 continuation amendment](plans/074-continuation-amendment-plan-081.md),
+and [Plan 081](plans/081-milestone-3-pre-protocol-and-minimal-i2pd-corrective-roadmap.md).
 The Plan 080 Multipass lane is qualified and the Plan 076 i2pd driver is real;
 the Plan 078/080 attempt stopped before TCP and established neither protocol
 conformance nor non-conformance. Plan 082 prepares authentic i2pr state and
 freezes real correlation fields before any live scenario is rendered.
 
-Plans 083 and 084 are the next minimal i2pr↔i2pd wire probes. Plan 079 remains
-blocked pending the Plan 084 decision. NTCP2 remains experimental,
+Plan 083 lands the canonical minimal `i2pr -> i2pd` wire probe record
+schema (`i2pr-minimal-i2pd-probe-v1`) plus the focused test matrices for
+the development diagnostic. The schema is bounded: it refuses the broad
+`typed-harness-operation-failed` reason, mandates the Plan 082 run-identity
+contract, forbids raw payload, private keys, Noise state, transcripts, and
+RouterInfo bytes, and pins the strictly-increasing stage model. A passed
+probe record requires the final stage (`i2np_delivery_status_decoded`), the
+four canonical observed events, clean cleanup, and `reason_code =
+not_started`. The probe is a development diagnostic; it does not authorize
+Plan 079 (repeated development validation) or Plan 073 (release
+qualification). The probe implementation surface is in process on this
+host; no real wire attempt has been executed because the host is the Plan
+046 `apparmor_restrict_on` negative baseline and the Plan 080 Multipass
+guest cannot complete on this constrained host. Plan 083 does not
+implement the actual wire runner; it adds the in-process schema and tests
+that the future runner must consume.
+
+Plan 084 remains the reverse direction and development decision. Plan 079
+remains blocked pending the Plan 084 decision. NTCP2 remains experimental,
 non-advertised, and disabled in normal daemon operation. Local preparation is
-not interoperability evidence; see [the Plan 082 status](plans/082-status.md).
+not interoperability evidence; see [the Plan 082 status](plans/082-status.md)
+and [the Plan 083 status](plans/083-status.md).
 
 Plan 072 is not active. It may be activated only if Plan 084 records
 `decision = ambiguous-reference-divergence` after a real wire-stage

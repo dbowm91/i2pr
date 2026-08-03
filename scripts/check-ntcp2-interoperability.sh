@@ -1231,4 +1231,68 @@ if grep -q '## Status' "$root/plans/080-status.md"; then
   fi
 fi
 
+# Plan 082: pre-protocol i2pr state preparation and runner contract correction.
+# The test-only ``i2pr-interop ntcp2 prepare`` command lives in
+# ``tools/i2pr-interop/src/main.rs``; the canonical Python adapter lives in
+# ``tests/integration/ntcp2/harness/i2pr.py``; the canonical runner uses the
+# frozen ``i2pr-minimal-run-identity-v1`` record before any live process. None
+# of these may be silently removed.
+if ! test -f "$root/tests/integration/ntcp2/harness/i2pr.py"; then
+  echo "Plan 082 i2pr adapter module is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'def prepare_state' "$root/tests/integration/ntcp2/harness/i2pr.py"; then
+  echo "Plan 082 I2prAdapter.prepare_state() is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-interop-state-prepared-v1' "$root/tests/integration/ntcp2/harness/i2pr.py"; then
+  echo "Plan 082 i2pr prepare adapter must reference the state-prepared schema" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-minimal-run-identity-v1' "$root/tests/integration/ntcp2/harness/mixed_runner.py"; then
+  echo "Plan 082 mixed runner must reference the minimal run identity schema" >&2
+  exit 1
+fi
+if ! grep -q 'Prepare' "$root/tools/i2pr-interop/src/main.rs"; then
+  echo "Plan 082 i2pr-interop launcher must expose the Prepare subcommand" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_i2pr_prepare.py"; then
+  echo "Plan 082 i2pr prepare test matrix is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan082.py"; then
+  echo "Plan 082 test matrix is missing" >&2
+  exit 1
+fi
+
+# Plan 083: minimal i2pr-to-i2pd NTCP2 wire probe record schema. The
+# canonical probe module, the focused tests, and the bounded stage and
+# reason code surfaces must all be present. The probe must remain
+# independent of release/bundle/certificate/rootless/Multipass authority.
+if ! test -f "$root/tests/integration/ntcp2/harness/minimal_i2pd_probe.py"; then
+  echo "Plan 083 minimal i2pd probe record module is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-minimal-i2pd-probe-v1' "$root/tests/integration/ntcp2/harness/minimal_i2pd_probe.py"; then
+  echo "Plan 083 probe module must declare the v1 schema marker" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-to-i2pd-ipv4' "$root/tests/integration/ntcp2/harness/minimal_i2pd_probe.py"; then
+  echo "Plan 083 probe module must declare the primary direction" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_minimal_i2pd_probe.py"; then
+  echo "Plan 083 minimal i2pd probe test matrix is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan083.py"; then
+  echo "Plan 083 plan test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 083' "$root/tests/integration/ntcp2/harness/minimal_i2pd_probe.py"; then
+  echo "Plan 083 probe module must reference its plan-of-record" >&2
+  exit 1
+fi
+
 echo "NTCP2 interoperability manifest and sanitized evidence boundary are valid (${scenario_count} scenarios)."

@@ -1313,6 +1313,36 @@ and local scenario parsing are pre-protocol diagnostics only; they cannot claim
 TCP, authentication, frame, or I2NP progress. Plans 083 and 084 own the first
 minimal i2pd wire probes, and Plan 079 is blocked until their decision.
 
+## Plan 083 minimal i2pr-to-i2pd wire probe
+
+Plan 083 introduces the canonical development diagnostic for the first real
+`i2pr -> i2pd` direction. The probe lives at
+`tests/integration/ntcp2/harness/minimal_i2pd_probe.py` and uses the locked
+record schema `i2pr-minimal-i2pd-probe-v1`. The schema enforces the
+strictly-increasing stage model (`not_started`, `state_prepared`,
+`peer_router_info_imported`, `listener_ready`, `tcp_connected`,
+`noise_authenticated`, `session_confirmed_accepted`,
+`authenticated_frame_written`, `authenticated_frame_decrypted`,
+`i2np_delivery_status_decoded`), the bounded terminal-result set
+(`passed`, `protocol_rejected`, `protocol_timeout`, `pre_protocol_rejected`,
+`cleanup_failed`, `lane_invalid`), and the bounded reason-code set. The
+generic `typed-harness-operation-failed` reason is explicitly rejected.
+Preparation and live process counters are separated; a rendering or
+preparation failure cannot fabricate a live process start.
+
+The probe is a development diagnostic, not a release certificate. A passed
+probe record requires the final stage, the four canonical observed events
+(`ntcp2_authenticated`, `frame_emitted`, `frame_authenticated_and_decrypted`,
+`i2np_message_decoded`), clean cleanup, and `reason_code = not_started`. The
+probe never imports Plan 056/066 candidate, bundle, certificate,
+rootless-topology, or Multipass authority. The bounded schema and the
+focused test matrices (`test_minimal_i2pd_probe.py` and `test_plan083.py`)
+are committed; the probe does not invoke the broad Plan 045/052 release-style
+finalization path. The implementation surface is in place on this host; no
+real wire attempt has been executed because the host is the Plan 046
+`apparmor_restrict_on` negative baseline and the Plan 080 Multipass guest
+cannot complete on this constrained host.
+
 ## Plan 078 first real i2pd two-way execution
 
 Plan 078 used the Plan 080-qualified guest and stopped before TCP at the i2pr

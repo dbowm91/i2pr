@@ -472,9 +472,9 @@ test suite plus `cargo fmt --all --check`, `cargo check --workspace
 --all-targets`, `cargo test --workspace`,
 `scripts/check-dependency-direction.sh`, and
 `scripts/check-runtime-boundaries.sh`. Full historical harness
-matrices, rootless checks, and Multipass checks remain available
-for explicit integration checkpoints but are not required for
-Level 1 or Level 2 closures.
+matrices, rootless checks, and Multipass checks remain available for
+explicit integration checkpoints but are not required for Level 1
+or Level 2 closures.
 
 Use the Plan 068 focused seam with:
 
@@ -483,6 +483,14 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_evidenc
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_loopback_smoke_record.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_development_validation.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan068.py'
+```
+
+The Plan 083 focused seam is:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_minimal_i2pd_probe.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan083.py'
+bash scripts/check-ntcp2-interoperability.sh
 ```
 
 ## Plan 074 real-driver and constrained-host corrective roadmap
@@ -638,6 +646,28 @@ must bind real RouterInfo/hash values and a frozen
 scenario ID or use empty correlation fields. Preparation is pre-protocol
 diagnostics only. Do not run the i2pd wire probe in the Plan 082 pass; Plan 083
 owns the first minimal `i2pr → i2pd` attempt.
+
+## Plan 083 minimal i2pr-to-i2pd wire probe
+
+Plan 083 lands the canonical development diagnostic for the first real
+`i2pr -> i2pd` direction. The probe record schema
+`i2pr-minimal-i2pd-probe-v1` lives in
+`tests/integration/ntcp2/harness/minimal_i2pd_probe.py`. The schema
+enforces the strictly-increasing stage model, the bounded terminal-result
+and reason-code sets, the per-process counter skeleton, and the
+Plan 082 run-identity contract. The generic `typed-harness-operation-failed`
+reason is rejected; preparation and live process counters are separated.
+A passed probe record requires the final stage, the four canonical observed
+events, clean cleanup, and `reason_code = not_started`. The probe is a
+development diagnostic, not a release certificate; it never authorizes
+Plan 079 (repeated development validation) or Plan 073 (release
+qualification). The probe never imports Plan 056/066 candidate, bundle,
+certificate, rootless-topology, or Multipass authority. The focused test
+matrices are `test_minimal_i2pd_probe.py` and `test_plan083.py`. The
+implementation surface is in place on this host; no real wire attempt has
+been executed because the host is the Plan 046 `apparmor_restrict_on`
+negative baseline and the Plan 080 Multipass guest cannot complete on
+this constrained host.
 
 ## Plan 078 first real two-way run
 

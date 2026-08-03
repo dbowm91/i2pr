@@ -1825,6 +1825,26 @@ over the wire or produce interoperability evidence. Plan 079 remains blocked
 until `plans/084-status.md` records `decision = two-way-development-probe-passed`.
 NTCP2 stays experimental and non-advertised.
 
+## Plan 083 minimal i2pr-to-i2pd wire probe
+
+Plan 083 owns the first real `i2pr -> i2pd` direction. The plan
+introduces `tests/integration/ntcp2/harness/minimal_i2pd_probe.py`
+with the locked record schema `i2pr-minimal-i2pd-probe-v1`, the
+strictly-increasing stage model, the bounded terminal-result and
+reason-code sets, and the per-process counters. The schema refuses
+the broad `typed-harness-operation-failed` reason code, mandates the
+Plan 082 run-identity contract, and forbids raw payload, private
+keys, Noise state, transcripts, and RouterInfo bytes. The focused
+matrices are `tests/integration/ntcp2/harness/test_minimal_i2pd_probe.py`
+and `tests/integration/ntcp2/harness/test_plan083.py`. The probe
+itself is a development diagnostic: a passed probe record does not
+authorize Plan 079 (repeated development validation) or Plan 073
+(release qualification); those gates remain owned by their own
+plans. Plan 083 is implemented as the in-process schema and tests;
+no real wire attempt has been executed in this checkout because the
+host is the Plan 046 `apparmor_restrict_on` negative baseline and the
+Plan 080 Multipass guest cannot complete on this constrained host.
+
 ## Plan 078 first real i2pd two-way execution
 
 Plan 078 used the Plan 080-qualified owned guest, then stopped before TCP at
