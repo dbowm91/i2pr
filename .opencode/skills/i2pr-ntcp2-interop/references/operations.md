@@ -194,9 +194,10 @@ authorized Ubuntu 24.04 amd64 host or Multipass guest. Plan 054 does
 not close Milestone 3; the canonical external path is the
 `i2pr-multipass-recovery` skill.
 
-## Plan 078 preflight gate
+## Plan 078 preflight gate (historical)
 
-Run the constrained-host preflight before any protocol process:
+The historical Plan 078 preflight ran the constrained-host probe before any
+protocol process:
 
 ```text
 bash scripts/interop/probe-constrained-host-lanes.sh
@@ -207,5 +208,10 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_executi
 Only a current qualification record with `full_runtime_lane = available` may
 authorize the two real i2pd directions. A reduced-scope selection, a remote
 workflow definition, a stale Multipass guest, or a loopback contract test is a
-typed preflight blocker, not protocol evidence. See `plans/078-status.md` for
-the current host result.
+typed preflight blocker, not protocol evidence. The Plan 078 attempt stopped
+before TCP at the i2pr pre-protocol RouterInfo stage and is preserved in
+`plans/078-status.md`; it is not a protocol result.
+
+The active pre-protocol checks are Plan 082's `i2pr-interop ntcp2 prepare`
+and the Plan 083/084 probe entry conditions. Do not start the Plan 083/084
+wire probes from a stale or unowned Multipass guest.

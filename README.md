@@ -1207,41 +1207,31 @@ roles, structured reference events, measured provenance, and
 fail-closed guards. Plan 069 also does not modify production NTCP2
 code or the i2pd direct driver.
 
-### Plan 074 real-driver and constrained-host corrective roadmap
+### Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
-Plan 074 is the active corrective roadmap for Milestone 3 NTCP2
-interoperability. Plan 074 supersedes Plan 070 as the next executable
-plan and reclassifies the implemented Plan 069 lane as orchestration
-scaffolding and fake-process test coverage only; it is not valid
-mixed-router evidence until Plan 075 closes. Plan 074 is the parent
-authority for the active sequence **Plan 075 → Plan 076 → Plan 077 →
-Plan 078 → Plan 079**. Plan 070 and Plan 071 are no longer active
-execution authority.
+Plan 074 is historical execution authority. Plan 081 supersedes its active
+sequence with **Plan 082 → Plan 083 → Plan 084 → Plan 079**. Plans 075, 076,
+077, and 080 are closed prerequisites or historical lane records.
 
 The corrected repository state is:
 
 ```text
 plan_068_staged_evidence = implemented
-plan_069_runner_scaffolding = implemented_but_not_valid_mixed_router_lane
-real_i2pd_driver = not_implemented
-real_i2pd_library_linkage = absent
-real_reference_process_in_plan069_runner = absent
+plan_069_runner_scaffolding = historical
+real_i2pd_driver = implemented
+real_i2pd_library_linkage = present
+real_reference_process_in_plan069_runner = corrected_by_plan075
 real_mixed_router_attempts = 0
 current_rootless_namespace_lane = unavailable
-multipass_lane = unreliable_or_unavailable
+multipass_lane = qualified
 support = experimental
 advertised = false
 normal_daemon_activation = disabled
 ```
 
-The constrained-host lane decision is ordered: existing accessible
-rootful Docker daemon (`--network none`), QEMU TCG guest (`-nic none`),
-inherited connected TCP descriptors plus `no_new_privs`/seccomp for
-reduced-scope protocol diagnostics, manually triggered dedicated
-remote Linux runner, and a typed no-full-runtime-lane blocker.
-Rootless namespaces, bubblewrap, rootless Podman/Docker, user-level
-systemd `PrivateNetwork`, and repeated Multipass recovery are not
-active work items on the known host.
+The constrained-host lane decision and Plan 077 capability probe remain
+historical records. Do not treat capability probing or the pre-protocol
+Plan 078 stop as protocol evidence.
 
 ### Plan 075 Plan 069 runner integrity and evidence correction
 
@@ -1668,21 +1658,22 @@ conformance nor non-conformance. Plan 082 prepares authentic i2pr state and
 freezes real correlation fields before any live scenario is rendered.
 
 Plan 083 lands the canonical minimal `i2pr -> i2pd` wire probe record
-schema (`i2pr-minimal-i2pd-probe-v1`) plus the focused test matrices for
-the development diagnostic. The schema is bounded: it refuses the broad
-`typed-harness-operation-failed` reason, mandates the Plan 082 run-identity
-contract, forbids raw payload, private keys, Noise state, transcripts, and
-RouterInfo bytes, and pins the strictly-increasing stage model. A passed
-probe record requires the final stage (`i2np_delivery_status_decoded`), the
-four canonical observed events, clean cleanup, and `reason_code =
-not_started`. The probe is a development diagnostic; it does not authorize
-Plan 079 (repeated development validation) or Plan 073 (release
-qualification). The probe implementation surface is in process on this
-host; no real wire attempt has been executed because the host is the Plan
-046 `apparmor_restrict_on` negative baseline and the Plan 080 Multipass
-guest cannot complete on this constrained host. Plan 083 does not
-implement the actual wire runner; it adds the in-process schema and tests
-that the future runner must consume.
+schema (`i2pr-minimal-i2pd-probe-v1`) plus the focused test matrices and
+the test-only runner orchestration at
+`tests/integration/ntcp2/harness/plan083_runner.py`. The schema is bounded:
+it refuses the broad `typed-harness-operation-failed` reason, mandates the
+Plan 082 run-identity contract, forbids raw payload, private keys, Noise
+state, transcripts, and RouterInfo bytes, and pins the strictly-increasing
+stage model. A passed probe record requires the final stage
+(`i2np_delivery_status_decoded`), the four canonical observed events, clean
+cleanup, and `reason_code = not_started`. The probe is a development
+diagnostic; it does not authorize Plan 079 (repeated development
+validation) or Plan 073 (release qualification). The probe implementation
+surface is committed on this host; no real wire attempt has been executed
+because the host is the Plan 046 `apparmor_restrict_on` negative baseline
+and the Plan 080 Multipass guest cannot complete on this constrained
+host. The runner is fail-closed and never synthesizes protocol pass or
+proven provenance.
 
 Plan 084 remains the reverse direction and development decision. Plan 079
 remains blocked pending the Plan 084 decision. NTCP2 remains experimental,

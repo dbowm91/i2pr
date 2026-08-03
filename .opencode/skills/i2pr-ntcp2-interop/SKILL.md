@@ -3,7 +3,7 @@ name: i2pr-ntcp2-interop
 description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/056/058/059/074/075/076/077/078/081/082/083/084 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, typed evidence validation, the Plan 081-084 minimal i2pd probe sequence, and the Plan 084-gated conditional Emissary decision. Use when an agent is asked to run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, diagnose Plan 082-084 execution, or validate evidence. Do not activate Plan 072 or build a general Emissary lane unless Plan 084 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
-# I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/074/075/076/077)
+# I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/081/082/083/084)
 
 Use this skill from the repository root for the **host-side** Ubuntu 24.04
 amd64 Plan 038 reference-router NTCP2 interoperability harness. This skill
@@ -493,57 +493,40 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan083
 bash scripts/check-ntcp2-interoperability.sh
 ```
 
-## Plan 074 real-driver and constrained-host corrective roadmap
+## Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
-Plan 074 is the active corrective roadmap for Milestone 3 NTCP2
-interoperability. Plan 074 supersedes Plan 070 as the next executable
-plan and reclassifies the implemented Plan 069 lane as orchestration
-scaffolding and fake-process test coverage only; it is not valid
-mixed-router evidence until Plan 075 closes. Plan 074 is the parent
-authority for the active sequence **Plan 075 → Plan 076 → Plan 077 →
-Plan 078 → Plan 079**. Plan 070 and Plan 071 are no longer active
-execution authority.
+Plan 074 is historical execution authority. Plan 081 supersedes its active
+sequence with **Plan 082 → Plan 083 → Plan 084 → Plan 079**. Plans 075, 076,
+077, and 080 are closed prerequisites or historical lane records.
 
 The corrected repository state is:
 
 ```text
 plan_068_staged_evidence = implemented
-plan_069_runner_scaffolding = implemented_but_not_valid_mixed_router_lane
-real_i2pd_driver = not_implemented
-real_i2pd_library_linkage = absent
-real_reference_process_in_plan069_runner = absent
+plan_069_runner_scaffolding = historical
+real_i2pd_driver = implemented
+real_i2pd_library_linkage = present
+real_reference_process_in_plan069_runner = corrected_by_plan075
 real_mixed_router_attempts = 0
 current_rootless_namespace_lane = unavailable
-multipass_lane = unreliable_or_unavailable
+multipass_lane = qualified
 support = experimental
 advertised = false
 normal_daemon_activation = disabled
 ```
 
-The constrained-host lane decision is ordered: existing accessible
-rootful Docker daemon (`--network none`), QEMU TCG guest (`-nic none`),
-inherited connected TCP descriptors plus `no_new_privs`/seccomp for
-reduced-scope protocol diagnostics, manually triggered dedicated
-remote Linux runner, and a typed no-full-runtime-lane blocker.
-Rootless namespaces, bubblewrap, rootless Podman/Docker, user-level
-systemd `PrivateNetwork`, and repeated Multipass recovery are not
-active work items on the known host.
+The constrained-host lane decision and Plan 077 capability probe remain
+historical records. Do not treat capability probing or the pre-protocol
+Plan 078 stop as protocol evidence.
 
-## Plan 069 host-compatible NTCP2 loopback smoke lane
+## Plan 069 host-compatible NTCP2 loopback smoke lane (historical)
 
 > **Reclassification (Plan 074, supersession note).** Plan 069
 > implements the Plan 067 Level 1 host-loopback smoke runner and its
-> static boundary check, but at the time Plan 074 was registered the
-> runner was scaffolding/fake-process coverage only. The Plan 069
-> runner selected the i2pr launcher for both process handles, did not
-> invoke the supplied i2pd binary as the reference process, and could
-> promote protocol milestones without consuming real structured
-> reference events. The Plan 064 i2pd helper's listen/dial paths were
-> terminal stubs when real pinned i2pd libraries were not linked. The
-> Plan 069 closure record (`plans/069-status.md`) is preserved as a
-> snapshot of that scaffolding state. Plan 075 is the runner integrity
-> and evidence correction pass; the Plan 069 lane is not valid
-> mixed-router evidence until Plan 075 closes.
+> static boundary check; at Plan 074 registration the runner was
+> scaffolding/fake-process test coverage only. The runner integrity
+> correction landed in Plan 075. Plan 069 remains the historical
+> scaffolding snapshot in `plans/069-status.md`.
 
 Plan 069 implements the Plan 067 Level 1 host-loopback smoke lane.
 The lane is a non-production composition that exercises a single
@@ -622,13 +605,25 @@ integrity surface only. The next active plan is Plan 076; do not
 attempt a real mixed-router run until the real i2pd driver and a
 qualified Plan 077 execution lane exist.
 
-## Plan 076 real pinned i2pd driver
+Plan 081 has since superseded Plan 074 for active execution. Plans 075,
+076, 077, and 080 are closed prerequisites; the active sequence is
+**Plan 082 → Plan 083 → Plan 084 → Plan 079**.
 
-Plan 076 is the next executable plan. It must build and link the exact pinned i2pd 2.60.0 source, remove terminal listen/dial stubs, prove real symbols and genuine inspect behavior, and produce measured instrumented/control manifests. Stop on unavailable or private APIs rather than substituting mocks or synthetic provenance.
+## Plan 076 real pinned i2pd driver (closed)
 
-## Plan 077 constrained-host lane
+Plan 076 built and linked the exact pinned i2pd 2.60.0 source, removed
+terminal listen/dial stubs, proved real symbols and genuine inspect
+behavior, and produced measured instrumented/control manifests. The
+qualification receipt carries the typed host blocker on the Plan 046
+`apparmor_restrict_on` negative baseline.
 
-Plan 077 follows only after Plan 076 closes. Probe existing rootful Docker (`--network none`), then QEMU TCG (`-nic none`), then the explicitly reduced inherited-descriptor lane or a manually triggered remote runner. Do not install privileged services, retry rootless/Multipass lanes, or claim protocol evidence from a typed no-lane result.
+## Plan 077 constrained-host lane (closed)
+
+Plan 077 documented the constrained-host capability state. Probe existing
+rootful Docker (`--network none`), then QEMU TCG (`-nic none`), then the
+explicitly reduced inherited-descriptor lane or a manually triggered
+remote runner. Do not install privileged services, retry rootless/Multipass
+lanes, or claim protocol evidence from a typed no-lane result.
 
 ## Plan 081/082 active sequence correction
 

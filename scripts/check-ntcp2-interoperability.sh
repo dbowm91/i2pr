@@ -1294,5 +1294,13 @@ if ! grep -Fq 'Plan 083' "$root/tests/integration/ntcp2/harness/minimal_i2pd_pro
   echo "Plan 083 probe module must reference its plan-of-record" >&2
   exit 1
 fi
+if ! test -f "$root/tests/integration/ntcp2/harness/plan083_runner.py"; then
+  echo "Plan 083 probe runner orchestration module is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 083' "$root/tests/integration/ntcp2/harness/plan083_runner.py"; then
+  echo "Plan 083 runner must reference its plan-of-record" >&2
+  exit 1
+fi
 
 echo "NTCP2 interoperability manifest and sanitized evidence boundary are valid (${scenario_count} scenarios)."

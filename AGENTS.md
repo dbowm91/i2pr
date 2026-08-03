@@ -1502,57 +1502,36 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_develop
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan068.py'
 ```
 
-## Plan 074 real-driver and constrained-host corrective roadmap
+## Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
-Plan 074 is the active corrective roadmap for Milestone 3 NTCP2
-interoperability. Plan 074 supersedes Plan 070 as the next executable
-plan and reclassifies the implemented Plan 069 lane as orchestration
-scaffolding and fake-process test coverage only; it is not valid
-mixed-router evidence until Plan 075 closes. Plan 074 is the parent
-authority for the active sequence **Plan 075 → Plan 076 → Plan 077 →
-Plan 078 → Plan 079**. Plan 070 and Plan 071 are no longer active
-execution authority.
+Plan 074 is historical execution authority. Plan 081 supersedes its active sequence with **Plan 082 → Plan 083 → Plan 084 → Plan 079**. Plans 075, 076, 077, and 080 are closed prerequisites or historical lane records.
 
 The corrected repository state is:
 
 ```text
 plan_068_staged_evidence = implemented
-plan_069_runner_scaffolding = implemented_but_not_valid_mixed_router_lane
-real_i2pd_driver = not_implemented
-real_i2pd_library_linkage = absent
-real_reference_process_in_plan069_runner = absent
+plan_069_runner_scaffolding = historical
+real_i2pd_driver = implemented
+real_i2pd_library_linkage = present
+real_reference_process_in_plan069_runner = corrected_by_plan075
 real_mixed_router_attempts = 0
 current_rootless_namespace_lane = unavailable
-multipass_lane = unreliable_or_unavailable
+multipass_lane = qualified
 support = experimental
 advertised = false
 normal_daemon_activation = disabled
 ```
 
-The constrained-host lane decision is ordered: existing accessible
-rootful Docker daemon (`--network none`), QEMU TCG guest (`-nic none`),
-inherited connected TCP descriptors plus `no_new_privs`/seccomp for
-reduced-scope protocol diagnostics, manually triggered dedicated
-remote Linux runner, and a typed no-full-runtime-lane blocker.
-Rootless namespaces, bubblewrap, rootless Podman/Docker, user-level
-systemd `PrivateNetwork`, and repeated Multipass recovery are not
-active work items on the known host.
+The constrained-host lane decision and Plan 077 capability probe remain historical records. Do not treat capability probing or the pre-protocol Plan 078 stop as protocol evidence.
 
-## Plan 069 host-compatible NTCP2 loopback smoke lane
+## Plan 069 host-compatible NTCP2 loopback smoke lane (historical)
 
 > **Reclassification (Plan 074, supersession note).** Plan 069
 > implements the Plan 067 Level 1 host-loopback smoke runner and its
-> static boundary check, but at the time Plan 074 was registered the
-> runner was scaffolding/fake-process coverage only. The Plan 069
-> runner selected the i2pr launcher for both process handles, did not
-> invoke the supplied i2pd binary as the reference process, and could
-> promote protocol milestones without consuming real structured
-> reference events. The Plan 064 i2pd helper's listen/dial paths were
-> terminal stubs when real pinned i2pd libraries were not linked. The
-> Plan 069 closure record (`plans/069-status.md`) is preserved as a
-> snapshot of that scaffolding state. Plan 075 is the runner integrity
-> and evidence correction pass; the Plan 069 lane is not valid
-> mixed-router evidence until Plan 075 closes.
+> static boundary check; at Plan 074 registration the runner was
+> scaffolding/fake-process test coverage only. The runner integrity
+> correction landed in Plan 075. Plan 069 remains the historical
+> scaffolding snapshot in `plans/069-status.md`.
 
 Plan 069 implements the Plan 067 Level 1 host-loopback smoke lane.
 The lane is a non-production composition that exercises a single
@@ -1663,6 +1642,8 @@ git diff --check
 ```
 
 Plan 075 closes the runner-integrity work only; it does not build i2pd, run a real mixed-router direction, add Docker/QEMU/namespaces/CI, change NTCP2 protocol code, or produce a Level 2 or Level 3 record. The next active plan is Plan 076, followed by Plans 077, 078, and 079. The current repository therefore has no real mixed-router attempt and remains experimental and non-advertised.
+
+Plan 081 has since superseded Plan 074 for active execution. Plans 075, 076, 077, and 080 are closed prerequisites; the active sequence is Plan 082 → Plan 083 → Plan 084 → Plan 079.
 
 Required focused checks for Plan 069 (after the Plan 075 fix
 lands):
@@ -1823,7 +1804,8 @@ RouterInfo/hash preparation, canonical pre-launch run identity, precise
 pre-protocol errors, and truthful process accounting. It does not run i2pd
 over the wire or produce interoperability evidence. Plan 079 remains blocked
 until `plans/084-status.md` records `decision = two-way-development-probe-passed`.
-NTCP2 stays experimental and non-advertised.
+NTCP2 stays experimental and non-advertised. Plan 082 is implemented and
+closed per `plans/082-status.md`.
 
 ## Plan 083 minimal i2pr-to-i2pd wire probe
 
@@ -1840,10 +1822,12 @@ and `tests/integration/ntcp2/harness/test_plan083.py`. The probe
 itself is a development diagnostic: a passed probe record does not
 authorize Plan 079 (repeated development validation) or Plan 073
 (release qualification); those gates remain owned by their own
-plans. Plan 083 is implemented as the in-process schema and tests;
-no real wire attempt has been executed in this checkout because the
-host is the Plan 046 `apparmor_restrict_on` negative baseline and the
-Plan 080 Multipass guest cannot complete on this constrained host.
+plans. Plan 083 is implemented as the in-process schema, the
+focused test matrix, and the test-only runner orchestration at
+`tests/integration/ntcp2/harness/plan083_runner.py`. No real wire
+attempt has been executed in this checkout because the host is the
+Plan 046 `apparmor_restrict_on` negative baseline and the Plan 080
+Multipass guest cannot complete on this constrained host.
 
 ## Plan 078 first real i2pd two-way execution
 

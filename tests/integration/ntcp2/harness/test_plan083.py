@@ -26,7 +26,11 @@ subprocess and never need the real i2pd binary.
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 
 import minimal_i2pd_probe as probe
 
@@ -330,6 +334,422 @@ class Plan083BoundaryTests(unittest.TestCase):
         import pathlib
         text = pathlib.Path(source_path).read_text(encoding="utf-8")
         self.assertIn("Plan 083", text)
+
+
+class Plan083RunnerContractTests(unittest.TestCase):
+    """Runner module contract and boundary tests."""
+
+    def test_runner_module_imports_minimal_i2pd_probe(self) -> None:
+        import plan083_runner as runner_mod
+        self.assertTrue(hasattr(runner_mod, "ProbeRunner"))
+        self.assertTrue(hasattr(runner_mod, "ProbeConfig"))
+
+    def test_runner_module_does_not_import_release_authority(self) -> None:
+        import plan083_runner as runner_mod
+        source_path = runner_mod.__file__
+        if source_path is None:
+            self.skipTest("module path unavailable")
+        import pathlib
+        import re
+        text = pathlib.Path(source_path).read_text(encoding="utf-8")
+        code_only = re.sub(r"\"\"\".*?\"\"\"", "", text, flags=re.DOTALL)
+        code_only = re.sub(r"#.*", "", code_only)
+        for forbidden in (
+            "verify_milestone3_certificate",
+            "candidate_record",
+            "evidence_bundle",
+            "from .rootless_topology",
+            "from .multipass",
+        ):
+            self.assertNotIn(forbidden, code_only, f"runner imports release authority: {forbidden}")
+
+    def test_runner_schema_constants_match_probe_module(self) -> None:
+        import plan083_runner as runner_mod
+        self.assertEqual(runner_mod.SCHEMA, probe.SCHEMA)
+        self.assertEqual(runner_mod.DIRECTION, probe.DIRECTION)
+        self.assertEqual(runner_mod.REFERENCE, probe.REFERENCE)
+
+    def test_runner_refuses_unknown_topology_kind(self) -> None:
+        import plan083_runner as runner_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = runner_mod.ProbeConfig(
+                run_id="test-run",
+                source_commit="a" * 40,
+                reference_revision="b" * 40,
+                lane_qualification_sha256="c" * 64,
+                topology_kind="public-network",
+                parent_network_state_unchanged=True,
+                i2pr_binary_sha256="d" * 64,
+                i2pd_binary_sha256="e" * 64,
+                i2pr_router_info_sha256="1" * 64,
+                i2pd_router_info_sha256="2" * 64,
+                i2pr_router_hash_sha256="3" * 64,
+                i2pd_router_hash_sha256="4" * 64,
+                delivery_status_message_id=0x04200001,
+                output_path=root / "probe-record.json",
+            )
+            runner = runner_mod.ProbeRunner(config)
+            output = runner.run(root)
+            record = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(record["terminal_result"], probe.LANE_INVALID)
+            self.assertEqual(record["reason_code"], "lane-invalid")
+
+    def test_runner_refuses_unchanged_network_state_false(self) -> None:
+        import plan083_runner as runner_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = runner_mod.ProbeConfig(
+                run_id="test-run",
+                source_commit="a" * 40,
+                reference_revision="b" * 40,
+                lane_qualification_sha256="c" * 64,
+                topology_kind="rootless-sealed-single-netns",
+                parent_network_state_unchanged=False,
+                i2pr_binary_sha256="d" * 64,
+                i2pd_binary_sha256="e" * 64,
+                i2pr_router_info_sha256="1" * 64,
+                i2pd_router_info_sha256="2" * 64,
+                i2pr_router_hash_sha256="3" * 64,
+                i2pd_router_hash_sha256="4" * 64,
+                delivery_status_message_id=0x04200001,
+                output_path=root / "probe-record.json",
+            )
+            runner = runner_mod.ProbeRunner(config)
+            output = runner.run(root)
+            record = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(record["terminal_result"], probe.LANE_INVALID)
+            self.assertEqual(record["reason_code"], "lane-invalid")
+
+    def test_runner_refuses_invalid_run_id(self) -> None:
+        import plan083_runner as runner_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = runner_mod.ProbeConfig(
+                run_id="INVALID",
+                source_commit="a" * 40,
+                reference_revision="b" * 40,
+                lane_qualification_sha256="c" * 64,
+                topology_kind="rootless-sealed-single-netns",
+                parent_network_state_unchanged=True,
+                i2pr_binary_sha256="d" * 64,
+                i2pd_binary_sha256="e" * 64,
+                i2pr_router_info_sha256="1" * 64,
+                i2pd_router_info_sha256="2" * 64,
+                i2pr_router_hash_sha256="3" * 64,
+                i2pd_router_hash_sha256="4" * 64,
+                delivery_status_message_id=0x04200001,
+                output_path=root / "probe-record.json",
+            )
+            runner = runner_mod.ProbeRunner(config)
+            output = runner.run(root)
+            record = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(record["terminal_result"], probe.PRE_PROTOCOL_REJECTED)
+
+    def test_runner_refuses_zero_message_id(self) -> None:
+        import plan083_runner as runner_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = runner_mod.ProbeConfig(
+                run_id="test-run",
+                source_commit="a" * 40,
+                reference_revision="b" * 40,
+                lane_qualification_sha256="c" * 64,
+                topology_kind="rootless-sealed-single-netns",
+                parent_network_state_unchanged=True,
+                i2pr_binary_sha256="d" * 64,
+                i2pd_binary_sha256="e" * 64,
+                i2pr_router_info_sha256="1" * 64,
+                i2pd_router_info_sha256="2" * 64,
+                i2pr_router_hash_sha256="3" * 64,
+                i2pd_router_hash_sha256="4" * 64,
+                delivery_status_message_id=0,
+                output_path=root / "probe-record.json",
+            )
+            runner = runner_mod.ProbeRunner(config)
+            output = runner.run(root)
+            record = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(record["terminal_result"], probe.PRE_PROTOCOL_REJECTED)
+
+
+class Plan083RunnerStageProgressionTests(unittest.TestCase):
+    """Runner stage progression with fake event sources."""
+
+    def test_runner_advances_to_state_prepared(self) -> None:
+        import plan083_runner as runner_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = runner_mod.ProbeConfig(
+                run_id="test-run",
+                source_commit="a" * 40,
+                reference_revision="b" * 40,
+                lane_qualification_sha256="c" * 64,
+                topology_kind="rootless-sealed-single-netns",
+                parent_network_state_unchanged=True,
+                i2pr_binary_sha256="d" * 64,
+                i2pd_binary_sha256="e" * 64,
+                i2pr_router_info_sha256="1" * 64,
+                i2pd_router_info_sha256="2" * 64,
+                i2pr_router_hash_sha256="3" * 64,
+                i2pd_router_hash_sha256="4" * 64,
+                delivery_status_message_id=0x04200001,
+                output_path=root / "probe-record.json",
+            )
+            runner = runner_mod.ProbeRunner(config)
+            output = runner.run(root)
+            record = json.loads(output.read_text(encoding="utf-8"))
+            self.assertIn(record["highest_stage_reached"], probe.STAGES)
+
+    def test_runner_emits_valid_probe_record(self) -> None:
+        import plan083_runner as runner_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = runner_mod.ProbeConfig(
+                run_id="test-run",
+                source_commit="a" * 40,
+                reference_revision="b" * 40,
+                lane_qualification_sha256="c" * 64,
+                topology_kind="rootless-sealed-single-netns",
+                parent_network_state_unchanged=True,
+                i2pr_binary_sha256="d" * 64,
+                i2pd_binary_sha256="e" * 64,
+                i2pr_router_info_sha256="1" * 64,
+                i2pd_router_info_sha256="2" * 64,
+                i2pr_router_hash_sha256="3" * 64,
+                i2pd_router_hash_sha256="4" * 64,
+                delivery_status_message_id=0x04200001,
+                output_path=root / "probe-record.json",
+            )
+            runner = runner_mod.ProbeRunner(config)
+            output = runner.run(root)
+            record = json.loads(output.read_text(encoding="utf-8"))
+            probe.validate_record(record)
+
+    def test_runner_pre_protocol_result_for_missing_router_info(self) -> None:
+        import plan083_runner as runner_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = runner_mod.ProbeConfig(
+                run_id="test-run",
+                source_commit="a" * 40,
+                reference_revision="b" * 40,
+                lane_qualification_sha256="c" * 64,
+                topology_kind="rootless-sealed-single-netns",
+                parent_network_state_unchanged=True,
+                i2pr_binary_sha256="d" * 64,
+                i2pd_binary_sha256="e" * 64,
+                i2pr_router_info_sha256="",
+                i2pd_router_info_sha256="2" * 64,
+                i2pr_router_hash_sha256="3" * 64,
+                i2pd_router_hash_sha256="4" * 64,
+                delivery_status_message_id=0x04200001,
+                output_path=root / "probe-record.json",
+            )
+            runner = runner_mod.ProbeRunner(config)
+            output = runner.run(root)
+            record = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(record["terminal_result"], probe.PRE_PROTOCOL_REJECTED)
+            self.assertIn(record["reason_code"], probe.REASON_CODES)
+
+    def test_runner_preserves_non_started_counter_for_failed_lane(self) -> None:
+        import plan083_runner as runner_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = runner_mod.ProbeConfig(
+                run_id="test-run",
+                source_commit="a" * 40,
+                reference_revision="b" * 40,
+                lane_qualification_sha256="c" * 64,
+                topology_kind="public-network",
+                parent_network_state_unchanged=True,
+                i2pr_binary_sha256="d" * 64,
+                i2pd_binary_sha256="e" * 64,
+                i2pr_router_info_sha256="1" * 64,
+                i2pd_router_info_sha256="2" * 64,
+                i2pr_router_hash_sha256="3" * 64,
+                i2pd_router_hash_sha256="4" * 64,
+                delivery_status_message_id=0x04200001,
+                output_path=root / "probe-record.json",
+            )
+            runner = runner_mod.ProbeRunner(config)
+            output = runner.run(root)
+            record = json.loads(output.read_text(encoding="utf-8"))
+            counters = record["process_counters"]
+            for key in probe.PROCESS_KEYS:
+                self.assertEqual(counters[key]["started"], 0)
+
+
+class Plan083FakeEventSourceTests(unittest.TestCase):
+    """FakeEventSource injection tests."""
+
+    def test_fake_event_source_returns_configured_event(self) -> None:
+        import plan083_runner as runner_mod
+        fake = runner_mod.FakeEventSource()
+        fake.add_event("listener_ready", "i2pd")
+        event = fake.wait_for_event("listener_ready", 1.0)
+        self.assertIsNotNone(event)
+        self.assertEqual(event["event_name"], "listener_ready")
+        self.assertEqual(event["source_side"], "i2pd")
+
+    def test_fake_event_source_returns_none_for_missing_event(self) -> None:
+        import plan083_runner as runner_mod
+        fake = runner_mod.FakeEventSource()
+        event = fake.wait_for_event("listener_ready", 0.01)
+        self.assertIsNone(event)
+
+    def test_fake_event_source_terminal_rejection(self) -> None:
+        import plan083_runner as runner_mod
+        fake = runner_mod.FakeEventSource()
+        fake.add_event("listener_ready", "i2pd")
+        fake.inject_terminal_rejected()
+        event = fake.wait_for_event("listener_ready", 0.01)
+        self.assertIsNone(event)
+
+    def test_fake_event_source_returns_events_in_order(self) -> None:
+        import plan083_runner as runner_mod
+        fake = runner_mod.FakeEventSource()
+        fake.add_event("ntcp2_authenticated", "i2pr")
+        fake.add_event("frame_emitted", "i2pr")
+        e1 = fake.wait_for_event("ntcp2_authenticated", 1.0)
+        e2 = fake.wait_for_event("frame_emitted", 1.0)
+        self.assertIsNotNone(e1)
+        self.assertIsNotNone(e2)
+        self.assertEqual(e1["event_name"], "ntcp2_authenticated")
+        self.assertEqual(e2["event_name"], "frame_emitted")
+
+    def test_fake_event_source_returns_none_for_wrong_name(self) -> None:
+        import plan083_runner as runner_mod
+        fake = runner_mod.FakeEventSource()
+        fake.add_event("ntcp2_authenticated", "i2pr")
+        event = fake.wait_for_event("frame_emitted", 0.01)
+        self.assertIsNone(event)
+
+    def test_fake_event_source_event_has_sha256_digest(self) -> None:
+        import plan083_runner as runner_mod
+        fake = runner_mod.FakeEventSource()
+        fake.add_event("listener_ready", "i2pd")
+        event = fake.wait_for_event("listener_ready", 1.0)
+        self.assertIsNotNone(event)
+        self.assertEqual(len(event["event_sha256"]), 64)
+        self.assertTrue(all(c in "0123456789abcdef" for c in event["event_sha256"]))
+
+
+class Plan083HostBlockerTests(unittest.TestCase):
+    """Host blocker detection and typed record tests."""
+
+    def test_detect_host_blocker_returns_none_when_unset(self) -> None:
+        import plan083_runner as runner_mod
+        env_key = runner_mod._PLAN046_HOST_BLOCKER_ENV
+        old = os.environ.pop(env_key, None)
+        try:
+            result = runner_mod.detect_host_blocker()
+            self.assertIsNone(result)
+        finally:
+            if old is not None:
+                os.environ[env_key] = old
+
+    def test_detect_host_blocker_returns_code_when_set(self) -> None:
+        import plan083_runner as runner_mod
+        env_key = runner_mod._PLAN046_HOST_BLOCKER_ENV
+        old = os.environ.pop(env_key, None)
+        try:
+            os.environ[env_key] = "blocked_unprivileged_user_namespace"
+            result = runner_mod.detect_host_blocker()
+            self.assertEqual(result, "blocked_unprivileged_user_namespace")
+        finally:
+            if old is not None:
+                os.environ[env_key] = old
+            else:
+                os.environ.pop(env_key, None)
+
+    def test_write_host_blocked_record_emits_lane_invalid(self) -> None:
+        import plan083_runner as runner_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = runner_mod.write_host_blocked_record(
+                run_root=root,
+                run_id="blocked-run",
+                source_commit="a" * 40,
+                reference_revision="b" * 40,
+                lane_qualification_sha256="c" * 64,
+                topology_kind="rootless-sealed-single-netns",
+                host_blocker="blocked_unprivileged_user_namespace",
+                output_path=root / "blocked-record.json",
+            )
+            record = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(record["terminal_result"], probe.LANE_INVALID)
+            self.assertEqual(record["reason_code"], "lane-invalid")
+            self.assertEqual(record["highest_stage_reached"], probe.NOT_STARTED)
+            self.assertEqual(record["cleanup_result"], "not-run")
+            probe.validate_record(record)
+
+    def test_write_host_blocked_record_has_zero_binary_digests(self) -> None:
+        import plan083_runner as runner_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = runner_mod.write_host_blocked_record(
+                run_root=root,
+                run_id="blocked-run",
+                source_commit="a" * 40,
+                reference_revision="b" * 40,
+                lane_qualification_sha256="c" * 64,
+                topology_kind="rootless-sealed-single-netns",
+                host_blocker="blocked_unprivileged_user_namespace",
+                output_path=root / "blocked-record.json",
+            )
+            record = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(record["i2pr_binary_sha256"], "0" * 64)
+            self.assertEqual(record["i2pd_binary_sha256"], "0" * 64)
+            self.assertEqual(record["i2pr_router_info_sha256"], "0" * 64)
+            self.assertEqual(record["i2pd_router_info_sha256"], "0" * 64)
+            self.assertEqual(record["i2pr_router_hash_sha256"], "0" * 64)
+            self.assertEqual(record["i2pd_router_hash_sha256"], "0" * 64)
+
+    def test_write_host_blocked_record_has_empty_observed_events(self) -> None:
+        import plan083_runner as runner_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = runner_mod.write_host_blocked_record(
+                run_root=root,
+                run_id="blocked-run",
+                source_commit="a" * 40,
+                reference_revision="b" * 40,
+                lane_qualification_sha256="c" * 64,
+                topology_kind="rootless-sealed-single-netns",
+                host_blocker="blocked_unprivileged_user_namespace",
+                output_path=root / "blocked-record.json",
+            )
+            record = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(record["observed_events"], [])
+
+
+class Plan083RunnerCleanupTests(unittest.TestCase):
+    """Runner cleanup verification tests."""
+
+    def test_runner_records_clean_for_empty_run_root(self) -> None:
+        import plan083_runner as runner_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = runner_mod.ProbeConfig(
+                run_id="cleanup-test",
+                source_commit="a" * 40,
+                reference_revision="b" * 40,
+                lane_qualification_sha256="c" * 64,
+                topology_kind="rootless-sealed-single-netns",
+                parent_network_state_unchanged=True,
+                i2pr_binary_sha256="d" * 64,
+                i2pd_binary_sha256="e" * 64,
+                i2pr_router_info_sha256="1" * 64,
+                i2pd_router_info_sha256="2" * 64,
+                i2pr_router_hash_sha256="3" * 64,
+                i2pd_router_hash_sha256="4" * 64,
+                delivery_status_message_id=0x04200001,
+                output_path=root / "probe-record.json",
+            )
+            runner = runner_mod.ProbeRunner(config)
+            output = runner.run(root)
+            record = json.loads(output.read_text(encoding="utf-8"))
+            self.assertIn(record["cleanup_result"], probe.CLEANUP_RESULTS)
 
 
 if __name__ == "__main__":
