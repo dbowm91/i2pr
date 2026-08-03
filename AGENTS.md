@@ -1842,4 +1842,6 @@ real wire stage, source/specification review cannot identify ownership, and
 `decision = ambiguous-reference-divergence` plus one precise role/stage
 question. Plan 082 preparation and any pre-protocol failure do not satisfy
 this gate. Emissary driver code and general qualification work are out of
-scope until then.
+scope until then. See the activation amendment at
+[plans/072-activation-amendment-plan-084.md](plans/072-activation-amendment-plan-084.md)
+for the full gate, scope, and handoff rule.

@@ -2,12 +2,23 @@
 
 ## Status and activation
 
-- Status: planned-conditional.
+- Status: planned-conditional. **Inactive on 2026-08-01.** See the activation
+  amendment at
+  [`plans/072-activation-amendment-plan-084.md`](072-activation-amendment-plan-084.md)
+  for the current gate: Plan 072 may activate only after Plan 084 reaches a
+  real wire stage, source/specification review cannot identify ownership, and
+  `plans/084-status.md` records
+  `decision = ambiguous-reference-divergence` plus one precise role/stage
+  question.
 - Parent roadmap: Plan 067.
 - Requires Plan 068 and Plan 069 closed.
-- Normally evaluated after Plan 079.
+- Historically evaluated after Plan 079. Plan 084 may also activate it
+  before Plan 079 only when the minimal probes leave an unambiguous
+  wire-stage reference divergence; that gate is defined in the amendment
+  above.
 - This plan is not on the mandatory development-validation critical path.
-- Execute only when Plan 079 status explicitly activates it or the maintainer explicitly requests a third-implementation comparison.
+- Execute only when the activation amendment, Plan 079 status, or an
+  explicit maintainer request authorizes a third-implementation comparison.
 - Plan type: bounded source-locked differential interoperability lane.
 
 ## Objective

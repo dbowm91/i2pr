@@ -1452,6 +1452,11 @@ Future integration with `eggsec` should use stable testkit, fault-injection, and
 - [Plan 067 Milestone 3 staged interoperability corrective roadmap](plans/067-milestone-3-staged-interoperability-corrective-roadmap.md)
 - [Plan 068 staged evidence and Milestone 3 authority correction](plans/068-staged-interop-evidence-and-milestone-3-authority-correction.md)
 - [ADR 0023 staged NTCP2 interoperability evidence](docs/adr/0023-staged-ntcp2-interoperability-evidence.md)
+- [Plan 072 conditional Emissary NTCP2 differential validation](plans/072-conditional-emissary-ntcp2-differential-validation.md)
+- [Plan 072 activation amendment](plans/072-activation-amendment-plan-084.md)
+- [Plan 083 minimal i2pr-to-i2pd NTCP2 wire probe](plans/083-minimal-i2pr-to-i2pd-ntcp2-wire-probe.md)
+- [Plan 084 i2pd-to-i2pr reverse probe and development decision](plans/084-i2pd-to-i2pr-reverse-probe-and-development-decision.md)
+- [Plan 084 status](plans/084-status.md)
 - [Aggregate Milestone 3 closure record](plans/030-milestone-3-closure.md)
 - [Controlled NTCP2 interoperability lane](tests/integration/ntcp2/README.md)
 - [Machine-readable protocol support ledger](specs/support.toml)
@@ -1670,7 +1675,8 @@ Plan 072 is not active. It may be activated only if Plan 084 records
 `decision = ambiguous-reference-divergence` after a real wire-stage
 i2pr/i2pd disagreement and names one exact role/stage diagnostic question.
 The current pre-protocol stop does not satisfy that gate; see
-[Plan 084 status](plans/084-status.md).
+[Plan 072 activation amendment](plans/072-activation-amendment-plan-084.md)
+and [Plan 084 status](plans/084-status.md).
 
 ## License
 
