@@ -1,6 +1,16 @@
 # Aggregate Milestone 3 closure: NTCP2 and transport-neutral link management
 
 Date: 2026-07-31 (last updated by Plan 068)
+Date (active correction, 2026-08-01): the Plan 074 active sequence is
+superseded by [the Plan 081 pre-protocol and minimal i2pd corrective
+roadmap](081-milestone-3-pre-protocol-and-minimal-i2pd-corrective-roadmap.md)
+and [the Plan 080 diagnostic correction amendment](080-diagnostic-correction-amendment-plan-081.md).
+The active Milestone 3 sequence is now Plan 082 → Plan 083 → Plan 084.
+The Plan 080 Multipass lane qualification and the Plan 076 real i2pd
+driver remain valid; the Plan 078/080 attempt stopped pre-protocol and
+is not protocol rejection evidence. See [the Plan 067 active-sequence
+amendment for Plan 081](067-active-sequence-amendment-plan-081.md) for
+the corrected active sequence and status-propagation rules.
 
 Status (Plan 074 active correction): **implementation phases complete
 for their bounded local scope; milestone acceptance criteria not met;
