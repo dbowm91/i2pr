@@ -634,23 +634,14 @@ bash scripts/check-multipass-interop-boundary.sh
 
 ## Plan 074 real-driver and constrained-host corrective roadmap
 
-Plan 074 is the active corrective roadmap for Milestone 3 NTCP2
-interoperability. Plan 074 supersedes Plan 070 as the next executable
-plan and reclassifies the implemented Plan 069 lane as orchestration
-scaffolding and fake-process test coverage only; it is not valid
-mixed-router evidence until Plan 075 closes. Plan 074 is the parent
-authority for the active sequence **Plan 075 → Plan 076 → Plan 077 →
-Plan 078 → Plan 079**. Plan 070 and Plan 071 are no longer active
-execution authority.
-
-The Plan 064 i2pd direct driver requires real library linkage and
-genuine transport implementation. The Plan 064 helper's listen/dial
-paths are terminal stubs when real pinned i2pd libraries are not
-linked. The Plan 069 runner was scaffolding/fake-process coverage
-only: it launched the i2pr launcher for both process handles and
-could promote protocol milestones without consuming real structured
-reference events. Zero real mixed-router attempts remain until Plan
-078 executes.
+Plan 074 is a historical corrective roadmap. Plan 081 supersedes it with the
+active sequence **Plan 082 (implemented) → Plan 083 → Plan 084 → Plan 079**.
+Plans 075, 076, 077, and 080 are closed prerequisites or historical lane
+records. The corrected Plan 069 runner remained orchestration scaffolding
+and fake-process coverage only until Plan 075 closed; the Plan 080-qualified
+Multipass guest and the Plan 076 real pinned i2pd driver remain valid
+prerequisites, but Plan 078 stopped before TCP and is not protocol rejection
+evidence.
 
 The constrained-host lane decision is ordered: existing accessible
 rootful Docker daemon (`--network none`), QEMU TCG guest (`-nic none`),
@@ -703,16 +694,18 @@ qualified the owned Multipass guest used for the single Plan 078 attempt.
 Capability output alone is not protocol evidence; use the Plan 080 status and
 its ownership record for the qualified lane.
 
-## Active Plan 082 correction
+## Plan 082 state preparation (implemented)
 
-The current active sequence is Plan 082 → Plan 083 → Plan 084. Plan 080
-qualified the owned lane and Plan 076 supplies a real pinned i2pd driver, but
-Plan 078/080 stopped before TCP and is not protocol rejection evidence. Plan
-082 introduces `i2pr-interop ntcp2 prepare`, validates the signed RouterInfo
-and Router Hash, freezes a compact run identity, and only then renders the
-strict Plan 065 live scenario. The old `-gen` live-scenario path is retired.
-Preparation and scenario parsing cannot claim protocol progress; Plan 083 owns
-the first minimal i2pr-to-i2pd wire attempt. Plan 079 remains blocked until
-Plan 084 records its required decision. Plan 072 remains inactive until Plan
-084 records `decision = ambiguous-reference-divergence` after a real
+The current active sequence is Plan 082 (implemented) → Plan 083 → Plan 084.
+Plan 080 qualified the owned lane and Plan 076 supplies a real pinned i2pd
+driver, but Plan 078/080 stopped before TCP and is not protocol rejection
+evidence. Plan 082 introduces `i2pr-interop ntcp2 prepare` and
+`i2pr-interop ntcp2 validate-scenario`, validates the signed RouterInfo and
+Router Hash, freezes a compact run identity, asserts both peer identities
+and the frozen run identity, and only then renders the strict Plan 065
+live scenario. The old `-gen` live-scenario path is retired. Preparation
+and scenario parsing cannot claim protocol progress; Plan 083 owns the
+first minimal i2pr-to-i2pd wire attempt. Plan 079 remains blocked until
+Plan 084 records its required decision. Plan 072 remains inactive until
+Plan 084 records `decision = ambiguous-reference-divergence` after a real
 wire-stage disagreement and states one exact role/stage question.

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -129,6 +130,17 @@ class I2prAdapter:
                 raise RuntimeError("i2pr-state-preparation-failed")
         except ProcessError as exc:
             raise RuntimeError("i2pr-state-preparation-failed") from exc
+        try:
+            output = process.log_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError("i2pr-preparation-record-invalid") from exc
+        parsed_records = [
+            parsed
+            for line in output.splitlines()
+            if line.strip() and (parsed := _parse_preparation(line)) is not None
+        ]
+        if len(output.splitlines()) != 1 or parsed_records != [record]:
+            raise RuntimeError("i2pr-preparation-record-invalid")
         if record["result"] != "prepared":
             raise RuntimeError(str(record.get("reason_code", "i2pr-state-preparation-failed")))
         router_info_path = state_path / "router.info"
@@ -160,6 +172,38 @@ class I2prAdapter:
             ntcp2_address_count=int(record["ntcp2_address_count"]),
         )
 
+    def validate_scenario(self) -> None:
+        scenario_path = (self.run_root / "scenario.toml").resolve()
+        if not self._inside_run_root(scenario_path) or not scenario_path.is_file():
+            raise RuntimeError("live-scenario-render-failed")
+        binary = self.repo_root / "target" / "debug" / "i2pr-interop"
+        if not binary.is_file():
+            raise RuntimeError("i2pr-binary-missing")
+        try:
+            command = self.placement.command(
+                [
+                    str(binary),
+                    "ntcp2",
+                    "validate-scenario",
+                    "--scenario-config",
+                    str(scenario_path),
+                ]
+            )
+            completed = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError, TopologyContractError) as exc:
+            raise RuntimeError("live-scenario-render-failed") from exc
+        lines = completed.stdout.splitlines()
+        record = _parse_scenario_validation(lines[0]) if len(lines) == 1 else None
+        if completed.returncode != 0 or record is None or record["result"] != "validated":
+            raise RuntimeError("live-scenario-render-failed")
+
     def start(self, mode: str) -> None:
         if mode not in {"listen", "dial"}:
             raise RuntimeError("invalid-i2pr-mode")
@@ -170,11 +214,13 @@ class I2prAdapter:
             command = self.placement.command(
                 [str(binary), "ntcp2", mode, "--scenario-config", str(self.run_root / "scenario.toml")]
             )
-        except TopologyContractError as exc:
-            raise RuntimeError(exc.code) from exc
-        self.process = BoundedProcess(command, self.run_root / "raw" / "i2pr.log")
+            process = BoundedProcess(command, self.run_root / "raw" / "i2pr.log")
+            process.start()
+        except (OSError, ProcessError, TopologyContractError) as exc:
+            reason = "listener-process-start-failed" if mode == "listen" else "dialer-process-start-failed"
+            raise RuntimeError(reason) from exc
+        self.process = process
         self.mode = mode
-        self.process.start()
 
     def wait_ready(self, timeout_seconds: float = 30.0) -> None:
         if self.process is None:
@@ -256,6 +302,18 @@ def _parse_terminal_status(line: str) -> dict[str, object] | None:
 
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_PREPARATION_REASONS = frozenset(
+    {
+        "prepare_input_invalid",
+        "prepare_state_path_invalid",
+        "prepare_identity_failed",
+        "prepare_static_key_failed",
+        "prepare_router_info_sign_failed",
+        "prepare_router_info_write_failed",
+        "prepare_router_info_verify_failed",
+        "prepare_endpoint_binding_failed",
+    }
+)
 
 
 def _parse_preparation(line: str) -> dict[str, object] | None:
@@ -271,10 +329,34 @@ def _parse_preparation(line: str) -> dict[str, object] | None:
             return None
         if not _HEX64.fullmatch(str(value["router_hash_sha256"])):
             return None
+        if value["router_hash_sha256"] == "0" * 64:
+            return None
         if not _HEX64.fullmatch(str(value["router_info_sha256"])):
+            return None
+        if value["router_info_sha256"] == "0" * 64:
             return None
         if value["ntcp2_address_count"] != 1:
             return None
-    elif value.get("result") != "rejected":
+    elif value.get("result") == "rejected":
+        if set(value) != {"schema", "result", "reason_code"}:
+            return None
+        if value.get("reason_code") not in _PREPARATION_REASONS:
+            return None
+    else:
         return None
     return value
+
+
+def _parse_scenario_validation(line: str) -> dict[str, object] | None:
+    try:
+        value = json.loads(line)
+    except (json.JSONDecodeError, UnicodeError):
+        return None
+    if not isinstance(value, dict) or value.get("schema") != "i2pr-interop-scenario-validated-v1":
+        return None
+    if value.get("result") == "validated" and set(value) == {"schema", "result"}:
+        return value
+    if value.get("result") == "rejected" and set(value) == {"schema", "result", "reason_code"}:
+        if value.get("reason_code") == "invalid_scenario_config":
+            return value
+    return None

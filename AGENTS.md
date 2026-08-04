@@ -1504,7 +1504,7 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan068
 
 ## Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
-Plan 074 is historical execution authority. Plan 081 supersedes its active sequence with **Plan 082 → Plan 083 → Plan 084 → Plan 079**. Plans 075, 076, 077, and 080 are closed prerequisites or historical lane records.
+Plan 074 is historical execution authority. Plan 081 supersedes its active sequence with **Plan 082 (implemented) → Plan 083 → Plan 084 → Plan 079**. Plans 075, 076, 077, and 080 are closed prerequisites or historical lane records.
 
 The corrected repository state is:
 
@@ -1643,7 +1643,7 @@ git diff --check
 
 Plan 075 closes the runner-integrity work only; it does not build i2pd, run a real mixed-router direction, add Docker/QEMU/namespaces/CI, change NTCP2 protocol code, or produce a Level 2 or Level 3 record. The next active plan is Plan 076, followed by Plans 077, 078, and 079. The current repository therefore has no real mixed-router attempt and remains experimental and non-advertised.
 
-Plan 081 has since superseded Plan 074 for active execution. Plans 075, 076, 077, and 080 are closed prerequisites; the active sequence is Plan 082 → Plan 083 → Plan 084 → Plan 079.
+Plan 081 has since superseded Plan 074 for active execution. Plans 075, 076, 077, and 080 are closed prerequisites; the active sequence is Plan 082 (implemented) → Plan 083 → Plan 084 → Plan 079.
 
 Required focused checks for Plan 069 (after the Plan 075 fix
 lands):
@@ -1793,19 +1793,20 @@ record.
 ## Current active sequence amendment (2026-08-01)
 
 The active authority is [Plan 067's Plan 081 amendment](plans/067-active-sequence-amendment-plan-081.md),
-followed by Plans 082, 083, and 084. The Plan 080 Multipass lane is qualified
-and the Plan 076 i2pd driver is real, but Plan 078 stopped before protocol
-execution; no real TCP connection, NTCP2 handshake, authenticated frame, or
-I2NP DeliveryStatus attempt is retained. Its historical
+followed by Plans 083 and 084. Plan 082 is implemented and closed. The Plan
+080 Multipass lane is qualified and the Plan 076 i2pd driver is real, but Plan
+078 stopped before protocol execution; no real TCP connection, NTCP2 handshake,
+authenticated frame, or I2NP DeliveryStatus attempt is retained. Its historical
 `blocked-protocol-defect` label must not be used as the current diagnosis.
 
-Plan 082 adds the test-only `i2pr-interop ntcp2 prepare` operation, authentic
-RouterInfo/hash preparation, canonical pre-launch run identity, precise
-pre-protocol errors, and truthful process accounting. It does not run i2pd
-over the wire or produce interoperability evidence. Plan 079 remains blocked
-until `plans/084-status.md` records `decision = two-way-development-probe-passed`.
-NTCP2 stays experimental and non-advertised. Plan 082 is implemented and
-closed per `plans/082-status.md`.
+Plan 082 provides the test-only `i2pr-interop ntcp2 prepare` and
+`validate-scenario` operations, authentic RouterInfo/hash preparation,
+canonical pre-launch run identity, precise pre-protocol errors, and truthful
+process accounting. Preparation and strict scenario validation open no socket,
+run no i2pd peer, and produce no interoperability evidence. Plan 079 remains
+blocked until `plans/084-status.md` records
+`decision = two-way-development-probe-passed`. NTCP2 stays experimental and
+non-advertised. See `plans/082-status.md`.
 
 ## Plan 083 minimal i2pr-to-i2pd wire probe
 

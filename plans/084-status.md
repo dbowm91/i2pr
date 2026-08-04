@@ -2,8 +2,13 @@
 
 ## Status
 
-Plan 084 has not started. Its prerequisite Plan 083 remains `planned`, so no
-reverse `i2pd → i2pr` wire probe or Plan 084 development decision exists.
+Plan 084 has not started. Its prerequisite Plan 083 remains the schema,
+focused test matrix, and test-only runner orchestration module; no live
+`i2pr → i2pd` wire probe or development decision exists on this host.
+Plan 082 is implemented and closed: the launcher prepares authentic
+endpoint-bound i2pr state, the runner validates both peer identities and
+freezes real correlation fields, and the Rust `validate-scenario`
+command parses the strict live scenario without opening a peer.
 
 Plan 072 is not activated. The repository has no retained TCP-stage
 divergence, no reference disagreement at a precise protocol stage, and no

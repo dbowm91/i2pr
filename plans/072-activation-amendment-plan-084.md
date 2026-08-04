@@ -7,12 +7,17 @@
 - Applies to `plans/072-conditional-emissary-ntcp2-differential-validation.md`.
 - Parent authority: Plan 081 and the Plan 067 active-sequence amendment for Plan 081.
 
-## Current gate assessment (2026-08-01)
+## Current gate assessment (2026-08-04)
 
-Plan 082 is implemented, but Plan 083 remains `planned` and no retained
-evidence reaches `tcp_connected`. Plan 084 therefore cannot issue one of its
-development decisions yet. Plan 072 is not activated: neither a wire-stage
-reference divergence nor the required exact diagnostic question exists.
+Plan 082 is implemented and closed: the launcher prepares authentic
+endpoint-bound i2pr state, the runner validates both peer identities and
+freezes real correlation fields, and the Rust `validate-scenario` command
+parses the strict live scenario without opening a peer. Plan 083 is
+implemented as the in-process record schema, focused test matrix, and
+test-only runner orchestration module; no retained evidence reaches
+`tcp_connected`. Plan 084 therefore cannot issue one of its development
+decisions yet. Plan 072 is not activated: neither a wire-stage reference
+divergence nor the required exact diagnostic question exists.
 
 The next authority is Plan 083. A preparation result, scenario-rendering
 success, process lifetime, or evidence bookkeeping result cannot activate this

@@ -29,9 +29,9 @@ development_validation = pending-i2pd-loopback
 release_qualification  = blocked-environment
 support                = experimental
 advertised             = false
-active_roadmap         = Plan 067
-active_authority       = Plan 068
-next_plan              = Plan 069
+active_roadmap         = Plan 081
+active_authority       = Plan 082 (implemented)
+next_plan              = Plan 083
 ```
 
 Plan 067 is the active Milestone 3 corrective roadmap. Plan 067

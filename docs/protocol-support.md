@@ -341,14 +341,13 @@ yet occurred.
 
 ### Plan 074 real-driver and constrained-host corrective roadmap
 
-Plan 074 is the active corrective roadmap for Milestone 3 NTCP2
-interoperability. Plan 074 supersedes Plan 070 as the next
-executable plan and reclassifies the implemented Plan 069 lane as
-orchestration scaffolding and fake-process test coverage only; it
-is not valid mixed-router evidence until Plan 075 closes. Plan 074
-is the parent authority for the active sequence **Plan 075 → Plan
-076 → Plan 077 → Plan 078 → Plan 079**. Plan 070 and Plan 071 are no
-longer active execution authority.
+Plan 074 is a historical corrective roadmap for Milestone 3 NTCP2
+interoperability. Plan 074 superseded Plan 070 and reclassified the
+implemented Plan 069 lane as orchestration scaffolding and fake-process
+test coverage only; the corrected lane became Plan 075's runner
+integrity pass. Plan 074 is no longer active execution authority; the
+Plan 081 amendment is the active corrective roadmap, with Plan 082
+implemented, Plan 083 next, and Plan 084 reverse.
 
 The corrected repository state is:
 
@@ -397,8 +396,9 @@ hashes, and fail closed with one of the typed blockers
 
 Plan 075 does not build i2pd, run a real mixed-router direction,
 add Docker/QEMU/namespaces/CI, change NTCP2 protocol code, or
-produce a Level 2 or Level 3 record. Zero real mixed-router
-attempts remain until Plan 078 executes.
+produce a Level 2 or Level 3 record. The Plan 078 attempt stopped
+before TCP and is not protocol evidence; the corrected active
+sequence is Plan 082 → Plan 083 → Plan 084.
 
 ### Plan 077 constrained-host execution lane
 
@@ -415,14 +415,17 @@ support-ledger status changed and NTCP2 remains experimental and
 non-advertised. See [`plans/078-status.md`](../plans/078-status.md) and
 [`plans/080-status.md`](../plans/080-status.md).
 
-## Active status correction (2026-08-01)
+## Active status correction (2026-08-04)
 
-The current Milestone 3 sequence is Plan 082 → Plan 083 → Plan 084. The Plan
-080 lane qualification and Plan 076 real i2pd driver remain valid, but the
-Plan 078/080 attempt stopped pre-protocol and did not produce a TCP, NTCP2,
-authenticated-frame, or I2NP result. Plan 082 prepares authentic i2pr state
-and real RouterInfo/hash/run-identity fields before strict live rendering.
-This changes diagnostic ownership only; it does not change any support row.
+The current Milestone 3 sequence is Plan 082 (implemented) → Plan 083 → Plan
+084. The Plan 080 lane qualification and Plan 076 real i2pd driver remain
+valid, but the Plan 078/080 attempt stopped pre-protocol and did not produce
+a TCP, NTCP2, authenticated-frame, or I2NP result. Plan 082 prepares authentic
+i2pr state and real RouterInfo/hash/run-identity fields, the Rust
+`validate-scenario` command parses the strict live scenario without opening a
+peer, and the mixed runner asserts both peer identities and the frozen run
+identity before any live process. This changes diagnostic ownership only; it
+does not change any support row.
 NTCP2 remains experimental and non-advertised, and Plan 079 remains blocked
 pending the Plan 084 development decision.
 

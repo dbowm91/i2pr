@@ -84,6 +84,10 @@ enum Ntcp2Command {
         #[arg(long = "deterministic-seed")]
         deterministic_seed: Option<u64>,
     },
+    ValidateScenario {
+        #[arg(long = "scenario-config")]
+        scenario_config: PathBuf,
+    },
     Listen {
         #[arg(long = "scenario-config")]
         scenario_config: PathBuf,
@@ -294,6 +298,31 @@ fn is_synthetic_address(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(address) => address.octets()[0..3] == [192, 0, 2],
         IpAddr::V6(address) => address.segments()[0..4] == [0x2001, 0x0db8, 0x0036, 0],
+    }
+}
+
+fn validate_scenario_command(scenario_config: &Path) -> ExitCode {
+    let (result, reason) = if Scenario::load(scenario_config).is_ok() {
+        ("validated", "")
+    } else {
+        ("rejected", "invalid_scenario_config")
+    };
+    let line = if reason.is_empty() {
+        format!("{{\"schema\":\"i2pr-interop-scenario-validated-v1\",\"result\":\"{result}\"}}")
+    } else {
+        format!(
+            "{{\"schema\":\"i2pr-interop-scenario-validated-v1\",\"result\":\"{result}\",\"reason_code\":\"{reason}\"}}"
+        )
+    };
+    let mut stdout = io::stdout().lock();
+    let write_result = stdout
+        .write_all(line.as_bytes())
+        .and_then(|_| stdout.write_all(b"\n"))
+        .and_then(|_| stdout.flush());
+    if write_result.is_ok() && result == "validated" {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
     }
 }
 
@@ -1471,6 +1500,9 @@ fn main() -> ExitCode {
                 network_id,
                 deterministic_seed,
             ),
+            Ntcp2Command::ValidateScenario { scenario_config } => {
+                validate_scenario_command(&scenario_config)
+            }
             Ntcp2Command::Listen { scenario_config } => {
                 run_wire_command("listen", &scenario_config)
             }

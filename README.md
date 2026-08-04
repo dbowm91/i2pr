@@ -8,16 +8,16 @@ The initial compatibility target is the current I2P network as implemented by I2
 
 ## Project status
 
-Milestone 0 workspace bootstrap and its corrective closure are implemented. The
-repository contains a buildable seven-crate Rust workspace, strict
-side-effect-free configuration validation, bounded common-structure and
-initial-I2NP codecs, reviewed Ed25519/X25519 identity wrappers,
-permission-hardened identity storage, a deterministic testkit foundation, and
-a non-networked CLI shell. Plan 014 also adds an opt-in nightly fuzz workspace
-and locally authored, hashed I2NP regression fixtures. Plan 015 adds
-creation-time directory permissions, zeroizing transient identity/reply-secret
-owners, grouped protocol namespaces, and fixture-backed positive/malformed
-regressions. These remain structural and local evidence only.
+The repository contains a buildable nine-crate Rust workspace with bounded
+protocol codecs, reviewed cryptographic wrappers, versioned storage, runtime-
+neutral service and transport contracts, a Tokio-owned runtime, a deterministic
+testkit, and a non-networked daemon shell. NTCP2 remains experimental and
+non-advertised. The non-production interoperability tooling includes the
+runtime-owned NTCP2 wire driver, source-locked Java I2P and i2pd direct drivers,
+staged evidence contracts, and the Plan 082 state-preparation boundary.
+No retained real mixed-router TCP, NTCP2 handshake, authenticated-frame, or
+DeliveryStatus result exists. Earlier milestone details are retained below as
+an implementation history.
 Plans 011–013 provide the structural and local cryptographic foundation for
 common I2P identities, mappings, certificates, RouterInfo, RouterAddress,
 Lease, classic LeaseSet, explicit identity generation, atomic reload, local
@@ -118,6 +118,8 @@ bash scripts/interop/build-references.sh --offline
 bash scripts/interop/run-scenario.sh --scenario <id> --reference java_i2p --build-cache <path> --run-root <path>
 bash scripts/interop/run-scenario.sh --scenario <id> --reference i2pd --build-cache <path> --run-root <path>
 bash scripts/interop/run-matrix.sh --profile environment-smoke
+i2pr-interop ntcp2 prepare --state-dir <path> --local-address <synthetic-ip> --local-port <port> --network-id 99
+i2pr-interop ntcp2 validate-scenario --scenario-config <path>
 i2pr-interop ntcp2 listen --scenario-config <path>
 i2pr-interop ntcp2 dial --scenario-config <path>
 i2pr-interop ntcp2 inspect --state-dir <path>
@@ -1646,16 +1648,18 @@ handshake, authenticated frame, or I2NP DeliveryStatus result exists, and the
 stop is not protocol rejection evidence. See [the Plan 078 status](plans/078-status.md)
 and [Plan 080 status](plans/080-status.md).
 
-### Current active sequence: Plan 081 → Plan 082 → Plan 083 → Plan 084
+### Current active sequence: Plan 081 → Plan 083 → Plan 084
 
-As of 2026-08-01, the active interpretation is governed by [the Plan 067
+As of 2026-08-04, the active interpretation is governed by [the Plan 067
 amendment](plans/067-active-sequence-amendment-plan-081.md),
 [Plan 074 continuation amendment](plans/074-continuation-amendment-plan-081.md),
 and [Plan 081](plans/081-milestone-3-pre-protocol-and-minimal-i2pd-corrective-roadmap.md).
 The Plan 080 Multipass lane is qualified and the Plan 076 i2pd driver is real;
 the Plan 078/080 attempt stopped before TCP and established neither protocol
-conformance nor non-conformance. Plan 082 prepares authentic i2pr state and
-freezes real correlation fields before any live scenario is rendered.
+conformance nor non-conformance. Plan 082 is implemented and closed: the
+launcher prepares authentic endpoint-bound i2pr state, the runner validates
+both peer identities and freezes real correlation fields, and Rust validates
+the strict live scenario without opening a listener or dialing a peer.
 
 Plan 083 lands the canonical minimal `i2pr -> i2pd` wire probe record
 schema (`i2pr-minimal-i2pd-probe-v1`) plus the focused test matrices and

@@ -2,7 +2,7 @@
 
 ## Status and dependencies
 
-- Status: planned.
+- Status: implemented (record schema, focused test matrix, test-only runner orchestration). No live wire attempt retained on this host.
 - Parent roadmap: Plan 081.
 - Requires Plan 082 closed with authentic prepared state and a valid strict live scenario.
 - Requires Plan 076 real i2pd driver artifacts and a valid Plan 080-style owned Multipass lane.

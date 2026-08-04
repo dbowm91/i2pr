@@ -1129,8 +1129,9 @@ Level 1 or Level 2 closures.
 ## Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
 Plan 074 is historical execution authority. Plan 081 supersedes its active
-sequence with **Plan 082 → Plan 083 → Plan 084 → Plan 079**. Plans 075, 076,
-077, and 080 are closed prerequisites or historical lane records.
+sequence with **Plan 082 (implemented) → Plan 083 → Plan 084 → Plan 079**.
+Plans 075, 076, 077, and 080 are closed prerequisites or historical lane
+records.
 
 The corrected repository state is:
 
@@ -1257,7 +1258,7 @@ mixed-router attempt has occurred.
 
 Plan 081 has since superseded Plan 074 for active execution. Plans 075,
 076, 077, and 080 are closed prerequisites; the active sequence is
-**Plan 082 → Plan 083 → Plan 084 → Plan 079**.
+**Plan 082 (implemented) → Plan 083 → Plan 084 → Plan 079**.
 
 ## Plan 077 constrained-host execution lane
 
@@ -1287,18 +1288,24 @@ record](../../plans/077-status.md), and [the Plan 080 closure](../../plans/080-s
 The current execution authority is Plan 081 and its Plan 082 child, not the
 historical Plan 078 close label. The qualified Plan 080 guest and real Plan
 076 i2pd driver are valid prerequisites, while the Plan 078/080 attempt
-stopped before TCP. The i2pr launcher therefore has a separate test-only
-`ntcp2 prepare` operation that reuses the existing identity, NTCP2 static-key,
-RouterInfo-signing, and endpoint-verification code without creating a runtime
-service. Plan 082 is implemented and closed per `plans/082-status.md`.
+stopped before TCP. The i2pr launcher therefore has separate test-only
+`ntcp2 prepare` and `ntcp2 validate-scenario` operations that reuse the
+existing identity, NTCP2 static-key, RouterInfo-signing, and
+endpoint-verification code without opening a socket or dialing a peer. The
+mixed runner prepares i2pr and the pinned reference, validates both
+RouterInfos and Router Hashes, asserts the frozen
+`i2pr-minimal-run-identity-v1` digest, and invokes the Rust
+`validate-scenario` command before any live process. Plan 082 is
+implemented and closed per `plans/082-status.md`.
 
 The mixed runner prepares i2pr and the pinned reference before rendering a
 strict Plan 065 scenario, validates both RouterInfos and Router Hashes, and
 freezes `i2pr-minimal-run-identity-v1` before any live process. A primary
-scenario never uses a generated suffix or empty correlation fields. Preparation
-and local scenario parsing are pre-protocol diagnostics only; they cannot claim
-TCP, authentication, frame, or I2NP progress. Plans 083 and 084 own the first
-minimal i2pd wire probes, and Plan 079 is blocked until their decision.
+scenario never uses a generated suffix or empty correlation fields. Preparation,
+scenario validation, and the frozen run identity are pre-protocol diagnostics
+only; they cannot claim TCP, authentication, frame, or I2NP progress. Plans
+083 and 084 own the first minimal i2pd wire probes, and Plan 079 is blocked
+until their decision.
 
 ## Plan 083 minimal i2pr-to-i2pd wire probe
 

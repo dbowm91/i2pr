@@ -1,6 +1,6 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/056/058/059/074/075/076/077/078/081/082/083/084 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, typed evidence validation, the Plan 081-084 minimal i2pd probe sequence, and the Plan 084-gated conditional Emissary decision. Use when an agent is asked to run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, diagnose Plan 082-084 execution, or validate evidence. Do not activate Plan 072 or build a general Emissary lane unless Plan 084 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, typed evidence validation, the Plan 081-084 minimal i2pd probe sequence, and the Plan 084-gated conditional Emissary decision. Use when an agent is asked to run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, diagnose Plan 082-084 execution, or validate evidence. Do not activate Plan 072 or build a general Emissary lane unless Plan 084 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
 # I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/081/082/083/084)
@@ -496,7 +496,7 @@ bash scripts/check-ntcp2-interoperability.sh
 ## Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
 Plan 074 is historical execution authority. Plan 081 supersedes its active
-sequence with **Plan 082 → Plan 083 → Plan 084 → Plan 079**. Plans 075, 076,
+sequence with **Plan 082 (implemented) → Plan 083 → Plan 084 → Plan 079**. Plans 075, 076,
 077, and 080 are closed prerequisites or historical lane records.
 
 The corrected repository state is:
@@ -607,7 +607,7 @@ qualified Plan 077 execution lane exist.
 
 Plan 081 has since superseded Plan 074 for active execution. Plans 075,
 076, 077, and 080 are closed prerequisites; the active sequence is
-**Plan 082 → Plan 083 → Plan 084 → Plan 079**.
+**Plan 082 (implemented) → Plan 083 → Plan 084 → Plan 079**.
 
 ## Plan 076 real pinned i2pd driver (closed)
 
@@ -629,18 +629,20 @@ lanes, or claim protocol evidence from a typed no-lane result.
 
 Plan 080's Multipass lane qualification and Plan 076's real pinned i2pd
 driver are valid. Plan 078/080 stopped before TCP, so it is not protocol
-rejection evidence. The active sequence is Plan 082 → Plan 083 → Plan 084;
-Plan 079 is blocked pending the Plan 084 decision, and Plan 072 remains
-inactive until Plan 084 records `decision = ambiguous-reference-divergence`
-with one exact wire-stage question.
+rejection evidence. Plan 082 is implemented; the active sequence is
+**Plan 082 (implemented) → Plan 083 → Plan 084**. Plan 079 is blocked pending
+the Plan 084 decision, and Plan 072 remains inactive until Plan 084 records
+`decision = ambiguous-reference-divergence` with one exact wire-stage question.
 
-Plan 082 uses the test-only `i2pr-interop ntcp2 prepare` command to create and
-validate i2pr state before strict Plan 065 scenario rendering. The mixed runner
-must bind real RouterInfo/hash values and a frozen
-`i2pr-minimal-run-identity-v1` record, and must not construct a generated
-scenario ID or use empty correlation fields. Preparation is pre-protocol
-diagnostics only. Do not run the i2pd wire probe in the Plan 082 pass; Plan 083
-owns the first minimal `i2pr → i2pd` attempt.
+Plan 082 uses the test-only `i2pr-interop ntcp2 prepare` and
+`i2pr-interop ntcp2 validate-scenario` commands to create and validate i2pr
+state before strict Plan 065 scenario rendering. The mixed runner must
+bind real RouterInfo/hash values and a frozen
+`i2pr-minimal-run-identity-v1` record, assert both peer identities and the
+frozen run identity, and must not construct a generated scenario ID or use
+empty correlation fields. Preparation and validate-scenario are
+pre-protocol diagnostics only. Do not run the i2pd wire probe in the
+Plan 082 pass; Plan 083 owns the first minimal `i2pr → i2pd` attempt.
 
 ## Plan 083 minimal i2pr-to-i2pd wire probe
 

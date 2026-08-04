@@ -213,5 +213,7 @@ before TCP at the i2pr pre-protocol RouterInfo stage and is preserved in
 `plans/078-status.md`; it is not a protocol result.
 
 The active pre-protocol checks are Plan 082's `i2pr-interop ntcp2 prepare`
-and the Plan 083/084 probe entry conditions. Do not start the Plan 083/084
-wire probes from a stale or unowned Multipass guest.
+and `i2pr-interop ntcp2 validate-scenario` commands, the
+`I2prAdapter.prepare_state()` and `I2prAdapter.validate_scenario()` adapters,
+and the canonical `i2pr-minimal-run-identity-v1` freeze. Do not start the
+Plan 083/084 wire probes from a stale or unowned Multipass guest.

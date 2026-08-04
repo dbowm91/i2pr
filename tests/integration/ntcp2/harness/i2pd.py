@@ -173,11 +173,12 @@ class I2pdAdapter:
                 command = self.placement.command(inner_with_tty)
             except TopologyContractError as exc:
                 raise I2pdError(exc.code) from exc
-        self.process = BoundedProcess(command, self.run_root / "raw" / "i2pd.log")
+        process = BoundedProcess(command, self.run_root / "raw" / "i2pd.log")
         try:
-            self.process.start()
-        except OSError as exc:
+            process.start()
+        except (OSError, ProcessError) as exc:
             raise I2pdError("process-start-failed") from exc
+        self.process = process
 
     def wait_ready(self, timeout_seconds: float = 30.0) -> None:
         if self.process is None:

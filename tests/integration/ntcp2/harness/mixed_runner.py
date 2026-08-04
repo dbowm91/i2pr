@@ -111,10 +111,14 @@ PRE_PROTOCOL_REASONS = frozenset(
         "i2pr-router-hash-invalid",
         "i2pr-preparation-record-invalid",
         "prepare-input-invalid",
+        "reference-state-preparation-failed",
         "reference-router-info-missing",
         "reference-router-info-validation-failed",
         "reference-router-hash-invalid",
         "run-identity-freeze-failed",
+        "live-scenario-render-failed",
+        "listener-process-start-failed",
+        "dialer-process-start-failed",
         "i2pr-binary-missing",
         "i2pd-binary-missing",
     }
@@ -215,17 +219,23 @@ def _plan065_primary_fields(
     }
 
 
-def _router_hash_sha256(path: Path) -> str:
+def _router_hash_sha256(path: Path, reason: str = "router-hash-invalid") -> str:
     """Hash the exact RouterIdentity prefix, matching the Router Hash rule."""
 
-    data = path.read_bytes()
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise MixedRunError(reason) from exc
     if len(data) < 387 or data[384] != 5:
-        raise MixedRunError("router-hash-invalid")
+        raise MixedRunError(reason)
     certificate_length = int.from_bytes(data[385:387], "big")
     identity_length = 387 + certificate_length
     if certificate_length < 4 or identity_length > len(data):
-        raise MixedRunError("router-hash-invalid")
-    return hashlib.sha256(data[:identity_length]).hexdigest()
+        raise MixedRunError(reason)
+    digest = hashlib.sha256(data[:identity_length]).hexdigest()
+    if digest == "0" * 64:
+        raise MixedRunError(reason)
+    return digest
 
 
 def _sha256_file(path: Path, reason: str) -> str:
@@ -236,6 +246,50 @@ def _sha256_file(path: Path, reason: str) -> str:
     if digest == "0" * 64:
         raise MixedRunError(reason)
     return digest
+
+
+def _valid_digest(value: str) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and value != "0" * 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _assert_pre_protocol_material(
+    *,
+    i2pr_router_info_path: Path,
+    reference_router_info_path: Path,
+    i2pr_router_info_sha256: str,
+    reference_router_info_sha256: str,
+    i2pr_router_hash_sha256: str,
+    reference_router_hash_sha256: str,
+) -> None:
+    if not i2pr_router_info_path.is_file():
+        raise MixedRunError("i2pr-router-info-missing")
+    if not reference_router_info_path.is_file():
+        raise MixedRunError("reference-router-info-missing")
+    if _sha256_file(i2pr_router_info_path, "i2pr-router-info-validation-failed") != i2pr_router_info_sha256:
+        raise MixedRunError("i2pr-router-info-validation-failed")
+    if (
+        _sha256_file(reference_router_info_path, "reference-router-info-validation-failed")
+        != reference_router_info_sha256
+    ):
+        raise MixedRunError("reference-router-info-validation-failed")
+    if not _valid_digest(i2pr_router_hash_sha256):
+        raise MixedRunError("i2pr-router-hash-invalid")
+    if not _valid_digest(reference_router_hash_sha256):
+        raise MixedRunError("reference-router-hash-invalid")
+    if i2pr_router_hash_sha256 == reference_router_hash_sha256:
+        raise MixedRunError("reference-router-hash-invalid")
+
+
+def _assert_frozen_run_identity(run_dir: Path, expected_sha256: str) -> None:
+    if not _valid_digest(expected_sha256):
+        raise MixedRunError("run-identity-freeze-failed")
+    if _sha256_file(run_dir / "run-identity.json", "run-identity-freeze-failed") != expected_sha256:
+        raise MixedRunError("run-identity-freeze-failed")
 
 
 def _freeze_minimal_run_identity(
@@ -253,10 +307,31 @@ def _freeze_minimal_run_identity(
     i2pd_binary_sha256: str,
     delivery_status_message_id: int,
 ) -> str:
+    commit, separator, disposition = source_commit.partition(";")
+    if (
+        separator != ";"
+        or disposition != "clean"
+        or len(commit) != 40
+        or any(character not in "0123456789abcdef" for character in commit)
+        or not 1 <= delivery_status_message_id <= 0xFFFFFFFF
+    ):
+        raise MixedRunError("run-identity-freeze-failed")
+    digests = (
+        i2pr_router_info_sha256,
+        i2pd_router_info_sha256,
+        i2pr_router_hash_sha256,
+        i2pd_router_hash_sha256,
+        i2pr_binary_sha256,
+        i2pd_binary_sha256,
+    )
+    if not all(_valid_digest(value) for value in digests):
+        raise MixedRunError("run-identity-freeze-failed")
+    if i2pr_router_hash_sha256 == i2pd_router_hash_sha256:
+        raise MixedRunError("run-identity-freeze-failed")
     payload = {
         "schema": "i2pr-minimal-run-identity-v1",
         "run_id": run_id,
-        "source_commit": source_commit,
+        "source_commit": commit,
         "direction": direction.execution_id,
         "reference": "i2pd",
         "reference_revision": metadata.source_revision,
@@ -479,7 +554,12 @@ def _validate_router_info_for_direction(
         router_validation[reference_key] = "validated-and-bound"
     except (RouterInfoPathError, OSError) as exc:
         router_validation[reference_key] = "rejected"
-        raise MixedRunError("router-info-validation-failed") from exc
+        reason = (
+            "i2pr-router-info-validation-failed"
+            if reference_key == "i2pr"
+            else "reference-router-info-validation-failed"
+        )
+        raise MixedRunError(reason) from exc
 
 
 def run(args: argparse.Namespace) -> int:
@@ -637,9 +717,18 @@ def run(args: argparse.Namespace) -> int:
                 shared_data_dir=shared_reference_data,
                 placement=ref_placement,
             )
-            ref_adapter.start()
-            ref_adapter.wait_ready(timeout_seconds=240.0)
-            reference_router_hash_sha256 = _router_hash_sha256(ref_info_path)
+            reference_router_hash_sha256 = _router_hash_sha256(
+                ref_info_path,
+                "reference-router-hash-invalid",
+            )
+            _assert_pre_protocol_material(
+                i2pr_router_info_path=prepared_i2pr.router_info_path,
+                reference_router_info_path=ref_info_path,
+                i2pr_router_info_sha256=i2pr_router_info_sha256,
+                reference_router_info_sha256=reference_router_info_sha256,
+                i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                reference_router_hash_sha256=reference_router_hash_sha256,
+            )
             fields = _plan065_primary_fields(
                 execution_id=direction.execution_id,
                 run_id=run_dir.name,
@@ -663,6 +752,7 @@ def run(args: argparse.Namespace) -> int:
                 i2pd_binary_sha256=_sha256_file(cache / metadata.launcher, "i2pd-binary-missing"),
                 delivery_status_message_id=int(fields["delivery_status_message_id"]),
             )
+            _assert_frozen_run_identity(run_dir, run_identity_sha256)
             scenario_toml = render_and_validate(
                 run_dir / "i2pr",
                 execution_id=direction.execution_id,
@@ -690,6 +780,12 @@ def run(args: argparse.Namespace) -> int:
                     correlation_nonce="initiator",
                 ),
             )
+            i2pr_adapter.validate_scenario()
+            try:
+                ref_adapter.start()
+            except (JavaI2pError, I2pdError) as exc:
+                raise MixedRunError("listener-process-start-failed") from exc
+            ref_adapter.wait_ready(timeout_seconds=240.0)
             i2pr_adapter.start("dial")
             terminal = i2pr_adapter.wait_terminal(timeout_seconds=30.0)
             if terminal["result"] != "passed":
@@ -757,8 +853,22 @@ def run(args: argparse.Namespace) -> int:
                 if not candidates:
                     raise MixedRunError("reference-router-info-missing")
                 reference_info_path = candidates[0]
-            reference_router_info_sha256 = _sha256_file(reference_info_path, "reference-router-info-missing")
-            reference_router_hash_sha256 = _router_hash_sha256(reference_info_path)
+            reference_router_info_sha256 = _sha256_file(
+                reference_info_path,
+                "reference-router-info-missing",
+            )
+            reference_router_hash_sha256 = _router_hash_sha256(
+                reference_info_path,
+                "reference-router-hash-invalid",
+            )
+            _assert_pre_protocol_material(
+                i2pr_router_info_path=prepared_i2pr.router_info_path,
+                reference_router_info_path=reference_info_path,
+                i2pr_router_info_sha256=i2pr_router_info_sha256,
+                reference_router_info_sha256=reference_router_info_sha256,
+                i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                reference_router_hash_sha256=reference_router_hash_sha256,
+            )
             fields = _plan065_primary_fields(
                 execution_id=direction.execution_id,
                 run_id=run_dir.name,
@@ -782,6 +892,7 @@ def run(args: argparse.Namespace) -> int:
                 i2pd_binary_sha256=_sha256_file(cache / metadata.launcher, "i2pd-binary-missing"),
                 delivery_status_message_id=int(fields["delivery_status_message_id"]),
             )
+            _assert_frozen_run_identity(run_dir, run_identity_sha256)
             scenario_toml = render_and_validate(
                 run_dir / "i2pr",
                 execution_id=direction.execution_id,
@@ -809,6 +920,7 @@ def run(args: argparse.Namespace) -> int:
                     correlation_nonce="responder",
                 ),
             )
+            i2pr_adapter.validate_scenario()
             i2pr_adapter.start("listen")
             i2pr_adapter.wait_ready(timeout_seconds=30.0)
             ref_adapter = _make_ref_adapter(
@@ -816,7 +928,10 @@ def run(args: argparse.Namespace) -> int:
                 shared_data_dir=shared_reference_data,
                 placement=ref_placement,
             )
-            ref_adapter.start()
+            try:
+                ref_adapter.start()
+            except (JavaI2pError, I2pdError) as exc:
+                raise MixedRunError("dialer-process-start-failed") from exc
             ref_adapter.wait_ready()
             trigger_result = trigger.send(
                 direction.i2pr_is_initiator, ref_endpoint, run_dir, placement=ref_placement,
@@ -1124,9 +1239,14 @@ def _run_initiator_first(
         shared_data_dir=shared_reference_data,
         placement=ref_placement,
     )
-    ref_adapter.start()
-    ref_adapter.wait_ready(timeout_seconds=240.0)
-    ri_path = ref_adapter.export_router_info()
+    try:
+        ref_adapter.start()
+        ref_adapter.wait_ready(timeout_seconds=240.0)
+        ri_path = ref_adapter.export_router_info()
+    except (JavaI2pError, I2pdError) as exc:
+        raise MixedRunError("reference-state-preparation-failed") from exc
+    finally:
+        ref_adapter.stop()
     _validate_router_info_for_direction(
         ri_path, ref_endpoint.local_address, ref_endpoint.local_port,
         repo_root, router_validation, direction.reference,
@@ -1134,7 +1254,6 @@ def _run_initiator_first(
     exchange_dir = run_dir / "i2pr" / "exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ri_path, exchange_dir / "ref-router.info")
-    ref_adapter.stop()
     return ("validated-and-bound", ri_path, getattr(ref_adapter, "configuration_sha256", ""))
 
 
@@ -1176,16 +1295,18 @@ def _run_responder_first(
         ref_adapter.wait_ready()
         ref_adapter.import_peer_router_info(ri_path)
         reference_info = ref_adapter.export_router_info()
-        _validate_router_info_for_direction(
-            reference_info,
-            ref_endpoint.local_address,
-            ref_endpoint.local_port,
-            repo_root,
-            router_validation,
-            direction.reference,
-        )
+    except (JavaI2pError, I2pdError) as exc:
+        raise MixedRunError("reference-state-preparation-failed") from exc
     finally:
         ref_adapter.stop()
+    _validate_router_info_for_direction(
+        reference_info,
+        ref_endpoint.local_address,
+        ref_endpoint.local_port,
+        repo_root,
+        router_validation,
+        direction.reference,
+    )
     return ("validated-and-bound", ri_path, getattr(ref_adapter, "configuration_sha256", ""))
 
 

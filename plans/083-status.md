@@ -3,7 +3,7 @@
 ## Status
 
 Implemented as the in-process record schema, focused test matrix, and
-the narrow test-only runner orchestration module on 2026-08-01. The
+the narrow test-only runner orchestration module on 2026-08-04. The
 runner is a development diagnostic that fails closed, never synthesizes
 pass or provenance, and does not attempt a live wire run on this host.
 
@@ -71,11 +71,10 @@ list, suitable for sanitized evidence.
 ```text
 python3 -m unittest ... -p 'test_minimal_i2pd_probe.py'   passed (43)
 python3 -m unittest ... -p 'test_plan083.py'                passed (48)
-python3 -m unittest ... -p 'test_plan082.py'                passed (3)
-python3 -m unittest ... -p 'test_i2pr_prepare.py'           passed (3)
-python3 -m unittest ... -p 'test_harness.py'                passed (111)
-python3 -m unittest ... -p 'test_plan065.py'                passed (29)
-python3 -m unittest discover -s tests/integration/ntcp2/harness  passed (1094)
+python3 -m unittest ... -p 'test_plan082.py'                passed (7)
+python3 -m unittest ... -p 'test_i2pr_prepare.py'           passed (5)
+python3 -m unittest ... -p 'test_harness.py'                passed
+python3 -m unittest ... -p 'test_plan065.py'                passed
 bash scripts/check-ntcp2-interoperability.sh               passed
 ```
 

@@ -217,11 +217,16 @@ class JavaI2pAdapter:
         environment = os.environ.copy()
         environment["I2P"] = str(self.runtime_dir)
         environment["JAVA_TOOL_OPTIONS"] = f"-Di2p.dir.base={self.runtime_dir} -Di2p.dir.config={self.config_dir} -Di2p.dir.router={self.data_dir} -Xmx512m"
-        self.process = BoundedProcess(command, self.run_root / "raw" / "java-i2p.log", environment=environment)
+        process = BoundedProcess(
+            command,
+            self.run_root / "raw" / "java-i2p.log",
+            environment=environment,
+        )
         try:
-            self.process.start()
-        except OSError as exc:
+            process.start()
+        except (OSError, ProcessError) as exc:
             raise JavaI2pError("process-start-failed") from exc
+        self.process = process
 
     def wait_ready(self, timeout_seconds: float = 240.0) -> None:
         if self.process is None:
