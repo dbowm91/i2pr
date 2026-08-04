@@ -318,8 +318,59 @@ class Plan084TopologyTests(unittest.TestCase):
     def test_multipass_owned_guest_topology_is_allowlisted(self) -> None:
         self.assertIn("multipass-owned-guest", reverse_probe.ALLOWED_TOPOLOGY_KINDS)
 
+    def test_host_loopback_development_topology_is_allowlisted(self) -> None:
+        # Plan 086/088 enables literal IPv4 loopback development under
+        # the bounded ``host-loopback-development`` topology. The
+        # allowlist must accept it without breaking the strict schema.
+        self.assertIn(
+            "host-loopback-development", reverse_probe.ALLOWED_TOPOLOGY_KINDS
+        )
+
+    def test_host_loopback_development_is_development_only(self) -> None:
+        # Plan 086/088 must mark the new topology as development-only;
+        # release and isolated lanes remain exclusive.
+        self.assertIn(
+            "host-loopback-development",
+            forward_probe.DEVELOPMENT_ONLY_TOPOLOGY_KINDS,
+        )
+        self.assertNotIn(
+            "rootless-sealed-single-netns",
+            forward_probe.DEVELOPMENT_ONLY_TOPOLOGY_KINDS,
+        )
+
     def test_public_topology_is_not_allowlisted(self) -> None:
         self.assertNotIn("public-network", reverse_probe.ALLOWED_TOPOLOGY_KINDS)
+
+    def test_runner_accepts_host_loopback_development_topology(self) -> None:
+        # The reverse runner must accept the development topology and
+        # produce a valid record without classifying the lane as
+        # invalid. No protocol stage is exercised in this unit test;
+        # the lane check is the only behaviour under examination.
+        import plan084_runner as runner_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = runner_mod.ReverseProbeConfig(
+                run_id="plan088-hldev",
+                source_commit="a" * 40,
+                reference_revision="b" * 40,
+                lane_qualification_sha256="c" * 64,
+                topology_kind="host-loopback-development",
+                parent_network_state_unchanged=True,
+                i2pr_binary_sha256="d" * 64,
+                i2pd_binary_sha256="e" * 64,
+                i2pr_router_info_sha256="1" * 64,
+                i2pd_router_info_sha256="2" * 64,
+                i2pr_router_hash_sha256="3" * 64,
+                i2pd_router_hash_sha256="4" * 64,
+                delivery_status_message_id=0x04200002,
+                output_path=root / "reverse-probe-record.json",
+            )
+            runner = runner_mod.ReverseProbeRunner(config)
+            output = runner.run(root)
+            record = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(record["topology_kind"], "host-loopback-development")
+            self.assertNotEqual(record["terminal_result"], reverse_probe.LANE_INVALID)
 
 
 class Plan084ProvenanceTests(unittest.TestCase):

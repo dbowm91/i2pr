@@ -1337,4 +1337,63 @@ if ! grep -Fq 'Plan 084' "$root/tests/integration/ntcp2/harness/plan084_runner.p
   exit 1
 fi
 
+# Plan 088: reverse host-loopback probe and development decision.
+# The Plan 088 test matrix must be present, must lock the five
+# bounded development decisions, and must encode the Plan 079/Plan
+# 072 gate handoff. The status record must exist, must bind the
+# shared handoff fields, and must declare exactly one bounded
+# decision token; the legacy ``lane-invalidated`` and
+# ``same-stage-two-way-i2pr-defect`` tokens are forbidden.
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan088.py"; then
+  echo "Plan 088 reverse probe test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'two-way-development-probe-passed' "$root/tests/integration/ntcp2/harness/test_plan088.py"; then
+  echo "Plan 088 test matrix must lock the two-way pass decision" >&2
+  exit 1
+fi
+if ! grep -Fq 'ambiguous-reference-divergence' "$root/tests/integration/ntcp2/harness/test_plan088.py"; then
+  echo "Plan 088 test matrix must lock the ambiguous-reference-divergence decision" >&2
+  exit 1
+fi
+if ! grep -Fq 'host-loopback-development' "$root/tests/integration/ntcp2/harness/test_plan088.py"; then
+  echo "Plan 088 test matrix must cover the host-loopback-development topology" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 088' "$root/tests/integration/ntcp2/harness/test_plan088.py"; then
+  echo "Plan 088 test matrix must reference its plan-of-record" >&2
+  exit 1
+fi
+if ! test -f "$root/plans/088-status.md"; then
+  echo "Plan 088 status record is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pd-to-i2pr-ipv4' "$root/plans/088-status.md"; then
+  echo "Plan 088 status record must bind the i2pd-to-i2pr-ipv4 direction" >&2
+  exit 1
+fi
+for decision_token in \
+    'two-way-development-probe-passed' \
+    'one-way-passed-reverse-defect' \
+    'ambiguous-reference-divergence' \
+    'manual-isolated-fallback-required' \
+    'insufficient-evidence'; do
+  if grep -Fq "$decision_token" "$root/plans/088-status.md"; then
+    plan088_decision="$decision_token"
+    break
+  fi
+done
+if test -z "${plan088_decision:-}"; then
+  echo "Plan 088 status record must record exactly one bounded development decision" >&2
+  exit 1
+fi
+if grep -Eq '^[[:space:]]*decision[[:space:]]*=[[:space:]]*lane-invalidated[[:space:]]*$' "$root/plans/088-status.md"; then
+  echo "Plan 088 status record must not bind the historical lane-invalidated decision" >&2
+  exit 1
+fi
+if grep -Eq '^[[:space:]]*decision[[:space:]]*=[[:space:]]*same-stage-two-way-i2pr-defect[[:space:]]*$' "$root/plans/088-status.md"; then
+  echo "Plan 088 status record must not bind the historical same-stage-two-way-i2pr-defect decision" >&2
+  exit 1
+fi
+
 echo "NTCP2 interoperability manifest and sanitized evidence boundary are valid (${scenario_count} scenarios)."

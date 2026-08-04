@@ -309,7 +309,11 @@ class ProbeRunner:
         self._freeze_run_identity(run_root)
 
     def _validate_lane(self) -> None:
-        if self.config.topology_kind not in {"rootless-sealed-single-netns", "multipass-owned-guest"}:
+        if self.config.topology_kind not in {
+            "rootless-sealed-single-netns",
+            "multipass-owned-guest",
+            "host-loopback-development",
+        }:
             raise RunnerError("lane-invalid")
         if not self.config.parent_network_state_unchanged:
             raise RunnerError("lane-invalid")
@@ -524,7 +528,11 @@ class ProbeRunner:
         # defaults. The record must always pass validation even when
         # the config was not suitable for a real run.
         topology = self.config.topology_kind
-        if topology not in {"rootless-sealed-single-netns", "multipass-owned-guest"}:
+        if topology not in {
+            "rootless-sealed-single-netns",
+            "multipass-owned-guest",
+            "host-loopback-development",
+        }:
             topology = "rootless-sealed-single-netns"
         message_id = self.config.delivery_status_message_id
         if message_id < 1 or message_id > 0xFFFFFFFF:
@@ -752,7 +760,11 @@ def execute_real_probe(
         )
 
     # Validate lane.
-    if topology_kind not in {"rootless-sealed-single-netns", "multipass-owned-guest"}:
+    if topology_kind not in {
+        "rootless-sealed-single-netns",
+        "multipass-owned-guest",
+        "host-loopback-development",
+    }:
         return finalize(
             terminal_result=LANE_INVALID,
             reason_code=REASON_LANE_INVALID,

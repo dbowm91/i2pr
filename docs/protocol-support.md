@@ -417,20 +417,41 @@ non-advertised. See [`plans/078-status.md`](../plans/078-status.md) and
 
 ## Active status correction (2026-08-04)
 
-The current Milestone 3 sequence is Plan 082 (implemented) → Plan 083 → Plan
-084. The Plan 080 lane qualification and Plan 076 real i2pd driver remain
-valid, but the Plan 078/080 attempt stopped pre-protocol and did not produce
-a TCP, NTCP2, authenticated-frame, or I2NP result. Plan 082 prepares authentic
+The current Milestone 3 execution roadmap is Plan 085 → Plan 086 → Plan
+087 → Plan 088. The Plan 082 prepare / validate-scenario surface is
+implemented and closed; Plans 083 and 084 are implemented and
+reclassifed as execution-pending. The Plan 084 historical
+`lane-invalidated` closure is reclassified as "runner implementation
+completed; required reverse wire execution never occurred" and the
+active development decision now lives in `plans/088-status.md`. The
+Plan 078/080 attempt stopped pre-protocol and did not produce a TCP,
+NTCP2, authenticated-frame, or I2NP result. Plan 082 prepares authentic
 i2pr state and real RouterInfo/hash/run-identity fields, the Rust
 `validate-scenario` command parses the strict live scenario without opening a
 peer, and the mixed runner asserts both peer identities and the frozen run
 identity before any live process. This changes diagnostic ownership only; it
 does not change any support row.
-NTCP2 remains experimental and non-advertised, and Plan 079 remains blocked
-pending the Plan 084 development decision.
 
-Plan 072 remains inactive. It requires a real wire-stage i2pr/i2pd
-disagreement that source/specification review cannot own, plus
-`decision = ambiguous-reference-divergence` and one exact diagnostic question
-in [`plans/084-status.md`](../plans/084-status.md). Preparation-only and
-pre-protocol results cannot activate Emissary or change this support ledger.
+Plan 085 introduces the bounded `host-loopback-development` topology
+kind that allows literal IPv4 loopback protocol execution on the
+constrained host. Plan 086 enables the lane and proves a listener-only
+preflight; Plan 086 must close as `host-loopback-development-ready`
+before Plan 087 begins. Plan 087 runs the first real `i2pr -> i2pd`
+forward direction under the development lane; Plan 088 runs the reverse
+`i2pd -> i2pr` direction and issues the active development decision.
+On this host the recorded Plan 088 decision is `insufficient-evidence`
+because the Plan 086 lane has not closed, the Plan 087 forward
+direction has not executed, and no real wire run has been retained.
+
+NTCP2 remains experimental and non-advertised, and Plan 079 remains
+blocked pending the Plan 088 decision. Plan 072 remains inactive. It
+requires a real wire-stage i2pr/i2pd disagreement that source and
+specification review cannot own, plus
+`decision = ambiguous-reference-divergence` and one exact diagnostic
+question in [`plans/088-status.md`](../plans/088-status.md). The
+historical `lane-invalidated` and `same-stage-two-way-i2pr-defect`
+tokens are forbidden by the static boundary checker. Preparation-only
+and pre-protocol results cannot activate Emissary or change this
+support ledger. The
+[Plan 072/079 gate amendment](../plans/072-079-gate-amendment-plan-088.md)
+records the active gate authority.

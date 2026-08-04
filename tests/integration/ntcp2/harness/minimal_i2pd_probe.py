@@ -226,13 +226,28 @@ ALLOWED_EVENT_SIDES: Final[frozenset[str]] = frozenset({"i2pr", "i2pd"})
 
 
 # Allowed topology kinds. The probe accepts the Plan 046 rootless
-# sealed-namespace lane (``rootless-sealed-single-netns``) or the
-# Plan 080 qualified Multipass guest lane; other topology kinds are
-# rejected by the strict parser.
+# sealed-namespace lane (``rootless-sealed-single-netns``), the
+# Plan 080 qualified Multipass guest lane, or the Plan 086/088
+# host-loopback development lane (``host-loopback-development``) for
+# literal IPv4 loopback protocol execution; other topology kinds are
+# rejected by the strict parser. The host-loopback-development
+# topology is development-only and never satisfies release
+# qualification.
 ALLOWED_TOPOLOGY_KINDS: Final[frozenset[str]] = frozenset(
     {
         "rootless-sealed-single-netns",
         "multipass-owned-guest",
+        "host-loopback-development",
+    }
+)
+
+# Development-only topology kinds. Records carrying any of these
+# topology values explicitly opt out of release/isolation
+# qualification; they never satisfy Plan 079 ``level2-passed`` or any
+# Level 3 release predicate.
+DEVELOPMENT_ONLY_TOPOLOGY_KINDS: Final[frozenset[str]] = frozenset(
+    {
+        "host-loopback-development",
     }
 )
 
@@ -669,6 +684,7 @@ __all__ = [
     "AUTHENTICATED_FRAME_WRITTEN",
     "CLEANUP_FAILED",
     "CLEANUP_RESULTS",
+    "DEVELOPMENT_ONLY_TOPOLOGY_KINDS",
     "DIRECTION",
     "FORBIDDEN_FIELDS",
     "I2NP_DELIVERY_STATUS_DECODED",

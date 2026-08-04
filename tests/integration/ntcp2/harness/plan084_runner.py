@@ -301,6 +301,7 @@ class ReverseProbeRunner:
         if self.config.topology_kind not in {
             "rootless-sealed-single-netns",
             "multipass-owned-guest",
+            "host-loopback-development",
         }:
             raise RunnerError("lane-invalid")
         if not self.config.parent_network_state_unchanged:
@@ -548,7 +549,11 @@ class ReverseProbeRunner:
                 for counter in sorted(PROCESS_COUNTER_KEYS)
             }
         topology = self.config.topology_kind
-        if topology not in {"rootless-sealed-single-netns", "multipass-owned-guest"}:
+        if topology not in {
+            "rootless-sealed-single-netns",
+            "multipass-owned-guest",
+            "host-loopback-development",
+        }:
             topology = "rootless-sealed-single-netns"
         message_id = self.config.delivery_status_message_id
         if message_id < 1 or message_id > 0xFFFFFFFF:
@@ -824,7 +829,11 @@ def execute_reverse_probe(
             highest_stage=highest_stage,
         )
 
-    if topology_kind not in {"rootless-sealed-single-netns", "multipass-owned-guest"}:
+    if topology_kind not in {
+        "rootless-sealed-single-netns",
+        "multipass-owned-guest",
+        "host-loopback-development",
+    }:
         return finalize(
             terminal_result=LANE_INVALID,
             reason_code=REASON_LANE_INVALID,

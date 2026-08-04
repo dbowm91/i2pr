@@ -280,6 +280,19 @@ class Plan083TopologyTests(unittest.TestCase):
     def test_multipass_owned_guest_topology_is_allowlisted(self) -> None:
         self.assertIn("multipass-owned-guest", probe.ALLOWED_TOPOLOGY_KINDS)
 
+    def test_host_loopback_development_topology_is_allowlisted(self) -> None:
+        # Plan 086/088 enables literal IPv4 loopback development under
+        # the bounded ``host-loopback-development`` topology. The
+        # allowlist must accept it without breaking the strict schema.
+        self.assertIn("host-loopback-development", probe.ALLOWED_TOPOLOGY_KINDS)
+
+    def test_host_loopback_development_is_development_only(self) -> None:
+        # Plan 086/088 must mark the new topology as development-only;
+        # release and isolated lanes remain exclusive.
+        self.assertIn(
+            "host-loopback-development", probe.DEVELOPMENT_ONLY_TOPOLOGY_KINDS
+        )
+
     def test_public_topology_is_not_allowlisted(self) -> None:
         self.assertNotIn("public-network", probe.ALLOWED_TOPOLOGY_KINDS)
 

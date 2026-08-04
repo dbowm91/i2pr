@@ -1128,10 +1128,14 @@ Level 1 or Level 2 closures.
 
 ## Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
-Plan 074 is historical execution authority. Plan 081 supersedes its active
-sequence with **Plan 082 (implemented) → Plan 083 → Plan 084 → Plan 079**.
-Plans 075, 076, 077, and 080 are closed prerequisites or historical lane
-records.
+Plan 074 is historical execution authority. Plan 085 supersedes its active
+sequence with **Plan 082 (implemented) → Plan 083 (implemented, execution
+pending) → Plan 084 (implemented, execution pending) → Plan 085 → Plan 086
+→ Plan 087 → Plan 088 → Plan 079 (blocked)**. Plans 075, 076, 077, and 080
+are closed prerequisites or historical lane records. The Plan 084 historical
+`lane-invalidated` closure is reclassified as "runner implementation
+completed; required reverse wire execution never occurred" and the active
+development decision now lives in `plans/088-status.md`.
 
 The corrected repository state is:
 
@@ -1256,9 +1260,14 @@ Plan 077 has selected and documented the constrained-host capability state;
 Plan 078 remains blocked because no full-runtime lane is qualified. No real
 mixed-router attempt has occurred.
 
-Plan 081 has since superseded Plan 074 for active execution. Plans 075,
+Plan 085 has since superseded Plan 074 for active execution. Plans 075,
 076, 077, and 080 are closed prerequisites; the active sequence is
-**Plan 082 (implemented) → Plan 083 → Plan 084 → Plan 079**.
+**Plan 082 (implemented) → Plan 083 (implemented, execution pending) →
+Plan 084 (implemented, execution pending) → Plan 085 → Plan 086 → Plan 087
+→ Plan 088 → Plan 079 (blocked)**. The Plan 084 historical
+`lane-invalidated` closure is reclassified as "runner implementation
+completed; required reverse wire execution never occurred" and the active
+development decision now lives in `plans/088-status.md`.
 
 ## Plan 077 constrained-host execution lane
 
@@ -1304,8 +1313,10 @@ freezes `i2pr-minimal-run-identity-v1` before any live process. A primary
 scenario never uses a generated suffix or empty correlation fields. Preparation,
 scenario validation, and the frozen run identity are pre-protocol diagnostics
 only; they cannot claim TCP, authentication, frame, or I2NP progress. Plans
-083 and 084 own the first minimal i2pd wire probes, and Plan 079 is blocked
-until their decision.
+083 and 084 own the first minimal i2pd wire probes; the active execution
+authority is Plan 085 (host-loopback development roadmap) → Plan 086 (lane
+enablement) → Plan 087 (forward probe) → Plan 088 (reverse probe and
+development decision). Plan 079 is blocked until the Plan 088 decision.
 
 ## Plan 083 minimal i2pr-to-i2pd wire probe
 
@@ -1357,9 +1368,61 @@ with the qualified-lane record in [`plans/080-status.md`](../../plans/080-status
 ## Plan 072 activation gate
 
 Plan 072 is a conditional differential lane, not the next executable plan. It
-may start only after Plan 084 reaches a real wire stage, i2pr and i2pd disagree
+may start only after Plan 088 reaches a real wire stage, i2pr and i2pd disagree
 at a precise stage that source/specification review cannot own, and
-[`plans/084-status.md`](../../plans/084-status.md) records
+[`plans/088-status.md`](../../plans/088-status.md) records
 `decision = ambiguous-reference-divergence` plus one exact diagnostic
 question. Preparation, rendering, cleanup, and generic pre-protocol failures
-never satisfy this gate.
+never satisfy this gate. The Plan 072/079 gate amendment
+[`plans/072-079-gate-amendment-plan-088.md`](../../plans/072-079-gate-amendment-plan-088.md)
+records the active gate authority.
+
+## Plan 088 reverse host-loopback probe and development decision
+
+Plan 088 owns the reverse `i2pd -> i2pr` direction and the active
+development decision. Plan 088 inherits the Plan 086
+`host-loopback-development` lane (literal IPv4 loopback, network ID
+99, development-only) and reuses the Plan 084 reverse probe schema
+(`i2pr-minimal-i2pd-reverse-probe-v1`) and runner orchestration module
+(`plan084_runner.py`) unchanged.
+
+Plan 088 lands:
+
+- `tests/integration/ntcp2/harness/minimal_i2pd_probe.py` — the
+  shared `ALLOWED_TOPOLOGY_KINDS` set accepts
+  `host-loopback-development`; the new bounded
+  `DEVELOPMENT_ONLY_TOPOLOGY_KINDS` marker records the development-only
+  classification.
+- `tests/integration/ntcp2/harness/plan083_runner.py` and
+  `tests/integration/ntcp2/harness/plan084_runner.py` — both runners
+  accept `host-loopback-development` in their lane validators.
+- `tests/integration/ntcp2/harness/test_plan088.py` — the Plan 088
+  test matrix (35 cases) covering the bounded development decision
+  vocabulary, the Plan 079 entry gate, the Plan 072 activation gate,
+  the handoff fields, the development-only topology contract, the
+  reverse probe schema contract, the cross-direction rejection, and
+  the module boundary.
+- `scripts/check-ntcp2-interoperability.sh` — enforces the Plan 088
+  test matrix presence, the locked decision vocabulary, the
+  `host-loopback-development` topology coverage, the plan-of-record
+  reference, the `plans/088-status.md` decision token, and the
+  prohibition of the legacy `lane-invalidated` and
+  `same-stage-two-way-i2pr-defect` tokens.
+
+The Plan 088 development decision vocabulary is exactly five values:
+`two-way-development-probe-passed`, `one-way-passed-reverse-defect`,
+`ambiguous-reference-divergence`, `manual-isolated-fallback-required`,
+`insufficient-evidence`. Only `two-way-development-probe-passed` may
+unblock Plan 079; only `ambiguous-reference-divergence` may activate
+Plan 072. The historical `lane-invalidated` and
+`same-stage-two-way-i2pr-defect` tokens are forbidden by the static
+boundary checker.
+
+On this host the recorded decision is `insufficient-evidence` because
+the Plan 086 lane has not closed, the Plan 087 forward direction has
+not executed, and no real wire run has been retained. The Plan 088
+implementation surface travels with the repository unchanged for any
+future host where the Plan 086 lane becomes executable or the Plan
+089 manual-isolated fallback becomes available. See
+[`plans/088-status.md`](../../plans/088-status.md) for the closure
+record. NTCP2 remains experimental and non-advertised.
