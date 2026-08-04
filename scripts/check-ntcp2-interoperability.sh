@@ -1303,4 +1303,38 @@ if ! grep -Fq 'Plan 083' "$root/tests/integration/ntcp2/harness/plan083_runner.p
   exit 1
 fi
 
+# Plan 084: i2pd-to-i2pr reverse probe. The reverse probe must
+# declare the v1 schema marker, the locked ``i2pd-to-i2pr-ipv4``
+# direction, the focused test matrix, the runner orchestration module,
+# and the plan-of-record reference. The probe must remain independent
+# of release/bundle/certificate/rootless/Multipass authority.
+if ! test -f "$root/tests/integration/ntcp2/harness/minimal_i2pd_reverse_probe.py"; then
+  echo "Plan 084 reverse probe record module is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-minimal-i2pd-reverse-probe-v1' "$root/tests/integration/ntcp2/harness/minimal_i2pd_reverse_probe.py"; then
+  echo "Plan 084 reverse probe module must declare the v1 schema marker" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pd-to-i2pr-ipv4' "$root/tests/integration/ntcp2/harness/minimal_i2pd_reverse_probe.py"; then
+  echo "Plan 084 reverse probe module must declare the reverse direction" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan084.py"; then
+  echo "Plan 084 reverse probe test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 084' "$root/tests/integration/ntcp2/harness/minimal_i2pd_reverse_probe.py"; then
+  echo "Plan 084 reverse probe module must reference its plan-of-record" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/plan084_runner.py"; then
+  echo "Plan 084 reverse probe runner orchestration module is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 084' "$root/tests/integration/ntcp2/harness/plan084_runner.py"; then
+  echo "Plan 084 reverse runner must reference its plan-of-record" >&2
+  exit 1
+fi
+
 echo "NTCP2 interoperability manifest and sanitized evidence boundary are valid (${scenario_count} scenarios)."

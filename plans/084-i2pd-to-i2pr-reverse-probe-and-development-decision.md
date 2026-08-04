@@ -2,7 +2,12 @@
 
 ## Status and dependencies
 
-- Status: planned.
+- Status: implemented (reverse-direction record schema, focused test
+  matrix, real-subprocess runner orchestration, static boundary
+  extension). Closed on this host with the typed environment blocker
+  ``lane-invalidated``; see ``plans/084-status.md`` for the
+  development decision, the rationale, and the cross-host portability
+  notes. Plan 079 remains blocked; Plan 072 remains inactive.
 - Parent roadmap: Plan 081.
 - Requires Plan 083 closed with either a pass or a corrected-and-rerun pass for `i2pr -> i2pd`.
 - Requires Plan 082 authentic state preparation and strict live-scenario rendering.

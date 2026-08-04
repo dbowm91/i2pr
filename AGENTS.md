@@ -1504,7 +1504,7 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan068
 
 ## Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
-Plan 074 is historical execution authority. Plan 081 supersedes its active sequence with **Plan 082 (implemented) → Plan 083 → Plan 084 → Plan 079**. Plans 075, 076, 077, and 080 are closed prerequisites or historical lane records.
+Plan 074 is historical execution authority. Plan 081 supersedes its active sequence with **Plan 082 (implemented) → Plan 083 (implemented) → Plan 084 (implemented, closed `lane-invalidated`) → Plan 079 (blocked)**. Plans 075, 076, 077, and 080 are closed prerequisites or historical lane records.
 
 The corrected repository state is:
 
@@ -1517,6 +1517,10 @@ real_reference_process_in_plan069_runner = corrected_by_plan075
 real_mixed_router_attempts = 0
 current_rootless_namespace_lane = unavailable
 multipass_lane = qualified
+plan_082_state_preparation = implemented
+plan_083_forward_probe = implemented_schema_and_runner
+plan_084_reverse_probe = implemented_schema_and_runner
+plan_084_development_decision = lane-invalidated
 support = experimental
 advertised = false
 normal_daemon_activation = disabled
@@ -1643,7 +1647,7 @@ git diff --check
 
 Plan 075 closes the runner-integrity work only; it does not build i2pd, run a real mixed-router direction, add Docker/QEMU/namespaces/CI, change NTCP2 protocol code, or produce a Level 2 or Level 3 record. The next active plan is Plan 076, followed by Plans 077, 078, and 079. The current repository therefore has no real mixed-router attempt and remains experimental and non-advertised.
 
-Plan 081 has since superseded Plan 074 for active execution. Plans 075, 076, 077, and 080 are closed prerequisites; the active sequence is Plan 082 (implemented) → Plan 083 → Plan 084 → Plan 079.
+Plan 081 has since superseded Plan 074 for active execution. Plans 075, 076, 077, and 080 are closed prerequisites; the active sequence is Plan 082 (implemented) → Plan 083 (implemented) → Plan 084 (implemented, closed `lane-invalidated`) → Plan 079 (blocked).
 
 Required focused checks for Plan 069 (after the Plan 075 fix
 lands):
@@ -1803,9 +1807,14 @@ Plan 082 provides the test-only `i2pr-interop ntcp2 prepare` and
 `validate-scenario` operations, authentic RouterInfo/hash preparation,
 canonical pre-launch run identity, precise pre-protocol errors, and truthful
 process accounting. Preparation and strict scenario validation open no socket,
-run no i2pd peer, and produce no interoperability evidence. Plan 079 remains
-blocked until `plans/084-status.md` records
-`decision = two-way-development-probe-passed`. NTCP2 stays experimental and
+run no i2pd peer, and produce no interoperability evidence. Plan 083 implements
+the forward ``i2pr -> i2pd`` probe schema, runner orchestration, and focused
+test matrix. Plan 084 implements the reverse ``i2pd -> i2pr`` probe schema,
+runner orchestration, focused test matrix, and static boundary check; on this
+host it closes with `decision = lane-invalidated` because the Plan 046 rootless
+probe returns `blocked_unprivileged_user_namespace` and the Plan 080 Multipass
+guest cannot complete. Plan 079 remains blocked until `plans/084-status.md`
+records `decision = two-way-development-probe-passed`. NTCP2 stays experimental and
 non-advertised. See `plans/082-status.md`.
 
 ## Plan 083 minimal i2pr-to-i2pd wire probe

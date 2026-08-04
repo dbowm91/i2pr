@@ -15,15 +15,21 @@ freezes real correlation fields, and the Rust `validate-scenario` command
 parses the strict live scenario without opening a peer. Plan 083 is
 implemented as the in-process record schema, focused test matrix, and
 test-only runner orchestration module; no retained evidence reaches
-`tcp_connected`. Plan 084 therefore cannot issue one of its development
-decisions yet. Plan 072 is not activated: neither a wire-stage reference
-divergence nor the required exact diagnostic question exists.
+`tcp_connected`. Plan 084 is implemented as the reverse-direction probe
+schema, the focused test matrix, the real-subprocess runner
+orchestration module, and the static boundary check extension. Plan 084
+closes with `decision = lane-invalidated` because the Plan 046
+rootless sealed-namespace probe returns `blocked_unprivileged_user_namespace`
+on this host and the Plan 080 Multipass guest cannot complete on this
+constrained host (per Plan 051). Plan 072 is not activated: no
+wire-stage reference divergence exists because the wire has not been
+exercised on this host.
 
-The next authority is Plan 083. A preparation result, scenario-rendering
-success, process lifetime, or evidence bookkeeping result cannot activate this
-plan. Preserve this gate until Plan 084 records
+A future plan may activate Plan 072 only when Plan 084 records
 `decision = ambiguous-reference-divergence` with one precise role/stage
-question.
+question, or when a future host becomes runnable and Plan 083/084
+produce a real wire-stage reference divergence during the development
+probe sequence.
 
 ## Corrected activation point
 

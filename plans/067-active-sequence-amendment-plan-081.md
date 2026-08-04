@@ -18,6 +18,10 @@ plan_076_real_i2pd_driver = implemented
 plan_077_lane_selection = implemented
 plan_080_multipass_lane = qualified
 plan_078_protocol_attempt = stopped_pre_protocol
+plan_082_state_preparation = implemented
+plan_083_forward_probe = implemented_schema_and_runner
+plan_084_reverse_probe = implemented_schema_and_runner
+plan_084_development_decision = lane-invalidated
 real_i2pd_router_info_export = observed
 real_i2pr_router_info_for_live_run = not_produced
 real_tcp_connection_attempt = 0
@@ -27,7 +31,7 @@ real_i2np_delivery_status_attempt = 0
 protocol_conformance_result = not_yet_observed
 current_primary_reference = i2pd_2_60_0
 emissary = conditional_only
-plan_079 = blocked_pending_plan_084
+plan_079 = blocked_pending_lane_availability
 support = experimental
 advertised = false
 normal_daemon_activation = disabled
@@ -62,7 +66,7 @@ No protocol defect or protocol pass has yet been demonstrated.
 | 081 | planned, active roadmap | Correct pre-protocol composition and obtain minimal two-way i2pd evidence | Plans 075-080 history |
 | 082 | planned, next | Add authentic i2pr state preparation, real hashes/run identity, precise errors, and truthful counters | 081 |
 | 083 | planned | Run minimal real `i2pr -> i2pd` probe and identify first authentic protocol result | 082 |
-| 084 | planned | Run minimal real `i2pd -> i2pr` probe and issue development decision | 083 |
+| 084 | implemented, closed as `lane-invalidated` on this host | Run minimal real `i2pd -> i2pr` probe and issue development decision | 083 |
 | 079 | blocked | Run 3/3 repeated i2pd development validation and negative controls | 084 decision |
 | 072 | conditional | Use Emissary only for one precise unresolved i2pd differential question | 084 ambiguity decision |
 | 073 | deferred final gate | Java+i2pd isolated release qualification | after development validation and suitable Level 3 lane |
