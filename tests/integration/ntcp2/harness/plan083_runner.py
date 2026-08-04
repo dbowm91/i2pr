@@ -37,6 +37,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -181,7 +182,7 @@ class FakeProcess:
         return self.exit_code
 
     def stop(self, timeout_seconds: float) -> str:
-        self._stopped = True
+        self._stopped = False
         return "clean"
 
     def wait_terminal(self, timeout_seconds: float) -> dict[str, Any] | None:
@@ -274,7 +275,7 @@ class ProbeRunner:
             self._execute(run_root)
         except RunnerError as exc:
             self._classify_runner_error(exc.code)
-        except Exception as exc:
+        except Exception:
             self._terminal_result = PROTOCOL_REJECTED
             self._reason_code = REASON_NOT_STARTED
 
@@ -320,6 +321,12 @@ class ProbeRunner:
         driver_path = os.environ.get("I2PD_DRIVER_PATH")
         if driver_path and Path(driver_path).is_file():
             try:
+                if self.config.i2pd_listener_factory is not None:
+                    self.config.i2pd_listener_factory(
+                        run_root=run_root,
+                        local_address=self.config.peer_address,
+                        local_port=self.config.peer_port,
+                    )
                 self._count_increment("i2pd_prepare", "exited")
             except Exception as exc:
                 raise RunnerError("pre-protocol-reference-failed") from exc
@@ -352,12 +359,13 @@ class ProbeRunner:
                 if self.config.i2pd_listener_factory is not None:
                     self.config.i2pd_listener_factory(
                         run_root=run_root,
-                        local_address=self.config.local_address,
+                        local_address=self.config.peer_address,
                         local_port=self.config.peer_port,
                     )
             except Exception as exc:
                 self._count_increment("i2pd_listener", "exited")
                 raise RunnerError("i2pd-listener-not-ready") from exc
+            self._count_increment("i2pd_listener", "exited")
         else:
             self._count_increment("i2pd_listener", "exited")
 
@@ -605,6 +613,585 @@ class ProbeRunner:
             })
 
 
+# ---------------------------------------------------------------------------
+# Real subprocess helpers.
+# ---------------------------------------------------------------------------
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _allocate_loopback_port() -> int:
+    """Bind a temporary loopback socket and return its port."""
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as handle:
+        handle.bind(("127.0.0.1", 0))
+        return int(handle.getsockname()[1])
+
+
+def _read_ndjson(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    out: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def execute_real_probe(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    run_id: str,
+    source_commit: str,
+    reference_revision: str,
+    lane_qualification_sha256: str,
+    topology_kind: str,
+    i2pr_binary_sha256: str,
+    i2pd_binary_sha256: str,
+    delivery_status_message_id: int,
+    i2pd_driver_binary: Path,
+    reference_tree_sha256: str = "0" * 64,
+    driver_source_sha256: str = "0" * 64,
+    build_manifest_sha256: str = "0" * 64,
+    observer_patch_sha256: str = "0" * 64,
+    handshake_timeout_ms: int = 30_000,
+    output_path: Path | None = None,
+) -> dict[str, Any]:
+    """Execute one Plan 083 minimal probe attempt against real subprocesses.
+
+    The runner calls ``i2pr-interop ntcp2 prepare`` to materialise the
+    i2pr state, renders and validates a Plan 065 strict scenario, then
+    launches the i2pd direct driver as the responder and the i2pr
+    launcher as the initiator. The runner consumes the structured
+    events emitted by both processes and writes a single sanitized
+    probe record.
+
+    The function is fail-closed: any pre-protocol rejection uses the
+    typed ``pre_protocol_rejected`` terminal and a Plan 083 fixed reason
+    code; any protocol failure uses ``protocol_rejected`` /
+    ``protocol_timeout`` with a typed reason; a passing probe requires
+    all four canonical observed events and the final stage.
+    """
+
+    counters = empty_process_counters()
+    observed: list[dict[str, Any]] = []
+
+    def increment(process_key: str, counter: str) -> None:
+        if process_key in counters and counter in counters[process_key]:
+            counters[process_key][counter] += 1
+
+    def record_event(event: dict[str, Any]) -> None:
+        event_name = event.get("event_name", "")
+        source_side = event.get("source_side", "")
+        if event_name in ALLOWED_EVENT_NAMES and source_side in ALLOWED_EVENT_SIDES:
+            observed.append({
+                "event_name": event_name,
+                "source_side": source_side,
+                "event_sha256": event.get("event_sha256", "0" * 64),
+            })
+
+    def finalize(
+        *,
+        terminal_result: str,
+        reason_code: str,
+        highest_stage: str,
+        cleanup_result: str = "clean",
+        parent_network_state_unchanged: bool = True,
+        i2pr_router_info_sha256: str = "0" * 64,
+        i2pd_router_info_sha256: str = "0" * 64,
+        i2pr_router_hash_sha256: str = "0" * 64,
+        i2pd_router_hash_sha256: str = "0" * 64,
+        delivery_status_message_id_override: int | None = None,
+        topology_kind_override: str | None = None,
+    ) -> dict[str, Any]:
+        message_id = (
+            delivery_status_message_id_override
+            if delivery_status_message_id_override is not None
+            else delivery_status_message_id
+        )
+        topology = topology_kind_override or topology_kind
+        record = build_record(
+            run_id=run_id,
+            source_commit=source_commit,
+            reference_revision=reference_revision,
+            lane_qualification_sha256=lane_qualification_sha256,
+            topology_kind=topology,
+            parent_network_state_unchanged=parent_network_state_unchanged,
+            i2pr_binary_sha256=i2pr_binary_sha256,
+            i2pd_binary_sha256=i2pd_binary_sha256,
+            i2pr_router_info_sha256=i2pr_router_info_sha256,
+            i2pd_router_info_sha256=i2pd_router_info_sha256,
+            i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+            i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+            delivery_status_message_id=message_id,
+            observed_events=observed,
+            highest_stage_reached=highest_stage,
+            terminal_result=terminal_result,
+            reason_code=reason_code,
+            process_counters=counters,
+            cleanup_result=cleanup_result,
+        )
+        target = output_path or (run_root / "probe-record.json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        return record
+
+    def reject(reason_code: str, highest_stage: str = STATE_PREPARED) -> dict[str, Any]:
+        return finalize(
+            terminal_result=PRE_PROTOCOL_REJECTED,
+            reason_code=reason_code,
+            highest_stage=highest_stage,
+        )
+
+    # Validate lane.
+    if topology_kind not in {"rootless-sealed-single-netns", "multipass-owned-guest"}:
+        return finalize(
+            terminal_result=LANE_INVALID,
+            reason_code=REASON_LANE_INVALID,
+            highest_stage=NOT_STARTED,
+            topology_kind_override="rootless-sealed-single-netns",
+        )
+
+    if delivery_status_message_id < 1 or delivery_status_message_id > 0xFFFFFFFF:
+        return finalize(
+            terminal_result=PRE_PROTOCOL_REJECTED,
+            reason_code=REASON_PRE_PROTOCOL_RUN_IDENTITY_FAILED,
+            highest_stage=STATE_PREPARED,
+            delivery_status_message_id_override=1,
+        )
+
+    # Allocate the loopback endpoints. The i2pr is the initiator
+    # (192.0.2.1 -> 192.0.2.2) and the i2pd is the responder.
+    i2pr_address = "192.0.2.1"
+    i2pd_address = "192.0.2.2"
+    i2pr_port = _allocate_loopback_port()
+    i2pd_port = _allocate_loopback_port()
+
+    raw_dir = run_root / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    state_dir = run_root / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    i2pd_data_dir = run_root / "i2pd-data"
+    i2pd_data_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = run_root / "i2pd-output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    exchange_dir = run_root / "exchange"
+    exchange_dir.mkdir(parents=True, exist_ok=True)
+
+    i2pr_binary = repo_root / "target" / "debug" / "i2pr-interop"
+    if not i2pr_binary.is_file():
+        return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+
+    # Phase 1: prepare the i2pr state.
+    increment("i2pr_prepare", "started")
+    try:
+        completed = subprocess.run(
+            [
+                str(i2pr_binary),
+                "ntcp2",
+                "prepare",
+                "--state-dir",
+                str(state_dir),
+                "--local-address",
+                i2pr_address,
+                "--local-port",
+                str(i2pr_port),
+                "--network-id",
+                "99",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60.0,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        increment("i2pr_prepare", "exited")
+        return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+    increment("i2pr_prepare", "exited")
+
+    if completed.returncode != 0:
+        return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+
+    try:
+        prep_record = json.loads(completed.stdout.decode("utf-8").strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError, UnicodeDecodeError):
+        return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+
+    if prep_record.get("result") != "prepared":
+        return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+
+    i2pr_router_info_path = state_dir / "router.info"
+    if not i2pr_router_info_path.is_file():
+        return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+    i2pr_router_info_sha256 = _sha256_file(i2pr_router_info_path)
+    i2pr_router_hash_sha256 = str(prep_record.get("router_hash_sha256", ""))
+    if not HEX64.fullmatch(i2pr_router_hash_sha256):
+        return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+
+    # Copy the i2pr RouterInfo into the exchange directory for the
+    # i2pd driver to import.
+    exchange_ri = exchange_dir / "i2pr-router.info"
+    exchange_ri.write_bytes(i2pr_router_info_path.read_bytes())
+
+    # Phase 2: prepare the i2pd driver. The driver initialises its own
+    # i2pd runtime and exports its RouterInfo to output_dir/events.ndjson
+    # via the ``router_info_exported`` event. We read the local hash from
+    # the events after the driver has completed its inspect-mode probe
+    # or we run it again in listen mode after importing the peer.
+    increment("i2pd_prepare", "started")
+    if not i2pd_driver_binary.is_file():
+        increment("i2pd_prepare", "exited")
+        return reject(REASON_PRE_PROTOCOL_REFERENCE_FAILED)
+
+    # Render a strict Plan 064 driver config for the inspect probe to
+    # obtain the local i2pd RouterInfo hash. The hash is captured from
+    # the ``router_info_exported`` event detail field.
+    inspect_config = {
+        "schema": "i2pr-i2pd-direct-driver-config-v1",
+        "schema_version": 1,
+        "run_id": run_id,
+        "scenario_id": "minimal-i2pd-probe-inspect",
+        "direction": "i2pr-to-i2pd-ipv4",
+        "mode": "inspect",
+        "data_dir": str(i2pd_data_dir),
+        "output_dir": str(output_dir),
+        "local_address": i2pd_address,
+        "local_port": i2pd_port,
+        "network_id": 99,
+        "peer_router_info_path": str(exchange_ri),
+        "expected_local_router_hash_sha256": "1" * 64,
+        "expected_peer_router_hash_sha256": "2" * 64,
+        "expected_peer_address": i2pr_address,
+        "expected_peer_port": i2pr_port,
+        "delivery_status_message_id": delivery_status_message_id,
+        "startup_timeout_ms": 30_000,
+        "handshake_timeout_ms": handshake_timeout_ms,
+        "data_phase_timeout_ms": handshake_timeout_ms,
+        "shutdown_timeout_ms": 10_000,
+        "reference_revision": reference_revision,
+        "reference_tree_sha256": reference_tree_sha256,
+        "driver_source_sha256": driver_source_sha256,
+        "driver_binary_sha256": i2pd_binary_sha256,
+        "build_manifest_sha256": build_manifest_sha256,
+        "observer_patch_sha256": observer_patch_sha256,
+        "run_identity_sha256": lane_qualification_sha256,
+    }
+    from i2pd_direct_driver import i2pd_direct_driver_invocation
+    try:
+        exit_code, trigger_record = i2pd_direct_driver_invocation(
+            config=inspect_config,
+            driver_binary=i2pd_driver_binary,
+            helper_binary_sha256=i2pd_binary_sha256,
+            helper_source_sha256=driver_source_sha256,
+            build_manifest_sha256=build_manifest_sha256,
+            helper_build_manifest_sha256=build_manifest_sha256,
+            run_identity_sha256=lane_qualification_sha256,
+            observer_patch_sha256=observer_patch_sha256,
+            local_router_info_sha256="0" * 64,
+            peer_router_info_sha256=i2pr_router_info_sha256,
+            result_path=run_root / "raw" / "i2pd-inspect-trigger.json",
+        )
+    except Exception:
+        increment("i2pd_prepare", "exited")
+        return reject(REASON_PRE_PROTOCOL_REFERENCE_FAILED)
+    increment("i2pd_prepare", "exited")
+
+    if exit_code != 0:
+        return reject(REASON_PRE_PROTOCOL_REFERENCE_FAILED)
+
+    inspect_events = _read_ndjson(output_dir / "events.ndjson")
+    i2pd_router_hash_sha256 = ""
+    i2pd_router_info_sha256 = "0" * 64
+    for event in inspect_events:
+        if event.get("event_kind") == "router_info_exported":
+            detail = event.get("detail", "")
+            if isinstance(detail, str) and HEX64.fullmatch(detail):
+                i2pd_router_hash_sha256 = detail
+            break
+    if not i2pd_router_hash_sha256:
+        return reject(REASON_PRE_PROTOCOL_ROUTER_INFO_VALIDATION_FAILED)
+
+    # Phase 3: render and validate the Plan 065 strict scenario.
+    scenario_path = run_root / "scenario.toml"
+    scenario_payload = {
+        "schema": "i2pr-launcher-scenario-v2",
+        "schema_version": 2,
+        "run_id": run_id,
+        "run_identity_sha256": lane_qualification_sha256,
+        "direction": "i2pr-to-i2pd-ipv4",
+        "expected_sender_router_hash_sha256": i2pr_router_hash_sha256,
+        "expected_receiver_router_hash_sha256": i2pd_router_hash_sha256,
+        "delivery_status_message_id": delivery_status_message_id,
+        "reference_driver_mode": "i2pd-direct-driver",
+        "reference_driver_binary_sha256": i2pd_binary_sha256,
+        "reference_driver_source_sha256": driver_source_sha256,
+        "reference_build_manifest_sha256": build_manifest_sha256,
+        "reference_observer_patch_sha256": observer_patch_sha256,
+        "listener_endpoint": {
+            "address": i2pd_address,
+            "port": i2pd_port,
+        },
+        "peer_router_info_path": str(exchange_ri),
+        "dialer_endpoint": {
+            "address": i2pr_address,
+            "port": i2pr_port,
+        },
+        "handshake_timeout_ms": handshake_timeout_ms,
+        "data_phase_timeout_ms": handshake_timeout_ms,
+    }
+    scenario_path.write_text(json.dumps(scenario_payload, indent=2), encoding="utf-8")
+
+    try:
+        completed = subprocess.run(
+            [
+                str(i2pr_binary),
+                "ntcp2",
+                "validate-scenario",
+                "--scenario-config",
+                str(scenario_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30.0,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return reject(REASON_PRE_PROTOCOL_RENDER_FAILED)
+    if completed.returncode != 0:
+        return reject(REASON_PRE_PROTOCOL_RENDER_FAILED)
+
+    # Phase 4: launch the i2pd listener subprocess.
+    increment("i2pd_listener", "started")
+    listener_config = dict(inspect_config)
+    listener_config["mode"] = "listen"
+    listener_events_path = output_dir / "events.ndjson"
+    # Truncate the prior events file so the listener emits a fresh
+    # sequence.
+    if listener_events_path.is_file():
+        listener_events_path.unlink()
+    try:
+        exit_code, _trigger = i2pd_direct_driver_invocation(
+            config=listener_config,
+            driver_binary=i2pd_driver_binary,
+            helper_binary_sha256=i2pd_binary_sha256,
+            helper_source_sha256=driver_source_sha256,
+            build_manifest_sha256=build_manifest_sha256,
+            helper_build_manifest_sha256=build_manifest_sha256,
+            run_identity_sha256=lane_qualification_sha256,
+            observer_patch_sha256=observer_patch_sha256,
+            local_router_info_sha256="0" * 64,
+            peer_router_info_sha256=i2pr_router_info_sha256,
+            result_path=run_root / "raw" / "i2pd-listener-trigger.json",
+        )
+    except Exception:
+        increment("i2pd_listener", "exited")
+        return finalize(
+            terminal_result=PROTOCOL_REJECTED,
+            reason_code=REASON_I2PD_LISTENER_NOT_READY,
+            highest_stage=STATE_PREPARED,
+            i2pr_router_info_sha256=i2pr_router_info_sha256,
+            i2pd_router_info_sha256=i2pd_router_info_sha256,
+            i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+            i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+        )
+    increment("i2pd_listener", "exited")
+
+    if exit_code != 0:
+        return finalize(
+            terminal_result=PROTOCOL_REJECTED,
+            reason_code=REASON_I2PD_LISTENER_NOT_READY,
+            highest_stage=STATE_PREPARED,
+            i2pr_router_info_sha256=i2pr_router_info_sha256,
+            i2pd_router_info_sha256=i2pd_router_info_sha256,
+            i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+            i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+        )
+
+    listener_events = _read_ndjson(listener_events_path)
+    listener_event_names = {e.get("event_kind") for e in listener_events}
+    if "listener_ready" in listener_event_names:
+        record_event({
+            "event_name": "listener_ready",
+            "source_side": "i2pd",
+            "event_sha256": next(
+                e.get("event_sha256", "0" * 64)
+                for e in listener_events
+                if e.get("event_kind") == "listener_ready"
+            ),
+        })
+
+    # Phase 5: launch the i2pr dialer subprocess.
+    increment("i2pr_dialer", "started")
+    i2pr_log_path = raw_dir / "i2pr.log"
+    try:
+        with i2pr_log_path.open("wb") as log_handle:
+            dialer_proc = subprocess.Popen(
+                [
+                    str(i2pr_binary),
+                    "ntcp2",
+                    "dial",
+                    "--scenario-config",
+                    str(scenario_path),
+                ],
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+            )
+    except (OSError, subprocess.SubprocessError):
+        increment("i2pr_dialer", "exited")
+        return finalize(
+            terminal_result=PROTOCOL_REJECTED,
+            reason_code=REASON_I2PR_DIAL_START_FAILED,
+            highest_stage=LISTENER_READY,
+            i2pr_router_info_sha256=i2pr_router_info_sha256,
+            i2pd_router_info_sha256=i2pd_router_info_sha256,
+            i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+            i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+        )
+
+    # Poll the dialer process and consume the i2pd events concurrently.
+    deadline = time.monotonic() + (handshake_timeout_ms / 1000.0) + 10.0
+    terminal_seen = False
+    i2pr_status_lines: list[dict[str, Any]] = []
+    seen_i2pd_events = set(listener_event_names)
+    while time.monotonic() < deadline:
+        if i2pr_log_path.is_file():
+            for line in i2pr_log_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if parsed.get("phase") in {"listener_ready", "tcp_connected", "ntcp2_authenticated", "frame_emitted", "frame_authenticated_and_decrypted", "i2np_message_decoded", "terminal"}:
+                    i2pr_status_lines.append(parsed)
+                    side = "i2pr"
+                    phase = str(parsed.get("phase", ""))
+                    if phase == "listener_ready":
+                        record_event({"event_name": "listener_ready", "source_side": side, "event_sha256": "0" * 64})
+                    elif phase == "tcp_connected":
+                        record_event({"event_name": "tcp_connected", "source_side": side, "event_sha256": "0" * 64})
+                    elif phase == "ntcp2_authenticated":
+                        record_event({"event_name": "ntcp2_authenticated", "source_side": side, "event_sha256": "0" * 64})
+                    elif phase == "frame_emitted":
+                        record_event({"event_name": "frame_emitted", "source_side": side, "event_sha256": "0" * 64})
+                    elif phase == "frame_authenticated_and_decrypted":
+                        record_event({"event_name": "frame_authenticated_and_decrypted", "source_side": side, "event_sha256": "0" * 64})
+                    elif phase == "i2np_message_decoded":
+                        record_event({"event_name": "i2np_message_decoded", "source_side": side, "event_sha256": "0" * 64})
+                    elif phase == "terminal":
+                        terminal_seen = True
+                        if parsed.get("result") == "passed":
+                            record_event({"event_name": "terminal_clean", "source_side": side, "event_sha256": "0" * 64})
+                        else:
+                            record_event({"event_name": "terminal_rejected", "source_side": side, "event_sha256": "0" * 64})
+
+        # Drain the i2pd events file too.
+        for event in _read_ndjson(listener_events_path):
+            kind = event.get("event_kind", "")
+            if kind and kind not in seen_i2pd_events:
+                seen_i2pd_events.add(kind)
+                side = "i2pd"
+                if kind == "ntcp2_authenticated":
+                    record_event({"event_name": "ntcp2_authenticated", "source_side": side, "event_sha256": event.get("event_sha256", "0" * 64)})
+                elif kind == "frame_emitted":
+                    record_event({"event_name": "frame_emitted", "source_side": side, "event_sha256": event.get("event_sha256", "0" * 64)})
+                elif kind == "frame_authenticated_and_decrypted":
+                    record_event({"event_name": "frame_authenticated_and_decrypted", "source_side": side, "event_sha256": event.get("event_sha256", "0" * 64)})
+                elif kind == "i2np_message_decoded":
+                    record_event({"event_name": "i2np_message_decoded", "source_side": side, "event_sha256": event.get("event_sha256", "0" * 64)})
+                elif kind == "terminal_clean":
+                    record_event({"event_name": "terminal_clean", "source_side": side, "event_sha256": event.get("event_sha256", "0" * 64)})
+                elif kind == "terminal_rejected":
+                    record_event({"event_name": "terminal_rejected", "source_side": side, "event_sha256": event.get("event_sha256", "0" * 64)})
+
+        if dialer_proc.poll() is not None and terminal_seen:
+            break
+        time.sleep(0.1)
+
+    # Ensure the dialer has terminated before computing the result.
+    try:
+        dialer_proc.wait(timeout=10.0)
+    except subprocess.TimeoutExpired:
+        dialer_proc.terminate()
+        try:
+            dialer_proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            dialer_proc.kill()
+            dialer_proc.wait(timeout=5.0)
+    increment("i2pr_dialer", "exited")
+
+    # Determine the highest stage reached.
+    observed_names = {e["event_name"] for e in observed}
+    if "i2np_message_decoded" in observed_names:
+        highest = I2NP_DELIVERY_STATUS_DECODED
+    elif "frame_authenticated_and_decrypted" in observed_names:
+        highest = "authenticated_frame_decrypted"
+    elif "frame_emitted" in observed_names:
+        highest = "authenticated_frame_written"
+    elif "ntcp2_authenticated" in observed_names:
+        highest = "noise_authenticated"
+    elif "tcp_connected" in observed_names:
+        highest = TCP_CONNECTED
+    elif "listener_ready" in observed_names:
+        highest = LISTENER_READY
+    else:
+        highest = STATE_PREPARED
+
+    # Evaluate the protocol result.
+    has_authenticated = "ntcp2_authenticated" in observed_names
+    has_frame_emitted = "frame_emitted" in observed_names
+    has_frame_decrypted = "frame_authenticated_and_decrypted" in observed_names
+    has_i2np_decoded = "i2np_message_decoded" in observed_names
+    if has_authenticated and has_frame_emitted and has_frame_decrypted and has_i2np_decoded:
+        return finalize(
+            terminal_result=PASSED,
+            reason_code=REASON_NOT_STARTED,
+            highest_stage=I2NP_DELIVERY_STATUS_DECODED,
+            i2pr_router_info_sha256=i2pr_router_info_sha256,
+            i2pd_router_info_sha256=i2pd_router_info_sha256,
+            i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+            i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+        )
+    if has_frame_emitted and not has_authenticated:
+        return finalize(
+            terminal_result=PROTOCOL_REJECTED,
+            reason_code=REASON_REFERENCE_EVENTS_MISSING,
+            highest_stage=highest,
+            i2pr_router_info_sha256=i2pr_router_info_sha256,
+            i2pd_router_info_sha256=i2pd_router_info_sha256,
+            i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+            i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+        )
+    if has_authenticated and not has_frame_decrypted:
+        return finalize(
+            terminal_result=PROTOCOL_REJECTED,
+            reason_code=REASON_REFERENCE_EVENTS_MISSING,
+            highest_stage=highest,
+            i2pr_router_info_sha256=i2pr_router_info_sha256,
+            i2pd_router_info_sha256=i2pd_router_info_sha256,
+            i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+            i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+        )
+    return finalize(
+        terminal_result=PROTOCOL_REJECTED,
+        reason_code=REASON_REFERENCE_EVENTS_MISSING,
+        highest_stage=highest,
+        i2pr_router_info_sha256=i2pr_router_info_sha256,
+        i2pd_router_info_sha256=i2pd_router_info_sha256,
+        i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+        i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+    )
+
+
 def detect_host_blocker() -> str | None:
     """Return the Plan 046 host blocker code if present.
 
@@ -669,5 +1256,6 @@ __all__ = [
     "ProbeRunner",
     "RunnerError",
     "detect_host_blocker",
+    "execute_real_probe",
     "write_host_blocked_record",
 ]

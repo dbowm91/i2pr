@@ -127,7 +127,14 @@ class I2pdDriverArtifactsPresentTests(unittest.TestCase):
     def test_i2pd_driver_source_lock_present(self):
         self.assertTrue(I2PD_SOURCE_LOCK.is_file())
 
-    def test_i2pd_observer_header_present(self):
+    def test_i2pd_observer_header_exposes_wait_primitives(self):
+        header = (REPO_ROOT / "tests/integration/ntcp2/reference-drivers/i2pd/src/interop_observer.h").read_text()
+        # Plan 083 wait primitives for the driver to block boundedly
+        # on observer-recorded events.
+        self.assertIn("WaitForAuthenticated", header)
+        self.assertIn("WaitForReceivedI2NP", header)
+        self.assertIn("WaitForSentI2NP", header)
+        self.assertIn("ObserveAuthenticated", header)
         self.assertTrue(I2PD_OBSERVER_HEADER.is_file())
 
     def test_i2pd_observer_source_present(self):
@@ -157,6 +164,11 @@ class I2pdDriverArtifactsPresentTests(unittest.TestCase):
         self.assertIn("i2pr-i2pd-direct-driver-build-manifest-v1", text)
 
     def test_i2pd_observer_patch_marker(self):
+        patch = (REPO_ROOT / "tests/integration/ntcp2/reference-drivers/i2pd/patches/i2pd-2.60.0-interop-observer.patch").read_text()
+        # Plan 083 authentication observer seam is added inside the
+        # Established() method body.
+        self.assertIn("Plan 083 authenticated observer seam", patch)
+        self.assertIn("ObserveAuthenticated", patch)
         text = I2PD_OBSERVER_PATCH.read_text()
         self.assertIn("I2PD_INTEROP_OBSERVER", text)
         self.assertIn("Plan 076", text)
@@ -210,6 +222,13 @@ class I2pdDriverArtifactsPresentTests(unittest.TestCase):
         # as the typed blocker in absence of the linked marker, but it must no
         # longer mark listen/dial as unreachable.
         self.assertIn("pinned-libraries-not-linked", source)
+        # Plan 083 listen/dial modes wait boundedly for real wire
+        # events; the wait primitives come from the observer header.
+        self.assertIn("WaitForReceivedI2NP", source)
+        self.assertIn("WaitForSentI2NP", source)
+        self.assertIn("WaitForAuthenticated", source)
+        self.assertIn("listening-handshake-timeout", source)
+        self.assertIn("dialing-send-timeout", source)
 
     def test_i2pd_qualification_receipt_carries_linked_library_digests(self):
         receipt_path = (

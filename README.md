@@ -1661,23 +1661,26 @@ launcher prepares authentic endpoint-bound i2pr state, the runner validates
 both peer identities and freezes real correlation fields, and Rust validates
 the strict live scenario without opening a listener or dialing a peer.
 
-Plan 083 lands the canonical minimal `i2pr -> i2pd` wire probe record
-schema (`i2pr-minimal-i2pd-probe-v1`) plus the focused test matrices and
-the test-only runner orchestration at
+Plan 083 owns the first real `i2pr -> i2pd` direction. It lands the canonical
+minimal wire probe record schema (`i2pr-minimal-i2pd-probe-v1`), the focused
+test matrices, and the runner orchestration at
 `tests/integration/ntcp2/harness/plan083_runner.py`. The schema is bounded:
 it refuses the broad `typed-harness-operation-failed` reason, mandates the
 Plan 082 run-identity contract, forbids raw payload, private keys, Noise
 state, transcripts, and RouterInfo bytes, and pins the strictly-increasing
 stage model. A passed probe record requires the final stage
 (`i2np_delivery_status_decoded`), the four canonical observed events, clean
-cleanup, and `reason_code = not_started`. The probe is a development
-diagnostic; it does not authorize Plan 079 (repeated development
-validation) or Plan 073 (release qualification). The probe implementation
-surface is committed on this host; no real wire attempt has been executed
-because the host is the Plan 046 `apparmor_restrict_on` negative baseline
-and the Plan 080 Multipass guest cannot complete on this constrained
-host. The runner is fail-closed and never synthesizes protocol pass or
-proven provenance.
+cleanup, and `reason_code = not_started`. The runner owns the 11-step
+execution architecture and is structurally incapable of producing a
+mixed-router pass unless it launches one real i2pr process and one configured
+real reference process and consumes authentic structured events from both.
+The C++ i2pd direct driver is the only allowlisted reference driver mode;
+the runner refuses to fall back to SAM, HTTP, support-topology, or
+synthetic-fallback helpers for any primary direction. The runner is
+fail-closed and never synthesizes protocol pass or proven provenance. No
+real wire attempt has been executed on this host because the host is the
+Plan 046 `apparmor_restrict_on` negative baseline and the Plan 080 Multipass
+guest cannot complete on this constrained host.
 
 Plan 084 remains the reverse direction and development decision. Plan 079
 remains blocked pending the Plan 084 decision. NTCP2 remains experimental,

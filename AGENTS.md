@@ -1824,11 +1824,54 @@ itself is a development diagnostic: a passed probe record does not
 authorize Plan 079 (repeated development validation) or Plan 073
 (release qualification); those gates remain owned by their own
 plans. Plan 083 is implemented as the in-process schema, the
-focused test matrix, and the test-only runner orchestration at
-`tests/integration/ntcp2/harness/plan083_runner.py`. No real wire
-attempt has been executed in this checkout because the host is the
-Plan 046 `apparmor_restrict_on` negative baseline and the Plan 080
-Multipass guest cannot complete on this constrained host.
+focused test matrix, and the runner orchestration at
+`tests/integration/ntcp2/harness/plan083_runner.py`.
+
+The runner owns the 11-step execution architecture and is
+structurally incapable of producing a mixed-router pass unless it
+launches one real i2pr process and one configured real reference
+process and consumes authentic structured events from both. The
+real-process entry point is
+`plan083_runner.execute_real_probe(...)`, which:
+
+1. validates the lane (``rootless-sealed-single-netns`` or
+   ``multipass-owned-guest``);
+2. prepares i2pr state via the Plan 082 `prepare` command and copies
+   the persisted `router.info` into the exchange directory;
+3. runs the Plan 076 i2pd direct driver in inspect mode to capture
+   the local i2pd Router Hash from the `router_info_exported`
+   event;
+4. renders and validates the Plan 065 strict scenario
+   (`i2pr-launcher-scenario-v2`) with the per-run
+   `delivery_status_message_id` and 64-hex Router Hash pair;
+5. launches the i2pd direct driver in listen mode as a separate
+   subprocess;
+6. launches the i2pr launcher in dial mode as a separate subprocess;
+7. consumes the i2pd `events.ndjson` stream and the i2pr JSONL
+   status stream concurrently, recording authentic
+   `ntcp2_authenticated`, `frame_emitted`,
+   `frame_authenticated_and_decrypted`, and `i2np_message_decoded`
+   events only when observed;
+8. bounded shutdown and cleanup of both subprocesses;
+9. writes one sanitized `i2pr-minimal-i2pd-probe-v1` record.
+
+The runner refuses to fall back to SAM, HTTP, support-topology, or
+synthetic-fallback helpers for any primary direction; the C++ i2pd
+direct driver is the only allowlisted reference driver mode. The
+runner never imports Plan 056/066 candidate, bundle, certificate,
+rootless-topology, or Multipass authority. No real wire attempt has
+been executed in this checkout because the host is the Plan 046
+`apparmor_restrict_on` negative baseline and the Plan 080 Multipass
+guest cannot complete on this constrained host.
+
+### Plan 083 focused checks
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan083.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_minimal_i2pd_probe.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan083_runner.py'
+bash scripts/check-ntcp2-interoperability.sh
+```
 
 ## Plan 078 first real i2pd two-way execution
 

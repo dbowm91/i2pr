@@ -992,7 +992,9 @@ int run_inspect(const DriverConfig& cfg) {
 
     // listen/dial modes reserve the deeper transport paths. Inspect
     // mode performs real initialization, emits the listener /
-    // router_info markers, and shuts down cleanly.
+    // router_info markers, and shuts down cleanly. No fake wire
+    // events are emitted; the inspect mode is intentionally bounded
+    // to the local runtime surface.
     OwnedRuntime rt;
     std::string failure_reason;
     if (!initialise_i2pd_runtime(cfg, writer, rt, failure_reason)) {
@@ -1001,20 +1003,11 @@ int run_inspect(const DriverConfig& cfg) {
         shutdown_runtime(rt, nullptr, nullptr);
         return 66;
     }
-    emit_event(writer, cfg, "listener_ready");
+    if (i2p::transport::transports.IsBoundNTCP2()) {
+        emit_event(writer, cfg, "listener_ready");
+    }
     i2pr::i2pdinterop::ResetObserverSink();
-    i2pr::i2pdinterop::ObserverMetadata md{};
-    md.i2np_type = 10;
-    md.delivery_status_message_id = cfg.delivery_status_message_id;
-    md.monotonic_ms = monotonic_millis();
-    i2pr::i2pdinterop::ObserveReceivedI2NP(md);
-    emit_event(writer, cfg, "frame_authenticated_and_decrypted",
-               cfg.delivery_status_message_id, /*i2np_type=*/10,
-               /*frame_sequence=*/0);
-    emit_event(writer, cfg, "i2np_message_decoded",
-               cfg.delivery_status_message_id, /*i2np_type=*/10,
-               /*frame_sequence=*/0);
-    shutdown_runtime(rt, &writer, nullptr);
+    shutdown_runtime(rt, nullptr, nullptr);
     emit_event(writer, cfg, "terminal_clean");
     return 0;
 }
@@ -1051,17 +1044,50 @@ int run_listen(const DriverConfig& cfg) {
         return 66;
     }
     emit_event(writer, cfg, "listener_ready");
-    // The listener mode waits boundedly for one expected peer. Plan
-    // 076 deliberately leaves the wait-for-peer loop in the adapter;
-    // on this host (the Plan 046 apparmor_restrict_on negative
-    // baseline) the i2pd listener cannot complete a real NTCP2
-    // handshake. The driver exits with a typed blocker rather than
-    // claiming a passing record.
-    emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
-               std::nullopt,
-               std::string("listening-but-no-peer-on-this-host"));
+    i2pr::i2pdinterop::ResetObserverSink();
+
+    // Plan 083: the listener waits boundedly for the peer to
+    // complete a real NTCP2 handshake and deliver one authenticated
+    // I2NP frame. The wait primitives only ever read observer
+    // metadata; they never fabricate data.
+    i2pr::i2pdinterop::ObserverMetadata auth_md{};
+    const std::uint32_t handshake_timeout_ms = cfg.handshake_timeout_ms;
+    if (!i2pr::i2pdinterop::WaitForAuthenticated(auth_md, handshake_timeout_ms)) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt,
+                   std::string("listening-handshake-timeout"));
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
+    emit_event(writer, cfg, "ntcp2_authenticated", std::nullopt, std::nullopt,
+               std::nullopt, std::nullopt);
+
+    i2pr::i2pdinterop::ObserverMetadata recv_md{};
+    const std::uint32_t data_timeout_ms = cfg.data_phase_timeout_ms;
+    if (!i2pr::i2pdinterop::WaitForReceivedI2NP(recv_md, data_timeout_ms)) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt,
+                   std::string("listening-data-phase-timeout"));
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
+    if (recv_md.delivery_status_message_id != cfg.delivery_status_message_id) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt,
+                   std::string("data-phase-message-id-mismatch"));
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
+    emit_event(writer, cfg, "frame_authenticated_and_decrypted",
+               recv_md.delivery_status_message_id,
+               recv_md.i2np_type, recv_md.frame_sequence);
+    emit_event(writer, cfg, "i2np_message_decoded",
+               recv_md.delivery_status_message_id,
+               recv_md.i2np_type, recv_md.frame_sequence);
+
     shutdown_runtime(rt, nullptr, nullptr);
-    return 66;
+    emit_event(writer, cfg, "terminal_clean");
+    return 0;
 }
 
 int run_dial(const DriverConfig& cfg) {
@@ -1115,18 +1141,7 @@ int run_dial(const DriverConfig& cfg) {
                /*i2np_type=*/10, /*frame_sequence=*/0);
 
     // Resolve the peer IdentHash from the imported RouterInfo and
-    // submit through the real transport. The Plan 076 closure
-    // boundary acknowledges that the immediate SendMessage future
-    // cannot on its own prove frame transfer; the receiver-side
-    // observer is required. On the Plan 046 closed-host baseline
-    // the peer is unreachable so we record a typed blocker.
-    auto& router_info = i2p::context.GetRouterInfo();
-    (void)router_info;
-    auto imported = i2p::data::netdb.FindRouter(
-        i2p::data::IdentHash(reinterpret_cast<const std::uint8_t*>(
-            cfg.expected_peer_router_hash_sha256.data())));
-    (void)imported;
-
+    // submit through the real transport.
     i2p::data::IdentHash peer_ident_hash{};
     {
         std::ifstream handle(cfg.peer_router_info_path, std::ios::binary);
@@ -1137,6 +1152,7 @@ int run_dial(const DriverConfig& cfg) {
         peer_ident_hash = peer_info.GetIdentity()->GetIdentHash();
     }
 
+    i2pr::i2pdinterop::ResetObserverSink();
     try {
         auto future = i2p::transport::transports.SendMessage(peer_ident_hash,
                                                               message);
@@ -1149,19 +1165,31 @@ int run_dial(const DriverConfig& cfg) {
         return 66;
     }
 
-    // The driver submits through the real SendMessage surface and
-    // closes the listener via shutdown_runtime before exit. The
-    // concrete mixed-router NTCP2 success path is reserved for the
-    // Plan 046 rootless sealed-namespace lane or the Plan 048/049
-    // Multipass recovery lane; on this host (the Plan 046
-    // apparmor_restrict_on negative baseline) the dialer exits with a
-    // typed blocker because the loopback mixed-router bundle is
-    // forbidden under the four-direction contract.
-    emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
-               std::nullopt,
-               std::string("mixed-router-bundle-forbidden-on-closed-host"));
+    // Plan 083: wait boundedly for the send observer to record that
+    // the asynchronous socket write actually delivered the
+    // DeliveryStatus frame.
+    i2pr::i2pdinterop::ObserverMetadata sent_md{};
+    const std::uint32_t handshake_timeout_ms = cfg.handshake_timeout_ms;
+    if (!i2pr::i2pdinterop::WaitForSentI2NP(sent_md, handshake_timeout_ms)) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt,
+                   std::string("dialing-send-timeout"));
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
+    if (sent_md.delivery_status_message_id != cfg.delivery_status_message_id) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt,
+                   std::string("dialing-send-message-id-mismatch"));
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
+    emit_event(writer, cfg, "frame_emitted", sent_md.delivery_status_message_id,
+               sent_md.i2np_type, sent_md.frame_sequence);
+
     shutdown_runtime(rt, nullptr, nullptr);
-    return 66;
+    emit_event(writer, cfg, "terminal_clean");
+    return 0;
 }
 
 }  // namespace

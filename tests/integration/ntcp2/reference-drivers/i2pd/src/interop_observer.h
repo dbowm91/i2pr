@@ -1,4 +1,4 @@
-// Plan 064 i2pd passive observer seam.
+// Plan 064/083 i2pd passive observer seam.
 //
 // The observer is the single owner of the receive-side and send-side
 // observation surface for the Plan 064 i2pd direct NTCP2 driver. The
@@ -47,19 +47,46 @@ struct ObserverMetadata {
 // elide.
 void ObserveReceivedI2NP(const ObserverMetadata& metadata) noexcept;
 void ObserveSentI2NP(const ObserverMetadata& metadata) noexcept;
+void ObserveAuthenticated(const ObserverMetadata& metadata) noexcept;
 
 // Sink management. The driver owns the sink; the observer never blocks.
 void ResetObserverSink() noexcept;
 std::uint64_t ObserverDropCount() noexcept;
 std::uint64_t ObserverObservationCount() noexcept;
 
+// Bounded wait primitives used by the Plan 083 minimal probe driver.
+// The wait primitives spin on a short sleep, never block the transport
+// thread, and return ``false`` on timeout. They only ever return
+// metadata captured from the observer sink (no fresh data is created).
+bool WaitForAuthenticated(ObserverMetadata& metadata,
+                          std::uint32_t timeout_ms) noexcept;
+bool WaitForReceivedI2NP(ObserverMetadata& metadata,
+                         std::uint32_t timeout_ms) noexcept;
+bool WaitForSentI2NP(ObserverMetadata& metadata,
+                     std::uint32_t timeout_ms) noexcept;
+
 #else
 
 inline void ObserveReceivedI2NP(const ObserverMetadata& /*metadata*/) noexcept {}
 inline void ObserveSentI2NP(const ObserverMetadata& /*metadata*/) noexcept {}
+inline void ObserveAuthenticated(const ObserverMetadata& /*metadata*/) noexcept {}
+
 inline void ResetObserverSink() noexcept {}
 inline std::uint64_t ObserverDropCount() noexcept { return 0; }
 inline std::uint64_t ObserverObservationCount() noexcept { return 0; }
+
+inline bool WaitForAuthenticated(ObserverMetadata& /*metadata*/,
+                                 std::uint32_t /*timeout_ms*/) noexcept {
+    return false;
+}
+inline bool WaitForReceivedI2NP(ObserverMetadata& /*metadata*/,
+                                std::uint32_t /*timeout_ms*/) noexcept {
+    return false;
+}
+inline bool WaitForSentI2NP(ObserverMetadata& /*metadata*/,
+                            std::uint32_t /*timeout_ms*/) noexcept {
+    return false;
+}
 
 #endif
 

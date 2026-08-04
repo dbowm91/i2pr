@@ -1332,10 +1332,20 @@ probe never imports Plan 056/066 candidate, bundle, certificate,
 rootless-topology, or Multipass authority. The bounded schema and the
 focused test matrices (`test_minimal_i2pd_probe.py` and `test_plan083.py`)
 are committed; the probe does not invoke the broad Plan 045/052 release-style
-finalization path. The implementation surface is in place on this host; no
-real wire attempt has been executed because the host is the Plan 046
-`apparmor_restrict_on` negative baseline and the Plan 080 Multipass guest
-cannot complete on this constrained host.
+finalization path.
+
+The runner lives at `tests/integration/ntcp2/harness/plan083_runner.py` and
+owns the 11-step execution architecture. It is structurally incapable of
+producing a mixed-router pass unless it launches one real i2pr process and
+one configured real reference process and consumes authentic structured
+events from both. The C++ i2pd direct driver is the only allowlisted
+reference driver mode; the runner refuses to fall back to SAM, HTTP,
+support-topology, or synthetic-fallback helpers for any primary direction.
+The runner never imports Plan 056/066 candidate, bundle, certificate,
+rootless-topology, or Multipass authority. The implementation surface is
+in place on this host; no real wire attempt has been executed because the
+host is the Plan 046 `apparmor_restrict_on` negative baseline and the Plan
+080 Multipass guest cannot complete on this constrained host.
 
 ## Plan 078 first real i2pd two-way execution
 

@@ -11,7 +11,35 @@
  
  #if defined(__linux__) && !defined(_NETINET_IN_H)
  	#include <linux/in6.h>
-@@ -1333,6 +1337,31 @@
+@@ -612,6 +616,27 @@
+ 
+ 	void NTCP2Session::Established ()
+ 	{
++#ifdef I2PD_INTEROP_OBSERVER
++		// Plan 083 authenticated observer seam. Activated once
++		// the NTCP2 Noise handshake completes (SessionConfirmed
++		// received and matched). Captures the peer Router Hash and
++		// monotonic timestamp without altering transport control
++		// flow.
++		{
++			i2pr::i2pdinterop::ObserverMetadata observer_md{};
++			if (auto peer = GetRemoteIdentity ())
++			{
++				auto ident = peer->GetIdentHash ();
++				std::memcpy (observer_md.peer_router_hash_sha256, ident.data (), 32);
++			}
++			std::strncpy (observer_md.transport, "ntcp2", sizeof (observer_md.transport) - 1);
++			observer_md.monotonic_ms = static_cast<std::uint64_t> (
++				std::chrono::duration_cast<std::chrono::milliseconds> (
++					std::chrono::steady_clock::now().time_since_epoch ())
++					.count ());
++			i2pr::i2pdinterop::ObserveAuthenticated (observer_md);
++		}
++#endif
+ 		m_IsEstablished = true;
+ 		m_Version = (uint8_t)m_Establisher->m_CryptoType - 2;
+ 		m_Establisher.reset (nullptr);
+@@ -1333,6 +1358,31 @@
  					{
  						memcpy (nextMsg->GetNTCP2Header (), frame + offset, size);
  						nextMsg->FromNTCP2 ();
@@ -43,7 +71,7 @@
  						m_Handler.PutNextMessage (std::move (nextMsg));
  					}
  					else
-@@ -1451,6 +1480,37 @@
+@@ -1451,6 +1501,37 @@
  
  	void NTCP2Session::HandleI2NPMsgsSent (const boost::system::error_code& ecode, std::size_t bytes_transferred, std::vector<std::shared_ptr<I2NPMessage> > msgs)
  	{
