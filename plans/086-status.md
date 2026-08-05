@@ -14,6 +14,14 @@ TOML scenario render with `validate-scenario`, and the canonical
 `i2pd_ntcp2_interop_driver_instrumented` binary are landed and green
 locally against the corrected source commit.
 
+The corrective pass landed as commit
+`3d77afbb012b53d78705488b756951e799bfc85f`; this closure record was
+re-rendered as commit `9cefde95d112ec29da8798e0012db046b5d869cf`
+without changing the corrective code surface. Future history may
+amend this closure record; the source-commit attribution in the
+sanitized records below always reflects the precise commit that
+produced the preflight invocation.
+
 ```text
 status = host-loopback-development-ready
 ```
