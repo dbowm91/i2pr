@@ -159,6 +159,10 @@ REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED: Final[str] = "runner-reference-pro
 REASON_RUNNER_REFERENCE_EVENTS_MISSING: Final[str] = "runner-reference-events-missing"
 REASON_RUNNER_SYNTHETIC_PROVENANCE_REJECTED: Final[str] = "runner-synthetic-provenance-rejected"
 REASON_RUNNER_PROTOCOL_EVENT_UNPROVEN: Final[str] = "runner-protocol-event-unproven"
+REASON_MIXED_ROUTER_HANDSHAKE_NOT_COMPLETED: Final[str] = "mixed-router-handshake-not-completed"
+REASON_MIXED_ROUTER_DATA_PHASE_INCOMPLETE: Final[str] = "mixed-router-data-phase-incomplete"
+REASON_MIXED_ROUTER_AUTHENTICATED_NO_DATA: Final[str] = "mixed-router-authenticated-no-data-phase"
+REASON_MIXED_ROUTER_PROTOCOL_COMPLETE: Final[str] = "mixed-router-protocol-complete"
 
 
 REASON_CODES: Final[frozenset[str]] = frozenset(
@@ -188,6 +192,10 @@ REASON_CODES: Final[frozenset[str]] = frozenset(
         REASON_RUNNER_REFERENCE_EVENTS_MISSING,
         REASON_RUNNER_SYNTHETIC_PROVENANCE_REJECTED,
         REASON_RUNNER_PROTOCOL_EVENT_UNPROVEN,
+        REASON_MIXED_ROUTER_HANDSHAKE_NOT_COMPLETED,
+        REASON_MIXED_ROUTER_DATA_PHASE_INCOMPLETE,
+        REASON_MIXED_ROUTER_AUTHENTICATED_NO_DATA,
+        REASON_MIXED_ROUTER_PROTOCOL_COMPLETE,
     }
 )
 

@@ -64,6 +64,10 @@ from minimal_i2pd_probe import (
     REASON_RUNNER_REFERENCE_EVENTS_MISSING,
     REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED,
     REASON_RUNNER_SYNTHETIC_PROVENANCE_REJECTED,
+    REASON_MIXED_ROUTER_AUTHENTICATED_NO_DATA,
+    REASON_MIXED_ROUTER_DATA_PHASE_INCOMPLETE,
+    REASON_MIXED_ROUTER_HANDSHAKE_NOT_COMPLETED,
+    REASON_MIXED_ROUTER_PROTOCOL_COMPLETE,
     STATE_PREPARED,
     build_record,
     empty_process_counters,
@@ -1430,22 +1434,22 @@ def execute_concurrent_preflight(
     if has_terminal_clean and has_ntcp2_authenticated and has_frame_decoded:
         highest_stage = "i2np_message_decoded"
         terminal = "passed"
-        reason = "mixed-router-protocol-complete"
+        reason = REASON_MIXED_ROUTER_PROTOCOL_COMPLETE
         is_ready_for_087 = True
     elif has_ntcp2_authenticated:
         highest_stage = "ntcp2_authenticated"
         terminal = PRE_PROTOCOL_REJECTED
         reason = (
-            "mixed-router-authenticated-no-data-phase"
+            REASON_MIXED_ROUTER_AUTHENTICATED_NO_DATA
             if not has_frame_decoded
-            else "mixed-router-data-phase-incomplete"
+            else REASON_MIXED_ROUTER_DATA_PHASE_INCOMPLETE
         )
         is_ready_for_087 = False
     else:
         highest_stage = LISTENER_READY
         terminal = PRE_PROTOCOL_REJECTED
         reason = (
-            "mixed-router-handshake-not-completed"
+            REASON_MIXED_ROUTER_HANDSHAKE_NOT_COMPLETED
             if not has_ntcp2_authenticated
             else REASON_NOT_STARTED
         )

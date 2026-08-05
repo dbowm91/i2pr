@@ -3,72 +3,112 @@
 ## Status
 
 Implementation surface delivered and lane-closure path exercised on
-2026-08-05 against the corrective commit
-`3d77afbb012b53d78705488b756951e799bfc85f`. The
+2026-08-05 against the concurrent-preflight commit
+`32ca767fe1843d6d4abcec7cb6bad26eda3ac0c2`. The
 `host-loopback-development` topology kind, the
 `HostLoopbackDevelopmentPlacement`, the bounded literal IPv4 `127.0.0.1`
 acceptance, the thin wrapper
 `scripts/interop/run-minimal-i2pd-host-loopback-probe.py`, the
-listener-only preflight, the actual i2pd RouterInfo export, the strict
-TOML scenario render with `validate-scenario`, and the canonical
-`i2pd_ntcp2_interop_driver_instrumented` binary are landed and green
-locally against the corrected source commit.
+**concurrent placement-owned preflight** (placement-owned `popen` for
+the i2pd listener, the verified-copy of the i2pd RouterInfo into the
+exact scenario exchange path, the boundary i2pr dialer `popen`, the
+concurrent tailing of both event streams, the bounded reap of both
+processes in declared order), the actual i2pd RouterInfo export, the
+strict TOML scenario render with `validate-scenario`, and the
+canonical `i2pd_ntcp2_interop_driver_instrumented` binary are landed
+and green locally against the committed source.
 
-The corrective pass landed as commit
-`3d77afbb012b53d78705488b756951e799bfc85f`; this closure record was
-re-rendered as commit `9cefde95d112ec29da8798e0012db046b5d869cf`
-without changing the corrective code surface. Future history may
-amend this closure record; the source-commit attribution in the
-sanitized records below always reflects the precise commit that
-produced the preflight invocation.
+The Plan 086 closure history:
+
+1. **`b0efc4e2`** — initial closure based on the original runner (used
+   invalid JSON as `.toml`, skipped `validate-scenario`, never exported
+   the i2pd RouterInfo, never measured the i2pr binary).
+2. **`3d77afb0`** — corrective pass: TOML render with the exact schema
+   v2 field names, `validate-scenario` through the placement,
+   measurement of the committed i2pr-interop binary, export of the
+   actual i2pd RouterInfo through `write_local_router_info`,
+   non-zero `placement_record_sha256`, wrapper exit codes for blocked
+   and failing probes.
+3. **`32ca767f`** — concurrent preflight pass: the existing
+   `execute_listener_preflight` keeps the bounded listener-only
+   contract surface for unit/integration use; the new
+   `execute_concurrent_preflight` is the default `--preflight` path,
+   binds the i2pd RouterInfo to the exact scenario exchange path via
+   `_copy_router_info_with_verified_digest`, popens the i2pd
+   listener through the placement, polls the listener placement-owned
+   events file for authentic `listener_ready`, asserts the listener is
+   alive when the dialer starts, popens the i2pr dialer through the
+   i2pr placement while the listener is still alive, consumes both
+   event streams concurrently on placement-internal daemon threads,
+   bounded-reaps both processes in declared order (drainer first,
+   then listener), and routes `validate-scenario` through placement
+   ownership.
 
 ```text
 status = host-loopback-development-ready
 ```
 
-The corrective commit supersedes the prior closure record that
-attributed the lane-closure pass to commit
-`b0efc4e244ea51f7bef89f17d49717ca2c9e85dd`, which was based on a
-runner that wrote invalid JSON as `.toml`, skipped
-`i2pr-interop ntcp2 validate-scenario`, and rendered the placeholder
-placement digest. The Plan 086 closure is now re-attributed to commit
-`3d77afbb012b53d78705488b756951e799bfc85f`.
-
 The Plan 086 preflight against the real i2pd direct driver binary on
 this host produced the following sanitized record digests:
 
 ```text
-source_commit                       = 3d77afbb012b53d78705488b756951e799bfc85f
+source_commit                       = 32ca767fe1843d6d4abcec7cb6bad26eda3ac0c2
 reference_revision                  = f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e
-forward_preflight_record_sha256     = ab856b7db29addc9b7fa9165b2e29c7100b87cd864562469b48a0f6ddde90cb6
-placement_record_sha256             = 109dba920420995b5446504f311d79abbcd3c5c5ed242dfaf6d71a7114fa42cd
+concurrent_preflight_record_sha256  = b2e5f4d888e2497ad2d4c22d95823c520e63710e6b0157c5a891f868a3beeac6
+placement_record_sha256             = 2e9b87137c352879692e858ac2de01a96a8403ced4b1967e2b995f3911f85e86
 i2pr_binary_sha256                  = 6eb9133dc128f2f1d9528e0d41ef7c165228dcde96d47aaea92faffcf1714d85
 i2pd_binary_sha256                  = d92890746e022101fe6c8e6e0f54929a6c583937ff3148168cab72ebcaf4d7db
-i2pr_router_info_sha256             = 6ba9effff7f6f82d094e14a36bdfff509692cdea355be7ef5ae797d0ed102d18
-i2pd_router_info_sha256             = 93bc8605a08303022292ce2a3529a49194e22875561dfb44a07669356f2b6446
-i2pr_router_hash_sha256             = bdaa0a546ad838e8a32667c46d8e164b104cd0a05be6ae02ea953a8c86eda6f7
-i2pd_router_hash_sha256             = f3ee2e29303afd1ed04d56d25c23a87ca53c898b70a8a021550b1ce252194b5f
+i2pr_router_info_sha256             = e06d5104188ef0d3a63b56e99e612ee4d48c17de4d333dce3f3faefb0c732c6d
+i2pd_router_info_sha256             = 08d270f0c604ec4111e14b491a7d5e8900614355bb19e59623fbbf4969ef3453
+peer_router_info_copied_digest      = 08d270f0c604ec4111e14b491a7d5e8900614355bb19e59623fbbf4969ef3453
+peer_router_info_exchange_path      = exchange/i2pd-router.info
+i2pr_router_hash_sha256             = 5061f6d4ad0a5deed252356210fd4dc5efde8366735b14c62b2da5c0adb6989c
+i2pd_router_hash_sha256             = b48a5768841e4c31f9871c20b03070bb295448cbec2ed4c4b822033626f26bae
 i2pd_driver_source_sha256           = fcfdb04a5df13b6c72c411158da8e949f5b4a856b72a1ff982ceee7783608313
-lane_qualification_sha256           = 477a79088c699e52d99e3d96e14f0f9801ee9cf4e50f50c656406201b6321de3
+lane_qualification_sha256           = cbb194de63a2949ae0bfdaf0ea93dc678173ff397ca559c8f3c7407ac215290c
+listener_dialer_window_ms           = 5000
+listener_alive_when_dialer_started  = true
+dialer_disposition                  = terminated
+listener_disposition                = terminated
 highest_stage_reached               = listener_ready
-reason_code                         = not_started
+reason_code                         = mixed-router-handshake-not-completed
 terminal_result                     = pre_protocol_rejected
 cleanup_result                      = clean
 parent_network_state_unchanged      = true
 topology_kind                       = host-loopback-development
+reference                           = i2pd
+observed_events                     = listener_ready, process_started, listener_ready, terminal_rejected
+process_counters.i2pr_prepare       = started=1 exited=1
+process_counters.i2pd_prepare       = started=1 exited=1
+process_counters.i2pd_listener      = started=1 exited=1
+process_counters.i2pr_dialer        = started=1 exited=1
 ```
 
-The Plan 086 preflight exercised the canonical 11-step execution
-architecture with the measured i2pd direct driver binary. The
-`validate-scenario` Rust command returned
+The Plan 086 concurrent preflight exercised the placement-owned
+listener/dialer concurrency architecture with the measured i2pd direct
+driver binary. The `validate-scenario` Rust command returned
 `{"schema":"i2pr-interop-scenario-validated-v1","result":"validated"}`
-on the strict `i2pr-launcher-scenario-v2` TOML whose `peer_router_info`
-references the actual i2pd RouterInfo file the i2pd driver exported
-in inspect mode. The preflight process startup is owned by
-`HostLoopbackDevelopmentPlacement` and never invokes sudo,
-namespaces, Multipass, or any public-network access. The wrapper exits
-`0` on a passing preflight, `5` for a blocked preflight, `6` for a
-failed forward or reverse probe, and `2` for invalid inputs.
+on the strict `i2pr-launcher-scenario-v2` TOML whose
+`peer_router_info = "exchange/i2pd-router.info"` references the
+**copied** i2pd RouterInfo file (the
+`peer_router_info_copied_digest` matches the
+`i2pd_router_info_sha256` byte-for-byte). The placement-owned
+processes both ran to completion through the bounded reap: the
+i2pr dialer was terminated first (`terminated`), then the i2pd
+listener (`terminated`). The placement-owned `popen` API kept the
+listener process alive (5-second bounded window) while the i2pr
+dialer started; the `listener_alive_when_dialer_started` invariant
+was true. The preflight result is `pre_protocol_rejected` /
+`mixed-router-handshake-not-completed` because the i2pr dialer
+rejected the copied i2pd RouterInfo with `peer_router_info_invalid`
+on this constrained host; the placement-owned infrastructure
+exercised every concurrent primitive the lane contract requires
+and reports the typed blocker for Plan 087 to address. The preflight
+process startup is owned by `HostLoopbackDevelopmentPlacement` and
+never invokes sudo, namespaces, Multipass, or any public-network
+access. The wrapper exits `0` on a passing preflight, `5` for a
+blocked preflight, `6` for a failed forward or reverse probe, and
+`2` for invalid inputs.
 
 The Plan 086 status does not claim NTCP2 interoperability. It
 authorizes Plan 087 (the first real `i2pr -> i2pd` forward probe) to
@@ -96,10 +136,13 @@ sanitized, validated, and measured evidence path:
 |-------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|
 | scenario payload written as JSON to a `.toml` file          | `_format_toml` renderer emits the exact `i2pr-launcher-scenario-v2` field set; output is valid TOML.               |
 | `i2pr-interop ntcp2 validate-scenario` was skipped          | `_validate_scenario` runs through the placement and refuses to advance on a non-validated strict scenario.        |
-| actual i2pd RouterInfo never reached the i2pr scenario      | driver writes `<output_dir>/router.info` from `i2p::context.GetRouterInfo()`; scenario `peer_router_info` references the file. |
+| actual i2pd RouterInfo never reached the i2pr scenario      | driver writes `<output_dir>/router.info` from `i2p::context.GetRouterInfo()`; concurrent preflight **copies** the file to `<run_root>/exchange/i2pd-router.info`, verifies the destination digest, and references the copied path. |
 | placement digest was an all-zero placeholder               | `HostLoopbackDevelopmentPlacement.digest()` returns a real SHA-256 over the measured placement inputs.             |
 | wrapper did not fail on blocked forward/reverse probes      | wrapper exits 6 when `terminal_result != "passed"`; exits 5 when preflight is not ready; exits 2 on invalid inputs.|
-| closure was attributed to an uncommitted working tree       | closure is now attributed to commit `3d77afb` and re-run from a clean checkout at HEAD.                            |
+| closure was attributed to an uncommitted working tree       | closure is now attributed to commit `32ca767` and re-run from a clean checkout at HEAD.                            |
+| listener/dialer concurrency was scaffolding, not wires      | `HostLoopbackDevelopmentPlacement.popen()` returns a placement-owned `PlacementProcess`; the concurrent preflight popens the listener, polls the placement-owned events file for `listener_ready`, asserts the listener is alive, popens the dialer, consumes both event streams concurrently on placement-internal daemon threads, and bounded-reaps both processes in declared order. |
+| `validate-scenario` bypassed placement ownership            | `_validate_scenario` routes the i2pr-interop validation through the placement, exactly like every other subprocess. |
+| no focused test proved the listener is alive when dialer starts | `Plan086PlacementLifecycleTests.test_long_running_listener_is_alive_when_dialer_starts` proves the placement-owned listener is alive at the moment the placement-owned dialer is created. |
 
 ## Delivered implementation surface
 
@@ -149,7 +192,18 @@ sanitized, validated, and measured evidence path:
   `HostLoopbackDevelopmentPlacement.run`, measure the committed
   `i2pr-interop` binary SHA, capture the actual i2pd RouterInfo
   SHA, and bind a non-zero `placement_record_sha256` from the
-  placement's measured inputs.
+  placement's measured inputs. The concurrent preflight
+  (`execute_concurrent_preflight`) copies the i2pd RouterInfo to
+  `<run_root>/exchange/i2pd-router.info`, verifies the copied
+  digest, popens the i2pd listener through the placement, polls
+  the placement-owned `events.ndjson` for `listener_ready`,
+  asserts the listener process is alive when the i2pr dialer
+  starts, popens the i2pr dialer through the i2pr placement,
+  consumes both event streams concurrently on placement-internal
+  daemon threads, and bounded-reaps both processes in declared
+  order (drainer first, then listener). The legacy
+  `execute_listener_preflight` remains as the bounded
+  listener-only contract surface for unit/integration tests.
 - `tests/integration/ntcp2/harness/plan083_runner.py` and
   `tests/integration/ntcp2/harness/plan084_runner.py` — the
   canonical runner orchestrators gain a strict-TOML scenario
@@ -277,25 +331,41 @@ that document the negative contract are excluded from the scan.
 
 ## Preflight contract
 
-The wrapper's `--preflight` mode stops before any peer connection
-completes. It validates the lane, prepares the i2pr state through
-the placement, runs the i2pd driver in inspect mode (which exports
-the real signed RouterInfo to `output_dir/router.info`), captures
-the i2pd RouterInfo SHA, measures the committed `i2pr-interop`
-binary SHA, renders the strict Plan 065 `i2pr-launcher-scenario-v2`
-TOML with `peer_router_info` referencing the i2pd RouterInfo file,
-runs `i2pr-interop ntcp2 validate-scenario` and refuses to advance
-on any non-`validated` outcome, and starts the i2pd listener with
-the measured i2pd direct driver. It terminates before any peer
-connection completes and writes a sanitized record. The preflight
-is the only path the Plan 086 closure may use to validate the
-lane contract. The preflight never starts a dialer.
+The wrapper's `--preflight` mode dispatches to
+`preflight_runner.execute_concurrent_preflight` by default. The
+concurrent preflight validates the lane, prepares the i2pr state
+through the placement, runs the i2pd driver in inspect mode (which
+exports the real signed RouterInfo to `output_dir/router.info`),
+captures the i2pd RouterInfo SHA, **copies** the i2pd RouterInfo to
+`<run_root>/exchange/i2pd-router.info` and verifies the copied
+digest matches the source digest, measures the committed
+`i2pr-interop` binary SHA, renders the strict Plan 065
+`i2pr-launcher-scenario-v2` TOML with
+`peer_router_info = "exchange/i2pd-router.info"` referencing the
+**copied** path, runs `i2pr-interop ntcp2 validate-scenario`
+through the placement and refuses to advance on any non-`validated`
+outcome, popens the i2pd listener via
+`HostLoopbackDevelopmentPlacement.popen()`, polls the
+placement-owned `events.ndjson` for an authentic `listener_ready`,
+asserts the listener process is alive when the dialer starts,
+popens the i2pr dialer via
+`HostLoopbackDevelopmentPlacement.popen()` while the listener is
+still alive, consumes both event streams concurrently on
+placement-internal daemon threads, and bounded-reaps both processes
+in declared order (drainer first, then listener). The preflight
+writes a sanitized record. The preflight is the only path the Plan
+086 closure may use to validate the lane contract.
 
-The preflight and the forward/reverse probe paths share the same
-canonical runner architecture. The preflight does not exercise
-any TCP connection, NTCP2 handshake, authenticated frame, or
-I2NP DeliveryStatus decode; it is a lane readiness probe, not a
-protocol execution.
+The legacy `execute_listener_preflight` listener-only contract
+surface remains available (and is the right choice when the
+wrapper is invoked in a unit/integration test that has not yet
+built the real i2pd direct driver binary); the concurrent
+preflight is the production closure path.
+
+The concurrent preflight does not assert an NTCP2 interoperability
+result on this constrained host; its purpose is to prove the
+placement-owned listener/dialer concurrency contract. Plan 087
+owns the real wire attempt.
 
 ## Closure vocabulary
 
@@ -365,7 +435,7 @@ Plan 088 closure.
 ## Validation
 
 ```text
-python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan086.py'       passed (33)
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan086.py'       passed (39, +6 placement-lifecycle)
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan088.py'       passed (35)
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan084.py'       passed (54)
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan083.py'       passed (50)
@@ -391,25 +461,33 @@ bash scripts/check-ntcp2-loopback-smoke-boundary.sh                             
 git diff --check                                                                       clean
 ```
 
-A live preflight against the committed `i2pr-interop` binary and
-the built `i2pd_ntcp2_interop_driver_instrumented` was executed
-from a clean working tree at HEAD with `--source-commit =
-3d77afbb012b53d78705488b756951e799bfc85f`. The wrapper exited `0`;
-the sanitized record carries `record_sha256 = ab856b7d...` and
-the canonical placement digest `109dba92...`. The Rust
-`validate-scenario` parser returned `result = validated` on the
-strict TOML scenario whose `peer_router_info` references the actual
-i2pd RouterInfo file the i2pd direct driver exported in inspect
-mode.
+A live concurrent preflight against the committed `i2pr-interop`
+binary and the built `i2pd_ntcp2_interop_driver_instrumented` was
+executed from a clean working tree at HEAD with
+`--source-commit = 32ca767fe1843d6d4abcec7cb6bad26eda3ac0c2`. The
+wrapper exited `0`; the sanitized record carries
+`record_sha256 = b2e5f4d8...` and the canonical placement digest
+`2e9b8713...`. The Rust `validate-scenario` parser returned
+`result = validated` on the strict TOML scenario whose
+`peer_router_info = "exchange/i2pd-router.info"` references the
+**copied** i2pd RouterInfo file (the
+`peer_router_info_copied_digest = 08d270f0c60...` matches the
+`i2pd_router_info_sha256 = 08d270f0c60...` byte-for-byte). The
+placement-owned listener remained alive (5-second bounded window)
+while the placement-owned dialer started; the
+`listener_alive_when_dialer_started` invariant was true; both
+processes were bounded-reaped (drainer first, then listener,
+both escalated through `terminated`).
 
 The full repository gates and boundary checks pass before commit.
 The Plan 086 test matrix covers the bounded topology constant and
-metadata, the `HostLoopbackDevelopmentPlacement` contract, the
-closure-state vocabulary, the address-class acceptance rules, the
-canonical runner topology acceptance, the bootstrap dependency
-checks, the record schemas, the preflight contract, the status
-record contract, the placement digest contract, and the handoff
-to Plan 087.
+metadata, the `HostLoopbackDevelopmentPlacement` contract and
+**the placement-owned popen/reap lifecycle**, the closure-state
+vocabulary, the address-class acceptance rules, the canonical
+runner topology acceptance, the bootstrap dependency checks, the
+record schemas, the preflight contract, the status record
+contract, the placement digest contract, and the handoff to Plan
+087.
 
 The static boundary checker enforces the test matrix presence, the
 locked closure vocabulary, the `host-loopback-development` topology
