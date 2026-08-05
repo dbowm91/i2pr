@@ -1835,11 +1835,14 @@ contract. Plan 086 closes as `host-loopback-development-ready` (or records
 pass before Plan 088 begins.
 
 Plan 088 owns the reverse probe and the active development decision. On this
-host the recorded decision is `insufficient-evidence` because the Plan 086
-`host-loopback-development` lane has not closed and no wire run has been
-retained. Plan 079 remains blocked until `plans/088-status.md` records
-`decision = two-way-development-probe-passed`. Plan 072 remains inactive
-until `plans/088-status.md` records `decision = ambiguous-reference-divergence`
+host the recorded decision is `insufficient-evidence` because the Plan 087
+forward direction has not executed and no real wire run has been retained.
+Plan 086 closes as `host-loopback-development-ready` (or records
+`manual-isolated-fallback-required`) before Plan 087 begins; Plan 087 must
+pass before Plan 088 begins. Plan 079 remains blocked until
+`plans/088-status.md` records `decision = two-way-development-probe-passed`.
+Plan 072 remains inactive until `plans/088-status.md` records
+`decision = ambiguous-reference-divergence`
 with one exact role/stage diagnostic question. NTCP2 stays experimental and
 non-advertised. See `plans/082-status.md`, `plans/083-status.md`,
 `plans/084-status.md`, and `plans/088-status.md`.

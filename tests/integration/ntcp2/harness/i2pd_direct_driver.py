@@ -91,6 +91,8 @@ ALLOWED_DIRECTIONS = {
     "i2pd-to-i2pr-ipv4",
 }
 SYNTHETIC_TARGETS = {"192.0.2.1", "192.0.2.2"}
+LOOPBACK_TARGETS = {"127.0.0.1"}
+LOOPBACK_TOPOLOGY_KIND = "host-loopback-development"
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -129,6 +131,7 @@ ALLOWED_CONFIG_FIELDS = frozenset(
         "build_manifest_sha256",
         "observer_patch_sha256",
         "run_identity_sha256",
+        "topology_kind",
     }
 )
 
@@ -253,8 +256,14 @@ def validate_strict_config(config: dict[str, Any]) -> None:
         raise Plan064Error("config-reference-revision-mismatch")
     if config["network_id"] != 99:
         raise Plan064Error("config-network-id-not-99")
-    if config["local_address"] not in SYNTHETIC_TARGETS:
-        raise Plan064Error("config-local-address-not-synthetic")
+    topology_kind_value = str(config.get("topology_kind", ""))
+    is_loopback_topology = topology_kind_value == LOOPBACK_TOPOLOGY_KIND
+    if is_loopback_topology:
+        if config["local_address"] not in LOOPBACK_TARGETS:
+            raise Plan064Error("config-local-address-not-loopback")
+    else:
+        if config["local_address"] not in SYNTHETIC_TARGETS:
+            raise Plan064Error("config-local-address-not-synthetic")
     if not isinstance(config["local_port"], int) or not 1 <= config["local_port"] <= 65535:
         raise Plan064Error("config-local-port-out-of-range")
     if not HEX64.fullmatch(str(config["expected_local_router_hash_sha256"])):
@@ -287,8 +296,12 @@ def validate_strict_config(config: dict[str, Any]) -> None:
         raise Plan064Error("config-delivery-status-message-id-out-of-range")
     if not isinstance(config["expected_peer_port"], int) or not 1 <= config["expected_peer_port"] <= 65535:
         raise Plan064Error("config-peer-port-out-of-range")
-    if config["expected_peer_address"] not in SYNTHETIC_TARGETS:
-        raise Plan064Error("config-peer-address-not-synthetic")
+    if is_loopback_topology:
+        if config["expected_peer_address"] not in LOOPBACK_TARGETS:
+            raise Plan064Error("config-peer-address-not-loopback")
+    else:
+        if config["expected_peer_address"] not in SYNTHETIC_TARGETS:
+            raise Plan064Error("config-peer-address-not-synthetic")
     if config["handshake_timeout_ms"] <= 0 or config["handshake_timeout_ms"] > 600_000:
         raise Plan064Error("config-handshake-timeout-out-of-range")
     if config["shutdown_timeout_ms"] <= 0 or config["shutdown_timeout_ms"] > 60_000:
@@ -364,6 +377,7 @@ def i2pd_direct_driver_invocation(
         attempt_count=0,
         outcome=TriggerOutcome.DIRECT_TRIGGER_HELPER_FAILED,
         reason_code="not-evaluated",
+        topology_kind=str(config.get("topology_kind", "rootless-sealed-single-netns")),
         transport_request_observed=False,
         connection_established_observed=False,
         sender_frame_write_observed=False,
@@ -557,6 +571,8 @@ __all__ = [
     "REFERENCE_REVISION",
     "REFERENCE_VERSION",
     "SYNTHETIC_TARGETS",
+    "LOOPBACK_TARGETS",
+    "LOOPBACK_TOPOLOGY_KIND",
     "build_helper",
     "build_manifest_schema_digest",
     "control_binary_digest",

@@ -155,6 +155,10 @@ REASON_PRE_PROTOCOL_RUN_IDENTITY_FAILED: Final[str] = "pre-protocol-run-identity
 REASON_PRE_PROTOCOL_PREPARATION_FAILED: Final[str] = "pre-protocol-preparation-failed"
 REASON_PRE_PROTOCOL_REFERENCE_FAILED: Final[str] = "pre-protocol-reference-failed"
 REASON_PRE_PROTOCOL_ROUTER_INFO_VALIDATION_FAILED: Final[str] = "pre-protocol-router-info-validation-failed"
+REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED: Final[str] = "runner-reference-process-not-executed"
+REASON_RUNNER_REFERENCE_EVENTS_MISSING: Final[str] = "runner-reference-events-missing"
+REASON_RUNNER_SYNTHETIC_PROVENANCE_REJECTED: Final[str] = "runner-synthetic-provenance-rejected"
+REASON_RUNNER_PROTOCOL_EVENT_UNPROVEN: Final[str] = "runner-protocol-event-unproven"
 
 
 REASON_CODES: Final[frozenset[str]] = frozenset(
@@ -180,6 +184,10 @@ REASON_CODES: Final[frozenset[str]] = frozenset(
         REASON_PRE_PROTOCOL_PREPARATION_FAILED,
         REASON_PRE_PROTOCOL_REFERENCE_FAILED,
         REASON_PRE_PROTOCOL_ROUTER_INFO_VALIDATION_FAILED,
+        REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED,
+        REASON_RUNNER_REFERENCE_EVENTS_MISSING,
+        REASON_RUNNER_SYNTHETIC_PROVENANCE_REJECTED,
+        REASON_RUNNER_PROTOCOL_EVENT_UNPROVEN,
     }
 )
 

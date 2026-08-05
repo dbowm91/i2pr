@@ -327,7 +327,7 @@ fn is_endpoint_address(address: IpAddr, topology: TopologyKind) -> bool {
     match topology {
         TopologyKind::Synthetic => is_synthetic_address(address),
         TopologyKind::HostLoopbackDevelopment => match address {
-            IpAddr::V4(value) => value.is_loopback() || value.octets()[0..3] == [192, 0, 2],
+            IpAddr::V4(value) => value.is_loopback(),
             IpAddr::V6(_) => false,
         },
     }

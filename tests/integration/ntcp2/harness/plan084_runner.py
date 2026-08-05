@@ -853,10 +853,16 @@ def execute_reverse_probe(
         )
 
     # In the reverse direction the i2pr is the responder/listener and
-    # the i2pd is the initiator/dialer. The synthetic test endpoints
-    # keep the same loopback range but the role assignment flips.
-    i2pr_address = "192.0.2.1"
-    i2pd_address = "192.0.2.2"
+    # the i2pd is the initiator/dialer. Endpoint selection branches on
+    # topology_kind: host-loopback-development pins both peers to
+    # literal IPv4 127.0.0.1, all other lanes use the synthetic
+    # RFC 5737 / 3849 range.
+    if topology_kind == "host-loopback-development":
+        i2pr_address = "127.0.0.1"
+        i2pd_address = "127.0.0.1"
+    else:
+        i2pr_address = "192.0.2.1"
+        i2pd_address = "192.0.2.2"
     i2pr_port = _allocate_loopback_port()
     i2pd_port = _allocate_loopback_port()
 
@@ -877,21 +883,24 @@ def execute_reverse_probe(
 
     # Phase 1: prepare the i2pr responder state.
     increment("i2pr_prepare", "started")
+    prepare_command = [
+        str(i2pr_binary),
+        "ntcp2",
+        "prepare",
+        "--state-dir",
+        str(state_dir),
+        "--local-address",
+        i2pr_address,
+        "--local-port",
+        str(i2pr_port),
+        "--network-id",
+        "99",
+    ]
+    if topology_kind == "host-loopback-development":
+        prepare_command.extend(["--topology-kind", "host-loopback-development"])
     try:
         completed = subprocess.run(
-            [
-                str(i2pr_binary),
-                "ntcp2",
-                "prepare",
-                "--state-dir",
-                str(state_dir),
-                "--local-address",
-                i2pr_address,
-                "--local-port",
-                str(i2pr_port),
-                "--network-id",
-                "99",
-            ],
+            prepare_command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=60.0,
@@ -965,6 +974,7 @@ def execute_reverse_probe(
         "build_manifest_sha256": build_manifest_sha256,
         "observer_patch_sha256": observer_patch_sha256,
         "run_identity_sha256": lane_qualification_sha256,
+        "topology_kind": topology_kind,
     }
     from i2pd_direct_driver import i2pd_direct_driver_invocation
     try:
@@ -1041,6 +1051,7 @@ def execute_reverse_probe(
         "reference_build_manifest_sha256": build_manifest_sha256,
         "reference_observer_patch_sha256": observer_patch_sha256,
         "deterministic_seed": 42,
+        "topology_kind": topology_kind,
     }
     scenario_path.write_text(_format_toml(scenario_payload), encoding="utf-8")
 

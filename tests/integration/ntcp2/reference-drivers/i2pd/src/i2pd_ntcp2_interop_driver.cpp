@@ -217,6 +217,7 @@ struct DriverConfig {
     std::string build_manifest_sha256;
     std::string observer_patch_sha256;
     std::string run_identity_sha256;
+    std::string topology_kind;
 };
 
 void parse_strict_config(const std::filesystem::path& path,
@@ -400,6 +401,8 @@ void parse_strict_config(const std::filesystem::path& path,
             out.observer_patch_sha256 = string_value;
         } else if (key == "run_identity_sha256") {
             out.run_identity_sha256 = string_value;
+        } else if (key == "topology_kind") {
+            out.topology_kind = string_value;
         } else {
             extra_fields.push_back(key);
         }
@@ -420,7 +423,7 @@ void parse_strict_config(const std::filesystem::path& path,
         "reference_revision", "reference_tree_sha256",
         "driver_source_sha256", "driver_binary_sha256",
         "build_manifest_sha256", "observer_patch_sha256",
-        "run_identity_sha256",
+        "run_identity_sha256", "topology_kind",
     };
     auto contains = [](const DriverConfig& cfg, const char* name) -> bool {
         if (std::strcmp(name, "schema") == 0) return true;
@@ -451,6 +454,7 @@ void parse_strict_config(const std::filesystem::path& path,
         if (std::strcmp(name, "build_manifest_sha256") == 0) return !cfg.build_manifest_sha256.empty();
         if (std::strcmp(name, "observer_patch_sha256") == 0) return !cfg.observer_patch_sha256.empty();
         if (std::strcmp(name, "run_identity_sha256") == 0) return !cfg.run_identity_sha256.empty();
+        if (std::strcmp(name, "topology_kind") == 0) return !cfg.topology_kind.empty();
         return false;
     };
     for (const auto* field : kRequired) {
@@ -470,9 +474,25 @@ void validate_config(const DriverConfig& cfg) {
         "i2pr-to-i2pd-ipv4",
         "i2pd-to-i2pr-ipv4",
     };
-    static const std::vector<std::string> kAllowedTargets = {
+    static const std::vector<std::string> kSyntheticTargets = {
         "192.0.2.1", "192.0.2.2",
     };
+    static const std::vector<std::string> kLoopbackTargets = {
+        "127.0.0.1",
+    };
+    static const std::string kLoopbackTopologyKind = "host-loopback-development";
+
+    const bool is_loopback_topology = (cfg.topology_kind == kLoopbackTopologyKind);
+    if (!is_loopback_topology &&
+        std::find(kSyntheticTargets.begin(), kSyntheticTargets.end(),
+                  cfg.local_address) == kSyntheticTargets.end()) {
+        throw std::runtime_error("config-local-address-not-synthetic");
+    }
+    if (is_loopback_topology &&
+        std::find(kLoopbackTargets.begin(), kLoopbackTargets.end(),
+                  cfg.local_address) == kLoopbackTargets.end()) {
+        throw std::runtime_error("config-local-address-not-loopback");
+    }
 
     if (cfg.reference_revision != kReferenceRevision) {
         throw std::runtime_error("config-reference-revision-mismatch");
@@ -486,10 +506,6 @@ void validate_config(const DriverConfig& cfg) {
     if (std::find(kAllowedModes.begin(), kAllowedModes.end(), cfg.mode) ==
         kAllowedModes.end()) {
         throw std::runtime_error("config-mode-not-allowlisted");
-    }
-    if (std::find(kAllowedTargets.begin(), kAllowedTargets.end(),
-                  cfg.local_address) == kAllowedTargets.end()) {
-        throw std::runtime_error("config-local-address-not-synthetic");
     }
     if (cfg.local_port == 0) {
         throw std::runtime_error("config-local-port-out-of-range");
@@ -530,9 +546,15 @@ void validate_config(const DriverConfig& cfg) {
     if (cfg.expected_peer_port == 0) {
         throw std::runtime_error("config-peer-port-out-of-range");
     }
-    if (std::find(kAllowedTargets.begin(), kAllowedTargets.end(),
-                  cfg.expected_peer_address) == kAllowedTargets.end()) {
+    if (!is_loopback_topology &&
+        std::find(kSyntheticTargets.begin(), kSyntheticTargets.end(),
+                  cfg.expected_peer_address) == kSyntheticTargets.end()) {
         throw std::runtime_error("config-peer-address-not-synthetic");
+    }
+    if (is_loopback_topology &&
+        std::find(kLoopbackTargets.begin(), kLoopbackTargets.end(),
+                  cfg.expected_peer_address) == kLoopbackTargets.end()) {
+        throw std::runtime_error("config-peer-address-not-loopback");
     }
     if (cfg.handshake_timeout_ms == 0 ||
         cfg.handshake_timeout_ms > 600000) {

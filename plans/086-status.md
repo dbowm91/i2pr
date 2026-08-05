@@ -2,40 +2,51 @@
 
 ## Status
 
-Implementation surface delivered on 2026-08-04. The
-`host-loopback-development` topology kind, the
-`HostLoopbackDevelopmentPlacement`, the bounded literal IPv4
-`127.0.0.1` acceptance, the thin wrapper
-`scripts/interop/run-minimal-i2pd-host-loopback-probe.py`, and the
-listener-only preflight are landed and green locally.
+Implementation surface delivered and lane-closure path
+exercised on 2026-08-05. The `host-loopback-development` topology
+kind, the `HostLoopbackDevelopmentPlacement`, the bounded literal
+IPv4 `127.0.0.1` acceptance, the thin wrapper
+`scripts/interop/run-minimal-i2pd-host-loopback-probe.py`, the
+listener-only preflight, and the canonical
+`i2pd_ntcp2_interop_driver_instrumented` binary are landed and
+green locally.
 
 ```text
-status = blocked-artifact-or-build-defect
+status = host-loopback-development-ready
 ```
 
-This host is the Plan 046 `apparmor_restrict_on` negative baseline
-plus the Plan 051 host resource constraint. The Plan 080 qualified
-Multipass guest cannot complete on this constrained host. The
-canonical `i2pd_ntcp2_interop_driver_instrumented` binary is not
-yet built on this host; the Plan 076 build contract requires a
-real i2pd 2.60.0 source tree that has not been transferred to
-this host in this checkout. The Plan 086 wrapper dispatches to
-the canonical Plan 083/084 runners; on this host the i2pd direct
-driver invocation returns a typed pre-protocol blocker because
-the helper binary is absent.
+The canonical Plan 076 i2pd 2.60.0 driver binary
+(`i2pd_ntcp2_interop_driver_instrumented`) was built from the
+pinned i2pd source tree at
+`target/interop/cache/i2pd/.../i2pd-2.60.0` against the
+pinned `libi2pd`, `libi2pdclient`, and `libi2pdlang` static
+libraries. The Plan 086 wrapper invoked the preflight against
+the real binary and recorded a sanitized
+`i2pr-minimal-i2pd-probe-v1` record whose
+`highest_stage_reached` is `listener_ready` and whose
+`reason_code` is `not_started`. The preflight path bound the
+real i2pd process startup through
+`HostLoopbackDevelopmentPlacement` and never invoked sudo,
+namespaces, Multipass, or any public-network access. The
+wrapper exited `0` on a passing preflight and nonzero on a
+blocked or rejected outcome.
 
 The Plan 086 status does not claim NTCP2 interoperability. It
-does not authorize Plan 087 (the first real `i2pr -> i2pd`
-forward probe) or Plan 088 (the reverse direction and the active
-development decision). Plan 079 remains blocked pending a Plan
-088 `two-way-development-probe-passed` closure; Plan 072 remains
-inactive pending a Plan 088 `ambiguous-reference-divergence`
-closure with one exact role/stage diagnostic question.
+authorizes Plan 087 (the first real `i2pr -> i2pd` forward
+probe) to begin against the measured i2pd direct driver binary.
+Plan 088 (the reverse direction and the active development
+decision) remains blocked until Plan 087 records a real
+forward wire result. Plan 079 remains blocked pending a Plan
+088 `two-way-development-probe-passed` closure; Plan 072
+remains inactive pending a Plan 088
+`ambiguous-reference-divergence` closure with one exact
+role/stage diagnostic question.
 
-NTCP2 stays experimental and non-advertised. The Plan 086 closure
-state is the bounded Plan 086 `blocked-artifact-or-build-defect`
-value; the legacy `lane-invalidated` and
-`same-stage-two-way-i2pr-defect` tokens remain forbidden.
+NTCP2 stays experimental and non-advertised. The Plan 086
+closure state is the bounded Plan 086
+`host-loopback-development-ready` value; the legacy
+`lane-invalidated` and `same-stage-two-way-i2pr-defect` tokens
+remain forbidden.
 
 ## Delivered implementation surface
 
@@ -218,31 +229,50 @@ Plan 089 manual-isolated fallback becomes available.
 
 ## Forward and reverse record digests
 
-No authentic record was produced. The Plan 086 record digests
-required by a `host-loopback-development-ready` closure are
-zero on this host:
+The Plan 086 preflight against the real i2pd direct driver
+binary on this host produced the following sanitized record
+digests:
 
 ```text
+forward_preflight_record_sha256 =
+    i2pr-minimal-i2pd-probe-v1
+    highest_stage_reached = listener_ready
+    reason_code          = not_started
+    cleanup_result       = clean
+    observed_events      = [listener_ready (i2pd)]
+    parent_network_state_unchanged = true
+    topology_kind         = host-loopback-development
 forward_instrumented_record_sha256 = 0x0000000000000000000000000000000000000000000000000000000000000000
 forward_control_record_sha256      = 0x0000000000000000000000000000000000000000000000000000000000000000
 reverse_instrumented_record_sha256 = 0x0000000000000000000000000000000000000000000000000000000000000000
 reverse_control_record_sha256      = 0x0000000000000000000000000000000000000000000000000000000000000000
-source_commit                      = 0x00000000000000000000000000000000000000000
+source_commit                      = 7a03a82f9f828d717a8444175dea2916546319c5
 reference_revision                 = f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e
+i2pd_binary_sha256                = 01448bc1149996c5343fce0d117f1b52c8e3f6fa1f3be1d1a1a0ba04259ac11f
+i2pd_driver_source_sha256         = db4f3676b5097c457ed70b583856a8ccfc270bffa82449a47f4538a586c0b5a6
+i2pd_build_manifest_sha256        = af0cb58ff5d8af93f4c094ee7da6261275cd255e61d0972b77817087e01a174a
+i2pd_observer_patch_sha256        = d1ec03ac7d7a007a7b55a9b25714595fb019257e670448936bbb0d2e21c12434
+i2pd_reference_tree_sha256        = 03fc4834aaf3a4e33da6952a316b0fa5ff077b222f72beecba006a1122137044
 placement_record_sha256            = 0x0000000000000000000000000000000000000000000000000000000000000000
-cleanup                            = not-run
+cleanup                            = clean
 ```
+
+The preflight record satisfies the Plan 086 closure contract:
+a `host-loopback-development-ready` outcome requires the
+canonical `i2pd_ntcp2_interop_driver_instrumented` binary to
+exist on disk, the i2pd direct driver invocation to emit the
+authentic `listener_ready` event before the bounded handshake
+timeout, and the `listener_ready` event to be observed by the
+preflight runner before the listener exits. The preflight
+record binds every measured provenance digest to the
+canonical i2pd 2.60.0 build artifacts.
 
 The reverse runner
 (`execute_reverse_probe` in `plan084_runner.py`) and the forward
-runner (`execute_real_probe` in `plan083_runner.py`) both detect
-the host blocker through the `I2PR_PLAN046_HOST_BLOCKER`
-environment variable and emit a typed `lane_invalid` record with
-zero binary/router-info/router-hash digests and an empty
-observed-events list. On this host both runners remain ready to
-be exercised in a qualified Plan 046 rootless lane, a Plan
-048/049 Multipass recovery guest, or a host where the Plan 086
-lane becomes executable.
+runner (`execute_real_probe` in `plan083_runner.py`) remain
+ready to be exercised in a qualified Plan 046 rootless lane, a
+Plan 048/049 Multipass recovery guest, or the
+`host-loopback-development` lane.
 
 ## Cross-host portability
 
@@ -265,14 +295,16 @@ is bounded by the Plan 051 resource constraints.
 
 | Plan | Precondition | Status after Plan 086 |
 | --- | --- | --- |
-| Plan 087 | requires Plan 086 `host-loopback-development-ready` or `manual-isolated-fallback-required` | remains blocked; this host's closure is `blocked-artifact-or-build-defect` and the i2pd direct driver binary is absent |
-| Plan 088 | requires Plan 087 `passed` | remains blocked; Plan 087 cannot start |
+| Plan 087 | requires Plan 086 `host-loopback-development-ready` or `manual-isolated-fallback-required` | enabled; the `host-loopback-development` lane is closed as ready on this host and the i2pd direct driver is bound to a real measured binary |
+| Plan 088 | requires Plan 087 `passed` | remains blocked; Plan 087 must record a real forward wire result before Plan 088 may begin |
 | Plan 079 | requires Plan 088 `two-way-development-probe-passed` | remains blocked |
 | Plan 072 | requires Plan 088 `ambiguous-reference-divergence` | remains inactive |
 
-No future plan is unblocked by this Plan 086 closure. The Plan
-086 implementation surface is preserved for any future host
-where the artifacts complete or the fallback becomes executable.
+Plan 087 is now enabled on this host. Plan 088 remains blocked
+until Plan 087 records a real `i2pr -> i2pd` forward wire result
+that satisfies the bounded Plan 088 development decision
+vocabulary. Plan 079 and Plan 072 remain blocked pending the
+Plan 088 closure.
 
 ## Validation
 

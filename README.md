@@ -1678,9 +1678,10 @@ development-only; it never satisfies any release or isolation predicate.
 Plan 086 enables the `host-loopback-development` lane, adds the bounded
 literal IPv4 loopback acceptance, the `HostLoopbackDevelopmentPlacement`,
 and the listener-only preflight. Plan 086 closes on this host as
-`blocked-artifact-or-build-defect` because the canonical
-`i2pd_ntcp2_interop_driver_instrumented` binary has not yet been
-built on this constrained host; the closure state and the
+`host-loopback-development-ready` after the canonical Plan 076 i2pd 2.60.0
+driver binary was built from the pinned source tree and the listener-only
+preflight recorded a sanitized `i2pr-minimal-i2pd-probe-v1` record whose
+`highest_stage_reached` is `listener_ready`; the closure state and the
 implementation surface are recorded in
 [Plan 086 status](plans/086-status.md). Plan 089 remains a conditional
 manual-isolated fallback for the case where direct host loopback cannot

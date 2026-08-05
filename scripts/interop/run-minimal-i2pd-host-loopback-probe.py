@@ -31,6 +31,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -72,22 +73,87 @@ def _fail(message: str, code: int = 2) -> int:
 def _make_provenance(
     *,
     source_commit: str,
+    run_id: str,
+    direction: str,
+    i2pd_driver_binary: Path | None,
     reference_revision: str = "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e",
 ) -> dict[str, str]:
     """Return the bounded provenance stub for the host-loopback lane.
 
-    The wrapper never fabricates a passing record; the stub uses
-    all-zero digests until the runner materialises the real
-    values. The reference revision is the pinned i2pd 2.60.0
-    record from Plan 064.
+    The wrapper measures the i2pd driver binary SHA-256 when an
+    explicit path is supplied; the run identity is derived from the
+    run id, source commit, and direction. The other digests use the
+    canonical Plan 082/083 zero placeholders. The wrapper never
+    fabricates a passing record; the runner materialises the real
+    values.
     """
 
+    driver_source_sha256 = "0" * 64
+    build_manifest_sha256 = "0" * 64
+    observer_patch_sha256 = "0" * 64
+    i2pd_binary_sha256 = "0" * 64
+    reference_tree_sha256 = "0" * 64
+    i2pd_dir = Path(__file__).resolve().parent.parent.parent / "tests/integration/ntcp2/reference-drivers/i2pd"
+    driver_source = i2pd_dir / "src/i2pd_ntcp2_interop_driver.cpp"
+    if driver_source.is_file():
+        try:
+            driver_source_sha256 = hashlib.sha256(
+                driver_source.read_bytes()
+            ).hexdigest()
+        except OSError:
+            pass
+    observer_patch = i2pd_dir / "patches/i2pd-2.60.0-interop-observer.patch"
+    if observer_patch.is_file():
+        try:
+            observer_patch_sha256 = hashlib.sha256(
+                observer_patch.read_bytes()
+            ).hexdigest()
+        except OSError:
+            pass
+    if i2pd_driver_binary is not None:
+        build_manifest = i2pd_driver_binary.parent / "build-manifest-instrumented.json"
+        if build_manifest.is_file():
+            try:
+                build_manifest_sha256 = hashlib.sha256(
+                    build_manifest.read_bytes()
+                ).hexdigest()
+            except OSError:
+                pass
+            try:
+                build_manifest_data = json.loads(
+                    build_manifest.read_text(encoding="utf-8")
+                )
+                if isinstance(build_manifest_data, dict):
+                    value = build_manifest_data.get(
+                        "reference_source_tree_sha256"
+                    )
+                    if isinstance(value, str):
+                        reference_tree_sha256 = value
+            except (OSError, json.JSONDecodeError):
+                pass
+    if i2pd_driver_binary is not None and i2pd_driver_binary.is_file():
+        try:
+            i2pd_binary_sha256 = hashlib.sha256(
+                i2pd_driver_binary.read_bytes()
+            ).hexdigest()
+        except OSError:
+            i2pd_binary_sha256 = "0" * 64
+    else:
+        i2pd_binary_sha256 = "0" * 64
+    lane_qualification_sha256 = hashlib.sha256(
+        f"i2pr-host-loopback-run-identity-v1|{run_id}|{direction}|{source_commit}".encode()
+    ).hexdigest()
     return {
         "source_commit": source_commit,
         "reference_revision": reference_revision,
-        "lane_qualification_sha256": "0" * 64,
+        "lane_qualification_sha256": lane_qualification_sha256,
         "i2pr_binary_sha256": "0" * 64,
-        "i2pd_binary_sha256": "0" * 64,
+        "i2pd_binary_sha256": i2pd_binary_sha256,
+        "driver_source_sha256": driver_source_sha256,
+        "build_manifest_sha256": build_manifest_sha256,
+        "observer_patch_sha256": observer_patch_sha256,
+        "reference_tree_sha256": reference_tree_sha256,
+        "source_inspection_record_sha256": reference_tree_sha256,
     }
 
 
@@ -198,7 +264,7 @@ def _detect_synthetic_profile_use(argv: list[str]) -> int | None:
     return None
 
 
-def _run_preflight(args: argparse.Namespace) -> dict[str, object]:
+def _run_preflight(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
     """Plan 086 listener-only preflight that never starts a dialer.
 
     The preflight validates the lane, prepares the i2pr state, runs
@@ -207,18 +273,26 @@ def _run_preflight(args: argparse.Namespace) -> dict[str, object]:
     It terminates before any peer connection completes and writes
     a sanitized record. The preflight is the only path the
     Plan 086 closure may use to validate the lane contract.
+
+    Returns the record and a boolean indicating whether the
+    preflight reached the authentic ``listener_ready`` event.
     """
 
-    import plan083_runner as runner
+    import preflight_runner as runner
 
-    provenance = _make_provenance(source_commit=args.source_commit)
+    provenance = _make_provenance(
+        source_commit=args.source_commit,
+        run_id=args.run_id,
+        direction=args.direction,
+        i2pd_driver_binary=args.i2pd_driver_binary,
+    )
     args.run_root.mkdir(parents=True, exist_ok=True)
     message_id = (
         int(args.delivery_status_message_id, 16)
         if args.delivery_status_message_id.startswith("0x")
         else int(args.delivery_status_message_id)
     )
-    record = runner.execute_real_probe(
+    outcome = runner.execute_listener_preflight(
         repo_root=args.repo_root,
         run_root=args.run_root,
         run_id=args.run_id,
@@ -232,8 +306,13 @@ def _run_preflight(args: argparse.Namespace) -> dict[str, object]:
         i2pd_driver_binary=args.i2pd_driver_binary or Path("/nonexistent"),
         handshake_timeout_ms=args.handshake_timeout_ms,
         output_path=args.output,
+        driver_source_sha256=provenance["driver_source_sha256"],
+        build_manifest_sha256=provenance["build_manifest_sha256"],
+        observer_patch_sha256=provenance["observer_patch_sha256"],
+        reference_tree_sha256=provenance["reference_tree_sha256"],
+        source_inspection_record_sha256=provenance["source_inspection_record_sha256"],
     )
-    return record
+    return outcome.record, outcome.is_ready
 
 
 def _run_forward_probe(args: argparse.Namespace) -> dict[str, object]:
@@ -248,7 +327,12 @@ def _run_forward_probe(args: argparse.Namespace) -> dict[str, object]:
     import plan083_runner as runner
 
     args.run_root.mkdir(parents=True, exist_ok=True)
-    provenance = _make_provenance(source_commit=args.source_commit)
+    provenance = _make_provenance(
+        source_commit=args.source_commit,
+        run_id=args.run_id,
+        direction=args.direction,
+        i2pd_driver_binary=args.i2pd_driver_binary,
+    )
     message_id = int(args.delivery_status_message_id, 16) if args.delivery_status_message_id.startswith("0x") else int(args.delivery_status_message_id)
     return runner.execute_real_probe(
         repo_root=args.repo_root,
@@ -264,6 +348,9 @@ def _run_forward_probe(args: argparse.Namespace) -> dict[str, object]:
         i2pd_driver_binary=args.i2pd_driver_binary or Path("/nonexistent"),
         handshake_timeout_ms=args.handshake_timeout_ms,
         output_path=args.output,
+        driver_source_sha256=provenance["driver_source_sha256"],
+        build_manifest_sha256=provenance["build_manifest_sha256"],
+        observer_patch_sha256=provenance["observer_patch_sha256"],
     )
 
 
@@ -279,7 +366,12 @@ def _run_reverse_probe(args: argparse.Namespace) -> dict[str, object]:
     import plan084_runner as runner
 
     args.run_root.mkdir(parents=True, exist_ok=True)
-    provenance = _make_provenance(source_commit=args.source_commit)
+    provenance = _make_provenance(
+        source_commit=args.source_commit,
+        run_id=args.run_id,
+        direction=args.direction,
+        i2pd_driver_binary=args.i2pd_driver_binary,
+    )
     message_id = int(args.delivery_status_message_id, 16) if args.delivery_status_message_id.startswith("0x") else int(args.delivery_status_message_id)
     return runner.execute_reverse_probe(
         repo_root=args.repo_root,
@@ -295,6 +387,9 @@ def _run_reverse_probe(args: argparse.Namespace) -> dict[str, object]:
         i2pd_driver_binary=args.i2pd_driver_binary or Path("/nonexistent"),
         handshake_timeout_ms=args.handshake_timeout_ms,
         output_path=args.output,
+        driver_source_sha256=provenance["driver_source_sha256"],
+        build_manifest_sha256=provenance["build_manifest_sha256"],
+        observer_patch_sha256=provenance["observer_patch_sha256"],
     )
 
 
@@ -309,12 +404,15 @@ def main(argv: list[str] | None = None) -> int:
     if invalid is not None:
         return invalid
     if args.preflight:
-        record = _run_preflight(args)
+        record, is_ready = _run_preflight(args)
+        print(json.dumps(record, sort_keys=True, indent=2))
+        if not is_ready:
+            return 5
+        return 0
+    if args.direction == "i2pr-to-i2pd-ipv4":
+        record = _run_forward_probe(args)
     else:
-        if args.direction == "i2pr-to-i2pd-ipv4":
-            record = _run_forward_probe(args)
-        else:
-            record = _run_reverse_probe(args)
+        record = _run_reverse_probe(args)
     print(json.dumps(record, sort_keys=True, indent=2))
     return 0
 

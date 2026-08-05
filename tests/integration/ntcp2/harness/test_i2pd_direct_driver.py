@@ -115,6 +115,7 @@ def _base_config(**overrides):
         "build_manifest_sha256": "6" * 64,
         "observer_patch_sha256": "7" * 64,
         "run_identity_sha256": "8" * 64,
+        "topology_kind": "rootless-sealed-single-netns",
     }
     config.update(overrides)
     return config

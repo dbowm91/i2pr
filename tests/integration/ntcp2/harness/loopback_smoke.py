@@ -301,6 +301,7 @@ class LoopbackSmokeConfig:
     data_timeout_seconds: float
     network_audit_mode: str
     diagnostics_mode: str
+    topology_kind: str = "rootless-sealed-single-netns"
 
     @property
     def is_i2pr_initiator(self) -> bool:
@@ -353,6 +354,7 @@ def parse_config_dict(payload: Any) -> LoopbackSmokeConfig:
         "data_timeout_seconds",
         "network_audit_mode",
         "diagnostics_mode",
+        "topology_kind",
     }
     if extra:
         raise LoopbackSmokeConfigError(
@@ -406,6 +408,15 @@ def parse_config_dict(payload: Any) -> LoopbackSmokeConfig:
             "diagnostics_mode-not-allowlisted:raw-capture-forbidden"
         )
 
+    topology_kind = payload.get("topology_kind", "rootless-sealed-single-netns")
+    if topology_kind not in {
+        "rootless-sealed-single-netns",
+        "host-loopback-development",
+    }:
+        raise LoopbackSmokeConfigError(
+            "topology_kind-not-allowlisted"
+        )
+
     return LoopbackSmokeConfig(
         direction=direction,
         reference_driver_binary=reference_driver_binary,
@@ -419,6 +430,7 @@ def parse_config_dict(payload: Any) -> LoopbackSmokeConfig:
         data_timeout_seconds=data_timeout,
         network_audit_mode=network_audit_mode,
         diagnostics_mode=diagnostics_mode,
+        topology_kind=topology_kind,
     )
 
 
@@ -938,6 +950,7 @@ def _render_reference_strict_config(
         "build_manifest_sha256": build_manifest_digest,
         "observer_patch_sha256": observer_patch_digest,
         "run_identity_sha256": run_identity_digest,
+        "topology_kind": config.topology_kind,
     }
     i2pd_driver.validate_strict_config(payload)
     return payload

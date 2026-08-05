@@ -597,13 +597,12 @@ fn parse_endpoint_address(
         }
         TopologyKind::HostLoopbackDevelopment => {
             // The host-loopback-development lane is IPv4 only and
-            // accepts the literal ``127.0.0.1`` address. RFC 5737
-            // addresses also remain valid because the runner falls
-            // back to them when the host-loopback listener failures
-            // are debugged off the synthetic range.
+            // accepts the literal ``127.0.0.1`` address only. RFC 5737
+            // synthetic addresses are explicitly rejected under this
+            // topology so the development-only lane never silently
+            // falls back to the synthetic range.
             match address {
                 IpAddr::V4(value) if value == Ipv4Addr::LOCALHOST => Ok(address),
-                IpAddr::V4(value) if is_synthetic_ipv4(value) => Ok(address),
                 IpAddr::V4(_) => Err(ScenarioError::AddressOutsideSyntheticRange),
                 IpAddr::V6(_) => Err(ScenarioError::AddressOutsideSyntheticRange),
             }
@@ -1005,6 +1004,49 @@ topology_kind = "host-loopback-development"
         );
         assert_eq!(
             Scenario::parse_str(&input, &std::env::temp_dir()),
+            Err(ScenarioError::AddressOutsideSyntheticRange)
+        );
+    }
+
+    /// Plan 086: synthetic RFC 5737 addresses (``192.0.2.x``) are
+    /// rejected under the host-loopback-development topology. The
+    /// development lane accepts literal ``127.0.0.1`` only.
+    #[test]
+    fn rejects_synthetic_address_in_host_loopback_topology() {
+        let input = r#"
+[scenario]
+schema = "i2pr-launcher-scenario-v2"
+schema_version = 2
+scenario_id = "i2pr-to-i2pd-ipv4"
+run_id = "test-run-id"
+role = "initiator"
+address_family = "ipv4"
+local_address = "192.0.2.1"
+local_port = 45680
+peer_address = "127.0.0.1"
+peer_port = 45678
+network_id = 99
+state_dir = "secrets"
+peer_router_info = "exchange/peer.info"
+handshake_deadline_ms = 30000
+read_deadline_ms = 1000
+write_deadline_ms = 1000
+queue_deadline_ms = 1000
+drain_deadline_ms = 1000
+padding_profile = "representative"
+smoke_message_profile = "delivery-status"
+deterministic_seed = 1
+expected_result_class = "authenticated-handshake-and-bounded-i2np-exchange"
+status_path = "status.jsonl"
+delivery_status_message_id = 12345
+expected_sender_router_hash_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+expected_receiver_router_hash_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+reference_driver_mode = "i2pd-direct-driver"
+run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+topology_kind = "host-loopback-development"
+"#;
+        assert_eq!(
+            Scenario::parse_str(input, &std::env::temp_dir()),
             Err(ScenarioError::AddressOutsideSyntheticRange)
         );
     }

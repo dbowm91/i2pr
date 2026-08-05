@@ -135,6 +135,7 @@ _REQUIRED_FIELDS = (
     "completed_monotonic_ms",
     "sanitized_detail",
     "trigger_sha256",
+    "topology_kind",
 )
 
 
@@ -148,6 +149,8 @@ _DIRECTIONS = {
     "i2pd-to-i2pr-ipv4",
 }
 _SYNTHETIC_TARGETS = {"192.0.2.1", "192.0.2.2"}
+_LOOPBACK_TARGETS = {"127.0.0.1"}
+_LOOPBACK_TOPOLOGY_KIND = "host-loopback-development"
 
 
 class TriggerRecordError(ValueError):
@@ -259,7 +262,11 @@ def validate_trigger_record(
     if record["peer_router_hash_sha256"] == "0" * 64 and record["attempted"]:
         raise TriggerRecordError("trigger-peer-router-hash-zero-with-attempted")
     if record["target_address"] not in _SYNTHETIC_TARGETS:
-        raise TriggerRecordError("trigger-target-address-not-synthetic")
+        topology_kind_value = str(record.get("topology_kind", ""))
+        if topology_kind_value != _LOOPBACK_TOPOLOGY_KIND:
+            raise TriggerRecordError("trigger-target-address-not-synthetic")
+        if record["target_address"] not in _LOOPBACK_TARGETS:
+            raise TriggerRecordError("trigger-target-address-not-loopback")
     if not isinstance(record["target_port"], int) or not 1 <= record["target_port"] <= 65535:
         raise TriggerRecordError("trigger-target-port-invalid")
     message_id = record["delivery_status_message_id"]
@@ -359,6 +366,7 @@ def build_trigger_record(
     started_monotonic_ms: int,
     completed_monotonic_ms: int,
     sanitized_detail: str,
+    topology_kind: str = "rootless-sealed-single-netns",
 ) -> dict[str, Any]:
     """Construct a Plan 062 v4 trigger record with bounded provenance.
 
@@ -405,6 +413,7 @@ def build_trigger_record(
         "started_monotonic_ms": started_monotonic_ms,
         "completed_monotonic_ms": completed_monotonic_ms,
         "sanitized_detail": sanitized_detail,
+        "topology_kind": topology_kind,
         "trigger_sha256": "",
     }
     finalize_trigger_record(record, run_identity_sha256=run_identity_sha256)

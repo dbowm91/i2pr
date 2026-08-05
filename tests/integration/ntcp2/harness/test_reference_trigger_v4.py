@@ -80,6 +80,7 @@ def _minimal_record(**overrides):
         "started_monotonic_ms": 1000,
         "completed_monotonic_ms": 2500,
         "sanitized_detail": "v4 trigger reached",
+        "topology_kind": "rootless-sealed-single-netns",
         "trigger_sha256": "",
     }
     payload.update(overrides)
