@@ -11,26 +11,73 @@ decision recorded in this status is:
 
 ```text
 decision = insufficient-evidence
+plan_086 = host-loopback-development-ready
+plan_087 = open_pending_plan_090_reference_driver_correction
+forward_attempt = authentic_pre_tcp_rejection_retained
+plan_088 = blocked_pending_plan_087_pass
 ```
 
-This host is the Plan 046 `apparmor_restrict_on` negative baseline.
-The Plan 080 Multipass recovery guest cannot complete on this
-constrained host (per Plan 051). The Plan 086
-`host-loopback-development` lane has not been closed on this host
-(no `plans/086-status.md` exists), and the Plan 087 forward
-direction has therefore not executed. No real wire attempt has been
-retained; no authentic reverse record exists.
+Plan 090 closed the Plan 087 zero-address RouterInfo defect
+(`ntcp2.published` was `false` because the driver stored an
+`int` rather than a `bool` and the i2pd `boost::program_options`
+map was empty when the driver called `SetOption`). Plan 090
+applied four behavior-neutral corrections in the i2pd direct
+driver:
+
+1. `set_bool_option("ntcp2.published", true)` — store the option
+   as `bool` to match the `value<bool>()->default_value(true)`
+   registration in `libi2pd/Config.cpp` line 330.
+2. `i2p::config::ParseCmdline(1, fake_argv, ignoreUnknown=true)`
+   followed by `Finalize()` — populate the option store with
+   declared defaults before the driver mutates individual
+   options.
+3. `set_uint16_option` helper for `port` and `ntcp2.port` — store
+   as `uint16_t` to match the `value<uint16_t>()` registration
+   in `Config.cpp` lines 63 and 331.
+4. `i2p::transport::transports.SetCheckReserved(false)` — disable
+   reserved-range filtering so loopback addresses survive
+   `RouterInfo::ReadFromBuffer` deserialization.
+
+The Plan 090 driver also fails closed with
+`router-info-endpoint-mismatch` if the authoritative in-memory
+RouterInfo does not carry the exact configured NTCP2 endpoint.
+
+The Plan 090 instrumented forward attempt
+(`/tmp/opencode/plan090-real-20260805174541-fresh/forward-record.json`)
+authenticated the i2pd listener (`listener_ready`) and reached
+TCP, then recorded a NTCP2 protocol failure. The i2pd direct
+driver emitted `process_started`, `router_info_exported`, and
+`listener_ready`; the i2pr dialer emitted a terminal status with
+`result = authentication_failed` and `reason_code = handshake_failed`
+after `drive_initiator_handshake` returned
+`Io(ExactIoError { kind: Closed })`. The Plan 083 pre-TCP
+classifier correctly mapped this to `terminal_result =
+pre_protocol_rejected` because no `tcp_connected` event was
+observed, but the NTCP2 handshake itself failed after the TCP
+connection established, so the per-direction record is a
+pre-protocol rejection rather than a TCP-authenticated failure.
+
+The Plan 090 pass criteria require an authentic
+`ntcp2_authenticated` event on both sides plus a decoded
+DeliveryStatus. Neither event was observed, so the
+`first-instrumented-attempt-pre-tcp-rejected` Plan 087 status
+remains `first-instrumented-attempt-pre-tcp-rejected` — the
+retained record is now a clean committed-head Plan 090 attempt
+against the corrected driver rather than the original
+dirty-tree diagnostic. The Plan 090 closure remains open: the
+forward direction did not pass.
 
 The Plan 088 entry gate requires `plans/087-status.md` to bind
 `status = passed` plus a non-zero instrumented and control
-forward record digest, the same source commit or an explicitly
-recorded narrow forward correction commit, and the same pinned
-i2pd revision. None of these prerequisites are satisfied on this
-host. The Plan 088 implementation surface is therefore delivered
-without a wire result; the active execution lane is `insufficient`
-until a Plan 086 `host-loopback-development-ready` or a Plan 089
-`manual-isolated-fallback-ready` placement is closed and Plan 087
-records a passing forward direction.
+forward record digest, the same source commit, and the same
+pinned i2pd revision. The Plan 090 commit satisfies the
+"narrow forward correction commit" entry condition, but the
+forward record digest is non-zero (the per-direction record is
+written) and the forward direction is not yet a passing wire
+attempt. The Plan 088 implementation surface therefore remains
+delivered without a wire result; the active execution lane is
+`insufficient-evidence` until Plan 090 closes with a passing
+forward direction.
 
 This record does not claim NTCP2 interoperability. It does not
 authorize Plan 079 (repeated development validation) or Plan 073

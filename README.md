@@ -1209,6 +1209,88 @@ roles, structured reference events, measured provenance, and
 fail-closed guards. Plan 069 also does not modify production NTCP2
 code or the i2pd direct driver.
 
+### Plan 090 i2pd RouterInfo and Plan 087 evidence corrective pass
+
+Plan 090 closes the Plan 087 zero-address `router.info` defect.
+The Plan 087 instrumented attempt reached `listener_ready` and
+then the i2pr dialer rejected the i2pd `router.info` with
+`peer_router_info_invalid` because the i2pd direct driver's
+emitted buffer contained zero `RouterAddress` entries. The root
+cause was a type-and-storage defect in the driver's
+`initialise_i2pd_runtime` rather than a transport defect.
+
+Plan 090 applies four behavior-neutral corrections in the i2pd
+direct driver
+(`tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp`):
+
+- `set_bool_option("ntcp2.published", true)` — store the option
+  as `bool` (was stored as `int` by the Plan 064 helper, which
+  silently failed to update the i2pd `boost::program_options` map
+  because `value<bool>()->default_value(true)` rejects an `int`
+  payload and silently no-ops). With `ntcp2.published = false`,
+  `RouterContext::NewRouterInfo()` (libi2pd/RouterContext.cpp
+  lines 152-157) takes the non-published branch and the NTCP2
+  address is serialized without `host`, `port`, or `i`.
+- `i2p::config::ParseCmdline(1, fake_argv, ignoreUnknown=true)` +
+  `Finalize()` — populate the i2pd option store with declared
+  defaults before the driver mutates individual options. Without
+  this, `SetOption` calls silently no-op because `m_Options` is
+  empty until `store()` runs.
+- `set_uint16_option` helper — store `port` and `ntcp2.port` as
+  `uint16_t` (was stored as `int`, which throws
+  `boost::bad_any_cast` on extraction because both options are
+  registered as `value<uint16_t>()` in i2pd Config.cpp lines 63
+  and 331).
+- `i2p::transport::transports.SetCheckReserved(false)` — disable
+  reserved-range filtering so loopback addresses survive
+  `RouterInfo::ReadFromBuffer` deserialization
+  (RouterInfo.cpp lines 256-262 strip the `host` field for any
+  IP in the reserved range).
+
+The driver also fails closed with
+`router-info-endpoint-mismatch` if the authoritative in-memory
+RouterInfo does not carry the exact configured NTCP2 endpoint.
+
+Plan 090 also corrects the Plan 083 pre-TCP classification: the
+canonical runner now forbids generic `protocol_rejected` /
+`reference-events-missing` before `tcp_connected` and serializes
+pre-TCP failures as `pre_protocol_rejected` with the bounded
+pre-protocol reason allowlist. Plan 083 host-loopback
+`validate-scenario` is routed through
+`HostLoopbackDevelopmentPlacement.run` so the runner never
+composes a shell or namespace wrapper.
+
+Plan 090 lands:
+
+- `tests/integration/ntcp2/harness/plan083_runner.py` —
+  pre-TCP classifier, placement-owned scenario validation,
+  typed pre-protocol reason allowlist, and the bounded
+  pre-protocol reject path.
+- `tests/integration/ntcp2/harness/test_plan090.py` — the Plan
+  090 test matrix (14 cases) covering the source verification,
+  driver binary, control parity, pre-TCP classification,
+  placement validation, and record validation.
+- `tests/integration/ntcp2/reference-drivers/source-verification.md`
+  — the "Plan 090 verified RouterInfo lifecycle" section
+  documents the pinned-source lifecycle and config/export
+  ownership.
+- `scripts/check-ntcp2-interoperability.sh` — enforces the Plan
+  090 driver corrections, lifecycle documentation, and test
+  matrix presence.
+
+The Plan 090 corrections landed on this host. The first clean
+committed-head forward attempt authenticated the i2pd listener
+and reached TCP, then the NTCP2 Noise handshake closed the
+socket with `Io(ExactIoError { kind: Closed })` before the i2pr
+initiator reached `ntcp2_authenticated`. The Plan 090 closure
+remains open: the forward direction did not pass. Per the Plan
+090 "Forward attempt reaches TCP and fails protocol" branch, the
+failed record is preserved and Plan 088 is not allowed to run
+until the forward direction passes. See
+[plans/087-status.md](plans/087-status.md) and
+[plans/088-status.md](plans/088-status.md) for the closure
+records. NTCP2 stays experimental and non-advertised.
+
 ### Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
 Plan 074 is historical execution authority. Plan 081 supersedes its active

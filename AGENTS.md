@@ -1794,14 +1794,17 @@ Plan 078 attempt. Do not treat either capability probing or a stale guest as
 protocol evidence; consult `plans/080-status.md` for the qualified-lane
 record.
 
-## Current active sequence amendment (2026-08-04)
+## Current active sequence amendment (2026-08-04, Plan 090)
 
 The active authority is [Plan 085](plans/085-milestone-3-host-loopback-development-execution-roadmap.md),
 followed by Plan 086 (status correction + `host-loopback-development`
 lane enablement, **closed on this host**), Plan 087 (first real
 `i2pr -> i2pd` forward probe, implementation surface delivered
-and instrumented attempt recorded), Plan 088 (reverse `i2pd -> i2pr`
-probe and development decision), and the
+and instrumented attempt recorded), Plan 090 (i2pd RouterInfo
+corrective pass: four behavior-neutral driver corrections, Plan 083
+pre-TCP classification, placement-owned scenario validation, focused
+regression tests, **corrections landed on this host**), and Plan 088
+(reverse `i2pd -> i2pr` probe and development decision), and the
 [Plan 072/079 gate amendment](plans/072-079-gate-amendment-plan-088.md)
 that moves the Plan 072 and Plan 079 gates from Plan 084 to Plan 088.
 Plan 082 is implemented and closed; Plans 083 and 084 are implementation
@@ -1825,19 +1828,46 @@ i2pr dialer (via `HostLoopbackDevelopmentPlacement.popen`) and copies
 the i2pd-exported RouterInfo into the scenario exchange path with a
 verified digest; the wrapper threads the missing `reference_tree_sha256`
 and `source_inspection_record_sha256` provenance digests through to
-the i2pd direct driver invocation. The first instrumented forward
-attempt reached `listener_ready` and the i2pr dialer started, then
-the i2pr dialer rejected the i2pd RouterInfo with
-`peer_router_info_invalid` before any TCP connection — the i2pd
-direct driver's emitted `router.info` carries zero `RouterAddress`
-entries, so `exact_ntcp2_address` rejects the peer RouterInfo.
-This is owned by the i2pd direct driver source
-(`tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp`);
-Plan 087 explicitly forbids patching pinned i2pd behavior, so the
-narrow correction is deferred to a Plan 064/076 corrective pass.
-Plan 087 remains open on this precondition. See `plans/087-status.md`
-for the closure record, exact live command, recorded digests, and
-the bounded correction-surfaces contract.
+the i2pd direct driver invocation. The Plan 090 corrective pass
+applied four behavior-neutral corrections to the i2pd direct
+driver source
+(`tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp`):
+
+- `set_bool_option("ntcp2.published", true)` — store the option as
+  `bool` (was stored as `int` by the Plan 064 helper, which
+  silently failed to update the i2pd option map).
+- `i2p::config::ParseCmdline(1, fake_argv, ignoreUnknown=true)` +
+  `Finalize()` — populate the i2pd option store with declared
+  defaults before the driver mutates individual options (the
+  `boost::program_options` map is empty until `store()` runs).
+- `set_uint16_option` helper — store `port` and `ntcp2.port` as
+  `uint16_t` (was stored as `int`, which throws
+  `boost::bad_any_cast` on extraction).
+- `i2p::transport::transports.SetCheckReserved(false)` — disable
+  reserved-range filtering so loopback addresses survive
+  `RouterInfo::ReadFromBuffer` deserialization
+  (`RouterInfo.cpp` lines 256-262).
+
+The driver also fails closed with
+`router-info-endpoint-mismatch` if the authoritative in-memory
+RouterInfo does not carry the exact configured NTCP2 endpoint.
+
+The Plan 090 first clean committed-head attempt authenticated
+the i2pd listener (`listener_ready`), the i2pr dialer started,
+then the NTCP2 Noise handshake closed the TCP socket with
+`Io(ExactIoError { kind: Closed })` before the i2pr initiator
+reached `ntcp2_authenticated`. The Plan 083 pre-TCP
+classifier mapped this to `terminal_result = pre_protocol_rejected`
+because no `tcp_connected` event was observed. The forward
+direction is therefore an authentic TCP-established protocol
+failure, not a passing Plan 087 result. The retained record is
+preserved at
+`/tmp/opencode/plan090-real-20260805174541-fresh/forward-record.json`;
+the i2pr status log is at
+`/tmp/opencode/plan090-real-20260805174541-fresh/raw/i2pr-status.jsonl`.
+See `plans/087-status.md` for the closure record, exact live
+command, recorded digests, and the bounded correction-surfaces
+contract.
 
 Plan 082 provides the test-only `i2pr-interop ntcp2 prepare` and
 `validate-scenario` operations, authentic RouterInfo/hash preparation,
@@ -1854,20 +1884,27 @@ protocol execution on the constrained host under the development-only lane
 contract. Plan 086 closes as `host-loopback-development-ready` (or records
 `manual-isolated-fallback-required`) before Plan 087 begins. Plan 087
 closes as `passed` only after a TCP-authenticated
-`i2pr -> i2pd` first-instrumented pass; the first pass recorded
-a pre-TCP rejection owned by the i2pd direct driver. Plan 087 must
-close (as `passed` or as a localized defect that authenticates TCP)
-before Plan 088 begins.
+`i2pr -> i2pd` first-instrumented pass; the Plan 090 instrumented
+attempt reached TCP authentication but the NTCP2 handshake closed
+before the i2pr initiator reached `ntcp2_authenticated`. Plan 087 must
+close (as `passed` or as a localized defect that authenticates the
+data phase) before Plan 088 begins.
 
-Plan 088 owns the reverse probe and the active development decision. On this
-host the recorded decision is `insufficient-evidence` because the Plan 087
-forward direction recorded a pre-TCP rejection and no real wire run has
-been retained. The Plan 087 implementation surface is ready for a fresh
-attempt against a fixed i2pd driver. Plan 079 remains blocked until
-`plans/088-status.md` records `decision = two-way-development-probe-passed`.
-Plan 072 remains inactive until `plans/088-status.md` records
-`decision = ambiguous-reference-divergence`
-with one exact role/stage diagnostic question. NTCP2 stays experimental and
+Plan 090 closes as `passed` only after Plan 087 records
+`status = passed` with both an instrumented and a control record
+digest. The Plan 090 corrections are landed on this host; the
+forward direction did not pass. Plan 088 owns the reverse probe
+and the active development decision. On this host the recorded
+decision is `insufficient-evidence` because the Plan 090 forward
+direction recorded a TCP-established protocol failure and no
+`i2np_message_decoded` event has been retained. The Plan 090
+implementation surface is ready for a fresh attempt against a
+fixed i2pd driver or after a follow-up corrective pass. Plan 079
+remains blocked until `plans/088-status.md` records
+`decision = two-way-development-probe-passed`. Plan 072 remains
+inactive until `plans/088-status.md` records
+`decision = ambiguous-reference-divergence` with one exact
+role/stage diagnostic question. NTCP2 stays experimental and
 non-advertised. See `plans/082-status.md`, `plans/083-status.md`,
 `plans/084-status.md`, `plans/086-status.md`, `plans/087-status.md`, and
 `plans/088-status.md`.
@@ -2000,23 +2037,53 @@ Plan 072. The historical `lane-invalidated` and
 boundary checker enforces this.
 
 On this host the recorded decision is `insufficient-evidence` because
-the Plan 086 lane has not closed, the Plan 087 forward direction has
-not executed, and no real wire run has been retained. The Plan 088
-implementation surface travels with the repository unchanged for any
-future host where the Plan 086 lane becomes executable or the Plan
-089 manual-isolated fallback becomes available. NTCP2 stays
-experimental and non-advertised. See
+the Plan 090 forward direction recorded a TCP-established protocol
+failure and no `i2np_message_decoded` event has been retained. The
+Plan 088 implementation surface travels with the repository unchanged
+for any future host where the Plan 086 lane becomes executable or
+the Plan 089 manual-isolated fallback becomes available. NTCP2
+stays experimental and non-advertised. See
 [plans/088-status.md](plans/088-status.md) for the closure record.
+
+Plan 090 is the i2pd RouterInfo and Plan 087 evidence corrective
+pass. The plan delivered four behavior-neutral corrections in
+the i2pd direct driver
+(`tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp`),
+a Plan 083 pre-TCP classifier that forbids generic
+`protocol_rejected` before `tcp_connected`, the placement-owned
+host-loopback `validate-scenario` invocation, and the
+`test_plan090.py` test matrix covering the source verification,
+driver binary, control parity, pre-TCP classification, placement
+validation, and record validation. The source-verification
+record (`tests/integration/ntcp2/reference-drivers/source-verification.md`
+"Plan 090 verified RouterInfo lifecycle") documents the
+pinned-source lifecycle and config/export ownership. The
+static boundary check (`scripts/check-ntcp2-interoperability.sh`)
+enforces the driver corrections, the lifecycle documentation, and
+the test matrix presence.
+
+The Plan 090 corrections landed on this host. The first clean
+committed-head forward attempt authenticated the i2pd listener
+and reached TCP, then the NTCP2 Noise handshake closed the
+socket before the i2pr initiator reached `ntcp2_authenticated`.
+The Plan 090 closure remains open: the forward direction did not
+pass. Per the Plan 090 "Forward attempt reaches TCP and fails
+protocol" branch, the failed record is preserved and Plan 088 is
+not allowed to run until the forward direction passes.
 
 Required focused checks for Plan 088:
 
 ```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan090.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan088.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan086.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan084.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan083.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan083_runner.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_minimal_i2pd_probe.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_minimal_i2pd_reverse_probe.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_driver.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_control.py'
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh

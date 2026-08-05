@@ -4,63 +4,72 @@
 
 The Plan 086 runner architecture was extended to drive a real
 `i2pr -> i2pd` forward wire attempt under the
-`host-loopback-development` lane. The runner now exercises every
-canonical Plan 087 step on the canonical host:
+`host-loopback-development` lane. The Plan 090 corrective pass
+applied four behavior-neutral corrections in the i2pd direct
+driver (see `tests/integration/ntcp2/reference-drivers/source-verification.md`
+"Plan 090 verified RouterInfo lifecycle"):
 
-- i2pr state preparation through the bounded placement;
-- i2pd direct driver state preparation (inspect) through the
-  Plan 064 strict config contract;
-- post-inspect i2pd RouterInfo copy to the i2pr scenario
-  exchange path with verified digest;
-- placement-owned i2pd listener popen via
-  `HostLoopbackDevelopmentPlacement` with
-  `wait_for_event("listener_ready")` instead of the prior
-  blocking `subprocess.run`;
-- placement-owned i2pr dialer popen that runs while the i2pd
-  listener is still alive;
-- concurrent drain of both event streams into the
-  per-direction record;
-- bounded reap in declared order
-  (drainer terminated first, listener second).
+1. `set_bool_option("ntcp2.published", true)` — store the
+   option as `bool` (was stored as `int` by the Plan 064
+   helper).
+2. `i2p::config::ParseCmdline(1, fake_argv, ignoreUnknown=true)`
+   + `Finalize()` — populate the i2pd option store with declared
+   defaults before the driver mutates individual options.
+3. `set_uint16_option` helper — store `port` and `ntcp2.port`
+   as `uint16_t` (was stored as `int`).
+4. `i2p::transport::transports.SetCheckReserved(false)` —
+   disable reserved-range filtering so loopback addresses
+   survive `RouterInfo::ReadFromBuffer` deserialization.
 
-The Plan 087 instrumented forward attempt authentically reaches
-`listener_ready` and the i2pr dialer starts; the i2pr dialer
-then rejects the exchange-copied i2pd RouterInfo with
-`peer_router_info_invalid` before any TCP connection. The
-Plan 087 outcome handling classifies this as a pre-TCP
-rejection (the i2pd RouterInfo has zero
-`RouterAddress` entries, so `exact_ntcp2_address` returns
-`Err`, which the i2pr surfaces as `peer_router_info_invalid`).
-TCP was not authentically reached.
+The driver also fails closed with
+`router-info-endpoint-mismatch` if the authoritative in-memory
+RouterInfo does not carry the exact configured NTCP2 endpoint.
+
+After the Plan 090 corrections, the Plan 087 instrumented
+forward attempt (`plan090-real-20260805174541-fresh`)
+authenticated the i2pd listener (`listener_ready`) and reached
+TCP, then recorded a NTCP2 protocol failure. The i2pd direct
+driver emitted `process_started`, `router_info_exported`, and
+`listener_ready`; the i2pr dialer emitted a terminal status with
+`result = authentication_failed` and
+`reason_code = handshake_failed` after
+`drive_initiator_handshake` returned
+`Io(ExactIoError { kind: Closed })`. The Plan 083 pre-TCP
+classifier mapped this to `terminal_result =
+pre_protocol_rejected` with
+`reason_code = pre-protocol-reference-failed` because no
+`tcp_connected` event was observed.
+
+The forward direction did not pass: the i2pd listener bound
+on the configured port and emitted `listener_ready`, but the
+NTCP2 Noise handshake closed the TCP socket before the i2pr
+initiator reached `ntcp2_authenticated`. The first-instrumented
+Plan 090 attempt is preserved at
+`/tmp/opencode/plan090-real-20260805174541-fresh/forward-record.json`
+and the i2pr status log at
+`/tmp/opencode/plan090-real-20260805174541-fresh/raw/i2pr-status.jsonl`.
+The retained record is the first authentic Plan 090 wire
+attempt; it is not yet a passing plan closure.
 
 ```text
-status = first-instrumented-attempt-pre-tcp-rejected
+status = open-plan-090-forward-protocol-failure
+forward_digest = non-zero (Plan 090 first clean committed-head attempt)
+corrective_source_commit = f3ba6e1c4b465d69f3570d3b9323b97a36e09ba9
+plan_090 = corrective-corrections-landed-forward-direction-not-passed
+plan_088 = blocked_pending_plan_087_pass
+plan_079 = blocked_pending_plan_088_two_way_pass
+plan_072 = inactive_pending_plan_088_ambiguity
 ```
 
-The Plan 088 reverse direction remains blocked pending a Plan 087
-pass; Plan 079/Plan 072 remain blocked pending the Plan 088
-decision.
-
-The blocker is owned by the i2pd direct driver
-(`tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp`)
-and is not patched here: Plan 087 explicitly forbids
-"patching pinned i2pd behavior". The narrow correction belongs
-in a Plan 064/076 corrective pass that must:
-
-- restore the i2pd direct driver RouterInfo so it carries at
-  least one non-published NTCP2 address whose endpoint matches
-  the rendered `local_address`/`local_port`,
-- keep the listener/dataplane behavior-neutral so the
-  Plan 076 instrumented/uninstrumented contracts continue to
-  hold, and
-- land a deterministic unit test that decodes the driver-written
-  `router.info` and asserts `addresses > 0`.
-
-When the Plan 064/076 corrective pass lands, the Plan 087
-implementation surface (`execute_real_probe`, the wrapper, the
-placement-owned concurrent listener/dialer) is ready to run a
-real forward pass against the same wrapped command. Plan 087
-remains open under this precondition.
+The Plan 090 corrections close the i2pd-side zero-address
+RouterInfo defect. The remaining NTCP2 protocol failure is a
+post-TCP handshake defect whose ownership is not yet
+established. The next active step is a follow-up corrective pass
+that runs the forward direction against a Plan 090-corrected
+driver until a passing `i2np_message_decoded` event is
+observed on both sides. The Plan 088 reverse direction
+remains blocked pending a Plan 087 pass; Plan 079 and Plan 072
+remain blocked pending the Plan 088 decision.
 
 ## Delivered implementation surface
 

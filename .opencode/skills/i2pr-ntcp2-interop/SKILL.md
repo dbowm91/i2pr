@@ -1,6 +1,6 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, typed evidence validation, the Plan 085-088 host-loopback development execution roadmap, and the Plan 088-gated conditional Emissary decision. Use when an agent is asked to run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, diagnose Plan 082-088 execution, or validate evidence. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, typed evidence validation, the Plan 085-088 host-loopback development execution roadmap, the Plan 090 i2pd RouterInfo and pre-TCP classification correction, and the Plan 088-gated conditional Emissary decision. Use when an agent is asked to run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, diagnose Plan 082-090 execution, or validate evidence. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
 # I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/081/082/083/084)
@@ -732,17 +732,76 @@ The first instrumented forward attempt on this host reached
 rejected the i2pd RouterInfo with `peer_router_info_invalid` before
 any TCP connection — the i2pd direct driver's emitted `router.info`
 carries zero `RouterAddress` entries, so `exact_ntcp2_address`
-rejects the peer RouterInfo. Plan 087 explicitly forbids patching
-pinned i2pd behavior, so the narrow correction is deferred to a Plan
-064/076 corrective pass that must restore the i2pd direct driver
-RouterInfo so it carries at least one non-published NTCP2 address
-whose endpoint matches the rendered `local_address`/`local_port`.
-Plan 087 remains open on this precondition; the bounded
-implementation surface travels with the repository so any future
-host that can run a fixed Plan 064/076 driver can resume the forward
-attempt without further runner changes. The closure record with the
-exact live command, recorded digests, and bounded correction-surfaces
-contract is in `plans/087-status.md`.
+rejects the peer RouterInfo. Plan 090 closes this defect with four
+behavior-neutral corrections to the i2pd direct driver
+(`tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp`):
+
+- `set_bool_option("ntcp2.published", true)` — store the option
+  as `bool` to match the `value<bool>()->default_value(true)`
+  registration in `libi2pd/Config.cpp` line 330. Storing as `int`
+  (the Plan 064 behavior) caused the `boost::any_cast<bool>`
+  mismatch that silently failed the address materialization.
+- `i2p::config::ParseCmdline(1, fake_argv, ignoreUnknown=true)` +
+  `Finalize()` — populate the i2pd option store with declared
+  defaults before the driver mutates individual options.
+- `set_uint16_option` helper — store `port` and `ntcp2.port`
+  as `uint16_t` (was stored as `int`, which throws
+  `boost::bad_any_cast`).
+- `i2p::transport::transports.SetCheckReserved(false)` — disable
+  reserved-range filtering so loopback addresses survive
+  `RouterInfo::ReadFromBuffer` deserialization.
+
+The driver also fails closed with
+`router-info-endpoint-mismatch` if the authoritative in-memory
+RouterInfo does not carry the exact configured NTCP2 endpoint.
+
+Plan 090 also corrects the Plan 083 pre-TCP classification: the
+canonical runner now forbids generic `protocol_rejected` /
+`reference-events-missing` before `tcp_connected` and serializes
+pre-TCP failures as `pre_protocol_rejected` with a bounded
+pre-protocol reason allowlist. Plan 083 host-loopback
+`validate-scenario` is routed through
+`HostLoopbackDevelopmentPlacement.run`.
+
+After the Plan 090 corrections, the first clean committed-head
+forward attempt authenticated the i2pd listener and reached
+TCP, then the NTCP2 Noise handshake closed the socket with
+`Io(ExactIoError { kind: Closed })` before the i2pr initiator
+reached `ntcp2_authenticated`. The Plan 090 closure remains
+open: the forward direction did not pass. Per the Plan 090
+"Forward attempt reaches TCP and fails protocol" branch, the
+failed record is preserved and Plan 088 is not allowed to run
+until the forward direction passes. The closure record with
+the exact live command, recorded digests, and bounded
+correction-surfaces contract is in `plans/087-status.md`.
+
+## Plan 090 i2pd RouterInfo and Plan 087 evidence corrective pass
+
+Plan 090 closes the Plan 087 zero-address `router.info` defect
+and corrects the Plan 083 pre-TCP classification and placement
+ownership. See `docs/adr/0025-plan090-i2pd-driver-routerinfo-correction.md`
+for the pinned-source references and the bounded pre-protocol
+reason allowlist. Plan 090 lands:
+
+- four driver corrections in
+  `tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp`;
+- the Plan 090 lifecycle documentation in
+  `tests/integration/ntcp2/reference-drivers/source-verification.md`;
+- the Plan 083 pre-TCP classifier, placement-owned scenario
+  validation, and pre-protocol reason allowlist in
+  `tests/integration/ntcp2/harness/plan083_runner.py`;
+- the `tests/integration/ntcp2/harness/test_plan090.py` test
+  matrix (14 cases) covering source verification, driver
+  binary, control parity, pre-TCP classification, placement
+  validation, and record validation;
+- the static boundary check
+  `scripts/check-ntcp2-interoperability.sh` extended to enforce
+  the Plan 090 driver corrections, lifecycle documentation,
+  and test matrix presence.
+
+The Plan 090 implementation surface travels with the repository
+unchanged for any future host where the forward direction
+ultimately passes. NTCP2 remains experimental and non-advertised.
 
 ## Plan 088 reverse host-loopback probe and development decision
 
