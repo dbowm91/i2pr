@@ -25,9 +25,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 ROOTLESS_TOPOLOGY_KIND = "rootless-sealed-single-netns"
 PRIVILEGED_TOPOLOGY_KIND = "privileged-dual-netns-veth"
@@ -124,6 +125,12 @@ class HostLoopbackDevelopmentPlacement:
     binary, a non-absolute path, or a non-allowlisted environment
     key raises :class:`TopologyContractError` rather than silently
     swapping in a fallback.
+
+    The placement owns the bounded ``run`` / ``popen`` subprocess
+    surface so the runner never reaches around it to invoke
+    ``subprocess.run`` or ``subprocess.Popen`` directly. The placement
+    is the only path that may launch a subprocess under the
+    ``host-loopback-development`` topology.
     """
 
     actor: str
@@ -172,6 +179,119 @@ class HostLoopbackDevelopmentPlacement:
 
     def environment_dict(self) -> dict[str, str]:
         return dict(self.environment)
+
+    def digest(self) -> str:
+        """Return a stable SHA-256 of the placement's measured inputs.
+
+        The digest binds the binary path, log path, environment, and
+        actor. It is the canonical ``placement_record_sha256`` for the
+        host-loopback-development lane and is never the all-zero
+        placeholder.
+        """
+
+        import hashlib
+        import json
+
+        payload = {
+            "topology_kind": self.topology_kind,
+            "actor": self.actor,
+            "binary_path": self.binary_path,
+            "log_path": self.log_path,
+            "environment": [[k, v] for k, v in self.environment],
+            "max_log_bytes": self.max_log_bytes,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def run(
+        self,
+        argv: Sequence[str],
+        *,
+        timeout_seconds: float,
+        extra_environment: Mapping[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Own the subprocess invocation. Captures stdout to the log path.
+
+        The placement never composes a shell, never invokes sudo, never
+        exposes the environment to the child, and never reads stdout
+        back into the runner. The bounded log file is the only path
+        that carries the subprocess output.
+        """
+
+        import os
+        import subprocess
+        from pathlib import Path
+
+        command = self.command(argv)
+        env = os.environ.copy()
+        env.update(self.environment_dict())
+        if extra_environment:
+            for key, value in extra_environment.items():
+                if key in {"LD_PRELOAD", "LD_LIBRARY_PATH"}:
+                    raise TopologyContractError(
+                        "host-loopback-environment-ld-preload-forbidden"
+                    )
+                env[key] = value
+        log_path = Path(self.log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("ab") as handle:
+            handle.write(
+                f"$ {' '.join(command)}\n".encode("utf-8")
+            )
+            completed = subprocess.run(
+                command,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                env=env,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        try:
+            if log_path.stat().st_size > self.max_log_bytes:
+                with log_path.open("rb+") as handle:
+                    handle.truncate(self.max_log_bytes)
+        except OSError:
+            pass
+        return completed
+
+    def popen(
+        self,
+        argv: Sequence[str],
+        *,
+        extra_environment: Mapping[str, str] | None = None,
+    ) -> subprocess.Popen[bytes]:
+        """Own the subprocess invocation for long-running processes.
+
+        The placement captures stdout and stderr to the bounded log
+        file so the runner never reaches around the placement. The
+        subprocess is detached from the runner's controlling terminal.
+        """
+
+        import os
+        import subprocess
+        from pathlib import Path
+
+        command = self.command(argv)
+        env = os.environ.copy()
+        env.update(self.environment_dict())
+        if extra_environment:
+            for key, value in extra_environment.items():
+                if key in {"LD_PRELOAD", "LD_LIBRARY_PATH"}:
+                    raise TopologyContractError(
+                        "host-loopback-environment-ld-preload-forbidden"
+                    )
+                env[key] = value
+        log_path = Path(self.log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = log_path.open("ab")
+        log_handle.write(f"$ {' '.join(command)}\n".encode("utf-8"))
+        return subprocess.Popen(
+            command,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+        )
 
 
 class InteropTopology(Protocol):

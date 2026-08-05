@@ -414,6 +414,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         record = _run_reverse_probe(args)
     print(json.dumps(record, sort_keys=True, indent=2))
+    terminal_result = str(record.get("terminal_result", ""))
+    if terminal_result != "passed":
+        return 6
     return 0
 
 

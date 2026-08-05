@@ -540,6 +540,7 @@ class Plan086RecordTests(unittest.TestCase):
                 "i2pr_dialer": {"started": 0, "exited": 0, "forced": 0},
             },
             cleanup_result="not-run",
+            placement_record_sha256="f" * 64,
         )
         self.assertEqual(record["topology_kind"], "host-loopback-development")
         forward_probe.validate_record(record)
@@ -570,6 +571,7 @@ class Plan086RecordTests(unittest.TestCase):
                 "i2pd_dialer": {"started": 0, "exited": 0, "forced": 0},
             },
             cleanup_result="not-run",
+            placement_record_sha256="f" * 64,
         )
         self.assertEqual(record["topology_kind"], "host-loopback-development")
         reverse_probe.validate_reverse_record(record)

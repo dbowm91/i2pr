@@ -731,8 +731,32 @@ struct OwnedRuntime {
     bool transports_started{false};
     bool context_started{false};
     bool router_info_exported{false};
+    bool router_info_written{false};
     std::string local_ident_hash_hex;
+    std::string router_info_path;
 };
+
+std::string write_local_router_info(const DriverConfig& cfg) {
+    if (!path_is_owned(cfg.output_dir)) {
+        return "output-dir-not-owned";
+    }
+    const auto& ri = i2p::context.GetRouterInfo();
+    if (!ri.GetBuffer() || ri.GetBufferLen() == 0) {
+        return "router-info-buffer-empty";
+    }
+    auto target = cfg.output_dir / "router.info";
+    std::ofstream out(target, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return "router-info-write-failed";
+    }
+    out.write(reinterpret_cast<const char*>(ri.GetBuffer()),
+              static_cast<std::streamsize>(ri.GetBufferLen()));
+    out.close();
+    if (!out.good()) {
+        return "router-info-write-failed";
+    }
+    return target.string();
+}
 
 void shutdown_runtime(OwnedRuntime& rt, EventWriter* /*writer*/,
                      DriverConfig* /*cfg*/) {
@@ -910,6 +934,13 @@ bool initialise_i2pd_runtime(const DriverConfig& cfg, EventWriter& writer,
     emit_event(writer, cfg, "router_info_exported", std::nullopt,
                std::nullopt, std::nullopt, std::nullopt,
                rt.local_ident_hash_hex);
+    std::string written_path = write_local_router_info(cfg);
+    if (written_path.find('/') == std::string::npos) {
+        failure_reason = "router-info-write-failed";
+        return false;
+    }
+    rt.router_info_written = true;
+    rt.router_info_path = written_path;
     return true;
 }
 

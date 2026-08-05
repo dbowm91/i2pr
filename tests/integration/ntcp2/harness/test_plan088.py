@@ -131,6 +131,7 @@ def _minimal_passed_reverse_record(
             "i2pd_dialer": {"started": 1, "exited": 1, "forced": 0},
         },
         cleanup_result=cleanup_result,
+        placement_record_sha256=_hex("9", 64),
     )
 
 
@@ -392,6 +393,7 @@ class Plan088SchemaContractTests(unittest.TestCase):
                 "i2pr_dialer": {"started": 0, "exited": 0, "forced": 0},
             },
             cleanup_result="not-run",
+            placement_record_sha256=_hex("9", 64),
         )
         with self.assertRaises(reverse_probe.ReverseProbeError):
             reverse_probe.validate_reverse_record(forward_record)

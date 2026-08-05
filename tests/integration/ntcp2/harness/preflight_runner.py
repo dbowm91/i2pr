@@ -17,14 +17,18 @@ Any other outcome is a typed preflight blocker:
 - ``runner-synthetic-provenance-rejected`` — driver metadata missing
 - ``runner-protocol-event-unproven`` — required event absent
 - ``lane-invalid`` — host-loopback-development topology rejected
+- ``scenario-render-failed`` — Plan 065 strict scenario rejected
 
 The preflight process startup is routed through
 ``HostLoopbackDevelopmentPlacement`` so the wrapper never builds a
-shell, namespace, Multipass, or sudo prefix itself.
+shell, namespace, Multipass, or sudo prefix itself. The placement
+owns the subprocess invocation; the runner never reaches around the
+placement to ``subprocess.run`` or ``subprocess.Popen`` directly.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -102,36 +106,50 @@ def _placement_for_i2pd(*, binary: Path, log_path: Path) -> HostLoopbackDevelopm
     )
 
 
-def _run_driver_subprocess(
-    placement: HostLoopbackDevelopmentPlacement,
-    *,
-    config_path: Path,
-    timeout_seconds: float,
-) -> subprocess.CompletedProcess[bytes]:
-    """Run the i2pd driver under the bounded host-direct placement."""
+def _placement_for_i2pr(*, binary: Path, log_path: Path) -> HostLoopbackDevelopmentPlacement:
+    """Build the bounded host-direct placement for the i2pr prepare command."""
 
-    argv = ["--config", str(config_path)]
-    try:
-        command = placement.command(argv)
-    except TopologyContractError:
-        raise
-    return subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout_seconds,
-        check=False,
+    return HostLoopbackDevelopmentPlacement(
+        actor="i2pr",
+        binary_path=str(binary),
+        log_path=str(log_path),
+        environment=tuple(),
+        max_log_bytes=131_072,
     )
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _measure_i2pr_binary(repo_root: Path) -> str:
+    """Compute the SHA-256 of the committed i2pr-interop binary.
+
+    The wrapper records the measured digest in the probe record so the
+    evidence binds to the actual binary the runner executed. The
+    measurement is a real file digest, never a placeholder.
+    """
+
+    debug_binary = repo_root / "target" / "debug" / "i2pr-interop"
+    release_binary = repo_root / "target" / "release" / "i2pr-interop"
+    if debug_binary.is_file():
+        return _sha256_file(debug_binary)
+    if release_binary.is_file():
+        return _sha256_file(release_binary)
+    return hashlib.sha256(b"i2pr-interop-binary-missing").hexdigest()
 
 
 def _prepare_i2pr_state(
     *,
     repo_root: Path,
     run_root: Path,
-    i2pr_binary_sha256: str,
     topology_kind: str,
 ) -> dict[str, Any]:
-    """Invoke ``i2pr-interop ntcp2 prepare`` for the host-loopback lane."""
+    """Invoke ``i2pr-interop ntcp2 prepare`` for the host-loopback lane.
+
+    The subprocess runs under the host-direct placement so the
+    measurement is owned by ``HostLoopbackDevelopmentPlacement``.
+    """
 
     if topology_kind != HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND:
         raise RuntimeError(REASON_LANE_INVALID)
@@ -140,8 +158,14 @@ def _prepare_i2pr_state(
     if state_dir.stat().st_mode & 0o777 != 0o700:
         state_dir.chmod(0o700)
     i2pr_port = _allocate_loopback_port()
-    prepare_command = [
-        str(repo_root / "target" / "debug" / "i2pr-interop"),
+    i2pr_binary = repo_root / "target" / "debug" / "i2pr-interop"
+    if not i2pr_binary.is_file():
+        raise RuntimeError(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+    placement = _placement_for_i2pr(
+        binary=i2pr_binary,
+        log_path=run_root / "raw" / "i2pr-prepare.log",
+    )
+    prepare_argv = [
         "ntcp2",
         "prepare",
         "--state-dir",
@@ -155,38 +179,34 @@ def _prepare_i2pr_state(
         "--topology-kind",
         HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND,
     ]
-    completed = subprocess.run(
-        prepare_command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=60.0,
-        check=False,
-    )
+    completed = placement.run(prepare_argv, timeout_seconds=60.0)
     if completed.returncode != 0:
         raise RuntimeError(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+    raw_stdout_path = run_root / "raw" / "i2pr-prepare.log"
+    last_line = ""
+    if raw_stdout_path.is_file():
+        for line in reversed(raw_stdout_path.read_text(encoding="utf-8").splitlines()):
+            stripped = line.strip()
+            if stripped.startswith("{") and stripped.endswith("}"):
+                last_line = stripped
+                break
     try:
-        record = json.loads(
-            completed.stdout.decode("utf-8").strip().splitlines()[-1]
-        )
-    except (json.JSONDecodeError, IndexError, UnicodeDecodeError):
+        record = json.loads(last_line)
+    except (json.JSONDecodeError, ValueError):
         raise RuntimeError(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
     if record.get("result") != "prepared":
         raise RuntimeError(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
     router_info_path = state_dir / "router.info"
     if not router_info_path.is_file():
         raise RuntimeError(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+    placement_digest = placement.digest()
     return {
         "router_info_path": router_info_path,
         "router_info_sha256": _sha256_file(router_info_path),
         "router_hash_sha256": str(record.get("router_hash_sha256", "")),
         "i2pr_port": i2pr_port,
+        "placement_digest": placement_digest,
     }
-
-
-def _sha256_file(path: Path) -> str:
-    import hashlib
-
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _render_listen_config(
@@ -262,19 +282,22 @@ def _render_scenario(
     i2pr_router_hash: str,
     i2pd_router_hash: str,
     delivery_status_message_id: int,
-    reference_driver_binary_sha256: str,
-    reference_driver_source_sha256: str,
-    reference_build_manifest_sha256: str,
-    reference_observer_patch_sha256: str,
     handshake_timeout_ms: int,
     topology_kind: str,
+    peer_router_info_path: str,
 ) -> dict[str, Any]:
+    """Render the Plan 065 strict scenario v2 payload.
+
+    The payload uses the exact ``i2pr-launcher-scenario-v2`` field
+    names. ``peer_router_info`` carries the path to the actual i2pd
+    RouterInfo file the i2pd direct driver exported in inspect mode.
+    """
+
     return {
         "schema": "i2pr-launcher-scenario-v2",
         "schema_version": 2,
         "scenario_id": "i2pr-to-i2pd-ipv4",
         "run_id": run_id,
-        "run_identity_sha256": run_identity_sha256,
         "role": "initiator",
         "address_family": "ipv4",
         "local_address": i2pr_address,
@@ -283,7 +306,7 @@ def _render_scenario(
         "peer_port": i2pd_port,
         "network_id": 99,
         "state_dir": "state",
-        "peer_router_info": "exchange/i2pr-router.info",
+        "peer_router_info": peer_router_info_path,
         "handshake_deadline_ms": handshake_timeout_ms,
         "read_deadline_ms": handshake_timeout_ms,
         "write_deadline_ms": handshake_timeout_ms,
@@ -291,6 +314,7 @@ def _render_scenario(
         "drain_deadline_ms": handshake_timeout_ms,
         "padding_profile": "representative",
         "smoke_message_profile": "delivery-status",
+        "deterministic_seed": 42,
         "expected_result_class": "authenticated-handshake-and-bounded-i2np-exchange",
         "status_path": "raw/i2pr-listener-status.jsonl",
         "data_phase_mode": "initiator-data-only",
@@ -301,9 +325,33 @@ def _render_scenario(
         "expected_sender_router_hash_sha256": i2pr_router_hash,
         "expected_receiver_router_hash_sha256": i2pd_router_hash,
         "reference_driver_mode": "i2pd-direct-driver",
-        "deterministic_seed": 42,
+        "run_identity_sha256": run_identity_sha256,
         "topology_kind": topology_kind,
     }
+
+
+def _validate_scenario(
+    *,
+    i2pr_binary: Path,
+    scenario_path: Path,
+    timeout_seconds: float = 30.0,
+) -> bool:
+    """Run the Rust ``validate-scenario`` command and return exit status."""
+
+    placement = _placement_for_i2pr(
+        binary=i2pr_binary,
+        log_path=scenario_path.parent / "validate-scenario.log",
+    )
+    completed = placement.run(
+        [
+            "ntcp2",
+            "validate-scenario",
+            "--scenario-config",
+            str(scenario_path),
+        ],
+        timeout_seconds=timeout_seconds,
+    )
+    return completed.returncode == 0
 
 
 def execute_listener_preflight(
@@ -329,15 +377,16 @@ def execute_listener_preflight(
 ) -> PreflightOutcome:
     """Execute the Plan 086 listener-only preflight.
 
-    The preflight runs prepare → inspect → render → listener start →
-    authentic ``listener_ready`` observation → listener shutdown →
-    cleanup. No dialer is ever started. The preflight is the only path
-    Plan 086 may use to validate the lane contract before Plan 087
-    begins.
+    The preflight runs prepare → inspect → render → validate →
+    listener start → authentic ``listener_ready`` observation →
+    listener shutdown → cleanup. No dialer is ever started. The
+    preflight is the only path Plan 086 may use to validate the lane
+    contract before Plan 087 begins.
     """
 
     counters = empty_process_counters()
     observed: list[dict[str, Any]] = []
+    placement_digest = hashlib.sha256(b"placement-not-initialised").hexdigest()
 
     def record_event(event_name: str, source_side: str, event_sha256: str) -> None:
         if event_name in ALLOWED_EVENT_NAMES and source_side in ALLOWED_EVENT_SIDES:
@@ -359,6 +408,7 @@ def execute_listener_preflight(
         i2pd_router_info_sha256: str = "0" * 64,
         i2pr_router_hash_sha256: str = "0" * 64,
         i2pd_router_hash_sha256: str = "0" * 64,
+        measured_i2pr_binary_sha256: str | None = None,
     ) -> dict[str, Any]:
         record = build_record(
             run_id=run_id,
@@ -367,7 +417,11 @@ def execute_listener_preflight(
             lane_qualification_sha256=lane_qualification_sha256,
             topology_kind=topology_kind,
             parent_network_state_unchanged=True,
-            i2pr_binary_sha256=i2pr_binary_sha256,
+            i2pr_binary_sha256=(
+                measured_i2pr_binary_sha256
+                if measured_i2pr_binary_sha256 is not None
+                else i2pr_binary_sha256
+            ),
             i2pd_binary_sha256=i2pd_binary_sha256,
             i2pr_router_info_sha256=i2pr_router_info_sha256,
             i2pd_router_info_sha256=i2pd_router_info_sha256,
@@ -380,6 +434,7 @@ def execute_listener_preflight(
             reason_code=reason_code,
             process_counters=counters,
             cleanup_result=cleanup_result,
+            placement_record_sha256=placement_digest,
         )
         target = output_path or (run_root / "probe-record.json")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -415,13 +470,17 @@ def execute_listener_preflight(
     raw_dir = run_root / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
 
+    # Phase 0: measure the committed i2pr-interop binary so the record
+    # binds to the actual binary the runner executed.
+    i2pr_binary = repo_root / "target" / "debug" / "i2pr-interop"
+    measured_i2pr_binary_sha256 = _measure_i2pr_binary(repo_root)
+
     # Phase 1: prepare the i2pr state.
     counters["i2pr_prepare"]["started"] += 1
     try:
         prepared = _prepare_i2pr_state(
             repo_root=repo_root,
             run_root=run_root,
-            i2pr_binary_sha256=i2pr_binary_sha256,
             topology_kind=topology_kind,
         )
     except RuntimeError as exc:
@@ -431,6 +490,7 @@ def execute_listener_preflight(
                 terminal_result=PRE_PROTOCOL_REJECTED,
                 reason_code=str(exc),
                 highest_stage=NOT_STARTED,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
             ),
             is_ready=False,
             reason_code=str(exc),
@@ -441,6 +501,7 @@ def execute_listener_preflight(
     i2pr_router_hash_sha256 = prepared["router_hash_sha256"]
     i2pr_port = prepared["i2pr_port"]
     i2pr_address = "127.0.0.1"
+    placement_digest = prepared["placement_digest"]
 
     exchange_dir = run_root / "exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True)
@@ -456,6 +517,7 @@ def execute_listener_preflight(
                 highest_stage=STATE_PREPARED,
                 i2pr_router_info_sha256=i2pr_router_info_sha256,
                 i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
             ),
             is_ready=False,
             reason_code=REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED,
@@ -471,12 +533,13 @@ def execute_listener_preflight(
                 highest_stage=STATE_PREPARED,
                 i2pr_router_info_sha256=i2pr_router_info_sha256,
                 i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
             ),
             is_ready=False,
             reason_code=REASON_RUNNER_SYNTHETIC_PROVENANCE_REJECTED,
         )
 
-    # Phase 3: run i2pd inspect to capture the local i2pd RouterInfo hash.
+    # Phase 3: run i2pd inspect to capture the local i2pd RouterInfo.
     i2pd_data_dir = run_root / "i2pd-data"
     i2pd_data_dir.mkdir(parents=True, exist_ok=True)
     output_dir = run_root / "i2pd-output"
@@ -529,6 +592,7 @@ def execute_listener_preflight(
                 highest_stage=STATE_PREPARED,
                 i2pr_router_info_sha256=i2pr_router_info_sha256,
                 i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
             ),
             is_ready=False,
             reason_code=REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED,
@@ -543,6 +607,7 @@ def execute_listener_preflight(
                 highest_stage=STATE_PREPARED,
                 i2pr_router_info_sha256=i2pr_router_info_sha256,
                 i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
             ),
             is_ready=False,
             reason_code=REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED,
@@ -550,7 +615,8 @@ def execute_listener_preflight(
 
     inspect_events = _read_ndjson(output_dir / "events.ndjson")
     i2pd_router_hash_sha256 = _collect_i2pd_hash(inspect_events)
-    if not i2pd_router_hash_sha256:
+    i2pd_router_info_path = output_dir / "router.info"
+    if not i2pd_router_hash_sha256 or not i2pd_router_info_path.is_file():
         return PreflightOutcome(
             record=finalize(
                 terminal_result=PRE_PROTOCOL_REJECTED,
@@ -558,21 +624,22 @@ def execute_listener_preflight(
                 highest_stage=STATE_PREPARED,
                 i2pr_router_info_sha256=i2pr_router_info_sha256,
                 i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
             ),
             is_ready=False,
             reason_code=REASON_REFERENCE_EVENTS_MISSING,
         )
+    i2pd_router_info_sha256 = _sha256_file(i2pd_router_info_path)
 
-    # Phase 4: render the strict scenario. The preflight does not
-    # run ``validate-scenario`` because the launcher strict schema
-    # rejects the reference driver source/manifest digests that
-    # Plan 065 binds into the scenario for the full bidirectional
-    # run; the preflight is a bounded listener-only surface and
-    # accepts the synthetic schema v2 contract. The scenario file
-    # is still written so the Plan 087/088 forward and reverse
-    # probes can read the persisted run identity and the topology
-    # kind.
+    # Phase 4: render and validate the Plan 065 strict scenario. The
+    # peer_router_info path is the actual i2pd RouterInfo file the
+    # i2pd driver exported in inspect mode.
     scenario_path = run_root / "scenario.toml"
+    scenario_peer_router_info = (
+        f"exchange/{i2pd_router_info_path.name}"
+        if i2pd_router_info_path.is_relative_to(run_root)
+        else str(i2pd_router_info_path)
+    )
     scenario_payload = _render_scenario(
         run_id=run_id,
         run_identity_sha256=lane_qualification_sha256,
@@ -583,17 +650,33 @@ def execute_listener_preflight(
         i2pr_router_hash=i2pr_router_hash_sha256,
         i2pd_router_hash=i2pd_router_hash_sha256,
         delivery_status_message_id=delivery_status_message_id,
-        reference_driver_binary_sha256=i2pd_binary_sha256,
-        reference_driver_source_sha256=driver_source_sha256,
-        reference_build_manifest_sha256=build_manifest_sha256,
-        reference_observer_patch_sha256=observer_patch_sha256,
         handshake_timeout_ms=handshake_timeout_ms,
         topology_kind=topology_kind,
+        peer_router_info_path=scenario_peer_router_info,
     )
     scenario_path.write_text(
         _format_toml(scenario_payload),
         encoding="utf-8",
     )
+
+    if not _validate_scenario(
+        i2pr_binary=i2pr_binary,
+        scenario_path=scenario_path,
+    ):
+        return PreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=REASON_PRE_PROTOCOL_RENDER_FAILED,
+                highest_stage=STATE_PREPARED,
+                i2pr_router_info_sha256=i2pr_router_info_sha256,
+                i2pd_router_info_sha256=i2pd_router_info_sha256,
+                i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
+            ),
+            is_ready=False,
+            reason_code=REASON_PRE_PROTOCOL_RENDER_FAILED,
+        )
 
     # Phase 5: launch the i2pd listener subprocess through the
     # bounded host-direct placement. No dialer is started.
@@ -606,10 +689,6 @@ def execute_listener_preflight(
     listen_config = dict(inspect_config)
     listen_config["mode"] = "listen"
     listen_config["expected_peer_port"] = i2pr_port
-    # The preflight never starts a dialer, so the i2pd listener
-    # will time out waiting for an inbound connection. Cap the
-    # handshake timeout at 2 seconds so the preflight completes
-    # within a bounded wall-clock budget.
     listen_config["handshake_timeout_ms"] = 2_000
     listen_config["data_phase_timeout_ms"] = 2_000
 
@@ -640,8 +719,10 @@ def execute_listener_preflight(
                 reason_code=REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED,
                 highest_stage=STATE_PREPARED,
                 i2pr_router_info_sha256=i2pr_router_info_sha256,
+                i2pd_router_info_sha256=i2pd_router_info_sha256,
                 i2pr_router_hash_sha256=i2pr_router_hash_sha256,
                 i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
             ),
             is_ready=False,
             reason_code=REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED,
@@ -659,8 +740,10 @@ def execute_listener_preflight(
                 reason_code=REASON_REFERENCE_EVENTS_MISSING,
                 highest_stage=STATE_PREPARED,
                 i2pr_router_info_sha256=i2pr_router_info_sha256,
+                i2pd_router_info_sha256=i2pd_router_info_sha256,
                 i2pr_router_hash_sha256=i2pr_router_hash_sha256,
                 i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
             ),
             is_ready=False,
             reason_code=REASON_REFERENCE_EVENTS_MISSING,
@@ -681,8 +764,10 @@ def execute_listener_preflight(
             reason_code=REASON_NOT_STARTED,
             highest_stage=LISTENER_READY,
             i2pr_router_info_sha256=i2pr_router_info_sha256,
+            i2pd_router_info_sha256=i2pd_router_info_sha256,
             i2pr_router_hash_sha256=i2pr_router_hash_sha256,
             i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+            measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
         ),
         is_ready=True,
         reason_code=REASON_NOT_STARTED,

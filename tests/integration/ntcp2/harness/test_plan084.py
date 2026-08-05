@@ -104,6 +104,7 @@ def _minimal_passed_record(
             "i2pd_dialer": {"started": 1, "exited": 1, "forced": 0},
         },
         cleanup_result=cleanup_result,
+        placement_record_sha256=_hex("9", 64),
     )
 
 
@@ -304,6 +305,7 @@ class Plan084ProcessCounterTests(unittest.TestCase):
                 "i2pd_dialer": {"started": 0, "exited": 0, "forced": 0},
             },
             cleanup_result="not-run",
+            placement_record_sha256=_hex("9", 64),
         )
         counters = record["process_counters"]
         self.assertEqual(counters["i2pr_listener"]["started"], 0)

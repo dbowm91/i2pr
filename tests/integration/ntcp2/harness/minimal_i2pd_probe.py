@@ -319,6 +319,7 @@ REQUIRED_FIELDS: Final[tuple[str, ...]] = (
     "reason_code",
     "process_counters",
     "cleanup_result",
+    "placement_record_sha256",
     "record_sha256",
 )
 
@@ -489,11 +490,16 @@ def validate_record(record: Any) -> dict[str, Any]:
         "i2pd_router_info_sha256",
         "i2pr_router_hash_sha256",
         "i2pd_router_hash_sha256",
+        "placement_record_sha256",
     ):
         _require(
             HEX64.fullmatch(record_copy[field]) is not None,
             f"probe record {field} must be 64 lowercase hex",
         )
+    _require(
+        record_copy["placement_record_sha256"] != "0" * 64,
+        "probe record placement_record_sha256 must be a real measured digest",
+    )
     message_id = record_copy["delivery_status_message_id"]
     _require(
         isinstance(message_id, int)
@@ -588,6 +594,7 @@ def build_record(
     reason_code: str,
     process_counters: dict[str, dict[str, int]],
     cleanup_result: str,
+    placement_record_sha256: str = "0" * 64,
 ) -> dict[str, Any]:
     """Build one finalized probe record and return the dict.
 
@@ -624,11 +631,16 @@ def build_record(
         ("i2pd_router_info_sha256", i2pd_router_info_sha256),
         ("i2pr_router_hash_sha256", i2pr_router_hash_sha256),
         ("i2pd_router_hash_sha256", i2pd_router_hash_sha256),
+        ("placement_record_sha256", placement_record_sha256),
     ):
         _require(
             HEX64.fullmatch(value) is not None,
             f"build_record: {field} must be 64 lowercase hex",
         )
+    _require(
+        placement_record_sha256 != "0" * 64,
+        "build_record: placement_record_sha256 must be a real measured digest",
+    )
     _require(
         isinstance(delivery_status_message_id, int)
         and not isinstance(delivery_status_message_id, bool)
@@ -677,6 +689,7 @@ def build_record(
         "reason_code": reason_code,
         "process_counters": normalized_counters,
         "cleanup_result": cleanup_result,
+        "placement_record_sha256": placement_record_sha256,
         "record_sha256": "",
     }
     record["record_sha256"] = canonical_record_digest(record)

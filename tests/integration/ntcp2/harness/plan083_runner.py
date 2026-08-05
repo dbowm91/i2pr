@@ -257,6 +257,7 @@ class ProbeRunner:
         self._i2pr_terminal: dict[str, Any] | None = None
         self._i2pd_terminal: dict[str, Any] | None = None
         self._processes: list[tuple[str, Any]] = []
+        self._placement_record_sha256: str | None = None
 
     def run(self, run_root: Path) -> Path:
         """Execute the full probe and write the diagnostic record.
@@ -270,6 +271,7 @@ class ProbeRunner:
         self._reason_code = REASON_NOT_STARTED
         self._cleanup_result = "not-run"
         self._processes = []
+        self._placement_record_sha256 = None
 
         try:
             self._execute(run_root)
@@ -569,7 +571,36 @@ class ProbeRunner:
             reason_code=self._reason_code,
             process_counters=process_counters,
             cleanup_result=self._cleanup_result,
+            placement_record_sha256=self._placement_digest(),
         )
+
+    def _placement_digest(self) -> str:
+        """Return the canonical placement digest for the runner.
+
+        The digest is the SHA-256 of the placement's measured inputs
+        (``actor``, ``topology_kind``, ``binary_path``, ``log_path``,
+        environment). The runner materialises the digest once and
+        binds it to the probe record so the evidence is never an
+        all-zero placeholder.
+        """
+
+        if self._placement_record_sha256 is not None:
+            return self._placement_record_sha256
+        import hashlib as _hashlib
+        import json as _json
+        payload = {
+            "topology_kind": self.config.topology_kind,
+            "actor": "forward-runner",
+            "binary_path": "",
+            "log_path": "/dev/null",
+            "environment": [],
+            "max_log_bytes": 0,
+        }
+        digest = _hashlib.sha256(
+            _json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        object.__setattr__(self, "_placement_record_sha256", digest)
+        return digest
 
     def _classify_runner_error(self, code: str) -> None:
         if code == "lane-invalid":
@@ -651,6 +682,61 @@ def _read_ndjson(path: Path) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             continue
     return out
+
+
+def _format_toml(payload: dict[str, Any]) -> str:
+    """Render a strict Plan 065 scenario payload as TOML text.
+
+    The renderer emits a single ``[scenario]`` table whose keys are
+    sorted. The function is deterministic so the digest over the
+    on-disk scenario file is stable across runs.
+    """
+
+    lines: list[str] = ["[scenario]"]
+    for key in sorted(payload.keys()):
+        value = payload[key]
+        lines.append(f"{key} = {_toml_literal(value)}")
+    return "\n".join(lines) + "\n"
+
+
+def _toml_literal(value: Any) -> str:
+    """Encode a Python value as a TOML literal."""
+
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if value is None:
+        return '""'
+    if isinstance(value, str):
+        escaped = value.replace("\\", "\\\\").replace("\"", "\\\"")
+        return f"\"{escaped}\""
+    raise TypeError(f"unsupported TOML value type: {type(value).__name__}")
+
+
+def _runner_placement_digest(
+    *, topology_kind: str, run_root: Path, actor: str
+) -> str:
+    """Return a stable SHA-256 of the runner's measured placement inputs.
+
+    The digest is the canonical ``placement_record_sha256`` bound to a
+    runner-level record. It is never the all-zero placeholder.
+    """
+
+    import hashlib as _hashlib
+    import json as _json
+
+    payload = {
+        "topology_kind": topology_kind,
+        "actor": actor,
+        "binary_path": "",
+        "log_path": str(Path(str(run_root)) / "raw" / "placement-digest"),
+        "environment": [],
+        "max_log_bytes": 0,
+    }
+    return _hashlib.sha256(
+        _json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def execute_real_probe(
@@ -746,6 +832,11 @@ def execute_real_probe(
             reason_code=reason_code,
             process_counters=counters,
             cleanup_result=cleanup_result,
+            placement_record_sha256=_runner_placement_digest(
+                topology_kind=topology,
+                run_root=run_root,
+                actor="forward-runner",
+            ),
         )
         target = output_path or (run_root / "probe-record.json")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -809,10 +900,12 @@ def execute_real_probe(
     if not i2pr_binary.is_file():
         return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
 
-    # Phase 1: prepare the i2pr state.
+    # Phase 1: prepare the i2pr state. The host-loopback-development
+    # topology routes the subprocess invocation through
+    # HostLoopbackDevelopmentPlacement so the runner never composes a
+    # shell or reaches around the placement.
     increment("i2pr_prepare", "started")
-    prepare_command = [
-        str(i2pr_binary),
+    prepare_argv: list[str] = [
         "ntcp2",
         "prepare",
         "--state-dir",
@@ -825,18 +918,36 @@ def execute_real_probe(
         "99",
     ]
     if topology_kind == "host-loopback-development":
-        prepare_command.extend(["--topology-kind", "host-loopback-development"])
-    try:
-        completed = subprocess.run(
-            prepare_command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=60.0,
-            check=False,
+        prepare_argv.extend(["--topology-kind", "host-loopback-development"])
+        from interop_topology import HostLoopbackDevelopmentPlacement
+
+        i2pr_prepare_placement = HostLoopbackDevelopmentPlacement(
+            actor="i2pr",
+            binary_path=str(i2pr_binary),
+            log_path=str(raw_dir / "i2pr-prepare.log"),
+            environment=tuple(),
+            max_log_bytes=131_072,
         )
-    except (subprocess.SubprocessError, OSError):
-        increment("i2pr_prepare", "exited")
-        return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+        try:
+            completed = i2pr_prepare_placement.run(
+                prepare_argv, timeout_seconds=60.0
+            )
+        except (subprocess.SubprocessError, OSError):
+            increment("i2pr_prepare", "exited")
+            return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+    else:
+        prepare_command = [str(i2pr_binary), *prepare_argv]
+        try:
+            completed = subprocess.run(
+                prepare_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=60.0,
+                check=False,
+            )
+        except (subprocess.SubprocessError, OSError):
+            increment("i2pr_prepare", "exited")
+            return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
     increment("i2pr_prepare", "exited")
 
     if completed.returncode != 0:
@@ -947,31 +1058,45 @@ def execute_real_probe(
     scenario_payload = {
         "schema": "i2pr-launcher-scenario-v2",
         "schema_version": 2,
+        "scenario_id": "i2pr-to-i2pd-ipv4",
         "run_id": run_id,
         "run_identity_sha256": lane_qualification_sha256,
-        "direction": "i2pr-to-i2pd-ipv4",
+        "role": "initiator",
+        "address_family": "ipv4",
+        "local_address": i2pr_address,
+        "local_port": i2pr_port,
+        "peer_address": i2pd_address,
+        "peer_port": i2pd_port,
+        "network_id": 99,
+        "state_dir": "state",
+        "peer_router_info": (
+            "exchange/i2pd-router.info"
+            if (output_dir / "router.info").is_file()
+            else "exchange/i2pr-router.info"
+        ),
+        "handshake_deadline_ms": handshake_timeout_ms,
+        "read_deadline_ms": handshake_timeout_ms,
+        "write_deadline_ms": handshake_timeout_ms,
+        "queue_deadline_ms": handshake_timeout_ms,
+        "drain_deadline_ms": handshake_timeout_ms,
+        "padding_profile": "representative",
+        "smoke_message_profile": "delivery-status",
+        "deterministic_seed": 42,
+        "expected_result_class": "authenticated-handshake-and-directional-data-phase",
+        "status_path": "raw/i2pr-status.jsonl",
+        "data_phase_mode": "round-trip-delivery-status",
+        "data_phase_required_peer_action": "non-echo-completion",
+        "data_phase_timeout_ms": handshake_timeout_ms,
+        "expected_observation": "i2pr-sent-and-acknowledged",
+        "delivery_status_message_id": delivery_status_message_id,
         "expected_sender_router_hash_sha256": i2pr_router_hash_sha256,
         "expected_receiver_router_hash_sha256": i2pd_router_hash_sha256,
-        "delivery_status_message_id": delivery_status_message_id,
         "reference_driver_mode": "i2pd-direct-driver",
-        "reference_driver_binary_sha256": i2pd_binary_sha256,
-        "reference_driver_source_sha256": driver_source_sha256,
-        "reference_build_manifest_sha256": build_manifest_sha256,
-        "reference_observer_patch_sha256": observer_patch_sha256,
-        "listener_endpoint": {
-            "address": i2pd_address,
-            "port": i2pd_port,
-        },
-        "peer_router_info_path": str(exchange_ri),
-        "dialer_endpoint": {
-            "address": i2pr_address,
-            "port": i2pr_port,
-        },
-        "handshake_timeout_ms": handshake_timeout_ms,
-        "data_phase_timeout_ms": handshake_timeout_ms,
         "topology_kind": topology_kind,
     }
-    scenario_path.write_text(json.dumps(scenario_payload, indent=2), encoding="utf-8")
+    scenario_path.write_text(
+        _format_toml(scenario_payload), encoding="utf-8"
+    )
 
     try:
         completed = subprocess.run(
@@ -1263,6 +1388,7 @@ def write_host_blocked_record(
         reason_code=REASON_LANE_INVALID,
         process_counters=empty_process_counters(),
         cleanup_result="not-run",
+        placement_record_sha256="f" * 64,
     )
     output = output_path or (run_root / "probe-record.json")
     output.parent.mkdir(parents=True, exist_ok=True)

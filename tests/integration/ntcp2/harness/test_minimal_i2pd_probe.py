@@ -82,6 +82,7 @@ def _valid_record(**overrides: object) -> dict[str, object]:
             "i2pr_dialer": {"started": 1, "exited": 1, "forced": 0},
         },
         "cleanup_result": "clean",
+        "placement_record_sha256": _hex("9", 64),
         "record_sha256": "",
     }
     payload.update(overrides)
@@ -143,6 +144,7 @@ class SchemaContractTests(unittest.TestCase):
             "reason_code",
             "process_counters",
             "cleanup_result",
+            "placement_record_sha256",
             "record_sha256",
         }
         self.assertEqual(set(probe.REQUIRED_FIELDS), expected)
@@ -429,6 +431,7 @@ class BuildRecordTests(unittest.TestCase):
                 "i2pr_dialer": {"started": 1, "exited": 1, "forced": 0},
             },
             cleanup_result="clean",
+            placement_record_sha256=_hex("9", 64),
         )
         self.assertEqual(record["schema"], probe.SCHEMA)
         self.assertEqual(record["record_sha256"], probe.canonical_record_digest(record))
