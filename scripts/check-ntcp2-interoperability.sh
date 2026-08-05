@@ -1454,4 +1454,84 @@ if test -z "${plan086_state_match:-}"; then
   exit 1
 fi
 
+# Plan 090: i2pd RouterInfo corrective pass. The driver source must
+# apply the four behavior-neutral corrections (publish NTCP2,
+# populate options via ParseCmdline, use the typed uint16_t helper,
+# disable reserved-range filtering), must fail closed when the
+# authoritative in-memory RouterInfo does not carry the exact
+# configured endpoint, and the source-verification document must
+# record the Plan 090 lifecycle/config/export ownership. The
+# Plan 090 test matrix must be present and must exercise the
+# structural verification, control parity, pre-TCP classification,
+# placement-owned scenario validation, and record validation.
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan090.py"; then
+  echo "Plan 090 corrective pass test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'set_bool_option("ntcp2.published", true)' \
+    "$root/tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp"; then
+  echo "Plan 090 driver must publish the NTCP2 address via set_bool_option(\"ntcp2.published\", true)" >&2
+  exit 1
+fi
+if ! grep -Fq 'ParseCmdline' \
+    "$root/tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp"; then
+  echo "Plan 090 driver must populate i2pd options via ParseCmdline before SetOption calls" >&2
+  exit 1
+fi
+if ! grep -Fq 'set_uint16_option' \
+    "$root/tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp"; then
+  echo "Plan 090 driver must use the typed uint16_t helper for port and ntcp2.port" >&2
+  exit 1
+fi
+if ! grep -Fq 'SetCheckReserved(false)' \
+    "$root/tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp"; then
+  echo "Plan 090 driver must disable reserved-range filtering for loopback peers" >&2
+  exit 1
+fi
+if ! grep -Fq 'router-info-endpoint-mismatch' \
+    "$root/tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp"; then
+  echo "Plan 090 driver must fail closed on router-info-endpoint-mismatch" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 090 verified RouterInfo lifecycle' \
+    "$root/tests/integration/ntcp2/reference-drivers/source-verification.md"; then
+  echo "Plan 090 source-verification document must record the Plan 090 lifecycle" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan090DriverSourceTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan090.py"; then
+  echo "Plan 090 test matrix must include Plan090DriverSourceTests" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan090DriverBinaryTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan090.py"; then
+  echo "Plan 090 test matrix must include Plan090DriverBinaryTests" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan090ControlParityTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan090.py"; then
+  echo "Plan 090 test matrix must include Plan090ControlParityTests" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan090PreTcpClassificationTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan090.py"; then
+  echo "Plan 090 test matrix must include Plan090PreTcpClassificationTests" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan090PlacementValidationTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan090.py"; then
+  echo "Plan 090 test matrix must include Plan090PlacementValidationTests" >&2
+  exit 1
+fi
+if ! grep -Fq 'pre_protocol(' \
+    "$root/tests/integration/ntcp2/harness/plan083_runner.py"; then
+  echo "Plan 090 runner must expose a pre_protocol() classification helper" >&2
+  exit 1
+fi
+if ! grep -Fq 'validate_placement' \
+    "$root/tests/integration/ntcp2/harness/plan083_runner.py"; then
+  echo "Plan 090 runner must route host-loopback validate-scenario through the placement" >&2
+  exit 1
+fi
+
 echo "NTCP2 interoperability manifest and sanitized evidence boundary are valid (${scenario_count} scenarios)."

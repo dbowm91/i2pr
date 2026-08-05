@@ -1114,24 +1114,53 @@ def execute_real_probe(
         _format_toml(scenario_payload), encoding="utf-8"
     )
 
-    try:
-        completed = subprocess.run(
-            [
-                str(i2pr_binary),
-                "ntcp2",
-                "validate-scenario",
-                "--scenario-config",
-                str(scenario_path),
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=30.0,
-            check=False,
+    # Plan 090 D6: route the host-loopback `validate-scenario`
+    # subprocess through the placement so the runner never composes
+    # a shell, namespace, or Multipass wrapper. The placement owns
+    # the entire process lifecycle including the validation pass.
+    if topology_kind == "host-loopback-development":
+        from interop_topology import HostLoopbackDevelopmentPlacement
+        validate_placement = HostLoopbackDevelopmentPlacement(
+            actor="i2pr",
+            binary_path=str(i2pr_binary),
+            log_path=str(raw_dir / "i2pr-validate.log"),
+            environment=tuple(),
+            max_log_bytes=131_072,
         )
-    except (subprocess.SubprocessError, OSError):
-        return reject(REASON_PRE_PROTOCOL_RENDER_FAILED)
-    if completed.returncode != 0:
-        return reject(REASON_PRE_PROTOCOL_RENDER_FAILED)
+        try:
+            completed = validate_placement.run(
+                [
+                    "ntcp2",
+                    "validate-scenario",
+                    "--scenario-config",
+                    str(scenario_path),
+                ],
+                timeout_seconds=30.0,
+                capture_stdout=False,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return reject(REASON_PRE_PROTOCOL_RENDER_FAILED)
+        if completed.returncode != 0:
+            return reject(REASON_PRE_PROTOCOL_RENDER_FAILED)
+    else:
+        try:
+            completed = subprocess.run(
+                [
+                    str(i2pr_binary),
+                    "ntcp2",
+                    "validate-scenario",
+                    "--scenario-config",
+                    str(scenario_path),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30.0,
+                check=False,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return reject(REASON_PRE_PROTOCOL_RENDER_FAILED)
+        if completed.returncode != 0:
+            return reject(REASON_PRE_PROTOCOL_RENDER_FAILED)
 
     # Phase 4: launch the i2pd listener subprocess asynchronously.
     increment("i2pd_listener", "started")
@@ -1330,11 +1359,49 @@ def execute_real_probe(
     else:
         highest = STATE_PREPARED
 
-    # Evaluate the protocol result.
+    # Evaluate the protocol result. Plan 090 D5: classify the result
+    # against authenticated TCP progress. A `protocol_rejected`
+    # result is forbidden unless at least one authentic `tcp_connected`
+    # event exists; pre-TCP rejections must serialize as
+    # `pre_protocol_rejected` with a Plan 083 reason.
     has_authenticated = "ntcp2_authenticated" in observed_names
     has_frame_emitted = "frame_emitted" in observed_names
     has_frame_decrypted = "frame_authenticated_and_decrypted" in observed_names
     has_i2np_decoded = "i2np_message_decoded" in observed_names
+    has_tcp_connected = "tcp_connected" in observed_names
+
+    # Plan 090 D5: parse the i2pr terminal status to map pre-TCP
+    # failures to the bounded pre-protocol reason allowlist.
+    i2pr_terminal_reason = None
+    if i2pr_status_lines:
+        for line in reversed(i2pr_status_lines):
+            if line.get("phase") == "terminal":
+                i2pr_terminal_reason = str(line.get("reason_code", ""))
+                break
+
+    def pre_protocol(reason_code: str) -> dict[str, Any]:
+        return finalize(
+            terminal_result=PRE_PROTOCOL_REJECTED,
+            reason_code=reason_code,
+            highest_stage=highest,
+            i2pr_router_info_sha256=i2pr_router_info_sha256,
+            i2pd_router_info_sha256=i2pd_router_info_sha256,
+            i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+            i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+        )
+
+    def protocol_rejected(reason_code: str) -> dict[str, Any]:
+        return finalize(
+            terminal_result=PROTOCOL_REJECTED,
+            reason_code=reason_code,
+            highest_stage=highest,
+            i2pr_router_info_sha256=i2pr_router_info_sha256,
+            i2pd_router_info_sha256=i2pd_router_info_sha256,
+            i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+            i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+        )
+
+    # Pass path.
     if has_authenticated and has_frame_emitted and has_frame_decrypted and has_i2np_decoded:
         return finalize(
             terminal_result=PASSED,
@@ -1345,35 +1412,31 @@ def execute_real_probe(
             i2pr_router_hash_sha256=i2pr_router_hash_sha256,
             i2pd_router_hash_sha256=i2pd_router_hash_sha256,
         )
+
+    # Plan 090 D5: every pre-TCP path is a pre-protocol rejection.
+    if not has_tcp_connected:
+        # Map bounded i2pr terminal reasons to pre-protocol reasons.
+        pre_protocol_map = {
+            "peer_router_info_invalid": REASON_PRE_PROTOCOL_ROUTER_INFO_VALIDATION_FAILED,
+            "scenario_render_failed": REASON_PRE_PROTOCOL_RENDER_FAILED,
+            "run_identity_invalid": REASON_PRE_PROTOCOL_RUN_IDENTITY_FAILED,
+            "preparation_failed": REASON_PRE_PROTOCOL_PREPARATION_FAILED,
+            "i2pd_router_info_invalid": REASON_PRE_PROTOCOL_ROUTER_INFO_VALIDATION_FAILED,
+        }
+        if i2pr_terminal_reason in pre_protocol_map:
+            return pre_protocol(pre_protocol_map[i2pr_terminal_reason])
+        # Any other unknown pre-TCP rejection is mapped to the bounded
+        # pre-protocol reference-failed category (which is the explicit
+        # Plan 090 D5 fallback) rather than the generic
+        # `reference-events-missing`.
+        return pre_protocol(REASON_PRE_PROTOCOL_REFERENCE_FAILED)
+
+    # Post-TCP paths use protocol-level categories.
     if has_frame_emitted and not has_authenticated:
-        return finalize(
-            terminal_result=PROTOCOL_REJECTED,
-            reason_code=REASON_REFERENCE_EVENTS_MISSING,
-            highest_stage=highest,
-            i2pr_router_info_sha256=i2pr_router_info_sha256,
-            i2pd_router_info_sha256=i2pd_router_info_sha256,
-            i2pr_router_hash_sha256=i2pr_router_hash_sha256,
-            i2pd_router_hash_sha256=i2pd_router_hash_sha256,
-        )
+        return protocol_rejected(REASON_REFERENCE_EVENTS_MISSING)
     if has_authenticated and not has_frame_decrypted:
-        return finalize(
-            terminal_result=PROTOCOL_REJECTED,
-            reason_code=REASON_REFERENCE_EVENTS_MISSING,
-            highest_stage=highest,
-            i2pr_router_info_sha256=i2pr_router_info_sha256,
-            i2pd_router_info_sha256=i2pd_router_info_sha256,
-            i2pr_router_hash_sha256=i2pr_router_hash_sha256,
-            i2pd_router_hash_sha256=i2pd_router_hash_sha256,
-        )
-    return finalize(
-        terminal_result=PROTOCOL_REJECTED,
-        reason_code=REASON_REFERENCE_EVENTS_MISSING,
-        highest_stage=highest,
-        i2pr_router_info_sha256=i2pr_router_info_sha256,
-        i2pd_router_info_sha256=i2pd_router_info_sha256,
-        i2pr_router_hash_sha256=i2pr_router_hash_sha256,
-        i2pd_router_hash_sha256=i2pd_router_hash_sha256,
-    )
+        return protocol_rejected(REASON_REFERENCE_EVENTS_MISSING)
+    return protocol_rejected(REASON_REFERENCE_EVENTS_MISSING)
 
 
 def detect_host_blocker() -> str | None:

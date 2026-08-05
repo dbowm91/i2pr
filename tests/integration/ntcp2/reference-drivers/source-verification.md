@@ -644,3 +644,204 @@ No placeholder or all-zero digest is permitted. The Python
 harness adapter loads every required digest from the on-disk
 build manifest and source-lock record and refuses to substitute
 synthetic values.
+
+## Plan 090 verified RouterInfo lifecycle (i2pd 2.60.0)
+
+Plan 090 is the corrective pass that closes the Plan 087 forward
+direction. The Plan 087 attempt was rejected by the i2pr launcher
+with `peer_router_info_invalid` because the i2pd direct driver's
+exported `router.info` decoded with zero `RouterAddress` entries,
+even though the i2pd listener was bound on the configured
+endpoint. The Plan 087 investigation correctly identified the
+defect in the driver's `initialise_i2pd_runtime`, but the Plan 064
+correction set `ntcp2.published = 0` for an unrelated reason and
+the Plan 090 pass now reverses that, plus three additional
+behavior-neutral corrections that were required to make the
+`ntcp2.published = true` value land in `m_Options` and survive
+the deserialization round-trip.
+
+This section records the exact lifecycle, configuration, and
+export ownership with pinned-source references so a future
+corrective pass cannot regress the fix.
+
+### Configuration values applied before `i2p::context.Init()`
+
+`RouterContext::Init()` (`libi2pd/RouterContext.cpp` line 44) calls
+`Load()` (line 49) and only falls through to `CreateNewRouter()`
+(line 50) when the existing data directory is unreadable. Every
+subsequent startup loads the prior signed `router.info`. The
+driver must therefore ensure the first run writes a valid
+`router.info`; the `ntcp2.published` flag is the only option that
+controls whether the NTCP2 address is serialized with `host`,
+`port`, and `i` material.
+
+i2pd's `NewRouterInfo()` (`libi2pd/RouterContext.cpp` lines
+100–248) gates the address-serialization material on the boolean
+read at line 120:
+
+```text
+bool ntcp2Published = false;
+if (ntcp2)
+{
+    i2p::config::GetOption("ntcp2.published", ntcp2Published);
+    ...
+}
+```
+
+With `ntcp2.published = false`, lines 152–158 of `NewRouterInfo()`
+fall through to the non-published branch and call the
+non-published overload `RouterInfo::AddNTCP2Address(staticKey, iv,
+port, caps)` (`libi2pd/RouterInfo.cpp` lines 680–700) — this
+overload sets `addr->published = false` and omits `host`, `port`,
+and `i` from the serialized representation (`RouterInfo.cpp`
+lines 1333–1390).
+
+With `ntcp2.published = true`, lines 143–151 take the published
+branch and call the published overload
+`RouterInfo::AddNTCP2Address(staticKey, iv, host, port)`
+(`RouterInfo.cpp` lines 702–741). The published address carries
+`host`, `port`, and `i`, which is what the i2pr parser
+(`exact_ntcp2_address` in `crates/i2pr-transport-ntcp2/src/`)
+expects.
+
+### Driver corrections (Plan 090)
+
+The Plan 090 driver applies four narrow, behavior-neutral
+corrections in `initialise_i2pd_runtime`. None of them edit
+serialized RouterInfo bytes, construct a RouterAddress in Python,
+sign a harness-created RouterInfo, modify pinned i2pd transport
+behavior, or add a driver-only fake endpoint. The driver simply
+aligns its configuration to the documented pinned i2pd contract.
+
+#### C1. Publish the NTCP2 address
+
+```text
+set_bool_option("ntcp2.published", true);  // was set_int_option("ntcp2.published", 0)
+```
+
+The Plan 064/076 driver used `set_int_option("ntcp2.published", 0)`
+which silently stores an `int` while i2pd's
+`GetOption<bool>("ntcp2.published", ntcp2Published)` extracts as
+`bool`; even when the new value is 1 the resulting `boost::any`
+type mismatch prevents i2pd from materializing the address. The
+Plan 090 driver uses the `set_bool_option` overload because the
+option is registered as `value<bool>()->default_value(true)` in
+`libi2pd/Config.cpp` line 330.
+
+#### C2. Populate `m_Options` before mutating it
+
+```text
+char* fake_argv[] = {"i2pd-direct-driver"};
+i2p::config::ParseCmdline(1, fake_argv, /*ignoreUnknown=*/true);
+i2p::config::Finalize();
+```
+
+The driver mutates the i2pd option store directly via
+`i2p::config::SetOption(...)`, but i2pd's
+`boost::program_options` `variables_map` only materializes the
+declared defaults after `store()` runs. The standalone i2pd
+binary calls `ParseCmdline` (which stores defaults) and
+`ParseConfig` (which overrides with the file). The driver has
+neither a command line nor a config file, so we synthesize a
+one-argument `ParseCmdline` invocation with `ignoreUnknown=true`.
+This stores every declared default into `m_Options` so each
+subsequent `SetOption` update lands in place. `Finalize()` then
+runs external notifications.
+
+#### C3. Use the typed `uint16_t` overload for `port` and `ntcp2.port`
+
+```text
+set_uint16_option("port", cfg.local_port);
+set_uint16_option("ntcp2.port", cfg.local_port);
+```
+
+Both options are registered as `value<uint16_t>()`
+(`Config.cpp` lines 63 and 331). The default `set_int_option`
+overload stores an `int`; the subsequent
+`GetOption<uint16_t>("ntcp2.port", ntcp2Port)` throws
+`boost::bad_any_cast`. The Plan 090 driver adds a typed
+`set_uint16_option` helper to land the value in the correct
+storage type.
+
+#### C4. Disable reserved-range filtering for loopback peers
+
+```text
+i2p::transport::transports.SetCheckReserved(false);
+```
+
+`Transports::IsInReservedRange` defaults to enabled
+(`Transports.cpp` line 156, `m_CheckReserved(true)`). When
+i2pd deserializes a RouterInfo through `RouterInfo::Update` →
+`ReadFromBuffer`, the deserializer at `RouterInfo.cpp` lines
+256–262 marks loopback addresses as invalid and silently strips
+the `host` material. The Plan 046 rootless sealed-namespace lane,
+the Plan 048/049 Multipass recovery lane, and the Plan 086
+host-loopback-development lane all use loopback or sealed
+namespaces; reserved-range filtering must be off for the
+published NTCP2 address to round-trip through the buffer.
+
+The standalone i2pd binary calls `transports.SetCheckReserved`
+through `i2pd::api::InitI2P` (api.cpp line 46) based on the
+`reservedrange` option; the driver replicates this manually because
+it does not call `InitI2P`.
+
+### Reused data-directory invariant
+
+When `i2p::context.Init()` loads an existing `router.info` whose
+address list is empty, `NewRouterInfo()` is not called (the
+`routerInfo.IsUnreachable()` gate at `RouterContext.cpp` line
+1196 evaluates false because the file is signed). The driver must
+therefore guarantee that the first run produces a valid
+`router.info`. The Plan 090 driver adds a deterministic
+in-process structural verification step after the i2pd context
+initializes:
+
+1. The driver inspects the authoritative in-memory RouterInfo
+   via `i2p::context.GetRouterInfo().GetPublishedNTCP2V4Address()`
+   (`RouterInfo.cpp` line 985). The accessor returns the
+   published IPv4 NTCP2 `Address` (`RouterInfo.h` line 238).
+2. The driver confirms the returned `Address` has
+   `host == cfg.local_address` and `port == cfg.local_port`.
+3. If the verification fails, the driver emits `terminal_rejected`
+   with `detail = "router-info-endpoint-mismatch"` and exits `66`.
+   The driver never claims a successful `router_info_exported`
+   for an unverified RouterInfo.
+
+A reused data directory inherits the first run's identity and
+RouterInfo. Because the first run produces a valid RouterInfo
+under the Plan 090 fix, every subsequent run also starts from a
+valid RouterInfo and the address survives
+`Load() → SetRouterIdentity() → Update()` without any
+driver-side mutation.
+
+### Transport binding
+
+`RouterContext::Init()` is followed by
+`i2p::transport::transports.Start(true, false)` (driver line ~917).
+i2pd's `Transports::Start` binds the NTCP2 listener when
+`ntcp2.enabled == true` and `address4 + ntcp2.port` are populated;
+the binding is independent of the `ntcp2.published` flag. The
+driver's `IsBoundNTCP2` check (driver line ~1059) confirms the
+listener is bound before the first `listener_ready` event is
+emitted.
+
+### Authoritative RouterInfo export
+
+The driver writes the authoritative signed RouterInfo buffer to
+`output_dir/router.info` from `i2p::context.GetRouterInfo()`
+immediately after `init_local_router_info`. The
+`RouterInfo::GetBuffer()` / `RouterInfo::GetBufferLen()`
+accessors (`libi2pd/RouterInfo.h` line 245) return the same
+buffer that `RouterContext::UpdateRouterInfo()` writes to disk
+through `LocalRouterInfo::WriteToStream`
+(`libi2pd/RouterInfo.cpp` line 1297), so the file is bit-identical
+to what i2pd would persist on shutdown.
+
+### Pinned source revision
+
+The verified call graph above uses the Plan 064/076 pinned i2pd
+revision `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`. The same
+revision is recorded in
+`tests/integration/ntcp2/reference-drivers/i2pd/source-lock.json`
+and the canonical
+`tests/integration/ntcp2/references.lock.toml` cache contract.

@@ -721,6 +721,14 @@ void set_int_option(const char* name, int value) {
     i2p::config::SetOption(name, value);
 }
 
+void set_uint16_option(const char* name, std::uint16_t value) {
+    i2p::config::SetOption(name, value);
+}
+
+void set_int_typed_option(const char* name, int value) {
+    i2p::config::SetOption(name, value);
+}
+
 void set_string_option(const char* name, const std::string& value) {
     i2p::config::SetOption(name, value);
 }
@@ -816,6 +824,25 @@ bool initialise_i2pd_runtime(const DriverConfig& cfg, EventWriter& writer,
         return false;
     }
 
+    // Step 2b: populate the i2pd option store before mutating it.
+    // i2pd's `boost::program_options` map only materializes the
+    // declared defaults into `m_Options` after `store()` runs; the
+    // standalone i2pd binary calls `ParseCmdline` (which stores
+    // defaults) and `ParseConfig` (which overrides with the file).
+    // The driver has neither a command line nor a config file, so
+    // we synthesize a one-argument `ParseCmdline` invocation with
+    // `ignoreUnknown = true`. This stores every declared default
+    // into `m_Options` so each subsequent `SetOption` update lands
+    // in place. `Finalize()` then runs external notifications.
+    try {
+        char* fake_argv[] = {const_cast<char*>("i2pd-direct-driver")};
+        i2p::config::ParseCmdline(1, fake_argv, /*ignoreUnknown=*/true);
+        i2p::config::Finalize();
+    } catch (const std::exception& exc) {
+        failure_reason = std::string("config-populate:") + exc.what();
+        return false;
+    }
+
     // Step 3: render a minimal configuration suitable for the sealed
     // synthetic namespace. The configuration values are forced through
     // the i2pd configuration subsystem; we never write an i2pd.conf
@@ -831,11 +858,27 @@ bool initialise_i2pd_runtime(const DriverConfig& cfg, EventWriter& writer,
         set_bool_option("ipv4", true);
         set_bool_option("ipv6", false);
         set_bool_option("ntcp2.enabled", true);
-        set_int_option("ntcp2.published", 0);
+        // Plan 090 correction: publish the NTCP2 address so the
+        // exported RouterInfo carries `host`, `port`, and `i`. With
+        // `ntcp2.published = false` the i2pd `NewRouterInfo()` path
+        // takes the non-published branch (RouterContext.cpp lines
+        // 152-157) and the address is serialized without the fields
+        // the i2pr `exact_ntcp2_address` parser requires. The option
+        // is registered as `value<bool>()` in i2pd Config.cpp line
+        // 330, so the driver must use `set_bool_option` (the
+        // `set_int_option` overload would store an `int` and the
+        // subsequent `GetOption<bool>` would throw `bad_any_cast`).
+        set_bool_option("ntcp2.published", true);
         set_bool_option("ssu2.enabled", false);
         set_bool_option("meshnets.yggdrasil", false);
-        set_int_option("port", cfg.local_port);
-        set_int_option("ntcp2.port", cfg.local_port);
+        // Plan 090 correction: both `port` and `ntcp2.port` are
+        // registered as `value<uint16_t>()` in i2pd Config.cpp lines
+        // 63 and 331. Storing as `int` (the default `set_int_option`
+        // overload) would throw `boost::bad_any_cast` when i2pd
+        // extracts the value as `uint16_t`. Use the typed uint16_t
+        // overload.
+        set_uint16_option("port", cfg.local_port);
+        set_uint16_option("ntcp2.port", cfg.local_port);
         set_string_option("address4", cfg.local_address);
         set_string_option("host", cfg.local_address);
         set_string_option("ifname4", "");
@@ -873,6 +916,19 @@ bool initialise_i2pd_runtime(const DriverConfig& cfg, EventWriter& writer,
         // The permissions helper is best-effort on hosts that ignore
         // chmod. The runner still owns the directory lifetime.
     }
+
+    // Step 4b: disable reserved-range filtering so loopback
+    // addresses (127.0.0.0/8) survive RouterInfo deserialization.
+    // i2pd's `Transports::IsInReservedRange` defaults to enabled
+    // (Transports.cpp line 156, `m_CheckReserved(true)`), which
+    // marks 127.0.0.0/8 addresses as invalid during `ReadFromBuffer`
+    // (RouterInfo.cpp lines 256-262) and silently strips the
+    // `host` material. The Plan 046 rootless sealed-namespace lane,
+    // the Plan 048/049 Multipass recovery lane, and the Plan 086
+    // host-loopback-development lane all use loopback or sealed
+    // namespaces; reserved-range filtering must be off for the
+    // published NTCP2 address to round-trip through the buffer.
+    i2p::transport::transports.SetCheckReserved(false);
 
     // Step 5: crypto::InitCrypto(false)
     try {
@@ -929,6 +985,29 @@ bool initialise_i2pd_runtime(const DriverConfig& cfg, EventWriter& writer,
     if (local_identity) {
         const auto& ident = local_identity->GetIdentHash();
         rt.local_ident_hash_hex = hex_lower(ident.data(), 32);
+    }
+    // Plan 090 fail-closed endpoint verification. The driver must
+    // refuse to emit `router_info_exported` when the authoritative
+    // RouterInfo does not contain a published NTCP2 address whose
+    // endpoint equals the configured listener. The non-published
+    // branch (RouterContext.cpp lines 152-157) silently strips
+    // host/port/i material, which causes the i2pr
+    // `exact_ntcp2_address` parser to reject the peer RouterInfo.
+    {
+        const auto& ri = i2p::context.GetRouterInfo();
+        auto ntcp2_v4 = ri.GetPublishedNTCP2V4Address();
+        bool endpoint_ok = false;
+        if (ntcp2_v4) {
+            auto host_string = ntcp2_v4->host.to_string();
+            if (host_string == cfg.local_address &&
+                ntcp2_v4->port == cfg.local_port) {
+                endpoint_ok = true;
+            }
+        }
+        if (!endpoint_ok) {
+            failure_reason = "router-info-endpoint-mismatch";
+            return false;
+        }
     }
     rt.router_info_exported = true;
     emit_event(writer, cfg, "router_info_exported", std::nullopt,
