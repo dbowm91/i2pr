@@ -217,3 +217,45 @@ and `i2pr-interop ntcp2 validate-scenario` commands, the
 `I2prAdapter.prepare_state()` and `I2prAdapter.validate_scenario()` adapters,
 and the canonical `i2pr-minimal-run-identity-v1` freeze. Do not start the
 Plan 083/084 wire probes from a stale or unowned Multipass guest.
+
+## Plan 087 host-loopback forward probe
+
+The Plan 086 `host-loopback-development` lane is now extended to drive one
+real `i2pr -> i2pd` forward wire attempt through the canonical Plan 083
+runner. The wrapper:
+
+```text
+python3 scripts/interop/run-minimal-i2pd-host-loopback-probe.py \
+    --direction i2pr-to-i2pd-ipv4 \
+    --repo-root <repo> \
+    --run-root <fresh-run-root> \
+    --run-id <plan082-run-id> \
+    --source-commit <40-hex> \
+    --output <record.json> \
+    --i2pd-driver-binary <i2pd_ntcp2_interop_driver_instrumented> \
+    [--preflight] \
+    --handshake-timeout-ms 30000
+```
+
+`--preflight` runs the bounded concurrent listener/dialer preflight and
+exits `0` on a passing preflight, `5` on a blocked preflight, `6` on a
+failed forward probe, `2` on invalid inputs. The wrapper refuses every
+release/support profile flag and accepts only the two i2pd directions.
+
+The runner requires:
+
+- `target/debug/i2pr-interop` (the i2pr launcher) built from the
+  current `source_commit`,
+- `target/interop/i2pd-driver/build/i2pd_ntcp2_interop_driver_instrumented`
+  (the Plan 076 i2pd direct driver binary) and its companion
+  `build-manifest-instrumented.json`,
+- `tests/integration/ntcp2/reference-drivers/i2pd/build-manifest.schema.json`
+  (the locked schema contract).
+
+Plan 087 must reach `i2np_delivery_status_decoded` with exact Router
+Hash and DeliveryStatus message ID correlation before Plan 088 begins.
+Plan 087 explicitly forbids patching pinned i2pd behavior; the narrow
+correction for the i2pd direct driver RouterInfo authoring path belongs
+to a Plan 064/076 corrective pass. See `plans/087-status.md` for the
+closure record with the exact live command, recorded digests, and
+bounded correction-surfaces contract.
