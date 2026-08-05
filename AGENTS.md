@@ -1798,14 +1798,20 @@ record.
 
 The active authority is [Plan 085](plans/085-milestone-3-host-loopback-development-execution-roadmap.md),
 followed by Plan 086 (status correction + `host-loopback-development`
-lane enablement), Plan 087 (first real `i2pr -> i2pd` forward probe),
-Plan 088 (reverse `i2pd -> i2pr` probe and development decision), and
-the [Plan 072/079 gate amendment](plans/072-079-gate-amendment-plan-088.md)
+lane enablement, **closed on this host**), Plan 087 (first real
+`i2pr -> i2pd` forward probe), Plan 088 (reverse `i2pd -> i2pr` probe
+and development decision), and the
+[Plan 072/079 gate amendment](plans/072-079-gate-amendment-plan-088.md)
 that moves the Plan 072 and Plan 079 gates from Plan 084 to Plan 088.
 Plan 082 is implemented and closed; Plans 083 and 084 are implementation
-complete but execution pending. The Plan 084 historical
-`lane-invalidated` closure is reclassified as "runner implementation
-completed; required reverse wire execution never occurred." The Plan 080
+complete but execution pending. Plan 086 added the
+`host-loopback-development` topology kind, the
+`HostLoopbackDevelopmentPlacement`, the bounded literal IPv4 loopback
+acceptance, the thin wrapper
+`scripts/interop/run-minimal-i2pd-host-loopback-probe.py`, and the
+listener-only preflight. The Plan 084 historical `lane-invalidated`
+closure is reclassified as "runner implementation completed;
+required reverse wire execution never occurred." The Plan 080
 Multipass lane is qualified and the Plan 076 i2pd driver is real, but
 Plan 078 stopped before protocol execution; no real TCP connection,
 NTCP2 handshake, authenticated frame, or I2NP DeliveryStatus attempt is
@@ -1978,10 +1984,56 @@ Required focused checks for Plan 088:
 
 ```text
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan088.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan086.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan084.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan083.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_minimal_i2pd_probe.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_minimal_i2pd_reverse_probe.py'
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+git diff --check
+```
+
+## Plan 086 host-loopback development lane
+
+Plan 086 introduces the `host-loopback-development` topology kind
+to the canonical Plan 083/084 runners, adds the bounded
+`HostLoopbackDevelopmentPlacement`, allows literal IPv4 `127.0.0.1`
+only under that topology, and lands the thin wrapper
+`scripts/interop/run-minimal-i2pd-host-loopback-probe.py`. The
+lane is development-only; it never satisfies a release or
+isolation predicate and must not be used for Plan 079/Plan 073
+evidence. The closure states are exactly three values:
+`host-loopback-development-ready`,
+`manual-isolated-fallback-required`, and
+`blocked-artifact-or-build-defect`. The legacy
+`lane-invalidated` and `same-stage-two-way-i2pr-defect` tokens
+are forbidden. The static boundary checker enforces the topology
+extension, the placement class, the schema marker, the wrapper
+script, and the bounded closure state.
+
+The wrapper accepts only the two i2pd directions, refuses every
+release/support profile flag, and writes a single sanitized
+record. The preflight path stops before any peer connection
+completes; the forward and reverse paths reuse the canonical
+Plan 083/084 runners unchanged. Plan 086 closes before Plan 087
+begins, and the Plan 086 status record gates the Plan 087/088
+execution authority.
+
+Required focused checks for Plan 086:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan086.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan088.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan083.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan084.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan082.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pr_prepare.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan065.py'
+cargo fmt --all --check
+cargo check -p i2pr-interop
+cargo test -p i2pr-interop
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh

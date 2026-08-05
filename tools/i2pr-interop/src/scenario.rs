@@ -11,12 +11,37 @@ use serde::Deserialize;
 /// 64-lowercase-hex sender/receiver Router Hashes that the i2pr sender and
 /// receiver use to validate the data phase. The plan closes the historical
 /// schema 1 path; primary directions must use schema v2.
+///
+/// Plan 086 extends the v2 schema with the optional ``topology_kind``
+/// field. The default remains the synthetic RFC 5737 range; the bounded
+/// ``host-loopback-development`` topology may carry literal IPv4
+/// ``127.0.0.1`` endpoints. The schema keeps the v2 marker and the
+/// parser accepts the new field without a schema bump.
 pub const SCENARIO_SCHEMA: &str = "i2pr-launcher-scenario-v2";
 pub const SCENARIO_SCHEMA_VERSION: u16 = 2;
 pub const MAX_SCENARIO_BYTES: u64 = 64 * 1024;
 pub const MAX_SCENARIO_ID_BYTES: usize = 64;
 pub const PRIVATE_NETWORK_ID: u16 = 99;
 pub const MAX_DEADLINE_MILLIS: u64 = 3_600_000;
+
+/// Plan 086: the bounded topology kinds that the strict scenario parser
+/// accepts. The synthetic RFC 5737 range is the default; the
+/// ``host-loopback-development`` topology is the only path that may
+/// carry literal IPv4 loopback addresses. Any other topology value
+/// is refused by the strict parser.
+pub const HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND: &str = "host-loopback-development";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TopologyKind {
+    /// Default synthetic RFC 5737 / 3849 range, used by the isolated
+    /// Plan 046 rootless sealed-namespace lane and the Plan 080
+    /// qualified Multipass guest.
+    Synthetic,
+    /// Plan 086 development-only lane. Literal IPv4 ``127.0.0.1`` is
+    /// accepted only in this topology; the lane is never release or
+    /// isolation qualified.
+    HostLoopbackDevelopment,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Role {
@@ -140,6 +165,12 @@ pub struct Scenario {
     /// Plan 065: per-run identity digest. The plan052 pipeline cross-checks
     /// every direction record against the recorded run identity.
     pub run_identity_sha256: String,
+    /// Plan 086: optional topology kind. The default is the synthetic
+    /// RFC 5737 / 3849 range; the only accepted non-default value is
+    /// ``host-loopback-development``, which permits literal IPv4
+    /// ``127.0.0.1`` endpoints. The field is optional so existing
+    /// scenario files do not need to be rewritten.
+    pub topology_kind: TopologyKind,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -182,6 +213,8 @@ pub enum ScenarioError {
     ReferenceDriverModeDirectionMismatch,
     /// Plan 065: run_identity_sha256 is not a 64-lowercase-hex digest.
     InvalidRunIdentitySha256,
+    /// Plan 086: topology_kind is set to a value outside the bounded allowlist.
+    InvalidTopologyKind,
 }
 
 #[derive(Debug, Deserialize)]
@@ -225,6 +258,10 @@ struct RawScenario {
     expected_receiver_router_hash_sha256: String,
     reference_driver_mode: String,
     run_identity_sha256: String,
+    /// Plan 086: optional topology kind. The default is the synthetic
+    /// RFC 5737 / 3849 range; the only accepted non-default value is
+    /// ``host-loopback-development``.
+    topology_kind: Option<String>,
 }
 
 impl Scenario {
@@ -272,12 +309,18 @@ impl Scenario {
             "ipv6" => AddressFamily::Ipv6,
             _ => return Err(ScenarioError::InvalidAddressFamily),
         };
-        let local_address = parse_synthetic_address(&raw.local_address, address_family)?;
+        let topology_kind = match raw.topology_kind.as_deref() {
+            None => TopologyKind::Synthetic,
+            Some(HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND) => TopologyKind::HostLoopbackDevelopment,
+            Some(_) => return Err(ScenarioError::InvalidTopologyKind),
+        };
+        let local_address =
+            parse_endpoint_address(&raw.local_address, address_family, topology_kind)?;
         let local_port = validate_port(raw.local_port)?;
 
         let (peer_address, peer_port) = match (raw.peer_address, raw.peer_port) {
             (Some(address), Some(port)) if !address.is_empty() && port != 0 => {
-                let address = parse_synthetic_address(&address, address_family)?;
+                let address = parse_endpoint_address(&address, address_family, topology_kind)?;
                 let port = validate_port(port)?;
                 if address == local_address && port == local_port {
                     return Err(ScenarioError::DuplicateEndpoint);
@@ -451,6 +494,7 @@ impl Scenario {
             expected_receiver_router_hash_sha256,
             reference_driver_mode,
             run_identity_sha256,
+            topology_kind,
         })
     }
 }
@@ -520,7 +564,18 @@ fn validate_run_identity(value: &str) -> Result<String, ScenarioError> {
     Ok(value.to_owned())
 }
 
-fn parse_synthetic_address(value: &str, family: AddressFamily) -> Result<IpAddr, ScenarioError> {
+/// Plan 086: parse a single endpoint address. The synthetic RFC 5737 /
+/// 3849 range remains the default; the bounded
+/// ``host-loopback-development`` topology is the only topology that
+/// accepts literal IPv4 ``127.0.0.1``. Every other topology refuses
+/// the address with the existing synthetic-range error so the
+/// production daemon and the synthetic lanes never silently accept
+/// loopback.
+fn parse_endpoint_address(
+    value: &str,
+    family: AddressFamily,
+    topology_kind: TopologyKind,
+) -> Result<IpAddr, ScenarioError> {
     let address = IpAddr::from_str(value).map_err(|_| ScenarioError::InvalidAddress)?;
     let family_matches = matches!(
         (family, address),
@@ -529,14 +584,31 @@ fn parse_synthetic_address(value: &str, family: AddressFamily) -> Result<IpAddr,
     if !family_matches {
         return Err(ScenarioError::AddressFamilyMismatch);
     }
-    let synthetic = match address {
-        IpAddr::V4(value) => is_synthetic_ipv4(value),
-        IpAddr::V6(value) => is_synthetic_ipv6(value),
-    };
-    if !synthetic {
-        return Err(ScenarioError::AddressOutsideSyntheticRange);
+    match topology_kind {
+        TopologyKind::Synthetic => {
+            let synthetic = match address {
+                IpAddr::V4(value) => is_synthetic_ipv4(value),
+                IpAddr::V6(value) => is_synthetic_ipv6(value),
+            };
+            if !synthetic {
+                return Err(ScenarioError::AddressOutsideSyntheticRange);
+            }
+            Ok(address)
+        }
+        TopologyKind::HostLoopbackDevelopment => {
+            // The host-loopback-development lane is IPv4 only and
+            // accepts the literal ``127.0.0.1`` address. RFC 5737
+            // addresses also remain valid because the runner falls
+            // back to them when the host-loopback listener failures
+            // are debugged off the synthetic range.
+            match address {
+                IpAddr::V4(value) if value == Ipv4Addr::LOCALHOST => Ok(address),
+                IpAddr::V4(value) if is_synthetic_ipv4(value) => Ok(address),
+                IpAddr::V4(_) => Err(ScenarioError::AddressOutsideSyntheticRange),
+                IpAddr::V6(_) => Err(ScenarioError::AddressOutsideSyntheticRange),
+            }
+        }
     }
-    Ok(address)
 }
 
 fn is_synthetic_ipv4(value: Ipv4Addr) -> bool {
@@ -868,6 +940,167 @@ run_identity_sha256 = "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacef
         assert_eq!(
             Scenario::parse_str(&input, &std::env::temp_dir()),
             Err(ScenarioError::InvalidSchemaVersion)
+        );
+    }
+
+    /// Plan 086: ``host-loopback-development`` topology accepts literal
+    /// IPv4 ``127.0.0.1`` endpoints. The default synthetic range is
+    /// still accepted under the development topology so existing
+    /// flows can switch lanes without rewriting the scenario.
+    #[test]
+    fn accepts_loopback_endpoints_only_in_host_loopback_topology() {
+        let input = r#"
+[scenario]
+schema = "i2pr-launcher-scenario-v2"
+schema_version = 2
+scenario_id = "i2pr-to-i2pd-ipv4"
+run_id = "test-run-id"
+role = "initiator"
+address_family = "ipv4"
+local_address = "127.0.0.1"
+local_port = 45680
+peer_address = "127.0.0.1"
+peer_port = 45678
+network_id = 99
+state_dir = "secrets"
+peer_router_info = "exchange/peer.info"
+handshake_deadline_ms = 30000
+read_deadline_ms = 1000
+write_deadline_ms = 1000
+queue_deadline_ms = 1000
+drain_deadline_ms = 1000
+padding_profile = "representative"
+smoke_message_profile = "delivery-status"
+deterministic_seed = 1
+expected_result_class = "authenticated-handshake-and-bounded-i2np-exchange"
+status_path = "status.jsonl"
+delivery_status_message_id = 12345
+expected_sender_router_hash_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+expected_receiver_router_hash_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+reference_driver_mode = "i2pd-direct-driver"
+run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+topology_kind = "host-loopback-development"
+"#;
+        let scenario =
+            Scenario::parse_str(input, &std::env::temp_dir()).expect("loopback scenario");
+        assert_eq!(
+            scenario.topology_kind,
+            TopologyKind::HostLoopbackDevelopment
+        );
+        assert_eq!(scenario.local_address.to_string(), "127.0.0.1");
+        assert_eq!(
+            scenario.peer_address.expect("peer").to_string(),
+            "127.0.0.1"
+        );
+    }
+
+    /// Plan 086: literal IPv4 ``127.0.0.1`` is rejected when the
+    /// topology is left at the default synthetic range. The existing
+    /// production daemon and the synthetic lanes remain untouched.
+    #[test]
+    fn rejects_loopback_endpoint_for_default_topology() {
+        let input = VALID.replace(
+            "local_address = \"192.0.2.1\"",
+            "local_address = \"127.0.0.1\"",
+        );
+        assert_eq!(
+            Scenario::parse_str(&input, &std::env::temp_dir()),
+            Err(ScenarioError::AddressOutsideSyntheticRange)
+        );
+    }
+
+    /// Plan 086: alternate loopback addresses such as ``127.0.0.2``
+    /// and ``::1`` are rejected even under the development topology.
+    /// Only literal ``127.0.0.1`` is accepted.
+    #[test]
+    fn rejects_alternate_loopback_addresses_in_host_loopback_topology() {
+        let input = r#"
+[scenario]
+schema = "i2pr-launcher-scenario-v2"
+schema_version = 2
+scenario_id = "i2pr-to-i2pd-ipv4"
+run_id = "test-run-id"
+role = "initiator"
+address_family = "ipv4"
+local_address = "127.0.0.2"
+local_port = 45680
+peer_address = "127.0.0.1"
+peer_port = 45678
+network_id = 99
+state_dir = "secrets"
+peer_router_info = "exchange/peer.info"
+handshake_deadline_ms = 30000
+read_deadline_ms = 1000
+write_deadline_ms = 1000
+queue_deadline_ms = 1000
+drain_deadline_ms = 1000
+padding_profile = "representative"
+smoke_message_profile = "delivery-status"
+deterministic_seed = 1
+expected_result_class = "authenticated-handshake-and-bounded-i2np-exchange"
+status_path = "status.jsonl"
+delivery_status_message_id = 12345
+expected_sender_router_hash_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+expected_receiver_router_hash_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+reference_driver_mode = "i2pd-direct-driver"
+run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+topology_kind = "host-loopback-development"
+"#;
+        assert_eq!(
+            Scenario::parse_str(input, &std::env::temp_dir()),
+            Err(ScenarioError::AddressOutsideSyntheticRange)
+        );
+    }
+
+    /// Plan 086: IPv6 addresses are rejected under the development
+    /// topology; the lane is IPv4-only.
+    #[test]
+    fn rejects_ipv6_endpoint_in_host_loopback_topology() {
+        let input = r#"
+[scenario]
+schema = "i2pr-launcher-scenario-v2"
+schema_version = 2
+scenario_id = "i2pr-to-i2pd-ipv4"
+run_id = "test-run-id"
+role = "responder"
+address_family = "ipv6"
+local_address = "::1"
+local_port = 45680
+network_id = 99
+state_dir = "secrets"
+handshake_deadline_ms = 30000
+read_deadline_ms = 1000
+write_deadline_ms = 1000
+queue_deadline_ms = 1000
+drain_deadline_ms = 1000
+padding_profile = "representative"
+smoke_message_profile = "delivery-status"
+deterministic_seed = 1
+expected_result_class = "authenticated-handshake-and-bounded-i2np-exchange"
+status_path = "status.jsonl"
+delivery_status_message_id = 12345
+expected_sender_router_hash_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+expected_receiver_router_hash_sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+reference_driver_mode = "i2pd-direct-driver"
+run_identity_sha256 = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+topology_kind = "host-loopback-development"
+"#;
+        assert_eq!(
+            Scenario::parse_str(input, &std::env::temp_dir()),
+            Err(ScenarioError::AddressOutsideSyntheticRange)
+        );
+    }
+
+    /// Plan 086: unknown topology_kind values are rejected.
+    #[test]
+    fn rejects_unknown_topology_kind() {
+        let input = VALID.replace(
+            "schema = \"i2pr-launcher-scenario-v2\"",
+            "schema = \"i2pr-launcher-scenario-v2\"\ntopology_kind = \"unknown-topology\"",
+        );
+        assert_eq!(
+            Scenario::parse_str(&input, &std::env::temp_dir()),
+            Err(ScenarioError::InvalidTopologyKind)
         );
     }
 }

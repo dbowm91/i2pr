@@ -24,6 +24,7 @@ try:
     from interop_topology import (  # type: ignore
         ALLOWED_ACTORS,
         ALLOWED_TOPOLOGY_KINDS,
+        HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND,
         PRIVILEGED_PRIVILEGE_MODEL,
         PRIVILEGED_TOPOLOGY_KIND,
         ProcessPlacement,
@@ -54,12 +55,26 @@ except ImportError:  # pragma: no cover
 
 class ProcessPlacementContractTests(unittest.TestCase):
     def test_topology_kinds_are_locked(self) -> None:
+        # Plan 086 adds the host-loopback-development topology kind to
+        # the allowlist. The rootless-sealed and privileged-dual
+        # topologies remain; the new kind is the Plan 086 lane
+        # addition.
         self.assertEqual(
             ALLOWED_TOPOLOGY_KINDS,
-            frozenset({ROOTLESS_TOPOLOGY_KIND, PRIVILEGED_TOPOLOGY_KIND}),
+            frozenset(
+                {
+                    ROOTLESS_TOPOLOGY_KIND,
+                    PRIVILEGED_TOPOLOGY_KIND,
+                    HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND,
+                }
+            ),
         )
         self.assertEqual(ROOTLESS_TOPOLOGY_KIND, "rootless-sealed-single-netns")
         self.assertEqual(PRIVILEGED_TOPOLOGY_KIND, "privileged-dual-netns-veth")
+        self.assertEqual(
+            HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND,
+            "host-loopback-development",
+        )
 
     def test_actors_are_locked(self) -> None:
         self.assertEqual(ALLOWED_ACTORS, frozenset({"i2pr", "reference", "control"}))

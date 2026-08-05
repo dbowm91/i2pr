@@ -698,11 +698,14 @@ manual-isolated fallback.
 Plan 086 enables the `host-loopback-development` lane, accepts literal
 `127.0.0.1` only under that topology, adds the
 `HostLoopbackDevelopmentPlacement`, and proves a listener-only preflight
-without starting a dialer. Plan 086 must close as
-`host-loopback-development-ready` before Plan 087 begins. On this host
-Plan 086 is not yet closed; the Plan 046 rootless sealed-namespace
-probe returns `blocked_unprivileged_user_namespace` and the Plan 080
-Multipass guest cannot complete on this constrained host.
+without starting a dialer. Plan 086 closes on this host as
+`blocked-artifact-or-build-defect` because the canonical
+`i2pd_ntcp2_interop_driver_instrumented` binary has not yet been
+built on this constrained host; the closure state and the
+implementation surface are recorded in `plans/086-status.md`. The
+Plan 087 forward direction remains blocked until Plan 086 records
+`host-loopback-development-ready` or Plan 089 records
+`manual-isolated-fallback-ready`.
 
 ## Plan 087 first real i2pr-to-i2pd host-loopback probe
 

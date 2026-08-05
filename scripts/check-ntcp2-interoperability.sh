@@ -1396,4 +1396,62 @@ if grep -Eq '^[[:space:]]*decision[[:space:]]*=[[:space:]]*same-stage-two-way-i2
   exit 1
 fi
 
+# Plan 086: host-loopback-development lane enablement. The
+# ``host-loopback-development`` topology kind must be defined in
+# the canonical topology contract, the runtime scenario parser, and
+# the in-process record schemas. The thin wrapper script and the
+# test matrix must be committed. The status record must exist and
+# must carry one of the three bounded closure states; the legacy
+# ``lane-invalidated`` and ``same-stage-two-way-i2pr-defect``
+# tokens may not reappear.
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan086.py"; then
+  echo "Plan 086 host-loopback lane test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'host-loopback-development' "$root/tests/integration/ntcp2/harness/interop_topology.py"; then
+  echo "Plan 086 topology contract must declare host-loopback-development" >&2
+  exit 1
+fi
+if ! grep -Fq 'HostLoopbackDevelopmentPlacement' "$root/tests/integration/ntcp2/harness/interop_topology.py"; then
+  echo "Plan 086 must add HostLoopbackDevelopmentPlacement" >&2
+  exit 1
+fi
+if ! grep -Fq 'host-loopback-development' "$root/tests/integration/ntcp2/harness/test_plan086.py"; then
+  echo "Plan 086 test matrix must cover the host-loopback-development topology" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 086' "$root/tests/integration/ntcp2/harness/test_plan086.py"; then
+  echo "Plan 086 test matrix must reference its plan-of-record" >&2
+  exit 1
+fi
+if ! test -f "$root/scripts/interop/run-minimal-i2pd-host-loopback-probe.py"; then
+  echo "Plan 086 thin wrapper script is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND' "$root/tools/i2pr-interop/src/scenario.rs"; then
+  echo "Plan 086 must extend the Rust scenario parser with the host-loopback-development topology" >&2
+  exit 1
+fi
+if ! grep -Fq "host-loopback-development" "$root/tools/i2pr-interop/src/scenario.rs"; then
+  echo "Plan 086 must accept the host-loopback-development topology in the Rust scenario parser" >&2
+  exit 1
+fi
+if ! test -f "$root/plans/086-status.md"; then
+  echo "Plan 086 status record is missing" >&2
+  exit 1
+fi
+for plan086_state in \
+    'host-loopback-development-ready' \
+    'manual-isolated-fallback-required' \
+    'blocked-artifact-or-build-defect'; do
+  if grep -Fq "$plan086_state" "$root/plans/086-status.md"; then
+    plan086_state_match="$plan086_state"
+    break
+  fi
+done
+if test -z "${plan086_state_match:-}"; then
+  echo "Plan 086 status record must record exactly one bounded closure state" >&2
+  exit 1
+fi
+
 echo "NTCP2 interoperability manifest and sanitized evidence boundary are valid (${scenario_count} scenarios)."

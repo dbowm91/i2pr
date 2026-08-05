@@ -21,9 +21,17 @@ except ImportError:  # pragma: no cover - direct harness-module execution
     from process import BoundedProcess, ProcessError  # type: ignore
 
 try:
-    from .interop_topology import ProcessPlacement, TopologyContractError
+    from .interop_topology import (
+        HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND,
+        ProcessPlacement,
+        TopologyContractError,
+    )
 except ImportError:  # pragma: no cover - direct harness-module execution
-    from interop_topology import ProcessPlacement, TopologyContractError  # type: ignore
+    from interop_topology import (  # type: ignore
+        HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND,
+        ProcessPlacement,
+        TopologyContractError,
+    )
 
 
 def _legacy_privileged_prefix() -> list[str]:
@@ -89,15 +97,31 @@ class I2prAdapter:
         network_id: int = 99,
         deterministic_seed: int | None = None,
         state_dir: str = "state",
+        topology_kind: str | None = None,
     ) -> PreparedI2prState:
-        """Prepare and validate i2pr state without opening a socket."""
+        """Prepare and validate i2pr state without opening a socket.
+
+        Plan 086: the optional ``topology_kind`` argument accepts the
+        bounded ``host-loopback-development`` value, which permits
+        literal IPv4 ``127.0.0.1`` endpoints. The default (synthetic
+        RFC 5737 / 3849 range) is unchanged for the existing
+        isolated lanes.
+        """
 
         address = ipaddress.ip_address(local_address)
-        if address.version == 4:
+        if topology_kind == HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND:
+            # Host-loopback-development accepts literal 127.0.0.1 only.
+            if address.version != 4 or str(address) != "127.0.0.1":
+                raise RuntimeError("prepare-input-invalid")
+        elif address.version == 4:
             synthetic = ipaddress.ip_network("192.0.2.0/24")
+            if address not in synthetic:
+                raise RuntimeError("prepare-input-invalid")
         else:
             synthetic = ipaddress.ip_network("2001:db8:36::/64")
-        if address not in synthetic or not 1 <= local_port <= 65535 or network_id != 99:
+            if address not in synthetic:
+                raise RuntimeError("prepare-input-invalid")
+        if not 1 <= local_port <= 65535 or network_id != 99:
             raise RuntimeError("prepare-input-invalid")
         state_path = (self.run_root / state_dir).resolve()
         if not self._inside_run_root(state_path):
@@ -117,6 +141,8 @@ class I2prAdapter:
         ]
         if deterministic_seed is not None:
             command_args.extend(["--deterministic-seed", str(deterministic_seed)])
+        if topology_kind is not None:
+            command_args.extend(["--topology-kind", topology_kind])
         try:
             command = self.placement.command(command_args)
             process = BoundedProcess(command, self.run_root / "raw" / "i2pr-prepare.log")

@@ -41,7 +41,7 @@ use i2pr_transport_ntcp2::handshake::{ClockSkewPolicy, HandshakeError};
 use i2pr_transport_ntcp2::state_machine::{InitiatorState, ResponderState};
 use i2pr_transport_ntcp2::{Ntcp2Endpoint, Ntcp2RouterAddress};
 
-use crate::scenario::{DataPhaseMode, Role, Scenario};
+use crate::scenario::{DataPhaseMode, Role, Scenario, TopologyKind};
 use crate::status::{
     StatusCounters, StatusPhase, StatusReason, StatusResult, StatusWriter, emit_stdout_status,
 };
@@ -83,6 +83,13 @@ enum Ntcp2Command {
         network_id: u16,
         #[arg(long = "deterministic-seed")]
         deterministic_seed: Option<u64>,
+        /// Plan 086: optional topology kind. The default is the
+        /// synthetic RFC 5737 / 3849 range; the only accepted
+        /// non-default value is ``host-loopback-development``, which
+        /// permits literal IPv4 ``127.0.0.1`` endpoints. The
+        /// topology flag never weakens production address validation.
+        #[arg(long = "topology-kind")]
+        topology_kind: Option<String>,
     },
     ValidateScenario {
         #[arg(long = "scenario-config")]
@@ -264,10 +271,20 @@ fn prepare_state_command(
     local_port: u16,
     network_id: u16,
     deterministic_seed: Option<u64>,
+    topology_kind: Option<&str>,
 ) -> ExitCode {
+    let topology = match topology_kind {
+        None => TopologyKind::Synthetic,
+        Some(scenario::HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND) => {
+            TopologyKind::HostLoopbackDevelopment
+        }
+        Some(_) => {
+            return emit_preparation("rejected", "prepare_topology_kind_invalid", None);
+        }
+    };
     if network_id != scenario::PRIVATE_NETWORK_ID
         || local_port == 0
-        || !is_synthetic_address(local_address)
+        || !is_endpoint_address(local_address, topology)
         || !state_dir.is_absolute()
         || state_dir
             .symlink_metadata()
@@ -298,6 +315,21 @@ fn is_synthetic_address(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(address) => address.octets()[0..3] == [192, 0, 2],
         IpAddr::V6(address) => address.segments()[0..4] == [0x2001, 0x0db8, 0x0036, 0],
+    }
+}
+
+/// Plan 086: shared endpoint acceptance for the test-only prepare
+/// boundary. The synthetic RFC 5737 / 3849 range is the default; the
+/// bounded ``host-loopback-development`` topology is the only other
+/// accepted topology. Production address validation in the daemon
+/// and the synthetic lanes remains unchanged.
+fn is_endpoint_address(address: IpAddr, topology: TopologyKind) -> bool {
+    match topology {
+        TopologyKind::Synthetic => is_synthetic_address(address),
+        TopologyKind::HostLoopbackDevelopment => match address {
+            IpAddr::V4(value) => value.is_loopback() || value.octets()[0..3] == [192, 0, 2],
+            IpAddr::V6(_) => false,
+        },
     }
 }
 
@@ -1493,12 +1525,14 @@ fn main() -> ExitCode {
                 local_port,
                 network_id,
                 deterministic_seed,
+                topology_kind,
             } => prepare_state_command(
                 &state_dir,
                 local_address,
                 local_port,
                 network_id,
                 deterministic_seed,
+                topology_kind.as_deref(),
             ),
             Ntcp2Command::ValidateScenario { scenario_config } => {
                 validate_scenario_command(&scenario_config)

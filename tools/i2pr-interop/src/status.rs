@@ -365,6 +365,7 @@ mod tests {
             reference_driver_mode: crate::scenario::ReferenceDriverMode::JavaDirectDriver,
             run_identity_sha256: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
                 .to_owned(),
+            topology_kind: crate::scenario::TopologyKind::Synthetic,
         };
         let mut writer = StatusWriter::new(&scenario).expect("status writer");
         writer

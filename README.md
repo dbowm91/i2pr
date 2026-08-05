@@ -1677,13 +1677,15 @@ development-only; it never satisfies any release or isolation predicate.
 
 Plan 086 enables the `host-loopback-development` lane, adds the bounded
 literal IPv4 loopback acceptance, the `HostLoopbackDevelopmentPlacement`,
-and the listener-only preflight. Plan 086 must close before Plan 087 begins;
-on this host it is not yet closed (the Plan 046 rootless sealed-namespace
-probe still returns `blocked_unprivileged_user_namespace` and the Plan 080
-Multipass guest cannot complete on this constrained host). Plan 089 remains
-a conditional manual-isolated fallback for the case where direct host
-loopback cannot start or bind for a demonstrated placement reason; it must
-not be activated for a protocol rejection or post-TCP failure.
+and the listener-only preflight. Plan 086 closes on this host as
+`blocked-artifact-or-build-defect` because the canonical
+`i2pd_ntcp2_interop_driver_instrumented` binary has not yet been
+built on this constrained host; the closure state and the
+implementation surface are recorded in
+[Plan 086 status](plans/086-status.md). Plan 089 remains a conditional
+manual-isolated fallback for the case where direct host loopback cannot
+start or bind for a demonstrated placement reason; it must not be
+activated for a protocol rejection or post-TCP failure.
 
 Plan 087 runs the first real `i2pr -> i2pd` forward direction under the
 development lane. Plan 088 runs the reverse `i2pd -> i2pr` direction and

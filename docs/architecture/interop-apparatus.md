@@ -1358,6 +1358,80 @@ in place on this host; no real wire attempt has been executed because the
 host is the Plan 046 `apparmor_restrict_on` negative baseline and the Plan
 080 Multipass guest cannot complete on this constrained host.
 
+## Plan 086 host-loopback development lane
+
+Plan 086 introduces the bounded `host-loopback-development` topology kind
+to the canonical Plan 083/084 runners, the
+`HostLoopbackDevelopmentPlacement`, the bounded literal IPv4 `127.0.0.1`
+acceptance, the thin wrapper
+`scripts/interop/run-minimal-i2pd-host-loopback-probe.py`, and the
+listener-only preflight. The lane is development-only; it never satisfies
+a release or isolation predicate and must not be used for Plan 079/Plan
+073 evidence. The closure vocabulary is exactly three values
+(`host-loopback-development-ready`,
+`manual-isolated-fallback-required`,
+`blocked-artifact-or-build-defect`); the legacy `lane-invalidated`
+and `same-stage-two-way-i2pr-defect` tokens are forbidden.
+
+Plan 086 lands:
+
+- `tests/integration/ntcp2/harness/interop_topology.py` — adds the
+  `host-loopback-development` topology constant, the
+  `host-direct-loopback` privilege model, the bounded
+  `HOST_LOOPBACK_DEVELOPMENT_METADATA` table, and the
+  `HostLoopbackDevelopmentPlacement` narrow host-direct placement.
+  The placement is fail-closed on relative paths, unknown actors,
+  unbounded log capture, and `LD_PRELOAD`/`LD_LIBRARY_PATH` in the
+  environment. The placement never wraps the command in a namespace,
+  Multipass, capability mutation, or shell invocation.
+- `tests/integration/ntcp2/harness/i2pr.py` — extends the
+  `prepare_state` method with an optional `topology_kind` argument.
+  Literal IPv4 `127.0.0.1` is accepted only when
+  `topology_kind == host-loopback-development`; every other topology
+  refuses the address with `prepare-input-invalid` before any
+  subprocess is executed. Production address validation in the
+  synthetic lanes remains unchanged.
+- `tools/i2pr-interop/src/scenario.rs` — extends the Plan 065
+  strict scenario schema with an optional `topology_kind` field and
+  the `TopologyKind` enum (`Synthetic` and `HostLoopbackDevelopment`).
+  The strict parser accepts literal IPv4 `127.0.0.1` only when
+  `topology_kind == host-loopback-development`; alternate loopback
+  addresses, hostnames, DNS names, public addresses, and RFC 5737
+  addresses outside the development lane are rejected with the
+  existing bounded error codes.
+- `tools/i2pr-interop/src/main.rs` — extends the `prepare` command
+  with an optional `--topology-kind` flag. The prepare command
+  accepts `127.0.0.1` only when the topology kind is
+  `host-loopback-development`; the existing production address
+  validation in the daemon is untouched.
+- `scripts/interop/run-minimal-i2pd-host-loopback-probe.py` —
+  the thin operator entry point. The wrapper accepts the four
+  required positional inputs, refuses every release/support profile
+  flag, and dispatches to the canonical Plan 083/084 runner
+  modules without copying orchestration. The wrapper opens no
+  socket, performs no bootstrap, and never invokes sudo,
+  namespaces, Multipass, or any public-network access.
+- `tests/integration/ntcp2/harness/test_plan086.py` — the Plan 086
+  test matrix (33 cases) covering the topology constant and bounded
+  metadata, the `HostLoopbackDevelopmentPlacement` contract, the
+  closure-state vocabulary, the address-class acceptance rules, the
+  canonical runner topology acceptance, the bootstrap dependency
+  checks, the record schemas, the preflight contract, the status
+  record contract, and the handoff to Plan 087.
+- `scripts/check-ntcp2-interoperability.sh` — extended to enforce
+  the Plan 086 topology contract, the placement class, the test
+  matrix presence, the wrapper script presence, the Rust schema
+  marker, and the bounded closure state in `plans/086-status.md`.
+
+On this host the Plan 086 closure state is `blocked-artifact-or-build-defect`
+because the canonical `i2pd_ntcp2_interop_driver_instrumented` binary
+has not yet been built on this constrained host. The Plan 087 forward
+direction remains blocked until Plan 086 records
+`host-loopback-development-ready` or Plan 089 records
+`manual-isolated-fallback-ready`. See
+[`plans/086-status.md`](../../plans/086-status.md) for the closure
+record. NTCP2 stays experimental and non-advertised.
+
 ## Plan 078 first real i2pd two-way execution
 
 Plan 078 used the Plan 080-qualified guest and stopped before TCP at the i2pr
