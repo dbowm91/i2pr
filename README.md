@@ -1688,8 +1688,27 @@ manual-isolated fallback for the case where direct host loopback cannot
 start or bind for a demonstrated placement reason; it must not be
 activated for a protocol rejection or post-TCP failure.
 
-Plan 087 runs the first real `i2pr -> i2pd` forward direction under the
-development lane. Plan 088 runs the reverse `i2pd -> i2pr` direction and
+Plan 087 implements the first real `i2pr -> i2pd` forward direction under
+the development lane. The Plan 087 implementation surface landed: the
+canonical Plan 083 runner now drives the placement-owned concurrent i2pd
+listener and i2pr dialer via `HostLoopbackDevelopmentPlacement.popen`,
+copies the i2pd-exported RouterInfo into the scenario exchange path with a
+verified digest, and threads the missing `reference_tree_sha256` and
+`source_inspection_record_sha256` provenance digests through to the i2pd
+direct driver invocation. The first instrumented forward attempt reached
+`listener_ready` and the i2pr dialer started, then the i2pr dialer
+rejected the i2pd RouterInfo with `peer_router_info_invalid` before any
+TCP connection — the i2pd direct driver's emitted `router.info` carries
+zero `RouterAddress` entries, so `exact_ntcp2_address` rejects the peer
+RouterInfo. This is owned by the i2pd direct driver source
+(`tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp`);
+Plan 087 explicitly forbids patching pinned i2pd behavior, so the narrow
+correction is deferred to a Plan 064/076 corrective pass. Plan 087 remains
+open on this precondition. The closure record with the exact live command,
+recorded digests, and bounded correction-surfaces contract is in
+[Plan 087 status](plans/087-status.md).
+
+Plan 088 runs the reverse `i2pd -> i2pr` direction and
 issues the active development decision. The Plan 088 development decision
 vocabulary is exactly five values
 (`two-way-development-probe-passed`, `one-way-passed-reverse-defect`,
@@ -1698,7 +1717,11 @@ vocabulary is exactly five values
 unblock Plan 079, and only `ambiguous-reference-divergence` may activate
 Plan 072. The historical `lane-invalidated` and
 `same-stage-two-way-i2pr-defect` tokens are forbidden by the static
-boundary checker.
+boundary checker. On this host the recorded decision is
+`insufficient-evidence` because the Plan 087 forward direction recorded a
+pre-TCP rejection owned by the i2pd direct driver and no real wire run has
+been retained; the Plan 087 implementation surface is ready for a fresh
+attempt against a fixed i2pd driver.
 
 Plan 079 remains blocked pending the Plan 088 decision. Plan 072 remains
 inactive until Plan 088 records `ambiguous-reference-divergence` with one

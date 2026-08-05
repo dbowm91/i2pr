@@ -1423,14 +1423,52 @@ Plan 086 lands:
   matrix presence, the wrapper script presence, the Rust schema
   marker, and the bounded closure state in `plans/086-status.md`.
 
-On this host the Plan 086 closure state is `blocked-artifact-or-build-defect`
+On this host the Plan 086 closure state is `host-loopback-development-ready`
 because the canonical `i2pd_ntcp2_interop_driver_instrumented` binary
-has not yet been built on this constrained host. The Plan 087 forward
-direction remains blocked until Plan 086 records
-`host-loopback-development-ready` or Plan 089 records
-`manual-isolated-fallback-ready`. See
+was built from the pinned source tree and the concurrent preflight
+recorded a sanitized `i2pr-minimal-i2pd-probe-v1` record whose
+`highest_stage_reached` is `listener_ready`. The Plan 087 forward
+direction is enabled on this host; see
 [`plans/086-status.md`](../../plans/086-status.md) for the closure
-record. NTCP2 stays experimental and non-advertised.
+record.
+
+## Plan 087 first real i2pr-to-i2pd host-loopback probe
+
+Plan 087 runs the first real `i2pr -> i2pd` forward direction under the
+Plan 086 `host-loopback-development` lane. The probe inherits the Plan
+083 forward probe record schema (`i2pr-minimal-i2pd-probe-v1`) and
+runner orchestration module (`plan083_runner.py`) unchanged. Plan 087
+must reach `i2np_delivery_status_decoded` with exact Router Hash and
+DeliveryStatus message ID correlation before Plan 088 begins.
+
+The Plan 087 implementation surface landed: the canonical Plan 083
+runner now drives the placement-owned concurrent i2pd listener and
+i2pr dialer via `HostLoopbackDevelopmentPlacement.popen`, copies the
+i2pd-exported RouterInfo into the scenario exchange path with a
+verified digest, and threads the missing `reference_tree_sha256` and
+`source_inspection_record_sha256` provenance digests through to the
+i2pd direct driver invocation. The wrapper
+(`scripts/interop/run-minimal-i2pd-host-loopback-probe.py`) accepts
+only the two i2pd directions and refuses every release/support profile
+flag.
+
+The first instrumented forward attempt on this host reached
+`listener_ready` and the i2pr dialer started, then the i2pr dialer
+rejected the i2pd RouterInfo with `peer_router_info_invalid` before
+any TCP connection — the i2pd direct driver's emitted `router.info`
+carries zero `RouterAddress` entries, so `exact_ntcp2_address`
+rejects the peer RouterInfo. Plan 087 explicitly forbids patching
+pinned i2pd behavior, so the narrow correction is deferred to a Plan
+064/076 corrective pass that must restore the i2pd direct driver
+RouterInfo so it carries at least one non-published NTCP2 address
+whose endpoint matches the rendered `local_address`/`local_port`.
+Plan 087 remains open on this precondition; the bounded
+implementation surface travels with the repository so any future
+host that can run a fixed Plan 064/076 driver can resume the forward
+attempt without further runner changes. The closure record with the
+exact live command, recorded digests, and bounded correction-surfaces
+contract is in [`plans/087-status.md`](../../plans/087-status.md).
+NTCP2 stays experimental and non-advertised.
 
 ## Plan 078 first real i2pd two-way execution
 
@@ -1493,10 +1531,11 @@ Plan 072. The historical `lane-invalidated` and
 boundary checker.
 
 On this host the recorded decision is `insufficient-evidence` because
-the Plan 086 lane has not closed, the Plan 087 forward direction has
-not executed, and no real wire run has been retained. The Plan 088
-implementation surface travels with the repository unchanged for any
-future host where the Plan 086 lane becomes executable or the Plan
-089 manual-isolated fallback becomes available. See
-[`plans/088-status.md`](../../plans/088-status.md) for the closure
-record. NTCP2 remains experimental and non-advertised.
+the Plan 087 forward direction recorded a pre-TCP rejection owned by
+the i2pd direct driver and no real wire run has been retained. The
+Plan 087 implementation surface is ready for a fresh attempt against
+a fixed i2pd driver. The Plan 088 implementation surface travels with
+the repository unchanged for any future host where the Plan 086 lane
+becomes executable or the Plan 089 manual-isolated fallback becomes
+available. See [`plans/088-status.md`](../../plans/088-status.md) for
+the closure record. NTCP2 remains experimental and non-advertised.

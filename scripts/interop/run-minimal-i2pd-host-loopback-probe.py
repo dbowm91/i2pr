@@ -355,8 +355,10 @@ def _run_forward_probe(args: argparse.Namespace) -> dict[str, object]:
         handshake_timeout_ms=args.handshake_timeout_ms,
         output_path=args.output,
         driver_source_sha256=provenance["driver_source_sha256"],
+        reference_tree_sha256=provenance["reference_tree_sha256"],
         build_manifest_sha256=provenance["build_manifest_sha256"],
         observer_patch_sha256=provenance["observer_patch_sha256"],
+        source_inspection_record_sha256=provenance["source_inspection_record_sha256"],
     )
 
 
@@ -394,8 +396,10 @@ def _run_reverse_probe(args: argparse.Namespace) -> dict[str, object]:
         handshake_timeout_ms=args.handshake_timeout_ms,
         output_path=args.output,
         driver_source_sha256=provenance["driver_source_sha256"],
+        reference_tree_sha256=provenance["reference_tree_sha256"],
         build_manifest_sha256=provenance["build_manifest_sha256"],
         observer_patch_sha256=provenance["observer_patch_sha256"],
+        source_inspection_record_sha256=provenance["source_inspection_record_sha256"],
     )
 
 

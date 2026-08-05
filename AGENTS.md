@@ -1799,12 +1799,13 @@ record.
 The active authority is [Plan 085](plans/085-milestone-3-host-loopback-development-execution-roadmap.md),
 followed by Plan 086 (status correction + `host-loopback-development`
 lane enablement, **closed on this host**), Plan 087 (first real
-`i2pr -> i2pd` forward probe), Plan 088 (reverse `i2pd -> i2pr` probe
-and development decision), and the
+`i2pr -> i2pd` forward probe, implementation surface delivered
+and instrumented attempt recorded), Plan 088 (reverse `i2pd -> i2pr`
+probe and development decision), and the
 [Plan 072/079 gate amendment](plans/072-079-gate-amendment-plan-088.md)
 that moves the Plan 072 and Plan 079 gates from Plan 084 to Plan 088.
 Plan 082 is implemented and closed; Plans 083 and 084 are implementation
-complete but execution pending. Plan 086 added the
+complete but execution pending; Plan 086 added the
 `host-loopback-development` topology kind, the
 `HostLoopbackDevelopmentPlacement`, the bounded literal IPv4 loopback
 acceptance, the thin wrapper
@@ -1817,6 +1818,26 @@ Plan 078 stopped before protocol execution; no real TCP connection,
 NTCP2 handshake, authenticated frame, or I2NP DeliveryStatus attempt is
 retained. The Plan 078 historical `blocked-protocol-defect` label must
 not be used as the current diagnosis.
+
+The Plan 087 implementation surface landed: the canonical Plan 083
+runner now drives the placement-owned concurrent i2pd listener and
+i2pr dialer (via `HostLoopbackDevelopmentPlacement.popen`) and copies
+the i2pd-exported RouterInfo into the scenario exchange path with a
+verified digest; the wrapper threads the missing `reference_tree_sha256`
+and `source_inspection_record_sha256` provenance digests through to
+the i2pd direct driver invocation. The first instrumented forward
+attempt reached `listener_ready` and the i2pr dialer started, then
+the i2pr dialer rejected the i2pd RouterInfo with
+`peer_router_info_invalid` before any TCP connection — the i2pd
+direct driver's emitted `router.info` carries zero `RouterAddress`
+entries, so `exact_ntcp2_address` rejects the peer RouterInfo.
+This is owned by the i2pd direct driver source
+(`tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp`);
+Plan 087 explicitly forbids patching pinned i2pd behavior, so the
+narrow correction is deferred to a Plan 064/076 corrective pass.
+Plan 087 remains open on this precondition. See `plans/087-status.md`
+for the closure record, exact live command, recorded digests, and
+the bounded correction-surfaces contract.
 
 Plan 082 provides the test-only `i2pr-interop ntcp2 prepare` and
 `validate-scenario` operations, authentic RouterInfo/hash preparation,
@@ -1831,21 +1852,25 @@ as the Plan 088 implementation surface. Plan 085 introduces the bounded
 `host-loopback-development` topology kind that allows literal IPv4 loopback
 protocol execution on the constrained host under the development-only lane
 contract. Plan 086 closes as `host-loopback-development-ready` (or records
-`manual-isolated-fallback-required`) before Plan 087 begins; Plan 087 must
-pass before Plan 088 begins.
+`manual-isolated-fallback-required`) before Plan 087 begins. Plan 087
+closes as `passed` only after a TCP-authenticated
+`i2pr -> i2pd` first-instrumented pass; the first pass recorded
+a pre-TCP rejection owned by the i2pd direct driver. Plan 087 must
+close (as `passed` or as a localized defect that authenticates TCP)
+before Plan 088 begins.
 
 Plan 088 owns the reverse probe and the active development decision. On this
 host the recorded decision is `insufficient-evidence` because the Plan 087
-forward direction has not executed and no real wire run has been retained.
-Plan 086 closes as `host-loopback-development-ready` (or records
-`manual-isolated-fallback-required`) before Plan 087 begins; Plan 087 must
-pass before Plan 088 begins. Plan 079 remains blocked until
+forward direction recorded a pre-TCP rejection and no real wire run has
+been retained. The Plan 087 implementation surface is ready for a fresh
+attempt against a fixed i2pd driver. Plan 079 remains blocked until
 `plans/088-status.md` records `decision = two-way-development-probe-passed`.
 Plan 072 remains inactive until `plans/088-status.md` records
 `decision = ambiguous-reference-divergence`
 with one exact role/stage diagnostic question. NTCP2 stays experimental and
 non-advertised. See `plans/082-status.md`, `plans/083-status.md`,
-`plans/084-status.md`, and `plans/088-status.md`.
+`plans/084-status.md`, `plans/086-status.md`, `plans/087-status.md`, and
+`plans/088-status.md`.
 
 ## Plan 083 minimal i2pr-to-i2pd wire probe
 

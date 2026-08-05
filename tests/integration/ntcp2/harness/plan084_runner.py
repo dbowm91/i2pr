@@ -777,6 +777,7 @@ def execute_reverse_probe(
     driver_source_sha256: str = "0" * 64,
     build_manifest_sha256: str = "0" * 64,
     observer_patch_sha256: str = "0" * 64,
+    source_inspection_record_sha256: str | None = None,
     handshake_timeout_ms: int = 30_000,
     output_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -908,15 +909,15 @@ def execute_reverse_probe(
     i2pd_port = _allocate_loopback_port()
 
     raw_dir = run_root / "raw"
-    raw_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     state_dir = run_root / "state"
-    state_dir.mkdir(parents=True, exist_ok=True)
+    state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     i2pd_data_dir = run_root / "i2pd-data"
-    i2pd_data_dir.mkdir(parents=True, exist_ok=True)
+    i2pd_data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     output_dir = run_root / "i2pd-output"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     exchange_dir = run_root / "exchange"
-    exchange_dir.mkdir(parents=True, exist_ok=True)
+    exchange_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     i2pr_binary = repo_root / "target" / "debug" / "i2pr-interop"
     if not i2pr_binary.is_file():
@@ -1048,6 +1049,7 @@ def execute_reverse_probe(
             helper_build_manifest_sha256=build_manifest_sha256,
             run_identity_sha256=lane_qualification_sha256,
             observer_patch_sha256=observer_patch_sha256,
+            source_inspection_record_sha256=source_inspection_record_sha256 or reference_tree_sha256,
             local_router_info_sha256="0" * 64,
             peer_router_info_sha256=i2pr_router_info_sha256,
             result_path=run_root / "raw" / "i2pd-inspect-trigger.json",
@@ -1234,6 +1236,7 @@ def execute_reverse_probe(
             helper_build_manifest_sha256=build_manifest_sha256,
             run_identity_sha256=lane_qualification_sha256,
             observer_patch_sha256=observer_patch_sha256,
+            source_inspection_record_sha256=source_inspection_record_sha256 or reference_tree_sha256,
             local_router_info_sha256="0" * 64,
             peer_router_info_sha256=i2pr_router_info_sha256,
             result_path=run_root / "raw" / "i2pd-dial-trigger.json",
