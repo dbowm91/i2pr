@@ -33,12 +33,14 @@ namespace {
 std::atomic<std::uint64_t> g_received_count{0};
 std::atomic<std::uint64_t> g_sent_count{0};
 std::atomic<std::uint64_t> g_authenticated_count{0};
+std::atomic<std::uint64_t> g_tcp_accepted_count{0};
 std::atomic<std::uint64_t> g_drop_count{0};
 
 std::mutex g_slot_mutex;
 ObserverMetadata g_last_received{};
 ObserverMetadata g_last_sent{};
 ObserverMetadata g_last_authenticated{};
+ObserverMetadata g_last_tcp_accepted{};
 
 void RecordObservation(ObserverMetadata& slot,
                        const ObserverMetadata& metadata,
@@ -81,15 +83,21 @@ void ObserveAuthenticated(const ObserverMetadata& metadata) noexcept {
     RecordObservation(g_last_authenticated, metadata, g_authenticated_count);
 }
 
+void ObserveTcpAccepted(const ObserverMetadata& metadata) noexcept {
+    RecordObservation(g_last_tcp_accepted, metadata, g_tcp_accepted_count);
+}
+
 void ResetObserverSink() noexcept {
     std::lock_guard<std::mutex> guard(g_slot_mutex);
     g_received_count.store(0, std::memory_order_relaxed);
     g_sent_count.store(0, std::memory_order_relaxed);
     g_authenticated_count.store(0, std::memory_order_relaxed);
+    g_tcp_accepted_count.store(0, std::memory_order_relaxed);
     g_drop_count.store(0, std::memory_order_relaxed);
     std::memset(&g_last_received, 0, sizeof(ObserverMetadata));
     std::memset(&g_last_sent, 0, sizeof(ObserverMetadata));
     std::memset(&g_last_authenticated, 0, sizeof(ObserverMetadata));
+    std::memset(&g_last_tcp_accepted, 0, sizeof(ObserverMetadata));
 }
 
 std::uint64_t ObserverDropCount() noexcept {
@@ -99,7 +107,8 @@ std::uint64_t ObserverDropCount() noexcept {
 std::uint64_t ObserverObservationCount() noexcept {
     return g_received_count.load(std::memory_order_relaxed) +
            g_sent_count.load(std::memory_order_relaxed) +
-           g_authenticated_count.load(std::memory_order_relaxed);
+           g_authenticated_count.load(std::memory_order_relaxed) +
+           g_tcp_accepted_count.load(std::memory_order_relaxed);
 }
 
 bool WaitForAuthenticated(ObserverMetadata& metadata,
@@ -138,6 +147,20 @@ bool WaitForSentI2NP(ObserverMetadata& metadata,
     try {
         std::lock_guard<std::mutex> guard(g_slot_mutex);
         std::memcpy(&metadata, &g_last_sent, sizeof(ObserverMetadata));
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool WaitForTcpAccepted(ObserverMetadata& metadata,
+                        std::uint32_t timeout_ms) noexcept {
+    if (!WaitForCounter(g_tcp_accepted_count, timeout_ms)) {
+        return false;
+    }
+    try {
+        std::lock_guard<std::mutex> guard(g_slot_mutex);
+        std::memcpy(&metadata, &g_last_tcp_accepted, sizeof(ObserverMetadata));
         return true;
     } catch (...) {
         return false;

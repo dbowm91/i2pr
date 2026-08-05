@@ -369,3 +369,18 @@ unchanged; the next time the Plan 086 lane is closed, the reverse
 runner can be invoked against real subprocesses and the bounded
 Plan 088 development decision vocabulary will resolve to whichever
 of the five exact values reflects the wire result.
+
+## Plan 091 forward direction update (2026-08-05)
+
+Plan 091 landed the i2pd direct driver preconditions
+(`SetNetID`, logger start/stop, `tcp_accepted` wait,
+symmetric `DeliveryStatus` send) and the i2pr launcher
+`tcp_connected` emission. The Plan 091 first clean
+committed-head reproduction recorded a TCP-established
+protocol failure with the i2pd NTCP2 transport reading
+`End of file` on the first handshake body read while the
+i2pr reports a data-phase `receiver_delivery_status_missing`
+terminal. The forward direction therefore remains
+unauthenticated and Plan 088 remains blocked on a follow-up
+ownership pass under a successor plan. See
+`plans/091-status.md` for the full closure record.

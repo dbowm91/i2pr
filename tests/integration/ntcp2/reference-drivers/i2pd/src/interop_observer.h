@@ -48,6 +48,11 @@ struct ObserverMetadata {
 void ObserveReceivedI2NP(const ObserverMetadata& metadata) noexcept;
 void ObserveSentI2NP(const ObserverMetadata& metadata) noexcept;
 void ObserveAuthenticated(const ObserverMetadata& metadata) noexcept;
+// Plan 091: TCP-stage observer seam. The observer records a
+// sanitized marker that the i2pd transport thread emits after the
+// real pinned NTCP2 accept succeeds and before any Noise handshake
+// byte is processed.
+void ObserveTcpAccepted(const ObserverMetadata& metadata) noexcept;
 
 // Sink management. The driver owns the sink; the observer never blocks.
 void ResetObserverSink() noexcept;
@@ -64,12 +69,18 @@ bool WaitForReceivedI2NP(ObserverMetadata& metadata,
                          std::uint32_t timeout_ms) noexcept;
 bool WaitForSentI2NP(ObserverMetadata& metadata,
                      std::uint32_t timeout_ms) noexcept;
+// Plan 091: TCP-stage wait primitive. Polls the observer sink for
+// the `tcp_accepted` counter and returns the metadata captured by
+// the patched `NTCP2Server::HandleAccept` path.
+bool WaitForTcpAccepted(ObserverMetadata& metadata,
+                        std::uint32_t timeout_ms) noexcept;
 
 #else
 
 inline void ObserveReceivedI2NP(const ObserverMetadata& /*metadata*/) noexcept {}
 inline void ObserveSentI2NP(const ObserverMetadata& /*metadata*/) noexcept {}
 inline void ObserveAuthenticated(const ObserverMetadata& /*metadata*/) noexcept {}
+inline void ObserveTcpAccepted(const ObserverMetadata& /*metadata*/) noexcept {}
 
 inline void ResetObserverSink() noexcept {}
 inline std::uint64_t ObserverDropCount() noexcept { return 0; }
@@ -85,6 +96,10 @@ inline bool WaitForReceivedI2NP(ObserverMetadata& /*metadata*/,
 }
 inline bool WaitForSentI2NP(ObserverMetadata& /*metadata*/,
                             std::uint32_t /*timeout_ms*/) noexcept {
+    return false;
+}
+inline bool WaitForTcpAccepted(ObserverMetadata& /*metadata*/,
+                               std::uint32_t /*timeout_ms*/) noexcept {
     return false;
 }
 

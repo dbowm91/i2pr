@@ -1291,6 +1291,65 @@ until the forward direction passes. See
 [plans/088-status.md](plans/088-status.md) for the closure
 records. NTCP2 stays experimental and non-advertised.
 
+### Plan 091 forward NTCP2 Noise-handshake corrective pass
+
+Plan 091 closes the bounded Plan 087 forward-direction Noise
+handshake work without broadening the Milestone 3 scope. It
+lands four i2pd direct driver preconditions and an i2pr
+launcher `tcp_connected` emission, retains an evidence-only
+reproduction of the open failure, and classifies the
+forward direction for the Plan 088 development decision
+without claiming a pass.
+
+Plan 091 lands four more i2pd direct driver corrections
+(`tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp`):
+
+- `i2p::context.SetNetID(cfg.network_id)` between
+  `i2p::crypto::InitCrypto(false)` and `i2p::context.Init()` —
+  the i2pd standalone daemon performs the same call; without
+  it `RouterContext::GetNetID()` returns the default
+  `I2PD_NET_ID` (=2) and the NTCP2 listener rejects the
+  SessionRequest with `networkID 99 mismatch. Expected 2`.
+- `i2p::log::Logger().SendTo(<data_dir>/i2pd.log)` plus
+  `Logger().Start()` after `InitCrypto` and `Logger().Stop()`
+  in `main()` before each `run_*` return. Without the
+  explicit `Start` the global `Log::Log` thread is not
+  running and `LogPrint` calls in the i2pd transport are
+  no-ops; the `Stop` in `main()` joins the background
+  thread and prevents the `terminate called without an
+  active exception` abort on shutdown.
+- `run_listen` waits boundedly for the i2pd transport to
+  record a real TCP accept through the Plan 064 observer
+  (`WaitForTcpAccepted`) and emits a `tcp_accepted` event
+  before continuing; without it the i2pd listener reported
+  `ntcp2_authenticated` only on stale observer slots from a
+  previous run.
+- `run_listen` composes a `DeliveryStatus` with the exact
+  correlation `message_id` and submits it through the real
+  i2pd transport (`transports.SendMessage(peer_ident_hash,
+  reply)`); without it the i2pr's `receive_delivery_status`
+  block reports `receiver_delivery_status_missing` and the
+  Plan 065 directional predicate cannot pass.
+
+The Plan 091 corrections landed on this host. The first
+clean committed-head forward attempt authenticated the i2pd
+listener, the i2pr dialer started, the i2pd NTCP2 transport
+accepted the TCP connection, the i2pd log shows
+`NTCP2: SessionRequest read error: End of file` (the i2pd
+transport read zero bytes on the first body read), and the
+i2pr status log shows `tcp_connected` immediately followed by
+`terminal, result: rejected, reason_code:
+receiver_delivery_status_missing`. The wire trace, the i2pd
+log, and the i2pr status do not yet agree on which side
+terminates the Noise handshake. The retained record is
+preserved at
+`/tmp/opencode/plan091-evidence/forward/forward-record.json`;
+see [plans/091-status.md](plans/091-status.md) for the
+closure record, exact live command, recorded digests, and
+the ownership analysis. Plan 088 remains blocked on a
+follow-up ownership pass under a successor plan. NTCP2 stays
+experimental and non-advertised.
+
 ### Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
 Plan 074 is historical execution authority. Plan 081 supersedes its active

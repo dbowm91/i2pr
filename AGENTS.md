@@ -1794,16 +1794,18 @@ Plan 078 attempt. Do not treat either capability probing or a stale guest as
 protocol evidence; consult `plans/080-status.md` for the qualified-lane
 record.
 
-## Current active sequence amendment (2026-08-04, Plan 090)
+## Current active sequence amendment (2026-08-05, Plan 091)
 
 The active authority is [Plan 085](plans/085-milestone-3-host-loopback-development-execution-roadmap.md),
 followed by Plan 086 (status correction + `host-loopback-development`
 lane enablement, **closed on this host**), Plan 087 (first real
 `i2pr -> i2pd` forward probe, implementation surface delivered
 and instrumented attempt recorded), Plan 090 (i2pd RouterInfo
-corrective pass: four behavior-neutral driver corrections, Plan 083
-pre-TCP classification, placement-owned scenario validation, focused
-regression tests, **corrections landed on this host**), and Plan 088
+corrective pass: four behavior-neutral driver corrections, **corrections
+landed on this host**), Plan 091 (forward NTCP2 Noise-handshake corrective
+pass: i2pd direct driver preconditions landed — `SetNetID`, explicit logger
+start/stop, `tcp_accepted` wait, symmetric `DeliveryStatus` send, **corrections
+landed on this host, forward direction still blocked**), and Plan 088
 (reverse `i2pd -> i2pr` probe and development decision), and the
 [Plan 072/079 gate amendment](plans/072-079-gate-amendment-plan-088.md)
 that moves the Plan 072 and Plan 079 gates from Plan 084 to Plan 088.
@@ -1852,22 +1854,57 @@ The driver also fails closed with
 `router-info-endpoint-mismatch` if the authoritative in-memory
 RouterInfo does not carry the exact configured NTCP2 endpoint.
 
-The Plan 090 first clean committed-head attempt authenticated
+The Plan 091 corrective pass added four more i2pd direct driver
+corrections:
+
+- `i2p::context.SetNetID(cfg.network_id)` between
+  `i2p::crypto::InitCrypto(false)` and `i2p::context.Init()` —
+  the i2pd standalone daemon performs the same call; without
+  it `RouterContext::GetNetID()` returns the default
+  `I2PD_NET_ID` (=2) and the NTCP2 listener rejects the
+  SessionRequest with `networkID 99 mismatch. Expected 2`.
+- `i2p::log::Logger().SendTo(<data_dir>/i2pd.log)` plus
+  `Logger().Start()` after `InitCrypto` and `Logger().Stop()`
+  in `main()` before each `run_*` return. Without the explicit
+  `Start` the global `Log::Log` thread is not running and
+  `LogPrint` calls in the i2pd transport are no-ops; the
+  `Stop` in `main()` joins the background thread and prevents
+  the `terminate called without an active exception` abort on
+  shutdown.
+- `run_listen` waits boundedly for the i2pd transport to
+  record a real TCP accept through the Plan 064 observer
+  (`WaitForTcpAccepted`) and emits a `tcp_accepted` event
+  before continuing; without it the i2pd listener reported
+  `ntcp2_authenticated` only on stale observer slots from a
+  previous run.
+- `run_listen` composes a `DeliveryStatus` with the exact
+  correlation `message_id` and submits it through the real
+  i2pd transport (`transports.SendMessage(peer_ident_hash,
+  reply)`); without it the i2pr's
+  `receive_delivery_status` block reports
+  `receiver_delivery_status_missing` and the Plan 065
+  directional predicate cannot pass.
+
+The Plan 091 first clean committed-head attempt authenticated
 the i2pd listener (`listener_ready`), the i2pr dialer started,
-then the NTCP2 Noise handshake closed the TCP socket with
-`Io(ExactIoError { kind: Closed })` before the i2pr initiator
-reached `ntcp2_authenticated`. The Plan 083 pre-TCP
-classifier mapped this to `terminal_result = pre_protocol_rejected`
-because no `tcp_connected` event was observed. The forward
-direction is therefore an authentic TCP-established protocol
-failure, not a passing Plan 087 result. The retained record is
-preserved at
-`/tmp/opencode/plan090-real-20260805174541-fresh/forward-record.json`;
-the i2pr status log is at
-`/tmp/opencode/plan090-real-20260805174541-fresh/raw/i2pr-status.jsonl`.
-See `plans/087-status.md` for the closure record, exact live
-command, recorded digests, and the bounded correction-surfaces
-contract.
+the i2pd NTCP2 transport accepted the TCP connection, the i2pd
+log shows `NTCP2: SessionRequest read error: End of file` (the
+i2pd transport read zero bytes on the first body read), and
+the i2pr status log shows `tcp_connected` immediately followed
+by `terminal, result: rejected, reason_code:
+receiver_delivery_status_missing`. The wire trace, the i2pd
+log, and the i2pr status do not yet agree on which side
+terminates the Noise handshake: the i2pr dialer enters
+`drive_initiator_handshake` and the runner serializes the
+forward direction as `terminal_result = protocol_rejected,
+highest_stage_reached = tcp_connected, reason_code =
+reference-events-missing` because the i2pd listener never
+emits `ntcp2_authenticated`. The retained record is preserved
+at `/tmp/opencode/plan091-evidence/forward/forward-record.json`;
+see `plans/091-status.md` for the closure record, exact live
+command, recorded digests, and the ownership analysis. Plan 088
+remains blocked on a follow-up ownership pass under a successor
+plan.
 
 Plan 082 provides the test-only `i2pr-interop ntcp2 prepare` and
 `validate-scenario` operations, authentic RouterInfo/hash preparation,
@@ -1884,30 +1921,27 @@ protocol execution on the constrained host under the development-only lane
 contract. Plan 086 closes as `host-loopback-development-ready` (or records
 `manual-isolated-fallback-required`) before Plan 087 begins. Plan 087
 closes as `passed` only after a TCP-authenticated
-`i2pr -> i2pd` first-instrumented pass; the Plan 090 instrumented
+`i2pr -> i2pd` first-instrumented pass; the Plan 091 instrumented
 attempt reached TCP authentication but the NTCP2 handshake closed
-before the i2pr initiator reached `ntcp2_authenticated`. Plan 087 must
+before the i2pd transport recorded a `SessionRequest` body. Plan 087 must
 close (as `passed` or as a localized defect that authenticates the
-data phase) before Plan 088 begins.
-
-Plan 090 closes as `passed` only after Plan 087 records
-`status = passed` with both an instrumented and a control record
-digest. The Plan 090 corrections are landed on this host; the
-forward direction did not pass. Plan 088 owns the reverse probe
-and the active development decision. On this host the recorded
-decision is `insufficient-evidence` because the Plan 090 forward
-direction recorded a TCP-established protocol failure and no
-`i2np_message_decoded` event has been retained. The Plan 090
-implementation surface is ready for a fresh attempt against a
-fixed i2pd driver or after a follow-up corrective pass. Plan 079
-remains blocked until `plans/088-status.md` records
-`decision = two-way-development-probe-passed`. Plan 072 remains
-inactive until `plans/088-status.md` records
-`decision = ambiguous-reference-divergence` with one exact
-role/stage diagnostic question. NTCP2 stays experimental and
-non-advertised. See `plans/082-status.md`, `plans/083-status.md`,
-`plans/084-status.md`, `plans/086-status.md`, `plans/087-status.md`, and
-`plans/088-status.md`.
+data phase) before Plan 088 begins. Plan 091 closes as `passed` only
+after Plan 087 records `status = passed` with both an instrumented
+and a control record digest; the Plan 091 corrections are landed on
+this host and the forward direction did not pass. The Plan 088 active
+development decision is `insufficient-evidence` because the Plan 091
+forward direction recorded a TCP-established protocol failure with
+the i2pd NTCP2 transport reading `End of file` on the first handshake
+body read while the i2pr reports a data-phase
+`receiver_delivery_status_missing` terminal. Plan 079 remains
+blocked until `plans/088-status.md` records `decision =
+two-way-development-probe-passed`. Plan 072 remains inactive until
+`plans/088-status.md` records `decision =
+ambiguous-reference-divergence` with one exact role/stage diagnostic
+question. NTCP2 stays experimental and non-advertised. See
+`plans/082-status.md`, `plans/083-status.md`, `plans/084-status.md`,
+`plans/086-status.md`, `plans/087-status.md`, `plans/088-status.md`, and
+`plans/091-status.md`.
 
 ## Plan 083 minimal i2pr-to-i2pd wire probe
 

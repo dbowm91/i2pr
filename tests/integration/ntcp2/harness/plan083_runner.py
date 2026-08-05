@@ -1166,6 +1166,14 @@ def execute_real_probe(
     increment("i2pd_listener", "started")
     listener_config = dict(inspect_config)
     listener_config["mode"] = "listen"
+    # Plan 091: the listener config must carry a unique scenario_id
+    # so the runner's wait_for_event does not collide with the
+    # inspect-mode events that were emitted before the unlink. The
+    # inspect-mode `listener_ready` event is bounded to the
+    # `minimal-i2pd-probe-inspect` scenario; the listener-mode
+    # `listener_ready` event must use the actual scenario id from
+    # the run_root layout.
+    listener_config["scenario_id"] = "minimal-i2pd-probe-listen"
     listener_events_path = output_dir / "events.ndjson"
     if listener_events_path.is_file():
         listener_events_path.unlink()
@@ -1270,7 +1278,10 @@ def execute_real_probe(
                 continue
             seen_i2pd_kinds.add(kind)
             side = "i2pd"
-            if kind == "ntcp2_authenticated":
+            if kind == "tcp_accepted":
+                record_event({"event_name": kind, "source_side": side, "event_sha256": marker})
+                self._stages.advance_to(TCP_CONNECTED)
+            elif kind == "ntcp2_authenticated":
                 record_event({"event_name": kind, "source_side": side, "event_sha256": marker})
             elif kind == "frame_emitted":
                 record_event({"event_name": kind, "source_side": side, "event_sha256": marker})
@@ -1302,10 +1313,18 @@ def execute_real_probe(
                     record_event({"event_name": "listener_ready", "source_side": side, "event_sha256": "0" * 64})
                 elif phase == "tcp_connected":
                     record_event({"event_name": "tcp_connected", "source_side": side, "event_sha256": "0" * 64})
+                elif phase == "noise_message1_sent":
+                    record_event({"event_name": "noise_message1_sent", "source_side": side, "event_sha256": "0" * 64})
+                elif phase == "noise_message2_received":
+                    record_event({"event_name": "noise_message2_received", "source_side": side, "event_sha256": "0" * 64})
+                elif phase == "noise_authenticated":
+                    record_event({"event_name": "noise_authenticated", "source_side": side, "event_sha256": "0" * 64})
                 elif phase == "ntcp2_authenticated":
                     record_event({"event_name": "ntcp2_authenticated", "source_side": side, "event_sha256": "0" * 64})
                 elif phase == "frame_emitted":
                     record_event({"event_name": "frame_emitted", "source_side": side, "event_sha256": "0" * 64})
+                elif phase == "frame_decoded":
+                    record_event({"event_name": "frame_decoded", "source_side": side, "event_sha256": "0" * 64})
                 elif phase == "frame_authenticated_and_decrypted":
                     record_event({"event_name": "frame_authenticated_and_decrypted", "source_side": side, "event_sha256": "0" * 64})
                 elif phase == "i2np_message_decoded":

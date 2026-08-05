@@ -11,6 +11,30 @@ pub const STATUS_SCHEMA: u8 = 1;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StatusPhase {
     ListenerReady,
+    /// Plan 091: emitted by the initiator immediately after the
+    /// bounded `TcpStream::connect` succeeds and before the first
+    /// Noise handshake byte is written. The event is the TCP-stage
+    /// authority; a post-connect socket close may not serialise as a
+    /// pre-protocol rejection once this event has been emitted.
+    TcpConnected,
+    /// Plan 091: emitted by the initiator when the Noise
+    /// `SessionRequest` write completes (or fails with a typed
+    /// bounded stage-specific reason).
+    NoiseMessage1Sent,
+    /// Plan 091: emitted by the initiator when the Noise
+    /// `SessionCreated` decode completes.
+    NoiseMessage2Received,
+    /// Plan 091: emitted by the initiator when the Noise
+    /// `SessionConfirmed` part-one decrypt + part-two payload decode
+    /// complete and the responder's RouterInfo is verified.
+    NoiseAuthenticated,
+    /// Plan 091: emitted by the initiator when one bounded
+    /// authenticated frame write completes.
+    FrameEmitted,
+    /// Plan 091: emitted by the initiator when the responder reports
+    /// (via the reference event stream) that the framed I2NP message
+    /// was decoded.
+    FrameDecoded,
     Terminal,
 }
 
@@ -34,6 +58,10 @@ pub enum StatusReason {
     PeerRouterInfoInvalid,
     UnsupportedPaddingProfile,
     ListenerFailed,
+    /// Plan 091: emitted as the bounded reason for the
+    /// ``tcp_connected`` status phase. The runner advances the TCP
+    /// stage tracker on observing this exact reason.
+    TcpConnectSucceeded,
     HandshakeAuthenticated,
     I2npExchangeComplete,
     DirectionalDataPhaseComplete,
@@ -91,6 +119,12 @@ pub enum StatusReason {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StatusCounters {
     pub listener_ready: u32,
+    /// Plan 091: TCP-stage authority counter. The initiator increments
+    /// this counter exactly once when the bounded TcpStream::connect
+    /// succeeds. The canonical Plan 083 runner advances to
+    /// ``tcp_connected`` only after observing the matching phase in
+    /// the i2pr JSONL status stream.
+    pub tcp_connected: u32,
     pub authenticated: u32,
     pub frames_sent: u32,
     pub frames_received: u32,
@@ -172,11 +206,12 @@ fn status_json(
     counters: StatusCounters,
 ) -> String {
     format!(
-        "{{\"schema\":{STATUS_SCHEMA},\"type\":\"i2pr-interop-status\",\"scenario_id\":\"{scenario_id}\",\"phase\":\"{}\",\"result\":\"{}\",\"reason_code\":\"{}\",\"counters\":{{\"listener_ready\":{},\"authenticated\":{},\"frames_sent\":{},\"frames_received\":{},\"i2np_sent\":{},\"i2np_received\":{},\"delivery_status_message_id\":{},\"expected_peer_router_hash_sha256\":\"{}\"}}}}",
+        "{{\"schema\":{STATUS_SCHEMA},\"type\":\"i2pr-interop-status\",\"scenario_id\":\"{scenario_id}\",\"phase\":\"{}\",\"result\":\"{}\",\"reason_code\":\"{}\",\"counters\":{{\"listener_ready\":{},\"tcp_connected\":{},\"authenticated\":{},\"frames_sent\":{},\"frames_received\":{},\"i2np_sent\":{},\"i2np_received\":{},\"delivery_status_message_id\":{},\"expected_peer_router_hash_sha256\":\"{}\"}}}}",
         phase_name(phase),
         result_name(result),
         reason_name(reason),
         counters.listener_ready,
+        counters.tcp_connected,
         counters.authenticated,
         counters.frames_sent,
         counters.frames_received,
@@ -190,6 +225,12 @@ fn status_json(
 fn phase_name(value: StatusPhase) -> &'static str {
     match value {
         StatusPhase::ListenerReady => "listener_ready",
+        StatusPhase::TcpConnected => "tcp_connected",
+        StatusPhase::NoiseMessage1Sent => "noise_message1_sent",
+        StatusPhase::NoiseMessage2Received => "noise_message2_received",
+        StatusPhase::NoiseAuthenticated => "noise_authenticated",
+        StatusPhase::FrameEmitted => "frame_emitted",
+        StatusPhase::FrameDecoded => "frame_decoded",
         StatusPhase::Terminal => "terminal",
     }
 }
@@ -213,6 +254,7 @@ pub(crate) fn reason_name(value: StatusReason) -> &'static str {
         StatusReason::PeerRouterInfoInvalid => "peer_router_info_invalid",
         StatusReason::UnsupportedPaddingProfile => "unsupported_padding_profile",
         StatusReason::ListenerFailed => "listener_failed",
+        StatusReason::TcpConnectSucceeded => "tcp_connect_succeeded",
         StatusReason::HandshakeAuthenticated => "handshake_authenticated",
         StatusReason::I2npExchangeComplete => "i2np_exchange_complete",
         StatusReason::DirectionalDataPhaseComplete => "directional_data_phase_complete",

@@ -1,17 +1,16 @@
 --- a/libi2pd/NTCP2.cpp
 +++ b/libi2pd/NTCP2.cpp
-@@ -24,6 +24,10 @@
+@@ -24,6 +24,9 @@
  #include "util.h"
  #include "Socks5.h"
  #include "NTCP2.h"
 +#ifdef I2PD_INTEROP_OBSERVER
 +#include "interop_observer.h"
 +#endif
-+
  
  #if defined(__linux__) && !defined(_NETINET_IN_H)
  	#include <linux/in6.h>
-@@ -612,6 +616,27 @@
+@@ -612,6 +615,27 @@
  
  	void NTCP2Session::Established ()
  	{
@@ -39,7 +38,7 @@
  		m_IsEstablished = true;
  		m_Version = (uint8_t)m_Establisher->m_CryptoType - 2;
  		m_Establisher.reset (nullptr);
-@@ -1333,6 +1358,31 @@
+@@ -1333,6 +1357,31 @@
  					{
  						memcpy (nextMsg->GetNTCP2Header (), frame + offset, size);
  						nextMsg->FromNTCP2 ();
@@ -71,7 +70,7 @@
  						m_Handler.PutNextMessage (std::move (nextMsg));
  					}
  					else
-@@ -1451,6 +1501,37 @@
+@@ -1451,6 +1500,37 @@
  
  	void NTCP2Session::HandleI2NPMsgsSent (const boost::system::error_code& ecode, std::size_t bytes_transferred, std::vector<std::shared_ptr<I2NPMessage> > msgs)
  	{
@@ -109,3 +108,27 @@
  		HandleNextFrameSent (ecode, bytes_transferred);
  		// msgs get destroyed here
  	}
+@@ -1974,6 +2054,23 @@
+ 	{
+ 		if (!error && conn)
+ 		{
++#ifdef I2PD_INTEROP_OBSERVER
++			// Plan 091 TCP-stage observer seam. Activated once
++			// the real pinned NTCP2 transport has accepted a
++			// TCP connection from the i2pr initiator and before
++			// any Noise handshake byte is processed. Captures
++			// the monotonic timestamp and the local listener
++			// identity without altering transport control flow.
++			{
++				i2pr::i2pdinterop::ObserverMetadata observer_md{};
++				std::strncpy (observer_md.transport, "ntcp2", sizeof (observer_md.transport) - 1);
++				observer_md.monotonic_ms = static_cast<std::uint64_t> (
++					std::chrono::duration_cast<std::chrono::milliseconds> (
++						std::chrono::steady_clock::now().time_since_epoch ())
++						.count ());
++				i2pr::i2pdinterop::ObserveTcpAccepted (observer_md);
++			}
++#endif
+ 			boost::system::error_code ec;
+ 			auto ep = conn->GetSocket ().remote_endpoint(ec);
+ 			if (!ec)

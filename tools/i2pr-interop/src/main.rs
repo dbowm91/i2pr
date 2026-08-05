@@ -515,6 +515,7 @@ async fn execute_wire(
             &scope,
             &root,
             &mut listener,
+            &mut status,
             local,
             &scenario,
             deadlines,
@@ -528,6 +529,7 @@ async fn execute_wire(
             &service,
             &scope,
             &root,
+            &mut status,
             local,
             peer.as_ref().expect("initiator peer was validated"),
             &scenario,
@@ -563,6 +565,7 @@ async fn execute_responder(
     scope: &i2pr_runtime::ChildScope,
     cancellation: &CancellationToken,
     listener: &mut i2pr_runtime::ListenerHandle,
+    status: &mut StatusWriter,
     local: LocalState,
     scenario: &Scenario,
     deadlines: Ntcp2RuntimeDeadlines,
@@ -585,6 +588,24 @@ async fn execute_responder(
         .await
         .map_err(|_| LauncherError::ResponderHandshakeTimeout)?
         .ok_or(LauncherError::ResponderTcpAcceptMissing)?;
+    // Plan 091: emit the TCP-stage authority immediately after the
+    // bounded TCP accept succeeds. The responder-side TCP accept is
+    // the canonical event the runner advances to `tcp_connected` on.
+    // Without this event the runner's pre-TCP classifier collapses
+    // every post-TCP Noise failure into a typed pre-protocol
+    // rejection, masking the real first-flight result.
+    counters.tcp_connected = 1;
+    if status
+        .emit(
+            StatusPhase::TcpConnected,
+            StatusResult::Ready,
+            StatusReason::TcpConnectSucceeded,
+            counters.clone(),
+        )
+        .is_err()
+    {
+        return Err(LauncherError::StatusOutputUnavailable);
+    }
     let ephemeral =
         X25519PrivateKey::generate(&mut OsRng).map_err(|_| LauncherError::StateInvalid)?;
     let state = ResponderState::new(
@@ -782,6 +803,7 @@ async fn execute_initiator(
     service: &Ntcp2RuntimeService,
     scope: &i2pr_runtime::ChildScope,
     cancellation: &CancellationToken,
+    status: &mut StatusWriter,
     local: LocalState,
     peer: &PeerState,
     scenario: &Scenario,
@@ -812,6 +834,29 @@ async fn execute_initiator(
             eprintln!("debug: dial failed: {:?}", e);
             LauncherError::DialFailed
         })?;
+    // Plan 091: emit the TCP-stage authority immediately after the
+    // bounded TcpStream::connect succeeds and before any Noise
+    // handshake byte is written. The post-connect socket close may
+    // not serialise as a pre-protocol rejection once this event has
+    // been emitted; the canonical Plan 083 runner advances the stage
+    // tracker on observing this phase. Without this event the
+    // runner's pre-TCP classifier collapses every post-TCP Noise
+    // failure into a typed pre-protocol rejection, masking the real
+    // first-flight result.
+    let mut counters_after_tcp = counters.clone();
+    counters_after_tcp.tcp_connected = 1;
+    if status
+        .emit(
+            StatusPhase::TcpConnected,
+            StatusResult::Ready,
+            StatusReason::TcpConnectSucceeded,
+            counters_after_tcp.clone(),
+        )
+        .is_err()
+    {
+        return Err(LauncherError::StatusOutputUnavailable);
+    }
+    *counters = counters_after_tcp;
     let ephemeral =
         X25519PrivateKey::generate(&mut OsRng).map_err(|_| LauncherError::StateInvalid)?;
     let state = InitiatorState::new(

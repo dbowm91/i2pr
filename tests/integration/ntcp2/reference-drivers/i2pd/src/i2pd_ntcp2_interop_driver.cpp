@@ -885,8 +885,9 @@ bool initialise_i2pd_runtime(const DriverConfig& cfg, EventWriter& writer,
         set_string_option("datadir", cfg.data_dir.string());
         set_int_option("netid", cfg.network_id);
         set_bool_option("reservedrange", false);
-        set_string_option("log", "none");
-        set_string_option("loglevel", "none");
+        set_string_option("log", "file");
+        set_string_option("logfile", (cfg.data_dir / "i2pd.log").string());
+        set_string_option("loglevel", "debug");
         set_string_option("family", "i2pr-interop-driver");
         set_bool_option("trust.enabled", false);
         set_int_option("share", 100);
@@ -937,6 +938,20 @@ bool initialise_i2pd_runtime(const DriverConfig& cfg, EventWriter& writer,
         failure_reason = std::string("crypto-init:") + exc.what();
         return false;
     }
+
+    // Plan 091: set the network ID on RouterContext. The i2pd
+    // standalone daemon reads `netid` and calls `SetNetID` between
+    // `InitCrypto` and `context.Init`. The driver must do the same
+    // or `RouterContext::GetNetID` returns the default
+    // `I2PD_NET_ID` (=2) and the NTCP2 listener rejects the
+    // SessionRequest with `networkID 99 mismatch. Expected 2`.
+    i2p::context.SetNetID(cfg.network_id);
+
+    // Plan 091: start the logger so i2pd transport warnings
+    // (KDF failure, MAC mismatch, etc.) are visible in the driver
+    // log file. The driver stops the logger in main() before exit.
+    i2p::log::Logger().SendTo((cfg.data_dir / "i2pd.log").string());
+    i2p::log::Logger().Start();
 
     // Step 6: context.Init(). This loads the local identity (or
     // generates fresh keys) and produces a signed local RouterInfo.
@@ -1178,6 +1193,21 @@ int run_listen(const DriverConfig& cfg) {
     emit_event(writer, cfg, "listener_ready");
     i2pr::i2pdinterop::ResetObserverSink();
 
+    // Plan 091: the listener waits boundedly for the i2pd transport
+    // to record that the real pinned NTCP2 transport accepted a TCP
+    // connection from the i2pr initiator. The wait primitive only
+    // ever reads observer metadata; it never fabricates data.
+    i2pr::i2pdinterop::ObserverMetadata tcp_md{};
+    const std::uint32_t tcp_accept_timeout_ms = cfg.handshake_timeout_ms;
+    if (!i2pr::i2pdinterop::WaitForTcpAccepted(tcp_md, tcp_accept_timeout_ms)) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt,
+                   std::string("listening-tcp-accept-timeout"));
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
+    emit_event(writer, cfg, "tcp_accepted");
+
     // Plan 083: the listener waits boundedly for the peer to
     // complete a real NTCP2 handshake and deliver one authenticated
     // I2NP frame. The wait primitives only ever read observer
@@ -1216,6 +1246,49 @@ int run_listen(const DriverConfig& cfg) {
     emit_event(writer, cfg, "i2np_message_decoded",
                recv_md.delivery_status_message_id,
                recv_md.i2np_type, recv_md.frame_sequence);
+
+    // Plan 091: the listener composes a DeliveryStatus with the same
+    // correlation message_id and writes it back to the i2pr through
+    // the real i2pd transport. The i2pr's data phase requires a
+    // DeliveryStatus with the exact correlation message_id; without
+    // this symmetric reply the i2pr reports
+    // `receiver_delivery_status_missing` and the directional predicate
+    // cannot pass.
+    {
+        std::ifstream handle(cfg.peer_router_info_path, std::ios::binary);
+        std::vector<std::uint8_t> bytes(
+            (std::istreambuf_iterator<char>(handle)),
+            std::istreambuf_iterator<char>{});
+        if (handle.good() && !bytes.empty()) {
+            i2p::data::RouterInfo peer_info(bytes.data(), bytes.size());
+            auto peer_ident_hash = peer_info.GetIdentity()->GetIdentHash();
+            auto reply = i2p::CreateDeliveryStatusMsg(
+                cfg.delivery_status_message_id);
+            try {
+                auto future = i2p::transport::transports.SendMessage(
+                    peer_ident_hash, reply);
+                (void)future.wait_for(std::chrono::milliseconds(0));
+            } catch (const std::exception& exc) {
+                emit_event(writer, cfg, "terminal_rejected", std::nullopt,
+                           std::nullopt, std::nullopt,
+                           std::string("listener-send-message:") + exc.what());
+                shutdown_runtime(rt, nullptr, nullptr);
+                return 66;
+            }
+            i2pr::i2pdinterop::ObserverMetadata sent_md{};
+            const std::uint32_t send_timeout_ms = cfg.handshake_timeout_ms;
+            if (!i2pr::i2pdinterop::WaitForSentI2NP(sent_md, send_timeout_ms)) {
+                emit_event(writer, cfg, "terminal_rejected", std::nullopt,
+                           std::nullopt, std::nullopt,
+                           std::string("listener-send-timeout"));
+                shutdown_runtime(rt, nullptr, nullptr);
+                return 66;
+            }
+            emit_event(writer, cfg, "frame_emitted",
+                       sent_md.delivery_status_message_id,
+                       sent_md.i2np_type, sent_md.frame_sequence);
+        }
+    }
 
     shutdown_runtime(rt, nullptr, nullptr);
     emit_event(writer, cfg, "terminal_clean");
@@ -1382,13 +1455,19 @@ int main(int argc, char** argv) {
         return 65;
     }
     if (cfg.mode == "inspect") {
-        return run_inspect(cfg);
+        int rc = run_inspect(cfg);
+        i2p::log::Logger().Stop();
+        return rc;
     }
     if (cfg.mode == "listen") {
-        return run_listen(cfg);
+        int rc = run_listen(cfg);
+        i2p::log::Logger().Stop();
+        return rc;
     }
     if (cfg.mode == "dial") {
-        return run_dial(cfg);
+        int rc = run_dial(cfg);
+        i2p::log::Logger().Stop();
+        return rc;
     }
     std::cerr << "i2pd-direct-driver: mode-not-allowlisted: " << cfg.mode
               << std::endl;

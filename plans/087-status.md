@@ -319,19 +319,23 @@ the i2pd direct driver's emitted `router.info` carries zero
 
 ## Future plan unblocking
 
-| Plan | Precondition                                              | Status after Plan 087  |
+| Plan | Precondition                                              | Status after Plan 091  |
 | ---  | ---                                                       | ---                    |
 | 088  | Plan 087 must record `passed`                              | remains blocked         |
 | 079  | Plan 088 must record `two-way-development-probe-passed`     | remains blocked         |
 | 072  | Plan 088 must record `ambiguous-reference-divergence`      | remains inactive        |
-| 064/076 corrective pass | i2pd direct driver must emit RouterInfo with addresses | required next           |
+| Plan 091 ownership pass | i2pr vs i2pd ownership of the wire-level termination must be classified | required next |
 
-Once a Plan 064/076 corrective pass lands the bounded
-fix and the corresponding deterministic unit test, the
-Plan 087 forward attempt above may be re-executed against
-the fixed driver binary without further runner changes and
-either close Plan 087 as `passed` or as a localized
-defect that authenticates TCP before any retry. The Plan
-088 reverse attempt then becomes executable on the same
-fixed driver binary. Plan 087 remains open under this
-precondition.
+Plan 091 landed the i2pd direct driver corrective preconditions
+(``SetNetID``, explicit logger start/stop, ``tcp_accepted``
+wait, symmetric ``DeliveryStatus`` send). It did not close
+Plan 087 as `passed`; the forward direction still terminates
+with the i2pd NTCP2 transport reading `End of file` on the
+SessionRequest body while the i2pr reports a data-phase
+``receiver_delivery_status_missing`` terminal. The diagnostic
+surface is in place (per-direction counters, intermediate
+phase emissions, file-scoped i2pd log) and the bounded
+forward record is retained at
+``/tmp/opencode/plan091-evidence/forward/forward-record.json``.
+Plan 088 may not run before a follow-up ownership pass
+isolates the wire-level termination to one side.
