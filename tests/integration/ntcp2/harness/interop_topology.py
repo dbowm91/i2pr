@@ -104,6 +104,104 @@ class ProcessPlacement:
 
 
 @dataclass(frozen=True)
+class RunResult:
+    """Result of a placement-owned synchronous subprocess invocation.
+
+    ``stdout`` is populated only when ``capture_stdout=True`` was
+    requested on :meth:`HostLoopbackDevelopmentPlacement.run`; the
+    default streaming variant returns an empty buffer. ``returncode``
+    is the child exit status; ``stderr`` is reserved for future
+    capture but is currently empty because stderr is folded into
+    the bounded log file.
+    """
+
+    returncode: int
+    stdout: bytes = b""
+    stderr: bytes = b""
+
+
+@dataclass(frozen=True)
+class PlacementReapDisposition:
+    """Disposition of a placement-owned bounded reap.
+
+    ``escalation`` records the path taken: ``already-exited`` when
+    the child had already returned before reap started,
+    ``terminated`` when SIGTERM produced a clean exit,
+    ``killed`` when SIGKILL was required after a SIGTERM timeout,
+    and ``kill-timeout`` when SIGKILL itself did not complete in
+    the bounded window. ``elapsed_seconds`` is the wall-clock time
+    the placement spent on the reap so the runner may report the
+    actual cleanup latency.
+    """
+
+    pid: int
+    returncode: int | None
+    escalation: str
+    elapsed_seconds: float
+
+
+@dataclass
+class PlacementProcess:
+    """Handle to an async child started via ``HostLoopbackDevelopmentPlacement.popen``.
+
+    The placement owns the child subprocess and the bounded log
+    handle. ``is_alive`` returns ``True`` while the child is
+    running and ``False`` once the child has been reaped.
+    ``terminate`` and ``kill`` are thin pass-throughs to
+    :class:`subprocess.Popen`; the placement's
+    :meth:`HostLoopbackDevelopmentPlacement.reap` is the bounded
+    owner of the cleanup sequence and the only path that closes
+    the captured log handle.
+    """
+
+    placement: "HostLoopbackDevelopmentPlacement"
+    proc: subprocess.Popen
+    pid: int
+    argv: tuple
+    log_path: Path
+    log_handle: Any | None = None
+
+    def is_alive(self) -> bool:
+        """Return ``True`` while the child handle is still running.
+
+        The handle is considered alive until the placement's
+        :meth:`HostLoopbackDevelopmentPlacement.reap` collects the
+        exit status. ``poll()`` returning ``None`` is the canonical
+        subprocess API for that state.
+        """
+
+        return self.proc.poll() is None
+
+    def terminate(self) -> None:
+        """Send SIGTERM to the child (best-effort)."""
+
+        try:
+            self.proc.terminate()
+        except ProcessLookupError:
+            pass
+
+    def kill(self) -> None:
+        """Send SIGKILL to the child (best-effort)."""
+
+        try:
+            self.proc.kill()
+        except ProcessLookupError:
+            pass
+
+    def close_log(self) -> None:
+        """Close the captured log file (idempotent)."""
+
+        handle = getattr(self, "log_handle", None)
+        if handle is None:
+            return
+        try:
+            handle.close()
+        except OSError:
+            pass
+        self.log_handle = None
+
+
+@dataclass(frozen=True)
 class HostLoopbackDevelopmentPlacement:
     """Plan 086 bounded host-direct placement for the development lane.
 
@@ -209,13 +307,21 @@ class HostLoopbackDevelopmentPlacement:
         *,
         timeout_seconds: float,
         extra_environment: Mapping[str, str] | None = None,
-    ) -> subprocess.CompletedProcess[bytes]:
-        """Own the subprocess invocation. Captures stdout to the log path.
+        capture_stdout: bool = False,
+    ) -> "RunResult":
+        """Own the subprocess invocation. By default routes output to the log path.
+
+        When ``capture_stdout`` is ``True`` the placement captures the
+        child stdout to a bounded in-memory buffer (in addition to
+        appending it to the bounded log file) and returns it via
+        :class:`RunResult.stdout`. The buffer is bounded to
+        ``max_log_bytes`` so the placement never grows without bound.
+        When ``capture_stdout`` is ``False`` the placement streams
+        child output only to the log file.
 
         The placement never composes a shell, never invokes sudo, never
         exposes the environment to the child, and never reads stdout
-        back into the runner. The bounded log file is the only path
-        that carries the subprocess output.
+        back into the runner.
         """
 
         import os
@@ -234,37 +340,59 @@ class HostLoopbackDevelopmentPlacement:
                 env[key] = value
         log_path = Path(self.log_path)
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        captured = bytearray()
         with log_path.open("ab") as handle:
             handle.write(
                 f"$ {' '.join(command)}\n".encode("utf-8")
             )
-            completed = subprocess.run(
-                command,
-                stdout=handle,
-                stderr=subprocess.STDOUT,
-                env=env,
-                timeout=timeout_seconds,
-                check=False,
-            )
+            if capture_stdout:
+                completed = subprocess.run(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    timeout=timeout_seconds,
+                    check=False,
+                )
+                captured.extend(completed.stdout or b"")
+                if len(captured) > self.max_log_bytes:
+                    del captured[: len(captured) - self.max_log_bytes]
+                handle.write(bytes(captured))
+            else:
+                completed = subprocess.run(
+                    command,
+                    stdout=handle,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    timeout=timeout_seconds,
+                    check=False,
+                )
         try:
             if log_path.stat().st_size > self.max_log_bytes:
                 with log_path.open("rb+") as handle:
                     handle.truncate(self.max_log_bytes)
         except OSError:
             pass
-        return completed
+        return RunResult(
+            returncode=int(completed.returncode),
+            stdout=bytes(captured) if capture_stdout else b"",
+            stderr=b"",
+        )
 
     def popen(
         self,
         argv: Sequence[str],
         *,
         extra_environment: Mapping[str, str] | None = None,
-    ) -> subprocess.Popen[bytes]:
+    ) -> "PlacementProcess":
         """Own the subprocess invocation for long-running processes.
 
         The placement captures stdout and stderr to the bounded log
         file so the runner never reaches around the placement. The
         subprocess is detached from the runner's controlling terminal.
+        The returned :class:`PlacementProcess` is the only owner of
+        the child handle, and the placement is the only owner of the
+        child teardown.
         """
 
         import os
@@ -285,13 +413,196 @@ class HostLoopbackDevelopmentPlacement:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_handle = log_path.open("ab")
         log_handle.write(f"$ {' '.join(command)}\n".encode("utf-8"))
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             command,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=True,
         )
+        return PlacementProcess(
+            placement=self,
+            proc=proc,
+            pid=int(proc.pid),
+            argv=tuple(command),
+            log_path=log_path,
+            log_handle=log_handle,
+        )
+
+    def reap(
+        self,
+        proc: "PlacementProcess",
+        *,
+        terminate_timeout: float = 10.0,
+        kill_timeout: float = 5.0,
+    ) -> "PlacementReapDisposition":
+        """Bounded terminate-then-kill reap of an async placement-owned process.
+
+        The placement first sends SIGTERM to the process group and
+        waits up to ``terminate_timeout`` seconds for a clean exit.
+        If the child is still alive the placement escalates to SIGKILL
+        and waits up to ``kill_timeout`` seconds for the kill to
+        complete. The disposition carries the exit code (or
+        ``None``), the timeout used, and the escalation label.
+
+        After the reap sequence completes the placement closes the
+        captured log handle so no file descriptor is leaked.
+        """
+
+        if not isinstance(proc, PlacementProcess):
+            raise TopologyContractError("host-loopback-reap-non-placement-process")
+        if proc.placement is not self:
+            raise TopologyContractError("host-loopback-reap-foreign-process")
+        try:
+            if not proc.is_alive():
+                returncode = proc.proc.returncode
+                return PlacementReapDisposition(
+                    pid=proc.pid,
+                    returncode=returncode,
+                    escalation="already-exited",
+                    elapsed_seconds=0.0,
+                )
+            import time
+
+            start = time.monotonic()
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                proc.proc.wait(timeout=terminate_timeout)
+                return PlacementReapDisposition(
+                    pid=proc.pid,
+                    returncode=int(proc.proc.returncode),
+                    escalation="terminated",
+                    elapsed_seconds=time.monotonic() - start,
+                )
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                proc.proc.wait(timeout=kill_timeout)
+                return PlacementReapDisposition(
+                    pid=proc.pid,
+                    returncode=int(proc.proc.returncode),
+                    escalation="killed",
+                    elapsed_seconds=time.monotonic() - start,
+                )
+            except subprocess.TimeoutExpired:
+                return PlacementReapDisposition(
+                    pid=proc.pid,
+                    returncode=None,
+                    escalation="kill-timeout",
+                    elapsed_seconds=time.monotonic() - start,
+                )
+        finally:
+            proc.close_log()
+
+    def reap_in_order(
+        self,
+        procs: Sequence["PlacementProcess"],
+        *,
+        terminate_timeout: float = 10.0,
+        kill_timeout: float = 5.0,
+    ) -> list["PlacementReapDisposition"]:
+        """Reap a sequence of placement-owned processes in declared order.
+
+        The placement sends SIGTERM to the first handle and waits for
+        the timeout before escalating, then walks the rest of the
+        list. The runner uses this for the bounded dialer-then-listener
+        teardown so the dialer can drain its queues before the
+        listener drops the bound socket.
+
+        Each ``PlacementProcess`` is reaped through its own placement
+        so a runner-managed sequence may mix a reference-owned
+        listener with an i2pr-owned dialer. The ``reap()`` foreign
+        guard still rejects raw ``subprocess.Popen`` handles.
+        """
+
+        dispositions = []
+        for proc in procs:
+            if not isinstance(proc, PlacementProcess):
+                raise TopologyContractError("host-loopback-reap-non-placement-process")
+            dispositions.append(
+                proc.placement.reap(
+                    proc,
+                    terminate_timeout=terminate_timeout,
+                    kill_timeout=kill_timeout,
+                )
+            )
+        return dispositions
+
+    def read_event_file(
+        self,
+        events_path: Path,
+    ) -> list[dict[str, Any]]:
+        """Read an NDJSON events file produced by an async child.
+
+        The placement parses the file (created by ``popen``) and
+        returns the list of structured events emitted so far. The
+        helper is a pure reader; it never mutates the file or the
+        running child. A missing or unreadable file returns an empty
+        list so the caller can poll incrementally.
+        """
+
+        from pathlib import Path as _Path
+
+        events_path = _Path(events_path)
+        if not events_path.is_file():
+            return []
+        try:
+            raw = events_path.read_text(encoding="utf-8")
+        except OSError:
+            return []
+        events: list[dict[str, Any]] = []
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                events.append(payload)
+        return events
+
+    def wait_for_event(
+        self,
+        events_path: Path,
+        event_kind: str,
+        *,
+        timeout_seconds: float,
+        poll_interval_seconds: float = 0.05,
+    ) -> dict[str, Any] | None:
+        """Poll the events file until ``event_kind`` appears or timeout.
+
+        The placement reads the events file from the top on every
+        poll because the i2pd direct driver truncates and reopens
+        the file at mode boundaries (inspect/listen/dial). A polling
+        adapter would otherwise miss the early ``listener_ready``
+        emitted during a single file lifetime.
+        """
+
+        import time
+        from pathlib import Path as _Path
+
+        events_path = _Path(events_path)
+        deadline = time.monotonic() + timeout_seconds
+        seen: list[str] = []
+        while time.monotonic() < deadline:
+            for event in self.read_event_file(events_path):
+                kind = str(event.get("event_kind", ""))
+                marker = str(event.get("event_sha256", "0" * 64))
+                if kind and (kind, marker) not in seen:
+                    seen.append((kind, marker))
+                if kind == event_kind:
+                    return event
+            time.sleep(poll_interval_seconds)
+        return None
 
 
 class InteropTopology(Protocol):
@@ -387,9 +698,12 @@ __all__ = [
     "InteropTopology",
     "PRIVILEGED_PRIVILEGE_MODEL",
     "PRIVILEGED_TOPOLOGY_KIND",
+    "PlacementProcess",
+    "PlacementReapDisposition",
     "ProcessPlacement",
     "ROOTLESS_PRIVILEGE_MODEL",
     "ROOTLESS_TOPOLOGY_KIND",
+    "RunResult",
     "TopologyContractError",
     "normalize_description",
     "register_topology",

@@ -265,17 +265,23 @@ def _detect_synthetic_profile_use(argv: list[str]) -> int | None:
 
 
 def _run_preflight(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
-    """Plan 086 listener-only preflight that never starts a dialer.
+    """Plan 086 concurrent placement-owned preflight.
 
-    The preflight validates the lane, prepares the i2pr state, runs
-    the i2pd driver in inspect mode, renders the strict scenario,
-    and starts the listener with the measured i2pd direct driver.
-    It terminates before any peer connection completes and writes
-    a sanitized record. The preflight is the only path the
-    Plan 086 closure may use to validate the lane contract.
+    The wrapper dispatches to ``preflight_runner.execute_concurrent_preflight``
+    by default because the concurrent path proves the listener is
+    alive when the dialer starts and consumes both event streams
+    concurrently under the placement-owned subprocess surface. The
+    preflight validates the lane, prepares the i2pr state, runs the
+    i2pd driver in inspect mode, copies the i2pd RouterInfo to the
+    scenario exchange path, renders the strict scenario, and
+    concurrently launches the i2pd listener and the i2pr dialer.
+
+    The legacy ``execute_listener_preflight`` path remains
+    available through the bounded listener-only contract surface;
+    the concurrent preflight is the default.
 
     Returns the record and a boolean indicating whether the
-    preflight reached the authentic ``listener_ready`` event.
+    preflight reached the highest data-phase observation.
     """
 
     import preflight_runner as runner
@@ -292,7 +298,7 @@ def _run_preflight(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
         if args.delivery_status_message_id.startswith("0x")
         else int(args.delivery_status_message_id)
     )
-    outcome = runner.execute_listener_preflight(
+    outcome = runner.execute_concurrent_preflight(
         repo_root=args.repo_root,
         run_root=args.run_root,
         run_id=args.run_id,

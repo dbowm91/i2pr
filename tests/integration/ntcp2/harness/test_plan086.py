@@ -182,6 +182,159 @@ class Plan086PlacementTests(unittest.TestCase):
         self.assertEqual(placement.topology_kind, "host-loopback-development")
 
 
+class Plan086PlacementLifecycleTests(unittest.TestCase):
+    """Plan 086 placement-owned async subprocess lifecycle.
+
+    These tests prove the bounded ``popen``/``reap`` surface keeps
+    the i2pd listener alive while the runner starts the i2pr
+    dialer. They use ``bash`` (an always-available portable binary
+    on the host) as a stand-in child when the i2pd direct driver is
+    not built; the placement contract is the same in either case.
+    """
+
+    def _make_placement(self, tmp: Path, actor: str) -> interop_topology.HostLoopbackDevelopmentPlacement:
+        return interop_topology.HostLoopbackDevelopmentPlacement(
+            actor=actor,
+            binary_path="/usr/bin/env",
+            log_path=str(tmp / f"{actor}.log"),
+        )
+
+    def test_popen_yields_alive_process_and_reap_releases_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            placement = self._make_placement(root, "control")
+            handle = placement.popen(["bash", "-c", "exit 0"])
+            try:
+                self.assertTrue(handle.is_alive())
+                handle.proc.wait(timeout=5.0)
+                self.assertFalse(handle.is_alive())
+            finally:
+                reap = placement.reap(handle)
+                self.assertIn(reap.escalation, {"already-exited", "terminated"})
+                self.assertEqual(reap.pid, handle.pid)
+                self.assertGreaterEqual(reap.elapsed_seconds, 0.0)
+
+    def test_long_running_listener_is_alive_when_dialer_starts(self) -> None:
+        """Prove the listener process is alive when the dialer starts.
+
+        The test stands up a long-running listener via ``placement.popen``
+        (the i2pd direct driver listener would emit ``listener_ready``
+        and block here) and verifies the placement-owned process is
+        still alive at the precise moment the dialer subprocess is
+        created. The teardown reaps both handles in declared order so
+        the dialer queue drains before the listener socket is closed.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            listener_placement = self._make_placement(root, "reference")
+            dialer_placement = self._make_placement(root, "i2pr")
+            listener = listener_placement.popen(
+                ["bash", "-c", "sleep 30"]
+            )
+            try:
+                self.assertTrue(listener.is_alive())
+                # The listener must be alive *before* the runner
+                # starts the dialer.
+                self.assertIsNone(listener.proc.poll())
+                # The dialer subprocess is created while the
+                # listener is alive (mirrors the i2pd driver waiting
+                # for the i2pr dialer in mixed-router mode).
+                dialer = dialer_placement.popen(
+                    ["bash", "-c", "sleep 30"]
+                )
+                try:
+                    self.assertTrue(listener.is_alive())
+                    self.assertTrue(dialer.is_alive())
+                    self.assertNotEqual(listener.pid, dialer.pid)
+                finally:
+                    placements = dialer_placement.reap_in_order(
+                        [dialer, listener],
+                        terminate_timeout=2.0,
+                        kill_timeout=2.0,
+                    )
+                    self.assertEqual(len(placements), 2)
+                    self.assertEqual(placements[0].pid, dialer.pid)
+                    self.assertEqual(placements[1].pid, listener.pid)
+                    self.assertIn(placements[0].escalation, {"terminated", "killed"})
+                    self.assertIn(placements[1].escalation, {"terminated", "killed"})
+            finally:
+                if listener.is_alive():
+                    reap = listener_placement.reap(listener)
+                    self.assertIn(reap.escalation, {"terminated", "killed"})
+
+    def test_run_with_capture_stdout_returns_buffer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            placement = self._make_placement(root, "control")
+            result = placement.run(
+                ["bash", "-c", "echo hello"],
+                timeout_seconds=10.0,
+                capture_stdout=True,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertIn(b"hello", result.stdout)
+            self.assertTrue((root / "control.log").is_file())
+
+    def test_read_event_file_parses_ndjson(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            events_path = root / "events.ndjson"
+            events_path.write_text(
+                "\n".join(
+                    [
+                        '{"event_kind":"process_started","event_sha256":"'
+                        + ("a" * 64)
+                        + '"}',
+                        '{"event_kind":"listener_ready","event_sha256":"'
+                        + ("b" * 64)
+                        + '"}',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            placement = self._make_placement(root, "control")
+            events = placement.read_event_file(events_path)
+            kinds = [event.get("event_kind") for event in events]
+            self.assertEqual(kinds, ["process_started", "listener_ready"])
+
+    def test_wait_for_event_returns_first_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            events_path = root / "events.ndjson"
+            events_path.write_text(
+                '{"event_kind":"process_started","event_sha256":"'
+                + ("a" * 64)
+                + '"}\n',
+                encoding="utf-8",
+            )
+            placement = self._make_placement(root, "control")
+            event = placement.wait_for_event(
+                events_path,
+                "listener_ready",
+                timeout_seconds=2.0,
+                poll_interval_seconds=0.02,
+            )
+            self.assertIsNone(event)
+
+    def test_reap_rejects_foreign_process(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            placement_a = self._make_placement(root, "control")
+            placement_b = interop_topology.HostLoopbackDevelopmentPlacement(
+                actor="control",
+                binary_path="/usr/bin/env",
+                log_path=str(root / "other.log"),
+            )
+            handle = placement_a.popen(["bash", "-c", "sleep 5"])
+            try:
+                with self.assertRaises(interop_topology.TopologyContractError):
+                    placement_b.reap(handle)
+            finally:
+                placement_a.reap(handle, terminate_timeout=2.0, kill_timeout=1.0)
+
+
 class Plan086ClosureStateTests(unittest.TestCase):
     """Plan 086 closure-state vocabulary is exactly three values."""
 

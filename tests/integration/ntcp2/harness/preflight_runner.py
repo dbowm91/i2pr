@@ -33,6 +33,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -774,9 +775,709 @@ def execute_listener_preflight(
     )
 
 
+def _copy_router_info_with_verified_digest(
+    *,
+    source_path: Path,
+    target_path: Path,
+) -> tuple[str, str]:
+    """Copy ``source_path`` to ``target_path`` and verify SHA-256 digests."""
+
+    if not source_path.is_file():
+        raise RuntimeError(REASON_RUNNER_SYNTHETIC_PROVENANCE_REJECTED)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(source_path.read_bytes())
+    source_digest = _sha256_file(source_path)
+    target_digest = _sha256_file(target_path)
+    if source_digest == "0" * 64 or target_digest == "0" * 64:
+        raise RuntimeError(REASON_RUNNER_SYNTHETIC_PROVENANCE_REJECTED)
+    if source_digest != target_digest:
+        raise RuntimeError(REASON_RUNNER_SYNTHETIC_PROVENANCE_REJECTED)
+    return source_digest, target_digest
+
+
+def _consume_event_stream_until_exit(
+    *,
+    placement: HostLoopbackDevelopmentPlacement,
+    file_path: Path,
+    accumulator: list[dict[str, Any]],
+    stop: threading.Event,
+    seen_keys: dict[str, str],
+) -> None:
+    """Tail an NDJSON event file until ``stop`` is set or it disappears."""
+
+    import json as _json
+
+    missing_iterations = 0
+    while not stop.is_set():
+        if file_path.is_file():
+            missing_iterations = 0
+            try:
+                raw = file_path.read_text(encoding="utf-8")
+            except OSError:
+                time.sleep(0.02)
+                continue
+            for line in raw.splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = _json.loads(stripped)
+                except _json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                marker = str(payload.get("event_sha256", ""))
+                if marker and marker in seen_keys:
+                    continue
+                if marker:
+                    seen_keys[marker] = str(payload.get("event_kind", ""))
+                accumulator.append(payload)
+        else:
+            missing_iterations += 1
+            if missing_iterations > 50:
+                return
+        time.sleep(0.02)
+
+
+@dataclass(frozen=True)
+class ConcurrentPreflightOutcome:
+    """Result of a Plan 086 placement-owned concurrent preflight."""
+
+    record: dict[str, Any]
+    is_ready: bool
+    reason_code: str
+    listener_alive_when_dialer_started: bool
+    peer_router_info_copied_digest: str
+    dialer_disposition: str
+    listener_disposition: str
+
+
+def execute_concurrent_preflight(
+    *,
+    repo_root: Path,
+    run_root: Path,
+    run_id: str,
+    source_commit: str,
+    reference_revision: str,
+    lane_qualification_sha256: str,
+    topology_kind: str,
+    i2pr_binary_sha256: str,
+    i2pd_binary_sha256: str,
+    delivery_status_message_id: int,
+    i2pd_driver_binary: Path,
+    reference_tree_sha256: str = "0" * 64,
+    driver_source_sha256: str = "0" * 64,
+    build_manifest_sha256: str = "0" * 64,
+    observer_patch_sha256: str = "0" * 64,
+    source_inspection_record_sha256: str = "0" * 64,
+    handshake_timeout_ms: int = 30_000,
+    listener_handshake_budget_ms: int = 5_000,
+    dialer_pool_poll_ms: int = 50,
+    output_path: Path | None = None,
+) -> ConcurrentPreflightOutcome:
+    """Execute the Plan 086 concurrent placement-owned preflight."""
+
+    from i2pd_direct_driver import (
+        Plan064Error,
+        load_source_lock,
+        render_strict_config,
+        validate_strict_config,
+    )
+    from interop_topology import PlacementReapDisposition
+
+    counters = empty_process_counters()
+    observed: list[dict[str, Any]] = []
+    placement_digest = hashlib.sha256(b"placement-not-initialised").hexdigest()
+    peer_router_info_copied_digest = "0" * 64
+    listener_alive_when_dialer_started = False
+
+    def record_event(event_name: str, source_side: str, event_sha256: str) -> None:
+        if event_name in ALLOWED_EVENT_NAMES and source_side in ALLOWED_EVENT_SIDES:
+            observed.append(
+                {
+                    "event_name": event_name,
+                    "source_side": source_side,
+                    "event_sha256": event_sha256,
+                }
+            )
+
+    def finalize(
+        *,
+        terminal_result: str,
+        reason_code: str,
+        highest_stage: str,
+        cleanup_result: str = "clean",
+        i2pr_router_info_sha256: str = "0" * 64,
+        i2pd_router_info_sha256: str = "0" * 64,
+        i2pr_router_hash_sha256: str = "0" * 64,
+        i2pd_router_hash_sha256: str = "0" * 64,
+        measured_i2pr_binary_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        record = build_record(
+            run_id=run_id,
+            source_commit=source_commit,
+            reference_revision=reference_revision,
+            lane_qualification_sha256=lane_qualification_sha256,
+            topology_kind=topology_kind,
+            parent_network_state_unchanged=True,
+            i2pr_binary_sha256=(
+                measured_i2pr_binary_sha256
+                if measured_i2pr_binary_sha256 is not None
+                else i2pr_binary_sha256
+            ),
+            i2pd_binary_sha256=i2pd_binary_sha256,
+            i2pr_router_info_sha256=i2pr_router_info_sha256,
+            i2pd_router_info_sha256=i2pd_router_info_sha256,
+            i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+            i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+            delivery_status_message_id=delivery_status_message_id,
+            observed_events=observed,
+            highest_stage_reached=highest_stage,
+            terminal_result=terminal_result,
+            reason_code=reason_code,
+            process_counters=counters,
+            cleanup_result=cleanup_result,
+            placement_record_sha256=placement_digest,
+        )
+        target = output_path or (run_root / "probe-record.json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(record, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return record
+
+    if topology_kind != HOST_LOOPBACK_DEVELOPMENT_TOPOLOGY_KIND:
+        return ConcurrentPreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=REASON_LANE_INVALID,
+                highest_stage=NOT_STARTED,
+            ),
+            is_ready=False,
+            reason_code=REASON_LANE_INVALID,
+            listener_alive_when_dialer_started=False,
+            peer_router_info_copied_digest="0" * 64,
+            dialer_disposition="not-attempted",
+            listener_disposition="not-attempted",
+        )
+
+    if delivery_status_message_id < 1 or delivery_status_message_id > 0xFFFFFFFF:
+        return ConcurrentPreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=REASON_PRE_PROTOCOL_PREPARATION_FAILED,
+                highest_stage=NOT_STARTED,
+            ),
+            is_ready=False,
+            reason_code=REASON_PRE_PROTOCOL_PREPARATION_FAILED,
+            listener_alive_when_dialer_started=False,
+            peer_router_info_copied_digest="0" * 64,
+            dialer_disposition="not-attempted",
+            listener_disposition="not-attempted",
+        )
+
+    run_root.mkdir(parents=True, exist_ok=True)
+    raw_dir = run_root / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    measured_i2pr_binary_sha256 = _measure_i2pr_binary(repo_root)
+    i2pr_binary = repo_root / "target" / "debug" / "i2pr-interop"
+
+    counters["i2pr_prepare"]["started"] += 1
+    try:
+        prepared = _prepare_i2pr_state(
+            repo_root=repo_root,
+            run_root=run_root,
+            topology_kind=topology_kind,
+        )
+    except RuntimeError as exc:
+        counters["i2pr_prepare"]["exited"] += 1
+        return ConcurrentPreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=str(exc),
+                highest_stage=NOT_STARTED,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
+            ),
+            is_ready=False,
+            reason_code=str(exc),
+            listener_alive_when_dialer_started=False,
+            peer_router_info_copied_digest="0" * 64,
+            dialer_disposition="not-attempted",
+            listener_disposition="not-attempted",
+        )
+    counters["i2pr_prepare"]["exited"] += 1
+
+    i2pr_router_info_sha256 = prepared["router_info_sha256"]
+    i2pr_router_hash_sha256 = prepared["router_hash_sha256"]
+    i2pr_port = prepared["i2pr_port"]
+    i2pr_address = "127.0.0.1"
+    placement_digest = prepared["placement_digest"]
+
+    exchange_dir = run_root / "exchange"
+    exchange_dir.mkdir(parents=True, exist_ok=True)
+    exchange_ri = exchange_dir / "i2pr-router.info"
+    exchange_ri.write_bytes(prepared["router_info_path"].read_bytes())
+
+    if not i2pd_driver_binary.is_file():
+        return ConcurrentPreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED,
+                highest_stage=STATE_PREPARED,
+                i2pr_router_info_sha256=i2pr_router_info_sha256,
+                i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
+            ),
+            is_ready=False,
+            reason_code=REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED,
+            listener_alive_when_dialer_started=False,
+            peer_router_info_copied_digest="0" * 64,
+            dialer_disposition="not-attempted",
+            listener_disposition="not-attempted",
+        )
+
+    try:
+        load_source_lock()
+    except Plan064Error:
+        return ConcurrentPreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=REASON_RUNNER_SYNTHETIC_PROVENANCE_REJECTED,
+                highest_stage=STATE_PREPARED,
+                i2pr_router_info_sha256=i2pr_router_info_sha256,
+                i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
+            ),
+            is_ready=False,
+            reason_code=REASON_RUNNER_SYNTHETIC_PROVENANCE_REJECTED,
+            listener_alive_when_dialer_started=False,
+            peer_router_info_copied_digest="0" * 64,
+            dialer_disposition="not-attempted",
+            listener_disposition="not-attempted",
+        )
+
+    i2pd_data_dir = run_root / "i2pd-data"
+    i2pd_data_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = run_root / "i2pd-output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    i2pd_port = _allocate_loopback_port()
+    i2pd_address = "127.0.0.1"
+
+    inspect_config = _render_listen_config(
+        run_id=run_id,
+        i2pd_port=i2pd_port,
+        i2pd_address=i2pd_address,
+        exchange_ri=exchange_ri,
+        delivery_status_message_id=delivery_status_message_id,
+        handshake_timeout_ms=handshake_timeout_ms,
+        reference_revision=reference_revision,
+        reference_tree_sha256=reference_tree_sha256,
+        driver_source_sha256=driver_source_sha256,
+        driver_binary_sha256=i2pd_binary_sha256,
+        build_manifest_sha256=build_manifest_sha256,
+        observer_patch_sha256=observer_patch_sha256,
+        run_identity_sha256=lane_qualification_sha256,
+        topology_kind=topology_kind,
+        i2pr_router_info_sha256=i2pr_router_info_sha256,
+    )
+    inspect_config["mode"] = "inspect"
+    inspect_config["expected_peer_port"] = i2pr_port
+
+    validate_strict_config(inspect_config)
+    inspect_config_path = raw_dir / "i2pd-inspect-config.json"
+    inspect_config_path.write_text(
+        render_strict_config(inspect_config), encoding="utf-8"
+    )
+
+    inspect_log_path = raw_dir / "i2pd-inspect.log"
+    inspect_placement = _placement_for_i2pd(
+        binary=i2pd_driver_binary,
+        log_path=inspect_log_path,
+    )
+    counters["i2pd_prepare"]["started"] += 1
+    inspect_result = inspect_placement.run(
+        ["--config", str(inspect_config_path)],
+        timeout_seconds=60.0,
+        capture_stdout=True,
+    )
+    counters["i2pd_prepare"]["exited"] += 1
+
+    if inspect_result.returncode != 0:
+        return ConcurrentPreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED,
+                highest_stage=STATE_PREPARED,
+                i2pr_router_info_sha256=i2pr_router_info_sha256,
+                i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
+            ),
+            is_ready=False,
+            reason_code=REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED,
+            listener_alive_when_dialer_started=False,
+            peer_router_info_copied_digest="0" * 64,
+            dialer_disposition="not-attempted",
+            listener_disposition="not-attempted",
+        )
+
+    inspect_events = _read_ndjson(output_dir / "events.ndjson")
+    i2pd_router_hash_sha256 = _collect_i2pd_hash(inspect_events)
+    i2pd_router_info_path = output_dir / "router.info"
+    if (
+        not i2pd_router_hash_sha256
+        or not i2pd_router_info_path.is_file()
+    ):
+        return ConcurrentPreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=REASON_REFERENCE_EVENTS_MISSING,
+                highest_stage=STATE_PREPARED,
+                i2pr_router_info_sha256=i2pr_router_info_sha256,
+                i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
+            ),
+            is_ready=False,
+            reason_code=REASON_REFERENCE_EVENTS_MISSING,
+            listener_alive_when_dialer_started=False,
+            peer_router_info_copied_digest="0" * 64,
+            dialer_disposition="not-attempted",
+            listener_disposition="not-attempted",
+        )
+    i2pd_router_info_sha256 = _sha256_file(i2pd_router_info_path)
+
+    exchange_i2pd_router_info = exchange_dir / "i2pd-router.info"
+    try:
+        source_digest, peer_router_info_copied_digest = (
+            _copy_router_info_with_verified_digest(
+                source_path=i2pd_router_info_path,
+                target_path=exchange_i2pd_router_info,
+            )
+        )
+    except RuntimeError as exc:
+        return ConcurrentPreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=str(exc),
+                highest_stage=STATE_PREPARED,
+                i2pr_router_info_sha256=i2pr_router_info_sha256,
+                i2pd_router_info_sha256=i2pd_router_info_sha256,
+                i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
+            ),
+            is_ready=False,
+            reason_code=str(exc),
+            listener_alive_when_dialer_started=False,
+            peer_router_info_copied_digest="0" * 64,
+            dialer_disposition="not-attempted",
+            listener_disposition="not-attempted",
+        )
+
+    scenario_path = run_root / "scenario.toml"
+    scenario_payload = _render_scenario(
+        run_id=run_id,
+        run_identity_sha256=lane_qualification_sha256,
+        i2pr_address=i2pr_address,
+        i2pr_port=i2pr_port,
+        i2pd_address=i2pd_address,
+        i2pd_port=i2pd_port,
+        i2pr_router_hash=i2pr_router_hash_sha256,
+        i2pd_router_hash=i2pd_router_hash_sha256,
+        delivery_status_message_id=delivery_status_message_id,
+        handshake_timeout_ms=handshake_timeout_ms,
+        topology_kind=topology_kind,
+        peer_router_info_path="exchange/i2pd-router.info",
+    )
+    scenario_path.write_text(
+        _format_toml(scenario_payload),
+        encoding="utf-8",
+    )
+
+    if not _validate_scenario(
+        i2pr_binary=i2pr_binary,
+        scenario_path=scenario_path,
+    ):
+        return ConcurrentPreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=REASON_PRE_PROTOCOL_RENDER_FAILED,
+                highest_stage=STATE_PREPARED,
+                i2pr_router_info_sha256=i2pr_router_info_sha256,
+                i2pd_router_info_sha256=i2pd_router_info_sha256,
+                i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
+            ),
+            is_ready=False,
+            reason_code=REASON_PRE_PROTOCOL_RENDER_FAILED,
+            listener_alive_when_dialer_started=False,
+            peer_router_info_copied_digest=peer_router_info_copied_digest,
+            dialer_disposition="not-attempted",
+            listener_disposition="not-attempted",
+        )
+
+    listen_config = dict(inspect_config)
+    listen_config["mode"] = "listen"
+    listen_config["expected_peer_port"] = i2pr_port
+    listen_config["handshake_timeout_ms"] = listener_handshake_budget_ms
+    listen_config["data_phase_timeout_ms"] = listener_handshake_budget_ms
+    validate_strict_config(listen_config)
+    listen_config_path = raw_dir / "i2pd-listener-config.json"
+    listen_config_path.write_text(
+        render_strict_config(listen_config), encoding="utf-8"
+    )
+
+    listener_log_path = raw_dir / "i2pd-listener.log"
+    listener_placement = _placement_for_i2pd(
+        binary=i2pd_driver_binary,
+        log_path=listener_log_path,
+    )
+
+    listener_events_path = output_dir / "events.ndjson"
+    if listener_events_path.is_file():
+        listener_events_path.unlink()
+
+    counters["i2pd_listener"]["started"] += 1
+    listener_proc = listener_placement.popen(
+        ["--config", str(listen_config_path)]
+    )
+
+    ready_event = listener_placement.wait_for_event(
+        listener_events_path,
+        "listener_ready",
+        timeout_seconds=float(listener_handshake_budget_ms) / 1000.0 + 5.0,
+        poll_interval_seconds=0.02,
+    )
+
+    if ready_event is None:
+        reap_listen = listener_placement.reap(listener_proc)
+        counters["i2pd_listener"]["exited"] += 1
+        return ConcurrentPreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=REASON_REFERENCE_EVENTS_MISSING,
+                highest_stage=STATE_PREPARED,
+                i2pr_router_info_sha256=i2pr_router_info_sha256,
+                i2pd_router_info_sha256=i2pd_router_info_sha256,
+                i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
+            ),
+            is_ready=False,
+            reason_code=REASON_REFERENCE_EVENTS_MISSING,
+            listener_alive_when_dialer_started=False,
+            peer_router_info_copied_digest=peer_router_info_copied_digest,
+            dialer_disposition="not-attempted",
+            listener_disposition=reap_listen.escalation,
+        )
+
+    for event in listener_placement.read_event_file(listener_events_path):
+        kind = event.get("event_kind")
+        if kind == "listener_ready":
+            record_event(
+                kind,
+                "i2pd",
+                event.get("event_sha256", "0" * 64),
+            )
+
+    listener_alive_when_dialer_started = listener_proc.is_alive()
+    if not listener_alive_when_dialer_started:
+        reap_listen = listener_placement.reap(listener_proc)
+        counters["i2pd_listener"]["exited"] += 1
+        return ConcurrentPreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED,
+                highest_stage=LISTENER_READY,
+                i2pr_router_info_sha256=i2pr_router_info_sha256,
+                i2pd_router_info_sha256=i2pd_router_info_sha256,
+                i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+                i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
+            ),
+            is_ready=False,
+            reason_code=REASON_RUNNER_REFERENCE_PROCESS_NOT_EXECUTED,
+            listener_alive_when_dialer_started=False,
+            peer_router_info_copied_digest=peer_router_info_copied_digest,
+            dialer_disposition="not-attempted",
+            listener_disposition=reap_listen.escalation,
+        )
+
+    dialer_log_path = raw_dir / "i2pr-dialer.log"
+    dialer_placement = _placement_for_i2pr(
+        binary=i2pr_binary,
+        log_path=dialer_log_path,
+    )
+    counters["i2pr_dialer"]["started"] += 1
+    dialer_proc = dialer_placement.popen(
+        [
+            "ntcp2",
+            "dial",
+            "--scenario-config",
+            str(scenario_path),
+        ]
+    )
+
+    stop_event = threading.Event()
+    i2pd_seen: dict[str, str] = {}
+    i2pr_seen: dict[str, str] = {}
+    i2pd_events: list[dict[str, Any]] = []
+    i2pr_events: list[dict[str, Any]] = []
+    i2pr_status_path = raw_dir / "i2pr-dialer-status.jsonl"
+    i2pd_tail = threading.Thread(
+        target=_consume_event_stream_until_exit,
+        kwargs={
+            "placement": listener_placement,
+            "file_path": listener_events_path,
+            "accumulator": i2pd_events,
+            "stop": stop_event,
+            "seen_keys": i2pd_seen,
+        },
+        daemon=True,
+    )
+    i2pr_tail = threading.Thread(
+        target=_consume_event_stream_until_exit,
+        kwargs={
+            "placement": dialer_placement,
+            "file_path": i2pr_status_path,
+            "accumulator": i2pr_events,
+            "stop": stop_event,
+            "seen_keys": i2pr_seen,
+        },
+        daemon=True,
+    )
+    i2pd_tail.start()
+    i2pr_tail.start()
+
+    deadline = time.monotonic() + (listener_handshake_budget_ms / 1000.0) + 5.0
+    while time.monotonic() < deadline:
+        if not listener_proc.is_alive() and not dialer_proc.is_alive():
+            break
+        clean_seen = any(
+            event.get("event_kind") == "terminal_clean"
+            for event in i2pd_events
+        )
+        rejected_seen = any(
+            event.get("event_kind") == "terminal_rejected"
+            for event in i2pd_events
+        )
+        if clean_seen or rejected_seen:
+            break
+        time.sleep(dialer_pool_poll_ms / 1000.0)
+
+    stop_event.set()
+    i2pd_tail.join(timeout=2.0)
+    i2pr_tail.join(timeout=2.0)
+
+    reap_dialer: PlacementReapDisposition | None = None
+    reap_listen: PlacementReapDisposition | None = None
+    try:
+        reap_dialer = dialer_placement.reap(
+            dialer_proc,
+            terminate_timeout=5.0,
+            kill_timeout=5.0,
+        )
+    finally:
+        reap_listen = listener_placement.reap(
+            listener_proc,
+            terminate_timeout=5.0,
+            kill_timeout=5.0,
+        )
+    counters["i2pr_dialer"]["exited"] += 1
+    counters["i2pd_listener"]["exited"] += 1
+
+    for event in i2pd_events:
+        kind = event.get("event_kind")
+        if kind in ALLOWED_EVENT_NAMES:
+            record_event(
+                kind,
+                "i2pd",
+                event.get("event_sha256", "0" * 64),
+            )
+    for event in i2pr_events:
+        kind = event.get("event_kind") or event.get("status_reason")
+        side = event.get("source_side") or "i2pr"
+        if not isinstance(side, str) or side not in ALLOWED_EVENT_SIDES:
+            side = "i2pr"
+        if isinstance(kind, str) and kind in ALLOWED_EVENT_NAMES:
+            record_event(
+                kind,
+                side,
+                event.get("event_sha256", "0" * 64),
+            )
+
+    cleanup_disposition = (
+        "clean"
+        if (
+            (reap_dialer is None or reap_dialer.escalation != "kill-timeout")
+            and (reap_listen is None or reap_listen.escalation != "kill-timeout")
+        )
+        else "kill-timeout"
+    )
+
+    has_terminal_clean = any(
+        event.get("event_kind") == "terminal_clean" for event in i2pd_events
+    )
+    has_ntcp2_authenticated = any(
+        event.get("event_name") == "ntcp2_authenticated" for event in observed
+    )
+    has_frame_decoded = any(
+        event.get("event_name") == "i2np_message_decoded" for event in observed
+    )
+
+    if has_terminal_clean and has_ntcp2_authenticated and has_frame_decoded:
+        highest_stage = "i2np_message_decoded"
+        terminal = "passed"
+        reason = "mixed-router-protocol-complete"
+        is_ready_for_087 = True
+    elif has_ntcp2_authenticated:
+        highest_stage = "ntcp2_authenticated"
+        terminal = PRE_PROTOCOL_REJECTED
+        reason = (
+            "mixed-router-authenticated-no-data-phase"
+            if not has_frame_decoded
+            else "mixed-router-data-phase-incomplete"
+        )
+        is_ready_for_087 = False
+    else:
+        highest_stage = LISTENER_READY
+        terminal = PRE_PROTOCOL_REJECTED
+        reason = (
+            "mixed-router-handshake-not-completed"
+            if not has_ntcp2_authenticated
+            else REASON_NOT_STARTED
+        )
+        is_ready_for_087 = False
+
+    record = finalize(
+        terminal_result=terminal,
+        reason_code=reason,
+        highest_stage=highest_stage,
+        cleanup_result=cleanup_disposition,
+        i2pr_router_info_sha256=i2pr_router_info_sha256,
+        i2pd_router_info_sha256=i2pd_router_info_sha256,
+        i2pr_router_hash_sha256=i2pr_router_hash_sha256,
+        i2pd_router_hash_sha256=i2pd_router_hash_sha256,
+        measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
+    )
+
+    return ConcurrentPreflightOutcome(
+        record=record,
+        is_ready=is_ready_for_087,
+        reason_code=reason,
+        listener_alive_when_dialer_started=listener_alive_when_dialer_started,
+        peer_router_info_copied_digest=peer_router_info_copied_digest,
+        dialer_disposition=reap_dialer.escalation if reap_dialer else "not-attempted",
+        listener_disposition=reap_listen.escalation if reap_listen else "not-attempted",
+    )
+
 __all__ = [
+    "ConcurrentPreflightOutcome",
     "PREFLIGHT_REASON_CODES",
     "PreflightOutcome",
+    "execute_concurrent_preflight",
     "execute_listener_preflight",
 ]
 
