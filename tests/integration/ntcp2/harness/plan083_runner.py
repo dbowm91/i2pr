@@ -1267,32 +1267,40 @@ def execute_real_probe(
     # so newly-emitted events are recorded exactly once.
     deadline = time.monotonic() + (handshake_timeout_ms / 1000.0) + 10.0
     terminal_seen = False
-    seen_i2pd_kinds: set[str] = set()
-    seen_i2pr_phases: set[str] = set()
+    seen_i2pd_events: set[tuple[str, str, str]] = set()
+    seen_i2pr_events: set[tuple[str, str, str]] = set()
     i2pr_status_lines: list[dict[str, Any]] = []
     while time.monotonic() < deadline:
         for event in listener_placement.read_event_file(listener_events_path):
-            kind = str(event.get("event_kind", ""))
+            stage = str(event.get("event_kind", ""))
             marker = str(event.get("event_sha256", "0" * 64))
-            if not kind or kind in seen_i2pd_kinds:
+            if not stage:
                 continue
-            seen_i2pd_kinds.add(kind)
+            # Plan 092: deduplicate by current-run key
+            # (source_side, invocation_id, event_sequence, event_sha256)
+            # not by event kind alone.
+            invocation_id = str(event.get("scenario_id", ""))
+            event_sequence = str(event.get("event_sequence", ""))
+            dedup_key = ("i2pd", invocation_id, event_sequence, marker)
+            if dedup_key in seen_i2pd_events:
+                continue
+            seen_i2pd_events.add(dedup_key)
             side = "i2pd"
-            if kind == "tcp_accepted":
-                record_event({"event_name": kind, "source_side": side, "event_sha256": marker})
+            if stage == "tcp_accepted":
+                record_event({"event_name": stage, "source_side": side, "event_sha256": marker})
                 self._stages.advance_to(TCP_CONNECTED)
-            elif kind == "ntcp2_authenticated":
-                record_event({"event_name": kind, "source_side": side, "event_sha256": marker})
-            elif kind == "frame_emitted":
-                record_event({"event_name": kind, "source_side": side, "event_sha256": marker})
-            elif kind == "frame_authenticated_and_decrypted":
-                record_event({"event_name": kind, "source_side": side, "event_sha256": marker})
-            elif kind == "i2np_message_decoded":
-                record_event({"event_name": kind, "source_side": side, "event_sha256": marker})
-            elif kind == "terminal_clean":
-                record_event({"event_name": kind, "source_side": side, "event_sha256": marker})
-            elif kind == "terminal_rejected":
-                record_event({"event_name": kind, "source_side": side, "event_sha256": marker})
+            elif stage == "ntcp2_authenticated":
+                record_event({"event_name": stage, "source_side": side, "event_sha256": marker})
+            elif stage == "frame_emitted":
+                record_event({"event_name": stage, "source_side": side, "event_sha256": marker})
+            elif stage == "frame_authenticated_and_decrypted":
+                record_event({"event_name": stage, "source_side": side, "event_sha256": marker})
+            elif stage == "i2np_message_decoded":
+                record_event({"event_name": stage, "source_side": side, "event_sha256": marker})
+            elif stage == "terminal_clean":
+                record_event({"event_name": stage, "source_side": side, "event_sha256": marker})
+            elif stage == "terminal_rejected":
+                record_event({"event_name": stage, "source_side": side, "event_sha256": marker})
 
         if i2pr_log_path.is_file():
             for line in i2pr_log_path.read_text(encoding="utf-8").splitlines():
@@ -1304,9 +1312,16 @@ def execute_real_probe(
                 except json.JSONDecodeError:
                     continue
                 phase = str(parsed.get("phase", ""))
-                if not phase or phase in seen_i2pr_phases:
+                if not phase:
                     continue
-                seen_i2pr_phases.add(phase)
+                # Plan 092: i2pr status lines do not carry an
+                # event_sequence marker so the dedup key uses the
+                # phase name plus the line hash.
+                line_marker = hashlib.sha256(line.encode("utf-8")).hexdigest()
+                dedup_key = ("i2pr", run_id, "", line_marker)
+                if dedup_key in seen_i2pr_events:
+                    continue
+                seen_i2pr_events.add(dedup_key)
                 i2pr_status_lines.append(parsed)
                 side = "i2pr"
                 if phase == "listener_ready":
@@ -1344,17 +1359,27 @@ def execute_real_probe(
 
     # Final drain to capture the last events before reap. The dialer
     # is reaped first so its outbound queue can drain before the
-    # listener drops the bound socket.
+    # listener drops the bound socket. Plan 092: the same
+    # current-run dedup key is reused; tcp_accepted is now captured
+    # here too because a fast i2pr terminal may race with a late
+    # i2pd TCP-accept observation.
     for event in listener_placement.read_event_file(listener_events_path):
-        kind = str(event.get("event_kind", ""))
+        stage = str(event.get("event_kind", ""))
         marker = str(event.get("event_sha256", "0" * 64))
-        if not kind or kind in seen_i2pd_kinds:
+        if not stage:
             continue
-        seen_i2pd_kinds.add(kind)
-        if kind in {"ntcp2_authenticated", "frame_emitted", "frame_authenticated_and_decrypted", "i2np_message_decoded"}:
-            record_event({"event_name": kind, "source_side": "i2pd", "event_sha256": marker})
-        elif kind in {"terminal_clean", "terminal_rejected"}:
-            record_event({"event_name": kind, "source_side": "i2pd", "event_sha256": marker})
+        invocation_id = str(event.get("scenario_id", ""))
+        event_sequence = str(event.get("event_sequence", ""))
+        dedup_key = ("i2pd", invocation_id, event_sequence, marker)
+        if dedup_key in seen_i2pd_events:
+            continue
+        seen_i2pd_events.add(dedup_key)
+        if stage in {"tcp_accepted", "ntcp2_authenticated", "frame_emitted", "frame_authenticated_and_decrypted", "i2np_message_decoded"}:
+            record_event({"event_name": stage, "source_side": "i2pd", "event_sha256": marker})
+            if stage == "tcp_accepted":
+                self._stages.advance_to(TCP_CONNECTED)
+        elif stage in {"terminal_clean", "terminal_rejected"}:
+            record_event({"event_name": stage, "source_side": "i2pd", "event_sha256": marker})
 
     dialer_placement.reap(dialer_proc)
     increment("i2pr_dialer", "exited")

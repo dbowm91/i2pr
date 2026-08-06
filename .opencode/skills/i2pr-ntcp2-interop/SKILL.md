@@ -1,6 +1,6 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, typed evidence validation, the Plan 085-088 host-loopback development execution roadmap, the Plan 090 i2pd RouterInfo and pre-TCP classification correction, and the Plan 088-gated conditional Emissary decision. Use when an agent is asked to run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, diagnose Plan 082-090 execution, or validate evidence. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090/091/092 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, typed evidence validation, the Plan 085-088 host-loopback development execution roadmap, the Plan 090 i2pd RouterInfo and pre-TCP classification correction, the Plan 091 i2pd Noise-handshake preconditions, and the Plan 092 forward-handshake evidence integrity and ownership closure. Use when an agent is asked to run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, diagnose Plan 082-092 execution, or validate evidence. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
 # I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/081/082/083/084)
@@ -495,12 +495,23 @@ bash scripts/check-ntcp2-interoperability.sh
 
 ## Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
-Plan 074 is historical execution authority. Plan 085 supersedes its active
-sequence with **Plan 082 (implemented) → Plan 083 (implemented, execution pending) → Plan 084 (implemented, execution pending) → Plan 085 → Plan 086 → Plan 087 → Plan 088 → Plan 079 (blocked)**. Plans 075, 076,
+Plan 074 is historical execution authority. Plan 092 supersedes its active
+sequence with **Plan 082 (implemented) → Plan 083 (implemented, execution pending) → Plan 084 (implemented, execution pending) → Plan 085 → Plan 086 → Plan 087 → Plan 090 → Plan 091 → Plan 092 (planned_next_executable) → Plan 088 → Plan 079 (blocked)**. Plans 075, 076,
 077, and 080 are closed prerequisites or historical lane records. The Plan
 084 historical `lane-invalidated` closure is reclassified as "runner
 implementation completed; required reverse wire execution never occurred" and
-the active development decision now lives in `plans/088-status.md`.
+the active development decision now lives in `plans/088-status.md`. Plan 092
+is the single next executable plan and owns the forward-handshake
+ownership probe, the narrow correction, the instrumented and control
+forward records, and the durable evidence reconciliation. The Plan 092
+first clean committed-head reproduction recorded the same forward
+direction outcome as Plan 091 with the new privacy-safe observation
+infrastructure; the ownership analysis selects Branch A (i2pr runtime /
+state-machine defect) with Branch D reserved as the secondary owner.
+The narrow correction is recorded in `plans/092-status.md` but is not
+yet implemented. Plan 088 remains blocked until Plan 092 closes with
+a passing instrumented forward record and a passing control forward
+record.
 
 The corrected repository state is:
 

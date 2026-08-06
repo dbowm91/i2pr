@@ -1794,7 +1794,7 @@ Plan 078 attempt. Do not treat either capability probing or a stale guest as
 protocol evidence; consult `plans/080-status.md` for the qualified-lane
 record.
 
-## Current active sequence amendment (2026-08-05, Plan 091)
+## Current active sequence amendment (2026-08-05, Plan 092 / plan092)
 
 The active authority is [Plan 085](plans/085-milestone-3-host-loopback-development-execution-roadmap.md),
 followed by Plan 086 (status correction + `host-loopback-development`
@@ -1805,9 +1805,13 @@ corrective pass: four behavior-neutral driver corrections, **corrections
 landed on this host**), Plan 091 (forward NTCP2 Noise-handshake corrective
 pass: i2pd direct driver preconditions landed — `SetNetID`, explicit logger
 start/stop, `tcp_accepted` wait, symmetric `DeliveryStatus` send, **corrections
-landed on this host, forward direction still blocked**), and Plan 088
-(reverse `i2pd -> i2pr` probe and development decision), and the
-[Plan 072/079 gate amendment](plans/072-079-gate-amendment-plan-088.md)
+landed on this host, forward direction still blocked**), Plan 092
+(forward-handshake evidence integrity and ownership closure:
+privacy-safe handshake stage observation schema, terminal-counter
+preservation, current-run event dedup, status authority rewrite,
+dedicated regression matrix, **active single next executable plan**),
+and Plan 088 (reverse `i2pd -> i2pr` probe and development decision),
+and the [Plan 072/079 gate amendment](plans/072-079-gate-plan-088.md)
 that moves the Plan 072 and Plan 079 gates from Plan 084 to Plan 088.
 Plan 082 is implemented and closed; Plans 083 and 084 are implementation
 complete but execution pending; Plan 086 added the
@@ -1893,8 +1897,8 @@ i2pd transport read zero bytes on the first body read), and
 the i2pr status log shows `tcp_connected` immediately followed
 by `terminal, result: rejected, reason_code:
 receiver_delivery_status_missing`. The wire trace, the i2pd
-log, and the i2pr status do not yet agree on which side
-terminates the Noise handshake: the i2pr dialer enters
+log, and the i2pr status do not yet agree on which side terminates
+the Noise handshake: the i2pr dialer enters
 `drive_initiator_handshake` and the runner serializes the
 forward direction as `terminal_result = protocol_rejected,
 highest_stage_reached = tcp_connected, reason_code =
@@ -1902,9 +1906,23 @@ reference-events-missing` because the i2pd listener never
 emits `ntcp2_authenticated`. The retained record is preserved
 at `/tmp/opencode/plan091-evidence/forward/forward-record.json`;
 see `plans/091-status.md` for the closure record, exact live
-command, recorded digests, and the ownership analysis. Plan 088
-remains blocked on a follow-up ownership pass under a successor
-plan.
+command, recorded digests, and the ownership analysis.
+
+The Plan 092 first clean committed-head reproduction recorded
+the same forward direction outcome but with the new privacy-safe
+observation infrastructure in place: the i2pd log shows
+`NTCP2: Receive length read error: End of file` on the first
+SessionRequest prefix read while the i2pr status counters carry
+`authenticated: 1`, `frames_sent: 1`, `frames_received: 1`,
+`i2np_sent: 1`, `i2np_received: 0`. The retained record is
+preserved at
+`/tmp/opencode/plan092-test-1/forward-record.json` with
+`record_sha256 = 696aa1339d3d950f9fec2a2e0b1f5bede2035761a71e167af6ab28b249cc998d`;
+see `plans/092-status.md` for the ownership selection
+(Branch A — i2pr runtime / state-machine defect, with Branch D
+reserved as the secondary owner) and the planned narrow
+correction surface. Plan 088 remains blocked on a follow-up
+execution pass under Plan 092.
 
 Plan 082 provides the test-only `i2pr-interop ntcp2 prepare` and
 `validate-scenario` operations, authentic RouterInfo/hash preparation,

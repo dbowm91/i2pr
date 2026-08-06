@@ -1534,4 +1534,122 @@ if ! grep -Fq 'validate_placement' \
   exit 1
 fi
 
+# Plan 092: forward-handshake evidence integrity and ownership closure.
+# The privacy-safe handshake stage observation schema, the
+# privacy-safe field allowlist, the typed i2pr runtime observer,
+# the Plan 092 status authority (Plan 091 is partial/incomplete and
+# Plan 087/Plan 088 name Plan 092 as the next executable plan), and
+# the active-sequence token must all be committed. Raw or hex
+# handshake capture is forbidden anywhere in the active path.
+if ! test -f "$root/tests/integration/ntcp2/harness/handshake_stage.py"; then
+  echo "Plan 092 privacy-safe handshake stage schema module is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-ntcp2-handshake-stage-v1' \
+    "$root/tests/integration/ntcp2/harness/handshake_stage.py"; then
+  echo "Plan 092 handshake stage schema marker is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'FORBIDDEN_FIELDS' \
+    "$root/tests/integration/ntcp2/harness/handshake_stage.py"; then
+  echo "Plan 092 privacy-safe FORBIDDEN_FIELDS allowlist is missing" >&2
+  exit 1
+fi
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan092.py"; then
+  echo "Plan 092 test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan092HandshakeStageSchemaTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan092.py"; then
+  echo "Plan 092 test matrix must include the handshake stage schema tests" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan092I2prRuntimeObservationTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan092.py"; then
+  echo "Plan 092 test matrix must include the i2pr runtime observation tests" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan092I2pdObserverCoverageTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan092.py"; then
+  echo "Plan 092 test matrix must include the i2pd observer coverage tests" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan092EventIngestionTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan092.py"; then
+  echo "Plan 092 test matrix must include the event ingestion tests" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan092StaticEnforcementTests' \
+    "$root/tests/integration/ntcp2/harness/test_plan092.py"; then
+  echo "Plan 092 test matrix must include the static enforcement tests" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-ntcp2-handshake-stage-v1' \
+    "$root/crates/i2pr-runtime/src/ntcp2_driver.rs"; then
+  echo "Plan 092 i2pr runtime must declare the handshake stage marker" >&2
+  exit 1
+fi
+if ! grep -Fq 'drive_initiator_handshake_observed' \
+    "$root/crates/i2pr-runtime/src/ntcp2_driver.rs"; then
+  echo "Plan 092 i2pr runtime must expose drive_initiator_handshake_observed" >&2
+  exit 1
+fi
+if ! grep -Fq 'drive_responder_handshake_observed' \
+    "$root/crates/i2pr-runtime/src/ntcp2_driver.rs"; then
+  echo "Plan 092 i2pr runtime must expose drive_responder_handshake_observed" >&2
+  exit 1
+fi
+if ! grep -Fq 'HandshakeProgressObserver' \
+    "$root/crates/i2pr-runtime/src/ntcp2_handshake_observer.rs"; then
+  echo "Plan 092 i2pr runtime must expose HandshakeProgressObserver" >&2
+  exit 1
+fi
+if ! grep -Fq 'NoopHandshakeObserver' \
+    "$root/crates/i2pr-runtime/src/ntcp2_handshake_observer.rs"; then
+  echo "Plan 092 i2pr runtime must expose NoopHandshakeObserver" >&2
+  exit 1
+fi
+if ! grep -Fq 'HandshakeCounterSnapshot' \
+    "$root/crates/i2pr-runtime/src/ntcp2_driver.rs"; then
+  echo "Plan 092 i2pr runtime must preserve terminal counters on failure" >&2
+  exit 1
+fi
+if ! grep -Fq 'HandshakeRunOutcome' \
+    "$root/crates/i2pr-runtime/src/ntcp2_driver.rs"; then
+  echo "Plan 092 i2pr runtime must return HandshakeRunOutcome" >&2
+  exit 1
+fi
+if ! grep -Fq 'plan092' "$root/AGENTS.md"; then
+  echo "AGENTS.md must reference Plan 092" >&2
+  exit 1
+fi
+# Plan 092 forbids raw or hex handshake capture in any active path.
+# The plan 091 status must be partial/incomplete; the 1 KiB hex dump
+# recommendation must be removed.
+if ! grep -Fq 'partial / incomplete' "$root/plans/091-status.md"; then
+  echo "Plan 091 status must declare the partial / incomplete state" >&2
+  exit 1
+fi
+if grep -Eq '1 KiB|hex dump|hex-dump' "$root/plans/091-status.md"; then
+  # The forbidden-follow-up section is the only place where the
+  # historically-considered hex-dump recommendation may be named
+  # verbatim. Outside that section the words must not appear.
+  if ! awk '/^## Forbidden follow-up/{in_section=1; next} /^## /{in_section=0} {if(!in_section) print}' \
+      "$root/plans/091-status.md" | grep -Eq '1 KiB|hex dump|hex-dump'; then
+    : # The only mentions live inside the forbidden-follow-up section.
+  else
+    echo "Plan 091 status must not recommend raw or hex handshake capture outside the forbidden-follow-up section" >&2
+    exit 1
+  fi
+fi
+# Plan 092 must be named as the next executable plan in 087/088.
+if ! grep -Fq 'plan_092 = planned_next_executable' "$root/plans/088-status.md"; then
+  echo "Plan 088 status must name Plan 092 as the next executable plan" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 092' "$root/plans/087-status.md"; then
+  echo "Plan 087 status must reference Plan 092" >&2
+  exit 1
+fi
+
 echo "NTCP2 interoperability manifest and sanitized evidence boundary are valid (${scenario_count} scenarios)."

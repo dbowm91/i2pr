@@ -412,9 +412,10 @@ fn run_wire_command(mode: &'static str, scenario_config: &Path) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (mut status, outcome, data_phase_mode) = run_blocking(execute_wire(scenario, status));
+    let (mut status, wire_outcome, data_phase_mode) = run_blocking(execute_wire(scenario, status));
+    let (counters, outcome) = wire_outcome;
     let (result, reason, counters) = match outcome {
-        Ok(counters) => {
+        Ok(()) => {
             let reason = match data_phase_mode {
                 DataPhaseMode::HandshakeOnly => StatusReason::HandshakeAuthenticated,
                 DataPhaseMode::InitiatorDataOnly | DataPhaseMode::ResponderDataOnly => {
@@ -426,7 +427,10 @@ fn run_wire_command(mode: &'static str, scenario_config: &Path) -> ExitCode {
         }
         Err(error) => {
             let (result, reason) = terminal_status(error);
-            (result, reason, StatusCounters::default())
+            // Plan 092: the accumulated counters are preserved on the
+            // error path so the runner can correlate the last
+            // authenticated/frame/I2NP state with the typed failure.
+            (result, reason, counters)
         }
     };
     if status
@@ -447,24 +451,42 @@ async fn execute_wire(
     mut status: StatusWriter,
 ) -> (
     StatusWriter,
-    Result<StatusCounters, LauncherError>,
+    (StatusCounters, Result<(), LauncherError>),
     DataPhaseMode,
 ) {
     let data_phase_mode = scenario.data_phase_mode;
     let local = match prepare_local_state(&scenario) {
         Ok(local) => local,
-        Err(error) => return (status, Err(error), data_phase_mode),
+        Err(error) => {
+            return (
+                status,
+                (StatusCounters::default(), Err(error)),
+                data_phase_mode,
+            );
+        }
     };
     let peer = match scenario.role {
         Role::Initiator => match prepare_peer_state(&scenario) {
             Ok(peer) => Some(peer),
-            Err(error) => return (status, Err(error), data_phase_mode),
+            Err(error) => {
+                return (
+                    status,
+                    (StatusCounters::default(), Err(error)),
+                    data_phase_mode,
+                );
+            }
         },
         Role::Responder => None,
     };
     let padding = match driver_padding(scenario.padding_profile) {
         Ok(padding) => padding,
-        Err(error) => return (status, Err(error), data_phase_mode),
+        Err(error) => {
+            return (
+                status,
+                (StatusCounters::default(), Err(error)),
+                data_phase_mode,
+            );
+        }
     };
     let deadlines = runtime_deadlines(&scenario);
     let service = match Ntcp2RuntimeService::new(Ntcp2RuntimeConfig {
@@ -472,7 +494,13 @@ async fn execute_wire(
         ..Ntcp2RuntimeConfig::default()
     }) {
         Ok(service) => service,
-        Err(_) => return (status, Err(LauncherError::StateInvalid), data_phase_mode),
+        Err(_) => {
+            return (
+                status,
+                (StatusCounters::default(), Err(LauncherError::StateInvalid)),
+                data_phase_mode,
+            );
+        }
     };
     let root = CancellationToken::new();
     let scope = service.child_scope(&root);
@@ -487,6 +515,7 @@ async fn execute_wire(
                     status,
                     scope,
                     Err(LauncherError::ListenerFailed),
+                    &mut counters,
                     data_phase_mode,
                 )
                 .await;
@@ -506,6 +535,7 @@ async fn execute_wire(
                 status,
                 scope,
                 Err(LauncherError::StatusOutputUnavailable),
+                &mut counters,
                 data_phase_mode,
             )
             .await;
@@ -523,7 +553,7 @@ async fn execute_wire(
             &mut counters,
         )
         .await;
-        finish_scope(status, scope, result.map(|_| counters), data_phase_mode).await
+        finish_scope(status, scope, result, &mut counters, data_phase_mode).await
     } else {
         let result = execute_initiator(
             &service,
@@ -538,25 +568,30 @@ async fn execute_wire(
             &mut counters,
         )
         .await;
-        finish_scope(status, scope, result.map(|_| counters), data_phase_mode).await
+        finish_scope(status, scope, result, &mut counters, data_phase_mode).await
     }
 }
 
 async fn finish_scope(
     status: StatusWriter,
     scope: i2pr_runtime::ChildScope,
-    result: Result<StatusCounters, LauncherError>,
+    result: Result<(), LauncherError>,
+    counters: &mut StatusCounters,
     data_phase_mode: DataPhaseMode,
 ) -> (
     StatusWriter,
-    Result<StatusCounters, LauncherError>,
+    (StatusCounters, Result<(), LauncherError>),
     DataPhaseMode,
 ) {
     let cleanup = scope.shutdown().await;
     if cleanup.failed() || cleanup.remaining() != 0 {
-        return (status, Err(LauncherError::CleanupFailed), data_phase_mode);
+        return (
+            status,
+            (counters.clone(), Err(LauncherError::CleanupFailed)),
+            data_phase_mode,
+        );
     }
-    (status, result, data_phase_mode)
+    (status, (counters.clone(), result), data_phase_mode)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1345,10 +1345,66 @@ terminates the Noise handshake. The retained record is
 preserved at
 `/tmp/opencode/plan091-evidence/forward/forward-record.json`;
 see [plans/091-status.md](plans/091-status.md) for the
-closure record, exact live command, recorded digests, and
-the ownership analysis. Plan 088 remains blocked on a
+closure record, exact live command, recorded digests, and the
+ownership analysis. Plan 088 remains blocked on a
 follow-up ownership pass under a successor plan. NTCP2 stays
 experimental and non-advertised.
+
+### Plan 092 forward-handshake evidence integrity and ownership closure
+
+Plan 092 is the active Plan 091 successor and the single next
+executable plan. It rewrites the Plan 091/087/088 status
+authority so Plan 091 is recorded as partial/incomplete (not
+closed), Plan 087 begins with the current forward state, and
+Plan 088 names Plan 092 as the next executable plan with a
+blocked gate that depends on the passing instrumented and
+control forward records. The plan delivers:
+
+- the privacy-safe handshake stage observation schema
+  (`tests/integration/ntcp2/harness/handshake_stage.py`,
+  schema `i2pr-ntcp2-handshake-stage-v1`) with closed i2pr and
+  i2pd stage allowlists, bounded octet counts, a forbidden
+  fields list, and a canonical event SHA-256 digest;
+- the i2pr runtime observed handshake driver entry points
+  (`drive_initiator_handshake_observed` and
+  `drive_responder_handshake_observed`) plus the
+  `HandshakeProgressObserver` / `NoopHandshakeObserver` /
+  `HandshakeStageObservation` / `HandshakeIoResult` /
+  `HandshakeCounterSnapshot` / `HandshakeRunOutcome` types in
+  `crates/i2pr-runtime/src/ntcp2_handshake_observer.rs` and
+  `crates/i2pr-runtime/src/ntcp2_driver.rs`;
+- terminal-counter preservation in the i2pr launcher so the
+  runner can correlate the last authenticated/frame/I2NP state
+  with the typed failure (`tools/i2pr-interop/src/main.rs`);
+- the Plan 083 event-ingestion repair with current-run dedup
+  keys and `tcp_accepted` inclusion in the final drain
+  (`tests/integration/ntcp2/harness/plan083_runner.py`);
+- the dedicated Plan 092 regression matrix
+  (`tests/integration/ntcp2/harness/test_plan092.py`, 28 cases);
+- the static boundary check extensions in
+  `scripts/check-ntcp2-interoperability.sh` that require the
+  privacy-safe observation schema, the active-sequence token,
+  the `partial / incomplete` declaration in the Plan 091
+  status, and the absence of raw or hex handshake capture
+  outside the forbidden-follow-up section.
+
+Plan 092 is **partial / incomplete**: the first clean
+committed-head reproduction
+(`/tmp/opencode/plan092-test-1/forward-record.json`,
+`record_sha256 = 696aa1339d3d950f9fec2a2e0b1f5bede2035761a71e167af6ab28b249cc998d`)
+records the same forward direction outcome as Plan 091: the
+i2pd NTCP2 transport reads EOF on the first SessionRequest
+prefix read while the i2pr status counters carry
+`authenticated: 1`, `frames_sent: 1`, `frames_received: 1`,
+`i2np_sent: 1`, `i2np_received: 0`. The ownership analysis
+selects **Branch A — i2pr runtime / state-machine defect** as
+the dominant owner, with Branch D reserved as the secondary
+owner. The narrow correction surface is recorded in
+[plans/092-status.md](plans/092-status.md) but is not yet
+implemented. Plan 088 remains blocked until Plan 092 closes
+with a passing instrumented forward record and a passing
+control forward record. NTCP2 stays experimental and
+non-advertised.
 
 ### Plan 074 real-driver and constrained-host corrective roadmap (historical)
 

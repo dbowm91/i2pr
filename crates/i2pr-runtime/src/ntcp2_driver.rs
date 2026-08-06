@@ -18,6 +18,9 @@ use i2pr_transport_ntcp2::state_machine::{
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::ntcp2_handshake_observer::{
+    HandshakeIoResult, HandshakeProgressObserver, HandshakeStageObservation, NoopHandshakeObserver,
+};
 use crate::{
     CancellationToken, ExactIoError, Ntcp2Deadline, Ntcp2RuntimeDeadlines, ReplayCache,
     ReplayCacheDecision,
@@ -127,6 +130,15 @@ impl fmt::Display for HandshakeDriverError {
 
 impl std::error::Error for HandshakeDriverError {}
 
+/// Plan 092 metadata-only handshake stage observation marker.
+///
+/// The driver emits observations for every ReadExact / Write /
+/// authenticated transition; the bounded i2pr-ntcp2-handshake-stage-v1
+/// schema lives in the runner and the record schema is the
+/// privacy-safe contract owned by the i2pr runtime.
+#[allow(dead_code)]
+pub const HANDSHAKE_STAGE_SCHEMA: &str = "i2pr-ntcp2-handshake-stage-v1";
+
 /// Aggregate result of an authenticated handshake.
 pub struct HandshakeRun {
     /// Authenticated peer and consuming data-phase key owners.
@@ -148,6 +160,100 @@ impl fmt::Debug for HandshakeRun {
             .field("written_bytes", &self.written_bytes)
             .field("action_count", &self.action_count)
             .finish()
+    }
+}
+
+/// Plan 092: counter snapshot retained alongside a terminal
+/// handshake failure so the runner can correlate the last observed
+/// state with the typed error. The snapshot is also produced for
+/// successful runs; the success path simply carries the same
+/// counters the runtime accumulates.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HandshakeCounterSnapshot {
+    /// Bytes read by the runtime handshake driver.
+    pub read_bytes: u64,
+    /// Bytes written by the runtime handshake driver.
+    pub written_bytes: u64,
+    /// Number of state-machine actions fulfilled.
+    pub action_count: u32,
+    /// Number of ``ReadExact`` actions fulfilled.
+    pub read_count: u32,
+    /// Number of ``Write`` actions fulfilled.
+    pub write_count: u32,
+}
+
+impl HandshakeCounterSnapshot {
+    /// Renders the snapshot as the canonical Plan 092 status
+    /// counters. The canonical ``i2pr-interop-status`` JSONL line
+    /// keeps the snapshot fields under the existing ``counters``
+    /// object so the runner can read them back without a schema
+    /// change.
+    pub fn as_status_counters(&self) -> [u32; 5] {
+        [
+            u32::try_from(self.read_bytes).unwrap_or(u32::MAX),
+            u32::try_from(self.written_bytes).unwrap_or(u32::MAX),
+            self.action_count,
+            self.read_count,
+            self.write_count,
+        ]
+    }
+}
+
+/// Plan 092: the bounded outcome returned by the observed
+/// handshake driver. The struct carries both the typed result and
+/// the accumulated counter snapshot so the runner can preserve the
+/// last authenticated/frame/I2NP correlation state on failure.
+pub struct HandshakeRunOutcome {
+    /// Typed result. ``Ok`` wraps an authenticated handshake run;
+    /// ``Err`` carries the bounded ``HandshakeDriverError`` plus the
+    /// accumulated counter snapshot.
+    pub result: Result<HandshakeRun, HandshakeDriverError>,
+    /// Counter snapshot accumulated by the runtime handshake driver.
+    /// The snapshot is preserved for both successful and failed
+    /// outcomes.
+    pub counters: HandshakeCounterSnapshot,
+}
+
+impl fmt::Debug for HandshakeRunOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.result {
+            Ok(run) => formatter
+                .debug_struct("HandshakeRunOutcome")
+                .field("result", &"Ok(HandshakeRun)")
+                .field("counters", &self.counters)
+                .field("authenticated", &true)
+                .field("read_bytes", &run.read_bytes)
+                .field("written_bytes", &run.written_bytes)
+                .field("action_count", &run.action_count)
+                .finish(),
+            Err(error) => formatter
+                .debug_struct("HandshakeRunOutcome")
+                .field("result", &format!("Err({error:?})"))
+                .field("counters", &self.counters)
+                .finish(),
+        }
+    }
+}
+
+impl HandshakeIoResult {
+    /// Maps a runtime ``ExactIoError`` to the bounded Plan 092 I/O
+    /// result category. The mapping is closed: ``Failed`` covers the
+    /// OS-rejected branch; ``Eof`` covers the peer-closed branch;
+    /// ``Timeout`` covers the deadline branch; ``Cancelled`` covers
+    /// the caller-cancellation branch.
+    pub fn from_io_error(error: &ExactIoError) -> Self {
+        match error.kind {
+            crate::IoErrorKind::Closed => Self::Eof,
+            crate::IoErrorKind::Deadline => Self::Timeout,
+            crate::IoErrorKind::Cancelled => Self::Cancelled,
+            crate::IoErrorKind::Failed => Self::Failed,
+        }
+    }
+}
+
+impl From<&ExactIoError> for HandshakeIoResult {
+    fn from(error: &ExactIoError) -> Self {
+        Self::from_io_error(error)
     }
 }
 
@@ -231,6 +337,11 @@ impl HandshakeMachine for ResponderState {
 }
 
 /// Drives one initiator handshake on a caller-owned stream.
+///
+/// The function preserves the existing production call surface by
+/// delegating to the observed implementation with a no-op observer.
+/// Tools that require Plan 092 metadata-only stage observations
+/// must invoke [`drive_initiator_handshake_observed`] directly.
 pub async fn drive_initiator_handshake<S>(
     state: InitiatorState,
     stream: &mut S,
@@ -242,18 +353,83 @@ pub async fn drive_initiator_handshake<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    drive(
+    let outcome = drive_initiator_handshake_observed(
         state,
         stream,
         local_router_info,
         replay,
         config,
         cancellation,
+        &NoopHandshakeObserver,
     )
-    .await
+    .await;
+    outcome.result
+}
+
+/// Drives one initiator handshake with metadata-only stage
+/// observations. The observer receives bounded Plan 092 stage
+/// observations emitted immediately around the actual encode/read/
+/// write/process operations; it never receives raw payload bytes or
+/// peer-controlled text. The returned [`HandshakeRunOutcome`]
+/// preserves the accumulated counter snapshot on both success and
+/// failure paths.
+pub async fn drive_initiator_handshake_observed<S>(
+    state: InitiatorState,
+    stream: &mut S,
+    local_router_info: &[u8],
+    replay: &ReplayCache,
+    config: HandshakeDriverConfig,
+    cancellation: &CancellationToken,
+    observer: &dyn HandshakeProgressObserver,
+) -> HandshakeRunOutcome
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    observer.observe(HandshakeStageObservation {
+        stage: "initiator_state_initialized",
+        expected_octets: None,
+        completed_octets: None,
+        io_result: HandshakeIoResult::NotApplicable,
+        elapsed_millis: 0,
+    });
+    let mut last_responder_label: Option<&'static str> = state.phase_label();
+    let (result, snapshot) = drive_inner_observed(
+        state,
+        stream,
+        local_router_info,
+        replay,
+        config,
+        cancellation,
+        &mut last_responder_label,
+        observer,
+    )
+    .await;
+    let result = match result {
+        Ok(run) => Ok(run),
+        Err(HandshakeDriverError::ResponderStage { .. }) => result,
+        Err(inner) => {
+            if let Some(phase_label) = last_responder_label {
+                Err(HandshakeDriverError::ResponderStage {
+                    phase_label,
+                    inner: Box::new(inner),
+                })
+            } else {
+                Err(inner)
+            }
+        }
+    };
+    HandshakeRunOutcome {
+        result,
+        counters: snapshot,
+    }
 }
 
 /// Drives one responder handshake on a caller-owned stream.
+///
+/// The function preserves the existing production call surface by
+/// delegating to the observed implementation with a no-op observer.
+/// Tools that require Plan 092 metadata-only stage observations
+/// must invoke [`drive_responder_handshake_observed`] directly.
 pub async fn drive_responder_handshake<S>(
     state: ResponderState,
     stream: &mut S,
@@ -265,34 +441,40 @@ pub async fn drive_responder_handshake<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    drive(
+    let outcome = drive_responder_handshake_observed(
         state,
         stream,
         local_router_info,
         replay,
         config,
         cancellation,
+        &NoopHandshakeObserver,
     )
-    .await
+    .await;
+    outcome.result
 }
 
-async fn drive<M, S>(
-    state: M,
+/// Drives one responder handshake with metadata-only stage
+/// observations. The observer receives bounded Plan 092 stage
+/// observations emitted immediately around the actual encode/read/
+/// write/process operations; it never receives raw payload bytes or
+/// peer-controlled text. The returned [`HandshakeRunOutcome`]
+/// preserves the accumulated counter snapshot on both success and
+/// failure paths.
+pub async fn drive_responder_handshake_observed<S>(
+    state: ResponderState,
     stream: &mut S,
     local_router_info: &[u8],
     replay: &ReplayCache,
     config: HandshakeDriverConfig,
     cancellation: &CancellationToken,
-) -> Result<HandshakeRun, HandshakeDriverError>
+    observer: &dyn HandshakeProgressObserver,
+) -> HandshakeRunOutcome
 where
-    M: HandshakeMachine,
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    // Plan 052 G1: cache the latest responder phase label observed by
-    // the loop so a terminal failure can be classified by stage without
-    // leaking protocol bytes. `None` for the initiator path.
-    let mut last_responder_label: Option<&'static str> = state.phase_label();
-    let outcome = drive_inner(
+    let mut last_responder_label: Option<&'static str> = Some(state.phase_label());
+    let (result, snapshot) = drive_inner_observed(
         state,
         stream,
         local_router_info,
@@ -300,14 +482,12 @@ where
         config,
         cancellation,
         &mut last_responder_label,
+        observer,
     )
     .await;
-    match outcome {
+    let result = match result {
         Ok(run) => Ok(run),
-        Err(HandshakeDriverError::ResponderStage { .. }) => {
-            // Already labelled; do not wrap twice.
-            outcome
-        }
+        Err(HandshakeDriverError::ResponderStage { .. }) => result,
         Err(inner) => {
             if let Some(phase_label) = last_responder_label {
                 Err(HandshakeDriverError::ResponderStage {
@@ -318,9 +498,14 @@ where
                 Err(inner)
             }
         }
+    };
+    HandshakeRunOutcome {
+        result,
+        counters: snapshot,
     }
 }
 
+#[allow(dead_code)]
 async fn drive_inner<M, S>(
     state: M,
     stream: &mut S,
@@ -334,110 +519,345 @@ where
     M: HandshakeMachine,
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let budget = HandshakeBudget::new(config.deadlines)?;
-    let mut transition = state.start().map_err(HandshakeDriverError::Protocol)?;
+    let (result, _) = drive_inner_observed(
+        state,
+        stream,
+        local_router_info,
+        replay,
+        config,
+        cancellation,
+        last_responder_label,
+        &NoopHandshakeObserver,
+    )
+    .await;
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drive_inner_observed<M, S>(
+    state: M,
+    stream: &mut S,
+    local_router_info: &[u8],
+    replay: &ReplayCache,
+    config: HandshakeDriverConfig,
+    cancellation: &CancellationToken,
+    last_responder_label: &mut Option<&'static str>,
+    observer: &dyn HandshakeProgressObserver,
+) -> (
+    Result<HandshakeRun, HandshakeDriverError>,
+    HandshakeCounterSnapshot,
+)
+where
+    M: HandshakeMachine,
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let snapshot = || HandshakeCounterSnapshot {
+        read_bytes: 0,
+        written_bytes: 0,
+        action_count: 0,
+        read_count: 0,
+        write_count: 0,
+    };
+    let budget = match HandshakeBudget::new(config.deadlines) {
+        Ok(value) => value,
+        Err(error) => return (Err(error), snapshot()),
+    };
+    let mut transition = match state.start() {
+        Ok(transition) => transition,
+        Err(error) => return (Err(HandshakeDriverError::Protocol(error)), snapshot()),
+    };
     if let Some(label) = transition.state.phase_label() {
         *last_responder_label = Some(label);
     }
-    let mut read_bytes = 0_u64;
-    let mut written_bytes = 0_u64;
-    let mut action_count = 0_u32;
+    let mut read_bytes: u64 = 0;
+    let mut written_bytes: u64 = 0;
+    let mut action_count: u32 = 0;
+    let mut read_count: u32 = 0;
+    let mut write_count: u32 = 0;
 
     loop {
         if budget.expired() {
-            return Err(HandshakeDriverError::Protocol(
-                HandshakeError::DeadlineExpired,
-            ));
+            return (
+                Err(HandshakeDriverError::Protocol(
+                    HandshakeError::DeadlineExpired,
+                )),
+                HandshakeCounterSnapshot {
+                    read_bytes,
+                    written_bytes,
+                    action_count,
+                    read_count,
+                    write_count,
+                },
+            );
         }
         let state = transition.state;
         if let Some(label) = state.phase_label() {
             *last_responder_label = Some(label);
         }
-        let mut next_transition = None;
+        let mut next_state: Option<Result<HandshakeTransition<M>, HandshakeDriverError>> = None;
+        let mut exit_with: Option<Result<HandshakeRun, HandshakeDriverError>> = None;
         for action in transition.actions {
             action_count = action_count.saturating_add(1);
             match action {
                 HandshakeAction::ReadExact { length } => {
                     if length > MAX_HANDSHAKE_BUFFERED_INPUT {
-                        return Err(HandshakeDriverError::InvalidAction);
+                        exit_with = Some(Err(HandshakeDriverError::InvalidAction));
+                        break;
                     }
+                    let started = std::time::Instant::now();
                     let mut bytes = vec![0_u8; length];
-                    let deadline = budget.operation_deadline(budget.deadlines.read_idle)?;
-                    read_exact(stream, &mut bytes, deadline, cancellation).await?;
-                    read_bytes = read_bytes.saturating_add(length as u64);
-                    next_transition = Some(
+                    let deadline = match budget.operation_deadline(budget.deadlines.read_idle) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            exit_with = Some(Err(error));
+                            break;
+                        }
+                    };
+                    let io_result =
+                        match read_exact(stream, &mut bytes, deadline, cancellation).await {
+                            Ok(()) => {
+                                read_bytes = read_bytes.saturating_add(length as u64);
+                                read_count = read_count.saturating_add(1);
+                                HandshakeIoResult::Completed
+                            }
+                            Err(HandshakeDriverError::Io(ref io_error)) => {
+                                HandshakeIoResult::from(io_error)
+                            }
+                            Err(_) => HandshakeIoResult::Failed,
+                        };
+                    let elapsed_millis =
+                        started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+                    observer.observe(HandshakeStageObservation {
+                        stage: "session_created_read_started",
+                        expected_octets: Some(length as u32),
+                        completed_octets: None,
+                        io_result: HandshakeIoResult::NotApplicable,
+                        elapsed_millis: 0,
+                    });
+                    observer.observe(HandshakeStageObservation {
+                        stage: "session_created_read_completed",
+                        expected_octets: Some(length as u32),
+                        completed_octets: if matches!(io_result, HandshakeIoResult::Completed) {
+                            Some(length as u32)
+                        } else {
+                            Some(0)
+                        },
+                        io_result,
+                        elapsed_millis,
+                    });
+                    if !matches!(io_result, HandshakeIoResult::Completed) {
+                        exit_with = Some(Err(HandshakeDriverError::Io(ExactIoError {
+                            kind: match io_result {
+                                HandshakeIoResult::Eof => crate::IoErrorKind::Closed,
+                                HandshakeIoResult::Timeout => crate::IoErrorKind::Deadline,
+                                HandshakeIoResult::Cancelled => crate::IoErrorKind::Cancelled,
+                                HandshakeIoResult::Failed | HandshakeIoResult::Completed => {
+                                    crate::IoErrorKind::Failed
+                                }
+                                HandshakeIoResult::NotApplicable => crate::IoErrorKind::Failed,
+                            },
+                        })));
+                        break;
+                    }
+                    next_state = Some(
                         state
                             .transition(HandshakeInput::Bytes(bytes))
-                            .map_err(HandshakeDriverError::Protocol)?,
+                            .map_err(HandshakeDriverError::Protocol),
                     );
                     break;
                 }
                 HandshakeAction::ReadBounded { .. } => {
-                    // An unframed variable handshake message cannot be safely
-                    // delimited by an arbitrary TCP read. Plan 042's staged
-                    // prefix/padding actions are the only accepted path.
-                    return Err(HandshakeDriverError::InvalidAction);
+                    exit_with = Some(Err(HandshakeDriverError::InvalidAction));
+                    break;
                 }
                 HandshakeAction::Write(bytes) => {
-                    let length = bytes.len();
+                    let inner = bytes.into_bytes();
+                    let length = inner.len();
                     if length > MAX_HANDSHAKE_BUFFERED_INPUT {
-                        return Err(HandshakeDriverError::InvalidAction);
+                        exit_with = Some(Err(HandshakeDriverError::InvalidAction));
+                        break;
                     }
-                    let deadline = budget.operation_deadline(budget.deadlines.write)?;
-                    write_all(stream, &bytes.into_bytes(), deadline, cancellation).await?;
-                    written_bytes = written_bytes.saturating_add(length as u64);
+                    let started = std::time::Instant::now();
+                    let deadline = match budget.operation_deadline(budget.deadlines.write) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            exit_with = Some(Err(error));
+                            break;
+                        }
+                    };
+                    let io_result = match write_all(stream, &inner, deadline, cancellation).await {
+                        Ok(()) => {
+                            written_bytes = written_bytes.saturating_add(length as u64);
+                            write_count = write_count.saturating_add(1);
+                            HandshakeIoResult::Completed
+                        }
+                        Err(HandshakeDriverError::Io(ref io_error)) => {
+                            HandshakeIoResult::from(io_error)
+                        }
+                        Err(_) => HandshakeIoResult::Failed,
+                    };
+                    let elapsed_millis =
+                        started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+                    let (stage_start, stage_complete) = if read_count == 0 {
+                        (
+                            "session_request_write_started",
+                            "session_request_write_completed",
+                        )
+                    } else {
+                        (
+                            "session_confirmed_write_started",
+                            "session_confirmed_write_completed",
+                        )
+                    };
+                    observer.observe(HandshakeStageObservation {
+                        stage: stage_start,
+                        expected_octets: Some(length as u32),
+                        completed_octets: None,
+                        io_result: HandshakeIoResult::NotApplicable,
+                        elapsed_millis: 0,
+                    });
+                    observer.observe(HandshakeStageObservation {
+                        stage: stage_complete,
+                        expected_octets: Some(length as u32),
+                        completed_octets: if matches!(io_result, HandshakeIoResult::Completed) {
+                            Some(length as u32)
+                        } else {
+                            Some(0)
+                        },
+                        io_result,
+                        elapsed_millis,
+                    });
+                    if !matches!(io_result, HandshakeIoResult::Completed) {
+                        exit_with = Some(Err(HandshakeDriverError::Io(ExactIoError {
+                            kind: match io_result {
+                                HandshakeIoResult::Eof => crate::IoErrorKind::Closed,
+                                HandshakeIoResult::Timeout => crate::IoErrorKind::Deadline,
+                                HandshakeIoResult::Cancelled => crate::IoErrorKind::Cancelled,
+                                HandshakeIoResult::Failed | HandshakeIoResult::Completed => {
+                                    crate::IoErrorKind::Failed
+                                }
+                                HandshakeIoResult::NotApplicable => crate::IoErrorKind::Failed,
+                            },
+                        })));
+                        break;
+                    }
                 }
                 HandshakeAction::RequestTimestamp { .. } => {
-                    next_transition = Some(
+                    next_state = Some(
                         state
                             .transition(HandshakeInput::Timestamp(config.clock.now()))
-                            .map_err(HandshakeDriverError::Protocol)?,
+                            .map_err(HandshakeDriverError::Protocol),
                     );
                     break;
                 }
                 HandshakeAction::RequestReplay { token, retention } => {
                     let decision = replay_decision(replay, token, config.clock.now(), retention);
-                    next_transition = Some(
+                    next_state = Some(
                         state
                             .transition(HandshakeInput::Replay(decision))
-                            .map_err(HandshakeDriverError::Protocol)?,
+                            .map_err(HandshakeDriverError::Protocol),
                     );
                     break;
                 }
                 HandshakeAction::RequestPadding { message, maximum } => {
-                    let padding = select_padding(config.padding, message, maximum)?;
-                    next_transition = Some(
+                    let padding = match select_padding(config.padding, message, maximum) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            exit_with = Some(Err(error));
+                            break;
+                        }
+                    };
+                    next_state = Some(
                         state
                             .transition(HandshakeInput::Padding(padding))
-                            .map_err(HandshakeDriverError::Protocol)?,
+                            .map_err(HandshakeDriverError::Protocol),
                     );
                     break;
                 }
                 HandshakeAction::RequestRouterInfo { maximum } => {
                     if local_router_info.is_empty() || local_router_info.len() > maximum {
-                        return Err(HandshakeDriverError::RouterInfoTooLarge);
+                        exit_with = Some(Err(HandshakeDriverError::RouterInfoTooLarge));
+                        break;
                     }
-                    next_transition = Some(
+                    next_state = Some(
                         state
                             .transition(HandshakeInput::RouterInfo(local_router_info.to_vec()))
-                            .map_err(HandshakeDriverError::Protocol)?,
+                            .map_err(HandshakeDriverError::Protocol),
                     );
                     break;
                 }
                 HandshakeAction::Authenticated(authenticated) => {
-                    return Ok(HandshakeRun {
-                        authenticated,
+                    observer.observe(HandshakeStageObservation {
+                        stage: "noise_authenticated",
+                        expected_octets: None,
+                        completed_octets: None,
+                        io_result: HandshakeIoResult::Completed,
+                        elapsed_millis: 0,
+                    });
+                    let snapshot = HandshakeCounterSnapshot {
                         read_bytes,
                         written_bytes,
                         action_count,
-                    });
+                        read_count,
+                        write_count,
+                    };
+                    return (
+                        Ok(HandshakeRun {
+                            authenticated,
+                            read_bytes,
+                            written_bytes,
+                            action_count,
+                        }),
+                        snapshot,
+                    );
                 }
                 HandshakeAction::Terminate(error) => {
-                    return Err(HandshakeDriverError::Protocol(error));
+                    exit_with = Some(Err(HandshakeDriverError::Protocol(error)));
+                    break;
                 }
             }
         }
-        transition = next_transition.ok_or(HandshakeDriverError::InvalidAction)?;
+        if let Some(result) = exit_with {
+            return (
+                result,
+                HandshakeCounterSnapshot {
+                    read_bytes,
+                    written_bytes,
+                    action_count,
+                    read_count,
+                    write_count,
+                },
+            );
+        }
+        match next_state {
+            Some(Ok(value)) => {
+                transition = value;
+            }
+            Some(Err(error)) => {
+                return (
+                    Err(error),
+                    HandshakeCounterSnapshot {
+                        read_bytes,
+                        written_bytes,
+                        action_count,
+                        read_count,
+                        write_count,
+                    },
+                );
+            }
+            None => {
+                return (
+                    Err(HandshakeDriverError::InvalidAction),
+                    HandshakeCounterSnapshot {
+                        read_bytes,
+                        written_bytes,
+                        action_count,
+                        read_count,
+                        write_count,
+                    },
+                );
+            }
+        }
         if let Some(label) = transition.state.phase_label() {
             *last_responder_label = Some(label);
         }

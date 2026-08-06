@@ -16,6 +16,7 @@ mod channel;
 mod context;
 mod graph;
 mod ntcp2_driver;
+mod ntcp2_handshake_observer;
 mod ntcp2_link;
 mod ntcp2_runtime;
 mod observability;
@@ -40,8 +41,13 @@ pub use graph::{
     ServiceResult, ServiceSpec,
 };
 pub use ntcp2_driver::{
-    HandshakeClock, HandshakeDriverConfig, HandshakeDriverError, HandshakeRun, PaddingProfile,
-    drive_initiator_handshake, drive_responder_handshake,
+    HandshakeClock, HandshakeCounterSnapshot, HandshakeDriverConfig, HandshakeDriverError,
+    HandshakeRun, HandshakeRunOutcome, PaddingProfile, drive_initiator_handshake,
+    drive_initiator_handshake_observed, drive_responder_handshake,
+    drive_responder_handshake_observed,
+};
+pub use ntcp2_handshake_observer::{
+    HandshakeIoResult, HandshakeProgressObserver, HandshakeStageObservation, NoopHandshakeObserver,
 };
 pub use ntcp2_link::{
     AuthenticatedLink, AuthenticatedLinkError, AuthenticatedLinkSnapshot,
