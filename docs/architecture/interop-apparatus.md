@@ -1539,3 +1539,65 @@ the repository unchanged for any future host where the Plan 086 lane
 becomes executable or the Plan 089 manual-isolated fallback becomes
 available. See [`plans/088-status.md`](../../plans/088-status.md) for
 the closure record. NTCP2 remains experimental and non-advertised.
+
+## Plan 095 CI host-loopback live-wire evidence lane
+
+Plan 095 is the next executable plan and the authoritative forward-
+direction closure pass. It implements the GitHub Actions
+`ubuntu-24.04` host-loopback live-wire evidence lane that runs the
+Plan 086 `host-loopback-development` topology on a fresh VM. The
+lane is **development-only**; it never satisfies a release or
+isolation qualification and cannot become a Milestone 3 certificate.
+
+The workflow lives at
+[`.github/workflows/ntcp2-interop-host-loopback-development.yml`](../../.github/workflows/ntcp2-interop-host-loopback-development.yml).
+The `workflow_dispatch` trigger is the only initial trigger; no
+`pull_request` automatic execution. Permissions are
+`contents: read`. The live jobs (`forward-instrumented`,
+`forward-control`, `validate-gate`) run on `ubuntu-24.04` and never
+invoke sudo, ip netns, nft, iptables, unshare, `--privileged`,
+`--network host`, multipass, or docker. The build job may install
+declared packages via `apt-get` only.
+
+The job sequence is:
+
+```text
+contract (static surface)
+  -> build (i2pr + i2pd-instrumented + i2pd-control from pinned source)
+  -> forward-instrumented (one fresh attempt)
+  -> forward-control (one fresh attempt, only after instrumented validates)
+  -> validate-gate (records both passes; emits plan095-ci-gate.json)
+```
+
+The artifact uploads are bounded to `target/interop/evidence/*.json`
+and `target/interop/build/*.json`; raw run roots are deleted before
+artifact upload. The CI environment blocker vocabulary is bounded
+(`ci_binary_execution_blocked`, `ci_loopback_bind_blocked`,
+`ci_loopback_connect_blocked`, `ci_reference_build_blocked`,
+`ci_artifact_transfer_blocked`, `ci_disk_space_blocked`,
+`ci_unexpected_runner_environment`); CI inability is never reported
+as a protocol failure.
+
+Plan 095 supersedes the Plan 094 assumption that the Plan 046
+rootless sealed-namespace lane or the Plan 048/049 Multipass guest
+must become runnable before development-only forward evidence can
+close. Those lanes remain valid historical/qualification lanes but
+are **not prerequisites** for the `host-loopback-development`
+forward evidence. The focused test matrix
+[`tests/integration/ntcp2/harness/test_plan095.py`](../../tests/integration/ntcp2/harness/test_plan095.py)
+statically enforces the workflow contract, the live-path prohibition
+list, the bounded CI environment blocker vocabulary, and the
+sanitized artifact upload allowlist. The static boundary checker
+[`scripts/check-ntcp2-interoperability.sh`](../../scripts/check-ntcp2-interoperability.sh)
+is not extended for Plan 095 (the focused test matrix is the
+authoritative contract verifier for the workflow file), and the
+existing plan surfaces (Plan 055/056/058/059/060/062/063/064/065/066
+freeze-readiness invariants) remain intact.
+
+The plan-of-record is
+[`plans/095-ci-host-loopback-live-wire-evidence-lane.md`](../../plans/095-ci-host-loopback-live-wire-evidence-lane.md).
+A passing CI evidence pair feeds Plan 088 only after both records
+are validated. Plan 088 remains blocked pending the actual two-way
+Plan 088 decision. Plan 079 remains blocked pending the Plan 088
+two-way pass. Plan 072 remains inactive pending the Plan 088
+ambiguity decision. NTCP2 remains experimental and non-advertised.

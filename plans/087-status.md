@@ -31,7 +31,7 @@ latest clean committed-head attempts are:
    **superseded** by Plan 093.
 
 ```text
-status = open-pending-plan094-forward-evidence-pair
+status = open-pending-plan095-ci-forward-evidence-pair
 forward_digest = non-zero (Plan 091 instrumented retained record)
                   and Plan 092 retained record (diagnostic history only)
 corrective_source_commit = <set-by-plan-094-corrective-commit>
@@ -40,22 +40,22 @@ plan_090 = routerinfo-correction-landed
 plan_091 = historical-partial-correction
 plan_092 = superseded-by-plan093
 plan_093 = implementation-landed-closure-incomplete
-plan_094 = active-single-next-executable-completion-pass
-plan_088 = blocked-pending-plan094-completion
+plan_094 = implementation-landed-live-closure-environment-blocked
+plan_095 = ci-live-wire-closure-next-executable
+plan_088 = blocked-pending-plan095-ci-closure
 plan_079 = blocked-pending-plan088-two-way-pass
 plan_072 = inactive-pending-plan088-ambiguity
 ntcp2    = experimental-non-advertised
 ```
 
-Plan 094 is the single next executable plan. Plan 094 completes
-Plan 093 without reopening its already-landed NTCP2 data-phase
-design. Plan 093 rewrites the ownership analysis to identify the
-remaining blocker as a **post-auth data-phase sequencing defect**
-owned by the mixed corrective surface (i2pr one-frame receive
-oracle + i2pd observer reset / target-send predicate lifecycle),
-not by the i2pr Noise state machine. Plan 088 may not run before
-Plan 094 closes with a passing instrumented forward record and a
-passing control forward record bound to the same corrective commit.
+Plan 095 is the single next executable plan. Plan 095 implements
+the GitHub Actions `ubuntu-24.04` host-loopback live-wire
+closure lane that supersedes the local host environment-blocked
+path that Plan 094 (plan094) expected to run. Plan 094 remains
+implementation-landed; its live closure environment is blocked
+on this host. Plan 088 may not run before Plan 095 closes with
+a passing instrumented forward record and a passing control
+forward record bound to the same CI evidence pair.
 Plan 079 and Plan 072 remain blocked pending the Plan 088 decision.
 
 ## Historical record
@@ -119,10 +119,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings  ok
 
 ## Future plan unblocking
 
-| Plan | Precondition                                              | Status after Plan 092  |
+| Plan | Precondition                                              | Status after Plan 095 |
 | ---  | ---                                                       | ---                    |
-| 092  | Forward direction ownership, narrow correction, instrumented + control pass | next executable |
-| 088  | Plan 092 must record `passed` instrumented and control forward records | remains blocked |
+| 095  | Plan 094 implementation landed; CI host-loopback live-wire closure lane | next executable |
+| 088  | Plan 095 must record `passed` instrumented and control forward records | remains blocked |
 | 079  | Plan 088 must record `two-way-development-probe-passed`     | remains blocked         |
 | 072  | Plan 088 must record `ambiguous-reference-divergence` with one exact diagnostic question | remains inactive |
 

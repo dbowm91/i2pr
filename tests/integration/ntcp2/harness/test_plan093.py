@@ -153,9 +153,14 @@ class Plan093StatusAuthorityTests(unittest.TestCase):
         text = (REPO_ROOT / "plans/091-status.md").read_text()
         self.assertIn("Plan 093", text)
 
-    def test_agents_md_active_sequence_token_is_plan094(self):
+    def test_agents_md_active_sequence_token_is_plan094_or_plan095(self):
+        # Plan 094 was the active single next executable plan; Plan 095
+        # has now superseded it as the CI live-wire closure authority.
         text = (REPO_ROOT / "AGENTS.md").read_text()
-        self.assertIn("plan094", text)
+        self.assertTrue(
+            "plan094" in text or "plan095" in text,
+            "AGENTS.md must reference the active sequence token (plan094 or plan095)",
+        )
 
 
 class Plan093I2pdObserverResetTests(unittest.TestCase):
@@ -395,9 +400,13 @@ class Plan093GateHandoffTests(unittest.TestCase):
 
     def test_plan088_status_remains_blocked(self):
         text = (REPO_ROOT / "plans/088-status.md").read_text()
-        # Plan 088 is blocked until Plan 094 records both passing
-        # instrumented and control records.
-        self.assertIn("blocked-pending-plan094-completion", text)
+        # Plan 088 is blocked until Plan 094 or Plan 095 records both
+        # passing instrumented and control records.
+        self.assertTrue(
+            "blocked-pending-plan094-completion" in text
+            or "blocked-pending-plan095-ci-closure" in text,
+            "Plan 088 must remain blocked pending plan094 or plan095",
+        )
         # Plan 079 remains blocked.
         self.assertIn("blocked-pending-plan088-two-way-pass", text)
         # Plan 072 remains inactive.

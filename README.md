@@ -1373,9 +1373,12 @@ authority.
 ### Plan 093 Plan 087 forward data-phase and reference-observer closure (superseded)
 
 Plan 093 implementation landed on this host but the closure is
-**incomplete**. Plan 094 is the **active single next executable
-plan** and the Plan 091 / Plan 092 / Plan 093 completion
-authority. Plan 093 corrected the Plan 092 "Branch A i2pr
+**incomplete**. Plan 094 lands the runner/provenance authority
+corrections but the live closure environment is blocked on this
+host. Plan 095 is the **active single next executable plan**: the
+GitHub Actions `ubuntu-24.04` host-loopback live-wire closure lane
+that supersedes the local host environment-blocked path that Plan
+094 expected to run. Plan 093 corrected the Plan 092 "Branch A i2pr
 state-machine defect" misclassification with a privacy-safe
 source reclassification of the i2pd NTCP2 log diagnostic,
 implemented the i2pd observer reset/generation/ring contract,
@@ -1389,10 +1392,65 @@ canonical Plan 083 event identity and ingestion contract, makes
 the forward pass classification require exact target metadata,
 binds the i2pr build manifest into the probe record, prunes the
 stale `plan_093b` token from the active vocabulary, and runs the
-one instrumented forward attempt followed by the one control
-forward attempt from the same corrective commit. Plan 088
-remains blocked until both records are retained. NTCP2 stays
-experimental and non-advertised.
+required static surface before any live attempt. Plan 095 adds
+the dedicated CI workflow, the focused test matrix, the bounded
+CI environment blocker vocabulary, and the sanitized CI gate
+record. Plan 088 remains blocked until Plan 095 closes with a
+passing instrumented and a passing control forward record from
+the same CI evidence pair. NTCP2 stays experimental and
+non-advertised.
+
+### Plan 095 CI host-loopback live-wire evidence lane
+
+Plan 095 is the **active single next executable plan** and the
+authoritative forward-direction closure pass. The plan implements
+the GitHub Actions `ubuntu-24.04` host-loopback live-wire
+evidence lane that runs the Plan 086 `host-loopback-development`
+topology on a fresh VM, with the contract/build/forward-instrumented/
+forward-control/validate-gate job sequence, provenance-bound
+binaries, and a sanitized CI gate record. The lane is
+**development-only**; it never satisfies a release or isolation
+qualification and cannot become a Milestone 3 certificate.
+
+Plan 095 implements:
+
+- `.github/workflows/ntcp2-interop-host-loopback-development.yml`
+  — the dedicated manual CI workflow. The `workflow_dispatch`
+  trigger is the only initial trigger; no `pull_request` automatic
+  execution. Permissions are `contents: read`. The live jobs
+  (`forward-instrumented`, `forward-control`, `validate-gate`) run
+  on `ubuntu-24.04` and never invoke sudo, ip netns, nft, iptables,
+  unshare, `--privileged`, `--network host`, multipass, or docker.
+  The build job may install declared packages via `apt-get` only.
+- `tests/integration/ntcp2/harness/test_plan095.py` — the Plan 095
+  test matrix that statically enforces the workflow contract, the
+  build/manual gates, the live-path prohibition list, the
+  controlled CI environment blocker vocabulary, and the bounded
+  artifact upload allowlist.
+- `target/interop/evidence/plan095-ci-gate.json` — the sanitized
+  Plan 095 CI gate record schema
+  (`i2pr-ntcp2-plan095-ci-gate-v1`) that binds the workflow run
+  metadata to the two passing evidence record digests and the
+  implementation commit.
+
+Plan 095 supersedes the Plan 094 assumption that the Plan 046
+rootless sealed-namespace lane or the Plan 048/049 Multipass
+guest must become runnable before development-only forward evidence
+can close. Those lanes remain valid historical/qualification lanes
+but are **not prerequisites** for the `host-loopback-development`
+evidence needed to advance the current roadmap. The static
+contract test (`scripts/check-ntcp2-interoperability.sh`) is
+extended by the workflow contract test to enforce the Plan 095
+artifacts, the schema tokens, the plan-of-record reference, and
+the post-Plan-094 status authority.
+
+The Plan 095 result feeds Plan 088 only after a passing CI
+evidence pair proves the forward direction. Plan 088 remains
+blocked pending the actual two-way Plan 088 decision. Plan 079
+remains blocked pending the Plan 088 two-way pass. Plan 072
+remains inactive pending the Plan 088 ambiguity decision. NTCP2
+remains experimental and non-advertised. The plan-of-record is
+`plans/095-ci-host-loopback-live-wire-evidence-lane.md`.
 
 ### Plan 074 real-driver and constrained-host corrective roadmap (historical)
 

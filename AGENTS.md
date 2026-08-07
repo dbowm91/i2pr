@@ -1794,11 +1794,11 @@ Plan 078 attempt. Do not treat either capability probing or a stale guest as
 protocol evidence; consult `plans/080-status.md` for the qualified-lane
 record.
 
-## Current active sequence amendment (2026-08-06, plan094 / Plan 094)
+## Current active sequence amendment (2026-08-06, plan095 / Plan 095)
 
-The active plan identifier is `plan094` (lowercase file-token) and
-`Plan 094` (display form). The active sequence is documented in
-`plans/094-plan093-completion-and-plan087-to-plan088-handoff.md`.
+The active plan identifier is `plan095` (lowercase file-token) and
+`Plan 095` (display form). The active sequence is documented in
+`plans/095-ci-host-loopback-live-wire-evidence-lane.md`.
 
 The active authority is [Plan 085](plans/085-milestone-3-host-loopback-development-execution-roadmap.md),
 followed by Plan 086 (status correction + `host-loopback-development`
@@ -1821,12 +1821,18 @@ binding, privacy-safe source reclassification of
 `NTCP2: Receive length read error` from SessionRequest (handshake
 read) to `HandleReceivedLength` (data-phase length reader), and the
 exact-bidirectional-DeliveryStatus forward direction pass,
-**implementation-landed-closure-incomplete**), and Plan 094 (Plan
+**implementation-landed-closure-incomplete**), Plan 094 (Plan
 093 completion pass and Plan 087 -> Plan 088 handoff: real per-process
 invocation IDs, shared canonical event-ingestion primitive, exact
 target pass classification, build/binary provenance binding, Plan
 094 focused regression matrix, prunes the stale `plan_093b` token,
-**active single next executable plan**),
+**implementation-landed-live-closure-environment-blocked**),
+Plan 095 (CI host-loopback live-wire evidence lane: GitHub Actions
+`ubuntu-24.04` workflow that runs the Plan 086 host-loopback-
+development lane on a fresh VM, contract/build/forward-instrumented/
+forward-control/validate-gate job sequence with provenance-bound
+binaries, sanitized CI contract record, and Plan 095 CI gate
+record, **active single next executable plan**),
 and Plan 088 (reverse `i2pd -> i2pr` probe and development decision),
 and the [Plan 072/079 gate amendment](plans/072-079-gate-plan-088.md)
 that moves the Plan 072 and Plan 079 gates from Plan 084 to Plan 088.
@@ -1836,7 +1842,10 @@ complete but execution pending; Plan 086 added the
 `HostLoopbackDevelopmentPlacement`, the bounded literal IPv4 loopback
 acceptance, the thin wrapper
 `scripts/interop/run-minimal-i2pd-host-loopback-probe.py`, and the
-listener-only preflight. The Plan 084 historical `lane-invalidated`
+listener-only preflight. Plan 095 adds the dedicated
+`.github/workflows/ntcp2-interop-host-loopback-development.yml`
+workflow and the `tests/integration/ntcp2/harness/test_plan095.py`
+test matrix. The Plan 084 historical `lane-invalidated`
 closure is reclassified as "runner implementation completed;
 required reverse wire execution never occurred." The Plan 080
 Multipass lane is qualified and the Plan 076 i2pd driver is real, but
@@ -1966,19 +1975,21 @@ close (as `passed` or as a localized defect that authenticates the
 data phase) before Plan 088 begins. Plan 091 closes as `passed` only
 after Plan 087 records `status = passed` with both an instrumented
 and a control record digest; the Plan 091 corrections are landed on
-this host and the forward direction did not pass. Plan 094 is the
-single next executable plan; it proves or corrects the canonical
-Plan 083 event identity and ingestion contract, makes the forward
-pass classification require exact target metadata, binds the i2pr
-build manifest into the probe record, prunes the stale `plan_093b`
-token from the active vocabulary, runs the one instrumented forward
-attempt and then the one control forward attempt from the same
-corrective commit, retains both record digests, and rewrites
-`plans/087-status.md` and `plans/088-status.md` to mark Plan 087
-`passed` and Plan 088 as `next_executable` without claiming a
-reverse result. The Plan 088 active development decision remains
-`insufficient-evidence` until Plan 094 closes with both passing
-records. Plan 079 remains blocked until `plans/088-status.md`
+this host and the forward direction did not pass. Plan 095 is the
+single next executable plan; it implements the GitHub Actions
+`ubuntu-24.04` host-loopback live-wire evidence lane that
+supersedes the local host environment-blocked path that Plan 094
+expected to run. Plan 095 adds the contract/build/forward-instrumented/
+forward-control/validate-gate job sequence, the dedicated
+`.github/workflows/ntcp2-interop-host-loopback-development.yml`
+workflow, the `tests/integration/ntcp2/harness/test_plan095.py`
+focused test matrix, the CI environment blocker vocabulary, and
+the sanitized CI gate record. Plan 094 remains
+implementation-landed; its live closure environment is blocked on
+this host. The Plan 088 active development decision remains
+`insufficient-evidence` until Plan 095 closes with a passing
+instrumented and a passing control forward record from the same CI
+evidence pair. Plan 079 remains blocked until `plans/088-status.md`
 records `decision = two-way-development-probe-passed`. Plan 072
 remains inactive until `plans/088-status.md` records `decision =
 ambiguous-reference-divergence` with one exact role/stage diagnostic
@@ -1986,7 +1997,8 @@ question. NTCP2 stays experimental and non-advertised. See
 `plans/082-status.md`, `plans/083-status.md`, `plans/084-status.md`,
 `plans/086-status.md`, `plans/087-status.md`, `plans/088-status.md`,
 `plans/091-status.md`, `plans/092-status.md`, `plans/093-status.md`,
-and `plans/094-plan093-completion-and-plan087-to-plan088-handoff.md`.
+`plans/094-plan093-completion-and-plan087-to-plan088-handoff.md`,
+and `plans/095-ci-host-loopback-live-wire-evidence-lane.md`.
 
 ## Plan 083 minimal i2pr-to-i2pd wire probe
 

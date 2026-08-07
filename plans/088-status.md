@@ -5,13 +5,14 @@
 ```text
 decision = insufficient-evidence
 plan_086 = host-loopback-development-ready
-plan_087 = open-pending-plan094-forward-evidence-pair
+plan_087 = open-pending-plan095-ci-forward-evidence-pair
 plan_090 = routerinfo-correction-landed
 plan_091 = historical-partial-correction
 plan_092 = superseded-by-plan093
 plan_093 = implementation-landed-closure-incomplete
-plan_094 = active-single-next-executable-completion-pass
-plan_088 = blocked-pending-plan094-completion
+plan_094 = implementation-landed-live-closure-environment-blocked
+plan_095 = ci-live-wire-closure-next-executable
+plan_088 = blocked-pending-plan095-ci-closure
 plan_079 = blocked-pending-plan088-two-way-pass
 plan_072 = inactive-pending-plan088-ambiguity
 ntcp2 = experimental-non-advertised
@@ -25,22 +26,22 @@ identifier is exactly `i2pd-to-i2pr-ipv4`. The Plan 088 development
 decision recorded in this status is `insufficient-evidence` because:
 
 1. the prerequisite forward direction has not executed a passing
-   instrumented record under Plan 094;
-2. no real wire run from a clean Plan 094 corrective commit has been
+   instrumented record under Plan 095;
+2. no real wire run from a clean Plan 095 CI evidence pair has been
    retained;
 3. the Plan 086 lane contract has closed as
-   `host-loopback-development-ready` but the Plan 094 completion
-   pass has not yet produced a passing instrumented or control
-   forward record;
+   `host-loopback-development-ready` but the Plan 095 CI host-loopback
+   live-wire closure lane has not yet produced a passing instrumented
+   or control forward record;
 4. the Plan 089 manual-isolated fallback has not been activated;
-5. the active execution lane remains blocked pending Plan 094
-   closure.
+5. the active execution lane remains blocked pending Plan 095
+   CI closure.
 
-Plan 094 is the active plan of record and the single next
+Plan 095 is the active plan of record and the single next
 executable implementation authority. Plan 088 must not run until
-Plan 094 records both a passing instrumented forward record and a
-passing control forward record from the same corrective source
-commit and pinned i2pd revision.
+Plan 095 records both a passing instrumented forward record and a
+passing control forward record from the same CI evidence pair
+bound to the same source commit and pinned i2pd revision.
 
 The historical `lane-invalidated` token carried by the legacy
 Plan 084 closure is intentionally **not** reused here. Plan 088
@@ -130,13 +131,14 @@ plan_072_activation_gate = decision != ambiguous-reference-divergence -> inactiv
 plan_079 = blocked-pending-plan088-two-way-pass
 plan_072 = inactive-pending-plan088-ambiguity
 plan_086 = host-loopback-development-ready
-plan_087 = open-pending-plan094-forward-evidence-pair
+plan_087 = open-pending-plan095-ci-forward-evidence-pair
 plan_090 = routerinfo-correction-landed
 plan_091 = historical-partial-correction
 plan_092 = superseded-by-plan093
 plan_093 = implementation-landed-closure-incomplete
-plan_094 = active-single-next-executable-completion-pass
-plan_088 = blocked-pending-plan094-completion
+plan_094 = implementation-landed-live-closure-environment-blocked
+plan_095 = ci-live-wire-closure-next-executable
+plan_088 = blocked-pending-plan095-ci-closure
 ```
 
 The Plan 088 handoff fields required for any future
@@ -262,16 +264,16 @@ bounded by the Plan 051 resource constraints.
 
 ## Future plan unblocking
 
-| Plan | Precondition | Status after Plan 094 |
+| Plan | Precondition | Status after Plan 095 |
 | --- | --- | --- |
-| Plan 094 | Plan 087 instrumented + control forward records from the same corrective commit | active next executable |
+| Plan 095 | Plan 087 instrumented + control forward records from the same CI evidence pair | active next executable |
 | Plan 079 | requires Plan 088 `two-way-development-probe-passed` | remains blocked |
 | Plan 072 | requires Plan 088 `ambiguous-reference-divergence` with one exact diagnostic question | remains inactive |
 | Plan 073 | requires release-qualification evidence | remains inactive |
 
-No future plan is unblocked by this Plan 088 closure until Plan 094
+No future plan is unblocked by this Plan 088 closure until Plan 095
 closes with a passing instrumented forward record and a passing
-control forward record from the same corrective commit. Plan 079
+control forward record from the same CI evidence pair. Plan 079
 remains explicitly blocked; Plan 072 remains explicitly inactive.
 The Plan 079 entry-gate reference points at this status record,
 per the Plan 088 gate amendment

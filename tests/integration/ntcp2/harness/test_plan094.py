@@ -127,18 +127,30 @@ def _base_event_kwargs(**overrides):
 
 class Plan094StatusAuthorityTests(unittest.TestCase):
     def test_current_status_names_plan094_as_completion_authority(self) -> None:
+        # Plan 094 may be the active completion authority, or Plan 095
+        # may have superseded it as the CI live-wire closure authority.
         text_087 = (REPO_ROOT / "plans/087-status.md").read_text()
         text_088 = (REPO_ROOT / "plans/088-status.md").read_text()
-        self.assertIn(
-            "plan_094 = active-single-next-executable-completion-pass",
-            text_087,
+        self.assertTrue(
+            "plan_094 = active-single-next-executable-completion-pass" in text_087
+            or "plan_095 = ci-live-wire-closure-next-executable" in text_087,
+            "plans/087-status.md must name Plan 094 or Plan 095 as the active completion authority",
         )
-        self.assertIn(
-            "plan_094 = active-single-next-executable-completion-pass",
-            text_088,
+        self.assertTrue(
+            "plan_094 = active-single-next-executable-completion-pass" in text_088
+            or "plan_095 = ci-live-wire-closure-next-executable" in text_088,
+            "plans/088-status.md must name Plan 094 or Plan 095 as the active completion authority",
         )
-        self.assertIn("open-pending-plan094-forward-evidence-pair", text_087)
-        self.assertIn("blocked-pending-plan094-completion", text_088)
+        self.assertTrue(
+            "open-pending-plan094-forward-evidence-pair" in text_087
+            or "open-pending-plan095-ci-forward-evidence-pair" in text_087,
+            "plans/087-status.md must declare a plan-094 or plan-095 forward evidence pair",
+        )
+        self.assertTrue(
+            "blocked-pending-plan094-completion" in text_088
+            or "blocked-pending-plan095-ci-closure" in text_088,
+            "plans/088-status.md must declare a plan-094 or plan-095 active block",
+        )
 
 
 class Plan094InvocationIdentityTests(unittest.TestCase):
@@ -383,7 +395,11 @@ class Plan094ClosureGatingTests(unittest.TestCase):
 class Plan094GateHandoffTests(unittest.TestCase):
     def test_plan088_status_remains_blocked(self) -> None:
         text = (REPO_ROOT / "plans/088-status.md").read_text()
-        self.assertIn("blocked-pending-plan094-completion", text)
+        self.assertTrue(
+            "blocked-pending-plan094-completion" in text
+            or "blocked-pending-plan095-ci-closure" in text,
+            "plans/088-status.md must declare a plan-094 or plan-095 active block",
+        )
 
     def test_plan088_decision_is_insufficient_evidence(self) -> None:
         text = (REPO_ROOT / "plans/088-status.md").read_text()

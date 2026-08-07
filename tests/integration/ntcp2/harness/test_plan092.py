@@ -95,12 +95,21 @@ class Plan092StatusAuthorityTests(unittest.TestCase):
         # direction passed and blocked.
         self.assertNotIn("Plan 087 closes as `passed`", text)
 
-    def test_plan088_status_records_plan094_as_next_executable(self):
+    def test_plan088_status_records_plan094_or_plan095_as_next_executable(self):
         text = (REPO_ROOT / "plans/088-status.md").read_text()
-        # Plan 094 is the single next executable plan; the status
-        # record must reflect the active sequence amendment.
-        self.assertIn("plan_094 = active-single-next-executable-completion-pass", text)
-        self.assertIn("blocked-pending-plan094-completion", text)
+        # Plan 094 was the single next executable plan; Plan 095 has
+        # superseded it as the CI live-wire closure authority. The
+        # status record must reflect at least one of the two.
+        self.assertTrue(
+            "plan_094 = active-single-next-executable-completion-pass" in text
+            or "plan_095 = ci-live-wire-closure-next-executable" in text,
+            "plans/088-status.md must name Plan 094 or Plan 095 as the active completion authority",
+        )
+        self.assertTrue(
+            "blocked-pending-plan094-completion" in text
+            or "blocked-pending-plan095-ci-closure" in text,
+            "plans/088-status.md must declare a plan-094 or plan-095 active block",
+        )
         self.assertIn("Plan 094", text)
         # The legacy ``lane-invalidated`` token must not be the
         # *active* decision value. The token may still appear in the
