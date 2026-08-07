@@ -46,6 +46,7 @@ from typing import Any, Protocol
 from minimal_i2pd_probe import (
     ALLOWED_EVENT_NAMES,
     ALLOWED_EVENT_SIDES,
+    ATTEMPT_KIND_INSTRUMENTED,
     CLEANUP_RESULTS,
     DIRECTION,
     FORBIDDEN_FIELDS,
@@ -201,6 +202,12 @@ class ProbeConfig:
     parent_network_state_unchanged: bool
     i2pr_binary_sha256: str
     i2pd_binary_sha256: str
+    i2pr_build_manifest_sha256: str = "0" * 64
+    i2pd_build_manifest_sha256: str = "0" * 64
+    reference_source_tree_sha256: str = "0" * 64
+    scenario_sha256: str = "0" * 64
+    attempt_kind: str = ATTEMPT_KIND_INSTRUMENTED
+    attempt_index: int = 1
     i2pr_router_info_sha256: str = ""
     i2pd_router_info_sha256: str = ""
     i2pr_router_hash_sha256: str = ""
@@ -560,6 +567,12 @@ class ProbeRunner:
             parent_network_state_unchanged=self.config.parent_network_state_unchanged,
             i2pr_binary_sha256=self.config.i2pr_binary_sha256,
             i2pd_binary_sha256=self.config.i2pd_binary_sha256,
+            i2pr_build_manifest_sha256=self.config.i2pr_build_manifest_sha256,
+            i2pd_build_manifest_sha256=self.config.i2pd_build_manifest_sha256,
+            reference_source_tree_sha256=self.config.reference_source_tree_sha256,
+            scenario_sha256=self.config.scenario_sha256,
+            attempt_kind=self.config.attempt_kind,
+            attempt_index=self.config.attempt_index,
             i2pr_router_info_sha256=i2pr_ri,
             i2pd_router_info_sha256=i2pd_ri,
             i2pr_router_hash_sha256=i2pr_hash,
@@ -778,6 +791,14 @@ def execute_real_probe(
 
     counters = empty_process_counters()
     observed: list[dict[str, Any]] = []
+    # Plan 094: the runner needs the build manifest digests, the
+    # reference source tree, and the measured scenario digest to
+    # produce a non-zero provenance record. The values default to
+    # the values passed by the caller (which are nonzero for a real
+    # attempt) so the strict runner validation cannot reject a
+    # legitimate attempt.
+    runner_build_manifest_sha256 = build_manifest_sha256
+    runner_scenario_sha256 = "0" * 64
 
     def increment(process_key: str, counter: str) -> None:
         if process_key in counters and counter in counters[process_key]:
@@ -822,6 +843,12 @@ def execute_real_probe(
             parent_network_state_unchanged=parent_network_state_unchanged,
             i2pr_binary_sha256=i2pr_binary_sha256,
             i2pd_binary_sha256=i2pd_binary_sha256,
+            i2pr_build_manifest_sha256=runner_build_manifest_sha256,
+            i2pd_build_manifest_sha256=build_manifest_sha256,
+            reference_source_tree_sha256=reference_tree_sha256,
+            scenario_sha256=runner_scenario_sha256,
+            attempt_kind=ATTEMPT_KIND_INSTRUMENTED,
+            attempt_index=1,
             i2pr_router_info_sha256=i2pr_router_info_sha256,
             i2pd_router_info_sha256=i2pd_router_info_sha256,
             i2pr_router_hash_sha256=i2pr_router_hash_sha256,
@@ -1519,6 +1546,12 @@ def write_host_blocked_record(
         parent_network_state_unchanged=False,
         i2pr_binary_sha256="0" * 64,
         i2pd_binary_sha256="0" * 64,
+        i2pr_build_manifest_sha256="0" * 64,
+        i2pd_build_manifest_sha256="0" * 64,
+        reference_source_tree_sha256="0" * 64,
+        scenario_sha256="0" * 64,
+        attempt_kind=ATTEMPT_KIND_INSTRUMENTED,
+        attempt_index=1,
         i2pr_router_info_sha256="0" * 64,
         i2pd_router_info_sha256="0" * 64,
         i2pr_router_hash_sha256="0" * 64,

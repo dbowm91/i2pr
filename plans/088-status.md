@@ -5,15 +5,16 @@
 ```text
 decision = insufficient-evidence
 plan_086 = host-loopback-development-ready
-plan_087 = open_post_auth_data_phase_sequencing_defect
+plan_087 = open-pending-plan094-forward-evidence-pair
 plan_090 = routerinfo-correction-landed
-plan_091 = partial_historical_correction
-plan_092 = partial_evidence_surface_landed_misclassification_corrected
-plan_093 = planned_next_executable
-plan_088 = blocked_pending_plan_093_instrumented_and_control_pass
-plan_079 = blocked_pending_plan_088_two_way_pass
-plan_072 = inactive_pending_plan_088_ambiguity
-ntcp2 = experimental_non_advertised
+plan_091 = historical-partial-correction
+plan_092 = superseded-by-plan093
+plan_093 = implementation-landed-closure-incomplete
+plan_094 = active-single-next-executable-completion-pass
+plan_088 = blocked-pending-plan094-completion
+plan_079 = blocked-pending-plan088-two-way-pass
+plan_072 = inactive-pending-plan088-ambiguity
+ntcp2 = experimental-non-advertised
 ```
 
 Implementation surface delivered on 2026-08-04. The reverse probe
@@ -24,21 +25,21 @@ identifier is exactly `i2pd-to-i2pr-ipv4`. The Plan 088 development
 decision recorded in this status is `insufficient-evidence` because:
 
 1. the prerequisite forward direction has not executed a passing
-   instrumented record under Plan 093;
-2. no real wire run from a clean Plan 093 corrective commit has been
+   instrumented record under Plan 094;
+2. no real wire run from a clean Plan 094 corrective commit has been
    retained;
 3. the Plan 086 lane contract has closed as
-   `host-loopback-development-ready` but the Plan 093 ownership probe
-   has not yet produced a passing instrumented or control forward
-   record;
+   `host-loopback-development-ready` but the Plan 094 completion
+   pass has not yet produced a passing instrumented or control
+   forward record;
 4. the Plan 089 manual-isolated fallback has not been activated;
-5. the active execution lane remains blocked pending Plan 093
+5. the active execution lane remains blocked pending Plan 094
    closure.
 
-Plan 093 supersedes Plan 092 as the active plan of record and as the
-single next executable implementation authority. Plan 088 must not
-run until Plan 093 records both a passing instrumented forward record
-and a passing control forward record from the same corrective source
+Plan 094 is the active plan of record and the single next
+executable implementation authority. Plan 088 must not run until
+Plan 094 records both a passing instrumented forward record and a
+passing control forward record from the same corrective source
 commit and pinned i2pd revision.
 
 The historical `lane-invalidated` token carried by the legacy
@@ -126,14 +127,16 @@ or `ambiguous-reference-divergence`; the closest match is
 ```text
 plan_079_entry_gate = decision != two-way-development-probe-passed -> blocked
 plan_072_activation_gate = decision != ambiguous-reference-divergence -> inactive
-plan_079 = blocked_pending_plan_088_two_way_pass
-plan_072 = inactive_pending_plan_088_ambiguity
+plan_079 = blocked-pending-plan088-two-way-pass
+plan_072 = inactive-pending-plan088-ambiguity
 plan_086 = host-loopback-development-ready
-plan_087 = open_pending_plan_092_forward_closure
+plan_087 = open-pending-plan094-forward-evidence-pair
 plan_090 = routerinfo-correction-landed
-plan_091 = partial-diagnostic-surface-landed-forward-not-passed
-plan_092 = planned_next_executable
-plan_088 = blocked_pending_plan_087_instrumented_and_control_pass
+plan_091 = historical-partial-correction
+plan_092 = superseded-by-plan093
+plan_093 = implementation-landed-closure-incomplete
+plan_094 = active-single-next-executable-completion-pass
+plan_088 = blocked-pending-plan094-completion
 ```
 
 The Plan 088 handoff fields required for any future
@@ -259,18 +262,19 @@ bounded by the Plan 051 resource constraints.
 
 ## Future plan unblocking
 
-| Plan | Precondition | Status after Plan 092 |
+| Plan | Precondition | Status after Plan 094 |
 | --- | --- | --- |
-| Plan 092 | Plan 087 instrumented + control forward records | active |
+| Plan 094 | Plan 087 instrumented + control forward records from the same corrective commit | active next executable |
 | Plan 079 | requires Plan 088 `two-way-development-probe-passed` | remains blocked |
 | Plan 072 | requires Plan 088 `ambiguous-reference-divergence` with one exact diagnostic question | remains inactive |
 | Plan 073 | requires release-qualification evidence | remains inactive |
 
-No future plan is unblocked by this Plan 088 closure until Plan 092
+No future plan is unblocked by this Plan 088 closure until Plan 094
 closes with a passing instrumented forward record and a passing
-control forward record. Plan 079 remains explicitly blocked; Plan
-072 remains explicitly inactive. The Plan 079 entry-gate reference
-points at this status record, per the Plan 088 gate amendment
+control forward record from the same corrective commit. Plan 079
+remains explicitly blocked; Plan 072 remains explicitly inactive.
+The Plan 079 entry-gate reference points at this status record,
+per the Plan 088 gate amendment
 (`plans/072-079-gate-amendment-plan-088.md`).
 
 ## Validation
@@ -324,14 +328,14 @@ The actual reverse probe runner may only be exercised when the
 Plan 086 `host-loopback-development` lane closes as
 `host-loopback-development-ready` (or the Plan 089
 `manual-isolated-fallback-ready` placement is activated) **and**
-Plan 092 closes with a passing instrumented forward record and a
+Plan 094 closes with a passing instrumented forward record and a
 passing control forward record bound to the same corrective commit.
 On this host neither prerequisite is satisfied, so the Plan 088
 execution authority is `insufficient-evidence` and the next
-executable plan-of-record is Plan 092.
+executable plan-of-record is Plan 094.
 
 The Plan 088 implementation surface travels with the repository
-unchanged; the next time the Plan 086 lane is closed and Plan 092
+unchanged; the next time the Plan 086 lane is closed and Plan 094
 closes, the reverse runner can be invoked against real subprocesses
 and the bounded Plan 088 development decision vocabulary will
 resolve to whichever of the five exact values reflects the wire

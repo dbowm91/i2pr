@@ -170,6 +170,11 @@ public final class JavaNtcp2InteropDriver {
     // ===================================================================
     static final class DriverRunner {
         private final AtomicLong eventSequence = new AtomicLong(-1);
+    // Plan 094: per-process invocation identifier. The driver
+    // allocates one opaque value at startup so every emitted
+    // event carries the same invocation_id and the runner can
+    // distinguish same-scenario launches.
+    private final String invocationId = "plan094-invocation-" + System.nanoTime();
         private Path eventsPath;
 
         int run(String[] args) throws Exception {
@@ -677,6 +682,11 @@ public final class JavaNtcp2InteropDriver {
             event.put("schema_version", EVENT_SCHEMA_VERSION);
             event.put("run_id", config.get("run_id"));
             event.put("scenario_id", config.get("scenario_id"));
+            // Plan 094: the driver must emit the per-process invocation
+            // identifier so the runner can distinguish same-scenario
+            // launches. The driver allocates one invocation_id at
+            // startup and reuses it for every event it emits.
+            event.put("invocation_id", invocationId);
             event.put("direction", config.get("direction"));
             event.put("implementation", IMPL_NAME);
             event.put("implementation_revision", IMPL_REVISION);

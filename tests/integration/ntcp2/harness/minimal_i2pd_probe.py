@@ -316,6 +316,12 @@ REQUIRED_FIELDS: Final[tuple[str, ...]] = (
     "parent_network_state_unchanged",
     "i2pr_binary_sha256",
     "i2pd_binary_sha256",
+    "i2pr_build_manifest_sha256",
+    "i2pd_build_manifest_sha256",
+    "reference_source_tree_sha256",
+    "scenario_sha256",
+    "attempt_kind",
+    "attempt_index",
     "i2pr_router_info_sha256",
     "i2pd_router_info_sha256",
     "i2pr_router_hash_sha256",
@@ -329,6 +335,20 @@ REQUIRED_FIELDS: Final[tuple[str, ...]] = (
     "cleanup_result",
     "placement_record_sha256",
     "record_sha256",
+)
+
+
+# Plan 094: bounded attempt-kind allowlist. The instrumented attempt
+# carries the i2pd observer digests; the control attempt uses the
+# pristine i2pd driver (no observer patch applied) and identifies
+# itself with the explicit control kind.
+ATTEMPT_KIND_INSTRUMENTED: Final[str] = "instrumented"
+ATTEMPT_KIND_CONTROL: Final[str] = "control"
+ALLOWED_ATTEMPT_KINDS: Final[frozenset[str]] = frozenset(
+    {
+        ATTEMPT_KIND_INSTRUMENTED,
+        ATTEMPT_KIND_CONTROL,
+    }
 )
 
 
@@ -427,6 +447,13 @@ def validate_observed_event(event: Any) -> dict[str, Any]:
         isinstance(event_sha256, str) and HEX64.fullmatch(event_sha256),
         "observed event_sha256 must be 64 lowercase hex",
     )
+    # Plan 094: zero-digest events cannot contribute to a passed
+    # record. The validator rejects them at the per-event level so
+    # the canonical observed-event list never carries a placeholder.
+    _require(
+        event_sha256 != "0" * 64,
+        "observed event_sha256 must be a real measured digest (no zero placeholder)",
+    )
     return dict(event)
 
 
@@ -494,6 +521,10 @@ def validate_record(record: Any) -> dict[str, Any]:
     for field in (
         "i2pr_binary_sha256",
         "i2pd_binary_sha256",
+        "i2pr_build_manifest_sha256",
+        "i2pd_build_manifest_sha256",
+        "reference_source_tree_sha256",
+        "scenario_sha256",
         "i2pr_router_info_sha256",
         "i2pd_router_info_sha256",
         "i2pr_router_hash_sha256",
@@ -507,6 +538,43 @@ def validate_record(record: Any) -> dict[str, Any]:
     _require(
         record_copy["placement_record_sha256"] != "0" * 64,
         "probe record placement_record_sha256 must be a real measured digest",
+    )
+    # Plan 094: build manifest digests, source tree digest, and
+    # scenario digest must be non-zero for a PASSED record. A
+    # non-passed record (LANE_INVALID, PRE_PROTOCOL_REJECTED,
+    # PROTOCOL_REJECTED, etc.) may carry zero digests so the
+    # pre-protocol and host-blocked record paths can construct
+    # minimal diagnostics. The Plan 094 test matrix verifies
+    # that a passed record rejects zero digests.
+    if record_copy["terminal_result"] == PASSED:
+        # Plan 094: zero binary digests cannot contribute to a passed
+        # record. The reference source tree, scenario digest, and
+        # build manifest digests must all be nonzero for a pass.
+        for field, label in (
+            ("i2pr_binary_sha256", "i2pr_binary_sha256"),
+            ("i2pd_binary_sha256", "i2pd_binary_sha256"),
+            ("i2pr_build_manifest_sha256", "i2pr_build_manifest_sha256"),
+            ("i2pd_build_manifest_sha256", "i2pd_build_manifest_sha256"),
+            ("reference_source_tree_sha256", "reference_source_tree_sha256"),
+            ("scenario_sha256", "scenario_sha256"),
+            ("i2pr_router_info_sha256", "i2pr_router_info_sha256"),
+            ("i2pd_router_info_sha256", "i2pd_router_info_sha256"),
+            ("i2pr_router_hash_sha256", "i2pr_router_hash_sha256"),
+            ("i2pd_router_hash_sha256", "i2pd_router_hash_sha256"),
+        ):
+            _require(
+                record_copy[field] != "0" * 64,
+                f"probe record {label} must be a real measured digest (no zero placeholder)",
+            )
+    _require(
+        record_copy["attempt_kind"] in ALLOWED_ATTEMPT_KINDS,
+        "probe record attempt_kind not allowlisted",
+    )
+    _require(
+        isinstance(record_copy["attempt_index"], int)
+        and not isinstance(record_copy["attempt_index"], bool)
+        and record_copy["attempt_index"] >= 1,
+        "probe record attempt_index must be positive integer",
     )
     message_id = record_copy["delivery_status_message_id"]
     _require(
@@ -591,6 +659,12 @@ def build_record(
     parent_network_state_unchanged: bool,
     i2pr_binary_sha256: str,
     i2pd_binary_sha256: str,
+    i2pr_build_manifest_sha256: str,
+    i2pd_build_manifest_sha256: str,
+    reference_source_tree_sha256: str,
+    scenario_sha256: str,
+    attempt_kind: str,
+    attempt_index: int,
     i2pr_router_info_sha256: str,
     i2pd_router_info_sha256: str,
     i2pr_router_hash_sha256: str,
@@ -635,6 +709,10 @@ def build_record(
     for field, value in (
         ("i2pr_binary_sha256", i2pr_binary_sha256),
         ("i2pd_binary_sha256", i2pd_binary_sha256),
+        ("i2pr_build_manifest_sha256", i2pr_build_manifest_sha256),
+        ("i2pd_build_manifest_sha256", i2pd_build_manifest_sha256),
+        ("reference_source_tree_sha256", reference_source_tree_sha256),
+        ("scenario_sha256", scenario_sha256),
         ("i2pr_router_info_sha256", i2pr_router_info_sha256),
         ("i2pd_router_info_sha256", i2pd_router_info_sha256),
         ("i2pr_router_hash_sha256", i2pr_router_hash_sha256),
@@ -648,6 +726,40 @@ def build_record(
     _require(
         placement_record_sha256 != "0" * 64,
         "build_record: placement_record_sha256 must be a real measured digest",
+    )
+    # Plan 094: build manifest digests, source tree digest, and
+    # scenario digest must be non-zero for a PASSED record. A
+    # non-passed record (LANE_INVALID, PRE_PROTOCOL_REJECTED,
+    # PROTOCOL_REJECTED, etc.) may carry zero digests so the
+    # pre-protocol and host-blocked record paths can construct
+    # minimal diagnostics. The Plan 094 test matrix verifies
+    # that a passed record rejects zero digests.
+    if terminal_result == PASSED:
+        _require(
+            i2pr_build_manifest_sha256 != "0" * 64,
+            "build_record: i2pr_build_manifest_sha256 must be a real measured digest",
+        )
+        _require(
+            i2pd_build_manifest_sha256 != "0" * 64,
+            "build_record: i2pd_build_manifest_sha256 must be a real measured digest",
+        )
+        _require(
+            reference_source_tree_sha256 != "0" * 64,
+            "build_record: reference_source_tree_sha256 must be a real measured digest",
+        )
+        _require(
+            scenario_sha256 != "0" * 64,
+            "build_record: scenario_sha256 must be a real measured digest",
+        )
+    _require(
+        attempt_kind in ALLOWED_ATTEMPT_KINDS,
+        "build_record: attempt_kind not allowlisted",
+    )
+    _require(
+        isinstance(attempt_index, int)
+        and not isinstance(attempt_index, bool)
+        and attempt_index >= 1,
+        "build_record: attempt_index must be positive integer",
     )
     _require(
         isinstance(delivery_status_message_id, int)
@@ -686,6 +798,12 @@ def build_record(
         "parent_network_state_unchanged": bool(parent_network_state_unchanged),
         "i2pr_binary_sha256": i2pr_binary_sha256,
         "i2pd_binary_sha256": i2pd_binary_sha256,
+        "i2pr_build_manifest_sha256": i2pr_build_manifest_sha256,
+        "i2pd_build_manifest_sha256": i2pd_build_manifest_sha256,
+        "reference_source_tree_sha256": reference_source_tree_sha256,
+        "scenario_sha256": scenario_sha256,
+        "attempt_kind": attempt_kind,
+        "attempt_index": int(attempt_index),
         "i2pr_router_info_sha256": i2pr_router_info_sha256,
         "i2pd_router_info_sha256": i2pd_router_info_sha256,
         "i2pr_router_hash_sha256": i2pr_router_hash_sha256,
@@ -706,9 +824,12 @@ def build_record(
 
 
 __all__ = [
+    "ALLOWED_ATTEMPT_KINDS",
     "ALLOWED_EVENT_NAMES",
     "ALLOWED_EVENT_SIDES",
     "ALLOWED_TOPOLOGY_KINDS",
+    "ATTEMPT_KIND_CONTROL",
+    "ATTEMPT_KIND_INSTRUMENTED",
     "AUTHENTICATED_FRAME_DECRYPTED",
     "AUTHENTICATED_FRAME_WRITTEN",
     "CLEANUP_FAILED",

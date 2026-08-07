@@ -71,7 +71,10 @@ PLAN_088_HANDOFF_FIELDS: tuple[str, ...] = (
 
 
 def _hex(value: str, length: int = 64) -> str:
-    return value * length
+    """Return ``value`` repeated/padded until exactly ``length`` hex chars."""
+
+    text = value * (length // max(len(value), 1) + 1)
+    return text[:length].lower()
 
 
 def _minimal_passed_reverse_record(
@@ -115,6 +118,12 @@ def _minimal_passed_reverse_record(
         parent_network_state_unchanged=True,
         i2pr_binary_sha256=_hex("d", 64),
         i2pd_binary_sha256=_hex("e", 64),
+        i2pr_build_manifest_sha256=_hex("f", 64),
+        i2pd_build_manifest_sha256=_hex("a1", 64),
+        reference_source_tree_sha256=_hex("a2", 64),
+        scenario_sha256=_hex("a3", 64),
+        attempt_kind="instrumented",
+        attempt_index=1,
         i2pr_router_info_sha256=_hex("1", 64),
         i2pd_router_info_sha256=_hex("2", 64),
         i2pr_router_hash_sha256=_hex("3", 64),
@@ -377,6 +386,12 @@ class Plan088SchemaContractTests(unittest.TestCase):
             parent_network_state_unchanged=True,
             i2pr_binary_sha256=_hex("d", 64),
             i2pd_binary_sha256=_hex("e", 64),
+            i2pr_build_manifest_sha256=_hex("f", 64),
+            i2pd_build_manifest_sha256=_hex("a1", 64),
+            reference_source_tree_sha256=_hex("a2", 64),
+            scenario_sha256=_hex("a3", 64),
+            attempt_kind=forward_probe.ATTEMPT_KIND_INSTRUMENTED,
+            attempt_index=1,
             i2pr_router_info_sha256=_hex("1", 64),
             i2pd_router_info_sha256=_hex("2", 64),
             i2pr_router_hash_sha256=_hex("3", 64),

@@ -193,6 +193,7 @@ std::string json_escape(std::string_view text) {
 struct DriverConfig {
     std::string run_id;
     std::string scenario_id;
+    std::string invocation_id;
     std::string direction;
     std::string mode;
     std::filesystem::path data_dir;
@@ -337,6 +338,14 @@ void parse_strict_config(const std::filesystem::path& path,
             out.run_id = string_value;
         } else if (key == "scenario_id") {
             out.scenario_id = string_value;
+        } else if (key == "invocation_id") {
+            // Plan 094: opaque per-process launch identifier; the
+            // runner allocates one value per child process before
+            // popen() and the driver echoes it in every event. The
+            // field is optional in the config so older wrappers can
+            // still construct a default value; new wrappers must
+            // always pass an explicit invocation_id.
+            out.invocation_id = string_value;
         } else if (key == "direction") {
             out.direction = string_value;
         } else if (key == "mode") {
@@ -584,6 +593,7 @@ bool path_is_owned(const std::filesystem::path& path) {
 struct EventRecord {
     std::string run_id;
     std::string scenario_id;
+    std::string invocation_id;
     std::string direction;
     std::string implementation;
     std::string implementation_revision;
@@ -612,6 +622,8 @@ class EventWriter {
         payload << "\"schema_version\":" << kEventSchemaVersion << ",";
         payload << "\"run_id\":\"" << json_escape(record.run_id) << "\",";
         payload << "\"scenario_id\":\"" << json_escape(record.scenario_id)
+                << "\",";
+        payload << "\"invocation_id\":\"" << json_escape(record.invocation_id)
                 << "\",";
         payload << "\"direction\":\"" << json_escape(record.direction)
                 << "\",";
@@ -688,6 +700,7 @@ void emit_event(EventWriter& writer, const DriverConfig& cfg,
     EventRecord record{};
     record.run_id = cfg.run_id;
     record.scenario_id = cfg.scenario_id;
+    record.invocation_id = cfg.invocation_id;
     record.direction = cfg.direction;
     record.implementation = std::string(kImplName);
     record.implementation_revision = std::string(kImplRevision);

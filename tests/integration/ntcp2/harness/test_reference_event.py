@@ -37,6 +37,7 @@ def _base_event_kwargs(**overrides):
         run_id="mixed-20260101t000000z-1-abcdef01",
         scenario_id="i2pr-to-java-ipv4",
         direction="i2pr-to-java-ipv4",
+        invocation_id="plan094-invocation-1",
         implementation="java-direct-driver",
         implementation_revision="2800040deee9bb376567b671ef2e9c34cf3e30b6",
         driver_binary_sha256="a" * 64,

@@ -28,7 +28,15 @@ import minimal_i2pd_probe as probe
 
 
 def _hex(value: str, length: int = 64) -> str:
-    return value * length
+    """Return ``value`` repeated/padded until it is exactly ``length`` hex chars.
+
+    The helper pads/truncates so the return value is exactly ``length``
+    characters long, regardless of how many times the input pattern is
+    repeated. This matches the schema's 64-lowercase-hex contract.
+    """
+
+    text = value * (length // max(len(value), 1) + 1)
+    return text[:length].lower()
 
 
 def _valid_record(**overrides: object) -> dict[str, object]:
@@ -45,6 +53,12 @@ def _valid_record(**overrides: object) -> dict[str, object]:
         "parent_network_state_unchanged": True,
         "i2pr_binary_sha256": _hex("d", 64),
         "i2pd_binary_sha256": _hex("e", 64),
+        "i2pr_build_manifest_sha256": _hex("f", 64),
+        "i2pd_build_manifest_sha256": _hex("a1", 64),
+        "reference_source_tree_sha256": _hex("a2", 64),
+        "scenario_sha256": _hex("a3", 64),
+        "attempt_kind": probe.ATTEMPT_KIND_INSTRUMENTED,
+        "attempt_index": 1,
         "i2pr_router_info_sha256": _hex("1", 64),
         "i2pd_router_info_sha256": _hex("2", 64),
         "i2pr_router_hash_sha256": _hex("3", 64),
@@ -133,6 +147,12 @@ class SchemaContractTests(unittest.TestCase):
             "parent_network_state_unchanged",
             "i2pr_binary_sha256",
             "i2pd_binary_sha256",
+            "i2pr_build_manifest_sha256",
+            "i2pd_build_manifest_sha256",
+            "reference_source_tree_sha256",
+            "scenario_sha256",
+            "attempt_kind",
+            "attempt_index",
             "i2pr_router_info_sha256",
             "i2pd_router_info_sha256",
             "i2pr_router_hash_sha256",
@@ -394,6 +414,12 @@ class BuildRecordTests(unittest.TestCase):
             parent_network_state_unchanged=True,
             i2pr_binary_sha256=_hex("d", 64),
             i2pd_binary_sha256=_hex("e", 64),
+            i2pr_build_manifest_sha256=_hex("f", 64),
+            i2pd_build_manifest_sha256=_hex("a1", 64),
+            reference_source_tree_sha256=_hex("a2", 64),
+            scenario_sha256=_hex("a3", 64),
+            attempt_kind=probe.ATTEMPT_KIND_INSTRUMENTED,
+            attempt_index=1,
             i2pr_router_info_sha256=_hex("1", 64),
             i2pd_router_info_sha256=_hex("2", 64),
             i2pr_router_hash_sha256=_hex("3", 64),
@@ -448,6 +474,12 @@ class BuildRecordTests(unittest.TestCase):
                 parent_network_state_unchanged=False,
                 i2pr_binary_sha256=_hex("d", 64),
                 i2pd_binary_sha256=_hex("e", 64),
+                i2pr_build_manifest_sha256=_hex("f", 64),
+                i2pd_build_manifest_sha256=_hex("a1", 64),
+                reference_source_tree_sha256=_hex("a2", 64),
+                scenario_sha256=_hex("a3", 64),
+                attempt_kind=probe.ATTEMPT_KIND_INSTRUMENTED,
+                attempt_index=1,
                 i2pr_router_info_sha256=_hex("1", 64),
                 i2pd_router_info_sha256=_hex("2", 64),
                 i2pr_router_hash_sha256=_hex("3", 64),
@@ -472,6 +504,12 @@ class BuildRecordTests(unittest.TestCase):
                 parent_network_state_unchanged=False,
                 i2pr_binary_sha256=_hex("d", 64),
                 i2pd_binary_sha256=_hex("e", 64),
+                i2pr_build_manifest_sha256=_hex("f", 64),
+                i2pd_build_manifest_sha256=_hex("a1", 64),
+                reference_source_tree_sha256=_hex("a2", 64),
+                scenario_sha256=_hex("a3", 64),
+                attempt_kind=probe.ATTEMPT_KIND_INSTRUMENTED,
+                attempt_index=1,
                 i2pr_router_info_sha256=_hex("1", 64),
                 i2pd_router_info_sha256=_hex("2", 64),
                 i2pr_router_hash_sha256=_hex("3", 64),
@@ -484,6 +522,128 @@ class BuildRecordTests(unittest.TestCase):
                 process_counters=probe.empty_process_counters(),
                 cleanup_result="not-run",
             )
+
+    def test_build_record_rejects_zero_build_manifest_sha256(self) -> None:
+        with self.assertRaises(probe.MinimalI2pdProbeError):
+            probe.build_record(
+                run_id="x",
+                source_commit=_hex("a", 40),
+                reference_revision=_hex("b", 40),
+                lane_qualification_sha256=_hex("c", 64),
+                topology_kind="rootless-sealed-single-netns",
+                parent_network_state_unchanged=False,
+                i2pr_binary_sha256=_hex("d", 64),
+                i2pd_binary_sha256=_hex("e", 64),
+                i2pr_build_manifest_sha256="0" * 64,
+                i2pd_build_manifest_sha256=_hex("a1", 64),
+                reference_source_tree_sha256=_hex("a2", 64),
+                scenario_sha256=_hex("a3", 64),
+                attempt_kind=probe.ATTEMPT_KIND_INSTRUMENTED,
+                attempt_index=1,
+                i2pr_router_info_sha256=_hex("1", 64),
+                i2pd_router_info_sha256=_hex("2", 64),
+                i2pr_router_hash_sha256=_hex("3", 64),
+                i2pd_router_hash_sha256=_hex("4", 64),
+                delivery_status_message_id=1,
+                observed_events=[],
+                highest_stage_reached=probe.STATE_PREPARED,
+                terminal_result=probe.PRE_PROTOCOL_REJECTED,
+                reason_code=probe.REASON_PRE_PROTOCOL_PREPARATION_FAILED,
+                process_counters=probe.empty_process_counters(),
+                cleanup_result="not-run",
+            )
+
+    def test_build_record_rejects_unknown_attempt_kind(self) -> None:
+        with self.assertRaises(probe.MinimalI2pdProbeError):
+            probe.build_record(
+                run_id="x",
+                source_commit=_hex("a", 40),
+                reference_revision=_hex("b", 40),
+                lane_qualification_sha256=_hex("c", 64),
+                topology_kind="rootless-sealed-single-netns",
+                parent_network_state_unchanged=False,
+                i2pr_binary_sha256=_hex("d", 64),
+                i2pd_binary_sha256=_hex("e", 64),
+                i2pr_build_manifest_sha256=_hex("f", 64),
+                i2pd_build_manifest_sha256=_hex("a1", 64),
+                reference_source_tree_sha256=_hex("a2", 64),
+                scenario_sha256=_hex("a3", 64),
+                attempt_kind="rogue",
+                attempt_index=1,
+                i2pr_router_info_sha256=_hex("1", 64),
+                i2pd_router_info_sha256=_hex("2", 64),
+                i2pr_router_hash_sha256=_hex("3", 64),
+                i2pd_router_hash_sha256=_hex("4", 64),
+                delivery_status_message_id=1,
+                observed_events=[],
+                highest_stage_reached=probe.STATE_PREPARED,
+                terminal_result=probe.PRE_PROTOCOL_REJECTED,
+                reason_code=probe.REASON_PRE_PROTOCOL_PREPARATION_FAILED,
+                process_counters=probe.empty_process_counters(),
+                cleanup_result="not-run",
+            )
+
+    def test_build_record_rejects_zero_attempt_index(self) -> None:
+        with self.assertRaises(probe.MinimalI2pdProbeError):
+            probe.build_record(
+                run_id="x",
+                source_commit=_hex("a", 40),
+                reference_revision=_hex("b", 40),
+                lane_qualification_sha256=_hex("c", 64),
+                topology_kind="rootless-sealed-single-netns",
+                parent_network_state_unchanged=False,
+                i2pr_binary_sha256=_hex("d", 64),
+                i2pd_binary_sha256=_hex("e", 64),
+                i2pr_build_manifest_sha256=_hex("f", 64),
+                i2pd_build_manifest_sha256=_hex("a1", 64),
+                reference_source_tree_sha256=_hex("a2", 64),
+                scenario_sha256=_hex("a3", 64),
+                attempt_kind=probe.ATTEMPT_KIND_INSTRUMENTED,
+                attempt_index=0,
+                i2pr_router_info_sha256=_hex("1", 64),
+                i2pd_router_info_sha256=_hex("2", 64),
+                i2pr_router_hash_sha256=_hex("3", 64),
+                i2pd_router_hash_sha256=_hex("4", 64),
+                delivery_status_message_id=1,
+                observed_events=[],
+                highest_stage_reached=probe.STATE_PREPARED,
+                terminal_result=probe.PRE_PROTOCOL_REJECTED,
+                reason_code=probe.REASON_PRE_PROTOCOL_PREPARATION_FAILED,
+                process_counters=probe.empty_process_counters(),
+                cleanup_result="not-run",
+            )
+
+    def test_build_record_accepts_control_attempt_kind(self) -> None:
+        record = probe.build_record(
+            run_id="x",
+            source_commit=_hex("a", 40),
+            reference_revision=_hex("b", 40),
+            lane_qualification_sha256=_hex("c", 64),
+            topology_kind="rootless-sealed-single-netns",
+            parent_network_state_unchanged=False,
+            i2pr_binary_sha256=_hex("d", 64),
+            i2pd_binary_sha256=_hex("e", 64),
+            i2pr_build_manifest_sha256=_hex("f", 64),
+            i2pd_build_manifest_sha256=_hex("a1", 64),
+            reference_source_tree_sha256=_hex("a2", 64),
+            scenario_sha256=_hex("a3", 64),
+            attempt_kind=probe.ATTEMPT_KIND_CONTROL,
+            attempt_index=2,
+            i2pr_router_info_sha256=_hex("1", 64),
+            i2pd_router_info_sha256=_hex("2", 64),
+            i2pr_router_hash_sha256=_hex("3", 64),
+            i2pd_router_hash_sha256=_hex("4", 64),
+            delivery_status_message_id=1,
+            observed_events=[],
+            highest_stage_reached=probe.STATE_PREPARED,
+            terminal_result=probe.PRE_PROTOCOL_REJECTED,
+            reason_code=probe.REASON_PRE_PROTOCOL_PREPARATION_FAILED,
+            process_counters=probe.empty_process_counters(),
+            cleanup_result="not-run",
+            placement_record_sha256=_hex("ff00", 64),
+        )
+        self.assertEqual(record["attempt_kind"], probe.ATTEMPT_KIND_CONTROL)
+        self.assertEqual(record["attempt_index"], 2)
 
 
 class CanonicalDigestTests(unittest.TestCase):

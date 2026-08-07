@@ -194,6 +194,12 @@ REQUIRED_FIELDS: Final[tuple[str, ...]] = (
     "parent_network_state_unchanged",
     "i2pr_binary_sha256",
     "i2pd_binary_sha256",
+    "i2pr_build_manifest_sha256",
+    "i2pd_build_manifest_sha256",
+    "reference_source_tree_sha256",
+    "scenario_sha256",
+    "attempt_kind",
+    "attempt_index",
     "i2pr_router_info_sha256",
     "i2pd_router_info_sha256",
     "i2pr_router_hash_sha256",
@@ -349,6 +355,10 @@ def validate_reverse_record(record: Any) -> dict[str, Any]:
     for field in (
         "i2pr_binary_sha256",
         "i2pd_binary_sha256",
+        "i2pr_build_manifest_sha256",
+        "i2pd_build_manifest_sha256",
+        "reference_source_tree_sha256",
+        "scenario_sha256",
         "i2pr_router_info_sha256",
         "i2pd_router_info_sha256",
         "i2pr_router_hash_sha256",
@@ -362,6 +372,33 @@ def validate_reverse_record(record: Any) -> dict[str, Any]:
     _require(
         record_copy["placement_record_sha256"] != "0" * 64,
         "reverse probe record placement_record_sha256 must be a real measured digest",
+    )
+    if record_copy["terminal_result"] == PASSED:
+        _require(
+            record_copy["i2pr_build_manifest_sha256"] != "0" * 64,
+            "reverse probe record i2pr_build_manifest_sha256 must be a real measured digest",
+        )
+        _require(
+            record_copy["i2pd_build_manifest_sha256"] != "0" * 64,
+            "reverse probe record i2pd_build_manifest_sha256 must be a real measured digest",
+        )
+        _require(
+            record_copy["reference_source_tree_sha256"] != "0" * 64,
+            "reverse probe record reference_source_tree_sha256 must be a real measured digest",
+        )
+        _require(
+            record_copy["scenario_sha256"] != "0" * 64,
+            "reverse probe record scenario_sha256 must be a real measured digest",
+        )
+    _require(
+        record_copy["attempt_kind"] in {"instrumented", "control"},
+        "reverse probe record attempt_kind not allowlisted",
+    )
+    _require(
+        isinstance(record_copy["attempt_index"], int)
+        and not isinstance(record_copy["attempt_index"], bool)
+        and record_copy["attempt_index"] >= 1,
+        "reverse probe record attempt_index must be positive integer",
     )
     message_id = record_copy["delivery_status_message_id"]
     _require(
@@ -450,6 +487,12 @@ def build_reverse_record(
     parent_network_state_unchanged: bool,
     i2pr_binary_sha256: str,
     i2pd_binary_sha256: str,
+    i2pr_build_manifest_sha256: str,
+    i2pd_build_manifest_sha256: str,
+    reference_source_tree_sha256: str,
+    scenario_sha256: str,
+    attempt_kind: str,
+    attempt_index: int,
     i2pr_router_info_sha256: str,
     i2pd_router_info_sha256: str,
     i2pr_router_hash_sha256: str,
@@ -494,6 +537,10 @@ def build_reverse_record(
     for field, value in (
         ("i2pr_binary_sha256", i2pr_binary_sha256),
         ("i2pd_binary_sha256", i2pd_binary_sha256),
+        ("i2pr_build_manifest_sha256", i2pr_build_manifest_sha256),
+        ("i2pd_build_manifest_sha256", i2pd_build_manifest_sha256),
+        ("reference_source_tree_sha256", reference_source_tree_sha256),
+        ("scenario_sha256", scenario_sha256),
         ("i2pr_router_info_sha256", i2pr_router_info_sha256),
         ("i2pd_router_info_sha256", i2pd_router_info_sha256),
         ("i2pr_router_hash_sha256", i2pr_router_hash_sha256),
@@ -507,6 +554,33 @@ def build_reverse_record(
     _require(
         placement_record_sha256 != "0" * 64,
         "build_reverse_record: placement_record_sha256 must be a real measured digest",
+    )
+    if terminal_result == PASSED:
+        _require(
+            i2pr_build_manifest_sha256 != "0" * 64,
+            "build_reverse_record: i2pr_build_manifest_sha256 must be a real measured digest",
+        )
+        _require(
+            i2pd_build_manifest_sha256 != "0" * 64,
+            "build_reverse_record: i2pd_build_manifest_sha256 must be a real measured digest",
+        )
+        _require(
+            reference_source_tree_sha256 != "0" * 64,
+            "build_reverse_record: reference_source_tree_sha256 must be a real measured digest",
+        )
+        _require(
+            scenario_sha256 != "0" * 64,
+            "build_reverse_record: scenario_sha256 must be a real measured digest",
+        )
+    _require(
+        attempt_kind in {"instrumented", "control"},
+        "build_reverse_record: attempt_kind not allowlisted",
+    )
+    _require(
+        isinstance(attempt_index, int)
+        and not isinstance(attempt_index, bool)
+        and attempt_index >= 1,
+        "build_reverse_record: attempt_index must be positive integer",
     )
     _require(
         isinstance(delivery_status_message_id, int)
@@ -545,6 +619,12 @@ def build_reverse_record(
         "parent_network_state_unchanged": bool(parent_network_state_unchanged),
         "i2pr_binary_sha256": i2pr_binary_sha256,
         "i2pd_binary_sha256": i2pd_binary_sha256,
+        "i2pr_build_manifest_sha256": i2pr_build_manifest_sha256,
+        "i2pd_build_manifest_sha256": i2pd_build_manifest_sha256,
+        "reference_source_tree_sha256": reference_source_tree_sha256,
+        "scenario_sha256": scenario_sha256,
+        "attempt_kind": attempt_kind,
+        "attempt_index": int(attempt_index),
         "i2pr_router_info_sha256": i2pr_router_info_sha256,
         "i2pd_router_info_sha256": i2pd_router_info_sha256,
         "i2pr_router_hash_sha256": i2pr_router_hash_sha256,

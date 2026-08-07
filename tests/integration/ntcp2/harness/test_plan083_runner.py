@@ -30,7 +30,10 @@ from plan083_runner import (
 
 
 def _hex(value: str, length: int = 64) -> str:
-    return value * length
+    """Return ``value`` repeated/padded until exactly ``length`` hex chars."""
+
+    text = value * (length // max(len(value), 1) + 1)
+    return text[:length].lower()
 
 
 def _minimal_config(**overrides: object) -> ProbeConfig:

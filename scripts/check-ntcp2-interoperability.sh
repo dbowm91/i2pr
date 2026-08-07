@@ -1650,17 +1650,36 @@ if ! grep -Fq 'superseded by Plan 093' "$root/plans/092-status.md"; then
   echo "Plan 092 status must mark Plan 093 supersession" >&2
   exit 1
 fi
-# Plan 093 must be named as the next executable plan in 087/088.
-if ! grep -Fq 'plan_093 = planned_next_executable' "$root/plans/088-status.md"; then
-  echo "Plan 088 status must name Plan 093 as the next executable plan" >&2
+# Plan 094 must be named as the active completion authority in 087/088.
+if ! grep -Fq 'plan_094 = active-single-next-executable-completion-pass' "$root/plans/088-status.md"; then
+  echo "Plan 088 status must name Plan 094 as the active completion authority" >&2
   exit 1
 fi
-if ! grep -Fq 'Plan 093' "$root/plans/087-status.md"; then
-  echo "Plan 087 status must reference Plan 093" >&2
+if ! grep -Fq 'plan_094 = active-single-next-executable-completion-pass' "$root/plans/087-status.md"; then
+  echo "Plan 087 status must name Plan 094 as the active completion authority" >&2
   exit 1
 fi
-if ! grep -Fq 'plan093' "$root/plans/087-status.md"; then
-  echo "Plan 087 status must include the lowercase plan093 token" >&2
+if ! grep -Fq 'Plan 094' "$root/plans/087-status.md"; then
+  echo "Plan 087 status must reference Plan 094" >&2
+  exit 1
+fi
+if ! grep -Fq 'plan094' "$root/plans/087-status.md"; then
+  echo "Plan 087 status must include the lowercase plan094 token" >&2
+  exit 1
+fi
+# Plan 094 must not carry the stale plan_093b token in active status files.
+if grep -Fq 'plan_093b' "$root/plans/087-status.md" \
+  || grep -Fq 'plan_093b' "$root/plans/088-status.md"; then
+  echo "Plan 094 stale plan_093b token must be removed from active status files" >&2
+  exit 1
+fi
+# Plan 094 must reference the forward evidence pair pre-live authority.
+if ! grep -Fq 'open-pending-plan094-forward-evidence-pair' "$root/plans/087-status.md"; then
+  echo "Plan 087 status must declare open-pending-plan094-forward-evidence-pair" >&2
+  exit 1
+fi
+if ! grep -Fq 'blocked-pending-plan094-completion' "$root/plans/088-status.md"; then
+  echo "Plan 088 status must declare blocked-pending-plan094-completion" >&2
   exit 1
 fi
 # Plan 092 must explicitly supersede its Branch A classification

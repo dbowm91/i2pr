@@ -1794,7 +1794,11 @@ Plan 078 attempt. Do not treat either capability probing or a stale guest as
 protocol evidence; consult `plans/080-status.md` for the qualified-lane
 record.
 
-## Current active sequence amendment (2026-08-06, Plan 093 / plan093)
+## Current active sequence amendment (2026-08-06, plan094 / Plan 094)
+
+The active plan identifier is `plan094` (lowercase file-token) and
+`Plan 094` (display form). The active sequence is documented in
+`plans/094-plan093-completion-and-plan087-to-plan088-handoff.md`.
 
 The active authority is [Plan 085](plans/085-milestone-3-host-loopback-development-execution-roadmap.md),
 followed by Plan 086 (status correction + `host-loopback-development`
@@ -1808,15 +1812,20 @@ landed on this host, forward direction still blocked**), Plan 092
 (forward-handshake evidence integrity and ownership closure:
 privacy-safe handshake stage observation schema, terminal-counter
 preservation, current-run event dedup, status authority rewrite,
-dedicated regression matrix, **partial / misclassification-corrected
-by Plan 093**), and Plan 093 (Plan 087 forward data-phase and
-reference-observer closure: i2pd observer reset/generation/lifecycle
-correction, bounded sequence ring with exact target predicate waits,
-i2pr bounded multi-frame receive oracle, i2pr binary provenance
+dedicated regression matrix, **partial / superseded-by-plan093**),
+Plan 093 (Plan 087 forward data-phase and reference-observer
+closure: i2pd observer reset/generation/lifecycle correction,
+bounded sequence ring with exact target predicate waits, i2pr
+bounded multi-frame receive oracle, i2pr binary provenance
 binding, privacy-safe source reclassification of
 `NTCP2: Receive length read error` from SessionRequest (handshake
 read) to `HandleReceivedLength` (data-phase length reader), and the
 exact-bidirectional-DeliveryStatus forward direction pass,
+**implementation-landed-closure-incomplete**), and Plan 094 (Plan
+093 completion pass and Plan 087 -> Plan 088 handoff: real per-process
+invocation IDs, shared canonical event-ingestion primitive, exact
+target pass classification, build/binary provenance binding, Plan
+094 focused regression matrix, prunes the stale `plan_093b` token,
 **active single next executable plan**),
 and Plan 088 (reverse `i2pd -> i2pr` probe and development decision),
 and the [Plan 072/079 gate amendment](plans/072-079-gate-plan-088.md)
@@ -1930,8 +1939,10 @@ see `plans/092-status.md` for the original Branch A ownership
 selection. Plan 093 supersedes that ownership analysis with a
 privacy-safe source reclassification: the i2pd diagnostic string
 originates from the data-phase length reader (`HandleReceivedLength`)
-and not from the SessionRequest handshake read. Plan 088 remains
-blocked on a follow-up execution pass under Plan 093.
+and not from the SessionRequest handshake read. Plan 094 is the
+single next executable plan that closes Plan 093 without
+reopening its already-landed NTCP2 data-phase design. Plan 088
+remains blocked on the Plan 094 completion pass.
 
 Plan 082 provides the test-only `i2pr-interop ntcp2 prepare` and
 `validate-scenario` operations, authentic RouterInfo/hash preparation,
@@ -1955,20 +1966,27 @@ close (as `passed` or as a localized defect that authenticates the
 data phase) before Plan 088 begins. Plan 091 closes as `passed` only
 after Plan 087 records `status = passed` with both an instrumented
 and a control record digest; the Plan 091 corrections are landed on
-this host and the forward direction did not pass. The Plan 088 active
-development decision is `insufficient-evidence` because the Plan 091
-forward direction recorded a TCP-established protocol failure with
-the i2pd NTCP2 transport reading `End of file` on the first handshake
-body read while the i2pr reports a data-phase
-`receiver_delivery_status_missing` terminal. Plan 079 remains
-blocked until `plans/088-status.md` records `decision =
-two-way-development-probe-passed`. Plan 072 remains inactive until
-`plans/088-status.md` records `decision =
+this host and the forward direction did not pass. Plan 094 is the
+single next executable plan; it proves or corrects the canonical
+Plan 083 event identity and ingestion contract, makes the forward
+pass classification require exact target metadata, binds the i2pr
+build manifest into the probe record, prunes the stale `plan_093b`
+token from the active vocabulary, runs the one instrumented forward
+attempt and then the one control forward attempt from the same
+corrective commit, retains both record digests, and rewrites
+`plans/087-status.md` and `plans/088-status.md` to mark Plan 087
+`passed` and Plan 088 as `next_executable` without claiming a
+reverse result. The Plan 088 active development decision remains
+`insufficient-evidence` until Plan 094 closes with both passing
+records. Plan 079 remains blocked until `plans/088-status.md`
+records `decision = two-way-development-probe-passed`. Plan 072
+remains inactive until `plans/088-status.md` records `decision =
 ambiguous-reference-divergence` with one exact role/stage diagnostic
 question. NTCP2 stays experimental and non-advertised. See
 `plans/082-status.md`, `plans/083-status.md`, `plans/084-status.md`,
-`plans/086-status.md`, `plans/087-status.md`, `plans/088-status.md`, and
-`plans/091-status.md`.
+`plans/086-status.md`, `plans/087-status.md`, `plans/088-status.md`,
+`plans/091-status.md`, `plans/092-status.md`, `plans/093-status.md`,
+and `plans/094-plan093-completion-and-plan087-to-plan088-handoff.md`.
 
 ## Plan 083 minimal i2pr-to-i2pd wire probe
 

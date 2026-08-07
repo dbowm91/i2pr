@@ -1026,6 +1026,7 @@ class Plan075RunnerIntegrityTests(unittest.TestCase):
             run_id=runner.run_id,
             scenario_id=runner.config.scenario_id,
             direction=runner.config.direction,
+            invocation_id="plan094-test-loopback-1",
             implementation=smoke_runner.REFERENCE_IMPLEMENTATION,
             implementation_revision=smoke_runner.REFERENCE_REVISION,
             driver_binary_sha256=driver_binary_sha256,

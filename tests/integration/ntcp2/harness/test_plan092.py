@@ -95,13 +95,13 @@ class Plan092StatusAuthorityTests(unittest.TestCase):
         # direction passed and blocked.
         self.assertNotIn("Plan 087 closes as `passed`", text)
 
-    def test_plan088_status_records_plan092_as_next_executable(self):
+    def test_plan088_status_records_plan094_as_next_executable(self):
         text = (REPO_ROOT / "plans/088-status.md").read_text()
-        self.assertIn("plan_092 = planned_next_executable", text)
-        self.assertIn("blocked_pending_plan_087_instrumented_and_control_pass", text)
-        # Plan 092 is the single next executable plan; the status
+        # Plan 094 is the single next executable plan; the status
         # record must reflect the active sequence amendment.
-        self.assertIn("Plan 092", text)
+        self.assertIn("plan_094 = active-single-next-executable-completion-pass", text)
+        self.assertIn("blocked-pending-plan094-completion", text)
+        self.assertIn("Plan 094", text)
         # The legacy ``lane-invalidated`` token must not be the
         # *active* decision value. The token may still appear in the
         # explanatory commentary that explains it was superseded.
@@ -447,6 +447,12 @@ class Plan092ProbeRecordSchemaTests(unittest.TestCase):
             parent_network_state_unchanged=True,
             i2pr_binary_sha256="d" * 64,
             i2pd_binary_sha256="e" * 64,
+            i2pr_build_manifest_sha256="0222" * 16,
+            i2pd_build_manifest_sha256="0333" * 16,
+            reference_source_tree_sha256="0444" * 16,
+            scenario_sha256="0555" * 16,
+            attempt_kind=probe.ATTEMPT_KIND_INSTRUMENTED,
+            attempt_index=1,
             i2pr_router_info_sha256="1" * 64,
             i2pd_router_info_sha256="2" * 64,
             i2pr_router_hash_sha256="3" * 64,

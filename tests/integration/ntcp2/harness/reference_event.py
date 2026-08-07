@@ -86,6 +86,7 @@ _REQUIRED_COMMON_FIELDS = (
     "run_id",
     "scenario_id",
     "direction",
+    "invocation_id",
     "implementation",
     "implementation_revision",
     "driver_binary_sha256",
@@ -172,6 +173,17 @@ def validate_event(
         raise ReferenceEventError("event-scenario-id-missing")
     if event["direction"] not in _DIRECTIONS:
         raise ReferenceEventError("event-direction-not-allowlisted")
+    # Plan 094: invocation_id is the opaque per-process launch
+    # identifier. The runner allocates one value per child process
+    # before popen() and the driver echoes it in every event. The
+    # validator rejects events that carry the scenario_id as a
+    # substitute or that omit the field entirely.
+    if not isinstance(event.get("invocation_id"), str) or not event["invocation_id"]:
+        raise ReferenceEventError("event-invocation-id-missing")
+    if event["invocation_id"] == event["scenario_id"]:
+        raise ReferenceEventError(
+            "event-invocation-id-must-differ-from-scenario-id",
+        )
     if not isinstance(event["implementation"], str) or not event["implementation"]:
         raise ReferenceEventError("event-implementation-missing")
     if not _REVISION.fullmatch(event["implementation_revision"]):
@@ -229,6 +241,7 @@ def build_event(
     run_id: str,
     scenario_id: str,
     direction: str,
+    invocation_id: str,
     implementation: str,
     implementation_revision: str,
     driver_binary_sha256: str,
@@ -249,6 +262,7 @@ def build_event(
         "run_id": run_id,
         "scenario_id": scenario_id,
         "direction": direction,
+        "invocation_id": invocation_id,
         "implementation": implementation,
         "implementation_revision": implementation_revision,
         "driver_binary_sha256": driver_binary_sha256,

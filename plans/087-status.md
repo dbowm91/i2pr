@@ -31,33 +31,32 @@ latest clean committed-head attempts are:
    **superseded** by Plan 093.
 
 ```text
-status = open-post-auth-data-phase-sequencing-defect
+status = open-pending-plan094-forward-evidence-pair
 forward_digest = non-zero (Plan 091 instrumented retained record)
-                  and Plan 092 retained record
-corrective_source_commit = <set-by-plan-093-corrective-commit>
+                  and Plan 092 retained record (diagnostic history only)
+corrective_source_commit = <set-by-plan-094-corrective-commit>
 plan_086 = host-loopback-development-ready
 plan_090 = routerinfo-correction-landed
-plan_091 = partial-historical-correction
-plan_092 = partial-evidence-surface-landed-misclassification-corrected
-plan_093 = planned_next_executable
-plan_093b = active_single_next_executable_plan
-plan_088 = blocked_pending_plan_093_instrumented_and_control_pass
-plan093 = active_next_executable
-plan093_plan = active_next_executable
-plan_079 = blocked_pending_plan_088_two_way_pass
-plan_072 = inactive_pending_plan_088_ambiguity
-ntcp2    = experimental_non_advertised
+plan_091 = historical-partial-correction
+plan_092 = superseded-by-plan093
+plan_093 = implementation-landed-closure-incomplete
+plan_094 = active-single-next-executable-completion-pass
+plan_088 = blocked-pending-plan094-completion
+plan_079 = blocked-pending-plan088-two-way-pass
+plan_072 = inactive-pending-plan088-ambiguity
+ntcp2    = experimental-non-advertised
 ```
 
-Plan 093 supersedes Plan 092 as the single next executable plan.
-Plan 093 rewrites the ownership analysis to identify the remaining
-blocker as a **post-auth data-phase sequencing defect** owned by the
-mixed corrective surface (i2pr one-frame receive oracle + i2pd
-observer reset / target-send predicate lifecycle), not by the i2pr
-Noise state machine. Plan 088 may not run before Plan 093 closes
-with a passing instrumented forward record and a passing control
-forward record bound to the same corrective commit. Plan 079 and
-Plan 072 remain blocked pending the Plan 088 decision.
+Plan 094 is the single next executable plan. Plan 094 completes
+Plan 093 without reopening its already-landed NTCP2 data-phase
+design. Plan 093 rewrites the ownership analysis to identify the
+remaining blocker as a **post-auth data-phase sequencing defect**
+owned by the mixed corrective surface (i2pr one-frame receive
+oracle + i2pd observer reset / target-send predicate lifecycle),
+not by the i2pr Noise state machine. Plan 088 may not run before
+Plan 094 closes with a passing instrumented forward record and a
+passing control forward record bound to the same corrective commit.
+Plan 079 and Plan 072 remain blocked pending the Plan 088 decision.
 
 ## Historical record
 

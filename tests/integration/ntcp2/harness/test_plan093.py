@@ -138,24 +138,24 @@ class Plan093StatusAuthorityTests(unittest.TestCase):
         # to HandleReceivedLength (data phase).
         self.assertIn("Receive length read error", text)
 
-    def test_plan087_status_names_plan093_as_next_executable(self):
+    def test_plan087_status_names_plan094_as_next_executable(self):
         text = (REPO_ROOT / "plans/087-status.md").read_text()
-        self.assertIn("plan_093", text)
-        self.assertIn("plan093", text)
-        self.assertIn("Plan 093", text)
+        self.assertIn("plan_094", text)
+        self.assertIn("plan094", text)
+        self.assertIn("Plan 094", text)
 
-    def test_plan088_status_records_plan093_active_sequence(self):
+    def test_plan088_status_records_plan094_active_sequence(self):
         text = (REPO_ROOT / "plans/088-status.md").read_text()
-        self.assertIn("plan_093", text)
-        self.assertIn("Plan 093", text)
+        self.assertIn("plan_094", text)
+        self.assertIn("Plan 094", text)
 
     def test_plan091_status_acknowledges_plan093(self):
         text = (REPO_ROOT / "plans/091-status.md").read_text()
         self.assertIn("Plan 093", text)
 
-    def test_agents_md_active_sequence_token_is_plan093(self):
+    def test_agents_md_active_sequence_token_is_plan094(self):
         text = (REPO_ROOT / "AGENTS.md").read_text()
-        self.assertIn("plan093", text)
+        self.assertIn("plan094", text)
 
 
 class Plan093I2pdObserverResetTests(unittest.TestCase):
@@ -395,13 +395,13 @@ class Plan093GateHandoffTests(unittest.TestCase):
 
     def test_plan088_status_remains_blocked(self):
         text = (REPO_ROOT / "plans/088-status.md").read_text()
-        # Plan 088 is blocked until Plan 093 records both passing
+        # Plan 088 is blocked until Plan 094 records both passing
         # instrumented and control records.
-        self.assertIn("blocked_pending_plan_093", text)
+        self.assertIn("blocked-pending-plan094-completion", text)
         # Plan 079 remains blocked.
-        self.assertIn("blocked_pending_plan_088_two_way_pass", text)
+        self.assertIn("blocked-pending-plan088-two-way-pass", text)
         # Plan 072 remains inactive.
-        self.assertIn("inactive_pending_plan_088_ambiguity", text)
+        self.assertIn("inactive-pending-plan088-ambiguity", text)
         # The legacy lane-invalidated token must not be the active
         # decision value.
         decision_match = re.search(
