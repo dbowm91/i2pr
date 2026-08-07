@@ -33,7 +33,7 @@ sha2 = "0.10"
 siphasher = { version = "1.0.3", default-features = false }
 subtle = { version = "2.6", default-features = false }
 thiserror = "2.0"
-toml = "0.8"
+toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tokio = { version = "1.48", default-features = false, features = ["io-util", "macros", "net", "rt", "sync", "time", "test-util"] }
