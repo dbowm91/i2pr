@@ -19,29 +19,45 @@ latest clean committed-head attempts are:
    the i2pd log shows `NTCP2: SessionRequest read error: End of
    file`, and the i2pr status log shows `tcp_connected` immediately
    followed by `terminal,, result: rejected,, reason_code:
-   receiver_delivery_status_missing`. The wire trace, the i2pd log,
-   and the i2pr status do not yet agree on which side terminates the
-   Noise handshake.
+   receiver_delivery_status_missing`.
+3. The Plan 092 privacy-safe observation infrastructure landed and
+   reproduced the same forward outcome on the first clean
+   committed-head head. The retained log message
+   `NTCP2: Receive length read error: End of file` is from
+   `NTCP2Session::HandleReceivedLength` in `libi2pd/NTCP2.cpp`, the
+   authenticated data-phase length reader, **not** the
+   `HandleSessionRequestReceived` handshake path. The Plan 092
+   "Branch A — i2pr runtime state-machine defect" classification is
+   **superseded** by Plan 093.
 
 ```text
-status = open-plan-091-forward-handshake-ownership-unresolved
+status = open-post-auth-data-phase-sequencing-defect
 forward_digest = non-zero (Plan 091 instrumented retained record)
-corrective_source_commit = 7952e7ad51d6ff1fcb334f89027e65e4c7f81e0e
+                  and Plan 092 retained record
+corrective_source_commit = <set-by-plan-093-corrective-commit>
+plan_086 = host-loopback-development-ready
 plan_090 = routerinfo-correction-landed
-plan_091 = partial-diagnostic-surface-landed-forward-not-passed
-plan_092 = planned_next_executable
-plan_088 = blocked_pending_plan_087_instrumented_and_control_pass
+plan_091 = partial-historical-correction
+plan_092 = partial-evidence-surface-landed-misclassification-corrected
+plan_093 = planned_next_executable
+plan_093b = active_single_next_executable_plan
+plan_088 = blocked_pending_plan_093_instrumented_and_control_pass
+plan093 = active_next_executable
+plan093_plan = active_next_executable
 plan_079 = blocked_pending_plan_088_two_way_pass
 plan_072 = inactive_pending_plan_088_ambiguity
+ntcp2    = experimental_non_advertised
 ```
 
-The remaining NTCP2 protocol failure is a post-TCP handshake defect
-whose ownership is not yet established. Plan 092 is the next active
-plan and owns the i2pr vs i2pd ownership probe, the bounded
-correction, the instrumented forward record, and the control forward
-record. Plan 088 may not run before Plan 092 closes with a passing
-instrumented forward record and a passing control forward record;
-Plan 079 and Plan 072 remain blocked pending the Plan 088 decision.
+Plan 093 supersedes Plan 092 as the single next executable plan.
+Plan 093 rewrites the ownership analysis to identify the remaining
+blocker as a **post-auth data-phase sequencing defect** owned by the
+mixed corrective surface (i2pr one-frame receive oracle + i2pd
+observer reset / target-send predicate lifecycle), not by the i2pr
+Noise state machine. Plan 088 may not run before Plan 093 closes
+with a passing instrumented forward record and a passing control
+forward record bound to the same corrective commit. Plan 079 and
+Plan 072 remain blocked pending the Plan 088 decision.
 
 ## Historical record
 

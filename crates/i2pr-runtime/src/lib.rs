@@ -15,6 +15,7 @@ mod cancel;
 mod channel;
 mod context;
 mod graph;
+mod ntcp2_data_oracle;
 mod ntcp2_driver;
 mod ntcp2_handshake_observer;
 mod ntcp2_link;
@@ -39,6 +40,13 @@ pub use graph::{
     GraphError, MAX_RESTART_ATTEMPTS, MAX_SERVICE_COUNT, MAX_SERVICE_TIMEOUT, RestartExhaustion,
     RestartPolicy, RestartPolicyError, ServiceFuture, ServiceGraph, ServiceGraphBuilder,
     ServiceResult, ServiceSpec,
+};
+pub use ntcp2_data_oracle::{
+    BOUNDED_STEP_BUDGET, DataOracleError, DataOracleError as DataOracle, MatchedTarget,
+    ORACLE_MAX_BLOCKS, ORACLE_MAX_FRAMES, ORACLE_MAX_NON_TARGET_I2NP, ORACLE_MAX_PLAINTEXT_BYTES,
+    ORACLE_SCHEMA, OracleAccept, OracleConfig, OracleCounters, PeerRouterHashBinding,
+    bounded_deadline_step, drop_lease as drop_received_frame_lease,
+    receive_correlated_delivery_status,
 };
 pub use ntcp2_driver::{
     HandshakeClock, HandshakeCounterSnapshot, HandshakeDriverConfig, HandshakeDriverError,

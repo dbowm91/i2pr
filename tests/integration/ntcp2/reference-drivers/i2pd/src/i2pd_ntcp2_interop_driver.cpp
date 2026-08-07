@@ -1175,6 +1175,35 @@ int run_listen(const DriverConfig& cfg) {
         return 66;
     }
 
+    // Plan 093: the observer generation is advanced and every
+    // bounded sequence ring is reset *before* the i2pd transport
+    // threads start. ``listener_ready`` (below) does not reset the
+    // rings or change the generation. The wait primitives record
+    // the active generation before any wait starts; a wait rejects
+    // metadata from a different generation. Stale events from an
+    // earlier invocation cannot satisfy the target waits.
+    i2pr::i2pdinterop::BeginListenerGeneration();
+    const std::uint64_t active_generation =
+        i2pr::i2pdinterop::ObserverCurrentGeneration();
+
+    // Plan 093: derive the expected peer Router Hash from the
+    // imported peer RouterInfo bytes before the listener waits.
+    // The receive and send predicate waits both require the entry's
+    // peer Router Hash to equal this hash.
+    std::uint64_t expected_peer_hash[4] = {0, 0, 0, 0};
+    {
+        std::ifstream handle(cfg.peer_router_info_path, std::ios::binary);
+        std::vector<std::uint8_t> bytes(
+            (std::istreambuf_iterator<char>(handle)),
+            std::istreambuf_iterator<char>());
+        if (handle.good() && !bytes.empty()) {
+            i2p::data::RouterInfo peer_info(bytes.data(), bytes.size());
+            auto peer_ident_hash = peer_info.GetIdentity()->GetIdentHash();
+            std::memcpy(expected_peer_hash, peer_ident_hash.data(),
+                        sizeof(expected_peer_hash));
+        }
+    }
+
     OwnedRuntime rt;
     std::string failure_reason;
     if (!initialise_i2pd_runtime(cfg, writer, rt, failure_reason)) {
@@ -1191,7 +1220,6 @@ int run_listen(const DriverConfig& cfg) {
         return 66;
     }
     emit_event(writer, cfg, "listener_ready");
-    i2pr::i2pdinterop::ResetObserverSink();
 
     // Plan 091: the listener waits boundedly for the i2pd transport
     // to record that the real pinned NTCP2 transport accepted a TCP
@@ -1224,19 +1252,25 @@ int run_listen(const DriverConfig& cfg) {
     emit_event(writer, cfg, "ntcp2_authenticated", std::nullopt, std::nullopt,
                std::nullopt, std::nullopt);
 
+    // Plan 093: the listener waits boundedly for the i2pd transport
+    // to deliver an authenticated and decoded I2NP frame with the
+    // exact target DeliveryStatus correlation (configured message
+    // ID, configured peer Router Hash, active generation,
+    // post-baseline observation_sequence). An automatic
+    // RouterInfo / DatabaseStore send that i2pd issues on inbound
+    // sessions before the target DeliveryStatus cannot satisfy the
+    // predicate.
     i2pr::i2pdinterop::ObserverMetadata recv_md{};
+    const std::uint64_t receive_baseline =
+        i2pr::i2pdinterop::ObserverReceiveSequence();
     const std::uint32_t data_timeout_ms = cfg.data_phase_timeout_ms;
-    if (!i2pr::i2pdinterop::WaitForReceivedI2NP(recv_md, data_timeout_ms)) {
+    if (!i2pr::i2pdinterop::WaitForReceivedDeliveryStatusAfter(
+            active_generation, receive_baseline,
+            expected_peer_hash,
+            cfg.delivery_status_message_id, data_timeout_ms, recv_md)) {
         emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
                    std::nullopt,
                    std::string("listening-data-phase-timeout"));
-        shutdown_runtime(rt, nullptr, nullptr);
-        return 66;
-    }
-    if (recv_md.delivery_status_message_id != cfg.delivery_status_message_id) {
-        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
-                   std::nullopt,
-                   std::string("data-phase-message-id-mismatch"));
         shutdown_runtime(rt, nullptr, nullptr);
         return 66;
     }
@@ -1247,18 +1281,17 @@ int run_listen(const DriverConfig& cfg) {
                recv_md.delivery_status_message_id,
                recv_md.i2np_type, recv_md.frame_sequence);
 
-    // Plan 091: the listener composes a DeliveryStatus with the same
-    // correlation message_id and writes it back to the i2pr through
-    // the real i2pd transport. The i2pr's data phase requires a
-    // DeliveryStatus with the exact correlation message_id; without
-    // this symmetric reply the i2pr reports
-    // `receiver_delivery_status_missing` and the directional predicate
-    // cannot pass.
+    // Plan 093: the listener composes a DeliveryStatus with the
+    // exact correlation message_id and submits it through the real
+    // i2pd transport, then waits boundedly for the asynchronous
+    // send to complete via the target predicate. The wait observes
+    // the active generation and a strictly greater send sequence
+    // than the recorded baseline.
     {
         std::ifstream handle(cfg.peer_router_info_path, std::ios::binary);
         std::vector<std::uint8_t> bytes(
             (std::istreambuf_iterator<char>(handle)),
-            std::istreambuf_iterator<char>{});
+            std::istreambuf_iterator<char>());
         if (handle.good() && !bytes.empty()) {
             i2p::data::RouterInfo peer_info(bytes.data(), bytes.size());
             auto peer_ident_hash = peer_info.GetIdentity()->GetIdentHash();
@@ -1275,9 +1308,15 @@ int run_listen(const DriverConfig& cfg) {
                 shutdown_runtime(rt, nullptr, nullptr);
                 return 66;
             }
+            const std::uint64_t send_baseline =
+                i2pr::i2pdinterop::ObserverSentSequence();
             i2pr::i2pdinterop::ObserverMetadata sent_md{};
             const std::uint32_t send_timeout_ms = cfg.handshake_timeout_ms;
-            if (!i2pr::i2pdinterop::WaitForSentI2NP(sent_md, send_timeout_ms)) {
+            if (!i2pr::i2pdinterop::WaitForSentDeliveryStatusAfter(
+                    active_generation, send_baseline,
+                    expected_peer_hash,
+                    cfg.delivery_status_message_id, send_timeout_ms,
+                    sent_md)) {
                 emit_event(writer, cfg, "terminal_rejected", std::nullopt,
                            std::nullopt, std::nullopt,
                            std::string("listener-send-timeout"));

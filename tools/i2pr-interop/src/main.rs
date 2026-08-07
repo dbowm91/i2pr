@@ -24,7 +24,7 @@ use i2pr_crypto::{
 };
 use i2pr_proto::{
     Date, DeliveryStatusMessage, Hash, I2npBody, I2npMessage, MAX_COMMON_STRUCTURE_SIZE, Mapping,
-    MessageType, RouterAddress, RouterInfo,
+    RouterAddress, RouterInfo,
 };
 use i2pr_runtime::{
     CancellationToken, HandshakeClock, HandshakeDriverConfig, HandshakeDriverError, Ntcp2Deadline,
@@ -33,7 +33,7 @@ use i2pr_runtime::{
 };
 use i2pr_storage::{IdentityStore, StorageError, TransportStaticKeyStore};
 use i2pr_transport::MAX_I2NP_MESSAGE_BYTES;
-use i2pr_transport_ntcp2::block::{Block, DecodedBlock, I2npMessageBlock};
+use i2pr_transport_ntcp2::block::{Block, I2npMessageBlock};
 use i2pr_transport_ntcp2::constants::MAX_FRAME_LENGTH;
 use i2pr_transport_ntcp2::crypto::PublicKeyBytes;
 use i2pr_transport_ntcp2::frame::FrameAssemblyPolicy;
@@ -168,6 +168,18 @@ enum LauncherError {
     ReceiverDeliveryStatusDuplicate,
     ReceiverPeerIdentityMismatch,
     ReceiverDeliveryStatusTimestampInvalid,
+    // Plan 093: bounded receive-oracle typed failures. The launcher
+    // surfaces every bounded negative path through a precise
+    // category; broad legacy reasons are forbidden in the active
+    // path.
+    ReceiverDeliveryStatusDeadline,
+    ReceiverDeliveryStatusFrameLimit,
+    ReceiverDeliveryStatusByteLimit,
+    ReceiverDeliveryStatusBlockLimit,
+    ReceiverDeliveryStatusNonTargetLimit,
+    ReceiverTerminationBeforeTarget,
+    ReceiverFrameParseFailed,
+    ReceiverPeerRouterInfoInvalid,
 }
 
 struct LocalState {
@@ -698,7 +710,8 @@ async fn execute_responder(
 /// the receiver categories are the terminal state; the launcher does
 /// not collapse them into the broad ``DataPhaseFailed`` reason. The
 /// responder-side variants are emitted only on the responder side
-/// and only on a Terminal phase.
+/// and only on a Terminal phase. Plan 093 extends the allowlist
+/// with the bounded receive-oracle categories.
 fn classify_responder_data_phase_error(error: LauncherError) -> LauncherError {
     match error {
         LauncherError::DataFrameReadFailed => LauncherError::ResponderDataFrameReadFailed,
@@ -726,6 +739,31 @@ fn classify_responder_data_phase_error(error: LauncherError) -> LauncherError {
             LauncherError::ReceiverFrameAuthenticationFailed
         }
         LauncherError::ReceiverPeerIdentityMismatch => LauncherError::ReceiverPeerIdentityMismatch,
+        // Plan 093: the bounded receive-oracle categories pass
+        // through unchanged so the harness and the verifier can
+        // apply the bounded predicate.
+        LauncherError::ReceiverDeliveryStatusDeadline => {
+            LauncherError::ReceiverDeliveryStatusDeadline
+        }
+        LauncherError::ReceiverDeliveryStatusFrameLimit => {
+            LauncherError::ReceiverDeliveryStatusFrameLimit
+        }
+        LauncherError::ReceiverDeliveryStatusByteLimit => {
+            LauncherError::ReceiverDeliveryStatusByteLimit
+        }
+        LauncherError::ReceiverDeliveryStatusBlockLimit => {
+            LauncherError::ReceiverDeliveryStatusBlockLimit
+        }
+        LauncherError::ReceiverDeliveryStatusNonTargetLimit => {
+            LauncherError::ReceiverDeliveryStatusNonTargetLimit
+        }
+        LauncherError::ReceiverTerminationBeforeTarget => {
+            LauncherError::ReceiverTerminationBeforeTarget
+        }
+        LauncherError::ReceiverFrameParseFailed => LauncherError::ReceiverFrameParseFailed,
+        LauncherError::ReceiverPeerRouterInfoInvalid => {
+            LauncherError::ReceiverPeerRouterInfoInvalid
+        }
         other => other,
     }
 }
@@ -1082,64 +1120,154 @@ async fn send_i2np_block(
     Ok(())
 }
 
-async fn receive_delivery_status(
+/// Plan 093: bounded correlated send-block entry point. The
+/// launcher uses this alias to expose the exact same send path
+/// through the bounded-correlated surface. The wrapper is a
+/// forwarder that delegates to the Plan 065 strict send path so
+/// the launcher's existing counter correlation remains valid.
+#[allow(dead_code)]
+pub(crate) async fn correlated_send_block(
     link: &mut i2pr_runtime::AuthenticatedLink,
     cancellation: &CancellationToken,
     deadlines: Ntcp2RuntimeDeadlines,
+    counters: &mut StatusCounters,
+    delivery_status_message_id: u32,
+    expected_sender_router_hash_sha256: &str,
+    expected_receiver_router_hash_sha256: &str,
+) -> Result<(), LauncherError> {
+    send_i2np_block(
+        link,
+        cancellation,
+        deadlines,
+        counters,
+        delivery_status_message_id,
+        expected_sender_router_hash_sha256,
+        expected_receiver_router_hash_sha256,
+    )
+    .await
+}
+
+async fn receive_delivery_status(
+    link: &mut i2pr_runtime::AuthenticatedLink,
+    cancellation: &CancellationToken,
+    _deadlines: Ntcp2RuntimeDeadlines,
     counters: &mut StatusCounters,
     expected_message_id: u32,
     _expected_sender_router_hash_sha256: &str,
     expected_receiver_router_hash_sha256: &str,
 ) -> Result<(), LauncherError> {
-    let lease = bounded_timeout(deadlines.read_idle, link.recv(cancellation))
-        .await
-        .map_err(|_| LauncherError::Timeout)?
-        .map_err(|_| LauncherError::ReceiverFrameReadFailed)?
-        .ok_or(LauncherError::ReceiverFrameReadFailed)?;
-    counters.frames_received = 1;
-    let parsed = lease
-        .frame()
-        .plaintext()
-        .parse()
-        .map_err(|_| LauncherError::ReceiverFrameReadFailed)?;
-    let mut found_delivery_status = false;
-    for block in parsed.blocks() {
-        if let DecodedBlock::I2np(message) = block {
-            let decoded =
-                I2npMessage::decode_short_transport(message.as_bytes(), MAX_I2NP_MESSAGE_BYTES)
-                    .map_err(|_| LauncherError::ReceiverI2npDecodeFailed)?;
-            if decoded.body().message_type() != MessageType::DeliveryStatus {
-                continue;
+    // Plan 093: the receiver consumes a bounded sequence of
+    // authenticated frames and tolerates valid pre-target
+    // traffic (RouterInfo, padding, options, datetime,
+    // non-target I2NP messages) until the exact target
+    // DeliveryStatus is decoded. The deadline is computed once at
+    // the start of the call and never refreshed by non-target
+    // traffic.
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_millis(
+            bounded_oracle_deadline_ms(),
+        ))
+        .ok_or(LauncherError::Timeout)?;
+    let expected_peer_hash_bytes = decode_expected_peer_hash(expected_receiver_router_hash_sha256)?;
+    let config = i2pr_runtime::OracleConfig {
+        deadline,
+        max_frames: i2pr_runtime::ORACLE_MAX_FRAMES,
+        max_plaintext_bytes: i2pr_runtime::ORACLE_MAX_PLAINTEXT_BYTES,
+        max_blocks: i2pr_runtime::ORACLE_MAX_BLOCKS,
+        max_non_target_i2np: i2pr_runtime::ORACLE_MAX_NON_TARGET_I2NP,
+        expected_message_id,
+        peer_router_hash: i2pr_runtime::PeerRouterHashBinding::Expected(expected_peer_hash_bytes),
+        expect_pre_target_router_info: false,
+    };
+    let outcome =
+        i2pr_runtime::receive_correlated_delivery_status(link, cancellation, config).await;
+    match outcome {
+        i2pr_runtime::OracleAccept::Accepted {
+            target,
+            counters: oracle_counters,
+        } => {
+            counters.frames_received = oracle_counters.frames_received;
+            counters.i2np_received = oracle_counters.matched_target_message_id;
+            counters.delivery_status_message_id = target.envelope_message_id;
+            counters.expected_peer_router_hash_sha256 =
+                expected_receiver_router_hash_sha256.to_owned();
+            // Plan 093: decode the bounded I2NP body so the launcher
+            // verifies the DeliveryStatus payload before claiming
+            // success. The short-transport encoding includes a
+            // header; the i2pr runtime already validated the
+            // envelope message ID; we still decode the payload to
+            // confirm it is a DeliveryStatus before recording the
+            // success counters.
+            match i2pr_proto::I2npMessage::decode_short_transport(&target.body, target.body.len()) {
+                Ok(decoded) => {
+                    if let I2npBody::DeliveryStatus(_status) = decoded.body() {
+                        counters.i2np_received = counters.i2np_received.saturating_add(1);
+                    } else {
+                        return Err(LauncherError::ReceiverDeliveryStatusIdMismatch);
+                    }
+                }
+                Err(_) => {
+                    return Err(LauncherError::ReceiverI2npDecodeFailed);
+                }
             }
-            let envelope_id = decoded.header().message_id().unwrap_or(0);
-            let payload_id = match decoded.body() {
-                I2npBody::DeliveryStatus(inner) => inner.message_id,
-                _ => unreachable!(),
-            };
-            // Plan 065: the envelope message ID and the DeliveryStatus
-            // payload message ID must both equal the scenario-owned
-            // correlation ID. A type-only match (DeliveryStatus type
-            // present but wrong ID) is rejected with the bounded
-            // `ReceiverDeliveryStatusIdMismatch` reason.
-            if envelope_id != expected_message_id || payload_id != expected_message_id {
-                return Err(LauncherError::ReceiverDeliveryStatusIdMismatch);
-            }
-            if found_delivery_status {
-                // Plan 065: a duplicate DeliveryStatus with the exact
-                // correlation ID is a bounded rejection. The data phase
-                // must observe exactly one relevant DeliveryStatus.
-                return Err(LauncherError::ReceiverDeliveryStatusDuplicate);
-            }
-            found_delivery_status = true;
-            counters.delivery_status_message_id = payload_id;
+        }
+        i2pr_runtime::OracleAccept::Error { reason, .. } => {
+            return Err(map_oracle_error(reason));
         }
     }
-    if !found_delivery_status {
-        return Err(LauncherError::ReceiverDeliveryStatusMissing);
-    }
-    counters.i2np_received = 1;
-    counters.expected_peer_router_hash_sha256 = expected_receiver_router_hash_sha256.to_owned();
     Ok(())
+}
+
+/// Plan 093: bounded receive oracle deadline. The launcher reserves
+/// a single absolute deadline that the oracle cannot extend across
+/// pre-target frames. The bound equals the read idle + handshake
+/// wait budget already used by the Plan 065 receive path.
+fn bounded_oracle_deadline_ms() -> u64 {
+    30_000
+}
+
+/// Plan 093: decode the expected peer Router Hash from a 64-hex
+/// string. Returns a `LauncherError::ReceiverFrameReadFailed` on
+/// malformed input so the failure surfaces through the existing
+/// typed receiver failure category.
+fn decode_expected_peer_hash(value: &str) -> Result<[u8; 32], LauncherError> {
+    if value.len() != 64 {
+        return Err(LauncherError::ReceiverFrameReadFailed);
+    }
+    let bytes = value.as_bytes();
+    let mut out = [0u8; 32];
+    for (index, chunk) in bytes.chunks_exact(2).enumerate() {
+        let pair =
+            std::str::from_utf8(chunk).map_err(|_| LauncherError::ReceiverFrameReadFailed)?;
+        out[index] =
+            u8::from_str_radix(pair, 16).map_err(|_| LauncherError::ReceiverFrameReadFailed)?;
+    }
+    Ok(out)
+}
+
+/// Plan 093: map the bounded oracle typed failure onto the existing
+/// launcher typed failure allowlist. Negative paths never broaden
+/// to the legacy `DataPhaseFailed` category.
+fn map_oracle_error(error: i2pr_runtime::DataOracleError) -> LauncherError {
+    use i2pr_runtime::DataOracleError;
+    match error {
+        DataOracleError::DeadlineElapsed => LauncherError::ReceiverDeliveryStatusDeadline,
+        DataOracleError::FrameLimitReached => LauncherError::ReceiverDeliveryStatusFrameLimit,
+        DataOracleError::ByteLimitReached => LauncherError::ReceiverDeliveryStatusByteLimit,
+        DataOracleError::BlockLimitReached => LauncherError::ReceiverDeliveryStatusBlockLimit,
+        DataOracleError::NonTargetI2npLimitReached => {
+            LauncherError::ReceiverDeliveryStatusNonTargetLimit
+        }
+        DataOracleError::TerminationBeforeTarget => LauncherError::ReceiverTerminationBeforeTarget,
+        DataOracleError::FrameParseFailed => LauncherError::ReceiverFrameParseFailed,
+        DataOracleError::I2npDecodeFailed => LauncherError::ReceiverI2npDecodeFailed,
+        DataOracleError::DeliveryStatusIdMismatch => {
+            LauncherError::ReceiverDeliveryStatusIdMismatch
+        }
+        DataOracleError::DeliveryStatusDuplicate => LauncherError::ReceiverDeliveryStatusDuplicate,
+        DataOracleError::PeerRouterInfoInvalid => LauncherError::ReceiverPeerRouterInfoInvalid,
+        DataOracleError::Closed => LauncherError::ReceiverFrameReadFailed,
+    }
 }
 
 fn prepare_local_state(scenario: &Scenario) -> Result<LocalState, LauncherError> {
@@ -1539,6 +1667,41 @@ fn terminal_status(error: LauncherError) -> (StatusResult, StatusReason) {
         LauncherError::ReceiverDeliveryStatusTimestampInvalid => (
             StatusResult::Rejected,
             StatusReason::ReceiverDeliveryStatusTimestampInvalid,
+        ),
+        // Plan 093: bounded receive-oracle failures serialize as
+        // receiver-side typed failures so the harness and the
+        // verifier can apply the bounded predicate.
+        LauncherError::ReceiverDeliveryStatusDeadline => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverDeliveryStatusDeadline,
+        ),
+        LauncherError::ReceiverDeliveryStatusFrameLimit => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverDeliveryStatusFrameLimit,
+        ),
+        LauncherError::ReceiverDeliveryStatusByteLimit => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverDeliveryStatusByteLimit,
+        ),
+        LauncherError::ReceiverDeliveryStatusBlockLimit => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverDeliveryStatusBlockLimit,
+        ),
+        LauncherError::ReceiverDeliveryStatusNonTargetLimit => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverDeliveryStatusNonTargetLimit,
+        ),
+        LauncherError::ReceiverTerminationBeforeTarget => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverTerminationBeforeTarget,
+        ),
+        LauncherError::ReceiverFrameParseFailed => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverFrameParseFailed,
+        ),
+        LauncherError::ReceiverPeerRouterInfoInvalid => (
+            StatusResult::Rejected,
+            StatusReason::ReceiverPeerRouterInfoInvalid,
         ),
     }
 }

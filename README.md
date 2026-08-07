@@ -1350,61 +1350,85 @@ ownership analysis. Plan 088 remains blocked on a
 follow-up ownership pass under a successor plan. NTCP2 stays
 experimental and non-advertised.
 
-### Plan 092 forward-handshake evidence integrity and ownership closure
+### Plan 092 forward-handshake evidence integrity and ownership closure (superseded)
 
-Plan 092 is the active Plan 091 successor and the single next
-executable plan. It rewrites the Plan 091/087/088 status
-authority so Plan 091 is recorded as partial/incomplete (not
-closed), Plan 087 begins with the current forward state, and
-Plan 088 names Plan 092 as the next executable plan with a
-blocked gate that depends on the passing instrumented and
-control forward records. The plan delivers:
-
-- the privacy-safe handshake stage observation schema
-  (`tests/integration/ntcp2/harness/handshake_stage.py`,
-  schema `i2pr-ntcp2-handshake-stage-v1`) with closed i2pr and
-  i2pd stage allowlists, bounded octet counts, a forbidden
-  fields list, and a canonical event SHA-256 digest;
-- the i2pr runtime observed handshake driver entry points
-  (`drive_initiator_handshake_observed` and
-  `drive_responder_handshake_observed`) plus the
-  `HandshakeProgressObserver` / `NoopHandshakeObserver` /
-  `HandshakeStageObservation` / `HandshakeIoResult` /
-  `HandshakeCounterSnapshot` / `HandshakeRunOutcome` types in
-  `crates/i2pr-runtime/src/ntcp2_handshake_observer.rs` and
-  `crates/i2pr-runtime/src/ntcp2_driver.rs`;
-- terminal-counter preservation in the i2pr launcher so the
-  runner can correlate the last authenticated/frame/I2NP state
-  with the typed failure (`tools/i2pr-interop/src/main.rs`);
-- the Plan 083 event-ingestion repair with current-run dedup
-  keys and `tcp_accepted` inclusion in the final drain
-  (`tests/integration/ntcp2/harness/plan083_runner.py`);
-- the dedicated Plan 092 regression matrix
-  (`tests/integration/ntcp2/harness/test_plan092.py`, 28 cases);
-- the static boundary check extensions in
-  `scripts/check-ntcp2-interoperability.sh` that require the
-  privacy-safe observation schema, the active-sequence token,
-  the `partial / incomplete` declaration in the Plan 091
-  status, and the absence of raw or hex handshake capture
-  outside the forbidden-follow-up section.
-
-Plan 092 is **partial / incomplete**: the first clean
-committed-head reproduction
+Plan 092 delivered the privacy-safe handshake stage observation
+schema, the i2pr runtime observed handshake driver entry points,
+the terminal-counter preservation in the i2pr launcher, the
+Plan 083 event-ingestion repair with current-run dedup, the
+dedicated Plan 092 regression matrix, and the static boundary
+check extensions that enforce the privacy-safe observation
+schema. The retained record
 (`/tmp/opencode/plan092-test-1/forward-record.json`,
 `record_sha256 = 696aa1339d3d950f9fec2a2e0b1f5bede2035761a71e167af6ab28b249cc998d`)
-records the same forward direction outcome as Plan 091: the
-i2pd NTCP2 transport reads EOF on the first SessionRequest
-prefix read while the i2pr status counters carry
-`authenticated: 1`, `frames_sent: 1`, `frames_received: 1`,
-`i2np_sent: 1`, `i2np_received: 0`. The ownership analysis
-selects **Branch A — i2pr runtime / state-machine defect** as
-the dominant owner, with Branch D reserved as the secondary
-owner. The narrow correction surface is recorded in
-[plans/092-status.md](plans/092-status.md) but is not yet
-implemented. Plan 088 remains blocked until Plan 092 closes
-with a passing instrumented forward record and a passing
-control forward record. NTCP2 stays experimental and
-non-advertised.
+preserves the first clean committed-head reproduction. Plan 092
+is **superseded by Plan 093** — its Branch A (i2pr runtime /
+state-machine defect) ownership analysis is corrected by the
+Plan 093 source reclassification that names the i2pd log
+diagnostic as data-phase length reader traffic rather than a
+handshake-state defect. Plan 092 remains the immutable
+diagnostic history; Plan 093 is the active implementation
+authority.
+
+### Plan 093 Plan 087 forward data-phase and reference-observer closure
+
+Plan 093 is the **active single next executable plan** and the
+Plan 091 / Plan 092 successor. It corrects the Plan 092
+"Branch A i2pr state-machine defect" misclassification with a
+privacy-safe source reclassification of the i2pd NTCP2 log
+diagnostic, implements the i2pd observer reset/generation/ring
+contract, ships the i2pr bounded multi-frame receive oracle,
+binds the i2pr binary provenance into the live wrapper, and
+introduces the runner event authority gate. The plan delivers:
+
+- the source-classification record
+  (`tests/integration/ntcp2/harness/source_classification.py`,
+  schema `i2pr-ntcp2-source-classification-v1`) that maps the
+  pinned i2pd 2.60.0 log diagnostics to the data-phase length
+  reader (`HandleReceivedLength`) and rejects the
+  `SessionRequest` handshake-state interpretation;
+- the i2pd direct driver observer ring with generation-bound
+  sequence predicates (`INTEROP_RING_CAPACITY = 64`,
+  `BeginListenerGeneration()`,
+  `WaitForReceivedDeliveryStatusAfter` /
+  `WaitForSentDeliveryStatusAfter`) and a per-listener
+  `ResetObserverSink()` that advances the generation;
+  stale-generation entries cannot satisfy any wait;
+- the i2pr bounded receive oracle
+  (`crates/i2pr-runtime/src/ntcp2_data_oracle.rs`,
+  schema `i2pr-ntcp2-data-oracle-v1`) with `ORACLE_MAX_FRAMES`,
+  `ORACLE_MAX_PLAINTEXT_BYTES`, `ORACLE_MAX_BLOCKS`,
+  `ORACLE_MAX_NON_TARGET_I2NP`, the
+  `receive_correlated_delivery_status` entry point, and a
+  bounded `MatchedTarget` body bytes wrapper so the launcher
+  can decode the DeliveryStatus without introducing a
+  reverse `i2pr-runtime -> i2pr-proto` dependency edge;
+- the i2pr launcher binary provenance binding
+  (`scripts/interop/run-minimal-i2pd-host-loopback-probe.py`)
+  that requires `--i2pr-binary` for any non-preflight attempt
+  and threads the measured `i2pr_binary_sha256` through the
+  Plan 083 provenance table;
+- the Plan 093 focused test matrix (36 cases,
+  `tests/integration/ntcp2/harness/test_plan093.py`) covering
+  source classification, status authority, i2pd observer
+  reset, observer predicates, i2pr runtime oracle, runner
+  event authority, live provenance, gate handoff, static
+  enforcement, and observer schema;
+- the static boundary check extensions in
+  `scripts/check-ntcp2-interoperability.sh` that require the
+  Plan 093 test matrix, the bounded receive oracle schema,
+  the i2pd observer generation header, the i2pr binary
+  provenance literal, and the rewritten Plan 087/088/091/092
+  status authority tokens.
+
+Plan 093 implementation lands on this host. The forward
+direction is the next executable attempt: instrumented and
+control i2pd binaries will be built, the wrapper will be
+invoked with `--i2pr-binary`, and the record will be retained
+under the Plan 092 retained path. Plan 088 remains blocked
+until the Plan 093 forward direction passes with both an
+instrumented and a control record digest. NTCP2 stays
+experimental and non-advertised.
 
 ### Plan 074 real-driver and constrained-host corrective roadmap (historical)
 

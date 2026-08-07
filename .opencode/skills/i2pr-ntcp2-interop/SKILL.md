@@ -1,6 +1,6 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090/091/092 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, typed evidence validation, the Plan 085-088 host-loopback development execution roadmap, the Plan 090 i2pd RouterInfo and pre-TCP classification correction, the Plan 091 i2pd Noise-handshake preconditions, and the Plan 092 forward-handshake evidence integrity and ownership closure. Use when an agent is asked to run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, diagnose Plan 082-092 execution, or validate evidence. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090/091/092/093 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, typed evidence validation, the Plan 085-088 host-loopback development execution roadmap, the Plan 090 i2pd RouterInfo and pre-TCP classification correction, the Plan 091 i2pd Noise-handshake preconditions, the Plan 092 forward-handshake evidence integrity (superseded by Plan 093), and the Plan 093 Plan 087 forward data-phase and reference-observer closure. Use when an agent is asked to run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, diagnose Plan 082-093 execution, or validate evidence. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
 # I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/081/082/083/084)
@@ -495,22 +495,23 @@ bash scripts/check-ntcp2-interoperability.sh
 
 ## Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
-Plan 074 is historical execution authority. Plan 092 supersedes its active
-sequence with **Plan 082 (implemented) → Plan 083 (implemented, execution pending) → Plan 084 (implemented, execution pending) → Plan 085 → Plan 086 → Plan 087 → Plan 090 → Plan 091 → Plan 092 (planned_next_executable) → Plan 088 → Plan 079 (blocked)**. Plans 075, 076,
+Plan 074 is historical execution authority. Plan 093 supersedes its active
+sequence with **Plan 082 (implemented) → Plan 083 (implemented, execution pending) → Plan 084 (implemented, execution pending) → Plan 085 → Plan 086 → Plan 087 → Plan 090 → Plan 091 → Plan 092 (superseded) → Plan 093 (planned_next_executable) → Plan 088 → Plan 079 (blocked)**. Plans 075, 076,
 077, and 080 are closed prerequisites or historical lane records. The Plan
 084 historical `lane-invalidated` closure is reclassified as "runner
 implementation completed; required reverse wire execution never occurred" and
-the active development decision now lives in `plans/088-status.md`. Plan 092
-is the single next executable plan and owns the forward-handshake
-ownership probe, the narrow correction, the instrumented and control
-forward records, and the durable evidence reconciliation. The Plan 092
-first clean committed-head reproduction recorded the same forward
-direction outcome as Plan 091 with the new privacy-safe observation
-infrastructure; the ownership analysis selects Branch A (i2pr runtime /
-state-machine defect) with Branch D reserved as the secondary owner.
-The narrow correction is recorded in `plans/092-status.md` but is not
-yet implemented. Plan 088 remains blocked until Plan 092 closes with
-a passing instrumented forward record and a passing control forward
+the active development decision now lives in `plans/088-status.md`. Plan 093
+is the single next executable plan and owns the forward data-phase closure,
+the i2pd observer reset/generation/ring contract, the i2pr bounded
+multi-frame receive oracle, the i2pr binary provenance binding, the source
+reclassification that supersedes the Plan 092 Branch A ownership analysis,
+and the instrumented + control forward wire attempts. The Plan 092 first
+clean committed-head reproduction (`/tmp/opencode/plan092-test-1/forward-record.json`,
+`record_sha256 = 696aa1339d3d950f9fec2a2e0b1f5bede2035761a71e167af6ab28b249cc998d`)
+is preserved verbatim and superseded by Plan 093 — the i2pd NTCP2 transport
+diagnostic is reclassified as data-phase length reader traffic rather than
+a handshake-state defect. Plan 088 remains blocked until Plan 093 closes
+with a passing instrumented forward record and a passing control forward
 record.
 
 The corrected repository state is:
@@ -524,9 +525,12 @@ real_reference_process_in_plan069_runner = corrected_by_plan075
 real_mixed_router_attempts = 0
 plan_085_host_loopback_roadmap = implemented
 plan_086_host_loopback_development_lane = planned
-plan_087_forward_wire_execution = blocked_pending_plan_086
+plan_087_forward_wire_execution = blocked_pending_plan_093_forward_pass
 plan_088_reverse_development_decision = insufficient_evidence
 plan_088_active_supersedure = supersedes_plan_084_lane_invalidated
+plan_091_status = partial_corrective_landed_on_host
+plan_092_status = superseded_by_plan_093
+plan_093_status = planned_next_executable
 plan_079_gate = blocked_pending_plan_088_two_way_passed
 plan_072_gate = inactive_pending_plan_088_ambiguity
 current_rootless_namespace_lane = unavailable

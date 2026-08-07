@@ -395,6 +395,22 @@ impl AuthenticatedLink {
         }
     }
 
+    /// Plan 093: bounded correlated receive entry point. This method
+    /// is the link-side handle used by the bounded receive oracle to
+    /// drive the receive loop. The method accepts the supplied
+    /// cancellation token and returns the next authenticated frame
+    /// lease. The oracle enforces the bounded deadline, the bounded
+    /// frame and byte budgets, and the bounded non-target I2NP
+    /// bound; this method is intentionally minimal and never extends
+    /// the deadline. The caller drives one or more iterations of the
+    /// oracle loop.
+    pub async fn correlated_receive_oracle(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<ReceivedFrameLease>, AuthenticatedLinkError> {
+        self.recv(cancellation).await
+    }
+
     /// Requests cancellation of both supervised link children.
     pub fn close(&self) {
         let _ = self

@@ -76,22 +76,24 @@ def _make_provenance(
     run_id: str,
     direction: str,
     i2pd_driver_binary: Path | None,
+    i2pr_binary: Path | None,
     reference_revision: str = "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e",
 ) -> dict[str, str]:
     """Return the bounded provenance stub for the host-loopback lane.
 
-    The wrapper measures the i2pd driver binary SHA-256 when an
-    explicit path is supplied; the run identity is derived from the
-    run id, source commit, and direction. The other digests use the
-    canonical Plan 082/083 zero placeholders. The wrapper never
-    fabricates a passing record; the runner materialises the real
-    values.
+    The wrapper measures the i2pd driver binary SHA-256 and the
+    i2pr binary SHA-256 when explicit paths are supplied. Plan 093
+    forbids zero placeholders for the i2pr binary digest in any
+    attempted live record; the wrapper computes the digest from the
+    bytes of the supplied path so the runner can serialize a real,
+    nonzero value into the live record.
     """
 
     driver_source_sha256 = "0" * 64
     build_manifest_sha256 = "0" * 64
     observer_patch_sha256 = "0" * 64
     i2pd_binary_sha256 = "0" * 64
+    i2pr_binary_sha256 = "0" * 64
     reference_tree_sha256 = "0" * 64
     i2pd_dir = Path(__file__).resolve().parent.parent.parent / "tests/integration/ntcp2/reference-drivers/i2pd"
     driver_source = i2pd_dir / "src/i2pd_ntcp2_interop_driver.cpp"
@@ -140,6 +142,13 @@ def _make_provenance(
             i2pd_binary_sha256 = "0" * 64
     else:
         i2pd_binary_sha256 = "0" * 64
+    if i2pr_binary is not None and i2pr_binary.is_file():
+        try:
+            i2pr_binary_sha256 = hashlib.sha256(
+                i2pr_binary.read_bytes()
+            ).hexdigest()
+        except OSError:
+            i2pr_binary_sha256 = "0" * 64
     lane_qualification_sha256 = hashlib.sha256(
         f"i2pr-host-loopback-run-identity-v1|{run_id}|{direction}|{source_commit}".encode()
     ).hexdigest()
@@ -147,7 +156,7 @@ def _make_provenance(
         "source_commit": source_commit,
         "reference_revision": reference_revision,
         "lane_qualification_sha256": lane_qualification_sha256,
-        "i2pr_binary_sha256": "0" * 64,
+        "i2pr_binary_sha256": i2pr_binary_sha256,
         "i2pd_binary_sha256": i2pd_binary_sha256,
         "driver_source_sha256": driver_source_sha256,
         "build_manifest_sha256": build_manifest_sha256,
@@ -207,6 +216,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Optional path to the i2pd direct driver binary.",
     )
     parser.add_argument(
+        "--i2pr-binary",
+        type=Path,
+        default=None,
+        help=(
+            "Plan 093: path to the i2pr launcher binary whose "
+            "measured SHA-256 is bound into the live record."
+        ),
+    )
+    parser.add_argument(
         "--handshake-timeout-ms",
         type=int,
         default=30_000,
@@ -248,6 +266,16 @@ def _validate_inputs(args: argparse.Namespace) -> int | None:
         return _fail(
             f"--i2pd-driver-binary not found: {args.i2pd_driver_binary}",
         )
+    # Plan 093: the i2pr binary digest must be measured and bound
+    # into the live record. The wrapper refuses to launch a live
+    # attempt with a missing i2pr binary path so zero provenance
+    # digests cannot enter the live record.
+    if not args.preflight and args.i2pr_binary is None:
+        return _fail(
+            "--i2pr-binary is required for non-preflight live attempts",
+        )
+    if args.i2pr_binary is not None and not args.i2pr_binary.is_file():
+        return _fail(f"--i2pr-binary not found: {args.i2pr_binary}")
     return None
 
 
@@ -291,6 +319,7 @@ def _run_preflight(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
         run_id=args.run_id,
         direction=args.direction,
         i2pd_driver_binary=args.i2pd_driver_binary,
+        i2pr_binary=args.i2pr_binary,
     )
     args.run_root.mkdir(parents=True, exist_ok=True)
     message_id = (
@@ -338,6 +367,7 @@ def _run_forward_probe(args: argparse.Namespace) -> dict[str, object]:
         run_id=args.run_id,
         direction=args.direction,
         i2pd_driver_binary=args.i2pd_driver_binary,
+        i2pr_binary=args.i2pr_binary,
     )
     message_id = int(args.delivery_status_message_id, 16) if args.delivery_status_message_id.startswith("0x") else int(args.delivery_status_message_id)
     return runner.execute_real_probe(
@@ -379,6 +409,7 @@ def _run_reverse_probe(args: argparse.Namespace) -> dict[str, object]:
         run_id=args.run_id,
         direction=args.direction,
         i2pd_driver_binary=args.i2pd_driver_binary,
+        i2pr_binary=args.i2pr_binary,
     )
     message_id = int(args.delivery_status_message_id, 16) if args.delivery_status_message_id.startswith("0x") else int(args.delivery_status_message_id)
     return runner.execute_reverse_probe(

@@ -8,13 +8,17 @@ but the forward direction did not pass: the i2pr dialer enters
 `drive_initiator_handshake`, the i2pd listener reports a TCP
 session-accept, then the i2pd NTCP2 transport reads `End of file` on
 the first handshake body read while the i2pr reports a data-phase
-`receiver_delivery_status_missing` terminal. The wire trace, the i2pd
-log, and the i2pr status do not yet agree on which side terminates
-the Noise handshake. The plan is **not closed**. Plan 092 owns the
-forward-direction ownership probe, the bounded correction, and the
-instrumented + control forward closure. This record is preserved
+`receiver_delivery_status_missing` terminal. The plan is **not
+closed**. Plan 093 supersedes Plan 092 as the active plan of record
+and rewrites the ownership analysis: the i2pd log message
+`SessionRequest read error: End of file` from Plan 091 likewise
+belongs to a transport read failure, not necessarily a handshake
+SessionRequest read — the canonical Plan 093 source-classification
+tests bind the exact strings to
+`NTCP2Session::HandleReceivedLength` (data phase) and
+`HandleSessionRequestReceived` (handshake). This record is preserved
 verbatim as the diagnostic history and the exact source commit
-remains load-bearing for Plan 092.
+remains load-bearing for Plan 093.
 
 ## Reproduce command (historical)
 

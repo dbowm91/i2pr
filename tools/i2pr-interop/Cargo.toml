@@ -19,6 +19,7 @@ i2pr-runtime = { path = "../../crates/i2pr-runtime" }
 i2pr-storage = { path = "../../crates/i2pr-storage" }
 i2pr-transport = { path = "../../crates/i2pr-transport" }
 i2pr-transport-ntcp2 = { path = "../../crates/i2pr-transport-ntcp2" }
+tokio.workspace = true
 
 [lints]
 workspace = true

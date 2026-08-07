@@ -114,6 +114,18 @@ pub enum StatusReason {
     ReceiverDeliveryStatusDuplicate,
     ReceiverPeerIdentityMismatch,
     ReceiverDeliveryStatusTimestampInvalid,
+    // Plan 093: bounded receive-oracle typed failures. The oracle
+    // emits these categories for every negative outcome and the
+    // launcher never collapses them into the broad
+    // `DataPhaseFailed` reason.
+    ReceiverDeliveryStatusDeadline,
+    ReceiverDeliveryStatusFrameLimit,
+    ReceiverDeliveryStatusByteLimit,
+    ReceiverDeliveryStatusBlockLimit,
+    ReceiverDeliveryStatusNonTargetLimit,
+    ReceiverTerminationBeforeTarget,
+    ReceiverFrameParseFailed,
+    ReceiverPeerRouterInfoInvalid,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -312,6 +324,17 @@ pub(crate) fn reason_name(value: StatusReason) -> &'static str {
         StatusReason::ReceiverDeliveryStatusTimestampInvalid => {
             "receiver_delivery_status_timestamp_invalid"
         }
+        // Plan 093: bounded receive-oracle typed failures.
+        StatusReason::ReceiverDeliveryStatusDeadline => "receiver_delivery_status_deadline",
+        StatusReason::ReceiverDeliveryStatusFrameLimit => "receiver_delivery_status_frame_limit",
+        StatusReason::ReceiverDeliveryStatusByteLimit => "receiver_delivery_status_byte_limit",
+        StatusReason::ReceiverDeliveryStatusBlockLimit => "receiver_delivery_status_block_limit",
+        StatusReason::ReceiverDeliveryStatusNonTargetLimit => {
+            "receiver_delivery_status_non_target_limit"
+        }
+        StatusReason::ReceiverTerminationBeforeTarget => "receiver_termination_before_target",
+        StatusReason::ReceiverFrameParseFailed => "receiver_frame_parse_failed",
+        StatusReason::ReceiverPeerRouterInfoInvalid => "receiver_peer_router_info_invalid",
     }
 }
 

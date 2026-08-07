@@ -225,8 +225,19 @@ class I2pdDriverArtifactsPresentTests(unittest.TestCase):
         self.assertIn("pinned-libraries-not-linked", source)
         # Plan 083 listen/dial modes wait boundedly for real wire
         # events; the wait primitives come from the observer header.
-        self.assertIn("WaitForReceivedI2NP", source)
-        self.assertIn("WaitForSentI2NP", source)
+        # Plan 093 introduces generation-and-sequence ring waits for
+        # the data-phase DeliveryStatus; legacy wait primitives
+        # remain for the handshake-stage auth/timeout waits.
+        self.assertTrue(
+            "WaitForReceivedI2NP" in source
+            or "WaitForReceivedDeliveryStatusAfter" in source,
+            "driver must use a bounded receive wait primitive",
+        )
+        self.assertTrue(
+            "WaitForSentI2NP" in source
+            or "WaitForSentDeliveryStatusAfter" in source,
+            "driver must use a bounded send wait primitive",
+        )
         self.assertIn("WaitForAuthenticated", source)
         self.assertIn("listening-handshake-timeout", source)
         self.assertIn("dialing-send-timeout", source)

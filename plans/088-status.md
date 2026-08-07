@@ -5,11 +5,12 @@
 ```text
 decision = insufficient-evidence
 plan_086 = host-loopback-development-ready
-plan_087 = open_pending_plan_092_forward_closure
+plan_087 = open_post_auth_data_phase_sequencing_defect
 plan_090 = routerinfo-correction-landed
-plan_091 = partial-diagnostic-surface-landed-forward-not-passed
-plan_092 = planned_next_executable
-plan_088 = blocked_pending_plan_087_instrumented_and_control_pass
+plan_091 = partial_historical_correction
+plan_092 = partial_evidence_surface_landed_misclassification_corrected
+plan_093 = planned_next_executable
+plan_088 = blocked_pending_plan_093_instrumented_and_control_pass
 plan_079 = blocked_pending_plan_088_two_way_pass
 plan_072 = inactive_pending_plan_088_ambiguity
 ntcp2 = experimental_non_advertised
@@ -23,16 +24,22 @@ identifier is exactly `i2pd-to-i2pr-ipv4`. The Plan 088 development
 decision recorded in this status is `insufficient-evidence` because:
 
 1. the prerequisite forward direction has not executed a passing
-   instrumented record;
-2. no real wire run from a clean Plan 092 corrective commit has been
+   instrumented record under Plan 093;
+2. no real wire run from a clean Plan 093 corrective commit has been
    retained;
 3. the Plan 086 lane contract has closed as
-   `host-loopback-development-ready` but the Plan 092 ownership probe
+   `host-loopback-development-ready` but the Plan 093 ownership probe
    has not yet produced a passing instrumented or control forward
    record;
 4. the Plan 089 manual-isolated fallback has not been activated;
-6. the active execution lane remains blocked pending Plan 092
+5. the active execution lane remains blocked pending Plan 093
    closure.
+
+Plan 093 supersedes Plan 092 as the active plan of record and as the
+single next executable implementation authority. Plan 088 must not
+run until Plan 093 records both a passing instrumented forward record
+and a passing control forward record from the same corrective source
+commit and pinned i2pd revision.
 
 The historical `lane-invalidated` token carried by the legacy
 Plan 084 closure is intentionally **not** reused here. Plan 088
@@ -181,9 +188,11 @@ placement_record_sha256            = 0x00000000000000000000000000000000000000000
 cleanup                            = not-run
 ```
 
-The Plan 091 retained forward record digest is preserved verbatim as
-the diagnostic history; it does **not** satisfy the forward
-instrumented or control record digest requirement.
+The Plan 091 retained forward record digest and the Plan 092 retained
+forward record digest (`696aa1339d3d950f9fec2a2e0b1f5bede2035761a71e167af6ab28b249cc998d`)
+are preserved verbatim as the diagnostic history; they do **not**
+satisfy the forward instrumented or control record digest
+requirement.
 
 The reverse runner
 (`execute_reverse_probe` in `plan084_runner.py`) and the forward

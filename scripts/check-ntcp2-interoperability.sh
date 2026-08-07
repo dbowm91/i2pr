@@ -1538,7 +1538,7 @@ fi
 # The privacy-safe handshake stage observation schema, the
 # privacy-safe field allowlist, the typed i2pr runtime observer,
 # the Plan 092 status authority (Plan 091 is partial/incomplete and
-# Plan 087/Plan 088 name Plan 092 as the next executable plan), and
+# Plan 087/Plan 088 name Plan 093 as the next executable plan), and
 # the active-sequence token must all be committed. Raw or hex
 # handshake capture is forbidden anywhere in the active path.
 if ! test -f "$root/tests/integration/ntcp2/harness/handshake_stage.py"; then
@@ -1619,17 +1619,20 @@ if ! grep -Fq 'HandshakeRunOutcome' \
   echo "Plan 092 i2pr runtime must return HandshakeRunOutcome" >&2
   exit 1
 fi
-if ! grep -Fq 'plan092' "$root/AGENTS.md"; then
-  echo "AGENTS.md must reference Plan 092" >&2
+# Plan 093 supersedes Plan 092. AGENTS.md, the Plan 087 and Plan 088
+# status records, and the Plan 092 status record must all reference
+# the active sequence amendment naming Plan 093 as the next
+# executable plan.
+if ! grep -Fq 'plan093' "$root/AGENTS.md"; then
+  echo "AGENTS.md must reference Plan 093" >&2
   exit 1
 fi
-# Plan 092 forbids raw or hex handshake capture in any active path.
-# The plan 091 status must be partial/incomplete; the 1 KiB hex dump
-# recommendation must be removed.
+# Plan 093 supersedes Plan 092. Plan 091 status must declare partial / incomplete.
 if ! grep -Fq 'partial / incomplete' "$root/plans/091-status.md"; then
   echo "Plan 091 status must declare the partial / incomplete state" >&2
   exit 1
 fi
+# Plan 092 forbids raw or hex handshake capture in any active path.
 if grep -Eq '1 KiB|hex dump|hex-dump' "$root/plans/091-status.md"; then
   # The forbidden-follow-up section is the only place where the
   # historically-considered hex-dump recommendation may be named
@@ -1642,13 +1645,92 @@ if grep -Eq '1 KiB|hex dump|hex-dump' "$root/plans/091-status.md"; then
     exit 1
   fi
 fi
-# Plan 092 must be named as the next executable plan in 087/088.
-if ! grep -Fq 'plan_092 = planned_next_executable' "$root/plans/088-status.md"; then
-  echo "Plan 088 status must name Plan 092 as the next executable plan" >&2
+# Plan 092 status must mark Plan 092 as superseded by Plan 093.
+if ! grep -Fq 'superseded by Plan 093' "$root/plans/092-status.md"; then
+  echo "Plan 092 status must mark Plan 093 supersession" >&2
   exit 1
 fi
-if ! grep -Fq 'Plan 092' "$root/plans/087-status.md"; then
-  echo "Plan 087 status must reference Plan 092" >&2
+# Plan 093 must be named as the next executable plan in 087/088.
+if ! grep -Fq 'plan_093 = planned_next_executable' "$root/plans/088-status.md"; then
+  echo "Plan 088 status must name Plan 093 as the next executable plan" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 093' "$root/plans/087-status.md"; then
+  echo "Plan 087 status must reference Plan 093" >&2
+  exit 1
+fi
+if ! grep -Fq 'plan093' "$root/plans/087-status.md"; then
+  echo "Plan 087 status must include the lowercase plan093 token" >&2
+  exit 1
+fi
+# Plan 092 must explicitly supersede its Branch A classification
+# after the Plan 093 source reclassification.
+if ! grep -Fq 'Branch A' "$root/plans/092-status.md"; then
+  echo "Plan 092 status must reference the superseded Branch A classification" >&2
+  exit 1
+fi
+if ! grep -Fq 'superseded' "$root/plans/092-status.md"; then
+  echo "Plan 092 status must declare the Branch A classification as superseded" >&2
+  exit 1
+fi
+# Plan 091 status must not claim a SessionRequest read error from
+# the i2pd log without acknowledging the Plan 093 source
+# reclassification. The log message is from the data-phase length
+# reader; the source-classification lives in test_plan093.py.
+if ! grep -Fq 'Plan 093' "$root/plans/091-status.md"; then
+  echo "Plan 091 status must acknowledge Plan 093 source reclassification" >&2
+  exit 1
+fi
+# Plan 093: forward data-phase and reference-observer closure.
+# The Plan 093 test matrix, the bounded receive oracle, the bounded
+# ring module, the i2pd driver observer reset contract, the i2pr
+# binary provenance binding, the active sequence amendment in
+# AGENTS.md, and the locked schema markers must all be committed.
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan093.py"; then
+  echo "Plan 093 test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-ntcp2-observer-ring-v1' \
+    "$root/tests/integration/ntcp2/harness/test_plan093.py"; then
+  echo "Plan 093 test matrix must exercise the observer ring schema marker" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr-ntcp2-data-oracle-v1' \
+    "$root/tests/integration/ntcp2/harness/test_plan093.py"; then
+  echo "Plan 093 test matrix must exercise the data oracle schema marker" >&2
+  exit 1
+fi
+if ! grep -Fq 'correlated_receive_oracle' \
+    "$root/crates/i2pr-runtime/src/ntcp2_link.rs"; then
+  echo "Plan 093 runtime must expose correlated_receive_oracle" >&2
+  exit 1
+fi
+if ! grep -Fq 'correlated_send_block' \
+    "$root/tools/i2pr-interop/src/main.rs"; then
+  echo "Plan 093 launcher must expose correlated_send_block" >&2
+  exit 1
+fi
+if ! grep -Fq 'INTEROP_RING_CAPACITY' \
+    "$root/tests/integration/ntcp2/reference-drivers/i2pd/src/interop_observer.h"; then
+  echo "Plan 093 i2pd observer header must declare INTEROP_RING_CAPACITY" >&2
+  exit 1
+fi
+if ! grep -Fq 'BeginListenerGeneration' \
+    "$root/tests/integration/ntcp2/reference-drivers/i2pd/src/interop_observer.h"; then
+  echo "Plan 093 i2pd observer header must expose BeginListenerGeneration" >&2
+  exit 1
+fi
+if ! grep -Fq 'ring' \
+    "$root/tests/integration/ntcp2/reference-drivers/i2pd/src/interop_observer.cpp"; then
+  echo "Plan 093 i2pd observer implementation must use a ring" >&2
+  exit 1
+fi
+# The wrapper script binds a measured i2pr_binary_sha256 into the
+# live provenance. The bound identifier must be referenced from the
+# static checker so a future zero-placeholder regression is caught.
+if ! grep -Fq 'i2pr_binary_sha256' \
+    "$root/scripts/interop/run-minimal-i2pd-host-loopback-probe.py"; then
+  echo "Plan 093 wrapper must bind i2pr_binary_sha256 provenance" >&2
   exit 1
 fi
 

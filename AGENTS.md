@@ -1794,13 +1794,12 @@ Plan 078 attempt. Do not treat either capability probing or a stale guest as
 protocol evidence; consult `plans/080-status.md` for the qualified-lane
 record.
 
-## Current active sequence amendment (2026-08-05, Plan 092 / plan092)
+## Current active sequence amendment (2026-08-06, Plan 093 / plan093)
 
 The active authority is [Plan 085](plans/085-milestone-3-host-loopback-development-execution-roadmap.md),
 followed by Plan 086 (status correction + `host-loopback-development`
 lane enablement, **closed on this host**), Plan 087 (first real
-`i2pr -> i2pd` forward probe, implementation surface delivered
-and instrumented attempt recorded), Plan 090 (i2pd RouterInfo
+`i2pr -> i2pd` forward probe), Plan 090 (i2pd RouterInfo
 corrective pass: four behavior-neutral driver corrections, **corrections
 landed on this host**), Plan 091 (forward NTCP2 Noise-handshake corrective
 pass: i2pd direct driver preconditions landed — `SetNetID`, explicit logger
@@ -1809,7 +1808,16 @@ landed on this host, forward direction still blocked**), Plan 092
 (forward-handshake evidence integrity and ownership closure:
 privacy-safe handshake stage observation schema, terminal-counter
 preservation, current-run event dedup, status authority rewrite,
-dedicated regression matrix, **active single next executable plan**),
+dedicated regression matrix, **partial / misclassification-corrected
+by Plan 093**), and Plan 093 (Plan 087 forward data-phase and
+reference-observer closure: i2pd observer reset/generation/lifecycle
+correction, bounded sequence ring with exact target predicate waits,
+i2pr bounded multi-frame receive oracle, i2pr binary provenance
+binding, privacy-safe source reclassification of
+`NTCP2: Receive length read error` from SessionRequest (handshake
+read) to `HandleReceivedLength` (data-phase length reader), and the
+exact-bidirectional-DeliveryStatus forward direction pass,
+**active single next executable plan**),
 and Plan 088 (reverse `i2pd -> i2pr` probe and development decision),
 and the [Plan 072/079 gate amendment](plans/072-079-gate-plan-088.md)
 that moves the Plan 072 and Plan 079 gates from Plan 084 to Plan 088.
@@ -1918,11 +1926,12 @@ SessionRequest prefix read while the i2pr status counters carry
 preserved at
 `/tmp/opencode/plan092-test-1/forward-record.json` with
 `record_sha256 = 696aa1339d3d950f9fec2a2e0b1f5bede2035761a71e167af6ab28b249cc998d`;
-see `plans/092-status.md` for the ownership selection
-(Branch A — i2pr runtime / state-machine defect, with Branch D
-reserved as the secondary owner) and the planned narrow
-correction surface. Plan 088 remains blocked on a follow-up
-execution pass under Plan 092.
+see `plans/092-status.md` for the original Branch A ownership
+selection. Plan 093 supersedes that ownership analysis with a
+privacy-safe source reclassification: the i2pd diagnostic string
+originates from the data-phase length reader (`HandleReceivedLength`)
+and not from the SessionRequest handshake read. Plan 088 remains
+blocked on a follow-up execution pass under Plan 093.
 
 Plan 082 provides the test-only `i2pr-interop ntcp2 prepare` and
 `validate-scenario` operations, authentic RouterInfo/hash preparation,

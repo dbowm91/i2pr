@@ -1,4 +1,4 @@
-// Plan 064/083 i2pd passive observer seam.
+// Plan 064/083/093 i2pd passive observer seam.
 //
 // The observer is the single owner of the receive-side and send-side
 // observation surface for the Plan 064 i2pd direct NTCP2 driver. The
@@ -12,6 +12,15 @@
 // API becomes an empty inline function that returns ``void``. The
 // instrumented build defines the macro and the call sites become
 // active observability hooks.
+//
+// Plan 093: the observer sink is a generation-bound bounded sequence
+// ring instead of the previous cumulative last-slot. Each emitted
+// observation carries a process-generation value (one per listener
+// invocation) and an observation_sequence value. Wait primitives
+// require exact matches on the ring entries by type, peer Router Hash,
+// and message ID, and they require the observation_sequence to be
+// strictly greater than a caller-supplied baseline. Stale-generation
+// observations cannot satisfy a wait.
 //
 // The observer exposes only allowlisted metadata. It never exposes raw
 // payload bytes, private keys, Noise state, frame keys, IV state, or
@@ -39,7 +48,31 @@ struct ObserverMetadata {
     std::uint64_t monotonic_ms;
 };
 
+// Plan 093: generation-and-sequence ring entry. The ring stores
+// observations tagged with the listener invocation's generation and
+// a strictly monotonic observation_sequence. Stale-generation or
+// pre-baseline entries are rejected by the predicate waits below.
+struct ObservationRingEntry {
+    std::uint64_t generation;
+    std::uint64_t observation_sequence;
+    ObserverMetadata metadata;
+    bool present;
+};
+
 #ifdef I2PD_INTEROP_OBSERVER
+
+// Plan 093: the bounded receive/send/authenticated/tcp-accepted
+// ring capacity. A passing run must observe only ``capacity``
+// ring entries per category; overflow increments
+// ``ObserverDropCount()`` and fails the gate.
+constexpr std::size_t INTEROP_RING_CAPACITY = 64;
+
+// Plan 093: begin a new listener generation. The driver calls this
+// before starting transports; the observer resets its counters and
+// the tcp-accepted ring to a new generation. The generation is
+// recorded on every subsequent ring entry; wait primitives reject
+// metadata from a different generation.
+void BeginListenerGeneration() noexcept;
 
 // Compile-time gated observer call sites. The instrumented build emits
 // structured metadata to the owned bounded sink. The uninstrumented
@@ -58,6 +91,18 @@ void ObserveTcpAccepted(const ObserverMetadata& metadata) noexcept;
 void ResetObserverSink() noexcept;
 std::uint64_t ObserverDropCount() noexcept;
 std::uint64_t ObserverObservationCount() noexcept;
+// Plan 093: total entries recorded since the last reset across all
+// categories. Used by the bounded unit tests to verify the ring
+// saw only the expected events.
+std::uint64_t ObserverRecordedCount() noexcept;
+// Plan 093: returns the current listener generation.
+std::uint64_t ObserverCurrentGeneration() noexcept;
+
+// Plan 093: the receive ring returns the current receive count for
+// the active generation. Predicates require ``observation_sequence``
+// strictly greater than this value.
+std::uint64_t ObserverReceiveSequence() noexcept;
+std::uint64_t ObserverSentSequence() noexcept;
 
 // Bounded wait primitives used by the Plan 083 minimal probe driver.
 // The wait primitives spin on a short sleep, never block the transport
@@ -75,7 +120,41 @@ bool WaitForSentI2NP(ObserverMetadata& metadata,
 bool WaitForTcpAccepted(ObserverMetadata& metadata,
                         std::uint32_t timeout_ms) noexcept;
 
+// Plan 093: target predicate waits. The waits block until a ring
+// entry in the active generation has type ``DeliveryStatus``, the
+// configured peer Router Hash, the configured message ID, and an
+// ``observation_sequence`` strictly greater than the supplied
+// baseline. The receive variant scans the receive ring; the send
+// variant scans the send ring. Returns ``false`` on timeout.
+//
+// The waits never accept stale-generation entries, generic-phrase
+// entries, wrong-router-hash entries, wrong-message-id entries, or
+// pre-baseline entries. The wait boundary exposes the resolved ring
+// entry via the supplied metadata out parameter.
+bool WaitForReceivedDeliveryStatusAfter(
+    std::uint64_t generation,
+    std::uint64_t baseline_sequence,
+    const std::uint64_t expected_peer_router_hash[4],
+    std::uint32_t expected_message_id,
+    std::uint32_t timeout_ms,
+    ObserverMetadata& metadata) noexcept;
+
+bool WaitForSentDeliveryStatusAfter(
+    std::uint64_t generation,
+    std::uint64_t baseline_sequence,
+    const std::uint64_t expected_peer_router_hash[4],
+    std::uint32_t expected_message_id,
+    std::uint32_t timeout_ms,
+    ObserverMetadata& metadata) noexcept;
+
 #else
+
+// Plan 093: under the uninstrumented control build the observer is a
+// no-op. The wait primitives never resolve. The plan forbids using
+// the control binary for any measure that depends on the observer;
+// the only data plane that matters in the control run is the
+// external DeliveryStatus reception.
+inline void BeginListenerGeneration() noexcept {}
 
 inline void ObserveReceivedI2NP(const ObserverMetadata& /*metadata*/) noexcept {}
 inline void ObserveSentI2NP(const ObserverMetadata& /*metadata*/) noexcept {}
@@ -85,6 +164,10 @@ inline void ObserveTcpAccepted(const ObserverMetadata& /*metadata*/) noexcept {}
 inline void ResetObserverSink() noexcept {}
 inline std::uint64_t ObserverDropCount() noexcept { return 0; }
 inline std::uint64_t ObserverObservationCount() noexcept { return 0; }
+inline std::uint64_t ObserverRecordedCount() noexcept { return 0; }
+inline std::uint64_t ObserverCurrentGeneration() noexcept { return 0; }
+inline std::uint64_t ObserverReceiveSequence() noexcept { return 0; }
+inline std::uint64_t ObserverSentSequence() noexcept { return 0; }
 
 inline bool WaitForAuthenticated(ObserverMetadata& /*metadata*/,
                                  std::uint32_t /*timeout_ms*/) noexcept {
@@ -100,6 +183,22 @@ inline bool WaitForSentI2NP(ObserverMetadata& /*metadata*/,
 }
 inline bool WaitForTcpAccepted(ObserverMetadata& /*metadata*/,
                                std::uint32_t /*timeout_ms*/) noexcept {
+    return false;
+}
+
+inline bool WaitForReceivedDeliveryStatusAfter(
+    std::uint64_t /*generation*/, std::uint64_t /*baseline_sequence*/,
+    const std::uint64_t /*expected_peer_router_hash*/[4],
+    std::uint32_t /*expected_message_id*/, std::uint32_t /*timeout_ms*/,
+    ObserverMetadata& /*metadata*/) noexcept {
+    return false;
+}
+
+inline bool WaitForSentDeliveryStatusAfter(
+    std::uint64_t /*generation*/, std::uint64_t /*baseline_sequence*/,
+    const std::uint64_t /*expected_peer_router_hash*/[4],
+    std::uint32_t /*expected_message_id*/, std::uint32_t /*timeout_ms*/,
+    ObserverMetadata& /*metadata*/) noexcept {
     return false;
 }
 
