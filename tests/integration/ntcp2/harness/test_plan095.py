@@ -301,7 +301,7 @@ class Plan095ArtifactAndUploadTests(unittest.TestCase):
                 or "plan095-instrumented/sanitized" in entry
                 or "plan095-control/sanitized" in entry
                 or entry.startswith("${{ env.PLAN095_SANITIZED }}")
-                or entry.startswith("${{ runner.temp }}"),
+                or entry.startswith("${{ github.workspace }}"),
                 f"unexpected upload path: {entry!r}",
             )
 

@@ -92,17 +92,14 @@ jobs:
     needs: contract
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    env:
-      I2PD_REVISION: "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
-      BUILD_ROOT: "${{ runner.temp }}/plan095-build"
-      BUILD_OUTPUT: "${{ runner.temp }}/plan095-build/output"
-      I2PD_SOURCE_DIR: "${{ runner.temp }}/plan095-build/i2pd"
     steps:
       - name: checkout
         uses: actions/checkout@v4.1.7
       - name: rust-toolchain
         uses: dtolnay/rust-toolchain@1.95.0
       - name: install-build-deps
+        # Plan 095: package installation is the only declared sudo
+        # exception; the live jobs run without privilege escalation.
         run: |
           set -euo pipefail
           sudo apt-get update -qq
@@ -110,12 +107,14 @@ jobs:
             build-essential cmake pkg-config \
             libboost-all-dev libssl-dev zlib1g-dev \
             ca-certificates git openssl
-        # Plan 095: package installation is the only declared sudo
-        # exception; the live jobs run without privilege escalation.
       - name: fetch-pinned-i2pd-source
-        working-directory: ${{ runner.temp }}/plan095-build
+        env:
+          I2PD_REVISION: "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
+          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
         run: |
           set -euo pipefail
+          mkdir -p "$BUILD_DIR"
+          cd "$BUILD_DIR"
           if [[ ! -d i2pd/.git ]]; then
             git clone --filter=blob:none --no-checkout \
               https://github.com/PurpleI2P/i2pd.git i2pd
@@ -124,9 +123,11 @@ jobs:
           git -C i2pd checkout --detach "$I2PD_REVISION"
           git -C i2pd rev-parse HEAD
       - name: record-source-tree-digest
-        working-directory: ${{ runner.temp }}/plan095-build
+        env:
+          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
         run: |
           set -euo pipefail
+          cd "$BUILD_DIR"
           find i2pd -type f -print0 \
             | LC_ALL=C sort -z \
             | xargs -0 sha256sum \
@@ -134,32 +135,38 @@ jobs:
             | awk '{print $1}' > i2pd-source-tree.sha256
           cat i2pd-source-tree.sha256
       - name: build-i2pd-driver
-        working-directory: ${{ runner.temp }}/plan095-build
+        env:
+          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
         run: |
           set -euo pipefail
+          cd "$BUILD_DIR"
           mkdir -p output
-          bash "$GITHUB_WORKSPACE/tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh" \
-            --repo-root "$GITHUB_WORKSPACE" \
+          bash "${{ github.workspace }}/tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh" \
+            --repo-root "${{ github.workspace }}" \
             --i2pd-source-dir i2pd \
             --output-dir output
       - name: build-i2pr-interop
-        working-directory: ${{ runner.temp }}/plan095-build
+        env:
+          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
         run: |
           set -euo pipefail
+          cd "$BUILD_DIR"
           cargo +1.95.0 build --locked --release \
             --bin i2pr-interop
           cp target/release/i2pr-interop output/i2pr-interop
       - name: hash-i2pr-build-manifest
-        working-directory: ${{ runner.temp }}/plan095-build
+        env:
+          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
         run: |
           set -euo pipefail
+          cd "$BUILD_DIR"
           cat > output/i2pr-build-manifest.json <<EOF
           {
             "schema": "i2pr-i2pr-interop-build-manifest-v1",
             "schema_version": 1,
             "source_commit": "${{ github.sha }}",
             "source_tree_clean": true,
-            "cargo_lock_sha256": "$(sha256sum "$GITHUB_WORKSPACE/Cargo.lock" | awk '{print $1}')",
+            "cargo_lock_sha256": "$(sha256sum "${{ github.workspace }}/Cargo.lock" | awk '{print $1}')",
             "i2pr_binary_sha256": "$(sha256sum output/i2pr-interop | awk '{print $1}')",
             "rust_toolchain": "1.95.0",
             "build_command_version": "cargo-build-release-v1",
@@ -167,9 +174,11 @@ jobs:
           }
           EOF
       - name: verify-build-artifacts
-        working-directory: ${{ runner.temp }}/plan095-build
+        env:
+          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
         run: |
           set -euo pipefail
+          cd "$BUILD_DIR"
           ls -la output
           test -x output/i2pr-interop
           test -x output/i2pd_ntcp2_interop_driver_instrumented
@@ -181,7 +190,7 @@ jobs:
           test -f output/inspect-instrumented.json
           test -f output/inspect-control.json
           python3 -c "
-          import json, sys
+          import json
           for path in ['output/i2pr-build-manifest.json',
                        'output/build-manifest-instrumented.json',
                        'output/build-manifest-control.json',
@@ -200,7 +209,7 @@ jobs:
         uses: actions/upload-artifact@v4.4.0
         with:
           name: plan095-build
-          path: ${{ runner.temp }}/plan095-build/output/
+          path: ${{ github.workspace }}/target/interop/plan095-build/output/
           if-no-files-found: error
           retention-days: 7
 
@@ -209,11 +218,6 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      PLAN095_RUN_ROOT: "${{ runner.temp }}/plan095-instrumented"
-      PLAN095_RECORD: "${{ runner.temp }}/plan095-instrumented/forward-record.json"
-      PLAN095_SANITIZED: "${{ runner.temp }}/plan095-instrumented/sanitized"
-      I2PD_DRIVER_MODE: "instrumented"
     steps:
       - name: checkout
         uses: actions/checkout@v4.1.7
@@ -223,8 +227,11 @@ jobs:
         uses: actions/download-artifact@v4.1.7
         with:
           name: plan095-build
-          path: ${{ runner.temp }}/plan095-build/output/
+          path: ${{ github.workspace }}/target/interop/plan095-build/output/
       - name: prepare-run-root
+        env:
+          PLAN095_RUN_ROOT: "${{ github.workspace }}/target/interop/plan095-instrumented"
+          PLAN095_SANITIZED: "${{ github.workspace }}/target/interop/plan095-instrumented/sanitized"
         run: |
           set -euo pipefail
           rm -rf "$PLAN095_RUN_ROOT"
@@ -233,7 +240,7 @@ jobs:
       - name: emit-environment-blocker-on-build-missing
         run: |
           set -euo pipefail
-          build_root="${{ runner.temp }}/plan095-build/output"
+          build_root="${{ github.workspace }}/target/interop/plan095-build/output"
           if [[ ! -x "$build_root/i2pr-interop" \
               || ! -x "$build_root/i2pd_ntcp2_interop_driver_instrumented" ]]; then
             echo "ci_build_blocked: build artifact missing" >&2
@@ -242,28 +249,29 @@ jobs:
       - name: run-forward-instrumented
         id: run_instrumented
         continue-on-error: true
+        env:
+          PLAN095_RUN_ROOT: "${{ github.workspace }}/target/interop/plan095-instrumented"
+          PLAN095_RECORD: "${{ github.workspace }}/target/interop/plan095-instrumented/forward-record.json"
+          I2PD_DRIVER_BINARY: "${{ github.workspace }}/target/interop/plan095-build/output/i2pd_ntcp2_interop_driver_instrumented"
+          I2PR_BINARY: "${{ github.workspace }}/target/interop/plan095-build/output/i2pr-interop"
         run: |
           set -euo pipefail
-          build_root="${{ runner.temp }}/plan095-build/output"
-          i2pd_driver=""
-          if [[ "$I2PD_DRIVER_MODE" == "instrumented" ]]; then
-            i2pd_driver="$build_root/i2pd_ntcp2_interop_driver_instrumented"
-          else
-            i2pd_driver="$build_root/i2pd_ntcp2_interop_driver_control"
-          fi
           python3 scripts/interop/run-minimal-i2pd-host-loopback-probe.py \
             --direction i2pr-to-i2pd-ipv4 \
-            --repo-root "$GITHUB_WORKSPACE" \
+            --repo-root "${{ github.workspace }}" \
             --run-root "$PLAN095_RUN_ROOT" \
             --run-id "plan095-instrumented-${{ github.run_id }}" \
             --source-commit "${{ github.sha }}" \
             --output "$PLAN095_RECORD" \
-            --i2pd-driver-binary "$i2pd_driver" \
-            --i2pr-binary "$build_root/i2pr-interop" \
+            --i2pd-driver-binary "$I2PD_DRIVER_BINARY" \
+            --i2pr-binary "$I2PR_BINARY" \
             --delivery-status-message-id "0x04200951" \
             || echo "instrumented attempt failed (exit $?)"
       - name: sanitize-record
         if: always()
+        env:
+          PLAN095_RECORD: "${{ github.workspace }}/target/interop/plan095-instrumented/forward-record.json"
+          PLAN095_SANITIZED: "${{ github.workspace }}/target/interop/plan095-instrumented/sanitized"
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -271,7 +279,6 @@ jobs:
           import json
           import os
           import pathlib
-          import shutil
 
           record_path = pathlib.Path(os.environ["PLAN095_RECORD"])
           sanitized_dir = pathlib.Path(os.environ["PLAN095_SANITIZED"])
@@ -324,6 +331,8 @@ jobs:
           PY
       - name: delete-raw-run-state
         if: always()
+        env:
+          PLAN095_RUN_ROOT: "${{ github.workspace }}/target/interop/plan095-instrumented"
         run: |
           set -euo pipefail
           if [[ -d "$PLAN095_RUN_ROOT" ]]; then
@@ -336,7 +345,7 @@ jobs:
         uses: actions/upload-artifact@v4.4.0
         with:
           name: plan095-instrumented-evidence
-          path: ${{ env.PLAN095_SANITIZED }}/
+          path: ${{ github.workspace }}/target/interop/plan095-instrumented/sanitized/
           if-no-files-found: error
           retention-days: 14
 
@@ -345,11 +354,6 @@ jobs:
     needs: [build, forward-instrumented]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      PLAN095_RUN_ROOT: "${{ runner.temp }}/plan095-control"
-      PLAN095_RECORD: "${{ runner.temp }}/plan095-control/forward-record.json"
-      PLAN095_SANITIZED: "${{ runner.temp }}/plan095-control/sanitized"
-      I2PD_DRIVER_MODE: "control"
     steps:
       - name: checkout
         uses: actions/checkout@v4.1.7
@@ -359,13 +363,15 @@ jobs:
         uses: actions/download-artifact@v4.1.7
         with:
           name: plan095-build
-          path: ${{ runner.temp }}/plan095-build/output/
+          path: ${{ github.workspace }}/target/interop/plan095-build/output/
       - name: download-instrumented-evidence
         uses: actions/download-artifact@v4.1.7
         with:
           name: plan095-instrumented-evidence
-          path: ${{ runner.temp }}/plan095-instrumented/sanitized/
+          path: ${{ github.workspace }}/target/interop/plan095-instrumented/sanitized/
       - name: validate-instrumented-evidence
+        env:
+          INSTRUMENTED_DIR: "${{ github.workspace }}/target/interop/plan095-instrumented/sanitized"
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -373,7 +379,7 @@ jobs:
           import pathlib
           import sys
 
-          sanitized_dir = pathlib.Path("${{ runner.temp }}/plan095-instrumented/sanitized")
+          sanitized_dir = pathlib.Path(os.environ["INSTRUMENTED_DIR"])
           files = sorted(sanitized_dir.glob("forward-instrumented-sanitized.json"))
           if not files:
               print("control attempt forbidden: instrumented sanitized record missing", file=sys.stderr)
@@ -396,6 +402,9 @@ jobs:
           print("instrumented evidence independently validated")
           PY
       - name: prepare-run-root
+        env:
+          PLAN095_RUN_ROOT: "${{ github.workspace }}/target/interop/plan095-control"
+          PLAN095_SANITIZED: "${{ github.workspace }}/target/interop/plan095-control/sanitized"
         run: |
           set -euo pipefail
           rm -rf "$PLAN095_RUN_ROOT"
@@ -404,7 +413,7 @@ jobs:
       - name: emit-environment-blocker-on-build-missing
         run: |
           set -euo pipefail
-          build_root="${{ runner.temp }}/plan095-build/output"
+          build_root="${{ github.workspace }}/target/interop/plan095-build/output"
           if [[ ! -x "$build_root/i2pr-interop" \
               || ! -x "$build_root/i2pd_ntcp2_interop_driver_control" ]]; then
             echo "ci_build_blocked: control build artifact missing" >&2
@@ -413,28 +422,29 @@ jobs:
       - name: run-forward-control
         id: run_control
         continue-on-error: true
+        env:
+          PLAN095_RUN_ROOT: "${{ github.workspace }}/target/interop/plan095-control"
+          PLAN095_RECORD: "${{ github.workspace }}/target/interop/plan095-control/forward-record.json"
+          I2PD_DRIVER_BINARY: "${{ github.workspace }}/target/interop/plan095-build/output/i2pd_ntcp2_interop_driver_control"
+          I2PR_BINARY: "${{ github.workspace }}/target/interop/plan095-build/output/i2pr-interop"
         run: |
           set -euo pipefail
-          build_root="${{ runner.temp }}/plan095-build/output"
-          i2pd_driver=""
-          if [[ "$I2PD_DRIVER_MODE" == "instrumented" ]]; then
-            i2pd_driver="$build_root/i2pd_ntcp2_interop_driver_instrumented"
-          else
-            i2pd_driver="$build_root/i2pd_ntcp2_interop_driver_control"
-          fi
           python3 scripts/interop/run-minimal-i2pd-host-loopback-probe.py \
             --direction i2pr-to-i2pd-ipv4 \
-            --repo-root "$GITHUB_WORKSPACE" \
+            --repo-root "${{ github.workspace }}" \
             --run-root "$PLAN095_RUN_ROOT" \
             --run-id "plan095-control-${{ github.run_id }}" \
             --source-commit "${{ github.sha }}" \
             --output "$PLAN095_RECORD" \
-            --i2pd-driver-binary "$i2pd_driver" \
-            --i2pr-binary "$build_root/i2pr-interop" \
+            --i2pd-driver-binary "$I2PD_DRIVER_BINARY" \
+            --i2pr-binary "$I2PR_BINARY" \
             --delivery-status-message-id "0x04200952" \
             || echo "control attempt failed (exit $?)"
       - name: sanitize-record
         if: always()
+        env:
+          PLAN095_RECORD: "${{ github.workspace }}/target/interop/plan095-control/forward-record.json"
+          PLAN095_SANITIZED: "${{ github.workspace }}/target/interop/plan095-control/sanitized"
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -494,6 +504,8 @@ jobs:
           PY
       - name: delete-raw-run-state
         if: always()
+        env:
+          PLAN095_RUN_ROOT: "${{ github.workspace }}/target/interop/plan095-control"
         run: |
           set -euo pipefail
           if [[ -d "$PLAN095_RUN_ROOT" ]]; then
@@ -506,7 +518,7 @@ jobs:
         uses: actions/upload-artifact@v4.4.0
         with:
           name: plan095-control-evidence
-          path: ${{ env.PLAN095_SANITIZED }}/
+          path: ${{ github.workspace }}/target/interop/plan095-control/sanitized/
           if-no-files-found: error
           retention-days: 14
 
@@ -522,18 +534,23 @@ jobs:
         uses: actions/download-artifact@v4.1.7
         with:
           name: plan095-build
-          path: ${{ runner.temp }}/plan095-build/output/
+          path: ${{ github.workspace }}/target/interop/plan095-build/output/
       - name: download-instrumented-evidence
         uses: actions/download-artifact@v4.1.7
         with:
           name: plan095-instrumented-evidence
-          path: ${{ runner.temp }}/plan095-instrumented/sanitized/
+          path: ${{ github.workspace }}/target/interop/plan095-instrumented/sanitized/
       - name: download-control-evidence
         uses: actions/download-artifact@v4.1.7
         with:
           name: plan095-control-evidence
-          path: ${{ runner.temp }}/plan095-control/sanitized/
+          path: ${{ github.workspace }}/target/interop/plan095-control/sanitized/
       - name: emit-ci-gate-record
+        env:
+          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build/output"
+          INSTRUMENTED_DIR: "${{ github.workspace }}/target/interop/plan095-instrumented/sanitized"
+          CONTROL_DIR: "${{ github.workspace }}/target/interop/plan095-control/sanitized"
+          EVIDENCE_ROOT: "${{ github.workspace }}/target/interop/evidence"
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -541,13 +558,12 @@ jobs:
           import json
           import os
           import pathlib
-          import subprocess
           import sys
 
-          build_dir = pathlib.Path("${{ runner.temp }}/plan095-build/output")
-          instrumented_dir = pathlib.Path("${{ runner.temp }}/plan095-instrumented/sanitized")
-          control_dir = pathlib.Path("${{ runner.temp }}/plan095-control/sanitized")
-          evidence_root = pathlib.Path("${{ github.workspace }}/target/interop/evidence")
+          build_dir = pathlib.Path(os.environ["BUILD_DIR"])
+          instrumented_dir = pathlib.Path(os.environ["INSTRUMENTED_DIR"])
+          control_dir = pathlib.Path(os.environ["CONTROL_DIR"])
+          evidence_root = pathlib.Path(os.environ["EVIDENCE_ROOT"])
           evidence_root.mkdir(parents=True, exist_ok=True)
           gate_path = evidence_root / "plan095-ci-gate.json"
 
@@ -572,41 +588,40 @@ jobs:
           )
           source_commit_match = (
               instrumented.get("source_commit") == control.get("source_commit")
-              == "${{ github.sha }}"
+              == os.environ["GITHUB_SHA"]
           )
           reference_revision_match = (
               instrumented.get("reference_revision")
               == control.get("reference_revision")
               == "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
           )
-          build_root = pathlib.Path("${{ runner.temp }}/plan095-build/output")
           instrumented_binary_sha = (
               hashlib.sha256(
-                  (build_root / "i2pd_ntcp2_interop_driver_instrumented").read_bytes()
+                  (build_dir / "i2pd_ntcp2_interop_driver_instrumented").read_bytes()
               ).hexdigest()
-              if (build_root / "i2pd_ntcp2_interop_driver_instrumented").is_file()
+              if (build_dir / "i2pd_ntcp2_interop_driver_instrumented").is_file()
               else "0" * 64
           )
           control_binary_sha = (
               hashlib.sha256(
-                  (build_root / "i2pd_ntcp2_interop_driver_control").read_bytes()
+                  (build_dir / "i2pd_ntcp2_interop_driver_control").read_bytes()
               ).hexdigest()
-              if (build_root / "i2pd_ntcp2_interop_driver_control").is_file()
+              if (build_dir / "i2pd_ntcp2_interop_driver_control").is_file()
               else "0" * 64
           )
           i2pr_binary_sha = (
               hashlib.sha256(
-                  (build_root / "i2pr-interop").read_bytes()
+                  (build_dir / "i2pr-interop").read_bytes()
               ).hexdigest()
-              if (build_root / "i2pr-interop").is_file()
+              if (build_dir / "i2pr-interop").is_file()
               else "0" * 64
           )
 
           gate = {
               "schema": "i2pr-ntcp2-plan095-ci-gate-v1",
-              "workflow_run_id": "${{ github.run_id }}",
-              "workflow_run_attempt": "${{ github.run_attempt }}",
-              "source_commit": "${{ github.sha }}",
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "source_commit": os.environ["GITHUB_SHA"],
               "runner_label": "ubuntu-24.04",
               "runner_arch": "x86_64",
               "reference_revision": "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e",
@@ -648,6 +663,6 @@ jobs:
         uses: actions/upload-artifact@v4.4.0
         with:
           name: plan095-ci-gate
-          path: target/interop/evidence/plan095-ci-gate.json
+          path: ${{ github.workspace }}/target/interop/evidence/plan095-ci-gate.json
           if-no-files-found: error
           retention-days: 14
