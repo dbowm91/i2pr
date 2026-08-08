@@ -43,6 +43,7 @@ plan_093 = implementation-landed-closure-incomplete
 plan_094 = implementation-landed-live-closure-environment-blocked
 plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
 plan_096 = passed-pre-dispatch-workflow-correction
+plan_097 = passed-artifact-path-and-cleanup-correction
 plan_088 = blocked-pending-plan095-ci-closure
 plan_079 = blocked-pending-plan088-two-way-pass
 plan_072 = inactive-pending-plan088-ambiguity
@@ -141,3 +142,21 @@ The Plan 096 pre-dispatch audit (`scripts/check-plan095-workflow.sh`)
 and test matrix (`tests/integration/ntcp2/harness/test_plan096.py`)
 are green locally; exactly one manual Plan 095 GitHub Actions
 dispatch follows.
+
+Plan 097 closed the two narrow workflow defects that remained
+after Plan 096: the producer/consumer artifact path identity
+mismatch (`build-i2pr-interop` wrote to a CWD-relative
+`output/i2pr-interop` while the manifest and verifier consumed
+from `${BUILD_DIR}/output/i2pr-interop`), and the disposable
+run-root cleanup that only deleted descendants with a suppressed
+absence assertion. Plan 097 introduced one canonical absolute
+`BUILD_OUTPUT` path used by every producer, verifier, manifest
+generator, artifact uploader, and live consumer; added an exact
+path guard before `rm -rf -- "$PLAN095_RUN_ROOT"`; and required
+an unsuppressed post-cleanup absence assertion. The Plan 097
+regression matrix
+(`tests/integration/ntcp2/harness/test_plan097.py`) and the
+extended pre-dispatch audit
+(`scripts/check-plan095-workflow.sh`) are green locally; exactly
+one manual Plan 095 GitHub Actions dispatch follows the Plan 097
+correction commit.

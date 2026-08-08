@@ -1518,6 +1518,82 @@ Plan 095 GitHub Actions dispatch follows the Plan 096 correction.
 The plan-of-record is
 `plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md`.
 
+### Plan 097 Plan 095 artifact-path and cleanup corrective pass
+
+Plan 097 is the active narrow corrective pass over the Plan 095
+GitHub Actions workflow that closed two workflow defects that
+remained after Plan 096. Plan 097 does **not** dispatch a Plan 095
+live run; it only restores execution correctness so the next
+manual dispatch can produce a usable evidence pair.
+
+The two demonstrated workflow defects closed by Plan 097:
+
+1. **Artifact-path ownership (Defect A).** The
+   `build-i2pr-interop` step wrote the i2pr binary to a
+   CWD-relative `output/i2pr-interop` while the
+   `hash-i2pr-build-manifest` and `verify-build-artifacts`
+   steps consumed from `${BUILD_DIR}/output/i2pr-interop` after
+   a step-local `cd "$BUILD_DIR"`. Producer and consumer
+   identities did not match; the manifest would have hashed a
+   file that did not yet exist at the consumer's path. Plan 097
+   defines one canonical absolute `BUILD_OUTPUT` path used by
+   every producer, verifier, manifest generator, artifact
+   uploader, and live consumer. No step relies on inherited
+   step working directory to establish artifact identity.
+2. **Disposable run-root cleanup (Defect B).** The cleanup
+   used `find $RUN_ROOT -mindepth 1 -delete` (descendant-only)
+   plus `test ! -e "$RUN_ROOT" || true` (suppressed absence
+   assertion). The root directory could survive cleanup while
+   the job claimed the cleanup is clean. Plan 097 replaces the
+   descendant-only deletion with strict `rm -rf -- "$RUN_ROOT"`
+   after an exact `case` path guard, and removes every
+   suppression from the post-cleanup absence assertion.
+
+Plan 097 lands:
+
+- `tests/integration/ntcp2/harness/test_plan097.py` — the Plan
+  097 regression matrix (45 cases) that rejects the pre-Plan-097
+  workflow on the two defects and exercises the canonical
+  absolute `$BUILD_OUTPUT` path identity, the exact path guard
+  before `rm -rf`, the unsuppressed absence assertion, and the
+  synthetic mutation tests that prove the regression surface
+  catches the prior defective semantics on synthetic fixtures.
+- `scripts/check-plan095-workflow.sh` — extended to reject both
+  Plan 097 defects. The audit now fails closed when the workflow
+  writes to a relative `output/i2pr-interop` destination,
+  relies on a relative output directory, omits the canonical
+  `$BUILD_OUTPUT` variable, omits the cleanup path guard, or
+  retains the suppressed absence assertion.
+- Status authority corrections in `plans/087-status.md` and
+  `plans/088-status.md`. The new `plan_097` token is
+  `passed-artifact-path-and-cleanup-correction`. Plan 087
+  remains open pending Plan 095 CI forward evidence pair. Plan
+  088 remains blocked pending Plan 095 CI closure.
+- Documentation propagation in `README.md`, `AGENTS.md`, the
+  `i2pr-ntcp2-interop` skill, and
+  `docs/architecture/interop-apparatus.md`.
+
+After Plan 097 lands, the current status of the active sequence
+is:
+
+```text
+plan_093 = implementation-landed-closure-incomplete
+plan_094 = implementation-landed-live-closure-environment-blocked
+plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_096 = passed-pre-dispatch-workflow-correction
+plan_097 = passed-artifact-path-and-cleanup-correction
+plan_087 = open-pending-plan095-ci-forward-evidence-pair
+plan_088 = blocked-pending-plan095-ci-closure
+plan_079 = blocked-pending-plan088-two-way-pass
+plan_072 = inactive-pending-plan088-ambiguity
+ntcp2    = experimental-non-advertised
+```
+
+Plan 095 remains the single next executable plan. Exactly one
+manual Plan 095 GitHub Actions dispatch follows the Plan 097
+correction commit. The plan-of-record is
+`plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md`.
+
 ### Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
 Plan 074 is historical execution authority. Plan 081 supersedes its active

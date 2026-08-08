@@ -1799,4 +1799,27 @@ if ! grep -Fq 'test_plan096.py' "$root/AGENTS.md"; then
   exit 1
 fi
 
+# Plan 097: artifact-path ownership and cleanup verification
+# corrective pass. The Plan 097 test matrix must be present; the
+# Plan 097 test matrix must be wired into the Plan 095 contract
+# job; and the Plan 097 closure token must appear in the active
+# status authority files.
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan097.py"; then
+  echo "Plan 097 test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_plan097.py' "$root/.github/workflows/ntcp2-interop-host-loopback-development.yml"; then
+  echo "Plan 097 test matrix is not wired into the Plan 095 workflow" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 097' "$root/AGENTS.md"; then
+  echo "Plan 097 test matrix is not wired into AGENTS.md" >&2
+  exit 1
+fi
+if ! grep -Fq 'Plan 097' "$root/plans/087-status.md" \
+  || ! grep -Fq 'Plan 097' "$root/plans/088-status.md"; then
+  echo "Plan 097 closure must be recorded in active status authority" >&2
+  exit 1
+fi
+
 echo "NTCP2 interoperability manifest and sanitized evidence boundary are valid (${scenario_count} scenarios)."

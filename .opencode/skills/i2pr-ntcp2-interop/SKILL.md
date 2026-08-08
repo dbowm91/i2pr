@@ -524,6 +524,20 @@ regression matrix (`tests/integration/ntcp2/harness/test_plan096.py`).
 Plan 096 is the gating implementation pass before the first
 authoritative Plan 095 live run.
 
+Plan 097 is the active narrow corrective pass over the Plan 095
+GitHub Actions workflow that closes two workflow defects that
+remained after Plan 096: the producer/consumer artifact path
+identity mismatch (one canonical absolute `BUILD_OUTPUT` path
+used by every producer, verifier, manifest, uploader, and live
+consumer) and the disposable run-root cleanup (strict `rm -rf --`
+with an exact path guard and an unsuppressed absence assertion).
+The Plan 097 regression matrix
+(`tests/integration/ntcp2/harness/test_plan097.py`) and the
+extended pre-dispatch audit
+(`scripts/check-plan095-workflow.sh`) are green locally. Plan 097
+is the final pre-dispatch implementation pass before the first
+authoritative Plan 095 live run.
+
 The corrected repository state is:
 
 ```text
@@ -544,6 +558,7 @@ plan_093_status = implementation_landed_closure_incomplete
 plan_094_status = implementation_landed_live_closure_environment_blocked
 plan_095_status = ci_live_wire_lane_corrected_awaiting_one_authoritative_run
 plan_096_status = passed_pre_dispatch_workflow_correction
+plan_097_status = passed_artifact_path_and_cleanup_correction
 plan_079_gate = blocked_pending_plan_088_two_way_passed
 plan_072_gate = inactive_pending_plan_088_ambiguity
 current_rootless_namespace_lane = unavailable

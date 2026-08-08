@@ -192,11 +192,18 @@ class Plan096BuildPathTests(unittest.TestCase):
         text = _read_workflow_text()
         # The downstream copy must source the binary from the
         # explicit target directory variable, not from a relative
-        # ``target/release`` path.
+        # ``target/release`` path. Plan 097: the destination must be
+        # the canonical absolute ``$BUILD_OUTPUT`` path so the
+        # producer, verifier, manifest, and uploader all resolve
+        # to the same file. The YAML literal-block line continuation
+        # (``\\`` followed by newline) is collapsed to a single
+        # space before matching.
+        collapsed = re.sub(r"\\\n[ \t]*", " ", text)
         self.assertRegex(
-            text,
-            r"cp\s+\"\$\w+/release/i2pr-interop\"\s+",
-            "i2pr binary must be copied from the explicit target dir",
+            collapsed,
+            r"cp\s+\"\$\w+/release/i2pr-interop\"\s+\"\$\w+/i2pr-interop\"",
+            "i2pr binary must be copied from the explicit target dir "
+            "to the canonical absolute output path",
         )
         # The forbidden pattern: relative ``cp target/release/...``
         # anchored to BUILD_DIR.
@@ -205,23 +212,38 @@ class Plan096BuildPathTests(unittest.TestCase):
             r"cp\s+target/release/i2pr-interop\b",
             "i2pr binary must not be copied from a relative target path",
         )
+        # Plan 097: the producer must NOT write to a bare relative
+        # ``output/i2pr-interop`` destination because that path
+        # depends on step working directory.
+        self.assertNotRegex(
+            collapsed,
+            r"cp\s+\"\$\w+/release/i2pr-interop\"\s+output/i2pr-interop\b",
+            "i2pr binary must not be copied to a relative output path",
+        )
 
     def test_i2pr_binary_verified_before_hashing(self) -> None:
         text = _read_workflow_text()
         # The build step must assert that the i2pr binary is a
         # regular, executable, non-symlink file before the build
-        # manifest is computed.
+        # manifest is computed. Plan 097: the canonical absolute
+        # ``$BUILD_OUTPUT`` path must be used so the producer,
+        # verifier, manifest, and uploader resolve to the same
+        # file regardless of step working directory.
         self.assertIn(
-            "test -f output/i2pr-interop", text,
-            "i2pr binary existence must be asserted before hashing",
+            "BUILD_OUTPUT=\"$BUILD_DIR/output\"", text,
+            "canonical BUILD_OUTPUT variable must be defined",
         )
         self.assertIn(
-            "test -x output/i2pr-interop", text,
-            "i2pr binary executability must be asserted before hashing",
+            "test -f \"$BUILD_OUTPUT/i2pr-interop\"", text,
+            "i2pr binary existence must be asserted at canonical path",
         )
         self.assertIn(
-            "test ! -L output/i2pr-interop", text,
-            "i2pr binary must be asserted as a non-symlink before hashing",
+            "test -x \"$BUILD_OUTPUT/i2pr-interop\"", text,
+            "i2pr binary executability must be asserted at canonical path",
+        )
+        self.assertIn(
+            "test ! -L \"$BUILD_OUTPUT/i2pr-interop\"", text,
+            "i2pr binary must be asserted as non-symlink at canonical path",
         )
 
 

@@ -13,6 +13,7 @@ plan_093 = implementation-landed-closure-incomplete
 plan_094 = implementation-landed-live-closure-environment-blocked
 plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
 plan_096 = passed-pre-dispatch-workflow-correction
+plan_097 = passed-artifact-path-and-cleanup-correction
 plan_088 = blocked-pending-plan095-ci-closure
 plan_079 = blocked-pending-plan088-two-way-pass
 plan_072 = inactive-pending-plan088-ambiguity
@@ -140,6 +141,7 @@ plan_093 = implementation-landed-closure-incomplete
 plan_094 = implementation-landed-live-closure-environment-blocked
 plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
 plan_096 = passed-pre-dispatch-workflow-correction
+plan_097 = passed-artifact-path-and-cleanup-correction
 plan_088 = blocked-pending-plan095-ci-closure
 ```
 
@@ -283,8 +285,15 @@ per the Plan 088 gate amendment
 (`plans/072-079-gate-amendment-plan-088.md`).
 
 Plan 096 closed the four demonstrated Plan 095 workflow execution
-defects and added the pre-dispatch audit. Plan 095 evidence is still
-pending; exactly one manual Plan 095 GitHub Actions dispatch follows.
+defects and added the pre-dispatch audit. Plan 097 closed the two
+narrow workflow defects that remained after Plan 096:
+producer/consumer artifact path identity (one canonical absolute
+`BUILD_OUTPUT` path used by every producer, verifier, manifest,
+uploader, and live consumer) and disposable run-root cleanup
+(strict `rm -rf --` with an exact path guard and an unsuppressed
+absence assertion). Plan 095 evidence is still pending; exactly one
+manual Plan 095 GitHub Actions dispatch follows the Plan 097
+correction commit.
 
 ## Validation
 
