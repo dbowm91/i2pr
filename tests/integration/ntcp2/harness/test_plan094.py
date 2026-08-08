@@ -131,16 +131,19 @@ class Plan094StatusAuthorityTests(unittest.TestCase):
         # may have superseded it as the CI live-wire closure authority.
         text_087 = (REPO_ROOT / "plans/087-status.md").read_text()
         text_088 = (REPO_ROOT / "plans/088-status.md").read_text()
-        self.assertTrue(
-            "plan_094 = active-single-next-executable-completion-pass" in text_087
-            or "plan_095 = ci-live-wire-closure-next-executable" in text_087,
-            "plans/087-status.md must name Plan 094 or Plan 095 as the active completion authority",
+        expected_095_tokens = (
+            "plan_095 = ci-live-wire-closure-next-executable",
+            "plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run",
         )
-        self.assertTrue(
-            "plan_094 = active-single-next-executable-completion-pass" in text_088
-            or "plan_095 = ci-live-wire-closure-next-executable" in text_088,
-            "plans/088-status.md must name Plan 094 or Plan 095 as the active completion authority",
-        )
+        for text, label in (
+            (text_087, "087"),
+            (text_088, "088"),
+        ):
+            self.assertTrue(
+                "plan_094 = active-single-next-executable-completion-pass" in text
+                or any(token in text for token in expected_095_tokens),
+                f"plans/{label}-status.md must name Plan 094 or Plan 095 as the active completion authority",
+            )
         self.assertTrue(
             "open-pending-plan094-forward-evidence-pair" in text_087
             or "open-pending-plan095-ci-forward-evidence-pair" in text_087,

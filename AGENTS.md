@@ -1502,6 +1502,99 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_develop
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan068.py'
 ```
 
+## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
+
+Plan 096 is the active workflow correctness and pre-dispatch
+closure pass over the Plan 095 manual GitHub Actions lane. The
+plan delivers four demonstrated workflow corrections and the
+static regression surface that proves the corrections on the
+post-correction workflow and rejects the pre-correction workflow
+on the pre-correction source. Plan 096 does **not** dispatch a
+Plan 095 live run; it only restores execution correctness so
+the next manual dispatch can produce a usable evidence pair.
+
+The four demonstrated workflow corrections:
+
+1. The i2pr Cargo invocation uses an explicit
+   `--manifest-path "${GITHUB_WORKSPACE}/Cargo.toml"` and an
+   explicit `--target-dir` variable. The downstream binary is
+   copied from the explicit target dir and is asserted regular,
+   executable, and non-symlink before hashing.
+2. The instrumented and control sanitized evidence trees are
+   disjoint from the disposable run roots. The plan moves them
+   to `target/interop/plan095-evidence/instrumented` and
+   `target/interop/plan095-evidence/control`. The
+   `delete-raw-run-state` steps delete only the disposable run
+   root and explicitly assert the sanitized tree still exists
+   after the destructive operation.
+3. Every embedded Python heredoc in the workflow is audited for
+   missing imports; the known control validator now imports
+   `os` so the `os.environ` reference resolves.
+4. The i2pd source digest uses `git -C i2pd ls-files -z` over
+   the pinned tracked tree. The pinned revision equality and
+   the worktree-dirty check are asserted before the digest is
+   computed.
+
+Plan 096 lands:
+
+- `tests/integration/ntcp2/harness/test_plan096.py` — the
+  static regression matrix (36 cases) that rejects the
+  pre-correction workflow on each defect and exercises the
+  dependency graph, the fail-closed live-attempt semantics, the
+  disjoint build/evidence artifact trust boundaries, and the
+  Plan 095/088/079/072 gate preservation.
+- `scripts/check-plan095-workflow.sh` — the pre-dispatch audit
+  script. It is invoked by the static boundary checker
+  `scripts/check-ntcp2-interoperability.sh` before the rest of
+  the static surface.
+- Status authority corrections in `plans/087-status.md` and
+  `plans/088-status.md`. The `plan_095` token becomes
+  `ci-live-wire-lane-corrected-awaiting-one-authoritative-run`,
+  the new `plan_096` token is
+  `passed-pre-dispatch-workflow-correction`, and the Plan 079 /
+  Plan 072 gates remain blocked / inactive.
+- Documentation propagation in `README.md`, this file, the
+  `i2pr-ntcp2-interop` skill, and
+  `docs/architecture/interop-apparatus.md`.
+
+After Plan 096 lands, the next executable action is exactly
+**one manual dispatch** of
+`.github/workflows/ntcp2-interop-host-loopback-development.yml`
+at the clean Plan 096 correction commit. Plan 088 remains
+blocked until the Plan 095 instrumented and control forward
+records pass. Plan 079 remains blocked pending the Plan 088
+two-way pass. Plan 072 remains inactive pending the Plan 088
+ambiguity decision. NTCP2 stays experimental and
+non-advertised.
+
+Required focused checks for Plan 096:
+
+```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan096.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan095.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan094.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan093.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan083_runner.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_driver.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_control.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan088.py'
+bash scripts/check-plan095-workflow.sh
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+bash scripts/check-fixture-manifest.sh
+bash scripts/check-ntcp2-vectors.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+bash scripts/check-ntcp2-loopback-smoke-boundary.sh
+cargo +1.95.0 fmt --all --check
+cargo +1.95.0 check --locked --workspace --all-targets
+cargo +1.95.0 test --locked --workspace
+cargo +1.95.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo +1.95.0 doc --locked --workspace --no-deps
+git diff --check
+```
+
 ## Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
 Plan 074 is historical execution authority. Plan 085 supersedes its active sequence with **Plan 082 (implemented) → Plan 083 (implemented, execution pending) → Plan 084 (implemented, execution pending) → Plan 085 → Plan 086 → Plan 087 → Plan 088 → Plan 079 (blocked)**. Plans 075, 076, 077, and 080 are closed prerequisites or historical lane records. The Plan 084 historical `lane-invalidated` closure is reclassified as "runner implementation completed; required reverse wire execution never occurred" and the active development decision now lives in `plans/088-status.md`.
@@ -1998,7 +2091,32 @@ question. NTCP2 stays experimental and non-advertised. See
 `plans/086-status.md`, `plans/087-status.md`, `plans/088-status.md`,
 `plans/091-status.md`, `plans/092-status.md`, `plans/093-status.md`,
 `plans/094-plan093-completion-and-plan087-to-plan088-handoff.md`,
-and `plans/095-ci-host-loopback-live-wire-evidence-lane.md`.
+`plans/095-ci-host-loopback-live-wire-evidence-lane.md`, and
+`plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md`.
+
+Plan 096 is the active workflow correctness and pre-dispatch
+closure pass. The plan delivers a static regression matrix
+(`tests/integration/ntcp2/harness/test_plan096.py`), a pre-dispatch
+audit script (`scripts/check-plan095-workflow.sh`), and the four
+demonstrated workflow corrections: explicit i2pr build path,
+disjoint sanitized evidence, embedded Python import audit, and
+canonical tracked-source digest. After Plan 096 lands, the
+current status of the active sequence is:
+
+```text
+plan_093 = implementation-landed-closure-incomplete
+plan_094 = implementation-landed-live-closure-environment-blocked
+plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_096 = passed-pre-dispatch-workflow-correction
+plan_087 = open-pending-plan095-ci-forward-evidence-pair
+plan_088 = blocked-pending-plan095-ci-closure
+plan_079 = blocked-pending-plan088-two-way-pass
+plan_072 = inactive-pending-plan088-ambiguity
+ntcp2    = experimental-non-advertised
+```
+
+Plan 095 is the single next executable plan; exactly one manual
+Plan 095 GitHub Actions dispatch follows the Plan 096 correction.
 
 ## Plan 083 minimal i2pr-to-i2pd wire probe
 

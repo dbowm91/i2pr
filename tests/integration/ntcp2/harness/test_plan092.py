@@ -98,11 +98,14 @@ class Plan092StatusAuthorityTests(unittest.TestCase):
     def test_plan088_status_records_plan094_or_plan095_as_next_executable(self):
         text = (REPO_ROOT / "plans/088-status.md").read_text()
         # Plan 094 was the single next executable plan; Plan 095 has
-        # superseded it as the CI live-wire closure authority. The
-        # status record must reflect at least one of the two.
+        # superseded it as the CI live-wire closure authority. After
+        # Plan 096 the Plan 095 status token changes to
+        # ``ci-live-wire-lane-corrected-awaiting-one-authoritative-run``.
+        # The status record must reflect at least one of the three.
         self.assertTrue(
             "plan_094 = active-single-next-executable-completion-pass" in text
-            or "plan_095 = ci-live-wire-closure-next-executable" in text,
+            or "plan_095 = ci-live-wire-closure-next-executable" in text
+            or "plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run" in text,
             "plans/088-status.md must name Plan 094 or Plan 095 as the active completion authority",
         )
         self.assertTrue(

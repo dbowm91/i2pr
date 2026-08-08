@@ -11,7 +11,8 @@ plan_091 = historical-partial-correction
 plan_092 = superseded-by-plan093
 plan_093 = implementation-landed-closure-incomplete
 plan_094 = implementation-landed-live-closure-environment-blocked
-plan_095 = ci-live-wire-closure-next-executable
+plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_096 = passed-pre-dispatch-workflow-correction
 plan_088 = blocked-pending-plan095-ci-closure
 plan_079 = blocked-pending-plan088-two-way-pass
 plan_072 = inactive-pending-plan088-ambiguity
@@ -137,7 +138,8 @@ plan_091 = historical-partial-correction
 plan_092 = superseded-by-plan093
 plan_093 = implementation-landed-closure-incomplete
 plan_094 = implementation-landed-live-closure-environment-blocked
-plan_095 = ci-live-wire-closure-next-executable
+plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_096 = passed-pre-dispatch-workflow-correction
 plan_088 = blocked-pending-plan095-ci-closure
 ```
 
@@ -264,11 +266,12 @@ bounded by the Plan 051 resource constraints.
 
 ## Future plan unblocking
 
-| Plan | Precondition | Status after Plan 095 |
+| Plan | Precondition | Status after Plan 096 |
 | --- | --- | --- |
-| Plan 095 | Plan 087 instrumented + control forward records from the same CI evidence pair | active next executable |
+| Plan 096 | Plan 095 implementation landed; workflow defects corrected | closed (pre-dispatch audit passed) |
+| Plan 095 | Plan 096 pre-dispatch audit passed; one manual dispatch follows | next executable |
 | Plan 079 | requires Plan 088 `two-way-development-probe-passed` | remains blocked |
-| Plan 072 | requires Plan 088 `ambiguous-reference-divergence` with one exact diagnostic question | remains inactive |
+| Plan 072 | requires Plan 088 `ambiguous-reference-divergence` with one exact wire-stage question | remains inactive |
 | Plan 073 | requires release-qualification evidence | remains inactive |
 
 No future plan is unblocked by this Plan 088 closure until Plan 095
@@ -278,6 +281,10 @@ remains explicitly blocked; Plan 072 remains explicitly inactive.
 The Plan 079 entry-gate reference points at this status record,
 per the Plan 088 gate amendment
 (`plans/072-079-gate-amendment-plan-088.md`).
+
+Plan 096 closed the four demonstrated Plan 095 workflow execution
+defects and added the pre-dispatch audit. Plan 095 evidence is still
+pending; exactly one manual Plan 095 GitHub Actions dispatch follows.
 
 ## Validation
 

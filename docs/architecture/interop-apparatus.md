@@ -1601,3 +1601,65 @@ are validated. Plan 088 remains blocked pending the actual two-way
 Plan 088 decision. Plan 079 remains blocked pending the Plan 088
 two-way pass. Plan 072 remains inactive pending the Plan 088
 ambiguity decision. NTCP2 remains experimental and non-advertised.
+
+## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
+
+Plan 096 is the active workflow correctness and pre-dispatch
+closure pass over the Plan 095 manual GitHub Actions lane. The
+plan delivers four demonstrated workflow corrections and the
+static regression surface that proves the corrections on the
+post-correction workflow and rejects the pre-correction workflow
+on the pre-correction source.
+
+The four corrections are:
+
+1. The i2pr Cargo invocation now uses an explicit
+   `--manifest-path` and an explicit `--target-dir`; the
+   downstream binary is copied from the explicit target dir and
+   is asserted regular, executable, and non-symlink before
+   hashing.
+2. The instrumented and control sanitized evidence trees are
+   disjoint from the disposable run roots and live under
+   `target/interop/plan095-evidence/{instrumented,control}`.
+   The `delete-raw-run-state` steps delete only the disposable
+   run root and explicitly assert the sanitized tree still
+   exists after the destructive operation.
+3. Every embedded Python heredoc is audited for missing
+   imports. The known control validator now imports `os` so
+   the `os.environ` reference resolves.
+4. The i2pd source digest uses `git -C i2pd ls-files -z` over
+   the pinned tracked tree. The pinned revision equality and
+   the worktree-dirty check are asserted before the digest is
+   computed.
+
+The focused regression matrix
+[`tests/integration/ntcp2/harness/test_plan096.py`](../../tests/integration/ntcp2/harness/test_plan096.py)
+(36 cases) rejects the pre-correction workflow on each defect
+and exercises the dependency graph, the fail-closed live-attempt
+semantics, the disjoint build/evidence artifact trust boundaries,
+and the Plan 095/088/079/072 gate preservation. The pre-dispatch
+audit script
+[`scripts/check-plan095-workflow.sh`](../../scripts/check-plan095-workflow.sh)
+is invoked by the static boundary checker
+[`scripts/check-ntcp2-interoperability.sh`](../../scripts/check-ntcp2-interoperability.sh)
+before the rest of the static surface.
+
+After Plan 096 lands, the current status of the active sequence
+is:
+
+```text
+plan_093 = implementation-landed-closure-incomplete
+plan_094 = implementation-landed-live-closure-environment-blocked
+plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_096 = passed-pre-dispatch-workflow-correction
+plan_087 = open-pending-plan095-ci-forward-evidence-pair
+plan_088 = blocked-pending-plan095-ci-closure
+plan_079 = blocked-pending-plan088-two-way-pass
+plan_072 = inactive-pending-plan088-ambiguity
+ntcp2    = experimental-non-advertised
+```
+
+Plan 095 is the single next executable plan. Exactly one manual
+Plan 095 GitHub Actions dispatch follows the Plan 096 correction.
+The plan-of-record is
+[`plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md`](../../plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md).

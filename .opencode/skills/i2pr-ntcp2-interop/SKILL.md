@@ -495,8 +495,8 @@ bash scripts/check-ntcp2-interoperability.sh
 
 ## Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
-Plan 074 is historical execution authority. Plan 095 supersedes its active
-sequence with **Plan 082 (implemented) → Plan 083 (implemented, execution pending) → Plan 084 (implemented, execution pending) → Plan 085 → Plan 086 → Plan 087 → Plan 090 → Plan 091 → Plan 092 (superseded) → Plan 093 (implementation-landed, closure-incomplete) → Plan 094 (implementation-landed, live-closure-environment-blocked) → Plan 095 (active_single_next_executable_ci_live_wire_closure) → Plan 088 → Plan 079 (blocked)**. Plans 075, 076,
+Plan 074 is historical execution authority. Plan 096 supersedes its active
+sequence with **Plan 082 (implemented) → Plan 083 (implemented, execution pending) → Plan 084 (implemented, execution pending) → Plan 085 → Plan 086 → Plan 087 → Plan 090 → Plan 091 → Plan 092 (superseded) → Plan 093 (implementation-landed, closure-incomplete) → Plan 094 (implementation-landed, live-closure-environment-blocked) → Plan 095 (ci-live-wire-lane-corrected, awaiting one authoritative run) → Plan 096 (passed-pre-dispatch-workflow-correction) → one manual Plan 095 dispatch → Plan 088 → Plan 079 (blocked)**. Plans 075, 076,
 077, and 080 are closed prerequisites or historical lane records. The Plan
 084 historical `lane-invalidated` closure is reclassified as "runner
 implementation completed; required reverse wire execution never occurred" and
@@ -515,6 +515,15 @@ a handshake-state defect. Plan 088 remains blocked until Plan 095 closes
 with a passing instrumented forward record and a passing control forward
 record from the same CI evidence pair.
 
+Plan 096 is the active workflow correctness and pre-dispatch closure
+pass. The plan delivers the four demonstrated workflow corrections
+(explicit i2pr build path, disjoint sanitized evidence, embedded
+Python import audit, canonical tracked-source digest), the pre-dispatch
+audit script (`scripts/check-plan095-workflow.sh`), and the static
+regression matrix (`tests/integration/ntcp2/harness/test_plan096.py`).
+Plan 096 is the gating implementation pass before the first
+authoritative Plan 095 live run.
+
 The corrected repository state is:
 
 ```text
@@ -526,13 +535,15 @@ real_reference_process_in_plan069_runner = corrected_by_plan075
 real_mixed_router_attempts = 0
 plan_085_host_loopback_roadmap = implemented
 plan_086_host_loopback_development_lane = planned
-plan_087_forward_wire_execution = blocked_pending_plan_094_forward_pass
+plan_087_forward_wire_execution = blocked_pending_plan_095_ci_forward_pass
 plan_088_reverse_development_decision = insufficient_evidence
 plan_088_active_supersedure = supersedes_plan_084_lane_invalidated
 plan_091_status = historical_partial_correction
 plan_092_status = superseded_by_plan_093
 plan_093_status = implementation_landed_closure_incomplete
-plan_094_status = active_single_next_executable_completion_pass
+plan_094_status = implementation_landed_live_closure_environment_blocked
+plan_095_status = ci_live_wire_lane_corrected_awaiting_one_authoritative_run
+plan_096_status = passed_pre_dispatch_workflow_correction
 plan_079_gate = blocked_pending_plan_088_two_way_passed
 plan_072_gate = inactive_pending_plan_088_ambiguity
 current_rootless_namespace_lane = unavailable

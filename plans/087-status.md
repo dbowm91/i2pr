@@ -41,7 +41,8 @@ plan_091 = historical-partial-correction
 plan_092 = superseded-by-plan093
 plan_093 = implementation-landed-closure-incomplete
 plan_094 = implementation-landed-live-closure-environment-blocked
-plan_095 = ci-live-wire-closure-next-executable
+plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_096 = passed-pre-dispatch-workflow-correction
 plan_088 = blocked-pending-plan095-ci-closure
 plan_079 = blocked-pending-plan088-two-way-pass
 plan_072 = inactive-pending-plan088-ambiguity
@@ -119,9 +120,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings  ok
 
 ## Future plan unblocking
 
-| Plan | Precondition                                              | Status after Plan 095 |
+| Plan | Precondition                                              | Status after Plan 096 |
 | ---  | ---                                                       | ---                    |
-| 095  | Plan 094 implementation landed; CI host-loopback live-wire closure lane | next executable |
+| 096  | Plan 095 implementation landed; workflow defects corrected | closed (pre-dispatch audit passed) |
+| 095  | Plan 096 pre-dispatch audit passed; one manual dispatch follows | next executable |
 | 088  | Plan 095 must record `passed` instrumented and control forward records | remains blocked |
 | 079  | Plan 088 must record `two-way-development-probe-passed`     | remains blocked         |
 | 072  | Plan 088 must record `ambiguous-reference-divergence` with one exact diagnostic question | remains inactive |
@@ -131,3 +133,11 @@ preserved at `/tmp/opencode/plan091-evidence/forward/forward-record.json`
 and earlier run roots under `/tmp/opencode/`. The records are diagnostic
 history only; they are not passing forward records. Plan 092 owns the
 ownership probe and the forward closure.
+
+Plan 096 closed the four demonstrated Plan 095 workflow execution
+defects: explicit i2pr build path, disjoint sanitized evidence,
+embedded Python import audit, and canonical tracked-source digest.
+The Plan 096 pre-dispatch audit (`scripts/check-plan095-workflow.sh`)
+and test matrix (`tests/integration/ntcp2/harness/test_plan096.py`)
+are green locally; exactly one manual Plan 095 GitHub Actions
+dispatch follows.

@@ -292,12 +292,19 @@ class Plan095ArtifactAndUploadTests(unittest.TestCase):
                 flattened.append(stripped)
         self.assertGreater(len(flattened), 0)
         for entry in flattened:
+            # Plan 096: sanitized evidence lives under
+            # ``plan095-evidence/instrumented`` or
+            # ``plan095-evidence/control``; the build artifact
+            # lives under ``plan095-build/output``; the gate
+            # record lives under ``target/interop/evidence``.
             self.assertTrue(
                 entry.startswith("target/interop/evidence/")
                 or entry.startswith("target/interop/build/")
                 or "/sanitized/" in entry
                 or entry.endswith("/output/")
                 or "plan095-build/output" in entry
+                or "plan095-evidence/instrumented" in entry
+                or "plan095-evidence/control" in entry
                 or "plan095-instrumented/sanitized" in entry
                 or "plan095-control/sanitized" in entry
                 or entry.startswith("${{ env.PLAN095_SANITIZED }}")
@@ -312,6 +319,28 @@ class Plan095ArtifactAndUploadTests(unittest.TestCase):
         # the live jobs upload only sanitized records.
         self.assertNotIn("raw/record", raw_yaml)
         self.assertNotIn("raw/state", raw_yaml)
+
+    def test_sanitized_paths_not_under_disposable_run_roots(self) -> None:
+        # Plan 096 WP3: the sanitized evidence path must be
+        # disjoint from the disposable run root. Both the
+        # instrumented and control paths must satisfy the contract.
+        raw_yaml = WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.assertNotIn(
+            "target/interop/plan095-instrumented/sanitized",
+            raw_yaml,
+        )
+        self.assertNotIn(
+            "target/interop/plan095-control/sanitized",
+            raw_yaml,
+        )
+        self.assertIn(
+            "target/interop/plan095-evidence/instrumented",
+            raw_yaml,
+        )
+        self.assertIn(
+            "target/interop/plan095-evidence/control",
+            raw_yaml,
+        )
 
 
 class Plan095EnvironmentBlockerVocabularyTests(unittest.TestCase):
@@ -355,12 +384,16 @@ class Plan095StatusAuthorityTests(unittest.TestCase):
         # landed; the forward evidence pair is not yet retained.
         text_087 = (REPO_ROOT / "plans/087-status.md").read_text()
         text_088 = (REPO_ROOT / "plans/088-status.md").read_text()
-        self.assertIn(
-            "plan_095 = ci-live-wire-closure-next-executable", text_087
+        expected_tokens = (
+            "plan_095 = ci-live-wire-closure-next-executable",
+            "plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run",
         )
-        self.assertIn(
-            "plan_095 = ci-live-wire-closure-next-executable", text_088
-        )
+        for text, label in ((text_087, "087"), (text_088, "088")):
+            self.assertTrue(
+                any(token in text for token in expected_tokens),
+                f"plans/{label}-status.md must name Plan 095 as the "
+                f"next executable plan with one of {expected_tokens!r}",
+            )
 
     def test_plan088_remains_blocked_until_ci_closure(self) -> None:
         text = (REPO_ROOT / "plans/088-status.md").read_text()

@@ -1452,6 +1452,72 @@ remains inactive pending the Plan 088 ambiguity decision. NTCP2
 remains experimental and non-advertised. The plan-of-record is
 `plans/095-ci-host-loopback-live-wire-evidence-lane.md`.
 
+### Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
+
+Plan 096 is the active workflow correctness and pre-dispatch
+closure pass. The plan is a narrow corrective change to the Plan
+095 GitHub Actions workflow (`Plan 095 manual`) so the first
+authoritative live run is execution-correct and statically
+verifiable before any manual dispatch.
+
+The plan delivers:
+
+- `tests/integration/ntcp2/harness/test_plan096.py` — the Plan 096
+  regression matrix (36 cases) that rejects the pre-correction
+  workflow on i2pr build path ambiguity, sanitized evidence nested
+  inside the disposable run root, the embedded Python `os` import
+  defect, and the filesystem-wide i2pd source digest that
+  includes `.git` administrative files. The matrix also enforces
+  the dependency graph, the fail-closed live-attempt semantics,
+  the disjoint build/evidence artifact trust boundaries, and the
+  plan 095/088/079/072 gate preservation.
+- `scripts/check-plan095-workflow.sh` — the pre-dispatch audit
+  script. It is invoked by `scripts/check-ntcp2-interoperability.sh`
+  before the rest of the static surface. The audit returns
+  nonzero on any of the four demonstrated defects.
+
+The four demonstrated workflow corrections:
+
+1. The i2pr Cargo invocation now uses an explicit
+   `--manifest-path "${GITHUB_WORKSPACE}/Cargo.toml"` and an
+   explicit `--target-dir` variable. The downstream binary is
+   copied from the explicit target directory and is asserted
+   regular, executable, and non-symlink before hashing.
+2. The instrumented and control sanitized evidence trees are
+   disjoint from the disposable run roots. The plan moves them
+   to `target/interop/plan095-evidence/instrumented` and
+   `target/interop/plan095-evidence/control`. The cleanup step
+   deletes only the disposable run root and asserts the
+   sanitized evidence still exists before artifact upload.
+3. Every embedded Python heredoc is audited for missing imports;
+   the known control validator now imports `os` so the
+   `os.environ` reference resolves. The audit uses a structural
+   Python check that mirrors the static test matrix.
+4. The i2pd source digest uses `git -C i2pd ls-files -z` over
+   the pinned tracked tree. The pinned revision equality and the
+   worktree-dirty check are asserted before the digest is
+   computed.
+
+After Plan 096 lands, the current status of the active sequence
+is:
+
+```text
+plan_093 = implementation-landed-closure-incomplete
+plan_094 = implementation-landed-live-closure-environment-blocked
+plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_096 = passed-pre-dispatch-workflow-correction
+plan_087 = open-pending-plan095-ci-forward-evidence-pair
+plan_088 = blocked-pending-plan095-ci-closure
+plan_079 = blocked-pending-plan088-two-way-pass
+plan_072 = inactive-pending-plan088-ambiguity
+ntcp2    = experimental-non-advertised
+```
+
+Plan 095 is the single next executable plan. Exactly one manual
+Plan 095 GitHub Actions dispatch follows the Plan 096 correction.
+The plan-of-record is
+`plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md`.
+
 ### Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
 Plan 074 is historical execution authority. Plan 081 supersedes its active

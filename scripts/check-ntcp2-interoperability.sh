@@ -1655,12 +1655,14 @@ fi
 # active CI host-loopback live-wire closure authority. The active status
 # files must name at least one of the two.
 if ! grep -Fq 'plan_094 = active-single-next-executable-completion-pass' "$root/plans/088-status.md" \
-  && ! grep -Fq 'plan_095 = ci-live-wire-closure-next-executable' "$root/plans/088-status.md"; then
+  && ! grep -Fq 'plan_095 = ci-live-wire-closure-next-executable' "$root/plans/088-status.md" \
+  && ! grep -Fq 'plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run' "$root/plans/088-status.md"; then
   echo "Plan 088 status must name Plan 094 or Plan 095 as the active completion authority" >&2
   exit 1
 fi
 if ! grep -Fq 'plan_094 = active-single-next-executable-completion-pass' "$root/plans/087-status.md" \
-  && ! grep -Fq 'plan_095 = ci-live-wire-closure-next-executable' "$root/plans/087-status.md"; then
+  && ! grep -Fq 'plan_095 = ci-live-wire-closure-next-executable' "$root/plans/087-status.md" \
+  && ! grep -Fq 'plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run' "$root/plans/087-status.md"; then
   echo "Plan 087 status must name Plan 094 or Plan 095 as the active completion authority" >&2
   exit 1
 fi
@@ -1766,6 +1768,34 @@ fi
 if ! grep -Fq 'i2pr_binary_sha256' \
     "$root/scripts/interop/run-minimal-i2pd-host-loopback-probe.py"; then
   echo "Plan 093 wrapper must bind i2pr_binary_sha256 provenance" >&2
+  exit 1
+fi
+
+# Plan 096: CI workflow correctness and pre-dispatch closure. The
+# Plan 096 pre-dispatch audit script and the Plan 096 test matrix
+# must be present; the audit must pass; the workflow must remain
+# Plan 095's manual workflow with the four documented defects
+# corrected. The check runs the audit before the test discovery so
+# a pre-correction workflow is rejected at the static surface.
+if ! test -f "$root/scripts/check-plan095-workflow.sh"; then
+  echo "Plan 096 pre-dispatch audit script is missing" >&2
+  exit 1
+fi
+if ! test -x "$root/scripts/check-plan095-workflow.sh"; then
+  echo "Plan 096 pre-dispatch audit script is not executable" >&2
+  exit 1
+fi
+bash "$root/scripts/check-plan095-workflow.sh"
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan096.py"; then
+  echo "Plan 096 test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_plan096.py' "$root/.github/workflows/ntcp2-interop-host-loopback-development.yml"; then
+  echo "Plan 096 test matrix is not wired into the Plan 095 workflow" >&2
+  exit 1
+fi
+if ! grep -Fq 'test_plan096.py' "$root/AGENTS.md"; then
+  echo "Plan 096 test matrix is not wired into AGENTS.md" >&2
   exit 1
 fi
 
