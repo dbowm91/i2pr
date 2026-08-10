@@ -256,8 +256,20 @@ jobs:
               assert isinstance(data, dict), path
               for key, value in data.items():
                   if 'sha256' in key.lower() or 'digest' in key.lower():
-                      if not isinstance(value, str) or len(value) != 64 or value == '0' * 64:
-                          raise SystemExit(f'nonzero 64-hex digest required at {path}:{key}')
+                      if not isinstance(value, str) or not value:
+                          raise SystemExit(f'nonempty string required at {path}:{key}')
+                      # The ``i2pd_libraries_sha256`` field is a
+                      # space-separated concatenation of three
+                      # library digests (libi2pd, libi2pdclient,
+                      # libi2pdlang); every fragment must be a
+                      # nonzero 64-hex digest. Other fields carry a
+                      # single nonzero 64-hex digest.
+                      fragments = value.split(' ')
+                      if not fragments or any(not frag for frag in fragments):
+                          raise SystemExit(f'empty fragment in digest at {path}:{key}')
+                      for frag in fragments:
+                          if len(frag) != 64 or frag == '0' * 64:
+                              raise SystemExit(f'nonzero 64-hex digest required at {path}:{key}: fragment {frag!r}')
           print('all build manifests validate')
           "
       - name: upload-build-artifact

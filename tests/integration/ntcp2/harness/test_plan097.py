@@ -305,6 +305,30 @@ class Plan097ProducerConsumerIdentityTests(unittest.TestCase):
             "verifier must not check a relative output path",
         )
 
+    def test_verifier_accepts_multi_digest_libraries_field(self) -> None:
+        # Plan 097 follow-up: the ``i2pd_libraries_sha256`` manifest
+        # field is a space-separated concatenation of three library
+        # digests (libi2pd, libi2pdclient, libi2pdlang), not a single
+        # 64-hex digest. The verifier must not refuse the field by
+        # enforcing a hard ``len(value) == 64`` check; the only
+        # required invariant is that every fragment be a nonzero
+        # 64-hex digest. Drift back to a strict single-digest length
+        # check re-introduces the verify-build-artifacts failure
+        # observed on the first Plan 095 CI dispatch.
+        text = _read_workflow_text()
+        body = _step_body(text, "verify-build-artifacts")
+        self.assertNotIn(
+            "len(value) != 64",
+            body,
+            "verifier must not enforce len(value) == 64 for sha256 fields "
+            "(i2pd_libraries_sha256 is multi-digest)",
+        )
+        self.assertIn(
+            "fragments = value.split(' ')",
+            body,
+            "verifier must split multi-digest fields on space",
+        )
+
 
 class Plan097ArtifactUploadTests(unittest.TestCase):
     """Plan 097 WP3 case 14: upload-artifact path matches canonical tree."""
