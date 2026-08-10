@@ -443,6 +443,31 @@ class Plan095DocumentationContractTests(unittest.TestCase):
         text = arch_path.read_text()
         self.assertIn("Plan 095", text)
 
+    def test_build_i2pr_interop_step_restores_executable_bit(self) -> None:
+        # Plan 098: bare ``cp`` defaults to the umask mode
+        # (typically 0644 in the Ubuntu 24.04 GitHub-hosted runner),
+        # which strips the executable bit the source binary
+        # carries. The downstream upload zips the file with its
+        # current mode and the downstream download extracts the
+        # same mode; the live jobs then fail the ``test -x`` guard
+        # with a typed ``ci_build_blocked``. The build-i2pr-interop
+        # step must explicitly ``chmod 0755`` the binary after
+        # copying it so the upload/download round-trip preserves
+        # the binary's runnability.
+        workflow = _load_workflow()
+        jobs = workflow.get("jobs") or {}
+        body = _job_steps_text(jobs["build"])
+        self.assertIn(
+            "build-i2pr-interop",
+            body,
+            "build job must include a build-i2pr-interop step",
+        )
+        self.assertRegex(
+            body,
+            r"chmod\s+0755\s+\"\$BUILD_OUTPUT/i2pr-interop\"",
+            "build-i2pr-interop must chmod 0755 the i2pr-interop artifact at the canonical output path",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

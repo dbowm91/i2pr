@@ -189,6 +189,18 @@ fi
 
 cp "$INSTRUMENTED_BINARY" "$OUTPUT_DIR/i2pd_ntcp2_interop_driver_instrumented"
 cp "$CONTROL_BINARY" "$OUTPUT_DIR/i2pd_ntcp2_interop_driver_control"
+# Plan 098: bare ``cp`` defaults to the umask mode (typically 0644
+# in the Ubuntu 24.04 GitHub-hosted runner), which strips the
+# executable bit the source binary carries. The downstream
+# ``actions/upload-artifact`` zips the file with its current mode
+# and the ``actions/download-artifact`` step extracts the same
+# mode on the consumer job; the live jobs then fail the
+# ``test -x`` guard with a typed ``ci_build_blocked``. Restore the
+# executable bit explicitly so the upload/download round-trip
+# preserves the binary's runnability.
+chmod 0755 \
+    "$OUTPUT_DIR/i2pd_ntcp2_interop_driver_instrumented" \
+    "$OUTPUT_DIR/i2pd_ntcp2_interop_driver_control"
 
 # Phase 4: linked library provenance manifest.
 LINK_MANIFEST="$OUTPUT_DIR/linked-library-manifest.txt"

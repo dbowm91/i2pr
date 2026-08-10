@@ -195,6 +195,17 @@ jobs:
             --bin i2pr-interop
           cp "$I2PR_TARGET_DIR/release/i2pr-interop" \
              "$BUILD_OUTPUT/i2pr-interop"
+          # Plan 098: bare ``cp`` defaults to the umask mode
+          # (typically 0644 in the Ubuntu 24.04 GitHub-hosted
+          # runner), which strips the executable bit the source
+          # binary carries. The downstream upload zips the file
+          # with its current mode and the downstream download
+          # extracts the same mode; the live jobs then fail the
+          # ``test -x`` guard with a typed ``ci_build_blocked``.
+          # Restore the executable bit explicitly so the
+          # upload/download round-trip preserves the binary's
+          # runnability.
+          chmod 0755 "$BUILD_OUTPUT/i2pr-interop"
           test -f "$BUILD_OUTPUT/i2pr-interop"
           test -x "$BUILD_OUTPUT/i2pr-interop"
           test ! -L "$BUILD_OUTPUT/i2pr-interop"

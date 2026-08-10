@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -249,6 +250,33 @@ class I2pdDriverArtifactsPresentTests(unittest.TestCase):
             ifdef_open,
             "INTEROP_RING_CAPACITY must be declared before the I2PD_INTEROP_OBSERVER ifdef so the control build can size the file-scope ObservationRing instances",
         )
+
+    def test_i2pd_build_driver_restores_executable_bit_on_driver_binaries(self):
+        # Plan 098: bare ``cp`` defaults to the umask mode
+        # (typically 0644 in the Ubuntu 24.04 GitHub-hosted runner),
+        # which strips the executable bit the source binary
+        # carries. The downstream ``actions/upload-artifact`` zips
+        # the file with its current mode and the
+        # ``actions/download-artifact`` step extracts the same
+        # mode on the consumer job; the live jobs then fail the
+        # ``test -x`` guard with a typed ``ci_build_blocked``.
+        # The build script must explicitly ``chmod 0755`` the
+        # driver binaries after copying them into the output
+        # directory so the upload/download round-trip preserves
+        # the binary's runnability.
+        script = I2PD_BUILD_SCRIPT.read_text()
+        # The chmod line uses shell line-continuation, so the
+        # binary name may appear on a later line. Match across
+        # newlines.
+        for binary in (
+            "i2pd_ntcp2_interop_driver_instrumented",
+            "i2pd_ntcp2_interop_driver_control",
+        ):
+            self.assertRegex(
+                script,
+                rf"chmod\s+0755[\s\S]*\b{re.escape(binary)}\b",
+                f"build-driver.sh must chmod 0755 {binary} after copying",
+            )
 
     def test_i2pd_driver_source_uses_real_i2pd_api(self):
         source = (REPO_ROOT / "tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp").read_text()
