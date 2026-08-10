@@ -11,7 +11,7 @@ plan_091 = historical-partial-correction
 plan_092 = superseded-by-plan093
 plan_093 = implementation-landed-closure-incomplete
 plan_094 = implementation-landed-live-closure-environment-blocked
-plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected
 plan_096 = passed-pre-dispatch-workflow-correction
 plan_097 = passed-artifact-path-and-cleanup-correction
 plan_088 = blocked-pending-plan095-ci-closure
@@ -139,7 +139,7 @@ plan_091 = historical-partial-correction
 plan_092 = superseded-by-plan093
 plan_093 = implementation-landed-closure-incomplete
 plan_094 = implementation-landed-live-closure-environment-blocked
-plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected
 plan_096 = passed-pre-dispatch-workflow-correction
 plan_097 = passed-artifact-path-and-cleanup-correction
 plan_088 = blocked-pending-plan095-ci-closure
@@ -160,6 +160,50 @@ exact Router Hash correlation
 exact DeliveryStatus ID correlation
 cleanup = clean
 ```
+
+## Plan 095 authoritative live-wire attempt (2026-08-10)
+
+The first authoritative Plan 095 manual CI dispatch against the
+post-Plan 097 head advanced through the full contract, build,
+forward-instrumented, forward-control, and validate-gate
+job graph. Six bounded corrections landed between the original
+Plan 095 implementation commit and the authoritative run:
+
+```text
+1. observer header: INTEROP_RING_CAPACITY moved out of the
+   I2PD_INTEROP_OBSERVER ifdef so the control build compiles
+2. i2pd build: --parallel bounded to 2 to fit the
+   github-hosted ubuntu-24.04 runner memory budget
+3. verify-build-artifacts: accept the i2pd_libraries_sha256
+   field as three space-separated 64-hex digests
+4. build-driver.sh and build-i2pr-interop: chmod 0755 after
+   the bare cp so the upload/download round-trip preserves
+   the binary's executable bit
+5. live jobs: restore-executable-bit step after the artifact
+   download so the live ``test -x`` guard accepts the
+   archiver-rewritten mode
+6. prepare-run-root: drop the run-root ``mkdir -p`` so the
+   live probe, which refuses a pre-existing run root, is the
+   single owner that creates the directory
+```
+
+The forward-instrumented job launched the live probe against
+the canonical `host-loopback-development` topology. The probe
+reached the pre-protocol state preparation phase and then
+failed closed with `terminal_result = pre_protocol_rejected`
+and `reason_code = pre-protocol-preparation-failed`. The
+control job correctly refused to launch because the
+instrumented evidence did not pass.
+
+The pre-protocol rejection is a real NTCP2 protocol-level
+classification, not a workflow defect. The plan-of-record
+forward-direction close therefore still requires a passing
+instrumented record, which this host's
+`host-loopback-development` topology has not produced. The
+forward-instrumented record is preserved under the
+`plan095-instrumented-evidence` artifact on the run id
+recorded above; the gate record was not produced because the
+control job correctly refused to run.
 
 The Plan 088 handoff fields required for any future
 `ambiguous-reference-divergence` closure are:

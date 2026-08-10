@@ -1656,13 +1656,15 @@ fi
 # files must name at least one of the two.
 if ! grep -Fq 'plan_094 = active-single-next-executable-completion-pass' "$root/plans/088-status.md" \
   && ! grep -Fq 'plan_095 = ci-live-wire-closure-next-executable' "$root/plans/088-status.md" \
-  && ! grep -Fq 'plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run' "$root/plans/088-status.md"; then
+  && ! grep -Fq 'plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run' "$root/plans/088-status.md" \
+  && ! grep -Fq 'plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected' "$root/plans/088-status.md"; then
   echo "Plan 088 status must name Plan 094 or Plan 095 as the active completion authority" >&2
   exit 1
 fi
 if ! grep -Fq 'plan_094 = active-single-next-executable-completion-pass' "$root/plans/087-status.md" \
   && ! grep -Fq 'plan_095 = ci-live-wire-closure-next-executable' "$root/plans/087-status.md" \
-  && ! grep -Fq 'plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run' "$root/plans/087-status.md"; then
+  && ! grep -Fq 'plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run' "$root/plans/087-status.md" \
+  && ! grep -Fq 'plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected' "$root/plans/087-status.md"; then
   echo "Plan 087 status must name Plan 094 or Plan 095 as the active completion authority" >&2
   exit 1
 fi

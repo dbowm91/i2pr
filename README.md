@@ -2060,7 +2060,7 @@ The current status of the active sequence is:
 ```text
 plan_093 = implementation-landed-closure-incomplete
 plan_094 = implementation-landed-live-closure-environment-blocked
-plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected
 plan_096 = passed-pre-dispatch-workflow-correction
 plan_097 = passed-artifact-path-and-cleanup-correction
 plan_087 = open-pending-plan095-ci-forward-evidence-pair
@@ -2070,14 +2070,24 @@ plan_072 = inactive-pending-plan088-ambiguity
 ntcp2    = experimental-non-advertised
 ```
 
-Plan 095 is the single next executable plan; exactly one manual
-GitHub Actions dispatch of
-`.github/workflows/ntcp2-interop-host-loopback-development.yml` follows
-the Plan 097 correction commit. Plan 088 remains blocked until Plan 095
-closes with a passing instrumented and a passing control forward record
-from the same CI evidence pair. Plan 079 remains blocked pending the
-Plan 088 two-way pass. Plan 072 remains inactive pending the Plan 088
-ambiguity decision. NTCP2 remains experimental and non-advertised.
+Plan 095 is the single next executable plan. The first
+authoritative manual GitHub Actions dispatch of
+`.github/workflows/ntcp2-interop-host-loopback-development.yml`
+ran on 2026-08-10 and advanced through the full
+contract/build/forward-instrumented job graph. The
+forward-instrumented probe reached pre-protocol state
+preparation and recorded
+`terminal_result = pre_protocol_rejected,
+reason_code = pre-protocol-preparation-failed`. The
+forward-control job correctly refused to launch because the
+instrumented evidence did not pass. Plan 095 therefore remains
+active; a successor plan is required to address the
+pre-protocol preparation regression. Plan 088 remains blocked
+until Plan 095 closes with a passing instrumented and a passing
+control forward record from the same CI evidence pair. Plan
+079 remains blocked pending the Plan 088 two-way pass. Plan
+072 remains inactive pending the Plan 088 ambiguity decision.
+NTCP2 remains experimental and non-advertised.
 
 ### Plan 088 reverse probe and development decision
 

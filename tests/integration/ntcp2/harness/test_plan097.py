@@ -704,10 +704,20 @@ class Plan097StatusAuthorityTests(unittest.TestCase):
     def test_plan095_awaits_authoritative_run(self) -> None:
         for status_path in ("plans/087-status.md", "plans/088-status.md"):
             text = (REPO_ROOT / status_path).read_text()
-            self.assertIn(
+            # The status may carry the pre-authoritative-run
+            # "awaiting" token, the post-dispatch
+            # "active-instrumented-pre-protocol-rejected" token,
+            # or the "passed" / "ci-live-wire-closure-next-executable"
+            # token. Any of these names Plan 095 as the live-wire
+            # authority for the forward direction.
+            valid_tokens = (
                 "plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run",
-                text,
-                f"{status_path} must record plan_095 awaiting one authoritative run",
+                "plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected",
+                "plan_095 = ci-live-wire-closure-next-executable",
+            )
+            self.assertTrue(
+                any(token in text for token in valid_tokens),
+                f"{status_path} must name plan_095 with one of {valid_tokens!r}",
             )
 
 

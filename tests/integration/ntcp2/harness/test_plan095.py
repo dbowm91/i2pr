@@ -387,6 +387,7 @@ class Plan095StatusAuthorityTests(unittest.TestCase):
         expected_tokens = (
             "plan_095 = ci-live-wire-closure-next-executable",
             "plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run",
+            "plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected",
         )
         for text, label in ((text_087, "087"), (text_088, "088")):
             self.assertTrue(
