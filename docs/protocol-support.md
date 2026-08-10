@@ -415,33 +415,43 @@ support-ledger status changed and NTCP2 remains experimental and
 non-advertised. See [`plans/078-status.md`](../plans/078-status.md) and
 [`plans/080-status.md`](../plans/080-status.md).
 
-## Active status correction (2026-08-04)
+## Active status correction (2026-08-08)
 
-The current Milestone 3 execution roadmap is Plan 085 → Plan 086 → Plan
-087 → Plan 088. The Plan 082 prepare / validate-scenario surface is
-implemented and closed; Plans 083 and 084 are implemented and
-reclassifed as execution-pending. The Plan 084 historical
+The current Milestone 3 forward-direction closure lane is governed by
+[Plan 095](../plans/095-ci-host-loopback-live-wire-evidence-lane.md) (the
+single next executable plan), with
+[Plan 096](../plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md)
+and
+[Plan 097](../plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md)
+as closed corrective passes that restored execution correctness before
+the first authoritative dispatch. The Plan 082 prepare / validate-scenario
+surface is implemented and closed; Plans 083 and 084 are implemented and
+reclassified as execution-pending. The Plan 084 historical
 `lane-invalidated` closure is reclassified as "runner implementation
 completed; required reverse wire execution never occurred" and the
 active development decision now lives in `plans/088-status.md`. The
 Plan 078/080 attempt stopped pre-protocol and did not produce a TCP,
 NTCP2, authenticated-frame, or I2NP result. Plan 082 prepares authentic
 i2pr state and real RouterInfo/hash/run-identity fields, the Rust
-`validate-scenario` command parses the strict live scenario without opening a
-peer, and the mixed runner asserts both peer identities and the frozen run
-identity before any live process. This changes diagnostic ownership only; it
-does not change any support row.
+`validate-scenario` command parses the strict live scenario without opening
+a peer, and the mixed runner asserts both peer identities and the frozen
+run identity before any live process. This changes diagnostic ownership
+only; it does not change any support row.
 
-Plan 085 introduces the bounded `host-loopback-development` topology
+Plan 085 introduced the bounded `host-loopback-development` topology
 kind that allows literal IPv4 loopback protocol execution on the
-constrained host. Plan 086 enables the lane and proves a listener-only
-preflight; Plan 086 must close as `host-loopback-development-ready`
-before Plan 087 begins. Plan 087 runs the first real `i2pr -> i2pd`
-forward direction under the development lane; Plan 088 runs the reverse
-`i2pd -> i2pr` direction and issues the active development decision.
-On this host the recorded Plan 088 decision is `insufficient-evidence`
-because the Plan 086 lane has not closed, the Plan 087 forward
-direction has not executed, and no real wire run has been retained.
+constrained host. Plan 086 enabled the lane and proved a listener-only
+preflight; Plan 086 closed as `host-loopback-development-ready` on this
+host. Plan 087 ran the first real `i2pr -> i2pd` forward direction under
+the development lane; Plan 090, Plan 091, Plan 092, Plan 093, and Plan
+094 applied i2pd direct driver corrections and runner/provenance
+authority corrections. Plan 094's live closure environment is blocked
+on this host, and Plan 095 supersedes that path with a manual GitHub
+Actions `ubuntu-24.04` host-loopback evidence lane. Plan 088 runs the
+reverse `i2pd -> i2pr` direction and issues the active development
+decision; on this host the recorded Plan 088 decision remains
+`insufficient-evidence` until Plan 095 closes with a passing instrumented
+and a passing control forward record from the same CI evidence pair.
 
 NTCP2 remains experimental and non-advertised, and Plan 079 remains
 blocked pending the Plan 088 decision. Plan 072 remains inactive. It
