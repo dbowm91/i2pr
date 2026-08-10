@@ -207,6 +207,49 @@ class I2pdDriverArtifactsPresentTests(unittest.TestCase):
         self.assertIn("libi2pdlang.a", script)
         self.assertIn("patch -p1 --fuzz=0", script)
 
+    def test_i2pd_build_driver_script_bounds_parallel_jobs(self):
+        # Plan 095: the i2pd library compile phase can exceed the
+        # GitHub-hosted ubuntu-24.04 runner's memory budget when
+        # invoked with unbounded ``--parallel``. The build script must
+        # always pass an explicit job count. Drift back to bare
+        # ``--parallel`` is a CI-build regression that re-introduces
+        # the OOM kill observed in the historical Plan 095 manual
+        # runs.
+        script = I2PD_BUILD_SCRIPT.read_text()
+        for line in script.splitlines():
+            stripped = line.lstrip()
+            if "--parallel" not in stripped:
+                continue
+            self.assertFalse(
+                stripped.endswith("--parallel"),
+                f"unbounded --parallel in build-driver.sh: {line!r}",
+            )
+            self.assertRegex(
+                stripped,
+                r"--parallel\s+\d+",
+                f"missing explicit --parallel <N> in build-driver.sh: {line!r}",
+            )
+
+    def test_i2pd_observer_header_makes_ring_capacity_visible_in_control_build(self):
+        # Plan 095 follow-up: the ``ObservationRing`` storage type
+        # declared at file scope in ``interop_observer.cpp`` is used
+        # in both the instrumented and the uninstrumented (control)
+        # builds, so the ``INTEROP_RING_CAPACITY`` constant it
+        # depends on must live outside the ``I2PD_INTEROP_OBSERVER``
+        # ifdef in the header. Restoring the constant inside the
+        # ifdef re-introduces the build regression observed on this
+        # host after the Plan 093 commit: the control binary fails
+        # to compile because the ring instances at file scope cannot
+        # be sized.
+        header = (REPO_ROOT / "tests/integration/ntcp2/reference-drivers/i2pd/src/interop_observer.h").read_text()
+        ifdef_open = header.index("#ifdef I2PD_INTEROP_OBSERVER")
+        capacity_pos = header.index("INTEROP_RING_CAPACITY = 64")
+        self.assertLess(
+            capacity_pos,
+            ifdef_open,
+            "INTEROP_RING_CAPACITY must be declared before the I2PD_INTEROP_OBSERVER ifdef so the control build can size the file-scope ObservationRing instances",
+        )
+
     def test_i2pd_driver_source_uses_real_i2pd_api(self):
         source = (REPO_ROOT / "tests/integration/ntcp2/reference-drivers/i2pd/src/i2pd_ntcp2_interop_driver.cpp").read_text()
         self.assertIn("i2p::transport::Transports::SendMessage", source)

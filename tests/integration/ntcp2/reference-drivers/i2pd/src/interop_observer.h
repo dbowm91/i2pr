@@ -59,13 +59,18 @@ struct ObservationRingEntry {
     bool present;
 };
 
-#ifdef I2PD_INTEROP_OBSERVER
-
 // Plan 093: the bounded receive/send/authenticated/tcp-accepted
-// ring capacity. A passing run must observe only ``capacity``
-// ring entries per category; overflow increments
-// ``ObserverDropCount()`` and fails the gate.
+// ring capacity. A passing run must observe only ``capacity`` ring
+// entries per category; overflow increments ``ObserverDropCount()``
+// and fails the gate. The constant and the ``ObservationRing``
+// storage type are reachable from the implementation file in both
+// the instrumented and the uninstrumented builds so the file-scope
+// ring instances and the empty inline observer API in the control
+// build compile cleanly. The active API surface remains gated by
+// ``I2PD_INTEROP_OBSERVER`` below.
 constexpr std::size_t INTEROP_RING_CAPACITY = 64;
+
+#ifdef I2PD_INTEROP_OBSERVER
 
 // Plan 093: begin a new listener generation. The driver calls this
 // before starting transports; the observer resets its counters and

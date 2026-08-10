@@ -139,7 +139,7 @@ cmake \
     -DBUILD_TESTING=OFF \
     -DWITH_UPNP=OFF >/dev/null
 
-cmake --build "$I2PD_LIB_BUILD" --parallel >/dev/null
+cmake --build "$I2PD_LIB_BUILD" --parallel 2 >/dev/null
 
 if [[ ! -f "$I2PD_LIB_BUILD/libi2pd.a" || \
       ! -f "$I2PD_LIB_BUILD/libi2pdclient.a" || \
@@ -173,7 +173,7 @@ cmake \
 cmake --build "$DRIVER_BUILD" \
     --target i2pd_ntcp2_interop_driver_instrumented \
     --target i2pd_ntcp2_interop_driver_control \
-    --parallel >/dev/null
+    --parallel 2 >/dev/null
 
 INSTRUMENTED_BINARY="$DRIVER_BUILD/i2pd_ntcp2_interop_driver_instrumented"
 CONTROL_BINARY="$DRIVER_BUILD/i2pd_ntcp2_interop_driver_control"
