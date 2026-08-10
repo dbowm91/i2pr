@@ -511,6 +511,39 @@ class Plan095DocumentationContractTests(unittest.TestCase):
                         f"{job_name} must restore the executable bit on {binary}",
                     )
 
+    def test_live_jobs_rc_capture_is_not_a_probe_argument(self) -> None:
+        # Plan 099/100: a trailing backslash after the last
+        # ``run-minimal-i2pd-host-loopback-probe.py`` argument
+        # turns the next line (``instrumented_rc=$?`` /
+        # ``control_rc=$?``) into a literal argument to the
+        # Python script, which then errors out with
+        # ``unrecognized arguments: instrumented_rc=0`` before
+        # the live attempt begins. The ``<role>_rc=$?`` capture
+        # must be on its own shell line so the probe runs cleanly
+        # and the exit code is captured by the shell.
+        workflow = _load_workflow()
+        jobs = workflow.get("jobs") or {}
+        for job_name, capture in (
+            ("forward-instrumented", "instrumented_rc=$?"),
+            ("forward-control", "control_rc=$?"),
+        ):
+            with self.subTest(job=job_name):
+                text = _job_steps_text(jobs[job_name])
+                self.assertIn(
+                    capture,
+                    text,
+                    f"{job_name} must capture the probe exit code via a separate shell line",
+                )
+                # The capture line must not be the continuation
+                # of the probe command (i.e. the probe argument
+                # list must end with the actual last argument,
+                # not a trailing backslash).
+                self.assertNotRegex(
+                    text,
+                    rf"run-minimal-i2pd-host-loopback-probe\.py.*\\[^\\]*\n\s*{re.escape(capture)}",
+                    f"{job_name} must not concatenate '{capture}' onto the probe command via a trailing backslash",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

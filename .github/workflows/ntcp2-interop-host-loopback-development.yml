@@ -381,7 +381,7 @@ jobs:
             --output "$PLAN095_RECORD" \
             --i2pd-driver-binary "$I2PD_DRIVER_BINARY" \
             --i2pr-binary "$I2PR_BINARY" \
-            --delivery-status-message-id "0x04200951" \
+            --delivery-status-message-id "0x04200951"
           instrumented_rc=$?
           echo "instrumented attempt exit: ${instrumented_rc}"
           # Plan 096: never silently mask a non-zero instrumented
