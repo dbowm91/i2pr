@@ -306,6 +306,31 @@ jobs:
         with:
           name: plan095-build
           path: ${{ github.workspace }}/target/interop/plan095-build/output/
+      - name: restore-executable-bit
+        env:
+          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
+        run: |
+          set -euo pipefail
+          # Plan 098/099: ``actions/upload-artifact@v4`` (archiver
+          # 7.0.1 + zip-stream) records the default 0644 mode in
+          # the zip entry's external attributes even when the file
+          # on disk is 0755. The downstream ``actions/download-artifact``
+          # then extracts the same 0644 mode, so the live job's
+          # ``test -x`` guard fails closed with a typed
+          # ``ci_build_blocked``. Restore the executable bit
+          # explicitly after extraction so the live jobs see the
+          # correct mode regardless of the upload action's zip-mode
+          # handling.
+          BUILD_OUTPUT="$BUILD_DIR/output"
+          for binary in i2pr-interop \
+                      i2pd_ntcp2_interop_driver_instrumented \
+                      i2pd_ntcp2_interop_driver_control; do
+            if [[ -f "$BUILD_OUTPUT/$binary" ]]; then
+              chmod 0755 "$BUILD_OUTPUT/$binary"
+            fi
+          done
+          test -x "$BUILD_OUTPUT/i2pr-interop"
+          test -x "$BUILD_OUTPUT/i2pd_ntcp2_interop_driver_instrumented"
       - name: prepare-run-root
         env:
           # Plan 096: the sanitized evidence tree must be disjoint
@@ -472,6 +497,31 @@ jobs:
         with:
           name: plan095-build
           path: ${{ github.workspace }}/target/interop/plan095-build/output/
+      - name: restore-executable-bit
+        env:
+          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
+        run: |
+          set -euo pipefail
+          # Plan 098/099: ``actions/upload-artifact@v4`` (archiver
+          # 7.0.1 + zip-stream) records the default 0644 mode in
+          # the zip entry's external attributes even when the file
+          # on disk is 0755. The downstream ``actions/download-artifact``
+          # then extracts the same 0644 mode, so the live job's
+          # ``test -x`` guard fails closed with a typed
+          # ``ci_build_blocked``. Restore the executable bit
+          # explicitly after extraction so the live jobs see the
+          # correct mode regardless of the upload action's zip-mode
+          # handling.
+          BUILD_OUTPUT="$BUILD_DIR/output"
+          for binary in i2pr-interop \
+                      i2pd_ntcp2_interop_driver_instrumented \
+                      i2pd_ntcp2_interop_driver_control; do
+            if [[ -f "$BUILD_OUTPUT/$binary" ]]; then
+              chmod 0755 "$BUILD_OUTPUT/$binary"
+            fi
+          done
+          test -x "$BUILD_OUTPUT/i2pr-interop"
+          test -x "$BUILD_OUTPUT/i2pd_ntcp2_interop_driver_instrumented"
       - name: download-instrumented-evidence
         uses: actions/download-artifact@v4.1.7
         with:
@@ -664,6 +714,31 @@ jobs:
         with:
           name: plan095-build
           path: ${{ github.workspace }}/target/interop/plan095-build/output/
+      - name: restore-executable-bit
+        env:
+          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
+        run: |
+          set -euo pipefail
+          # Plan 098/099: ``actions/upload-artifact@v4`` (archiver
+          # 7.0.1 + zip-stream) records the default 0644 mode in
+          # the zip entry's external attributes even when the file
+          # on disk is 0755. The downstream ``actions/download-artifact``
+          # then extracts the same 0644 mode, so the live job's
+          # ``test -x`` guard fails closed with a typed
+          # ``ci_build_blocked``. Restore the executable bit
+          # explicitly after extraction so the live jobs see the
+          # correct mode regardless of the upload action's zip-mode
+          # handling.
+          BUILD_OUTPUT="$BUILD_DIR/output"
+          for binary in i2pr-interop \
+                      i2pd_ntcp2_interop_driver_instrumented \
+                      i2pd_ntcp2_interop_driver_control; do
+            if [[ -f "$BUILD_OUTPUT/$binary" ]]; then
+              chmod 0755 "$BUILD_OUTPUT/$binary"
+            fi
+          done
+          test -x "$BUILD_OUTPUT/i2pr-interop"
+          test -x "$BUILD_OUTPUT/i2pd_ntcp2_interop_driver_instrumented"
       - name: download-instrumented-evidence
         uses: actions/download-artifact@v4.1.7
         with:

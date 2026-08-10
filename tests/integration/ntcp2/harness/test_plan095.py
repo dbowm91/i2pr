@@ -468,6 +468,49 @@ class Plan095DocumentationContractTests(unittest.TestCase):
             "build-i2pr-interop must chmod 0755 the i2pr-interop artifact at the canonical output path",
         )
 
+    def test_live_jobs_restore_executable_bit_after_download(self) -> None:
+        # Plan 099: ``actions/upload-artifact@v4`` (archiver
+        # 7.0.1 + zip-stream) records the default 0644 mode in
+        # the zip entry's external attributes even when the file
+        # on disk is 0755. The downstream
+        # ``actions/download-artifact`` then extracts the same
+        # 0644 mode, so the live jobs' ``test -x`` guard fails
+        # closed with a typed ``ci_build_blocked``. The
+        # forward-instrumented and forward-control jobs must
+        # explicitly ``chmod 0755`` the downloaded binaries so
+        # the live jobs see the correct mode regardless of the
+        # upload action's zip-mode handling.
+        workflow = _load_workflow()
+        jobs = workflow.get("jobs") or {}
+        for job_name in ("forward-instrumented", "forward-control"):
+            with self.subTest(job=job_name):
+                text = _job_steps_text(jobs[job_name])
+                self.assertIn(
+                    "restore-executable-bit",
+                    text,
+                    f"{job_name} must include a restore-executable-bit step",
+                )
+                # The exact form may be a literal ``chmod 0755
+                # "$BUILD_OUTPUT/<binary>"`` line or a ``chmod
+                # 0755`` applied inside a loop over the binary
+                # names. Match the binary names anywhere in the
+                # step body and the ``chmod 0755`` token in the
+                # same step.
+                self.assertIn(
+                    "chmod 0755",
+                    text,
+                    f"{job_name} must invoke chmod 0755 to restore the executable bit on downloaded artifacts",
+                )
+                for binary in (
+                    "i2pr-interop",
+                    "i2pd_ntcp2_interop_driver_instrumented",
+                ):
+                    self.assertIn(
+                        binary,
+                        text,
+                        f"{job_name} must restore the executable bit on {binary}",
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
