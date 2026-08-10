@@ -544,6 +544,35 @@ class Plan095DocumentationContractTests(unittest.TestCase):
                     f"{job_name} must not concatenate '{capture}' onto the probe command via a trailing backslash",
                 )
 
+    def test_prepare_run_root_does_not_create_the_run_root(self) -> None:
+        # Plan 100: the live probe refuses to launch if the
+        # run root already exists ("--run-root must not exist
+        # before the run (fresh run root)"). The
+        # ``prepare-run-root`` step must remove the run root but
+        # must not re-create it via ``mkdir -p``; the probe is
+        # the single owner that creates the run root.
+        workflow = _load_workflow()
+        jobs = workflow.get("jobs") or {}
+        for job_name in ("forward-instrumented", "forward-control"):
+            with self.subTest(job=job_name):
+                text = _job_steps_text(jobs[job_name])
+                # The whole-step text contains every ``run:``
+                # block for the job. Assert directly on the
+                # textual contract instead of extracting a
+                # per-step body.
+                self.assertRegex(
+                    text,
+                    r'rm -rf\s+"\$\{?PLAN095_RUN_ROOT\}?"',
+                    f"{job_name} prepare-run-root must remove the run root",
+                )
+                # The contract forbids the prepare-run-root
+                # step from creating the run root via mkdir.
+                self.assertNotRegex(
+                    text,
+                    r'mkdir -p\s+"\$\{?PLAN095_RUN_ROOT\}?"',
+                    f"{job_name} prepare-run-root must not create the run root; the probe owns its creation",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
