@@ -415,16 +415,17 @@ support-ledger status changed and NTCP2 remains experimental and
 non-advertised. See [`plans/078-status.md`](../plans/078-status.md) and
 [`plans/080-status.md`](../plans/080-status.md).
 
-## Active status correction (2026-08-08)
+## Active status correction (2026-08-10)
 
 The current Milestone 3 forward-direction closure lane is governed by
 [Plan 095](../plans/095-ci-host-loopback-live-wire-evidence-lane.md) (the
 single next executable plan), with
-[Plan 096](../plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md)
+[Plan 096](../plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md),
+[Plan 097](../plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md),
 and
-[Plan 097](../plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md)
+[Plan 098](../plans/098-plan095-runner-provenance-boundary-corrective-pass.md)
 as closed corrective passes that restored execution correctness before
-the first authoritative dispatch. The Plan 082 prepare / validate-scenario
+the next authoritative dispatch. The Plan 082 prepare / validate-scenario
 surface is implemented and closed; Plans 083 and 084 are implemented and
 reclassified as execution-pending. The Plan 084 historical
 `lane-invalidated` closure is reclassified as "runner implementation
@@ -447,11 +448,21 @@ the development lane; Plan 090, Plan 091, Plan 092, Plan 093, and Plan
 094 applied i2pd direct driver corrections and runner/provenance
 authority corrections. Plan 094's live closure environment is blocked
 on this host, and Plan 095 supersedes that path with a manual GitHub
-Actions `ubuntu-24.04` host-loopback evidence lane. Plan 088 runs the
-reverse `i2pd -> i2pr` direction and issues the active development
-decision; on this host the recorded Plan 088 decision remains
-`insufficient-evidence` until Plan 095 closes with a passing instrumented
-and a passing control forward record from the same CI evidence pair.
+Actions `ubuntu-24.04` host-loopback evidence lane. The first
+authoritative Plan 095 manual CI dispatch on 2026-08-10 advanced through
+the full contract/build/forward-instrumented job graph but failed
+closed with `terminal_result = pre_protocol_rejected /
+pre-protocol-preparation-failed` before any TCP or NTCP2 wire activity.
+Plan 098 reclassified that result as a pre-protocol runner/provenance
+failure (the runner reconstructed a non-authoritative
+`target/debug/i2pr-interop` path instead of consuming the
+wrapper-supplied `--i2pr-binary` path) and corrected the
+runner/provenance ownership boundary before any future dispatch. Plan
+088 runs the reverse `i2pd -> i2pr` direction and issues the active
+development decision; on this host the recorded Plan 088 decision
+remains `insufficient-evidence` until Plan 095 closes with a passing
+instrumented and a passing control forward record from the same CI
+evidence pair.
 
 NTCP2 remains experimental and non-advertised, and Plan 079 remains
 blocked pending the Plan 088 decision. Plan 072 remains inactive. It
@@ -465,3 +476,77 @@ and pre-protocol results cannot activate Emissary or change this
 support ledger. The
 [Plan 072/079 gate amendment](../plans/072-079-gate-amendment-plan-088.md)
 records the active gate authority.
+
+The current status of the active sequence is:
+
+```text
+plan_093 = implementation-landed-closure-incomplete
+plan_094 = implementation-landed-live-closure-environment-blocked
+plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun
+plan_096 = passed-pre-dispatch-workflow-correction
+plan_097 = passed-artifact-path-and-cleanup-correction
+plan_098 = passed-runner-provenance-boundary-correction
+plan_087 = open-pending-plan095-ci-forward-evidence-pair
+plan_088 = blocked-pending-plan095-ci-closure
+plan_079 = blocked-pending-plan088-two-way-pass
+plan_072 = inactive-pending-plan088-ambiguity
+ntcp2    = experimental-non-advertised
+```
+
+### Plan 095 CI host-loopback live-wire evidence lane
+
+[Plan 095](../plans/095-ci-host-loopback-live-wire-evidence-lane.md)
+implements the GitHub Actions `ubuntu-24.04` host-loopback live-wire
+evidence lane that runs the Plan 086 `host-loopback-development` topology
+on a fresh VM. The lane is **development-only**; it never satisfies a
+release or isolation qualification and cannot become a Milestone 3
+certificate. The workflow lives at
+`.github/workflows/ntcp2-interop-host-loopback-development.yml` with a
+manual `workflow_dispatch` trigger only, `contents: read` permissions,
+and the contract/build/forward-instrumented/forward-control/validate-gate
+job sequence.
+
+The CI environment blocker vocabulary is bounded
+(`ci_binary_execution_blocked`, `ci_loopback_bind_blocked`,
+`ci_loopback_connect_blocked`, `ci_reference_build_blocked`,
+`ci_artifact_transfer_blocked`, `ci_disk_space_blocked`,
+`ci_unexpected_runner_environment`); CI inability is never reported
+as a protocol failure. Plan 095 supersedes the Plan 094 assumption that
+the Plan 046 rootless sealed-namespace lane or the Plan 048/049
+Multipass guest must become runnable before development-only forward
+evidence can close.
+
+### Plan 096/097/098 Plan 095 corrective passes
+
+[Plan 096](../plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md)
+closed four demonstrated workflow defects before the first authoritative
+dispatch: explicit i2pr build path, disjoint sanitized evidence,
+embedded Python import audit, and canonical tracked-source digest. The
+static regression matrix `test_plan096.py` (36 cases) and the
+pre-dispatch audit `scripts/check-plan095-workflow.sh` are green
+locally.
+
+[Plan 097](../plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md)
+closed two narrow workflow defects that remained after Plan 096:
+artifact-path ownership (one canonical absolute `BUILD_OUTPUT` path used
+by every producer, verifier, manifest generator, artifact uploader, and
+live consumer) and disposable run-root cleanup (strict `rm -rf --` with
+an exact path guard and an unsuppressed absence assertion). The static
+regression matrix `test_plan097.py` (45 cases) and the extended
+pre-dispatch audit are green locally.
+
+[Plan 098](../plans/098-plan095-runner-provenance-boundary-corrective-pass.md)
+closed the runner/provenance ownership boundary that the first
+authoritative Plan 095 dispatch exposed on 2026-08-10. The forward,
+reverse, and preflight runners now accept an explicit `i2pr_binary: Path`
+argument and rehash the supplied file bytes against `i2pr_binary_sha256`
+before any subprocess launch. The wrapper threads the exact
+caller-supplied `--i2pr-binary` path to every runner, exposes
+`--attempt-kind` for instrumented/control role binding, and refuses
+role/binary mismatches. The i2pr and i2pd build-manifest digests are
+independently measured; the runner no longer aliases a generic manifest
+digest into both artifact classes. The Plan 095 final gate validates
+record digests against the actual downloaded artifacts and role-specific
+manifests. The static regression matrix `test_plan098.py` (15 cases) is
+green locally. The 2026-08-10 result is reclassified as a pre-protocol
+runner/provenance failure with no TCP or NTCP2 wire conclusion.

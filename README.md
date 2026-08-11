@@ -2150,27 +2150,30 @@ and [Plan 080 status](plans/080-status.md).
 ### Current active sequence: Plan 095 → Plan 088
 
 The earlier Plan 085 → Plan 086 → Plan 087 → Plan 088 summary is preserved
-above as a historical section. As of 2026-08-08 the active Milestone 3
+above as a historical section. As of 2026-08-10 the active Milestone 3
 forward-direction closure lane is governed by
 [Plan 095](plans/095-ci-host-loopback-live-wire-evidence-lane.md) (the
-single next executable plan), with [Plan 096](plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md)
-and [Plan 097](plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md)
+single next executable plan), with [Plan 096](plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md),
+[Plan 097](plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md),
+and [Plan 098](plans/098-plan095-runner-provenance-boundary-corrective-pass.md)
 as closed corrective passes that restored execution correctness before
-the first authoritative dispatch. See the [Plan 095](#plan-095-ci-host-loopback-live-wire-evidence-lane),
+the next authoritative dispatch. See the [Plan 095](#plan-095-ci-host-loopback-live-wire-evidence-lane),
 [Plan 096](#plan-096-plan-095-ci-workflow-correctness-and-pre-dispatch-closure),
-and [Plan 097](#plan-097-plan-095-artifact-path-and-cleanup-corrective-pass)
+[Plan 097](#plan-097-plan-095-artifact-path-and-cleanup-corrective-pass),
+and [Plan 098](#plan-098-plan-095-runner-provenance-boundary-corrective-pass)
 sections above for the full implementation surface, the bounded CI
-environment blocker vocabulary, and the artifact-path and cleanup
-corrections.
+environment blocker vocabulary, the artifact-path and cleanup
+corrections, and the runner/provenance ownership boundary correction.
 
 The current status of the active sequence is:
 
 ```text
 plan_093 = implementation-landed-closure-incomplete
 plan_094 = implementation-landed-live-closure-environment-blocked
-plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected
+plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun
 plan_096 = passed-pre-dispatch-workflow-correction
 plan_097 = passed-artifact-path-and-cleanup-correction
+plan_098 = passed-runner-provenance-boundary-correction
 plan_087 = open-pending-plan095-ci-forward-evidence-pair
 plan_088 = blocked-pending-plan095-ci-closure
 plan_079 = blocked-pending-plan088-two-way-pass
@@ -2188,14 +2191,20 @@ preparation and recorded
 `terminal_result = pre_protocol_rejected,
 reason_code = pre-protocol-preparation-failed`. The
 forward-control job correctly refused to launch because the
-instrumented evidence did not pass. Plan 095 therefore remains
-active; a successor plan is required to address the
-pre-protocol preparation regression. Plan 088 remains blocked
-until Plan 095 closes with a passing instrumented and a passing
-control forward record from the same CI evidence pair. Plan
-079 remains blocked pending the Plan 088 two-way pass. Plan
-072 remains inactive pending the Plan 088 ambiguity decision.
-NTCP2 remains experimental and non-advertised.
+instrumented evidence did not pass. Plan 098 reclassified
+the 2026-08-10 result as a **pre-protocol runner/provenance
+failure**, not a wire-level NTCP2 conclusion, and corrected
+the runner/provenance ownership boundary (the runner
+reconstructed a non-authoritative `target/debug/i2pr-interop`
+path instead of consuming the wrapper-supplied
+`--i2pr-binary` path). Exactly one manual Plan 095 GitHub
+Actions dispatch follows the Plan 098 correction commit. Plan
+088 remains blocked until Plan 095 closes with a passing
+instrumented and a passing control forward record from the
+same CI evidence pair. Plan 079 remains blocked pending the
+Plan 088 two-way pass. Plan 072 remains inactive pending the
+Plan 088 ambiguity decision. NTCP2 remains experimental and
+non-advertised.
 
 ### Plan 088 reverse probe and development decision
 
