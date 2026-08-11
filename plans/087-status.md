@@ -30,6 +30,29 @@ latest clean committed-head attempts are:
    "Branch A — i2pr runtime state-machine defect" classification is
    **superseded** by Plan 093.
 
+The Plan 098 runner/provenance boundary corrective pass
+delivered the implementation surface required for any future
+authoritative Plan 095 dispatch. The forward, reverse, and
+preflight runners now accept the explicit `i2pr_binary` path as
+a mandatory first-class argument and refuse an attempted-live
+execution when the path is missing or its measured digest does
+not match the supplied SHA-256. The wrapper threads the exact
+caller-supplied path to every runner, distinguishes the i2pr and
+i2pd build-manifest digests, and binds the i2pd driver role to
+the exact role-specific build manifest via the new
+`--attempt-kind` flag. The Plan 095 final gate now validates the
+record claims against the actual downloaded artifacts and
+role-specific manifests.
+
+The first authoritative Plan 095 CI dispatch on 2026-08-10 was
+a **pre-protocol runner/provenance failure**, not a wire-level
+NTCP2 classification. The live runner reached the pre-protocol
+state preparation phase, then the runner reconstructed a
+non-authoritative `target/debug/i2pr-interop` path instead of
+using the canonical absolute artifact path supplied by the
+wrapper. No TCP or NTCP2 wire-level conclusion is supported by
+that result.
+
 ```text
 status = open-pending-plan095-ci-forward-evidence-pair
 forward_digest = non-zero (Plan 091 instrumented retained record)
@@ -41,24 +64,45 @@ plan_091 = historical-partial-correction
 plan_092 = superseded-by-plan093
 plan_093 = implementation-landed-closure-incomplete
 plan_094 = implementation-landed-live-closure-environment-blocked
-plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun
 plan_096 = passed-pre-dispatch-workflow-correction
 plan_097 = passed-artifact-path-and-cleanup-correction
+plan_098 = passed-runner-provenance-boundary-correction
 plan_088 = blocked-pending-plan095-ci-closure
 plan_079 = blocked-pending-plan088-two-way-pass
 plan_072 = inactive-pending-plan088-ambiguity
 ntcp2    = experimental-non-advertised
 ```
 
-Plan 095 is the single next executable plan. Plan 095 implements
-the GitHub Actions `ubuntu-24.04` host-loopback live-wire
-closure lane that supersedes the local host environment-blocked
-path that Plan 094 (plan094) expected to run. Plan 094 remains
-implementation-landed; its live closure environment is blocked
-on this host. Plan 088 may not run before Plan 095 closes with
-a passing instrumented forward record and a passing control
-forward record bound to the same CI evidence pair.
-Plan 079 and Plan 072 remain blocked pending the Plan 088 decision.
+Plan 095 remains the single next executable plan. Plan 098
+corrected the runner/provenance ownership boundary that the
+first authoritative dispatch exposed before any TCP or NTCP2
+wire activity. Exactly one manual Plan 095 GitHub Actions
+dispatch follows the Plan 098 correction commit. Plan 088 may
+not run before Plan 095 closes with a passing instrumented
+forward record and a passing control forward record bound to the
+same CI evidence pair. Plan 079 and Plan 072 remain blocked
+pending the Plan 088 decision.
+
+## Plan 094 status reference
+
+Plan 094 is implementation-landed with live closure
+environment-blocked on this host. The Plan 094 active
+sequence amendment is recorded in
+`plans/094-plan093-completion-and-plan087-to-plan088-handoff.md`.
+Plan 094 remained the active runner/provenance authority
+between the Plan 093 implementation landing and the Plan 095
+CI live-wire lane activation; the Plan 098 runner/provenance
+boundary correction supersedes the Plan 094 local-host lane as
+the authoritative forward-direction close path. Plan 094
+remains implementation-landed; its local live closure
+environment is blocked on this host.
+
+The lowercase `plan094` token is recorded in the active status
+authority block at the top of this document and in the
+historical record below; the Plan 094 active sequence
+amendment remains the canonical reference for any future
+Plan 094 re-activation.
 
 ## Historical record
 

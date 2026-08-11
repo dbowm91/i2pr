@@ -259,4 +259,29 @@ if ! grep -q "host-loopback-development" "$workflow"; then
     exit 42
 fi
 
+# WP8 (Plan 098): the workflow must thread the explicit
+# ``--attempt-kind`` flag and the canonical absolute
+# ``$BUILD_OUTPUT`` i2pr / i2pd paths through the wrapper, and the
+# final gate must enforce role-specific manifest digests.
+if ! grep -q -- "--attempt-kind instrumented" "$workflow"; then
+    echo "Plan 098: instrumented job must pass --attempt-kind instrumented" >&2
+    exit 43
+fi
+if ! grep -q -- "--attempt-kind control" "$workflow"; then
+    echo "Plan 098: control job must pass --attempt-kind control" >&2
+    exit 44
+fi
+if ! grep -q "instrumented_build_manifest_sha256" "$workflow"; then
+    echo "Plan 098: final gate must validate role-specific i2pd build manifests" >&2
+    exit 45
+fi
+if ! grep -q "i2pr_build_manifest_sha256" "$workflow"; then
+    echo "Plan 098: final gate must validate the i2pr build manifest" >&2
+    exit 46
+fi
+if ! grep -q "provenance mismatch for" "$workflow"; then
+    echo "Plan 098: final gate must surface provenance mismatch labels" >&2
+    exit 47
+fi
+
 echo "Plan 096/097 workflow audit: OK (workflow is dispatch-ready)"

@@ -171,7 +171,17 @@ class Plan083RealProbeLaneTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_invalid_lane_records_lane_invalid(self) -> None:
+        import hashlib
         import json
+        # Plan 098: the runner requires an explicit i2pr binary
+        # path that is a regular file whose measured SHA-256 matches
+        # the supplied digest. The test pre-creates the file and
+        # supplies the matching digest so the runner passes the
+        # i2pr-binary pre-flight and reaches the lane validation
+        # that produces the lane-invalid record.
+        fake_binary = self.run_root / "fake-i2pr-interop"
+        fake_binary.write_bytes(b"fake-i2pr")
+        measured = hashlib.sha256(fake_binary.read_bytes()).hexdigest()
         record = execute_real_probe(
             repo_root=Path("/nonexistent"),
             run_root=self.run_root,
@@ -180,10 +190,11 @@ class Plan083RealProbeLaneTests(unittest.TestCase):
             reference_revision=_hex("b", 40),
             lane_qualification_sha256=_hex("c", 64),
             topology_kind="public-network",
-            i2pr_binary_sha256=_hex("d", 64),
+            i2pr_binary_sha256=measured,
             i2pd_binary_sha256=_hex("e", 64),
             delivery_status_message_id=0x04200001,
             i2pd_driver_binary=Path("/nonexistent/i2pd-driver"),
+            i2pr_binary=fake_binary,
         )
         validated = probe.validate_record(record)
         self.assertEqual(validated["terminal_result"], probe.LANE_INVALID)
@@ -191,7 +202,11 @@ class Plan083RealProbeLaneTests(unittest.TestCase):
         self.assertEqual(validated["highest_stage_reached"], probe.NOT_STARTED)
 
     def test_zero_message_id_records_pre_protocol_run_identity_failure(self) -> None:
+        import hashlib
         import json
+        fake_binary = self.run_root / "fake-i2pr-interop"
+        fake_binary.write_bytes(b"fake-i2pr")
+        measured = hashlib.sha256(fake_binary.read_bytes()).hexdigest()
         record = execute_real_probe(
             repo_root=Path("/nonexistent"),
             run_root=self.run_root,
@@ -200,16 +215,84 @@ class Plan083RealProbeLaneTests(unittest.TestCase):
             reference_revision=_hex("b", 40),
             lane_qualification_sha256=_hex("c", 64),
             topology_kind="rootless-sealed-single-netns",
-            i2pr_binary_sha256=_hex("d", 64),
+            i2pr_binary_sha256=measured,
             i2pd_binary_sha256=_hex("e", 64),
             delivery_status_message_id=0,
             i2pd_driver_binary=Path("/nonexistent/i2pd-driver"),
+            i2pr_binary=fake_binary,
         )
         validated = probe.validate_record(record)
         self.assertEqual(validated["terminal_result"], probe.PRE_PROTOCOL_REJECTED)
         self.assertEqual(
             validated["reason_code"], probe.REASON_PRE_PROTOCOL_RUN_IDENTITY_FAILED
         )
+
+    def test_missing_i2pr_binary_fails_closed(self) -> None:
+        # Plan 098: the runner refuses an attempted-live execution
+        # when the explicit ``i2pr_binary`` path is missing. The
+        # record must carry the typed pre-protocol rejection reason
+        # so the workflow final gate can fail closed without
+        # ambiguity.
+        import json
+        record = execute_real_probe(
+            repo_root=Path("/nonexistent"),
+            run_root=self.run_root,
+            run_id="real-missing-i2pr",
+            source_commit=_hex("a", 40),
+            reference_revision=_hex("b", 40),
+            lane_qualification_sha256=_hex("c", 64),
+            topology_kind="host-loopback-development",
+            i2pr_binary_sha256=_hex("d", 64),
+            i2pd_binary_sha256=_hex("e", 64),
+            delivery_status_message_id=0x04200001,
+            i2pd_driver_binary=Path("/nonexistent/i2pd-driver"),
+            i2pr_binary=Path("/nonexistent/fake-i2pr"),
+        )
+        validated = probe.validate_record(record)
+        self.assertEqual(
+            validated["terminal_result"], probe.PRE_PROTOCOL_REJECTED
+        )
+        self.assertEqual(
+            validated["reason_code"],
+            probe.REASON_PRE_PROTOCOL_PREPARATION_FAILED,
+        )
+
+    def test_i2pr_binary_hash_mismatch_fails_closed(self) -> None:
+        # Plan 098: the runner rehashes the explicit ``i2pr_binary``
+        # file and rejects the attempt when the measured digest does
+        # not match the supplied ``i2pr_binary_sha256``. The
+        # rejected record must carry the measured digest so the
+        # workflow can surface the mismatch.
+        import json
+        fake_binary = self.run_root / "fake-i2pr-interop"
+        fake_binary.write_bytes(b"fake-i2pr-bytes")
+        record = execute_real_probe(
+            repo_root=Path("/nonexistent"),
+            run_root=self.run_root,
+            run_id="real-mismatch-i2pr",
+            source_commit=_hex("a", 40),
+            reference_revision=_hex("b", 40),
+            lane_qualification_sha256=_hex("c", 64),
+            topology_kind="host-loopback-development",
+            i2pr_binary_sha256=_hex("d", 64),
+            i2pd_binary_sha256=_hex("e", 64),
+            delivery_status_message_id=0x04200001,
+            i2pd_driver_binary=Path("/nonexistent/i2pd-driver"),
+            i2pr_binary=fake_binary,
+        )
+        validated = probe.validate_record(record)
+        self.assertEqual(
+            validated["terminal_result"], probe.PRE_PROTOCOL_REJECTED
+        )
+        self.assertEqual(
+            validated["reason_code"],
+            probe.REASON_PRE_PROTOCOL_PREPARATION_FAILED,
+        )
+        # The record must surface the measured digest so the
+        # workflow can surface the mismatch; the i2pr_binary_sha256
+        # field carries the measured value, not the supplied zero.
+        self.assertNotEqual(validated["i2pr_binary_sha256"], _hex("d", 64))
+        self.assertEqual(len(validated["i2pr_binary_sha256"]), 64)
 
 
 class Plan083HostBlockerTests(unittest.TestCase):

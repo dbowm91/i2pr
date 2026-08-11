@@ -288,8 +288,13 @@ class Plan095ArtifactAndUploadTests(unittest.TestCase):
         )
         for entry in single_paths:
             stripped = entry.strip()
-            if stripped and not stripped.startswith("#"):
-                flattened.append(stripped)
+            # Plan 098: filter out false positives from inline
+            # Python type annotations (e.g., ``pathlib.Path) -> str:``)
+            # that the broad regex picks up inside ``python3 - <<'PY'``
+            # heredocs.
+            if not stripped or stripped.startswith("#") or " -> " in stripped:
+                continue
+            flattened.append(stripped)
         self.assertGreater(len(flattened), 0)
         for entry in flattened:
             # Plan 096: sanitized evidence lives under
@@ -388,6 +393,7 @@ class Plan095StatusAuthorityTests(unittest.TestCase):
             "plan_095 = ci-live-wire-closure-next-executable",
             "plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run",
             "plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected",
+            "plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun",
         )
         for text, label in ((text_087, "087"), (text_088, "088")):
             self.assertTrue(

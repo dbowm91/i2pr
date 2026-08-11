@@ -1657,14 +1657,16 @@ fi
 if ! grep -Fq 'plan_094 = active-single-next-executable-completion-pass' "$root/plans/088-status.md" \
   && ! grep -Fq 'plan_095 = ci-live-wire-closure-next-executable' "$root/plans/088-status.md" \
   && ! grep -Fq 'plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run' "$root/plans/088-status.md" \
-  && ! grep -Fq 'plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected' "$root/plans/088-status.md"; then
+  && ! grep -Fq 'plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected' "$root/plans/088-status.md" \
+  && ! grep -Fq 'plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun' "$root/plans/088-status.md"; then
   echo "Plan 088 status must name Plan 094 or Plan 095 as the active completion authority" >&2
   exit 1
 fi
 if ! grep -Fq 'plan_094 = active-single-next-executable-completion-pass' "$root/plans/087-status.md" \
   && ! grep -Fq 'plan_095 = ci-live-wire-closure-next-executable' "$root/plans/087-status.md" \
   && ! grep -Fq 'plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run' "$root/plans/087-status.md" \
-  && ! grep -Fq 'plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected' "$root/plans/087-status.md"; then
+  && ! grep -Fq 'plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected' "$root/plans/087-status.md" \
+  && ! grep -Fq 'plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun' "$root/plans/087-status.md"; then
   echo "Plan 087 status must name Plan 094 or Plan 095 as the active completion authority" >&2
   exit 1
 fi
@@ -1821,6 +1823,47 @@ fi
 if ! grep -Fq 'Plan 097' "$root/plans/087-status.md" \
   || ! grep -Fq 'Plan 097' "$root/plans/088-status.md"; then
   echo "Plan 097 closure must be recorded in active status authority" >&2
+  exit 1
+fi
+
+# Plan 098: runner/provenance ownership boundary corrective pass.
+# The Plan 098 test matrix must be present; the wrapper must
+# thread the explicit ``--i2pr-binary`` path to the runner; the
+# wrapper must validate the attempt-kind/role-to-binary mapping;
+# and the Plan 098 closure token must appear in the active
+# status authority files.
+if ! test -f "$root/tests/integration/ntcp2/harness/test_plan098.py"; then
+  echo "Plan 098 test matrix is missing" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr_binary: Path' "$root/tests/integration/ntcp2/harness/plan083_runner.py"; then
+  echo "Plan 098: forward runner must accept explicit i2pr_binary path" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr_binary: Path' "$root/tests/integration/ntcp2/harness/plan084_runner.py"; then
+  echo "Plan 098: reverse runner must accept explicit i2pr_binary path" >&2
+  exit 1
+fi
+if ! grep -Fq 'i2pr_binary: Path' "$root/tests/integration/ntcp2/harness/preflight_runner.py"; then
+  echo "Plan 098: preflight runner must accept explicit i2pr_binary path" >&2
+  exit 1
+fi
+if ! grep -Fq '"--attempt-kind"' "$root/scripts/interop/run-minimal-i2pd-host-loopback-probe.py"; then
+  echo "Plan 098: wrapper must expose the --attempt-kind flag" >&2
+  exit 1
+fi
+if ! grep -Fq 'attempt_kind' "$root/tests/integration/ntcp2/harness/plan083_runner.py" \
+  || ! grep -Fq 'attempt_kind' "$root/tests/integration/ntcp2/harness/plan084_runner.py"; then
+  echo "Plan 098: runner must thread attempt_kind into the probe record" >&2
+  exit 1
+fi
+if grep -Fq 'ATTEMPT_KIND_INSTRUMENTED' "$root/tests/integration/ntcp2/harness/plan084_runner.py" \
+  && grep -q 'attempt_kind=ATTEMPT_KIND_INSTRUMENTED' "$root/tests/integration/ntcp2/harness/plan084_runner.py"; then
+  echo "Plan 098: reverse runner must not hard-code attempt_kind=instrumented" >&2
+  exit 1
+fi
+if ! grep -q 'git ls-files' "$root/tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh"; then
+  echo "Plan 098: build-driver.sh must use canonical tracked-source identity (git ls-files)" >&2
   exit 1
 fi
 

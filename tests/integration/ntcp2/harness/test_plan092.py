@@ -101,11 +101,14 @@ class Plan092StatusAuthorityTests(unittest.TestCase):
         # superseded it as the CI live-wire closure authority. After
         # Plan 096 the Plan 095 status token changes to
         # ``ci-live-wire-lane-corrected-awaiting-one-authoritative-run``.
-        # The status record must reflect at least one of the three.
+        # After Plan 098 the Plan 095 status token becomes
+        # ``active-runner-provenance-corrected-awaiting-authoritative-rerun``.
+        # The status record must reflect at least one of the four.
         self.assertTrue(
             "plan_094 = active-single-next-executable-completion-pass" in text
             or "plan_095 = ci-live-wire-closure-next-executable" in text
-            or "plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run" in text,
+            or "plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run" in text
+            or "plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun" in text,
             "plans/088-status.md must name Plan 094 or Plan 095 as the active completion authority",
         )
         self.assertTrue(

@@ -127,21 +127,17 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _measure_i2pr_binary(repo_root: Path) -> str:
-    """Compute the SHA-256 of the committed i2pr-interop binary.
+def _measure_i2pr_binary(i2pr_binary: Path) -> str:
+    """Compute the SHA-256 of the supplied i2pr-interop binary.
 
     The wrapper records the measured digest in the probe record so the
     evidence binds to the actual binary the runner executed. The
     measurement is a real file digest, never a placeholder.
     """
 
-    debug_binary = repo_root / "target" / "debug" / "i2pr-interop"
-    release_binary = repo_root / "target" / "release" / "i2pr-interop"
-    if debug_binary.is_file():
-        return _sha256_file(debug_binary)
-    if release_binary.is_file():
-        return _sha256_file(release_binary)
-    return hashlib.sha256(b"i2pr-interop-binary-missing").hexdigest()
+    if not i2pr_binary.is_file():
+        raise RuntimeError(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+    return _sha256_file(i2pr_binary)
 
 
 def _prepare_i2pr_state(
@@ -149,6 +145,7 @@ def _prepare_i2pr_state(
     repo_root: Path,
     run_root: Path,
     topology_kind: str,
+    i2pr_binary: Path,
 ) -> dict[str, Any]:
     """Invoke ``i2pr-interop ntcp2 prepare`` for the host-loopback lane.
 
@@ -163,7 +160,6 @@ def _prepare_i2pr_state(
     if state_dir.stat().st_mode & 0o777 != 0o700:
         state_dir.chmod(0o700)
     i2pr_port = _allocate_loopback_port()
-    i2pr_binary = repo_root / "target" / "debug" / "i2pr-interop"
     if not i2pr_binary.is_file():
         raise RuntimeError(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
     placement = _placement_for_i2pr(
@@ -226,7 +222,7 @@ def _render_listen_config(
     reference_tree_sha256: str,
     driver_source_sha256: str,
     driver_binary_sha256: str,
-    build_manifest_sha256: str,
+    i2pd_build_manifest_sha256: str,
     observer_patch_sha256: str,
     run_identity_sha256: str,
     topology_kind: str,
@@ -260,7 +256,7 @@ def _render_listen_config(
         "reference_tree_sha256": reference_tree_sha256,
         "driver_source_sha256": driver_source_sha256,
         "driver_binary_sha256": driver_binary_sha256,
-        "build_manifest_sha256": build_manifest_sha256,
+        "build_manifest_sha256": i2pd_build_manifest_sha256,
         "observer_patch_sha256": observer_patch_sha256,
         "run_identity_sha256": run_identity_sha256,
         "topology_kind": topology_kind,
@@ -372,9 +368,11 @@ def execute_listener_preflight(
     i2pd_binary_sha256: str,
     delivery_status_message_id: int,
     i2pd_driver_binary: Path,
+    i2pr_binary: Path,
+    i2pr_build_manifest_sha256: str = "0" * 64,
+    i2pd_build_manifest_sha256: str = "0" * 64,
     reference_tree_sha256: str = "0" * 64,
     driver_source_sha256: str = "0" * 64,
-    build_manifest_sha256: str = "0" * 64,
     observer_patch_sha256: str = "0" * 64,
     source_inspection_record_sha256: str = "0" * 64,
     handshake_timeout_ms: int = 30_000,
@@ -387,6 +385,13 @@ def execute_listener_preflight(
     listener shutdown → cleanup. No dialer is ever started. The
     preflight is the only path Plan 086 may use to validate the lane
     contract before Plan 087 begins.
+
+    Plan 098: ``i2pr_binary`` is the explicit caller-supplied absolute
+    path to the i2pr launcher binary. The preflight measures the file
+    bytes against ``i2pr_binary_sha256`` before any subprocess launch
+    and fails closed with a typed pre-protocol provenance rejection if
+    the path is missing, not a regular file, or its measured digest
+    does not match the supplied SHA-256.
     """
 
     counters = empty_process_counters()
@@ -477,8 +482,34 @@ def execute_listener_preflight(
 
     # Phase 0: measure the committed i2pr-interop binary so the record
     # binds to the actual binary the runner executed.
-    i2pr_binary = repo_root / "target" / "debug" / "i2pr-interop"
-    measured_i2pr_binary_sha256 = _measure_i2pr_binary(repo_root)
+    # Plan 098: the explicit ``i2pr_binary`` argument is now the
+    # sole owner of every i2pr subprocess launch. The legacy
+    # ``repo_root / target / debug / i2pr-interop`` reconstruction
+    # is no longer performed for any authoritative attempt.
+    try:
+        measured_i2pr_binary_sha256 = _measure_i2pr_binary(i2pr_binary)
+    except RuntimeError as exc:
+        counters["i2pr_prepare"]["exited"] += 1
+        return PreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=str(exc),
+                highest_stage=NOT_STARTED,
+            ),
+            is_ready=False,
+            reason_code=str(exc),
+        )
+    if measured_i2pr_binary_sha256 != i2pr_binary_sha256:
+        return PreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=REASON_PRE_PROTOCOL_PREPARATION_FAILED,
+                highest_stage=NOT_STARTED,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
+            ),
+            is_ready=False,
+            reason_code=REASON_PRE_PROTOCOL_PREPARATION_FAILED,
+        )
 
     # Phase 1: prepare the i2pr state.
     counters["i2pr_prepare"]["started"] += 1
@@ -487,6 +518,7 @@ def execute_listener_preflight(
             repo_root=repo_root,
             run_root=run_root,
             topology_kind=topology_kind,
+            i2pr_binary=i2pr_binary,
         )
     except RuntimeError as exc:
         counters["i2pr_prepare"]["exited"] += 1
@@ -563,7 +595,7 @@ def execute_listener_preflight(
         reference_tree_sha256=reference_tree_sha256,
         driver_source_sha256=driver_source_sha256,
         driver_binary_sha256=i2pd_binary_sha256,
-        build_manifest_sha256=build_manifest_sha256,
+        build_manifest_sha256=i2pd_build_manifest_sha256,
         observer_patch_sha256=observer_patch_sha256,
         run_identity_sha256=lane_qualification_sha256,
         topology_kind=topology_kind,
@@ -579,8 +611,8 @@ def execute_listener_preflight(
             driver_binary=i2pd_driver_binary,
             helper_binary_sha256=i2pd_binary_sha256,
             helper_source_sha256=driver_source_sha256,
-            build_manifest_sha256=build_manifest_sha256,
-            helper_build_manifest_sha256=build_manifest_sha256,
+            build_manifest_sha256=i2pd_build_manifest_sha256,
+            helper_build_manifest_sha256=i2pd_build_manifest_sha256,
             run_identity_sha256=lane_qualification_sha256,
             observer_patch_sha256=observer_patch_sha256,
             local_router_info_sha256="0" * 64,
@@ -707,8 +739,8 @@ def execute_listener_preflight(
             driver_binary=i2pd_driver_binary,
             helper_binary_sha256=i2pd_binary_sha256,
             helper_source_sha256=driver_source_sha256,
-            build_manifest_sha256=build_manifest_sha256,
-            helper_build_manifest_sha256=build_manifest_sha256,
+            build_manifest_sha256=i2pd_build_manifest_sha256,
+            helper_build_manifest_sha256=i2pd_build_manifest_sha256,
             run_identity_sha256=lane_qualification_sha256,
             observer_patch_sha256=observer_patch_sha256,
             local_router_info_sha256="0" * 64,
@@ -869,6 +901,9 @@ def execute_concurrent_preflight(
     i2pd_binary_sha256: str,
     delivery_status_message_id: int,
     i2pd_driver_binary: Path,
+    i2pr_binary: Path,
+    i2pr_build_manifest_sha256: str = "0" * 64,
+    i2pd_build_manifest_sha256: str = "0" * 64,
     reference_tree_sha256: str = "0" * 64,
     driver_source_sha256: str = "0" * 64,
     build_manifest_sha256: str = "0" * 64,
@@ -985,8 +1020,42 @@ def execute_concurrent_preflight(
     raw_dir = run_root / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
 
-    measured_i2pr_binary_sha256 = _measure_i2pr_binary(repo_root)
-    i2pr_binary = repo_root / "target" / "debug" / "i2pr-interop"
+    # Plan 098: the explicit ``i2pr_binary`` argument is now the
+    # sole owner of every i2pr subprocess launch. The legacy
+    # ``repo_root / target / debug / i2pr-interop`` reconstruction
+    # is no longer performed for any authoritative attempt.
+    try:
+        measured_i2pr_binary_sha256 = _measure_i2pr_binary(i2pr_binary)
+    except RuntimeError as exc:
+        counters["i2pr_prepare"]["exited"] += 1
+        return ConcurrentPreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=str(exc),
+                highest_stage=NOT_STARTED,
+            ),
+            is_ready=False,
+            reason_code=str(exc),
+            listener_alive_when_dialer_started=False,
+            peer_router_info_copied_digest="0" * 64,
+            dialer_disposition="not-attempted",
+            listener_disposition="not-attempted",
+        )
+    if measured_i2pr_binary_sha256 != i2pr_binary_sha256:
+        return ConcurrentPreflightOutcome(
+            record=finalize(
+                terminal_result=PRE_PROTOCOL_REJECTED,
+                reason_code=REASON_PRE_PROTOCOL_PREPARATION_FAILED,
+                highest_stage=NOT_STARTED,
+                measured_i2pr_binary_sha256=measured_i2pr_binary_sha256,
+            ),
+            is_ready=False,
+            reason_code=REASON_PRE_PROTOCOL_PREPARATION_FAILED,
+            listener_alive_when_dialer_started=False,
+            peer_router_info_copied_digest="0" * 64,
+            dialer_disposition="not-attempted",
+            listener_disposition="not-attempted",
+        )
 
     counters["i2pr_prepare"]["started"] += 1
     try:
@@ -994,6 +1063,7 @@ def execute_concurrent_preflight(
             repo_root=repo_root,
             run_root=run_root,
             topology_kind=topology_kind,
+            i2pr_binary=i2pr_binary,
         )
     except RuntimeError as exc:
         counters["i2pr_prepare"]["exited"] += 1
@@ -1080,7 +1150,7 @@ def execute_concurrent_preflight(
         reference_tree_sha256=reference_tree_sha256,
         driver_source_sha256=driver_source_sha256,
         driver_binary_sha256=i2pd_binary_sha256,
-        build_manifest_sha256=build_manifest_sha256,
+        build_manifest_sha256=i2pd_build_manifest_sha256,
         observer_patch_sha256=observer_patch_sha256,
         run_identity_sha256=lane_qualification_sha256,
         topology_kind=topology_kind,

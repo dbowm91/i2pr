@@ -114,8 +114,52 @@ if [[ ! -d "$I2PD_SOURCE_DIR/libi2pd" ]]; then
     exit 64
 fi
 
-# Phase 1: compute provenance digests.
-PRISTINE_TREE_SHA="$(find "$I2PD_SOURCE_DIR" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')"
+# Phase 1: compute provenance digests. Plan 098: the canonical
+# tracked-source identity must match the workflow's
+# ``record-source-tree-digest`` step and the wrapper's
+# ``_canonical_tracked_tree_digest`` helper. The algorithm walks
+# ``git ls-files -z`` (excluding the ``.git`` administrative tree)
+# and hashes each tracked file's bytes; the digests are
+# concatenated in stable git order with a single NUL separator
+# before the final SHA-256 is computed. Drift between the
+# workflow, the build script, and the wrapper would break the
+# cross-reference identity, so the same Python helper may be
+# reused from the wrapper when available.
+if command -v python3 >/dev/null 2>&1; then
+    PRISTINE_TREE_SHA="$(python3 -c '
+import hashlib, subprocess, sys
+tree = sys.argv[1]
+out = subprocess.run(
+    ["git", "-C", tree, "ls-files", "-z"],
+    check=True, capture_output=True,
+).stdout
+stream = bytearray()
+for entry in out.split(b"\x00"):
+    if not entry:
+        continue
+    stream.extend(entry)
+    stream.extend(b"\x00")
+    file_path = tree + "/" + entry.decode("utf-8")
+    try:
+        with open(file_path, "rb") as handle:
+            stream.extend(hashlib.sha256(handle.read()).digest())
+            stream.extend(b"\x00")
+    except OSError:
+        pass
+print(hashlib.sha256(bytes(stream)).hexdigest())
+' "$I2PD_SOURCE_DIR")"
+else
+    # POSIX fallback: enumerate tracked paths via git, hash each
+    # file's bytes, aggregate a single SHA-256. The fallback is
+    # slower but keeps the algorithm deterministic across hosts.
+    PRISTINE_TREE_SHA="$(cd "$I2PD_SOURCE_DIR" && git ls-files -z | tr '\0' '\n' \
+        | while IFS= read -r path; do
+            printf '%s\0' "$path"
+            sha256sum "$path" | awk '{printf "%s\0", $1}'
+          done \
+        | sha256sum \
+        | awk '{print $1}')"
+fi
 SOURCE_LOCK_SHA="$(sha256sum "$SOURCE_LOCK" | awk '{print $1}')"
 OBSERVER_PATCH_SHA="$(sha256sum "$OBSERVER_PATCH" | awk '{print $1}')"
 HELPER_SOURCE_SHA="$(sha256sum "$HELPER_SOURCE" | awk '{print $1}')"

@@ -1724,3 +1724,63 @@ Plan 095 remains the single next executable plan. Exactly one
 manual Plan 095 GitHub Actions dispatch follows the Plan 097
 correction commit. The plan-of-record is
 [`plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md`](../../plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md).
+
+## Plan 098 Plan 095 runner/provenance boundary corrective pass
+
+Plan 098 is the active runner/provenance boundary corrective pass
+over the Plan 095 live runner and wrapper provenance surfaces. The
+plan closes the runner/provenance ownership defects that the first
+authoritative Plan 095 manual CI dispatch exposed on 2026-08-10.
+The authoritative run advanced through the contract, build, and
+live runner launch phases but failed closed before any TCP or
+NTCP2 wire activity. The runner reconstructed a non-authoritative
+`repo_root / target / debug / i2pr-interop` path instead of using
+the canonical absolute artifact path supplied by the wrapper; the
+runner therefore returned `pre-protocol-preparation-failed` before
+launching `i2pr-interop ntcp2 prepare`. That result must **not** be
+interpreted as a wire-level NTCP2 failure.
+
+Plan 098 corrects the runner/provenance ownership boundary and
+the adjacent provenance defects in a single coherent pass:
+
+- the runner accepts an explicit `i2pr_binary: Path` argument and
+  rehashes the supplied file bytes against `i2pr_binary_sha256`
+  before any subprocess launch;
+- the wrapper threads the exact caller-supplied path to every
+  runner and refuses a role/binary mismatch via the new
+  `--attempt-kind` flag;
+- the i2pr and i2pd build-manifest digests are independently
+  measured; the runner no longer aliases a generic manifest
+  digest into both artifact classes;
+- the Plan 095 final gate validates record digests against the
+  actual downloaded artifacts and role-specific manifests.
+
+The Plan 098 regression matrix
+[`tests/integration/ntcp2/harness/test_plan098.py`](../../tests/integration/ntcp2/harness/test_plan098.py),
+the extended pre-dispatch audit
+[`scripts/check-plan095-workflow.sh`](../../scripts/check-plan095-workflow.sh),
+and the extended interop boundary check
+[`scripts/check-ntcp2-interoperability.sh`](../../scripts/check-ntcp2-interoperability.sh)
+are green locally.
+
+After Plan 098 lands, the current status of the active sequence
+is:
+
+```text
+plan_093 = implementation-landed-closure-incomplete
+plan_094 = implementation-landed-live-closure-environment-blocked
+plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun
+plan_096 = passed-pre-dispatch-workflow-correction
+plan_097 = passed-artifact-path-and-cleanup-correction
+plan_098 = passed-runner-provenance-boundary-correction
+plan_087 = open-pending-plan095-ci-forward-evidence-pair
+plan_088 = blocked-pending-plan095-ci-closure
+plan_079 = blocked-pending-plan088-two-way-pass
+plan_072 = inactive-pending-plan088-ambiguity
+ntcp2    = experimental-non-advertised
+```
+
+Plan 095 remains the single next executable plan. Exactly one
+manual Plan 095 GitHub Actions dispatch follows the Plan 098
+correction commit. The plan-of-record is
+[`plans/098-plan095-runner-provenance-boundary-corrective-pass.md`](../../plans/098-plan095-runner-provenance-boundary-corrective-pass.md).

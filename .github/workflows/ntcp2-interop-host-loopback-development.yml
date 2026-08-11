@@ -84,6 +84,8 @@ jobs:
         run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan096.py'
       - name: plan097-artifact-cleanup-tests
         run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan097.py'
+      - name: plan098-runner-provenance-tests
+        run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan098.py'
       - name: plan094-regression-tests
         run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan094.py'
       - name: plan093-regression-tests
@@ -378,6 +380,10 @@ jobs:
           I2PR_BINARY: "${{ github.workspace }}/target/interop/plan095-build/output/i2pr-interop"
         run: |
           set -euo pipefail
+          # Plan 098: thread the explicit ``--attempt-kind
+          # instrumented`` flag and the canonical i2pr/i2pd paths
+          # through the wrapper. The wrapper refuses a role/binary
+          # mismatch before any subprocess launches.
           python3 scripts/interop/run-minimal-i2pd-host-loopback-probe.py \
             --direction i2pr-to-i2pd-ipv4 \
             --repo-root "${{ github.workspace }}" \
@@ -387,6 +393,7 @@ jobs:
             --output "$PLAN095_RECORD" \
             --i2pd-driver-binary "$I2PD_DRIVER_BINARY" \
             --i2pr-binary "$I2PR_BINARY" \
+            --attempt-kind instrumented \
             --delivery-status-message-id "0x04200951"
           instrumented_rc=$?
           echo "instrumented attempt exit: ${instrumented_rc}"
@@ -602,6 +609,10 @@ jobs:
           I2PR_BINARY: "${{ github.workspace }}/target/interop/plan095-build/output/i2pr-interop"
         run: |
           set -euo pipefail
+          # Plan 098: thread the explicit ``--attempt-kind
+          # control`` flag and the canonical control i2pd driver /
+          # build manifest through the wrapper. The wrapper refuses
+          # a role/binary mismatch before any subprocess launches.
           python3 scripts/interop/run-minimal-i2pd-host-loopback-probe.py \
             --direction i2pr-to-i2pd-ipv4 \
             --repo-root "${{ github.workspace }}" \
@@ -611,7 +622,8 @@ jobs:
             --output "$PLAN095_RECORD" \
             --i2pd-driver-binary "$I2PD_DRIVER_BINARY" \
             --i2pr-binary "$I2PR_BINARY" \
-            --delivery-status-message-id "0x04200952" \
+            --attempt-kind control \
+            --delivery-status-message-id "0x04200952"
           control_rc=$?
           echo "control attempt exit: ${control_rc}"
           exit ${control_rc}
@@ -769,7 +781,10 @@ jobs:
           import json
           import os
           import pathlib
+          import re
           import sys
+
+          HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
           build_dir = pathlib.Path(os.environ["BUILD_DIR"])
           instrumented_dir = pathlib.Path(os.environ["INSTRUMENTED_DIR"])
@@ -797,36 +812,129 @@ jobs:
               control.get("terminal_result") == "passed"
               and control.get("cleanup_result") == "clean"
           )
-          source_commit_match = (
-              instrumented.get("source_commit") == control.get("source_commit")
-              == os.environ["GITHUB_SHA"]
+
+          def _sha256_file(path: pathlib.Path) -> str:
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          def _manifest_sha(path: pathlib.Path) -> str:
+              if path.is_file():
+                  return _sha256_file(path)
+              return "0" * 64
+
+          # Plan 098 WP6: the gate must prove the record claims
+          # correspond to the actual downloaded artifacts and
+          # role-specific manifests. A record with nonzero but
+          # incorrect provenance must fail closed.
+          instrumented_binary_path = (
+              build_dir / "i2pd_ntcp2_interop_driver_instrumented"
           )
-          reference_revision_match = (
-              instrumented.get("reference_revision")
-              == control.get("reference_revision")
-              == "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
+          control_binary_path = (
+              build_dir / "i2pd_ntcp2_interop_driver_control"
           )
-          instrumented_binary_sha = (
-              hashlib.sha256(
-                  (build_dir / "i2pd_ntcp2_interop_driver_instrumented").read_bytes()
-              ).hexdigest()
-              if (build_dir / "i2pd_ntcp2_interop_driver_instrumented").is_file()
-              else "0" * 64
-          )
-          control_binary_sha = (
-              hashlib.sha256(
-                  (build_dir / "i2pd_ntcp2_interop_driver_control").read_bytes()
-              ).hexdigest()
-              if (build_dir / "i2pd_ntcp2_interop_driver_control").is_file()
-              else "0" * 64
-          )
-          i2pr_binary_sha = (
-              hashlib.sha256(
-                  (build_dir / "i2pr-interop").read_bytes()
-              ).hexdigest()
-              if (build_dir / "i2pr-interop").is_file()
-              else "0" * 64
-          )
+          i2pr_binary_path = build_dir / "i2pr-interop"
+          instrumented_manifest_path = build_dir / "build-manifest-instrumented.json"
+          control_manifest_path = build_dir / "build-manifest-control.json"
+          i2pr_manifest_path = build_dir / "i2pr-build-manifest.json"
+
+          instrumented_binary_sha = _sha256_file(instrumented_binary_path)
+          control_binary_sha = _sha256_file(control_binary_path)
+          i2pr_binary_sha = _sha256_file(i2pr_binary_path)
+          instrumented_manifest_sha = _manifest_sha(instrumented_manifest_path)
+          control_manifest_sha = _manifest_sha(control_manifest_path)
+          i2pr_manifest_sha = _manifest_sha(i2pr_manifest_path)
+
+          def _require_digest(label: str, record_value: str, file_value: str) -> None:
+              if record_value != file_value:
+                  print(
+                      f"provenance mismatch for {label}: record={record_value} file={file_value}",
+                      file=sys.stderr,
+                  )
+                  sys.exit(82)
+
+          if instrumented_passed:
+              _require_digest(
+                  "instrumented i2pd binary",
+                  instrumented.get("i2pd_binary_sha256", ""),
+                  instrumented_binary_sha,
+              )
+              _require_digest(
+                  "instrumented i2pd build manifest",
+                  instrumented.get("i2pd_build_manifest_sha256", ""),
+                  instrumented_manifest_sha,
+              )
+          if control_passed:
+              _require_digest(
+                  "control i2pd binary",
+                  control.get("i2pd_binary_sha256", ""),
+                  control_binary_sha,
+              )
+              _require_digest(
+                  "control i2pd build manifest",
+                  control.get("i2pd_build_manifest_sha256", ""),
+                  control_manifest_sha,
+              )
+          if instrumented_passed and control_passed:
+              _require_digest(
+                  "shared i2pr binary",
+                  instrumented.get("i2pr_binary_sha256", ""),
+                  i2pr_binary_sha,
+              )
+              _require_digest(
+                  "shared i2pr build manifest",
+                  instrumented.get("i2pr_build_manifest_sha256", ""),
+                  i2pr_manifest_sha,
+              )
+              if (
+                  instrumented.get("source_commit")
+                  != control.get("source_commit")
+                  != os.environ["GITHUB_SHA"]
+              ):
+                  print("source_commit mismatch between instrumented/control and GITHUB_SHA", file=sys.stderr)
+                  sys.exit(82)
+              if (
+                  instrumented.get("reference_revision")
+                  != control.get("reference_revision")
+                  != "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
+              ):
+                  print("reference_revision mismatch", file=sys.stderr)
+                  sys.exit(82)
+              if (
+                  instrumented.get("reference_source_tree_sha256", "")
+                  != control.get("reference_source_tree_sha256", "")
+                  or not HEX64.fullmatch(
+                      instrumented.get("reference_source_tree_sha256", "")
+                  )
+                  or instrumented.get("reference_source_tree_sha256") == "0" * 64
+              ):
+                  print(
+                      "instrumented/control reference_source_tree_sha256 mismatch",
+                      file=sys.stderr,
+                  )
+                  sys.exit(82)
+              if (
+                  instrumented.get("scenario_sha256", "") == "0" * 64
+                  or control.get("scenario_sha256", "") == "0" * 64
+              ):
+                  print("scenario_sha256 placeholder in passed record", file=sys.stderr)
+                  sys.exit(82)
+              if (
+                  instrumented.get("placement_record_sha256", "") == "0" * 64
+                  or control.get("placement_record_sha256", "") == "0" * 64
+              ):
+                  print("placement_record_sha256 placeholder in passed record", file=sys.stderr)
+                  sys.exit(82)
+              if (
+                  instrumented.get("attempt_kind") != "instrumented"
+                  or control.get("attempt_kind") != "control"
+              ):
+                  print("attempt_kind does not match role", file=sys.stderr)
+                  sys.exit(82)
+              if (
+                  instrumented.get("attempt_index") != 1
+                  or control.get("attempt_index") != 1
+              ):
+                  print("attempt_index must be 1 for Plan 095", file=sys.stderr)
+                  sys.exit(82)
 
           gate = {
               "schema": "i2pr-ntcp2-plan095-ci-gate-v1",
@@ -843,15 +951,16 @@ jobs:
               "release_qualified": False,
               "isolation_qualified": False,
               "i2pr_binary_sha256": i2pr_binary_sha,
+              "i2pr_build_manifest_sha256": i2pr_manifest_sha,
               "instrumented_binary_sha256": instrumented_binary_sha,
+              "instrumented_build_manifest_sha256": instrumented_manifest_sha,
               "control_binary_sha256": control_binary_sha,
+              "control_build_manifest_sha256": control_manifest_sha,
               "instrumented_record_sha256": instrumented.get("sanitized_sha256", ""),
               "control_record_sha256": control.get("sanitized_sha256", ""),
               "instrumented_result": "passed" if instrumented_passed else "nonpassing",
               "control_result": "passed" if control_passed else "nonpassing",
               "equivalence": "passed" if (instrumented_passed and control_passed) else "nonpassing",
-              "source_commit_match": source_commit_match,
-              "reference_revision_match": reference_revision_match,
               "cleanup": "clean" if (instrumented_passed and control_passed) else "nonpassing",
               "plan087_gate": "satisfied" if (instrumented_passed and control_passed) else "blocked",
               "plan088_gate": "ready_after_status_reconciliation" if (instrumented_passed and control_passed) else "blocked",

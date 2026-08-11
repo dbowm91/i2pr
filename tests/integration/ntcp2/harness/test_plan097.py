@@ -707,12 +707,16 @@ class Plan097StatusAuthorityTests(unittest.TestCase):
             # The status may carry the pre-authoritative-run
             # "awaiting" token, the post-dispatch
             # "active-instrumented-pre-protocol-rejected" token,
-            # or the "passed" / "ci-live-wire-closure-next-executable"
-            # token. Any of these names Plan 095 as the live-wire
-            # authority for the forward direction.
+            # the post-Plan-098 corrected
+            # "active-runner-provenance-corrected-awaiting-authoritative-rerun"
+            # token, or the "passed" /
+            # "ci-live-wire-closure-next-executable" token. Any of
+            # these names Plan 095 as the live-wire authority for
+            # the forward direction.
             valid_tokens = (
                 "plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run",
                 "plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected",
+                "plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun",
                 "plan_095 = ci-live-wire-closure-next-executable",
             )
             self.assertTrue(

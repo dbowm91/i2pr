@@ -495,8 +495,8 @@ bash scripts/check-ntcp2-interoperability.sh
 
 ## Plan 074 real-driver and constrained-host corrective roadmap (historical)
 
-Plan 074 is historical execution authority. Plan 096 supersedes its active
-sequence with **Plan 082 (implemented) → Plan 083 (implemented, execution pending) → Plan 084 (implemented, execution pending) → Plan 085 → Plan 086 → Plan 087 → Plan 090 → Plan 091 → Plan 092 (superseded) → Plan 093 (implementation-landed, closure-incomplete) → Plan 094 (implementation-landed, live-closure-environment-blocked) → Plan 095 (ci-live-wire-lane-corrected, awaiting one authoritative run) → Plan 096 (passed-pre-dispatch-workflow-correction) → one manual Plan 095 dispatch → Plan 088 → Plan 079 (blocked)**. Plans 075, 076,
+Plan 074 is historical execution authority. Plan 098 supersedes its active
+sequence with **Plan 082 (implemented) → Plan 083 (implemented, execution pending) → Plan 084 (implemented, execution pending) → Plan 085 → Plan 086 → Plan 087 → Plan 090 → Plan 091 → Plan 092 (superseded) → Plan 093 (implementation-landed, closure-incomplete) → Plan 094 (implementation-landed, live-closure-environment-blocked) → Plan 095 (ci-live-wire-lane-corrected, awaiting one authoritative run) → Plan 096 (passed-pre-dispatch-workflow-correction) → Plan 097 (passed-artifact-path-and-cleanup-correction) → Plan 098 (passed-runner-provenance-boundary-correction) → one manual Plan 095 dispatch → Plan 088 → Plan 079 (blocked)**. Plans 075, 076,
 077, and 080 are closed prerequisites or historical lane records. The Plan
 084 historical `lane-invalidated` closure is reclassified as "runner
 implementation completed; required reverse wire execution never occurred" and
@@ -525,7 +525,7 @@ Plan 096 is the gating implementation pass before the first
 authoritative Plan 095 live run.
 
 Plan 097 is the active narrow corrective pass over the Plan 095
-GitHub Actions workflow that closes two workflow defects that
+GitHub Actions workflow that closed two workflow defects that
 remained after Plan 096: the producer/consumer artifact path
 identity mismatch (one canonical absolute `BUILD_OUTPUT` path
 used by every producer, verifier, manifest, uploader, and live
@@ -537,6 +537,39 @@ extended pre-dispatch audit
 (`scripts/check-plan095-workflow.sh`) are green locally. Plan 097
 is the final pre-dispatch implementation pass before the first
 authoritative Plan 095 live run.
+
+Plan 098 is the active runner/provenance boundary corrective pass
+over the Plan 095 live runner and wrapper provenance surfaces. The
+plan closes the runner/provenance ownership defects that the first
+authoritative Plan 095 manual CI dispatch exposed on 2026-08-10.
+The authoritative run advanced through the contract, build, and
+live runner launch phases but failed closed before any TCP or
+NTCP2 wire activity. The runner reconstructed a non-authoritative
+`repo_root / target / debug / i2pr-interop` path instead of using
+the canonical absolute artifact path supplied by the wrapper; the
+runner therefore returned `pre-protocol-preparation-failed` before
+launching `i2pr-interop ntcp2 prepare`. That result must **not** be
+interpreted as a wire-level NTCP2 failure. Plan 098 corrects the
+runner/provenance ownership boundary and the adjacent provenance
+defects in a single coherent pass:
+
+- the runner accepts an explicit `i2pr_binary: Path` argument and
+  rehashes the supplied file bytes against `i2pr_binary_sha256`
+  before any subprocess launch;
+- the wrapper threads the exact caller-supplied path to every
+  runner and refuses a role/binary mismatch via the new
+  `--attempt-kind` flag;
+- the i2pr and i2pd build-manifest digests are independently
+  measured; the runner no longer aliases a generic manifest
+  digest into both artifact classes;
+- the Plan 095 final gate validates record digests against the
+  actual downloaded artifacts and role-specific manifests.
+
+The Plan 098 regression matrix
+(`tests/integration/ntcp2/harness/test_plan098.py`), the extended
+pre-dispatch audit (`scripts/check-plan095-workflow.sh`), and the
+extended interop boundary check
+(`scripts/check-ntcp2-interoperability.sh`) are green locally.
 
 The corrected repository state is:
 
@@ -556,9 +589,10 @@ plan_091_status = historical_partial_correction
 plan_092_status = superseded_by_plan_093
 plan_093_status = implementation_landed_closure_incomplete
 plan_094_status = implementation_landed_live_closure_environment_blocked
-plan_095_status = ci_live_wire_lane_corrected_awaiting_one_authoritative_run
+plan_095_status = active_runner_provenance_corrected_awaiting_authoritative_rerun
 plan_096_status = passed_pre_dispatch_workflow_correction
 plan_097_status = passed_artifact_path_and_cleanup_correction
+plan_098_status = passed_runner_provenance_boundary_correction
 plan_079_gate = blocked_pending_plan_088_two_way_passed
 plan_072_gate = inactive_pending_plan_088_ambiguity
 current_rootless_namespace_lane = unavailable

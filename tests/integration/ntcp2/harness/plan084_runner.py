@@ -791,11 +791,14 @@ def execute_reverse_probe(
     i2pd_binary_sha256: str,
     delivery_status_message_id: int,
     i2pd_driver_binary: Path,
+    i2pr_binary: Path,
+    i2pr_build_manifest_sha256: str = "0" * 64,
+    i2pd_build_manifest_sha256: str = "0" * 64,
     reference_tree_sha256: str = "0" * 64,
     driver_source_sha256: str = "0" * 64,
-    build_manifest_sha256: str = "0" * 64,
     observer_patch_sha256: str = "0" * 64,
     source_inspection_record_sha256: str | None = None,
+    attempt_kind: str = "instrumented",
     handshake_timeout_ms: int = 30_000,
     output_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -808,17 +811,24 @@ def execute_reverse_probe(
     the i2pr launcher as the listener and the i2pd direct driver as
     the dialer. The runner consumes the structured events emitted by
     both processes and writes a single sanitized reverse probe record.
+
+    Plan 098: ``i2pr_binary`` is the explicit caller-supplied absolute
+    path to the i2pr launcher binary. The runner measures the file
+    bytes against ``i2pr_binary_sha256`` before any subprocess launch
+    and fails closed with a typed pre-protocol provenance rejection if
+    the path is missing, not a regular file, or its measured digest
+    does not match the supplied SHA-256.
     """
 
     counters = empty_reverse_process_counters()
     observed: list[dict[str, Any]] = []
-    # Plan 094: the runner needs the build manifest digests, the
-    # reference source tree, and the measured scenario digest to
-    # produce a non-zero provenance record. The values default to
-    # the values passed by the caller (which are nonzero for a real
-    # attempt) so the strict runner validation cannot reject a
-    # legitimate attempt.
-    runner_build_manifest_sha256 = build_manifest_sha256
+    # Plan 098: the runner needs the role-specific i2pr/i2pd build
+    # manifest digests, the reference source tree, and the measured
+    # scenario digest to produce a non-zero provenance record. The
+    # values default to the values passed by the caller (which are
+    # nonzero for a real attempt) so the strict runner validation
+    # cannot reject a legitimate attempt.
+    runner_build_manifest_sha256 = i2pr_build_manifest_sha256
     runner_scenario_sha256 = "0" * 64
 
     def increment(process_key: str, counter: str) -> None:
@@ -850,6 +860,7 @@ def execute_reverse_probe(
         i2pd_router_hash_sha256: str = "0" * 64,
         delivery_status_message_id_override: int | None = None,
         topology_kind_override: str | None = None,
+        i2pr_binary_sha256_override: str | None = None,
     ) -> dict[str, Any]:
         message_id = (
             delivery_status_message_id_override
@@ -864,13 +875,17 @@ def execute_reverse_probe(
             lane_qualification_sha256=lane_qualification_sha256,
             topology_kind=topology,
             parent_network_state_unchanged=parent_network_state_unchanged,
-            i2pr_binary_sha256=i2pr_binary_sha256,
+            i2pr_binary_sha256=(
+                i2pr_binary_sha256_override
+                if i2pr_binary_sha256_override is not None
+                else i2pr_binary_sha256
+            ),
             i2pd_binary_sha256=i2pd_binary_sha256,
             i2pr_build_manifest_sha256=runner_build_manifest_sha256,
-            i2pd_build_manifest_sha256=build_manifest_sha256,
+            i2pd_build_manifest_sha256=i2pd_build_manifest_sha256,
             reference_source_tree_sha256=reference_tree_sha256,
             scenario_sha256=runner_scenario_sha256,
-            attempt_kind="instrumented",
+            attempt_kind=attempt_kind,
             attempt_index=1,
             i2pr_router_info_sha256=i2pr_router_info_sha256,
             i2pd_router_info_sha256=i2pd_router_info_sha256,
@@ -902,6 +917,25 @@ def execute_reverse_probe(
             reason_code=reason_code,
             highest_stage=highest_stage,
         )
+
+    # Plan 098: the i2pr binary path is now mandatory for any
+    # attempted-live execution. The runner refuses to attempt a live
+    # probe with a missing path, a non-regular file, or a measured
+    # digest that does not match the supplied SHA-256.
+    if i2pr_binary is None or not isinstance(i2pr_binary, Path):
+        return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+    if not i2pr_binary.is_file():
+        return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+    measured_i2pr_sha256 = _sha256_file(i2pr_binary)
+    if measured_i2pr_sha256 != i2pr_binary_sha256:
+        return finalize(
+            terminal_result=PRE_PROTOCOL_REJECTED,
+            reason_code=REASON_PRE_PROTOCOL_PREPARATION_FAILED,
+            highest_stage=STATE_PREPARED,
+            i2pr_binary_sha256_override=measured_i2pr_sha256,
+        )
+    if attempt_kind not in {"instrumented", "control"}:
+        return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
 
     if topology_kind not in {
         "rootless-sealed-single-netns",
@@ -951,9 +985,12 @@ def execute_reverse_probe(
     exchange_dir = run_root / "exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-    i2pr_binary = repo_root / "target" / "debug" / "i2pr-interop"
-    if not i2pr_binary.is_file():
-        return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
+    # Plan 098: the explicit ``i2pr_binary`` argument is now the
+    # sole owner of every i2pr subprocess launch. The legacy
+    # ``repo_root / target / debug / i2pr-interop`` reconstruction
+    # is no longer performed for any authoritative attempt; the
+    # ``i2pr_binary`` variable below is the validated explicit path.
+    i2pr_binary_path = i2pr_binary
 
     # Phase 1: prepare the i2pr responder state. The
     # host-loopback-development topology routes the subprocess
@@ -978,7 +1015,7 @@ def execute_reverse_probe(
 
         i2pr_prepare_placement = HostLoopbackDevelopmentPlacement(
             actor="i2pr",
-            binary_path=str(i2pr_binary),
+            binary_path=str(i2pr_binary_path),
             log_path=str(raw_dir / "i2pr-prepare.log"),
             environment=tuple(),
             max_log_bytes=131_072,
@@ -991,7 +1028,7 @@ def execute_reverse_probe(
             increment("i2pr_prepare", "exited")
             return reject(REASON_PRE_PROTOCOL_PREPARATION_FAILED)
     else:
-        prepare_command = [str(i2pr_binary), *prepare_argv]
+        prepare_command = [str(i2pr_binary_path), *prepare_argv]
         try:
             completed = subprocess.run(
                 prepare_command,
@@ -1065,7 +1102,7 @@ def execute_reverse_probe(
         "reference_tree_sha256": reference_tree_sha256,
         "driver_source_sha256": driver_source_sha256,
         "driver_binary_sha256": i2pd_binary_sha256,
-        "build_manifest_sha256": build_manifest_sha256,
+        "build_manifest_sha256": i2pd_build_manifest_sha256,
         "observer_patch_sha256": observer_patch_sha256,
         "run_identity_sha256": lane_qualification_sha256,
         "topology_kind": topology_kind,
@@ -1077,8 +1114,8 @@ def execute_reverse_probe(
             driver_binary=i2pd_driver_binary,
             helper_binary_sha256=i2pd_binary_sha256,
             helper_source_sha256=driver_source_sha256,
-            build_manifest_sha256=build_manifest_sha256,
-            helper_build_manifest_sha256=build_manifest_sha256,
+            build_manifest_sha256=i2pd_build_manifest_sha256,
+            helper_build_manifest_sha256=i2pd_build_manifest_sha256,
             run_identity_sha256=lane_qualification_sha256,
             observer_patch_sha256=observer_patch_sha256,
             source_inspection_record_sha256=source_inspection_record_sha256 or reference_tree_sha256,
@@ -1145,11 +1182,15 @@ def execute_reverse_probe(
         "topology_kind": topology_kind,
     }
     scenario_path.write_text(_format_toml(scenario_payload), encoding="utf-8")
+    # Plan 098: measure the scenario digest so the probe record
+    # carries the canonical, non-zero scenario_sha256 for the
+    # authoritative run.
+    runner_scenario_sha256 = _sha256_file(scenario_path)
 
     try:
         completed = subprocess.run(
             [
-                str(i2pr_binary),
+                str(i2pr_binary_path),
                 "ntcp2",
                 "validate-scenario",
                 "--scenario-config",
@@ -1172,7 +1213,7 @@ def execute_reverse_probe(
         with i2pr_log_path.open("wb") as log_handle:
             listener_proc = subprocess.Popen(
                 [
-                    str(i2pr_binary),
+                    str(i2pr_binary_path),
                     "ntcp2",
                     "listen",
                     "--scenario-config",
@@ -1264,8 +1305,8 @@ def execute_reverse_probe(
             driver_binary=i2pd_driver_binary,
             helper_binary_sha256=i2pd_binary_sha256,
             helper_source_sha256=driver_source_sha256,
-            build_manifest_sha256=build_manifest_sha256,
-            helper_build_manifest_sha256=build_manifest_sha256,
+            build_manifest_sha256=i2pd_build_manifest_sha256,
+            helper_build_manifest_sha256=i2pd_build_manifest_sha256,
             run_identity_sha256=lane_qualification_sha256,
             observer_patch_sha256=observer_patch_sha256,
             source_inspection_record_sha256=source_inspection_record_sha256 or reference_tree_sha256,

@@ -134,6 +134,7 @@ class Plan094StatusAuthorityTests(unittest.TestCase):
         expected_095_tokens = (
             "plan_095 = ci-live-wire-closure-next-executable",
             "plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run",
+            "plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun",
         )
         for text, label in (
             (text_087, "087"),

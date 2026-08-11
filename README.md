@@ -1589,10 +1589,118 @@ plan_072 = inactive-pending-plan088-ambiguity
 ntcp2    = experimental-non-advertised
 ```
 
-Plan 095 remains the single next executable plan. Exactly one
-manual Plan 095 GitHub Actions dispatch follows the Plan 097
-correction commit. The plan-of-record is
+Plan 095 remains the single next executable plan. Exactly one manual
+Plan 095 GitHub Actions dispatch follows the Plan 097 correction
+commit. The plan-of-record is
 `plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md`.
+
+### Plan 098 Plan 095 runner/provenance boundary corrective pass
+
+Plan 098 is the active narrow corrective pass over the runner and
+wrapper provenance surfaces that the first authoritative Plan 095
+manual CI dispatch exposed on 2026-08-10. The authoritative run
+advanced through the contract, build, and live runner launch
+phases but failed closed before any TCP or NTCP2 wire activity.
+The runner reconstructed a non-authoritative
+`repo_root / target / debug / i2pr-interop` path instead of
+using the canonical absolute artifact path supplied by the
+wrapper; the runner therefore returned
+`pre-protocol-preparation-failed` before launching
+`i2pr-interop ntcp2 prepare`. That result must **not** be
+interpreted as a wire-level NTCP2 failure.
+
+Plan 098 corrects the runner/provenance ownership boundary and
+the adjacent provenance defects in a single coherent pass:
+
+- **Defect A**: the runner reconstructed the i2pr binary path
+  instead of consuming the explicit caller-supplied path.
+- **Defect B**: the reverse and preflight runners reproduced
+  the same path reconstruction defect.
+- **Defect C**: the runner aliased a single generic manifest
+  digest into both the i2pr and i2pd build-manifest fields.
+- **Defect D**: the wrapper used the instrumented build
+  manifest regardless of the requested role.
+- **Defect E**: the forward runner hard-coded
+  `attempt_kind=instrumented` in the underlying record.
+- **Defect F**: `build-driver.sh` used a recursive
+  `find -type f` digest that drifts from the workflow's
+  canonical `git ls-files` algorithm.
+- **Defect G**: the final gate checked nonzeroness but not
+  full provenance equivalence against the downloaded artifacts.
+- **Defect H**: `plans/088-status.md` misclassified the
+  August 10 pre-protocol rejection as a wire-level result.
+
+Plan 098 lands:
+
+- `tests/integration/ntcp2/harness/plan083_runner.py`,
+  `tests/integration/ntcp2/harness/plan084_runner.py`, and
+  `tests/integration/ntcp2/harness/preflight_runner.py` —
+  every runner now accepts an explicit `i2pr_binary: Path`
+  argument, measures the file bytes against the supplied
+  SHA-256, and fails closed with a typed
+  `pre-protocol-preparation-failed` rejection when the path
+  is missing, not a regular file, or its measured digest does
+  not match. The `i2pr_build_manifest_sha256` and
+  `i2pd_build_manifest_sha256` fields are independently
+  measured; the runner no longer aliases a generic manifest
+  digest into both artifact classes. The `attempt_kind`
+  argument reaches the underlying record instead of being
+  hard-coded.
+- `scripts/interop/run-minimal-i2pd-host-loopback-probe.py`
+  — the wrapper now threads the exact caller-supplied
+  `--i2pr-binary` path to every runner, validates the
+  `--attempt-kind` against the i2pd driver binary filename
+  and the role-specific build manifest, and measures the
+  canonical tracked-tree digest via
+  `_canonical_tracked_tree_digest` (which must stay in
+  lock-step with the workflow and the build script).
+- `tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh`
+  — the source-tree digest is now computed from
+  `git ls-files -z` (excluding the `.git` administrative
+  tree) so the build manifest digest matches the workflow
+  digest byte-for-byte.
+- `.github/workflows/ntcp2-interop-host-loopback-development.yml`
+  — the live jobs thread `--attempt-kind instrumented` and
+  `--attempt-kind control` explicitly, and the validate-gate
+  job enforces exact provenance equivalence between the
+  sanitized records and the actual downloaded artifacts and
+  role-specific manifests.
+- `tests/integration/ntcp2/harness/test_plan098.py` — the
+  Plan 098 regression matrix (15 cases) covering the
+  runner-boundary ownership contract, the wrapper path
+  threading, the distinct i2pr/i2pd manifests, the
+  role/manifest binding, the canonical tracked-tree
+  digest, and the workflow final-gate checks.
+- `scripts/check-plan095-workflow.sh` and
+  `scripts/check-ntcp2-interoperability.sh` — extended to
+  enforce the Plan 098 ownership invariants.
+- Status authority corrections in `plans/087-status.md` and
+  `plans/088-status.md`. The new `plan_098` token is
+  `passed-runner-provenance-boundary-correction`. The August
+  10 result is reclassified as a pre-protocol runner/provenance
+  failure with no TCP/NTCP2 wire conclusion.
+
+After Plan 098 lands, the current status of the active sequence
+is:
+
+```text
+plan_093 = implementation-landed-closure-incomplete
+plan_094 = implementation-landed-live-closure-environment-blocked
+plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun
+plan_096 = passed-pre-dispatch-workflow-correction
+plan_097 = passed-artifact-path-and-cleanup-correction
+plan_098 = passed-runner-provenance-boundary-correction
+plan_087 = open-pending-plan095-ci-forward-evidence-pair
+plan_088 = blocked-pending-plan095-ci-closure
+plan_079 = blocked-pending-plan088-two-way-pass
+plan_072 = inactive-pending-plan088-ambiguity
+ntcp2    = experimental-non-advertised
+```
+
+Plan 095 remains the single next executable plan. Exactly one
+manual Plan 095 GitHub Actions dispatch follows the Plan 098
+correction commit. The plan-of-record is
+`plans/098-plan095-runner-provenance-boundary-corrective-pass.md`.
 
 ### Plan 074 real-driver and constrained-host corrective roadmap (historical)
 

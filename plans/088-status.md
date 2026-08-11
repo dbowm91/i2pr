@@ -11,9 +11,10 @@ plan_091 = historical-partial-correction
 plan_092 = superseded-by-plan093
 plan_093 = implementation-landed-closure-incomplete
 plan_094 = implementation-landed-live-closure-environment-blocked
-plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected
+plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun
 plan_096 = passed-pre-dispatch-workflow-correction
 plan_097 = passed-artifact-path-and-cleanup-correction
+plan_098 = passed-runner-provenance-boundary-correction
 plan_088 = blocked-pending-plan095-ci-closure
 plan_079 = blocked-pending-plan088-two-way-pass
 plan_072 = inactive-pending-plan088-ambiguity
@@ -45,6 +46,18 @@ Plan 095 records both a passing instrumented forward record and a
 passing control forward record from the same CI evidence pair
 bound to the same source commit and pinned i2pd revision.
 
+Plan 094 remains implementation-landed with live closure
+environment-blocked on this host. The Plan 094 active
+sequence amendment is recorded in
+`plans/094-plan093-completion-and-plan087-to-plan088-handoff.md`.
+Plan 094 remained the active runner/provenance authority
+between the Plan 093 implementation landing and the Plan 095
+CI live-wire lane activation; the Plan 098 runner/provenance
+boundary correction supersedes the Plan 094 local-host lane as
+the authoritative forward-direction close path. Plan 094
+remains implementation-landed; its local live closure
+environment is blocked on this host.
+
 The historical `lane-invalidated` token carried by the legacy
 Plan 084 closure is intentionally **not** reused here. Plan 088
 supersedes the Plan 084 closure vocabulary for the active
@@ -72,9 +85,15 @@ The static boundary checker
 - `tests/integration/ntcp2/harness/plan083_runner.py` and
   `tests/integration/ntcp2/harness/plan084_runner.py` — both
   runners now accept `host-loopback-development` in their lane
-  validators and top-level topology override paths. The
-  development topology never satisfies any release/isolation
-  predicate.
+  validators and top-level topology override paths. Plan 098
+  further extends both runners to accept an explicit
+  `i2pr_binary` path argument with mandatory path/hash
+  verification at the runner entry. The development topology
+  never satisfies any release/isolation predicate.
+- `tests/integration/ntcp2/harness/preflight_runner.py` — the
+  Plan 098 path-ownership contract is mirrored here so the
+  preflight refuses an attempted-live execution with a
+  reconstructed `target/debug/i2pr-interop` fallback path.
 - `tests/integration/ntcp2/harness/test_plan083.py` and
   `tests/integration/ntcp2/harness/test_plan084.py` — extended
   the topology allowlist assertions to cover the new development
@@ -94,7 +113,11 @@ The static boundary checker
   the plan-of-record reference, and the
   `plans/088-status.md` decision token plus the
   prohibition of the legacy `lane-invalidated` and
-  `same-stage-two-way-i2pr-defect` tokens.
+  `same-stage-two-way-i2pr-defect` tokens. The Plan 098 static
+  surface is appended: the runner must accept an explicit
+  `i2pr_binary` path, the wrapper must expose
+  `--attempt-kind`, and `build-driver.sh` must use the canonical
+  tracked-source identity.
 
 ## Plan 088 development decision
 
@@ -117,7 +140,7 @@ insufficient-evidence
 bounded reproduction cycle and no safe ownership conclusion can be
 made." On this host the prerequisite forward direction has not
 executed a passing instrumented record and no real wire run from a
-clean Plan 092 corrective commit has been retained; the Plan 086
+clean Plan 098 corrective commit has been retained; the Plan 086
 lane contract has not closed with a passing Plan 087 forward
 record; the Plan 089 manual-isolated fallback has not been
 activated. The decision therefore cannot be
@@ -139,9 +162,10 @@ plan_091 = historical-partial-correction
 plan_092 = superseded-by-plan093
 plan_093 = implementation-landed-closure-incomplete
 plan_094 = implementation-landed-live-closure-environment-blocked
-plan_095 = ci-live-wire-lane-active-instrumented-pre-protocol-rejected
+plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun
 plan_096 = passed-pre-dispatch-workflow-correction
 plan_097 = passed-artifact-path-and-cleanup-correction
+plan_098 = passed-runner-provenance-boundary-correction
 plan_088 = blocked-pending-plan095-ci-closure
 ```
 
@@ -195,10 +219,17 @@ and `reason_code = pre-protocol-preparation-failed`. The
 control job correctly refused to launch because the
 instrumented evidence did not pass.
 
-The pre-protocol rejection is a real NTCP2 protocol-level
-classification, not a workflow defect. The plan-of-record
-forward-direction close therefore still requires a passing
-instrumented record, which this host's
+Plan 098 reclassified the August 10 result as a **pre-protocol
+runner/provenance failure**, not a wire-level NTCP2
+classification. The live runner reached the pre-protocol state
+preparation phase, then the runner reconstructed a
+non-authoritative `target/debug/i2pr-interop` path instead of
+using the canonical absolute artifact path supplied by the
+wrapper. No TCP or NTCP2 wire-level conclusion is supported by
+that result.
+
+The plan-of-record forward-direction close therefore still
+requires a passing instrumented record, which this host's
 `host-loopback-development` topology has not produced. The
 forward-instrumented record is preserved under the
 `plan095-instrumented-evidence` artifact on the run id
@@ -299,7 +330,7 @@ The reverse probe module, the runner orchestration module, the
 shared `minimal_i2pd_probe` topology allowlist, and the focused
 test matrices travel with the repository unchanged. On a host
 where the Plan 086 host-loopback-development lane becomes
-executable and Plan 092 closes with a passing instrumented and
+executable and Plan 098 closes with a passing instrumented and
 control forward record, the reverse probe may be invoked against
 real subprocesses; the bounded Plan 088 development decision
 vocabulary will resolve to whichever of the five exact values
@@ -312,10 +343,10 @@ bounded by the Plan 051 resource constraints.
 
 ## Future plan unblocking
 
-| Plan | Precondition | Status after Plan 096 |
+| Plan | Precondition | Status after Plan 098 |
 | --- | --- | --- |
-| Plan 096 | Plan 095 implementation landed; workflow defects corrected | closed (pre-dispatch audit passed) |
-| Plan 095 | Plan 096 pre-dispatch audit passed; one manual dispatch follows | next executable |
+| Plan 098 | Plan 097 audit closed; runner/provenance boundary corrective pass landed | closed (static + regression matrix green) |
+| Plan 095 | Plan 098 runner/provenance correction committed; one manual dispatch follows | next executable |
 | Plan 079 | requires Plan 088 `two-way-development-probe-passed` | remains blocked |
 | Plan 072 | requires Plan 088 `ambiguous-reference-divergence` with one exact wire-stage question | remains inactive |
 | Plan 073 | requires release-qualification evidence | remains inactive |
@@ -335,31 +366,36 @@ producer/consumer artifact path identity (one canonical absolute
 `BUILD_OUTPUT` path used by every producer, verifier, manifest,
 uploader, and live consumer) and disposable run-root cleanup
 (strict `rm -rf --` with an exact path guard and an unsuppressed
-absence assertion). Plan 095 evidence is still pending; exactly one
-manual Plan 095 GitHub Actions dispatch follows the Plan 097
-correction commit.
+absence assertion). Plan 098 closed the runner/provenance
+ownership boundary that the first authoritative Plan 095 dispatch
+exposed before any TCP or NTCP2 wire activity. Plan 095 evidence
+is still pending; exactly one manual Plan 095 GitHub Actions
+dispatch follows the Plan 098 correction commit.
 
 ## Validation
 
 ```text
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan098.py'               passed
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan088.py'               passed (35)
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan084.py'               passed (54)
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan083.py'               passed (50)
-python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan083_runner.py'        passed (14)
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan083_runner.py'        passed (16)
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_minimal_i2pd_reverse_probe.py' passed
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_minimal_i2pd_probe.py'    passed (43)
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_driver.py'    passed (57)
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_control.py'   passed
-cargo fmt --all --check                                                                passed
-cargo check --workspace --all-targets                                                  passed
-cargo test --workspace                                                                 passed
-bash scripts/check-ntcp2-interoperability.sh                                           passed
-bash scripts/check-dependency-direction.sh                                             passed
-bash scripts/check-runtime-boundaries.sh                                               passed
-bash scripts/check-ntcp2-vectors.sh                                                    passed
-bash scripts/check-rootless-interop-boundary.sh                                        passed
-bash scripts/check-multipass-interop-boundary.sh                                       passed
-git diff --check                                                                       passed
+bash scripts/check-plan095-workflow.sh                                            passed
+bash scripts/check-ntcp2-interoperability.sh                                      passed
+cargo fmt --all --check                                                          passed
+cargo check --workspace --all-targets                                             passed
+cargo test --workspace                                                           passed
+bash scripts/check-dependency-direction.sh                                        passed
+bash scripts/check-runtime-boundaries.sh                                          passed
+bash scripts/check-fixture-manifest.sh                                            passed
+bash scripts/check-ntcp2-vectors.sh                                              passed
+bash scripts/check-rootless-interop-boundary.sh                                   passed
+bash scripts/check-multipass-interop-boundary.sh                                  passed
+git diff --check                                                                  passed
 ```
 
 The full repository gates and boundary checks pass before commit.
@@ -370,9 +406,9 @@ contract, the cross-direction rejection, and the module boundary.
 The static boundary checker enforces the test matrix presence, the
 locked decision vocabulary, the `host-loopback-development`
 topology coverage, the plan-of-record reference, the
-`plans/088-status.md` decision token, and the prohibition of the
+`plans/088-status.md` decision token, the prohibition of the
 legacy `lane-invalidated` and `same-stage-two-way-i2pr-defect`
-tokens.
+tokens, and the Plan 098 runner/provenance ownership boundary.
 
 The reverse probe record schema remains round-trippable and the
 canonical `record_sha256` digest is stable across key ordering.
@@ -390,14 +426,14 @@ The actual reverse probe runner may only be exercised when the
 Plan 086 `host-loopback-development` lane closes as
 `host-loopback-development-ready` (or the Plan 089
 `manual-isolated-fallback-ready` placement is activated) **and**
-Plan 094 closes with a passing instrumented forward record and a
+Plan 098 closes with a passing instrumented forward record and a
 passing control forward record bound to the same corrective commit.
 On this host neither prerequisite is satisfied, so the Plan 088
 execution authority is `insufficient-evidence` and the next
-executable plan-of-record is Plan 094.
+executable plan-of-record is Plan 095.
 
 The Plan 088 implementation surface travels with the repository
-unchanged; the next time the Plan 086 lane is closed and Plan 094
+unchanged; the next time the Plan 086 lane is closed and Plan 095
 closes, the reverse runner can be invoked against real subprocesses
 and the bounded Plan 088 development decision vocabulary will
 resolve to whichever of the five exact values reflects the wire
