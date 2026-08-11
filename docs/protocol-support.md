@@ -569,13 +569,17 @@ bounded to three values: `passed`, `protocol-defect-localized`,
 [Plan 100](../plans/100-plan099-exit-gate-cleanup-and-router-handoff.md)
 is the one-time active cleanup authority that repairs the exit gate
 (D1, D2), hardens the i2pd observer proof (D3), and removes the
-divergent source-tree digest fallback (D4).
+divergent source-tree digest fallback (D4). The Plan 099 single-job
+CI workflow was dispatched exactly once from the Plan 100 correction
+commit and the bounded replacement runs consumed two narrow direct
+corrections before the bound forward-instrumented attempt reached
+authentic post-TCP protocol evidence.
 
 After Plan 100:
 
 ```text
-plan_099 = implementation-landed-exit-cleanup-complete-pending-live-run
-plan_100 = exit-ready-awaiting-one-manual-run
+plan_099 = closed-protocol-defect-localized
+plan_100 = passed-exit-cleanup-and-handoff
 plan_095 = historical-superseded-by-plan099-single-job-lane
 plan_087 = historical-development-sequence-superseded-by-plan100
 plan_088 = historical-development-sequence-superseded-by-plan100
@@ -583,7 +587,10 @@ plan_079 = deferred-to-pre-normal-ntcp2-activation-and-public-network-checkpoint
 plan_072 = inactive-pending-plan088-ambiguity
 ntcp2    = experimental-non-advertised
 normal_daemon_activation = disabled
-router_construction = authorized-after-plan100-outcome
+router_construction = next
+development_interop = protocol-defect-localized
+exact_wire_stage = noise_authenticated
+external_netdb_over_ntcp2 = blocked
 ```
 
 Plan 099 deleted all Plan 052–098 plan-number-specific Python test

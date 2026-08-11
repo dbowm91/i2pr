@@ -1799,14 +1799,17 @@ native `Transports::SendMessage`, `Transports::IsConnected`, and
 `TransportSession::IsEstablished` instead of observer APIs the
 control build cannot emit.
 
-Plan 100 is the one-time active cleanup authority that repairs
-the Plan 099 exit-gate API/classification (D1, D2), hardens the
-i2pd observer proof (D3), and removes the divergent source-tree
-digest fallback (D4). After Plan 100:
+Plan 100 closed its exit-readiness defects (D1, D2, D3, D4) and
+the Plan 099 single-job CI workflow was dispatched exactly once
+from the Plan 100 correction commit. The bounded replacement
+runs (allowed by Plan 100 Result branch C) consumed two narrow
+direct corrections before the bound forward-instrumented attempt
+reached authentic post-TCP protocol evidence. The final
+development result is `protocol-defect-localized`:
 
 ```text
-plan_099 = implementation-landed-exit-cleanup-complete-pending-live-run
-plan_100 = exit-ready-awaiting-one-manual-run
+plan_099 = closed-protocol-defect-localized
+plan_100 = passed-exit-cleanup-and-handoff
 plan_095 = historical-superseded-by-plan099-single-job-lane
 plan_087 = historical-development-sequence-superseded-by-plan100
 plan_088 = historical-development-sequence-superseded-by-plan100
@@ -1814,8 +1817,20 @@ plan_079 = deferred-to-pre-normal-ntcp2-activation-and-public-network-checkpoint
 plan_072 = inactive-pending-plan088-ambiguity
 ntcp2    = experimental-non-advertised
 normal_daemon_activation = disabled
-router_construction = authorized-after-plan100-outcome
+router_construction = next
+development_interop = protocol-defect-localized
+exact_wire_stage = noise_authenticated
+external_netdb_over_ntcp2 = blocked
 ```
+
+The compact sanitized summary is preserved at
+`target/interop/evidence/milestone-3/31521642090/plan099-summary.json`.
+The cross-side defect (i2pd listener authenticated but i2pr dialer
+recorded `tcp_connected` then `terminal_rejected` with
+`reference-events-missing` before observing the i2pd's
+authentication event) is recorded as a localized protocol defect;
+no further Rust correction is attempted under Plan 100. NTCP2
+remains experimental and non-advertised.
 
 The active development interop lane is bounded to one fresh
 GitHub Actions `ubuntu-24.04` workflow

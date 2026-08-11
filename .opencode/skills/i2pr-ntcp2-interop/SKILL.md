@@ -1,6 +1,6 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090/091/092/093/094/095/099/100 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, typed evidence validation, the Plan 085-088 host-loopback development execution roadmap (historical), the Plan 090 i2pd RouterInfo and pre-TCP classification correction, the Plan 091 i2pd Noise-handshake preconditions, the Plan 092 forward-handshake evidence integrity (superseded by Plan 093), the Plan 093 Plan 087 forward data-phase and reference-observer closure, the Plan 094 Plan 093 completion pass and Plan 087 -> Plan 088 handoff, the Plan 099 Milestone 3 interop exit and router buildout, and the Plan 100 one-time exit-gate cleanup and router handoff. Use when an agent is asked to run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, diagnose Plan 082-099 execution, or validate evidence. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090/091/092/093/094/099/100 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness (Plan 099/100 closed as protocol-defect-localized; Plan 095 historical). The harness includes the Plan 085-088 host-loopback development execution roadmap (historical), the Plan 090 i2pd RouterInfo and pre-TCP classification correction, the Plan 091 i2pd Noise-handshake preconditions, the Plan 092 forward-handshake evidence integrity (superseded by Plan 093), the Plan 093 Plan 087 forward data-phase and reference-observer closure, the Plan 094 Plan 093 completion pass and Plan 087 -> Plan 088 handoff, the Plan 099 Milestone 3 interop exit and router buildout, and the Plan 100 one-time exit-gate cleanup and router handoff. Use when an agent is asked to read or reproduce the historical harness surface, run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, or validate evidence. The active development interop lane is closed; NTCP2 remains experimental and non-advertised. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
 # I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/081/082/083/084)
@@ -1690,19 +1690,17 @@ native `Transports::SendMessage`, `Transports::IsConnected`, and
 `TransportSession::IsEstablished` instead of observer APIs the
 control build cannot emit.
 
-Plan 100 is the one-time active cleanup authority that repairs
-the Plan 099 exit-gate API/classification (D1, D2), hardens the
-i2pd observer proof (D3), and removes the divergent source-tree
-digest fallback (D4). The development exit gate vocabulary is
-bounded to three values: `passed`, `protocol-defect-localized`,
-`environment-or-harness-blocked` (see
-`tests/integration/ntcp2/harness/plan099_exit_gate.py`).
-
-After Plan 100:
+Plan 100 closed its exit-readiness defects (D1, D2, D3, D4) and
+the Plan 099 single-job CI workflow was dispatched exactly once
+from the Plan 100 correction commit. The bounded replacement
+runs (allowed by Plan 100 Result branch C) consumed two narrow
+direct corrections before the bound forward-instrumented attempt
+reached authentic post-TCP protocol evidence. The final
+development result is `protocol-defect-localized`:
 
 ```text
-plan_099 = implementation-landed-exit-cleanup-complete-pending-live-run
-plan_100 = exit-ready-awaiting-one-manual-run
+plan_099 = closed-protocol-defect-localized
+plan_100 = passed-exit-cleanup-and-handoff
 plan_095 = historical-superseded-by-plan099-single-job-lane
 plan_087 = historical-development-sequence-superseded-by-plan100
 plan_088 = historical-development-sequence-superseded-by-plan100
@@ -1710,8 +1708,20 @@ plan_079 = deferred-to-pre-normal-ntcp2-activation-and-public-network-checkpoint
 plan_072 = inactive-pending-plan088-ambiguity
 ntcp2    = experimental-non-advertised
 normal_daemon_activation = disabled
-router_construction = authorized-after-plan100-outcome
+router_construction = next
+development_interop = protocol-defect-localized
+exact_wire_stage = noise_authenticated
+external_netdb_over_ntcp2 = blocked
 ```
+
+The compact sanitized summary is preserved at
+`target/interop/evidence/milestone-3/31521642090/plan099-summary.json`.
+The cross-side defect (i2pd listener authenticated but i2pr dialer
+recorded `tcp_connected` then `terminal_rejected` with
+`reference-events-missing` before observing the i2pd's
+authentication event) is recorded as a localized protocol defect;
+no further Rust correction is attempted under Plan 100. NTCP2
+remains experimental and non-advertised.
 
 The active development interop surface is small and bounded:
 
