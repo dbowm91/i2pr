@@ -277,7 +277,7 @@ jobs:
                   return {
                       "present": False,
                       "label": label,
-                      "terminal_result": ENVIRONMENT_OR_BUILD_BLOCKED,
+                      "terminal_result": ENVIRONMENT_OR_HARNESS_BLOCKED,
                       "cleanup_result": "not-run",
                   }
               try:
@@ -289,7 +289,7 @@ jobs:
                   return {
                       "present": False,
                       "label": label,
-                      "terminal_result": ENVIRONMENT_OR_BUILD_BLOCKED,
+                      "terminal_result": ENVIRONMENT_OR_HARNESS_BLOCKED,
                       "cleanup_result": "not-run",
                   }
 
