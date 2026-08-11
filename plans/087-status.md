@@ -1,19 +1,24 @@
 # Plan 087 status: first real i2pr-to-i2pd host-loopback probe
 
-## Active correction — Plan 100 supersession (2026-08-11)
+## Active correction — Plan 101 daemon-safety correction (2026-08-11)
 
-Plan 099/Plan 100 supersede Plan 087's Plan 095 sequencing for
-active execution. The single Plan 099 one-job workflow now owns
-both directions and both control comparisons in one run.
+Plan 101 corrects the daemon NTCP2 activation boundary that the
+post-Plan 100 daemon-composition commit accidentally crossed. Plan 099/100
+achieved their strategic exit from the interoperability apparatus and
+produced a real post-TCP development result (`protocol-defect-localized`
+at `noise_authenticated`). Plan 101 removes premature NTCP2 production
+activation and restores the correct activation boundary.
 
 ```text
-plan_087 = historical-development-sequence-superseded-by-plan100
-plan_088 = historical-development-sequence-superseded-by-plan100
-plan_079 = deferred-to-pre-normal-ntcp2-activation-and-public-network-checkpoint
-plan_095 = historical-superseded-by-plan099-single-job-lane
-plan_099 = implementation-landed-exit-cleanup-complete-pending-live-run
-plan_100 = exit-ready-awaiting-one-manual-run
+plan_087 = historical-development-sequence
+plan_088 = historical-development-sequence
+plan_095 = historical
+plan_099 = closed-protocol-defect-localized
+plan_100 = closed-with-recorded-procedural-deviation
+plan_101 = active-daemon-ntcp2-activation-safety-correction
+plan_079 = deferred
 ntcp2    = experimental-non-advertised
+normal_daemon_ntcp2 = disabled-after-plan101
 ```
 
 Plan 087's runner architecture, host-loopback-development lane

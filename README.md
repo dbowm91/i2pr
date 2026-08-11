@@ -11,13 +11,16 @@ The initial compatibility target is the current I2P network as implemented by I2
 The repository contains a buildable nine-crate Rust workspace with bounded
 protocol codecs, reviewed cryptographic wrappers, versioned storage, runtime-
 neutral service and transport contracts, a Tokio-owned runtime, a deterministic
-testkit, and a non-networked daemon shell. NTCP2 remains experimental and
-non-advertised. The non-production interoperability tooling includes the
-runtime-owned NTCP2 wire driver, source-locked Java I2P and i2pd direct drivers,
-staged evidence contracts, and the Plan 082 state-preparation boundary.
-No retained real mixed-router TCP, NTCP2 handshake, authenticated-frame, or
-DeliveryStatus result exists. Earlier milestone details are retained below as
-an implementation history.
+testkit, and a real production daemon composition root (identity load,
+supervisor, service graph, graceful shutdown). NTCP2 remains experimental and
+non-advertised; normal-daemon NTCP2 activation is disabled and unenableable.
+The NTCP2 development interoperability result is `protocol-defect-localized`
+at `noise_authenticated`; no passed mixed-router NTCP2 result exists.
+The non-production interoperability tooling includes the runtime-owned NTCP2
+wire driver, source-locked Java I2P and i2pd direct drivers, staged evidence
+contracts, and the Plan 082 state-preparation boundary.
+The active product direction is local RouterInfo and NetDB foundation.
+Earlier milestone details are retained below as an implementation history.
 Plans 011–013 provide the structural and local cryptographic foundation for
 common I2P identities, mappings, certificates, RouterInfo, RouterAddress,
 Lease, classic LeaseSet, explicit identity generation, atomic reload, local

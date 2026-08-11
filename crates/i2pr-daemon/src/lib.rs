@@ -14,13 +14,9 @@ use cli::{CheckConfigArgs, Cli, Command, IdentityCommand, RunArgs};
 use config::Config;
 use error::DaemonError;
 use i2pr_crypto::{OsRng, RouterIdentityBundle};
-use i2pr_runtime::{
-    CancellationToken, Ntcp2RuntimeConfig, Ntcp2RuntimeService, ServiceClassification, ServiceName,
-    ServiceSpec,
-};
+use i2pr_runtime::{ServiceClassification, ServiceName, ServiceSpec};
 use i2pr_storage::IdentityStore;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 /// Result of a successful side-effect-free validation command.
@@ -105,82 +101,31 @@ pub fn execute(cli: Cli) -> Result<CommandOutcome, DaemonError> {
     }
 }
 
-/// Executes the live daemon run with Tokio runtime and supervisor.
-pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
-    let store = IdentityStore::in_data_dir(&config.router.data_dir);
-    let _bundle = store.load().map_err(|e| {
-        DaemonError::RuntimeIdentity(format!("failed to load router identity: {e}"))
-    })?;
-
-    let ntcp2_config = Ntcp2RuntimeConfig {
-        deadlines: i2pr_runtime::Ntcp2RuntimeDeadlines {
-            connect: config.transport.ntcp2.connect_timeout,
-            handshake: config.transport.ntcp2.handshake_timeout,
-            read_idle: config.transport.ntcp2.read_idle_timeout,
-            write: config.transport.ntcp2.write_timeout,
-            queue_wait: config.transport.ntcp2.queue_wait_timeout,
-            drain: config.transport.ntcp2.drain_timeout,
-        },
-        limits: i2pr_runtime::Ntcp2RuntimeLimits {
-            max_active_links: config.transport.ntcp2.max_active_links,
-            max_replay_entries: config.transport.ntcp2.max_replay_entries,
-            ..i2pr_runtime::Ntcp2RuntimeLimits::default()
-        },
-        prefixes: i2pr_runtime::IpPrefixPolicy {
-            ipv4_prefix: config.transport.ntcp2.ipv4_prefix,
-            ipv6_prefix: config.transport.ntcp2.ipv6_prefix,
-        },
-    };
-
-    let service = Arc::new(Ntcp2RuntimeService::new(ntcp2_config).map_err(|e| {
-        DaemonError::RuntimeSupervisorFailed(format!("failed to create NTCP2 runtime: {e}"))
-    })?);
-
-    let listen_address = config.network.listen_socket();
+/// Builds the daemon service graph for the given configuration.
+///
+/// Returns the graph so callers and tests can inspect the registered services
+/// without starting the supervisor loop.
+pub fn build_daemon_graph(config: &Config) -> Result<i2pr_runtime::ServiceGraph, DaemonError> {
+    if config.transport.ntcp2.enabled {
+        return Err(DaemonError::RuntimeSupervisorFailed(
+            "NTCP2 activation is not available while support is experimental".to_string(),
+        ));
+    }
 
     let mut builder = i2pr_runtime::ServiceGraph::builder(i2pr_runtime::MAX_SERVICE_COUNT)
         .map_err(|e| {
             DaemonError::RuntimeSupervisorFailed(format!("failed to create service graph: {e}"))
         })?;
 
-    let ntcp2_service_name = ServiceName::new("ntcp2-transport").expect("valid service name");
+    let lifecycle_name = ServiceName::new("lifecycle").expect("valid service name");
     builder
         .register(ServiceSpec::new(
-            ntcp2_service_name.clone(),
+            lifecycle_name,
             ServiceClassification::Essential,
-            move |_ctx| {
-                let service = Arc::clone(&service);
-                let address = listen_address;
-                Box::pin(async move {
-                    let root = CancellationToken::new();
-                    let scope = service.child_scope(&root);
-
-                    match service.listen(address, &scope).await {
-                        Ok(_listener) => {
-                            tokio::signal::ctrl_c().await.ok();
-                            let cleanup = scope.shutdown().await;
-                            if cleanup.failed() {
-                                let detail =
-                                    i2pr_core::HealthDetail::new("listener cleanup failed").ok();
-                                i2pr_runtime::ServiceResult::Failed(i2pr_core::ServiceFailure::new(
-                                    i2pr_core::ServiceFailureCategory::Internal,
-                                    detail,
-                                ))
-                            } else {
-                                i2pr_runtime::ServiceResult::RequestedShutdown
-                            }
-                        }
-                        Err(e) => {
-                            let detail = i2pr_core::HealthDetail::new(format!(
-                                "failed to bind listener: {e:?}"
-                            ))
-                            .ok();
-                            i2pr_runtime::ServiceResult::Failed(i2pr_core::ServiceFailure::new(
-                                i2pr_core::ServiceFailureCategory::ResourceExhausted,
-                                detail,
-                            ))
-                        }
-                    }
+            |_ctx| {
+                Box::pin(async {
+                    tokio::signal::ctrl_c().await.ok();
+                    i2pr_runtime::ServiceResult::RequestedShutdown
                 })
             },
         ))
@@ -188,9 +133,19 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
             DaemonError::RuntimeSupervisorFailed(format!("failed to register service: {e}"))
         })?;
 
-    let graph = builder
+    builder
         .build()
-        .map_err(|e| DaemonError::RuntimeSupervisorFailed(format!("invalid service graph: {e}")))?;
+        .map_err(|e| DaemonError::RuntimeSupervisorFailed(format!("invalid service graph: {e}")))
+}
+
+/// Executes the live daemon run with Tokio runtime and supervisor.
+pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
+    let store = IdentityStore::in_data_dir(&config.router.data_dir);
+    let _bundle = store.load().map_err(|e| {
+        DaemonError::RuntimeIdentity(format!("failed to load router identity: {e}"))
+    })?;
+
+    let graph = build_daemon_graph(&config)?;
 
     let supervisor =
         i2pr_runtime::Supervisor::new(graph, Duration::from_secs(30)).map_err(|e| {
@@ -319,5 +274,48 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn daemon_graph_contains_no_ntcp2_transport_service() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n",
+            path.to_string_lossy()
+        );
+        let config = Config::parse(&text).expect("valid config");
+        let graph = build_daemon_graph(&config).expect("graph builds");
+        let names: Vec<_> = graph
+            .startup_order()
+            .iter()
+            .map(|n| n.as_str().to_string())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n == "ntcp2-transport"),
+            "service graph must not contain ntcp2-transport, got: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "lifecycle"),
+            "service graph must contain lifecycle, got: {names:?}"
+        );
+    }
+
+    #[test]
+    fn daemon_graph_rejects_ntcp2_enabled_config() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[transport.ntcp2]\nenabled = true\n",
+            path.to_string_lossy()
+        );
+        let err = Config::parse(&text).expect_err("config should reject enabled = true");
+        assert!(matches!(
+            err,
+            crate::config::ConfigError::Semantic {
+                field: "transport.ntcp2.enabled",
+                ..
+            }
+        ));
     }
 }

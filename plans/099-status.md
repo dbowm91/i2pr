@@ -106,26 +106,33 @@ attempted under Plan 100.
 
 ```text
 plan_099 = closed-protocol-defect-localized
-plan_100 = passed-exit-cleanup-and-handoff
+plan_100 = closed-exit-cleanup-with-recorded-procedural-deviation
+plan_101 = active-daemon-ntcp2-activation-safety-correction
 plan_095 = historical-superseded-by-plan099-single-job-lane
 plan_087 = historical-development-sequence
 plan_088 = historical-development-sequence
 plan_079 = deferred-to-pre-normal-ntcp2-activation-and-public-network-checkpoint
 plan_072 = inactive-pending-plan088-ambiguity
 ntcp2    = experimental-non-advertised
-normal_daemon_activation = disabled
-router_construction = next
+normal_daemon_ntcp2 = temporarily-regressed-pending-plan101
+router_construction = active
 development_interop = protocol-defect-localized
 exact_wire_stage = noise_authenticated
 external_netdb_over_ntcp2 = blocked
 ```
 
-The Plan 100 focused local validation remains green and the
-single authoritative CI dispatch produced a sanitized summary.
-Plan 100 does not create a Plan 101 NTCP2 cleanup pass. The next
-substantial product roadmap is the production i2pr router
-construction (daemon composition + RouterInfo/NetDB foundation),
-not another NTCP2 evidence framework plan.
+### Plan 100 procedural deviation record
+
+Plan 100 technical closure result remains `protocol-defect-localized`.
+The implementation required more pre-TCP harness corrections than the
+written Branch C budget and the final post-TCP result was not
+reproduced unchanged as required by criterion 47. These are recorded
+procedural deviations, not grounds to reopen the retired interop
+sequence.
+
+Plan 101 is the active daemon-safety correction that removes
+premature NTCP2 production activation and restores the correct
+activation boundary.
 
 ## Implementation baseline and outcome
 

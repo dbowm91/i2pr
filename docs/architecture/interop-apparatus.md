@@ -1809,15 +1809,16 @@ development result is `protocol-defect-localized`:
 
 ```text
 plan_099 = closed-protocol-defect-localized
-plan_100 = passed-exit-cleanup-and-handoff
+plan_100 = closed-exit-cleanup-with-recorded-procedural-deviation
+plan_101 = active-daemon-ntcp2-activation-safety-correction
 plan_095 = historical-superseded-by-plan099-single-job-lane
-plan_087 = historical-development-sequence-superseded-by-plan100
-plan_088 = historical-development-sequence-superseded-by-plan100
+plan_087 = historical-development-sequence
+plan_088 = historical-development-sequence
 plan_079 = deferred-to-pre-normal-ntcp2-activation-and-public-network-checkpoint
 plan_072 = inactive-pending-plan088-ambiguity
 ntcp2    = experimental-non-advertised
-normal_daemon_activation = disabled
-router_construction = next
+normal_daemon_ntcp2 = disabled-after-plan101
+router_construction = active
 development_interop = protocol-defect-localized
 exact_wire_stage = noise_authenticated
 external_netdb_over_ntcp2 = blocked
@@ -1825,12 +1826,9 @@ external_netdb_over_ntcp2 = blocked
 
 The compact sanitized summary is preserved at
 `target/interop/evidence/milestone-3/31521642090/plan099-summary.json`.
-The cross-side defect (i2pd listener authenticated but i2pr dialer
-recorded `tcp_connected` then `terminal_rejected` with
-`reference-events-missing` before observing the i2pd's
-authentication event) is recorded as a localized protocol defect;
-no further Rust correction is attempted under Plan 100. NTCP2
-remains experimental and non-advertised.
+Plan 101 corrects the daemon NTCP2 activation boundary; normal-daemon
+NTCP2 is disabled and unenableable. NTCP2 remains experimental and
+non-advertised.
 
 The active development interop lane is bounded to one fresh
 GitHub Actions `ubuntu-24.04` workflow

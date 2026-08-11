@@ -40,14 +40,24 @@ done
 
 # 2. Production daemon must not accidentally activate NTCP2.
 daemon_lib="$root/crates/i2pr-daemon/src/lib.rs"
-daemon_main="$root/crates/i2pr-daemon/src/main.rs"
+daemon_config="$root/crates/i2pr-daemon/src/config.rs"
 test -f "$daemon_lib"
-test -f "$daemon_main"
-if grep -qE 'ntcp2|listen|dial' "$daemon_lib" 2>/dev/null; then
-    if grep -qE 'pub (fn|async fn) (listen|dial|connect)' "$daemon_lib"; then
-        echo "production daemon exposes NTCP2 listen/dial surface" >&2
-        exit 2
-    fi
+test -f "$daemon_config"
+# The NTCP2 default must be false.
+if ! grep -q 'default_ntcp2_enabled' "$daemon_config" || ! grep -A1 'fn default_ntcp2_enabled' "$daemon_config" | grep -q 'false'; then
+    echo "daemon NTCP2 default is not false" >&2
+    exit 2
+fi
+# The composition graph must not register ntcp2-transport.
+# The registration pattern is ServiceName::new("ntcp2-transport").
+if grep -q 'ServiceName::new("ntcp2-transport")' "$daemon_lib"; then
+    echo "daemon registers ntcp2-transport in the service graph" >&2
+    exit 2
+fi
+# The behavioral composition regression test must exist.
+if ! grep -q 'daemon_graph_contains_no_ntcp2_transport_service' "$daemon_lib"; then
+    echo "daemon composition regression test missing" >&2
+    exit 2
 fi
 
 # 3. Direct i2pd reference driver and helpers remain test-only.

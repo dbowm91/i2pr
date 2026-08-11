@@ -186,7 +186,7 @@ const fn default_network_id() -> u16 {
 }
 
 const fn default_ntcp2_enabled() -> bool {
-    true
+    false
 }
 
 const fn default_ntcp2_connect_timeout_ms() -> u64 {
@@ -481,6 +481,13 @@ fn validate_limit(field: &'static str, value: u64, maximum: u64) -> Result<(), C
 }
 
 fn normalize_ntcp2(raw: &RawNtcp2Config) -> Result<Ntcp2Config, ConfigError> {
+    if raw.enabled {
+        return Err(ConfigError::Semantic {
+            field: "transport.ntcp2.enabled",
+            reason: "normal-daemon NTCP2 activation is unavailable while support is experimental",
+        });
+    }
+
     let connect_timeout = Duration::from_millis(raw.connect_timeout_ms);
     let handshake_timeout = Duration::from_millis(raw.handshake_timeout_ms);
     let read_idle_timeout = Duration::from_millis(raw.read_idle_timeout_ms);
@@ -611,7 +618,7 @@ listen_port = 9150
 network_id = 2
 
 [transport.ntcp2]
-enabled = true
+enabled = false
 connect_timeout_ms = 5000
 handshake_timeout_ms = 30000
 read_idle_timeout_ms = 120000
@@ -704,7 +711,7 @@ data_dir = "./state"
         );
         assert_eq!(config.network.listen_port, 9150);
         assert_eq!(config.network.network_id, 2);
-        assert!(config.transport.ntcp2.enabled);
+        assert!(!config.transport.ntcp2.enabled);
         assert_eq!(
             config.transport.ntcp2.connect_timeout,
             Duration::from_millis(5000)
@@ -828,5 +835,58 @@ data_dir = "./state"
             config.network.listen_socket(),
             "127.0.0.1:9150".parse().unwrap()
         );
+    }
+
+    #[test]
+    fn omitted_ntcp2_section_means_disabled() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n",
+            path.to_string_lossy()
+        );
+        let config = Config::parse(&text).expect("valid config");
+        assert!(!config.transport.ntcp2.enabled);
+    }
+
+    #[test]
+    fn explicit_ntcp2_enabled_false_is_accepted() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[transport.ntcp2]\nenabled = false\n",
+            path.to_string_lossy()
+        );
+        let config = Config::parse(&text).expect("explicit false should be accepted");
+        assert!(!config.transport.ntcp2.enabled);
+    }
+
+    #[test]
+    fn explicit_ntcp2_enabled_true_is_rejected() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[transport.ntcp2]\nenabled = true\n",
+            path.to_string_lossy()
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "transport.ntcp2.enabled",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn ntcp2_tuning_fields_do_not_activate_when_disabled() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[transport.ntcp2]\nconnect_timeout_ms = 1000\nhandshake_timeout_ms = 5000\n",
+            path.to_string_lossy()
+        );
+        let config = Config::parse(&text).expect("tuning without enabled should be accepted");
+        assert!(!config.transport.ntcp2.enabled);
     }
 }
