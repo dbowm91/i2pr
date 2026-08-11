@@ -27,6 +27,20 @@ pub enum ExitCode {
     IdentityStorage = 30,
     /// Identity cryptographic execution failed.
     IdentityCrypto = 31,
+    /// The router identity was not found or invalid.
+    RuntimeIdentity = 41,
+    /// TCP listener could not bind the configured address.
+    RuntimeBindFailed = 40,
+    /// Listener accept loop failed.
+    RuntimeListenerFailed = 42,
+    /// Outbound connection failed.
+    RuntimeDialFailed = 43,
+    /// NTCP2 Noise handshake failed.
+    RuntimeHandshakeFailed = 44,
+    /// Supervised shutdown exceeded deadline.
+    RuntimeShutdownTimeout = 45,
+    /// Child task crashed and supervisor terminated.
+    RuntimeSupervisorFailed = 46,
     /// An unexpected internal failure occurred.
     Internal = 70,
 }
@@ -64,6 +78,27 @@ pub enum DaemonError {
     /// Identity cryptographic execution failed.
     #[error(transparent)]
     IdentityCrypto(#[from] CryptoError),
+    /// The router identity was not found or invalid.
+    #[error("router identity not found or invalid: {0}")]
+    RuntimeIdentity(String),
+    /// TCP listener could not bind the configured address.
+    #[error("failed to bind TCP listener: {0}")]
+    RuntimeBindFailed(io::Error),
+    /// Listener accept loop failed.
+    #[error("listener accept loop failed: {0}")]
+    RuntimeListenerFailed(String),
+    /// Outbound connection failed.
+    #[error("outbound connection failed: {0}")]
+    RuntimeDialFailed(String),
+    /// NTCP2 Noise handshake failed.
+    #[error("NTCP2 handshake failed: {0}")]
+    RuntimeHandshakeFailed(String),
+    /// Supervised shutdown exceeded deadline.
+    #[error("supervised shutdown exceeded deadline")]
+    RuntimeShutdownTimeout,
+    /// Child task crashed and supervisor terminated.
+    #[error("supervisor terminated: {0}")]
+    RuntimeSupervisorFailed(String),
 }
 
 impl DaemonError {
@@ -75,6 +110,13 @@ impl DaemonError {
             Self::RuntimeNotImplemented => ExitCode::RuntimeNotImplemented,
             Self::IdentityStorage(_) => ExitCode::IdentityStorage,
             Self::IdentityCrypto(_) => ExitCode::IdentityCrypto,
+            Self::RuntimeIdentity(_) => ExitCode::RuntimeIdentity,
+            Self::RuntimeBindFailed(_) => ExitCode::RuntimeBindFailed,
+            Self::RuntimeListenerFailed(_) => ExitCode::RuntimeListenerFailed,
+            Self::RuntimeDialFailed(_) => ExitCode::RuntimeDialFailed,
+            Self::RuntimeHandshakeFailed(_) => ExitCode::RuntimeHandshakeFailed,
+            Self::RuntimeShutdownTimeout => ExitCode::RuntimeShutdownTimeout,
+            Self::RuntimeSupervisorFailed(_) => ExitCode::RuntimeSupervisorFailed,
         }
     }
 }

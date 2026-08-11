@@ -114,8 +114,8 @@ fn dry_run_succeeds_and_live_run_is_not_implemented() {
         .arg(&config)
         .output()
         .expect("run live command");
-    assert_eq!(live.status.code(), Some(20));
-    assert!(String::from_utf8_lossy(&live.stderr).contains("live daemon execution is not enabled"));
+    assert_eq!(live.status.code(), Some(41));
+    assert!(String::from_utf8_lossy(&live.stderr).contains("router identity not found"));
 }
 
 #[test]

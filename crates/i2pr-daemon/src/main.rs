@@ -33,6 +33,20 @@ fn main() -> ProcessExitCode {
             );
             ProcessExitCode::SUCCESS
         }
+        Ok(i2pr_daemon::CommandOutcome::RunReady { config }) => {
+            i2pr_daemon::initialize_logging(&config.logging);
+            let result = i2pr_runtime::run_blocking(i2pr_daemon::run_daemon(config));
+            match result {
+                Ok(()) => {
+                    println!("router shutdown cleanly");
+                    ProcessExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    process_exit(error.exit_code())
+                }
+            }
+        }
         Err(error) => {
             eprintln!("error: {error}");
             process_exit(error.exit_code())
