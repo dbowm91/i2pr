@@ -666,5 +666,91 @@ class CanonicalDigestTests(unittest.TestCase):
         self.assertEqual(probe.canonical_record_digest(decoded), record["record_sha256"])
 
 
+class Plan099ExitGateTests(unittest.TestCase):
+    """Plan 099 WP4: the development exit gate vocabulary is bounded
+    to four values. A two-way development smoke pass requires all
+    four per-attempt records to carry ``terminal_result = passed``
+    and ``cleanup_result = clean``. Any other combination collapses
+    to one of the three typed blocker values.
+    """
+
+    def _passed(self) -> dict[str, object]:
+        return {"terminal_result": "passed", "cleanup_result": "clean"}
+
+    def _blocked(self) -> dict[str, object]:
+        return {
+            "terminal_result": "environment-or-build-blocked",
+            "cleanup_result": "not-run",
+        }
+
+    def _rejected(self) -> dict[str, object]:
+        return {"terminal_result": "protocol_rejected", "cleanup_result": "forced"}
+
+    def test_all_pass_yields_two_way(self) -> None:
+        from plan099_exit_gate import TWO_WAY, classify_exit_result
+        self.assertEqual(
+            classify_exit_result(
+                self._passed(), self._passed(), self._passed(), self._passed()
+            ),
+            TWO_WAY,
+        )
+
+    def test_forward_defect_yields_forward_wire_defect(self) -> None:
+        from plan099_exit_gate import FORWARD_DEFECT, classify_exit_result
+        self.assertEqual(
+            classify_exit_result(
+                self._rejected(), self._passed(), self._passed(), self._passed()
+            ),
+            FORWARD_DEFECT,
+        )
+
+    def test_reverse_defect_yields_reverse_wire_defect(self) -> None:
+        from plan099_exit_gate import REVERSE_DEFECT, classify_exit_result
+        self.assertEqual(
+            classify_exit_result(
+                self._passed(), self._passed(), self._rejected(), self._passed()
+            ),
+            REVERSE_DEFECT,
+        )
+
+    def test_both_defects_yield_blocked(self) -> None:
+        from plan099_exit_gate import BLOCKED, classify_exit_result
+        self.assertEqual(
+            classify_exit_result(
+                self._blocked(), self._passed(), self._blocked(), self._passed()
+            ),
+            BLOCKED,
+        )
+
+    def test_build_and_validate_round_trip(self) -> None:
+        from plan099_exit_gate import build_summary, validate_summary
+
+        summary = build_summary(
+            workflow_run_id="run-1",
+            workflow_run_attempt=1,
+            source_commit="a" * 40,
+            runner_label="ubuntu-24.04",
+            runner_arch="x86_64",
+            reference_revision="f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e",
+            topology_kind="host-loopback-development",
+            network_id=99,
+            bind_address="127.0.0.1",
+            development_only=True,
+            release_qualified=False,
+            isolation_qualified=False,
+            i2pr_binary_sha256="1" * 64,
+            i2pd_instrumented_binary_sha256="2" * 64,
+            i2pd_control_binary_sha256="3" * 64,
+            forward_instrumented=self._passed(),
+            forward_control=self._passed(),
+            reverse_instrumented=self._passed(),
+            reverse_control=self._passed(),
+            ntcp2_status="experimental-non-advertised",
+            attempt_records={},
+        )
+        validate_summary(summary)
+        self.assertEqual(summary["status"], "two-way-development-smoke-passed")
+
+
 if __name__ == "__main__":
     unittest.main()

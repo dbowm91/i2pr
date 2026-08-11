@@ -1789,15 +1789,15 @@ correction commit. The plan-of-record is
 
 Plan 099 is the active corrective and exit plan from the
 multi-job CI/provenance expansion that consumed Plans 095–098. It
-freezes interoperability architecture growth, fixes the four
-residual Plan 098 evidence-integrity defects (D1 chained
-inequality, D2 source-tree digest, D3 manifest parity, D4
-preflight binary requirement), collapses the development CI
-workflow to one build-and-run job, prunes superseded
-plan-specific Python harness machinery, and amends continuation
-authority so production daemon composition and local/offline
-Milestone 4 work may proceed even if a localized NTCP2 wire
-defect is recorded.
+corrects the central Plan 099 implementation finding — the
+instrumented i2pd transport libraries were never actually
+compiled from the patched source tree — and it freezes
+interoperability architecture growth. The build script now
+produces two separate i2pd archive sets (`I2PD_INSTRUMENTED_LIB_DIR`
+and `I2PD_PRISTINE_LIB_DIR`), and the pristine control driver uses
+native `Transports::SendMessage`, `Transports::IsConnected`, and
+`TransportSession::IsEstablished` instead of observer APIs the
+control build cannot emit.
 
 After Plan 099:
 
@@ -1818,12 +1818,12 @@ The active development interop lane is bounded to one fresh
 GitHub Actions `ubuntu-24.04` workflow
 ([`.github/workflows/ntcp2-interop-host-loopback-development.yml`](../../.github/workflows/ntcp2-interop-host-loopback-development.yml))
 with one `development-interop` job that builds i2pr and the
-pinned i2pd direct driver, runs the four primary attempts in
-sequence (forward-instrumented, forward-control,
-reverse-instrumented, reverse-control), and emits one compact
-sanitized summary. No cross-job artifact transfer. No
-Multipass, Docker, public-network traffic, reseed, SAM, I2CP,
-SSU2, or Java I2P.
+pinned i2pd direct driver (with separate pristine and instrumented
+archive sets), runs the four primary attempts in sequence
+(forward-instrumented, forward-control, reverse-instrumented,
+reverse-control), and emits one compact sanitized summary. No
+cross-job artifact transfer. No Multipass, Docker, public-network
+traffic, reseed, SAM, I2CP, SSU2, or Java I2P.
 
 The Plan 099 active functional surface is small:
 
@@ -1841,7 +1841,8 @@ The Plan 099 active functional surface is small:
   [`interop_topology.py`](../../tests/integration/ntcp2/harness/interop_topology.py),
   [`reference_event.py`](../../tests/integration/ntcp2/harness/reference_event.py),
   [`reference_trigger_v4.py`](../../tests/integration/ntcp2/harness/reference_trigger_v4.py),
-  [`execution_lane.py`](../../tests/integration/ntcp2/harness/execution_lane.py)
+  [`execution_lane.py`](../../tests/integration/ntcp2/harness/execution_lane.py),
+  [`plan099_exit_gate.py`](../../tests/integration/ntcp2/harness/plan099_exit_gate.py)
   — the functional interop modules;
 - [`tests/integration/ntcp2/harness/test_minimal_i2pd_probe.py`](../../tests/integration/ntcp2/harness/test_minimal_i2pd_probe.py),
   [`test_i2pd_direct_driver.py`](../../tests/integration/ntcp2/harness/test_i2pd_direct_driver.py),
@@ -1849,10 +1850,26 @@ The Plan 099 active functional surface is small:
   [`test_execution_lane.py`](../../tests/integration/ntcp2/harness/test_execution_lane.py)
   — the bounded functional tests;
 - [`tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh`](../../tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh)
-  — the i2pd driver build script;
+  and
+  [`CMakeLists.txt`](../../tests/integration/ntcp2/reference-drivers/i2pd/CMakeLists.txt)
+  — the i2pd driver build script and the split-library link
+  contract;
 - [`scripts/check-ntcp2-interoperability.sh`](../../scripts/check-ntcp2-interoperability.sh)
-  — the trimmed static boundary check (reduced from 1870 to 124
-  lines).
+  — the trimmed static boundary check.
+
+The Plan 099 development exit gate vocabulary is exactly four values:
+
+```text
+two-way-development-smoke-passed
+forward-wire-defect
+reverse-wire-defect
+environment-or-build-blocked
+```
+
+`two-way-development-smoke-passed` requires all four per-attempt
+records to carry `terminal_result = passed` and `cleanup_result =
+clean`. Any other combination collapses to one of the three typed
+blocker values. The gate is implemented in `plan099_exit_gate.py`.
 
 Plan 099 forbids adding new `test_planNNN.py` files, new
 plan-number-specific Python runners, or new plan-token static

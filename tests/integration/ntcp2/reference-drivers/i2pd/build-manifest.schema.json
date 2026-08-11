@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "i2pr-i2pd-direct-driver-build-manifest-v1",
-  "title": "Plan 076 i2pd direct NTCP2 driver build manifest",
+  "title": "Plan 099 i2pd direct NTCP2 driver build manifest",
   "type": "object",
   "required": [
     "schema",
@@ -85,7 +85,17 @@
     "i2pd_libraries_sha256": {
       "type": "string",
       "minLength": 1,
-      "description": "Three measured SHA-256 digests separated by spaces (libi2pd, libi2pdclient, libi2pdlang)."
+      "description": "Three measured SHA-256 digests separated by spaces for the pristine archives (libi2pd, libi2pdclient, libi2pdlang)."
+    },
+    "instrumented_libraries_sha256": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Plan 099 WP1.3: three measured SHA-256 digests separated by spaces for the instrumented archives (libi2pd, libi2pdclient, libi2pdlang) built from the patched tree with I2PD_INTEROP_OBSERVER=1."
+    },
+    "object_level_proof_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Plan 099 WP1.4: SHA-256 of the object-level proof file produced by build-driver.sh via nm -C over the pristine and instrumented archives."
     },
     "cmake_version": {
       "type": "string",
@@ -148,6 +158,10 @@
     "observer_compile_time_gated": {
       "type": "boolean",
       "const": true
+    },
+    "plan": {
+      "type": "string",
+      "const": "099"
     }
   }
 }

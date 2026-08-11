@@ -192,12 +192,23 @@ class I2pdDriverArtifactsPresentTests(unittest.TestCase):
         self.assertIn("linked_i2pd_sources", text)
         self.assertIn("observer_compile_time_gated", text)
 
-    def test_i2pd_cmakelists_uses_linked_marker_and_lib_dir(self):
+    def test_i2pd_cmakelists_uses_linked_marker_and_lib_dirs(self):
         cmake = (REPO_ROOT / "tests/integration/ntcp2/reference-drivers/i2pd/CMakeLists.txt").read_text()
         self.assertIn("I2PD_PLAN076_LINKED=1", cmake)
-        self.assertIn("I2PD_LIB_DIR", cmake)
+        self.assertIn("I2PD_INSTRUMENTED_LIB_DIR", cmake)
+        self.assertIn("I2PD_PRISTINE_LIB_DIR", cmake)
         self.assertIn("I2PD_PATCHED_TREE", cmake)
         self.assertIn("I2PD_PRISTINE_TREE", cmake)
+        # Plan 099 WP1.3: the legacy single ``I2PD_LIB_DIR`` variable
+        # is forbidden as a CMake cache variable. We strip comments
+        # before searching so the docstring note about the variable
+        # being rejected does not produce a false positive.
+        cmake_no_comments = "\n".join(
+            line for line in cmake.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        self.assertNotIn("I2PD_LIB_DIR", cmake_no_comments)
+        self.assertNotIn("${I2PD_LIB_DIR}", cmake)
 
     def test_i2pd_build_driver_script_builds_pinned_libraries(self):
         script = I2PD_BUILD_SCRIPT.read_text()
@@ -207,6 +218,24 @@ class I2pdDriverArtifactsPresentTests(unittest.TestCase):
         self.assertIn("libi2pdclient.a", script)
         self.assertIn("libi2pdlang.a", script)
         self.assertIn("patch -p1 --fuzz=0", script)
+        # Plan 099 WP1.2: the script must build a second set of
+        # archives from the patched tree with the observer macro
+        # visible. The instrumented archives feed the instrumented
+        # binary; the pristine archives feed the control binary.
+        self.assertIn("I2PD_INTEROP_OBSERVER=1", script)
+        self.assertIn("INSTRUMENTED_LIB_BUILD", script)
+        self.assertIn("PRISTINE_LIB_BUILD", script)
+
+    def test_i2pd_build_driver_emits_object_level_proof(self):
+        # Plan 099 WP1.4: ``build-driver.sh`` must produce an
+        # object-level proof via ``nm -C`` that proves the
+        # instrumented archive references the observer API and the
+        # pristine archive does not. Header include-path
+        # differences alone are insufficient.
+        script = I2PD_BUILD_SCRIPT.read_text()
+        self.assertIn("object-level-proof.txt", script)
+        self.assertIn("nm -C", script)
+        self.assertIn("i2pr::i2pdinterop::Observe", script)
 
     def test_i2pd_build_driver_script_bounds_parallel_jobs(self):
         # Plan 095: the i2pd library compile phase can exceed the
@@ -312,6 +341,16 @@ class I2pdDriverArtifactsPresentTests(unittest.TestCase):
         self.assertIn("WaitForAuthenticated", source)
         self.assertIn("listening-handshake-timeout", source)
         self.assertIn("dialing-send-timeout", source)
+        # Plan 099 WP2: the driver must compile-time branch the
+        # observer wait primitives behind ``I2PD_INTEROP_OBSERVER``
+        # so the pristine control binary does not wait for observer
+        # APIs the control build cannot emit. The control branch
+        # uses native ``Transports::IsConnected`` and the
+        # ``TransportSession`` future from ``SendMessage``.
+        self.assertIn("#ifdef I2PD_INTEROP_OBSERVER", source)
+        self.assertIn("transports.IsConnected", source)
+        self.assertIn("TransportSession", source)
+        self.assertIn("IsEstablished", source)
 
     def test_i2pd_qualification_receipt_carries_linked_library_digests(self):
         receipt_path = (

@@ -1680,15 +1680,19 @@ qualification record exists. See `plans/077-status.md` and ADR 0024.
 
 Plan 099 is the **active** corrective and exit plan from the
 multi-job CI/provenance expansion that consumed Plans 095–098. It
-freezes interoperability architecture growth, fixes the four
-residual Plan 098 evidence-integrity defects (D1 chained
-inequality, D2 source-tree digest, D3 manifest parity, D4
-preflight binary requirement), collapses the development CI
-workflow to one build-and-run job, prunes superseded
-plan-specific Python harness machinery, and amends continuation
-authority so production daemon composition and local/offline
-Milestone 4 work may proceed even if a localized NTCP2 wire
-defect is recorded.
+corrects the central Plan 099 implementation finding — the
+instrumented i2pd transport libraries were never actually
+compiled from the patched source tree — and it freezes
+interoperability architecture growth. The build script now
+produces two separate i2pd archive sets
+(`I2PD_INSTRUMENTED_LIB_DIR` and `I2PD_PRISTINE_LIB_DIR`), and the
+pristine control driver uses native `Transports::SendMessage`,
+`Transports::IsConnected`, and `TransportSession::IsEstablished`
+instead of observer APIs the control build cannot emit. The
+development exit gate vocabulary is bounded to four values:
+`two-way-development-smoke-passed`, `forward-wire-defect`,
+`reverse-wire-defect`, `environment-or-build-blocked` (see
+`tests/integration/ntcp2/harness/plan099_exit_gate.py`).
 
 After Plan 099:
 
@@ -1717,13 +1721,14 @@ bounded:
 - `tests/integration/ntcp2/harness/i2pd_direct_driver.py`,
   `minimal_i2pd_probe.py`, `minimal_i2pd_reverse_probe.py`,
   `interop_topology.py`, `reference_event.py`,
-  `reference_trigger_v4.py`, `execution_lane.py` — the functional
-  interop modules;
+  `reference_trigger_v4.py`, `execution_lane.py`,
+  `plan099_exit_gate.py` — the functional interop modules;
 - `tests/integration/ntcp2/harness/test_minimal_i2pd_probe.py`,
   `test_i2pd_direct_driver.py`, `test_i2pd_direct_control.py`,
   `test_execution_lane.py` — the bounded functional tests;
 - `tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh`
-  — the i2pd driver build script;
+  and `CMakeLists.txt` — the i2pd driver build script and the
+  split-library link contract;
 - `scripts/check-ntcp2-interoperability.sh` — the trimmed
   static boundary check.
 

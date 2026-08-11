@@ -54,11 +54,13 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <openssl/sha.h>
@@ -78,6 +80,7 @@
 #include "NetDb.hpp"
 #include "RouterContext.h"
 #include "RouterInfo.h"
+#include "TransportSession.h"
 #include "Transports.h"
 #include "version.h"
 
@@ -738,10 +741,6 @@ void set_uint16_option(const char* name, std::uint16_t value) {
     i2p::config::SetOption(name, value);
 }
 
-void set_int_typed_option(const char* name, int value) {
-    i2p::config::SetOption(name, value);
-}
-
 void set_string_option(const char* name, const std::string& value) {
     i2p::config::SetOption(name, value);
 }
@@ -1188,6 +1187,7 @@ int run_listen(const DriverConfig& cfg) {
         return 66;
     }
 
+#ifdef I2PD_INTEROP_OBSERVER
     // Plan 093: the observer generation is advanced and every
     // bounded sequence ring is reset *before* the i2pd transport
     // threads start. ``listener_ready`` (below) does not reset the
@@ -1198,12 +1198,14 @@ int run_listen(const DriverConfig& cfg) {
     i2pr::i2pdinterop::BeginListenerGeneration();
     const std::uint64_t active_generation =
         i2pr::i2pdinterop::ObserverCurrentGeneration();
+#endif
 
-    // Plan 093: derive the expected peer Router Hash from the
+    // Plan 093/099: derive the expected peer IdentHash from the
     // imported peer RouterInfo bytes before the listener waits.
-    // The receive and send predicate waits both require the entry's
-    // peer Router Hash to equal this hash.
-    std::uint64_t expected_peer_hash[4] = {0, 0, 0, 0};
+    // The instrumented path uses the hash to gate the receive and
+    // send predicate waits; the control path uses it to poll the
+    // native transport state for the peer's connected session.
+    i2p::data::IdentHash peer_ident_hash{};
     {
         std::ifstream handle(cfg.peer_router_info_path, std::ios::binary);
         std::vector<std::uint8_t> bytes(
@@ -1211,9 +1213,7 @@ int run_listen(const DriverConfig& cfg) {
             std::istreambuf_iterator<char>());
         if (handle.good() && !bytes.empty()) {
             i2p::data::RouterInfo peer_info(bytes.data(), bytes.size());
-            auto peer_ident_hash = peer_info.GetIdentity()->GetIdentHash();
-            std::memcpy(expected_peer_hash, peer_ident_hash.data(),
-                        sizeof(expected_peer_hash));
+            peer_ident_hash = peer_info.GetIdentity()->GetIdentHash();
         }
     }
 
@@ -1234,6 +1234,7 @@ int run_listen(const DriverConfig& cfg) {
     }
     emit_event(writer, cfg, "listener_ready");
 
+#ifdef I2PD_INTEROP_OBSERVER
     // Plan 091: the listener waits boundedly for the i2pd transport
     // to record that the real pinned NTCP2 transport accepted a TCP
     // connection from the i2pr initiator. The wait primitive only
@@ -1273,6 +1274,9 @@ int run_listen(const DriverConfig& cfg) {
     // RouterInfo / DatabaseStore send that i2pd issues on inbound
     // sessions before the target DeliveryStatus cannot satisfy the
     // predicate.
+    std::uint64_t expected_peer_hash[4] = {0, 0, 0, 0};
+    std::memcpy(expected_peer_hash, peer_ident_hash.data(),
+                sizeof(expected_peer_hash));
     i2pr::i2pdinterop::ObserverMetadata recv_md{};
     const std::uint64_t receive_baseline =
         i2pr::i2pdinterop::ObserverReceiveSequence();
@@ -1301,46 +1305,99 @@ int run_listen(const DriverConfig& cfg) {
     // the active generation and a strictly greater send sequence
     // than the recorded baseline.
     {
-        std::ifstream handle(cfg.peer_router_info_path, std::ios::binary);
-        std::vector<std::uint8_t> bytes(
-            (std::istreambuf_iterator<char>(handle)),
-            std::istreambuf_iterator<char>());
-        if (handle.good() && !bytes.empty()) {
-            i2p::data::RouterInfo peer_info(bytes.data(), bytes.size());
-            auto peer_ident_hash = peer_info.GetIdentity()->GetIdentHash();
-            auto reply = i2p::CreateDeliveryStatusMsg(
-                cfg.delivery_status_message_id);
-            try {
-                auto future = i2p::transport::transports.SendMessage(
-                    peer_ident_hash, reply);
-                (void)future.wait_for(std::chrono::milliseconds(0));
-            } catch (const std::exception& exc) {
-                emit_event(writer, cfg, "terminal_rejected", std::nullopt,
-                           std::nullopt, std::nullopt,
-                           std::string("listener-send-message:") + exc.what());
-                shutdown_runtime(rt, nullptr, nullptr);
-                return 66;
-            }
-            const std::uint64_t send_baseline =
-                i2pr::i2pdinterop::ObserverSentSequence();
-            i2pr::i2pdinterop::ObserverMetadata sent_md{};
-            const std::uint32_t send_timeout_ms = cfg.handshake_timeout_ms;
-            if (!i2pr::i2pdinterop::WaitForSentDeliveryStatusAfter(
-                    active_generation, send_baseline,
-                    expected_peer_hash,
-                    cfg.delivery_status_message_id, send_timeout_ms,
-                    sent_md)) {
-                emit_event(writer, cfg, "terminal_rejected", std::nullopt,
-                           std::nullopt, std::nullopt,
-                           std::string("listener-send-timeout"));
-                shutdown_runtime(rt, nullptr, nullptr);
-                return 66;
-            }
-            emit_event(writer, cfg, "frame_emitted",
-                       sent_md.delivery_status_message_id,
-                       sent_md.i2np_type, sent_md.frame_sequence);
+        auto reply = i2p::CreateDeliveryStatusMsg(
+            cfg.delivery_status_message_id);
+        try {
+            auto future = i2p::transport::transports.SendMessage(
+                peer_ident_hash, reply);
+            (void)future.wait_for(std::chrono::milliseconds(0));
+        } catch (const std::exception& exc) {
+            emit_event(writer, cfg, "terminal_rejected", std::nullopt,
+                       std::nullopt, std::nullopt,
+                       std::string("listener-send-message:") + exc.what());
+            shutdown_runtime(rt, nullptr, nullptr);
+            return 66;
         }
+        const std::uint64_t send_baseline =
+            i2pr::i2pdinterop::ObserverSentSequence();
+        i2pr::i2pdinterop::ObserverMetadata sent_md{};
+        const std::uint32_t send_timeout_ms = cfg.handshake_timeout_ms;
+        if (!i2pr::i2pdinterop::WaitForSentDeliveryStatusAfter(
+                active_generation, send_baseline,
+                expected_peer_hash,
+                cfg.delivery_status_message_id, send_timeout_ms,
+                sent_md)) {
+            emit_event(writer, cfg, "terminal_rejected", std::nullopt,
+                       std::nullopt, std::nullopt,
+                       std::string("listener-send-timeout"));
+            shutdown_runtime(rt, nullptr, nullptr);
+            return 66;
+        }
+        emit_event(writer, cfg, "frame_emitted",
+                   sent_md.delivery_status_message_id,
+                   sent_md.i2np_type, sent_md.frame_sequence);
     }
+#else
+    // Plan 099 WP2.2: the pristine control listener does not depend
+    // on observer APIs. It polls the native i2pd transport for the
+    // peer's connected state, composes a real DeliveryStatus through
+    // the real SendMessage surface, waits boundedly for the
+    // asynchronous session future, and requires a non-null
+    // established TransportSession. The authenticated-data-plane
+    // round trip is proved by the i2pr-side receive of the
+    // correlated DeliveryStatus message ID; the control does not
+    // attempt to reproduce the instrumented exact receive metadata.
+    const std::uint32_t handshake_timeout_ms = cfg.handshake_timeout_ms;
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(handshake_timeout_ms);
+    bool peer_connected = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (i2p::transport::transports.IsConnected(peer_ident_hash)) {
+            peer_connected = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (!peer_connected) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt,
+                   std::string("control-listening-peer-connect-timeout"));
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
+    emit_event(writer, cfg, "ntcp2_authenticated", std::nullopt, std::nullopt,
+               std::nullopt, std::nullopt);
+
+    auto reply = i2p::CreateDeliveryStatusMsg(cfg.delivery_status_message_id);
+    std::future<std::shared_ptr<i2p::transport::TransportSession>> future;
+    try {
+        future = i2p::transport::transports.SendMessage(peer_ident_hash, reply);
+    } catch (const std::exception& exc) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt,
+                   std::string("control-listener-send-message:") + exc.what());
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
+    std::shared_ptr<i2p::transport::TransportSession> session;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (future.wait_for(std::chrono::milliseconds(0)) ==
+            std::future_status::ready) {
+            session = future.get();
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (!session || !session->IsEstablished()) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt,
+                   std::string("control-listener-session-not-established"));
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
+    emit_event(writer, cfg, "frame_emitted", cfg.delivery_status_message_id,
+               /*i2np_type=*/10, /*frame_sequence=*/0);
+#endif
 
     shutdown_runtime(rt, nullptr, nullptr);
     emit_event(writer, cfg, "terminal_clean");
@@ -1394,8 +1451,10 @@ int run_dial(const DriverConfig& cfg) {
         shutdown_runtime(rt, nullptr, nullptr);
         return 66;
     }
+#ifdef I2PD_INTEROP_OBSERVER
     emit_event(writer, cfg, "frame_emitted", cfg.delivery_status_message_id,
                /*i2np_type=*/10, /*frame_sequence=*/0);
+#endif
 
     // Resolve the peer IdentHash from the imported RouterInfo and
     // submit through the real transport.
@@ -1409,6 +1468,7 @@ int run_dial(const DriverConfig& cfg) {
         peer_ident_hash = peer_info.GetIdentity()->GetIdentHash();
     }
 
+#ifdef I2PD_INTEROP_OBSERVER
     i2pr::i2pdinterop::ResetObserverSink();
     try {
         auto future = i2p::transport::transports.SendMessage(peer_ident_hash,
@@ -1443,6 +1503,45 @@ int run_dial(const DriverConfig& cfg) {
     }
     emit_event(writer, cfg, "frame_emitted", sent_md.delivery_status_message_id,
                sent_md.i2np_type, sent_md.frame_sequence);
+#else
+    // Plan 099 WP2.1: the pristine control branch initiates the
+    // dial through the real SendMessage surface, waits boundedly for
+    // the asynchronous session future, and requires a non-null
+    // established TransportSession. The control does not require
+    // observer-defined send metadata; the i2pr-side receive of the
+    // exact DeliveryStatus message ID proves the wire round trip.
+    std::future<std::shared_ptr<i2p::transport::TransportSession>> future;
+    try {
+        future = i2p::transport::transports.SendMessage(peer_ident_hash,
+                                                         message);
+    } catch (const std::exception& exc) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt,
+                   std::string("control-send-message:") + exc.what());
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(cfg.handshake_timeout_ms);
+    std::shared_ptr<i2p::transport::TransportSession> session;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (future.wait_for(std::chrono::milliseconds(0)) ==
+            std::future_status::ready) {
+            session = future.get();
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (!session || !session->IsEstablished()) {
+        emit_event(writer, cfg, "terminal_rejected", std::nullopt, std::nullopt,
+                   std::nullopt,
+                   std::string("control-dialing-session-not-established"));
+        shutdown_runtime(rt, nullptr, nullptr);
+        return 66;
+    }
+    emit_event(writer, cfg, "frame_emitted", cfg.delivery_status_message_id,
+               /*i2np_type=*/10, /*frame_sequence=*/0);
+#endif
 
     shutdown_runtime(rt, nullptr, nullptr);
     emit_event(writer, cfg, "terminal_clean");

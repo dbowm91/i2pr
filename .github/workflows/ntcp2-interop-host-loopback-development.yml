@@ -246,6 +246,20 @@ jobs:
           import json
           import os
           import pathlib
+          import sys
+
+          HERE = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+          sys.path.insert(0, str(HERE / "tests/integration/ntcp2/harness"))
+
+          from plan099_exit_gate import (  # noqa: E402
+              ATTEMPT_SLOTS,
+              ENVIRONMENT_OR_BUILD_BLOCKED,
+              PASSED_CLEANUP_RESULT,
+              PASSED_TERMINAL_RESULT,
+              build_summary,
+              classify_exit_result,
+              validate_summary,
+          )
 
           output = pathlib.Path(os.environ["PLAN099_OUTPUT"])
           sanitized = pathlib.Path(os.environ["PLAN099_SANITIZED"])
@@ -256,7 +270,7 @@ jobs:
                   return "0" * 64
               return hashlib.sha256(path.read_bytes()).hexdigest()
 
-          def load_or_zero(label: str, run_dir_name: str) -> dict[str, object]:
+          def load_or_blocked(label: str, run_dir_name: str) -> dict[str, object]:
               record_path = build_dir / run_dir_name / (
                   "forward-record.json" if "reverse" not in run_dir_name
                   else "reverse-record.json"
@@ -265,7 +279,7 @@ jobs:
                   return {
                       "present": False,
                       "label": label,
-                      "terminal_result": "blocked-environment-or-build",
+                      "terminal_result": ENVIRONMENT_OR_BUILD_BLOCKED,
                       "cleanup_result": "not-run",
                   }
               try:
@@ -277,89 +291,56 @@ jobs:
                   return {
                       "present": False,
                       "label": label,
-                      "terminal_result": "blocked-environment-or-build",
+                      "terminal_result": ENVIRONMENT_OR_BUILD_BLOCKED,
                       "cleanup_result": "not-run",
                   }
 
-          forward_instrumented = load_or_zero(
+          forward_instrumented = load_or_blocked(
               "forward-instrumented", "run-instrumented"
           )
-          forward_control = load_or_zero("forward-control", "run-control")
-          reverse_instrumented = load_or_zero(
+          forward_control = load_or_blocked("forward-control", "run-control")
+          reverse_instrumented = load_or_blocked(
               "reverse-instrumented", "run-reverse-instrumented"
           )
-          reverse_control = load_or_zero(
+          reverse_control = load_or_blocked(
               "reverse-control", "run-reverse-control"
           )
 
-          def passed(record: dict[str, object]) -> bool:
-              return (
-                  record.get("terminal_result") == "passed"
-                  and record.get("cleanup_result") == "clean"
-              )
+          attempt_records = {
+              ATTEMPT_SLOTS[0]: forward_instrumented,
+              ATTEMPT_SLOTS[1]: forward_control,
+              ATTEMPT_SLOTS[2]: reverse_instrumented,
+              ATTEMPT_SLOTS[3]: reverse_control,
+          }
 
-          summary = {
-              "schema": "i2pr-ntcp2-plan099-summary-v1",
-              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
-              "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
-              "source_commit": os.environ["GITHUB_SHA"],
-              "runner_label": "ubuntu-24.04",
-              "runner_arch": "x86_64",
-              "reference_revision": os.environ["PLAN099_I2PD_REVISION"],
-              "topology_kind": os.environ["PLAN099_TOPOLOGY"],
-              "network_id": int(os.environ["PLAN099_NETWORK_ID"]),
-              "bind_address": "127.0.0.1",
-              "development_only": True,
-              "release_qualified": False,
-              "isolation_qualified": False,
-              "i2pr_binary_sha256": sha256_file(output / "i2pr-interop"),
-              "i2pd_instrumented_binary_sha256": sha256_file(
+          summary = build_summary(
+              workflow_run_id=os.environ["GITHUB_RUN_ID"],
+              workflow_run_attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              source_commit=os.environ["GITHUB_SHA"],
+              runner_label="ubuntu-24.04",
+              runner_arch="x86_64",
+              reference_revision=os.environ["PLAN099_I2PD_REVISION"],
+              topology_kind=os.environ["PLAN099_TOPOLOGY"],
+              network_id=int(os.environ["PLAN099_NETWORK_ID"]),
+              bind_address="127.0.0.1",
+              development_only=True,
+              release_qualified=False,
+              isolation_qualified=False,
+              i2pr_binary_sha256=sha256_file(output / "i2pr-interop"),
+              i2pd_instrumented_binary_sha256=sha256_file(
                   output / "i2pd_ntcp2_interop_driver_instrumented"
               ),
-              "i2pd_control_binary_sha256": sha256_file(
+              i2pd_control_binary_sha256=sha256_file(
                   output / "i2pd_ntcp2_interop_driver_control"
               ),
-              "forward_instrumented_result": (
-                  "passed" if passed(forward_instrumented) else "nonpassing"
-              ),
-              "forward_control_result": (
-                  "passed" if passed(forward_control) else "nonpassing"
-              ),
-              "reverse_instrumented_result": (
-                  "passed" if passed(reverse_instrumented) else "nonpassing"
-              ),
-              "reverse_control_result": (
-                  "passed" if passed(reverse_control) else "nonpassing"
-              ),
-              "cleanup": (
-                  "clean"
-                  if all(passed(r) for r in [
-                      forward_instrumented,
-                      forward_control,
-                      reverse_instrumented,
-                      reverse_control,
-                  ])
-                  else "nonpassing"
-              ),
-              "status": (
-                  "passed"
-                  if all(passed(r) for r in [
-                      forward_instrumented,
-                      forward_control,
-                      reverse_instrumented,
-                      reverse_control,
-                  ])
-                  else "nonpassing"
-              ),
-              "ntcp2": "experimental-non-advertised",
-          }
-          summary["summary_sha256"] = hashlib.sha256(
-              json.dumps(
-                  {k: v for k, v in summary.items() if k != "summary_sha256"},
-                  sort_keys=True,
-                  indent=2,
-              ).encode()
-          ).hexdigest()
+              forward_instrumented=forward_instrumented,
+              forward_control=forward_control,
+              reverse_instrumented=reverse_instrumented,
+              reverse_control=reverse_control,
+              ntcp2="experimental-non-advertised",
+              attempt_records=attempt_records,
+          )
+          validate_summary(summary)
           sanitized.mkdir(parents=True, exist_ok=True)
           out = sanitized / "plan099-summary.json"
           out.write_text(
@@ -367,6 +348,7 @@ jobs:
           )
           print(f"summary written: {out}")
           print(f"summary_sha256: {summary['summary_sha256']}")
+          print(f"status: {summary['status']}")
           PY
 
       - name: delete-raw-run-state

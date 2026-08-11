@@ -552,18 +552,20 @@ runner/provenance failure with no TCP or NTCP2 wire conclusion.
 
 ### Plan 099 Milestone 3 interop exit, harness reduction, and router buildout
 
-[Plan 099](../plans/099-milestone3-interop-exit-and-router-buildout-corrective-plan.md)
+[Plan 099](../plans/099-ntcp2-interop-exit-harness-simplification-and-router-build-unblock.md)
 is the active corrective and exit plan from the multi-job
-CI/provenance expansion. It freezes interoperability architecture
-growth, fixes the four residual Plan 098 evidence-integrity defects
-(D1 chained inequality in the final gate, D2 source-tree digest
-encoding unification, D3 manifest parity between instrumented and
-control roles, D4 preflight binary requirement), collapses the
-development CI workflow to one build-and-run job, prunes superseded
-plan-specific Python harness machinery, and amends continuation
-authority so production daemon composition and local/offline
-Milestone 4 work may proceed even if a localized NTCP2 wire defect
-is recorded.
+CI/provenance expansion. It corrects the central Plan 099
+implementation finding — the instrumented i2pd transport libraries
+were never actually compiled from the patched source tree — and it
+freezes interoperability architecture growth. The build script
+now produces two separate i2pd archive sets
+(`I2PD_INSTRUMENTED_LIB_DIR` and `I2PD_PRISTINE_LIB_DIR`), and the
+pristine control driver uses native `Transports::SendMessage`,
+`Transports::IsConnected`, and `TransportSession::IsEstablished`
+instead of observer APIs the control build cannot emit. The
+development exit gate vocabulary is bounded to four values:
+`two-way-development-smoke-passed`, `forward-wire-defect`,
+`reverse-wire-defect`, `environment-or-build-blocked`.
 
 After Plan 099:
 
@@ -596,7 +598,12 @@ exists, and functional interop tests exist). The
 `scripts/check-ntcp2-loopback-smoke-boundary.sh` scripts were
 removed entirely. The CI workflow file was reduced from 988 lines
 to 398 lines and now performs build and execute in the same fresh
-job with no cross-job binary artifact transfer.
+job with no cross-job binary artifact transfer. The i2pd driver
+build script now produces two separate instrumented and pristine
+archive sets, the driver CMake consumes them through explicit
+`I2PD_INSTRUMENTED_LIB_DIR` and `I2PD_PRISTINE_LIB_DIR` variables,
+and `nm -C` proves the instrumented archive references the
+observer API while the pristine archive does not.
 
 Plan 099 does not enable NTCP2 in normal daemon operation, does not
 advertise NTCP2 in production RouterInfo, does not depend on NTCP2
