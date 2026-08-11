@@ -1,5 +1,27 @@
 # Plan 099 implementation status: 2026-08-11
 
+## Active correction — Plan 100 exit cleanup
+
+Plan 099's pruning, one-job workflow conversion, and router-buildout authority landed, but the final Phase F/G development-interop exit is **not yet complete**. The post-implementation audit found deterministic exit-readiness defects in the compact summary API/classifier and i2pd observer-proof path. Plan 100 is the one-time active cleanup authority for those defects and the final bounded run:
+
+```text
+plan_099 = implementation-landed-exit-run-pending
+plan_100 = active-exit-gate-cleanup-and-router-handoff
+plan_095 = historical-superseded-by-plan099-single-job-lane
+plan_087 = historical-development-sequence
+plan_088 = historical-development-sequence
+plan_079 = deferred-to-pre-activation-checkpoint
+ntcp2 = experimental-non-advertised
+normal_daemon_activation = disabled
+router_construction = authorized-after-plan100-outcome
+```
+
+Plan 100 is recorded at `plans/100-plan099-exit-gate-cleanup-and-router-handoff.md`. It does **not** create a new interoperability architecture. It repairs only the Plan 099 exit-gate API/classification, hardens the existing instrumented/pristine i2pd proof, removes the divergent digest fallback, performs focused validation, and dispatches the existing one-job Plan 099 workflow exactly once. A bounded replacement run is allowed only under Plan 100's explicit pre-TCP/post-TCP failure policy.
+
+The older status/prose below is retained as implementation history. Any statement below that says Plan 099 is already fully passed, Plan 095 is the next executable plan, or Plan 088 is the active reverse-execution gate is superseded by this active correction.
+
+Regardless of whether the final development result is `passed`, `protocol-defect-localized`, or `environment-or-harness-blocked`, production daemon composition and local/offline RouterInfo/NetDB work are the next product-development line. NTCP2 remains disabled and non-advertised; external NetDB-over-NTCP2 remains blocked unless the independent two-way smoke passes.
+
 ## Implementation baseline and outcome
 
 | Stage              | Tracked Python LOC | Tracked Rust LOC |
