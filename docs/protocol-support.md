@@ -480,17 +480,16 @@ records the active gate authority.
 The current status of the active sequence is:
 
 ```text
-plan_093 = implementation-landed-closure-incomplete
-plan_094 = implementation-landed-live-closure-environment-blocked
-plan_095 = active-runner-provenance-corrected-awaiting-authoritative-rerun
-plan_096 = passed-pre-dispatch-workflow-correction
-plan_097 = passed-artifact-path-and-cleanup-correction
-plan_098 = passed-runner-provenance-boundary-correction
+plan_099 = passed-pruning-and-exit
+plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_098 = passed-runner-provenance-boundary-correction (historical)
 plan_087 = open-pending-plan095-ci-forward-evidence-pair
 plan_088 = blocked-pending-plan095-ci-closure
-plan_079 = blocked-pending-plan088-two-way-pass
+plan_079 = deferred-to-pre-activation-checkpoint
 plan_072 = inactive-pending-plan088-ambiguity
 ntcp2    = experimental-non-advertised
+normal_daemon_activation = disabled
+router_construction = next
 ```
 
 ### Plan 095 CI host-loopback live-wire evidence lane
@@ -550,3 +549,58 @@ record digests against the actual downloaded artifacts and role-specific
 manifests. The static regression matrix `test_plan098.py` (15 cases) is
 green locally. The 2026-08-10 result is reclassified as a pre-protocol
 runner/provenance failure with no TCP or NTCP2 wire conclusion.
+
+### Plan 099 Milestone 3 interop exit, harness reduction, and router buildout
+
+[Plan 099](../plans/099-milestone3-interop-exit-and-router-buildout-corrective-plan.md)
+is the active corrective and exit plan from the multi-job
+CI/provenance expansion. It freezes interoperability architecture
+growth, fixes the four residual Plan 098 evidence-integrity defects
+(D1 chained inequality in the final gate, D2 source-tree digest
+encoding unification, D3 manifest parity between instrumented and
+control roles, D4 preflight binary requirement), collapses the
+development CI workflow to one build-and-run job, prunes superseded
+plan-specific Python harness machinery, and amends continuation
+authority so production daemon composition and local/offline
+Milestone 4 work may proceed even if a localized NTCP2 wire defect
+is recorded.
+
+After Plan 099:
+
+```text
+plan_099 = passed-pruning-and-exit
+plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_098 = passed-runner-provenance-boundary-correction (historical)
+plan_087 = open-pending-plan095-ci-forward-evidence-pair
+plan_088 = blocked-pending-plan095-ci-closure
+plan_079 = deferred-to-pre-activation-checkpoint
+plan_072 = inactive-pending-plan088-ambiguity
+ntcp2    = experimental-non-advertised
+normal_daemon_activation = disabled
+router_construction = next
+```
+
+Plan 099 deleted all Plan 052–098 plan-number-specific Python test
+and runner files after migrating unique functional assertions into
+the bounded functional test set
+(`test_execution_lane.py`, `test_i2pd_direct_driver.py`,
+`test_i2pd_direct_control.py`, `test_minimal_i2pd_probe.py`). The
+`scripts/check-ntcp2-interoperability.sh` static boundary check
+was trimmed from 1870 to 124 lines and now enforces only durable
+invariants (NTCP2 remains experimental/non-advertised, the
+production daemon does not accidentally activate NTCP2, the direct
+reference driver is test-only, no public-network/reseed/SAM/I2CP
+fallback in the development smoke, the pinned reference revision
+exists, and functional interop tests exist). The
+`scripts/check-plan095-workflow.sh` and
+`scripts/check-ntcp2-loopback-smoke-boundary.sh` scripts were
+removed entirely. The CI workflow file was reduced from 988 lines
+to 398 lines and now performs build and execute in the same fresh
+job with no cross-job binary artifact transfer.
+
+Plan 099 does not enable NTCP2 in normal daemon operation, does not
+advertise NTCP2 in production RouterInfo, does not depend on NTCP2
+for real NetDB peer exchange, and does not authorize public-network
+bootstrap. Plan 079's 3/3 repeated-direction validation campaign is
+moved to the pre-normal-activation / pre-public-network integration
+checkpoint rather than gating offline/local router development.

@@ -438,3 +438,33 @@ closes, the reverse runner can be invoked against real subprocesses
 and the bounded Plan 088 development decision vocabulary will
 resolve to whichever of the five exact values reflects the wire
 result.
+
+## Plan 099 closure amendment (2026-08-11)
+
+Plan 099 supersedes the active execution interpretation of the
+Plan 095–098 multi-job CI/provenance sequence. The CI workflow
+is reduced from 988 lines (five jobs with cross-job binary
+artifact transfer) to 398 lines (one `development-interop` job
+that builds and executes in the same fresh workspace). The Plan
+098 D1–D4 evidence-integrity corrections are landed in the new
+single-job workflow. The wrapper requires `--i2pr-binary` for
+every attempted-live path (preflight, forward, reverse); the
+legacy `/nonexistent` fallback is removed. All Plan 052–098
+plan-number-specific Python test and runner files are deleted;
+unique functional assertions are migrated into the bounded
+functional test set (`test_execution_lane.py`,
+`test_i2pd_direct_driver.py`, `test_i2pd_direct_control.py`,
+`test_minimal_i2pd_probe.py`). The
+`scripts/check-plan095-workflow.sh` and
+`scripts/check-ntcp2-loopback-smoke-boundary.sh` scripts are
+removed. The `scripts/check-ntcp2-interoperability.sh` static
+boundary check is trimmed from 1870 to 124 lines.
+
+The recorded Plan 088 development decision remains
+`insufficient-evidence`. Plan 095 remains the single next
+executable plan; exactly one manual Plan 095 GitHub Actions
+dispatch follows the Plan 099 correction commit. Plan 079's
+3/3 repeated-direction validation campaign is moved to the
+pre-normal-activation / pre-public-network integration
+checkpoint rather than gating offline/local router development.
+Plan 072 remains inactive.

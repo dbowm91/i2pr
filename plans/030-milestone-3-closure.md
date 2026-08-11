@@ -321,3 +321,50 @@ required implementations in both directions, bounded I2NP exchange,
 duplicate-link stability, adversarial/resource cleanup, sanitized evidence,
 and exact CI/manual run identifiers. Transport observations must remain inputs
 to any later NetDB/publication policy rather than bypassing the boundary.
+
+## Plan 099 closure amendment (2026-08-11)
+
+Plan 099 supersedes the prior multi-job CI/provenance expansion
+(Plans 095–098) as the active execution authority for development
+NTCP2 interoperability. The active sequence is now:
+
+```text
+plan_099 = passed-pruning-and-exit
+plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_098 = passed-runner-provenance-boundary-correction (historical)
+plan_087 = open-pending-plan095-ci-forward-evidence-pair
+plan_088 = blocked-pending-plan095-ci-closure
+plan_079 = deferred-to-pre-activation-checkpoint
+plan_072 = inactive-pending-plan088-ambiguity
+ntcp2    = experimental-non-advertised
+normal_daemon_activation = disabled
+router_construction = next
+```
+
+The development interop lane is bounded to one fresh GitHub
+Actions `ubuntu-24.04` workflow
+(`.github/workflows/ntcp2-interop-host-loopback-development.yml`)
+with one `development-interop` job that builds i2pr and the
+pinned i2pd direct driver, runs the four primary attempts in
+sequence, and emits one compact sanitized summary. No cross-job
+binary artifact transfer. No Multipass, Docker, public-network
+traffic, reseed, SAM, I2CP, SSU2, or Java I2P.
+
+Plan 099 deletes all Plan 052–098 plan-number-specific Python
+test and runner files after migrating unique functional
+assertions into the bounded functional test set
+(`test_execution_lane.py`, `test_i2pd_direct_driver.py`,
+`test_i2pd_direct_control.py`, `test_minimal_i2pd_probe.py`).
+The `scripts/check-ntcp2-interoperability.sh` static boundary
+check is trimmed from 1870 to 124 lines and enforces only durable
+invariants. The `scripts/check-plan095-workflow.sh` and
+`scripts/check-ntcp2-loopback-smoke-boundary.sh` scripts are
+removed. The CI workflow file is reduced from 988 to 398 lines.
+
+A localized NTCP2 wire defect keeps NTCP2 disabled and
+non-advertised but does not block production daemon composition,
+RouterInfo publication architecture, NetDB storage/indexing, SU3
+reseed parsing, or deterministic local state-machine tests. The
+next substantial plan after 099 addresses production router
+construction (daemon composition + RouterInfo/NetDB foundation),
+not another NTCP2 evidence framework plan.

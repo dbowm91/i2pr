@@ -1675,3 +1675,105 @@ owned by `tests/integration/ntcp2/harness/execution_lane.py`. Run
 On this host Docker is inaccessible, QEMU is absent, and only the reduced
 scope is available; Plan 078 remains blocked until a full-runtime
 qualification record exists. See `plans/077-status.md` and ADR 0024.
+
+## Plan 099 Milestone 3 interop exit, harness reduction, and router buildout (active)
+
+Plan 099 is the **active** corrective and exit plan from the
+multi-job CI/provenance expansion that consumed Plans 095–098. It
+freezes interoperability architecture growth, fixes the four
+residual Plan 098 evidence-integrity defects (D1 chained
+inequality, D2 source-tree digest, D3 manifest parity, D4
+preflight binary requirement), collapses the development CI
+workflow to one build-and-run job, prunes superseded
+plan-specific Python harness machinery, and amends continuation
+authority so production daemon composition and local/offline
+Milestone 4 work may proceed even if a localized NTCP2 wire
+defect is recorded.
+
+After Plan 099:
+
+```text
+plan_099 = passed-pruning-and-exit
+plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_098 = passed-runner-provenance-boundary-correction (historical)
+plan_087 = open-pending-plan095-ci-forward-evidence-pair
+plan_088 = blocked-pending-plan095-ci-closure
+plan_079 = deferred-to-pre-activation-checkpoint
+plan_072 = inactive-pending-plan088-ambiguity
+ntcp2    = experimental-non-advertised
+normal_daemon_activation = disabled
+router_construction = next
+```
+
+The Plan 099 active development interop surface is small and
+bounded:
+
+- `scripts/interop/run-minimal-i2pd-host-loopback-probe.py` —
+  the only allowed entry point to live subprocess execution;
+- `tests/integration/ntcp2/harness/plan083_runner.py` and
+  `plan084_runner.py` — the canonical forward/reverse runners;
+- `tests/integration/ntcp2/harness/preflight_runner.py` — the
+  listener-only preflight;
+- `tests/integration/ntcp2/harness/i2pd_direct_driver.py`,
+  `minimal_i2pd_probe.py`, `minimal_i2pd_reverse_probe.py`,
+  `interop_topology.py`, `reference_event.py`,
+  `reference_trigger_v4.py`, `execution_lane.py` — the functional
+  interop modules;
+- `tests/integration/ntcp2/harness/test_minimal_i2pd_probe.py`,
+  `test_i2pd_direct_driver.py`, `test_i2pd_direct_control.py`,
+  `test_execution_lane.py` — the bounded functional tests;
+- `tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh`
+  — the i2pd driver build script;
+- `scripts/check-ntcp2-interoperability.sh` — the trimmed
+  static boundary check.
+
+Plan 099 forbids adding new `test_planNNN.py` files, new
+plan-number-specific Python runners, or new plan-token static
+checks. Historical plan documents remain in `plans/` as audit
+records but are not executable API contracts.
+
+Plan 099 forbids repairing or retrying the Plan 046 rootless
+lane or the Plan 048/049/050 Multipass recovery lane.
+Multipass, Docker, public-network traffic, reseed, SAM, I2CP,
+SSU2, and Java I2P are not part of the development interop
+surface. A localized NTCP2 defect keeps NTCP2 disabled and
+non-advertised but does not block production daemon composition,
+RouterInfo publication architecture, NetDB storage/indexing,
+SU3 reseed parsing, or deterministic local state-machine tests.
+The next substantial plan after 099 addresses production router
+construction (daemon composition + RouterInfo/NetDB
+foundation), not another NTCP2 evidence framework plan.
+
+Required focused checks for Plan 099:
+
+```text
+cargo fmt --all --check
+cargo check --workspace --all-targets
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-fixture-manifest.sh
+bash scripts/check-ntcp2-vectors.sh
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_driver.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_control.py'
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_minimal_i2pd_probe.py'
+git diff --check
+```
+
+The Plan 099 focused local seam is sufficient for routine
+development. The full historical plan-specific Python matrix,
+rootless checker, Multipass checker, and release-certificate
+validator are not required for Plan 099 closure; they remain
+available via git history for forensic archaeology.
+
+The Plan 099 wrapper requires an explicit `--i2pr-binary` path
+for every attempted-live path (preflight, forward, reverse). The
+Plan 099 CI workflow runs build and execute in a single
+`ubuntu-24.04` job with no cross-job binary artifact transfer.
+Plan 095 remains the single next executable plan; exactly one
+manual Plan 095 GitHub Actions dispatch follows the Plan 099
+correction commit.

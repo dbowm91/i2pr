@@ -344,15 +344,15 @@ def _validate_inputs(args: argparse.Namespace) -> int | None:
                 f"--attempt-kind {args.attempt_kind} requires "
                 f"build manifest {expected_manifest}",
             )
-    # Plan 093: the i2pr binary digest must be measured and bound
-    # into the live record. The wrapper refuses to launch a live
-    # attempt with a missing i2pr binary path so zero provenance
-    # digests cannot enter the live record.
-    if not args.preflight and args.i2pr_binary is None:
-        return _fail(
-            "--i2pr-binary is required for non-preflight live attempts",
-        )
-    if args.i2pr_binary is not None and not args.i2pr_binary.is_file():
+    # Plan 093/099: the i2pr binary digest must be measured and bound
+    # into the live record. The wrapper refuses to launch any
+    # attempted-live path (preflight, forward, or reverse) with a
+    # missing i2pr binary path so zero provenance digests cannot
+    # enter the live record. Purely synthetic/unit tests inject fake
+    # paths through direct runner APIs, not through the CLI contract.
+    if args.i2pr_binary is None:
+        return _fail("--i2pr-binary is required for all live attempts")
+    if not args.i2pr_binary.is_file():
         return _fail(f"--i2pr-binary not found: {args.i2pr_binary}")
     return None
 
@@ -406,7 +406,11 @@ def _run_preflight(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
         if args.delivery_status_message_id.startswith("0x")
         else int(args.delivery_status_message_id)
     )
-    i2pr_binary_path = args.i2pr_binary or Path("/nonexistent")
+    # Plan 099 D4: the wrapper guarantees ``args.i2pr_binary`` is a
+    # real existing file before this function is called; the legacy
+    # ``/nonexistent`` fallback is removed.
+    assert args.i2pr_binary is not None
+    i2pr_binary_path = args.i2pr_binary
     outcome = runner.execute_concurrent_preflight(
         repo_root=args.repo_root,
         run_root=args.run_root,
@@ -457,7 +461,11 @@ def _run_forward_probe(args: argparse.Namespace) -> dict[str, object]:
         attempt_kind=args.attempt_kind,
     )
     message_id = int(args.delivery_status_message_id, 16) if args.delivery_status_message_id.startswith("0x") else int(args.delivery_status_message_id)
-    i2pr_binary_path = args.i2pr_binary or Path("/nonexistent")
+    # Plan 099 D4: validation guarantees ``args.i2pr_binary`` is a
+    # real existing file; the legacy ``/nonexistent`` fallback is
+    # removed.
+    assert args.i2pr_binary is not None
+    i2pr_binary_path = args.i2pr_binary
     return runner.execute_real_probe(
         repo_root=args.repo_root,
         run_root=args.run_root,
@@ -508,7 +516,11 @@ def _run_reverse_probe(args: argparse.Namespace) -> dict[str, object]:
         attempt_kind=args.attempt_kind,
     )
     message_id = int(args.delivery_status_message_id, 16) if args.delivery_status_message_id.startswith("0x") else int(args.delivery_status_message_id)
-    i2pr_binary_path = args.i2pr_binary or Path("/nonexistent")
+    # Plan 099 D4: validation guarantees ``args.i2pr_binary`` is a
+    # real existing file; the legacy ``/nonexistent`` fallback is
+    # removed.
+    assert args.i2pr_binary is not None
+    i2pr_binary_path = args.i2pr_binary
     return runner.execute_reverse_probe(
         repo_root=args.repo_root,
         run_root=args.run_root,

@@ -1,30 +1,28 @@
-name: NTCP2 host-loopback live-wire evidence (Plan 095 manual)
+name: NTCP2 host-loopback live-wire evidence (Plan 099 manual)
 
-# Plan 095 manual CI live-wire evidence lane.
+# Plan 099 manual CI live-wire evidence lane.
 #
 # The Plan 086 host-loopback-development lane is the only path that
 # can run on this host. Two ordinary userspace processes over literal
-# IPv4 loopback suffice. The live jobs must not use privileged
-# operations or namespace manipulation; the build job may install
-# declared packages via the runner's ordinary package manager.
+# IPv4 loopback suffice. The live job must not use privileged
+# operations or namespace manipulation; the build steps may install
+# declared packages via the runner's ordinary package mechanism.
 #
 # This workflow must:
 # - use only the standard github-hosted ubuntu-24.04 image;
-# - keep the live jobs free of privileged operations;
+# - keep the live steps free of privileged operations;
 # - never advertise NTCP2 support;
 # - never enable the normal daemon NTCP2 surface;
 # - never publish RouterInfo, reseed, bootstrap, or use DNS;
 # - fail closed with a typed CI environment blocker when ordinary
 #   loopback processes cannot run.
 #
-# The contract job runs the static/repository-boundary surface only.
-# The build job produces the i2pr binary, the instrumented i2pd
-# direct driver, and the control/pristine i2pd direct driver from
-# exact immutable source/build inputs. The forward-instrumented
-# job runs exactly one fresh forward attempt. The forward-control
-# job runs exactly one fresh forward attempt only after the
-# instrumented evidence independently validates. The validate-gate
-# job verifies both records and emits the Plan 095 CI gate record.
+# Plan 099 collapses the prior multi-job build/artifact-transfer
+# graph into a single build-and-run job. Build and execute in the
+# same fresh workspace. No actions/upload-artifact or
+# actions/download-artifact cycles for binaries. No separate
+# contract/build/instrumented/control/validate jobs. The final
+# sanitized compact summary is the only retained evidence.
 
 on:
   workflow_dispatch:
@@ -39,79 +37,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  contract:
-    name: Plan 095 contract gate
+  development-interop:
+    name: Plan 099 host-loopback development interop
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
+    env:
+      # Plan 099 single-job canonical paths. Every producer, verifier,
+      # manifest, and live consumer resolves against the same absolute
+      # directory; no step relies on inherited step working directory
+      # to establish artifact identity.
+      PLAN099_BUILD_DIR: "${{ github.workspace }}/target/interop/plan099-build"
+      PLAN099_OUTPUT: "${{ github.workspace }}/target/interop/plan099-build/output"
+      PLAN099_SANITIZED: "${{ github.workspace }}/target/interop/plan099-evidence"
+      PLAN099_I2PD_REVISION: "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
+      PLAN099_TOPOLOGY: "host-loopback-development"
+      PLAN099_NETWORK_ID: "99"
     steps:
       - name: checkout
         uses: actions/checkout@v4.1.7
+
       - name: rust-toolchain
         uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: rustfmt, clippy
-      - name: cargo-fmt
-        run: cargo +1.95.0 fmt --all --check
-      - name: cargo-check
-        run: cargo +1.95.0 check --locked --workspace --all-targets
-      - name: cargo-test
-        run: cargo +1.95.0 test --locked --workspace
-      - name: cargo-clippy
-        run: cargo +1.95.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - name: rustdoc
-        env:
-          RUSTDOCFLAGS: "-D warnings"
-        run: cargo +1.95.0 doc --locked --workspace --no-deps
-      - name: dependency-direction
-        run: bash scripts/check-dependency-direction.sh
-      - name: runtime-boundaries
-        run: bash scripts/check-runtime-boundaries.sh
-      - name: ntcp2-vectors
-        run: bash scripts/check-ntcp2-vectors.sh
-      - name: ntcp2-interoperability
-        run: bash scripts/check-ntcp2-interoperability.sh
-      - name: rootless-boundary
-        run: bash scripts/check-rootless-interop-boundary.sh
-      - name: install-rg
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ripgrep
-      - name: multipass-boundary
-        run: bash scripts/check-multipass-interop-boundary.sh
-      - name: plan095-contract-tests
-        run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan095.py'
-      - name: plan096-workflow-tests
-        run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan096.py'
-      - name: plan097-artifact-cleanup-tests
-        run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan097.py'
-      - name: plan098-runner-provenance-tests
-        run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan098.py'
-      - name: plan094-regression-tests
-        run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan094.py'
-      - name: plan093-regression-tests
-        run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan093.py'
-      - name: plan083-runner-tests
-        run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan083_runner.py'
-      - name: i2pd-driver-tests
-        run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_driver.py'
-      - name: i2pd-control-tests
-        run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_control.py'
-      - name: plan088-tests
-        run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan088.py'
 
-  build:
-    name: Plan 095 deterministic build
-    needs: contract
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4.1.7
-      - name: rust-toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
       - name: install-build-deps
-        # Plan 095: package installation is the only declared sudo
-        # exception; the live jobs run without privilege escalation.
+        # Plan 099: package installation is the only declared sudo
+        # exception; the live steps run without privilege escalation.
         run: |
           set -euo pipefail
           sudo apt-get update -qq
@@ -119,519 +71,174 @@ jobs:
             build-essential cmake pkg-config \
             libboost-all-dev libssl-dev zlib1g-dev \
             ca-certificates git openssl ripgrep
-      - name: fetch-pinned-i2pd-source
-        env:
-          I2PD_REVISION: "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
-          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
+
+      - name: prepare-build-dirs
         run: |
           set -euo pipefail
-          mkdir -p "$BUILD_DIR"
-          cd "$BUILD_DIR"
+          mkdir -p "$PLAN099_BUILD_DIR/i2pr-target"
+          mkdir -p "$PLAN099_OUTPUT"
+
+      - name: fetch-pinned-i2pd-source
+        run: |
+          set -euo pipefail
+          cd "$PLAN099_BUILD_DIR"
           if [[ ! -d i2pd/.git ]]; then
             git clone --filter=blob:none --no-checkout \
               https://github.com/PurpleI2P/i2pd.git i2pd
           fi
-          git -C i2pd fetch --depth=1 origin "$I2PD_REVISION"
-          git -C i2pd checkout --detach "$I2PD_REVISION"
+          git -C i2pd fetch --depth=1 origin "$PLAN099_I2PD_REVISION"
+          git -C i2pd checkout --detach "$PLAN099_I2PD_REVISION"
           git -C i2pd rev-parse HEAD
+
       - name: verify-pinned-revision
-        env:
-          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
-          I2PD_REVISION: "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
         run: |
           set -euo pipefail
-          cd "$BUILD_DIR"
-          test "$(git -C i2pd rev-parse HEAD)" = "$I2PD_REVISION"
+          cd "$PLAN099_BUILD_DIR"
+          test "$(git -C i2pd rev-parse HEAD)" = "$PLAN099_I2PD_REVISION"
           if [[ -n "$(git -C i2pd status --porcelain --untracked-files=no)" ]]; then
             echo "pinned i2pd worktree is dirty; refusing to build" >&2
             exit 70
           fi
-      - name: record-source-tree-digest
-        env:
-          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
-        run: |
-          set -euo pipefail
-          cd "$BUILD_DIR"
-          # Plan 096: canonical tracked-source digest excludes the
-          # ``.git`` administrative tree and any build/worktree
-          # metadata. The digest covers the pinned tracked file paths
-          # and content of the i2pd 2.60.0 source tree.
-          git -C i2pd ls-files -z \
-            | while IFS= read -r -d '' path; do
-                printf '%s\0' "$path"
-                sha256sum "i2pd/$path" | awk '{printf "%s\0", $1}'
-              done \
-            | sha256sum \
-            | awk '{print $1}' > i2pd-source-tree.sha256
-          cat i2pd-source-tree.sha256
+
       - name: build-i2pd-driver
-        env:
-          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
         run: |
           set -euo pipefail
-          cd "$BUILD_DIR"
-          mkdir -p output
+          cd "$PLAN099_BUILD_DIR"
           bash "${{ github.workspace }}/tests/integration/ntcp2/reference-drivers/i2pd/build-driver.sh" \
             --repo-root "${{ github.workspace }}" \
             --i2pd-source-dir i2pd \
             --output-dir output
+
       - name: build-i2pr-interop
-        env:
-          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
         run: |
           set -euo pipefail
-          # Plan 097: the i2pr artifact must travel through one
-          # canonical absolute path. ``BUILD_OUTPUT`` is the single
-          # directory every producer and consumer resolves against.
-          # No step relies on inherited step working directory to
-          # establish artifact identity.
-          I2PR_TARGET_DIR="$BUILD_DIR/i2pr-target"
-          BUILD_OUTPUT="$BUILD_DIR/output"
-          mkdir -p "$I2PR_TARGET_DIR"
-          mkdir -p "$BUILD_OUTPUT"
           cargo +1.95.0 build \
             --manifest-path "${GITHUB_WORKSPACE}/Cargo.toml" \
-            --target-dir "$I2PR_TARGET_DIR" \
+            --target-dir "$PLAN099_BUILD_DIR/i2pr-target" \
             --locked \
             --release \
             --bin i2pr-interop
-          cp "$I2PR_TARGET_DIR/release/i2pr-interop" \
-             "$BUILD_OUTPUT/i2pr-interop"
-          # Plan 098: bare ``cp`` defaults to the umask mode
-          # (typically 0644 in the Ubuntu 24.04 GitHub-hosted
-          # runner), which strips the executable bit the source
-          # binary carries. The downstream upload zips the file
-          # with its current mode and the downstream download
-          # extracts the same mode; the live jobs then fail the
-          # ``test -x`` guard with a typed ``ci_build_blocked``.
-          # Restore the executable bit explicitly so the
-          # upload/download round-trip preserves the binary's
-          # runnability.
-          chmod 0755 "$BUILD_OUTPUT/i2pr-interop"
-          test -f "$BUILD_OUTPUT/i2pr-interop"
-          test -x "$BUILD_OUTPUT/i2pr-interop"
-          test ! -L "$BUILD_OUTPUT/i2pr-interop"
-      - name: hash-i2pr-build-manifest
-        env:
-          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
-        run: |
-          set -euo pipefail
-          # Plan 097: the manifest must hash the exact canonical
-          # artifact at the canonical absolute path. No CWD
-          # inference; the producer, verifier, manifest, and uploader
-          # all resolve to the same absolute path.
-          BUILD_OUTPUT="$BUILD_DIR/output"
-          test -f "$BUILD_OUTPUT/i2pr-interop"
-          test -x "$BUILD_OUTPUT/i2pr-interop"
-          test ! -L "$BUILD_OUTPUT/i2pr-interop"
-          cat > "$BUILD_OUTPUT/i2pr-build-manifest.json" <<EOF
-          {
-            "schema": "i2pr-i2pr-interop-build-manifest-v1",
-            "schema_version": 1,
-            "source_commit": "${{ github.sha }}",
-            "source_tree_clean": true,
-            "cargo_lock_sha256": "$(sha256sum "${{ github.workspace }}/Cargo.lock" | awk '{print $1}')",
-            "i2pr_binary_sha256": "$(sha256sum "$BUILD_OUTPUT/i2pr-interop" | awk '{print $1}')",
-            "rust_toolchain": "1.95.0",
-            "build_command_version": "cargo-build-release-v1",
-            "build_timestamp_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
-          EOF
-      - name: verify-build-artifacts
-        env:
-          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
-        run: |
-          set -euo pipefail
-          # Plan 097: every verification path resolves to the
-          # canonical absolute output directory. No CWD inference;
-          # if any required artifact is missing the step exits
-          # non-zero and the build job fails closed.
-          BUILD_OUTPUT="$BUILD_DIR/output"
-          ls -la "$BUILD_OUTPUT"
-          test -x "$BUILD_OUTPUT/i2pr-interop"
-          test -x "$BUILD_OUTPUT/i2pd_ntcp2_interop_driver_instrumented"
-          test -x "$BUILD_OUTPUT/i2pd_ntcp2_interop_driver_control"
-          test -f "$BUILD_OUTPUT/i2pr-build-manifest.json"
-          test -f "$BUILD_OUTPUT/build-manifest-instrumented.json"
-          test -f "$BUILD_OUTPUT/build-manifest-control.json"
-          test -f "$BUILD_OUTPUT/linked-library-manifest.txt"
-          test -f "$BUILD_OUTPUT/inspect-instrumented.json"
-          test -f "$BUILD_OUTPUT/inspect-control.json"
-          python3 -c "
-          import json
-          for path in ['$BUILD_OUTPUT/i2pr-build-manifest.json',
-                       '$BUILD_OUTPUT/build-manifest-instrumented.json',
-                       '$BUILD_OUTPUT/build-manifest-control.json',
-                       '$BUILD_OUTPUT/inspect-instrumented.json',
-                       '$BUILD_OUTPUT/inspect-control.json']:
-              with open(path, 'r', encoding='utf-8') as handle:
-                  data = json.load(handle)
-              assert isinstance(data, dict), path
-              for key, value in data.items():
-                  if 'sha256' in key.lower() or 'digest' in key.lower():
-                      if not isinstance(value, str) or not value:
-                          raise SystemExit(f'nonempty string required at {path}:{key}')
-                      # The ``i2pd_libraries_sha256`` field is a
-                      # space-separated concatenation of three
-                      # library digests (libi2pd, libi2pdclient,
-                      # libi2pdlang); every fragment must be a
-                      # nonzero 64-hex digest. Other fields carry a
-                      # single nonzero 64-hex digest.
-                      fragments = value.split(' ')
-                      if not fragments or any(not frag for frag in fragments):
-                          raise SystemExit(f'empty fragment in digest at {path}:{key}')
-                      for frag in fragments:
-                          if len(frag) != 64 or frag == '0' * 64:
-                              raise SystemExit(f'nonzero 64-hex digest required at {path}:{key}: fragment {frag!r}')
-          print('all build manifests validate')
-          "
-      - name: upload-build-artifact
-        uses: actions/upload-artifact@v4.4.0
-        with:
-          name: plan095-build
-          path: ${{ github.workspace }}/target/interop/plan095-build/output/
-          if-no-files-found: error
-          retention-days: 7
+          cp "$PLAN099_BUILD_DIR/i2pr-target/release/i2pr-interop" \
+             "$PLAN099_OUTPUT/i2pr-interop"
+          chmod 0755 "$PLAN099_OUTPUT/i2pr-interop"
+          test -f "$PLAN099_OUTPUT/i2pr-interop"
+          test -x "$PLAN099_OUTPUT/i2pr-interop"
+          test ! -L "$PLAN099_OUTPUT/i2pr-interop"
 
-  forward-instrumented:
-    name: Plan 095 forward instrumented
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4.1.7
-      - name: rust-toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
-      - name: download-build-artifact
-        uses: actions/download-artifact@v4.1.7
-        with:
-          name: plan095-build
-          path: ${{ github.workspace }}/target/interop/plan095-build/output/
-      - name: restore-executable-bit
-        env:
-          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
+      - name: verify-build-artifacts
         run: |
           set -euo pipefail
-          # Plan 098/099: ``actions/upload-artifact@v4`` (archiver
-          # 7.0.1 + zip-stream) records the default 0644 mode in
-          # the zip entry's external attributes even when the file
-          # on disk is 0755. The downstream ``actions/download-artifact``
-          # then extracts the same 0644 mode, so the live job's
-          # ``test -x`` guard fails closed with a typed
-          # ``ci_build_blocked``. Restore the executable bit
-          # explicitly after extraction so the live jobs see the
-          # correct mode regardless of the upload action's zip-mode
-          # handling.
-          BUILD_OUTPUT="$BUILD_DIR/output"
-          for binary in i2pr-interop \
-                      i2pd_ntcp2_interop_driver_instrumented \
-                      i2pd_ntcp2_interop_driver_control; do
-            if [[ -f "$BUILD_OUTPUT/$binary" ]]; then
-              chmod 0755 "$BUILD_OUTPUT/$binary"
-            fi
-          done
-          test -x "$BUILD_OUTPUT/i2pr-interop"
-          test -x "$BUILD_OUTPUT/i2pd_ntcp2_interop_driver_instrumented"
-      - name: prepare-run-root
-        env:
-          # Plan 096: the sanitized evidence tree must be disjoint
-          # from the disposable run root. Raw runtime state lives
-          # under ``plan095-instrumented`` and is deleted before
-          # the artifact upload step. Sanitized evidence lives
-          # under ``plan095-evidence/instrumented`` and is
-          # preserved across the cleanup step.
-          PLAN095_RUN_ROOT: "${{ github.workspace }}/target/interop/plan095-instrumented"
-          PLAN095_SANITIZED: "${{ github.workspace }}/target/interop/plan095-evidence/instrumented"
+          test -x "$PLAN099_OUTPUT/i2pr-interop"
+          test -x "$PLAN099_OUTPUT/i2pd_ntcp2_interop_driver_instrumented"
+          test -x "$PLAN099_OUTPUT/i2pd_ntcp2_interop_driver_control"
+          test -f "$PLAN099_OUTPUT/build-manifest-instrumented.json"
+          test -f "$PLAN099_OUTPUT/build-manifest-control.json"
+
+      - name: focused-local-tests
+        # Plan 099 WP6: only the bounded functional test set runs in
+        # the live lane. The full historical plan-specific matrix is
+        # not executed by the development lane; it remains available
+        # via git history for forensic archaeology.
         run: |
           set -euo pipefail
-          # Plan 100: the live probe refuses to launch if the
-          # run root already exists ("--run-root must not exist
-          # before the run (fresh run root)"). Removing the
-          # directory and then immediately ``mkdir -p`` it would
-          # re-create it before the probe validates, so the
-          # sanitized tree is created here but the run root is
-          # only removed. The probe creates the run root itself.
-          rm -rf "$PLAN095_RUN_ROOT"
-          rm -rf "$PLAN095_SANITIZED"
-          mkdir -p "$PLAN095_SANITIZED"
-          # Fail closed if the sanitized tree is a descendant of the
-          # disposable run root. The contract is structural, not
-          # semantic; this guards against future drift.
-          case "$PLAN095_SANITIZED" in
-            "$PLAN095_RUN_ROOT"/*) echo "sanitized path is descendant of run root" >&2; exit 71 ;;
-          esac
-      - name: emit-environment-blocker-on-build-missing
+          python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_driver.py' 2>&1 | tail -n 5
+          python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_minimal_i2pd_probe.py' 2>&1 | tail -n 5
+
+      - name: prepare-sanitized-dir
         run: |
           set -euo pipefail
-          build_root="${{ github.workspace }}/target/interop/plan095-build/output"
-          if [[ ! -x "$build_root/i2pr-interop" \
-              || ! -x "$build_root/i2pd_ntcp2_interop_driver_instrumented" ]]; then
-            echo "ci_build_blocked: build artifact missing" >&2
-            exit 73
-          fi
-      - name: run-forward-instrumented
-        id: run_instrumented
+          rm -rf "$PLAN099_SANITIZED"
+          mkdir -p "$PLAN099_SANITIZED"
+
+      - name: forward-instrumented
+        id: forward_instrumented
         continue-on-error: true
-        env:
-          PLAN095_RUN_ROOT: "${{ github.workspace }}/target/interop/plan095-instrumented"
-          PLAN095_RECORD: "${{ github.workspace }}/target/interop/plan095-instrumented/forward-record.json"
-          I2PD_DRIVER_BINARY: "${{ github.workspace }}/target/interop/plan095-build/output/i2pd_ntcp2_interop_driver_instrumented"
-          I2PR_BINARY: "${{ github.workspace }}/target/interop/plan095-build/output/i2pr-interop"
         run: |
           set -euo pipefail
-          # Plan 098: thread the explicit ``--attempt-kind
-          # instrumented`` flag and the canonical i2pr/i2pd paths
-          # through the wrapper. The wrapper refuses a role/binary
-          # mismatch before any subprocess launches.
+          rm -rf "$PLAN099_BUILD_DIR/run-instrumented"
           python3 scripts/interop/run-minimal-i2pd-host-loopback-probe.py \
             --direction i2pr-to-i2pd-ipv4 \
             --repo-root "${{ github.workspace }}" \
-            --run-root "$PLAN095_RUN_ROOT" \
-            --run-id "plan095-instrumented-${{ github.run_id }}" \
+            --run-root "$PLAN099_BUILD_DIR/run-instrumented" \
+            --run-id "plan099-instrumented-${{ github.run_id }}" \
             --source-commit "${{ github.sha }}" \
-            --output "$PLAN095_RECORD" \
-            --i2pd-driver-binary "$I2PD_DRIVER_BINARY" \
-            --i2pr-binary "$I2PR_BINARY" \
+            --output "$PLAN099_BUILD_DIR/run-instrumented/forward-record.json" \
+            --i2pd-driver-binary "$PLAN099_OUTPUT/i2pd_ntcp2_interop_driver_instrumented" \
+            --i2pr-binary "$PLAN099_OUTPUT/i2pr-interop" \
             --attempt-kind instrumented \
             --delivery-status-message-id "0x04200951"
           instrumented_rc=$?
           echo "instrumented attempt exit: ${instrumented_rc}"
-          # Plan 096: never silently mask a non-zero instrumented
-          # exit. Record the exit so the validate step can require
-          # an evidence-pass with explicit ``terminal_result`` =
-          # ``passed``; ``|| echo`` cannot make the run a success.
           exit ${instrumented_rc}
-      - name: sanitize-record
-        if: always()
-        env:
-          PLAN095_RECORD: "${{ github.workspace }}/target/interop/plan095-instrumented/forward-record.json"
-          PLAN095_SANITIZED: "${{ github.workspace }}/target/interop/plan095-evidence/instrumented"
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import os
-          import pathlib
 
-          record_path = pathlib.Path(os.environ["PLAN095_RECORD"])
-          sanitized_dir = pathlib.Path(os.environ["PLAN095_SANITIZED"])
-          sanitized_dir.mkdir(parents=True, exist_ok=True)
-          if not record_path.is_file():
-              sanitized = {
-                  "schema": "i2pr-ntcp2-plan095-instrumented-record-v1",
-                  "attempt_kind": "instrumented",
-                  "attempt_index": 1,
-                  "direction": "i2pr-to-i2pd-ipv4",
-                  "topology_kind": "host-loopback-development",
-                  "terminal_result": "blocked-environment-or-build",
-                  "cleanup_result": "not-run",
-                  "raw_record_present": False,
-              }
-          else:
-              record = json.loads(record_path.read_text(encoding="utf-8"))
-              sanitized = {
-                  "schema": "i2pr-ntcp2-plan095-instrumented-record-v1",
-                  "attempt_kind": record.get("attempt_kind", "instrumented"),
-                  "attempt_index": record.get("attempt_index", 1),
-                  "direction": record.get("direction", "i2pr-to-i2pd-ipv4"),
-                  "topology_kind": record.get("topology_kind", "host-loopback-development"),
-                  "source_commit": record.get("source_commit", ""),
-                  "reference_revision": record.get("reference_revision", ""),
-                  "network_id": record.get("network_id", 99),
-                  "terminal_result": record.get("terminal_result", ""),
-                  "reason_code": record.get("reason_code", ""),
-                  "highest_stage_reached": record.get("highest_stage_reached", ""),
-                  "i2pr_binary_sha256": record.get("i2pr_binary_sha256", ""),
-                  "i2pd_binary_sha256": record.get("i2pd_binary_sha256", ""),
-                  "i2pr_build_manifest_sha256": record.get("i2pr_build_manifest_sha256", ""),
-                  "i2pd_build_manifest_sha256": record.get("i2pd_build_manifest_sha256", ""),
-                  "reference_source_tree_sha256": record.get("reference_source_tree_sha256", ""),
-                  "scenario_sha256": record.get("scenario_sha256", ""),
-                  "placement_record_sha256": record.get("placement_record_sha256", ""),
-                  "cleanup_result": record.get("cleanup_result", ""),
-                  "delivery_status_message_id": record.get("delivery_status_message_id", 0),
-                  "peer_router_hash_sha256": record.get("peer_router_hash_sha256", ""),
-                  "i2pr_router_hash_sha256": record.get("i2pr_router_hash_sha256", ""),
-                  "record_sha256": record.get("record_sha256", ""),
-              }
-          sanitized["sanitized_sha256"] = hashlib.sha256(
-              json.dumps(sanitized, sort_keys=True, indent=2).encode()
-          ).hexdigest()
-          out = sanitized_dir / "forward-instrumented-sanitized.json"
-          out.write_text(json.dumps(sanitized, sort_keys=True, indent=2), encoding="utf-8")
-          print(f"sanitized record written: {out}")
-          print(f"sanitized_sha256: {sanitized['sanitized_sha256']}")
-          PY
-      - name: delete-raw-run-state
-        if: always()
-        env:
-          PLAN095_RUN_ROOT: "${{ github.workspace }}/target/interop/plan095-instrumented"
-          PLAN095_SANITIZED: "${{ github.workspace }}/target/interop/plan095-evidence/instrumented"
-        run: |
-          set -euo pipefail
-          # Plan 097: the disposable run root and every descendant
-          # must be absent after cleanup. The deletion is destructive
-          # and verified; the absence assertion is not suppressed.
-          # The path guard refuses any unexpected cleanup target
-          # before any ``rm -rf`` runs.
-          case "$PLAN095_RUN_ROOT" in
-            "${{ github.workspace }}/target/interop/plan095-instrumented") ;;
-            *) echo "refusing unexpected PLAN095_RUN_ROOT: $PLAN095_RUN_ROOT" >&2; exit 72 ;;
-          esac
-          rm -rf -- "$PLAN095_RUN_ROOT"
-          test ! -e "$PLAN095_RUN_ROOT"
-          test -d "$PLAN095_SANITIZED" || { echo "sanitized evidence tree was lost" >&2; exit 72; }
-          test -f "$PLAN095_SANITIZED/forward-instrumented-sanitized.json" \
-            || { echo "sanitized record file was lost" >&2; exit 72; }
-          echo "raw run state deleted; sanitized evidence preserved"
-      - name: upload-instrumented-evidence
-        if: always()
-        uses: actions/upload-artifact@v4.4.0
-        with:
-          name: plan095-instrumented-evidence
-          path: ${{ github.workspace }}/target/interop/plan095-evidence/instrumented/
-          if-no-files-found: error
-          retention-days: 14
-
-  forward-control:
-    name: Plan 095 forward control
-    needs: [build, forward-instrumented]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4.1.7
-      - name: rust-toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
-      - name: download-build-artifact
-        uses: actions/download-artifact@v4.1.7
-        with:
-          name: plan095-build
-          path: ${{ github.workspace }}/target/interop/plan095-build/output/
-      - name: restore-executable-bit
-        env:
-          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
-        run: |
-          set -euo pipefail
-          # Plan 098/099: ``actions/upload-artifact@v4`` (archiver
-          # 7.0.1 + zip-stream) records the default 0644 mode in
-          # the zip entry's external attributes even when the file
-          # on disk is 0755. The downstream ``actions/download-artifact``
-          # then extracts the same 0644 mode, so the live job's
-          # ``test -x`` guard fails closed with a typed
-          # ``ci_build_blocked``. Restore the executable bit
-          # explicitly after extraction so the live jobs see the
-          # correct mode regardless of the upload action's zip-mode
-          # handling.
-          BUILD_OUTPUT="$BUILD_DIR/output"
-          for binary in i2pr-interop \
-                      i2pd_ntcp2_interop_driver_instrumented \
-                      i2pd_ntcp2_interop_driver_control; do
-            if [[ -f "$BUILD_OUTPUT/$binary" ]]; then
-              chmod 0755 "$BUILD_OUTPUT/$binary"
-            fi
-          done
-          test -x "$BUILD_OUTPUT/i2pr-interop"
-          test -x "$BUILD_OUTPUT/i2pd_ntcp2_interop_driver_instrumented"
-      - name: download-instrumented-evidence
-        uses: actions/download-artifact@v4.1.7
-        with:
-          name: plan095-instrumented-evidence
-          path: ${{ github.workspace }}/target/interop/plan095-evidence/instrumented/
-      - name: validate-instrumented-evidence
-        env:
-          INSTRUMENTED_DIR: "${{ github.workspace }}/target/interop/plan095-evidence/instrumented"
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import os
-          import pathlib
-          import sys
-
-          sanitized_dir = pathlib.Path(os.environ["INSTRUMENTED_DIR"])
-          files = sorted(sanitized_dir.glob("forward-instrumented-sanitized.json"))
-          if not files:
-              print("control attempt forbidden: instrumented sanitized record missing", file=sys.stderr)
-              sys.exit(74)
-          record = json.loads(files[0].read_text(encoding="utf-8"))
-          if record.get("terminal_result") != "passed":
-              print("control attempt forbidden: instrumented terminal_result != passed", file=sys.stderr)
-              sys.exit(75)
-          if record.get("cleanup_result") != "clean":
-              print("control attempt forbidden: instrumented cleanup != clean", file=sys.stderr)
-              sys.exit(76)
-          for key in ("i2pr_binary_sha256", "i2pd_binary_sha256",
-                      "i2pr_build_manifest_sha256", "i2pd_build_manifest_sha256",
-                      "reference_source_tree_sha256", "scenario_sha256",
-                      "placement_record_sha256"):
-              value = record.get(key, "")
-              if not isinstance(value, str) or len(value) != 64 or value == "0" * 64:
-                  print(f"control attempt forbidden: instrumented {key} not a nonzero 64-hex digest", file=sys.stderr)
-                  sys.exit(77)
-          print("instrumented evidence independently validated")
-          PY
-      - name: prepare-run-root
-        env:
-          # Plan 096/100: control sanitized evidence lives outside
-          # the disposable control run root for the same reason as
-          # the instrumented path. The run root is removed but
-          # not re-created; the live probe is the single owner
-          # that creates the run root.
-          PLAN095_RUN_ROOT: "${{ github.workspace }}/target/interop/plan095-control"
-          PLAN095_SANITIZED: "${{ github.workspace }}/target/interop/plan095-evidence/control"
-        run: |
-          set -euo pipefail
-          rm -rf "$PLAN095_RUN_ROOT"
-          rm -rf "$PLAN095_SANITIZED"
-          mkdir -p "$PLAN095_SANITIZED"
-          case "$PLAN095_SANITIZED" in
-            "$PLAN095_RUN_ROOT"/*) echo "sanitized path is descendant of run root" >&2; exit 71 ;;
-          esac
-      - name: emit-environment-blocker-on-build-missing
-        run: |
-          set -euo pipefail
-          build_root="${{ github.workspace }}/target/interop/plan095-build/output"
-          if [[ ! -x "$build_root/i2pr-interop" \
-              || ! -x "$build_root/i2pd_ntcp2_interop_driver_control" ]]; then
-            echo "ci_build_blocked: control build artifact missing" >&2
-            exit 73
-          fi
-      - name: run-forward-control
-        id: run_control
+      - name: forward-control
+        id: forward_control
         continue-on-error: true
-        env:
-          PLAN095_RUN_ROOT: "${{ github.workspace }}/target/interop/plan095-control"
-          PLAN095_RECORD: "${{ github.workspace }}/target/interop/plan095-control/forward-record.json"
-          I2PD_DRIVER_BINARY: "${{ github.workspace }}/target/interop/plan095-build/output/i2pd_ntcp2_interop_driver_control"
-          I2PR_BINARY: "${{ github.workspace }}/target/interop/plan095-build/output/i2pr-interop"
+        if: steps.forward_instrumented.outcome == 'success'
         run: |
           set -euo pipefail
-          # Plan 098: thread the explicit ``--attempt-kind
-          # control`` flag and the canonical control i2pd driver /
-          # build manifest through the wrapper. The wrapper refuses
-          # a role/binary mismatch before any subprocess launches.
+          rm -rf "$PLAN099_BUILD_DIR/run-control"
           python3 scripts/interop/run-minimal-i2pd-host-loopback-probe.py \
             --direction i2pr-to-i2pd-ipv4 \
             --repo-root "${{ github.workspace }}" \
-            --run-root "$PLAN095_RUN_ROOT" \
-            --run-id "plan095-control-${{ github.run_id }}" \
+            --run-root "$PLAN099_BUILD_DIR/run-control" \
+            --run-id "plan099-control-${{ github.run_id }}" \
             --source-commit "${{ github.sha }}" \
-            --output "$PLAN095_RECORD" \
-            --i2pd-driver-binary "$I2PD_DRIVER_BINARY" \
-            --i2pr-binary "$I2PR_BINARY" \
+            --output "$PLAN099_BUILD_DIR/run-control/forward-record.json" \
+            --i2pd-driver-binary "$PLAN099_OUTPUT/i2pd_ntcp2_interop_driver_control" \
+            --i2pr-binary "$PLAN099_OUTPUT/i2pr-interop" \
             --attempt-kind control \
             --delivery-status-message-id "0x04200952"
           control_rc=$?
           echo "control attempt exit: ${control_rc}"
           exit ${control_rc}
-      - name: sanitize-record
+
+      - name: reverse-instrumented
+        id: reverse_instrumented
+        continue-on-error: true
+        if: steps.forward_control.outcome == 'success'
+        run: |
+          set -euo pipefail
+          rm -rf "$PLAN099_BUILD_DIR/run-reverse-instrumented"
+          python3 scripts/interop/run-minimal-i2pd-host-loopback-probe.py \
+            --direction i2pd-to-i2pr-ipv4 \
+            --repo-root "${{ github.workspace }}" \
+            --run-root "$PLAN099_BUILD_DIR/run-reverse-instrumented" \
+            --run-id "plan099-reverse-instrumented-${{ github.run_id }}" \
+            --source-commit "${{ github.sha }}" \
+            --output "$PLAN099_BUILD_DIR/run-reverse-instrumented/reverse-record.json" \
+            --i2pd-driver-binary "$PLAN099_OUTPUT/i2pd_ntcp2_interop_driver_instrumented" \
+            --i2pr-binary "$PLAN099_OUTPUT/i2pr-interop" \
+            --attempt-kind instrumented \
+            --delivery-status-message-id "0x04200953"
+          rev_inst_rc=$?
+          echo "reverse instrumented attempt exit: ${rev_inst_rc}"
+          exit ${rev_inst_rc}
+
+      - name: reverse-control
+        id: reverse_control
+        continue-on-error: true
+        if: steps.reverse_instrumented.outcome == 'success'
+        run: |
+          set -euo pipefail
+          rm -rf "$PLAN099_BUILD_DIR/run-reverse-control"
+          python3 scripts/interop/run-minimal-i2pd-host-loopback-probe.py \
+            --direction i2pd-to-i2pr-ipv4 \
+            --repo-root "${{ github.workspace }}" \
+            --run-root "$PLAN099_BUILD_DIR/run-reverse-control" \
+            --run-id "plan099-reverse-control-${{ github.run_id }}" \
+            --source-commit "${{ github.sha }}" \
+            --output "$PLAN099_BUILD_DIR/run-reverse-control/reverse-record.json" \
+            --i2pd-driver-binary "$PLAN099_OUTPUT/i2pd_ntcp2_interop_driver_control" \
+            --i2pr-binary "$PLAN099_OUTPUT/i2pr-interop" \
+            --attempt-kind control \
+            --delivery-status-message-id "0x04200954"
+          rev_ctrl_rc=$?
+          echo "reverse control attempt exit: ${rev_ctrl_rc}"
+          exit ${rev_ctrl_rc}
+
+      - name: emit-compact-summary
         if: always()
-        env:
-          PLAN095_RECORD: "${{ github.workspace }}/target/interop/plan095-control/forward-record.json"
-          PLAN095_SANITIZED: "${{ github.workspace }}/target/interop/plan095-evidence/control"
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -640,349 +247,153 @@ jobs:
           import os
           import pathlib
 
-          record_path = pathlib.Path(os.environ["PLAN095_RECORD"])
-          sanitized_dir = pathlib.Path(os.environ["PLAN095_SANITIZED"])
-          sanitized_dir.mkdir(parents=True, exist_ok=True)
-          if not record_path.is_file():
-              sanitized = {
-                  "schema": "i2pr-ntcp2-plan095-control-record-v1",
-                  "attempt_kind": "control",
-                  "attempt_index": 1,
-                  "direction": "i2pr-to-i2pd-ipv4",
-                  "topology_kind": "host-loopback-development",
-                  "terminal_result": "blocked-environment-or-build",
-                  "cleanup_result": "not-run",
-                  "raw_record_present": False,
-              }
-          else:
-              record = json.loads(record_path.read_text(encoding="utf-8"))
-              sanitized = {
-                  "schema": "i2pr-ntcp2-plan095-control-record-v1",
-                  "attempt_kind": record.get("attempt_kind", "control"),
-                  "attempt_index": record.get("attempt_index", 1),
-                  "direction": record.get("direction", "i2pr-to-i2pd-ipv4"),
-                  "topology_kind": record.get("topology_kind", "host-loopback-development"),
-                  "source_commit": record.get("source_commit", ""),
-                  "reference_revision": record.get("reference_revision", ""),
-                  "network_id": record.get("network_id", 99),
-                  "terminal_result": record.get("terminal_result", ""),
-                  "reason_code": record.get("reason_code", ""),
-                  "highest_stage_reached": record.get("highest_stage_reached", ""),
-                  "i2pr_binary_sha256": record.get("i2pr_binary_sha256", ""),
-                  "i2pd_binary_sha256": record.get("i2pd_binary_sha256", ""),
-                  "i2pr_build_manifest_sha256": record.get("i2pr_build_manifest_sha256", ""),
-                  "i2pd_build_manifest_sha256": record.get("i2pd_build_manifest_sha256", ""),
-                  "reference_source_tree_sha256": record.get("reference_source_tree_sha256", ""),
-                  "scenario_sha256": record.get("scenario_sha256", ""),
-                  "placement_record_sha256": record.get("placement_record_sha256", ""),
-                  "cleanup_result": record.get("cleanup_result", ""),
-                  "delivery_status_message_id": record.get("delivery_status_message_id", 0),
-                  "peer_router_hash_sha256": record.get("peer_router_hash_sha256", ""),
-                  "i2pr_router_hash_sha256": record.get("i2pr_router_hash_sha256", ""),
-                  "record_sha256": record.get("record_sha256", ""),
-              }
-          sanitized["sanitized_sha256"] = hashlib.sha256(
-              json.dumps(sanitized, sort_keys=True, indent=2).encode()
-          ).hexdigest()
-          out = sanitized_dir / "forward-control-sanitized.json"
-          out.write_text(json.dumps(sanitized, sort_keys=True, indent=2), encoding="utf-8")
-          print(f"sanitized record written: {out}")
-          print(f"sanitized_sha256: {sanitized['sanitized_sha256']}")
-          PY
-      - name: delete-raw-run-state
-        if: always()
-        env:
-          PLAN095_RUN_ROOT: "${{ github.workspace }}/target/interop/plan095-control"
-          PLAN095_SANITIZED: "${{ github.workspace }}/target/interop/plan095-evidence/control"
-        run: |
-          set -euo pipefail
-          # Plan 097: the disposable run root and every descendant
-          # must be absent after cleanup. The deletion is destructive
-          # and verified; the absence assertion is not suppressed.
-          # The path guard refuses any unexpected cleanup target
-          # before any ``rm -rf`` runs.
-          case "$PLAN095_RUN_ROOT" in
-            "${{ github.workspace }}/target/interop/plan095-control") ;;
-            *) echo "refusing unexpected PLAN095_RUN_ROOT: $PLAN095_RUN_ROOT" >&2; exit 72 ;;
-          esac
-          rm -rf -- "$PLAN095_RUN_ROOT"
-          test ! -e "$PLAN095_RUN_ROOT"
-          test -d "$PLAN095_SANITIZED" || { echo "sanitized evidence tree was lost" >&2; exit 72; }
-          test -f "$PLAN095_SANITIZED/forward-control-sanitized.json" \
-            || { echo "sanitized record file was lost" >&2; exit 72; }
-          echo "raw run state deleted; sanitized evidence preserved"
-      - name: upload-control-evidence
-        if: always()
-        uses: actions/upload-artifact@v4.4.0
-        with:
-          name: plan095-control-evidence
-          path: ${{ github.workspace }}/target/interop/plan095-evidence/control/
-          if-no-files-found: error
-          retention-days: 14
+          output = pathlib.Path(os.environ["PLAN099_OUTPUT"])
+          sanitized = pathlib.Path(os.environ["PLAN099_SANITIZED"])
+          build_dir = pathlib.Path(os.environ["PLAN099_BUILD_DIR"])
 
-  validate-gate:
-    name: Plan 095 CI gate validation
-    needs: [build, forward-instrumented, forward-control]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4.1.7
-      - name: download-build-artifact
-        uses: actions/download-artifact@v4.1.7
-        with:
-          name: plan095-build
-          path: ${{ github.workspace }}/target/interop/plan095-build/output/
-      - name: restore-executable-bit
-        env:
-          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build"
-        run: |
-          set -euo pipefail
-          # Plan 098/099: ``actions/upload-artifact@v4`` (archiver
-          # 7.0.1 + zip-stream) records the default 0644 mode in
-          # the zip entry's external attributes even when the file
-          # on disk is 0755. The downstream ``actions/download-artifact``
-          # then extracts the same 0644 mode, so the live job's
-          # ``test -x`` guard fails closed with a typed
-          # ``ci_build_blocked``. Restore the executable bit
-          # explicitly after extraction so the live jobs see the
-          # correct mode regardless of the upload action's zip-mode
-          # handling.
-          BUILD_OUTPUT="$BUILD_DIR/output"
-          for binary in i2pr-interop \
-                      i2pd_ntcp2_interop_driver_instrumented \
-                      i2pd_ntcp2_interop_driver_control; do
-            if [[ -f "$BUILD_OUTPUT/$binary" ]]; then
-              chmod 0755 "$BUILD_OUTPUT/$binary"
-            fi
-          done
-          test -x "$BUILD_OUTPUT/i2pr-interop"
-          test -x "$BUILD_OUTPUT/i2pd_ntcp2_interop_driver_instrumented"
-      - name: download-instrumented-evidence
-        uses: actions/download-artifact@v4.1.7
-        with:
-          name: plan095-instrumented-evidence
-          path: ${{ github.workspace }}/target/interop/plan095-evidence/instrumented/
-      - name: download-control-evidence
-        uses: actions/download-artifact@v4.1.7
-        with:
-          name: plan095-control-evidence
-          path: ${{ github.workspace }}/target/interop/plan095-evidence/control/
-      - name: emit-ci-gate-record
-        env:
-          BUILD_DIR: "${{ github.workspace }}/target/interop/plan095-build/output"
-          INSTRUMENTED_DIR: "${{ github.workspace }}/target/interop/plan095-evidence/instrumented"
-          CONTROL_DIR: "${{ github.workspace }}/target/interop/plan095-evidence/control"
-          EVIDENCE_ROOT: "${{ github.workspace }}/target/interop/evidence"
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import os
-          import pathlib
-          import re
-          import sys
-
-          HEX64 = re.compile(r"^[0-9a-f]{64}$")
-
-          build_dir = pathlib.Path(os.environ["BUILD_DIR"])
-          instrumented_dir = pathlib.Path(os.environ["INSTRUMENTED_DIR"])
-          control_dir = pathlib.Path(os.environ["CONTROL_DIR"])
-          evidence_root = pathlib.Path(os.environ["EVIDENCE_ROOT"])
-          evidence_root.mkdir(parents=True, exist_ok=True)
-          gate_path = evidence_root / "plan095-ci-gate.json"
-
-          instrumented_files = sorted(instrumented_dir.glob("forward-instrumented-sanitized.json"))
-          control_files = sorted(control_dir.glob("forward-control-sanitized.json"))
-          if not instrumented_files:
-              print("instrumented sanitized record missing", file=sys.stderr)
-              sys.exit(80)
-          if not control_files:
-              print("control sanitized record missing", file=sys.stderr)
-              sys.exit(81)
-          instrumented = json.loads(instrumented_files[0].read_text(encoding="utf-8"))
-          control = json.loads(control_files[0].read_text(encoding="utf-8"))
-
-          instrumented_passed = (
-              instrumented.get("terminal_result") == "passed"
-              and instrumented.get("cleanup_result") == "clean"
-          )
-          control_passed = (
-              control.get("terminal_result") == "passed"
-              and control.get("cleanup_result") == "clean"
-          )
-
-          def _sha256_file(path: pathlib.Path) -> str:
+          def sha256_file(path: pathlib.Path) -> str:
+              if not path.is_file():
+                  return "0" * 64
               return hashlib.sha256(path.read_bytes()).hexdigest()
 
-          def _manifest_sha(path: pathlib.Path) -> str:
-              if path.is_file():
-                  return _sha256_file(path)
-              return "0" * 64
+          def load_or_zero(label: str, run_dir_name: str) -> dict[str, object]:
+              record_path = build_dir / run_dir_name / (
+                  "forward-record.json" if "reverse" not in run_dir_name
+                  else "reverse-record.json"
+              )
+              if not record_path.is_file():
+                  return {
+                      "present": False,
+                      "label": label,
+                      "terminal_result": "blocked-environment-or-build",
+                      "cleanup_result": "not-run",
+                  }
+              try:
+                  data = json.loads(record_path.read_text(encoding="utf-8"))
+                  data["present"] = True
+                  data["label"] = label
+                  return data
+              except json.JSONDecodeError:
+                  return {
+                      "present": False,
+                      "label": label,
+                      "terminal_result": "blocked-environment-or-build",
+                      "cleanup_result": "not-run",
+                  }
 
-          # Plan 098 WP6: the gate must prove the record claims
-          # correspond to the actual downloaded artifacts and
-          # role-specific manifests. A record with nonzero but
-          # incorrect provenance must fail closed.
-          instrumented_binary_path = (
-              build_dir / "i2pd_ntcp2_interop_driver_instrumented"
+          forward_instrumented = load_or_zero(
+              "forward-instrumented", "run-instrumented"
           )
-          control_binary_path = (
-              build_dir / "i2pd_ntcp2_interop_driver_control"
+          forward_control = load_or_zero("forward-control", "run-control")
+          reverse_instrumented = load_or_zero(
+              "reverse-instrumented", "run-reverse-instrumented"
           )
-          i2pr_binary_path = build_dir / "i2pr-interop"
-          instrumented_manifest_path = build_dir / "build-manifest-instrumented.json"
-          control_manifest_path = build_dir / "build-manifest-control.json"
-          i2pr_manifest_path = build_dir / "i2pr-build-manifest.json"
+          reverse_control = load_or_zero(
+              "reverse-control", "run-reverse-control"
+          )
 
-          instrumented_binary_sha = _sha256_file(instrumented_binary_path)
-          control_binary_sha = _sha256_file(control_binary_path)
-          i2pr_binary_sha = _sha256_file(i2pr_binary_path)
-          instrumented_manifest_sha = _manifest_sha(instrumented_manifest_path)
-          control_manifest_sha = _manifest_sha(control_manifest_path)
-          i2pr_manifest_sha = _manifest_sha(i2pr_manifest_path)
+          def passed(record: dict[str, object]) -> bool:
+              return (
+                  record.get("terminal_result") == "passed"
+                  and record.get("cleanup_result") == "clean"
+              )
 
-          def _require_digest(label: str, record_value: str, file_value: str) -> None:
-              if record_value != file_value:
-                  print(
-                      f"provenance mismatch for {label}: record={record_value} file={file_value}",
-                      file=sys.stderr,
-                  )
-                  sys.exit(82)
-
-          if instrumented_passed:
-              _require_digest(
-                  "instrumented i2pd binary",
-                  instrumented.get("i2pd_binary_sha256", ""),
-                  instrumented_binary_sha,
-              )
-              _require_digest(
-                  "instrumented i2pd build manifest",
-                  instrumented.get("i2pd_build_manifest_sha256", ""),
-                  instrumented_manifest_sha,
-              )
-          if control_passed:
-              _require_digest(
-                  "control i2pd binary",
-                  control.get("i2pd_binary_sha256", ""),
-                  control_binary_sha,
-              )
-              _require_digest(
-                  "control i2pd build manifest",
-                  control.get("i2pd_build_manifest_sha256", ""),
-                  control_manifest_sha,
-              )
-          if instrumented_passed and control_passed:
-              _require_digest(
-                  "shared i2pr binary",
-                  instrumented.get("i2pr_binary_sha256", ""),
-                  i2pr_binary_sha,
-              )
-              _require_digest(
-                  "shared i2pr build manifest",
-                  instrumented.get("i2pr_build_manifest_sha256", ""),
-                  i2pr_manifest_sha,
-              )
-              if (
-                  instrumented.get("source_commit")
-                  != control.get("source_commit")
-                  != os.environ["GITHUB_SHA"]
-              ):
-                  print("source_commit mismatch between instrumented/control and GITHUB_SHA", file=sys.stderr)
-                  sys.exit(82)
-              if (
-                  instrumented.get("reference_revision")
-                  != control.get("reference_revision")
-                  != "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e"
-              ):
-                  print("reference_revision mismatch", file=sys.stderr)
-                  sys.exit(82)
-              if (
-                  instrumented.get("reference_source_tree_sha256", "")
-                  != control.get("reference_source_tree_sha256", "")
-                  or not HEX64.fullmatch(
-                      instrumented.get("reference_source_tree_sha256", "")
-                  )
-                  or instrumented.get("reference_source_tree_sha256") == "0" * 64
-              ):
-                  print(
-                      "instrumented/control reference_source_tree_sha256 mismatch",
-                      file=sys.stderr,
-                  )
-                  sys.exit(82)
-              if (
-                  instrumented.get("scenario_sha256", "") == "0" * 64
-                  or control.get("scenario_sha256", "") == "0" * 64
-              ):
-                  print("scenario_sha256 placeholder in passed record", file=sys.stderr)
-                  sys.exit(82)
-              if (
-                  instrumented.get("placement_record_sha256", "") == "0" * 64
-                  or control.get("placement_record_sha256", "") == "0" * 64
-              ):
-                  print("placement_record_sha256 placeholder in passed record", file=sys.stderr)
-                  sys.exit(82)
-              if (
-                  instrumented.get("attempt_kind") != "instrumented"
-                  or control.get("attempt_kind") != "control"
-              ):
-                  print("attempt_kind does not match role", file=sys.stderr)
-                  sys.exit(82)
-              if (
-                  instrumented.get("attempt_index") != 1
-                  or control.get("attempt_index") != 1
-              ):
-                  print("attempt_index must be 1 for Plan 095", file=sys.stderr)
-                  sys.exit(82)
-
-          gate = {
-              "schema": "i2pr-ntcp2-plan095-ci-gate-v1",
+          summary = {
+              "schema": "i2pr-ntcp2-plan099-summary-v1",
               "workflow_run_id": os.environ["GITHUB_RUN_ID"],
               "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
               "source_commit": os.environ["GITHUB_SHA"],
               "runner_label": "ubuntu-24.04",
               "runner_arch": "x86_64",
-              "reference_revision": "f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e",
-              "topology_kind": "host-loopback-development",
-              "network_id": 99,
+              "reference_revision": os.environ["PLAN099_I2PD_REVISION"],
+              "topology_kind": os.environ["PLAN099_TOPOLOGY"],
+              "network_id": int(os.environ["PLAN099_NETWORK_ID"]),
               "bind_address": "127.0.0.1",
               "development_only": True,
               "release_qualified": False,
               "isolation_qualified": False,
-              "i2pr_binary_sha256": i2pr_binary_sha,
-              "i2pr_build_manifest_sha256": i2pr_manifest_sha,
-              "instrumented_binary_sha256": instrumented_binary_sha,
-              "instrumented_build_manifest_sha256": instrumented_manifest_sha,
-              "control_binary_sha256": control_binary_sha,
-              "control_build_manifest_sha256": control_manifest_sha,
-              "instrumented_record_sha256": instrumented.get("sanitized_sha256", ""),
-              "control_record_sha256": control.get("sanitized_sha256", ""),
-              "instrumented_result": "passed" if instrumented_passed else "nonpassing",
-              "control_result": "passed" if control_passed else "nonpassing",
-              "equivalence": "passed" if (instrumented_passed and control_passed) else "nonpassing",
-              "cleanup": "clean" if (instrumented_passed and control_passed) else "nonpassing",
-              "plan087_gate": "satisfied" if (instrumented_passed and control_passed) else "blocked",
-              "plan088_gate": "ready_after_status_reconciliation" if (instrumented_passed and control_passed) else "blocked",
-              "plan079_gate": "blocked_pending_plan088_two_way_pass",
-              "plan072_gate": "inactive_pending_plan088_ambiguity",
+              "i2pr_binary_sha256": sha256_file(output / "i2pr-interop"),
+              "i2pd_instrumented_binary_sha256": sha256_file(
+                  output / "i2pd_ntcp2_interop_driver_instrumented"
+              ),
+              "i2pd_control_binary_sha256": sha256_file(
+                  output / "i2pd_ntcp2_interop_driver_control"
+              ),
+              "forward_instrumented_result": (
+                  "passed" if passed(forward_instrumented) else "nonpassing"
+              ),
+              "forward_control_result": (
+                  "passed" if passed(forward_control) else "nonpassing"
+              ),
+              "reverse_instrumented_result": (
+                  "passed" if passed(reverse_instrumented) else "nonpassing"
+              ),
+              "reverse_control_result": (
+                  "passed" if passed(reverse_control) else "nonpassing"
+              ),
+              "cleanup": (
+                  "clean"
+                  if all(passed(r) for r in [
+                      forward_instrumented,
+                      forward_control,
+                      reverse_instrumented,
+                      reverse_control,
+                  ])
+                  else "nonpassing"
+              ),
+              "status": (
+                  "passed"
+                  if all(passed(r) for r in [
+                      forward_instrumented,
+                      forward_control,
+                      reverse_instrumented,
+                      reverse_control,
+                  ])
+                  else "nonpassing"
+              ),
               "ntcp2": "experimental-non-advertised",
           }
-          gate["gate_record_sha256"] = hashlib.sha256(
-              json.dumps({k: v for k, v in gate.items() if k != "gate_record_sha256"},
-                         sort_keys=True, indent=2).encode()
+          summary["summary_sha256"] = hashlib.sha256(
+              json.dumps(
+                  {k: v for k, v in summary.items() if k != "summary_sha256"},
+                  sort_keys=True,
+                  indent=2,
+              ).encode()
           ).hexdigest()
-          gate_path.write_text(json.dumps(gate, sort_keys=True, indent=2), encoding="utf-8")
-          print(f"gate record written: {gate_path}")
-          print(f"gate_record_sha256: {gate['gate_record_sha256']}")
-          if not (instrumented_passed and control_passed):
-              sys.exit(82)
+          sanitized.mkdir(parents=True, exist_ok=True)
+          out = sanitized / "plan099-summary.json"
+          out.write_text(
+              json.dumps(summary, sort_keys=True, indent=2), encoding="utf-8"
+          )
+          print(f"summary written: {out}")
+          print(f"summary_sha256: {summary['summary_sha256']}")
           PY
-      - name: upload-gate-record
+
+      - name: delete-raw-run-state
+        if: always()
+        run: |
+          set -euo pipefail
+          # Plan 099 WP3: destructive cleanup of every disposable run
+          # root created during the live steps. The sanitized summary
+          # tree survives; nothing else is retained.
+          case "$PLAN099_BUILD_DIR" in
+            "${{ github.workspace }}/target/interop/plan099-build") ;;
+            *) echo "refusing unexpected build dir: $PLAN099_BUILD_DIR" >&2; exit 72 ;;
+          esac
+          for run_dir in run-instrumented run-control \
+                         run-reverse-instrumented run-reverse-control; do
+            target="$PLAN099_BUILD_DIR/$run_dir"
+            if [[ -d "$target" ]]; then
+              rm -rf -- "$target"
+              test ! -e "$target"
+            fi
+          done
+
+      - name: upload-summary
         if: always()
         uses: actions/upload-artifact@v4.4.0
         with:
-          name: plan095-ci-gate
-          path: ${{ github.workspace }}/target/interop/evidence/plan095-ci-gate.json
+          name: plan099-summary
+          path: ${{ github.workspace }}/target/interop/plan099-evidence/plan099-summary.json
           if-no-files-found: error
           retention-days: 14

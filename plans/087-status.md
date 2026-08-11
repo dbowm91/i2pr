@@ -200,7 +200,50 @@ path guard before `rm -rf -- "$PLAN095_RUN_ROOT"`; and required
 an unsuppressed post-cleanup absence assertion. The Plan 097
 regression matrix
 (`tests/integration/ntcp2/harness/test_plan097.py`) and the
-extended pre-dispatch audit
-(`scripts/check-plan095-workflow.sh`) are green locally; exactly
-one manual Plan 095 GitHub Actions dispatch follows the Plan 097
+extended pre-dispatch audit are green locally; exactly one
+manual Plan 095 GitHub Actions dispatch follows the Plan 097
 correction commit.
+
+## Plan 099 closure amendment (2026-08-11)
+
+Plan 099 is the active corrective and exit plan from the
+multi-job CI/provenance expansion. The CI workflow is reduced
+from 988 lines (five jobs with cross-job binary artifact
+transfer) to 398 lines (one `development-interop` job that
+builds and executes in the same fresh workspace). The Plan 098
+D1–D4 evidence-integrity corrections are landed in the new
+single-job workflow (chained inequality is gone, manifest parity
+is enforced, and the wrapper requires `--i2pr-binary` for every
+attempted-live path). The Plan 098 chained-inequality bug is
+fixed at the gate level. All Plan 052–098 plan-number-specific
+Python test and runner files are deleted; unique functional
+assertions are migrated into the bounded functional test set
+(`test_execution_lane.py`, `test_i2pd_direct_driver.py`,
+`test_i2pd_direct_control.py`, `test_minimal_i2pd_probe.py`).
+The `scripts/check-plan095-workflow.sh` and
+`scripts/check-ntcp2-loopback-smoke-boundary.sh` scripts are
+removed. The `scripts/check-ntcp2-interoperability.sh` static
+boundary check is trimmed from 1870 to 124 lines and enforces
+only durable invariants.
+
+Plan 099 status:
+
+```text
+plan_099 = passed-pruning-and-exit
+plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
+plan_098 = passed-runner-provenance-boundary-correction (historical)
+plan_087 = open-pending-plan095-ci-forward-evidence-pair
+plan_088 = blocked-pending-plan095-ci-closure
+plan_079 = deferred-to-pre-activation-checkpoint
+plan_072 = inactive-pending-plan088-ambiguity
+ntcp2    = experimental-non-advertised
+normal_daemon_activation = disabled
+router_construction = next
+```
+
+Plan 095 remains the single next executable plan; exactly one
+manual Plan 095 GitHub Actions dispatch follows the Plan 099
+correction commit. Plan 088 may not run before Plan 095 closes
+with a passing instrumented forward record and a passing control
+forward record bound to the same CI evidence pair. Plan 079 and
+Plan 072 remain blocked pending the Plan 088 decision.
