@@ -1364,7 +1364,6 @@ def execute_real_probe(
             side = "i2pd"
             if stage == "tcp_accepted":
                 record_event({"event_name": stage, "source_side": side, "event_sha256": marker})
-                self._stages.advance_to(TCP_CONNECTED)
             elif stage == "ntcp2_authenticated":
                 record_event({"event_name": stage, "source_side": side, "event_sha256": marker})
             elif stage == "frame_emitted":
@@ -1452,8 +1451,6 @@ def execute_real_probe(
         seen_i2pd_events.add(dedup_key)
         if stage in {"tcp_accepted", "ntcp2_authenticated", "frame_emitted", "frame_authenticated_and_decrypted", "i2np_message_decoded"}:
             record_event({"event_name": stage, "source_side": "i2pd", "event_sha256": marker})
-            if stage == "tcp_accepted":
-                self._stages.advance_to(TCP_CONNECTED)
         elif stage in {"terminal_clean", "terminal_rejected"}:
             record_event({"event_name": stage, "source_side": "i2pd", "event_sha256": marker})
 
