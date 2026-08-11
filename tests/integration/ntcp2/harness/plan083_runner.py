@@ -1400,31 +1400,31 @@ def execute_real_probe(
                 i2pr_status_lines.append(parsed)
                 side = "i2pr"
                 if phase == "listener_ready":
-                    record_event({"event_name": "listener_ready", "source_side": side, "event_sha256": "0" * 64})
+                    record_event({"event_name": "listener_ready", "source_side": side, "event_sha256": line_marker})
                 elif phase == "tcp_connected":
-                    record_event({"event_name": "tcp_connected", "source_side": side, "event_sha256": "0" * 64})
+                    record_event({"event_name": "tcp_connected", "source_side": side, "event_sha256": line_marker})
                 elif phase == "noise_message1_sent":
-                    record_event({"event_name": "noise_message1_sent", "source_side": side, "event_sha256": "0" * 64})
+                    record_event({"event_name": "noise_message1_sent", "source_side": side, "event_sha256": line_marker})
                 elif phase == "noise_message2_received":
-                    record_event({"event_name": "noise_message2_received", "source_side": side, "event_sha256": "0" * 64})
+                    record_event({"event_name": "noise_message2_received", "source_side": side, "event_sha256": line_marker})
                 elif phase == "noise_authenticated":
-                    record_event({"event_name": "noise_authenticated", "source_side": side, "event_sha256": "0" * 64})
+                    record_event({"event_name": "noise_authenticated", "source_side": side, "event_sha256": line_marker})
                 elif phase == "ntcp2_authenticated":
-                    record_event({"event_name": "ntcp2_authenticated", "source_side": side, "event_sha256": "0" * 64})
+                    record_event({"event_name": "ntcp2_authenticated", "source_side": side, "event_sha256": line_marker})
                 elif phase == "frame_emitted":
-                    record_event({"event_name": "frame_emitted", "source_side": side, "event_sha256": "0" * 64})
+                    record_event({"event_name": "frame_emitted", "source_side": side, "event_sha256": line_marker})
                 elif phase == "frame_decoded":
-                    record_event({"event_name": "frame_decoded", "source_side": side, "event_sha256": "0" * 64})
+                    record_event({"event_name": "frame_decoded", "source_side": side, "event_sha256": line_marker})
                 elif phase == "frame_authenticated_and_decrypted":
-                    record_event({"event_name": "frame_authenticated_and_decrypted", "source_side": side, "event_sha256": "0" * 64})
+                    record_event({"event_name": "frame_authenticated_and_decrypted", "source_side": side, "event_sha256": line_marker})
                 elif phase == "i2np_message_decoded":
-                    record_event({"event_name": "i2np_message_decoded", "source_side": side, "event_sha256": "0" * 64})
+                    record_event({"event_name": "i2np_message_decoded", "source_side": side, "event_sha256": line_marker})
                 elif phase == "terminal":
                     terminal_seen = True
                     if parsed.get("result") == "passed":
-                        record_event({"event_name": "terminal_clean", "source_side": side, "event_sha256": "0" * 64})
+                        record_event({"event_name": "terminal_clean", "source_side": side, "event_sha256": line_marker})
                     else:
-                        record_event({"event_name": "terminal_rejected", "source_side": side, "event_sha256": "0" * 64})
+                        record_event({"event_name": "terminal_rejected", "source_side": side, "event_sha256": line_marker})
 
         if not dialer_proc.is_alive() and terminal_seen:
             break
