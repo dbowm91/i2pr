@@ -107,14 +107,14 @@ attempted under Plan 100.
 ```text
 plan_099 = closed-protocol-defect-localized
 plan_100 = closed-exit-cleanup-with-recorded-procedural-deviation
-plan_101 = active-daemon-ntcp2-activation-safety-correction
+plan_101 = passed-daemon-ntcp2-activation-safety
 plan_095 = historical-superseded-by-plan099-single-job-lane
 plan_087 = historical-development-sequence
 plan_088 = historical-development-sequence
 plan_079 = deferred-to-pre-normal-ntcp2-activation-and-public-network-checkpoint
 plan_072 = inactive-pending-plan088-ambiguity
 ntcp2    = experimental-non-advertised
-normal_daemon_ntcp2 = temporarily-regressed-pending-plan101
+normal_daemon_ntcp2 = disabled
 router_construction = active
 development_interop = protocol-defect-localized
 exact_wire_stage = noise_authenticated
