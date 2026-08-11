@@ -1787,31 +1787,34 @@ correction commit. The plan-of-record is
 
 ## Plan 099 Milestone 3 interop exit, harness reduction, and router buildout
 
-Plan 099 is the active corrective and exit plan from the
-multi-job CI/provenance expansion that consumed Plans 095–098. It
-corrects the central Plan 099 implementation finding — the
-instrumented i2pd transport libraries were never actually
-compiled from the patched source tree — and it freezes
-interoperability architecture growth. The build script now
-produces two separate i2pd archive sets (`I2PD_INSTRUMENTED_LIB_DIR`
-and `I2PD_PRISTINE_LIB_DIR`), and the pristine control driver uses
+Plan 099 is the corrective and exit plan from the multi-job
+CI/provenance expansion that consumed Plans 095–098. It corrects
+the central Plan 099 implementation finding — the instrumented
+i2pd transport libraries were never actually compiled from the
+patched source tree — and it freezes interoperability
+architecture growth. The build script now produces two separate
+i2pd archive sets (`I2PD_INSTRUMENTED_LIB_DIR` and
+`I2PD_PRISTINE_LIB_DIR`), and the pristine control driver uses
 native `Transports::SendMessage`, `Transports::IsConnected`, and
 `TransportSession::IsEstablished` instead of observer APIs the
 control build cannot emit.
 
-After Plan 099:
+Plan 100 is the one-time active cleanup authority that repairs
+the Plan 099 exit-gate API/classification (D1, D2), hardens the
+i2pd observer proof (D3), and removes the divergent source-tree
+digest fallback (D4). After Plan 100:
 
 ```text
-plan_099 = passed-pruning-and-exit
-plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
-plan_098 = passed-runner-provenance-boundary-correction (historical)
-plan_087 = open-pending-plan095-ci-forward-evidence-pair
-plan_088 = blocked-pending-plan095-ci-closure
-plan_079 = deferred-to-pre-activation-checkpoint
+plan_099 = implementation-landed-exit-cleanup-complete-pending-live-run
+plan_100 = exit-ready-awaiting-one-manual-run
+plan_095 = historical-superseded-by-plan099-single-job-lane
+plan_087 = historical-development-sequence-superseded-by-plan100
+plan_088 = historical-development-sequence-superseded-by-plan100
+plan_079 = deferred-to-pre-normal-ntcp2-activation-and-public-network-checkpoint
 plan_072 = inactive-pending-plan088-ambiguity
 ntcp2    = experimental-non-advertised
 normal_daemon_activation = disabled
-router_construction = next
+router_construction = authorized-after-plan100-outcome
 ```
 
 The active development interop lane is bounded to one fresh
@@ -1825,7 +1828,7 @@ reverse-control), and emits one compact sanitized summary. No
 cross-job artifact transfer. No Multipass, Docker, public-network
 traffic, reseed, SAM, I2CP, SSU2, or Java I2P.
 
-The Plan 099 active functional surface is small:
+The active functional surface is small:
 
 - [`scripts/interop/run-minimal-i2pd-host-loopback-probe.py`](../../scripts/interop/run-minimal-i2pd-host-loopback-probe.py)
   — the only allowed entry point to live subprocess execution;
@@ -1857,31 +1860,40 @@ The Plan 099 active functional surface is small:
 - [`scripts/check-ntcp2-interoperability.sh`](../../scripts/check-ntcp2-interoperability.sh)
   — the trimmed static boundary check.
 
-The Plan 099 development exit gate vocabulary is exactly four values:
+The Plan 099/Plan 100 development exit gate vocabulary is exactly
+three values:
 
 ```text
-two-way-development-smoke-passed
-forward-wire-defect
-reverse-wire-defect
-environment-or-build-blocked
+passed
+protocol-defect-localized
+environment-or-harness-blocked
 ```
 
-`two-way-development-smoke-passed` requires all four per-attempt
-records to carry `terminal_result = passed` and `cleanup_result =
-clean`. Any other combination collapses to one of the three typed
-blocker values. The gate is implemented in `plan099_exit_gate.py`.
+- `passed` — all four per-attempt records carry
+  `terminal_result = passed` and `cleanup_result = clean`.
+- `protocol-defect-localized` — at least one executed primary
+  direction reached `tcp_connected` (or any later wire stage) and
+  then failed before the required correlated DeliveryStatus pass.
+  A skipped downstream attempt cannot erase that classification.
+- `environment-or-harness-blocked` — the earliest nonpassing path
+  is pre-TCP preparation, build, reference startup, or
+  workflow/API failure.
 
-Plan 099 forbids adding new `test_planNNN.py` files, new
+The gate is implemented in `plan099_exit_gate.py` and is covered
+by the focused `Plan099ExitGateTests` class in
+`test_minimal_i2pd_probe.py`.
+
+Plan 099/Plan 100 forbid adding new `test_planNNN.py` files, new
 plan-number-specific Python runners, or new plan-token static
 checks. Historical plan documents remain in `plans/` as audit
 records but are not executable API contracts.
 
-Plan 099 forbids repairing or retrying the Plan 046 rootless
-lane or the Plan 048/049/050 Multipass recovery lane. A
-localized NTCP2 defect keeps NTCP2 disabled and non-advertised
+The active sequence forbids repairing or retrying the Plan 046
+rootless lane or the Plan 048/049/050 Multipass recovery lane.
+A localized NTCP2 defect keeps NTCP2 disabled and non-advertised
 but does not block production daemon composition, RouterInfo
 publication architecture, NetDB storage/indexing, SU3 reseed
 parsing, or deterministic local state-machine tests. The next
-substantial plan after 099 addresses production router
+substantial plan after Plan 100 addresses production router
 construction (daemon composition + RouterInfo/NetDB
 foundation), not another NTCP2 evidence framework plan.

@@ -2,8 +2,26 @@
 
 ## Status and dependencies
 
-- Status: planned (blocked pending Plan 084 decision `two-way-development-probe-passed`).
-- Active parent roadmap: Plan 081; historical parent sequence: Plan 074.
+- Status (Plan 100 amendment, 2026-08-11): **deferred to the
+  pre-normal-NTCP2-activation and pre-public-network integration
+  checkpoint**. The repeated fresh-state 3/3 per-direction validation
+  campaign is not a prerequisite for daemon composition, local
+  RouterInfo publication architecture, local NetDB storage,
+  deterministic NetDB lookup/store state machines, persistence /
+  restart revalidation, or offline/local SU3 ingestion. Plan 100
+  closes NTCP2 planning regardless of the Plan 099 one-job CI run
+  outcome (`passed`, `protocol-defect-localized`, or
+  `environment-or-harness-blocked`). The Plan 087/088 historical
+  Plan 095 sequencing is superseded by the Plan 099 one-job
+  workflow; Plan 079's prior entry gate (Plan 084
+  `two-way-development-probe-passed`) is replaced by the Plan 099
+  one-job record's exit-status equivalent
+  (`status = passed`).
+
+- Status (historical): planned (blocked pending Plan 084 decision
+  `two-way-development-probe-passed`).
+- Active parent roadmap (historical): Plan 081; historical parent
+  sequence: Plan 074.
 - Requires Plans 082 and 083 closed and Plan 084 closed with one genuine passing compact probe in each direction plus behavior-neutral control comparisons.
 - The Plan 078/080 attempt stopped pre-protocol and cannot satisfy this prerequisite; see `plans/080-diagnostic-correction-amendment-plan-081.md`.
 - Supersedes Plan 071 as the active repeated i2pd development-validation plan.

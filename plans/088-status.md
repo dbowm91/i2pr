@@ -1,5 +1,28 @@
 # Plan 088 status: reverse host-loopback probe and development decision
 
+## Active correction — Plan 100 supersession (2026-08-11)
+
+Plan 099/Plan 100 supersede Plan 088's Plan 095 sequencing for
+active execution. The single Plan 099 one-job workflow now owns
+both directions and both control comparisons in one run.
+
+```text
+plan_088 = historical-development-sequence-superseded-by-plan100
+plan_087 = historical-development-sequence-superseded-by-plan100
+plan_079 = deferred-to-pre-normal-ntcp2-activation-and-public-network-checkpoint
+plan_095 = historical-superseded-by-plan099-single-job-lane
+plan_099 = implementation-landed-exit-cleanup-complete-pending-live-run
+plan_100 = exit-ready-awaiting-one-manual-run
+ntcp2    = experimental-non-advertised
+```
+
+Plan 088's reverse runner architecture, host-loopback-development
+lane contract, and bounded reverse-probe record schema are
+preserved as the historical audit record below. The active
+development result comes from the Plan 099 one-job forward/reverse
+matrix; the Plan 088 reverse runner (`plan084_runner.py`) travels
+with the repository unchanged.
+
 ## Status
 
 ```text

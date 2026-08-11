@@ -237,6 +237,73 @@ class I2pdDriverArtifactsPresentTests(unittest.TestCase):
         self.assertIn("nm -C", script)
         self.assertIn("i2pr::i2pdinterop::Observe", script)
 
+    def test_i2pd_build_driver_uses_declared_ripgrep(self):
+        # Plan 100 D3: the observer proof must use a command
+        # declared by the workflow (``rg`` from the ``ripgrep``
+        # package). ``rtk`` is not a declared dependency and was
+        # observed silently missing on the runner. Drift back to
+        # ``rtk rg`` is a regression. The check ignores shell
+        # comments (``#``) so the docstring note about the
+        # replacement does not produce a false positive.
+        script_text = I2PD_BUILD_SCRIPT.read_text()
+        code_lines = [
+            line for line in script_text.splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        code_blob = "\n".join(code_lines)
+        self.assertNotRegex(
+            code_blob,
+            r"\brtk\s+rg\b",
+            "build-driver.sh must not invoke rtk rg (undeclared dependency)",
+        )
+        self.assertTrue(
+            any("rg -c" in line for line in code_lines),
+            "build-driver.sh must use rg -c to count observer references",
+        )
+        self.assertRegex(
+            code_blob,
+            r"command\s+-v\s+rg",
+            "build-driver.sh must guard on the presence of rg",
+        )
+
+    def test_i2pd_build_driver_enforces_hard_observer_invariants(self):
+        # Plan 100 D3: the observer proof must fail closed when
+        # the pristine archive carries observer references or when
+        # the instrumented archive carries none. Suppression forms
+        # (``|| true``, fallback text) cannot convert a missing
+        # observer reference into success.
+        script = I2PD_BUILD_SCRIPT.read_text()
+        self.assertIn("pristine_refs", script)
+        self.assertIn("instrumented_refs", script)
+        self.assertRegex(
+            script,
+            r'pristine_refs[^=]*!=\s*"0"',
+            "build-driver.sh must hard-assert pristine observer count == 0",
+        )
+        self.assertRegex(
+            script,
+            r"instrumented_refs[^<]*-lt\s+1",
+            "build-driver.sh must hard-assert instrumented observer count >= 1",
+        )
+
+    def test_i2pd_build_driver_requires_python3_for_tree_digest(self):
+        # Plan 100 D4: the divergent POSIX-shell tracked-tree
+        # digest fallback aggregated hexadecimal digest text instead
+        # of raw SHA-256 bytes. The active development lane requires
+        # Python 3, so the script must fail closed without it rather
+        # than silently producing a different byte encoding.
+        script = I2PD_BUILD_SCRIPT.read_text()
+        self.assertNotIn(
+            "POSIX fallback",
+            script,
+            "build-driver.sh must not retain the POSIX-shell tracked-tree digest fallback",
+        )
+        self.assertRegex(
+            script,
+            r"command\s+-v\s+python3",
+            "build-driver.sh must guard on python3 presence for the tracked-tree digest",
+        )
+
     def test_i2pd_build_driver_script_bounds_parallel_jobs(self):
         # Plan 095: the i2pd library compile phase can exceed the
         # GitHub-hosted ubuntu-24.04 runner's memory budget when

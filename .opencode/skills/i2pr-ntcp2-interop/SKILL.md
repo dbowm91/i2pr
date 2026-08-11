@@ -1,6 +1,6 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090/091/092/093/094/095 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, typed evidence validation, the Plan 085-088 host-loopback development execution roadmap, the Plan 090 i2pd RouterInfo and pre-TCP classification correction, the Plan 091 i2pd Noise-handshake preconditions, the Plan 092 forward-handshake evidence integrity (superseded by Plan 093), the Plan 093 Plan 087 forward data-phase and reference-observer closure, the Plan 094 Plan 093 completion pass and Plan 087 -> Plan 088 handoff, and the Plan 095 CI host-loopback live-wire evidence lane. Use when an agent is asked to run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, diagnose Plan 082-095 execution, or validate evidence. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090/091/092/093/094/095/099/100 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness, including host preflight, pinned Java I2P and i2pd preparation, isolated scenario execution, typed evidence validation, the Plan 085-088 host-loopback development execution roadmap (historical), the Plan 090 i2pd RouterInfo and pre-TCP classification correction, the Plan 091 i2pd Noise-handshake preconditions, the Plan 092 forward-handshake evidence integrity (superseded by Plan 093), the Plan 093 Plan 087 forward data-phase and reference-observer closure, the Plan 094 Plan 093 completion pass and Plan 087 -> Plan 088 handoff, the Plan 099 Milestone 3 interop exit and router buildout, and the Plan 100 one-time exit-gate cleanup and router handoff. Use when an agent is asked to run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, diagnose Plan 082-099 execution, or validate evidence. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
 # I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/081/082/083/084)
@@ -1678,46 +1678,49 @@ qualification record exists. See `plans/077-status.md` and ADR 0024.
 
 ## Plan 099 Milestone 3 interop exit, harness reduction, and router buildout (active)
 
-Plan 099 is the **active** corrective and exit plan from the
-multi-job CI/provenance expansion that consumed Plans 095–098. It
-corrects the central Plan 099 implementation finding — the
-instrumented i2pd transport libraries were never actually
-compiled from the patched source tree — and it freezes
-interoperability architecture growth. The build script now
-produces two separate i2pd archive sets
-(`I2PD_INSTRUMENTED_LIB_DIR` and `I2PD_PRISTINE_LIB_DIR`), and the
-pristine control driver uses native `Transports::SendMessage`,
-`Transports::IsConnected`, and `TransportSession::IsEstablished`
-instead of observer APIs the control build cannot emit. The
-development exit gate vocabulary is bounded to four values:
-`two-way-development-smoke-passed`, `forward-wire-defect`,
-`reverse-wire-defect`, `environment-or-build-blocked` (see
+Plan 099 is the corrective and exit plan from the multi-job
+CI/provenance expansion that consumed Plans 095–098. It corrects
+the central Plan 099 implementation finding — the instrumented
+i2pd transport libraries were never actually compiled from the
+patched source tree — and it freezes interoperability
+architecture growth. The build script now produces two separate
+i2pd archive sets (`I2PD_INSTRUMENTED_LIB_DIR` and
+`I2PD_PRISTINE_LIB_DIR`), and the pristine control driver uses
+native `Transports::SendMessage`, `Transports::IsConnected`, and
+`TransportSession::IsEstablished` instead of observer APIs the
+control build cannot emit.
+
+Plan 100 is the one-time active cleanup authority that repairs
+the Plan 099 exit-gate API/classification (D1, D2), hardens the
+i2pd observer proof (D3), and removes the divergent source-tree
+digest fallback (D4). The development exit gate vocabulary is
+bounded to three values: `passed`, `protocol-defect-localized`,
+`environment-or-harness-blocked` (see
 `tests/integration/ntcp2/harness/plan099_exit_gate.py`).
 
-After Plan 099:
+After Plan 100:
 
 ```text
-plan_099 = passed-pruning-and-exit
-plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
-plan_098 = passed-runner-provenance-boundary-correction (historical)
-plan_087 = open-pending-plan095-ci-forward-evidence-pair
-plan_088 = blocked-pending-plan095-ci-closure
-plan_079 = deferred-to-pre-activation-checkpoint
+plan_099 = implementation-landed-exit-cleanup-complete-pending-live-run
+plan_100 = exit-ready-awaiting-one-manual-run
+plan_095 = historical-superseded-by-plan099-single-job-lane
+plan_087 = historical-development-sequence-superseded-by-plan100
+plan_088 = historical-development-sequence-superseded-by-plan100
+plan_079 = deferred-to-pre-normal-ntcp2-activation-and-public-network-checkpoint
 plan_072 = inactive-pending-plan088-ambiguity
 ntcp2    = experimental-non-advertised
 normal_daemon_activation = disabled
-router_construction = next
+router_construction = authorized-after-plan100-outcome
 ```
 
-The Plan 099 active development interop surface is small and
-bounded:
+The active development interop surface is small and bounded:
 
 - `scripts/interop/run-minimal-i2pd-host-loopback-probe.py` —
   the only allowed entry point to live subprocess execution;
 - `tests/integration/ntcp2/harness/plan083_runner.py` and
   `plan084_runner.py` — the canonical forward/reverse runners;
-- `tests/integration/ntcp2/harness/preflight_runner.py` — the
-  listener-only preflight;
+- `tests/integration/ntcp2/harness/preflight_runner.py` —
+  the listener-only preflight;
 - `tests/integration/ntcp2/harness/i2pd_direct_driver.py`,
   `minimal_i2pd_probe.py`, `minimal_i2pd_reverse_probe.py`,
   `interop_topology.py`, `reference_event.py`,
@@ -1732,53 +1735,46 @@ bounded:
 - `scripts/check-ntcp2-interoperability.sh` — the trimmed
   static boundary check.
 
-Plan 099 forbids adding new `test_planNNN.py` files, new
+Plan 099/Plan 100 forbid adding new `test_planNNN.py` files, new
 plan-number-specific Python runners, or new plan-token static
 checks. Historical plan documents remain in `plans/` as audit
 records but are not executable API contracts.
 
-Plan 099 forbids repairing or retrying the Plan 046 rootless
-lane or the Plan 048/049/050 Multipass recovery lane.
+The active sequence forbids repairing or retrying the Plan 046
+rootless lane or the Plan 048/049/050 Multipass recovery lane.
 Multipass, Docker, public-network traffic, reseed, SAM, I2CP,
 SSU2, and Java I2P are not part of the development interop
 surface. A localized NTCP2 defect keeps NTCP2 disabled and
 non-advertised but does not block production daemon composition,
-RouterInfo publication architecture, NetDB storage/indexing,
-SU3 reseed parsing, or deterministic local state-machine tests.
-The next substantial plan after 099 addresses production router
-construction (daemon composition + RouterInfo/NetDB
-foundation), not another NTCP2 evidence framework plan.
+RouterInfo publication architecture, NetDB storage/indexing, SU3
+reseed parsing, or deterministic local state-machine tests.
 
-Required focused checks for Plan 099:
+Required focused checks for the active sequence:
 
 ```text
 cargo fmt --all --check
-cargo check --workspace --all-targets
-cargo test --workspace
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+cargo check --locked --workspace --all-targets
+cargo test --locked --workspace
 bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-fixture-manifest.sh
 bash scripts/check-ntcp2-vectors.sh
-python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_driver.py'
-python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_i2pd_direct_control.py'
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_minimal_i2pd_probe.py'
 git diff --check
 ```
 
-The Plan 099 focused local seam is sufficient for routine
-development. The full historical plan-specific Python matrix,
-rootless checker, Multipass checker, and release-certificate
-validator are not required for Plan 099 closure; they remain
-available via git history for forensic archaeology.
+The focused local seam is sufficient for routine development.
+The full historical plan-specific Python matrix, rootless checker,
+Multipass checker, and release-certificate validator are not
+required for Plan 100 closure; they remain available via git
+history for forensic archaeology.
 
-The Plan 099 wrapper requires an explicit `--i2pr-binary` path
-for every attempted-live path (preflight, forward, reverse). The
-Plan 099 CI workflow runs build and execute in a single
-`ubuntu-24.04` job with no cross-job binary artifact transfer.
-Plan 095 remains the single next executable plan; exactly one
-manual Plan 095 GitHub Actions dispatch follows the Plan 099
+The wrapper requires an explicit `--i2pr-binary` path for every
+attempted-live path (preflight, forward, reverse). The CI workflow
+runs build and execute in a single `ubuntu-24.04` job with no
+cross-job binary artifact transfer. Plan 095 is historical; the
+single next executable plan is the bounded manual Plan 099
+GitHub Actions dispatch, which executes after the Plan 100
 correction commit.

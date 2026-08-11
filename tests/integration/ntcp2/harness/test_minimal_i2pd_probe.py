@@ -667,60 +667,265 @@ class CanonicalDigestTests(unittest.TestCase):
 
 
 class Plan099ExitGateTests(unittest.TestCase):
-    """Plan 099 WP4: the development exit gate vocabulary is bounded
-    to four values. A two-way development smoke pass requires all
-    four per-attempt records to carry ``terminal_result = passed``
-    and ``cleanup_result = clean``. Any other combination collapses
-    to one of the three typed blocker values.
+    """Plan 100 WP2/WP3: the development exit gate vocabulary is
+    bounded to three values, and the classifier is stage-aware so
+    the workflow's sequential gating does not misclassify a real
+    post-TCP protocol defect as an environment/harness blocker.
+
+    - ``passed`` -- all four executed per-attempt records carry
+      ``terminal_result = passed`` and ``cleanup_result = clean``.
+    - ``protocol-defect-localized`` -- at least one executed
+      primary attempt reached ``tcp_connected`` or any later wire
+      stage and then failed before the correlated DeliveryStatus
+      pass. A skipped downstream attempt cannot erase that
+      classification.
+    - ``environment-or-harness-blocked`` -- the earliest
+      nonpassing path is a pre-TCP preparation, build, reference
+      startup, or workflow/API failure.
     """
 
-    def _passed(self) -> dict[str, object]:
-        return {"terminal_result": "passed", "cleanup_result": "clean"}
-
-    def _blocked(self) -> dict[str, object]:
+    def _passed(self, stage: str = "i2np_delivery_status_decoded") -> dict[str, object]:
         return {
-            "terminal_result": "environment-or-build-blocked",
+            "terminal_result": "passed",
+            "cleanup_result": "clean",
+            "highest_stage_reached": stage,
+        }
+
+    def _skipped(self) -> dict[str, object]:
+        return {
+            "present": False,
+            "terminal_result": "environment-or-harness-blocked",
             "cleanup_result": "not-run",
         }
 
-    def _rejected(self) -> dict[str, object]:
-        return {"terminal_result": "protocol_rejected", "cleanup_result": "forced"}
+    def _blocked_pre_tcp(self) -> dict[str, object]:
+        return {
+            "terminal_result": "pre_protocol_rejected",
+            "cleanup_result": "not-run",
+            "highest_stage_reached": "state_prepared",
+            "reason_code": "pre-protocol-preparation-failed",
+        }
 
-    def test_all_pass_yields_two_way(self) -> None:
-        from plan099_exit_gate import TWO_WAY, classify_exit_result
+    def _rejected_post_tcp(self) -> dict[str, object]:
+        return {
+            "terminal_result": "protocol_rejected",
+            "cleanup_result": "forced",
+            "highest_stage_reached": "tcp_connected",
+            "reason_code": "noise-session-request-rejected",
+        }
+
+    def test_all_pass_yields_passed(self) -> None:
+        from plan099_exit_gate import PASSED, classify_exit_result
         self.assertEqual(
             classify_exit_result(
                 self._passed(), self._passed(), self._passed(), self._passed()
             ),
-            TWO_WAY,
+            PASSED,
         )
 
-    def test_forward_defect_yields_forward_wire_defect(self) -> None:
-        from plan099_exit_gate import FORWARD_DEFECT, classify_exit_result
+    def test_forward_pre_tcp_failure_with_skipped_downstream_yields_blocked(
+        self,
+    ) -> None:
+        from plan099_exit_gate import (
+            ENVIRONMENT_OR_HARNESS_BLOCKED,
+            classify_exit_result,
+        )
         self.assertEqual(
             classify_exit_result(
-                self._rejected(), self._passed(), self._passed(), self._passed()
+                self._blocked_pre_tcp(),
+                self._skipped(),
+                self._skipped(),
+                self._skipped(),
             ),
-            FORWARD_DEFECT,
+            ENVIRONMENT_OR_HARNESS_BLOCKED,
         )
 
-    def test_reverse_defect_yields_reverse_wire_defect(self) -> None:
-        from plan099_exit_gate import REVERSE_DEFECT, classify_exit_result
+    def test_forward_post_tcp_failure_with_skipped_downstream_yields_protocol_defect(
+        self,
+    ) -> None:
+        from plan099_exit_gate import PROTOCOL_DEFECT_LOCALIZED, classify_exit_result
         self.assertEqual(
             classify_exit_result(
-                self._passed(), self._passed(), self._rejected(), self._passed()
+                self._rejected_post_tcp(),
+                self._skipped(),
+                self._skipped(),
+                self._skipped(),
             ),
-            REVERSE_DEFECT,
+            PROTOCOL_DEFECT_LOCALIZED,
         )
 
-    def test_both_defects_yield_blocked(self) -> None:
-        from plan099_exit_gate import BLOCKED, classify_exit_result
+    def test_forward_pair_passes_reverse_pre_tcp_failure_yields_blocked(
+        self,
+    ) -> None:
+        from plan099_exit_gate import (
+            ENVIRONMENT_OR_HARNESS_BLOCKED,
+            classify_exit_result,
+        )
         self.assertEqual(
             classify_exit_result(
-                self._blocked(), self._passed(), self._blocked(), self._passed()
+                self._passed(),
+                self._passed(),
+                self._blocked_pre_tcp(),
+                self._skipped(),
             ),
-            BLOCKED,
+            ENVIRONMENT_OR_HARNESS_BLOCKED,
         )
+
+    def test_forward_pair_passes_reverse_post_tcp_failure_yields_protocol_defect(
+        self,
+    ) -> None:
+        from plan099_exit_gate import PROTOCOL_DEFECT_LOCALIZED, classify_exit_result
+        self.assertEqual(
+            classify_exit_result(
+                self._passed(),
+                self._passed(),
+                self._rejected_post_tcp(),
+                self._skipped(),
+            ),
+            PROTOCOL_DEFECT_LOCALIZED,
+        )
+
+    def test_malformed_record_fails_closed(self) -> None:
+        from plan099_exit_gate import (
+            ENVIRONMENT_OR_HARNESS_BLOCKED,
+            classify_exit_result,
+        )
+        self.assertEqual(
+            classify_exit_result(None, None, None, None),
+            ENVIRONMENT_OR_HARNESS_BLOCKED,
+        )
+
+    def test_skipped_attempts_cannot_mask_protocol_defect(self) -> None:
+        from plan099_exit_gate import PROTOCOL_DEFECT_LOCALIZED, classify_exit_result
+        self.assertEqual(
+            classify_exit_result(
+                self._passed(),
+                self._passed(),
+                self._rejected_post_tcp(),
+                self._skipped(),
+            ),
+            PROTOCOL_DEFECT_LOCALIZED,
+        )
+        self.assertEqual(
+            classify_exit_result(
+                self._rejected_post_tcp(),
+                self._passed(),
+                self._skipped(),
+                self._skipped(),
+            ),
+            PROTOCOL_DEFECT_LOCALIZED,
+        )
+
+    def test_summary_digest_validation_round_trips(self) -> None:
+        from plan099_exit_gate import (
+            ATTEMPT_SLOTS,
+            SCHEMA,
+            build_summary,
+            canonical_summary_digest,
+            validate_summary,
+        )
+        records = {
+            ATTEMPT_SLOTS[0]: self._passed(),
+            ATTEMPT_SLOTS[1]: self._passed(),
+            ATTEMPT_SLOTS[2]: self._passed(),
+            ATTEMPT_SLOTS[3]: self._passed(),
+        }
+        summary = build_summary(
+            workflow_run_id="plan099-round-trip",
+            workflow_run_attempt=1,
+            source_commit="a" * 40,
+            runner_label="ubuntu-24.04",
+            runner_arch="x86_64",
+            reference_revision="f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e",
+            topology_kind="host-loopback-development",
+            network_id=99,
+            bind_address="127.0.0.1",
+            development_only=True,
+            release_qualified=False,
+            isolation_qualified=False,
+            i2pr_binary_sha256="1" * 64,
+            i2pd_instrumented_binary_sha256="2" * 64,
+            i2pd_control_binary_sha256="3" * 64,
+            forward_instrumented=self._passed(),
+            forward_control=self._passed(),
+            reverse_instrumented=self._passed(),
+            reverse_control=self._passed(),
+            ntcp2="experimental-non-advertised",
+            attempt_records=records,
+        )
+        self.assertEqual(summary["schema"], SCHEMA)
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(summary["ntcp2"], "experimental-non-advertised")
+        validate_summary(summary)
+        self.assertEqual(summary["summary_sha256"], canonical_summary_digest(summary))
+
+    def test_workflow_facing_constants_are_exposed(self) -> None:
+        import plan099_exit_gate
+        for name in (
+            "ATTEMPT_SLOTS",
+            "ENVIRONMENT_OR_HARNESS_BLOCKED",
+            "PASSED_CLEANUP_RESULT",
+            "PASSED_TERMINAL_RESULT",
+            "PROTOCOL_DEFECT_LOCALIZED",
+            "PASSED",
+            "DEVELOPMENT_RESULT_VALUES",
+            "PROTOCOL_STAGE_THRESHOLD",
+        ):
+            self.assertTrue(
+                hasattr(plan099_exit_gate, name),
+                f"plan099_exit_gate must expose {name}",
+            )
+        self.assertEqual(
+            plan099_exit_gate.ENVIRONMENT_OR_HARNESS_BLOCKED,
+            "environment-or-harness-blocked",
+        )
+        self.assertEqual(
+            plan099_exit_gate.PROTOCOL_DEFECT_LOCALIZED,
+            "protocol-defect-localized",
+        )
+        self.assertEqual(plan099_exit_gate.PASSED, "passed")
+        self.assertEqual(plan099_exit_gate.PASSED_TERMINAL_RESULT, "passed")
+        self.assertEqual(plan099_exit_gate.PASSED_CLEANUP_RESULT, "clean")
+        self.assertEqual(
+            plan099_exit_gate.PROTOCOL_STAGE_THRESHOLD,
+            "tcp_connected",
+        )
+        self.assertEqual(len(plan099_exit_gate.ATTEMPT_SLOTS), 4)
+        self.assertEqual(
+            set(plan099_exit_gate.DEVELOPMENT_RESULT_VALUES),
+            {
+                "passed",
+                "protocol-defect-localized",
+                "environment-or-harness-blocked",
+            },
+        )
+
+    def test_build_summary_rejects_unknown_keyword(self) -> None:
+        import plan099_exit_gate
+        with self.assertRaises(TypeError):
+            plan099_exit_gate.build_summary(
+                workflow_run_id="r",
+                workflow_run_attempt=1,
+                source_commit="a" * 40,
+                runner_label="ubuntu-24.04",
+                runner_arch="x86_64",
+                reference_revision="f" * 40,
+                topology_kind="host-loopback-development",
+                network_id=99,
+                bind_address="127.0.0.1",
+                development_only=True,
+                release_qualified=False,
+                isolation_qualified=False,
+                i2pr_binary_sha256="1" * 64,
+                i2pd_instrumented_binary_sha256="2" * 64,
+                i2pd_control_binary_sha256="3" * 64,
+                forward_instrumented=self._passed(),
+                forward_control=self._passed(),
+                reverse_instrumented=self._passed(),
+                reverse_control=self._passed(),
+                ntcp2_status="experimental-non-advertised",
+                attempt_records={},
+            )
 
     def test_build_and_validate_round_trip(self) -> None:
         from plan099_exit_gate import build_summary, validate_summary
@@ -745,11 +950,11 @@ class Plan099ExitGateTests(unittest.TestCase):
             forward_control=self._passed(),
             reverse_instrumented=self._passed(),
             reverse_control=self._passed(),
-            ntcp2_status="experimental-non-advertised",
+            ntcp2="experimental-non-advertised",
             attempt_records={},
         )
         validate_summary(summary)
-        self.assertEqual(summary["status"], "two-way-development-smoke-passed")
+        self.assertEqual(summary["status"], "passed")
 
 
 if __name__ == "__main__":

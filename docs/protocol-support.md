@@ -553,33 +553,37 @@ runner/provenance failure with no TCP or NTCP2 wire conclusion.
 ### Plan 099 Milestone 3 interop exit, harness reduction, and router buildout
 
 [Plan 099](../plans/099-ntcp2-interop-exit-harness-simplification-and-router-build-unblock.md)
-is the active corrective and exit plan from the multi-job
-CI/provenance expansion. It corrects the central Plan 099
-implementation finding — the instrumented i2pd transport libraries
-were never actually compiled from the patched source tree — and it
-freezes interoperability architecture growth. The build script
-now produces two separate i2pd archive sets
-(`I2PD_INSTRUMENTED_LIB_DIR` and `I2PD_PRISTINE_LIB_DIR`), and the
-pristine control driver uses native `Transports::SendMessage`,
-`Transports::IsConnected`, and `TransportSession::IsEstablished`
-instead of observer APIs the control build cannot emit. The
-development exit gate vocabulary is bounded to four values:
-`two-way-development-smoke-passed`, `forward-wire-defect`,
-`reverse-wire-defect`, `environment-or-build-blocked`.
+is the corrective and exit plan from the multi-job CI/provenance
+expansion. It corrects the central Plan 099 implementation finding
+— the instrumented i2pd transport libraries were never actually
+compiled from the patched source tree — and it freezes
+interoperability architecture growth. The build script now produces
+two separate i2pd archive sets (`I2PD_INSTRUMENTED_LIB_DIR` and
+`I2PD_PRISTINE_LIB_DIR`), and the pristine control driver uses
+native `Transports::SendMessage`, `Transports::IsConnected`, and
+`TransportSession::IsEstablished` instead of observer APIs the
+control build cannot emit. The development exit gate vocabulary is
+bounded to three values: `passed`, `protocol-defect-localized`,
+`environment-or-harness-blocked`.
 
-After Plan 099:
+[Plan 100](../plans/100-plan099-exit-gate-cleanup-and-router-handoff.md)
+is the one-time active cleanup authority that repairs the exit gate
+(D1, D2), hardens the i2pd observer proof (D3), and removes the
+divergent source-tree digest fallback (D4).
+
+After Plan 100:
 
 ```text
-plan_099 = passed-pruning-and-exit
-plan_095 = ci-live-wire-lane-corrected-awaiting-one-authoritative-run
-plan_098 = passed-runner-provenance-boundary-correction (historical)
-plan_087 = open-pending-plan095-ci-forward-evidence-pair
-plan_088 = blocked-pending-plan095-ci-closure
-plan_079 = deferred-to-pre-activation-checkpoint
+plan_099 = implementation-landed-exit-cleanup-complete-pending-live-run
+plan_100 = exit-ready-awaiting-one-manual-run
+plan_095 = historical-superseded-by-plan099-single-job-lane
+plan_087 = historical-development-sequence-superseded-by-plan100
+plan_088 = historical-development-sequence-superseded-by-plan100
+plan_079 = deferred-to-pre-normal-ntcp2-activation-and-public-network-checkpoint
 plan_072 = inactive-pending-plan088-ambiguity
 ntcp2    = experimental-non-advertised
 normal_daemon_activation = disabled
-router_construction = next
+router_construction = authorized-after-plan100-outcome
 ```
 
 Plan 099 deleted all Plan 052–098 plan-number-specific Python test
@@ -597,15 +601,16 @@ exists, and functional interop tests exist). The
 `scripts/check-plan095-workflow.sh` and
 `scripts/check-ntcp2-loopback-smoke-boundary.sh` scripts were
 removed entirely. The CI workflow file was reduced from 988 lines
-to 398 lines and now performs build and execute in the same fresh
-job with no cross-job binary artifact transfer. The i2pd driver
-build script now produces two separate instrumented and pristine
-archive sets, the driver CMake consumes them through explicit
-`I2PD_INSTRUMENTED_LIB_DIR` and `I2PD_PRISTINE_LIB_DIR` variables,
-and `nm -C` proves the instrumented archive references the
-observer API while the pristine archive does not.
+to a single `development-interop` job and now performs build and
+execute in the same fresh job with no cross-job binary artifact
+transfer. The i2pd driver build script now produces two separate
+instrumented and pristine archive sets, the driver CMake consumes
+them through explicit `I2PD_INSTRUMENTED_LIB_DIR` and
+`I2PD_PRISTINE_LIB_DIR` variables, and Plan 100 D3 hard-asserts
+that the pristine archive carries exactly zero observer references
+and the instrumented archive carries at least one.
 
-Plan 099 does not enable NTCP2 in normal daemon operation, does not
+Plan 100 does not enable NTCP2 in normal daemon operation, does not
 advertise NTCP2 in production RouterInfo, does not depend on NTCP2
 for real NetDB peer exchange, and does not authorize public-network
 bootstrap. Plan 079's 3/3 repeated-direction validation campaign is

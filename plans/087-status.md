@@ -1,5 +1,27 @@
 # Plan 087 status: first real i2pr-to-i2pd host-loopback probe
 
+## Active correction — Plan 100 supersession (2026-08-11)
+
+Plan 099/Plan 100 supersede Plan 087's Plan 095 sequencing for
+active execution. The single Plan 099 one-job workflow now owns
+both directions and both control comparisons in one run.
+
+```text
+plan_087 = historical-development-sequence-superseded-by-plan100
+plan_088 = historical-development-sequence-superseded-by-plan100
+plan_079 = deferred-to-pre-normal-ntcp2-activation-and-public-network-checkpoint
+plan_095 = historical-superseded-by-plan099-single-job-lane
+plan_099 = implementation-landed-exit-cleanup-complete-pending-live-run
+plan_100 = exit-ready-awaiting-one-manual-run
+ntcp2    = experimental-non-advertised
+```
+
+Plan 087's runner architecture, host-loopback-development lane
+contract, and bounded record schema are preserved as the historical
+audit record below. The active development result comes from the
+Plan 099 one-job forward/reverse matrix; the Plan 087 forward and
+reverse runners travel with the repository unchanged.
+
 ## Status
 
 The Plan 087 instrumented forward direction did **not** pass. The

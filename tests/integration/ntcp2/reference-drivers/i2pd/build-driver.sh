@@ -141,12 +141,16 @@ fi
 # ``git ls-files -z`` (excluding the ``.git`` administrative tree)
 # and hashes each tracked file's bytes; the digests are
 # concatenated in stable git order with a single NUL separator
-# before the final SHA-256 is computed. Drift between the
-# workflow, the build script, and the wrapper would break the
-# cross-reference identity, so the same Python helper may be
-# reused from the wrapper when available.
-if command -v python3 >/dev/null 2>&1; then
-    PRISTINE_TREE_SHA="$(python3 -c '
+# before the final SHA-256 is computed. Plan 100 D4 removes the
+# divergent POSIX-shell fallback because the active development
+# lane requires Python 3 (used elsewhere in the build script) and
+# the shell encoding aggregated hexadecimal digest text rather
+# than raw SHA-256 bytes.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "build-driver.sh: python3 is required for the tracked-tree digest" >&2
+    exit 64
+fi
+PRISTINE_TREE_SHA="$(python3 -c '
 import hashlib, subprocess, sys
 tree = sys.argv[1]
 out = subprocess.run(
@@ -168,18 +172,6 @@ for entry in out.split(b"\x00"):
         pass
 print(hashlib.sha256(bytes(stream)).hexdigest())
 ' "$I2PD_SOURCE_DIR")"
-else
-    # POSIX fallback: enumerate tracked paths via git, hash each
-    # file's bytes, aggregate a single SHA-256. The fallback is
-    # slower but keeps the algorithm deterministic across hosts.
-    PRISTINE_TREE_SHA="$(cd "$I2PD_SOURCE_DIR" && git ls-files -z | tr '\0' '\n' \
-        | while IFS= read -r path; do
-            printf '%s\0' "$path"
-            sha256sum "$path" | awk '{printf "%s\0", $1}'
-          done \
-        | sha256sum \
-        | awk '{print $1}')"
-fi
 SOURCE_LOCK_SHA="$(sha256sum "$SOURCE_LOCK" | awk '{print $1}')"
 OBSERVER_PATCH_SHA="$(sha256sum "$OBSERVER_PATCH" | awk '{print $1}')"
 HELPER_SOURCE_SHA="$(sha256sum "$HELPER_SOURCE" | awk '{print $1}')"
@@ -259,42 +251,64 @@ fi
 # static archives and shows whether the i2pd NTCP2 transport object
 # references the i2pr observer API. The pristine NTCP2 object must
 # carry no such reference; the instrumented NTCP2 object must carry
-# them.
+# them. Plan 100 D3 replaces ``rtk rg`` (an undeclared command)
+# with plain ``rg`` from the workflow's installed ``ripgrep``
+# package, and adds hard assertions on the reference counts so a
+# missing observer is treated as a build failure rather than a
+# benign fallback.
+if ! command -v rg >/dev/null 2>&1; then
+    echo "build-driver.sh: rg (ripgrep) is required for the observer proof" >&2
+    exit 64
+fi
+if ! command -v nm >/dev/null 2>&1; then
+    echo "build-driver.sh: nm is required for the observer proof" >&2
+    exit 64
+fi
+
+pristine_refs="$(nm -C "$PRISTINE_LIB_BUILD/libi2pd.a" 2>/dev/null \
+    | rg -c 'i2pr::i2pdinterop::Observe' || true)"
+instrumented_refs="$(nm -C "$INSTRUMENTED_LIB_BUILD/libi2pd.a" 2>/dev/null \
+    | rg -c 'i2pr::i2pdinterop::Observe' || true)"
+pristine_ntcp2="$(find "$PRISTINE_LIB_BUILD" -name 'NTCP2.cpp.o' -path '*/CMakeFiles/libi2pd.dir/*' 2>/dev/null | head -n1)"
+instrumented_ntcp2="$(find "$INSTRUMENTED_LIB_BUILD" -name 'NTCP2.cpp.o' -path '*/CMakeFiles/libi2pd.dir/*' 2>/dev/null | head -n1)"
+
+# Plan 100 WP4: hard invariants. A build that violates either
+# invariant fails closed. Suppression forms (``|| true``, fallback
+# text) cannot convert a missing observer reference into success.
+if [[ "${pristine_refs:-0}" != "0" ]]; then
+    echo "build-driver.sh: pristine libi2pd.a carries $pristine_refs observer references; expected 0" >&2
+    exit 64
+fi
+if [[ "${instrumented_refs:-0}" -lt 1 ]]; then
+    echo "build-driver.sh: instrumented libi2pd.a carries $instrumented_refs observer references; expected >= 1" >&2
+    exit 64
+fi
+
 PROOF_PATH="$OUTPUT_DIR/object-level-proof.txt"
 {
     echo "# Plan 099 i2pd direct driver object-level proof"
     echo "# generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo
-    echo "# pristine i2pd libi2pd.a: i2pr::i2pdinterop::Observe* references (must be empty)"
-    if command -v nm >/dev/null 2>&1; then
-        nm -C "$PRISTINE_LIB_BUILD/libi2pd.a" 2>/dev/null \
-            | rtk rg 'i2pr::i2pdinterop::Observe' || true
-    else
-        echo "(nm not available)"
-    fi
+    echo "# pristine i2pd libi2pd.a: i2pr::i2pdinterop::Observe* references (must be 0)"
+    nm -C "$PRISTINE_LIB_BUILD/libi2pd.a" 2>/dev/null \
+        | rg 'i2pr::i2pdinterop::Observe' || true
     echo
-    echo "# instrumented i2pd libi2pd.a: i2pr::i2pdinterop::Observe* references (must be non-empty)"
-    if command -v nm >/dev/null 2>&1; then
-        nm -C "$INSTRUMENTED_LIB_BUILD/libi2pd.a" 2>/dev/null \
-            | rtk rg 'i2pr::i2pdinterop::Observe' || true
-    else
-        echo "(nm not available)"
-    fi
+    echo "# instrumented i2pd libi2pd.a: i2pr::i2pdinterop::Observe* references (must be > 0)"
+    nm -C "$INSTRUMENTED_LIB_BUILD/libi2pd.a" 2>/dev/null \
+        | rg 'i2pr::i2pdinterop::Observe' || true
     echo
     echo "# pristine NTCP2.o object (must be empty):"
-    pristine_ntcp2="$(find "$PRISTINE_LIB_BUILD" -name 'NTCP2.cpp.o' -path '*/CMakeFiles/libi2pd.dir/*' 2>/dev/null | head -n1)"
     if [[ -n "$pristine_ntcp2" && -f "$pristine_ntcp2" ]]; then
         nm -C "$pristine_ntcp2" 2>/dev/null \
-            | rtk rg 'i2pr::i2pdinterop::Observe' || echo "(none)"
+            | rg 'i2pr::i2pdinterop::Observe' || echo "(none)"
     else
         echo "(NTCP2.cpp.o not found in pristine build)"
     fi
     echo
     echo "# instrumented NTCP2.cpp.o object (must reference i2pr::i2pdinterop::Observe*):"
-    instrumented_ntcp2="$(find "$INSTRUMENTED_LIB_BUILD" -name 'NTCP2.cpp.o' -path '*/CMakeFiles/libi2pd.dir/*' 2>/dev/null | head -n1)"
     if [[ -n "$instrumented_ntcp2" && -f "$instrumented_ntcp2" ]]; then
         nm -C "$instrumented_ntcp2" 2>/dev/null \
-            | rtk rg 'i2pr::i2pdinterop::Observe' || echo "(none)"
+            | rg 'i2pr::i2pdinterop::Observe' || echo "(none)"
     else
         echo "(NTCP2.cpp.o not found in instrumented build)"
     fi

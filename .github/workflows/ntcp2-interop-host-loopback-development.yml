@@ -253,11 +253,9 @@ jobs:
 
           from plan099_exit_gate import (  # noqa: E402
               ATTEMPT_SLOTS,
-              ENVIRONMENT_OR_BUILD_BLOCKED,
-              PASSED_CLEANUP_RESULT,
-              PASSED_TERMINAL_RESULT,
+              ENVIRONMENT_OR_HARNESS_BLOCKED,
+              PROTOCOL_STAGE_THRESHOLD,
               build_summary,
-              classify_exit_result,
               validate_summary,
           )
 
