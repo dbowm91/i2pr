@@ -54,7 +54,7 @@ jobs:
       PLAN099_NETWORK_ID: "99"
     steps:
       - name: checkout
-        uses: actions/checkout@v4.1.7
+        uses: actions/checkout@v7
 
       - name: rust-toolchain
         uses: dtolnay/rust-toolchain@1.95.0
