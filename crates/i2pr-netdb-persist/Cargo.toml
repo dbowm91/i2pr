@@ -1,0 +1,27 @@
+[package]
+name = "i2pr-netdb-persist"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Composition owner for the Plan 104 NetDB cache loader and SU3 reseed ingestion"
+publish = false
+
+[dependencies]
+i2pr-crypto = { path = "../i2pr-crypto" }
+i2pr-netdb = { path = "../i2pr-netdb" }
+i2pr-proto = { path = "../i2pr-proto" }
+i2pr-storage = { path = "../i2pr-storage" }
+thiserror.workspace = true
+
+[dev-dependencies]
+i2pr-crypto = { path = "../i2pr-crypto" }
+i2pr-netdb = { path = "../i2pr-netdb" }
+i2pr-proto = { path = "../i2pr-proto" }
+i2pr-storage = { path = "../i2pr-storage" }
+rand_chacha.workspace = true
+rand_core.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

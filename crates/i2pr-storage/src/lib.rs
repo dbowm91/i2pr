@@ -1,10 +1,17 @@
-//! Permission-hardened persistence for the local router identity.
+//! Permission-hardened persistence for the local router identity and the
+//! bounded raw-byte cache seam used by the Plan 104 NetDB composition
+//! owner.
 //!
-//! The format is intentionally independent of Rust layout and serde. Version
-//! 1 stores the two private seeds, their derived public keys, algorithm IDs,
-//! fixed lengths, and a SHA-256 integrity value. It is not encrypted at rest;
-//! filesystem permissions and operator backup handling are the Milestone 1
-//! threat-model boundary.
+//! The identity format is intentionally independent of Rust layout and serde.
+//! Version 2 stores the two private seeds, their derived public keys,
+//! algorithm IDs, fixed lengths, and a SHA-256 integrity value. It is not
+//! encrypted at rest; filesystem permissions and operator backup handling
+//! are the Milestone 1 threat-model boundary.
+//!
+//! The Plan 104 cache seam is deliberately byte-level: it does not know
+//! about RouterInfo, ZIP, SU3, or the NetDB store. The composition owner
+//! decodes bytes, validates them through `i2pr-netdb`, and then asks this
+//! seam to atomically write or remove the canonical bytes.
 
 #![forbid(unsafe_code)]
 
@@ -378,6 +385,357 @@ pub fn decode_transport_static_key(
         });
     }
     decode_ntcp2_transport_key(bytes)
+}
+
+/// Plan 104 raw-byte cache seam.
+///
+/// The cache is byte-level and knows nothing about RouterInfo, ZIP, SU3,
+/// or the NetDB store. It enforces:
+///
+/// - directory layout (`<root>/netdb/routers/` for RouterInfo entries;
+///   `<root>/netdb/routers/pending/` and similar for staged temporaries);
+/// - filename hygiene (lowercase hex / percent-encoded / single-segment
+///   name);
+/// - bounded per-file and aggregate scan budgets;
+/// - atomic replace via same-directory temporary + `hard_link` install;
+/// - no symlinks anywhere along the path.
+///
+/// The composition owner in `i2pr-netdb-persist` decodes bytes, validates
+/// them through `i2pr-netdb`, and then asks this seam to persist or
+/// remove them. The cache never claims trust over the bytes it stores.
+pub mod cache_seam {
+    use std::fs::{self, File};
+    use std::io::{self, Read, Write};
+    use std::path::{Path, PathBuf};
+
+    use super::{StorageError, create_temporary_file, ensure_secure_directory, sync_directory};
+
+    /// Subdirectory under the router data dir that holds RouterInfo bytes.
+    pub const ROUTERS_SUBDIR: &str = "netdb/routers";
+
+    /// Subdirectory used as the staging area for atomic-replace temporaries.
+    pub const PENDING_SUBDIR: &str = "netdb/routers/.pending";
+
+    /// The Plan 104 single-file byte ceiling for a cached record.
+    ///
+    /// 64 KiB comfortably exceeds the Plan 103 validator ceiling
+    /// (`DEFAULT_MAX_ENCODED_LEN = 16 KiB`) while remaining small enough
+    /// to refuse obviously malicious files without reading them.
+    pub const MAX_CACHE_FILE_BYTES: usize = 64 * 1024;
+
+    /// The Plan 104 aggregate byte ceiling accepted during one cache
+    /// scan. The loader stops incrementing aggregate accounting once
+    /// this bound is reached.
+    pub const MAX_CACHE_SCAN_BYTES: u64 = 32 * 1024 * 1024;
+
+    /// The Plan 104 entry-count ceiling accepted during one cache
+    /// scan. The loader stops reading directory entries once this bound
+    /// is reached.
+    pub const MAX_CACHE_SCAN_ENTRIES: usize = 16 * 1024;
+
+    /// Errors emitted by the raw-byte cache seam.
+    #[derive(Debug, thiserror::Error)]
+    pub enum CacheError {
+        /// A filesystem operation failed; the operation tag is included
+        /// for diagnostics and the underlying `io::Error` for typed
+        /// inspection.
+        #[error("cache {operation} failed: {source}")]
+        Io {
+            /// Static filesystem operation category.
+            operation: &'static str,
+            /// Underlying operating-system error.
+            #[source]
+            source: io::Error,
+        },
+        /// The requested path traversed a symlink or another unsafe
+        /// filesystem object.
+        #[error("cache path is not a regular non-symlink path")]
+        UnsafePath,
+        /// A cache filename was not a 64-character lowercase hex string.
+        #[error("cache filename {name} is not 64 lowercase hex characters")]
+        InvalidFilename {
+            /// The offending filename.
+            name: String,
+        },
+        /// A cache file exceeded the Plan 104 per-file byte ceiling.
+        #[error("cache file {path} exceeds {maximum} bytes")]
+        FileTooLarge {
+            /// Path to the offending file.
+            path: PathBuf,
+            /// Plan 104 single-file ceiling.
+            maximum: usize,
+        },
+        /// A cache scan exceeded the Plan 104 aggregate byte ceiling.
+        #[error("cache scan exceeded {maximum} bytes")]
+        ScanBudgetExceeded {
+            /// Plan 104 aggregate ceiling.
+            maximum: u64,
+        },
+        /// A cache scan exceeded the Plan 104 entry-count ceiling.
+        #[error("cache scan exceeded {maximum} entries")]
+        ScanEntriesExceeded {
+            /// Plan 104 entry-count ceiling.
+            maximum: usize,
+        },
+        /// The caller requested atomic replace but the source bytes
+        /// were empty.
+        #[error("cache write rejected: zero-byte payload")]
+        EmptyPayload,
+    }
+
+    impl From<CacheError> for StorageError {
+        fn from(error: CacheError) -> Self {
+            match error {
+                CacheError::Io { operation, source } => StorageError::Io { operation, source },
+                // The remaining variants are domain-specific and have no
+                // direct identity-storage mapping; surface them through
+                // the identity-storage Io surface with a stable label so
+                // callers can distinguish them while reusing the same
+                // error type.
+                other => StorageError::Io {
+                    operation: "netdb cache",
+                    source: io::Error::other(other.to_string()),
+                },
+            }
+        }
+    }
+
+    /// A bounded cache directory rooted at the router data directory.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct ByteCache {
+        root: PathBuf,
+    }
+
+    impl ByteCache {
+        /// Returns the cache rooted at the supplied router data
+        /// directory. The directory itself is not created until the
+        /// caller invokes a write or scan operation.
+        pub fn in_data_dir(data_dir: &Path) -> Self {
+            Self {
+                root: data_dir.join(ROUTERS_SUBDIR),
+            }
+        }
+
+        /// Returns the underlying cache root.
+        pub fn root(&self) -> &Path {
+            &self.root
+        }
+
+        /// Returns the staging directory used for atomic replace
+        /// temporaries.
+        pub fn pending_dir(&self) -> PathBuf {
+            self.root
+                .join(PENDING_SUBDIR.trim_start_matches("netdb/routers/"))
+        }
+
+        /// Returns `true` if the cache root already exists on disk.
+        pub fn exists(&self) -> bool {
+            self.root.exists()
+        }
+
+        /// Ensures both the cache root and the staging directory exist
+        /// with `0o700` permissions.
+        pub fn prepare(&self) -> Result<(), CacheError> {
+            ensure_secure_directory(&self.root).map_err(map_storage)?;
+            ensure_secure_directory(&self.pending_dir()).map_err(map_storage)?;
+            Ok(())
+        }
+
+        /// Validates a filename is exactly 64 lowercase hex characters.
+        pub fn validate_name(name: &str) -> Result<(), CacheError> {
+            if name.len() != 64 {
+                return Err(CacheError::InvalidFilename {
+                    name: name.to_owned(),
+                });
+            }
+            for byte in name.bytes() {
+                match byte {
+                    b'0'..=b'9' | b'a'..=b'f' => {}
+                    _ => {
+                        return Err(CacheError::InvalidFilename {
+                            name: name.to_owned(),
+                        });
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        /// Resolves a validated filename to its full path under the
+        /// cache root.
+        pub fn path_for(&self, name: &str) -> Result<PathBuf, CacheError> {
+            Self::validate_name(name)?;
+            Ok(self.root.join(name))
+        }
+
+        /// Writes `bytes` to the cache under `name` atomically.
+        ///
+        /// The seam refuses zero-byte payloads. On success, the previous
+        /// file (if any) is replaced via same-directory temporary +
+        /// `hard_link` install so a concurrent reader cannot observe a
+        /// half-written record. On failure, the temporary is removed and
+        /// any prior valid file is preserved.
+        pub fn write(&self, name: &str, bytes: &[u8]) -> Result<(), CacheError> {
+            if bytes.is_empty() {
+                return Err(CacheError::EmptyPayload);
+            }
+            if bytes.len() > MAX_CACHE_FILE_BYTES {
+                return Err(CacheError::FileTooLarge {
+                    path: self.path_for(name)?,
+                    maximum: MAX_CACHE_FILE_BYTES,
+                });
+            }
+            self.prepare()?;
+            let target = self.path_for(name)?;
+            let pending = self.pending_dir();
+            let (temporary_path, mut temporary) =
+                create_temporary_file(&pending, name).map_err(map_storage)?;
+            let install = (|| -> Result<(), CacheError> {
+                temporary
+                    .write_all(bytes)
+                    .map_err(|source| cache_io("write temporary cache entry", source))?;
+                temporary
+                    .sync_all()
+                    .map_err(|source| cache_io("sync temporary cache entry", source))?;
+                drop(temporary);
+                fs::hard_link(&temporary_path, &target)
+                    .map_err(|source| cache_io("install cache entry", source))?;
+                fs::remove_file(&temporary_path)
+                    .map_err(|source| cache_io("remove temporary cache entry", source))?;
+                Ok(())
+            })();
+            if install.is_err() {
+                let _ = fs::remove_file(&temporary_path);
+            }
+            let pending_parent = pending.clone();
+            let root_parent = self.root.clone();
+            let _ = sync_directory(&pending_parent);
+            let _ = sync_directory(&root_parent);
+            install
+        }
+
+        /// Removes a single cache entry by name. Returns `Ok(true)` if
+        /// a file was removed, `Ok(false)` if the file did not exist.
+        pub fn remove(&self, name: &str) -> Result<bool, CacheError> {
+            let path = self.path_for(name)?;
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) => {
+                    if metadata.file_type().is_symlink() || !metadata.is_file() {
+                        return Err(CacheError::UnsafePath);
+                    }
+                    fs::remove_file(&path)
+                        .map_err(|source| cache_io("remove cache entry", source))?;
+                    let _ = sync_directory(&self.root);
+                    Ok(true)
+                }
+                Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
+                Err(source) => Err(cache_io("inspect cache entry", source)),
+            }
+        }
+
+        /// Reads a single cache entry into a `Vec<u8>`.
+        ///
+        /// Returns `Ok(None)` when the file is absent, `Ok(Some(bytes))`
+        /// when the file is present and within bounds, and a typed
+        /// error for oversize, unreadable, or unsafe paths.
+        pub fn read(&self, name: &str) -> Result<Option<Vec<u8>>, CacheError> {
+            let path = self.path_for(name)?;
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(source) => return Err(cache_io("inspect cache entry", source)),
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(CacheError::UnsafePath);
+            }
+            let length = usize::try_from(metadata.len()).map_err(|_| CacheError::FileTooLarge {
+                path: path.clone(),
+                maximum: MAX_CACHE_FILE_BYTES,
+            })?;
+            if length > MAX_CACHE_FILE_BYTES {
+                return Err(CacheError::FileTooLarge {
+                    path: path.clone(),
+                    maximum: MAX_CACHE_FILE_BYTES,
+                });
+            }
+            let mut file =
+                File::open(&path).map_err(|source| cache_io("open cache entry", source))?;
+            let mut bytes = Vec::with_capacity(length);
+            file.read_to_end(&mut bytes)
+                .map_err(|source| cache_io("read cache entry", source))?;
+            if bytes.len() > MAX_CACHE_FILE_BYTES {
+                return Err(CacheError::FileTooLarge {
+                    path: path.clone(),
+                    maximum: MAX_CACHE_FILE_BYTES,
+                });
+            }
+            Ok(Some(bytes))
+        }
+
+        /// Enumerates cache filenames (validates and returns them in
+        /// lexical order) subject to the Plan 104 scan budgets.
+        ///
+        /// The function never returns more than `MAX_CACHE_SCAN_ENTRIES`
+        /// names and refuses to continue past `MAX_CACHE_SCAN_BYTES` of
+        /// cumulative file size.
+        pub fn scan(&self) -> Result<Vec<String>, CacheError> {
+            self.prepare()?;
+            let mut names = Vec::new();
+            let mut bytes_seen: u64 = 0;
+            for entry in fs::read_dir(&self.root)
+                .map_err(|source| cache_io("open cache directory", source))?
+            {
+                if names.len() >= MAX_CACHE_SCAN_ENTRIES {
+                    return Err(CacheError::ScanEntriesExceeded {
+                        maximum: MAX_CACHE_SCAN_ENTRIES,
+                    });
+                }
+                let entry = entry.map_err(|source| cache_io("iterate cache directory", source))?;
+                let file_type = entry
+                    .file_type()
+                    .map_err(|source| cache_io("inspect cache entry type", source))?;
+                if !file_type.is_file() {
+                    continue;
+                }
+                let file_name = entry.file_name();
+                let Some(name) = file_name.to_str() else {
+                    continue;
+                };
+                if Self::validate_name(name).is_err() {
+                    continue;
+                }
+                let metadata = entry
+                    .metadata()
+                    .map_err(|source| cache_io("inspect cache entry metadata", source))?;
+                let length = metadata.len();
+                let next = bytes_seen.saturating_add(length);
+                if next > MAX_CACHE_SCAN_BYTES {
+                    return Err(CacheError::ScanBudgetExceeded {
+                        maximum: MAX_CACHE_SCAN_BYTES,
+                    });
+                }
+                bytes_seen = next;
+                names.push(name.to_owned());
+            }
+            names.sort();
+            Ok(names)
+        }
+    }
+
+    fn cache_io(operation: &'static str, source: io::Error) -> CacheError {
+        CacheError::Io { operation, source }
+    }
+
+    fn map_storage(error: StorageError) -> CacheError {
+        match error {
+            StorageError::Io { operation, source } => CacheError::Io { operation, source },
+            StorageError::UnsafePath => CacheError::UnsafePath,
+            other => CacheError::Io {
+                operation: "netdb cache",
+                source: io::Error::other(other.to_string()),
+            },
+        }
+    }
 }
 
 fn storage_io(operation: &'static str, source: io::Error) -> StorageError {

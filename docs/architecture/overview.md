@@ -116,12 +116,12 @@ i2pr-proto  <- i2pr-crypto <- i2pr-storage
      ^             ^              ^
      |             |              |
 i2pr-core <- i2pr-transport <- i2pr-runtime <- i2pr-daemon (composition root)
-     ^             ^              ^
-     |             |              |
-     +-------------+   i2pr-transport-ntcp2
-                          ^
-                          |
-                i2pr-proto + i2pr-crypto
+     ^             ^              ^                    |
+     |             |              |                    v
+     +-------------+   i2pr-transport-ntcp2    i2pr-netdb-persist
+                          ^                     (cache + reseed)
+                          |                          |
+                i2pr-proto + i2pr-crypto     i2pr-netdb (SU3/reseed)
 
 i2pr-testkit (test-only; may depend on transport crates;
               no production crate may depend on it)
@@ -143,7 +143,8 @@ tests, and any distinctive design choices.
 | `i2pr-crypto` | Identity crypto | Protocol-specific wrappers around Ed25519, X25519, SHA-256. Secret material is zeroized. | [i2pr-crypto.md](i2pr-crypto.md) |
 | `i2pr-storage` | Persistence | Versioned, atomic, permission-hardened storage for router identity and NTCP2 static key. | [i2pr-storage.md](i2pr-storage.md) |
 | `i2pr-core` | Service contracts | Runtime-neutral lifecycle, health, cancellation, and resource budgets. Zero dependencies. | [i2pr-core.md](i2pr-core.md) |
-| `i2pr-netdb` | Local NetDB | Runtime-neutral RouterInfo validation, bounded in-memory NetDB store, peer-selection primitives, and local signed RouterInfo construction. Plan 103. | [i2pr-netdb.md](i2pr-netdb.md) |
+| `i2pr-netdb` | Local NetDB | Runtime-neutral RouterInfo validation, bounded in-memory NetDB store, SU3/reseed verification, peer-selection primitives, and local signed RouterInfo construction. Plan 103/104. | [i2pr-netdb.md](i2pr-netdb.md) |
+| `i2pr-netdb-persist` | Cache composition | Composition owner for Plan 104 persistent RouterInfo cache and SU3 reseed ingestion. Bridges `i2pr-storage` (raw bytes) and `i2pr-netdb` (validation). | — |
 | `i2pr-transport` | Transport contracts | Runtime-neutral link/delivery contracts. No Tokio, no I/O, no async. | [i2pr-transport.md](i2pr-transport.md) |
 | `i2pr-transport-ntcp2` | NTCP2 protocol | Runtime-neutral Noise handshake, AEAD frames, data-phase blocks. | [i2pr-transport-ntcp2.md](i2pr-transport-ntcp2.md) |
 | `i2pr-runtime` | Runtime owner | The only production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation. | [i2pr-runtime.md](i2pr-runtime.md) |

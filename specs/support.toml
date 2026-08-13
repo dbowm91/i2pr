@@ -294,8 +294,13 @@ id = "netdb.persistent-cache"
 protocol = "reseed-netdb"
 structure = "bounded-persistent-routerinfo-cache-with-startup-revalidation"
 scope = "required"
-status = "deferred"
-evidence = ["plans/104-persistent-netdb-cache-and-su3-reseed-trust-path.md"]
+status = "experimental"
+evidence = [
+    "crates/i2pr-storage/src/lib.rs (cache_seam)",
+    "crates/i2pr-netdb-persist/src/cache_loader.rs",
+    "plans/104-persistent-netdb-cache-and-su3-reseed-trust-path.md",
+    "plans/104-status.md",
+]
 advertised = false
 
 [[surface]]
@@ -303,8 +308,14 @@ id = "netdb.su3-reseed"
 protocol = "reseed-netdb"
 structure = "bounded-su3-reseed-verification-and-zip-ingestion"
 scope = "required"
-status = "deferred"
-evidence = ["plans/104-persistent-netdb-cache-and-su3-reseed-trust-path.md"]
+status = "experimental"
+evidence = [
+    "crates/i2pr-netdb/src/reseed.rs",
+    "crates/i2pr-netdb/src/base64.rs",
+    "crates/i2pr-netdb-persist/src/reseed_ingest.rs",
+    "plans/104-persistent-netdb-cache-and-su3-reseed-trust-path.md",
+    "plans/104-status.md",
+]
 advertised = false
 
 [[surface]]

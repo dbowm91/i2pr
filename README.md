@@ -2284,23 +2284,42 @@ The crate depends only on `i2pr-proto` and `i2pr-crypto`; it opens
 no sockets, performs no filesystem I/O, and does not list `tokio` as
 a dependency. The static surface under
 `scripts/check-dependency-direction.sh` and
-`scripts/check-runtime-boundaries.sh` enforces the boundary. Plan
-104 (persistent cache + SU3 reseed), Plan 105 (transport-neutral
-query state-machines), and Plan 106 (daemon/bootstrap integration)
-consume the bounded API. The current support state is:
+`scripts/check-runtime-boundaries.sh` enforces the boundary.
+
+### Plan 104 persistent NetDB cache and SU3 reseed trust path
+
+[Plan 104](plans/104-persistent-netdb-cache-and-su3-reseed-trust-path.md)
+makes the Plan 103 RouterInfo trust boundary durable and
+bootstrap-capable. It introduces:
+
+- `i2pr_storage::cache_seam::ByteCache` — bounded raw-byte cache
+  seam with strict filename validation, per-file/aggregate scan
+  limits, and atomic replace.
+- `i2pr_netdb::base64` — I2P Base64 codec for reseed filenames.
+- `i2pr_netdb::reseed` — SU3 parser, RSA-SHA512-4096 signature
+  verifier, bounded ZIP ingestion, and `ReseedSignerTrustSet`.
+- `i2pr_netdb_persist` — composition owner that ties the cache seam
+  and reseed pipeline together through the Plan 103 validator.
+
+The crate depends on `i2pr-crypto`, `i2pr-proto`, and reviewed
+third-party crates (`rsa`, `x509-parser`, `zip`, `sha2`). The
+`i2pr-netdb-persist` crate bridges `i2pr-storage` (raw bytes) and
+`i2pr-netdb` (validation). The current support state is:
 
 ```text
-local RouterInfo validation    = implemented
-bounded local NetDB            = implemented
-local RouterInfo construction  = implemented
-persistent NetDB cache         = not yet implemented (Plan 104)
-SU3 reseed                     = not yet implemented (Plan 104)
+local RouterInfo validation    = implemented (Plan 103)
+bounded local NetDB            = implemented (Plan 103)
+local RouterInfo construction  = implemented (Plan 103)
+persistent RouterInfo cache    = implemented, untrusted-on-load (Plan 104)
+SU3 reseed verification        = implemented (Plan 104)
+reseed ingestion               = implemented from verified bytes (Plan 104)
 live NetDB lookup              = not implemented (Plan 105)
 RouterInfo publication         = not yet live (Plan 106)
 NTCP2                         = experimental-non-advertised
 ```
 
 The Plan 103 closure record is `plans/103-status.md`.
+The Plan 104 closure record is `plans/104-status.md`.
 
 ## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active roadmap)
 

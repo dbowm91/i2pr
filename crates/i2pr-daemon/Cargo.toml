@@ -11,6 +11,8 @@ publish = false
 clap.workspace = true
 i2pr-crypto = { path = "../i2pr-crypto" }
 i2pr-core = { path = "../i2pr-core" }
+i2pr-netdb = { path = "../i2pr-netdb" }
+i2pr-netdb-persist = { path = "../i2pr-netdb-persist" }
 i2pr-proto = { path = "../i2pr-proto" }
 i2pr-runtime = { path = "../i2pr-runtime" }
 i2pr-storage = { path = "../i2pr-storage" }

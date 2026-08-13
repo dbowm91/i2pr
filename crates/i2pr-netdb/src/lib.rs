@@ -16,12 +16,22 @@
 
 #![forbid(unsafe_code)]
 
+mod base64;
 mod local;
+mod reseed;
 mod router_info;
 mod routing;
 mod store;
 
+pub use base64::{I2pBase64Error, MAX_DECODED_LEN, encode_filename_prefix};
 pub use local::{LocalRouterInfo, LocalRouterInfoBuilder, LocalRouterInfoError};
+pub use reseed::TrustedSigner;
+pub use reseed::{
+    ReseedEntryReport, ReseedEntryState, ReseedLimits, ReseedSignatureType, ReseedSignerId,
+    ReseedSignerTrustSet, ReseedTrustError, ReseedVerifiedBundle, ReseedVerifyOutcome,
+    ReseedVerifyReport, parse_su3, verify_su3, verify_su3_archive, verify_su3_with_signers,
+};
+pub use router_info::RouterInfoValidationPolicy as ValidationPolicy;
 pub use router_info::{
     RouterHash, RouterInfoValidationError, RouterInfoValidationPolicy, ValidatedRouterInfo,
     ValidationContext, router_hash,
