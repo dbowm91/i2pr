@@ -543,7 +543,7 @@ version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "i2pr-proto",
- "rand_chacha 0.9.0",
+ "rand_chacha 0.10.0",
  "rand_core 0.9.5",
  "sha2",
  "subtle",
@@ -585,7 +585,7 @@ dependencies = [
  "i2pr-storage",
  "i2pr-transport",
  "i2pr-transport-ntcp2",
- "rand_chacha 0.9.0",
+ "rand_chacha 0.10.0",
  "rand_core 0.9.5",
  "serde",
  "tokio",
@@ -599,8 +599,8 @@ dependencies = [
  "base64ct",
  "i2pr-crypto",
  "i2pr-proto",
+ "rand_chacha 0.10.0",
  "rand_chacha 0.3.1",
- "rand_chacha 0.9.0",
  "rand_core 0.6.4",
  "rand_core 0.9.5",
  "rsa",
@@ -618,7 +618,7 @@ dependencies = [
  "i2pr-netdb",
  "i2pr-proto",
  "i2pr-storage",
- "rand_chacha 0.9.0",
+ "rand_chacha 0.10.0",
  "rand_core 0.9.5",
  "tempfile",
  "thiserror 2.0.18",
@@ -652,7 +652,7 @@ name = "i2pr-storage"
 version = "0.1.0"
 dependencies = [
  "i2pr-crypto",
- "rand_chacha 0.9.0",
+ "rand_chacha 0.10.0",
  "rand_core 0.9.5",
  "tempfile",
  "thiserror 2.0.18",
@@ -669,7 +669,7 @@ dependencies = [
  "i2pr-runtime",
  "i2pr-transport",
  "i2pr-transport-ntcp2",
- "rand_chacha 0.9.0",
+ "rand_chacha 0.10.0",
  "rand_core 0.9.5",
  "sha2",
  "tokio",
@@ -1008,12 +1008,12 @@ dependencies = [
 
 [[package]]
 name = "rand_chacha"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
+checksum = "3e6af7f3e25ded52c41df4e0b1af2d047e45896c2f3281792ed68a1c243daedb"
 dependencies = [
  "ppv-lite86",
- "rand_core 0.9.5",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -1033,6 +1033,12 @@ checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
 ]
+
+[[package]]
+name = "rand_core"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "regex-automata"
