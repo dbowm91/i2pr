@@ -1,0 +1,20 @@
+[package]
+name = "i2pr-netdb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Runtime-neutral RouterInfo validation, local NetDB foundation, and local signed RouterInfo construction for i2pr"
+publish = false
+
+[dependencies]
+i2pr-crypto = { path = "../i2pr-crypto" }
+i2pr-proto = { path = "../i2pr-proto" }
+thiserror.workspace = true
+
+[dev-dependencies]
+rand_chacha.workspace = true
+rand_core.workspace = true
+
+[lints]
+workspace = true

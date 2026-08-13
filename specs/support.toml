@@ -1,10 +1,10 @@
 # Machine-readable workspace support inventory (current evidence through
-# Milestone 3 corrective integration).
+# the Plan 103 local NetDB foundation).
 # Structural evidence may be recorded before interoperability; all entries remain
 # non-advertised until the conformance requirements are met.
 schema = 1
-milestone = 3
-plan_065_implementation_floor = "plans/065-status.md"
+milestone = 4
+plan_103_implementation_floor = "plans/103-status.md"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -94,6 +94,55 @@ structure = "versioned-atomic-router-identity-store"
 scope = "required"
 status = "experimental"
 evidence = ["crates/i2pr-storage/src/lib.rs", "plans/013-closure.md"]
+advertised = false
+
+[[surface]]
+id = "netdb.routerinfo-validation"
+protocol = "reseed-netdb"
+structure = "routerinfo-signature-freshness-and-key-binding-validation"
+scope = "required"
+status = "experimental"
+evidence = [
+    "crates/i2pr-netdb/src/router_info.rs",
+    "crates/i2pr-netdb/src/lib.rs",
+    "plans/103-routerinfo-validation-and-local-netdb-foundation.md",
+    "plans/103-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "netdb.bounded-in-memory-store"
+protocol = "reseed-netdb"
+structure = "bounded-routerinfo-store-with-replacement-conflict-expiry"
+scope = "required"
+status = "experimental"
+evidence = [
+    "crates/i2pr-netdb/src/store.rs",
+    "crates/i2pr-netdb/src/lib.rs",
+    "plans/103-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "netdb.peer-selection-primitives"
+protocol = "reseed-netdb"
+structure = "xor-distance-floodfill-filter-nearest-n"
+scope = "required"
+status = "experimental"
+evidence = ["crates/i2pr-netdb/src/routing.rs", "plans/103-status.md"]
+advertised = false
+
+[[surface]]
+id = "netdb.local-routerinfo"
+protocol = "reseed-netdb"
+structure = "local-signed-routerinfo-construction-and-self-validation"
+scope = "required"
+status = "experimental"
+evidence = [
+    "crates/i2pr-netdb/src/local.rs",
+    "crates/i2pr-netdb/src/lib.rs",
+    "plans/103-status.md",
+]
 advertised = false
 
 [[surface]]
@@ -238,4 +287,31 @@ structure = "initial-netdb-delivery-tunnel-and-garlic-message-bodies"
 scope = "required-later"
 status = "deferred"
 evidence = ["specs/protocols/02-i2np.md", "plans/014-closure.md"]
+advertised = false
+
+[[surface]]
+id = "netdb.persistent-cache"
+protocol = "reseed-netdb"
+structure = "bounded-persistent-routerinfo-cache-with-startup-revalidation"
+scope = "required"
+status = "deferred"
+evidence = ["plans/104-persistent-netdb-cache-and-su3-reseed-trust-path.md"]
+advertised = false
+
+[[surface]]
+id = "netdb.su3-reseed"
+protocol = "reseed-netdb"
+structure = "bounded-su3-reseed-verification-and-zip-ingestion"
+scope = "required"
+status = "deferred"
+evidence = ["plans/104-persistent-netdb-cache-and-su3-reseed-trust-path.md"]
+advertised = false
+
+[[surface]]
+id = "netdb.query-state-machines"
+protocol = "reseed-netdb"
+structure = "transport-neutral-databaselookup-storereply-publication-state-machines"
+scope = "required"
+status = "deferred"
+evidence = ["plans/105-transport-neutral-netdb-query-and-publication-state-machines.md"]
 advertised = false

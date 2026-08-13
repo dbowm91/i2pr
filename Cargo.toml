@@ -4,6 +4,7 @@ members = [
     "crates/i2pr-proto",
     "crates/i2pr-core",
     "crates/i2pr-daemon",
+    "crates/i2pr-netdb",
     "crates/i2pr-runtime",
     "crates/i2pr-storage",
     "crates/i2pr-testkit",

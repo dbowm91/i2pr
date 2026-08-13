@@ -16,6 +16,7 @@ from this production graph; they are allowed to support crate-local tests.
 | `i2pr-crypto` | `i2pr-proto` + `ed25519-dalek`, `x25519-dalek`, `sha2`, `subtle`, `zeroize`, `rand_core`, `thiserror` |
 | `i2pr-storage` | `i2pr-crypto` + `rand_core`, `thiserror`, `zeroize` |
 | `i2pr-core` | (zero deps) |
+| `i2pr-netdb` | `i2pr-crypto`, `i2pr-proto` + `thiserror` |
 | `i2pr-transport` | `i2pr-core`, `i2pr-proto` |
 | `i2pr-transport-ntcp2` | `i2pr-proto`, `i2pr-crypto`, `i2pr-transport` + `aes`, `chacha20poly1305`, `hmac`, `sha2`, `siphasher`, `thiserror`, `zeroize` |
 | `i2pr-runtime` | `i2pr-core`, `i2pr-transport`, `i2pr-transport-ntcp2` + `tokio`, `tokio-util`, `futures-util`, `tracing` |
@@ -27,6 +28,9 @@ Reverse edges (i.e. "may NOT depend on"):
 - `i2pr-proto` may not depend on any `i2pr-*` crate.
 - `i2pr-crypto` may not depend on `i2pr-storage` (or above).
 - `i2pr-core` may not depend on anything `i2pr-*`.
+- `i2pr-netdb` may not depend on `i2pr-storage`, `i2pr-transport`,
+  `i2pr-transport-ntcp2`, `i2pr-runtime`, `i2pr-daemon`, or
+  `i2pr-testkit` (Plan 103).
 - `i2pr-transport` may not depend on `i2pr-transport-ntcp2`,
   `i2pr-runtime`, `i2pr-daemon`, `i2pr-testkit`, `i2pr-netdb`,
   `i2pr-tunnel`, `i2pr-client`.
@@ -44,11 +48,12 @@ i2pr-daemon -> i2pr-runtime -> i2pr-transport-ntcp2
                          |                 |
                          v                 v
                  i2pr-transport -------> i2pr-crypto -> i2pr-proto
-                         |
-                         v
-                     i2pr-core
-
-i2pr-storage -> i2pr-crypto
+                         |                  ^
+                         v                  |
+                     i2pr-core              +--> i2pr-netdb
+                                              |
+i2pr-storage -> i2pr-crypto --------------------+
+                                              (Plan 103)
 
 i2pr-testkit (test/simulation only; may depend on transport crates;
               no production crate may depend on it)

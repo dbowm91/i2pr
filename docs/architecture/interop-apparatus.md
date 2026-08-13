@@ -1827,9 +1827,19 @@ closes, Milestone 4A is
 Milestone 5 supplies exploratory inbound/outbound paths and a
 router transport is deliberately qualified. A direct
 `DatabaseLookup` over NTCP2 is not accepted as a substitute for
-the standard exploratory-tunnel path. The next executable
-implementation remains **Plan 103** (RouterInfo validation and
-local NetDB foundation).
+the standard exploratory-tunnel path.
+
+Plan 103 has landed the local RouterInfo validation and
+in-memory NetDB foundation in the new `i2pr-netdb` crate
+(`crates/i2pr-netdb/`). The local signed RouterInfo carries zero
+`RouterAddress` entries under the Plan 101 activation guard and
+self-validates through the same validator used for remote
+records. The store enforces exact record-count and byte-quota
+accounting with checked arithmetic and deterministic
+replacement/conflict/expiry. The next executable implementation
+is **Plan 104** (persistent cache + SU3 reseed trust path), then
+Plan 105 (transport-neutral query state machines), then Plan 106
+(daemon/bootstrap integration).
 
 ## Plan 099 Milestone 3 interop exit, harness reduction, and router buildout (historical; retained NTCP2 result)
 

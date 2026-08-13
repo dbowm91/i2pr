@@ -23,6 +23,7 @@ expected = {
         "i2pr-transport", "i2pr-transport-ntcp2",
     },
     "i2pr-storage": {"i2pr-crypto"},
+    "i2pr-netdb": {"i2pr-crypto", "i2pr-proto"},
     "i2pr-daemon": {
         "i2pr-core",
         "i2pr-proto",

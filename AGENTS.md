@@ -7,12 +7,13 @@ relevant `docs/adr/` records before changing code.
 
 ## Workspace Layout
 
-Nine-crate workspace under `crates/`:
+Ten-crate workspace under `crates/`:
 
 - `i2pr-proto` — bounded wire codecs (crate-root façade, borrowed cursors, strict decoding, typed errors)
 - `i2pr-crypto` — Ed25519/X25519/AES/ChaCha20-Poly1305/HMAC/SipHash wrappers
 - `i2pr-storage` — versioned persistence; identity and NTCP2 static-key records
 - `i2pr-core` — runtime-neutral service contracts
+- `i2pr-netdb` — runtime-neutral RouterInfo validation, local NetDB store, and local signed RouterInfo construction (Plan 103; consumes `i2pr-crypto`/`i2pr-proto` only)
 - `i2pr-transport` — runtime-neutral link/delivery contracts (no Tokio, no I/O)
 - `i2pr-transport-ntcp2` — runtime-neutral NTCP2 handshake + data frames
 - `i2pr-runtime` — **only** production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation
@@ -30,7 +31,8 @@ These are checked on CI and will reject the change:
 - Dependency direction (`scripts/check-dependency-direction.sh`):
   `i2pr-proto <- i2pr-crypto <- i2pr-storage`; `i2pr-core <- i2pr-transport
   <- i2pr-runtime <- i2pr-daemon`; `i2pr-transport-ntcp2` consumes
-  `i2pr-crypto`/`i2pr-proto`/`i2pr-transport`, and `i2pr-runtime` may compose
+  `i2pr-crypto`/`i2pr-proto`/`i2pr-transport`; `i2pr-netdb` consumes
+  `i2pr-crypto`/`i2pr-proto` only (Plan 103); and `i2pr-runtime` may compose
   `i2pr-transport-ntcp2` for Plan 042. **No production crate may
   depend on `i2pr-testkit`.**
 - Runtime boundaries (`scripts/check-runtime-boundaries.sh`):

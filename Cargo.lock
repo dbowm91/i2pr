@@ -434,6 +434,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "i2pr-netdb"
+version = "0.1.0"
+dependencies = [
+ "i2pr-crypto",
+ "i2pr-proto",
+ "rand_chacha",
+ "rand_core 0.9.5",
+ "thiserror",
+]
+
+[[package]]
 name = "i2pr-proto"
 version = "0.1.0"
 dependencies = [

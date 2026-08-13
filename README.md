@@ -8,19 +8,26 @@ The initial compatibility target is the current I2P network as implemented by I2
 
 ## Project status
 
-The repository contains a buildable nine-crate Rust workspace with bounded
+The repository contains a buildable ten-crate Rust workspace with bounded
 protocol codecs, reviewed cryptographic wrappers, versioned storage, runtime-
 neutral service and transport contracts, a Tokio-owned runtime, a deterministic
-testkit, and a real production daemon composition root (identity load,
-supervisor, service graph, graceful shutdown). NTCP2 remains experimental and
-non-advertised; normal-daemon NTCP2 activation is disabled and unenableable.
+testkit, a real production daemon composition root (identity load,
+supervisor, service graph, graceful shutdown), and the Plan 103 runtime-
+neutral `i2pr-netdb` foundation (RouterInfo validation, bounded in-memory
+NetDB store, peer-selection primitives, and local signed RouterInfo
+construction). NTCP2 remains experimental and non-advertised; normal-daemon
+NTCP2 activation is disabled and unenableable.
 The NTCP2 development interoperability result is `protocol-defect-localized`
 at `noise_authenticated`; no passed mixed-router NTCP2 result exists.
 The non-production interoperability tooling includes the runtime-owned NTCP2
 wire driver, source-locked Java I2P and i2pd direct drivers, staged evidence
 contracts, and the Plan 082 state-preparation boundary.
-The active product direction is local RouterInfo and NetDB foundation.
-Earlier milestone details are retained below as an implementation history.
+The active product direction is governed by Plan 102 and its child
+sequence (Plans 103 → 104 → 105 → 106). Plan 103 has landed the local
+RouterInfo validation and in-memory NetDB foundation; persistent cache,
+SU3 reseed trust, transport-neutral query state-machines, and daemon
+bootstrap integration remain to be implemented. Earlier milestone details
+are retained below as an implementation history.
 Plans 011–013 provide the structural and local cryptographic foundation for
 common I2P identities, mappings, certificates, RouterInfo, RouterAddress,
 Lease, classic LeaseSet, explicit identity generation, atomic reload, local
@@ -2249,6 +2256,51 @@ Plan 088 implementation surface is preserved for any future host where
 the Plan 095 CI evidence pair records `two-way-development-probe-passed`
 or `ambiguous-reference-divergence`. Plan 079 remains blocked; Plan 072
 remains inactive. NTCP2 remains experimental and non-advertised.
+
+### Plan 103 local RouterInfo and NetDB foundation
+
+[Plan 103](plans/103-routerinfo-validation-and-local-netdb-foundation.md)
+is the first executable child of Plan 102 and the first stateful
+router-information subsystem in `i2pr`. It introduces the new
+runtime-neutral `i2pr-netdb` workspace crate with:
+
+- `RouterHash` derivation from the canonical encoded `RouterIdentity`
+  and a `ValidatedRouterInfo` boundary that gates every record
+  through cryptographic, freshness, and key-binding checks before
+  any store insertion can occur.
+- `RouterInfoStore` with deterministic replacement/conflict/expiry
+  semantics, exact record-count and byte-quota accounting, and
+  checked arithmetic that fails closed on overflow.
+- Pure routing primitives (`xor_distance`, `nearest`,
+  `nearest_floodfill`) used by Plan 105's forthcoming query state
+  machines.
+- `LocalRouterInfoBuilder` that signs a local `RouterInfo` through
+  the persistent `RouterIdentityBundle` and self-validates it
+  through the same validator. Under Plan 101 authority the local
+  record carries zero `RouterAddress` entries — no NTCP2 address is
+  published while the activation guard is in force.
+
+The crate depends only on `i2pr-proto` and `i2pr-crypto`; it opens
+no sockets, performs no filesystem I/O, and does not list `tokio` as
+a dependency. The static surface under
+`scripts/check-dependency-direction.sh` and
+`scripts/check-runtime-boundaries.sh` enforces the boundary. Plan
+104 (persistent cache + SU3 reseed), Plan 105 (transport-neutral
+query state-machines), and Plan 106 (daemon/bootstrap integration)
+consume the bounded API. The current support state is:
+
+```text
+local RouterInfo validation    = implemented
+bounded local NetDB            = implemented
+local RouterInfo construction  = implemented
+persistent NetDB cache         = not yet implemented (Plan 104)
+SU3 reseed                     = not yet implemented (Plan 104)
+live NetDB lookup              = not implemented (Plan 105)
+RouterInfo publication         = not yet live (Plan 106)
+NTCP2                         = experimental-non-advertised
+```
+
+The Plan 103 closure record is `plans/103-status.md`.
 
 ## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active roadmap)
 

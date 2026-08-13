@@ -61,7 +61,7 @@ advertisement requirements in `specs/CONFORMANCE.md`.
 | NTCP2 handshake codecs and state machines | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0012, `plans/036-closure.md`, `plans/037-closure.md` | Fixed/malformed/bounded state and policy tests plus local corrective campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with `blocked_unprivileged_user_namespace`; Plan 066 fresh-candidate pass is `declared-not-executable` on this host with the typed blocker `blocked_execution_lane_unavailable`; see `plans/066-closure.md` and `specs/CONFORMANCE.md`; the Plan 067/068 active roadmap separates evidence into local-conformance, external-loopback-smoke, repeated-development-interop, conditional-differential, and release-qualification tiers (ADR 0023) |
 | NTCP2 authenticated data frames and payload blocks | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0013, `plans/036-closure.md`, `plans/037-closure.md` | Deterministic frame/block vectors, corrected repeated-block/termination ordering tests, partial-I/O cleanup, and local campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`); the Plan 066 fresh-candidate pass is `declared-not-executable` on this host, see `plans/066-closure.md`; the Plan 067/068/074 active roadmap defines Plan 069 (host-loopback smoke), Plan 075 (runner integrity), Plan 076 (real i2pd driver), and Plan 079 (repeated i2pd validation) for development interoperability; no real mixed-router attempt has yet occurred |
 | NTCP2 runtime link manager, addresses, and controlled TCP lifecycle | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0014, `plans/036-closure.md`, `plans/037-closure.md` | Bounded address/admission/replay/backoff/duplicate/RAII cleanup tests plus loopback lifecycle and preflight; runtime-owned wire adapter implemented and locally validated, mixed-router evidence pending | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`); the Plan 066 fresh-candidate pass is `declared-not-executable` on this host, see `plans/066-closure.md`; the Plan 067/068 active roadmap keeps NTCP2 experimental and non-advertised |
-| Reseed and RouterInfo publication | Not implemented | 4 | `specs/protocols/04-reseed-netdb.md` | None imported | None |
+| Reseed and RouterInfo publication | Plan 103 RouterInfo validation + bounded local NetDB implemented; persistent cache, SU3 reseed, and live publication remain Plan 104/105/106 work | 4 | `specs/protocols/04-reseed-netdb.md`, `plans/103-routerinfo-validation-and-local-netdb-foundation.md`, `plans/103-status.md` | Local signed-region verification, fresh/future/malformed/stale rejection, store replacement/conflict/quota/prune; no Java I2P/i2pd mixed-router evidence | None |
 | Network tunnels and transit participation | Not implemented | 5 | `specs/protocols/05-tunnels.md` | None imported | None |
 | Classic LeaseSet structural codec | Experimental structural subset; LeaseSet2-family deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Local Lease/LeaseSet vectors and negative tests; no independent router vectors | None |
 | LeaseSet2, EncryptedLeaseSet, and MetaLeaseSet | Deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Explicit rejection/deferred framing only | None |
@@ -423,10 +423,16 @@ and the
 [Plan 102 amendment](../plans/102-amendment-exploratory-tunnel-dependency.md)
 clarifies that live RouterInfo lookup through a direct router
 transport is not a substitute for the standard exploratory-tunnel
-path. Plan 103 (RouterInfo validation + bounded local NetDB) is
-the next executable implementation, followed by Plan 104 → Plan 105
-→ Plan 106 → Milestone 5 exploratory tunnels → Milestone 4B
-external acceptance. Plan 106 closes only the local/bootstrap
+path. Plan 103 (RouterInfo validation + bounded local NetDB) has
+landed as the new runtime-neutral `i2pr-netdb` workspace crate
+(`crates/i2pr-netdb/`) with cryptographic/temporal validation, a
+bounded in-memory store with deterministic
+replacement/conflict/expiry, peer-selection primitives, and local
+signed RouterInfo construction. The Plan 103 closure record is
+`plans/103-status.md`. The next executable implementation is
+Plan 104 (persistent cache + SU3 reseed trust path), followed by
+Plan 105 → Plan 106 → Milestone 5 exploratory tunnels → Milestone
+4B external acceptance. Plan 106 closes only the local/bootstrap
 implementation phase.
 
 The retained Milestone 3 forward-direction closure lane was governed by
