@@ -2754,7 +2754,52 @@ bash scripts/check-runtime-boundaries.sh
 git diff --check
 ```
 
-## Plan 099 Milestone 3 interop exit, harness reduction, and router buildout (active corrective/exit plan)
+## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active roadmap)
+
+[Plan 102](plans/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
+is the active Milestone 4 parent authority that supersedes the
+historical Milestone 3 "active" blocks for the purpose of
+continuing router development. The retained Plan 099/100/101
+NTCP2 result (`protocol-defect-localized` at `noise_authenticated`,
+normal-daemon NTCP2 disabled and unenableable) is preserved as
+the authoritative NTCP2 development record. The Plan 099/100/101
+status blocks in this file and in `README.md` describe that
+result; the next substantial product work is now governed by
+Plan 102 and its child sequence (Plans 103 → 104 → 105 → 106).
+
+### Plan 102 amendment — exploratory-tunnel dependency
+
+[Plan 102 amendment](plans/102-amendment-exploratory-tunnel-dependency.md)
+corrects an over-optimistic wording in the first Plan 102 draft.
+The current I2P `DatabaseLookup` operation uses an outbound
+exploratory tunnel and requests the response through an inbound
+exploratory tunnel; exploratory tunnels are Milestone 5 scope.
+Therefore a standards-conformant live RouterInfo lookup cannot
+complete inside the Plan 103–106 implementation sequence merely
+by re-entering NTCP2 or another direct router transport.
+
+The authoritative Plan 102 sequence is:
+
+```text
+Plan 103  RouterInfo validation + bounded local NetDB
+   -> Plan 104  persistent cache + SU3 reseed trust/ingestion
+   -> Plan 105  transport-neutral lookup/store/publication state machines
+   -> Plan 106  daemon/bootstrap integration
+   -> Milestone 5 exploratory tunnel substrate
+   -> return to Milestone 4B external acceptance
+```
+
+Plan 106 closes the local/bootstrap implementation phase, not
+the complete original Milestone 4 exit criteria. After Plan 106
+closes, Milestone 4A is `local-foundation-complete-external-transport-blocked`
+until Milestone 5 supplies exploratory inbound/outbound paths and
+a router transport is deliberately qualified. A direct
+`DatabaseLookup` over NTCP2 is not accepted as a substitute for
+the standard exploratory-tunnel path. The next executable
+implementation remains **Plan 103** (RouterInfo validation and
+local NetDB foundation).
+
+## Plan 099 Milestone 3 interop exit, harness reduction, and router buildout (historical; retained NTCP2 result)
 
 Plan 099 is the corrective and exit plan from the multi-job
 CI/provenance expansion that consumed Plans 095–098. It corrects
@@ -2797,9 +2842,11 @@ The compact sanitized summary is preserved at
 `target/interop/evidence/milestone-3/31521642090/plan099-summary.json`.
 Plan 101 is the active daemon-safety correction that removes
 premature NTCP2 production activation and restores the correct
-activation boundary. The next substantial product roadmap is the
-production i2pr router construction (RouterInfo/NetDB foundation),
-not another NTCP2 evidence framework plan.
+activation boundary. The next substantial product roadmap is now
+governed by
+[Plan 102](plans/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
+and its child sequence (Plans 103 → 104 → 105 → 106), not another
+NTCP2 evidence framework plan.
 
 The active development interop lane is bounded to:
 

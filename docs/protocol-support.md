@@ -415,11 +415,22 @@ support-ledger status changed and NTCP2 remains experimental and
 non-advertised. See [`plans/078-status.md`](../plans/078-status.md) and
 [`plans/080-status.md`](../plans/080-status.md).
 
-## Active status correction (2026-08-10)
+## Active status correction (2026-08-13)
 
-The current Milestone 3 forward-direction closure lane is governed by
-[Plan 095](../plans/095-ci-host-loopback-live-wire-evidence-lane.md) (the
-single next executable plan), with
+The active Milestone 4 parent authority is
+[Plan 102](../plans/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
+and the
+[Plan 102 amendment](../plans/102-amendment-exploratory-tunnel-dependency.md)
+clarifies that live RouterInfo lookup through a direct router
+transport is not a substitute for the standard exploratory-tunnel
+path. Plan 103 (RouterInfo validation + bounded local NetDB) is
+the next executable implementation, followed by Plan 104 → Plan 105
+→ Plan 106 → Milestone 5 exploratory tunnels → Milestone 4B
+external acceptance. Plan 106 closes only the local/bootstrap
+implementation phase.
+
+The retained Milestone 3 forward-direction closure lane was governed by
+[Plan 095](../plans/095-ci-host-loopback-live-wire-evidence-lane.md), with
 [Plan 096](../plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md),
 [Plan 097](../plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md),
 and
@@ -623,3 +634,46 @@ for real NetDB peer exchange, and does not authorize public-network
 bootstrap. Plan 079's 3/3 repeated-direction validation campaign is
 moved to the pre-normal-activation / pre-public-network integration
 checkpoint rather than gating offline/local router development.
+
+## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active roadmap)
+
+[Plan 102](../plans/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
+is the active Milestone 4 parent authority that supersedes the
+historical Milestone 3 "active" blocks for the purpose of
+continuing router development. The retained Plan 099/100/101
+NTCP2 result above is preserved as the authoritative NTCP2
+development record. The next substantial product work is governed
+by Plan 102 and its child sequence (Plans 103 → 104 → 105 → 106).
+
+### Plan 102 amendment — exploratory-tunnel dependency
+
+[Plan 102 amendment](../plans/102-amendment-exploratory-tunnel-dependency.md)
+corrects an over-optimistic wording in the first Plan 102 draft.
+The current I2P `DatabaseLookup` operation uses an outbound
+exploratory tunnel and requests the response through an inbound
+exploratory tunnel; exploratory tunnels are Milestone 5 scope.
+Therefore a standards-conformant live RouterInfo lookup cannot
+complete inside the Plan 103–106 implementation sequence merely
+by re-entering NTCP2 or another direct router transport.
+
+The authoritative Plan 102 sequence is:
+
+```text
+Plan 103  RouterInfo validation + bounded local NetDB
+   -> Plan 104  persistent cache + SU3 reseed trust/ingestion
+   -> Plan 105  transport-neutral lookup/store/publication state machines
+   -> Plan 106  daemon/bootstrap integration
+   -> Milestone 5 exploratory tunnel substrate
+   -> return to Milestone 4B external acceptance
+```
+
+Plan 106 closes the local/bootstrap implementation phase, not
+the complete original Milestone 4 exit criteria. After Plan 106
+closes, Milestone 4A is
+`local-foundation-complete-external-transport-blocked` until
+Milestone 5 supplies exploratory inbound/outbound paths and a
+router transport is deliberately qualified. A direct
+`DatabaseLookup` over NTCP2 is not accepted as a substitute for
+the standard exploratory-tunnel path. The next executable
+implementation remains **Plan 103** (RouterInfo validation and
+local NetDB foundation).
