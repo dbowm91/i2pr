@@ -28,15 +28,15 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
       - name: Check workspace
-        run: cargo check --workspace
+        run: cargo check --locked --workspace
       - name: Check all workspace targets
-        run: cargo check --workspace --all-targets
+        run: cargo check --locked --workspace --all-targets
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Build documentation
-        run: cargo doc --workspace --no-deps
+        run: cargo doc --locked --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
       - name: Check dependency direction
@@ -71,7 +71,7 @@ jobs:
         with:
           toolchain: 1.85.0
       - name: Check workspace on MSRV
-        run: cargo check --workspace --all-targets
+        run: cargo check --locked --workspace --all-targets
 
   dependency-policy:
     name: Dependency policy
