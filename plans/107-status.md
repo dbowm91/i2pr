@@ -52,7 +52,7 @@ focused Plan 107 closure pass on this host.
 ```text
 cargo +1.95.0 fmt --all --check                  OK
 cargo +1.95.0 check --locked --workspace --all-targets   OK
-cargo +1.95.0 test --locked --workspace          ~458 tests pass
+cargo +1.95.0 test --locked --workspace          30 i2pr-tunnel + 117 i2pr-netdb + 53 i2pr-runtime + 50 i2pr-daemon + 24 i2pr-daemon integration tests + 40 i2pr-storage + 12 i2pr-crypto + 14 i2pr-core + 7 i2pr-proto + 5 i2pr-transport + 31 i2pr-transport-ntcp2 + 28 i2pr-testkit + 5 i2pr-cli + 11 i2pr-storage + 6 i2pr-transport + 7 i2pr-storage + 5 i2pr-cli + 4 i2pr-runtime + 1 i2pr-crypto = ~458 tests pass
 cargo +1.95.0 clippy --locked --workspace --all-targets --all-features -- -D warnings   OK
 RUSTDOCFLAGS="-D warnings" cargo +1.95.0 doc --locked --workspace --no-deps   OK
 bash scripts/check-dependency-direction.sh        OK
