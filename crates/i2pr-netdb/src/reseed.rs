@@ -923,8 +923,8 @@ fn verify_rsa_sha512_signature(
     signer: &TrustedSigner,
 ) -> Result<(), ReseedParseError> {
     use sad_rsa::pkcs1v15::{Signature, VerifyingKey};
-    use sad_rsa::signature::Verifier;
     use sad_rsa::sha2::Sha512;
+    use sad_rsa::signature::Verifier;
 
     // sad-rsa's `RsaPublicKey::new` accepts `BoxedUint` (a
     // fixed-precision heap integer from `crypto-bigint`) rather than
@@ -1237,8 +1237,8 @@ mod tests {
             sad_rsa::BoxedUint::from_be_slice(&n, n_bits).map_err(|e| format!("modulus: {e}"))?;
         let e_int =
             sad_rsa::BoxedUint::from_be_slice(&e, e_bits).map_err(|e| format!("exponent: {e}"))?;
-        let public = sad_rsa::RsaPublicKey::new(n_int, e_int)
-            .map_err(|e| format!("public key: {e}"))?;
+        let public =
+            sad_rsa::RsaPublicKey::new(n_int, e_int).map_err(|e| format!("public key: {e}"))?;
         let vk = VerifyingKey::<sad_rsa::sha2::Sha512>::new(public);
         let sig = sad_rsa::pkcs1v15::Signature::try_from(signature)
             .map_err(|e| format!("signature: {e}"))?;
