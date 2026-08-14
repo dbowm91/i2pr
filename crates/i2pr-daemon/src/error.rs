@@ -41,6 +41,8 @@ pub enum ExitCode {
     RuntimeShutdownTimeout = 45,
     /// Child task crashed and supervisor terminated.
     RuntimeSupervisorFailed = 46,
+    /// Bootstrap pipeline failed.
+    RuntimeBootstrap = 47,
     /// An unexpected internal failure occurred.
     Internal = 70,
 }
@@ -99,6 +101,9 @@ pub enum DaemonError {
     /// Child task crashed and supervisor terminated.
     #[error("supervisor terminated: {0}")]
     RuntimeSupervisorFailed(String),
+    /// Bootstrap pipeline failed.
+    #[error("bootstrap pipeline failed: {0}")]
+    RuntimeBootstrap(String),
 }
 
 impl DaemonError {
@@ -117,6 +122,7 @@ impl DaemonError {
             Self::RuntimeHandshakeFailed(_) => ExitCode::RuntimeHandshakeFailed,
             Self::RuntimeShutdownTimeout => ExitCode::RuntimeShutdownTimeout,
             Self::RuntimeSupervisorFailed(_) => ExitCode::RuntimeSupervisorFailed,
+            Self::RuntimeBootstrap(_) => ExitCode::RuntimeBootstrap,
         }
     }
 }

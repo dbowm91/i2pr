@@ -20,6 +20,11 @@ const MAX_ALLOWED_BUFFERED_BYTES: u64 = 1_u64 << 40;
 const MAX_ALLOWED_DURATION_SECS: u64 = 3_600;
 const MAX_ALLOWED_PREFIX_IPV4: u8 = 32;
 const MAX_ALLOWED_PREFIX_IPV6: u8 = 128;
+const MAX_ALLOWED_NETDB_RECORDS: u64 = 65_536;
+const MAX_ALLOWED_NETDB_ENCODED_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_ALLOWED_RESEED_SOURCES: usize = 16;
+const MAX_ALLOWED_RESEED_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_ALLOWED_BOOTSTRAP_RECORDS: u64 = 65_536;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,6 +39,10 @@ struct RawConfig {
     network: RawNetworkConfig,
     #[serde(default)]
     transport: RawTransportConfig,
+    #[serde(default)]
+    netdb: RawNetDbConfig,
+    #[serde(default)]
+    reseed: RawReseedConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,6 +162,66 @@ impl Default for RawNtcp2Config {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawNetDbConfig {
+    #[serde(default = "default_netdb_enabled")]
+    enabled: bool,
+    #[serde(default = "default_netdb_max_records")]
+    max_records: u64,
+    #[serde(default = "default_netdb_max_encoded_bytes")]
+    max_encoded_bytes: u64,
+    #[serde(default = "default_netdb_min_router_infos")]
+    min_router_infos: u64,
+    #[serde(default = "default_netdb_min_floodfill_advertisers")]
+    min_floodfill_advertisers: u64,
+}
+
+impl Default for RawNetDbConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_netdb_enabled(),
+            max_records: default_netdb_max_records(),
+            max_encoded_bytes: default_netdb_max_encoded_bytes(),
+            min_router_infos: default_netdb_min_router_infos(),
+            min_floodfill_advertisers: default_netdb_min_floodfill_advertisers(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawReseedConfig {
+    #[serde(default = "default_reseed_enabled")]
+    enabled: bool,
+    #[serde(default = "default_reseed_max_sources")]
+    max_sources: usize,
+    #[serde(default = "default_reseed_max_su3_bytes")]
+    max_su3_bytes: u64,
+    #[serde(default)]
+    sources: Vec<RawReseedSource>,
+}
+
+impl Default for RawReseedConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_reseed_enabled(),
+            max_sources: default_reseed_max_sources(),
+            max_su3_bytes: default_reseed_max_su3_bytes(),
+            sources: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawReseedSource {
+    #[serde(default)]
+    signer_id: String,
+    #[serde(default)]
+    certificate_path: String,
+}
+
 fn default_profile() -> String {
     String::from("balanced")
 }
@@ -227,6 +296,38 @@ const fn default_ntcp2_ipv4_prefix() -> u8 {
 
 const fn default_ntcp2_ipv6_prefix() -> u8 {
     64
+}
+
+const fn default_netdb_enabled() -> bool {
+    true
+}
+
+const fn default_netdb_max_records() -> u64 {
+    4_096
+}
+
+const fn default_netdb_max_encoded_bytes() -> u64 {
+    4 * 1024 * 1024
+}
+
+const fn default_netdb_min_router_infos() -> u64 {
+    50
+}
+
+const fn default_netdb_min_floodfill_advertisers() -> u64 {
+    5
+}
+
+const fn default_reseed_enabled() -> bool {
+    false
+}
+
+const fn default_reseed_max_sources() -> usize {
+    4
+}
+
+const fn default_reseed_max_su3_bytes() -> u64 {
+    8 * 1024 * 1024
 }
 
 /// Normalized router policy placeholder.
@@ -322,6 +423,44 @@ pub struct TransportConfig {
     pub ntcp2: Ntcp2Config,
 }
 
+/// Normalized NetDB configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetDbConfig {
+    /// Whether the local NetDB and cache loader are active.
+    pub enabled: bool,
+    /// Maximum records retained by the in-memory store.
+    pub max_records: usize,
+    /// Maximum aggregate encoded bytes retained by the in-memory store.
+    pub max_encoded_bytes: usize,
+    /// Minimum record count required for the cache-sufficient state.
+    pub min_router_infos: usize,
+    /// Minimum floodfill advertiser count required for the
+    /// `ready-for-network-integration` state.
+    pub min_floodfill_advertisers: usize,
+}
+
+/// Normalized reseed configuration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReseedConfig {
+    /// Whether reseed may run during bootstrap.
+    pub enabled: bool,
+    /// Maximum number of configured reseed sources.
+    pub max_sources: usize,
+    /// Maximum SU3 bundle bytes any single acquisition may consume.
+    pub max_su3_bytes: usize,
+    /// Configured trust-source list (operator-supplied).
+    pub sources: Vec<ReseedSourceConfig>,
+}
+
+/// One trust-store entry for a Plan 104 SU3 reseed signer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReseedSourceConfig {
+    /// Human-readable signer identifier carried in the SU3 header.
+    pub signer_id: String,
+    /// Filesystem path to the matching DER X.509 certificate.
+    pub certificate_path: PathBuf,
+}
+
 /// Immutable normalized configuration snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
@@ -337,6 +476,10 @@ pub struct Config {
     pub network: NetworkConfig,
     /// Transport settings.
     pub transport: TransportConfig,
+    /// NetDB settings.
+    pub netdb: NetDbConfig,
+    /// Reseed settings.
+    pub reseed: ReseedConfig,
 }
 
 impl Config {
@@ -420,6 +563,8 @@ impl Config {
         }
 
         let ntcp2 = normalize_ntcp2(&raw.transport.ntcp2)?;
+        let netdb = normalize_netdb(&raw.netdb)?;
+        let reseed = normalize_reseed(&raw.reseed, &netdb)?;
 
         Ok(Self {
             schema_version: raw.schema_version,
@@ -438,6 +583,8 @@ impl Config {
                 network_id: raw.network.network_id,
             },
             transport: TransportConfig { ntcp2 },
+            netdb,
+            reseed,
         })
     }
 }
@@ -556,6 +703,127 @@ fn validate_duration(field: &'static str, value: Duration) -> Result<(), ConfigE
         });
     }
     Ok(())
+}
+
+fn normalize_netdb(raw: &RawNetDbConfig) -> Result<NetDbConfig, ConfigError> {
+    if raw.max_records == 0 {
+        return Err(ConfigError::Semantic {
+            field: "netdb.max_records",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.max_records > MAX_ALLOWED_NETDB_RECORDS {
+        return Err(ConfigError::Semantic {
+            field: "netdb.max_records",
+            reason: "exceeds the bootstrap safety limit",
+        });
+    }
+    if raw.max_encoded_bytes == 0 {
+        return Err(ConfigError::Semantic {
+            field: "netdb.max_encoded_bytes",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.max_encoded_bytes > MAX_ALLOWED_NETDB_ENCODED_BYTES {
+        return Err(ConfigError::Semantic {
+            field: "netdb.max_encoded_bytes",
+            reason: "exceeds the bootstrap safety limit",
+        });
+    }
+    if raw.min_router_infos > MAX_ALLOWED_BOOTSTRAP_RECORDS {
+        return Err(ConfigError::Semantic {
+            field: "netdb.min_router_infos",
+            reason: "exceeds the bootstrap safety limit",
+        });
+    }
+    if raw.min_floodfill_advertisers > raw.min_router_infos {
+        return Err(ConfigError::Semantic {
+            field: "netdb.min_floodfill_advertisers",
+            reason: "must not exceed netdb.min_router_infos",
+        });
+    }
+    Ok(NetDbConfig {
+        enabled: raw.enabled,
+        max_records: raw.max_records as usize,
+        max_encoded_bytes: raw.max_encoded_bytes as usize,
+        min_router_infos: raw.min_router_infos as usize,
+        min_floodfill_advertisers: raw.min_floodfill_advertisers as usize,
+    })
+}
+
+fn normalize_reseed(
+    raw: &RawReseedConfig,
+    netdb: &NetDbConfig,
+) -> Result<ReseedConfig, ConfigError> {
+    if raw.max_sources == 0 {
+        return Err(ConfigError::Semantic {
+            field: "reseed.max_sources",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.max_sources > MAX_ALLOWED_RESEED_SOURCES {
+        return Err(ConfigError::Semantic {
+            field: "reseed.max_sources",
+            reason: "exceeds the bootstrap safety limit",
+        });
+    }
+    if raw.max_su3_bytes == 0 {
+        return Err(ConfigError::Semantic {
+            field: "reseed.max_su3_bytes",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.max_su3_bytes > MAX_ALLOWED_RESEED_BYTES {
+        return Err(ConfigError::Semantic {
+            field: "reseed.max_su3_bytes",
+            reason: "exceeds the bootstrap safety limit",
+        });
+    }
+    if raw.enabled && !netdb.enabled {
+        return Err(ConfigError::Semantic {
+            field: "reseed.enabled",
+            reason: "reseed cannot be enabled while netdb.enabled is false",
+        });
+    }
+    if raw.sources.len() > raw.max_sources {
+        return Err(ConfigError::Semantic {
+            field: "reseed.sources",
+            reason: "exceeds reseed.max_sources",
+        });
+    }
+    let mut sources = Vec::with_capacity(raw.sources.len());
+    for (index, raw_source) in raw.sources.iter().enumerate() {
+        if raw_source.signer_id.is_empty() {
+            return Err(ConfigError::Semantic {
+                field: "reseed.sources",
+                reason: "signer identifier must not be empty",
+            });
+        }
+        if raw_source.signer_id.len() > 256 {
+            return Err(ConfigError::Semantic {
+                field: "reseed.sources",
+                reason: "signer identifier exceeds 256 bytes",
+            });
+        }
+        if raw_source.certificate_path.is_empty() {
+            return Err(ConfigError::Semantic {
+                field: "reseed.sources",
+                reason: "certificate path must not be empty",
+            });
+        }
+        let path = PathBuf::from(&raw_source.certificate_path);
+        sources.push(ReseedSourceConfig {
+            signer_id: raw_source.signer_id.clone(),
+            certificate_path: path,
+        });
+        let _ = index;
+    }
+    Ok(ReseedConfig {
+        enabled: raw.enabled,
+        max_sources: raw.max_sources,
+        max_su3_bytes: raw.max_su3_bytes as usize,
+        sources,
+    })
 }
 
 /// Configuration parse and semantic-validation failures.
@@ -888,5 +1156,187 @@ data_dir = "./state"
         );
         let config = Config::parse(&text).expect("tuning without enabled should be accepted");
         assert!(!config.transport.ntcp2.enabled);
+    }
+
+    #[test]
+    fn netdb_defaults_apply_when_section_is_omitted() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n",
+            path.to_string_lossy()
+        );
+        let config = Config::parse(&text).expect("valid defaults");
+        assert!(config.netdb.enabled);
+        assert_eq!(config.netdb.max_records, 4_096);
+        assert_eq!(config.netdb.max_encoded_bytes, 4 * 1024 * 1024);
+        assert_eq!(config.netdb.min_router_infos, 50);
+        assert_eq!(config.netdb.min_floodfill_advertisers, 5);
+    }
+
+    #[test]
+    fn netdb_rejects_zero_max_records() {
+        let text = format!("{}\n[netdb]\nmax_records = 0\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "netdb.max_records",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn netdb_rejects_excessive_max_records() {
+        let text = format!("{}\n[netdb]\nmax_records = 100000\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "netdb.max_records",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn netdb_rejects_zero_max_encoded_bytes() {
+        let text = format!("{}\n[netdb]\nmax_encoded_bytes = 0\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "netdb.max_encoded_bytes",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn netdb_rejects_floodfill_min_exceeding_record_min() {
+        let text = format!(
+            "{}\n[netdb]\nmin_router_infos = 10\nmin_floodfill_advertisers = 20\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "netdb.min_floodfill_advertisers",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn reseed_defaults_apply_when_section_is_omitted() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n",
+            path.to_string_lossy()
+        );
+        let config = Config::parse(&text).expect("valid defaults");
+        assert!(!config.reseed.enabled);
+        assert_eq!(config.reseed.max_sources, 4);
+        assert_eq!(config.reseed.max_su3_bytes, 8 * 1024 * 1024);
+        assert!(config.reseed.sources.is_empty());
+    }
+
+    #[test]
+    fn reseed_rejects_zero_max_sources() {
+        let text = format!("{}\n[reseed]\nmax_sources = 0\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "reseed.max_sources",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn reseed_rejects_excessive_max_su3_bytes() {
+        let text = format!("{}\n[reseed]\nmax_su3_bytes = 33554432\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "reseed.max_su3_bytes",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn reseed_rejects_enable_when_netdb_disabled() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[netdb]\nenabled = false\n[reseed]\nenabled = true\n",
+            path.to_string_lossy()
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "reseed.enabled",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn reseed_rejects_too_many_configured_sources() {
+        let text = format!(
+            "{}\n[reseed]\nmax_sources = 2\n[[reseed.sources]]\nsigner_id = \"a\"\ncertificate_path = \"x.pem\"\n[[reseed.sources]]\nsigner_id = \"b\"\ncertificate_path = \"y.pem\"\n[[reseed.sources]]\nsigner_id = \"c\"\ncertificate_path = \"z.pem\"\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "reseed.sources",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn reseed_rejects_empty_signer_id() {
+        let text = format!(
+            "{}\n[reseed]\nenabled = true\n[[reseed.sources]]\nsigner_id = \"\"\ncertificate_path = \"x.pem\"\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "reseed.sources",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn reseed_accepts_valid_source_entry() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let cert = directory.path().join("signer.pem");
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[reseed]\nenabled = true\n[[reseed.sources]]\nsigner_id = \"trusted\"\ncertificate_path = {:?}\n",
+            path.to_string_lossy(),
+            cert.to_string_lossy()
+        );
+        let config = Config::parse(&text).expect("valid reseed source");
+        assert!(config.reseed.enabled);
+        assert_eq!(config.reseed.sources.len(), 1);
+        assert_eq!(config.reseed.sources[0].signer_id, "trusted");
+        assert_eq!(config.reseed.sources[0].certificate_path, cert);
+    }
+
+    #[test]
+    fn unknown_netdb_fields_are_rejected() {
+        let text = format!("{}\n[netdb]\nunknown = true\n", MINIMAL);
+        assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
+    }
+
+    #[test]
+    fn unknown_reseed_fields_are_rejected() {
+        let text = format!("{}\n[reseed]\nunknown = true\n", MINIMAL);
+        assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
     }
 }

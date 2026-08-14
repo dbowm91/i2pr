@@ -1507,6 +1507,41 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_develop
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_plan068.py'
 ```
 
+## Plan 106 daemon NetDB/bootstrap integration (closed)
+
+Plan 106 is the final executable plan in the current Milestone 4
+foundation sequence. The Plan 106 closure record lives at
+`plans/106-status.md`. The required focused checks for Plan 106
+are the touched-code test suite plus the workspace-standard
+formatted/lint/compile commands and the Plan 068 static-boundary
+posture:
+
+```text
+cargo +1.95.0 fmt --all --check
+cargo +1.95.0 check --locked --workspace --all-targets
+cargo +1.95.0 test --locked --workspace
+cargo +1.95.0 test --locked -p i2pr-daemon
+cargo +1.95.0 test --locked -p i2pr-netdb
+cargo +1.95.0 test --locked -p i2pr-storage
+cargo +1.95.0 test --locked -p i2pr-runtime
+cargo +1.95.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo +1.95.0 doc --locked --workspace --no-deps
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+bash scripts/check-fixture-manifest.sh
+bash scripts/check-ntcp2-vectors.sh
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-rootless-interop-boundary.sh
+bash scripts/check-multipass-interop-boundary.sh
+git diff --check
+```
+
+The Plan 046 rootless checker reports a pre-existing baseline
+failure (the `rootless_supervisor.py` file was retired by the
+Plan 099 harness-reduction commit). Plan 106 does not modify any
+rootless-owned file and the baseline failure is unrelated to
+Plan 106.
+
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
 
 Plan 096 is the active workflow correctness and pre-dispatch
@@ -2786,10 +2821,10 @@ by re-entering NTCP2 or another direct router transport.
 The authoritative Plan 102 sequence is:
 
 ```text
-Plan 103  RouterInfo validation + bounded local NetDB
-   -> Plan 104  persistent cache + SU3 reseed trust/ingestion
-   -> Plan 105  transport-neutral lookup/store/publication state machines
-   -> Plan 106  daemon/bootstrap integration
+Plan 103  RouterInfo validation + bounded local NetDB     [closed]
+   -> Plan 104  persistent cache + SU3 reseed trust/ingestion [closed]
+   -> Plan 105  transport-neutral lookup/store/publication state machines [closed]
+   -> Plan 106  daemon/bootstrap integration                 [closed]
    -> Milestone 5 exploratory tunnel substrate
    -> return to Milestone 4B external acceptance
 ```
@@ -2801,8 +2836,55 @@ until Milestone 5 supplies exploratory inbound/outbound paths and
 a router transport is deliberately qualified. A direct
 `DatabaseLookup` over NTCP2 is not accepted as a substitute for
 the standard exploratory-tunnel path. The next executable
-implementation remains **Plan 103** (RouterInfo validation and
-local NetDB foundation).
+implementation is **Milestone 5 exploratory tunnels** under
+Plan 102 authority.
+
+## Plan 106 daemon NetDB/bootstrap integration and Milestone 5 handoff (closed)
+
+Plan 106 composes the Plan 103/104/105 runtime-neutral surfaces into
+the real `i2pr` daemon without activating any I2P transport:
+
+- new `[netdb]` and `[reseed]` configuration sections with hard
+  ceilings (`max_records ≤ 65536`, `max_encoded_bytes ≤ 64 MiB`,
+  `max_su3_bytes ≤ 16 MiB`, etc.);
+- a bounded `BootstrapState` vocabulary
+  (`empty`, `cache-sufficient`, `reseed-required`, `reseeding`,
+  `ready-for-network-integration`, `degraded-insufficient-peers`,
+  `failed`) with a `BootstrapPolicy` derived from the validated
+  config;
+- a synchronous `bootstrap_daemon` pipeline (cache revalidation,
+  local RouterInfo construction, bounded offline reseed) before the
+  supervisor starts; HTTPS reseed remains deferred;
+- a `netdb-bootstrap` service in the supervisor graph alongside the
+  `lifecycle` service; both are wired to the supervisor's
+  cancellation primitive;
+- a `netdb_seam::NetDbSeam` runtime-facing seam that exposes the
+  Plan 105 lookup state machine vocabulary while reporting
+  `ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable`
+  until Milestone 5 supplies exploratory tunnels;
+- 24 integration tests under
+  `crates/i2pr-daemon/tests/netdb_integration.rs` covering all 14
+  Plan 106 integration items plus the typed-blocker paths.
+
+The Plan 106 closure record is `plans/106-status.md`. Milestone 4A
+status after Plan 106:
+
+```text
+routerinfo_validation             = implemented (Plan 103)
+local_netdb                       = implemented (Plan 103)
+persistent_routerinfo_cache       = implemented (Plan 104)
+su3_reseed_verification           = implemented (Plan 104)
+reseed_ingestion                  = implemented (Plan 104)
+netdb_query_state_machine         = implemented (Plan 105)
+routerinfo_publication_state      = implemented (Plan 105)
+netdb_daemon_integration          = implemented (Plan 106)
+live_routerinfo_lookup            = blocked-on-milestone5-exploratory-tunnels
+live_publication_verification     = blocked-on-milestone5-and-qualified-transport
+milestone4_full_exit              = pending-cross-milestone-checkpoint
+normal_daemon_ntcp2               = disabled-and-unenableable
+ntcp2                             = experimental-non-advertised
+external_netdb_over_ntcp2         = blocked
+```
 
 ## Plan 099 Milestone 3 interop exit, harness reduction, and router buildout (historical; retained NTCP2 result)
 
@@ -2845,10 +2927,11 @@ external_netdb_over_ntcp2 = blocked
 
 The compact sanitized summary is preserved at
 `target/interop/evidence/milestone-3/31521642090/plan099-summary.json`.
-Plan 101 is the active daemon-safety correction that removes
-premature NTCP2 production activation and restores the correct
-activation boundary. The next substantial product roadmap is now
-governed by
+Plan 101 closed the daemon-safety correction that removes premature
+NTCP2 production activation and restores the correct activation
+boundary. The Milestone 4 child sequence (Plan 103 → Plan 104 →
+Plan 105 → Plan 106) closed locally; the next substantial product
+roadmap is governed by
 [Plan 102](plans/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
 and its child sequence (Plans 103 → 104 → 105 → 106), not another
 NTCP2 evidence framework plan.

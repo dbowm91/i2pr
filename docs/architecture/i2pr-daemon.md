@@ -3,9 +3,9 @@
 Composition root and CLI entrypoint. Glues together the other
 workspace crates into the `i2pr` binary. Provides a real Tokio
 daemon composition with identity load, supervisor, service graph,
-and graceful shutdown. NTCP2 is disabled while support remains
-experimental; the daemon owns no NTCP2 listener under normal
-operation.
+bootstrap pipeline, and graceful shutdown. NTCP2 is disabled
+while support remains experimental; the daemon owns no NTCP2
+listener under normal operation.
 
 Path: `crates/i2pr-daemon/`
 
@@ -20,13 +20,19 @@ work is scoped to:
 - **CLI parsing** via `clap` derives: subcommands, flags, `--help`.
 - **Configuration** parsing, validation, normalization, schema
   version checking; NTCP2 `enabled = true` is rejected while
-  support remains experimental.
+  support remains experimental. Plan 106 added bounded `[netdb]`
+  and `[reseed]` sections.
 - **Identity lifecycle**: explicit generation and inspection of
   `<data_dir>/router.identity`. No auto-generated side effects on
   `run --dry-run`.
 - **Daemon composition**: real Tokio supervisor, service graph,
-  lifecycle service, and graceful shutdown. `i2pr run` starts the
-  daemon; it is no longer a non-networked shell.
+  lifecycle service, netdb-bootstrap service, and graceful
+  shutdown. `i2pr run` starts the daemon; it is no longer a
+  non-networked shell.
+- **NetDB/bootstrap pipeline** (Plan 106): runs cache revalidation,
+  local RouterInfo construction, and bounded offline reseed before
+  the supervisor starts. Produces a sanitized `BootstrapReport`
+  with a bounded `BootstrapSnapshot` and `ReseedAttemptSummary`.
 - **Stable process exit codes** that operators and automation can
   rely on.
 
@@ -35,67 +41,64 @@ What it **does not** do yet:
 - Open NTCP2 listeners (disabled under current authority).
 - Run `Ntcp2RuntimeService` or register `ntcp2-transport`.
 - Apply live configuration changes.
-- Perform reseed, NetDB, or RouterInfo publication.
+- Implement exploratory tunnels (Milestone 5).
+- Accept HTTPS reseed at runtime (the offline source path is the
+  only allowlisted Plan 106 acquisition path; HTTPS is deferred
+  to a future plan).
 
 ## Module layout
 
-Flat — four files at the crate root:
+Flat — six files at the crate root:
 
 | File | Responsibility | Main items |
 | --- | --- | --- |
 | `src/main.rs` | Executable shell: parse CLI, dispatch through `execute()`, print results, map errors to stable exit codes | `main()` |
-| `src/lib.rs` | Crate root: re-exports `cli`, `config`, `error`; defines `execute()` (pure dispatch), `CommandOutcome`, `IdentitySummary`, `initialize_logging()` | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()` |
+| `src/lib.rs` | Crate root: re-exports `cli`, `config`, `error`, `bootstrap`, `netdb_seam`; defines `execute()` (pure dispatch), `CommandOutcome`, `IdentitySummary`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `run_daemon()` | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `run_daemon()` |
 | `src/cli.rs` | CLI vocabulary — `clap` derives | `Cli`, `Command`, `IdentityCommand`, `CheckConfigArgs`, `IdentityArgs`, `RunArgs` |
-| `src/config.rs` | Strict versioned TOML configuration (`serde(deny_unknown_fields)` everywhere) | `CURRENT_SCHEMA_VERSION`, `DEFAULT_MAX_TASKS`, `DEFAULT_MAX_BUFFERED_BYTES`, `RouterProfile`, `LogFormat`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `Config`, `ConfigError` |
+| `src/config.rs` | Strict versioned TOML configuration (`serde(deny_unknown_fields)` everywhere) | `CURRENT_SCHEMA_VERSION`, `DEFAULT_MAX_TASKS`, `DEFAULT_MAX_BUFFERED_BYTES`, `RouterProfile`, `LogFormat`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `Config`, `ConfigError` |
 | `src/error.rs` | Typed error hierarchy and stable exit-code mapping | `ExitCode`, `DaemonError` |
+| `src/bootstrap.rs` | Plan 106 NetDB/bootstrap state machine | `BootstrapState`, `BootstrapPolicy`, `BootstrapSnapshot`, `BootstrapReport`, `ReseedAttemptSummary`, `Bootstrap`, `bootstrap_daemon`, `bootstrap_with_offline_reseed`, `build_trust_set`, `store_summary` |
+| `src/netdb_seam.rs` | Plan 106 runtime-facing seam for Plan 105 actions | `NetDbSeam`, `ExploratoryPathStatus` |
 
 There are no subdirectories.
 
 ## Public surface
 
 ### Crate root (`src/lib.rs`)
-- `pub mod cli;` (`lib.rs:9`)
-- `pub mod config;` (`lib.rs:10`)
-- `pub mod error;` (`lib.rs:11`)
-- `enum CommandOutcome` (`lib.rs:22`):
-  - `Validated { dry_run, config }` (`lib.rs:24`)
-  - `IdentityGenerated { path }` (`lib.rs:31`)
-  - `IdentityInspected { path, summary }` (`lib.rs:36`)
-- `struct IdentitySummary { signing_algorithm, encryption_algorithm }`
-  (`lib.rs:46-51`).
-- `fn execute(Cli) -> Result<CommandOutcome, DaemonError>`
-  (`lib.rs:54`).
-- `fn initialize_logging(&LoggingConfig)` (`lib.rs:101`).
-
-### `src/cli.rs`
-- `struct Cli` (`Parser`, `cli.rs:14`).
-- `enum Command` (`Subcommand`, `cli.rs:22`).
-- `enum IdentityCommand` (`Subcommand`, `cli.rs:37`).
-- `struct CheckConfigArgs { config: PathBuf }` (`cli.rs:46-49`).
-- `struct IdentityArgs { config: PathBuf }` (`cli.rs:54-57`).
-- `struct RunArgs { config: PathBuf, dry_run: bool }` (`cli.rs:62-68`).
+- `pub mod bootstrap;`
+- `pub mod cli;`
+- `pub mod config;`
+- `pub mod error;`
+- `pub mod netdb_seam;`
+- `pub use error::DaemonError;`
+- `enum CommandOutcome`:
+  - `Validated { dry_run, config }`
+  - `IdentityGenerated { path }`
+  - `IdentityInspected { path, summary }`
+  - `RunReady { config }`
+- `struct IdentitySummary { signing_algorithm, encryption_algorithm }`.
+- `fn execute(Cli) -> Result<CommandOutcome, DaemonError>`.
+- `fn initialize_logging(&LoggingConfig)`.
+- `fn bootstrap_daemon(&Config, now_seconds, offline_reseed_path) -> Result<(BootstrapReport, Arc<Mutex<Bootstrap>>), DaemonError>`.
+- `fn build_daemon_graph(&Config) -> Result<i2pr_runtime::ServiceGraph, DaemonError>`.
+- `async fn run_daemon(Config) -> Result<(), DaemonError>`.
 
 ### `src/config.rs`
-- `const CURRENT_SCHEMA_VERSION: u64 = 1` (`config.rs:11`).
-- `const DEFAULT_MAX_TASKS: u64 = 4_096` (`config.rs:13`).
-- `const DEFAULT_MAX_BUFFERED_BYTES: u64 = 67_108_864` (64 MiB)
-  (`config.rs:15`).
-- `enum RouterProfile` (`config.rs:96`).
-- `enum LogFormat` (`config.rs:102`).
-- `struct RouterConfig` (`config.rs:110`).
-- `struct LoggingConfig` (`config.rs:118`).
-- `struct LimitsConfig` (`config.rs:128`).
-- `struct Config` (`config.rs:137`).
-- `impl Config { fn load(&Path) -> Result<Self, DaemonError>; fn parse(&str) -> Result<Self, ConfigError> }`
-  (`config.rs:150, 161`).
-- `enum ConfigError` (`config.rs:262`) with `fn exit_code() -> ExitCode`
-  (`config.rs:281`).
+- `enum RouterProfile { Balanced }`.
+- `enum LogFormat { Text }`.
+- `struct RouterConfig { data_dir, profile }`.
+- `struct LoggingConfig { filter, format }`.
+- `struct LimitsConfig { max_tasks, max_buffered_bytes }`.
+- `struct NetDbConfig { enabled, max_records, max_encoded_bytes, min_router_infos, min_floodfill_advertisers }`.
+- `struct ReseedConfig { enabled, max_sources, max_su3_bytes, sources }`.
+- `struct ReseedSourceConfig { signer_id, certificate_path }`.
+- `struct Config { schema_version, router, logging, limits, network, transport, netdb, reseed }`.
+- `impl Config { fn load(&Path) -> Result<Self, DaemonError>; fn parse(&str) -> Result<Self, ConfigError> }`.
+- `enum ConfigError` with `fn exit_code() -> ExitCode`.
 
 ### `src/error.rs`
-- `enum ExitCode #[repr(u8)]` (`error.rs:15`); `fn as_i32() -> i32`
-  (`error.rs:36`).
-- `enum DaemonError` (`error.rs:43`) with `fn exit_code() -> ExitCode`
-  (`error.rs:71`).
+- `enum ExitCode #[repr(u8)]`; `fn as_i32() -> i32`.
+- `enum DaemonError` with `fn exit_code() -> ExitCode`.
 
 ## CLI surface
 
@@ -128,6 +131,14 @@ explicit.
 | `logging.format` | `"text"` |
 | `limits.max_tasks` | `4_096` |
 | `limits.max_buffered_bytes` | `67_108_864` (64 MiB) |
+| `netdb.enabled` | `true` |
+| `netdb.max_records` | `4_096` |
+| `netdb.max_encoded_bytes` | `4 MiB` |
+| `netdb.min_router_infos` | `50` |
+| `netdb.min_floodfill_advertisers` | `5` |
+| `reseed.enabled` | `false` |
+| `reseed.max_sources` | `4` |
+| `reseed.max_su3_bytes` | `8 MiB` |
 
 ### Stable exit codes
 
@@ -140,6 +151,14 @@ explicit.
 | 20 | `RuntimeNotImplemented` | `run` without `--dry-run`. |
 | 30 | `IdentityStorage` | Identity persistence failure. |
 | 31 | `IdentityCrypto` | Identity generation failure. |
+| 40 | `RuntimeBindFailed` | TCP listener could not bind. |
+| 41 | `RuntimeIdentity` | Router identity not found/invalid. |
+| 42 | `RuntimeListenerFailed` | Listener accept loop failed. |
+| 43 | `RuntimeDialFailed` | Outbound connection failed. |
+| 44 | `RuntimeHandshakeFailed` | NTCP2 Noise handshake failed. |
+| 45 | `RuntimeShutdownTimeout` | Supervised shutdown exceeded deadline. |
+| 46 | `RuntimeSupervisorFailed` | Child task crashed and supervisor terminated. |
+| 47 | `RuntimeBootstrap` | Bootstrap pipeline failed. |
 | 70 | `Internal` | Unexpected internal failure. |
 
 `clap`'s own usage errors produce exit code **2**.
@@ -178,15 +197,32 @@ execute(cli: Cli) -> Result<CommandOutcome, DaemonError>
 
 `run_daemon(config)` (`lib.rs`) is the real daemon path:
 
-1. Load persistent router identity from `data_dir`.
-2. Build a service graph via `build_daemon_graph(&config)`.
-3. Create the `Supervisor` with the graph.
-4. Register a ctrl-c handler that triggers graceful shutdown.
-5. Run the supervisor loop until shutdown or failure.
+1. Compute current wall-clock seconds.
+2. Run `bootstrap_daemon(&config, now_seconds, None)`:
+   a. load persistent router identity from `data_dir`;
+   b. construct the NetDB store and bootstrap state;
+   c. revalidate the persistent RouterInfo cache through
+      `CacheLoader::load_into`;
+   d. construct and self-validate the local RouterInfo;
+   e. recompute bootstrap readiness;
+   f. if reseed is enabled and the cache is below threshold, run
+      the bounded offline reseed pipeline;
+   g. return a sanitized `BootstrapReport`.
+3. Build the service graph via `build_daemon_graph(&config)`.
+4. Create the `Supervisor` with the graph.
+5. Register a ctrl-c handler that triggers graceful shutdown.
+6. Run the supervisor loop until shutdown or failure.
 
 NTCP2 is excluded from the service graph under current authority.
-The graph contains only a `lifecycle` service that waits for the
-shutdown signal.
+The graph contains a `lifecycle` service that waits for the
+shutdown signal and a `netdb-bootstrap` service that observes the
+supervisor's cancellation token.
+
+`bootstrap_daemon(&config, now_seconds, offline_reseed_path)` is
+the Plan 106 synchronous pipeline. The function returns both the
+sanitized `BootstrapReport` and an `Arc<Mutex<Bootstrap>>` so future
+long-lived runtime adapters can observe the in-memory store
+without re-running any pipeline stage.
 
 `build_daemon_graph(&Config)` (`lib.rs`) is the testable seam
 that builds the service graph without running the supervisor.
@@ -208,12 +244,44 @@ It rejects `ntcp2.enabled = true` as a defense-in-depth check.
 calls `try_init()` — duplicate init is silently ignored for test
 embedding.
 
+### Plan 106 bootstrap state machine (`src/bootstrap.rs`)
+
+`bootstrap_daemon` owns the Plan 106 bounded startup/readiness
+pipeline. It composes the Plan 103/104/105 surfaces
+(`RouterInfoStore`, `LocalRouterInfoBuilder`,
+`ReseedSignerTrustSet`) without owning a runtime, sockets, or
+tunnels.
+
+`BootstrapState` is a bounded seven-variant enum
+(`Empty`, `CacheSufficient`, `ReseedRequired`, `Reseeding`,
+`ReadyForNetworkIntegration`, `DegradedInsufficientPeers`,
+`Failed`). `BootstrapPolicy::from_config` derives the readiness
+thresholds from the validated `Config`.
+
+The pipeline never opens sockets, never performs DNS, never
+contacts I2P peers, and never accepts plain HTTP bytes. The
+HTTPS reseed adapter is deferred to a future plan; the offline
+SU3 source path is the only allowlisted Plan 106 acquisition
+path.
+
+### Plan 106 runtime seam (`src/netdb_seam.rs`)
+
+`NetDbSeam` exposes the Plan 105 lookup state machines behind a
+stable runtime-facing surface. `path_status()` returns
+`ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable` until
+Milestone 5 supplies an exploratory inbound gateway + tunnel
+identifier. `begin_lookup` translates the `RouterInfoLookup::start`
+outcome into the typed `LookupAction` vocabulary. A peer transport
+link is not equivalent to a complete reply path.
+
 ### Which crates are wired in today
 
 | Subsystem | Crate |
 | --- | --- |
 | Crypto (`OsRng`, `RouterIdentityBundle`) | `i2pr-crypto` |
-| Storage (`IdentityStore`) | `i2pr-storage` |
+| Storage (`IdentityStore`, `ByteCache`) | `i2pr-storage` |
+| NetDB (`RouterInfoStore`, `ValidatedRouterInfo`, `LocalRouterInfoBuilder`, lookup state machines) | `i2pr-netdb` |
+| NetDB composition (`CacheLoader`, `ReseedIngestor`) | `i2pr-netdb-persist` |
 | Runtime (supervisor, service graph, lifecycle) | `i2pr-runtime` |
 | Transport / NTCP2 / Proto / Core | declared, **not yet used in production daemon** |
 

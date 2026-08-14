@@ -148,48 +148,63 @@ tests, and any distinctive design choices.
 | `i2pr-transport` | Transport contracts | Runtime-neutral link/delivery contracts. No Tokio, no I/O, no async. | [i2pr-transport.md](i2pr-transport.md) |
 | `i2pr-transport-ntcp2` | NTCP2 protocol | Runtime-neutral Noise handshake, AEAD frames, data-phase blocks. | [i2pr-transport-ntcp2.md](i2pr-transport-ntcp2.md) |
 | `i2pr-runtime` | Runtime owner | The only production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation. | [i2pr-runtime.md](i2pr-runtime.md) |
-| `i2pr-daemon` | Composition root | CLI + config + identity lifecycle. Live daemon execution not yet enabled. | [i2pr-daemon.md](i2pr-daemon.md) |
+| `i2pr-daemon` | Composition root | CLI + config + identity lifecycle + Plan 106 NetDB/bootstrap pipeline. Live daemon runs through the supervisor with no I2P transport. | [i2pr-daemon.md](i2pr-daemon.md) |
 | `i2pr-testkit` | Test simulation | Deterministic clocks, virtual links, scripted faults. Test-only; never a production dep. | [i2pr-testkit.md](i2pr-testkit.md) |
 | `scripts/` + `tests/` + `fuzz/` | Tooling | Guardrails, fixtures, integration lanes, opt-in fuzzing. | [tooling.md](tooling.md) |
 
 ## How data flows at runtime
 
-Even though the live daemon is not yet wired in, the seams are in place.
-A future `i2pr run` will:
+A live `i2pr run` today (Plan 106) follows this sequence:
 
 1. **`i2pr-daemon`** parses CLI flags, loads and validates the TOML
-   config under `deny_unknown_fields`, maps errors to stable exit codes,
-   then constructs an `IdentityStore` and hands off the validated
-   `Config`.
+   config under `deny_unknown_fields` (including the new `[netdb]`
+   and `[reseed]` sections), maps errors to stable exit codes, then
+   runs `bootstrap_daemon` before starting the supervisor.
 2. **`i2pr-storage`** loads the router identity from
    `<data_dir>/router.identity` and (separately) the NTCP2 static key
    from `<data_dir>/ntcp2.static.key`. Either file can be generated,
    but never silently replaced (atomic `hard_link` + `AlreadyExists`).
-3. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
+3. **`i2pr-netdb`** validates and self-validates the local
+   `RouterInfo` through `LocalRouterInfoBuilder`; refuses any
+   transport address or forbidden capability letter under the
+   Plan 101 activation guard.
+4. **`i2pr-netdb-persist`** loads and revalidates the persistent
+   RouterInfo cache through the Plan 104 `CacheLoader`, then runs
+   the optional bounded offline SU3 reseed through `ReseedIngestor`.
+5. **`i2pr-netdb`** keeps the populated `RouterInfoStore`,
+   `CoalescedRouterInfoLookup`, `PublicationCoordinator`, and the
+   transport-neutral state machines ready for the future Milestone 5
+   runtime adapter. `i2pr-daemon`'s `NetDbSeam` exposes them through
+   a stable surface while reporting
+   `BlockedExploratoryTunnelUnavailable`.
+6. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
    before startup, then spawns one supervisor manager per service via a
    `JoinSet`. Each service receives a narrowed `ServiceContext` (name,
    cancellation, readiness, health, child scope) — never a direct handle
-   to the supervisor.
-4. **`i2pr-transport-ntcp2`** implements the protocol: Noise XK
-   handshake, AES-CBC ephemeral obfuscation, ChaCha20-Poly1305 data
-   phase, directional SipHash frame-length masking, deterministic
-   handshake state machines. It returns `HandshakeAction` /
-   `FrameAction` requests; `i2pr-runtime` fulfills them with real
-   sockets and cancellation.
-5. **`i2pr-transport`** sits underneath as the runtime-neutral link
+   to the supervisor. The graph contains only `lifecycle` and
+   `netdb-bootstrap` services under Plan 101/106 authority.
+7. **`i2pr-transport-ntcp2`** is declared but **not yet used** in the
+   production daemon. It implements the protocol: Noise XK handshake,
+   AES-CBC ephemeral obfuscation, ChaCha20-Poly1305 data phase,
+   directional SipHash frame-length masking, deterministic handshake
+   state machines. It returns `HandshakeAction` / `FrameAction`
+   requests; `i2pr-runtime` would fulfill them with real sockets and
+   cancellation. The Plan 101 NTCP2 activation guard keeps the daemon
+   from registering `ntcp2-transport`.
+8. **`i2pr-transport`** sits underneath as the runtime-neutral link
    manager: `LinkState` FSM, `TransportManager` admission with RAII
    leases, duplicate-resolution policy, privacy-safe `TransportSnapshot`.
-6. **`i2pr-core`** provides lifecycle, health snapshots, cancellation
+9. **`i2pr-core`** provides lifecycle, health snapshots, cancellation
    tokens, and the shared `ResourceBudget` governor that all subsystems
    draw from via typed lease owners.
-7. **`i2pr-proto`** and **`i2pr-crypto`** stay at the bottom — no one
-   depends on anything above them except the test and integration
-   layers.
-8. **`i2pr-testkit`** is used only by tests. It exercises the same
-   crates through a `NetworkScheduler`, `ManualClock`,
-   `Ntcp2DataPhaseDriver`, and a 128-bit `ReproducibilitySeed`. Tests
-   use `#[tokio::test(start_paused = true)]`; no wall-clock sleeps, no
-   real sockets, no DNS, no public-network traffic.
+10. **`i2pr-proto`** and **`i2pr-crypto`** stay at the bottom — no one
+    depends on anything above them except the test and integration
+    layers.
+11. **`i2pr-testkit`** is used only by tests. It exercises the same
+    crates through a `NetworkScheduler`, `ManualClock`,
+    `Ntcp2DataPhaseDriver`, and a 128-bit `ReproducibilitySeed`. Tests
+    use `#[tokio::test(start_paused = true)]`; no wall-clock sleeps, no
+    real sockets, no DNS, no public-network traffic.
 
 The boundary contract is enforced by scripts under `scripts/`:
 

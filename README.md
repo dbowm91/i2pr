@@ -2286,6 +2286,42 @@ a dependency. The static surface under
 `scripts/check-dependency-direction.sh` and
 `scripts/check-runtime-boundaries.sh` enforces the boundary.
 
+### Plan 106 daemon NetDB/bootstrap integration and Milestone 5 handoff
+
+[Plan 106](plans/106-daemon-netdb-bootstrap-integration-and-milestone-5-handoff.md)
+is the final executable plan in the Milestone 4 foundation sequence.
+It composes the Plan 103/104/105 runtime-neutral surfaces into the
+real `i2pr` daemon without activating any I2P transport:
+
+- `[netdb]` and `[reseed]` configuration sections under
+  `deny_unknown_fields`, with hard ceilings (`max_records ≤ 65536`,
+  `max_encoded_bytes ≤ 64 MiB`, `max_su3_bytes ≤ 16 MiB`).
+- A bounded `BootstrapState` vocabulary
+  (`empty`, `cache-sufficient`, `reseed-required`, `reseeding`,
+  `ready-for-network-integration`, `degraded-insufficient-peers`,
+  `failed`) with a `BootstrapPolicy` derived from the validated
+  config.
+- A synchronous `bootstrap_daemon` pipeline that runs cache
+  revalidation, local RouterInfo construction, and bounded offline
+  reseed (HTTPS reseed is explicitly deferred) before the supervisor
+  starts.
+- A `netdb-bootstrap` service in the supervisor graph alongside the
+  `lifecycle` service; both are wired to the supervisor's
+  cancellation primitive.
+- A `netdb_seam::NetDbSeam` runtime-facing seam that exposes the
+  Plan 105 lookup state machine vocabulary while reporting
+  `ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable`
+  until Milestone 5 supplies exploratory tunnels.
+- 24 integration tests under
+  `crates/i2pr-daemon/tests/netdb_integration.rs` covering all 14
+  Plan 106 integration items plus the typed-blocker paths.
+
+Plan 106 closes the Milestone 4A local/bootstrap implementation
+phase. Live `RouterInfo` lookup remains blocked on the Milestone 5
+exploratory-tunnel substrate; a direct NTCP2 `DatabaseLookup` is not
+accepted as a substitute. The Plan 106 closure record is
+`plans/106-status.md`.
+
 ### Plan 104 persistent NetDB cache and SU3 reseed trust path
 
 [Plan 104](plans/104-persistent-netdb-cache-and-su3-reseed-trust-path.md)
@@ -2317,6 +2353,8 @@ routing-key/floodfill selection = implemented (Plan 105)
 RouterInfo lookup state machine = implemented, runtime/path not live (Plan 105)
 DatabaseStore RouterInfo ingestion = implemented (Plan 105)
 RouterInfo publication coordinator = implemented, not live-verified (Plan 105)
+daemon NetDB/bootstrap integration = implemented (Plan 106)
+runtime-facing NetDB seam       = implemented, exploratory-path blocked (Plan 106)
 exploratory tunnels              = not implemented (Milestone 5)
 live standards-conformant NetDB lookup = blocked on Milestone 5 + transport
 NTCP2                            = experimental-non-advertised
@@ -2325,6 +2363,7 @@ NTCP2                            = experimental-non-advertised
 The Plan 103 closure record is `plans/103-status.md`.
 The Plan 104 closure record is `plans/104-status.md`.
 The Plan 105 closure record is `plans/105-status.md`.
+The Plan 106 closure record is `plans/106-status.md`.
 
 ## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active roadmap)
 
@@ -2367,9 +2406,10 @@ closes, Milestone 4A is `local-foundation-complete-external-transport-blocked`
 until Milestone 5 supplies exploratory inbound/outbound paths and
 a router transport is deliberately qualified. A direct
 `DatabaseLookup` over NTCP2 is not accepted as a substitute for
-the standard exploratory-tunnel path. The next executable
-implementation remains **Plan 103** (RouterInfo validation and
-local NetDB foundation).
+the standard exploratory-tunnel path. Plans 103 → 104 → 105 →
+106 have all closed locally on this host. The next executable
+implementation is **Milestone 5 exploratory tunnels** under
+Plan 102 authority.
 
 ## Plan 099 Milestone 3 interop exit, harness reduction, and router buildout (historical; retained NTCP2 result)
 

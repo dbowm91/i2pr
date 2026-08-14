@@ -310,7 +310,9 @@ impl RouterInfoLookup {
             return AdvanceOutcome::Attempt(key, body_len);
         }
         // No eligible candidate remains.
-        if state.queried.is_empty() {
+        let queried_is_empty = state.queried.is_empty();
+        self.active = Some(state);
+        if queried_is_empty {
             AdvanceOutcome::Terminal(LookupFinalState::NoEligibleCandidates)
         } else {
             AdvanceOutcome::Terminal(LookupFinalState::PeerExhausted)

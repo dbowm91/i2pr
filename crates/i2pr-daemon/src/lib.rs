@@ -6,17 +6,22 @@
 
 #![forbid(unsafe_code)]
 
+pub mod bootstrap;
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod netdb_seam;
+
+pub use error::DaemonError;
 
 use cli::{CheckConfigArgs, Cli, Command, IdentityCommand, RunArgs};
 use config::Config;
-use error::DaemonError;
 use i2pr_crypto::{OsRng, RouterIdentityBundle};
+use i2pr_netdb::{LocalRouterInfoBuilder, RouterInfoStoreConfig};
 use i2pr_runtime::{ServiceClassification, ServiceName, ServiceSpec};
 use i2pr_storage::IdentityStore;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Result of a successful side-effect-free validation command.
@@ -104,7 +109,9 @@ pub fn execute(cli: Cli) -> Result<CommandOutcome, DaemonError> {
 /// Builds the daemon service graph for the given configuration.
 ///
 /// Returns the graph so callers and tests can inspect the registered services
-/// without starting the supervisor loop.
+/// without starting the supervisor loop. The graph is transport-neutral:
+/// no `ntcp2-transport` service is registered under the current Plan 101
+/// activation guard.
 pub fn build_daemon_graph(config: &Config) -> Result<i2pr_runtime::ServiceGraph, DaemonError> {
     if config.transport.ntcp2.enabled {
         return Err(DaemonError::RuntimeSupervisorFailed(
@@ -133,17 +140,91 @@ pub fn build_daemon_graph(config: &Config) -> Result<i2pr_runtime::ServiceGraph,
             DaemonError::RuntimeSupervisorFailed(format!("failed to register service: {e}"))
         })?;
 
+    let netdb_name = ServiceName::new("netdb-bootstrap").expect("valid service name");
+    builder
+        .register(ServiceSpec::new(
+            netdb_name,
+            ServiceClassification::Essential,
+            |ctx| {
+                Box::pin(async move {
+                    // The Plan 106 netdb-bootstrap service is a
+                    // long-lived observability owner that keeps the
+                    // supervisor alive while the daemon is healthy.
+                    // The actual bootstrap pipeline runs synchronously
+                    // in `run_daemon` before the supervisor starts so
+                    // the bounded startup pipeline is observable in
+                    // the CLI exit path. The service here is the
+                    // cancellation-aware wait that ties the supervisor
+                    // lifetime to the lifecycle signal.
+                    let cancellation = ctx.cancellation();
+                    cancellation.cancelled().await;
+                    i2pr_runtime::ServiceResult::RequestedShutdown
+                })
+            },
+        ))
+        .map_err(|e| {
+            DaemonError::RuntimeSupervisorFailed(format!("failed to register service: {e}"))
+        })?;
+
     builder
         .build()
         .map_err(|e| DaemonError::RuntimeSupervisorFailed(format!("invalid service graph: {e}")))
 }
 
-/// Executes the live daemon run with Tokio runtime and supervisor.
-pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
+/// Runs the Plan 106 bounded bootstrap pipeline synchronously and
+/// returns the sanitized report.
+///
+/// The pipeline:
+/// 1. loads the persistent router identity;
+/// 2. revalidates the persistent RouterInfo cache;
+/// 3. constructs and self-validates the local RouterInfo;
+/// 4. recomputes bootstrap readiness;
+/// 5. performs at most one bounded reseed attempt if enabled.
+///
+/// The function never opens sockets, never performs DNS, and never
+/// contacts I2P peers.
+pub fn bootstrap_daemon(
+    config: &Config,
+    now_seconds: u64,
+    offline_reseed_path: Option<std::path::PathBuf>,
+) -> Result<(bootstrap::BootstrapReport, Arc<Mutex<bootstrap::Bootstrap>>), DaemonError> {
     let store = IdentityStore::in_data_dir(&config.router.data_dir);
-    let _bundle = store.load().map_err(|e| {
+    let bundle = store.load().map_err(|e| {
         DaemonError::RuntimeIdentity(format!("failed to load router identity: {e}"))
     })?;
+    let builder = LocalRouterInfoBuilder::new(&bundle);
+    let store_config =
+        RouterInfoStoreConfig::new(config.netdb.max_records, config.netdb.max_encoded_bytes);
+    let mut bootstrap = bootstrap::Bootstrap::new(store_config, config.reseed.clone());
+    if let Some(path) = offline_reseed_path {
+        bootstrap = bootstrap.with_offline_reseed_path(path);
+    }
+    let policy = bootstrap::BootstrapPolicy::from_config(config);
+    let report = bootstrap
+        .run(&config.router.data_dir, &builder, policy, now_seconds)
+        .map_err(|e| DaemonError::RuntimeBootstrap(e.to_string()))?;
+    let shared = Arc::new(Mutex::new(bootstrap));
+    Ok((report, shared))
+}
+
+/// Executes the live daemon run with Tokio runtime and supervisor.
+///
+/// The function runs the Plan 106 bounded bootstrap pipeline
+/// synchronously before starting the supervisor, then drives the
+/// supervisor loop until shutdown or failure.
+pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
+    let now_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let (report, _bootstrap_handle) = bootstrap_daemon(&config, now_seconds, None)?;
+    tracing::info!(
+        state = %report.final_state,
+        record_count = report.snapshot.record_count,
+        floodfill_advertisers = report.snapshot.floodfill_advertisers,
+        reseed_attempts = report.snapshot.reseed_attempts,
+        "bootstrap pipeline completed"
+    );
 
     let graph = build_daemon_graph(&config)?;
 

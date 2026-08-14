@@ -688,6 +688,8 @@ dependencies = [
  "i2pr-runtime",
  "i2pr-storage",
  "i2pr-transport",
+ "rand_chacha 0.9.0",
+ "rand_core 0.9.5",
  "serde",
  "tempfile",
  "thiserror 2.0.18",

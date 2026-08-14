@@ -44,6 +44,7 @@ pub use lookup_engine::{
     handle_databasestore_message, handle_delivery_outcome, handle_search_reply,
     handle_searchreply_message,
 };
+
 pub use lookup_id::{
     CoalescedTargets, LookupId, LookupKind, MAX_COALESCED_LOOKUPS, MAX_WAITERS_PER_LOOKUP,
     ReplyPath, ReplyPathError, WaiterSet, router_hash_from_proto_hash,
@@ -63,7 +64,8 @@ pub use reseed::TrustedSigner;
 pub use reseed::{
     ReseedEntryReport, ReseedEntryState, ReseedLimits, ReseedSignatureType, ReseedSignerId,
     ReseedSignerTrustSet, ReseedTrustError, ReseedVerifiedBundle, ReseedVerifyOutcome,
-    ReseedVerifyReport, parse_su3, verify_su3, verify_su3_archive, verify_su3_with_signers,
+    ReseedVerifyReport, parse_su3, trust_signer_from_certificate, verify_su3, verify_su3_archive,
+    verify_su3_with_signers,
 };
 pub use router_info::RouterInfoValidationPolicy as ValidationPolicy;
 pub use router_info::{
