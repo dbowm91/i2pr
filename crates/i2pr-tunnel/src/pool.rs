@@ -37,6 +37,11 @@ impl TunnelSlot {
     pub const fn get(self) -> u32 {
         self.0
     }
+
+    /// Constructs a `TunnelSlot` from a raw value.
+    pub const fn from_raw(value: u32) -> Self {
+        Self(value)
+    }
 }
 
 impl fmt::Display for TunnelSlot {

@@ -1617,6 +1617,55 @@ bash scripts/check-multipass-interop-boundary.sh
 git diff --check
 ```
 
+## Plan 108 ECIES-X25519 short tunnel-build construction (closed)
+
+Plan 108 is the active Milestone 5 implementation plan that closes
+the local construction gap from Plan 107. Plan 108 lands:
+
+- a real ECIES-X25519 short-build cryptography primitive
+  (`EciesX25519BuildCryptography`) over the existing
+  `i2pr-crypto` ChaCha20-Poly1305 + HKDF-SHA256 helpers;
+- typed 154-byte short request and 202-byte reply record
+  encoders in [`short_record`], with strict validation of
+  every field the I2P short-build specification defines;
+- the runtime-neutral [`short`] build state machine that
+  drives one attempt through `Prepared → Protecting →
+  ReadyForDelivery → AwaitingReply → Established` and the
+  bounded terminal failures;
+- the success-only [`short_state::ShortBuildRegistrar`] that
+  admits a fully validated build into `ExploratoryPool`;
+- a deterministic in-process peer simulator
+  ([`responder`]) for end-to-end local simulation without
+  self-mirroring the cryptography primitive;
+- the HKDF-SHA256 helper in `i2pr-crypto` shared by the
+  primitive and future protocol-neutral callers;
+- corrective constant fixes for `ShortTunnelBuild = 25` and
+  `OutboundTunnelBuildReply = 26` (Plan 107 carried incorrect
+  values 24 / 225 in `BuildRequestKind`).
+
+Plan 108 does **not** activate NTCP2, advertise tunnels, run a
+live mixed-router build, or claim a network-facing
+interoperability result. The next substantial product
+roadmap is governed by [Plan 102][plans/102] and its child
+sequence, not by another NTCP2 evidence framework plan.
+
+### Plan 108 focused checks
+
+```text
+cargo +1.95.0 fmt --all --check
+cargo +1.95.0 check --locked --workspace --all-targets
+cargo +1.95.0 test --locked --workspace
+cargo +1.95.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo +1.95.0 doc --locked --workspace --no-deps
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+bash scripts/check-fixture-manifest.sh
+bash scripts/check-ntcp2-vectors.sh
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-multipass-interop-boundary.sh
+git diff --check
+```
+
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
 
 Plan 096 is the active workflow correctness and pre-dispatch
@@ -2898,11 +2947,12 @@ The authoritative Plan 102 sequence is:
 ```text
 Plan 103  RouterInfo validation + bounded local NetDB     [closed]
    -> Plan 104  persistent cache + SU3 reseed trust/ingestion [closed]
-   -> Plan 105  transport-neutral lookup/store/publication state machines [closed]
-   -> Plan 106  daemon/bootstrap integration                 [closed]
-   -> Plan 107  Milestone 5 exploratory tunnel substrate     [closed]
-   -> Plan 108+ ECIES-X25519 build-encryption + live build   [next executable]
-   -> return to Milestone 4B external acceptance
+    -> Plan 105  transport-neutral lookup/store/publication state machines [closed]
+    -> Plan 106  daemon/bootstrap integration                 [closed]
+    -> Plan 107  Milestone 5 exploratory tunnel substrate     [closed]
+    -> Plan 108  ECIES-X25519 short record construction core   [closed]
+    -> Plan 109+ live mixed-router build + external acceptance [next executable]
+    -> return to Milestone 4B external acceptance
 ```
 
 Plan 106 closed the local/bootstrap implementation phase; Plan 107
@@ -2910,12 +2960,13 @@ landed the runtime-neutral exploratory pool, the typed build-record
 layout surface, the build-cryptography seam, and the reply-path
 provider that flips the Plan 106 NetDB seam from
 `BlockedExploratoryTunnelUnavailable` to `Available` once a real
-inbound tunnel is registered. Milestone 4A is now
-`local-foundation-complete-exploratory-substrate-landed-live-build-pending`.
+inbound tunnel is registered. Plan 108 closed the local
+short-record construction phase. Milestone 4A is now
+`local-foundation-complete-short-build-construction-landed-live-build-pending`.
 A direct `DatabaseLookup` over NTCP2 is not accepted as a substitute
 for the standard exploratory-tunnel path. The next executable
-implementation is **Plan 108** (live ECIES-X25519 build-encryption
-primitive and live mixed-router tunnel build).
+implementation is **Plan 109+** (live mixed-router build + external
+acceptance) and Milestone 4B external acceptance.
 
 ## Plan 106 daemon NetDB/bootstrap integration and Milestone 5 handoff (closed)
 

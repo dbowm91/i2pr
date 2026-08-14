@@ -1,10 +1,11 @@
 //! Bounded build record layout surface.
 //!
 //! Plan 107 §3.4 owns the typed surface over the existing
-//! `DeferredBuildRecords` bytes from `i2pr-proto`. The surface does
-//! not perform ECIES-X25519 encryption — that lives behind the
-//! `build_crypto` trait object. The layout module enforces the
-//! expected record size and count bounds and refuses unknown shapes.
+//! `DeferredBuildRecords` bytes from `i2pr-proto`. The surface
+//! exposes the wire-shape constants the Plan 108 ECIES-X25519
+//! construction path consumes. The layout module enforces the
+//! expected record size and count bounds and refuses unknown
+//! shapes.
 
 #![forbid(unsafe_code)]
 
@@ -18,8 +19,9 @@ use crate::build_crypto::BuildCryptographyError;
 
 /// The two record sizes the I2P tunnel-build messages accept.
 ///
-/// Plan 107 supports both shapes; Plan 008 will fix the default
-/// selector once the live ECIES primitive lands.
+/// Plan 108 supports both shapes; the short layout is the default
+/// for ECIES-X25519 builds and the only layout consumed by the
+/// [`crate::build_crypto::BuildCryptography`] ECIES primitive.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuildRecordLayout {
     /// The legacy 528-byte variable-size record. Required when
@@ -52,9 +54,9 @@ impl BuildRecordLayout {
 /// The I2NP message type a build request uses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuildRequestKind {
-    /// Legacy 528-byte records; I2NP message type 24.
+    /// Legacy 528-byte records; I2NP message type 23.
     VariableTunnelBuild,
-    /// Short 218-byte records; I2NP message type 225.
+    /// Short 218-byte records; I2NP message type 25.
     ShortTunnelBuild,
 }
 
@@ -62,8 +64,17 @@ impl BuildRequestKind {
     /// Returns the I2NP message-type numeric identifier.
     pub const fn message_type(self) -> u8 {
         match self {
-            Self::VariableTunnelBuild => 24,
-            Self::ShortTunnelBuild => 225,
+            Self::VariableTunnelBuild => 23,
+            Self::ShortTunnelBuild => 25,
+        }
+    }
+
+    /// Returns the short record size for the matched layout, or
+    /// the variable record size for the legacy layout.
+    pub const fn matched_layout(self) -> BuildRecordLayout {
+        match self {
+            Self::VariableTunnelBuild => BuildRecordLayout::Variable,
+            Self::ShortTunnelBuild => BuildRecordLayout::Short,
         }
     }
 }
@@ -73,6 +84,41 @@ impl fmt::Display for BuildRequestKind {
         let label = match self {
             Self::VariableTunnelBuild => "variable-tunnel-build",
             Self::ShortTunnelBuild => "short-tunnel-build",
+        };
+        formatter.write_str(label)
+    }
+}
+
+/// The I2NP message type a build reply uses.
+///
+/// The reply classification is a more constrained cousin of
+/// [`BuildRequestKind`]: only the variable and short reply types
+/// are reachable from the active `i2pr-tunnel` surface, and the
+/// short reply is the only message kind the Plan 108 ECIES
+/// cryptography path consumes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuildReplyKind {
+    /// Legacy 528-byte records; I2NP message type 24.
+    VariableTunnelBuildReply,
+    /// Short 218-byte ECIES record reply; I2NP message type 26.
+    OutboundTunnelBuildReply,
+}
+
+impl BuildReplyKind {
+    /// Returns the I2NP message-type numeric identifier.
+    pub const fn message_type(self) -> u8 {
+        match self {
+            Self::VariableTunnelBuildReply => 24,
+            Self::OutboundTunnelBuildReply => 26,
+        }
+    }
+}
+
+impl fmt::Display for BuildReplyKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::VariableTunnelBuildReply => "variable-tunnel-build-reply",
+            Self::OutboundTunnelBuildReply => "outbound-tunnel-build-reply",
         };
         formatter.write_str(label)
     }
@@ -152,13 +198,13 @@ impl BuildRecordLayout {
 
 /// Marker for the build-cryptography seam. Plan 107 only validates
 /// that the seam rejects calls to the absent primitive; the live
-/// ECIES-X25519 encryption is implemented in Plan 008+.
+/// ECIES-X25519 encryption is implemented in Plan 108.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BuildCryptographyUnavailable;
 
 impl fmt::Display for BuildCryptographyUnavailable {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("build cryptography primitive is not yet implemented (Plan 008)")
+        formatter.write_str("build cryptography primitive is not yet implemented (Plan 108)")
     }
 }
 
@@ -217,13 +263,19 @@ mod tests {
 
     #[test]
     fn build_request_kind_message_types_are_stable() {
-        assert_eq!(BuildRequestKind::VariableTunnelBuild.message_type(), 24);
-        assert_eq!(BuildRequestKind::ShortTunnelBuild.message_type(), 225);
+        assert_eq!(BuildRequestKind::VariableTunnelBuild.message_type(), 23);
+        assert_eq!(BuildRequestKind::ShortTunnelBuild.message_type(), 25);
+    }
+
+    #[test]
+    fn build_reply_kind_message_types_are_stable() {
+        assert_eq!(BuildReplyKind::VariableTunnelBuildReply.message_type(), 24);
+        assert_eq!(BuildReplyKind::OutboundTunnelBuildReply.message_type(), 26);
     }
 
     #[test]
     fn build_cryptography_unavailable_is_typed() {
         let label = BuildCryptographyUnavailable.to_string();
-        assert!(label.contains("Plan 008"));
+        assert!(label.contains("Plan 108"));
     }
 }

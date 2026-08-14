@@ -8,7 +8,7 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 
 **Implemented:**
 - Bounded wire protocol codecs (`i2pr-proto`)
-- Cryptographic wrappers: Ed25519, X25519, AES, ChaCha20-Poly1305, HMAC, SipHash (`i2pr-crypto`)
+- Cryptographic wrappers: Ed25519, X25519, AES, ChaCha20-Poly1305, HMAC, SipHash, HKDF-SHA256 (`i2pr-crypto`)
 - Versioned private-identity storage (`i2pr-storage`)
 - Runtime-neutral transport and service contracts (`i2pr-transport`, `i2pr-transport-ntcp2`)
 - Tokio-owned runtime with supervision, cancellation, and bounded channels (`i2pr-runtime`)
@@ -18,11 +18,17 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 - Transport-neutral lookup, store, and publication state machines (`i2pr-netdb`)
 - Daemon bootstrap integration with `NetDbSeam` (`i2pr-daemon`)
 - Exploratory tunnel substrate, pool, and reply-path provider (`i2pr-tunnel`)
+- ECIES-X25519 short tunnel-build cryptography, typed short request/reply
+  records, runtime-neutral `ShortBuildStateMachine`, success-only
+  `ShortBuildRegistrar`, and deterministic `DeterministicResponder`
+  peer simulator (`i2pr-tunnel`)
 - CLI daemon with config validation, identity generation, and dry-run (`i2pr-daemon`)
 
 **Not implemented:**
 - Live NTCP2 or SSU2 transport (NTCP2 experimental, non-advertised)
-- Live tunnel builds (ECIES-X25519 build-encryption pending)
+- Live mixed-router tunnel build execution (Plan 108 closed the local
+  short-record construction core; live execution depends on a
+  qualified router-to-router transport)
 - NetDB lookup/publication over the network
 - I2NP message handling and router dispatch
 - Streaming, SAM, I2CP, garlic, LeaseSet management
@@ -44,7 +50,7 @@ crates/
   i2pr-runtime/             Tokio-owned supervision, cancellation, and I/O
   i2pr-netdb/               RouterInfo validation, NetDB store, lookup, publication
   i2pr-netdb-persist/       Persistent cache and SU3 reseed ingestion
-  i2pr-tunnel/              Tunnel identity, exploratory pool, reply-path provider
+  i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build cryptography, runtime-neutral build state machine, reply-path provider
   i2pr-daemon/              CLI, configuration, composition, supervision
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
 tools/

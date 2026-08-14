@@ -121,6 +121,16 @@ no DNS. Filesystem I/O belongs to `i2pr-storage` (raw-byte seam) and
   semantics; tracks acknowledgement tokens, never re-signs the
   local RouterInfo, and surfaces a `needs_verification_lookup()`
   signal for the future Milestone 5 verification path.
+- `lookup_id::ReplyPathProvider` — the trait the Plan 107
+  `i2pr-tunnel::provider::ExploratoryPoolReplyPathProvider` adapter
+  implements. `i2pr-daemon`'s `NetDbSeam` consumes the trait; the
+  Plan 107 exploratory pool integration is the only live feed of
+  reply paths the Plan 106 NetDB bootstrap path consumes.
+- The Plan 108 short tunnel-build state machine lives in
+  `i2pr-tunnel` (not in this crate) and consumes
+  `i2pr_netdb::ReplyPath` only through the Plan 107 reply-path
+  provider — `i2pr-netdb` does not import the ECIES primitive or
+  the build state machine directly.
 - `store_message::handle_unsolicited_databasestore` — bounded
   ingestion handler for `DatabaseStore` messages that arrive outside
   an active lookup; rejects non-RouterInfo payloads and enforces the

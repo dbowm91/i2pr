@@ -1,7 +1,8 @@
 # Machine-readable workspace support inventory (current evidence through
-# the Plan 107 Milestone 5 exploratory tunnel substrate). Structural
-# evidence may be recorded before interoperability; all entries remain
-# non-advertised until the conformance requirements are met.
+# the Plan 108 ECIES-X25519 short tunnel-build construction pass).
+# Structural evidence may be recorded before interoperability; all
+# entries remain non-advertised until the conformance requirements
+# are met.
 schema = 1
 milestone = 5
 plan_103_implementation_floor = "plans/103-status.md"
@@ -9,6 +10,7 @@ plan_104_implementation_floor = "plans/104-status.md"
 plan_105_implementation_floor = "plans/105-status.md"
 plan_106_implementation_floor = "plans/106-status.md"
 plan_107_implementation_floor = "plans/107-status.md"
+plan_108_implementation_floor = "plans/108-status.md"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -409,6 +411,24 @@ status = "experimental"
 evidence = [
     "crates/i2pr-tunnel/src/build_crypto.rs",
     "plans/107-milestone-5-exploratory-tunnel-substrate.md",
+    "plans/108-live-ecies-x25519-short-tunnel-build-construction.md",
+]
+advertised = false
+
+[[surface]]
+id = "tunnel.ecies-x25519-short-build-crypto"
+protocol = "tunnels"
+structure = "local-ecies-x25519-short-build-cryptography-and-state-machine"
+scope = "required-later"
+status = "experimental"
+evidence = [
+    "crates/i2pr-tunnel/src/build_crypto.rs",
+    "crates/i2pr-tunnel/src/short.rs",
+    "crates/i2pr-tunnel/src/short_record.rs",
+    "crates/i2pr-tunnel/src/short_state.rs",
+    "crates/i2pr-tunnel/src/responder.rs",
+    "crates/i2pr-crypto/src/hkdf.rs",
+    "plans/108-live-ecies-x25519-short-tunnel-build-construction.md",
 ]
 advertised = false
 
@@ -418,5 +438,5 @@ protocol = "tunnels"
 structure = "live-ecies-x25519-build-and-mixed-router-execution"
 scope = "required-later"
 status = "deferred"
-evidence = ["plans/107-milestone-5-exploratory-tunnel-substrate.md"]
+evidence = ["plans/108-live-ecies-x25519-short-tunnel-build-construction.md"]
 advertised = false

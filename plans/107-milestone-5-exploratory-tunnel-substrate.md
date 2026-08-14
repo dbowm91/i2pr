@@ -186,7 +186,7 @@ Open decisions deferred from the dossier that Plan 107 resolves:
   `SHORT_BUILD_RECORD_SIZE` (218) and `VARIABLE_BUILD_RECORD_SIZE`
   (528) layouts behind a typed enum and does not commit to either
   as the production default; the default selector remains
-  Short until Plan 008 introduces the live build, at which point
+  Short until Plan 108 introduces the live build, at which point
   the production default will be set to `Short`.
 - **Tunnel length policy.** Plan 107 keeps a single
   `length_hops: u8` (default 2, hard ceiling 8) field in the pool
@@ -223,7 +223,7 @@ Plan 107 inherits and reinforces the Plan 102 invariants:
    `PoolFull` error and never silently drops the registration.
 6. Build encryption surface is gated behind an injected
    `BuildCryptography` trait that returns a typed
-   `BuildCryptographyUnavailable` error until Plan 008 supplies
+   `BuildCryptographyUnavailable` error until Plan 108 supplies
    the live primitive; Plan 107 only validates that the seam
    rejects calls to the absent primitive.
 

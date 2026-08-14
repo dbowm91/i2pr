@@ -1,11 +1,15 @@
-//! Protocol-specific cryptographic wrappers for the Milestone 1 router
-//! identity.
+//! Protocol-specific cryptographic wrappers for i2pr identity and
+//! ECIES tunnel-build operations.
 //!
-//! The generated identity uses I2P signature type 7 (Ed25519) and encryption
-//! type 4 (X25519). Secret operations are deliberately kept here rather than
-//! in `i2pr-proto`, whose key types remain public structural representations.
-//! Randomness is supplied by the caller and must implement
-//! [`rand_core::TryCryptoRng`].
+//! The generated identity uses I2P signature type 7 (Ed25519) and
+//! encryption type 4 (X25519). Secret operations are deliberately
+//! kept here rather than in `i2pr-proto`, whose key types remain
+//! public structural representations. Randomness is supplied by the
+//! caller and must implement [`rand_core::TryCryptoRng`].
+//!
+//! The crate also exposes the protocol-neutral HKDF-SHA256 helper
+//! that the Milestone 5 ECIES-X25519 tunnel build cryptography uses
+//! to derive per-hop keys.
 
 #![forbid(unsafe_code)]
 
@@ -26,6 +30,10 @@ use zeroize::{Zeroize, Zeroizing};
 
 /// Operating-system-backed randomness for explicit production injection.
 pub use rand_core::OsRng;
+
+pub mod hkdf;
+
+pub use hkdf::{HkdfError, MAX_HKDF_OUTPUT_LEN, hkdf_sha256_32, hkdf_sha256_extract_and_expand};
 
 /// The generated I2P signature algorithm: EdDSA over Ed25519 (type 7).
 pub const ROUTER_SIGNING_KEY_TYPE: SigningKeyType = SigningKeyType::EdDsaSha512Ed25519;

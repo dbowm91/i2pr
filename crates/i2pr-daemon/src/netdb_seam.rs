@@ -168,7 +168,7 @@ impl NetDbSeam {
         // records the path. The caller will need to drive the next
         // attempt through `lookup_mut()` to emit the actual
         // `SendDatabaselookup` action. Returning `NeedExploratoryReplyPath`
-        // here keeps the seam conservative; Plan 008 will replace
+        // here keeps the seam conservative; Plan 108 will replace
         // this stub with the live advance-loop that emits the
         // follow-up action.
         LookupAction::NeedExploratoryReplyPath {
