@@ -14,105 +14,7 @@
 8. documentation of unsupported and compatibility-only behavior;
 9. no advertised RouterInfo, I2NP, API or transport capability beyond the tested subset.
 
-## Machine-readable support ledger
-
-`specs/support.toml` is a declarative inventory of planned protocol surfaces;
-it is not a capability registry. Its schema is versioned by the top-level
-integer `schema` field. Each `[[surface]]` entry contains `id`, `protocol`,
-`structure`, `scope`, `status`, `evidence` (an array of repository references),
-and `advertised` (a boolean).
-
-Plan 037's local NTCP2 corrections are evidence for bounded ownership and
-parser behavior only. They do not satisfy the mixed-router requirement: Java
-I2P and i2pd results must include sanitized run records, artifact/configuration
-hashes, and reproduction identifiers before any NTCP2 row can advance or be
-advertised.
-
-The allowed `status` values are `not-implemented`, `implemented`,
-`compatibility`, `experimental`, `deferred`, `legacy-reject`, and `open`.
-`not-implemented` is the initial state for Milestone 1. `implemented` is only
-valid after the claim requirements above are met for that exact surface;
-`scope` uses the planning labels from `specs/README.md` and does not itself
-make a support claim. An entry may set `advertised` to `true` only after the
-capability-advertisement requirements below are met. Empty `evidence` and
-`advertised = false` therefore describe the initial, non-claiming ledger.
-
 Java I2P and I2P+ share lineage and count as one implementation family for independence. The preferred router-to-router interoperability pair is Java I2P or I2P+ plus i2pd. Emissary/go-i2p should be added where its current implementation is complete enough for the tested surface.
-
-Plan 036's required mixed-router evidence is recorded separately from local
-codec/runtime evidence. The pinned manual lane is
-`tests/integration/ntcp2/manifest.toml`; its preflight must fail closed for
-public networking, reseed/bootstrap, operational identities, unpinned
-artifacts, and unsanitized evidence. A local self-handshake, loopback socket,
-fixed-seed simulation, or fuzz result cannot satisfy the two-implementation,
-two-direction requirement.
-
-Plans 038/040/041 define how that evidence may be prepared, not a relaxation
-of the claim model. Plan 041's reference-only Java I2P/i2pd crosscheck is a
-control for the harness and never counts as i2pr interoperability. The
-Ubuntu-only harness has a network-enabled preparation phase
-for declared packages and locked reference builds, followed by a
-network-isolated execution phase. Execution requires disposable namespaces
-with only a veth connection, no default routes, no DNS, and no public egress;
-isolation and cleanup are part of the result. Environment smoke and a Java
-I2P/i2pd reference crosscheck validate the harness only. They cannot advance
-an i2pr support row. Only sanitized, bounded authenticated i2pr-to-reference
-runs in both directions can supply mixed-router evidence for NTCP2.
-
-Plan 043 makes the evidence path an ordered build-system contract. The
-promotion sequence is `contract`, `reference-build`,
-`reference-offline-reuse`, `environment-smoke`,
-`reference-crosscheck-ipv4`, `i2pr-handshake-smoke-ipv4`, `full-matrix`,
-`evidence-validation`, and `cleanup-verification`. Preparation may use the
-declared Ubuntu package/source network access; execution must consume verified
-offline caches in disposable namespaces with no default route, DNS, or public
-egress. The reference-only crosscheck must pass before i2pr scenarios are
-eligible, but it never advances an i2pr support row.
-
-The exact host/cache contract is recorded in
-[`tests/integration/ntcp2/references.lock.toml`](../tests/integration/ntcp2/references.lock.toml)
-and the operational commands and current status are recorded in
-[`tests/integration/ntcp2/README.md`](../tests/integration/ntcp2/README.md) and
-[`docs/architecture/interop-apparatus.md`](../docs/architecture/interop-apparatus.md).
-Evidence records and the Plan 043 aggregate manifest are specified in
-[`tests/integration/ntcp2/evidence/README.md`](../tests/integration/ntcp2/evidence/README.md).
-Validation must reject missing/extra passed records, placeholders, digest
-mismatches, incomplete direction coverage, forbidden material, and failed
-cleanup verification. The retained artifact allowlist is sanitized JSON and
-approved hashes only.
-
-Cleanup is an independent conformance property: an always-run cleanup path and
-clean-host verifier must prove zero residual prefixed namespaces/veths,
-reference or launcher processes, secret-bearing run roots, forbidden retained
-files, and attributable host nftables/routes/forwarding changes. A protocol
-pass with failed cleanup verification is not a pass.
-
-The current checkout has no sanitized i2pr-to-reference record or completed
-successful aggregate manifest. The workflow-integrated clean-host verifier is
-present, but no successful Plan 043 run has established conformance. Plan 044
-implements the mixed-router composition, directional scenario expansion,
-strict launcher rendering, and the non-echo data-phase oracle, but no
-authorized mixed-router execution has been completed. Therefore NTCP2 remains
-`experimental` and `advertised = false`; workflow scaffolding, local launcher
-success, loopback, vectors, testkit output, and Plan 041 reference-control
-records cannot change that status.
-
-### Plan 046 rootless-lane gate notice
-
-Plan 046 introduces the rootless sealed-namespace lane as the primary
-evidence path. The lane is fail-closed: on a host that does not permit
-unprivileged user namespaces, the sandbox capability probe emits the
-canonical typed blocker `blocked_unprivileged_user_namespace` and writes it
-to the `--attestation-output` path on disk. This is the correct closure on a
-host that activates `kernel.apparmor_restrict_unprivileged_userns=1` even
-when `kernel.unprivileged_userns_clone=1` is also set, because AppArmor
-confines every unprivileged user namespace to a restrictive policy and the
-ordinary invoking user cannot lift that policy. The lane remains runnable
-by an ordinary user; it just returns a typed blocker on hosts whose
-kernel/AppArmor policy refuses unprivileged namespacing. Plan 047 takes on
-cross-host portability. No rootless-lane typed blocker is a protocol pass,
-and the blocker does not advance any `[[surface]]` row or any
-`advertised = true` flag.
 
 ## Source-to-code traceability
 
@@ -144,14 +46,6 @@ Network, disk, reseed and local-API inputs are untrusted. Decoders must:
 - avoid retaining attacker-controlled backing buffers after parsing unless bounded and intentional.
 
 Unknown blocks or options may be ignored only when the specification explicitly defines forward-compatible skipping. The parser must still validate the enclosing length and resource bounds.
-
-For Plan 034 NTCP2 frames, AEAD verification is a mandatory gate before block
-iteration, unknown-block skipping, or semantic output. Transmit and receive
-counters are independent and direction-specific; accepted frames advance once,
-failed authentication is terminal, and the forbidden nonce value is never
-emitted. The data-phase dossier defines no periodic rekey threshold, so
-counter exhaustion requires a fresh Noise handshake. Fuzz and malformed tests
-must preserve these invariants while remaining bounded and payload-redacted.
 
 ## Encoder policy
 
@@ -232,14 +126,6 @@ At minimum, fuzz:
 
 Fuzz harnesses must have bounded input size and should assert no panic, no excessive allocation, no infinite loop and stable error classification where practical.
 
-Plan 014 maintains these entry points in the separate nightly `fuzz/`
-workspace: every public common decoder (`date`, `date32`, `hash`, `mapping`,
-certificate/key certificate, key-and-cert, identity, destination, address,
-RouterInfo, Lease, and LeaseSet), the three I2NP header decoders, and an
-`i2np_bodies` dispatch target covering each independently complex I2NP body.
-The smoke script is opt-in and bounded; its fuzz-only dependency is excluded
-from production workspace and MSRV checks.
-
 ## Differential tests
 
 Use differential testing selectively. Valuable comparisons include:
@@ -286,37 +172,3 @@ Capability publication is a security and interoperability contract. Before chang
 ## Evidence retention
 
 Store stable protocol vectors and minimized malformed fixtures in the repository. Store large captures, generated testnets and sensitive operational logs outside Git history, with scripts and hashes sufficient to reproduce them. Redact live peer identities, IP addresses, destination keys, session keys and potentially identifying timing data before retaining or publishing artifacts.
-
-## Plan 048/049/050 Multipass recovery category
-
-The Plan 046 host blocker remains a negative baseline. Plan 048 targets the
-`host.apparmor-restrict-off` category through a disposable Ubuntu 24.04 amd64
-Multipass guest whose permissive sysctls are guest-only. Plan 049 requires a
-stable environment ID distinct from the run ID, concrete instance name, and
-instance generation. The default lane reserves lifecycle state atomically
-before launch, proves ownership through a linked host/guest contract, and
-allocates a fresh name on collision without mutating an unrelated resource.
-
-The cache root is the existing `target/interop/cache`; source and cache are
-transferred and verified, not mounted. The host baseline probe is retained as
-an independent result and does not gate guest launch. The guest runs the
-rootless probe after policy/ownership verification and again immediately before
-any router process; only `rootless_sandbox_available` permits the four Plan 045
-directions as the non-sudo `i2ptest` user after offline enforcement.
-
-Inspection is read-only. Adoption, resume, recreation, and destruction require
-explicit operations and proven ownership; unknown, incompatible,
-deleted-but-unpurged, or name-only collisions are typed blockers. Global purge
-is not permitted in the normal lifecycle. Snapshots, lifecycle records, and
-directional records are bound to the environment contract and generation.
-
-The environment record must link source/tree/cache/environment hashes, the
-ownership record, the separate host and guest probe outcomes, and the rootless
-attestation. Export requires independent host hashing, a fixed sanitized file
-allowlist, clean cleanup, identical topology/privilege and attestation fields,
-parent-network-state equivalence, and one common environment evidence hash
-across all four directions. Mixed run IDs or generations are rejected. A
-pre-router blocker is an environment result only and cannot satisfy the
-conformance predicates. This environment does not change advertisement or
-support status and cannot close Milestone 3 without the existing mixed-router
-conformance predicates.

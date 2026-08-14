@@ -104,37 +104,3 @@ Compare serialization output, signed ranges, mapping ordering, timestamp validat
 4. How preserved signed bytes and normalized semantic views are represented without duplicate unbounded storage.
 5. Initial policy for hybrid/PQ records: recognize-and-reject, parse-and-store opaque, or fully validate signatures while deferring decryption.
 6. Maximum accepted RouterInfo size, address count, mapping size and LeaseSet lease count, reconciled against the current specification and deployed routers.
-
-## Current i2pr structural implementation
-
-Plan 012 implements the bounded structural subset in
-`crates/i2pr-proto/src/common_impl.rs` and the grouped `common/` namespace:
-Date/Date32, Hash, typed public/signing
-material and signatures, Mapping, Certificate/KeyCertificate,
-RouterIdentity, Destination, RouterAddress, RouterInfo, Lease, and classic
-LeaseSet. The module follows the pinned source in `specs/SOURCES.md`, uses a
-1 MiB caller-visible common-structure ceiling, the specification's 65,535-byte
-Mapping body ceiling, 255 RouterAddress/peer entries, and 16 classic leases.
-
-Parsed RouterInfo and LeaseSet values retain the exact bytes before their
-signatures. No signature verification, key generation, secret material,
-timestamp freshness policy, transport option interpretation, or capability
-advertisement is present. LeaseSet2, MetaLeaseSet, and EncryptedLeaseSet are
-rejected explicitly until later plans define their crypto and NetDB semantics.
-Local fixed bytes and malformed/boundary tests are not interoperability
-evidence; the support ledger therefore remains `experimental` and
-`advertised = false`.
-
-## Plan 013 execution boundary
-
-Plan 013 selects I2P signature type 7 (Ed25519) and router encryption type 4
-(X25519) for newly generated identities. `crates/i2pr-crypto` wraps reviewed
-Rust implementations, accepts an injected cryptographic RNG, zeroizes private
-wrappers, signs the exact retained RouterInfo signed region, and verifies it
-through the public identity. `crates/i2pr-storage` persists only the explicit
-version-1 private identity format documented by ADR 0006.
-
-This is local execution evidence only. No RouterInfo capability or version is
-advertised, no transport or NetDB behavior is enabled, and the support ledger
-remains non-advertised and experimental until authoritative vectors and mixed
-router interoperability evidence exist.

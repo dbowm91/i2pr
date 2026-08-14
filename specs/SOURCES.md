@@ -85,38 +85,6 @@ These are code references, not normative specifications.
 
 The public source used here is named `go-i2p/go-i2p`. This corpus uses “Emissary/go-i2p” to preserve the project terminology in the `i2pr` roadmap discussion without asserting that every upstream branch or release uses the Emissary name.
 
-## i2pr source-to-code traceability
-
-The bounded implementation in `crates/i2pr-proto/src/common_impl.rs` and its
-grouped `common/` façade follows the
-common-structures source above at pinned website commit
-`88596022920bdf99f27db27688faf4f204792fcd`, especially Integer/Date/String,
-Mapping, Certificate/Key Certificate, KeysAndCert, RouterIdentity, Destination,
-RouterAddress, RouterInfo, Lease, and classic LeaseSet. Hash derivation uses the
-reviewed `sha2` crate and is covered by locally authored fixed primitive bytes;
-no external router implementation code or opaque fixture corpus was copied.
-
-Plan 013's crypto/storage implementation uses the same pinned protocol source
-for type identifiers and signed-byte boundaries; RustCrypto/dalek crate
-versions and feature decisions are recorded in
-`docs/adr/0005-crypto-dependency-selection.md`. No external router
-implementation code or private fixture was copied.
-
-The proto module records the deliberate deviations: signed records preserve
-their parsed signed region, timestamp freshness and signature verification are
-deferred, only classic LeaseSet is decoded, and LeaseSet2, MetaLeaseSet, and
-EncryptedLeaseSet are explicit unsupported paths pending their later crypto and
-NetDB plans.
-
-Plan 014's `crates/i2pr-proto/src/i2np_impl.rs` and grouped `i2np/` façade follow the same pinned website
-commit's I2NP message table, standard/short header layouts, checksum rule,
-DatabaseStore/Lookup/SearchReply/DeliveryStatus fields, Garlic/Data framing,
-TunnelData/TunnelGateway framing, and tunnel-build record sizes. The fixed
-I2NP fixtures under `tests/fixtures/i2np/` are locally authored from those
-documented bytes; no implementation code, live capture, peer identity, or
-opaque external corpus was copied. Deferred values are intentionally not
-counted as cryptographic, NetDB, tunnel, garlic, or interoperability support.
-
 ## Refresh triggers
 
 Refresh this ledger when any of the following occurs:

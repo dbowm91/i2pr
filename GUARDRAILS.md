@@ -38,19 +38,12 @@ The project is a modular monolith. One daemon process may contain multiple focus
 The intended dependency direction is broadly:
 
 ```text
-proto <- crypto <- storage
-core <- runtime <- daemon
+proto <- crypto
 proto/core <- transports, netdb, tunnel, client
 client <- api, service-tunnels
 all runtime services <- daemon composition root
 shared deterministic fixtures <- testkit
 ```
-
-The concrete runtime boundary is `i2pr-runtime`: it owns Tokio, wakeable
-cancellation, supervised task collections, readiness, bounded restart policy,
-and graceful/forced shutdown. `i2pr-core` remains runtime-neutral. No service
-may detach a long-lived task or return while an owned child task is still
-alive.
 
 The exact graph may be refined, but the following constraints apply:
 
@@ -63,15 +56,6 @@ The exact graph may be refined, but the following constraints apply:
 - Synvoid and eggsec remain outside the production routing core.
 
 Avoid global mutable state and unrestricted `Arc<RouterContext>` service locators. Each subsystem should receive narrow handles or capabilities for the operations it is permitted to perform.
-
-Plan 038's reference-router harness is an external, non-production test
-boundary. It must not become a dependency of the daemon or enable the daemon's
-normal live execution. Its Ubuntu-only preparation phase may install declared
-tools and build pinned reference revisions; its execution phase must be
-network-isolated and must compose only disposable namespaces, reference
-adapters, and the dedicated i2pr interoperability launcher. The execution
-phase must not reseed, bootstrap, publish RouterInfo, mutate NetDB, or use
-public endpoints.
 
 Do not introduce runtime-loadable in-process Rust plugins during the MVP. Rust does not provide a stable ABI suitable for a security-sensitive third-party plugin ecosystem. Compile-time components or authenticated out-of-process interfaces are preferred.
 
@@ -100,15 +84,6 @@ Required properties:
 - No sensitive values in default logs, errors, or metrics labels.
 
 Every parser must have explicit input limits and complete-consumption behavior. Every asynchronous request path must have a deadline, cancellation path, and cleanup behavior. Every resource-owning subsystem must define shutdown semantics.
-
-Forced runtime cleanup is evidence-bearing: aborting a manager is not a child
-join. The supervisor must retain the manager's bounded child-scope owner,
-abort that exact collection after the deadline, and drain each join result
-before reporting zero child tasks. Scope `Drop` cannot decrement counters or
-claim cleanup success. An uncancelled `RequestedShutdown` is an unexpected
-clean exit and must not hide essential-service loss. Resource lease release
-underflow is a typed, bounded invariant signal; cleanup remains non-panicking
-but accounting corruption is never silently normalized.
 
 ## 5. Resource governance
 
@@ -251,133 +226,6 @@ Protocol and subsystem work must include, as applicable:
 Tests involving timing should prefer a virtual or controllable clock. Tests involving randomness should use reproducible seeds unless validating production entropy integration.
 
 Public-network testing must be passive, ordinary, and non-disruptive. Stress, mutation, malformed traffic, load testing, and adversarial scenarios belong in an isolated authorized testnet.
-
-The Plan 038 harness is fail-closed: it supports Ubuntu amd64 only for the
-initial closure, verifies host and namespace prerequisites before launch, and
-requires two namespaces connected only by a scenario veth pair. Each namespace
-must have loopback and only the expected connected routes; default routes, DNS,
-host bridges, and public egress are rejected. Route checks are primary and
-namespace-scoped nftables rules are defense in depth. Environment smoke and
-reference crosscheck are harness validation, not i2pr interoperability
-evidence. Only sanitized, bounded i2pr-to-reference runs in both directions
-can contribute to a mixed-router claim. Raw addresses, identities, RouterInfo,
-I2NP, keys, transcripts, logs, and remote error text must be destroyed before
-retaining evidence.
-
-Plan 043 extends this boundary into the build system. The required order is
-`contract` → `reference-build` → `reference-offline-reuse` →
-`environment-smoke` → `reference-crosscheck-ipv4` →
-`i2pr-handshake-smoke-ipv4` → `full-matrix` → `evidence-validation` →
-`cleanup-verification`. Preparation is the only network-enabled trust domain;
-execution is offline, cache-verified, and namespace-isolated. Ordinary CI
-must remain unprivileged, and privileged execution must not run arbitrary
-fork/pull-request code.
-
-The cache key must bind the canonical reference ID, full source revision, lock
-digest, Ubuntu/architecture contract, build-command version, and relevant
-tool/ABI versions. Re-hash the complete runtime tree before use. Never cache
-identities, keys, RouterInfo, NetDB state, rendered configs, run roots, raw
-logs, namespaces, or evidence records. Never fetch after an offline cache miss.
-
-The aggregate evidence manifest and narrow upload allowlist must reject
-placeholders, missing or unexpected passed records, inconsistent hashes,
-incomplete direction coverage, private absolute paths, endpoints, identities,
-keys, RouterInfo, payloads, raw logs, and packet captures. Cleanup runs with
-an always-run policy after privileged phases and at the end. An independent
-clean-host verifier must reject residual prefixed namespaces/veths,
-reference/launcher processes, secret-bearing run roots, forbidden retained
-files, and attributable global nftables/routes/forwarding changes. Cleanup
-verification failure is a lane failure even after protocol success.
-
-Environment smoke and the Java-I2P/i2pd reference crosscheck are harness
-controls only. NTCP2 support remains experimental and non-advertised until
-four independent authenticated i2pr/reference directions, bounded I2NP
-exchange, adversarial coverage, sanitized evidence, and clean-host verification
-meet `specs/CONFORMANCE.md`. The current checkout has not met those gates.
-
-## Plan 044 mixed-router guardrails
-
-1. The data-phase oracle must not rely on an echo assumption. It must use a
-   protocol-valid trigger supported by both pinned references.
-2. Do not activate `i2pr-daemon`. The launcher is a non-production composition
-   seam only.
-3. Each directional scenario must have its own execution ID, namespace pair,
-   firewall policy, and evidence record. No direction may mask another.
-4. Gate archival must use gate-specific staging to prevent cross-gate record
-   relabeling.
-5. The aggregate manifest must include exactly the expected records for the
-   selected profile; missing, extra, mislabeled, or zero-valued records fail
-   the gate.
-6. Evidence records must carry real counters, not placeholders. Zero-filled
-   required hashes and required counters at zero are rejected.
-7. Protocol success never overrides cleanup failure, even after a positive
-   mixed-router result.
-
-## Plan 046 rootless sealed-namespace guardrails
-
-1. The primary NTCP2 mixed-router evidence topology is
-   `rootless-sealed-single-netns` with privilege model `unprivileged-userns`.
-   The legacy `privileged-dual-netns-veth` topology is preserved as an
-   explicit later qualification lane; it is never the default and never a
-   silent fallback.
-2. No rootless code path may use `sudo`, `setcap`, setuid helpers, file
-   capabilities, ambient host capabilities, `--privileged` containers,
-   `--network host` containers, privileged sidecars, `ip netns add`, host
-   link mutation, host route mutation, or host nftables mutation. The
-   static boundary checker `scripts/check-rootless-interop-boundary.sh`
-   enforces this on every change.
-3. The user namespace must have a single-ID UID/GID mapping with `setgroups
-   deny` and `no_new_privs`. Broader maps or missing denials are typed
-   blockers; they are not silently accepted.
-4. The sandbox contains only `lo` plus the synthetic `192.0.2.{1,2}/32`
-   addresses (and optional `2001:db8:36::{1,2}/128`). No default route,
-   no host interface, no forwarded port, and no public-network path are
-   permitted.
-5. The mixed-router evidence schema requires `topology_kind`,
-   `privilege_model`, `sandbox_attestation_sha256`, and
-   `parent_network_state_unchanged` on every record. A passed record that
-   violates any of these is rejected. The aggregate manifest verifies that
-   all four handshake-smoke scenario records reference the same gate
-   attestation, that the attestation validates, and that the parent-network
-   state pre/post digests are byte-equal.
-6. A typed probe blocker such as `blocked_unprivileged_user_namespace`,
-   `blocked_loopback_unconfigured`, `blocked_synthetic_bind_failed`, or
-   `blocked_external_connect_succeeded` is a hard stop, not a fallback.
-7. The rootless lane does not install system packages. It verifies
-   dependencies and emits a typed blocker when the environment is incomplete.
-   Preparation (network-enabled) and execution (offline) remain separate.
-8. Public I2P reseed, discovery, RouterInfo publication, transit, tunnels,
-   proxy services, SAM exposure outside the sandbox, I2CP exposure outside
-   the sandbox, console exposure, and SSU2 remain prohibited.
-9. Cleanup failure overrides protocol success in the rootless lane exactly
-   as it does in the privileged lane. Sandbox attestation must include a
-   cleanup result; a missing or failed cleanup converts the entire mixed-
-   router record set to failure.
-10. The retained evidence claim is intentionally narrower than the
-    privileged topology: the rootless lane proves protocol compatibility
-    inside a single process-scoped network namespace, not separate-stack
-    network behavior, asymmetric firewall semantics, packet loss, route
-    mutation, or interface-failure semantics.
- 11. NTCP2 remains experimental and non-advertised; Milestone 3 remains open.
-     Plan 046 is closed with a typed host-level blocker; the closure
-     record is `plans/046-closure.md`. Cross-host recovery lives in
-    `plans/047-cross-host-rootless-lane-expansion.md`.
-
-## Plan 048 Multipass recovery boundary
-
-The current host's AppArmor-restricted `blocked_unprivileged_user_namespace`
-result remains a negative baseline. Plan 048 may use a disposable Multipass
-Ubuntu 24.04 amd64 guest, but all permissive user-namespace policy changes
-must stay inside that guest. The checked-in environment manifest fixes the
-instance name/resources and the canonical cache path `target/interop/cache`.
-
-Cloud-init is the administrative provisioning phase. The evidence lane runs
-only as the locked-down `i2ptest` user, transfers immutable source/cache
-inputs, applies the guest-only offline egress policy, and runs the rootless
-probe before the four Plan 045 directions. Host mounts, arbitrary guest
-commands, privileged containers, and silent privileged-topology fallback are
-forbidden. Evidence export is a separate sanitized, hash-checked atomic
-boundary; destroying the guest must not delete exported evidence.
 
 ## 13. Synvoid and eggsec integration
 
