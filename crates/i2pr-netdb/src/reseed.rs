@@ -922,14 +922,25 @@ fn verify_rsa_sha512_signature(
     signature: &[u8],
     signer: &TrustedSigner,
 ) -> Result<(), ReseedParseError> {
-    use rsa::pkcs1v15::{Signature, VerifyingKey};
-    use rsa::signature::Verifier;
-    use sha2::Sha512;
+    use sad_rsa::pkcs1v15::{Signature, VerifyingKey};
+    use sad_rsa::signature::Verifier;
+    use sad_rsa::sha2::Sha512;
 
-    let key = match rsa::RsaPublicKey::new(
-        rsa::BigUint::from_bytes_be(&signer.modulus),
-        rsa::BigUint::from_bytes_be(&signer.exponent),
-    ) {
+    // sad-rsa's `RsaPublicKey::new` accepts `BoxedUint` (a
+    // fixed-precision heap integer from `crypto-bigint`) rather than
+    // `num-bigint::BigUint`. Convert with the bit-precision the modulus
+    // bytes already encode.
+    let modulus_bits = (signer.modulus.len() as u32).checked_mul(8).unwrap_or(0);
+    let exponent_bits = (signer.exponent.len() as u32).checked_mul(8).unwrap_or(0);
+    let n = match sad_rsa::BoxedUint::from_be_slice(&signer.modulus, modulus_bits) {
+        Ok(n) => n,
+        Err(_) => return Err(ReseedParseError::SignatureInvalid),
+    };
+    let e = match sad_rsa::BoxedUint::from_be_slice(&signer.exponent, exponent_bits) {
+        Ok(e) => e,
+        Err(_) => return Err(ReseedParseError::SignatureInvalid),
+    };
+    let key = match sad_rsa::RsaPublicKey::new(n, e) {
         Ok(key) => key,
         Err(_) => return Err(ReseedParseError::SignatureInvalid),
     };
@@ -1177,19 +1188,18 @@ mod tests {
     use super::*;
     use i2pr_crypto::RouterIdentityBundle;
     use i2pr_proto::{Date, Mapping};
-    use rsa::pkcs1v15::{SigningKey, VerifyingKey};
-    use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
-    use rsa::traits::PublicKeyParts;
+    use sad_rsa::pkcs1v15::{SigningKey, VerifyingKey};
+    use sad_rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
+    use sad_rsa::traits::PublicKeyParts;
 
-    // RSA 0.9 uses `rand_core` 0.6. `rand_chacha` 0.3 provides a
-    // `SeedableRng` + `CryptoRng` implementation for that version.
-    // The workspace `rand_chacha` is 0.9; the `_03` alias resolves to
-    // 0.3.
-    use rand_chacha_03::ChaCha8Rng as Rng06;
-    use rand_core_06::SeedableRng as Seed06;
+    // sad-rsa 0.2 uses `rand_core` 0.10. Use a deterministic
+    // `rand_chacha` 0.10 `ChaCha8Rng` so signer/verifier agree on
+    // a stable seeded byte stream.
+    use sad_rsa::rand_core as sad_rand_core;
 
-    fn rng(seed: u64) -> Rng06 {
-        Rng06::seed_from_u64(seed)
+    fn sad_rng(seed: u64) -> rand_chacha_10::ChaCha8Rng {
+        use sad_rand_core::SeedableRng;
+        rand_chacha_10::ChaCha8Rng::seed_from_u64(seed)
     }
 
     fn bundle(seed: u64) -> RouterIdentityBundle {
@@ -1198,35 +1208,40 @@ mod tests {
         RouterIdentityBundle::generate(&mut i2rng).expect("identity")
     }
 
-    fn rsa_2048_pair(seed: u64) -> rsa::RsaPrivateKey {
-        rsa::RsaPrivateKey::new(&mut rng(seed), 2048).expect("RSA key")
+    fn rsa_2048_pair(seed: u64) -> sad_rsa::RsaPrivateKey {
+        let mut rng = sad_rng(seed);
+        sad_rsa::RsaPrivateKey::new(&mut rng, 2048).expect("RSA key")
     }
 
     fn rsa_2048_public(seed: u64) -> (Vec<u8>, Vec<u8>) {
         let private = rsa_2048_pair(seed);
-        let public = rsa::RsaPublicKey::from(&private);
-        let n = public.n().to_bytes_be();
-        let e = public.e().to_bytes_be();
+        let public = sad_rsa::RsaPublicKey::from(&private);
+        let n = public.n_bytes().to_vec();
+        let e = public.e_bytes().to_vec();
         (n, e)
     }
 
     fn sign_with_rsa_2048(seed: u64, message: &[u8]) -> Vec<u8> {
         let private = rsa_2048_pair(seed);
-        let signing_key = SigningKey::<sha2::Sha512>::new(private);
-        let sig: rsa::pkcs1v15::Signature = signing_key.sign_with_rng(&mut rng(seed), message);
+        let signing_key = SigningKey::<sad_rsa::sha2::Sha512>::new(private);
+        let mut rng = sad_rng(seed);
+        let sig: sad_rsa::pkcs1v15::Signature = signing_key.sign_with_rng(&mut rng, message);
         sig.to_bytes().to_vec()
     }
 
     fn verify_rsa_2048(seed: u64, message: &[u8], signature: &[u8]) -> Result<(), String> {
         let (n, e) = rsa_2048_public(seed);
-        let public = rsa::RsaPublicKey::new(
-            rsa::BigUint::from_bytes_be(&n),
-            rsa::BigUint::from_bytes_be(&e),
-        )
-        .map_err(|e| format!("public key: {e}"))?;
-        let vk = VerifyingKey::<sha2::Sha512>::new(public);
-        let sig =
-            rsa::pkcs1v15::Signature::try_from(signature).map_err(|e| format!("signature: {e}"))?;
+        let n_bits = (n.len() as u32).checked_mul(8).unwrap_or(2048);
+        let e_bits = (e.len() as u32).checked_mul(8).unwrap_or(32);
+        let n_int =
+            sad_rsa::BoxedUint::from_be_slice(&n, n_bits).map_err(|e| format!("modulus: {e}"))?;
+        let e_int =
+            sad_rsa::BoxedUint::from_be_slice(&e, e_bits).map_err(|e| format!("exponent: {e}"))?;
+        let public = sad_rsa::RsaPublicKey::new(n_int, e_int)
+            .map_err(|e| format!("public key: {e}"))?;
+        let vk = VerifyingKey::<sad_rsa::sha2::Sha512>::new(public);
+        let sig = sad_rsa::pkcs1v15::Signature::try_from(signature)
+            .map_err(|e| format!("signature: {e}"))?;
         vk.verify(message, &sig).map_err(|e| format!("verify: {e}"))
     }
 

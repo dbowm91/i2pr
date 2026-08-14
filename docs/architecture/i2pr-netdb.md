@@ -58,7 +58,7 @@ RouterInfo publication coordinator.
 ## Dependency boundary
 
 ```text
-i2pr-netdb -> i2pr-crypto, i2pr-proto + thiserror, base64ct, sha2, x509-parser, zip, rsa, flate2
+i2pr-netdb -> i2pr-crypto, i2pr-proto + thiserror, base64ct, sha2, x509-parser, zip, sad-rsa, flate2
 ```
 
 Runtime-neutral: no `tokio`, no `std::net`, no `std::fs`, no sockets,
@@ -71,7 +71,10 @@ no DNS. Filesystem I/O belongs to `i2pr-storage` (raw-byte seam) and
   reseed filenames.
 - `reseed::parse_su3` / `verify_su3` / `verify_su3_with_signers` /
   `verify_su3_archive` — full SU3 trust + signature verification
-  pipeline.
+  pipeline. Plan 105 migrates the underlying RSA primitive to
+  `sad-rsa 0.2` (Marvin-Attack hardened pure-Rust fork of the
+  RustCrypto `rsa` crate) so the Plan 104 SU3 trust path stays
+  inside the `cargo deny` advisory budget.
 - `reseed::ReseedSignerTrustSet` — typed signer trust store with
   certificate validity enforcement.
 - `reseed::ReseedLimits` — tuned scan budgets for the reseed pipeline.
@@ -129,9 +132,10 @@ no DNS. Filesystem I/O belongs to `i2pr-storage` (raw-byte seam) and
 - `RouterInfoStore::insert` is the only public store entry point; it
   enforces byte quotas and replacement/conflict/expiry semantics
   deterministically.
-- SU3 signature verification delegates to the `rsa` crate's
+- SU3 signature verification delegates to the `sad-rsa` crate's
   PKCS#1 v1.5 + SHA-512 implementation; the repository does not
-  implement RSA primitives locally.
+  implement RSA primitives locally. `sad-rsa` is the Marvin-Attack
+  hardened pure-Rust fork of `rsa` that removes RUSTSEC-2023-0071.
 - `ReseedSignerTrustSet` maps signer identifiers to parsed certificates;
   the verifier requires an exact match before signature verification
   proceeds.

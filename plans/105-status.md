@@ -249,3 +249,27 @@ Plan 105 is closed. NTCP2 remains experimental and non-advertised.
 The next executable implementation is **Plan 106** (daemon and
 bootstrap integration), followed by Milestone 5 (exploratory tunnel
 substrate) before any return to Milestone 4B external acceptance.
+
+## Marvin-Attack correction (rsa → sad-rsa)
+
+Plan 105 closes with the Plan 104 SU3 signature-verification stack
+migrated from `rsa 0.9` to `sad-rsa 0.2`. The change was forced by
+`cargo-deny`'s `Dependency policy` CI job, which fails closed on
+`RUSTSEC-2023-0071` (Marvin Attack timing-side-channel on
+`rsa 0.9.x`; the upstream advisory states "No safe upgrade is
+available!"). The migration keeps the same PKCS#1 v1.5 + SHA-512
+semantics Plan 104 closed against and the same `TrustedSigner`
+boundary:
+
+- production verifier `verify_rsa_sha512_signature` constructs
+  `sad_rsa::RsaPublicKey::new(sad_rsa::BoxedUint::from_be_slice(modulus, bits_precision), exponent)`
+  and verifies through `sad_rsa::pkcs1v15::VerifyingKey<Sha512>`;
+- the deterministic test signer is rebuilt around `sad_rsa 0.2`'s
+  `rand_core 0.10` RNG (`rand_chacha 0.10` `ChaCha8Rng`).
+- all 117 `i2pr-netdb` tests pass; the Plan 104 SU3 reseed suite
+  (`cargo test --locked -p i2pr-netdb --lib reseed`) passes; and
+  `cargo deny check advisories bans sources` reports
+  `advisories ok, bans ok, sources ok`.
+
+The Plan 104 closure record and the Plan 104 SU3 contract are
+preserved verbatim; only the underlying RSA primitive changed.

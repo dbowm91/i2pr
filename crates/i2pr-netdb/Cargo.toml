@@ -12,7 +12,7 @@ base64ct = { workspace = true }
 flate2 = { workspace = true }
 i2pr-crypto = { path = "../i2pr-crypto" }
 i2pr-proto = { path = "../i2pr-proto" }
-rsa = { workspace = true }
+sad-rsa = { workspace = true }
 sha2 = { workspace = true }
 thiserror.workspace = true
 x509-parser = { workspace = true }
@@ -22,8 +22,10 @@ zip = { workspace = true }
 rand_chacha.workspace = true
 rand_core.workspace = true
 rand_chacha_03 = { package = "rand_chacha", version = "0.3" }
+rand_chacha_10 = { package = "rand_chacha", version = "0.10" }
 rand_core_06 = { package = "rand_core", version = "0.6" }
-rsa = { workspace = true, features = ["pem"] }
+rand_core_10 = { package = "rand_core", version = "0.10" }
+sad-rsa = { workspace = true, features = ["encoding"] }
 sha2.workspace = true
 zip.workspace = true
 

@@ -32,7 +32,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hmac = { version = "0.12.1", default-features = false }
 rand_chacha = "0.9"
 rand_core = { version = "0.9", default-features = false }
-rsa = { version = "0.9", default-features = false, features = ["std", "sha2"] }
+sad-rsa = { version = "0.2", default-features = false, features = ["std", "encoding", "sha2"] }
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
 siphasher = { version = "1.0.3", default-features = false }
