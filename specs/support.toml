@@ -1,10 +1,12 @@
 # Machine-readable workspace support inventory (current evidence through
-# the Plan 103 local NetDB foundation).
+# the Plan 105 transport-neutral NetDB query and publication state machines).
 # Structural evidence may be recorded before interoperability; all entries remain
 # non-advertised until the conformance requirements are met.
 schema = 1
 milestone = 4
 plan_103_implementation_floor = "plans/103-status.md"
+plan_104_implementation_floor = "plans/104-status.md"
+plan_105_implementation_floor = "plans/105-status.md"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -323,6 +325,26 @@ id = "netdb.query-state-machines"
 protocol = "reseed-netdb"
 structure = "transport-neutral-databaselookup-storereply-publication-state-machines"
 scope = "required"
+status = "experimental"
+evidence = [
+    "crates/i2pr-netdb/src/routing.rs",
+    "crates/i2pr-netdb/src/lookup_policy.rs",
+    "crates/i2pr-netdb/src/lookup_id.rs",
+    "crates/i2pr-netdb/src/lookup_action.rs",
+    "crates/i2pr-netdb/src/databaselookup.rs",
+    "crates/i2pr-netdb/src/lookup_engine.rs",
+    "crates/i2pr-netdb/src/publication.rs",
+    "crates/i2pr-netdb/src/store_message.rs",
+    "plans/105-transport-neutral-netdb-query-and-publication-state-machines.md",
+    "plans/105-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "netdb.live-routerinfo-lookup"
+protocol = "reseed-netdb"
+structure = "live-standards-conformant-routerinfo-lookup-over-exploratory-tunnels"
+scope = "required-later"
 status = "deferred"
-evidence = ["plans/105-transport-neutral-netdb-query-and-publication-state-machines.md"]
+evidence = ["plans/102-amendment-exploratory-tunnel-dependency.md"]
 advertised = false

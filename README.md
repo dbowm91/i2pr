@@ -2313,13 +2313,18 @@ local RouterInfo construction  = implemented (Plan 103)
 persistent RouterInfo cache    = implemented, untrusted-on-load (Plan 104)
 SU3 reseed verification        = implemented (Plan 104)
 reseed ingestion               = implemented from verified bytes (Plan 104)
-live NetDB lookup              = not implemented (Plan 105)
-RouterInfo publication         = not yet live (Plan 106)
-NTCP2                         = experimental-non-advertised
+routing-key/floodfill selection = implemented (Plan 105)
+RouterInfo lookup state machine = implemented, runtime/path not live (Plan 105)
+DatabaseStore RouterInfo ingestion = implemented (Plan 105)
+RouterInfo publication coordinator = implemented, not live-verified (Plan 105)
+exploratory tunnels              = not implemented (Milestone 5)
+live standards-conformant NetDB lookup = blocked on Milestone 5 + transport
+NTCP2                            = experimental-non-advertised
 ```
 
 The Plan 103 closure record is `plans/103-status.md`.
 The Plan 104 closure record is `plans/104-status.md`.
+The Plan 105 closure record is `plans/105-status.md`.
 
 ## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active roadmap)
 

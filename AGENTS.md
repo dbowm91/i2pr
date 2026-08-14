@@ -13,7 +13,7 @@ Ten-crate workspace under `crates/`:
 - `i2pr-crypto` — Ed25519/X25519/AES/ChaCha20-Poly1305/HMAC/SipHash wrappers
 - `i2pr-storage` — versioned persistence; identity, NTCP2 static-key records, and Plan 104 raw-byte cache seam
 - `i2pr-core` — runtime-neutral service contracts
-- `i2pr-netdb` — runtime-neutral RouterInfo validation, local NetDB store, SU3/reseed verification, and local signed RouterInfo construction (Plan 103/104; consumes `i2pr-crypto`/`i2pr-proto` + reviewed third-party crates)
+- `i2pr-netdb` — runtime-neutral RouterInfo validation, local NetDB store, SU3/reseed verification, local signed RouterInfo construction, and transport-neutral query/publication state machines (Plan 103/104/105; consumes `i2pr-crypto`/`i2pr-proto` + reviewed third-party crates)
 - `i2pr-netdb-persist` — composition owner for Plan 104 persistent cache and SU3 reseed ingestion
 - `i2pr-transport` — runtime-neutral link/delivery contracts (no Tokio, no I/O)
 - `i2pr-transport-ntcp2` — runtime-neutral NTCP2 handshake + data frames
@@ -31,9 +31,9 @@ These are checked on CI and will reject the change:
 
 - Dependency direction (`scripts/check-dependency-direction.sh`):
   `i2pr-proto <- i2pr-crypto <- i2pr-storage`; `i2pr-core <- i2pr-transport
-  <- i2pr-runtime <- i2pr-daemon`; `i2pr-transport-ntcp2` consumes
+  <- i2pr-runtime <- i2pr-daemon`;   `i2pr-transport-ntcp2` consumes
   `i2pr-crypto`/`i2pr-proto`/`i2pr-transport`; `i2pr-netdb` consumes
-  `i2pr-crypto`/`i2pr-proto` + reviewed third-party crates (Plan 103/104);
+  `i2pr-crypto`/`i2pr-proto` + reviewed third-party crates (Plan 103/104/105);
   `i2pr-netdb-persist` consumes `i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-storage`
   (Plan 104); and `i2pr-runtime` may compose
   `i2pr-transport-ntcp2` for Plan 042. **No production crate may

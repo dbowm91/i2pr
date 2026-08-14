@@ -597,6 +597,7 @@ name = "i2pr-netdb"
 version = "0.1.0"
 dependencies = [
  "base64ct",
+ "flate2",
  "i2pr-crypto",
  "i2pr-proto",
  "rand_chacha 0.3.1",

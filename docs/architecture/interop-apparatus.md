@@ -1836,10 +1836,27 @@ in-memory NetDB foundation in the new `i2pr-netdb` crate
 self-validates through the same validator used for remote
 records. The store enforces exact record-count and byte-quota
 accounting with checked arithmetic and deterministic
-replacement/conflict/expiry. The next executable implementation
-is **Plan 104** (persistent cache + SU3 reseed trust path), then
-Plan 105 (transport-neutral query state machines), then Plan 106
-(daemon/bootstrap integration).
+replacement/conflict/expiry.
+
+Plan 104 has landed the persistent RouterInfo cache, SU3 signature
+verification, and bounded ZIP ingestion in
+`crates/i2pr-netdb/src/{base64,reseed}.rs` plus the composition
+owner `crates/i2pr-netdb-persist/`.
+
+Plan 105 has landed the transport-neutral query and publication
+state machines in `crates/i2pr-netdb/src/{routing,lookup_policy,
+lookup_id,lookup_action,databaselookup,lookup_engine,publication,
+store_message}.rs`. The lookup state machine refuses to emit a
+standards-conformant `DatabaseLookup` until the runtime supplies an
+exploratory reply path, the bounded gzip decompressor enforces
+explicit compressed and decompressed byte ceilings, and the local
+publication coordinator never re-signs the local RouterInfo on
+retry. Live standards-conformant NetDB lookup remains blocked on
+the Milestone 5 exploratory-tunnel substrate.
+
+The next executable implementation is **Plan 106** (daemon and
+bootstrap integration), then Milestone 5 (exploratory tunnel
+substrate), then a return to Milestone 4B external acceptance.
 
 ## Plan 099 Milestone 3 interop exit, harness reduction, and router buildout (historical; retained NTCP2 result)
 
