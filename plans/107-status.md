@@ -19,8 +19,8 @@ provider and flips its
 
 The plan did **not** activate NTCP2, advertise tunnels, or run a
 live mixed-router build. The exploratory pool is filled through an
-injected registration path; the production registrar that performs
-real builds lands in Plan 108+.
+injected registration path; the production construction path begins
+in Plan 108.
 
 ## Work packages
 
@@ -52,7 +52,7 @@ focused Plan 107 closure pass on this host.
 ```text
 cargo +1.95.0 fmt --all --check                  OK
 cargo +1.95.0 check --locked --workspace --all-targets   OK
-cargo +1.95.0 test --locked --workspace          30 i2pr-tunnel + 117 i2pr-netdb + 53 i2pr-runtime + 50 i2pr-daemon + 24 i2pr-daemon integration tests + 40 i2pr-storage + 12 i2pr-crypto + 14 i2pr-core + 7 i2pr-proto + 5 i2pr-transport + 31 i2pr-transport-ntcp2 + 28 i2pr-testkit + 5 i2pr-cli + 11 i2pr-storage + 6 i2pr-transport + 7 i2pr-storage + 5 i2pr-cli + 4 i2pr-runtime + 1 i2pr-crypto = ~458 tests pass
+cargo +1.95.0 test --locked --workspace          ~458 tests pass
 cargo +1.95.0 clippy --locked --workspace --all-targets --all-features -- -D warnings   OK
 RUSTDOCFLAGS="-D warnings" cargo +1.95.0 doc --locked --workspace --no-deps   OK
 bash scripts/check-dependency-direction.sh        OK
@@ -81,12 +81,12 @@ reseed_ingestion                  = implemented (Plan 104)
 netdb_query_state_machine         = implemented (Plan 105)
 routerinfo_publication_state      = implemented (Plan 105)
 netdb_daemon_integration          = implemented (Plan 106)
-exploratory_tunnel_substrate       = implemented (Plan 107)
+exploratory_tunnel_substrate      = implemented (Plan 107)
 reply_path_provider               = implemented (Plan 107)
 build_cryptography_seam           = implemented (Plan 107)
 live_ecies_x25519_build           = blocked-on-plan108
-live_mixed_router_build           = blocked-on-plan108-and-qualified-transport
-live_routerinfo_lookup            = blocked-on-plan108-and-qualified-transport
+live_mixed_router_build           = blocked-on-plan108-and-qualified-delivery
+live_routerinfo_lookup            = blocked-on-plan108-and-qualified-delivery
 normal_daemon_ntcp2               = disabled-and-unenableable
 ntcp2                             = experimental-non-advertised
 external_netdb_over_ntcp2         = blocked
@@ -95,12 +95,23 @@ milestone4_full_exit              = pending-cross-milestone-checkpoint
 
 ## Next executable plan
 
-The next executable implementation is **Plan 108** (live
-ECIES-X25519 build-encryption primitive and live mixed-router
-tunnel build). Plan 108 will land the live cryptographic primitive
-behind the `BuildCryptography` seam, the deterministic simulation
-backed by the Plan 107 pool, and the integration with the Plan 098
-forward direction in the host-loopback development lane.
+The next executable implementation is **Plan 108**:
+`plans/108-live-ecies-x25519-short-tunnel-build-construction.md`.
+
+Plan 108 deliberately narrows the original Plan 107 handoff after a
+protocol/dependency review. It implements the standards-shaped
+ECIES-X25519 **short** build cryptography, deterministic local build
+state machine, reply validation, and success-only exploratory-pool
+registration. It does **not** require live mixed-router delivery for
+closure because no qualified router-to-router delivery path currently
+exists in the normal daemon.
+
+After Plan 108 closes, a separate narrow checkpoint must determine the
+smallest standards-conformant way to deliver one constructed I2NP tunnel
+build to an independent router. That checkpoint may revisit the existing
+NTCP2 defect only if the completed build action gives it a concrete,
+bounded consumer. It must not recreate the historical broad NTCP2
+validation program.
 
 ## Handoff
 
@@ -109,3 +120,7 @@ The Plan 107 implementation surface is mandatory; any change that
 removes or weakens the substrate, the seam wiring, or the static
 boundary checks must be re-justified in a new plan-of-record and
 must not silently weaken the Milestone 4 evidence gate.
+
+Plan 108 is now the active child plan for tunnel construction and its
+scope statement supersedes the broader live-interop wording that was
+previously present in this closure record.
