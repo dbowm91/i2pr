@@ -47,7 +47,7 @@ pub use lookup_engine::{
 
 pub use lookup_id::{
     CoalescedTargets, LookupId, LookupKind, MAX_COALESCED_LOOKUPS, MAX_WAITERS_PER_LOOKUP,
-    ReplyPath, ReplyPathError, WaiterSet, router_hash_from_proto_hash,
+    ReplyPath, ReplyPathError, ReplyPathProvider, WaiterSet, router_hash_from_proto_hash,
 };
 pub use lookup_policy::{
     DEFAULT_MAX_CANDIDATES_CONSIDERED, DEFAULT_MAX_PEERS_PER_LOOKUP, DEFAULT_MAX_SUGGESTED_HASHES,

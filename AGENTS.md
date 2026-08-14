@@ -1542,6 +1542,81 @@ Plan 099 harness-reduction commit). Plan 106 does not modify any
 rootless-owned file and the baseline failure is unrelated to
 Plan 106.
 
+## Plan 107 Milestone 5 exploratory tunnel substrate (closed)
+
+Plan 107 is the active Milestone 5 implementation plan. It lands the
+runtime-neutral substrate required by the NetDB seam to flip from
+`ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable` to
+`Available` once a real inbound exploratory tunnel is registered.
+The plan delivers a new crate `i2pr-tunnel` and wires
+`NetDbSeam` to a typed `i2pr_netdb::ReplyPathProvider` trait that
+the new crate's `ExploratoryPoolReplyPathProvider` adapter
+implements.
+
+Plan 107 lands:
+
+- `crates/i2pr-tunnel/src/identity.rs` — bounded typed tunnel
+  identity (`TunnelId`, `TunnelDirection`, `TunnelRole`,
+  `TunnelLifetime`, `TunnelState`, `TunnelPeer`).
+- `crates/i2pr-tunnel/src/config.rs` — bounded
+  `ExploratoryPoolConfig` with hard ceilings
+  (`max_inbound ≤ 8`, `max_outbound ≤ 8`,
+  `length_hops ∈ [1, 8]`, `lifetime_seconds ≤ 1 800`,
+  `build_concurrency ≤ 4`, `failure_threshold ≤ 16`).
+- `crates/i2pr-tunnel/src/pool.rs` — deterministic
+  `ExploratoryPool` with bounded replacement, expiry, and failure
+  accounting; `select_inbound_reply_path` selector returns the
+  oldest valid inbound tunnel.
+- `crates/i2pr-tunnel/src/build.rs` — `BuildRecordLayout`
+  (Short/Variable) over the existing
+  `i2pr_proto::DeferredBuildRecords` codec plus the
+  `BuildRequestKind` enumeration.
+- `crates/i2pr-tunnel/src/build_crypto.rs` — `BuildCryptography`
+  trait, `LayerKeys` zeroizing wrapper, and the
+  `NoBuildCryptography` default that always returns
+  `Unavailable`. The live ECIES-X25519 primitive lands in Plan
+  108+.
+- `crates/i2pr-tunnel/src/provider.rs` —
+  `ExploratoryPoolReplyPathProvider` adapter that implements
+  `i2pr_netdb::ReplyPathProvider` and exposes
+  `has_inbound_tunnel()` + `provide_reply_path()`.
+- `crates/i2pr-netdb/src/lookup_id.rs` — the new
+  `ReplyPathProvider` trait plus a `RouterInfoLookup::accept_reply_path`
+  method that records a path on the active lookup.
+- `crates/i2pr-daemon/src/netdb_seam.rs` —
+  `NetDbSeam::set_reply_path_provider` / `clear_reply_path_provider`
+  / `path_status` consult the injected provider;
+  `NetDbSeam::begin_lookup` consumes the path through
+  `accept_reply_path`.
+- `docs/architecture/i2pr-tunnel.md` — the new crate's deep dive.
+- `docs/architecture/overview.md`, `docs/architecture/i2pr-netdb.md`,
+  `docs/architecture/i2pr-daemon.md`, `docs/protocol-support.md`,
+  `specs/support.toml` — updated to reflect Milestone 5 progress.
+
+Plan 107 does **not** activate NTCP2, advertise tunnels, or run a
+live mixed-router build. The exploratory pool is filled through an
+injected `TunnelRegistrar`; the production registrar that performs
+real builds is Plan 108+ scope. The Plan 046 rootless checker
+continues to report the same pre-existing baseline failure
+unrelated to Plan 107.
+
+### Plan 107 focused checks
+
+```text
+cargo +1.95.0 fmt --all --check
+cargo +1.95.0 check --locked --workspace --all-targets
+cargo +1.95.0 test --locked --workspace
+cargo +1.95.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo +1.95.0 doc --locked --workspace --no-deps
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+bash scripts/check-fixture-manifest.sh
+bash scripts/check-ntcp2-vectors.sh
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-multipass-interop-boundary.sh
+git diff --check
+```
+
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
 
 Plan 096 is the active workflow correctness and pre-dispatch
@@ -2825,19 +2900,22 @@ Plan 103  RouterInfo validation + bounded local NetDB     [closed]
    -> Plan 104  persistent cache + SU3 reseed trust/ingestion [closed]
    -> Plan 105  transport-neutral lookup/store/publication state machines [closed]
    -> Plan 106  daemon/bootstrap integration                 [closed]
-   -> Milestone 5 exploratory tunnel substrate
+   -> Plan 107  Milestone 5 exploratory tunnel substrate     [closed]
+   -> Plan 108+ ECIES-X25519 build-encryption + live build   [next executable]
    -> return to Milestone 4B external acceptance
 ```
 
-Plan 106 closes the local/bootstrap implementation phase, not
-the complete original Milestone 4 exit criteria. After Plan 106
-closes, Milestone 4A is `local-foundation-complete-external-transport-blocked`
-until Milestone 5 supplies exploratory inbound/outbound paths and
-a router transport is deliberately qualified. A direct
-`DatabaseLookup` over NTCP2 is not accepted as a substitute for
-the standard exploratory-tunnel path. The next executable
-implementation is **Milestone 5 exploratory tunnels** under
-Plan 102 authority.
+Plan 106 closed the local/bootstrap implementation phase; Plan 107
+landed the runtime-neutral exploratory pool, the typed build-record
+layout surface, the build-cryptography seam, and the reply-path
+provider that flips the Plan 106 NetDB seam from
+`BlockedExploratoryTunnelUnavailable` to `Available` once a real
+inbound tunnel is registered. Milestone 4A is now
+`local-foundation-complete-exploratory-substrate-landed-live-build-pending`.
+A direct `DatabaseLookup` over NTCP2 is not accepted as a substitute
+for the standard exploratory-tunnel path. The next executable
+implementation is **Plan 108** (live ECIES-X25519 build-encryption
+primitive and live mixed-router tunnel build).
 
 ## Plan 106 daemon NetDB/bootstrap integration and Milestone 5 handoff (closed)
 

@@ -245,6 +245,31 @@ impl RouterInfoLookup {
         None
     }
 
+    /// Accepts a reply path for the active lookup. Returns `true`
+    /// when the path was stored and the lookup is still active.
+    /// Returns `false` when no lookup is active, the supplied
+    /// identity does not match, or the reply path is invalid.
+    ///
+    /// Plan 107 §3.6 exposes this method so the runtime adapter
+    /// can convert a `NeedExploratoryReplyPath` action into a real
+    /// `SendDatabaselookup` action when the exploratory pool can
+    /// supply a `ReplyPath` token.
+    pub fn accept_reply_path(&mut self, lookup_id: LookupId, path: ReplyPath) -> bool {
+        let active_id = match self.active_lookup() {
+            Some(id) => id,
+            None => return false,
+        };
+        if active_id != lookup_id {
+            return false;
+        }
+        let state = match self.active.as_mut() {
+            Some(state) => state,
+            None => return false,
+        };
+        state.reply_path = Some(path);
+        true
+    }
+
     /// Returns the current active lookup's diagnostics, if any.
     pub fn diagnostics(&self) -> Option<LookupDiagnostics> {
         self.active.as_ref().map(|state| state.diagnostics())

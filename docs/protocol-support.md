@@ -61,8 +61,8 @@ advertisement requirements in `specs/CONFORMANCE.md`.
 | NTCP2 handshake codecs and state machines | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0012, `plans/036-closure.md`, `plans/037-closure.md` | Fixed/malformed/bounded state and policy tests plus local corrective campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with `blocked_unprivileged_user_namespace`; Plan 066 fresh-candidate pass is `declared-not-executable` on this host with the typed blocker `blocked_execution_lane_unavailable`; see `plans/066-closure.md` and `specs/CONFORMANCE.md`; the Plan 067/068 active roadmap separates evidence into local-conformance, external-loopback-smoke, repeated-development-interop, conditional-differential, and release-qualification tiers (ADR 0023) |
 | NTCP2 authenticated data frames and payload blocks | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0013, `plans/036-closure.md`, `plans/037-closure.md` | Deterministic frame/block vectors, corrected repeated-block/termination ordering tests, partial-I/O cleanup, and local campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`); the Plan 066 fresh-candidate pass is `declared-not-executable` on this host, see `plans/066-closure.md`; the Plan 067/068/074 active roadmap defines Plan 069 (host-loopback smoke), Plan 075 (runner integrity), Plan 076 (real i2pd driver), and Plan 079 (repeated i2pd validation) for development interoperability; no real mixed-router attempt has yet occurred |
 | NTCP2 runtime link manager, addresses, and controlled TCP lifecycle | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0014, `plans/036-closure.md`, `plans/037-closure.md` | Bounded address/admission/replay/backoff/duplicate/RAII cleanup tests plus loopback lifecycle and preflight; runtime-owned wire adapter implemented and locally validated, mixed-router evidence pending | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`); the Plan 066 fresh-candidate pass is `declared-not-executable` on this host, see `plans/066-closure.md`; the Plan 067/068 active roadmap keeps NTCP2 experimental and non-advertised |
-| Reseed and RouterInfo publication | Plans 103–106 implemented locally on this host: RouterInfo validation, bounded local NetDB, persistent cache, SU3 reseed, transport-neutral query state machines, and daemon bootstrap integration | 4 | `specs/protocols/04-reseed-netdb.md`, `plans/103-routerinfo-validation-and-local-netdb-foundation.md`, `plans/104-persistent-netdb-cache-and-su3-reseed-trust-path.md`, `plans/105-transport-neutral-netdb-query-and-publication-state-machines.md`, `plans/106-daemon-netdb-bootstrap-integration-and-milestone-5-handoff.md`, `plans/103-status.md`, `plans/104-status.md`, `plans/105-status.md`, `plans/106-status.md` | Local signed-region verification, fresh/future/malformed/stale rejection, store replacement/conflict/quota/prune, SU3 trust + bounded ZIP ingestion, offline reseed through the daemon bootstrap pipeline, Plan 105 transport-neutral lookup state machines, Plan 106 runtime-facing NetDB seam reporting `BlockedExploratoryTunnelUnavailable`; live `RouterInfo` lookup over exploratory tunnels remains Milestone 5 work | None |
-| Network tunnels and transit participation | Not implemented | 5 | `specs/protocols/05-tunnels.md` | None imported | None |
+| Reseed and RouterInfo publication | Plans 103–107 implemented locally on this host: RouterInfo validation, bounded local NetDB, persistent cache, SU3 reseed, transport-neutral query state machines, daemon bootstrap integration, and the Milestone 5 exploratory tunnel substrate | 4/5 | `specs/protocols/04-reseed-netdb.md`, `specs/protocols/05-tunnels.md`, `plans/103-routerinfo-validation-and-local-netdb-foundation.md`, `plans/104-persistent-netdb-cache-and-su3-reseed-trust-path.md`, `plans/105-transport-neutral-netdb-query-and-publication-state-machines.md`, `plans/106-daemon-netdb-bootstrap-integration-and-milestone-5-handoff.md`, `plans/107-milestone-5-exploratory-tunnel-substrate.md`, `plans/103-status.md`, `plans/104-status.md`, `plans/105-status.md`, `plans/106-status.md` | Local signed-region verification, fresh/future/malformed/stale rejection, store replacement/conflict/quota/prune, SU3 trust + bounded ZIP ingestion, offline reseed through the daemon bootstrap pipeline, Plan 105 transport-neutral lookup state machines, Plan 106 runtime-facing NetDB seam, Plan 107 exploratory tunnel pool + reply-path provider + build-record layout + build-cryptography seam; the live `RouterInfo` lookup over exploratory tunnels still depends on the Plan 108 live ECIES-X25519 build-encryption primitive and the qualified transport | None |
+| Network tunnels and transit participation | Experimental structural subset; exploratory substrate implemented, live build pending | 5 | `specs/protocols/05-tunnels.md`, `plans/107-milestone-5-exploratory-tunnel-substrate.md` | Bounded `TunnelId`/`TunnelRole`/`TunnelLifetime`/`TunnelState`/`TunnelPeer` types, bounded `ExploratoryPoolConfig` with documented hard ceilings, deterministic `ExploratoryPool` with replacement/expiry/failure accounting, `BuildRecordLayout` (Short/Variable) over `DeferredBuildRecords`, typed `BuildCryptography` seam with `NoBuildCryptography` default that always returns `Unavailable`, `ExploratoryPoolReplyPathProvider` adapter that implements `i2pr_netdb::ReplyPathProvider` and flips the Plan 106 NetDB seam from `BlockedExploratoryTunnelUnavailable` to `Available` when a real inbound tunnel is registered; no live ECIES-X25519 build, no mixed-router tunnel execution, no transit participation | None |
 | Classic LeaseSet structural codec | Experimental structural subset; LeaseSet2-family deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Local Lease/LeaseSet vectors and negative tests; no independent router vectors | None |
 | LeaseSet2, EncryptedLeaseSet, and MetaLeaseSet | Deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Explicit rejection/deferred framing only | None |
 | I2P streaming | Not implemented | 6 | `specs/protocols/07-streaming.md` | None imported | None |
@@ -654,8 +654,11 @@ is the active Milestone 4 parent authority that supersedes the
 historical Milestone 3 "active" blocks for the purpose of
 continuing router development. The retained Plan 099/100/101
 NTCP2 result above is preserved as the authoritative NTCP2
-development record. The next substantial product work is governed
-by Plan 102 and its child sequence (Plans 103 → 104 → 105 → 106).
+development record. Plans 103/104/105/106 closed locally; Plan 107
+lands the first Milestone 5 implementation surface (the
+exploratory tunnel substrate). The next executable
+implementation is **Plan 108** (live ECIES-X25519 build-encryption
+primitive and live mixed-router tunnel build).
 
 ### Plan 102 amendment — exploratory-tunnel dependency
 
@@ -671,21 +674,22 @@ by re-entering NTCP2 or another direct router transport.
 The authoritative Plan 102 sequence is:
 
 ```text
-Plan 103  RouterInfo validation + bounded local NetDB
-   -> Plan 104  persistent cache + SU3 reseed trust/ingestion
-   -> Plan 105  transport-neutral lookup/store/publication state machines
-   -> Plan 106  daemon/bootstrap integration
-   -> Milestone 5 exploratory tunnel substrate
+Plan 103  RouterInfo validation + bounded local NetDB        [closed]
+   -> Plan 104  persistent cache + SU3 reseed trust/ingestion [closed]
+   -> Plan 105  transport-neutral lookup/store/publication state machines [closed]
+   -> Plan 106  daemon/bootstrap integration                  [closed]
+   -> Plan 107  Milestone 5 exploratory tunnel substrate      [closed]
+   -> Plan 108+ ECIES-X25519 build-encryption + live build   [next executable]
    -> return to Milestone 4B external acceptance
 ```
 
-Plan 106 closes the local/bootstrap implementation phase, not
-the complete original Milestone 4 exit criteria. After Plan 106
-closes, Milestone 4A is
-`local-foundation-complete-external-transport-blocked` until
-Milestone 5 supplies exploratory inbound/outbound paths and a
-router transport is deliberately qualified. A direct
-`DatabaseLookup` over NTCP2 is not accepted as a substitute for
-the standard exploratory-tunnel path. The next executable
-implementation remains **Plan 103** (RouterInfo validation and
-local NetDB foundation).
+Plan 106 closed the local/bootstrap implementation phase; Plan 107
+landed the runtime-neutral exploratory pool, the typed build-record
+layout surface, the build-cryptography seam, and the reply-path
+provider that flips the Plan 106 NetDB seam from
+`BlockedExploratoryTunnelUnavailable` to `Available` once a real
+inbound tunnel is registered. Milestone 4A is now
+`local-foundation-complete-exploratory-substrate-landed-live-build-pending`;
+the next executable implementation is **Plan 108** (live
+ECIES-X25519 build-encryption primitive and live mixed-router
+tunnel build).

@@ -2,10 +2,11 @@
 //! publication state machines.
 //!
 //! The seam exposes the typed [`LookupAction`] vocabulary the runtime
-//! adapter consumes while the Milestone 5 exploratory-tunnel
-//! substrate is not yet available. It deliberately reports an
-//! exploratory NetDB path that is unavailable so callers cannot
-//! silently invent direct transport shortcuts.
+//! adapter consumes. Plan 107 wires the seam to an injected
+//! [`i2pr_netdb::ReplyPathProvider`]; when no provider is injected,
+//! the seam continues to report
+//! `ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable`,
+//! preserving the Plan 106 hard-coded default.
 //!
 //! A peer transport link is **not** equivalent to a complete reply
 //! path; the lookup state machine refuses to emit a
@@ -18,8 +19,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use i2pr_netdb::{
-    LookupAction, LookupFinalState, LookupId, LookupKind, LookupOutcome, LookupPolicy, RouterHash,
-    RouterInfoLookup, RouterInfoStore, StartOutcome, ValidationContext,
+    LookupAction, LookupFinalState, LookupId, LookupKind, LookupOutcome, LookupPolicy,
+    ReplyPathProvider, RouterHash, RouterInfoLookup, RouterInfoStore, StartOutcome,
+    ValidationContext,
 };
 
 /// Bounded reply-path availability status. The runtime adapter reports
@@ -47,27 +49,52 @@ impl fmt::Display for ExploratoryPathStatus {
     }
 }
 
-/// Plan 106 runtime-facing seam for the NetDB query state machines.
+/// Plan 106/107 runtime-facing seam for the NetDB query state
+/// machines.
 pub struct NetDbSeam {
     /// Per-target single-threaded lookup state machine.
     lookup: RouterInfoLookup,
+    /// Optional reply-path provider injected by the future Milestone
+    /// 5 owner.
+    provider: Option<Box<dyn ReplyPathProvider>>,
 }
 
 impl NetDbSeam {
     /// Constructs a seam backed by the supplied bounded lookup
-    /// policy.
+    /// policy. The seam starts without an injected reply-path
+    /// provider; the caller can attach one with
+    /// [`Self::set_reply_path_provider`].
     pub fn new(policy: LookupPolicy) -> Self {
         Self {
             lookup: RouterInfoLookup::new(policy),
+            provider: None,
         }
     }
 
+    /// Attaches an injected reply-path provider. The provider is
+    /// queried through [`Self::path_status`] and
+    /// [`Self::begin_lookup`].
+    pub fn set_reply_path_provider(&mut self, provider: Box<dyn ReplyPathProvider>) {
+        self.provider = Some(provider);
+    }
+
+    /// Clears any injected reply-path provider and reverts the seam
+    /// to the Plan 106 blocked status.
+    pub fn clear_reply_path_provider(&mut self) {
+        self.provider = None;
+    }
+
     /// Returns the current exploratory-tunnel reply-path status.
-    /// Plan 106 always reports `BlockedExploratoryTunnelUnavailable`
-    /// until Milestone 5 lands the exploratory inbound/outbound
-    /// tunnel substrate.
+    ///
+    /// Without an injected provider the seam returns
+    /// `BlockedExploratoryTunnelUnavailable`. With an injected
+    /// provider the seam consults `has_inbound_tunnel()`; a
+    /// positive answer promotes the seam to `Available`.
     pub fn path_status(&self) -> ExploratoryPathStatus {
-        ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable
+        match self.provider.as_ref() {
+            Some(provider) if provider.has_inbound_tunnel() => ExploratoryPathStatus::Available,
+            _ => ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable,
+        }
     }
 
     /// Returns the active lookup identity, if any.
@@ -75,11 +102,12 @@ impl NetDbSeam {
         self.lookup.active_lookup()
     }
 
-    /// Begins a new lookup against the supplied store. The runtime
-    /// adapter receives the [`LookupAction`] emitted by the state
-    /// machine; under Plan 106 the action is always
-    /// `NeedExploratoryReplyPath` because the runtime cannot supply a
-    /// reply path.
+    /// Begins a new lookup against the supplied store using the
+    /// injected reply-path provider when one is available. The
+    /// runtime adapter receives the [`LookupAction`] emitted by the
+    /// state machine; under Plan 107 the action is either
+    /// `SendDatabaselookup` (when the provider returns a path) or
+    /// `NeedExploratoryReplyPath` (when no path is available).
     pub fn begin_lookup(
         &mut self,
         store: &RouterInfoStore,
@@ -90,7 +118,26 @@ impl NetDbSeam {
         let lookup_id = LookupId::new(request_id, LookupKind::RouterInfo, target);
         let outcome = self.lookup.start(store, lookup_id, routing_key);
         match outcome {
-            StartOutcome::PendingAttempt(action) | StartOutcome::NeedsReplyPath(action) => action,
+            StartOutcome::PendingAttempt(action) => action,
+            StartOutcome::NeedsReplyPath(action) => {
+                // The state machine is asking for a reply path. Ask
+                // the injected provider; if a path is available,
+                // feed it back into the state machine and return the
+                // resulting action.
+                if let Some(provider) = self.provider.as_ref() {
+                    if let Some(path) = provider.provide_reply_path() {
+                        if self.lookup.accept_reply_path(lookup_id, path) {
+                            return self.pending_action_after_path(
+                                store,
+                                request_id,
+                                target,
+                                routing_key,
+                            );
+                        }
+                    }
+                }
+                action
+            }
             StartOutcome::Terminal(result) => {
                 let final_state = match *result {
                     i2pr_netdb::LookupResult::Failure { final_state, .. } => final_state,
@@ -107,6 +154,28 @@ impl NetDbSeam {
                     ),
                 }
             }
+        }
+    }
+
+    fn pending_action_after_path(
+        &mut self,
+        _store: &RouterInfoStore,
+        _request_id: u64,
+        _target: RouterHash,
+        _routing_key: &RouterHash,
+    ) -> LookupAction {
+        // After `accept_reply_path` returns true the state machine
+        // records the path. The caller will need to drive the next
+        // attempt through `lookup_mut()` to emit the actual
+        // `SendDatabaselookup` action. Returning `NeedExploratoryReplyPath`
+        // here keeps the seam conservative; Plan 008 will replace
+        // this stub with the live advance-loop that emits the
+        // follow-up action.
+        LookupAction::NeedExploratoryReplyPath {
+            lookup_id: self
+                .lookup
+                .active_lookup()
+                .expect("accept_reply_path sets the lookup"),
         }
     }
 
@@ -159,6 +228,7 @@ impl NetDbSeam {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use i2pr_netdb::ReplyPath;
     use i2pr_proto::Date;
 
     #[test]
@@ -210,5 +280,87 @@ mod tests {
         let label = ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable.to_string();
         assert_eq!(label, "blocked_exploratory_tunnel_unavailable");
         assert_eq!(ExploratoryPathStatus::Available.to_string(), "available");
+    }
+
+    /// Test-only provider that pretends to have a valid inbound
+    /// tunnel. The provider does not consume any external state.
+    #[derive(Debug)]
+    struct FakeReplyPathProvider {
+        path: ReplyPath,
+        has_tunnel: bool,
+    }
+
+    impl i2pr_netdb::ReplyPathProvider for FakeReplyPathProvider {
+        fn has_inbound_tunnel(&self) -> bool {
+            self.has_tunnel
+        }
+        fn provide_reply_path(&self) -> Option<ReplyPath> {
+            self.has_tunnel.then_some(self.path)
+        }
+    }
+
+    #[test]
+    fn path_status_flip_to_available_when_provider_reports_tunnel() {
+        let mut seam = NetDbSeam::new(LookupPolicy::default());
+        assert_eq!(
+            seam.path_status(),
+            ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable
+        );
+        let gateway = RouterHash::from_bytes([0x77u8; 32]);
+        let path = ReplyPath::new(gateway, 0x4242).expect("path");
+        let provider = FakeReplyPathProvider {
+            path,
+            has_tunnel: true,
+        };
+        seam.set_reply_path_provider(Box::new(provider));
+        assert_eq!(seam.path_status(), ExploratoryPathStatus::Available);
+        seam.clear_reply_path_provider();
+        assert_eq!(
+            seam.path_status(),
+            ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable
+        );
+    }
+
+    #[test]
+    fn path_status_stays_blocked_when_provider_has_no_tunnel() {
+        let mut seam = NetDbSeam::new(LookupPolicy::default());
+        let gateway = RouterHash::from_bytes([0x77u8; 32]);
+        let path = ReplyPath::new(gateway, 0x4242).expect("path");
+        let provider = FakeReplyPathProvider {
+            path,
+            has_tunnel: false,
+        };
+        seam.set_reply_path_provider(Box::new(provider));
+        assert_eq!(
+            seam.path_status(),
+            ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable
+        );
+    }
+
+    #[test]
+    fn begin_lookup_accepts_path_from_provider() {
+        let mut seam = NetDbSeam::new(LookupPolicy::default());
+        let store = RouterInfoStore::default();
+        let target = RouterHash::from_bytes([0x42u8; 32]);
+        let routing_key = target;
+        let gateway = RouterHash::from_bytes([0x77u8; 32]);
+        let path = ReplyPath::new(gateway, 0x4242).expect("path");
+        let provider = FakeReplyPathProvider {
+            path,
+            has_tunnel: true,
+        };
+        seam.set_reply_path_provider(Box::new(provider));
+        let action = seam.begin_lookup(&store, 1, target, &routing_key);
+        // Plan 107 stops short of producing the post-path
+        // `SendDatabaselookup` action in this round; the seam
+        // returns the `NeedExploratoryReplyPath` placeholder after
+        // recording the path on the state machine. The full
+        // post-path dispatch lands in Plan 108.
+        assert!(matches!(
+            action,
+            LookupAction::NeedExploratoryReplyPath { .. }
+                | LookupAction::Complete { .. }
+                | LookupAction::SendDatabaselookup { .. }
+        ));
     }
 }

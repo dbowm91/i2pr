@@ -41,7 +41,8 @@ What it **does not** do yet:
 - Open NTCP2 listeners (disabled under current authority).
 - Run `Ntcp2RuntimeService` or register `ntcp2-transport`.
 - Apply live configuration changes.
-- Implement exploratory tunnels (Milestone 5).
+- Drive a live exploratory tunnel build (Plan 107 lands the
+  substrate; the live build lands in Plan 108+).
 - Accept HTTPS reseed at runtime (the offline source path is the
   only allowlisted Plan 106 acquisition path; HTTPS is deferred
   to a future plan).
@@ -264,15 +265,17 @@ HTTPS reseed adapter is deferred to a future plan; the offline
 SU3 source path is the only allowlisted Plan 106 acquisition
 path.
 
-### Plan 106 runtime seam (`src/netdb_seam.rs`)
+### Plan 106/107 runtime seam (`src/netdb_seam.rs`)
 
 `NetDbSeam` exposes the Plan 105 lookup state machines behind a
 stable runtime-facing surface. `path_status()` returns
-`ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable` until
-Milestone 5 supplies an exploratory inbound gateway + tunnel
-identifier. `begin_lookup` translates the `RouterInfoLookup::start`
-outcome into the typed `LookupAction` vocabulary. A peer transport
-link is not equivalent to a complete reply path.
+`ExploratoryPathStatus::Available` when an injected
+`i2pr_netdb::ReplyPathProvider` reports at least one valid inbound
+tunnel, and `ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable`
+otherwise. `set_reply_path_provider` accepts any `Box<dyn
+ReplyPathProvider>`; the production wiring is the
+`i2pr_tunnel::ExploratoryPoolReplyPathProvider` adapter. A peer
+transport link is not equivalent to a complete reply path.
 
 ### Which crates are wired in today
 
@@ -280,8 +283,9 @@ link is not equivalent to a complete reply path.
 | --- | --- |
 | Crypto (`OsRng`, `RouterIdentityBundle`) | `i2pr-crypto` |
 | Storage (`IdentityStore`, `ByteCache`) | `i2pr-storage` |
-| NetDB (`RouterInfoStore`, `ValidatedRouterInfo`, `LocalRouterInfoBuilder`, lookup state machines) | `i2pr-netdb` |
+| NetDB (`RouterInfoStore`, `ValidatedRouterInfo`, `LocalRouterInfoBuilder`, lookup state machines, `ReplyPathProvider`) | `i2pr-netdb` |
 | NetDB composition (`CacheLoader`, `ReseedIngestor`) | `i2pr-netdb-persist` |
+| Tunnel substrate (`ExploratoryPool`, `BuildRecordLayout`, `BuildCryptography` seam, `ExploratoryPoolReplyPathProvider`) | `i2pr-tunnel` |
 | Runtime (supervisor, service graph, lifecycle) | `i2pr-runtime` |
 | Transport / NTCP2 / Proto / Core | declared, **not yet used in production daemon** |
 

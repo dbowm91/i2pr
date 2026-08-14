@@ -50,7 +50,16 @@ impl fmt::Debug for DeferredBuildRecords {
 }
 
 impl DeferredBuildRecords {
-    pub(super) fn new(count: u8, record_size: usize, records: Vec<u8>) -> Result<Self, CodecError> {
+    /// Constructs a bounded deferred build-record value.
+    ///
+    /// The constructor is public so external crates can wrap raw
+    /// build-record bytes produced by their state machines. Callers
+    /// remain responsible for the cryptographic semantics of those
+    /// bytes; this constructor only enforces the bounded structural
+    /// shape (nonzero count, count within
+    /// [`MAX_BUILD_RECORDS`], length matching `count * record_size`,
+    /// and a record size that fits in a `u16`).
+    pub fn new(count: u8, record_size: usize, records: Vec<u8>) -> Result<Self, CodecError> {
         let expected =
             usize::from(count)
                 .checked_mul(record_size)

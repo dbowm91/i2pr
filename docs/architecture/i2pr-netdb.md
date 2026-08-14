@@ -26,7 +26,8 @@ RouterInfo publication coordinator.
   transports (`LocalRouterInfoBuilder`);
 - the daily routing-key derivation and bounded nearest-floodfill
   selection (`routing`, `lookup_policy`);
-- the typed lookup identity, exploratory-tunnel reply-path token, and
+- the typed lookup identity, exploratory-tunnel reply-path token,
+  the [`ReplyPathProvider`](src/lookup_id.rs) trait, and the
   waiter-set/coalescing primitives (`lookup_id`);
 - the iterative `RouterInfo` lookup state machine and bounded
   `DatabaseStore` decompression (`lookup_action`, `databaselookup`,
@@ -48,7 +49,7 @@ RouterInfo publication coordinator.
 | `routing` | XOR distance, daily routing-key derivation, deterministic nearest-N floodfill selection |
 | `local` | `LocalRouterInfoBuilder`, self-validation, capability policy |
 | `lookup_policy` | Bounded `LookupPolicy`, candidate eligibility, floodfill selection |
-| `lookup_id` | `LookupId`, `LookupKind`, exploratory-tunnel `ReplyPath`, bounded `WaiterSet` |
+| `lookup_id` | `LookupId`, `LookupKind`, exploratory-tunnel `ReplyPath`, `ReplyPathProvider`, bounded `WaiterSet` |
 | `lookup_action` | Typed `LookupAction` vocabulary, bounded gzip decompression |
 | `databaselookup` | Standards-conformant `DatabaseLookup` builder |
 | `lookup_engine` | Iterative `RouterInfo` lookup state machine |

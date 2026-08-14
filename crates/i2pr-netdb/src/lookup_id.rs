@@ -243,6 +243,29 @@ pub fn router_hash_from_proto_hash(hash: Hash) -> RouterHash {
     RouterHash::from_hash(hash)
 }
 
+/// Reply-path provider implemented by the future Milestone 5
+/// exploratory-tunnel owner. The seam consults the provider before
+/// emitting any [`crate::LookupAction::SendDatabaselookup`] action.
+///
+/// The trait is intentionally narrow: the provider must report
+/// whether at least one inbound tunnel is available and, on demand,
+/// return one valid `ReplyPath`. A `None` result tells the seam to
+/// stop the lookup with [`crate::LookupFinalState::PathUnavailable`].
+///
+/// Plan 107 wires `i2pr_tunnel::ExploratoryPoolReplyPathProvider` to
+/// this trait. The seam will only consult a provider that is
+/// actually injected; without an injection, the seam continues to
+/// report the Plan 106 blocked status.
+pub trait ReplyPathProvider {
+    /// Returns `true` when at least one inbound exploratory tunnel is
+    /// currently registered and unexpired.
+    fn has_inbound_tunnel(&self) -> bool;
+    /// Returns one reply path the seam can attach to the next
+    /// outbound `DatabaseLookup`. Returns `None` when no valid
+    /// inbound tunnel is registered.
+    fn provide_reply_path(&self) -> Option<ReplyPath>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

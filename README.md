@@ -2322,6 +2322,61 @@ exploratory-tunnel substrate; a direct NTCP2 `DatabaseLookup` is not
 accepted as a substitute. The Plan 106 closure record is
 `plans/106-status.md`.
 
+### Plan 107 Milestone 5 exploratory tunnel substrate
+
+[Plan 107](plans/107-milestone-5-exploratory-tunnel-substrate.md)
+is the first Milestone 5 implementation surface. It adds a new
+runtime-neutral crate `i2pr-tunnel` that owns the typed tunnel
+identity, a bounded exploratory pool, the build-record layout
+surface, a typed build-cryptography seam, and a reply-path
+provider the Plan 106 NetDB seam now consumes:
+
+- `TunnelId`, `TunnelDirection`, `TunnelRole`, `TunnelLifetime`,
+  `TunnelState`, `TunnelPeer` — bounded typed identity.
+- `ExploratoryPoolConfig` with hard ceilings
+  (`max_inbound ≤ 8`, `max_outbound ≤ 8`, `length_hops ∈ [1, 8]`,
+  `lifetime_seconds ≤ 1 800`, `build_concurrency ≤ 4`,
+  `failure_threshold ≤ 16`).
+- Deterministic `ExploratoryPool` with bounded replacement, expiry,
+  and failure accounting.
+- `BuildRecordLayout` (Short/Variable) over the existing
+  `i2pr_proto::DeferredBuildRecords` codec plus the `BuildRequestKind`
+  enumeration.
+- `BuildCryptography` trait with a `NoBuildCryptography` default
+  that always returns `Unavailable` (the live ECIES-X25519 primitive
+  lands in Plan 108+).
+- `ExploratoryPoolReplyPathProvider` adapter that implements the
+  new `i2pr_netdb::ReplyPathProvider` trait and flips the
+  `NetDbSeam::path_status` from
+  `BlockedExploratoryTunnelUnavailable` to `Available` once a real
+  inbound tunnel is registered.
+
+The Plan 107 substrate is **structural evidence only**. It opens no
+sockets, does not perform DNS, does not run a live mixed-router build,
+and does not advertise tunnels. The current support state is:
+
+```text
+local RouterInfo validation    = implemented (Plan 103)
+bounded local NetDB            = implemented (Plan 103)
+local RouterInfo construction  = implemented (Plan 103)
+persistent RouterInfo cache    = implemented, untrusted-on-load (Plan 104)
+SU3 reseed verification        = implemented (Plan 104)
+reseed ingestion               = implemented from verified bytes (Plan 104)
+routing-key/floodfill selection = implemented (Plan 105)
+RouterInfo lookup state machine = implemented, runtime/path not live (Plan 105)
+DatabaseStore RouterInfo ingestion = implemented (Plan 105)
+RouterInfo publication coordinator = implemented, not live-verified (Plan 105)
+daemon NetDB/bootstrap integration = implemented (Plan 106)
+runtime-facing NetDB seam       = implemented (Plan 106/107)
+exploratory tunnel substrate     = implemented (Plan 107)
+live ECIES-X25519 build/encryption = not implemented (Plan 108+)
+live mixed-router build execution = blocked on Plan 108 + qualified transport
+live standards-conformant NetDB lookup = blocked on Plan 108 + qualified transport
+NTCP2                            = experimental-non-advertised
+```
+
+The Plan 107 closure record is `plans/107-status.md`.
+
 ### Plan 104 persistent NetDB cache and SU3 reseed trust path
 
 [Plan 104](plans/104-persistent-netdb-cache-and-su3-reseed-trust-path.md)

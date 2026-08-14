@@ -1,13 +1,14 @@
 # Machine-readable workspace support inventory (current evidence through
-# the Plan 106 daemon NetDB/bootstrap integration). Structural evidence
-# may be recorded before interoperability; all entries remain
+# the Plan 107 Milestone 5 exploratory tunnel substrate). Structural
+# evidence may be recorded before interoperability; all entries remain
 # non-advertised until the conformance requirements are met.
 schema = 1
-milestone = 4
+milestone = 5
 plan_103_implementation_floor = "plans/103-status.md"
 plan_104_implementation_floor = "plans/104-status.md"
 plan_105_implementation_floor = "plans/105-status.md"
 plan_106_implementation_floor = "plans/106-status.md"
+plan_107_implementation_floor = "plans/107-status.md"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -365,4 +366,57 @@ structure = "live-standards-conformant-routerinfo-lookup-over-exploratory-tunnel
 scope = "required-later"
 status = "deferred"
 evidence = ["plans/102-amendment-exploratory-tunnel-dependency.md"]
+advertised = false
+
+[[surface]]
+id = "tunnel.identity-and-pool"
+protocol = "tunnels"
+structure = "runtime-neutral-tunnel-identity-and-exploratory-pool-substrate"
+scope = "required"
+status = "experimental"
+evidence = [
+    "crates/i2pr-tunnel/src/identity.rs",
+    "crates/i2pr-tunnel/src/config.rs",
+    "crates/i2pr-tunnel/src/pool.rs",
+    "crates/i2pr-tunnel/src/build.rs",
+    "crates/i2pr-tunnel/src/build_crypto.rs",
+    "crates/i2pr-tunnel/src/provider.rs",
+    "crates/i2pr-tunnel/src/lib.rs",
+    "plans/107-milestone-5-exploratory-tunnel-substrate.md",
+]
+advertised = false
+
+[[surface]]
+id = "tunnel.reply-path-provider"
+protocol = "tunnels"
+structure = "reply-path-provider-trait-and-pool-adapter"
+scope = "required"
+status = "experimental"
+evidence = [
+    "crates/i2pr-netdb/src/lookup_id.rs",
+    "crates/i2pr-tunnel/src/provider.rs",
+    "crates/i2pr-daemon/src/netdb_seam.rs",
+    "plans/107-milestone-5-exploratory-tunnel-substrate.md",
+]
+advertised = false
+
+[[surface]]
+id = "tunnel.build-cryptography-seam"
+protocol = "tunnels"
+structure = "typed-build-cryptography-seam-with-no-build-default"
+scope = "required-later"
+status = "experimental"
+evidence = [
+    "crates/i2pr-tunnel/src/build_crypto.rs",
+    "plans/107-milestone-5-exploratory-tunnel-substrate.md",
+]
+advertised = false
+
+[[surface]]
+id = "tunnel.live-build"
+protocol = "tunnels"
+structure = "live-ecies-x25519-build-and-mixed-router-execution"
+scope = "required-later"
+status = "deferred"
+evidence = ["plans/107-milestone-5-exploratory-tunnel-substrate.md"]
 advertised = false
