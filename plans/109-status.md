@@ -1,24 +1,39 @@
 # Plan 109 closure: short-build record and Noise-N conformance
 
-> **2026-08-15 conformance amendment:** A post-Plan-110 audit found that Plan 109's local wire/crypto implementation still contains protocol defects shared by Plan 110: the required Noise null-prologue `MixHash` is missing; the request `es` AEAD key is obtained through an incorrect second HKDF instead of the single `HKDF(ck, sharedSecret, "", 64)` split; record-slot nonce construction uses byte 11 instead of byte 4; OBEP garlic tag material is represented as 16 instead of 8 bytes; and the fixture obtains critical expected state from the production implementation. The historical closure record below is retained for audit only. Current corrective authority is [`plans/111-short-build-final-local-conformance-correction.md`](111-short-build-final-local-conformance-correction.md). Until Plan 111 passes, `passed-record-and-noise-conformance` is superseded by `implementation-landed-conformance-reopened-by-plan111`.
+> **2026-08-15 conformance amendment (Plan 111 closure):** Plan 111
+> closed as `passed-final-local-short-build-conformance`. The
+> Plan 109 local wire/crypto implementation contained four
+> defects the post-Plan-110 audit found: the required Noise
+> null-prologue `MixHash` was missing; the request `es` AEAD key
+> was obtained through an incorrect second HKDF instead of the
+> single `HKDF(ck, sharedSecret, "", 64)` split; record-slot nonce
+> construction used byte 11 instead of byte 4; and the OBEP
+> garlic tag material was represented as 16 instead of 8 bytes.
+> Plan 111 corrected all four defects and added an independent
+> reference `fixed_vectors` oracle. The historical closure record
+> below is retained for audit only.
 
-- Status: **implementation-landed-conformance-reopened-by-plan111**
+- Status: **superseded-by-plan111-corrected**
 - Historical closure date: 2026-08-15
 - Pre-Plan 109 commit: `c74493433ac39eb4ae6e617961f737f6b7e0a9d5`
 - Plan-of-record:
   [`plans/109-short-build-record-and-noise-conformance-correction.md`](109-short-build-record-and-noise-conformance-correction.md)
 - Corrective successor:
   [`plans/111-short-build-final-local-conformance-correction.md`](111-short-build-final-local-conformance-correction.md)
+- Final closure: [`plans/111-status.md`](111-status.md)
 
 ## Current authoritative state
 
 ```text
-plan_109                         = implementation-landed-conformance-reopened-by-plan111
-plan_110                         = implementation-landed-conformance-reopened-by-plan111
-plan_111                         = ready-for-implementation
-single_record_short_build_crypto = needs-plan111-correction
-short_build_derived_keys         = needs-plan111-correction
-external_build_delivery          = blocked-on-plan111
+plan_109                         = superseded-by-plan111-corrected
+plan_110                         = superseded-by-plan111-corrected
+plan_111                         = passed-final-local-short-build-conformance
+single_record_short_build_crypto = locally-conformant-fixed-vectors
+short_build_derived_keys         = locally-conformant-fixed-vectors
+short_build_multirecord_processing = locally-conformant-fixed-vectors
+complete_stbm_payload            = locally-conformant-fixed-vectors
+inbound_short_build              = blocked-inbound-layout-ambiguity
+external_build_delivery          = next-checkpoint
 ```
 
 ## Historical Plan 109 closure record

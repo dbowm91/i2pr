@@ -302,6 +302,138 @@ impl ShortRequestRecord {
         Ok((seconds / 60) as u32)
     }
 
+    /// Decode a 154-byte request plaintext into a validated record.
+    /// The decoder validates every protocol-mandated field and
+    /// rejects unknown role/layer-encryption/mapping bytes. It is
+    /// the postprocessor's source of authenticated hop metadata.
+    pub fn decode(input: &[u8]) -> Result<Self, ShortBuildError> {
+        if input.len() != SHORT_REQUEST_PLAINTEXT_SIZE {
+            return Err(ShortBuildError::PlaintextLength {
+                actual: input.len(),
+                expected: SHORT_REQUEST_PLAINTEXT_SIZE,
+            });
+        }
+        let receive_tunnel_bytes: [u8; 4] =
+            input[0..4]
+                .try_into()
+                .map_err(|_| ShortBuildError::PlaintextLength {
+                    actual: input.len(),
+                    expected: SHORT_REQUEST_PLAINTEXT_SIZE,
+                })?;
+        let receive_tunnel_value = u32::from_be_bytes(receive_tunnel_bytes);
+        if receive_tunnel_value == 0 {
+            return Err(ShortBuildError::ZeroTunnelId {
+                field: "receive_tunnel",
+            });
+        }
+        let receive_tunnel =
+            TunnelId::new(receive_tunnel_value).map_err(|_| ShortBuildError::ZeroTunnelId {
+                field: "receive_tunnel",
+            })?;
+        let next_tunnel_bytes: [u8; 4] =
+            input[4..8]
+                .try_into()
+                .map_err(|_| ShortBuildError::PlaintextLength {
+                    actual: input.len(),
+                    expected: SHORT_REQUEST_PLAINTEXT_SIZE,
+                })?;
+        let next_tunnel_value = u32::from_be_bytes(next_tunnel_bytes);
+        if next_tunnel_value == 0 {
+            return Err(ShortBuildError::ZeroTunnelId {
+                field: "next_tunnel",
+            });
+        }
+        let next_tunnel =
+            TunnelId::new(next_tunnel_value).map_err(|_| ShortBuildError::ZeroTunnelId {
+                field: "next_tunnel",
+            })?;
+        let mut next_router_bytes = [0_u8; 32];
+        next_router_bytes.copy_from_slice(&input[8..40]);
+        let next_router = Hash::from_bytes(next_router_bytes);
+        let role = HopRole::from_flag(input[40])?;
+        // Bytes 41..42 must be zero in the canonical encoding.
+        if input[41] != 0 || input[42] != 0 {
+            return Err(ShortBuildError::InvalidRequestPrefixBytes);
+        }
+        let layer_encryption_type = LayerEncryptionType::from_byte(input[43])?;
+        let minutes_bytes: [u8; 4] =
+            input[44..48]
+                .try_into()
+                .map_err(|_| ShortBuildError::PlaintextLength {
+                    actual: input.len(),
+                    expected: SHORT_REQUEST_PLAINTEXT_SIZE,
+                })?;
+        let minutes = u32::from_be_bytes(minutes_bytes);
+        let request_time_ms = (minutes as u64).saturating_mul(60).saturating_mul(1_000);
+        let request_time = Date::from_millis(request_time_ms);
+        let expiration_bytes: [u8; 4] =
+            input[48..52]
+                .try_into()
+                .map_err(|_| ShortBuildError::PlaintextLength {
+                    actual: input.len(),
+                    expected: SHORT_REQUEST_PLAINTEXT_SIZE,
+                })?;
+        let expiration_seconds = u32::from_be_bytes(expiration_bytes);
+        if expiration_seconds == 0 {
+            return Err(ShortBuildError::ZeroExpiration);
+        }
+        if expiration_seconds != REQUEST_EXPIRATION_SECONDS {
+            return Err(ShortBuildError::ExpirationMismatch {
+                actual: expiration_seconds,
+                expected: REQUEST_EXPIRATION_SECONDS,
+            });
+        }
+        let next_message_id_bytes: [u8; 4] =
+            input[52..56]
+                .try_into()
+                .map_err(|_| ShortBuildError::PlaintextLength {
+                    actual: input.len(),
+                    expected: SHORT_REQUEST_PLAINTEXT_SIZE,
+                })?;
+        let next_message_id = u32::from_be_bytes(next_message_id_bytes);
+        if next_message_id == 0 {
+            return Err(ShortBuildError::ZeroMessageId);
+        }
+        let mapping_area = &input[REQUEST_FIXED_PREFIX_LEN..];
+        let mapping = if mapping_area.len() < 2 {
+            return Err(ShortBuildError::OptionsLength {
+                actual: mapping_area.len(),
+            });
+        } else {
+            let declared_body = u16::from_be_bytes([mapping_area[0], mapping_area[1]]) as usize;
+            if declared_body > MAX_REQUEST_MAPPING_BODY {
+                return Err(ShortBuildError::Protocol(CodecError::LengthExceeded {
+                    offset: 0,
+                    declared: declared_body,
+                    maximum: MAX_REQUEST_MAPPING_BODY,
+                    context: "request mapping body",
+                }));
+            }
+            let mapping_len = 2 + declared_body;
+            if mapping_len > mapping_area.len() {
+                return Err(ShortBuildError::Protocol(CodecError::Truncated {
+                    offset: mapping_area.len(),
+                    needed: mapping_len,
+                    remaining: mapping_area.len(),
+                }));
+            }
+            Mapping::decode(&mapping_area[..mapping_len], MAX_REQUEST_MAPPING_AREA)
+                .map_err(ShortBuildError::Protocol)?
+        };
+        let options = BuildOptions::from_mapping(mapping)?;
+        Ok(Self {
+            receive_tunnel,
+            next_tunnel,
+            next_router,
+            role,
+            layer_encryption_type,
+            request_time,
+            expiration_seconds,
+            next_message_id,
+            options,
+        })
+    }
+
     /// Encodes the canonical 154-byte plaintext record.
     pub fn encode(&self) -> Result<Zeroizing<[u8; SHORT_REQUEST_PLAINTEXT_SIZE]>, ShortBuildError> {
         let mut buffer = [0_u8; SHORT_REQUEST_PLAINTEXT_SIZE];
@@ -490,6 +622,17 @@ pub enum ShortBuildError {
     InvalidRoleFlags {
         /// Offending flag byte.
         flags: u8,
+    },
+    /// A non-prefix byte at offset 41..42 of the canonical
+    /// request plaintext held an unexpected non-zero value.
+    #[error("short build request plaintext carried unexpected prefix bytes")]
+    InvalidRequestPrefixBytes,
+    /// A required four-byte tunnel identifier was zero in the
+    /// decoded request plaintext.
+    #[error("short build request plaintext carried a zero {field} tunnel id")]
+    ZeroTunnelId {
+        /// Field name carrying the zero tunnel id.
+        field: &'static str,
     },
     /// Layer encryption type byte was outside the supported set.
     #[error("unsupported layer encryption type {byte:#x}")]
@@ -761,6 +904,78 @@ mod tests {
         assert_eq!(bytes.len(), SHORT_REPLY_PLAINTEXT_SIZE);
         let decoded = ShortReplyRecord::decode(bytes.as_ref()).expect("decode");
         assert_eq!(decoded, reply);
+    }
+
+    #[test]
+    fn request_record_decodes_round_trip_through_canonical_154_bytes() {
+        let record = request_record();
+        let bytes = record.encode().expect("encode");
+        let decoded = ShortRequestRecord::decode(bytes.as_ref()).expect("decode");
+        assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn request_record_decode_rejects_zero_receive_tunnel() {
+        let mut bytes = [0_u8; SHORT_REQUEST_PLAINTEXT_SIZE];
+        // Bytes 0..4 remain zero (receive tunnel id = 0).
+        bytes[8..40].copy_from_slice(&[0x33_u8; 32]); // next router hash
+        bytes[40] = HOP_ROLE_PARTICIPANT;
+        bytes[43] = LayerEncryptionType::Aes.byte();
+        bytes[48..52].copy_from_slice(&REQUEST_EXPIRATION_SECONDS.to_be_bytes());
+        bytes[52..56].copy_from_slice(&0x1234_5678_u32.to_be_bytes());
+        let outcome = ShortRequestRecord::decode(&bytes);
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildError::ZeroTunnelId {
+                field: "receive_tunnel"
+            })
+        ));
+    }
+
+    #[test]
+    fn request_record_decode_rejects_zero_next_tunnel() {
+        let record = ShortRequestRecord::try_new(
+            TunnelId::new(0x1000).expect("id"),
+            TunnelId::new(0x2000).expect("id"),
+            next_router(),
+            HopRole::InboundGateway,
+            LayerEncryptionType::Aes,
+            Date::from_millis(60_000),
+            REQUEST_EXPIRATION_SECONDS,
+            0xABCD_1234,
+            BuildOptions::empty(),
+        )
+        .expect("ok");
+        let mut bytes_vec = record.encode().expect("encode").to_vec();
+        // Zero out the next tunnel id at offset 4..8.
+        for byte in &mut bytes_vec[4..8] {
+            *byte = 0;
+        }
+        let outcome = ShortRequestRecord::decode(&bytes_vec);
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildError::ZeroTunnelId {
+                field: "next_tunnel"
+            })
+        ));
+    }
+
+    #[test]
+    fn request_record_decode_rejects_invalid_role_byte() {
+        let mut bytes = [0_u8; SHORT_REQUEST_PLAINTEXT_SIZE];
+        // Receive/next tunnel ids (nonzero).
+        bytes[0..4].copy_from_slice(&0x1000_u32.to_be_bytes());
+        bytes[4..8].copy_from_slice(&0x2000_u32.to_be_bytes());
+        bytes[8..40].copy_from_slice(&[0x33_u8; 32]); // next router hash
+        bytes[40] = 0xC0; // invalid role flag combination
+        bytes[43] = LayerEncryptionType::Aes.byte();
+        bytes[48..52].copy_from_slice(&REQUEST_EXPIRATION_SECONDS.to_be_bytes());
+        bytes[52..56].copy_from_slice(&0x1234_5678_u32.to_be_bytes());
+        let outcome = ShortRequestRecord::decode(&bytes);
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildError::InvalidRoleFlags { flags: 0xC0 })
+        ));
     }
 
     #[test]

@@ -43,6 +43,7 @@ pub mod build;
 pub mod build_crypto;
 pub mod config;
 pub mod conformance_fixtures;
+pub mod fixed_vectors;
 pub mod identity;
 pub mod multirecord;
 pub mod pool;

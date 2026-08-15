@@ -60,7 +60,7 @@ use i2pr_proto::{
 use crate::build_crypto::{
     AEAD_KEY_LEN, AEAD_NONCE_LEN, BuildCryptography, BuildCryptographyError, EPHEMERAL_KEY_LEN,
     EciesX25519BuildCryptography, LayerKeys, NoiseRequestState, OpenedShortRequest,
-    ValidatedRecordSlot,
+    RECORD_SLOT_NONCE_OFFSET, ValidatedRecordSlot,
 };
 use crate::identity::TunnelDirection;
 use crate::short_record::{
@@ -78,6 +78,28 @@ pub const REQUEST_PLAINTEXT_BYTES: usize = SHORT_REQUEST_PLAINTEXT_SIZE;
 
 /// Plaintext reply size for one short tunnel-build record.
 pub const REPLY_PLAINTEXT_BYTES: usize = SHORT_REPLY_PLAINTEXT_SIZE;
+
+/// Marker for the inbound creator-ephemeral public-key placement.
+///
+/// The current I2P Tunnel Creation Specification states that the
+/// creator ECIES ephemeral public key is included in the inbound
+/// short request plaintext because the IBGW layer has no build-record
+/// DH, but does not pin the exact byte offset. Plan 111 §F preserves
+/// the placeholder in the canonical 154-byte plaintext so a future
+/// pinned implementation can land without rewriting the layout, and
+/// disables inbound `prepare_short_build_message` until a current
+/// reference-router source (Java I2P or i2pd) is available to pin
+/// the interoperable location. The placeholder occupies the same
+/// offset in every record so the test suite can detect drift.
+pub const INBOUND_CREATOR_EPHEMERAL_PLACEHOLDER_LEN: usize = 0;
+
+/// Plan 111 §F marker: inbound short-build construction is
+/// `blocked-inbound-layout-ambiguity` until a current reference
+/// implementation is available to pin the inbound creator-ephemeral
+/// public-key placement. The constant exists so a future audit can
+/// detect if the inbound path is silently re-enabled without the
+/// corresponding placement decision.
+pub const INBOUND_SHORT_BUILD_LAYOUT_AMBIGUITY: bool = true;
 
 /// Hard ceiling on the wire record count.
 pub const MAX_RECORD_COUNT: u8 = 8;
@@ -493,9 +515,11 @@ pub fn build_padding_fake_record<R: CryptoRng + RngCore>(
 /// Applies the canonical I2P raw-ChaCha20 transform to the
 /// supplied 218-byte target record using the supplied hop's
 /// derived `replyKey` and the target record slot. The IV is 12
-/// bytes, zero in the first 11 bytes and the slot byte at offset
-/// 11. The transform is symmetric: applying the same call twice
-/// with the same key and slot restores the original bytes.
+/// bytes, zero in the first 4 bytes and at offset 5..11; the
+/// record-slot byte lives at offset **4** of the IV
+/// (the eight-byte little-endian nonce occupies bytes 4..11). The
+/// transform is symmetric: applying the same call twice with the
+/// same key and slot restores the original bytes.
 pub fn chacha20_transform(
     reply_key: &[u8; CHACHA20_KEY_LEN],
     slot: SlotIndex,
@@ -509,6 +533,7 @@ pub fn chacha20_transform(
 /// The function is exposed (instead of inlined into
 /// [`chacha20_transform`]) so the postprocessor can reuse the same
 /// primitive without re-importing the underlying cipher trait.
+/// The IV follows the canonical record-slot encoding at offset 4.
 pub fn chacha20_xor(
     key: &[u8; CHACHA20_KEY_LEN],
     slot: SlotIndex,
@@ -516,7 +541,7 @@ pub fn chacha20_xor(
 ) -> Result<(), MultiRecordError> {
     use chacha20::ChaCha20;
     let mut nonce = [0_u8; AEAD_NONCE_LEN];
-    nonce[11] = slot.get();
+    nonce[RECORD_SLOT_NONCE_OFFSET] = slot.get();
     let mut cipher = <ChaCha20 as KeyIvInit>::new(key.into(), &nonce.into());
     cipher.apply_keystream(record);
     Ok(())
@@ -601,7 +626,6 @@ fn ephemeral_public(priv_bytes: &[u8; EPHEMERAL_KEY_LEN]) -> [u8; EPHEMERAL_KEY_
 /// Per-hop crypto context the preprocessor retains so it can apply
 /// the symmetric ChaCha20 transforms in the correct order before
 /// the message is dispatched.
-#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct PreparedHopContext {
     /// Canonical hop index.
     pub hop_index: u8,
@@ -613,7 +637,24 @@ pub struct PreparedHopContext {
     pub state: NoiseRequestState,
     /// The derived layer keys for this hop.
     pub layer_keys: LayerKeys,
+    /// Hop role. Used by the postprocessor to surface the
+    /// outbound-endpoint classification on the per-hop result.
+    pub role: HopRole,
 }
+
+// Manual `Zeroize`/`ZeroizeOnDrop` implementation because `HopRole`
+// is a public marker and does not implement `Zeroize` (it carries no
+// secret material).
+impl Zeroize for PreparedHopContext {
+    fn zeroize(&mut self) {
+        self.own_record.zeroize();
+        self.state.zeroize();
+        self.layer_keys.zeroize();
+        // `slot` and `role` carry no secret material.
+    }
+}
+
+impl ZeroizeOnDrop for PreparedHopContext {}
 
 impl fmt::Debug for PreparedHopContext {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -624,6 +665,7 @@ impl fmt::Debug for PreparedHopContext {
             .field("slot", &self.slot)
             .field("state", &"<redacted>")
             .field("layer_keys", &"<redacted>")
+            .field("role", &self.role)
             .finish()
     }
 }
@@ -718,6 +760,7 @@ pub fn prepare_short_build_message<R: CryptoRng + RngCore>(
             slot,
             state,
             layer_keys,
+            role: hop.role,
         });
     }
     // Build the wire payload slot table.
@@ -772,31 +815,31 @@ pub struct MultiRecordHopSpec<'a> {
     pub static_encryption_key: &'a [u8; EPHEMERAL_KEY_LEN],
     /// Hop role.
     pub role: HopRole,
-    /// Next-hop router hash for the request plaintext (or
-    /// `None` if this is the terminal hop and the creator wants to
-    /// emit the creator's own tunnel-id hash as the next router).
-    pub next_router_hash: Option<&'a Hash>,
+    /// Explicit per-hop receive tunnel identifier. Plan 111
+    /// defect 6: each hop has its own nonzero receive tunnel id
+    /// that is independent from any router hash and from any other
+    /// hop's id.
+    pub receive_tunnel: crate::identity::TunnelId,
+    /// Explicit per-hop next tunnel identifier. The value is
+    /// independent from the next router hash and from any other
+    /// hop's id.
+    pub next_tunnel: crate::identity::TunnelId,
+    /// Next-hop router hash for the request plaintext. The
+    /// terminal hop carries the upstream hop's router hash; the
+    /// creator is responsible for supplying an explicit value
+    /// rather than synthesising one from a prefix.
+    pub next_router_hash: &'a Hash,
 }
 
 fn build_hop_request_plaintext(
     hop: &MultiRecordHopSpec<'_>,
-    creator_tunnel_id_bytes: &[u8; 4],
+    _creator_tunnel_id_bytes: &[u8; 4],
     request_time_ms: u64,
     next_message_id: u32,
 ) -> Result<[u8; SHORT_REQUEST_PLAINTEXT_SIZE], MultiRecordError> {
-    let receive_tunnel = u32::from_be_bytes(*creator_tunnel_id_bytes);
-    let next_tunnel_id = match hop.next_router_hash {
-        Some(hash) => {
-            let bytes = hash.as_bytes();
-            u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
-        }
-        None => receive_tunnel,
-    };
-    let receive_tunnel =
-        crate::identity::TunnelId::new(receive_tunnel).map_err(|_| MultiRecordError::EmptyPath)?;
-    let next_tunnel =
-        crate::identity::TunnelId::new(next_tunnel_id).map_err(|_| MultiRecordError::EmptyPath)?;
-    let next_router = hop.next_router_hash.copied().unwrap_or(*hop.router_hash);
+    let receive_tunnel = hop.receive_tunnel;
+    let next_tunnel = hop.next_tunnel;
+    let next_router = *hop.next_router_hash;
     let request_time = i2pr_proto::Date::from_millis(request_time_ms);
     let record = ShortRequestRecord::try_new(
         receive_tunnel,
@@ -969,6 +1012,10 @@ pub struct ProcessedHopResult {
     pub plaintext: Zeroizing<Vec<u8>>,
     /// The response code byte the hop returned.
     pub response_code: ShortResponseCode,
+    /// Whether the authenticated hop plaintext declared the
+    /// outbound-endpoint role. Used by the registry/registrar to
+    /// route through the OBEP continuation path.
+    pub is_obep: bool,
 }
 
 /// Standalone message-level hop processor. The processor is the
@@ -992,7 +1039,6 @@ impl MessageHopProcessor {
         payload: &[u8],
         hop_static_priv: &[u8; EPHEMERAL_KEY_LEN],
         hop_identity: &Hash,
-        _is_outbound_endpoint: bool,
         response_code: ShortResponseCode,
     ) -> Result<(Vec<u8>, ProcessedHopResult), MultiRecordError> {
         let (count, mut slots) = decode_short_tunnel_build_payload(payload)?;
@@ -1019,10 +1065,13 @@ impl MessageHopProcessor {
             hop_static_priv,
             hop_identity.as_bytes(),
         )?;
-        let layer_keys = derive_layer_keys_for_hop(
-            &opened.state,
-            hop_role_from_opened(opened.plaintext.as_ref()),
-        )?;
+        // Plan 111 defect 7: the authenticated hop role is
+        // decoded from the request plaintext rather than flattened
+        // to participant.
+        let decoded_record = ShortRequestRecord::decode(opened.plaintext.as_ref())
+            .map_err(MultiRecordError::ShortRecord)?;
+        let is_obep = matches!(decoded_record.role(), HopRole::OutboundEndpoint);
+        let layer_keys = derive_layer_keys_for_hop(&opened.state, decoded_record.role())?;
         let reply = ShortReplyRecord::new(BuildOptions::empty(), response_code);
         let plaintext_vec = reply.encode();
         let mut plaintext = [0_u8; SHORT_REPLY_PLAINTEXT_SIZE];
@@ -1050,17 +1099,10 @@ impl MessageHopProcessor {
                 slot,
                 plaintext: Zeroizing::new(plaintext.to_vec()),
                 response_code,
+                is_obep,
             },
         ))
     }
-}
-
-fn hop_role_from_opened(_plaintext: &[u8]) -> HopRole {
-    // The plaintext role byte is decoded in Work package G's
-    // stricter validation path; for the message-level processor
-    // the layer-keys derivation uses the participant role unless
-    // the OBEP continuation is required.
-    HopRole::Participant
 }
 
 fn encode_short_tunnel_build_payload_from_count(
@@ -1162,6 +1204,7 @@ impl CreatorReplyPostprocessor {
                 slot,
                 plaintext: Zeroizing::new(plaintext.to_vec()),
                 response_code: reply.response(),
+                is_obep: context.role == HopRole::OutboundEndpoint,
             });
         }
         Ok(results)
@@ -1253,6 +1296,7 @@ impl MultiHopReferenceFixture {
             slot: record_set.slot_for_real_hop(0).expect("slot"),
             state: sealed0.state,
             layer_keys: layer0,
+            role: HopRole::InboundGateway,
         };
         let context1 = PreparedHopContext {
             hop_index: 1,
@@ -1260,6 +1304,7 @@ impl MultiHopReferenceFixture {
             slot: record_set.slot_for_real_hop(1).expect("slot"),
             state: sealed1.state,
             layer_keys: layer1,
+            role: HopRole::Participant,
         };
         let context2 = PreparedHopContext {
             hop_index: 2,
@@ -1267,6 +1312,7 @@ impl MultiHopReferenceFixture {
             slot: record_set.slot_for_real_hop(2).expect("slot"),
             state: sealed2.state,
             layer_keys: layer2,
+            role: HopRole::OutboundEndpoint,
         };
         let contexts = vec![context0, context1, context2];
         let mut slots = vec![[0_u8; RECORD_BYTES]; record_set.record_count() as usize];
@@ -1287,10 +1333,10 @@ impl MultiHopReferenceFixture {
         // Process each hop.
         let mut current_payload = preprocessed_payload.clone();
         for context in &contexts {
-            let (hop_priv, hop_hash, is_obep) = match context.hop_index {
-                0 => (hop0_priv, hop0_hash, false),
-                1 => (hop1_priv, hop1_hash, false),
-                2 => (hop2_priv, hop2_hash, true),
+            let (hop_priv, hop_hash) = match context.hop_index {
+                0 => (hop0_priv, hop0_hash),
+                1 => (hop1_priv, hop1_hash),
+                2 => (hop2_priv, hop2_hash),
                 _ => unreachable!(),
             };
             let (new_payload, _result) = MessageHopProcessor::process_hop(
@@ -1298,7 +1344,6 @@ impl MultiHopReferenceFixture {
                 &current_payload,
                 &hop_priv,
                 &hop_hash,
-                is_obep,
                 ShortResponseCode::Accepted,
             )?;
             current_payload = new_payload;
@@ -1398,6 +1443,8 @@ fn fixture_request_plaintext(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::TunnelId;
+    use crate::short_record::LayerEncryptionType;
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
 
@@ -1487,6 +1534,178 @@ mod tests {
         chacha20_transform(&key, slot_zero, &mut a).expect("a");
         chacha20_transform(&key, slot_one, &mut b).expect("b");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn chacha20_transform_nonzero_slot_changes_iv() {
+        // Plan 111 defect 3: a nonzero slot byte at offset 4 must
+        // produce a different first keystream block from a zero
+        // slot byte; the transform must not place the slot byte at
+        // offset 11. The first keystream block difference is
+        // observable as a different output for two otherwise equal
+        // inputs.
+        use chacha20::ChaCha20;
+        use chacha20::cipher::{KeyIvInit, StreamCipher};
+
+        let key = [0x77_u8; 32];
+        let slot_zero = SlotIndex::new(0).expect("ok");
+        let slot_four = SlotIndex::new(4).expect("ok");
+        let mut buf_zero = [0x66_u8; 64];
+        let mut buf_four = buf_zero;
+
+        let mut nonce_zero = [0_u8; 12];
+        nonce_zero[RECORD_SLOT_NONCE_OFFSET] = slot_zero.get();
+        let mut cipher_zero = <ChaCha20 as KeyIvInit>::new((&key).into(), (&nonce_zero).into());
+        cipher_zero.apply_keystream(&mut buf_zero);
+
+        let mut nonce_four = [0_u8; 12];
+        nonce_four[RECORD_SLOT_NONCE_OFFSET] = slot_four.get();
+        let mut cipher_four = <ChaCha20 as KeyIvInit>::new((&key).into(), (&nonce_four).into());
+        cipher_four.apply_keystream(&mut buf_four);
+
+        assert_ne!(buf_zero, buf_four);
+
+        // And the bad placement at offset 11 must produce a
+        // strictly different keystream that does NOT match the
+        // production chacha20_xor result.
+        let mut bad_nonce = [0_u8; 12];
+        bad_nonce[11] = slot_four.get();
+        let mut buf_bad = [0x66_u8; 64];
+        let mut cipher_bad = <ChaCha20 as KeyIvInit>::new((&key).into(), (&bad_nonce).into());
+        cipher_bad.apply_keystream(&mut buf_bad);
+        assert_ne!(buf_bad, buf_four);
+    }
+
+    #[test]
+    fn role_aware_processor_decodes_authenticated_role() {
+        // Plan 111 defect 7: the per-hop processor must decode
+        // the role from the authenticated request plaintext
+        // rather than flatten to participant. An OBEP role in the
+        // authenticated plaintext must surface as
+        // `is_obep = true` on the per-hop result.
+        let cryptography = EciesX25519BuildCryptography::new();
+        let hop0_priv = {
+            let mut bytes = [0x55u8; 32];
+            bytes[0..8].copy_from_slice(&1_u64.to_le_bytes());
+            bytes
+        };
+        let hop1_priv = {
+            let mut bytes = [0x77u8; 32];
+            bytes[0..8].copy_from_slice(&2_u64.to_le_bytes());
+            bytes
+        };
+        let hop0_pub = ephemeral_public(&hop0_priv);
+        let hop1_pub = ephemeral_public(&hop1_priv);
+        let hop0_hash = Hash::from_bytes([0xAA; 32]);
+        let hop1_hash = Hash::from_bytes([0xBB; 32]);
+        let hop0_eph = {
+            let mut bytes = [0x33u8; 32];
+            bytes[0..8].copy_from_slice(&101_u64.to_le_bytes());
+            bytes
+        };
+        let hop1_eph = {
+            let mut bytes = [0x44u8; 32];
+            bytes[0..8].copy_from_slice(&102_u64.to_le_bytes());
+            bytes
+        };
+
+        let plaintext0: [u8; SHORT_REQUEST_PLAINTEXT_SIZE] = {
+            let mut bytes = [0u8; SHORT_REQUEST_PLAINTEXT_SIZE];
+            // First 4 bytes: receive tunnel id.
+            bytes[0..4].copy_from_slice(&0x1000_u32.to_be_bytes());
+            // Next 4 bytes: next tunnel id.
+            bytes[4..8].copy_from_slice(&0x2000_u32.to_be_bytes());
+            // Next 32 bytes: next router hash.
+            bytes[8..40].copy_from_slice(hop1_hash.as_bytes());
+            // Role flag at offset 40: OBEP = 0x40.
+            bytes[40] = HopRole::OutboundEndpoint.flag();
+            // Bytes 41..43: zero.
+            // Layer encryption type at offset 43: AES = 0x00.
+            bytes[43] = LayerEncryptionType::Aes.byte();
+            // Request time minutes at offset 44..48: 1 minute.
+            bytes[44..48].copy_from_slice(&1_u32.to_be_bytes());
+            // Expiration at offset 48..52: 600 seconds.
+            bytes[48..52].copy_from_slice(&REQUEST_EXPIRATION_SECONDS.to_be_bytes());
+            // Message id at offset 52..56: nonzero.
+            bytes[52..56].copy_from_slice(&0xABCD_1234_u32.to_be_bytes());
+            // Mapping at offset 56: two-byte empty.
+            bytes
+        };
+        let sealed0 = cryptography
+            .seal_short_request_with_ephemeral(
+                &plaintext0,
+                &hop0_pub,
+                hop0_hash.as_bytes(),
+                &hop0_eph,
+            )
+            .expect("seal obep");
+
+        let plaintext1: [u8; SHORT_REQUEST_PLAINTEXT_SIZE] = {
+            let mut bytes = plaintext0;
+            bytes[40] = HopRole::Participant.flag();
+            bytes
+        };
+        let sealed1 = cryptography
+            .seal_short_request_with_ephemeral(
+                &plaintext1,
+                &hop1_pub,
+                hop1_hash.as_bytes(),
+                &hop1_eph,
+            )
+            .expect("seal participant");
+
+        let mut record0 = [0u8; RECORD_BYTES];
+        record0.copy_from_slice(sealed0.record.as_ref());
+        let mut record1 = [0u8; RECORD_BYTES];
+        record1.copy_from_slice(sealed1.record.as_ref());
+
+        // Build a 2-record payload manually.
+        let mut slots = vec![[0u8; RECORD_BYTES]; 2];
+        slots[0] = record0;
+        slots[1] = record1;
+        let payload = encode_short_tunnel_build_payload_from_count(2, &slots).expect("payload");
+
+        // Process hop0 (OBEP) using only its static key.
+        let (_new_payload, result_obep) = MessageHopProcessor::process_hop(
+            &cryptography,
+            &payload,
+            &hop0_priv,
+            &hop0_hash,
+            ShortResponseCode::Accepted,
+        )
+        .expect("process hop0");
+        assert!(
+            result_obep.is_obep,
+            "OBEP role must surface as is_obep=true"
+        );
+
+        // Process hop1 (participant) using only its static key.
+        let (_new_payload2, result_part) = MessageHopProcessor::process_hop(
+            &cryptography,
+            &payload,
+            &hop1_priv,
+            &hop1_hash,
+            ShortResponseCode::Accepted,
+        )
+        .expect("process hop1");
+        assert!(
+            !result_part.is_obep,
+            "participant role must surface as is_obep=false"
+        );
+    }
+
+    #[test]
+    fn inbound_layout_ambiguity_marker_is_committed() {
+        // Plan 111 §F: the inbound creator-ephemeral layout is
+        // pinned by reference-router source inspection. Until
+        // that source is locked, the inbound short-build
+        // construction must remain explicitly disabled and the
+        // marker must read `true`. A future re-enabler must
+        // also flip this marker, which an audit can detect.
+        // The placeholder occupies zero bytes until a pinned
+        // reference-router source is available.
+        const { assert!(INBOUND_SHORT_BUILD_LAYOUT_AMBIGUITY) };
+        const { assert!(INBOUND_CREATOR_EPHEMERAL_PLACEHOLDER_LEN == 0) };
     }
 
     #[test]
@@ -1629,21 +1848,27 @@ mod tests {
             router_hash: &Hash::from_bytes([0x10_u8; 32]),
             static_encryption_key: &[0xAA_u8; 32],
             role: HopRole::InboundGateway,
-            next_router_hash: Some(&Hash::from_bytes([0x11_u8; 32])),
+            receive_tunnel: TunnelId::new(0x1000).expect("id"),
+            next_tunnel: TunnelId::new(0x2000).expect("id"),
+            next_router_hash: &Hash::from_bytes([0x11_u8; 32]),
         };
         let hop1 = MultiRecordHopSpec {
             canonical_index: 1,
             router_hash: &Hash::from_bytes([0x11_u8; 32]),
             static_encryption_key: &[0xBB_u8; 32],
             role: HopRole::Participant,
-            next_router_hash: Some(&Hash::from_bytes([0x12_u8; 32])),
+            receive_tunnel: TunnelId::new(0x3000).expect("id"),
+            next_tunnel: TunnelId::new(0x4000).expect("id"),
+            next_router_hash: &Hash::from_bytes([0x12_u8; 32]),
         };
         let hop2 = MultiRecordHopSpec {
             canonical_index: 2,
             router_hash: &Hash::from_bytes([0x12_u8; 32]),
             static_encryption_key: &[0xCC_u8; 32],
             role: HopRole::OutboundEndpoint,
-            next_router_hash: Some(&Hash::from_bytes([0x13_u8; 32])),
+            receive_tunnel: TunnelId::new(0x5000).expect("id"),
+            next_tunnel: TunnelId::new(0x6000).expect("id"),
+            next_router_hash: &Hash::from_bytes([0x13_u8; 32]),
         };
         let hops = vec![hop0, hop1, hop2];
         let mut rng = ChaCha8Rng::seed_from_u64(31);
@@ -1674,14 +1899,19 @@ mod tests {
             router_hash: &Hash::from_bytes([0x10_u8; 32]),
             static_encryption_key: &[0xAA_u8; 32],
             role: HopRole::InboundGateway,
-            next_router_hash: Some(&Hash::from_bytes([0x11_u8; 32])),
+            receive_tunnel: TunnelId::new(0x1000).expect("id"),
+            next_tunnel: TunnelId::new(0x2000).expect("id"),
+            next_router_hash: &Hash::from_bytes([0x11_u8; 32]),
         };
         let hop1 = MultiRecordHopSpec {
             canonical_index: 1,
             router_hash: &Hash::from_bytes([0x11_u8; 32]),
             static_encryption_key: &[0xBB_u8; 32],
             role: HopRole::Participant,
-            next_router_hash: None,
+            receive_tunnel: TunnelId::new(0x3000).expect("id"),
+            next_tunnel: TunnelId::new(0x4000).expect("id"),
+            // Terminal hop hands its own router hash as the next router.
+            next_router_hash: &Hash::from_bytes([0x11_u8; 32]),
         };
         let hops = vec![hop0, hop1];
         let mut rng = ChaCha8Rng::seed_from_u64(41);
@@ -1722,7 +1952,6 @@ mod tests {
             &payload,
             &[0x44_u8; 32],
             &hop_identity,
-            false,
             ShortResponseCode::Accepted,
         );
         assert!(matches!(outcome, Err(MultiRecordError::HopHashNotFound)));
@@ -1739,14 +1968,18 @@ mod tests {
             router_hash: &Hash::from_bytes([0x10_u8; 32]),
             static_encryption_key: &[0xAA_u8; 32],
             role: HopRole::InboundGateway,
-            next_router_hash: Some(&Hash::from_bytes([0x11_u8; 32])),
+            receive_tunnel: TunnelId::new(0x3000).expect("id"),
+            next_tunnel: TunnelId::new(0x4000).expect("id"),
+            next_router_hash: &Hash::from_bytes([0x11_u8; 32]),
         };
         let hop1 = MultiRecordHopSpec {
             canonical_index: 1,
             router_hash: &Hash::from_bytes([0x11_u8; 32]),
             static_encryption_key: &[0xBB_u8; 32],
             role: HopRole::Participant,
-            next_router_hash: None,
+            receive_tunnel: TunnelId::new(0x5000).expect("id"),
+            next_tunnel: TunnelId::new(0x6000).expect("id"),
+            next_router_hash: &Hash::from_bytes([0x11_u8; 32]),
         };
         let hops = vec![hop0, hop1];
         let mut rng = ChaCha8Rng::seed_from_u64(51);

@@ -18,22 +18,31 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 - Transport-neutral lookup, store, and publication state machines (`i2pr-netdb`)
 - Daemon bootstrap integration with `NetDbSeam` (`i2pr-daemon`)
 - Exploratory tunnel substrate, pool, and reply-path provider (`i2pr-tunnel`)
-- ECIES-X25519 short tunnel-build cryptography — locally conformant
-  single-record `Noise_N_25519_ChaChaPoly_SHA256` implementation with
-  exact 154-byte request plaintext, 218-byte encrypted envelope,
-  202-byte reply plaintext, hop-own reply AEAD, derived
-  `replyKey/layerKey/ivKey`, and the OBEP garlic continuation; the
-  Plan 108 implementation was corrected by
-  [`plans/109-short-build-record-and-noise-conformance-correction.md`](plans/109-short-build-record-and-noise-conformance-correction.md)
-  and the conformance fixture is published in
-  [`crates/i2pr-tunnel/src/conformance_fixtures.rs`](crates/i2pr-tunnel/src/conformance_fixtures.rs)
+- ECIES-X25519 short tunnel-build cryptography — Plan 111 final
+  local short-build conformance correction landing. Outbound
+  construction is locally conformant against the current official
+  I2P Tunnel Creation Specification: canonical Noise-N null-prologue
+  `MixHash`, single-HKDF `es` derivation, 218-byte encrypted envelope,
+  202-byte reply plaintext, slot byte at offset 4 of the 12-byte
+  nonce, 8-byte OBEP garlic reply tag, explicit per-hop tunnel IDs,
+  role-aware `MessageHopProcessor`, and frozen independent
+  fixed vectors. Inbound creator-ephemeral plaintext semantics
+  remain `blocked-inbound-layout-ambiguity` until a current
+  reference-router source pins the placement. See
+  [`plans/111-short-build-final-local-conformance-correction.md`](plans/111-short-build-final-local-conformance-correction.md),
+  the conformance fixture in
+  [`crates/i2pr-tunnel/src/conformance_fixtures.rs`](crates/i2pr-tunnel/src/conformance_fixtures.rs),
+  and the frozen fixed-vector oracle in
+  [`crates/i2pr-tunnel/src/fixed_vectors.rs`](crates/i2pr-tunnel/src/fixed_vectors.rs).
 - Runtime-neutral `ShortBuildStateMachine`, success-only
   `ShortBuildRegistrar`, and deterministic `DeterministicResponder`
   peer simulator (`i2pr-tunnel`)
 - Multi-record short tunnel-build construction: randomized slot
   allocation, originator + padding fake records, raw ChaCha20
-  preprocessing/postprocessing, and the one-byte-count STBM/OTBRM
-  payload framing (Plan 110 closed)
+  preprocessing/postprocessing (slot byte at offset 4 of the
+  12-byte nonce), and the one-byte-count STBM/OTBRM payload
+  framing (Plan 110 closed; Plan 111 corrected the byte-11
+  regression to byte 4)
 - CLI daemon with config validation, identity generation, and dry-run (`i2pr-daemon`)
 
 **Not implemented:**
@@ -61,7 +70,7 @@ crates/
   i2pr-runtime/             Tokio-owned supervision, cancellation, and I/O
   i2pr-netdb/               RouterInfo validation, NetDB store, lookup, publication
   i2pr-netdb-persist/       Persistent cache and SU3 reseed ingestion
-  i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build cryptography (implementation-landed, protocol-conformance reopened; see plans/108-conformance-amendment.md), runtime-neutral build state machine, reply-path provider
+  i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build cryptography (Plan 111 final local short-build conformance correction; outbound locally conformant against fixed vectors, inbound blocked on layout ambiguity), runtime-neutral build state machine, reply-path provider
   i2pr-daemon/              CLI, configuration, composition, supervision
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
 tools/

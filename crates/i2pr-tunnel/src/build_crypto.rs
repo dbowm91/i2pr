@@ -59,18 +59,59 @@ pub const HASH_PREFIX_LEN: usize = 16;
 /// Length of the Noise protocol name used for short tunnel-build
 /// request transcripts. The exact 31-byte ASCII literal
 /// `Noise_N_25519_ChaChaPoly_SHA256`.
-const NOISE_PROTOCOL_NAME: &[u8] = b"Noise_N_25519_ChaChaPoly_SHA256";
+pub const NOISE_PROTOCOL_NAME: &[u8] = b"Noise_N_25519_ChaChaPoly_SHA256";
 
 /// The Noise transcript state for a single hop's request.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct NoiseRequestState {
-    /// Running chaining key after `e → es`.
+    /// Running chaining key after the most recent `MixKey`/`MixHash`.
     ck: [u8; 32],
-    /// Running transcript hash after the ciphertext mix.
+    /// Running transcript hash after the most recent `MixHash`.
     h: [u8; 32],
 }
 
+/// Output of a single Noise `MixKey(ck, input)` derivation: the new
+/// chaining key and the AEAD key for the immediately-following
+/// payload. Plan 111 replaces the prior two-HKDF split with one
+/// canonical 64-byte derivation.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct RequestKeyMaterial {
+    /// New chaining key (`keydata[0..32]`).
+    pub next_ck: [u8; 32],
+    /// AEAD key for the next payload (`keydata[32..64]`).
+    pub aead_key: [u8; 32],
+}
+
+impl fmt::Debug for RequestKeyMaterial {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RequestKeyMaterial")
+            .field("next_ck", &"<redacted>")
+            .field("aead_key", &"<redacted>")
+            .finish()
+    }
+}
+
 impl NoiseRequestState {
+    /// Initialise the Noise-N request state for the short
+    /// tunnel-build transcript. The state machine performs:
+    ///
+    /// - `h0 = protocol_name || zero_padding_to_32`
+    /// - `ck = h0`
+    /// - null prologue `h = SHA256(h0)`
+    pub fn new_for_short_build() -> Self {
+        let mut state = Self {
+            ck: noise_init_h0(),
+            h: [0_u8; 32],
+        };
+        // Apply the canonical Noise-N null-prologue `MixHash`.
+        let mut hasher = Sha256::new();
+        hasher.update(state.ck);
+        let output = hasher.finalize();
+        state.h.copy_from_slice(&output);
+        state
+    }
+
     /// Returns a copy of the chaining key.
     pub fn chaining_key(&self) -> [u8; 32] {
         self.ck
@@ -90,11 +131,20 @@ impl NoiseRequestState {
         self.h.copy_from_slice(&output);
     }
 
-    /// Perform the spec `MixKey(shared)` derivation.
-    pub fn mix_key(&mut self, shared: &[u8]) -> Result<(), BuildCryptographyError> {
+    /// Perform the spec `MixKey(ck, input)` derivation. Returns the
+    /// new chaining key plus the AEAD key in a single
+    /// `HKDF(ck, input, "", 64)` operation. The internal chaining key
+    /// is updated with `keydata[0..32]`; the AEAD key is handed to
+    /// the caller for the immediately-following payload. No second
+    /// HKDF is run to obtain the AEAD key.
+    pub fn mix_key(&mut self, shared: &[u8]) -> Result<RequestKeyMaterial, BuildCryptographyError> {
         let keydata = mix_key_derive(&self.ck, shared)?;
-        self.ck.copy_from_slice(&keydata[..32]);
-        Ok(())
+        let mut next_ck = [0_u8; 32];
+        next_ck.copy_from_slice(&keydata[..32]);
+        let mut aead_key = [0_u8; 32];
+        aead_key.copy_from_slice(&keydata[32..64]);
+        self.ck = next_ck;
+        Ok(RequestKeyMaterial { next_ck, aead_key })
     }
 }
 
@@ -125,23 +175,40 @@ fn mix_key_derive(ck: &[u8; 32], input: &[u8]) -> Result<[u8; 64], BuildCryptogr
     Ok(out)
 }
 
-/// Initial `h` value computed from the protocol name.
+/// Initial `h0` value computed from the protocol name.
 ///
 /// The Noise spec defines `h = protocol_name || 0` (zero-padded to
-/// 32 bytes) when the protocol name is shorter than 32 bytes.
-fn noise_init_h() -> [u8; 32] {
+/// 32 bytes) when the protocol name is shorter than 32 bytes. Both
+/// the chaining key and the pre-null-prologue transcript hash start
+/// from this value; the null-prologue `h = SHA256(h0)` is applied
+/// inside [`NoiseRequestState::new_for_short_build`].
+fn noise_init_h0() -> [u8; 32] {
     debug_assert!(NOISE_PROTOCOL_NAME.len() <= 32);
     let mut h = [0_u8; 32];
     h[..NOISE_PROTOCOL_NAME.len()].copy_from_slice(NOISE_PROTOCOL_NAME);
     h
 }
 
+/// Initial `h` value (post null-prologue) computed from the
+/// protocol name. The canonical Noise-N transcript requires
+/// `h = SHA256(protocol_name_padded_to_32)` as the first step.
+#[cfg(test)]
+fn noise_init_h() -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(noise_init_h0());
+    let output = hasher.finalize();
+    let mut out = [0_u8; 32];
+    out.copy_from_slice(&output);
+    out
+}
+
 /// Per-record slot for the hop-own reply nonce.
 ///
-/// I2P ChaChaPoly for tunnel build records uses a 12-byte nonce that
-/// is zero in its first 11 bytes and carries the record slot in the
-/// final byte. Only slot values in `0..=7` are valid; the type
-/// rejects every other value at construction.
+/// I2P ChaChaPoly for tunnel build records uses a 12-byte nonce in
+/// which the eight-byte little-endian nonce occupies bytes 4..11
+/// and the record-slot byte lives at offset **4**; bytes 0..3 and
+/// the remaining bytes 5..11 are zero. Only slot values in `0..=7`
+/// are valid; the type rejects every other value at construction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ValidatedRecordSlot(u8);
 
@@ -167,13 +234,25 @@ impl ValidatedRecordSlot {
         self.0
     }
 
-    /// Returns the 12-byte ChaChaPoly nonce for this slot.
+    /// Returns the canonical 12-byte ChaChaPoly nonce for this
+    /// slot. The slot byte lives at offset **4** of the 12-byte
+    /// nonce; every other byte is zero. Plan 111 corrects the
+    /// historical Plan 109 placement at offset 11.
     pub fn nonce(self) -> [u8; AEAD_NONCE_LEN] {
         let mut nonce = [0_u8; AEAD_NONCE_LEN];
-        nonce[11] = self.0;
+        nonce[RECORD_SLOT_NONCE_OFFSET] = self.0;
         nonce
     }
 }
+
+/// Canonical byte offset of the record-slot byte inside the 12-byte
+/// ChaChaPoly nonce used for hop-own reply AEAD and raw ChaCha20
+/// other-record transforms. The current I2P Tunnel Creation
+/// Specification places the slot at offset **4**; the eight-byte
+/// little-endian nonce occupies bytes 4..11. Plan 111 introduces
+/// this constant so a regression to the historical byte-11 layout
+/// fails at compile time.
+pub const RECORD_SLOT_NONCE_OFFSET: usize = 4;
 
 /// Try a default record slot from an integer in `[0, 7]`.
 pub fn record_slot(value: u8) -> Result<ValidatedRecordSlot, BuildCryptographyError> {
@@ -254,6 +333,11 @@ impl From<HkdfError> for BuildCryptographyError {
     }
 }
 
+/// Number of bytes the OBEP `RGarlicKeyAndTag` derivation publishes
+/// as the garlic reply tag. Plan 111 corrects the historical 16-byte
+/// prefix to the canonical 8-byte tag.
+pub const GARLIC_REPLY_TAG_LEN: usize = 8;
+
 /// Derived per-hop key material produced by `SMTunnel*` KDFs.
 ///
 /// The struct is zeroizing and does not implement `Debug`. The
@@ -273,9 +357,9 @@ pub struct LayerKeys {
     iv_key: [u8; 32],
     /// `garlicReplyKey` derived for OBEP-only continuation.
     garlic_reply_key: Option<[u8; 32]>,
-    /// OBEP-only continuation tag prefix (length depends on spec
-    /// version; current I2P uses 16 bytes).
-    garlic_reply_tag_prefix: Option<[u8; 16]>,
+    /// OBEP-only continuation garlic reply tag (8 bytes; current I2P
+    /// specification value).
+    garlic_reply_tag: Option<[u8; GARLIC_REPLY_TAG_LEN]>,
 }
 
 impl LayerKeys {
@@ -286,7 +370,7 @@ impl LayerKeys {
             layer_key,
             iv_key,
             garlic_reply_key: None,
-            garlic_reply_tag_prefix: None,
+            garlic_reply_tag: None,
         }
     }
 
@@ -297,14 +381,14 @@ impl LayerKeys {
         layer_key: [u8; 32],
         iv_key: [u8; 32],
         garlic_reply_key: [u8; 32],
-        garlic_reply_tag_prefix: [u8; 16],
+        garlic_reply_tag: [u8; GARLIC_REPLY_TAG_LEN],
     ) -> Self {
         Self {
             reply_key,
             layer_key,
             iv_key,
             garlic_reply_key: Some(garlic_reply_key),
-            garlic_reply_tag_prefix: Some(garlic_reply_tag_prefix),
+            garlic_reply_tag: Some(garlic_reply_tag),
         }
     }
 
@@ -328,9 +412,9 @@ impl LayerKeys {
         self.garlic_reply_key.as_ref()
     }
 
-    /// Returns the OBEP garlic reply tag prefix when present.
-    pub fn garlic_reply_tag_prefix(&self) -> Option<&[u8; 16]> {
-        self.garlic_reply_tag_prefix.as_ref()
+    /// Returns the OBEP garlic reply tag when present.
+    pub fn garlic_reply_tag(&self) -> Option<&[u8; GARLIC_REPLY_TAG_LEN]> {
+        self.garlic_reply_tag.as_ref()
     }
 }
 
@@ -529,28 +613,28 @@ impl BuildCryptography for EciesX25519BuildCryptography {
         ephemeral_priv: &[u8; EPHEMERAL_KEY_LEN],
     ) -> Result<SealedShortRequest, BuildCryptographyError> {
         validate_peer_key(peer_static_key)?;
-        // 1. Noise-N initialization.
-        let mut state = NoiseRequestState {
-            ck: noise_init_h(),
-            h: noise_init_h(),
-        };
+        // 1. Noise-N initialization with the canonical null
+        //    prologue. `new_for_short_build` builds
+        //    `h0 = protocol_name || zero_padding_to_32`, sets
+        //    `ck = h0`, and applies `h = SHA256(h0)` as the
+        //    null-prologue `MixHash`.
+        let mut state = NoiseRequestState::new_for_short_build();
         // 2. Peer static mix.
         state.mix_hash(peer_static_key);
         // 3. Sender ephemeral public key.
         let ephemeral_pub = ephemeral_public(ephemeral_priv);
         state.mix_hash(&ephemeral_pub);
-        // 4. `es` + MixKey.
+        // 4. `es` + `MixKey`. The single canonical
+        //    `HKDF(ck, shared, "", 64)` produces both the new
+        //    chaining key (`keydata[0..32]`) and the request AEAD
+        //    key (`keydata[32..64]`); no second HKDF is run.
         let shared = compute_dh(ephemeral_priv, peer_static_key)?;
-        state.mix_key(&shared)?;
+        let key_material = state.mix_key(&shared)?;
         let mut ephemeral_priv_copy = *ephemeral_priv;
         ephemeral_priv_copy.zeroize();
-        // 5. Request AEAD: ChaCha20-Poly1305 with key = k, nonce = 0,
-        //    plaintext = the 154-byte request, AD = current h.
-        let keydata: [u8; 64] = mix_key_derive(&state.ck, &[])?;
-        let key_bytes: [u8; AEAD_KEY_LEN] = keydata[AEAD_KEY_LEN..AEAD_KEY_LEN + AEAD_KEY_LEN]
-            .try_into()
-            .map_err(|_| BuildCryptographyError::HkdfError(HkdfError::InvalidKeyLength))?;
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(&key_bytes));
+        // 5. Request AEAD: ChaCha20-Poly1305 with key = key_material.aead_key,
+        //    nonce = 0, plaintext = the 154-byte request, AD = current h.
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(&key_material.aead_key));
         let nonce_array = [0_u8; AEAD_NONCE_LEN];
         let nonce = Nonce::from_slice(&nonce_array);
         let plaintext_vec = Zeroizing::new(plaintext.to_vec());
@@ -608,21 +692,14 @@ impl BuildCryptography for EciesX25519BuildCryptography {
             return Err(BuildCryptographyError::AllZeroEphemeral);
         }
         let ciphertext = &record[HASH_PREFIX_LEN + EPHEMERAL_KEY_LEN..];
-        // Noise-N initialization.
-        let mut state = NoiseRequestState {
-            ck: noise_init_h(),
-            h: noise_init_h(),
-        };
+        // Noise-N initialization with the canonical null prologue.
+        let mut state = NoiseRequestState::new_for_short_build();
         state.mix_hash(peer_static_priv_to_public(peer_static_priv).as_slice());
         state.mix_hash(&ephemeral_pub);
         // Shared = X25519(localpriv, remote-ephemeral).
         let shared = compute_dh(peer_static_priv, &ephemeral_pub)?;
-        state.mix_key(&shared)?;
-        let keydata: [u8; 64] = mix_key_derive(&state.ck, &[])?;
-        let key_bytes: [u8; AEAD_KEY_LEN] = keydata[AEAD_KEY_LEN..AEAD_KEY_LEN + AEAD_KEY_LEN]
-            .try_into()
-            .map_err(|_| BuildCryptographyError::HkdfError(HkdfError::InvalidKeyLength))?;
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(&key_bytes));
+        let key_material = state.mix_key(&shared)?;
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(&key_material.aead_key));
         let nonce_array = [0_u8; AEAD_NONCE_LEN];
         let nonce = Nonce::from_slice(&nonce_array);
         let plaintext_vec = cipher
@@ -816,8 +893,9 @@ pub fn derive_layer_keys(
                 },
             ));
         }
-        let mut tag = [0_u8; 16];
-        tag.copy_from_slice(&garlic_keydata[..16]);
+        // 8-byte tag at offset 0..8 and 32-byte key at offset 32..64.
+        let mut tag = [0_u8; GARLIC_REPLY_TAG_LEN];
+        tag.copy_from_slice(&garlic_keydata[..GARLIC_REPLY_TAG_LEN]);
         let mut garlic_reply_key = [0_u8; 32];
         garlic_reply_key.copy_from_slice(&garlic_keydata[32..64]);
         return Ok(LayerKeys::new_obep(
@@ -858,10 +936,32 @@ mod tests {
     }
 
     #[test]
-    fn noise_init_h_matches_protocol_name_padded() {
+    fn noise_init_h0_matches_protocol_name_padded() {
         let mut expected = [0_u8; 32];
         expected[..NOISE_PROTOCOL_NAME.len()].copy_from_slice(NOISE_PROTOCOL_NAME);
+        assert_eq!(noise_init_h0(), expected);
+    }
+
+    #[test]
+    fn noise_init_h_matches_null_prologue_sha256() {
+        let mut h0 = [0_u8; 32];
+        h0[..NOISE_PROTOCOL_NAME.len()].copy_from_slice(NOISE_PROTOCOL_NAME);
+        let mut hasher = Sha256::new();
+        hasher.update(h0);
+        let output = hasher.finalize();
+        let mut expected = [0_u8; 32];
+        expected.copy_from_slice(&output);
         assert_eq!(noise_init_h(), expected);
+    }
+
+    #[test]
+    fn noise_request_state_starts_with_null_prologue_hash() {
+        // Plan 111 defect 1: the initial state must include the
+        // null-prologue `MixHash`.
+        let state = NoiseRequestState::new_for_short_build();
+        assert_eq!(state.transcript_hash(), noise_init_h());
+        // The chaining key starts as `h0` (no null-prologue on ck).
+        assert_eq!(state.chaining_key(), noise_init_h0());
     }
 
     #[test]
@@ -880,11 +980,34 @@ mod tests {
     }
 
     #[test]
-    fn record_slot_nonce_is_zero_padded_then_slot_byte() {
-        let slot = ValidatedRecordSlot::new(5).expect("ok");
-        let nonce = slot.nonce();
-        assert_eq!(nonce[..11], [0_u8; 11]);
-        assert_eq!(nonce[11], 5);
+    fn record_slot_nonce_places_slot_byte_at_offset_4() {
+        // Plan 111 defect 3: the slot byte must live at offset 4
+        // (the eight-byte little-endian nonce occupies bytes 4..11).
+        for slot in 0u8..=7 {
+            let validated = ValidatedRecordSlot::new(slot).expect("ok");
+            let nonce = validated.nonce();
+            for (i, byte) in nonce.iter().enumerate() {
+                if i == RECORD_SLOT_NONCE_OFFSET {
+                    assert_eq!(*byte, slot, "byte {i} must equal slot value");
+                } else {
+                    assert_eq!(*byte, 0, "byte {i} must be zero");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn record_slot_nonce_never_places_slot_byte_at_offset_11() {
+        // Regression guard: a defect that places the slot byte at
+        // offset 11 must fail this test.
+        for slot in 0u8..=7 {
+            let validated = ValidatedRecordSlot::new(slot).expect("ok");
+            let nonce = validated.nonce();
+            assert_eq!(
+                nonce[11], 0,
+                "byte 11 must remain zero for every valid slot"
+            );
+        }
     }
 
     #[test]
@@ -1053,7 +1176,36 @@ mod tests {
             .expect("seal");
         let derived = derive_layer_keys(&sealed.state, true).expect("derive obep");
         assert!(derived.garlic_reply_key().is_some());
-        assert!(derived.garlic_reply_tag_prefix().is_some());
+        // Plan 111 defect 4: the OBEP garlic reply tag is exactly
+        // 8 bytes (Plan 109 used 16 bytes).
+        assert_eq!(
+            derived.garlic_reply_tag().map(|t| t.len()),
+            Some(GARLIC_REPLY_TAG_LEN)
+        );
+    }
+
+    #[test]
+    fn obep_garlic_material_differs_from_participant_material() {
+        let cryptography = EciesX25519BuildCryptography::new();
+        let mut rng = fixed_rng(15);
+        let responder_priv = privkey(16);
+        let responder_pub = ephemeral_public(&responder_priv);
+        let hash = hop_hash();
+        let plaintext = [0xAA_u8; SHORT_REQUEST_PLAINTEXT_SIZE];
+        let sealed = cryptography
+            .seal_short_request(&plaintext, &responder_pub, &hash, &mut rng)
+            .expect("seal");
+        let participant = derive_layer_keys(&sealed.state, false).expect("participant");
+        let obep = derive_layer_keys(&sealed.state, true).expect("obep");
+        assert!(participant.garlic_reply_key().is_none());
+        assert!(participant.garlic_reply_tag().is_none());
+        let obep_key = obep.garlic_reply_key().expect("obep key");
+        let obep_tag = obep.garlic_reply_tag().expect("obep tag");
+        assert_ne!(&obep_key[..], &participant.reply_key()[..]);
+        assert_ne!(&obep_key[..], &participant.layer_key()[..]);
+        assert_ne!(&obep_tag[..], &participant.iv_key()[..8]);
+        // The garlic key must not appear in the participant path.
+        assert_ne!(&obep_key[..], &participant.iv_key()[..]);
     }
 
     #[test]

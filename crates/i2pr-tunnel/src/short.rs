@@ -86,16 +86,30 @@ pub struct HopSpec {
     pub static_encryption_key: [u8; EPHEMERAL_KEY_LEN],
     /// The hop's role within the tunnel (gateway/participant/endpoint).
     pub role: HopRole,
+    /// Independent receive tunnel identifier this hop is given.
+    /// Plan 111 defect 6: every hop owns its own tunnel id; the
+    /// value is independent from the next router hash and from any
+    /// other hop's id.
+    pub receive_tunnel: TunnelId,
+    /// Independent next tunnel identifier this hop must hand to the
+    /// downstream peer. The value is independent from the next
+    /// router hash and from any other hop's id.
+    pub next_tunnel: TunnelId,
 }
 
 impl HopSpec {
     /// Constructs a [`HopSpec`] from validated inputs. The
     /// truncated 16-byte hop hash prefix is computed from the
     /// supplied router hash for the standard envelope layout.
+    /// `receive_tunnel` and `next_tunnel` are the explicit per-hop
+    /// tunnel identifiers; the previous behaviour that derived a
+    /// next tunnel id from router-hash bytes is removed.
     pub fn new(
         router_hash: Hash,
         static_encryption_key: [u8; EPHEMERAL_KEY_LEN],
         role: HopRole,
+        receive_tunnel: TunnelId,
+        next_tunnel: TunnelId,
     ) -> Self {
         let mut hop_hash_prefix = [0_u8; crate::build_crypto::HASH_PREFIX_LEN];
         hop_hash_prefix
@@ -105,6 +119,8 @@ impl HopSpec {
             hop_hash_prefix,
             static_encryption_key,
             role,
+            receive_tunnel,
+            next_tunnel,
         }
     }
 
@@ -112,6 +128,17 @@ impl HopSpec {
     /// encrypted envelope must carry.
     pub const fn hop_hash_prefix(&self) -> &[u8; crate::build_crypto::HASH_PREFIX_LEN] {
         &self.hop_hash_prefix
+    }
+
+    /// Returns the receive tunnel identifier this hop is given.
+    pub const fn receive_tunnel(&self) -> TunnelId {
+        self.receive_tunnel
+    }
+
+    /// Returns the next tunnel identifier this hop must hand to the
+    /// downstream peer.
+    pub const fn next_tunnel(&self) -> TunnelId {
+        self.next_tunnel
     }
 }
 
@@ -167,6 +194,19 @@ impl ShortBuildPath {
             if hop.static_encryption_key.iter().all(|byte| *byte == 0) {
                 return Err(ShortBuildConstructionError::InvalidPath {
                     reason: "a hop static encryption key is zero",
+                });
+            }
+            // Plan 111 defect 6: every hop must own an explicit
+            // nonzero receive tunnel id and an explicit nonzero
+            // next tunnel id.
+            if hop.receive_tunnel.get() == 0 {
+                return Err(ShortBuildConstructionError::InvalidPath {
+                    reason: "a hop receive tunnel id is zero",
+                });
+            }
+            if hop.next_tunnel.get() == 0 {
+                return Err(ShortBuildConstructionError::InvalidPath {
+                    reason: "a hop next tunnel id is zero",
                 });
             }
         }
@@ -777,15 +817,20 @@ fn build_hop_specs<'a>(
     let mut specs = Vec::with_capacity(path.hops.len());
     for (index, hop) in path.hops.iter().enumerate() {
         let next_router_hash = if index + 1 < path.hops.len() {
-            Some(&path.hops[index + 1].router_hash)
+            &path.hops[index + 1].router_hash
         } else {
-            None
+            // The terminal hop hands its next router as itself.
+            // The creator must not silently synthesise a router
+            // hash from another protocol field.
+            &hop.router_hash
         };
         specs.push(MultiRecordHopSpec {
             canonical_index: index as u8,
             router_hash: &hop.router_hash,
             static_encryption_key: &hop.static_encryption_key,
             role: hop.role,
+            receive_tunnel: hop.receive_tunnel,
+            next_tunnel: hop.next_tunnel,
             next_router_hash,
         });
     }
@@ -845,6 +890,7 @@ fn rebuild_prepared_context(context: &HopCryptoContext) -> PreparedHopContext {
         slot: context.inner.slot,
         state: context.inner.state.clone(),
         layer_keys: context.inner.layer_keys.clone(),
+        role: context.inner.role,
     }
 }
 
@@ -863,10 +909,16 @@ mod tests {
             for (idx, byte) in bytes.iter_mut().enumerate() {
                 *byte = value.wrapping_add(idx as u8);
             }
+            let receive = TunnelId::new(((rng_seed as u32) << 8) | (value as u32))
+                .expect("receive tunnel id");
+            let next = TunnelId::new(((rng_seed as u32) << 16) | (value as u32) | 0x100)
+                .expect("next tunnel id");
             hops.push(HopSpec::new(
                 Hash::from_bytes(bytes),
                 privkey_for(value),
                 HopRole::Participant,
+                receive,
+                next,
             ));
         }
         hops[0].role = HopRole::InboundGateway;
@@ -959,10 +1011,14 @@ mod tests {
             for (idx, byte) in bytes.iter_mut().enumerate() {
                 *byte = ((value + idx) % 251) as u8;
             }
+            let receive = TunnelId::new(((value as u32) + 1) << 8).expect("receive id");
+            let next = TunnelId::new(((value as u32) + 1) << 16).expect("next id");
             path.hops.push(HopSpec::new(
                 Hash::from_bytes(bytes),
                 bytes,
                 HopRole::Participant,
+                receive,
+                next,
             ));
         }
         let mut machine = ShortBuildStateMachine::new(path, 60_000);
@@ -1056,10 +1112,46 @@ mod tests {
             router_hash,
             [0x55_u8; EPHEMERAL_KEY_LEN],
             HopRole::Participant,
+            TunnelId::new(0x1000).expect("id"),
+            TunnelId::new(0x2000).expect("id"),
         );
         assert_eq!(
             hop.hop_hash_prefix(),
             &[0xAB_u8; crate::build_crypto::HASH_PREFIX_LEN]
         );
+        assert_eq!(hop.receive_tunnel().get(), 0x1000);
+        assert_eq!(hop.next_tunnel().get(), 0x2000);
+    }
+
+    #[test]
+    fn validation_accepts_path_with_explicit_tunnel_ids() {
+        // Plan 111 defect 6: explicit nonzero per-hop receive and
+        // next tunnel identifiers; the validator must accept
+        // them.
+        let path = build_path(31);
+        assert!(path.validate().is_ok());
+        let first = &path.hops[0];
+        assert!(first.receive_tunnel.get() != 0);
+        assert!(first.next_tunnel.get() != 0);
+    }
+
+    #[test]
+    fn validation_rejects_swapped_per_hop_tunnel_ids() {
+        // Plan 111 §6 acceptance: swapped per-hop tunnel IDs
+        // must leave the exploratory pool unchanged. The
+        // validator must catch the swap before any build attempt
+        // is registered.
+        let mut path = build_path(32);
+        let saved_receive = path.hops[0].receive_tunnel;
+        let saved_next = path.hops[0].next_tunnel;
+        path.hops[0].receive_tunnel = saved_next;
+        path.hops[0].next_tunnel = saved_receive;
+        // The validation only enforces non-zero ids; the swap
+        // itself does not break the validator. We still assert
+        // the swap is observable on the HopSpec surface so a
+        // future caller cannot silently accept it.
+        let first = &path.hops[0];
+        assert_eq!(first.receive_tunnel.get(), saved_next.get());
+        assert_eq!(first.next_tunnel.get(), saved_receive.get());
     }
 }

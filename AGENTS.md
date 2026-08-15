@@ -1742,21 +1742,82 @@ Plan 110 closes, a separate narrow external-delivery checkpoint
 must select the smallest available qualified delivery lane and
 send one independent build.
 
-### Plan 109/110 current authoritative state
+### Plan 109/110/111 current authoritative state
 
 ```text
 plan_108                         = superseded-local-architecture-retained-wire-crypto-corrected
-plan_109                         = passed-record-and-noise-conformance
-plan_110                         = passed-multirecord-local-conformance
-short_build_record_format        = locally-conformant
-short_build_noise_state          = locally-conformant
-short_build_reply_crypto         = locally-conformant
-short_build_derived_keys         = locally-conformant
-short_build_multirecord_processing = locally-conformant
-complete_stbm_payload            = locally-conformant
+plan_109                         = superseded-by-plan111-corrected
+plan_110                         = superseded-by-plan111-corrected
+plan_111                         = passed-final-local-short-build-conformance
+short_build_record_format        = locally-conformant-fixed-vectors
+short_build_noise_state          = locally-conformant-fixed-vectors
+short_build_reply_crypto         = locally-conformant-fixed-vectors
+short_build_derived_keys         = locally-conformant-fixed-vectors
+short_build_multirecord_processing = locally-conformant-fixed-vectors
+complete_stbm_payload            = locally-conformant-fixed-vectors
+inbound_short_build              = blocked-inbound-layout-ambiguity
 live_mixed_router_build          = blocked-on-qualified-delivery
 normal_daemon_ntcp2              = disabled-and-unenableable
 ntcp2                            = experimental-non-advertised
+```
+
+Plan 111 corrects the remaining Plan 109/110 defects against the
+current official I2P Tunnel Creation Specification:
+
+- Noise-N null-prologue `h = SHA256(h0)` is now applied before
+  the peer-static `MixHash` (Plan 109 missed the null prologue).
+- The request `es` derivation is a single
+  `HKDF(ck, sharedSecret, "", 64)` that produces both the new
+  chaining key and the request AEAD key, replacing the prior
+  second-HKDF split (Plan 109 ran a second HKDF).
+- Record-slot nonce/IV construction places the slot byte at
+  offset **4** of the 12-byte nonce; bytes 0..3 and 5..11 are
+  zero. Plan 109 placed the slot byte at offset 11.
+- OBEP `RGarlicKeyAndTag` produces an 8-byte tag (Plan 109 used
+  16 bytes).
+- Per-hop `receive_tunnel` and `next_tunnel` identifiers are
+  explicit independent `TunnelId` fields; Plan 109 derived the
+  next tunnel id from the next router hash.
+- `MessageHopProcessor::process_hop` decodes the role from the
+  authenticated request plaintext rather than flattening to
+  participant.
+- An independent reference computation produces a frozen
+  `fixed_vectors` module that the conformance tests assert the
+  production primitive against. The frozen constants were
+  generated once during the implementation pass and never
+  recomputed; the production primitive must continue to match
+  them or fail the conformance tests.
+
+Inbound creator-ephemeral plaintext semantics (Plan 111 §F) are
+**not** corrected on this pass: the current I2P Tunnel Creation
+Specification prose mentions the requirement but does not pin
+the byte offset, and no current reference-router source was
+available during the implementation pass to disambiguate the
+placement. Plan 111 closes with
+`INBOUND_SHORT_BUILD_LAYOUT_AMBIGUITY = true` and
+`outbound_short_build = locally-conformant-fixed-vectors`; a
+future plan with a pinned reference-router source can flip the
+marker and re-enable the inbound path.
+
+## Plan 111 short-build final local conformance correction (closed)
+
+Plan 111 is the Milestone 5 short-build correction pass that
+supersedes Plan 109/110's `passed-*` conformance claims and
+reopens the local conformance gate against the current official
+I2P Tunnel Creation Specification. Plan 111 closes
+`passed-final-local-short-build-conformance` for the outbound
+path; the inbound creator-ephemeral plaintext path remains
+`blocked-inbound-layout-ambiguity`. Plan 111 does **not**
+perform the external-delivery checkpoint; a future plan
+consumes the byte-correct count-prefixed STBM payload and
+selects the smallest available qualified delivery lane.
+
+Required focused checks:
+
+```text
+cargo +1.95.0 test --locked -p i2pr-tunnel --all-targets
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
 ```
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
@@ -3044,8 +3105,9 @@ Plan 103  RouterInfo validation + bounded local NetDB     [closed]
      -> Plan 106  daemon/bootstrap integration                 [closed]
      -> Plan 107  Milestone 5 exploratory tunnel substrate     [closed]
      -> Plan 108  ECIES-X25519 short record construction core   [superseded-by-plan109]
-     -> Plan 109  short-record + Noise-N conformance correction  [closed-passed-record-and-noise-conformance]
-     -> Plan 110  multi-record preprocessing + local conformance closure [closed-passed-multirecord-local-conformance]
+     -> Plan 109  short-record + Noise-N conformance correction  [superseded-by-plan111]
+     -> Plan 110  multi-record preprocessing + local conformance closure [superseded-by-plan111]
+     -> Plan 111  final local short-build conformance correction [passed-final-local-short-build-conformance]
      -> narrow qualified external-delivery checkpoint
      -> return to Milestone 4B external acceptance
 ```
@@ -3058,16 +3120,22 @@ provider that flips the Plan 106 NetDB seam from
 inbound tunnel is registered. Plan 108 landed the local
 short-record construction architecture but its wire/cryptographic
 algorithm was **not** protocol-conformant against the current
-official I2P Tunnel Creation Specification. Plan 109 closed as
-`passed-record-and-noise-conformance` and corrected the wire
-format, Noise-N transcript, layer-encryption type, request/reply
-key derivation, response codes, and 218-byte envelope layout in
-place. Plan 110 closed as `passed-multirecord-local-conformance`
-and added randomized slot allocation, fake records, raw ChaCha20
+official I2P Tunnel Creation Specification. Plan 109 corrected the
+wire format, Noise-N transcript, layer-encryption type, request/
+reply key derivation, response codes, and 218-byte envelope layout
+but missed four defects that Plan 111 reopens. Plan 110 added
+randomized slot allocation, fake records, raw ChaCha20
 preprocessing/postprocessing, and the one-byte-count STBM/OTBRM
-payload framing. Milestone 4A is now
-`local-foundation-complete-short-build-record-and-noise-conformant-multirecord-pending` ->
-`local-foundation-complete-short-build-multirecord-conformant`.
+payload framing but inherited the Plan 109 defects. Plan 111
+closed as `passed-final-local-short-build-conformance` and
+corrected the remaining defects (Noise null prologue, single-HKDF
+`es` split, slot byte at offset 4, 8-byte OBEP garlic tag, explicit
+per-hop tunnel IDs, role-aware hop processor, frozen independent
+fixed vectors); inbound creator-ephemeral layout remains
+`blocked-inbound-layout-ambiguity` until a current reference-router
+source pins the placement. Milestone 4A is now
+`local-foundation-complete-short-build-outbound-conformant-fixed-vectors`
+with `inbound_short_build = disabled-pending-layout-resolution`.
 A direct `DatabaseLookup` over NTCP2 is not accepted as a substitute
 for the standard exploratory-tunnel path. The next executable step
 is a narrow qualified external-delivery checkpoint, before
