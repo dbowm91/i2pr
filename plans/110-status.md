@@ -3,8 +3,8 @@
 - Status: **passed-multirecord-local-conformance**
 - Date: 2026-08-15
 - Pre-Plan 110 commit: `b0a5907c64622ac1de48c2fbbb43649948578aa8`
-- Plan 110 implementation commit: see `git log` after the
-  Plan 110 commit lands.
+- Plan 110 implementation commit: `cf90793` ("tunnel: implement
+  Plan 110 multi-record short-build conformance").
 - Plan-of-record:
   [`plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md`](plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md)
 - Predecessor authority:
