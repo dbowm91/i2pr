@@ -1,12 +1,29 @@
 # Plan 109 closure: short-build record and Noise-N conformance
 
-- Status: **passed-record-and-noise-conformance**
-- Date: 2026-08-15
+> **2026-08-15 conformance amendment:** A post-Plan-110 audit found that Plan 109's local wire/crypto implementation still contains protocol defects shared by Plan 110: the required Noise null-prologue `MixHash` is missing; the request `es` AEAD key is obtained through an incorrect second HKDF instead of the single `HKDF(ck, sharedSecret, "", 64)` split; record-slot nonce construction uses byte 11 instead of byte 4; OBEP garlic tag material is represented as 16 instead of 8 bytes; and the fixture obtains critical expected state from the production implementation. The historical closure record below is retained for audit only. Current corrective authority is [`plans/111-short-build-final-local-conformance-correction.md`](111-short-build-final-local-conformance-correction.md). Until Plan 111 passes, `passed-record-and-noise-conformance` is superseded by `implementation-landed-conformance-reopened-by-plan111`.
+
+- Status: **implementation-landed-conformance-reopened-by-plan111**
+- Historical closure date: 2026-08-15
 - Pre-Plan 109 commit: `c74493433ac39eb4ae6e617961f737f6b7e0a9d5`
 - Plan-of-record:
-  [`plans/109-short-build-record-and-noise-conformance-correction.md`](plans/109-short-build-record-and-noise-conformance-correction.md)
-- Successor authority:
-  [`plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md`](plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md)
+  [`plans/109-short-build-record-and-noise-conformance-correction.md`](109-short-build-record-and-noise-conformance-correction.md)
+- Corrective successor:
+  [`plans/111-short-build-final-local-conformance-correction.md`](111-short-build-final-local-conformance-correction.md)
+
+## Current authoritative state
+
+```text
+plan_109                         = implementation-landed-conformance-reopened-by-plan111
+plan_110                         = implementation-landed-conformance-reopened-by-plan111
+plan_111                         = ready-for-implementation
+single_record_short_build_crypto = needs-plan111-correction
+short_build_derived_keys         = needs-plan111-correction
+external_build_delivery          = blocked-on-plan111
+```
+
+## Historical Plan 109 closure record
+
+The remainder of this file records the historical Plan 109 implementation result. Its conformance claims are superseded where they conflict with Plan 111.
 
 ## Summary
 
