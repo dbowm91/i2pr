@@ -1742,19 +1742,21 @@ Plan 110 closes, a separate narrow external-delivery checkpoint
 must select the smallest available qualified delivery lane and
 send one independent build.
 
-### Plan 109/110/111 current authoritative state
+### Plan 109/110/111/112 current authoritative state
 
 ```text
 plan_108                         = superseded-local-architecture-retained-wire-crypto-corrected
 plan_109                         = superseded-by-plan111-corrected
 plan_110                         = superseded-by-plan111-corrected
 plan_111                         = passed-final-local-short-build-conformance
+plan_112                         = passed-outbound-pre-delivery-closure
 short_build_record_format        = locally-conformant-fixed-vectors
 short_build_noise_state          = locally-conformant-fixed-vectors
 short_build_reply_crypto         = locally-conformant-fixed-vectors
 short_build_derived_keys         = locally-conformant-fixed-vectors
 short_build_multirecord_processing = locally-conformant-fixed-vectors
 complete_stbm_payload            = locally-conformant-fixed-vectors
+outbound_short_build             = locally-conformant-fixed-vectors-with-plan112-pre-delivery-closure
 inbound_short_build              = blocked-inbound-layout-ambiguity
 live_mixed_router_build          = blocked-on-qualified-delivery
 normal_daemon_ntcp2              = disabled-and-unenableable
@@ -1818,6 +1820,92 @@ Required focused checks:
 cargo +1.95.0 test --locked -p i2pr-tunnel --all-targets
 bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh
+```
+
+## Plan 112 outbound pre-delivery closure (closed)
+
+Plan 112 is the Milestone 5 outbound pre-delivery closure pass
+that tightens the Plan 111 outbound construction with six
+deterministic local defect fixes and one provenance defect
+fix, **without** unblocking the inbound path or advancing to a
+qualified external delivery lane. Plan 112 closes
+`passed-outbound-pre-delivery-closure`. The Plan 112 architecture
+surface travels with the `i2pr-tunnel` crate unchanged; only the
+fixes below land on this commit.
+
+The six deterministic defects fixed by Plan 112:
+
+- **Random post-Mapping padding.** Plan 111 left the post-`Mapping`
+  padding bytes zero. Plan 112 routes the plaintext encoder
+  through a caller-injected CSPRNG (`&mut R: RngCore + CryptoRng`)
+  with a deterministic zero-padded path for fixtures; production
+  surfaces fail closed with
+  `ShortBuildError::RandomnessUnavailable` when no CSPRNG is
+  injected.
+- **Direction/role topology validation.** Plan 109/110 accepted
+  outbound and inbound paths that violated the canonical I2P
+  role ordering. Plan 112 `ShortBuildPath::validate` enforces:
+  outbound paths may not contain `IBGW` and may only contain
+  `OBEP` at the final hop, with `Participant` hops preceding the
+  final OBEP; inbound paths must place `IBGW` at the first hop,
+  may not contain `OBEP`, and place `Participant` hops after the
+  first IBGW.
+- **Inbound production fail-closed gate.** The Plan 111 inbound
+  path produced bytes that could not be reconciled with any
+  pinned reference. Plan 112 hardens the gate: every inbound
+  call path through `ShortBuildStateMachine::prepare` and
+  `prepare_short_build_message` now raises
+  `ShortBuildConstructionError::InboundBuildPendingReconciliation`
+  (and the corresponding
+  `MultiRecordError::InboundBuildPendingReconciliation`) before
+  any record bytes are produced.
+- **`HopCryptoContext::ephemeral_public()` accessor.** Plan 108
+  exposed `ephemeral_public()` for diagnostic access. Plan 112
+  deletes the accessor; the field remains private and the
+  `Debug` impl retains the same label string.
+- **STBM/OTBRM payload contract exactness.** Plan 110 used a
+  private `encode_short_tunnel_build_payload_from_count`
+  helper. Plan 112 renames it to the explicit public
+  `encode_count_prefixed_short_payload` and adds a matching
+  public `validate_count_prefixed_short_payload` helper. The
+  helpers reject zero record counts, record counts above 8, and
+  any payload whose length does not equal
+  `1 + count * 218` bytes. `decode_short_tunnel_build_payload`
+  remains as a thin wrapper for symmetry.
+- **Frozen vector provenance.** Plan 111 asserted the production
+  primitive against the frozen `fixed_vectors` module, but the
+  frozen constants were generated from the same production code
+  path under audit. Plan 112 adds the Rust-only reference
+  provenance test under
+  `crates/i2pr-tunnel/tests/plan111_reference_vectors.rs` that
+  re-derives the same frozen bytes from a pure-Rust path built
+  only on `x25519-dalek`, `sha2`, `chacha20poly1305`, and
+  `i2pr_crypto::hkdf_sha256_extract_and_expand`, without
+  consulting the frozen module. The test asserts the production
+  `seal_short_request`, `open_short_request`, and
+  `derive_layer_keys` reproductions match byte-for-byte and that
+  re-encryption of the sealed envelope produces identical bytes.
+
+Plan 112 does **not** activate NTCP2, perform any live
+mixed-router validation, require public I2P access, or relax
+the Plan 046 rootless or the Plan 048/049 Multipass gates. The
+inbound path remains fail-closed behind
+`InboundBuildPendingReconciliation` until Plan 113 reconciles
+the inbound creator-ephemeral standards/reference discrepancy
+with a pinned reference-router source.
+
+Required focused checks:
+
+```text
+cargo +1.95.0 test --locked -p i2pr-tunnel --all-targets
+cargo +1.95.0 fmt --all --check
+cargo +1.95.0 check --locked --workspace --all-targets
+cargo +1.95.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+bash scripts/check-fixture-manifest.sh
+bash scripts/check-ntcp2-vectors.sh
+git diff --check
 ```
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure

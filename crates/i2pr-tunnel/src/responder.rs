@@ -118,7 +118,11 @@ impl DeterministicResponder {
     }
 
     /// Composes a canonical accepted reply plaintext + sealed
-    /// record in one call. The slot must lie in `0..=7`.
+    /// record in one call. The slot must lie in `0..=7`. The
+    /// reply plaintext uses the deterministic zero-padded
+    /// encoder because the simulator is a test-only surface; the
+    /// production postprocessor in [`crate::multirecord`] uses
+    /// [`ShortReplyRecord::encode_with_rng`] instead.
     pub fn compose_accepted_reply(
         &self,
         slot: u8,
@@ -127,7 +131,7 @@ impl DeterministicResponder {
         options: BuildOptions,
     ) -> Result<([u8; SHORT_BUILD_RECORD_SIZE], ShortReplyRecord), ResponderError> {
         let reply = ShortReplyRecord::new(options, ShortResponseCode::Accepted);
-        let plaintext_zeroizing = reply.encode();
+        let plaintext_zeroizing = reply.encode_deterministic_zero_padded();
         let mut plaintext = [0_u8; SHORT_REPLY_PLAINTEXT_SIZE];
         plaintext.copy_from_slice(plaintext_zeroizing.as_ref());
         let record = self.seal_reply(&plaintext, layer_keys, request_hash, slot)?;
@@ -153,7 +157,9 @@ pub fn seal_into_envelope(sealed: SealedShortRequest) -> Zeroizing<[u8; SHORT_BU
 
 /// Convenience one-call helper that opens a request, derives
 /// the layer keys, and seals an accepted reply. Used by the
-/// canonical Plan 109 conformance fixture harness.
+/// canonical Plan 109 conformance fixture harness. The reply
+/// plaintext uses the deterministic zero-padded encoder because
+/// the helper is a test-only surface.
 pub fn open_and_seal_accepted(
     responder: &DeterministicResponder,
     record: &[u8],
@@ -163,7 +169,7 @@ pub fn open_and_seal_accepted(
     let opened = responder.open_request(record)?;
     let keys = responder.derive_layer_keys(&opened.state, is_outbound_endpoint)?;
     let reply = ShortReplyRecord::new(BuildOptions::empty(), ShortResponseCode::Accepted);
-    let plaintext_zeroizing = reply.encode();
+    let plaintext_zeroizing = reply.encode_deterministic_zero_padded();
     let mut plaintext = [0_u8; SHORT_REPLY_PLAINTEXT_SIZE];
     plaintext.copy_from_slice(plaintext_zeroizing.as_ref());
     let sealed = responder.seal_reply(&plaintext, &keys, &opened.state.transcript_hash(), slot)?;
@@ -209,7 +215,7 @@ mod tests {
             .derive_layer_keys(&opened.state, false)
             .expect("keys");
         let reply = ShortReplyRecord::new(BuildOptions::empty(), ShortResponseCode::Accepted);
-        let plaintext_bytes = reply.encode();
+        let plaintext_bytes = reply.encode_deterministic_zero_padded();
         let mut arr = [0_u8; SHORT_REPLY_PLAINTEXT_SIZE];
         arr.copy_from_slice(plaintext_bytes.as_ref());
         let slot = 2_u8;

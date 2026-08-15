@@ -572,6 +572,13 @@ pub enum MultiRecordError {
     /// The slot allocator exhausted the available slots.
     #[error("multi-record slot allocator ran out of available slots")]
     SlotExhausted,
+    /// Inbound short-build production construction is explicitly
+    /// disabled until Plan 113 reconciles the inbound creator-
+    /// ephemeral standards/reference discrepancy.
+    #[error(
+        "inbound short build construction is pending Plan 113 standards/reference reconciliation"
+    )]
+    InboundBuildPendingReconciliation,
     /// The supplied RNG could not produce output.
     #[error("multi-record RNG unavailable")]
     RandomnessUnavailable,
@@ -717,6 +724,12 @@ impl fmt::Debug for PreparedShortBuildMessage {
 /// into the assigned slots and the creator preprocessing applies
 /// the iterative ChaCha20 transforms so each hop only sees its own
 /// record at its stage.
+///
+/// Plan 112 §7 makes inbound production construction explicitly
+/// fail closed at this entry point with
+/// [`MultiRecordError::InboundBuildPendingReconciliation`]
+/// before any cryptographic material is allocated. Originator-fake
+/// primitives remain testable independently.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_short_build_message<R: CryptoRng + RngCore>(
     cryptography: &EciesX25519BuildCryptography,
@@ -732,6 +745,21 @@ pub fn prepare_short_build_message<R: CryptoRng + RngCore>(
     if path_hops.is_empty() {
         return Err(MultiRecordError::EmptyPath);
     }
+    // Plan 112 §7 inbound production gate: refuse inbound
+    // construction until Plan 113 resolves the standards/
+    // reference discrepancy.
+    if matches!(direction, TunnelDirection::Inbound) {
+        let _ = (
+            cryptography,
+            creator_tunnel_id_bytes,
+            request_time_ms,
+            next_message_id,
+            first_hop,
+            originator_hash,
+            rng,
+        );
+        return Err(MultiRecordError::InboundBuildPendingReconciliation);
+    }
     let record_set = assign_record_slots(path_hops.len() as u8, direction, rng)?;
     let mut hop_contexts: Vec<PreparedHopContext> = Vec::with_capacity(path_hops.len());
     for hop in path_hops {
@@ -743,6 +771,7 @@ pub fn prepare_short_build_message<R: CryptoRng + RngCore>(
             &creator_tunnel_id_bytes,
             request_time_ms,
             next_message_id,
+            rng,
         )?;
         let sealed = cryptography.seal_short_request(
             &plaintext_array,
@@ -831,11 +860,12 @@ pub struct MultiRecordHopSpec<'a> {
     pub next_router_hash: &'a Hash,
 }
 
-fn build_hop_request_plaintext(
+fn build_hop_request_plaintext<R: CryptoRng + RngCore>(
     hop: &MultiRecordHopSpec<'_>,
     _creator_tunnel_id_bytes: &[u8; 4],
     request_time_ms: u64,
     next_message_id: u32,
+    rng: &mut R,
 ) -> Result<[u8; SHORT_REQUEST_PLAINTEXT_SIZE], MultiRecordError> {
     let receive_tunnel = hop.receive_tunnel;
     let next_tunnel = hop.next_tunnel;
@@ -852,7 +882,7 @@ fn build_hop_request_plaintext(
         next_message_id,
         BuildOptions::empty(),
     )?;
-    let encoded = record.encode()?;
+    let encoded = record.encode_with_rng(rng)?;
     let mut out = [0_u8; SHORT_REQUEST_PLAINTEXT_SIZE];
     out.copy_from_slice(encoded.as_ref());
     Ok(out)
@@ -923,6 +953,20 @@ pub fn encode_short_tunnel_build_payload(
 pub fn decode_short_tunnel_build_payload(
     payload: &[u8],
 ) -> Result<(u8, Vec<[u8; RECORD_BYTES]>), MultiRecordError> {
+    validate_count_prefixed_short_payload(payload)
+}
+
+/// Validates the canonical STBM/OTBRM count-prefixed payload
+/// contract: payload byte 0 is the record count `n` (`1..=8`)
+/// and the remaining `n * 218` bytes are the concatenated
+/// 218-byte records. Trailing bytes, count = 0, count > 8, and
+/// truncated input are rejected. This is the single
+/// authoritative validation helper for both the STBM wire payload
+/// and the OTBRM reply payload; the two encoders must emit, and
+/// every consumer must verify, the same exact contract.
+pub fn validate_count_prefixed_short_payload(
+    payload: &[u8],
+) -> Result<(u8, Vec<[u8; RECORD_BYTES]>), MultiRecordError> {
     if payload.is_empty() {
         return Err(MultiRecordError::RecordCountExceedsMaximum {
             actual: 0,
@@ -958,6 +1002,34 @@ pub fn decode_short_tunnel_build_payload(
         slots.push(slot);
     }
     Ok((count, slots))
+}
+
+/// Encodes the canonical count-prefixed STBM/OTBRM payload from
+/// the supplied 218-byte records. The byte 0 is the record count
+/// (`1..=8`); the rest is the concatenation of `count * 218`
+/// record bytes. The encoder is the single authoritative
+/// producer for both the STBM wire payload and the OTBRM reply
+/// payload, and every consumer validates the contract through
+/// [`validate_count_prefixed_short_payload`].
+pub fn encode_count_prefixed_short_payload(
+    count: u8,
+    slots: &[[u8; RECORD_BYTES]],
+) -> Result<Vec<u8>, MultiRecordError> {
+    if count == 0 || count > MAX_RECORD_COUNT {
+        return Err(MultiRecordError::RecordCountExceedsMaximum {
+            actual: count,
+            maximum: MAX_RECORD_COUNT,
+        });
+    }
+    if slots.len() != count as usize {
+        return Err(MultiRecordError::SlotExhausted);
+    }
+    let mut out = Vec::with_capacity(1 + count as usize * RECORD_BYTES);
+    out.push(count);
+    for slot in slots {
+        out.extend_from_slice(slot);
+    }
+    Ok(out)
 }
 
 /// Encodes the canonical OTBRM payload from the supplied reply
@@ -1034,12 +1106,13 @@ impl MessageHopProcessor {
     /// caller supplies the static private X25519 key for the hop
     /// and the hop's identity hash.
     #[allow(clippy::too_many_arguments)]
-    pub fn process_hop(
+    pub fn process_hop<R: CryptoRng + RngCore>(
         cryptography: &EciesX25519BuildCryptography,
         payload: &[u8],
         hop_static_priv: &[u8; EPHEMERAL_KEY_LEN],
         hop_identity: &Hash,
         response_code: ShortResponseCode,
+        rng: &mut R,
     ) -> Result<(Vec<u8>, ProcessedHopResult), MultiRecordError> {
         let (count, mut slots) = decode_short_tunnel_build_payload(payload)?;
         // Find the unique slot whose 16-byte hash prefix matches
@@ -1073,7 +1146,7 @@ impl MessageHopProcessor {
         let is_obep = matches!(decoded_record.role(), HopRole::OutboundEndpoint);
         let layer_keys = derive_layer_keys_for_hop(&opened.state, decoded_record.role())?;
         let reply = ShortReplyRecord::new(BuildOptions::empty(), response_code);
-        let plaintext_vec = reply.encode();
+        let plaintext_vec = reply.encode_with_rng(rng)?;
         let mut plaintext = [0_u8; SHORT_REPLY_PLAINTEXT_SIZE];
         plaintext.copy_from_slice(plaintext_vec.as_ref());
         let sealed_reply = cryptography.seal_short_reply(
@@ -1091,7 +1164,7 @@ impl MessageHopProcessor {
             let target_slot = SlotIndex::new(index as u8).expect("validated");
             chacha20_transform(layer_keys.reply_key(), target_slot, other_slot)?;
         }
-        let new_payload = encode_short_tunnel_build_payload_from_count(count, &slots)?;
+        let new_payload = encode_count_prefixed_short_payload(count, &slots)?;
         Ok((
             new_payload,
             ProcessedHopResult {
@@ -1103,27 +1176,6 @@ impl MessageHopProcessor {
             },
         ))
     }
-}
-
-fn encode_short_tunnel_build_payload_from_count(
-    count: u8,
-    slots: &[[u8; RECORD_BYTES]],
-) -> Result<Vec<u8>, MultiRecordError> {
-    if count == 0 || count > MAX_RECORD_COUNT {
-        return Err(MultiRecordError::RecordCountExceedsMaximum {
-            actual: count,
-            maximum: MAX_RECORD_COUNT,
-        });
-    }
-    if slots.len() != count as usize {
-        return Err(MultiRecordError::SlotExhausted);
-    }
-    let mut out = Vec::with_capacity(1 + count as usize * RECORD_BYTES);
-    out.push(count);
-    for slot in slots {
-        out.extend_from_slice(slot);
-    }
-    Ok(out)
 }
 
 /// Postprocessor that undoes the accumulated later-hop ChaCha20
@@ -1345,6 +1397,7 @@ impl MultiHopReferenceFixture {
                 &hop_priv,
                 &hop_hash,
                 ShortResponseCode::Accepted,
+                &mut rng,
             )?;
             current_payload = new_payload;
         }
@@ -1434,7 +1487,11 @@ fn fixture_request_plaintext(
         0xABCD_1234,
         BuildOptions::empty(),
     )?;
-    let encoded = record.encode()?;
+    // Fixture path: deterministic zero-padded encoder so the
+    // reference fixture can assert exact bytes without depending
+    // on RNG output. The production path uses
+    // `encode_with_rng`.
+    let encoded = record.encode_deterministic_zero_padded()?;
     let mut out = [0_u8; SHORT_REQUEST_PLAINTEXT_SIZE];
     out.copy_from_slice(encoded.as_ref());
     Ok(out)
@@ -1578,6 +1635,7 @@ mod tests {
 
     #[test]
     fn role_aware_processor_decodes_authenticated_role() {
+        let mut rng = ChaCha8Rng::seed_from_u64(0xCAFE_F00D);
         // Plan 111 defect 7: the per-hop processor must decode
         // the role from the authenticated request plaintext
         // rather than flatten to participant. An OBEP role in the
@@ -1663,7 +1721,7 @@ mod tests {
         let mut slots = vec![[0u8; RECORD_BYTES]; 2];
         slots[0] = record0;
         slots[1] = record1;
-        let payload = encode_short_tunnel_build_payload_from_count(2, &slots).expect("payload");
+        let payload = encode_count_prefixed_short_payload(2, &slots).expect("payload");
 
         // Process hop0 (OBEP) using only its static key.
         let (_new_payload, result_obep) = MessageHopProcessor::process_hop(
@@ -1672,6 +1730,7 @@ mod tests {
             &hop0_priv,
             &hop0_hash,
             ShortResponseCode::Accepted,
+            &mut rng,
         )
         .expect("process hop0");
         assert!(
@@ -1686,6 +1745,7 @@ mod tests {
             &hop1_priv,
             &hop1_hash,
             ShortResponseCode::Accepted,
+            &mut rng,
         )
         .expect("process hop1");
         assert!(
@@ -1891,7 +1951,7 @@ mod tests {
     }
 
     #[test]
-    fn prepare_short_build_inbound_includes_originator_fake() {
+    fn prepare_short_build_inbound_fails_closed_pending_plan113() {
         let cryptography = EciesX25519BuildCryptography::new();
         let originator_hash = Hash::from_bytes([0x77_u8; 32]);
         let hop0 = MultiRecordHopSpec {
@@ -1915,7 +1975,12 @@ mod tests {
         };
         let hops = vec![hop0, hop1];
         let mut rng = ChaCha8Rng::seed_from_u64(41);
-        let prepared = prepare_short_build_message(
+        // Plan 112 §7 inbound production gate: every public
+        // production inbound builder returns the typed
+        // reconciliation error before any cryptographic material
+        // is allocated. Component fake-record tests remain
+        // available without bypassing the production gate.
+        let outcome = prepare_short_build_message(
             &cryptography,
             &hops,
             TunnelDirection::Inbound,
@@ -1925,19 +1990,33 @@ mod tests {
             Some(Hash::from_bytes([0x10_u8; 32])),
             Some(&originator_hash),
             &mut rng,
-        )
-        .expect("prepare");
-        assert_eq!(prepared.record_set.record_count(), 4);
-        assert!(prepared.originator_fake.is_some());
+        );
+        assert!(matches!(
+            outcome,
+            Err(MultiRecordError::InboundBuildPendingReconciliation)
+        ));
+    }
+
+    #[test]
+    fn build_originator_fake_record_remains_testable_under_plan112_gate() {
+        // Plan 112 §7: component-level originator-fake primitives
+        // remain testable without bypassing the production gate.
+        // The build_originator_fake_record helper is not gated
+        // because it does not perform record-set allocation or
+        // message construction.
+        let hash = Hash::from_bytes([0x77_u8; 32]);
+        let mut rng = ChaCha8Rng::seed_from_u64(43);
+        let fake = build_originator_fake_record(&hash, &mut rng).expect("fake");
         assert_eq!(
-            prepared.originator_fake.as_ref().unwrap().hash_prefix,
-            originator_hash.as_bytes()[..crate::build_crypto::HASH_PREFIX_LEN]
+            &fake.hash_prefix[..],
+            &hash.as_bytes()[..crate::build_crypto::HASH_PREFIX_LEN]
         );
     }
 
     #[test]
     fn process_hop_rejects_zero_matches() {
         let cryptography = EciesX25519BuildCryptography::new();
+        let mut rng = ChaCha8Rng::seed_from_u64(0xDEAD_BEEF);
         // Build a payload whose slots do not include the supplied
         // hop's hash prefix.
         let mut slots = vec![[0x77_u8; RECORD_BYTES]; 4];
@@ -1945,7 +2024,7 @@ mod tests {
             let fake_slot = SlotIndex::new(index).expect("ok");
             chacha20_xor(&[0x33_u8; 32], fake_slot, &mut slots[index as usize]).expect("transform");
         }
-        let payload = encode_short_tunnel_build_payload_from_count(4, &slots).expect("payload");
+        let payload = encode_count_prefixed_short_payload(4, &slots).expect("payload");
         let hop_identity = Hash::from_bytes([0x99_u8; 32]);
         let outcome = MessageHopProcessor::process_hop(
             &cryptography,
@@ -1953,70 +2032,30 @@ mod tests {
             &[0x44_u8; 32],
             &hop_identity,
             ShortResponseCode::Accepted,
+            &mut rng,
         );
         assert!(matches!(outcome, Err(MultiRecordError::HopHashNotFound)));
     }
 
     #[test]
-    fn postprocessor_rejects_tampered_originator_fake() {
-        // Run an inbound fixture through the full pipeline and
-        // tamper with the originator fake before postprocessing.
-        let cryptography = EciesX25519BuildCryptography::new();
-        let originator_hash = Hash::from_bytes([0x55_u8; 32]);
-        let hop0 = MultiRecordHopSpec {
-            canonical_index: 0,
-            router_hash: &Hash::from_bytes([0x10_u8; 32]),
-            static_encryption_key: &[0xAA_u8; 32],
-            role: HopRole::InboundGateway,
-            receive_tunnel: TunnelId::new(0x3000).expect("id"),
-            next_tunnel: TunnelId::new(0x4000).expect("id"),
-            next_router_hash: &Hash::from_bytes([0x11_u8; 32]),
-        };
-        let hop1 = MultiRecordHopSpec {
-            canonical_index: 1,
-            router_hash: &Hash::from_bytes([0x11_u8; 32]),
-            static_encryption_key: &[0xBB_u8; 32],
-            role: HopRole::Participant,
-            receive_tunnel: TunnelId::new(0x5000).expect("id"),
-            next_tunnel: TunnelId::new(0x6000).expect("id"),
-            next_router_hash: &Hash::from_bytes([0x11_u8; 32]),
-        };
-        let hops = vec![hop0, hop1];
+    fn verify_originator_fake_rejects_tampered_bytes() {
+        // Plan 112 §7: the public production inbound builder is
+        // gated behind the typed reconciliation error. The
+        // component-level verification primitive remains
+        // testable without bypassing the gate. Mutate a single
+        // byte in a synthetic wire and assert the verifier
+        // rejects the tampered bytes.
+        let hash = Hash::from_bytes([0x55_u8; 32]);
         let mut rng = ChaCha8Rng::seed_from_u64(51);
-        let prepared = prepare_short_build_message(
-            &cryptography,
-            &hops,
-            TunnelDirection::Inbound,
-            [0x10, 0x00, 0x00, 0x01],
-            60_000,
-            0x1234_5678,
-            Some(Hash::from_bytes([0x10_u8; 32])),
-            Some(&originator_hash),
-            &mut rng,
-        )
-        .expect("prepare");
-        let fake = prepared.originator_fake.as_ref().unwrap();
-        // Find the originator fake slot and tamper it.
-        let mut tampered = prepared.payload.to_vec();
-        let (count, mut slots) = decode_short_tunnel_build_payload(&tampered).expect("decode");
-        let fake_slot = (0..count)
-            .find(|index| {
-                prepared
-                    .record_set
-                    .is_originator_fake_slot(SlotIndex::new(*index).expect("ok"))
-            })
-            .expect("fake slot");
-        slots[fake_slot as usize][0] ^= 0x01;
-        tampered = encode_short_tunnel_build_payload_from_count(count, &slots).expect("encode");
-        let post = CreatorReplyPostprocessor::process_reply(
-            &cryptography,
-            &prepared.hop_contexts,
-            &prepared.record_set,
-            &tampered,
-            Some(fake),
-        );
+        let fake = build_originator_fake_record(&hash, &mut rng).expect("fake");
+        // The wire bytes are arbitrary; only the integrity hash
+        // comparison matters.
+        let mut wire = [0x33_u8; RECORD_BYTES];
+        // Tamper one byte.
+        wire[0] ^= 0x01;
+        let outcome = verify_originator_fake(&fake, &wire);
         assert!(matches!(
-            post,
+            outcome,
             Err(MultiRecordError::OriginatorFakeModified)
         ));
     }

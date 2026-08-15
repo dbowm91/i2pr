@@ -78,8 +78,9 @@ pub use multirecord::{
     RecordAssignment, RecordOwner, ShortBuildRecordSet, SlotIndex, assign_record_slots,
     build_minimum_record_count, build_originator_fake_record, build_padding_fake_record,
     chacha20_transform, chacha20_xor, decode_outbound_tunnel_build_reply,
-    decode_short_tunnel_build_payload, encode_outbound_tunnel_build_reply,
-    encode_short_tunnel_build_payload, prepare_short_build_message, verify_originator_fake,
+    decode_short_tunnel_build_payload, encode_count_prefixed_short_payload,
+    encode_outbound_tunnel_build_reply, prepare_short_build_message,
+    validate_count_prefixed_short_payload, verify_originator_fake,
 };
 pub use pool::{
     ExploratoryPool, MAX_HOPS_PER_TUNNEL, PoolError, PoolFullError, RegisterError, RegisterOutcome,

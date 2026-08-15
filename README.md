@@ -19,21 +19,30 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 - Daemon bootstrap integration with `NetDbSeam` (`i2pr-daemon`)
 - Exploratory tunnel substrate, pool, and reply-path provider (`i2pr-tunnel`)
 - ECIES-X25519 short tunnel-build cryptography — Plan 111 final
-  local short-build conformance correction landing. Outbound
-  construction is locally conformant against the current official
-  I2P Tunnel Creation Specification: canonical Noise-N null-prologue
-  `MixHash`, single-HKDF `es` derivation, 218-byte encrypted envelope,
-  202-byte reply plaintext, slot byte at offset 4 of the 12-byte
-  nonce, 8-byte OBEP garlic reply tag, explicit per-hop tunnel IDs,
-  role-aware `MessageHopProcessor`, and frozen independent
-  fixed vectors. Inbound creator-ephemeral plaintext semantics
-  remain `blocked-inbound-layout-ambiguity` until a current
-  reference-router source pins the placement. See
+  local short-build conformance correction landing plus the Plan
+  112 outbound pre-delivery closure. Outbound construction is
+  locally conformant against the current official I2P Tunnel
+  Creation Specification: canonical Noise-N null-prologue
+  `MixHash`, single-HKDF `es` derivation, 218-byte encrypted
+  envelope, 202-byte reply plaintext, slot byte at offset 4 of
+  the 12-byte nonce, 8-byte OBEP garlic reply tag, explicit
+  per-hop tunnel IDs, role-aware `MessageHopProcessor`, frozen
+  independent fixed vectors, CSPRNG-filled post-Mapping padding,
+  Plan 112 direction/role topology validation, Plan 112 STBM/OTBRM
+  count-prefixed contract helper, and the typed
+  `InboundBuildPendingReconciliation` fail-closed gate that holds
+  inbound construction until Plan 113 reconciles the inbound
+  creator-ephemeral standards/reference discrepancy. Inbound
+  creator-ephemeral plaintext semantics remain
+  `blocked-inbound-layout-ambiguity`. See
   [`plans/111-short-build-final-local-conformance-correction.md`](plans/111-short-build-final-local-conformance-correction.md),
+  [`plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`](plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md),
   the conformance fixture in
   [`crates/i2pr-tunnel/src/conformance_fixtures.rs`](crates/i2pr-tunnel/src/conformance_fixtures.rs),
-  and the frozen fixed-vector oracle in
-  [`crates/i2pr-tunnel/src/fixed_vectors.rs`](crates/i2pr-tunnel/src/fixed_vectors.rs).
+  the frozen fixed-vector oracle in
+  [`crates/i2pr-tunnel/src/fixed_vectors.rs`](crates/i2pr-tunnel/src/fixed_vectors.rs),
+  and the Rust-only reference provenance test in
+  [`crates/i2pr-tunnel/tests/plan111_reference_vectors.rs`](crates/i2pr-tunnel/tests/plan111_reference_vectors.rs).
 - Runtime-neutral `ShortBuildStateMachine`, success-only
   `ShortBuildRegistrar`, and deterministic `DeterministicResponder`
   peer simulator (`i2pr-tunnel`)
@@ -41,8 +50,11 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
   allocation, originator + padding fake records, raw ChaCha20
   preprocessing/postprocessing (slot byte at offset 4 of the
   12-byte nonce), and the one-byte-count STBM/OTBRM payload
-  framing (Plan 110 closed; Plan 111 corrected the byte-11
-  regression to byte 4)
+  framing validated through
+  `validate_count_prefixed_short_payload` /
+  `encode_count_prefixed_short_payload` (Plan 110 closed; Plan
+  111 corrected the byte-11 regression to byte 4; Plan 112 made
+  the count-prefixed contract explicit)
 - CLI daemon with config validation, identity generation, and dry-run (`i2pr-daemon`)
 
 **Not implemented:**
@@ -70,7 +82,7 @@ crates/
   i2pr-runtime/             Tokio-owned supervision, cancellation, and I/O
   i2pr-netdb/               RouterInfo validation, NetDB store, lookup, publication
   i2pr-netdb-persist/       Persistent cache and SU3 reseed ingestion
-  i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build cryptography (Plan 111 final local short-build conformance correction; outbound locally conformant against fixed vectors, inbound blocked on layout ambiguity), runtime-neutral build state machine, reply-path provider
+  i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build cryptography (Plan 111 final local short-build conformance + Plan 112 outbound pre-delivery closure; outbound locally conformant against fixed vectors, inbound blocked on layout ambiguity and gated by typed `InboundBuildPendingReconciliation`), runtime-neutral build state machine, reply-path provider
   i2pr-daemon/              CLI, configuration, composition, supervision
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
 tools/

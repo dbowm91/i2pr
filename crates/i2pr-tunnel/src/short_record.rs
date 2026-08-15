@@ -2,18 +2,22 @@
 //!
 //! Plan 109 §6 + §10 own the canonical 154-byte short request
 //! plaintext and the canonical 202-byte short reply plaintext.
-//! The module does not perform cryptography; it only validates
-//! the structure of one record and produces the canonical byte
-//! buffer the `build_crypto` and `short` modules consume.
+//! Plan 112 §5 extends the encoder so production construction
+//! receives randomness explicitly via [`ShortRequestRecord::encode_with_rng`]
+//! and [`ShortReplyRecord::encode_with_rng`]. The module does not
+//! perform cryptography; it only validates the structure of one
+//! record and produces the canonical byte buffer the
+//! `build_crypto` and `short` modules consume.
 //!
 //! All field sizes mirror the current official I2P Tunnel
 //! Creation Specification that Plan 109 implements:
 //!
 //! - the request plaintext uses the 154-byte layout with a fixed
-//!   56-byte prefix followed by a canonical `Mapping`;
+//!   56-byte prefix followed by a canonical `Mapping` and
+//!   random padding through byte 153;
 //! - the reply plaintext uses the 202-byte layout with a
-//!   canonical `Mapping` followed by a one-byte response code at
-//!   byte 201;
+//!   canonical `Mapping` at offset 0, random padding through
+//!   byte 200, and a one-byte response code at byte 201;
 //! - the role flags, layer-encryption type, request-time minute
 //!   encoding, and expiration encoding are exact
 //!   (`Participant = 0x00`, `InboundGateway = 0x80`,
@@ -30,6 +34,7 @@ use std::fmt;
 use i2pr_proto::{
     CodecError, Date, Hash, Mapping, SHORT_REPLY_PLAINTEXT_SIZE, SHORT_REQUEST_PLAINTEXT_SIZE,
 };
+use rand_core::{CryptoRng, RngCore, TryRngCore};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -434,14 +439,22 @@ impl ShortRequestRecord {
         })
     }
 
-    /// Encodes the canonical 154-byte plaintext record.
-    pub fn encode(&self) -> Result<Zeroizing<[u8; SHORT_REQUEST_PLAINTEXT_SIZE]>, ShortBuildError> {
+    /// Encodes the canonical 154-byte plaintext record, filling the
+    /// post-Mapping random padding from the supplied CSPRNG. The
+    /// final I2P Tunnel Creation Specification requires the bytes
+    /// `56 + encoded_mapping_len .. 154` to be random; production
+    /// callers must use this method rather than the
+    /// [`Self::encode_deterministic_zero_padded`] fallback.
+    pub fn encode_with_rng<R: CryptoRng + RngCore>(
+        &self,
+        rng: &mut R,
+    ) -> Result<Zeroizing<[u8; SHORT_REQUEST_PLAINTEXT_SIZE]>, ShortBuildError> {
         let mut buffer = [0_u8; SHORT_REQUEST_PLAINTEXT_SIZE];
         buffer[0..4].copy_from_slice(&self.receive_tunnel.get().to_be_bytes());
         buffer[4..8].copy_from_slice(&self.next_tunnel.get().to_be_bytes());
         buffer[8..40].copy_from_slice(self.next_router.as_bytes());
         buffer[40] = self.role.flag();
-        // Additional flag bytes 41..43 must be zero. The layer
+        // Additional flag bytes 41..42 must be zero. The layer
         // encryption type occupies byte 43.
         buffer[41] = 0;
         buffer[42] = 0;
@@ -462,10 +475,66 @@ impl ShortRequestRecord {
                 actual: encoded_options.len(),
             });
         }
-        buffer[56..56 + encoded_options.len()].copy_from_slice(&encoded_options);
-        // Remaining bytes (56 + len .. 154) are zero by construction;
-        // the in-memory representation of [0_u8; 154] starts zeroed.
+        let mapping_end = REQUEST_FIXED_PREFIX_LEN + encoded_options.len();
+        buffer[REQUEST_FIXED_PREFIX_LEN..mapping_end].copy_from_slice(&encoded_options);
+        // Plan 112 §5.A2: fill the post-Mapping padding
+        // (`mapping_end .. SHORT_REQUEST_PLAINTEXT_SIZE`) from the
+        // supplied CSPRNG. RNG failure fails closed.
+        let padding = &mut buffer[mapping_end..SHORT_REQUEST_PLAINTEXT_SIZE];
+        rng.try_fill_bytes(padding)
+            .map_err(|_| ShortBuildError::RandomnessUnavailable)?;
         Ok(Zeroizing::new(buffer))
+    }
+
+    /// Deterministic zero-padded request encoder. The byte layout
+    /// after Mapping is filled with zeros rather than random bytes
+    /// so fixture-style tests can assert exact padding bytes. This
+    /// method is **not** spec-conformant and must not be used in
+    /// production; it exists solely for deterministic unit tests
+    /// and the legacy fixed-vector conformance fixture.
+    pub fn encode_deterministic_zero_padded(
+        &self,
+    ) -> Result<Zeroizing<[u8; SHORT_REQUEST_PLAINTEXT_SIZE]>, ShortBuildError> {
+        let mut buffer = [0_u8; SHORT_REQUEST_PLAINTEXT_SIZE];
+        buffer[0..4].copy_from_slice(&self.receive_tunnel.get().to_be_bytes());
+        buffer[4..8].copy_from_slice(&self.next_tunnel.get().to_be_bytes());
+        buffer[8..40].copy_from_slice(self.next_router.as_bytes());
+        buffer[40] = self.role.flag();
+        buffer[41] = 0;
+        buffer[42] = 0;
+        buffer[43] = self.layer_encryption_type.byte();
+        let minutes = self.request_time_minutes()?;
+        buffer[44..48].copy_from_slice(&minutes.to_be_bytes());
+        buffer[48..52].copy_from_slice(&self.expiration_seconds.to_be_bytes());
+        buffer[52..56].copy_from_slice(&self.next_message_id.to_be_bytes());
+        let encoded_options = self
+            .options
+            .mapping
+            .encode_to_vec(MAX_REQUEST_MAPPING_AREA)
+            .map_err(ShortBuildError::OptionsEncode)?;
+        if encoded_options.len() > MAX_REQUEST_MAPPING_AREA {
+            return Err(ShortBuildError::OptionsLength {
+                actual: encoded_options.len(),
+            });
+        }
+        buffer[REQUEST_FIXED_PREFIX_LEN..REQUEST_FIXED_PREFIX_LEN + encoded_options.len()]
+            .copy_from_slice(&encoded_options);
+        // Remaining bytes (mapping_end .. 154) are intentionally
+        // left zero. The spec requires them to be random; this
+        // method is test-only.
+        Ok(Zeroizing::new(buffer))
+    }
+
+    /// Backwards-compatible alias for
+    /// [`Self::encode_deterministic_zero_padded`]. Existing test
+    /// callers and the legacy conformance fixtures keep using this
+    /// surface; production paths must migrate to
+    /// [`Self::encode_with_rng`].
+    #[deprecated(
+        note = "use encode_with_rng for production; encode_deterministic_zero_padded for tests"
+    )]
+    pub fn encode(&self) -> Result<Zeroizing<[u8; SHORT_REQUEST_PLAINTEXT_SIZE]>, ShortBuildError> {
+        self.encode_deterministic_zero_padded()
     }
 }
 
@@ -584,8 +653,48 @@ impl ShortReplyRecord {
         Ok(Self { options, response })
     }
 
-    /// Encodes the canonical 202-byte reply plaintext.
-    pub fn encode(&self) -> Zeroizing<[u8; SHORT_REPLY_PLAINTEXT_SIZE]> {
+    /// Encodes the canonical 202-byte reply plaintext, filling the
+    /// post-Mapping random padding from the supplied CSPRNG. The
+    /// final I2P Tunnel Creation Specification requires the bytes
+    /// `encoded_mapping_len .. 201` to be random; production
+    /// callers must use this method rather than the
+    /// [`Self::encode_deterministic_zero_padded`] fallback.
+    pub fn encode_with_rng<R: CryptoRng + RngCore>(
+        &self,
+        rng: &mut R,
+    ) -> Result<Zeroizing<[u8; SHORT_REPLY_PLAINTEXT_SIZE]>, ShortBuildError> {
+        let mut buffer = [0_u8; SHORT_REPLY_PLAINTEXT_SIZE];
+        let encoded = self
+            .options
+            .mapping
+            .encode_to_vec(MAX_REPLY_MAPPING_AREA)
+            .map_err(ShortBuildError::OptionsEncode)?;
+        if encoded.len() > SHORT_REPLY_PLAINTEXT_SIZE - 1 {
+            return Err(ShortBuildError::OptionsLength {
+                actual: encoded.len(),
+            });
+        }
+        let mapping_end = encoded.len();
+        buffer[..mapping_end].copy_from_slice(&encoded);
+        // Plan 112 §5.A3: fill the post-Mapping padding
+        // (`mapping_end .. SHORT_REPLY_PLAINTEXT_SIZE - 1`) from
+        // the supplied CSPRNG. The response byte lives at offset
+        // `SHORT_REPLY_PLAINTEXT_SIZE - 1` and is **not** part of
+        // the random region. RNG failure fails closed.
+        let padding = &mut buffer[mapping_end..SHORT_REPLY_PLAINTEXT_SIZE - 1];
+        rng.try_fill_bytes(padding)
+            .map_err(|_| ShortBuildError::RandomnessUnavailable)?;
+        buffer[SHORT_REPLY_PLAINTEXT_SIZE - 1] = self.response.byte();
+        Ok(Zeroizing::new(buffer))
+    }
+
+    /// Deterministic zero-padded reply encoder. The byte layout
+    /// after Mapping is filled with zeros rather than random bytes
+    /// so fixture-style tests can assert exact padding bytes. This
+    /// method is **not** spec-conformant and must not be used in
+    /// production; it exists solely for deterministic unit tests
+    /// and the legacy fixed-vector conformance fixture.
+    pub fn encode_deterministic_zero_padded(&self) -> Zeroizing<[u8; SHORT_REPLY_PLAINTEXT_SIZE]> {
         let mut buffer = [0_u8; SHORT_REPLY_PLAINTEXT_SIZE];
         let encoded = self
             .options
@@ -597,12 +706,23 @@ impl ShortReplyRecord {
             return Zeroizing::new([0_u8; SHORT_REPLY_PLAINTEXT_SIZE]);
         }
         buffer[..encoded.len()].copy_from_slice(&encoded);
-        // Bytes between the end of the Mapping and the response byte
-        // are random padding. The constructor `new(...)` above does
-        // not provide caller-supplied padding, so we leave those bytes
-        // zeroed; the decoder accepts any padding value.
+        // The padding bytes between the end of the Mapping and
+        // the response byte are intentionally zeroed. The spec
+        // requires them to be random; this method is test-only.
         buffer[SHORT_REPLY_PLAINTEXT_SIZE - 1] = self.response.byte();
         Zeroizing::new(buffer)
+    }
+
+    /// Backwards-compatible alias for
+    /// [`Self::encode_deterministic_zero_padded`]. Existing test
+    /// callers and the legacy conformance fixtures keep using this
+    /// surface; production paths must migrate to
+    /// [`Self::encode_with_rng`].
+    #[deprecated(
+        note = "use encode_with_rng for production; encode_deterministic_zero_padded for tests"
+    )]
+    pub fn encode(&self) -> Zeroizing<[u8; SHORT_REPLY_PLAINTEXT_SIZE]> {
+        self.encode_deterministic_zero_padded()
     }
 }
 
@@ -675,6 +795,12 @@ pub enum ShortBuildError {
         /// Actual encoded options length.
         actual: usize,
     },
+    /// The cryptographic RNG was unable to produce output for the
+    /// protocol padding bytes. Plan 112 §5.A4 mandates that any
+    /// `try_fill_bytes` failure fail closed rather than silently
+    /// fall back to zero padding.
+    #[error("short build protocol RNG unavailable")]
+    RandomnessUnavailable,
     /// A wrapped decode error from `i2pr-proto`.
     #[error("short build protocol error: {0}")]
     Protocol(#[from] CodecError),
@@ -716,6 +842,7 @@ pub fn validate_reply_body(body: &[u8]) -> Result<(), ShortBuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand_core::SeedableRng;
 
     use crate::identity::TunnelId;
 
@@ -824,7 +951,7 @@ mod tests {
     #[test]
     fn request_record_encodes_to_canonical_layout() {
         let record = request_record();
-        let bytes = record.encode().expect("encode");
+        let bytes = record.encode_deterministic_zero_padded().expect("encode");
         assert_eq!(bytes.len(), SHORT_REQUEST_PLAINTEXT_SIZE);
         // Receive tunnel id at offset 0.
         assert_eq!(&bytes[0..4], &[0x00, 0x00, 0x10, 0x00]);
@@ -900,7 +1027,7 @@ mod tests {
     #[test]
     fn reply_record_round_trips_through_canonical_202_bytes() {
         let reply = ShortReplyRecord::new(BuildOptions::empty(), ShortResponseCode::Accepted);
-        let bytes = reply.encode();
+        let bytes = reply.encode_deterministic_zero_padded();
         assert_eq!(bytes.len(), SHORT_REPLY_PLAINTEXT_SIZE);
         let decoded = ShortReplyRecord::decode(bytes.as_ref()).expect("decode");
         assert_eq!(decoded, reply);
@@ -909,7 +1036,7 @@ mod tests {
     #[test]
     fn request_record_decodes_round_trip_through_canonical_154_bytes() {
         let record = request_record();
-        let bytes = record.encode().expect("encode");
+        let bytes = record.encode_deterministic_zero_padded().expect("encode");
         let decoded = ShortRequestRecord::decode(bytes.as_ref()).expect("decode");
         assert_eq!(decoded, record);
     }
@@ -946,7 +1073,10 @@ mod tests {
             BuildOptions::empty(),
         )
         .expect("ok");
-        let mut bytes_vec = record.encode().expect("encode").to_vec();
+        let mut bytes_vec = record
+            .encode_deterministic_zero_padded()
+            .expect("encode")
+            .to_vec();
         // Zero out the next tunnel id at offset 4..8.
         for byte in &mut bytes_vec[4..8] {
             *byte = 0;
@@ -1002,7 +1132,63 @@ mod tests {
     fn reply_record_carries_bandwidth_rejection_response_byte() {
         let reply =
             ShortReplyRecord::new(BuildOptions::empty(), ShortResponseCode::BandwidthRejected);
-        let bytes = reply.encode();
+        let bytes = reply.encode_deterministic_zero_padded();
         assert_eq!(bytes[SHORT_REPLY_PLAINTEXT_SIZE - 1], 30);
+    }
+
+    /// Plan 112 §5.G: the production RNG-padded request encoder
+    /// must produce at least one non-zero byte in the post-Mapping
+    /// padding region for an empty-mapping request; otherwise the
+    /// padding has not been filled from the supplied CSPRNG.
+    #[test]
+    fn request_padding_with_rng_produces_non_zero_bytes() {
+        let request = request_record();
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(0xABCD);
+        let bytes = request.encode_with_rng(&mut rng).expect("encode");
+        // Find a non-zero byte in the padding region (post-Mapping
+        // area, before the fixed-size plaintext ends).
+        let has_nonzero = bytes.iter().any(|byte| *byte != 0);
+        assert!(
+            has_nonzero,
+            "post-Mapping padding must contain at least one non-zero byte from the CSPRNG"
+        );
+    }
+
+    /// Plan 112 §5.G: the test-only zero-padded encoder must
+    /// produce an all-zero post-Mapping padding region; this is
+    /// the fixture-style invariant the conformance suite relies
+    /// on.
+    #[test]
+    fn request_deterministic_zero_padding_leaves_padding_all_zero() {
+        let request = request_record();
+        let bytes = request.encode_deterministic_zero_padded().expect("encode");
+        // The mapping area ends at REQUEST_FIXED_PREFIX_LEN;
+        // padding is REQUEST_FIXED_PREFIX_LEN..SHORT_REQUEST_PLAINTEXT_SIZE.
+        for index in REQUEST_FIXED_PREFIX_LEN..SHORT_REQUEST_PLAINTEXT_SIZE {
+            assert_eq!(
+                bytes[index], 0,
+                "padding byte at offset {index} must be zero in deterministic mode"
+            );
+        }
+    }
+
+    /// Plan 112 §5.G: the production RNG-padded reply encoder
+    /// must produce at least one non-zero byte in the post-Mapping
+    /// padding region.
+    #[test]
+    fn reply_padding_with_rng_produces_non_zero_bytes() {
+        let reply = ShortReplyRecord::new(BuildOptions::empty(), ShortResponseCode::Accepted);
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(0xBEEF);
+        let bytes = reply.encode_with_rng(&mut rng).expect("encode");
+        // The response byte lives at SHORT_REPLY_PLAINTEXT_SIZE-1;
+        // the post-Mapping padding region ends one byte earlier.
+        let last_padding = SHORT_REPLY_PLAINTEXT_SIZE - 2;
+        let has_nonzero = bytes[..=last_padding].iter().any(|byte| *byte != 0);
+        assert!(
+            has_nonzero,
+            "post-Mapping reply padding must contain at least one non-zero byte from the CSPRNG"
+        );
+        // The response byte at the last position must be preserved.
+        assert_eq!(bytes[SHORT_REPLY_PLAINTEXT_SIZE - 1], 0);
     }
 }

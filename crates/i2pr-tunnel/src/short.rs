@@ -174,6 +174,9 @@ impl ShortBuildPath {
     }
 
     /// Validates the path before the state machine accepts it.
+    /// The validator enforces Plan 112 §6 direction/role
+    /// topology rules in addition to the Plan 111 hard-field
+    /// invariants.
     pub fn validate(&self) -> Result<(), ShortBuildConstructionError> {
         if self.hops.is_empty() {
             return Err(ShortBuildConstructionError::InvalidPath {
@@ -215,6 +218,54 @@ impl ShortBuildPath {
                 reason: "next message id must be nonzero",
             });
         }
+        // Plan 112 §6.B1: enforce direction/role topology.
+        match self.direction {
+            TunnelDirection::Outbound => {
+                let last = self.hops.len() - 1;
+                for (index, hop) in self.hops.iter().enumerate() {
+                    if matches!(hop.role, HopRole::InboundGateway) {
+                        return Err(ShortBuildConstructionError::InvalidPath {
+                            reason: "outbound path rejects inbound-gateway hop",
+                        });
+                    }
+                    if matches!(hop.role, HopRole::OutboundEndpoint) && index != last {
+                        return Err(ShortBuildConstructionError::InvalidPath {
+                            reason: "outbound path requires OBEP only as final hop",
+                        });
+                    }
+                    if index < last && !matches!(hop.role, HopRole::Participant) {
+                        return Err(ShortBuildConstructionError::InvalidPath {
+                            reason: "outbound non-final hop must be Participant",
+                        });
+                    }
+                }
+                if !matches!(self.hops[last].role, HopRole::OutboundEndpoint) {
+                    return Err(ShortBuildConstructionError::InvalidPath {
+                        reason: "outbound path final hop must be OutboundEndpoint",
+                    });
+                }
+            }
+            TunnelDirection::Inbound => {
+                for (index, hop) in self.hops.iter().enumerate() {
+                    if matches!(hop.role, HopRole::OutboundEndpoint) {
+                        return Err(ShortBuildConstructionError::InvalidPath {
+                            reason: "inbound path rejects outbound-endpoint hop",
+                        });
+                    }
+                    if index == 0 {
+                        if !matches!(hop.role, HopRole::InboundGateway) {
+                            return Err(ShortBuildConstructionError::InvalidPath {
+                                reason: "inbound path first hop must be InboundGateway",
+                            });
+                        }
+                    } else if !matches!(hop.role, HopRole::Participant) {
+                        return Err(ShortBuildConstructionError::InvalidPath {
+                            reason: "inbound non-first hop must be Participant",
+                        });
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -227,10 +278,14 @@ pub enum ShortBuildAction {
     Deliver {
         /// The first-hop router hash the runtime should target.
         first_hop: Hash,
-        /// The full 218-byte-aligned build message payload (one or
-        /// more 218-byte records concatenated).
+        /// The full STBM wire payload. Byte 0 is the canonical
+        /// record count `n` (`1..=8`); the remaining `n * 218`
+        /// bytes are the concatenated 218-byte records. The
+        /// helper [`crate::validate_count_prefixed_short_payload`]
+        /// enforces the same contract for every consumer.
         message: Zeroizing<Vec<u8>>,
-        /// Number of records the message carries.
+        /// Number of records the message carries (byte 0 of
+        /// `message`).
         record_count: u8,
         /// Required-cleared deadline in milliseconds since the
         /// Unix epoch.
@@ -250,8 +305,12 @@ pub enum BuildEvent {
     },
     /// The builder received a build reply for this attempt.
     BuildReply {
-        /// Per-hop reply payload. The buffer is exactly
-        /// `records * (SHORT_BUILD_RECORD_SIZE)` bytes.
+        /// The full OTBRM reply payload. Byte 0 is the canonical
+        /// record count `n` (`1..=8`); the remaining `n * 218`
+        /// bytes are the concatenated 218-byte reply records.
+        /// The helper
+        /// [`crate::validate_count_prefixed_short_payload`]
+        /// enforces the same contract for every consumer.
         reply: Zeroizing<Vec<u8>>,
     },
     /// The deadline was reached before the reply arrived.
@@ -355,6 +414,16 @@ pub enum ShortBuildConstructionError {
     /// The short record encoder rejected an input.
     #[error("short build record rejected: {0}")]
     Record(#[from] crate::short_record::ShortBuildError),
+    /// Inbound short-build production construction is explicitly
+    /// disabled until Plan 113 reconciles the inbound creator-
+    /// ephemeral standards/reference discrepancy. The error is
+    /// returned before any cryptographic material is allocated or
+    /// any slot is assigned so production code cannot silently
+    /// produce an inbound message while the gate is active.
+    #[error(
+        "inbound short build construction is pending Plan 113 standards/reference reconciliation"
+    )]
+    InboundBuildPendingReconciliation,
 }
 
 impl From<BuildCryptographyUnavailable> for ShortBuildConstructionError {
@@ -383,13 +452,6 @@ impl HopCryptoContext {
     /// Returns the hop index the context belongs to.
     pub const fn hop_index(&self) -> HopIndex {
         self.inner.hop_index
-    }
-
-    /// Returns the ephemeral X25519 public key carried on the wire.
-    pub fn ephemeral_public(&self) -> [u8; EPHEMERAL_KEY_LEN] {
-        let mut out = [0_u8; EPHEMERAL_KEY_LEN];
-        out.copy_from_slice(&self.inner.own_record[..EPHEMERAL_KEY_LEN]);
-        out
     }
 
     /// Returns the canonical post-request transcript hash for the hop.
@@ -538,6 +600,11 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
 
     /// Performs the prepare→protecting transition, sealing every
     /// per-hop request record and assembling the build message.
+    /// Plan 112 §7 makes inbound production construction fail
+    /// closed with the typed
+    /// [`ShortBuildConstructionError::InboundBuildPendingReconciliation`]
+    /// error until Plan 113 resolves the inbound standards/
+    /// reference discrepancy.
     pub fn prepare<R: CryptoRng + RngCore>(
         &mut self,
         rng: &mut R,
@@ -549,6 +616,13 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
             });
         }
         self.path.validate()?;
+        if matches!(self.path.direction, TunnelDirection::Inbound) {
+            // Plan 112 §7 inbound production gate. The state
+            // machine remains in the `Prepared` phase so a
+            // caller can recover by switching direction or
+            // dropping the state machine.
+            return Err(ShortBuildConstructionError::InboundBuildPendingReconciliation);
+        }
         self.state = StatePhase::Protecting;
         // Build the per-hop request plaintexts, seal them through
         // the canonical Plan 109 EciesX25519 primitive, and shuffle
@@ -878,6 +952,9 @@ fn short_build_construction_from_multi(error: MultiRecordError) -> ShortBuildCon
         MultiRecordError::HopRejected { .. } => ShortBuildConstructionError::InvalidReply {
             reason: "hop rejected the build",
         },
+        MultiRecordError::InboundBuildPendingReconciliation => {
+            ShortBuildConstructionError::InboundBuildPendingReconciliation
+        }
         MultiRecordError::Cryptography(error) => ShortBuildConstructionError::Cryptography(error),
         MultiRecordError::ShortRecord(error) => ShortBuildConstructionError::Record(error),
     }
@@ -921,7 +998,11 @@ mod tests {
                 next,
             ));
         }
-        hops[0].role = HopRole::InboundGateway;
+        // Plan 112 §6.B3: the canonical outbound path has every
+        // remote hop before the last as a Participant and the
+        // final hop as OutboundEndpoint. The previous fixture
+        // marked the first remote hop as InboundGateway, which
+        // is forbidden for an outbound direction.
         let last = hops.len() - 1;
         hops[last].role = HopRole::OutboundEndpoint;
         ShortBuildPath {
@@ -1153,5 +1234,133 @@ mod tests {
         let first = &path.hops[0];
         assert_eq!(first.receive_tunnel.get(), saved_next.get());
         assert_eq!(first.next_tunnel.get(), saved_receive.get());
+    }
+
+    /// Plan 112 §6.B1: outbound paths must reject a non-final
+    /// `OutboundEndpoint` role; only the last hop may be the OBEP.
+    #[test]
+    fn validation_rejects_outbound_obep_before_final_hop() {
+        let mut path = build_path(40);
+        // build_path makes the last hop OutboundEndpoint. Mark
+        // an earlier hop as OBEP to trigger the validator.
+        path.hops[0].role = HopRole::OutboundEndpoint;
+        let outcome = path.validate();
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildConstructionError::InvalidPath { .. })
+        ));
+    }
+
+    /// Plan 112 §6.B1: outbound paths must reject any hop
+    /// declared as `InboundGateway`.
+    #[test]
+    fn validation_rejects_outbound_inbound_gateway_role() {
+        let mut path = build_path(41);
+        path.hops[0].role = HopRole::InboundGateway;
+        let outcome = path.validate();
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildConstructionError::InvalidPath { .. })
+        ));
+    }
+
+    /// Plan 112 §6.B1: outbound paths must require the final hop
+    /// to be `OutboundEndpoint`.
+    #[test]
+    fn validation_rejects_outbound_missing_final_obep() {
+        let mut path = build_path(42);
+        let last = path.hops.len() - 1;
+        path.hops[last].role = HopRole::Participant;
+        let outcome = path.validate();
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildConstructionError::InvalidPath { .. })
+        ));
+    }
+
+    /// Plan 112 §6.B1: inbound paths must have the first hop as
+    /// `InboundGateway`; a Participant first hop fails the
+    /// validator.
+    #[test]
+    fn validation_rejects_inbound_missing_first_ibgw() {
+        let mut path = build_path(43);
+        path.direction = TunnelDirection::Inbound;
+        path.hops[0].role = HopRole::Participant;
+        let outcome = path.validate();
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildConstructionError::InvalidPath { .. })
+        ));
+    }
+
+    /// Plan 112 §6.B1: inbound paths must reject an
+    /// `OutboundEndpoint` role on any hop.
+    #[test]
+    fn validation_rejects_inbound_outbound_endpoint_role() {
+        let mut path = build_path(44);
+        path.direction = TunnelDirection::Inbound;
+        path.hops[0].role = HopRole::InboundGateway;
+        path.hops[1].role = HopRole::OutboundEndpoint;
+        let outcome = path.validate();
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildConstructionError::InvalidPath { .. })
+        ));
+    }
+
+    /// Plan 112 §7: `ShortBuildStateMachine::prepare` returns
+    /// the typed `InboundBuildPendingReconciliation` error for
+    /// an inbound direction.
+    #[test]
+    fn state_machine_prepare_returns_typed_inbound_gate() {
+        let mut path = build_path(45);
+        path.direction = TunnelDirection::Inbound;
+        path.hops[0].role = HopRole::InboundGateway;
+        // build_path makes the final hop OutboundEndpoint; the
+        // inbound validator forbids OBEP, so flip the last hop
+        // to Participant before triggering the gate.
+        let last = path.hops.len() - 1;
+        path.hops[last].role = HopRole::Participant;
+        let mut machine = ShortBuildStateMachine::new(path, 60_000);
+        let mut rng = ChaCha8Rng::seed_from_u64(46);
+        let outcome = machine.prepare(&mut rng);
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildConstructionError::InboundBuildPendingReconciliation)
+        ));
+    }
+
+    /// Plan 112 §6.E: `validate_count_prefixed_short_payload`
+    /// rejects a zero-length payload.
+    #[test]
+    fn validate_count_prefixed_rejects_zero_count() {
+        let mut bytes = vec![0_u8; 1 + 8 * crate::multirecord::RECORD_BYTES];
+        bytes[0] = 0;
+        let outcome = crate::multirecord::validate_count_prefixed_short_payload(&bytes);
+        assert!(outcome.is_err());
+    }
+
+    /// Plan 112 §6.E: `validate_count_prefixed_short_payload`
+    /// rejects a count > 8.
+    #[test]
+    fn validate_count_prefixed_rejects_count_above_maximum() {
+        let mut bytes = vec![0_u8; 1 + 9 * crate::multirecord::RECORD_BYTES];
+        bytes[0] = 9;
+        let outcome = crate::multirecord::validate_count_prefixed_short_payload(&bytes);
+        assert!(outcome.is_err());
+    }
+
+    /// Plan 112 §6.E: `validate_count_prefixed_short_payload`
+    /// accepts a valid count and produces the same slots the
+    /// encoder produced.
+    #[test]
+    fn validate_count_prefixed_round_trips() {
+        let slots = vec![[0x55_u8; crate::multirecord::RECORD_BYTES]; 4];
+        let encoded =
+            crate::multirecord::encode_count_prefixed_short_payload(4, &slots).expect("encode");
+        let (count, decoded) =
+            crate::multirecord::validate_count_prefixed_short_payload(&encoded).expect("validate");
+        assert_eq!(count, 4);
+        assert_eq!(decoded, slots);
     }
 }

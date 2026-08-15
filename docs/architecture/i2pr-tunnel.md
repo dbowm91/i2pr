@@ -23,14 +23,31 @@ inbound tunnel is registered.
 > OBEP garlic reply tag, explicit per-hop receive and next tunnel
 > IDs, role-aware `MessageHopProcessor`, and a frozen
 > `fixed_vectors` module generated from an independent reference
-> Noise-N + HKDF-SHA256 + ChaCha20-Poly1305 oracle. Inbound
-> creator-ephemeral plaintext semantics remain
-> `blocked-inbound-layout-ambiguity` until a current reference-router
-> source pins the placement. Live mixed-router delivery is still
-> blocked on a qualified external delivery lane. Not
-> production-ready. See `README.md`, `GUARDRAILS.md`,
+> Noise-N + HKDF-SHA256 + ChaCha20-Poly1305 oracle. Plan 112
+> landed the outbound pre-delivery closure: CSPRNG-filled
+> post-Mapping request/reply plaintext padding, the
+> `ShortBuildPath::validate` direction/role topology validator,
+> the typed `InboundBuildPendingReconciliation` fail-closed gate
+> that holds inbound production construction, the explicit
+> `validate_count_prefixed_short_payload` /
+> `encode_count_prefixed_short_payload` STBM/OTBRM contract
+> helpers, and a Rust-only reference provenance test under
+> `crates/i2pr-tunnel/tests/plan111_reference_vectors.rs` that
+> re-derives the frozen bytes from a pure-Rust path built only on
+> `x25519-dalek`, `sha2`, `chacha20poly1305`, and
+> `i2pr_crypto::hkdf_sha256_extract_and_expand` without
+> consulting the frozen module. Inbound creator-ephemeral
+> plaintext semantics remain `blocked-inbound-layout-ambiguity`
+> until Plan 113 reconciles the standards/reference discrepancy
+> and the typed `InboundBuildPendingReconciliation` gate is lifted.
+> Live mixed-router delivery is still blocked on a qualified
+> external delivery lane. Not production-ready. See `README.md`,
+> `GUARDRAILS.md`,
 > [`plans/111-short-build-final-local-conformance-correction.md`](../../plans/111-short-build-final-local-conformance-correction.md),
-> and [`plans/111-status.md`](../../plans/111-status.md).
+> [`plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`](../../plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md),
+> [`plans/112-outbound-short-build-pre-delivery-closure.md`](../../plans/112-outbound-short-build-pre-delivery-closure.md),
+> [`plans/111-status.md`](../../plans/111-status.md), and
+> [`plans/112-status.md`](../../plans/112-status.md).
 
 ## Purpose
 
@@ -63,21 +80,33 @@ inbound tunnel is registered.
   hop-own reply record;
 - the typed [`short_record`](src/short_record.rs) module — the
   Plan 109 154-byte request plaintext encoder (fixed 56-byte
-  prefix followed by a canonical `Mapping` and random padding)
-  with strict `HopRole` (0x80 IBGW / 0x40 OBEP / 0x00 participant),
-  `LayerEncryptionType::Aes` (byte 0), request-time minute
-  encoding (`floor(unix_seconds / 60)`), and a mandatory
-  600-second expiration window; the 202-byte reply plaintext
-  encoder/decoder with a canonical `Mapping` followed by a
-  one-byte response code at byte 201 (accept `0`, bandwidth reject
-  `30`);
+  prefix followed by a canonical `Mapping` and CSPRNG-filled
+  post-Mapping padding via `encode_with_rng`, with a deterministic
+  zero-padded path `encode_deterministic_zero_padded` for
+  fixtures) with strict `HopRole` (0x80 IBGW / 0x40 OBEP / 0x00
+  participant), `LayerEncryptionType::Aes` (byte 0),
+  request-time minute encoding (`floor(unix_seconds / 60)`), and
+  a mandatory 600-second expiration window
+  (`ShortBuildError::RandomnessUnavailable` fails closed when no
+  CSPRNG is injected); the 202-byte reply plaintext encoder with
+  the same CSPRNG/deterministic split, and a decoder with a
+  canonical `Mapping` followed by a one-byte response code at
+  byte 201 (accept `0`, bandwidth reject `30`);
 - the runtime-neutral [`short`](src/short.rs) state machine that
   drives one attempted build through
   `Prepared → Protecting → ReadyForDelivery → AwaitingReply →
   Established` (plus the bounded terminal failures `HopRejected`,
   `TimedOut`, `Cancelled`, `InvalidReply`, `CryptoFailed`,
   `DeliveryFailed`) and emits typed `ShortBuildAction::Deliver`
-  events;
+  events; the state machine enforces the Plan 112
+  `ShortBuildPath::validate` direction/role topology rules
+  (outbound: no IBGW, OBEP only at the final hop, participants
+  before the final OBEP; inbound: IBGW at the first hop, no OBEP,
+  participants after the first IBGW) and refuses inbound
+  construction through the typed
+  `ShortBuildConstructionError::InboundBuildPendingReconciliation`
+  gate until Plan 113 reconciles the inbound creator-ephemeral
+  standards/reference discrepancy;
 - the [`short_state::ShortBuildRegistrar`](src/short_state.rs)
   success-only registrar that admits a fully validated build into
   `ExploratoryPool`;
@@ -93,6 +122,15 @@ inbound tunnel is registered.
   ivKey` against an independent HKDF-SHA256 derivation that does
   not call the production `BuildCryptographyError`-wrapping
   KDF path;
+- the Plan 112 Rust-only reference provenance test under
+  [`crates/i2pr-tunnel/tests/plan111_reference_vectors.rs`](../../crates/i2pr-tunnel/tests/plan111_reference_vectors.rs)
+  that re-derives the frozen `fixed_vectors` bytes from a
+  pure-Rust path built only on `x25519-dalek`, `sha2`,
+  `chacha20poly1305`, and
+  `i2pr_crypto::hkdf_sha256_extract_and_expand`, without
+  consulting the frozen module, and asserts the production
+  `seal_short_request`, `open_short_request`, and `derive_layer_keys`
+  reproductions match byte-for-byte;
 - the [`provider::ExploratoryPoolReplyPathProvider`](src/provider.rs)
   adapter that turns an `ExploratoryPool` into a
   `i2pr_netdb::ReplyPathProvider`.
@@ -110,8 +148,8 @@ on `i2pr-proto`, `i2pr-crypto`, `i2pr-core`, and `i2pr-netdb`.
 | `pool` | Deterministic `ExploratoryPool` with bounded replacement, expiry, and failure accounting |
 | `build` | `BuildRecordLayout` (Short/Variable) over `DeferredBuildRecords`; `BuildRequestKind` / `BuildReplyKind` wire-type markers |
 | `build_crypto` | `BuildCryptography` trait + `LayerKeys` zeroizing wrapper + `ValidatedRecordSlot` typed nonce + `NoBuildCryptography` default + the Plan 109 ECIES-X25519 Noise-N implementation |
-| `short_record` | Typed 154-byte request and 202-byte reply record encoders; `HopRole`, `LayerEncryptionType`, `ShortResponseCode`, `BuildOptions` |
-| `short` | Runtime-neutral `ShortBuildStateMachine` with bounded `Prepared → Protecting → ReadyForDelivery → AwaitingReply → Established` (plus terminal failures) and the typed `ShortBuildAction::Deliver` event |
+| `short_record` | Typed 154-byte request and 202-byte reply record encoders (`encode_with_rng` + `encode_deterministic_zero_padded`); `HopRole`, `LayerEncryptionType`, `ShortResponseCode`, `BuildOptions`, `ShortBuildError::RandomnessUnavailable` |
+| `short` | Runtime-neutral `ShortBuildStateMachine` with bounded `Prepared → Protecting → ReadyForDelivery → AwaitingReply → Established` (plus terminal failures), the typed `ShortBuildAction::Deliver` event, the `ShortBuildPath::validate` direction/role topology validator, and the typed `ShortBuildConstructionError::InboundBuildPendingReconciliation` Plan 112 fail-closed gate |
 | `short_state` | Success-only `ShortBuildRegistrar` that admits an established build into `ExploratoryPool` |
 | `responder` | Deterministic `DeterministicResponder` peer simulator |
 | `conformance_fixtures` | Plan 109 single-record conformance fixtures with independent reference Noise-N and SMTunnel KDF derivation |
@@ -174,6 +212,19 @@ no DNS. The plans-of-record forbid adding any of these dependencies.
   `conformance_fixtures::FixtureRequest`,
   `conformance_fixtures::DeterministicRng` — the Plan 109
   independent-reference conformance surface.
+- `multirecord::validate_count_prefixed_short_payload`,
+  `multirecord::encode_count_prefixed_short_payload`,
+  `multirecord::decode_short_tunnel_build_payload` — the Plan 112
+  explicit STBM/OTBRM `count || records` contract helpers that
+  reject zero record counts, record counts above 8, and any
+  payload whose length does not equal
+  `1 + count * 218` bytes.
+- `tests::plan111_reference_vectors` (integration test) — the
+  Plan 112 Rust-only reference provenance test that re-derives
+  the frozen `fixed_vectors` constants without consulting the
+  frozen module and asserts byte-for-byte equivalence with the
+  production `seal_short_request` / `open_short_request` /
+  `derive_layer_keys` primitives.
 - `provider::ExploratoryPoolReplyPathProvider` — the
   `ReplyPathProvider` adapter.
 
