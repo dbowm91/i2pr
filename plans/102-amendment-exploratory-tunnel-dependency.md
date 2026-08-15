@@ -3,9 +3,9 @@
 ## Status
 
 - Original amendment date: 2026-08-13.
-- Updated: 2026-08-15 after Plan 108 protocol-conformance review.
+- Updated: 2026-08-15 after Plan 111 post-Plan-110 conformance review.
 - Authority: **active amendment to Plan 102**.
-- Reason: standards-conformant external NetDB acceptance depends on exploratory tunnels, and the first Plan 108 tunnel-build implementation requires a bounded protocol-conformance correction before live tunnel construction can proceed.
+- Reason: standards-conformant external NetDB acceptance depends on exploratory tunnels, and the current short-build implementation requires one final bounded local protocol-conformance correction before live tunnel construction can proceed.
 
 ## Original dependency correction
 
@@ -17,7 +17,7 @@ A direct `DatabaseLookup` over NTCP2 is not accepted as a substitute for the sta
 
 ## Current authoritative sequence
 
-Plans 103–107 landed the local NetDB and exploratory-tunnel substrate. Plan 108 then landed a useful runtime-neutral short-build architecture, but its initial short-record wire/cryptographic semantics were subsequently found to diverge from the current official I2P Tunnel Creation Specification.
+Plans 103–107 landed the local NetDB and exploratory-tunnel substrate. Plan 108 landed the runtime-neutral short-build architecture. Plans 109 and 110 then corrected most of the short-record, Noise, and multi-record construction surface, but a post-Plan-110 audit found a remaining bounded set of deterministic protocol defects.
 
 The authoritative sequence is now:
 
@@ -27,48 +27,81 @@ Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
    -> Plan 105  transport-neutral lookup/store/publication states     [closed]
    -> Plan 106  daemon/bootstrap integration                          [closed]
    -> Plan 107  exploratory tunnel substrate                          [closed]
-   -> Plan 108  local short-build architecture                        [landed; conformance reopened]
-   -> Plan 109  exact short-record + Noise-N/KDF correction           [next executable]
-   -> Plan 110  multi-record preprocessing + local conformance close  [blocked on 109]
+   -> Plan 108  local short-build architecture                        [landed; superseded]
+   -> Plan 109  single-record short-build correction                  [landed; conformance reopened]
+   -> Plan 110  multi-record construction/preprocessing               [landed; conformance reopened]
+   -> Plan 111  final local short-build conformance correction        [next executable]
    -> narrow qualified external-delivery checkpoint
    -> return to Milestone 4B external acceptance
 ```
 
-See:
+Current corrective authority:
+
+- `plans/111-short-build-final-local-conformance-correction.md`
+- `plans/111-handoff.md`
+
+Historical corrective context:
 
 - `plans/108-conformance-amendment.md`
 - `plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md`
 - `plans/109-short-build-record-and-noise-conformance-correction.md`
 - `plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md`
 
+## Why Plan 111 precedes external delivery
+
+The current implementation has useful structure but still requires these local corrections before its STBM bytes can be treated as standards-conformant evidence:
+
+```text
+Noise null-prologue MixHash          = missing
+request es AEAD-key derivation       = incorrect-second-HKDF
+record-slot nonce/IV                 = byte11-instead-of-byte4
+OBEP garlic reply tag                = 16-bytes-instead-of-8
+inbound creator ephemeral plaintext  = missing
+per-hop receive/next tunnel IDs      = missing-or-synthesized
+hop responder role                   = flattened-to-participant
+independent fixed-vector oracle      = insufficient
+```
+
+These are deterministic local defects. They do not justify reopening the Milestone 3 transport-validation program.
+
 ## Current Milestone 4A / Milestone 5 dependency state
 
 ```text
-RouterInfo validation               = implemented
-local NetDB                         = implemented
-persistent cache                    = implemented
-SU3 reseed verification             = implemented
-reseed ingestion                    = implemented
-lookup/publication state            = implemented
-NetDB daemon integration            = implemented
-exploratory tunnel substrate        = implemented
-short-build local architecture      = implemented-needs-protocol-correction
-short-build record/Noise conformance = blocked-on-plan109
-short-build multi-record conformance = blocked-on-plan110
-live exploratory tunnel             = blocked-on-plan109-plan110-and-qualified-delivery
-live RouterInfo lookup              = blocked-on-live-exploratory-tunnel
-live publication verification       = blocked-on-live-exploratory-tunnel-and-qualified-transport
-normal daemon NTCP2                 = disabled/unenableable
-ntcp2                               = experimental/non-advertised
+RouterInfo validation                 = implemented
+local NetDB                           = implemented
+persistent cache                      = implemented
+SU3 reseed verification               = implemented
+reseed ingestion                      = implemented
+lookup/publication state              = implemented
+NetDB daemon integration              = implemented
+exploratory tunnel substrate          = implemented
+short-build architecture              = implemented
+short-build local conformance         = reopened-on-plan111
+live exploratory tunnel               = blocked-on-plan111-and-qualified-delivery
+live RouterInfo lookup                = blocked-on-live-exploratory-tunnel
+live publication verification         = blocked-on-live-exploratory-tunnel-and-qualified-transport
+normal daemon NTCP2                   = disabled/unenableable
+ntcp2                                 = experimental/non-advertised
 ```
 
-This remains a successful local foundation state, but it is not `milestone4-passed` and is not yet a locally conformant tunnel-build state.
+This remains a successful local foundation state, but it is not `milestone4-passed` and the short-build path must not yet be called locally conformant.
 
-## Plan 109–110 corrective boundary
+## Plan 111 corrective boundary
 
-Plans 109 and 110 are deliberately local and deterministic.
+Plan 111 is deliberately local and deterministic.
 
-They must not require:
+It owns only:
+
+- literal Noise-N null-prologue and single-HKDF request `es` correction;
+- record number at nonce/IV byte 4;
+- 8-byte OBEP garlic reply tag representation;
+- explicit inbound creator-ephemeral plaintext semantics;
+- explicit independent per-hop receive/next tunnel IDs;
+- role-aware responder KDF behavior;
+- independently frozen cryptographic intermediate vectors;
+- status/support corrections necessary to stop stale conformance claims.
+
+It must not require:
 
 - normal-daemon NTCP2 activation;
 - SSU2;
@@ -76,11 +109,12 @@ They must not require:
 - Java I2P/i2pd/Emissary live validation as a closure gate;
 - privileged network namespaces;
 - Docker/Multipass/rootless isolation machinery;
-- new Python interoperability frameworks.
+- new Python interoperability frameworks;
+- generic I2NP dispatch.
 
-Plan 109 corrects exact single-record wire and Noise-N semantics. Plan 110 corrects randomized record slots, fake records, raw-ChaCha20 preprocessing/postprocessing, exact one-byte-count STBM/OTBRM payload framing, and independent multi-hop local conformance evidence.
+One narrow exception is allowed: if the final public specification remains ambiguous about the exact placement/order of the inbound creator ephemeral public key inside the 154-byte plaintext's variable region, the implementer must inspect a current independent reference-router implementation to disambiguate that wire layout. This is source inspection only, not live-router execution.
 
-Only after Plan 110 passes may the project select the smallest available external delivery lane for one real mixed-router tunnel-build attempt.
+Only after Plan 111 passes may the project select the smallest available external delivery lane for one real mixed-router tunnel-build attempt.
 
 ## Milestone 4B external acceptance
 
@@ -94,15 +128,15 @@ Full acceptance requires:
 4. normal Plan 103 validation/insertion/persistence;
 5. local RouterInfo publication with independent verification.
 
-Do not substitute deterministic simulation for this later external acceptance, but do not make external acceptance a gate for the local Plan 109/110 protocol corrections.
+Do not substitute deterministic simulation for this later external acceptance, but do not make external acceptance a gate for Plan 111's local protocol correction.
 
 ## Transport boundary
 
 Before normal NTCP2 activation/public I2P use, reconcile deferred Plan 079 with the retained Plan 099/100/101 state.
 
-Any new transport work must be narrow and product-driven. The existence of a correct STBM payload after Plan 110 will be the concrete consumer. Do not create another generic interoperability harness sequence.
+Any new transport work must be narrow and product-driven. A Plan 111-correct STBM payload will be the concrete consumer. Do not create another generic interoperability harness sequence.
 
-If a transport other than NTCP2 becomes the smallest viable lane for the first independent tunnel-build check, it may be evaluated separately without rewriting Plans 109/110.
+If a transport other than NTCP2 becomes the smallest viable lane for the first independent tunnel-build check, it may be evaluated separately without rewriting Plan 111.
 
 ## Authority precedence
 
@@ -110,13 +144,14 @@ When documents disagree, use this order for the current line of work:
 
 ```text
 Plan 102 amendment (this file)
- -> Plans 109-110 corrective roadmap
- -> Plan 108 conformance amendment
- -> active child Plan 109 / Plan 110
+ -> Plan 111 plan-of-record
+ -> Plan 111 handoff
+ -> Plan 109/110 status amendments
+ -> historical Plan 109/110 corrective roadmap
  -> Plan 102 parent roadmap
  -> Plans 099-101 for retained Milestone 3/NTCP2 state
  -> plans/000-mvp-roadmap.md milestone descriptions
  -> older historical Milestone 3 active blocks
 ```
 
-The next executable implementation is **Plan 109**.
+The next executable implementation is **Plan 111**.
