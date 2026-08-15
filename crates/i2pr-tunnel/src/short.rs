@@ -41,8 +41,8 @@ use crate::build_crypto::{
 };
 use crate::identity::{TunnelDirection, TunnelId};
 use crate::multirecord::{
-    self, CreatorReplyPostprocessor, MultiRecordError, MultiRecordHopSpec, PreparedHopContext,
-    ProcessedHopResult, ShortBuildRecordSet,
+    self, CreatorReplyPostprocessor, MultiRecordError, MultiRecordHopSpec, OriginatorFake,
+    PreparedHopContext, ProcessedHopResult, ShortBuildRecordSet,
 };
 use crate::short_record::{BuildOptions, HopRole, ShortResponseCode};
 
@@ -154,6 +154,10 @@ pub struct ShortBuildPath {
     pub attempt_id: BuildAttemptId,
     /// Inbound or outbound direction.
     pub direction: TunnelDirection,
+    /// Creator identity hash used for the inbound originator fake.
+    /// Outbound paths leave this unset; inbound paths must provide it
+    /// explicitly and never derive it from a hop or tunnel identifier.
+    pub originator_hash: Option<Hash>,
     /// Creator tunnel identifier this build is associated with.
     pub creator_tunnel_id: TunnelId,
     /// Ordered per-hop specifications.
@@ -217,6 +221,9 @@ impl ShortBuildPath {
             return Err(ShortBuildConstructionError::InvalidPath {
                 reason: "next message id must be nonzero",
             });
+        }
+        if matches!(self.direction, TunnelDirection::Inbound) && self.originator_hash.is_none() {
+            return Err(ShortBuildConstructionError::MissingInboundOriginatorIdentity);
         }
         // Plan 112 §6.B1/B2: use the same validator as the public
         // lower-level multi-record builder so the role boundary is
@@ -387,16 +394,10 @@ pub enum ShortBuildConstructionError {
     /// The short record encoder rejected an input.
     #[error("short build record rejected: {0}")]
     Record(#[from] crate::short_record::ShortBuildError),
-    /// Inbound short-build production construction is explicitly
-    /// disabled until Plan 113 reconciles the inbound creator-
-    /// ephemeral standards/reference discrepancy. The error is
-    /// returned before any cryptographic material is allocated or
-    /// any slot is assigned so production code cannot silently
-    /// produce an inbound message while the gate is active.
-    #[error(
-        "inbound short build construction is pending Plan 113 standards/reference reconciliation"
-    )]
-    InboundBuildPendingReconciliation,
+    /// An inbound path omitted the creator identity needed by its
+    /// originator fake.
+    #[error("inbound short build requires an explicit originator identity hash")]
+    MissingInboundOriginatorIdentity,
 }
 
 impl From<BuildCryptographyUnavailable> for ShortBuildConstructionError {
@@ -474,6 +475,7 @@ where
     state: StatePhase,
     contexts: Vec<HopCryptoContext>,
     record_set: Option<ShortBuildRecordSet>,
+    originator_fake: Option<OriginatorFake>,
     deadline_ms: u64,
 }
 
@@ -535,6 +537,7 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
             state: StatePhase::Prepared,
             contexts: Vec::new(),
             record_set: None,
+            originator_fake: None,
             deadline_ms,
         }
     }
@@ -573,11 +576,9 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
 
     /// Performs the prepare→protecting transition, sealing every
     /// per-hop request record and assembling the build message.
-    /// Plan 112 §7 makes inbound production construction fail
-    /// closed with the typed
-    /// [`ShortBuildConstructionError::InboundBuildPendingReconciliation`]
-    /// error until Plan 113 resolves the inbound standards/
-    /// reference discrepancy.
+    /// Inbound construction follows Plan 113's deployed-reference
+    /// compatible policy: normal fixed-field request plaintext plus
+    /// one separately randomized originator fake.
     pub fn prepare<R: CryptoRng + RngCore>(
         &mut self,
         rng: &mut R,
@@ -589,13 +590,6 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
             });
         }
         self.path.validate()?;
-        if matches!(self.path.direction, TunnelDirection::Inbound) {
-            // Plan 112 §7 inbound production gate. The state
-            // machine remains in the `Prepared` phase so a
-            // caller can recover by switching direction or
-            // dropping the state machine.
-            return Err(ShortBuildConstructionError::InboundBuildPendingReconciliation);
-        }
         self.state = StatePhase::Protecting;
         // Build the per-hop request plaintexts, seal them through
         // the canonical Plan 109 EciesX25519 primitive, and shuffle
@@ -605,14 +599,7 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
         let creator_tunnel_id_bytes = self.path.creator_tunnel_id.get().to_be_bytes();
         let request_time_ms = self.path.request_time.as_millis();
         let first_hop = self.path.hops.first().map(|hop| hop.router_hash);
-        // The state machine does not yet own an originator-fake
-        // path; for outbound paths the multirecord surface will not
-        // produce one, and for inbound paths the caller may
-        // configure the fake hash through the ShortBuildPath before
-        // invoking `prepare`. For now we leave it as `None`; future
-        // work wires the inbound originator-fake path through the
-        // daemon bootstrap.
-        let originator_hash: Option<&Hash> = None;
+        let originator_hash = self.path.originator_hash.as_ref();
         let cryptography = EciesX25519BuildCryptography::new();
         let prepared = multirecord::prepare_short_build_message(
             &cryptography,
@@ -627,6 +614,7 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
         )
         .map_err(short_build_construction_from_multi)?;
         let record_set = prepared.record_set.clone();
+        let originator_fake = prepared.originator_fake;
         let contexts: Vec<HopCryptoContext> = prepared
             .hop_contexts
             .into_iter()
@@ -635,6 +623,7 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
         let records = prepared.payload.to_vec();
         self.contexts = contexts;
         self.record_set = Some(record_set);
+        self.originator_fake = originator_fake;
         self.state = StatePhase::ReadyForDelivery;
         let message = ShortTunnelBuildMessage {
             kind: crate::build::BuildRequestKind::ShortTunnelBuild,
@@ -799,7 +788,7 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
             &contexts,
             &record_set,
             reply,
-            None,
+            self.originator_fake.as_ref(),
         ) {
             Ok(results) => self.complete_build(results),
             Err(error) => {
@@ -937,8 +926,19 @@ fn short_build_construction_from_multi(error: MultiRecordError) -> ShortBuildCon
         MultiRecordError::HopRejected { .. } => ShortBuildConstructionError::InvalidReply {
             reason: "hop rejected the build",
         },
-        MultiRecordError::InboundBuildPendingReconciliation => {
-            ShortBuildConstructionError::InboundBuildPendingReconciliation
+        MultiRecordError::MissingOriginatorHash => {
+            ShortBuildConstructionError::MissingInboundOriginatorIdentity
+        }
+        MultiRecordError::OriginatorFakeMissing => ShortBuildConstructionError::InvalidPath {
+            reason: "inbound build did not produce its originator fake",
+        },
+        MultiRecordError::OriginatorFakeUnexpected => ShortBuildConstructionError::InvalidPath {
+            reason: "outbound build carried an originator fake",
+        },
+        MultiRecordError::OriginatorFakeCountInvalid { .. } => {
+            ShortBuildConstructionError::InvalidPath {
+                reason: "short build did not contain exactly one originator fake",
+            }
         }
         MultiRecordError::Cryptography(error) => ShortBuildConstructionError::Cryptography(error),
         MultiRecordError::ShortRecord(error) => ShortBuildConstructionError::Record(error),
@@ -993,6 +993,7 @@ mod tests {
         ShortBuildPath {
             attempt_id: BuildAttemptId::new(rng_seed),
             direction: TunnelDirection::Outbound,
+            originator_hash: None,
             creator_tunnel_id: TunnelId::new(0xABCD).expect("id"),
             hops,
             request_time: Date::from_millis(60_000),
@@ -1307,6 +1308,7 @@ mod tests {
     fn validation_rejects_inbound_missing_first_ibgw() {
         let mut path = build_path(43);
         path.direction = TunnelDirection::Inbound;
+        path.originator_hash = Some(Hash::from_bytes([0x43_u8; 32]));
         path.hops[0].role = HopRole::Participant;
         let outcome = path.validate();
         assert!(matches!(
@@ -1321,6 +1323,7 @@ mod tests {
     fn validation_rejects_inbound_outbound_endpoint_role() {
         let mut path = build_path(44);
         path.direction = TunnelDirection::Inbound;
+        path.originator_hash = Some(Hash::from_bytes([0x44_u8; 32]));
         path.hops[0].role = HopRole::InboundGateway;
         path.hops[1].role = HopRole::OutboundEndpoint;
         let outcome = path.validate();
@@ -1330,13 +1333,13 @@ mod tests {
         ));
     }
 
-    /// Plan 112 §7: `ShortBuildStateMachine::prepare` returns
-    /// the typed `InboundBuildPendingReconciliation` error for
-    /// an inbound direction.
+    /// Plan 113: an inbound path without explicit creator identity
+    /// is rejected before cryptographic allocation.
     #[test]
-    fn state_machine_prepare_returns_typed_inbound_gate() {
+    fn state_machine_prepare_requires_inbound_originator_identity() {
         let mut path = build_path(45);
         path.direction = TunnelDirection::Inbound;
+        path.originator_hash = None;
         path.hops[0].role = HopRole::InboundGateway;
         // build_path makes the final hop OutboundEndpoint; the
         // inbound validator forbids OBEP, so flip the last hop
@@ -1348,7 +1351,7 @@ mod tests {
         let outcome = machine.prepare(&mut rng);
         assert!(matches!(
             outcome,
-            Err(ShortBuildConstructionError::InboundBuildPendingReconciliation)
+            Err(ShortBuildConstructionError::MissingInboundOriginatorIdentity)
         ));
     }
 

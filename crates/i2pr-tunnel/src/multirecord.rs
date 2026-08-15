@@ -79,27 +79,15 @@ pub const REQUEST_PLAINTEXT_BYTES: usize = SHORT_REQUEST_PLAINTEXT_SIZE;
 /// Plaintext reply size for one short tunnel-build record.
 pub const REPLY_PLAINTEXT_BYTES: usize = SHORT_REPLY_PLAINTEXT_SIZE;
 
-/// Marker for the inbound creator-ephemeral public-key placement.
+/// The selected inbound creator-key policy.
 ///
-/// The current I2P Tunnel Creation Specification states that the
-/// creator ECIES ephemeral public key is included in the inbound
-/// short request plaintext because the IBGW layer has no build-record
-/// DH, but does not pin the exact byte offset. Plan 111 §F preserves
-/// the placeholder in the canonical 154-byte plaintext so a future
-/// pinned implementation can land without rewriting the layout, and
-/// disables inbound `prepare_short_build_message` until a current
-/// reference-router source (Java I2P or i2pd) is available to pin
-/// the interoperable location. The placeholder occupies the same
-/// offset in every record so the test suite can detect drift.
-pub const INBOUND_CREATOR_EPHEMERAL_PLACEHOLDER_LEN: usize = 0;
-
-/// Plan 111 §F marker: inbound short-build construction is
-/// `blocked-inbound-layout-ambiguity` until a current reference
-/// implementation is available to pin the inbound creator-ephemeral
-/// public-key placement. The constant exists so a future audit can
-/// detect if the inbound path is silently re-enabled without the
-/// corresponding placement decision.
-pub const INBOUND_SHORT_BUILD_LAYOUT_AMBIGUITY: bool = true;
+/// The final specification prose mentions a creator ephemeral key in
+/// an inbound request plaintext, but supplies no offset, Mapping key,
+/// or presence flag. Current Java I2P and i2pd instead agree on the
+/// deployed originator-fake representation. This policy name is
+/// intentionally precise: it is reference-compatible for this
+/// semantic, but not a claim of strict final-spec text conformance.
+pub const INBOUND_SHORT_BUILD_POLICY: &str = "reference-compatible-spec-text-discrepancy";
 
 /// Hard ceiling on the wire record count.
 pub const MAX_RECORD_COUNT: u8 = 8;
@@ -247,6 +235,14 @@ impl ShortBuildRecordSet {
             self.slots[slot.get() as usize],
             Some(RecordOwner::OriginatorFake)
         )
+    }
+
+    /// Returns the number of originator-fake slots in the set.
+    pub fn originator_fake_count(&self) -> usize {
+        self.slots[..self.count as usize]
+            .iter()
+            .filter(|owner| matches!(owner, Some(RecordOwner::OriginatorFake)))
+            .count()
     }
 
     /// Returns whether the supplied wire slot is a padding fake.
@@ -573,12 +569,9 @@ pub enum MultiRecordError {
     #[error("multi-record slot allocator ran out of available slots")]
     SlotExhausted,
     /// Inbound short-build production construction is explicitly
-    /// disabled until Plan 113 reconciles the inbound creator-
-    /// ephemeral standards/reference discrepancy.
-    #[error(
-        "inbound short build construction is pending Plan 113 standards/reference reconciliation"
-    )]
-    InboundBuildPendingReconciliation,
+    /// requires the creator's identity hash for the originator fake.
+    #[error("inbound short build requires an explicit originator identity hash")]
+    MissingOriginatorHash,
     /// The direction and hop roles do not form a valid remote-hop
     /// topology for a short tunnel build.
     #[error("multi-record role topology rejected: {reason}")]
@@ -599,6 +592,18 @@ pub enum MultiRecordError {
         actual: usize,
         /// Expected length.
         expected: usize,
+    },
+    /// The prepared inbound reply did not carry its required originator fake.
+    #[error("inbound short build reply is missing its originator fake")]
+    OriginatorFakeMissing,
+    /// A reply supplied an originator fake for a record set that has no fake slot.
+    #[error("outbound short build reply carried an unexpected originator fake")]
+    OriginatorFakeUnexpected,
+    /// The record set did not contain exactly one originator fake slot.
+    #[error("short build record set contains {actual} originator fake slots")]
+    OriginatorFakeCountInvalid {
+        /// Observed originator fake slot count.
+        actual: usize,
     },
     /// The hop processor found zero slots whose 16-byte hash
     /// prefix matched the hop identity.
@@ -790,11 +795,10 @@ impl fmt::Debug for PreparedShortBuildMessage {
 /// the iterative ChaCha20 transforms so each hop only sees its own
 /// record at its stage.
 ///
-/// Plan 112 §7 makes inbound production construction explicitly
-/// fail closed at this entry point with
-/// [`MultiRecordError::InboundBuildPendingReconciliation`]
-/// before any cryptographic material is allocated. Originator-fake
-/// primitives remain testable independently.
+/// Inbound construction uses the deployed-reference-compatible
+/// originator-fake policy selected by Plan 113. The real request
+/// plaintext remains the normal fixed fields + Mapping + padding;
+/// the creator key is carried only by the dedicated originator fake.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_short_build_message<R: CryptoRng + RngCore>(
     cryptography: &EciesX25519BuildCryptography,
@@ -810,20 +814,8 @@ pub fn prepare_short_build_message<R: CryptoRng + RngCore>(
     if path_hops.is_empty() {
         return Err(MultiRecordError::EmptyPath);
     }
-    // Plan 112 §7 inbound production gate: refuse inbound
-    // construction until Plan 113 resolves the standards/
-    // reference discrepancy.
-    if matches!(direction, TunnelDirection::Inbound) {
-        let _ = (
-            cryptography,
-            creator_tunnel_id_bytes,
-            request_time_ms,
-            next_message_id,
-            first_hop,
-            originator_hash,
-            rng,
-        );
-        return Err(MultiRecordError::InboundBuildPendingReconciliation);
+    if matches!(direction, TunnelDirection::Inbound) && originator_hash.is_none() {
+        return Err(MultiRecordError::MissingOriginatorHash);
     }
     let roles: Vec<HopRole> = path_hops.iter().map(|hop| hop.role).collect();
     validate_role_topology(direction, &roles)?;
@@ -886,6 +878,9 @@ pub fn prepare_short_build_message<R: CryptoRng + RngCore>(
                 return Err(MultiRecordError::SlotExhausted);
             }
         }
+    }
+    if matches!(direction, TunnelDirection::Inbound) && originator_fake.is_none() {
+        return Err(MultiRecordError::OriginatorFakeMissing);
     }
     // Apply creator request preprocessing.
     preprocess_creator_request(&record_set, &hop_contexts, &mut slots)?;
@@ -1270,6 +1265,16 @@ impl CreatorReplyPostprocessor {
         let expected_count = record_set.record_count();
         if count != expected_count {
             return Err(MultiRecordError::SlotExhausted);
+        }
+        match (
+            record_set.originator_fake_count(),
+            originator_fake.is_some(),
+        ) {
+            (0, false) => {}
+            (0, true) => return Err(MultiRecordError::OriginatorFakeUnexpected),
+            (1, true) => {}
+            (1, false) => return Err(MultiRecordError::OriginatorFakeMissing),
+            (actual, _) => return Err(MultiRecordError::OriginatorFakeCountInvalid { actual }),
         }
         // First, undo the symmetric transforms for each real hop
         // using every later real hop's reply key and the target
@@ -1819,17 +1824,12 @@ mod tests {
     }
 
     #[test]
-    fn inbound_layout_ambiguity_marker_is_committed() {
-        // Plan 111 §F: the inbound creator-ephemeral layout is
-        // pinned by reference-router source inspection. Until
-        // that source is locked, the inbound short-build
-        // construction must remain explicitly disabled and the
-        // marker must read `true`. A future re-enabler must
-        // also flip this marker, which an audit can detect.
-        // The placeholder occupies zero bytes until a pinned
-        // reference-router source is available.
-        const { assert!(INBOUND_SHORT_BUILD_LAYOUT_AMBIGUITY) };
-        const { assert!(INBOUND_CREATOR_EPHEMERAL_PLACEHOLDER_LEN == 0) };
+    fn inbound_policy_is_reference_compatible_and_does_not_add_plaintext_field() {
+        assert_eq!(
+            INBOUND_SHORT_BUILD_POLICY,
+            "reference-compatible-spec-text-discrepancy"
+        );
+        assert_eq!(SHORT_REQUEST_PLAINTEXT_SIZE, 154);
     }
 
     #[test]
@@ -1907,6 +1907,56 @@ mod tests {
         assert!(matches!(
             outcome,
             Err(MultiRecordError::OriginatorFakeModified)
+        ));
+    }
+
+    #[test]
+    fn originator_fake_is_fresh_and_randomized_per_build() {
+        let hash = Hash::from_bytes([0x42_u8; 32]);
+        let mut rng_a = ChaCha8Rng::seed_from_u64(6);
+        let mut rng_b = ChaCha8Rng::seed_from_u64(7);
+        let fake_a = build_originator_fake_record(&hash, &mut rng_a).expect("fake a");
+        let fake_b = build_originator_fake_record(&hash, &mut rng_b).expect("fake b");
+        assert_ne!(fake_a.ephemeral_pub, fake_b.ephemeral_pub);
+        assert_ne!(fake_a.wire, fake_b.wire);
+        assert!(fake_a.wire[48..].iter().any(|byte| *byte != 0));
+        assert!(fake_b.wire[48..].iter().any(|byte| *byte != 0));
+    }
+
+    #[test]
+    fn reply_postprocessor_requires_exact_originator_fake_ownership() {
+        let cryptography = EciesX25519BuildCryptography::new();
+        let mut rng = ChaCha8Rng::seed_from_u64(8);
+        let outbound = assign_record_slots(1, TunnelDirection::Outbound, &mut rng).expect("set");
+        let inbound = assign_record_slots(1, TunnelDirection::Inbound, &mut rng).expect("set");
+        let slots = vec![[0_u8; RECORD_BYTES]; outbound.record_count() as usize];
+        let payload =
+            encode_count_prefixed_short_payload(outbound.record_count(), &slots).expect("payload");
+        let fake =
+            build_originator_fake_record(&Hash::from_bytes([0x42_u8; 32]), &mut rng).expect("fake");
+        assert!(matches!(
+            CreatorReplyPostprocessor::process_reply(
+                &cryptography,
+                &[],
+                &outbound,
+                &payload,
+                Some(&fake),
+            ),
+            Err(MultiRecordError::OriginatorFakeUnexpected)
+        ));
+        let inbound_slots = vec![[0_u8; RECORD_BYTES]; inbound.record_count() as usize];
+        let inbound_payload =
+            encode_count_prefixed_short_payload(inbound.record_count(), &inbound_slots)
+                .expect("payload");
+        assert!(matches!(
+            CreatorReplyPostprocessor::process_reply(
+                &cryptography,
+                &[],
+                &inbound,
+                &inbound_payload,
+                None,
+            ),
+            Err(MultiRecordError::OriginatorFakeMissing)
         ));
     }
 
@@ -2018,9 +2068,8 @@ mod tests {
     }
 
     #[test]
-    fn prepare_short_build_inbound_fails_closed_pending_plan113() {
+    fn prepare_short_build_inbound_requires_originator_hash() {
         let cryptography = EciesX25519BuildCryptography::new();
-        let originator_hash = Hash::from_bytes([0x77_u8; 32]);
         let hop0 = MultiRecordHopSpec {
             canonical_index: 0,
             router_hash: &Hash::from_bytes([0x10_u8; 32]),
@@ -2042,11 +2091,6 @@ mod tests {
         };
         let hops = vec![hop0, hop1];
         let mut rng = ChaCha8Rng::seed_from_u64(41);
-        // Plan 112 §7 inbound production gate: every public
-        // production inbound builder returns the typed
-        // reconciliation error before any cryptographic material
-        // is allocated. Component fake-record tests remain
-        // available without bypassing the production gate.
         let outcome = prepare_short_build_message(
             &cryptography,
             &hops,
@@ -2055,22 +2099,105 @@ mod tests {
             60_000,
             0x1234_5678,
             Some(Hash::from_bytes([0x10_u8; 32])),
-            Some(&originator_hash),
+            None,
             &mut rng,
         );
         assert!(matches!(
             outcome,
-            Err(MultiRecordError::InboundBuildPendingReconciliation)
+            Err(MultiRecordError::MissingOriginatorHash)
         ));
     }
 
     #[test]
-    fn build_originator_fake_record_remains_testable_under_plan112_gate() {
-        // Plan 112 §7: component-level originator-fake primitives
-        // remain testable without bypassing the production gate.
-        // The build_originator_fake_record helper is not gated
-        // because it does not perform record-set allocation or
-        // message construction.
+    fn inbound_multi_record_trajectory_round_trips_with_one_originator_fake() {
+        let cryptography = EciesX25519BuildCryptography::new();
+        let originator_hash = Hash::from_bytes([0x77_u8; 32]);
+        let hop_hashes = [
+            Hash::from_bytes([0x10_u8; 32]),
+            Hash::from_bytes([0x20_u8; 32]),
+            Hash::from_bytes([0x30_u8; 32]),
+        ];
+        let hop_privs = [[0xAA_u8; 32], [0xBB_u8; 32], [0xCC_u8; 32]];
+        let hop_keys = [
+            ephemeral_public(&hop_privs[0]),
+            ephemeral_public(&hop_privs[1]),
+            ephemeral_public(&hop_privs[2]),
+        ];
+        let next_hashes = [hop_hashes[1], hop_hashes[2], originator_hash];
+        let roles = [
+            HopRole::InboundGateway,
+            HopRole::Participant,
+            HopRole::Participant,
+        ];
+        let hops: Vec<MultiRecordHopSpec<'_>> = (0..3)
+            .map(|index| MultiRecordHopSpec {
+                canonical_index: index as u8,
+                router_hash: &hop_hashes[index],
+                static_encryption_key: &hop_keys[index],
+                role: roles[index],
+                receive_tunnel: TunnelId::new(0x1000 + index as u32).expect("receive id"),
+                next_tunnel: TunnelId::new(0x2000 + index as u32).expect("next id"),
+                next_router_hash: &next_hashes[index],
+            })
+            .collect();
+        let mut rng = ChaCha8Rng::seed_from_u64(113);
+        let prepared = prepare_short_build_message(
+            &cryptography,
+            &hops,
+            TunnelDirection::Inbound,
+            [0x10, 0x00, 0x00, 0x01],
+            60_000,
+            0x1234_5678,
+            Some(hop_hashes[0]),
+            Some(&originator_hash),
+            &mut rng,
+        )
+        .expect("inbound preparation");
+        assert_eq!(prepared.record_set.originator_fake_count(), 1);
+        assert!(prepared.originator_fake.is_some());
+        assert_eq!(prepared.record_set.record_count(), 4);
+        assert_eq!(prepared.hop_contexts[0].role, HopRole::InboundGateway);
+        assert!(
+            prepared
+                .hop_contexts
+                .iter()
+                .skip(1)
+                .all(|context| context.role == HopRole::Participant)
+        );
+
+        let mut payload = prepared.payload.to_vec();
+        for index in 0..3 {
+            let (next, _) = MessageHopProcessor::process_hop(
+                &cryptography,
+                &payload,
+                &hop_privs[index],
+                &hop_hashes[index],
+                ShortResponseCode::Accepted,
+                &mut rng,
+            )
+            .expect("hop processing");
+            payload = next;
+        }
+        let replies = CreatorReplyPostprocessor::process_reply(
+            &cryptography,
+            &prepared.hop_contexts,
+            &prepared.record_set,
+            &payload,
+            prepared.originator_fake.as_ref(),
+        )
+        .expect("creator reply processing");
+        assert_eq!(replies.len(), 3);
+        assert!(
+            replies
+                .iter()
+                .all(|reply| reply.response_code == ShortResponseCode::Accepted)
+        );
+    }
+
+    #[test]
+    fn build_originator_fake_record_is_independently_testable() {
+        // The component helper remains directly testable because it
+        // owns only fake-record construction, not message dispatch.
         let hash = Hash::from_bytes([0x77_u8; 32]);
         let mut rng = ChaCha8Rng::seed_from_u64(43);
         let fake = build_originator_fake_record(&hash, &mut rng).expect("fake");

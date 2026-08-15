@@ -11,8 +11,9 @@ the substrate required to flip the Plan 106 NetDB seam from
 `BlockedExploratoryTunnelUnavailable` to `Available` once a real
 inbound tunnel is registered.
 
-> Status: Plan 111 final local short-build conformance correction
-> landed. Plan 109 corrected the wire format, Noise-N transcript,
+> Status: Plan 113 inbound reference reconciliation after Plan 112
+> outbound pre-delivery closure. Plan 109 corrected the wire format,
+> Noise-N transcript,
 > layer-encryption type, request/reply key derivation, response
 > codes, and 218-byte envelope layout. Plan 110 added randomized
 > slot allocation, fake records, raw ChaCha20
@@ -27,8 +28,7 @@ inbound tunnel is registered.
 > landed the outbound pre-delivery closure: CSPRNG-filled
 > post-Mapping request/reply plaintext padding, the
 > `ShortBuildPath::validate` direction/role topology validator,
-> the typed `InboundBuildPendingReconciliation` fail-closed gate
-> that holds inbound production construction, the explicit
+> the explicit
 > `validate_count_prefixed_short_payload` /
 > `encode_count_prefixed_short_payload` STBM/OTBRM contract
 > helpers (including delivery-action validation), and a Rust-only reference provenance test under
@@ -36,10 +36,13 @@ inbound tunnel is registered.
 > re-derives the frozen bytes from a pure-Rust path built only on
 > `x25519-dalek`, `sha2`, `chacha20poly1305`, and
 > `i2pr_crypto::hkdf_sha256_extract_and_expand` without
-> consulting the frozen module. Inbound creator-ephemeral
-> plaintext semantics remain `blocked-inbound-layout-ambiguity`
-> until Plan 113 reconciles the standards/reference discrepancy
-> and the typed `InboundBuildPendingReconciliation` gate is lifted.
+> consulting the frozen module. Plan 113 enables inbound under the
+> `reference-compatible-spec-text-discrepancy` policy: normal fixed
+> request fields plus Mapping/padding, one originator fake carrying
+> `hash16 || fresh X25519 pub32 || random remainder`, and creator-side
+> integrity verification. The unresolved final-spec prose is not a
+> strict conformance claim for this one semantic. See
+> `specs/references/short-build-inbound-creator-key.md`.
 > Live mixed-router delivery is still blocked on a qualified
 > external delivery lane. Not production-ready. See `README.md`,
 > `GUARDRAILS.md`,
@@ -102,11 +105,8 @@ inbound tunnel is registered.
   `ShortBuildPath::validate` direction/role topology rules
   (outbound: no IBGW, OBEP only at the final hop, participants
   before the final OBEP; inbound: IBGW at the first hop, no OBEP,
-  participants after the first IBGW) and refuses inbound
-  construction through the typed
-  `ShortBuildConstructionError::InboundBuildPendingReconciliation`
-  gate until Plan 113 reconciles the inbound creator-ephemeral
-  standards/reference discrepancy;
+  participants after the first IBGW), requires an explicit inbound
+  `originator_hash`, and constructs the Plan 113 originator fake;
 - the [`short_state::ShortBuildRegistrar`](src/short_state.rs)
   success-only registrar that admits a fully validated build into
   `ExploratoryPool`;
@@ -149,7 +149,7 @@ on `i2pr-proto`, `i2pr-crypto`, `i2pr-core`, and `i2pr-netdb`.
 | `build` | `BuildRecordLayout` (Short/Variable) over `DeferredBuildRecords`; `BuildRequestKind` / `BuildReplyKind` wire-type markers |
 | `build_crypto` | `BuildCryptography` trait + `LayerKeys` zeroizing wrapper + `ValidatedRecordSlot` typed nonce + `NoBuildCryptography` default + the Plan 109 ECIES-X25519 Noise-N implementation |
 | `short_record` | Typed 154-byte request and 202-byte reply record encoders (`encode_with_rng` + `encode_deterministic_zero_padded`); `HopRole`, `LayerEncryptionType`, `ShortResponseCode`, `BuildOptions`, `ShortBuildError::RandomnessUnavailable` |
-| `short` | Runtime-neutral `ShortBuildStateMachine` with bounded `Prepared → Protecting → ReadyForDelivery → AwaitingReply → Established` (plus terminal failures), the typed `ShortBuildAction::Deliver` event with exact count-prefixed payload validation, the shared `ShortBuildPath::validate` direction/role topology validator, and the typed `ShortBuildConstructionError::InboundBuildPendingReconciliation` Plan 112 fail-closed gate |
+| `short` | Runtime-neutral `ShortBuildStateMachine` with bounded `Prepared → Protecting → ReadyForDelivery → AwaitingReply → Established` (plus terminal failures), exact count-prefixed delivery validation, shared direction/role validation, explicit inbound `originator_hash` ownership, and Plan 113 reference-compatible originator-fake construction |
 | `short_state` | Success-only `ShortBuildRegistrar` that admits an established build into `ExploratoryPool` |
 | `responder` | Deterministic `DeterministicResponder` peer simulator |
 | `conformance_fixtures` | Plan 109 single-record conformance fixtures with independent reference Noise-N and SMTunnel KDF derivation |
@@ -342,12 +342,10 @@ when the following local conformance criteria were satisfied:
     record, derives the layer keys, seals a reply plaintext, and
     the production primitive round-trips that reply through
     `open_short_reply` for every valid slot in `0..=7`.
-14. Inbound creator-ephemeral plaintext semantics are explicitly
-    marked `blocked-inbound-layout-ambiguity` via the constant
-    `INBOUND_SHORT_BUILD_LAYOUT_AMBIGUITY` and the placeholder
-    `INBOUND_CREATOR_EPHEMERAL_PLACEHOLDER_LEN`; a future pinned
-    reference-router source can flip the marker and re-enable the
-    inbound path.
+14. Plan 113 records the unresolved final-spec creator-key prose and
+    the pinned Java/i2pd agreement. Inbound uses the explicit
+    `reference-compatible-spec-text-discrepancy` policy; no guessed
+    plaintext field is added.
 
 These criteria prove only that the local creator and
 independent-reference implementations agree with the production
@@ -403,7 +401,8 @@ short-build surface:
 - `OriginatorFake`, `build_originator_fake_record`, and
   `verify_originator_fake` — the inbound originator fake record with
   SHA-256 integrity, including the 16-byte hash prefix, ephemeral
-  X25519 public key, and 154-byte padding;
+  X25519 public key, and random remainder; Plan 113 requires exactly
+  one fake for inbound builds and verifies it after reply processing;
 - `chacha20_transform` and `chacha20_xor` — raw ChaCha20 stream
   transforms using `crypto::chacha20::ChaCha20` with the canonical
   12-byte nonce (zero in bytes 0..10, target slot byte at 11);
@@ -455,3 +454,6 @@ outcomes.
   seam consumes the reply-path provider when one is injected.
 - Plan-of-record:
   [`plans/109-short-build-record-and-noise-conformance-correction.md`](../../plans/109-short-build-record-and-noise-conformance-correction.md).
+- Inbound policy evidence and closure:
+  [`specs/references/short-build-inbound-creator-key.md`](../../specs/references/short-build-inbound-creator-key.md),
+  [`plans/113-status.md`](../../plans/113-status.md).

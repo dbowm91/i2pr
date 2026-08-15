@@ -181,7 +181,7 @@ otbrm_event_payload_contract      = count-prefixed-and-validated
 fixed_vector_provenance           = reproducible-in-repo
 outbound_short_build              = locally-conformant-pre-delivery
 outbound_external_delivery        = next-qualified-checkpoint
-inbound_short_build               = blocked-on-plan113
+inbound_short_build               = locally-reference-compatible-spec-text-discrepancy
 normal_daemon_ntcp2               = disabled-and-unenableable
 ```
 

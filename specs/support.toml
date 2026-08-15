@@ -1,5 +1,5 @@
 # Machine-readable workspace support inventory (current evidence
-# through the Plan 112 outbound pre-delivery closure landing;
+# through the Plan 113 inbound reference-reconciliation landing;
 # Plan 111 status is `passed-final-local-short-build-conformance`
 # per plans/111-short-build-final-local-conformance-correction.md
 # and plans/111-status.md, and Plan 112 status is
@@ -8,12 +8,13 @@
 # plans/112-outbound-short-build-pre-delivery-closure.md, and
 # plans/112-status.md). Plan 109 and Plan 110 are superseded by
 # Plan 111 for the short-build local conformance surface; Plan 113
-# remains the inbound creator-ephemeral standards/reference
-# reconciliation plan and continues to gate inbound construction
-# through the typed `InboundBuildPendingReconciliation` fail-closed
-# error. Structural evidence may be recorded before
+# closed as `passed-inbound-reference-reconciliation`; inbound uses
+# the explicitly named `reference-compatible-spec-text-discrepancy`
+# policy because the final-spec prose has no concrete plaintext
+# encoding while Java I2P and i2pd agree on the originator fake.
+# Structural evidence may be recorded before
 # interoperability; all entries remain non-advertised until the
-# conformance requirements are met.
+# external delivery; all entries remain non-advertised.
 schema = 1
 milestone = 5
 plan_103_implementation_floor = "plans/103-status.md"
@@ -445,7 +446,7 @@ structure = "local-ecies-x25519-noise-n-short-build-cryptography-and-state-machi
 scope = "required-later"
 status = "experimental"
 conformant = true
-conformance_note = "Plan 111 closed as `passed-final-local-short-build-conformance` and Plan 112 closed as `passed-outbound-pre-delivery-closure`: the corrected Noise-N transcript applies the canonical null-prologue MixHash and runs the request `es` derivation as a single `HKDF(ck, shared, '', 64)` whose first 32 bytes become the new chaining key and whose second 32 bytes become the request AEAD key. The 218-byte encrypted envelope (`truncated_hash_prefix (16) || ephemeral_pub (32) || ciphertext (154) || tag (16)`) and 202-byte reply plaintext are byte-for-byte conformant with the current official I2P Tunnel Creation Specification. The slot byte for the hop-own reply AEAD nonce and raw ChaCha20 other-record transform lives at offset 4 of the 12-byte nonce. The OBEP `RGarlicKeyAndTag` continuation produces a 32-byte key and an 8-byte tag. Per-hop `receive_tunnel` and `next_tunnel` identifiers are explicit independent `TunnelId` fields. The per-hop processor decodes the role from the authenticated request plaintext rather than flattening to participant. Multi-record slot allocation, fake records, raw ChaCha20 preprocessing/postprocessing, and the one-byte-count STBM/OTBRM payload framing (validated through `validate_count_prefixed_short_payload` and `encode_count_prefixed_short_payload`) are byte-for-byte conformant against fixed vectors. The CSPRNG-filled post-Mapping plaintext padding, the `ShortBuildPath::validate` direction/role topology validator, and the typed `InboundBuildPendingReconciliation` fail-closed gate that holds inbound production construction are enforced under Plan 112. Inbound creator-ephemeral plaintext semantics remain `blocked-inbound-layout-ambiguity` until Plan 113 reconciles the inbound creator-ephemeral standards/reference discrepancy. Live mixed-router execution is blocked on a qualified external delivery lane."
+conformance_note = "Plan 111/112 preserve local outbound conformance. Plan 113 closes inbound as `reference-compatible-spec-text-discrepancy`: the final specification mentions a creator ephemeral key in inbound plaintext but gives no serializable location, while pinned Java I2P and i2pd agree on the deployed originator fake. The real request retains fixed fields + Mapping/padding; exactly one originator fake carries `hash16 || fresh X25519 pub32 || random remainder` and is integrity-checked after reply processing. This is not a strict final-spec conformance claim for that one semantic. Live mixed-router execution remains blocked on a qualified external delivery lane."
 evidence = [
     "crates/i2pr-tunnel/src/build_crypto.rs",
     "crates/i2pr-tunnel/src/short.rs",
@@ -457,6 +458,9 @@ evidence = [
     "crates/i2pr-crypto/src/hkdf.rs",
     "plans/111-short-build-final-local-conformance-correction.md",
     "plans/111-status.md",
+    "plans/112-status.md",
+    "plans/113-status.md",
+    "specs/references/short-build-inbound-creator-key.md",
 ]
 advertised = false
 
@@ -484,7 +488,7 @@ structure = "randomized-slot-fake-record-cha-cha20-preprocessing-stbm-otbrm-fram
 scope = "required-later"
 status = "experimental"
 conformant = true
-conformance_note = "Plan 110 (superseded by Plan 111 for the conformance status, retained for the implementation surface) added randomized record slot allocation (rejection-sampled Fisher-Yates), originator + padding fake records with SHA-256 integrity, raw ChaCha20 preprocessing/postprocessing of other records with the corrected byte-4 slot encoding, and the canonical one-byte-count STBM/OTBRM payload framing. The Plan 111 corrections propagate through the multi-record path: the slot byte lives at offset 4 of the ChaCha20 nonce, the per-hop processor decodes the role from the authenticated plaintext, and the per-hop `receive_tunnel` / `next_tunnel` identifiers are explicit independent fields. Live mixed-router execution is blocked on a qualified external delivery lane."
+conformance_note = "Plan 110 (superseded by Plan 111 for conformance status) added randomized slots, originator + padding fake records with SHA-256 integrity, raw ChaCha20 preprocessing/postprocessing with the corrected byte-4 slot encoding, and canonical one-byte-count STBM/OTBRM framing. Plan 113 closes the inbound policy: exactly one originator fake is required and verified, with no invented creator-key field in the real request. The real request remains fixed fields + Mapping/padding under the deployed-reference-compatible spec-text discrepancy. Live mixed-router execution remains blocked on a qualified external delivery lane."
 evidence = [
     "crates/i2pr-tunnel/src/multirecord.rs",
     "crates/i2pr-tunnel/src/short.rs",

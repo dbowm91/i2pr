@@ -147,7 +147,8 @@ Plan 112 is deliberately local and deterministic. It owns only:
 - random request plaintext padding using injected CSPRNG;
 - random reply plaintext padding using injected CSPRNG;
 - outbound and inbound structural role-topology validation;
-- explicit fail-closed production inbound gate pending Plan 113;
+- Plan 113 reference-compatible inbound policy with explicit creator identity,
+  one originator fake, and integrity verification;
 - correcting/removing the bad ephemeral-public accessor;
 - exact count-prefixed STBM/OTBRM action/event contracts;
 - a small Rust-only reproducible reference-vector artifact;

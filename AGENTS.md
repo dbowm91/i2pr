@@ -1750,6 +1750,7 @@ plan_109                         = superseded-by-plan111-corrected
 plan_110                         = superseded-by-plan111-corrected
 plan_111                         = passed-final-local-short-build-conformance
 plan_112                         = passed-outbound-pre-delivery-closure
+plan_113                         = passed-inbound-reference-reconciliation
 short_build_record_format        = locally-conformant-fixed-vectors
 short_build_noise_state          = locally-conformant-fixed-vectors
 short_build_reply_crypto         = locally-conformant-fixed-vectors
@@ -1757,7 +1758,7 @@ short_build_derived_keys         = locally-conformant-fixed-vectors
 short_build_multirecord_processing = locally-conformant-fixed-vectors
 complete_stbm_payload            = locally-conformant-fixed-vectors
 outbound_short_build             = locally-conformant-pre-delivery
-inbound_short_build              = blocked-on-plan113
+inbound_short_build              = locally-reference-compatible-spec-text-discrepancy
 live_mixed_router_build          = blocked-on-qualified-delivery
 normal_daemon_ntcp2              = disabled-and-unenableable
 ntcp2                            = experimental-non-advertised
@@ -1790,16 +1791,20 @@ current official I2P Tunnel Creation Specification:
   recomputed; the production primitive must continue to match
   them or fail the conformance tests.
 
-Inbound creator-ephemeral plaintext semantics (Plan 111 §F) are
-**not** corrected on this pass: the current I2P Tunnel Creation
-Specification prose mentions the requirement but does not pin
-the byte offset, and no current reference-router source was
-available during the implementation pass to disambiguate the
-placement. Plan 111 closes with
-`INBOUND_SHORT_BUILD_LAYOUT_AMBIGUITY = true` and
-`outbound_short_build = locally-conformant-fixed-vectors`; a
-future plan with a pinned reference-router source can flip the
-marker and re-enable the inbound path.
+Plan 111 left the inbound creator-key wording unresolved. Plan 113
+bounded the source review and selected Policy B: the final
+specification still does not define a concrete plaintext offset or
+option, while pinned Java I2P and i2pd agree on the deployed
+originator fake. The real request remains fixed fields +
+Mapping/padding; exactly one fake carries
+`hash16 || fresh X25519 pub32 || random remainder` and is checked by
+the creator after reply processing. This is
+`reference-compatible-spec-text-discrepancy`, not strict final-spec
+text conformance for that one semantic. The high-level path requires
+an explicit inbound `originator_hash`; outbound paths remain
+unchanged. Evidence is recorded in
+`specs/references/short-build-inbound-creator-key.md` and
+`plans/113-status.md`.
 
 ## Plan 111 short-build final local conformance correction (closed)
 
@@ -1827,8 +1832,8 @@ bash scripts/check-runtime-boundaries.sh
 Plan 112 is the Milestone 5 outbound pre-delivery closure pass
 that tightens the Plan 111 outbound construction with six
 deterministic local defect fixes and one provenance defect
-fix, **without** unblocking the inbound path or advancing to a
-qualified external delivery lane. Plan 112 closes
+fix, **without** advancing to a qualified external delivery lane.
+Plan 112 closes
 `passed-outbound-pre-delivery-closure`. The Plan 112 architecture
 surface travels with the `i2pr-tunnel` crate unchanged; only the
 fixes below land on this commit.
@@ -1850,15 +1855,9 @@ The six deterministic defects fixed by Plan 112:
   final OBEP; inbound paths must place `IBGW` at the first hop,
   may not contain `OBEP`, and place `Participant` hops after the
   first IBGW.
-- **Inbound production fail-closed gate.** The Plan 111 inbound
-  path produced bytes that could not be reconciled with any
-  pinned reference. Plan 112 hardens the gate: every inbound
-  call path through `ShortBuildStateMachine::prepare` and
-  `prepare_short_build_message` now raises
-  `ShortBuildConstructionError::InboundBuildPendingReconciliation`
-  (and the corresponding
-  `MultiRecordError::InboundBuildPendingReconciliation`) before
-  any record bytes are produced.
+- **Inbound gate handoff.** Plan 112 retained the inbound gate
+  while Plan 113 performed the bounded standards/reference
+  reconciliation.
 - **`HopCryptoContext::ephemeral_public()` accessor.** Plan 108
   exposed `ephemeral_public()` for diagnostic access. Plan 112
   deletes the accessor; the field remains private and the
@@ -1888,11 +1887,8 @@ The six deterministic defects fixed by Plan 112:
 
 Plan 112 does **not** activate NTCP2, perform any live
 mixed-router validation, require public I2P access, or relax
-the Plan 046 rootless or the Plan 048/049 Multipass gates. The
-inbound path remains fail-closed behind
-`InboundBuildPendingReconciliation` until Plan 113 reconciles
-the inbound creator-ephemeral standards/reference discrepancy
-with a pinned reference-router source. The closure record is
+the Plan 046 rootless or the Plan 048/049 Multipass gates. Plan 113
+now owns the inbound reference-compatible policy. The closure record is
 [`plans/112-status.md`](plans/112-status.md).
 
 Required focused checks:
@@ -1908,6 +1904,29 @@ bash scripts/check-fixture-manifest.sh
 bash scripts/check-ntcp2-vectors.sh
 git diff --check
 ```
+
+## Plan 113 inbound short-build specification/reference reconciliation (closed)
+
+Plan 113 closes as `passed-inbound-reference-reconciliation` with Policy B,
+`reference-compatible-spec-text-discrepancy`. The final specification mentions
+a creator ephemeral key in inbound plaintext but does not define an offset,
+Mapping key, or option flag. Pinned Java I2P and i2pd instead agree on the
+deployed representation: the real request remains fixed fields +
+Mapping/padding, and exactly one originator fake contains
+`hash16 || fresh X25519 pub32 || random remainder`.
+
+The high-level `ShortBuildPath` requires an explicit `originator_hash` for
+inbound paths. The shared validator enforces `IBGW` first and `Participant`
+thereafter with no `OBEP`; the builder emits exactly one originator fake and
+the creator verifies its integrity after all replies are postprocessed. No
+plaintext padding bytes are reinterpreted and no private field is invented.
+Outbound construction remains unchanged. This is not strict final-spec text
+conformance for the unresolved creator-key sentence. Evidence and closure are
+[`specs/references/short-build-inbound-creator-key.md`](specs/references/short-build-inbound-creator-key.md)
+and [`plans/113-status.md`](plans/113-status.md).
+
+The later inbound STBM delivery rule remains out of scope; Plan 113 adds no
+dispatcher, transport, NTCP2 activation, SSU2, or public-network behavior.
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
 
@@ -3220,11 +3239,13 @@ closed as `passed-final-local-short-build-conformance` and
 corrected the remaining defects (Noise null prologue, single-HKDF
 `es` split, slot byte at offset 4, 8-byte OBEP garlic tag, explicit
 per-hop tunnel IDs, role-aware hop processor, frozen independent
-fixed vectors); inbound creator-ephemeral layout remains
-`blocked-inbound-layout-ambiguity` until a current reference-router
-source pins the placement. Milestone 4A is now
+fixed vectors). Plan 113 then closed inbound as
+`reference-compatible-spec-text-discrepancy`: pinned Java I2P and
+i2pd agree on exactly one originator fake, while the final-spec
+prose has no concrete separate plaintext creator-key encoding.
+Milestone 4A is now
 `local-foundation-complete-short-build-outbound-conformant-fixed-vectors`
-with `inbound_short_build = disabled-pending-layout-resolution`.
+with `inbound_short_build = locally-reference-compatible`.
 A direct `DatabaseLookup` over NTCP2 is not accepted as a substitute
 for the standard exploratory-tunnel path. The next executable step
 is a narrow qualified external-delivery checkpoint, before

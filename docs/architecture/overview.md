@@ -201,7 +201,13 @@ A live `i2pr run` today (Plan 106) follows this sequence:
        [`plans/110-status.md`](../../plans/110-status.md). Plan 110
        closed the multi-record slot allocation, fake records, raw
        ChaCha20 preprocessing, and one-byte-count STBM/OTBRM payload
-       framing as `passed-multirecord-local-conformance`.**
+       framing as `passed-multirecord-local-conformance`. Plan 113
+       enables the inbound path under the explicitly named
+       `reference-compatible-spec-text-discrepancy` policy: the real
+       request keeps its fixed fields + Mapping/padding and exactly
+       one originator fake carries the creator key. This does not
+       claim strict final-spec text conformance for that semantic;
+       see `specs/references/short-build-inbound-creator-key.md`.**
 6. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
    before startup, then spawns one supervisor manager per service via a
    `JoinSet`. Each service receives a narrowed `ServiceContext` (name,

@@ -81,7 +81,7 @@ otbrm_payload_contract         = exact-count-prefixed
 fixed_vector_reference         = reproducible-rust-only
 outbound_short_build           = locally-conformant-pre-delivery
 outbound_external_delivery     = next-qualified-checkpoint
-inbound_short_build            = blocked-on-plan113
+inbound_short_build            = locally-reference-compatible-spec-text-discrepancy
 normal_daemon_ntcp2            = disabled-and-unenableable
 ```
 

@@ -1,6 +1,6 @@
 # Plan 113: Inbound short-build specification/reference reconciliation
 
-- Status: **planned; blocked only on Plan 112 production gate landing**
+- Status: **passed-inbound-reference-reconciliation**
 - Date: 2026-08-15
 - Parent roadmap: `plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`
 - Parent authority: `plans/102-amendment-exploratory-tunnel-dependency.md`
@@ -22,6 +22,17 @@ Plan 113 must end with one explicit result:
 2. **unresolved and fail-closed** — inbound remains disabled while outbound progress continues.
 
 A guessed private layout is not an acceptable result.
+
+## 1A. Closure result
+
+Policy B is selected: `reference-compatible-spec-text-discrepancy`. The final
+specification does not define a concrete plaintext creator-key encoding, while
+the pinned Java I2P and i2pd implementations agree on the deployed originator
+fake. i2pr therefore retains the normal fixed-field + Mapping/padding request,
+requires explicit inbound creator identity, emits exactly one
+`hash16 || fresh X25519 pub32 || random remainder` originator fake, and checks
+its creator-side integrity after reply processing. Strict final-spec text
+conformance is not claimed for the unresolved creator-key sentence.
 
 ## 2. Why this is separate from Plan 112
 
@@ -502,26 +513,26 @@ Plan 113 closes only if all applicable items are true.
 
 ### Evidence
 
-- [ ] Final spec discrepancy is quoted/paraphrased and source-pinned.
-- [ ] Java I2P current source is pinned by commit and inspected.
-- [ ] i2pd current source is pinned by commit and inspected.
-- [ ] Upstream history search is bounded and documented.
-- [ ] No invented offset or private option is introduced.
+- [x] Final spec discrepancy is quoted/paraphrased and source-pinned.
+- [x] Java I2P current source is pinned by commit and inspected.
+- [x] i2pd current source is pinned by commit and inspected.
+- [x] Upstream history search is bounded and documented.
+- [x] No invented offset or private option is introduced.
 
 ### Policy
 
-- [ ] One and only one of Policy A, B, or C is selected.
-- [ ] Selected policy is reflected in code behavior and docs.
-- [ ] Strict-conformance wording is not used if Policy B remains spec-text-discrepant.
+- [x] One and only one of Policy A, B, or C is selected.
+- [x] Selected policy is reflected in code behavior and docs.
+- [x] Strict-conformance wording is not used if Policy B remains spec-text-discrepant.
 
 ### Inbound construction, if enabled
 
-- [ ] Originator identity is explicit at high-level path boundary.
-- [ ] First remote hop is IBGW; remaining remote hops are participants.
-- [ ] Exactly one originator fake is emitted.
-- [ ] Fake is `hash16 || fresh X25519 pub32 || random remainder` unless authoritative Policy A evidence explicitly requires a different final layout.
-- [ ] Fake integrity is verified before tunnel success.
-- [ ] Full local inbound multi-record trajectory passes.
+- [x] Originator identity is explicit at high-level path boundary.
+- [x] First remote hop is IBGW; remaining remote hops are participants.
+- [x] Exactly one originator fake is emitted.
+- [x] Fake is `hash16 || fresh X25519 pub32 || random remainder` unless authoritative Policy A evidence explicitly requires a different final layout.
+- [x] Fake integrity is verified before tunnel success.
+- [x] Full local inbound multi-record trajectory passes.
 
 ### If disabled
 
@@ -554,4 +565,6 @@ Plan 113 does not automatically authorize public-network use.
 
 If inbound is enabled locally, the next inbound-specific checkpoint is a **small independent-router delivery test** using the already-defined message semantics.
 
-If Plan 113 remains fail-closed, continue outbound development and defer inbound activation without reopening Plans 109-112.
+Plan 113 does not authorize public-network use. The next inbound-specific
+checkpoint is a small independent-router delivery test using the existing
+message semantics; no dispatcher or transport adapter is added here.

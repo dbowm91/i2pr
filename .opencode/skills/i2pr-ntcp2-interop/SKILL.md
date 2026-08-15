@@ -7,16 +7,25 @@ description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/
 
 ## Current tunnel-build handoff boundary
 
-Plan 112 is closed as `passed-outbound-pre-delivery-closure` for the
-runtime-neutral ECIES-X25519 short-build surface. Its outbound payload is
-locally conformant and ready for a separate qualified external-delivery
-checkpoint; this skill must not present that local result as live
-interoperability. The production inbound short-build builder remains behind
-the typed `InboundBuildPendingReconciliation` gate until Plan 113 resolves
-the inbound standards/reference discrepancy. This NTCP2 skill does not own
-that tunnel-build implementation and must not activate NTCP2, add a generic
-I2NP dispatcher, or use a local/vector/testkit result as reference-router
-evidence.
+Plan 112 is closed as `passed-outbound-pre-delivery-closure` and Plan 113 is
+closed as `passed-inbound-reference-reconciliation` for the runtime-neutral
+ECIES-X25519 short-build surface. Outbound payloads are locally conformant and
+inbound construction is locally reference-compatible under the explicitly
+named `reference-compatible-spec-text-discrepancy` policy: the real request
+keeps fixed fields + Mapping/padding and exactly one originator fake carries
+`hash16 || fresh X25519 pub32 || random remainder`. The final-spec prose is
+not claimed as strictly conformant for that unresolved semantic. This skill
+must not present local results as live interoperability. This NTCP2 skill does
+not own that tunnel-build implementation and must not activate NTCP2, add a
+generic I2NP dispatcher, or use a local/vector/testkit result as
+reference-router evidence.
+
+The inbound creator identity is explicit at the `ShortBuildPath` boundary;
+the first remote hop is `InboundGateway`, later remote hops are `Participant`,
+and the creator verifies the originator fake after reply processing. The
+evidence note is `specs/references/short-build-inbound-creator-key.md` and the
+closure record is `plans/113-status.md`. The next inbound-specific activity
+is an independent-router delivery checkpoint, not an NTCP2 activation.
 
 Use this skill from the repository root for the **host-side** Ubuntu 24.04
 amd64 Plan 038 reference-router NTCP2 interoperability harness. This skill
