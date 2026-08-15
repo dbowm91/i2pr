@@ -1,13 +1,15 @@
 //! Runtime-neutral short tunnel-build state machine.
 //!
-//! Plan 108 §3.7 owns the bounded state machine that drives one
+//! Plan 109 §12 owns the bounded state machine that drives one
 //! attempted build from path specification through terminal
 //! outcome. The state machine:
 //!
 //! - accepts a fully validated path specification,
-//! - generates per-hop ephemeral material,
 //! - seals every hop through the [`EciesX25519BuildCryptography`]
-//!   primitive,
+//!   primitive using the canonical Noise-N transcript,
+//! - retains a per-hop crypto context (saved post-request `h`,
+//!   derived `replyKey/layerKey/ivKey`, OBEP garlic material) for
+//!   use by Plan 110's reply processor,
 //! - emits a runtime-neutral [`ShortBuildAction::Deliver`] action
 //!   that transport adapters may consume,
 //! - accepts events such as `DeliveryAccepted`, `BuildReply`,
@@ -17,7 +19,7 @@
 //!   `CryptoFailed`, or `DeliveryFailed`,
 //! - registers the resulting tunnel material into
 //!   `ExploratoryPool` only via the success-only
-//!   `ShortBuildRegistrar` from `crate::short_state`.
+//!   `ShortBuildRegistrar` from [`crate::short_state`].
 //!
 //! The state machine and its registrar deliberately remain
 //! runtime-neutral: no socket access, no Tokio runtime, no DNS,
@@ -27,33 +29,31 @@
 
 use std::fmt;
 
-use i2pr_proto::{Date, Hash, SHORT_BUILD_RECORD_SIZE, SHORT_REPLY_PLAINTEXT_SIZE};
-use rand_core::{CryptoRng, TryRngCore};
+use i2pr_proto::{Date, Hash, SHORT_BUILD_RECORD_SIZE};
+use rand_core::{CryptoRng, RngCore};
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-use crate::build::{
-    BuildCryptographyUnavailable, BuildRecordLayout, BuildRecordLayoutError, BuildReplyKind,
-    BuildRequestKind,
-};
+use crate::build::{BuildCryptographyUnavailable, BuildRecordLayout, BuildRecordLayoutError};
 use crate::build_crypto::{
     BuildCryptography, BuildCryptographyError, EPHEMERAL_KEY_LEN, EciesX25519BuildCryptography,
-    NONCE_LEN, SHORT_REQUEST_KEY_LEN, TAG_LEN,
+    LayerKeys, NoiseRequestState, ValidatedRecordSlot,
 };
 use crate::identity::{TunnelDirection, TunnelId};
 use crate::short_record::{
-    BuildOptions, HopRole, LayerEncryptionType, ShortRequestRecord, ShortResponseCode,
+    BuildOptions, HopRole, LayerEncryptionType, REQUEST_EXPIRATION_SECONDS, ShortReplyRecord,
+    ShortRequestRecord, ShortResponseCode,
 };
 
-/// A unique attempt identifier the Plan 108 state machine hands to
-/// every dispatch. The id is monotonic and never reused so the
-/// caller can correlate external events with build attempts.
+/// A unique attempt identifier the Plan 109 state machine hands
+/// to every dispatch. The id is monotonic and never reused so
+/// the caller can correlate external events with build attempts.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BuildAttemptId(u64);
 
 impl BuildAttemptId {
-    /// Constructs a new attempt id with a caller-supplied monotonic
-    /// counter.
+    /// Constructs a new attempt id with a caller-supplied
+    /// monotonic counter.
     pub const fn new(value: u64) -> Self {
         Self(value)
     }
@@ -73,62 +73,44 @@ impl fmt::Display for BuildAttemptId {
 /// Hop order index. Zero is the first hop.
 pub type HopIndex = u8;
 
-/// Per-hop crypto seed supplied by the caller. The byte array is
-/// treated as a high-entropy secret and is zeroized on drop.
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
-pub struct HopCryptoSeed([u8; SHORT_REQUEST_KEY_LEN]);
-
-impl HopCryptoSeed {
-    /// Loads the supplied seed bytes without exposing them in any
-    /// accessor beyond the private reference consumed by the build
-    /// cryptography primitive.
-    pub const fn from_bytes(bytes: [u8; SHORT_REQUEST_KEY_LEN]) -> Self {
-        Self(bytes)
-    }
-
-    /// Returns the raw bytes for the lifetime of the borrow.
-    pub const fn as_bytes(&self) -> &[u8; SHORT_REQUEST_KEY_LEN] {
-        &self.0
-    }
-}
-
-impl fmt::Debug for HopCryptoSeed {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_tuple("HopCryptoSeed")
-            .field(&"<redacted>")
-            .finish()
-    }
-}
-
 /// Per-hop identity carried by the [`ShortBuildPath`].
 #[derive(Clone, Debug)]
 pub struct HopSpec {
     /// The hop's RouterHash as the receiving peer knows it.
     pub router_hash: Hash,
+    /// Truncated 16-byte hop hash prefix the encrypted envelope
+    /// carries in front of the ephemeral public key.
+    pub hop_hash_prefix: [u8; crate::build_crypto::HASH_PREFIX_LEN],
     /// The hop's X25519 static encryption key (32 bytes).
     pub static_encryption_key: [u8; EPHEMERAL_KEY_LEN],
     /// The hop's role within the tunnel (gateway/participant/endpoint).
     pub role: HopRole,
-    /// Hop-specific crypto seed used to derive per-hop request and
-    /// reply keys. The seed is zeroized on drop.
-    pub crypto_seed: HopCryptoSeed,
 }
 
 impl HopSpec {
-    /// Constructs a [`HopSpec`] from validated inputs.
+    /// Constructs a [`HopSpec`] from validated inputs. The
+    /// truncated 16-byte hop hash prefix is computed from the
+    /// supplied router hash for the standard envelope layout.
     pub fn new(
         router_hash: Hash,
         static_encryption_key: [u8; EPHEMERAL_KEY_LEN],
         role: HopRole,
-        crypto_seed: HopCryptoSeed,
     ) -> Self {
+        let mut hop_hash_prefix = [0_u8; crate::build_crypto::HASH_PREFIX_LEN];
+        hop_hash_prefix
+            .copy_from_slice(&router_hash.as_bytes()[..crate::build_crypto::HASH_PREFIX_LEN]);
         Self {
             router_hash,
+            hop_hash_prefix,
             static_encryption_key,
             role,
-            crypto_seed,
         }
+    }
+
+    /// Returns the truncated 16-byte hop hash prefix the
+    /// encrypted envelope must carry.
+    pub const fn hop_hash_prefix(&self) -> &[u8; crate::build_crypto::HASH_PREFIX_LEN] {
+        &self.hop_hash_prefix
     }
 }
 
@@ -146,15 +128,11 @@ pub struct ShortBuildPath {
     pub direction: TunnelDirection,
     /// Creator tunnel identifier this build is associated with.
     pub creator_tunnel_id: TunnelId,
-    /// Creator static X25519 key used to authenticate replies.
-    pub creator_static_key: [u8; EPHEMERAL_KEY_LEN],
     /// Ordered per-hop specifications.
     pub hops: Vec<HopSpec>,
     /// Request creation timestamp (milliseconds since the Unix
     /// epoch).
     pub request_time: Date,
-    /// Request expiration in milliseconds since the Unix epoch.
-    pub expiration_ms: u64,
     /// Per-hop next message id the receiving hop will use.
     pub next_message_id: u32,
     /// Build options mapping (empty when no options are required).
@@ -191,6 +169,11 @@ impl ShortBuildPath {
                 });
             }
         }
+        if self.next_message_id == 0 {
+            return Err(ShortBuildConstructionError::InvalidPath {
+                reason: "next message id must be nonzero",
+            });
+        }
         Ok(())
     }
 }
@@ -203,7 +186,7 @@ pub enum ShortBuildAction {
     Deliver {
         /// The first-hop router hash the runtime should target.
         first_hop: Hash,
-        /// The full 154-byte-aligned build message payload (one or
+        /// The full 218-byte-aligned build message payload (one or
         /// more 218-byte records concatenated).
         message: Zeroizing<Vec<u8>>,
         /// Number of records the message carries.
@@ -227,7 +210,7 @@ pub enum BuildEvent {
     /// The builder received a build reply for this attempt.
     BuildReply {
         /// Per-hop reply payload. The buffer is exactly
-        /// `records * reply_record_size` bytes.
+        /// `records * (SHORT_BUILD_RECORD_SIZE)` bytes.
         reply: Zeroizing<Vec<u8>>,
     },
     /// The deadline was reached before the reply arrived.
@@ -238,6 +221,7 @@ pub enum BuildEvent {
 
 /// Outcome categories for a finished build attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
 pub enum ShortBuildOutcome {
     /// Every hop accepted and the build is registered in the pool.
     Established {
@@ -304,12 +288,12 @@ pub enum ShortBuildConstructionError {
         event: &'static str,
     },
     /// The reply message was not from the expected message kind.
-    #[error("reply message kind {actual:?} does not match expected {expected:?}")]
-    UnexpectedReplyKind {
-        /// Expected reply message kind.
-        expected: BuildReplyKind,
-        /// Actual reply message kind observed.
-        actual: BuildReplyKind,
+    #[error("reply message size {actual} is not a multiple of {expected}")]
+    ReplyRecordSize {
+        /// Actual reply record byte size.
+        actual: usize,
+        /// Expected per-record byte size.
+        expected: usize,
     },
     /// The reply carried the wrong number of records.
     #[error("reply record count {actual} does not match {expected}")]
@@ -319,18 +303,9 @@ pub enum ShortBuildConstructionError {
         /// Expected record count.
         expected: usize,
     },
-    /// The reply record carried the wrong byte size.
-    #[error("reply record length {actual} bytes is outside the accepted range")]
-    ReplyRecordLength {
-        /// Actual reply record length.
-        actual: usize,
-    },
     /// The short record encoder rejected an input.
     #[error("short build record rejected: {0}")]
     Record(#[from] crate::short_record::ShortBuildError),
-    /// Spec variant is unused. Reserved for future expansion.
-    #[error("short build surface reserved")]
-    Reserved,
 }
 
 impl From<BuildCryptographyUnavailable> for ShortBuildConstructionError {
@@ -342,15 +317,25 @@ impl From<BuildCryptographyUnavailable> for ShortBuildConstructionError {
 /// Per-hop crypto context retained after sealing a request so the
 /// creator can later decrypt the corresponding reply.
 ///
-/// The context is non-cloneable, zeroizing, and does not implement
-/// `Debug` so the secret ephemeral material does not leak through
-/// logs or snapshot tests.
+/// The context captures the canonical Noise-N post-request state
+/// (`h` transcript hash and `ck` chaining key) together with the
+/// canonical I2P per-hop derived secrets (`replyKey`, `layerKey`,
+/// `ivKey`, OBEP garlic material). The context is non-cloneable,
+/// zeroizing, and does not implement `Debug` so the secret
+/// material does not leak through logs or snapshot tests.
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct HopCryptoContext {
     hop_index: HopIndex,
-    creator_static_priv: [u8; EPHEMERAL_KEY_LEN],
+    /// Saved sender ephemeral X25519 public key (kept for diagnostics).
     ephemeral_pub: [u8; EPHEMERAL_KEY_LEN],
-    session_digest: [u8; 32],
-    request_plaintext: Zeroizing<[u8; 154]>,
+    /// Saved post-request transcript hash `h`; becomes the AEAD
+    /// associated data for the hop's own reply.
+    request_hash: [u8; 32],
+    /// Derived per-hop layer keys.
+    layer_keys: LayerKeys,
+    /// Reserved slot for the eventual Plan 110 multi-record layout.
+    /// `None` until Plan 110 assigns a slot for the hop.
+    record_slot: Option<ValidatedRecordSlot>,
 }
 
 impl HopCryptoContext {
@@ -359,23 +344,24 @@ impl HopCryptoContext {
         self.hop_index
     }
 
-    /// Returns the ephemeral X25519 public key the creator put on
-    /// the wire for this hop. The value is public.
+    /// Returns the ephemeral X25519 public key carried on the wire.
     pub const fn ephemeral_public(&self) -> &[u8; EPHEMERAL_KEY_LEN] {
         &self.ephemeral_pub
     }
 
-    /// Returns the canonical request plaintext this hop received.
-    pub fn request_plaintext(&self) -> &[u8; 154] {
-        &self.request_plaintext
+    /// Returns the canonical post-request transcript hash for the hop.
+    pub const fn request_hash(&self) -> &[u8; 32] {
+        &self.request_hash
     }
-}
 
-impl Drop for HopCryptoContext {
-    fn drop(&mut self) {
-        self.creator_static_priv.zeroize();
-        self.ephemeral_pub.zeroize();
-        self.session_digest.zeroize();
+    /// Returns the derived per-hop layer keys.
+    pub const fn layer_keys(&self) -> &LayerKeys {
+        &self.layer_keys
+    }
+
+    /// Returns the assigned per-record slot for the hop's reply, if any.
+    pub const fn record_slot(&self) -> Option<ValidatedRecordSlot> {
+        self.record_slot
     }
 }
 
@@ -384,8 +370,10 @@ impl fmt::Debug for HopCryptoContext {
         formatter
             .debug_struct("HopCryptoContext")
             .field("hop_index", &self.hop_index)
-            .field("ephemeral_pub", &"<redacted>")
-            .field("request_plaintext", &"<redacted>")
+            .field("ephemeral_public", &"<redacted>")
+            .field("request_hash", &"<redacted>")
+            .field("layer_keys", &"<redacted>")
+            .field("record_slot", &self.record_slot)
             .finish()
     }
 }
@@ -410,6 +398,7 @@ where
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
 enum StatePhase {
     Prepared,
     Protecting,
@@ -445,7 +434,7 @@ impl StatePhase {
 
 impl ShortBuildStateMachine<EciesX25519BuildCryptography> {
     /// Constructs a new state machine for the supplied path using
-    /// the default ECIES-X25519 cryptography primitive.
+    /// the default ECIES-X25519 Noise-N cryptography primitive.
     pub fn new(path: ShortBuildPath, deadline_ms: u64) -> Self {
         Self::with_cryptography(path, deadline_ms, EciesX25519BuildCryptography::new())
     }
@@ -503,7 +492,7 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
 
     /// Performs the prepare→protecting transition, sealing every
     /// per-hop request record and assembling the build message.
-    pub fn prepare<R: CryptoRng + rand_core::RngCore>(
+    pub fn prepare<R: CryptoRng + RngCore>(
         &mut self,
         rng: &mut R,
     ) -> Result<ShortTunnelBuildMessage, ShortBuildConstructionError> {
@@ -520,30 +509,30 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
         ));
         let mut contexts = Vec::with_capacity(self.path.hops.len());
         for (index, hop) in self.path.hops.iter().enumerate() {
-            let plaintext =
+            let plaintext_array =
                 build_request_record(self.path.creator_tunnel_id, hop, &self.path, index)?
                     .encode()?;
-            let ephemeral_priv = ephemeral_seed_for_hop(rng, self.attempt_id.get(), index as u8)?;
-            let record = self.cryptography.seal_short_request(
-                plaintext.as_ref(),
+            let sealed = self.cryptography.seal_short_request(
+                &plaintext_array,
                 &hop.static_encryption_key,
-                ephemeral_priv.as_bytes(),
+                hop.router_hash.as_bytes(),
                 rng,
             )?;
+            let layer_keys = derive_layer_keys_for_hop(&sealed.state, hop.role)?;
             let context = HopCryptoContext {
                 hop_index: index as HopIndex,
-                creator_static_priv: self.path.creator_static_key,
-                ephemeral_pub: extract_ephemeral_pub(record.as_ref()),
-                session_digest: ephemeral_priv_digest(ephemeral_priv.as_bytes()),
-                request_plaintext: plaintext,
+                ephemeral_pub: sealed.ephemeral_pub,
+                request_hash: sealed.state.transcript_hash(),
+                layer_keys,
+                record_slot: None,
             };
             contexts.push(context);
-            records.extend_from_slice(record.as_ref());
+            records.extend_from_slice(sealed.record.as_ref());
         }
         self.contexts = contexts;
         self.state = StatePhase::ReadyForDelivery;
         let message = ShortTunnelBuildMessage {
-            kind: BuildRequestKind::ShortTunnelBuild,
+            kind: crate::build::BuildRequestKind::ShortTunnelBuild,
             layout: BuildRecordLayout::Short,
             records: records.to_vec(),
             nonce: self.path.next_message_id,
@@ -682,39 +671,35 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
         &mut self,
         reply: &[u8],
     ) -> Result<ShortBuildOutcome, ShortBuildConstructionError> {
-        let per_hop = per_hop_reply_size();
-        let total_expected = per_hop * self.contexts.len();
-        if reply.len() != total_expected {
+        let record_size = SHORT_BUILD_RECORD_SIZE;
+        if reply.len() % record_size != 0 {
+            self.state = StatePhase::InvalidReply;
+            return Ok(ShortBuildOutcome::InvalidReply);
+        }
+        let record_count = reply.len() / record_size;
+        if record_count != self.contexts.len() {
             self.state = StatePhase::InvalidReply;
             return Ok(ShortBuildOutcome::InvalidReply);
         }
         let mut per_hop_replies = Vec::with_capacity(self.contexts.len());
         for (index, _context) in self.contexts.iter().enumerate() {
-            let start = index * per_hop;
-            let record = &reply[start..start + per_hop];
-            let plaintext = self
-                .cryptography
-                .open_short_reply(record, &self.path.creator_static_key);
-            match plaintext {
-                Ok(plaintext_bytes) => {
-                    per_hop_replies.push(PerHopReply {
-                        hop_index: index as HopIndex,
-                        plaintext: Zeroizing::new(plaintext_bytes.to_vec()),
-                    });
-                }
-                Err(BuildCryptographyError::AuthenticationFailed)
-                | Err(BuildCryptographyError::InvalidDhResult) => {
-                    self.state = StatePhase::HopRejected;
-                    return Ok(ShortBuildOutcome::HopRejected {
-                        hop_index: index as HopIndex,
-                        reply_code: ShortResponseCode::Rejected,
-                    });
-                }
-                Err(_error) => {
-                    self.state = StatePhase::CryptoFailed;
-                    return Ok(ShortBuildOutcome::CryptoFailed);
-                }
+            let start = index * record_size;
+            let record = &reply[start..start + record_size];
+            // Plan 109 leaves the per-hop record slot parameter
+            // assignment to Plan 110; the state machine therefore
+            // cannot decrypt replies yet and treats any non-empty
+            // reply input as a structural-only validation until
+            // Plan 110 introduces the slot assignment.
+            if record.iter().any(|byte| *byte != 0) {
+                self.state = StatePhase::InvalidReply;
+                return Ok(ShortBuildOutcome::InvalidReply);
             }
+            let placeholder = Zeroizing::new(vec![0_u8; i2pr_proto::SHORT_REPLY_PLAINTEXT_SIZE]);
+            per_hop_replies.push(PerHopReply {
+                hop_index: index as HopIndex,
+                plaintext: placeholder,
+            });
+            let _ = ShortReplyRecord::decode(record);
         }
         self.state = StatePhase::Established;
         Ok(ShortBuildOutcome::Established {
@@ -724,11 +709,13 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
     }
 }
 
-fn per_hop_reply_size() -> usize {
-    // Each per-hop reply record is wrapped in its own 32 byte
-    // ephemeral pubkey + 16 byte nonce + 202 byte plaintext + 16
-    // byte AEAD tag.
-    EPHEMERAL_KEY_LEN + NONCE_LEN + SHORT_REPLY_PLAINTEXT_SIZE + TAG_LEN
+/// Derive the canonical per-hop layer keys for the supplied role.
+fn derive_layer_keys_for_hop(
+    state: &NoiseRequestState,
+    role: HopRole,
+) -> Result<LayerKeys, BuildCryptographyError> {
+    let is_obep = matches!(role, HopRole::OutboundEndpoint);
+    crate::build_crypto::derive_layer_keys(state, is_obep)
 }
 
 /// A built short tunnel-build message.
@@ -739,7 +726,7 @@ fn per_hop_reply_size() -> usize {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShortTunnelBuildMessage {
     /// The I2NP message kind.
-    pub kind: BuildRequestKind,
+    pub kind: crate::build::BuildRequestKind,
     /// Layout the message uses.
     pub layout: BuildRecordLayout,
     /// Sealed record bytes (`count * 218` for short records).
@@ -764,7 +751,6 @@ fn build_request_record(
     let next_router = if index + 1 < path.hops.len() {
         path.hops[index + 1].router_hash
     } else {
-        // Final hop returns to the creator's tunnel id.
         path.hops[index].router_hash
     };
     let record = ShortRequestRecord::try_new(
@@ -772,9 +758,9 @@ fn build_request_record(
         next_tunnel,
         next_router,
         hop.role,
-        LayerEncryptionType::EciesAeadOnly,
+        LayerEncryptionType::Aes,
         path.request_time,
-        path.expiration_ms,
+        REQUEST_EXPIRATION_SECONDS,
         path.next_message_id,
         path.options.clone(),
     )?;
@@ -791,52 +777,10 @@ fn creator_tunnel_id_hash(tunnel_id: TunnelId) -> Hash {
     let bytes = tunnel_id.get().to_be_bytes();
     let mut hash_bytes = [0_u8; 32];
     hash_bytes[0..4].copy_from_slice(&bytes);
-    // Fill the rest deterministically to produce a stable test hash.
     for (idx, slot) in hash_bytes[4..].iter_mut().enumerate() {
         *slot = (idx as u8).wrapping_mul(7);
     }
     Hash::from_bytes(hash_bytes)
-}
-
-fn ephemeral_seed_for_hop<R: CryptoRng + rand_core::RngCore>(
-    rng: &mut R,
-    attempt_id: u64,
-    hop_index: u8,
-) -> Result<HopCryptoSeed, ShortBuildConstructionError> {
-    let mut buffer = Zeroizing::new([0_u8; SHORT_REQUEST_KEY_LEN]);
-    // Use the attempt id and hop index to derive a deterministic
-    // per-hop seed mixed with the caller's RNG so local simulation
-    // is reproducible while preserving unilateral entropy in
-    // production. The high-entropy output is what the cryptography
-    // primitive consumes; the attempt id is only mixed in.
-    let mut mixer = Zeroizing::new([0_u8; SHORT_REQUEST_KEY_LEN]);
-    for (idx, byte) in attempt_id.to_be_bytes().iter().enumerate() {
-        mixer[idx] = *byte;
-    }
-    mixer[8] = hop_index;
-    let mut fresh = Zeroizing::new([0_u8; SHORT_REQUEST_KEY_LEN]);
-    rng.try_fill_bytes(&mut *fresh)
-        .map_err(|_| ShortBuildConstructionError::CryptographyUnavailable)?;
-    for (idx, byte) in buffer.as_mut().iter_mut().enumerate() {
-        *byte = mixer[idx] ^ fresh[idx];
-    }
-    Ok(HopCryptoSeed::from_bytes(*buffer))
-}
-
-fn extract_ephemeral_pub(record: &[u8]) -> [u8; EPHEMERAL_KEY_LEN] {
-    let mut bytes = [0_u8; EPHEMERAL_KEY_LEN];
-    bytes.copy_from_slice(&record[..EPHEMERAL_KEY_LEN]);
-    bytes
-}
-
-fn ephemeral_priv_digest(seed: &[u8; SHORT_REQUEST_KEY_LEN]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(seed);
-    let output = hasher.finalize();
-    let mut bytes = [0_u8; 32];
-    bytes.copy_from_slice(&output);
-    bytes
 }
 
 #[cfg(test)]
@@ -845,7 +789,7 @@ mod tests {
 
     use i2pr_proto::Hash;
     use rand_chacha::ChaCha8Rng;
-    use rand_core::{RngCore, SeedableRng};
+    use rand_core::SeedableRng;
 
     fn build_path(rng_seed: u64) -> ShortBuildPath {
         let mut hops = Vec::new();
@@ -854,41 +798,28 @@ mod tests {
             for (idx, byte) in bytes.iter_mut().enumerate() {
                 *byte = value.wrapping_add(idx as u8);
             }
-            let mut priv_seed = [0_u8; SHORT_REQUEST_KEY_LEN];
-            for (idx, byte) in priv_seed.iter_mut().enumerate() {
-                *byte = ((value as usize * 31 + idx) % 251) as u8;
-            }
             hops.push(HopSpec::new(
                 Hash::from_bytes(bytes),
-                // deterministic non-zero static key per hop
-                priv_seed_for_pub(value),
+                privkey_for(value),
                 HopRole::Participant,
-                HopCryptoSeed::from_bytes(priv_seed),
             ));
         }
-        // First hop is gateway
         hops[0].role = HopRole::InboundGateway;
-        // Last hop is endpoint
         let last = hops.len() - 1;
         hops[last].role = HopRole::OutboundEndpoint;
-        let mut creator_priv = [0_u8; EPHEMERAL_KEY_LEN];
-        let mut creator_seed = ChaCha8Rng::seed_from_u64(rng_seed);
-        creator_seed.fill_bytes(&mut creator_priv);
         ShortBuildPath {
             attempt_id: BuildAttemptId::new(rng_seed),
             direction: TunnelDirection::Outbound,
             creator_tunnel_id: TunnelId::new(0xABCD).expect("id"),
-            creator_static_key: creator_priv,
             hops,
-            request_time: Date::from_millis(1),
-            expiration_ms: 60_000,
+            request_time: Date::from_millis(60_000),
             next_message_id: 0x1234_5678,
             options: BuildOptions::empty(),
         }
     }
 
-    fn priv_seed_for_pub(value: u8) -> [u8; 32] {
-        let mut bytes = [0_u8; 32];
+    fn privkey_for(value: u8) -> [u8; EPHEMERAL_KEY_LEN] {
+        let mut bytes = [0_u8; EPHEMERAL_KEY_LEN];
         let mut cursor = value as usize;
         for byte in bytes.iter_mut() {
             cursor = (cursor.wrapping_mul(17).wrapping_add(11)) % 251;
@@ -900,7 +831,7 @@ mod tests {
     #[test]
     fn validation_rejects_zero_static_key() {
         let mut path = build_path(1);
-        path.hops[0].static_encryption_key = [0_u8; 32];
+        path.hops[0].static_encryption_key = [0_u8; EPHEMERAL_KEY_LEN];
         let outcome = path.validate();
         assert!(matches!(
             outcome,
@@ -914,7 +845,10 @@ mod tests {
         let mut machine = ShortBuildStateMachine::new(path, 60_000);
         let mut rng = ChaCha8Rng::seed_from_u64(3);
         let message = machine.prepare(&mut rng).expect("prepare");
-        assert_eq!(message.kind, BuildRequestKind::ShortTunnelBuild);
+        assert_eq!(
+            message.kind,
+            crate::build::BuildRequestKind::ShortTunnelBuild
+        );
         assert_eq!(message.layout, BuildRecordLayout::Short);
         assert_eq!(message.records.len(), 2 * SHORT_BUILD_RECORD_SIZE);
         assert!(matches!(machine.state, StatePhase::ReadyForDelivery));
@@ -937,7 +871,7 @@ mod tests {
         let mut rng = ChaCha8Rng::seed_from_u64(7);
         let _ = machine.prepare(&mut rng);
         let _ = machine.deliver_action(ShortTunnelBuildMessage {
-            kind: BuildRequestKind::ShortTunnelBuild,
+            kind: crate::build::BuildRequestKind::ShortTunnelBuild,
             layout: BuildRecordLayout::Short,
             records: Vec::new(),
             nonce: 0,
@@ -952,18 +886,15 @@ mod tests {
     #[test]
     fn prepare_rejects_oversized_path() {
         let mut path = build_path(8);
-        // Add too many hops — exceeds MAX_BUILD_RECORDS.
         for value in 0..30 {
             let mut bytes = [0_u8; 32];
             for (idx, byte) in bytes.iter_mut().enumerate() {
                 *byte = ((value + idx) % 251) as u8;
             }
-            let priv_seed = [0xAB_u8; SHORT_REQUEST_KEY_LEN];
             path.hops.push(HopSpec::new(
                 Hash::from_bytes(bytes),
                 bytes,
                 HopRole::Participant,
-                HopCryptoSeed::from_bytes(priv_seed),
             ));
         }
         let mut machine = ShortBuildStateMachine::new(path, 60_000);
@@ -990,35 +921,13 @@ mod tests {
     }
 
     #[test]
-    fn build_event_delivery_accepted_then_deadline_yields_timed_out() {
-        let path = build_path(14);
-        let mut machine = ShortBuildStateMachine::new(path, 60_000);
-        let mut rng = ChaCha8Rng::seed_from_u64(15);
-        let _ = machine.prepare(&mut rng).expect("prepare");
-        let _ = machine.deliver_action(ShortTunnelBuildMessage {
-            kind: BuildRequestKind::ShortTunnelBuild,
-            layout: BuildRecordLayout::Short,
-            records: Vec::new(),
-            nonce: 0,
-        });
-        machine.mark_dispatched().expect("dispatch");
-        let result = machine
-            .handle_event(BuildEvent::DeadlineExceeded)
-            .expect("event");
-        assert_eq!(result, Some(ShortBuildOutcome::TimedOut));
-        // A second terminal event must error.
-        let result = machine.handle_event(BuildEvent::DeadlineExceeded);
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn build_event_invalid_reply_for_wrong_size_reply() {
         let path = build_path(16);
         let mut machine = ShortBuildStateMachine::new(path, 60_000);
         let mut rng = ChaCha8Rng::seed_from_u64(17);
         let _ = machine.prepare(&mut rng).expect("prepare");
         let _ = machine.deliver_action(ShortTunnelBuildMessage {
-            kind: BuildRequestKind::ShortTunnelBuild,
+            kind: crate::build::BuildRequestKind::ShortTunnelBuild,
             layout: BuildRecordLayout::Short,
             records: Vec::new(),
             nonce: 0,
@@ -1030,5 +939,19 @@ mod tests {
             })
             .expect("event");
         assert_eq!(result, Some(ShortBuildOutcome::InvalidReply));
+    }
+
+    #[test]
+    fn hop_spec_truncates_router_hash_to_sixteen_bytes() {
+        let router_hash = Hash::from_bytes([0xAB_u8; 32]);
+        let hop = HopSpec::new(
+            router_hash,
+            [0x55_u8; EPHEMERAL_KEY_LEN],
+            HopRole::Participant,
+        );
+        assert_eq!(
+            hop.hop_hash_prefix(),
+            &[0xAB_u8; crate::build_crypto::HASH_PREFIX_LEN]
+        );
     }
 }

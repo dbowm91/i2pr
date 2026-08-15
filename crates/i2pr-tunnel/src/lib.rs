@@ -2,8 +2,8 @@
 //! layout, build-cryptography seam, reply-path provider, and
 //! short-tunnel-build state machine for `i2pr`.
 //!
-//! This crate is the Milestone 5 implementation surface (Plans 107
-//! and 108). It owns:
+//! This crate is the Milestone 5 implementation surface (Plans 107,
+//! 108, and 109). It owns:
 //!
 //! - typed tunnel identity ([`identity`])
 //! - bounded exploratory tunnel pool configuration ([`config`])
@@ -13,8 +13,8 @@
 //!   `i2pr_proto::DeferredBuildRecords` codec and the canonical
 //!   wire constants for short and variable builds
 //! - the [`build_crypto::BuildCryptography`] seam together with the
-//!   Plan 108 ECIES-X25519 primitive that protects short
-//!   tunnel-build request/reply records
+//!   Plan 109 ECIES-X25519 Noise-N primitive that protects short
+//!   tunnel-build request and reply records
 //! - the typed short-build request/reply records ([`short`] and the
 //!   [`short_record`] module) and the per-hop crypto contexts that
 //!   drive the build state machine
@@ -23,6 +23,9 @@
 //! - the [`short_state::ShortBuildRegistrar`] that registers a
 //!   fully validated build in the [`pool::ExploratoryPool`] only
 //!   after every hop has accepted
+//! - the deterministic [`responder::DeterministicResponder`]
+//!   peer simulator that exercises the Noise-N crypto primitive
+//!   end-to-end
 //! - the [`provider::ExploratoryPoolReplyPathProvider`] that turns
 //!   the pool into a [`i2pr_netdb::ReplyPath`] source the Plan 105
 //!   lookup state machine can consume
@@ -39,6 +42,7 @@
 pub mod build;
 pub mod build_crypto;
 pub mod config;
+pub mod conformance_fixtures;
 pub mod identity;
 pub mod pool;
 pub mod provider;
@@ -52,8 +56,9 @@ pub use build::{
     BuildRequestKind,
 };
 pub use build_crypto::{
-    BuildCryptography, BuildCryptographyError, EciesX25519BuildCryptography, LayerKeys,
-    NoBuildCryptography, SHORT_REPLY_KEY_LEN, SHORT_REQUEST_KEY_LEN,
+    AEAD_KEY_LEN, AEAD_NONCE_LEN, BuildCryptography, BuildCryptographyError, EPHEMERAL_KEY_LEN,
+    EciesX25519BuildCryptography, HASH_PREFIX_LEN, LayerKeys, NoBuildCryptography,
+    NoiseRequestState, OpenedShortRequest, SealedShortRequest, TAG_LEN, ValidatedRecordSlot,
 };
 pub use config::{
     ExploratoryConfigError, ExploratoryPoolConfig, MAX_BUILD_CONCURRENCY, MAX_EXPLORATORY_INBOUND,
@@ -68,12 +73,13 @@ pub use pool::{
     RegistrationError, TunnelRegistration, TunnelSlot,
 };
 pub use provider::ExploratoryPoolReplyPathProvider;
+pub use responder::{DeterministicResponder, ResponderError};
 pub use short::{
-    BuildAttemptId, BuildEvent, HopCryptoContext, ShortBuildAction, ShortBuildConstructionError,
-    ShortBuildOutcome, ShortBuildPath, ShortTunnelBuildMessage,
+    BuildAttemptId, BuildEvent, HopCryptoContext, HopIndex, HopSpec, PerHopReply, ShortBuildAction,
+    ShortBuildConstructionError, ShortBuildOutcome, ShortBuildPath, ShortTunnelBuildMessage,
 };
 pub use short_record::{
-    BuildOptions, BuildOptionsError, HopRole, LayerEncryptionType, ShortBuildError,
-    ShortReplyRecord, ShortRequestRecord, ShortResponseCode,
+    BuildOptions, BuildOptionsError, HopRole, LayerEncryptionType, REQUEST_EXPIRATION_SECONDS,
+    ShortBuildError, ShortReplyRecord, ShortRequestRecord, ShortResponseCode,
 };
 pub use short_state::{HopResponse, ShortBuildRegistrar, ShortBuildState, ShortBuildStateMachine};

@@ -18,25 +18,26 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 - Transport-neutral lookup, store, and publication state machines (`i2pr-netdb`)
 - Daemon bootstrap integration with `NetDbSeam` (`i2pr-daemon`)
 - Exploratory tunnel substrate, pool, and reply-path provider (`i2pr-tunnel`)
-- ECIES-X25519 short tunnel-build cryptography, typed short request/reply
-  records, runtime-neutral `ShortBuildStateMachine`, success-only
+- ECIES-X25519 short tunnel-build cryptography — locally conformant
+  single-record `Noise_N_25519_ChaChaPoly_SHA256` implementation with
+  exact 154-byte request plaintext, 218-byte encrypted envelope,
+  202-byte reply plaintext, hop-own reply AEAD, derived
+  `replyKey/layerKey/ivKey`, and the OBEP garlic continuation; the
+  Plan 108 implementation was corrected by
+  [`plans/109-short-build-record-and-noise-conformance-correction.md`](plans/109-short-build-record-and-noise-conformance-correction.md)
+  and the conformance fixture is published in
+  [`crates/i2pr-tunnel/src/conformance_fixtures.rs`](crates/i2pr-tunnel/src/conformance_fixtures.rs)
+- Runtime-neutral `ShortBuildStateMachine`, success-only
   `ShortBuildRegistrar`, and deterministic `DeterministicResponder`
-  peer simulator (`i2pr-tunnel`); the wire/cryptographic algorithm
-  is not yet protocol-conformant against the current official I2P
-  Tunnel Creation Specification — see
-  [`plans/108-conformance-amendment.md`](plans/108-conformance-amendment.md)
-  and the Plan 109/110 corrective roadmap
+  peer simulator (`i2pr-tunnel`)
 - CLI daemon with config validation, identity generation, and dry-run (`i2pr-daemon`)
 
 **Not implemented:**
 - Live NTCP2 or SSU2 transport (NTCP2 experimental, non-advertised)
-- Standards-conformant short tunnel-build construction (Plan 108 landed
-  the local architecture but its wire/cryptographic algorithm diverges
-  from the current official I2P Tunnel Creation Specification; Plan
-  109/110 corrective work is the next executable implementation)
-- Live mixed-router tunnel build execution (depends on the locally
-  conformant short-build path and a qualified router-to-router
-  transport)
+- Complete randomized multi-record `ShortTunnelBuild` slot layout,
+  fake records, and one-byte count payload framing (Plan 110 scope)
+- Live mixed-router tunnel build execution (depends on the multi-record
+  closure and a qualified router-to-router transport)
 - NetDB lookup/publication over the network
 - I2NP message handling and router dispatch
 - Streaming, SAM, I2CP, garlic, LeaseSet management

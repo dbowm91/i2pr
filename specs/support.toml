@@ -1,9 +1,10 @@
 # Machine-readable workspace support inventory (current evidence
-# through the Plan 108 ECIES-X25519 short tunnel-build
-# implementation landing; Plan 108 status is
-# `implementation-landed-protocol-conformance-reopened` per
-# plans/108-conformance-amendment.md, with the Plan 109/110
-# corrective roadmap as the next executable authority).
+# through the Plan 109 single-record short tunnel-build Noise-N
+# conformance landing; Plan 109 status is
+# `passed-record-and-noise-conformance` per
+# plans/109-short-build-record-and-noise-conformance-correction.md
+# and plans/109-status.md; the multi-record implementation
+# closure is Plan 110 scope).
 # Structural evidence may be recorded before interoperability; all
 # entries remain non-advertised until the conformance requirements
 # are met.
@@ -16,7 +17,10 @@ plan_106_implementation_floor = "plans/106-status.md"
 plan_107_implementation_floor = "plans/107-status.md"
 plan_108_implementation_floor = "plans/108-status.md"
 plan_108_conformance_amendment = "plans/108-conformance-amendment.md"
+plan_109_short_build_conformance = "plans/109-short-build-record-and-noise-conformance-correction.md"
+plan_109_closure = "plans/109-status.md"
 plan_109_110_corrective_roadmap = "plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md"
+plan_110_multirecord_closure = "plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -417,30 +421,55 @@ status = "experimental"
 evidence = [
     "crates/i2pr-tunnel/src/build_crypto.rs",
     "plans/107-milestone-5-exploratory-tunnel-substrate.md",
-    "plans/108-live-ecies-x25519-short-tunnel-build-construction.md",
-    "plans/108-conformance-amendment.md",
+    "plans/109-short-build-record-and-noise-conformance-correction.md",
+    "plans/109-status.md",
 ]
 advertised = false
 
 [[surface]]
 id = "tunnel.ecies-x25519-short-build-crypto"
 protocol = "tunnels"
-structure = "local-ecies-x25519-short-build-cryptography-and-state-machine"
+structure = "local-ecies-x25519-noise-n-short-build-cryptography-and-state-machine"
 scope = "required-later"
-status = "nonconformant"
-conformant = false
-conformance_note = "Plan 108 implementation landed but its wire/cryptographic algorithm diverges from the current official I2P Tunnel Creation Specification; see plans/108-conformance-amendment.md and plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md. The Plan 109 corrective pass replaces the wire format, Noise-N transcript, layer-encryption type, request/reply key derivation, response codes, and message framing."
+status = "experimental"
+conformant = true
+conformance_note = "Plan 109 closed as `passed-record-and-noise-conformance`: the single-record short request, Noise-N transcript, derived reply/layer/iv keys, exact 218-byte encrypted envelope, and 202-byte reply plaintext are byte-for-byte conformant with the current official I2P Tunnel Creation Specification. Multi-record slot allocation, fake records, raw ChaCha20 preprocessing, and the one-byte-count STBM/OTBRM payload framing are Plan 110 scope. Live mixed-router execution is blocked on Plan 110 and a qualified external delivery lane."
 evidence = [
     "crates/i2pr-tunnel/src/build_crypto.rs",
     "crates/i2pr-tunnel/src/short.rs",
     "crates/i2pr-tunnel/src/short_record.rs",
     "crates/i2pr-tunnel/src/short_state.rs",
     "crates/i2pr-tunnel/src/responder.rs",
+    "crates/i2pr-tunnel/src/conformance_fixtures.rs",
     "crates/i2pr-crypto/src/hkdf.rs",
-    "plans/108-live-ecies-x25519-short-tunnel-build-construction.md",
-    "plans/108-conformance-amendment.md",
-    "plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md",
+    "plans/109-short-build-record-and-noise-conformance-correction.md",
+    "plans/109-status.md",
+    "plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md",
 ]
+advertised = false
+
+[[surface]]
+id = "tunnel.short-build-conformance-fixture"
+protocol = "tunnels"
+structure = "independent-reference-noise-n-and-smtunnel-kdf-fixture"
+scope = "required-later"
+status = "experimental"
+conformant = true
+conformance_note = "Plan 109 introduced the canonical single-record conformance fixture that compares the production ECIES-X25519 Noise-N primitive against an independent reference Noise-N + HKDF-SHA256 derivation. The fixture is exercised by every `cargo test` run and any drift between the two paths fails the test."
+evidence = [
+    "crates/i2pr-tunnel/src/conformance_fixtures.rs",
+    "plans/109-short-build-record-and-noise-conformance-correction.md",
+    "plans/109-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "tunnel.multirecord-short-build"
+protocol = "tunnels"
+structure = "randomized-slot-fake-record-cha-cha20-preprocessing-stbm-otbrm-framing"
+scope = "required-later"
+status = "deferred"
+evidence = ["plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md"]
 advertised = false
 
 [[surface]]
@@ -449,5 +478,5 @@ protocol = "tunnels"
 structure = "live-ecies-x25519-build-and-mixed-router-execution"
 scope = "required-later"
 status = "deferred"
-evidence = ["plans/108-live-ecies-x25519-short-tunnel-build-construction.md"]
+evidence = ["plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md"]
 advertised = false

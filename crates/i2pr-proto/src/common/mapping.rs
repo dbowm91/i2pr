@@ -159,7 +159,10 @@ impl Mapping {
         encode_to_vec(maximum, |encoder| self.encode_into(encoder))
     }
 
-    pub(super) fn encoded_body_len(&self) -> Result<usize, CodecError> {
+    /// Returns the on-wire body length of this mapping (excluding the
+    /// two-byte length prefix). Returns an error if the mapping is
+    /// too large to encode.
+    pub fn encoded_body_len(&self) -> Result<usize, CodecError> {
         let mut total = 0usize;
         for entry in &self.entries {
             total = total
@@ -178,6 +181,15 @@ impl Mapping {
             });
         }
         Ok(total)
+    }
+
+    /// Unwrapping variant of [`Self::encoded_body_len`] for callers
+    /// that have already validated the mapping against its bound.
+    /// Panics if the body length would exceed the maximum, which is
+    /// unreachable for a well-formed mapping.
+    pub fn encoded_body_len_unwrap(&self) -> usize {
+        self.encoded_body_len()
+            .expect("mapping body length exceeded the wire bound")
     }
 
     pub(super) fn encode_into(&self, encoder: &mut EncodeBuffer<'_>) -> Result<(), CodecError> {

@@ -1,15 +1,27 @@
 //! Typed short tunnel-build request and reply records.
 //!
-//! Plan 108 §7 owns the typed internal representation for the 154-byte
-//! request plaintext and the 202-byte reply plaintext. The module
-//! does not perform cryptography — it only validates the structure of
-//! one record and produces the canonical byte buffer the
-//! `build_crypto` and `short` modules consume.
+//! Plan 109 §6 + §10 own the canonical 154-byte short request
+//! plaintext and the canonical 202-byte short reply plaintext.
+//! The module does not perform cryptography; it only validates
+//! the structure of one record and produces the canonical byte
+//! buffer the `build_crypto` and `short` modules consume.
 //!
-//! All field sizes mirror the ECIES-X25519 short tunnel-build
-//! specification the Plan 108 implementation follows. The module
-//! rejects malformed inputs and refuses to expose partially
-//! validated records.
+//! All field sizes mirror the current official I2P Tunnel
+//! Creation Specification that Plan 109 implements:
+//!
+//! - the request plaintext uses the 154-byte layout with a fixed
+//!   56-byte prefix followed by a canonical `Mapping`;
+//! - the reply plaintext uses the 202-byte layout with a
+//!   canonical `Mapping` followed by a one-byte response code at
+//!   byte 201;
+//! - the role flags, layer-encryption type, request-time minute
+//!   encoding, and expiration encoding are exact
+//!   (`Participant = 0x00`, `InboundGateway = 0x80`,
+//!   `OutboundEndpoint = 0x40`, `AES = 0x00`, time/floor(unix/60),
+//!   expiration seconds since creation).
+//!
+//! Malformed inputs are rejected; the module never exposes a
+//! partially validated record.
 
 #![forbid(unsafe_code)]
 
@@ -23,69 +35,89 @@ use zeroize::Zeroizing;
 
 use crate::identity::TunnelId;
 
-/// The fixed role byte mask carried by a short request record.
+/// Length of the request plaintext Mapping region (Mapping + padding budget).
+const MAX_REQUEST_MAPPING_AREA: usize = 98;
+const MAX_REQUEST_MAPPING_BODY: usize = MAX_REQUEST_MAPPING_AREA - 2;
+/// Length of the fixed prefix preceding the options Mapping in a request.
+pub const REQUEST_FIXED_PREFIX_LEN: usize = 56;
+
+/// Length of the reply plaintext Mapping region (Mapping + padding budget).
+const MAX_REPLY_MAPPING_AREA: usize = 201;
+const MAX_REPLY_MAPPING_BODY: usize = MAX_REPLY_MAPPING_AREA - 2;
+
+/// The current fixed role flag byte for a participant hop.
+pub const HOP_ROLE_PARTICIPANT: u8 = 0x00;
+/// The current fixed role flag byte for an inbound gateway hop.
+pub const HOP_ROLE_INBOUND_GATEWAY: u8 = 0x80;
+/// The current fixed role flag byte for an outbound endpoint hop.
+pub const HOP_ROLE_OUTBOUND_ENDPOINT: u8 = 0x40;
+
+/// Hop role carried by the short request record.
 ///
-/// A value of zero marks the participant role. Exactly one of the
-/// [`HopRole`] variants is accepted; simultaneously setting gateway
-/// and endpoint is rejected at construction time.
+/// The normative byte values follow the I2P Tunnel Creation
+/// Specification: `0x00` for participants, `0x80` for an inbound
+/// gateway, and `0x40` for an outbound endpoint. Setting both the
+/// gateway and endpoint bits is rejected at construction time,
+/// and any other undefined high bits are refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HopRole {
-    /// Inbound gateway: receives the request from the inbound side.
-    InboundGateway,
     /// Intermediate participant: decrypts one layer and forwards.
     Participant,
+    /// Inbound gateway: receives the request from the inbound side.
+    InboundGateway,
     /// Outbound endpoint: terminates the tunnel path.
     OutboundEndpoint,
 }
 
 impl HopRole {
-    /// Returns the role flag byte.
+    /// Returns the normative role flag byte.
     pub const fn flag(self) -> u8 {
         match self {
-            Self::InboundGateway => 0x01,
-            Self::Participant => 0x00,
-            Self::OutboundEndpoint => 0x02,
+            Self::Participant => HOP_ROLE_PARTICIPANT,
+            Self::InboundGateway => HOP_ROLE_INBOUND_GATEWAY,
+            Self::OutboundEndpoint => HOP_ROLE_OUTBOUND_ENDPOINT,
         }
     }
 
-    /// Decodes the role flag byte. Bits outside the two-bit
-    /// canonical mask must be zero; otherwise the input is rejected.
+    /// Decodes a role flag byte. The I2P specification requires
+    /// that exactly one of the high-bit role flags is set (or zero
+    /// for participant). Any other bit pattern is rejected.
     pub const fn from_flag(flag: u8) -> Result<Self, ShortBuildError> {
-        if flag & !0x03 != 0 {
-            return Err(ShortBuildError::InvalidRoleFlags { flags: flag });
-        }
-        match flag & 0x03 {
-            0x00 => Ok(Self::Participant),
-            0x01 => Ok(Self::InboundGateway),
-            0x02 => Ok(Self::OutboundEndpoint),
-            _ => Err(ShortBuildError::InvalidRoleFlags { flags: flag }),
+        match flag {
+            HOP_ROLE_PARTICIPANT => Ok(Self::Participant),
+            HOP_ROLE_INBOUND_GATEWAY => Ok(Self::InboundGateway),
+            HOP_ROLE_OUTBOUND_ENDPOINT => Ok(Self::OutboundEndpoint),
+            other => Err(ShortBuildError::InvalidRoleFlags { flags: other }),
         }
     }
 }
 
-/// Layer encryption type permitted by the Plan 108 short build.
+/// Layer encryption type carried by the short request record.
 ///
-/// Only the AEAD-only ECIES-X25519 layer is currently produced by
-/// the Plan 108 implementation. The encoded byte matches the I2P
-/// specification but values outside the known set are rejected.
+/// The current specification only defines `0` (AES). Construction
+/// rejects any other value; decoding mirrors the construction rule
+/// without an explicit `UnsupportedLayerEncryption` category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LayerEncryptionType {
-    /// ECIES-X25519 AEAD-only per-hop encryption (Plan 108 default).
-    EciesAeadOnly,
+    /// AES tunnel-layer encryption (current I2P specification value `0`).
+    Aes,
 }
 
 impl LayerEncryptionType {
-    /// Returns the layer encryption type byte.
+    /// Returns the normative layer-encryption type byte.
     pub const fn byte(self) -> u8 {
         match self {
-            Self::EciesAeadOnly => 0x05,
+            Self::Aes => 0x00,
         }
     }
 
-    /// Decodes a layer encryption type byte.
+    /// Decodes the layer-encryption type byte. Unknown values are
+    /// rejected fail-closed; the surface refuses to expose a
+    /// non-AES layer encryption type until the I2P specification
+    /// publishes another canonical byte.
     pub const fn from_byte(byte: u8) -> Result<Self, ShortBuildError> {
         match byte {
-            0x05 => Ok(Self::EciesAeadOnly),
+            0x00 => Ok(Self::Aes),
             other => Err(ShortBuildError::UnsupportedLayerEncryption { byte: other }),
         }
     }
@@ -108,8 +140,14 @@ impl BuildOptions {
     }
 
     /// Constructs options from a validated canonical mapping.
-    pub fn from_mapping(mapping: Mapping) -> Self {
-        Self { mapping }
+    pub fn from_mapping(mapping: Mapping) -> Result<Self, ShortBuildError> {
+        let body_len = mapping
+            .encoded_body_len()
+            .map_err(ShortBuildError::Protocol)?;
+        if body_len > MAX_REQUEST_MAPPING_BODY {
+            return Err(ShortBuildError::OptionsLength { actual: body_len });
+        }
+        Ok(Self { mapping })
     }
 
     /// Returns the underlying mapping.
@@ -124,7 +162,7 @@ impl Default for BuildOptions {
     }
 }
 
-/// Errors produced by the [`BuildOptions`] bounds and parsing.
+/// Validation failures for [`BuildOptions`].
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum BuildOptionsError {
     /// Options failed to encode within the protocol maximum.
@@ -140,19 +178,21 @@ pub enum BuildOptionsError {
     Protocol(#[from] CodecError),
 }
 
-/// Maximum build request expiration in milliseconds from creation.
+/// Fixed expiration window for a short tunnel-build request.
 ///
-/// The I2P specification limits the acceptance window for a build
-/// request to a few minutes. Plan 108 caps the value at one hour
-/// to bound replay windows; callers should pick a smaller value.
-pub const MAX_BUILD_EXPIRATION_MILLIS: u64 = 60 * 60 * 1000;
+/// The I2P specification currently mandates an expiration of
+/// exactly 600 seconds from the creation time. Plan 109 enforces
+/// this constant for every hop the builder produces; the variable
+/// lifetime work belongs to a different layer.
+pub const REQUEST_EXPIRATION_SECONDS: u32 = 600;
 
 /// Typed 154-byte short tunnel-build request record.
 ///
-/// The struct is runtime-neutral: it owns the canonical fields the
-/// I2P short-build specification defines and refuses to expose
-/// partially validated data. Use [`ShortRequestRecord::encode`] to
-/// produce the 154-byte plaintext the build cryptography consumes.
+/// The struct is runtime-neutral: it owns the canonical fields
+/// the I2P short-build specification defines and refuses to
+/// expose partially validated data. Use
+/// [`ShortRequestRecord::encode`] to produce the 154-byte
+/// plaintext the build cryptography consumes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShortRequestRecord {
     receive_tunnel: TunnelId,
@@ -161,7 +201,7 @@ pub struct ShortRequestRecord {
     role: HopRole,
     layer_encryption_type: LayerEncryptionType,
     request_time: Date,
-    expiration: Date,
+    expiration_seconds: u32,
     next_message_id: u32,
     options: BuildOptions,
 }
@@ -176,20 +216,20 @@ impl ShortRequestRecord {
         role: HopRole,
         layer_encryption_type: LayerEncryptionType,
         request_time: Date,
-        expiration_ms: u64,
+        expiration_seconds: u32,
         next_message_id: u32,
         options: BuildOptions,
     ) -> Result<Self, ShortBuildError> {
         if next_message_id == 0 {
             return Err(ShortBuildError::ZeroMessageId);
         }
-        if expiration_ms == 0 {
+        if expiration_seconds == 0 {
             return Err(ShortBuildError::ZeroExpiration);
         }
-        if expiration_ms > MAX_BUILD_EXPIRATION_MILLIS {
-            return Err(ShortBuildError::ExpirationExceedsMaximum {
-                actual: expiration_ms,
-                maximum: MAX_BUILD_EXPIRATION_MILLIS,
+        if expiration_seconds != REQUEST_EXPIRATION_SECONDS {
+            return Err(ShortBuildError::ExpirationMismatch {
+                actual: expiration_seconds,
+                expected: REQUEST_EXPIRATION_SECONDS,
             });
         }
         Ok(Self {
@@ -199,7 +239,7 @@ impl ShortRequestRecord {
             role,
             layer_encryption_type,
             request_time,
-            expiration: Date::from_millis(expiration_ms),
+            expiration_seconds,
             next_message_id,
             options,
         })
@@ -220,7 +260,7 @@ impl ShortRequestRecord {
         &self.next_router
     }
 
-    /// Returns the hop role flags.
+    /// Returns the hop role.
     pub const fn role(&self) -> HopRole {
         self.role
     }
@@ -230,14 +270,14 @@ impl ShortRequestRecord {
         self.layer_encryption_type
     }
 
-    /// Returns the request time in milliseconds.
+    /// Returns the request time (milliseconds since the Unix epoch).
     pub const fn request_time(&self) -> Date {
         self.request_time
     }
 
-    /// Returns the request expiration in milliseconds.
-    pub const fn expiration(&self) -> Date {
-        self.expiration
+    /// Returns the request expiration in seconds since creation.
+    pub const fn expiration_seconds(&self) -> u32 {
+        self.expiration_seconds
     }
 
     /// Returns the next-hop message identifier.
@@ -245,9 +285,21 @@ impl ShortRequestRecord {
         self.next_message_id
     }
 
-    /// Returns the encoded build options mapping.
+    /// Returns the build options mapping.
     pub const fn options(&self) -> &BuildOptions {
         &self.options
+    }
+
+    /// Computes the wire `floor(unix_seconds / 60)` minute value
+    /// the build encodes. The conversion refuses truncation on
+    /// overflow rather than emitting a wrong minute.
+    pub const fn request_time_minutes(&self) -> Result<u32, ShortBuildError> {
+        let millis = self.request_time.as_millis();
+        let seconds = millis / 1_000;
+        if seconds > u32::MAX as u64 {
+            return Err(ShortBuildError::RequestTimeOverflow { millis });
+        }
+        Ok((seconds / 60) as u32)
     }
 
     /// Encodes the canonical 154-byte plaintext record.
@@ -257,125 +309,102 @@ impl ShortRequestRecord {
         buffer[4..8].copy_from_slice(&self.next_tunnel.get().to_be_bytes());
         buffer[8..40].copy_from_slice(self.next_router.as_bytes());
         buffer[40] = self.role.flag();
-        buffer[41] = self.layer_encryption_type.byte();
-        buffer[42..50].copy_from_slice(&self.request_time.as_millis().to_be_bytes());
-        // 8 bytes reserved (zero per Plan 108) sit at offset 50..58.
-        buffer[50..58].copy_from_slice(&[0_u8; 8]);
-        buffer[58..66].copy_from_slice(&self.expiration.as_millis().to_be_bytes());
-        buffer[66..70].copy_from_slice(&self.next_message_id.to_be_bytes());
-        // 69 bytes of options follow, encoded as a Mapping.
+        // Additional flag bytes 41..43 must be zero. The layer
+        // encryption type occupies byte 43.
+        buffer[41] = 0;
+        buffer[42] = 0;
+        buffer[43] = self.layer_encryption_type.byte();
+        let minutes = self.request_time_minutes()?;
+        buffer[44..48].copy_from_slice(&minutes.to_be_bytes());
+        buffer[48..52].copy_from_slice(&self.expiration_seconds.to_be_bytes());
+        buffer[52..56].copy_from_slice(&self.next_message_id.to_be_bytes());
+        // Encoding at offset 56: the canonical Mapping with a
+        // two-byte length prefix.
         let encoded_options = self
             .options
             .mapping
-            .encode_to_vec(69)
+            .encode_to_vec(MAX_REQUEST_MAPPING_AREA)
             .map_err(ShortBuildError::OptionsEncode)?;
-        if encoded_options.is_empty() || encoded_options.len() > 70 {
+        if encoded_options.len() > MAX_REQUEST_MAPPING_AREA {
             return Err(ShortBuildError::OptionsLength {
                 actual: encoded_options.len(),
             });
         }
-        // first byte is the u16 length high byte of mapping; we treat
-        // the body length's lower byte as the count byte at offset 70
-        // to keep the encoded form strictly canonical.
-        let body_len = u16::from_be_bytes([encoded_options[0], encoded_options[1]]) as usize;
-        if body_len + 2 != encoded_options.len() {
-            return Err(ShortBuildError::OptionsLength {
-                actual: encoded_options.len(),
-            });
-        }
-        if body_len > 67 {
-            return Err(ShortBuildError::OptionsLength { actual: body_len });
-        }
-        // Options layout: 1 byte length + body (max 67 bytes).
-        buffer[70] = body_len as u8;
-        buffer[71..71 + body_len].copy_from_slice(&encoded_options[2..]);
-        // Remaining bytes 71 + body_len .. 154 are zero (zero-padded).
+        buffer[56..56 + encoded_options.len()].copy_from_slice(&encoded_options);
+        // Remaining bytes (56 + len .. 154) are zero by construction;
+        // the in-memory representation of [0_u8; 154] starts zeroed.
         Ok(Zeroizing::new(buffer))
     }
 }
 
-/// Short-build reply response codes the Plan 108 surface recognises.
+/// Short-build reply response codes the Plan 109 surface recognises.
+///
+/// The I2P specification currently publishes the bandwidth
+/// rejection code `30`. The success code is `0`. Additional
+/// response values may be rejected unless an authorised I2P
+/// specification update introduces them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShortResponseCode {
     /// The hop accepted its position in the build.
-    Accepted = 0,
-    /// The hop rejected the build for a permitted reason.
-    Rejected = 1,
+    Accepted,
+    /// The hop rejected the build for the current defined reason.
+    BandwidthRejected,
 }
 
 impl ShortResponseCode {
-    /// Returns the response code byte.
+    /// Returns the normative response byte.
     pub const fn byte(self) -> u8 {
-        self as u8
+        match self {
+            Self::Accepted => 0x00,
+            Self::BandwidthRejected => 30,
+        }
     }
 
     /// Decodes a response byte; unknown values produce a typed
     /// [`ShortBuildError::UnknownReplyCode`].
     pub const fn from_byte(byte: u8) -> Result<Self, ShortBuildError> {
         match byte {
-            0 => Ok(Self::Accepted),
-            1 => Ok(Self::Rejected),
+            0x00 => Ok(Self::Accepted),
+            30 => Ok(Self::BandwidthRejected),
             other => Err(ShortBuildError::UnknownReplyCode { code: other }),
+        }
+    }
+}
+
+impl fmt::Display for ShortResponseCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Accepted => formatter.write_str("accepted"),
+            Self::BandwidthRejected => formatter.write_str("bandwidth-rejected"),
         }
     }
 }
 
 /// Typed 202-byte short tunnel-build reply record.
 ///
-/// The plaintext reply record carries the hop's response code,
-/// adjusted timings, and the per-hop reply message id that the
-/// creator uses for correlation.
+/// The plaintext reply record carries the hop's response code
+/// and the hop's own canonical options Mapping. The reply byte
+/// lives at offset 201; the Mapping begins at offset 0.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShortReplyRecord {
-    reply_code: ShortResponseCode,
-    expiration: Date,
-    next_message_id: u32,
-    tunnel_id: u32,
+    options: BuildOptions,
+    response: ShortResponseCode,
 }
 
 impl ShortReplyRecord {
     /// Constructs a reply record with full validation.
-    pub fn try_new(
-        reply_code: ShortResponseCode,
-        expiration_ms: u64,
-        next_message_id: u32,
-        tunnel_id: u32,
-    ) -> Result<Self, ShortBuildError> {
-        if expiration_ms == 0 {
-            return Err(ShortBuildError::ZeroExpiration);
-        }
-        if expiration_ms > MAX_BUILD_EXPIRATION_MILLIS {
-            return Err(ShortBuildError::ExpirationExceedsMaximum {
-                actual: expiration_ms,
-                maximum: MAX_BUILD_EXPIRATION_MILLIS,
-            });
-        }
-        Ok(Self {
-            reply_code,
-            expiration: Date::from_millis(expiration_ms),
-            next_message_id,
-            tunnel_id,
-        })
+    pub fn new(options: BuildOptions, response: ShortResponseCode) -> Self {
+        Self { options, response }
     }
 
-    /// Returns the hop's response code.
-    pub const fn reply_code(&self) -> ShortResponseCode {
-        self.reply_code
+    /// Returns the reply options mapping.
+    pub fn options(&self) -> &BuildOptions {
+        &self.options
     }
 
-    /// Returns the reply expiration time in milliseconds.
-    pub const fn expiration(&self) -> Date {
-        self.expiration
-    }
-
-    /// Returns the per-hop reply message identifier.
-    pub const fn next_message_id(&self) -> u32 {
-        self.next_message_id
-    }
-
-    /// Returns the per-hop tunnel identifier.
-    pub const fn tunnel_id(&self) -> u32 {
-        self.tunnel_id
+    /// Returns the reply response code.
+    pub const fn response(&self) -> ShortResponseCode {
+        self.response
     }
 
     /// Decodes a reply plaintext buffer.
@@ -386,35 +415,63 @@ impl ShortReplyRecord {
                 expected: SHORT_REPLY_PLAINTEXT_SIZE,
             });
         }
-        let reply_code = ShortResponseCode::from_byte(input[0])?;
-        let expiration = decode_u64(&input[1..9]);
-        let next_message_id = decode_u32(&input[9..13]);
-        let tunnel_id = decode_u32(&input[13..17]);
-        Self::try_new(reply_code, expiration, next_message_id, tunnel_id)
+        let response = ShortResponseCode::from_byte(input[SHORT_REPLY_PLAINTEXT_SIZE - 1])?;
+        // The Mapping covers bytes `0..201` and the response byte is
+        // at index 201.  For an empty Mapping the canonical encoding
+        // is exactly two bytes `00 00`; any remaining bytes in the
+        // 201-byte mapping area are random padding and not validated.
+        // Slice only the encoded prefix so the strict codec does not
+        // reject the trailing random padding.
+        let mapping_area = &input[..SHORT_REPLY_PLAINTEXT_SIZE - 1];
+        let mapping = if mapping_area.len() < 2 {
+            Mapping::empty()
+        } else {
+            // Read the declared body length from the first two bytes,
+            // then take exactly that many bytes for the Mapping body.
+            let declared_body = u16::from_be_bytes([mapping_area[0], mapping_area[1]]) as usize;
+            if declared_body > MAX_REPLY_MAPPING_BODY {
+                return Err(ShortBuildError::Protocol(CodecError::LengthExceeded {
+                    offset: 0,
+                    declared: declared_body,
+                    maximum: MAX_REPLY_MAPPING_BODY,
+                    context: "reply mapping body",
+                }));
+            }
+            let mapping_len = 2 + declared_body;
+            if mapping_len > mapping_area.len() {
+                return Err(ShortBuildError::Protocol(CodecError::Truncated {
+                    offset: mapping_area.len(),
+                    needed: mapping_len,
+                    remaining: mapping_area.len(),
+                }));
+            }
+            Mapping::decode(&mapping_area[..mapping_len], MAX_REPLY_MAPPING_AREA)
+                .map_err(ShortBuildError::Protocol)?
+        };
+        let options = BuildOptions::from_mapping(mapping)?;
+        Ok(Self { options, response })
     }
 
     /// Encodes the canonical 202-byte reply plaintext.
     pub fn encode(&self) -> Zeroizing<[u8; SHORT_REPLY_PLAINTEXT_SIZE]> {
         let mut buffer = [0_u8; SHORT_REPLY_PLAINTEXT_SIZE];
-        buffer[0] = self.reply_code.byte();
-        buffer[1..9].copy_from_slice(&self.expiration.as_millis().to_be_bytes());
-        buffer[9..13].copy_from_slice(&self.next_message_id.to_be_bytes());
-        buffer[13..17].copy_from_slice(&self.tunnel_id.to_be_bytes());
-        // Bytes 17..202 are zero per Plan 108 (no extra options).
+        let encoded = self
+            .options
+            .mapping
+            .encode_to_vec(MAX_REPLY_MAPPING_AREA)
+            .map_err(ShortBuildError::OptionsEncode)
+            .unwrap_or_default();
+        if encoded.len() > SHORT_REPLY_PLAINTEXT_SIZE - 1 {
+            return Zeroizing::new([0_u8; SHORT_REPLY_PLAINTEXT_SIZE]);
+        }
+        buffer[..encoded.len()].copy_from_slice(&encoded);
+        // Bytes between the end of the Mapping and the response byte
+        // are random padding. The constructor `new(...)` above does
+        // not provide caller-supplied padding, so we leave those bytes
+        // zeroed; the decoder accepts any padding value.
+        buffer[SHORT_REPLY_PLAINTEXT_SIZE - 1] = self.response.byte();
         Zeroizing::new(buffer)
     }
-}
-
-fn decode_u64(input: &[u8]) -> u64 {
-    let mut bytes = [0_u8; 8];
-    bytes.copy_from_slice(input);
-    u64::from_be_bytes(bytes)
-}
-
-fn decode_u32(input: &[u8]) -> u32 {
-    let mut bytes = [0_u8; 4];
-    bytes.copy_from_slice(input);
-    u32::from_be_bytes(bytes)
 }
 
 /// Typed errors produced by the short-build record surface.
@@ -428,7 +485,7 @@ pub enum ShortBuildError {
         /// Expected length.
         expected: usize,
     },
-    /// Hop role flags were outside the allowed two-bit field.
+    /// Hop role flag byte did not match a normative single-bit value.
     #[error("invalid hop role flags {flags:#x}")]
     InvalidRoleFlags {
         /// Offending flag byte.
@@ -446,15 +503,21 @@ pub enum ShortBuildError {
     /// The request expiration was zero.
     #[error("short build expiration must be nonzero")]
     ZeroExpiration,
-    /// The request expiration exceeded the maximum.
-    #[error("short build expiration {actual}ms exceeds {maximum}ms maximum")]
-    ExpirationExceedsMaximum {
+    /// The request expiration disagreed with the I2P-mandated 600-second window.
+    #[error("short build expiration {actual}s differs from mandatory {expected}s")]
+    ExpirationMismatch {
         /// Actual supplied expiration.
-        actual: u64,
-        /// Maximum accepted expiration.
-        maximum: u64,
+        actual: u32,
+        /// Mandated expiration.
+        expected: u32,
     },
-    /// Reply code byte was unknown.
+    /// The request time overflowed the wire minutes conversion.
+    #[error("short build request time {millis}ms overflows the minute wire conversion")]
+    RequestTimeOverflow {
+        /// Original millisecond timestamp.
+        millis: u64,
+    },
+    /// Reply code byte was not in the recognised set.
     #[error("unknown short build reply code {code}")]
     UnknownReplyCode {
         /// Offending byte.
@@ -464,9 +527,9 @@ pub enum ShortBuildError {
     #[error("short build options encoding failed: {0}")]
     OptionsEncode(CodecError),
     /// Options mapping length was outside the record budget.
-    #[error("short build options length {actual} bytes is outside record budget")]
+    #[error("short build options encoded length {actual} is outside record budget")]
     OptionsLength {
-        /// Actual options body length.
+        /// Actual encoded options length.
         actual: usize,
     },
     /// A wrapped decode error from `i2pr-proto`.
@@ -474,21 +537,7 @@ pub enum ShortBuildError {
     Protocol(#[from] CodecError),
 }
 
-impl fmt::Display for ShortResponseCode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            Self::Accepted => "accepted",
-            Self::Rejected => "rejected",
-        };
-        formatter.write_str(label)
-    }
-}
-
 /// Decoder/encoder helper exposed for the build cryptography layer.
-///
-/// The plaintext buffer size matches the canonical I2P short
-/// request/reply record sizes. Plan 108 does not extend the wire
-/// layout beyond those values.
 pub const fn plaintext_size(is_reply: bool) -> usize {
     if is_reply {
         SHORT_REPLY_PLAINTEXT_SIZE
@@ -497,11 +546,7 @@ pub const fn plaintext_size(is_reply: bool) -> usize {
     }
 }
 
-/// Helper that decodes a plaintext buffer as either a request or a
-/// reply. The first byte selects the kind: 0 is reserved for
-/// replies (the `reply_code` field) and Plan 108 only consumes
-/// request encoding internally; the helper is reserved for the
-/// responder that produces a reply.
+/// Helper that classifies a plaintext buffer by length.
 pub fn classify_plaintext_kind(input: &[u8]) -> Result<bool, ShortBuildError> {
     match input.len() {
         SHORT_REQUEST_PLAINTEXT_SIZE => Ok(false),
@@ -513,18 +558,14 @@ pub fn classify_plaintext_kind(input: &[u8]) -> Result<bool, ShortBuildError> {
     }
 }
 
-/// Validate a Mapping as a build options payload.
-///
-/// The function rejects empty mappings (the I2P spec requires a 0
-/// length when there are no options) and any mapping that fails
-/// to encode within the record budget. Used by callers that build
-/// options from external input.
-pub fn validate_options_body(body: &[u8]) -> Result<(), ShortBuildError> {
-    if body.len() > 68 {
+/// Validate a Mapping as a reply body. Used by callers that build
+/// replies from external input.
+pub fn validate_reply_body(body: &[u8]) -> Result<(), ShortBuildError> {
+    if body.len() > MAX_REPLY_MAPPING_AREA {
         return Err(ShortBuildError::OptionsLength { actual: body.len() });
     }
     if !body.is_empty() {
-        Mapping::decode(body, body.len()).map_err(ShortBuildError::Protocol)?;
+        Mapping::decode(body, MAX_REPLY_MAPPING_AREA).map_err(ShortBuildError::Protocol)?;
     }
     Ok(())
 }
@@ -534,7 +575,6 @@ mod tests {
     use super::*;
 
     use crate::identity::TunnelId;
-    use i2pr_proto::Hash;
 
     fn next_router() -> Hash {
         Hash::from_bytes([0x33_u8; 32])
@@ -546,9 +586,9 @@ mod tests {
             TunnelId::new(0x2000).expect("tunnel id"),
             next_router(),
             HopRole::InboundGateway,
-            LayerEncryptionType::EciesAeadOnly,
-            Date::from_millis(1_000),
-            60_000,
+            LayerEncryptionType::Aes,
+            Date::from_millis(60_000),
+            REQUEST_EXPIRATION_SECONDS,
             0xABCD_1234,
             BuildOptions::empty(),
         )
@@ -556,112 +596,167 @@ mod tests {
     }
 
     #[test]
-    fn hop_role_flag_roundtrip() {
-        for role in [
-            HopRole::InboundGateway,
-            HopRole::Participant,
-            HopRole::OutboundEndpoint,
-        ] {
-            assert_eq!(HopRole::from_flag(role.flag()).expect("flag"), role);
-        }
-        assert!(HopRole::from_flag(0x03).is_err());
+    fn hop_role_flags_round_trip() {
+        assert_eq!(
+            HopRole::from_flag(HOP_ROLE_PARTICIPANT).expect("flag"),
+            HopRole::Participant
+        );
+        assert_eq!(
+            HopRole::from_flag(HOP_ROLE_INBOUND_GATEWAY).expect("flag"),
+            HopRole::InboundGateway
+        );
+        assert_eq!(
+            HopRole::from_flag(HOP_ROLE_OUTBOUND_ENDPOINT).expect("flag"),
+            HopRole::OutboundEndpoint
+        );
+        assert!(HopRole::from_flag(0xC0).is_err());
         assert!(HopRole::from_flag(0x10).is_err());
     }
 
     #[test]
-    fn layer_encryption_type_roundtrip() {
+    fn layer_encryption_type_is_aes_only() {
         assert_eq!(
-            LayerEncryptionType::from_byte(LayerEncryptionType::EciesAeadOnly.byte()).expect("ok"),
-            LayerEncryptionType::EciesAeadOnly
+            LayerEncryptionType::from_byte(LayerEncryptionType::Aes.byte()).expect("ok"),
+            LayerEncryptionType::Aes
         );
+        // The Plan 108 0x05 byte is rejected by the new decoder.
         assert!(matches!(
-            LayerEncryptionType::from_byte(0x04),
-            Err(ShortBuildError::UnsupportedLayerEncryption { .. })
+            LayerEncryptionType::from_byte(0x05),
+            Err(ShortBuildError::UnsupportedLayerEncryption { byte: 0x05 })
         ));
     }
 
     #[test]
-    fn response_code_roundtrip() {
+    fn response_code_round_trip() {
         assert_eq!(
             ShortResponseCode::from_byte(ShortResponseCode::Accepted.byte()).expect("ok"),
             ShortResponseCode::Accepted
         );
         assert_eq!(
-            ShortResponseCode::from_byte(ShortResponseCode::Rejected.byte()).expect("ok"),
-            ShortResponseCode::Rejected
+            ShortResponseCode::from_byte(ShortResponseCode::BandwidthRejected.byte()).expect("ok"),
+            ShortResponseCode::BandwidthRejected
         );
+        // Plan 108's response code 1 is no longer accepted.
         assert!(matches!(
-            ShortResponseCode::from_byte(7),
-            Err(ShortBuildError::UnknownReplyCode { .. })
+            ShortResponseCode::from_byte(1),
+            Err(ShortBuildError::UnknownReplyCode { code: 1 })
         ));
     }
 
     #[test]
-    fn request_record_encodes_to_canonical_size() {
+    fn request_minutes_conversion_is_exact() {
+        // 60_000 ms = 60 s = 1 minute exactly.
+        let record = request_record();
+        assert_eq!(record.request_time_minutes().expect("minutes"), 1);
+        // Now test the boundaries.
+        let floor_60s = ShortRequestRecord::try_new(
+            TunnelId::new(0x1000).expect("tunnel id"),
+            TunnelId::new(0x2000).expect("tunnel id"),
+            next_router(),
+            HopRole::InboundGateway,
+            LayerEncryptionType::Aes,
+            Date::from_millis(59_999),
+            REQUEST_EXPIRATION_SECONDS,
+            0x1234_5678,
+            BuildOptions::empty(),
+        )
+        .expect("request");
+        // 59.999 s rounds down to 0 minutes.
+        assert_eq!(floor_60s.request_time_minutes().expect("minutes"), 0);
+        let exact_60s = ShortRequestRecord::try_new(
+            TunnelId::new(0x1000).expect("tunnel id"),
+            TunnelId::new(0x2000).expect("tunnel id"),
+            next_router(),
+            HopRole::InboundGateway,
+            LayerEncryptionType::Aes,
+            Date::from_millis(60_000),
+            REQUEST_EXPIRATION_SECONDS,
+            0x1234_5678,
+            BuildOptions::empty(),
+        )
+        .expect("request");
+        assert_eq!(exact_60s.request_time_minutes().expect("minutes"), 1);
+    }
+
+    #[test]
+    fn request_record_encodes_to_canonical_layout() {
         let record = request_record();
         let bytes = record.encode().expect("encode");
         assert_eq!(bytes.len(), SHORT_REQUEST_PLAINTEXT_SIZE);
-        // receive_tunnel at offset 0
-        assert_eq!(bytes[0..4], [0x00, 0x00, 0x10, 0x00]);
-        // next_tunnel at offset 4
-        assert_eq!(bytes[4..8], [0x00, 0x00, 0x20, 0x00]);
-        // role flag at offset 40
-        assert_eq!(bytes[40], HopRole::InboundGateway.flag());
-        // layer encryption byte at offset 41
-        assert_eq!(bytes[41], LayerEncryptionType::EciesAeadOnly.byte());
-        // expiration in ms at offset 58
-        assert_eq!(&bytes[58..66], &(60_000_u64).to_be_bytes());
-        // next message id at offset 66
-        assert_eq!(&bytes[66..70], &0xABCD_1234_u32.to_be_bytes());
-        // options body length at offset 70 is zero
-        assert_eq!(bytes[70], 0);
+        // Receive tunnel id at offset 0.
+        assert_eq!(&bytes[0..4], &[0x00, 0x00, 0x10, 0x00]);
+        // Next tunnel id at offset 4.
+        assert_eq!(&bytes[4..8], &[0x00, 0x00, 0x20, 0x00]);
+        // Next router hash at offset 8.
+        assert_eq!(&bytes[8..40], &[0x33_u8; 32]);
+        // Role flag at offset 40 (InboundGateway = 0x80).
+        assert_eq!(bytes[40], HOP_ROLE_INBOUND_GATEWAY);
+        // Bytes 41..42 are zero.
+        assert_eq!(bytes[41], 0);
+        assert_eq!(bytes[42], 0);
+        // Layer encryption type at offset 43.
+        assert_eq!(bytes[43], LayerEncryptionType::Aes.byte());
+        // Request time minutes at offset 44.
+        assert_eq!(&bytes[44..48], &1_u32.to_be_bytes());
+        // Expiration in seconds at offset 48.
+        assert_eq!(&bytes[48..52], &REQUEST_EXPIRATION_SECONDS.to_be_bytes());
+        // Next message id at offset 52.
+        assert_eq!(&bytes[52..56], &0xABCD_1234_u32.to_be_bytes());
+        // Empty Mapping at offset 56 encodes to two zero bytes.
+        assert_eq!(&bytes[56..58], &[0x00, 0x00]);
+        // Remaining bytes up to 154 are zero (background padding).
+        assert_eq!(bytes[58..154], [0_u8; 96]);
     }
 
     #[test]
-    fn request_record_rejects_simultaneous_flags() {
-        // We do not store two flags simultaneously; the constructor
-        // accepts a single HopRole, so this is enforced by the type
-        // system. Confirm the only mutators produce a canonical
-        // single-flag value.
-        let gw = HopRole::InboundGateway.flag();
-        let ep = HopRole::OutboundEndpoint.flag();
-        assert_eq!(gw & ep, 0x00);
-        assert_eq!(gw | ep, 0x03);
+    fn request_record_rejects_simultaneous_role_flags() {
+        // The flag encoder never combines the two high bits, so a
+        // round-trip through the canonical byte must reject 0xC0.
+        let outcome = HopRole::from_flag(0xC0);
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildError::InvalidRoleFlags { flags: 0xC0 })
+        ));
     }
 
     #[test]
-    fn request_record_rejects_zero_message_id_and_expiration() {
+    fn request_record_rejects_zero_message_id() {
         let outcome = ShortRequestRecord::try_new(
             TunnelId::new(0x10).expect("id"),
             TunnelId::new(0x20).expect("id"),
             next_router(),
             HopRole::Participant,
-            LayerEncryptionType::EciesAeadOnly,
-            Date::from_millis(1),
-            60_000,
+            LayerEncryptionType::Aes,
+            Date::from_millis(60_000),
+            REQUEST_EXPIRATION_SECONDS,
             0,
             BuildOptions::empty(),
         );
         assert!(matches!(outcome, Err(ShortBuildError::ZeroMessageId)));
+    }
+
+    #[test]
+    fn request_record_rejects_non_standard_expiration() {
         let outcome = ShortRequestRecord::try_new(
             TunnelId::new(0x10).expect("id"),
             TunnelId::new(0x20).expect("id"),
             next_router(),
             HopRole::Participant,
-            LayerEncryptionType::EciesAeadOnly,
-            Date::from_millis(1),
-            0,
-            0x1234,
+            LayerEncryptionType::Aes,
+            Date::from_millis(60_000),
+            42,
+            0x1234_5678,
             BuildOptions::empty(),
         );
-        assert!(matches!(outcome, Err(ShortBuildError::ZeroExpiration)));
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildError::ExpirationMismatch { .. })
+        ));
     }
 
     #[test]
     fn reply_record_round_trips_through_canonical_202_bytes() {
-        let reply =
-            ShortReplyRecord::try_new(ShortResponseCode::Accepted, 120_000, 0xFEED_BEEF, 0x1000)
-                .expect("reply");
+        let reply = ShortReplyRecord::new(BuildOptions::empty(), ShortResponseCode::Accepted);
         let bytes = reply.encode();
         assert_eq!(bytes.len(), SHORT_REPLY_PLAINTEXT_SIZE);
         let decoded = ShortReplyRecord::decode(bytes.as_ref()).expect("decode");
@@ -678,13 +773,21 @@ mod tests {
     }
 
     #[test]
-    fn reply_record_rejects_unknown_code() {
+    fn reply_record_rejects_unknown_response_byte() {
         let mut bytes = [0_u8; SHORT_REPLY_PLAINTEXT_SIZE];
-        bytes[0] = 0x05;
+        bytes[SHORT_REPLY_PLAINTEXT_SIZE - 1] = 0x05;
         let outcome = ShortReplyRecord::decode(&bytes);
         assert!(matches!(
             outcome,
             Err(ShortBuildError::UnknownReplyCode { .. })
         ));
+    }
+
+    #[test]
+    fn reply_record_carries_bandwidth_rejection_response_byte() {
+        let reply =
+            ShortReplyRecord::new(BuildOptions::empty(), ShortResponseCode::BandwidthRejected);
+        let bytes = reply.encode();
+        assert_eq!(bytes[SHORT_REPLY_PLAINTEXT_SIZE - 1], 30);
     }
 }

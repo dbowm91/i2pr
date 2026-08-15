@@ -180,22 +180,28 @@ A live `i2pr run` today (Plan 106) follows this sequence:
      `CoalescedRouterInfoLookup`, `PublicationCoordinator`, and the
      transport-neutral state machines ready for the Milestone 5
      runtime adapter. `i2pr-daemon`'s `NetDbSeam` exposes them
-     through a stable surface; under Plan 107 the seam consults an
-     injected [``i2pr_netdb::ReplyPathProvider`] implementation
-     backed by `i2pr-tunnel`'s exploratory pool, so a registered
-     inbound tunnel flips the seam's status to `Available` and a
-     `NeedExploratoryReplyPath` lookup action is converted into a
-      real path on the state machine. Under Plan 108 the same crate
-      holds the ECIES-X25519 short-build cryptography primitive and
-      the runtime-neutral `ShortBuildStateMachine` that drives one
-      short tunnel-build attempt through the canonical state
-      machine; admission into the exploratory pool flows only through
-      the success-only `ShortBuildRegistrar`. **The Plan 108
-      wire/cryptographic algorithm is not protocol-conformant
-      against the current official I2P Tunnel Creation
-      Specification; see
-      [`plans/108-conformance-amendment.md`](../../plans/108-conformance-amendment.md)
-      and the Plan 109/110 corrective roadmap.**
+      through a stable surface; under Plan 107 the seam consults an
+      injected [``i2pr_netdb::ReplyPathProvider`] implementation
+      backed by `i2pr-tunnel`'s exploratory pool, so a registered
+      inbound tunnel flips the seam's status to `Available` and a
+      `NeedExploratoryReplyPath` lookup action is converted into a
+       real path on the state machine. Under Plan 109 the same crate
+       holds the locally-conformant ECIES-X25519 Noise-N
+       short-build cryptography primitive, the
+       `ReferenceFixture` independent conformance fixture, and the
+       runtime-neutral `ShortBuildStateMachine` that drives one
+       short tunnel-build attempt through the canonical state
+       machine; admission into the exploratory pool flows only through
+       the success-only `ShortBuildRegistrar`. **The single-record
+       request/reply wire format and Noise-N transcript are locally
+       conformant against the current official I2P Tunnel Creation
+       Specification; see
+       [`plans/109-short-build-record-and-noise-conformance-correction.md`](../../plans/109-short-build-record-and-noise-conformance-correction.md)
+       and the closure record
+       [`plans/109-status.md`](../../plans/109-status.md). The
+       multi-record slot allocation, fake records, raw ChaCha20
+       preprocessing, and one-byte-count STBM/OTBRM payload
+       framing are Plan 110 scope.**
 6. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
    before startup, then spawns one supervisor manager per service via a
    `JoinSet`. Each service receives a narrowed `ServiceContext` (name,
