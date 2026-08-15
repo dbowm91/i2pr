@@ -3,7 +3,8 @@
 - Status: **passed-outbound-pre-delivery-closure**
 - Date: 2026-08-15
 - Pre-Plan 112 commit: `21b5e8a`
-- Plan 112 commit: `fe1e07f`
+- Initial Plan 112 implementation: `fe1e07f`
+- Final audit-correction commit: recorded after verification
 - Plan-of-record:
   [`plans/112-outbound-short-build-pre-delivery-closure.md`](112-outbound-short-build-pre-delivery-closure.md)
 - Parent roadmap:
@@ -68,11 +69,11 @@ implementation.
 | --- | --- | --- |
 | 1. Request plaintext padding is not random | `encode()` zero-filled the post-Mapping bytes | `encode_with_rng` fills `mapping_end .. 154` from a caller-injected CSPRNG; `encode_deterministic_zero_padded` is retained as a fixture-only path; `ShortBuildError::RandomnessUnavailable` fails closed when no CSPRNG is injected |
 | 2. Reply plaintext padding is not random | `encode()` zero-filled the post-Mapping bytes | `encode_with_rng` fills `encoded_mapping_len .. 201` from the supplied CSPRNG; the response byte at offset 201 is preserved after the random region |
-| 3. Role topology is not validated | `ShortBuildPath::validate` did not enforce the canonical role/direction topology | Validates outbound (no IBGW; OBEP only at the final hop; participants before the final OBEP) and inbound (IBGW at the first hop; no OBEP; participants after the first IBGW) |
+| 3. Role topology is not validated | `ShortBuildPath::validate` did not enforce the canonical role/direction topology | A shared validator is used by both `ShortBuildPath::validate` and the public multi-record builder: outbound has no IBGW and only a final OBEP; inbound starts with IBGW, has no OBEP, and uses participants thereafter |
 | 4. Inbound production gate is implicit | `prepare_short_build_message` accepted `TunnelDirection::Inbound` and ran far enough to surface an `EmptyPath` or missing `originator_hash` error | `ShortBuildStateMachine::prepare` and `prepare_short_build_message` both return `InboundBuildPendingReconciliation` before any cryptographic material is allocated |
 | 5. `HopCryptoContext::ephemeral_public()` was wrong | accessor returned `own_record[..32]` (16-byte hash prefix plus the first 16 bytes of the ephemeral pubkey) | accessor deleted; the field is private; the `Debug` impl retains the same label string |
-| 6. State-machine payload contract is internally inconsistent | `ShortBuildAction::Deliver` and `BuildEvent::BuildReply` docstrings said "218-byte-aligned records concatenated"; `deliver_action` derived count with `len / 218`; `records` field contained the count-prefixed payload | `validate_count_prefixed_short_payload` / `encode_count_prefixed_short_payload` / `decode_short_tunnel_build_payload` are the single authoritative STBM/OTBRM surface; `deliver_action` derives count from the documented prefix; docstrings now name the `count \|\| records` contract |
-| 7. Frozen vector provenance is stale | `fixed_vectors` documented a generator at `tests/integration/tunnel/conformance_vectors.rs::print_plan111_fixed_vectors` that did not exist | `crates/i2pr-tunnel/tests/plan111_reference_vectors.rs` re-derives the frozen constants from a pure-Rust primitive path and asserts the production `seal_short_request` / `open_short_request` / `derive_layer_keys` outputs match byte-for-byte |
+| 6. State-machine payload contract is internally inconsistent | `ShortBuildAction::Deliver` and `BuildEvent::BuildReply` docstrings said "218-byte-aligned records concatenated"; `deliver_action` derived count with `len / 218`; `records` field contained the count-prefixed payload | `validate_count_prefixed_short_payload` / `encode_count_prefixed_short_payload` / `decode_short_tunnel_build_payload` are the single authoritative STBM/OTBRM surface; `deliver_action` validates the exact payload and derives count from byte 0; docstrings name the `count \|\| records` contract |
+| 7. Frozen vector provenance is stale | `fixed_vectors` documented a generator that did not exist in the repository | `crates/i2pr-tunnel/tests/plan111_reference_vectors.rs` re-derives the frozen constants from a pure-Rust primitive path and asserts the production `seal_short_request` / `open_short_request` / `derive_layer_keys` outputs match byte-for-byte |
 
 ## Frozen fixed-vector evidence
 
@@ -95,9 +96,12 @@ implementation.
 ## Test counts
 
 - `cargo +1.95.0 test --locked -p i2pr-tunnel --all-targets` —
-  **134 passed** (2 suites).
-- `cargo +1.95.0 test --locked --workspace` — **579 passed**
-  (35 suites).
+  **134 unit tests + 5 reference-vector tests passed**.
+- `cargo +1.95.0 test --locked --workspace` — all workspace
+  suites passed.
+- `cargo +1.85.0 check --locked --workspace --all-targets` — passed
+  after pinning the transitive `time` family to Rust-1.85-compatible
+  versions.
 - `cargo +1.95.0 clippy --locked --workspace --all-targets
   --all-features -- -D warnings` — clean.
 - `cargo +1.95.0 fmt --all --check` — clean.
@@ -120,6 +124,9 @@ implementation.
   dependencies. The `rand_core` dependency is already declared
   with `features = ["os_rng"]` and the workspace also supplies
   `TryRngCore`.
+- `Cargo.lock` — pins `time` to `0.3.44`, `time-core` to `0.1.6`,
+  and `time-macros` to `0.2.24` so the declared Rust 1.85 MSRV
+  check remains buildable.
 - `crates/i2pr-tunnel/src/lib.rs` — exposes
   `validate_count_prefixed_short_payload` and
   `encode_count_prefixed_short_payload` alongside the existing
@@ -128,9 +135,10 @@ implementation.
   `ShortBuildConstructionError::InboundBuildPendingReconciliation`
   variant; `ShortBuildStateMachine::prepare` returns the typed
   gate for inbound directions; `ShortBuildPath::validate`
-  enforces the Plan 112 direction/role topology rules;
-  `deliver_action` derives record count from the documented
-  payload prefix.
+  and the public multi-record builder share the Plan 112
+  direction/role topology rules; `deliver_action` validates the
+  exact count-prefixed payload and derives record count from its
+  prefix.
 - `crates/i2pr-tunnel/src/short_record.rs` — adds the
   `encode_with_rng` and `encode_deterministic_zero_padded`
   encoders for both the request and reply records; the legacy

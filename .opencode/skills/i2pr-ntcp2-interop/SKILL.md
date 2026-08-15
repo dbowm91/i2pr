@@ -5,6 +5,19 @@ description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/
 
 # I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/081/082/083/084)
 
+## Current tunnel-build handoff boundary
+
+Plan 112 is closed as `passed-outbound-pre-delivery-closure` for the
+runtime-neutral ECIES-X25519 short-build surface. Its outbound payload is
+locally conformant and ready for a separate qualified external-delivery
+checkpoint; this skill must not present that local result as live
+interoperability. The production inbound short-build builder remains behind
+the typed `InboundBuildPendingReconciliation` gate until Plan 113 resolves
+the inbound standards/reference discrepancy. This NTCP2 skill does not own
+that tunnel-build implementation and must not activate NTCP2, add a generic
+I2NP dispatcher, or use a local/vector/testkit result as reference-router
+evidence.
+
 Use this skill from the repository root for the **host-side** Ubuntu 24.04
 amd64 Plan 038 reference-router NTCP2 interoperability harness. This skill
 intentionally does **not** cover the Plan 046 rootless sealed-namespace lane

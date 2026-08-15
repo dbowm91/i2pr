@@ -33,7 +33,7 @@ Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
    -> Plan 109  single-record short-build correction                  [superseded]
    -> Plan 110  multi-record construction/preprocessing               [superseded]
    -> Plan 111  core short-build cryptographic correction             [landed; amended]
-   -> Plan 112  outbound short-build pre-delivery closure             [NEXT EXECUTABLE]
+-> Plan 112  outbound short-build pre-delivery closure             [CLOSED]
       -> narrow outbound qualified external-delivery checkpoint
    -> Plan 113  inbound specification/reference reconciliation        [separate inbound authority]
       -> later inbound qualified delivery checkpoint if enabled
@@ -127,9 +127,9 @@ NetDB daemon integration              = implemented
 exploratory tunnel substrate          = implemented
 short-build architecture              = implemented
 short-build cryptographic core        = Plan111-corrected
-outbound short-build pre-delivery      = blocked-on-plan112
+outbound short-build pre-delivery      = passed-outbound-pre-delivery-closure
 inbound short-build                    = blocked-on-plan113
-outbound independent delivery          = blocked-on-plan112
+outbound independent delivery          = next-qualified-checkpoint
 inbound independent delivery           = blocked-on-plan113-and-later-delivery
 live exploratory inbound/outbound pair = blocked-on-both-directions
 live RouterInfo lookup                 = blocked-on-live-exploratory-tunnels
@@ -222,4 +222,6 @@ Plan 102 amendment (this file)
  -> older historical Milestone 3 active blocks
 ```
 
-The next executable implementation is **Plan 112**.
+The next executable action is the narrow outbound-only qualified
+external-delivery checkpoint after Plan 112. Plan 113 remains the sole
+authority for inbound short-build semantics and enablement.

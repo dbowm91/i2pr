@@ -35,6 +35,17 @@ normal_daemon_ntcp2                = disabled-and-unenableable
 ntcp2                              = experimental-non-advertised
 ```
 
+### Supersession by Plan 112
+
+This historical Plan 111 record remains authoritative for the corrected
+cryptographic core, but its `external_build_delivery = next-checkpoint`
+line predates the outer-surface audit. Plan 112 subsequently closed the
+outbound pre-delivery gate with CSPRNG-filled plaintext padding, shared
+direction/role validation, an exact count-prefixed action/event contract,
+and an explicit inbound production gate. The current status is recorded in
+[`plans/112-status.md`](112-status.md); no live interoperability claim is
+implied.
+
 ## Official specification metadata
 
 - Source: `https://i2p.net/en/docs/specs/tunnel-creation-ecies/`

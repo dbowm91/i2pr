@@ -1,6 +1,6 @@
 # Plan 112 handoff
 
-- Status: **ready for implementation**
+- Status: **closed; passed-outbound-pre-delivery-closure**
 - Date: 2026-08-15
 - Plan-of-record: `plans/112-outbound-short-build-pre-delivery-closure.md`
 - Parent roadmap: `plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`
@@ -23,7 +23,9 @@ OTBRM reply-event contract         = count-prefix docs inconsistent
 fixed-vector generator provenance  = stale/non-reproducible
 ```
 
-The next executable implementation is **Plan 112 only**.
+Plan 112 is now closed. Its next-step authority is the narrow
+outbound-only qualified external-delivery checkpoint described below;
+Plan 113 remains separate inbound work.
 
 Plan 113 is already written for the separate inbound standards/reference discrepancy and does not block outbound progress after Plan 112.
 
@@ -83,4 +85,6 @@ inbound_short_build            = blocked-on-plan113
 normal_daemon_ntcp2            = disabled-and-unenableable
 ```
 
-Do not start the outbound external-delivery checkpoint until all Plan 112 acceptance criteria pass.
+Plan 112 acceptance criteria passed locally. Do not claim live
+interoperability until the outbound external-delivery checkpoint has
+produced independent-router evidence.

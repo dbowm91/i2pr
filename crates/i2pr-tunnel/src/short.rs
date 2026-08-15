@@ -29,7 +29,7 @@
 
 use std::fmt;
 
-use i2pr_proto::{Date, Hash, SHORT_BUILD_RECORD_SIZE};
+use i2pr_proto::{Date, Hash};
 use rand_core::{CryptoRng, RngCore};
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
@@ -218,54 +218,20 @@ impl ShortBuildPath {
                 reason: "next message id must be nonzero",
             });
         }
-        // Plan 112 §6.B1: enforce direction/role topology.
-        match self.direction {
-            TunnelDirection::Outbound => {
-                let last = self.hops.len() - 1;
-                for (index, hop) in self.hops.iter().enumerate() {
-                    if matches!(hop.role, HopRole::InboundGateway) {
-                        return Err(ShortBuildConstructionError::InvalidPath {
-                            reason: "outbound path rejects inbound-gateway hop",
-                        });
-                    }
-                    if matches!(hop.role, HopRole::OutboundEndpoint) && index != last {
-                        return Err(ShortBuildConstructionError::InvalidPath {
-                            reason: "outbound path requires OBEP only as final hop",
-                        });
-                    }
-                    if index < last && !matches!(hop.role, HopRole::Participant) {
-                        return Err(ShortBuildConstructionError::InvalidPath {
-                            reason: "outbound non-final hop must be Participant",
-                        });
-                    }
+        // Plan 112 §6.B1/B2: use the same validator as the public
+        // lower-level multi-record builder so the role boundary is
+        // enforced consistently at both API layers.
+        let roles: Vec<HopRole> = self.hops.iter().map(|hop| hop.role).collect();
+        multirecord::validate_role_topology(self.direction, &roles).map_err(
+            |error| match error {
+                multirecord::MultiRecordError::RoleTopologyInvalid { reason } => {
+                    ShortBuildConstructionError::InvalidPath { reason }
                 }
-                if !matches!(self.hops[last].role, HopRole::OutboundEndpoint) {
-                    return Err(ShortBuildConstructionError::InvalidPath {
-                        reason: "outbound path final hop must be OutboundEndpoint",
-                    });
-                }
-            }
-            TunnelDirection::Inbound => {
-                for (index, hop) in self.hops.iter().enumerate() {
-                    if matches!(hop.role, HopRole::OutboundEndpoint) {
-                        return Err(ShortBuildConstructionError::InvalidPath {
-                            reason: "inbound path rejects outbound-endpoint hop",
-                        });
-                    }
-                    if index == 0 {
-                        if !matches!(hop.role, HopRole::InboundGateway) {
-                            return Err(ShortBuildConstructionError::InvalidPath {
-                                reason: "inbound path first hop must be InboundGateway",
-                            });
-                        }
-                    } else if !matches!(hop.role, HopRole::Participant) {
-                        return Err(ShortBuildConstructionError::InvalidPath {
-                            reason: "inbound non-first hop must be Participant",
-                        });
-                    }
-                }
-            }
-        }
+                _ => ShortBuildConstructionError::InvalidPath {
+                    reason: "short build role topology is invalid",
+                },
+            },
+        )?;
         Ok(())
     }
 }
@@ -409,6 +375,13 @@ pub enum ShortBuildConstructionError {
     #[error("multi-record reply rejected: {reason}")]
     InvalidReply {
         /// Description of the rejection.
+        reason: &'static str,
+    },
+    /// The delivery action was given a malformed count-prefixed
+    /// STBM payload.
+    #[error("short build delivery payload rejected: {reason}")]
+    InvalidDeliveryPayload {
+        /// Description of the payload rejection.
         reason: &'static str,
     },
     /// The short record encoder rejected an input.
@@ -673,20 +646,28 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
     }
 
     /// Emits the typed delivery action the caller performs.
-    pub fn deliver_action(&self, message: ShortTunnelBuildMessage) -> ShortBuildAction {
-        let record_count = (message.records.len() / SHORT_BUILD_RECORD_SIZE) as u8;
+    pub fn deliver_action(
+        &self,
+        message: ShortTunnelBuildMessage,
+    ) -> Result<ShortBuildAction, ShortBuildConstructionError> {
+        let (record_count, _) = multirecord::validate_count_prefixed_short_payload(
+            &message.records,
+        )
+        .map_err(|_| ShortBuildConstructionError::InvalidDeliveryPayload {
+            reason: "STBM payload must be count-prefixed with exactly count * 218 record bytes",
+        })?;
         let first_hop = self
             .path
             .hops
             .first()
             .map(|hop| hop.router_hash)
             .unwrap_or_else(|| Hash::from_bytes([0_u8; 32]));
-        ShortBuildAction::Deliver {
+        Ok(ShortBuildAction::Deliver {
             first_hop,
             message: Zeroizing::new(message.records),
             record_count,
             deadline_ms: self.deadline_ms,
-        }
+        })
     }
 
     /// Transitions the state machine to awaiting replies after the
@@ -870,15 +851,16 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
 /// A built short tunnel-build message.
 ///
 /// The struct is the canonical output of
-/// [`ShortBuildStateMachine::prepare`]. The bytes inside are a
-/// concatenation of `count` 218-byte short records.
+/// [`ShortBuildStateMachine::prepare`]. The bytes inside are the
+/// full count-prefixed STBM payload: byte 0 is `count` and the
+/// remaining bytes are exactly `count * 218` short records.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShortTunnelBuildMessage {
     /// The I2NP message kind.
     pub kind: crate::build::BuildRequestKind,
     /// Layout the message uses.
     pub layout: BuildRecordLayout,
-    /// Sealed record bytes (`count * 218` for short records).
+    /// Full count-prefixed STBM payload (`count || count * 218 bytes`).
     pub records: Vec<u8>,
     /// Per-attempt message identifier (also used as the I2NP
     /// header identifier).
@@ -932,6 +914,9 @@ fn short_build_construction_from_multi(error: MultiRecordError) -> ShortBuildCon
         MultiRecordError::SlotExhausted => ShortBuildConstructionError::InvalidPath {
             reason: "multi-record slot allocator exhausted",
         },
+        MultiRecordError::RoleTopologyInvalid { reason } => {
+            ShortBuildConstructionError::InvalidPath { reason }
+        }
         MultiRecordError::RandomnessUnavailable => {
             ShortBuildConstructionError::Cryptography(BuildCryptographyError::RandomnessUnavailable)
         }
@@ -975,7 +960,7 @@ fn rebuild_prepared_context(context: &HopCryptoContext) -> PreparedHopContext {
 mod tests {
     use super::*;
 
-    use i2pr_proto::Hash;
+    use i2pr_proto::{Hash, SHORT_BUILD_RECORD_SIZE};
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
 
@@ -1053,6 +1038,43 @@ mod tests {
         // two real hops.
         assert_eq!(message.records.len(), 1 + 4 * SHORT_BUILD_RECORD_SIZE);
         assert!(matches!(machine.state, StatePhase::ReadyForDelivery));
+    }
+
+    #[test]
+    fn deliver_action_derives_record_count_from_payload_prefix() {
+        let path = build_path(3);
+        let machine = ShortBuildStateMachine::new(path, 60_000);
+        let payload = vec![4_u8; 1 + 4 * SHORT_BUILD_RECORD_SIZE];
+        let message = ShortTunnelBuildMessage {
+            kind: crate::build::BuildRequestKind::ShortTunnelBuild,
+            layout: BuildRecordLayout::Short,
+            records: payload,
+            nonce: 1,
+        };
+        let action = machine.deliver_action(message).expect("valid payload");
+        let ShortBuildAction::Deliver {
+            message,
+            record_count,
+            ..
+        } = action;
+        assert_eq!(record_count, 4);
+        assert_eq!(message[0], 4);
+    }
+
+    #[test]
+    fn deliver_action_rejects_trailing_payload_bytes() {
+        let path = build_path(4);
+        let machine = ShortBuildStateMachine::new(path, 60_000);
+        let message = ShortTunnelBuildMessage {
+            kind: crate::build::BuildRequestKind::ShortTunnelBuild,
+            layout: BuildRecordLayout::Short,
+            records: vec![1_u8; 1 + SHORT_BUILD_RECORD_SIZE + 1],
+            nonce: 2,
+        };
+        assert!(matches!(
+            machine.deliver_action(message),
+            Err(ShortBuildConstructionError::InvalidDeliveryPayload { .. })
+        ));
     }
 
     #[test]
@@ -1163,7 +1185,7 @@ mod tests {
             1 + 4 * SHORT_BUILD_RECORD_SIZE,
             "Plan 110 reserves four slots for two-hop outbound paths"
         );
-        let _ = machine.deliver_action(message);
+        let _action = machine.deliver_action(message).expect("deliver action");
         machine.mark_dispatched().expect("dispatch");
         // Build a synthetic accepted reply payload from the
         // multirecord reference fixture so the postprocessor

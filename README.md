@@ -56,7 +56,8 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
   `validate_count_prefixed_short_payload` /
   `encode_count_prefixed_short_payload` (Plan 110 closed; Plan
   111 corrected the byte-11 regression to byte 4; Plan 112 made
-  the count-prefixed contract explicit)
+  the count-prefixed contract explicit and makes the state-machine
+  delivery action validate the exact prefix and payload length)
 - CLI daemon with config validation, identity generation, and dry-run (`i2pr-daemon`)
 
 **Not implemented:**

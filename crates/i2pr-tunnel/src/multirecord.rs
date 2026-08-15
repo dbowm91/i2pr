@@ -579,6 +579,13 @@ pub enum MultiRecordError {
         "inbound short build construction is pending Plan 113 standards/reference reconciliation"
     )]
     InboundBuildPendingReconciliation,
+    /// The direction and hop roles do not form a valid remote-hop
+    /// topology for a short tunnel build.
+    #[error("multi-record role topology rejected: {reason}")]
+    RoleTopologyInvalid {
+        /// Bounded explanation of the topology rejection.
+        reason: &'static str,
+    },
     /// The supplied RNG could not produce output.
     #[error("multi-record RNG unavailable")]
     RandomnessUnavailable,
@@ -622,6 +629,64 @@ fn sha256_of(input: &[u8]) -> [u8; 32] {
     let mut out = [0_u8; 32];
     out.copy_from_slice(&output);
     out
+}
+
+/// Validates the canonical remote-hop role topology for a short
+/// tunnel build. This shared helper is used by both the public
+/// multi-record builder and the high-level state-machine path so a
+/// caller cannot bypass Plan 112's direction/role boundary by using
+/// the lower-level API directly.
+pub(crate) fn validate_role_topology(
+    direction: TunnelDirection,
+    roles: &[HopRole],
+) -> Result<(), MultiRecordError> {
+    if roles.is_empty() {
+        return Err(MultiRecordError::EmptyPath);
+    }
+    match direction {
+        TunnelDirection::Outbound => {
+            let last = roles.len() - 1;
+            for (index, role) in roles.iter().enumerate() {
+                if matches!(role, HopRole::InboundGateway) {
+                    return Err(MultiRecordError::RoleTopologyInvalid {
+                        reason: "outbound path rejects inbound-gateway hop",
+                    });
+                }
+                if index == last {
+                    if !matches!(role, HopRole::OutboundEndpoint) {
+                        return Err(MultiRecordError::RoleTopologyInvalid {
+                            reason: "outbound path final hop must be OutboundEndpoint",
+                        });
+                    }
+                } else if !matches!(role, HopRole::Participant) {
+                    return Err(MultiRecordError::RoleTopologyInvalid {
+                        reason: "outbound non-final hop must be Participant",
+                    });
+                }
+            }
+        }
+        TunnelDirection::Inbound => {
+            for (index, role) in roles.iter().enumerate() {
+                if matches!(role, HopRole::OutboundEndpoint) {
+                    return Err(MultiRecordError::RoleTopologyInvalid {
+                        reason: "inbound path rejects outbound-endpoint hop",
+                    });
+                }
+                if index == 0 {
+                    if !matches!(role, HopRole::InboundGateway) {
+                        return Err(MultiRecordError::RoleTopologyInvalid {
+                            reason: "inbound path first hop must be InboundGateway",
+                        });
+                    }
+                } else if !matches!(role, HopRole::Participant) {
+                    return Err(MultiRecordError::RoleTopologyInvalid {
+                        reason: "inbound non-first hop must be Participant",
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn ephemeral_public(priv_bytes: &[u8; EPHEMERAL_KEY_LEN]) -> [u8; EPHEMERAL_KEY_LEN] {
@@ -760,6 +825,8 @@ pub fn prepare_short_build_message<R: CryptoRng + RngCore>(
         );
         return Err(MultiRecordError::InboundBuildPendingReconciliation);
     }
+    let roles: Vec<HopRole> = path_hops.iter().map(|hop| hop.role).collect();
+    validate_role_topology(direction, &roles)?;
     let record_set = assign_record_slots(path_hops.len() as u8, direction, rng)?;
     let mut hop_contexts: Vec<PreparedHopContext> = Vec::with_capacity(path_hops.len());
     for hop in path_hops {
@@ -1303,11 +1370,8 @@ impl MultiHopReferenceFixture {
         let eph1 = fixture_privkey(seed.wrapping_add(102));
         let eph2 = fixture_privkey(seed.wrapping_add(103));
         let cryptography = EciesX25519BuildCryptography::new();
-        let plaintext0 = fixture_request_plaintext(
-            [0x10, 0x00, 0x00, 0x01],
-            HopRole::InboundGateway,
-            &hop1_hash,
-        )?;
+        let plaintext0 =
+            fixture_request_plaintext([0x10, 0x00, 0x00, 0x01], HopRole::Participant, &hop1_hash)?;
         let plaintext1 =
             fixture_request_plaintext([0x10, 0x00, 0x00, 0x02], HopRole::Participant, &hop2_hash)?;
         let plaintext2 = fixture_request_plaintext(
@@ -1333,7 +1397,7 @@ impl MultiHopReferenceFixture {
             hop2_hash.as_bytes(),
             &eph2,
         )?;
-        let layer0 = derive_layer_keys_for_hop(&sealed0.state, HopRole::InboundGateway)?;
+        let layer0 = derive_layer_keys_for_hop(&sealed0.state, HopRole::Participant)?;
         let layer1 = derive_layer_keys_for_hop(&sealed1.state, HopRole::Participant)?;
         let layer2 = derive_layer_keys_for_hop(&sealed2.state, HopRole::OutboundEndpoint)?;
         let mut record0 = [0_u8; RECORD_BYTES];
@@ -1348,7 +1412,7 @@ impl MultiHopReferenceFixture {
             slot: record_set.slot_for_real_hop(0).expect("slot"),
             state: sealed0.state,
             layer_keys: layer0,
-            role: HopRole::InboundGateway,
+            role: HopRole::Participant,
         };
         let context1 = PreparedHopContext {
             hop_index: 1,
@@ -1907,7 +1971,10 @@ mod tests {
             canonical_index: 0,
             router_hash: &Hash::from_bytes([0x10_u8; 32]),
             static_encryption_key: &[0xAA_u8; 32],
-            role: HopRole::InboundGateway,
+            // Plan 112 §6: this outbound test uses a remote
+            // participant first; the creator is not represented by
+            // an inbound-gateway remote-hop role.
+            role: HopRole::Participant,
             receive_tunnel: TunnelId::new(0x1000).expect("id"),
             next_tunnel: TunnelId::new(0x2000).expect("id"),
             next_router_hash: &Hash::from_bytes([0x11_u8; 32]),
@@ -2057,6 +2124,16 @@ mod tests {
         assert!(matches!(
             outcome,
             Err(MultiRecordError::OriginatorFakeModified)
+        ));
+    }
+
+    #[test]
+    fn lower_level_builder_rejects_invalid_outbound_role_topology_before_crypto() {
+        let roles = [HopRole::InboundGateway, HopRole::OutboundEndpoint];
+        let outcome = validate_role_topology(TunnelDirection::Outbound, &roles);
+        assert!(matches!(
+            outcome,
+            Err(MultiRecordError::RoleTopologyInvalid { .. })
         ));
     }
 }

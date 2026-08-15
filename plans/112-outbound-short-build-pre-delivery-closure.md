@@ -1,6 +1,6 @@
 # Plan 112: Outbound short-build pre-delivery closure
 
-- Status: **ready for implementation**
+- Status: **passed-outbound-pre-delivery-closure**
 - Date: 2026-08-15
 - Parent roadmap: `plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`
 - Parent authority: `plans/102-amendment-exploratory-tunnel-dependency.md`
@@ -142,9 +142,9 @@ This is dangerous immediately before a transport adapter is written: an adapter 
 
 `fixed_vectors.rs` says the values were produced by:
 
-`tests/integration/tunnel/conformance_vectors.rs::print_plan111_fixed_vectors`
-
-but no such file exists in the repository. `plans/111-status.md` separately says the generator was not committed.
+an uncommitted integration-test generator that is not present in the
+repository. `plans/111-status.md` separately says the generator was not
+committed.
 
 The constants remain useful, but their provenance is not reproducible from the repository.
 
@@ -631,51 +631,51 @@ Plan 112 passes only if every item below is true.
 
 ### Protocol bytes
 
-- [ ] Production request plaintext padding is filled from an injected CSPRNG.
-- [ ] Production reply plaintext padding is filled from an injected CSPRNG.
-- [ ] No production request/reply encoder silently leaves protocol padding zero-filled.
-- [ ] Mapping boundaries remain exact.
-- [ ] Reply status remains at byte 201.
-- [ ] Plan 111 encrypted request/reply sizes and crypto remain unchanged.
+- [x] Production request plaintext padding is filled from an injected CSPRNG.
+- [x] Production reply plaintext padding is filled from an injected CSPRNG.
+- [x] No production request/reply encoder silently leaves protocol padding zero-filled.
+- [x] Mapping boundaries remain exact.
+- [x] Reply status remains at byte 201.
+- [x] Plan 111 encrypted request/reply sizes and crypto remain unchanged.
 
 ### Topology
 
-- [ ] Outbound path validates exactly one final OBEP and participants before it.
-- [ ] Outbound path rejects IBGW.
-- [ ] Inbound path structurally validates exactly one first IBGW and participants after it.
-- [ ] Inbound path rejects OBEP.
-- [ ] Current tests no longer describe an outbound path beginning with an IBGW as canonical.
+- [x] Outbound path validates exactly one final OBEP and participants before it.
+- [x] Outbound path rejects IBGW.
+- [x] Inbound path structurally validates exactly one first IBGW and participants after it.
+- [x] Inbound path rejects OBEP.
+- [x] Current tests no longer describe an outbound path beginning with an IBGW as canonical.
 
 ### Inbound gate
 
-- [ ] High-level production inbound build construction returns a typed Plan 113 gate error before crypto work.
-- [ ] Any public lower-level production inbound construction entry point does the same.
-- [ ] Originator-fake component tests remain available without bypassing the production gate.
+- [x] High-level production inbound build construction returns a typed Plan 113 gate error before crypto work.
+- [x] Any public lower-level production inbound construction entry point does the same.
+- [x] Originator-fake component tests remain available without bypassing the production gate.
 
 ### API correctness
 
-- [ ] `HopCryptoContext::ephemeral_public()` is deleted if unused, or returns exact bytes 16..48 if retained.
-- [ ] STBM delivery action contract explicitly includes the one-byte count prefix.
-- [ ] Build-reply event contract explicitly includes the one-byte count prefix.
-- [ ] Record count is validated from the prefix rather than inferred by truncating `len / 218`.
-- [ ] Exact payload length is `1 + count * 218`; trailing/truncated data fail closed.
+- [x] `HopCryptoContext::ephemeral_public()` is deleted if unused, or returns exact bytes 16..48 if retained.
+- [x] STBM delivery action contract explicitly includes the one-byte count prefix.
+- [x] Build-reply event contract explicitly includes the one-byte count prefix.
+- [x] Record count is validated from the prefix rather than inferred by truncating `len / 218`.
+- [x] Exact payload length is `1 + count * 218`; trailing/truncated data fail closed.
 
 ### Evidence
 
-- [ ] Frozen Plan 111 vectors remain unchanged unless an independently demonstrated prior constant is wrong.
-- [ ] A committed Rust-only reference artifact reproduces the frozen constants without calling production short-build crypto helpers.
-- [ ] No stale reference to a nonexistent vector generator remains.
-- [ ] Padding behavior has deterministic seeded tests plus RNG-failure tests.
+- [x] Frozen Plan 111 vectors remain unchanged unless an independently demonstrated prior constant is wrong.
+- [x] A committed Rust-only reference artifact reproduces the frozen constants without calling production short-build crypto helpers.
+- [x] No stale reference to a nonexistent vector generator remains.
+- [x] Padding behavior has deterministic seeded tests plus RNG-failure tests.
 
 ### Scope
 
-- [ ] No NTCP2 activation/repair.
-- [ ] No SSU2 work.
-- [ ] No subprocess-based router harness.
-- [ ] No Python added.
-- [ ] No root/container/namespace requirement.
-- [ ] No generic I2NP dispatcher.
-- [ ] No live network claim.
+- [x] No NTCP2 activation/repair.
+- [x] No SSU2 work.
+- [x] No subprocess-based router harness.
+- [x] No Python added.
+- [x] No root/container/namespace requirement.
+- [x] No generic I2NP dispatcher.
+- [x] No live network claim.
 
 ## 17. Stop conditions
 

@@ -31,7 +31,7 @@ inbound tunnel is registered.
 > that holds inbound production construction, the explicit
 > `validate_count_prefixed_short_payload` /
 > `encode_count_prefixed_short_payload` STBM/OTBRM contract
-> helpers, and a Rust-only reference provenance test under
+> helpers (including delivery-action validation), and a Rust-only reference provenance test under
 > `crates/i2pr-tunnel/tests/plan111_reference_vectors.rs` that
 > re-derives the frozen bytes from a pure-Rust path built only on
 > `x25519-dalek`, `sha2`, `chacha20poly1305`, and
@@ -149,7 +149,7 @@ on `i2pr-proto`, `i2pr-crypto`, `i2pr-core`, and `i2pr-netdb`.
 | `build` | `BuildRecordLayout` (Short/Variable) over `DeferredBuildRecords`; `BuildRequestKind` / `BuildReplyKind` wire-type markers |
 | `build_crypto` | `BuildCryptography` trait + `LayerKeys` zeroizing wrapper + `ValidatedRecordSlot` typed nonce + `NoBuildCryptography` default + the Plan 109 ECIES-X25519 Noise-N implementation |
 | `short_record` | Typed 154-byte request and 202-byte reply record encoders (`encode_with_rng` + `encode_deterministic_zero_padded`); `HopRole`, `LayerEncryptionType`, `ShortResponseCode`, `BuildOptions`, `ShortBuildError::RandomnessUnavailable` |
-| `short` | Runtime-neutral `ShortBuildStateMachine` with bounded `Prepared → Protecting → ReadyForDelivery → AwaitingReply → Established` (plus terminal failures), the typed `ShortBuildAction::Deliver` event, the `ShortBuildPath::validate` direction/role topology validator, and the typed `ShortBuildConstructionError::InboundBuildPendingReconciliation` Plan 112 fail-closed gate |
+| `short` | Runtime-neutral `ShortBuildStateMachine` with bounded `Prepared → Protecting → ReadyForDelivery → AwaitingReply → Established` (plus terminal failures), the typed `ShortBuildAction::Deliver` event with exact count-prefixed payload validation, the shared `ShortBuildPath::validate` direction/role topology validator, and the typed `ShortBuildConstructionError::InboundBuildPendingReconciliation` Plan 112 fail-closed gate |
 | `short_state` | Success-only `ShortBuildRegistrar` that admits an established build into `ExploratoryPool` |
 | `responder` | Deterministic `DeterministicResponder` peer simulator |
 | `conformance_fixtures` | Plan 109 single-record conformance fixtures with independent reference Noise-N and SMTunnel KDF derivation |

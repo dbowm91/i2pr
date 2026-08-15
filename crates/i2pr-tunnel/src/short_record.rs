@@ -34,7 +34,7 @@ use std::fmt;
 use i2pr_proto::{
     CodecError, Date, Hash, Mapping, SHORT_REPLY_PLAINTEXT_SIZE, SHORT_REQUEST_PLAINTEXT_SIZE,
 };
-use rand_core::{CryptoRng, RngCore, TryRngCore};
+use rand_core::TryCryptoRng;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -445,7 +445,7 @@ impl ShortRequestRecord {
     /// `56 + encoded_mapping_len .. 154` to be random; production
     /// callers must use this method rather than the
     /// [`Self::encode_deterministic_zero_padded`] fallback.
-    pub fn encode_with_rng<R: CryptoRng + RngCore>(
+    pub fn encode_with_rng<R: TryCryptoRng>(
         &self,
         rng: &mut R,
     ) -> Result<Zeroizing<[u8; SHORT_REQUEST_PLAINTEXT_SIZE]>, ShortBuildError> {
@@ -659,7 +659,7 @@ impl ShortReplyRecord {
     /// `encoded_mapping_len .. 201` to be random; production
     /// callers must use this method rather than the
     /// [`Self::encode_deterministic_zero_padded`] fallback.
-    pub fn encode_with_rng<R: CryptoRng + RngCore>(
+    pub fn encode_with_rng<R: TryCryptoRng>(
         &self,
         rng: &mut R,
     ) -> Result<Zeroizing<[u8; SHORT_REPLY_PLAINTEXT_SIZE]>, ShortBuildError> {
@@ -842,9 +842,30 @@ pub fn validate_reply_body(body: &[u8]) -> Result<(), ShortBuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand_core::SeedableRng;
+    use rand_core::{SeedableRng, TryCryptoRng, TryRngCore};
 
     use crate::identity::TunnelId;
+
+    #[derive(Debug)]
+    struct FailingRng;
+
+    impl TryRngCore for FailingRng {
+        type Error = &'static str;
+
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            Err("test RNG failure")
+        }
+
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            Err("test RNG failure")
+        }
+
+        fn try_fill_bytes(&mut self, _dst: &mut [u8]) -> Result<(), Self::Error> {
+            Err("test RNG failure")
+        }
+    }
+
+    impl TryCryptoRng for FailingRng {}
 
     fn next_router() -> Hash {
         Hash::from_bytes([0x33_u8; 32])
@@ -1190,5 +1211,25 @@ mod tests {
         );
         // The response byte at the last position must be preserved.
         assert_eq!(bytes[SHORT_REPLY_PLAINTEXT_SIZE - 1], 0);
+    }
+
+    #[test]
+    fn request_padding_rng_failure_fails_closed() {
+        let request = request_record();
+        let mut rng = FailingRng;
+        assert!(matches!(
+            request.encode_with_rng(&mut rng),
+            Err(ShortBuildError::RandomnessUnavailable)
+        ));
+    }
+
+    #[test]
+    fn reply_padding_rng_failure_fails_closed() {
+        let reply = ShortReplyRecord::new(BuildOptions::empty(), ShortResponseCode::Accepted);
+        let mut rng = FailingRng;
+        assert!(matches!(
+            reply.encode_with_rng(&mut rng),
+            Err(ShortBuildError::RandomnessUnavailable)
+        ));
     }
 }
