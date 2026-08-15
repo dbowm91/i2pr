@@ -375,19 +375,20 @@ impl StreamState {
     }
 
     fn request_graceful(&self) {
-        if let Ok(mut inbound) = self.inbound.lock() {
-            if inbound.close == CloseMode::Open {
-                inbound.close_after_pending = true;
-            }
+        if let Ok(mut inbound) = self.inbound.lock()
+            && inbound.close == CloseMode::Open
+        {
+            inbound.close_after_pending = true;
         }
         self.data.notify_waiters();
     }
 
     fn close_if_drained(&self) {
-        if let Ok(mut inbound) = self.inbound.lock() {
-            if inbound.close_after_pending && inbound.bytes.is_empty() {
-                inbound.close = CloseMode::Graceful;
-            }
+        if let Ok(mut inbound) = self.inbound.lock()
+            && inbound.close_after_pending
+            && inbound.bytes.is_empty()
+        {
+            inbound.close = CloseMode::Graceful;
         }
         self.data.notify_waiters();
     }
@@ -1042,10 +1043,8 @@ impl NetworkScheduler {
                     .any(|delivery| delivery.target.is_same(target))
             })
             .unwrap_or(false);
-        if !pending {
-            if let Target::Stream(stream) = target {
-                stream.close_if_drained();
-            }
+        if !pending && let Target::Stream(stream) = target {
+            stream.close_if_drained();
         }
     }
 

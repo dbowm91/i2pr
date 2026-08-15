@@ -69,7 +69,7 @@ jobs:
       - name: Install declared MSRV toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.85.0
+          toolchain: 1.88.0
       - name: Check workspace on MSRV
         run: cargo check --locked --workspace --all-targets
 

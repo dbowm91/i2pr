@@ -94,7 +94,7 @@ tools/
 
 ## Building and testing
 
-Requires Rust 1.95.0 (pinned via `rust-toolchain.toml`); MSRV is 1.85.
+Requires Rust 1.95.0 (pinned via `rust-toolchain.toml`); MSRV is 1.88.
 
 ```text
 cargo fmt --all --check

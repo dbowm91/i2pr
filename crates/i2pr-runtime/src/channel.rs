@@ -478,13 +478,13 @@ impl ChannelState {
 
     fn admit(&self, estimate: Option<u64>) -> Result<Option<ResourceLease>, AdmissionError> {
         let Some(charge) = self.spec.charge else {
-            if let Some(estimate) = estimate {
-                if estimate > MAX_QUEUE_ITEM_BYTES {
-                    return Err(AdmissionError::EstimateTooLarge {
-                        estimate,
-                        maximum: MAX_QUEUE_ITEM_BYTES,
-                    });
-                }
+            if let Some(estimate) = estimate
+                && estimate > MAX_QUEUE_ITEM_BYTES
+            {
+                return Err(AdmissionError::EstimateTooLarge {
+                    estimate,
+                    maximum: MAX_QUEUE_ITEM_BYTES,
+                });
             }
             return Ok(None);
         };

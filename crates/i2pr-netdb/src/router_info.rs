@@ -247,10 +247,10 @@ impl ValidatedRouterInfo {
         }
 
         let key = router_hash(router_info.router_identity())?;
-        if let Some(expected) = expected_key {
-            if expected != key {
-                return Err(RouterInfoValidationError::KeyMismatch);
-            }
+        if let Some(expected) = expected_key
+            && expected != key
+        {
+            return Err(RouterInfoValidationError::KeyMismatch);
         }
 
         let algorithm = router_info

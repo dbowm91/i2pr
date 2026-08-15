@@ -378,10 +378,10 @@ impl std::fmt::Debug for ChildScopeInner {
 impl Drop for ChildScopeInner {
     fn drop(&mut self) {
         self.closed.store(true, Ordering::Release);
-        if let Ok(mut tasks) = self.tasks.try_lock() {
-            if let Some(tasks) = tasks.as_mut() {
-                tasks.abort_all();
-            }
+        if let Ok(mut tasks) = self.tasks.try_lock()
+            && let Some(tasks) = tasks.as_mut()
+        {
+            tasks.abort_all();
         }
     }
 }

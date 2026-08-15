@@ -124,17 +124,11 @@ impl NetDbSeam {
                 // the injected provider; if a path is available,
                 // feed it back into the state machine and return the
                 // resulting action.
-                if let Some(provider) = self.provider.as_ref() {
-                    if let Some(path) = provider.provide_reply_path() {
-                        if self.lookup.accept_reply_path(lookup_id, path) {
-                            return self.pending_action_after_path(
-                                store,
-                                request_id,
-                                target,
-                                routing_key,
-                            );
-                        }
-                    }
+                if let Some(provider) = self.provider.as_ref()
+                    && let Some(path) = provider.provide_reply_path()
+                    && self.lookup.accept_reply_path(lookup_id, path)
+                {
+                    return self.pending_action_after_path(store, request_id, target, routing_key);
                 }
                 action
             }

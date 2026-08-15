@@ -34,7 +34,7 @@ Tokio is selected as the initial concrete runtime. The workspace requirement is
 Tokio `1.48` (the closure lockfile resolves `1.52.3`), and enables only
 `macros`, `rt`, `sync`, `time`, and `test-util`; no TCP, UDP, DNS, or other
 network feature is enabled. `test-util` supports paused deterministic tests
-and explicit `time::advance`, not production networking. Rust 1.85 remains the
+and explicit `time::advance`, not production networking. Rust 1.88 remains the
 declared MSRV and is checked separately.
 
 `tokio-util::sync::CancellationToken` is selected through the crate's narrow
@@ -83,7 +83,7 @@ Tokio and `tokio-util` are runtime-facing dependencies only. No network feature
 is enabled and no Plan 021 code opens a socket, performs DNS, touches NetDB,
 constructs tunnels, or advertises protocol capabilities. Dependency versions
 are centralized in the workspace manifest and checked by the dependency
-direction script, `cargo deny`, normal workspace checks, and the Rust 1.85
+direction script, `cargo deny`, normal workspace checks, and the Rust 1.88
 MSRV lane.
 
 Service names, health details, service counts, timeouts, child tasks, restart

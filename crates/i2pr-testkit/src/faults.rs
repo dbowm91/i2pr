@@ -221,7 +221,9 @@ impl FaultMatcher {
             || self
                 .range
                 .is_some_and(|(start, end)| sequence < start || sequence > end)
-            || self.every.is_some_and(|value| sequence % value != 0)
+            || self
+                .every
+                .is_some_and(|value| !sequence.is_multiple_of(value))
         {
             return false;
         }
@@ -293,10 +295,10 @@ impl FaultScript {
             return Err(FaultError::TooManyRules);
         }
         for rule in &rules {
-            if let FaultAction::Duplicate { copies } = rule.action {
-                if copies == 0 || copies as usize > MAX_DUPLICATE_UNITS {
-                    return Err(FaultError::ExpansionLimit);
-                }
+            if let FaultAction::Duplicate { copies } = rule.action
+                && (copies == 0 || copies as usize > MAX_DUPLICATE_UNITS)
+            {
+                return Err(FaultError::ExpansionLimit);
             }
         }
         Ok(Self { seed, rules })

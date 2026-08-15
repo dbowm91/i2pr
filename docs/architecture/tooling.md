@@ -267,7 +267,7 @@ subcommands, no hidden `-Z` flags. Deliberately clean.
 | Job | OS | Steps |
 | --- | --- | --- |
 | **Quality** | ubuntu-latest + macos-latest (matrix, fail-fast: false) | Checkout → Rust 1.95.0 + rustfmt + clippy → `cargo fmt --all --check` → `cargo check --workspace` → `cargo check --workspace --all-targets` → `cargo test --workspace` → `cargo clippy --workspace --all-targets --all-features -- -D warnings` → `cargo doc` (with `-D warnings`) → `check-dependency-direction.sh` (both OS) → `check-runtime-boundaries.sh` (Linux) → `check-fixture-manifest.sh` (Linux) → `check-ntcp2-vectors.sh` (Linux) → `check-ntcp2-interoperability.sh` (Linux) |
-| **MSRV** | ubuntu-latest | Rust **1.85.0** → `cargo check --workspace --all-targets` |
+| **MSRV** | ubuntu-latest | Rust **1.88.0** → `cargo check --workspace --all-targets` |
 | **Dependency policy** | ubuntu-latest | Rust 1.95.0 → `cargo-deny check advisories bans sources` |
 
 Triggers: `on: push`, `on: pull_request` (all branches).
@@ -291,7 +291,7 @@ i2pr-crypto, i2pr-proto, i2pr-core, i2pr-daemon, i2pr-runtime,
 i2pr-storage, i2pr-testkit, i2pr-transport, i2pr-transport-ntcp2
 ```
 
-Resolver v2, edition 2024, MSRV 1.85, workspace version 0.1.0.
+Resolver v2, edition 2024, MSRV 1.88, workspace version 0.1.0.
 
 ### Workspace dependencies (14, all default-features = false unless needed)
 
@@ -344,7 +344,7 @@ unwinding panics and no LTO (fast builds over binary size).
 1. **Zero Rust integration test files under `tests/`.** All
    verification lives inside the crates.
 2. **Dual-toolchain CI.** Production builds use 1.95.0; MSRV
-   verification runs 1.85.0 separately. The toolchain is pinned in
+   verification runs 1.88.0 separately. The toolchain is pinned in
    `rust-toolchain.toml`.
 3. **Python in the dependency-direction guard.** Uses Python 3 stdlib
    for JSON parsing — the only script that does so.

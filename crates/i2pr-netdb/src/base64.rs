@@ -128,7 +128,7 @@ pub fn encode(bytes: &[u8]) -> Result<String, I2pBase64Error> {
 /// alphabet and the I2P strict padding rules.
 pub fn decode(input: &str) -> Result<Vec<u8>, I2pBase64Error> {
     let bytes = input.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(I2pBase64Error::InvalidLength {
             actual: bytes.len(),
         });

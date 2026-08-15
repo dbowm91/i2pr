@@ -99,9 +99,9 @@ implementation.
   **134 unit tests + 5 reference-vector tests passed**.
 - `cargo +1.95.0 test --locked --workspace` — all workspace
   suites passed.
-- `cargo +1.85.0 check --locked --workspace --all-targets` — passed
-  after pinning the transitive `time` family to Rust-1.85-compatible
-  versions.
+- `cargo +1.88.0 check --locked --workspace --all-targets` — passed after
+  raising the declared MSRV to 1.88 to consume the patched `time` release
+  required by the current RustSec advisory database.
 - `cargo +1.95.0 clippy --locked --workspace --all-targets
   --all-features -- -D warnings` — clean.
 - `cargo +1.95.0 fmt --all --check` — clean.
@@ -124,9 +124,10 @@ implementation.
   dependencies. The `rand_core` dependency is already declared
   with `features = ["os_rng"]` and the workspace also supplies
   `TryRngCore`.
-- `Cargo.lock` — pins `time` to `0.3.44`, `time-core` to `0.1.6`,
-  and `time-macros` to `0.2.24` so the declared Rust 1.85 MSRV
-  check remains buildable.
+- `Cargo.toml` / `.github/workflows/ci.yml` — raise the declared and
+  continuously checked MSRV from 1.85 to 1.88. The patched `time >= 0.3.47`
+  release required by RustSec advisory RUSTSEC-2026-0009 requires Rust 1.88.
+- `Cargo.lock` — updates `time` to `0.3.47` and `x509-parser` to `0.18.1`.
 - `crates/i2pr-tunnel/src/lib.rs` — exposes
   `validate_count_prefixed_short_payload` and
   `encode_count_prefixed_short_payload` alongside the existing

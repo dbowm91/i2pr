@@ -276,7 +276,7 @@ records fail the gate.
 
 ## Build, Test, and Quality
 
-Toolchain is pinned to Rust 1.95.0 (`rust-toolchain.toml`); MSRV is 1.85
+Toolchain is pinned to Rust 1.95.0 (`rust-toolchain.toml`); MSRV is 1.88
 (verified by a dedicated CI job). Workspace edition is 2024; `max_width = 100`.
 
 Before handoff, run from the repo root, in this order:

@@ -648,14 +648,14 @@ impl TransportManager {
             return Err(DeliveryOutcome::NoActiveLink);
         };
         for link_id in link_ids {
-            if let Some(link) = state.links.get(link_id) {
-                if link.candidate.state() == LinkState::Authenticated {
-                    return Ok(LinkDeliveryCapability {
-                        link_id: *link_id,
-                        peer,
-                        transport: link.candidate.transport(),
-                    });
-                }
+            if let Some(link) = state.links.get(link_id)
+                && link.candidate.state() == LinkState::Authenticated
+            {
+                return Ok(LinkDeliveryCapability {
+                    link_id: *link_id,
+                    peer,
+                    transport: link.candidate.transport(),
+                });
             }
         }
         Err(DeliveryOutcome::LinkClosedBeforeWrite)
@@ -800,10 +800,11 @@ impl TransportManager {
         backoff: DialBackoff,
     ) -> Result<(), RegistrationError> {
         let mut state = self.lock_state()?;
-        if state.dials.len() >= MAX_REACHABILITY_OBSERVATIONS && !state.dials.contains_key(&peer) {
-            if let Some(oldest) = state.dials.keys().next().copied() {
-                state.dials.remove(&oldest);
-            }
+        if state.dials.len() >= MAX_REACHABILITY_OBSERVATIONS
+            && !state.dials.contains_key(&peer)
+            && let Some(oldest) = state.dials.keys().next().copied()
+        {
+            state.dials.remove(&oldest);
         }
         state.dials.insert(peer, backoff);
         Ok(())

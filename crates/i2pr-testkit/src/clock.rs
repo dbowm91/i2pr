@@ -103,10 +103,10 @@ impl Waiter {
 
     fn wake(&self) {
         self.done.store(true, Ordering::Release);
-        if let Ok(mut waker) = self.waker.lock() {
-            if let Some(waker) = waker.take() {
-                waker.wake();
-            }
+        if let Ok(mut waker) = self.waker.lock()
+            && let Some(waker) = waker.take()
+        {
+            waker.wake();
         }
     }
 }
@@ -340,10 +340,10 @@ impl Future for ManualSleep {
 
 impl Drop for ManualSleep {
     fn drop(&mut self) {
-        if let Some(key) = self.key.take() {
-            if let Ok(mut state) = self.clock.state.lock() {
-                state.pending.remove(&key);
-            }
+        if let Some(key) = self.key.take()
+            && let Ok(mut state) = self.clock.state.lock()
+        {
+            state.pending.remove(&key);
         }
     }
 }
