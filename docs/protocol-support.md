@@ -680,9 +680,9 @@ Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
     -> Plan 105  transport-neutral lookup/store/publication states     [closed]
     -> Plan 106  daemon/bootstrap integration                          [closed]
     -> Plan 107  exploratory tunnel substrate                          [closed]
-    -> Plan 108  local short-build architecture                        [landed; conformance reopened]
-    -> Plan 109  exact short-record + Noise-N/KDF correction           [next executable]
-    -> Plan 110  multi-record preprocessing + local conformance close  [blocked on 109]
+    -> Plan 108  local short-build architecture                        [superseded-by-plan109]
+    -> Plan 109  exact short-record + Noise-N/KDF correction           [passed-record-and-noise-conformance]
+    -> Plan 110  multi-record preprocessing + local conformance close  [passed-multirecord-local-conformance]
     -> narrow qualified external-delivery checkpoint
     -> return to Milestone 4B external acceptance
 ```
@@ -699,10 +699,14 @@ official I2P Tunnel Creation Specification; see
 [`plans/108-conformance-amendment.md`](../plans/108-conformance-amendment.md)
 and the Plan 109/110 corrective roadmap at
 [`plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md`](../plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md).
+Plan 109 closed as `passed-record-and-noise-conformance` and corrected
+the wire format, Noise-N transcript, layer-encryption type,
+request/reply key derivation, response codes, and 218-byte envelope
+layout in place. Plan 110 closed as
+`passed-multirecord-local-conformance` and added randomized slot
+allocation, fake records, raw ChaCha20 preprocessing/postprocessing,
+and the one-byte-count STBM/OTBRM payload framing.
 Milestone 4A is now
-`local-foundation-complete-short-build-architecture-landed-protocol-conformance-reopened`;
-the next executable implementation is **Plan 109** (exact
-short-record + Noise-N conformance correction), followed by
-**Plan 110** (multi-record preprocessing + local conformance
-closure) and then a narrow qualified external-delivery checkpoint,
-before Milestone 4B external acceptance.
+`local-foundation-complete-short-build-multirecord-conformant`; the
+next executable step is a narrow qualified external-delivery
+checkpoint, before Milestone 4B external acceptance.

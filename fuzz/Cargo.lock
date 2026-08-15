@@ -268,6 +268,7 @@ name = "i2pr-crypto"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "hmac",
  "i2pr-proto",
  "rand_core 0.9.5",
  "sha2",

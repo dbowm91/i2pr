@@ -62,7 +62,7 @@ pub const HASH_PREFIX_LEN: usize = 16;
 const NOISE_PROTOCOL_NAME: &[u8] = b"Noise_N_25519_ChaChaPoly_SHA256";
 
 /// The Noise transcript state for a single hop's request.
-#[derive(Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct NoiseRequestState {
     /// Running chaining key after `e → es`.
     ck: [u8; 32],
@@ -256,11 +256,14 @@ impl From<HkdfError> for BuildCryptographyError {
 
 /// Derived per-hop key material produced by `SMTunnel*` KDFs.
 ///
-/// The struct is non-cloneable, zeroizing, and does not implement
-/// `Debug`. The fields are the canonical post-request KDF outputs
-/// the I2P specification publishes for layer decryption and
-/// reply protection.
-#[derive(Zeroize, ZeroizeOnDrop)]
+/// The struct is zeroizing and does not implement `Debug`. The
+/// fields are the canonical post-request KDF outputs the I2P
+/// specification publishes for layer decryption and reply
+/// protection. `Clone` is implemented to support the Plan 110
+/// postprocessor path that retains multiple independent views of
+/// the same derived material; the zeroize-on-drop contract still
+/// wipes the buffer on any drop.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct LayerKeys {
     /// `replyKey` derived from `SMTunnelReplyKey`.
     reply_key: [u8; 32],

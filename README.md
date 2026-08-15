@@ -30,14 +30,16 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 - Runtime-neutral `ShortBuildStateMachine`, success-only
   `ShortBuildRegistrar`, and deterministic `DeterministicResponder`
   peer simulator (`i2pr-tunnel`)
+- Multi-record short tunnel-build construction: randomized slot
+  allocation, originator + padding fake records, raw ChaCha20
+  preprocessing/postprocessing, and the one-byte-count STBM/OTBRM
+  payload framing (Plan 110 closed)
 - CLI daemon with config validation, identity generation, and dry-run (`i2pr-daemon`)
 
 **Not implemented:**
 - Live NTCP2 or SSU2 transport (NTCP2 experimental, non-advertised)
-- Complete randomized multi-record `ShortTunnelBuild` slot layout,
-  fake records, and one-byte count payload framing (Plan 110 scope)
-- Live mixed-router tunnel build execution (depends on the multi-record
-  closure and a qualified router-to-router transport)
+- Live mixed-router tunnel build execution (depends on a qualified
+  external delivery lane)
 - NetDB lookup/publication over the network
 - I2NP message handling and router dispatch
 - Streaming, SAM, I2CP, garlic, LeaseSet management

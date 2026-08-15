@@ -198,10 +198,10 @@ A live `i2pr run` today (Plan 106) follows this sequence:
        Specification; see
        [`plans/109-short-build-record-and-noise-conformance-correction.md`](../../plans/109-short-build-record-and-noise-conformance-correction.md)
        and the closure record
-       [`plans/109-status.md`](../../plans/109-status.md). The
-       multi-record slot allocation, fake records, raw ChaCha20
-       preprocessing, and one-byte-count STBM/OTBRM payload
-       framing are Plan 110 scope.**
+       [`plans/110-status.md`](../../plans/110-status.md). Plan 110
+       closed the multi-record slot allocation, fake records, raw
+       ChaCha20 preprocessing, and one-byte-count STBM/OTBRM payload
+       framing as `passed-multirecord-local-conformance`.**
 6. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
    before startup, then spawns one supervisor manager per service via a
    `JoinSet`. Each service receives a narrowed `ServiceContext` (name,

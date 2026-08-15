@@ -44,6 +44,7 @@ pub mod build_crypto;
 pub mod config;
 pub mod conformance_fixtures;
 pub mod identity;
+pub mod multirecord;
 pub mod pool;
 pub mod provider;
 pub mod responder;
@@ -67,6 +68,17 @@ pub use config::{
 pub use identity::{
     MAX_TUNNEL_ID, TunnelDirection, TunnelId, TunnelIdError, TunnelLifetime, TunnelLifetimeError,
     TunnelPeer, TunnelRole, TunnelState,
+};
+pub use multirecord::{
+    CHACHA20_KEY_LEN, CreatorReplyPostprocessor, MAX_RECORD_COUNT, MIN_PRODUCTION_RECORD_COUNT,
+    MessageHopProcessor, MultiHopFixture, MultiHopReferenceFixture, MultiRecordError,
+    MultiRecordHopSpec, OriginatorFake, PreparedHopContext, PreparedShortBuildMessage,
+    ProcessedHopResult, RECORD_BYTES, REPLY_PLAINTEXT_BYTES, REQUEST_PLAINTEXT_BYTES,
+    RecordAssignment, RecordOwner, ShortBuildRecordSet, SlotIndex, assign_record_slots,
+    build_minimum_record_count, build_originator_fake_record, build_padding_fake_record,
+    chacha20_transform, chacha20_xor, decode_outbound_tunnel_build_reply,
+    decode_short_tunnel_build_payload, encode_outbound_tunnel_build_reply,
+    encode_short_tunnel_build_payload, prepare_short_build_message, verify_originator_fake,
 };
 pub use pool::{
     ExploratoryPool, MAX_HOPS_PER_TUNNEL, PoolError, PoolFullError, RegisterError, RegisterOutcome,

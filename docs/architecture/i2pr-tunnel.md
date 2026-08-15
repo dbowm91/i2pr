@@ -11,11 +11,13 @@ the substrate required to flip the Plan 106 NetDB seam from
 `BlockedExploratoryTunnelUnavailable` to `Available` once a real
 inbound tunnel is registered.
 
-> Status: Plan 109 single-record Noise-N conformance landed. The
-> multi-record `ShortTunnelBuild` slot/fake-record/preprocessing
-> closure is Plan 110 scope. Not production-ready. See
-> `README.md`, `GUARDRAILS.md`,
-> [`plans/109-short-build-record-and-noise-conformance-correction.md`](../../plans/109-short-build-record-and-noise-conformance-correction.md),
+> Status: Plan 109 single-record Noise-N conformance landed. Plan 110
+> multi-record short tunnel-build construction (randomized slot
+> allocation, fake records, raw ChaCha20 preprocessing/postprocessing,
+> and one-byte-count STBM/OTBRM payload framing) is closed locally.
+> Live mixed-router delivery is still blocked on a qualified external
+> delivery lane. Not production-ready. See `README.md`, `GUARDRAILS.md`,
+> [`plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md`](../../plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md),
 > and [`plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md`](../../plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md).
 
 ## Purpose
@@ -291,15 +293,47 @@ qualification run can promote the surface to `interoperable`.
    `i2pr-runtime` and depend on `i2pr-tunnel`, never the other way
    around.
 
-## Out of scope (Plan 110+)
+## Multi-record construction (Plan 110)
 
-- randomized multi-record slot assignment;
-- fake build records;
-- inbound originator fake-record integrity;
-- iterative ChaCha20 preprocessing of other records;
-- complete `ShortTunnelBuild` / `OutboundTunnelBuildReply` payload
-  framing with the one-byte record count;
+[`multirecord`](src/multirecord.rs) owns the Plan 110 multi-record
+short-build surface:
+
+- `ShortBuildRecordSet` and `assign_record_slots` — typed record-set
+  representation with a rejection-sampled Fisher-Yates permutation;
+- `OriginatorFake`, `build_originator_fake_record`, and
+  `verify_originator_fake` — the inbound originator fake record with
+  SHA-256 integrity, including the 16-byte hash prefix, ephemeral
+  X25519 public key, and 154-byte padding;
+- `chacha20_transform` and `chacha20_xor` — raw ChaCha20 stream
+  transforms using `crypto::chacha20::ChaCha20` with the canonical
+  12-byte nonce (zero in bytes 0..10, target slot byte at 11);
+- `prepare_short_build_message` — the creator-side preprocessor that
+  seals every real-hop request, applies raw ChaCha20 transforms for
+  each prior hop's reply key, and produces a `count + count*218`
+  `ShortTunnelBuild` payload;
+- `MessageHopProcessor` — the per-hop in-transit processor that
+  locates the matching record by 16-byte hash prefix, opens the
+  sealed request, derives the layer keys, seals the reply, and
+  pre-processes every other slot for the next hop;
+- `CreatorReplyPostprocessor` — the creator-side reply processor that
+  undoes every symmetric transform, opens every real-hop reply, and
+  verifies the inbound originator-fake integrity hash;
+- `MultiHopReferenceFixture::three_hop_one_fake` — the deterministic
+  three-hop one-fake trajectory fixture used as the local conformance
+  oracle.
+
+The state-machine integration lives in
+[`short`](src/short.rs): `ShortBuildStateMachine::prepare` calls
+`prepare_short_build_message`, and `handle_event(BuildEvent::BuildReply)`
+calls `CreatorReplyPostprocessor::process_reply`. The registrar
+([`short_state`](src/short_state.rs)) admits only `Established`
+outcomes.
+
+## Out of scope (next plans)
+
 - live mixed-router tunnel build execution against Java I2P and i2pd;
+- narrow qualified external-delivery checkpoint that carries one
+  already-correct STBM payload to an independent router;
 - transit participation (Milestone 11);
 - destination-specific tunnel pools (Milestone 6);
 - LeaseSet publication from tunnel records;

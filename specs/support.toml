@@ -433,7 +433,7 @@ structure = "local-ecies-x25519-noise-n-short-build-cryptography-and-state-machi
 scope = "required-later"
 status = "experimental"
 conformant = true
-conformance_note = "Plan 109 closed as `passed-record-and-noise-conformance`: the single-record short request, Noise-N transcript, derived reply/layer/iv keys, exact 218-byte encrypted envelope, and 202-byte reply plaintext are byte-for-byte conformant with the current official I2P Tunnel Creation Specification. Multi-record slot allocation, fake records, raw ChaCha20 preprocessing, and the one-byte-count STBM/OTBRM payload framing are Plan 110 scope. Live mixed-router execution is blocked on Plan 110 and a qualified external delivery lane."
+conformance_note = "Plan 109 closed as `passed-record-and-noise-conformance`: the single-record short request, Noise-N transcript, derived reply/layer/iv keys, exact 218-byte encrypted envelope, and 202-byte reply plaintext are byte-for-byte conformant with the current official I2P Tunnel Creation Specification. Multi-record slot allocation, fake records, raw ChaCha20 preprocessing, and the one-byte-count STBM/OTBRM payload framing are Plan 110 scope. Live mixed-router execution is blocked on a qualified external delivery lane."
 evidence = [
     "crates/i2pr-tunnel/src/build_crypto.rs",
     "crates/i2pr-tunnel/src/short.rs",
@@ -445,6 +445,7 @@ evidence = [
     "plans/109-short-build-record-and-noise-conformance-correction.md",
     "plans/109-status.md",
     "plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md",
+    "plans/110-status.md",
 ]
 advertised = false
 
@@ -455,11 +456,14 @@ structure = "independent-reference-noise-n-and-smtunnel-kdf-fixture"
 scope = "required-later"
 status = "experimental"
 conformant = true
-conformance_note = "Plan 109 introduced the canonical single-record conformance fixture that compares the production ECIES-X25519 Noise-N primitive against an independent reference Noise-N + HKDF-SHA256 derivation. The fixture is exercised by every `cargo test` run and any drift between the two paths fails the test."
+conformance_note = "Plan 109 introduced the canonical single-record conformance fixture that compares the production ECIES-X25519 Noise-N primitive against an independent reference Noise-N + HKDF-SHA256 derivation. The fixture is exercised by every `cargo test` run and any drift between the two paths fails the test. Plan 110 added the multi-hop reference fixture that drives the creator preprocessor and the postprocessor against an independent trajectory and verifies deterministic round-trip."
 evidence = [
     "crates/i2pr-tunnel/src/conformance_fixtures.rs",
+    "crates/i2pr-tunnel/src/multirecord.rs",
     "plans/109-short-build-record-and-noise-conformance-correction.md",
     "plans/109-status.md",
+    "plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md",
+    "plans/110-status.md",
 ]
 advertised = false
 
@@ -468,8 +472,17 @@ id = "tunnel.multirecord-short-build"
 protocol = "tunnels"
 structure = "randomized-slot-fake-record-cha-cha20-preprocessing-stbm-otbrm-framing"
 scope = "required-later"
-status = "deferred"
-evidence = ["plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md"]
+status = "experimental"
+conformant = true
+conformance_note = "Plan 110 closed as `passed-multirecord-local-conformance`: randomized record slot allocation (rejection-sampled Fisher-Yates), originator + padding fake records with SHA-256 integrity, raw ChaCha20 preprocessing/postprocessing of other records, and the canonical one-byte-count STBM/OTBRM payload framing are byte-for-byte conformant with the current official I2P Tunnel Creation Specification. Live mixed-router execution is blocked on a qualified external delivery lane."
+evidence = [
+    "crates/i2pr-tunnel/src/multirecord.rs",
+    "crates/i2pr-tunnel/src/short.rs",
+    "crates/i2pr-tunnel/src/short_record.rs",
+    "crates/i2pr-tunnel/src/short_state.rs",
+    "plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md",
+    "plans/110-status.md",
+]
 advertised = false
 
 [[surface]]
@@ -478,5 +491,8 @@ protocol = "tunnels"
 structure = "live-ecies-x25519-build-and-mixed-router-execution"
 scope = "required-later"
 status = "deferred"
-evidence = ["plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md"]
+evidence = [
+    "plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md",
+    "plans/110-status.md",
+]
 advertised = false

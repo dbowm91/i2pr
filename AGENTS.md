@@ -1747,14 +1747,14 @@ send one independent build.
 ```text
 plan_108                         = superseded-local-architecture-retained-wire-crypto-corrected
 plan_109                         = passed-record-and-noise-conformance
-plan_110                         = blocked-on-plan109-execution
+plan_110                         = passed-multirecord-local-conformance
 short_build_record_format        = locally-conformant
 short_build_noise_state          = locally-conformant
 short_build_reply_crypto         = locally-conformant
 short_build_derived_keys         = locally-conformant
-short_build_multirecord_processing = pending Plan 110
-complete_stbm_payload           = pending Plan 110
-live_mixed_router_build          = blocked-on-plan110-and-qualified-delivery
+short_build_multirecord_processing = locally-conformant
+complete_stbm_payload            = locally-conformant
+live_mixed_router_build          = blocked-on-qualified-delivery
 normal_daemon_ntcp2              = disabled-and-unenableable
 ntcp2                            = experimental-non-advertised
 ```
@@ -3045,7 +3045,7 @@ Plan 103  RouterInfo validation + bounded local NetDB     [closed]
      -> Plan 107  Milestone 5 exploratory tunnel substrate     [closed]
      -> Plan 108  ECIES-X25519 short record construction core   [superseded-by-plan109]
      -> Plan 109  short-record + Noise-N conformance correction  [closed-passed-record-and-noise-conformance]
-     -> Plan 110  multi-record preprocessing + local conformance closure [next executable]
+     -> Plan 110  multi-record preprocessing + local conformance closure [closed-passed-multirecord-local-conformance]
      -> narrow qualified external-delivery checkpoint
      -> return to Milestone 4B external acceptance
 ```
@@ -3062,14 +3062,16 @@ official I2P Tunnel Creation Specification. Plan 109 closed as
 `passed-record-and-noise-conformance` and corrected the wire
 format, Noise-N transcript, layer-encryption type, request/reply
 key derivation, response codes, and 218-byte envelope layout in
-place. Milestone 4A is now
-`local-foundation-complete-short-build-record-and-noise-conformant-multirecord-pending`.
+place. Plan 110 closed as `passed-multirecord-local-conformance`
+and added randomized slot allocation, fake records, raw ChaCha20
+preprocessing/postprocessing, and the one-byte-count STBM/OTBRM
+payload framing. Milestone 4A is now
+`local-foundation-complete-short-build-record-and-noise-conformant-multirecord-pending` ->
+`local-foundation-complete-short-build-multirecord-conformant`.
 A direct `DatabaseLookup` over NTCP2 is not accepted as a substitute
-for the standard exploratory-tunnel path. The next executable
-implementation is **Plan 110** (multi-record preprocessing + local
-conformance closure), followed by a narrow qualified
-external-delivery checkpoint, before Milestone 4B external
-acceptance.
+for the standard exploratory-tunnel path. The next executable step
+is a narrow qualified external-delivery checkpoint, before
+Milestone 4B external acceptance.
 
 ## Plan 106 daemon NetDB/bootstrap integration and Milestone 5 handoff (closed)
 

@@ -833,6 +833,7 @@ name = "i2pr-tunnel"
 version = "0.1.0"
 dependencies = [
  "aes",
+ "chacha20",
  "chacha20poly1305",
  "i2pr-core",
  "i2pr-crypto",

@@ -57,7 +57,12 @@ impl<'a> ShortBuildRegistrar<'a> {
 
     /// Attempts to admit the supplied established outcome into the
     /// pool. Returns the resulting `RegisterOutcome` on success or
-    /// `Err(NotEstablished)` when the outcome is not a success.
+    /// `Err(NotEstablished)` when the outcome is not a success. The
+    /// `ShortBuildOutcome::Established` variant is only produced by
+    /// `complete_build` after every real hop has reported
+    /// `ShortResponseCode::Accepted`; any partial-success path
+    /// produces `HopRejected` instead and the registrar rejects
+    /// it.
     pub fn admit(
         &mut self,
         outcome: &super::short::ShortBuildOutcome,
