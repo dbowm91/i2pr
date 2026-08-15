@@ -1892,7 +1892,8 @@ the Plan 046 rootless or the Plan 048/049 Multipass gates. The
 inbound path remains fail-closed behind
 `InboundBuildPendingReconciliation` until Plan 113 reconciles
 the inbound creator-ephemeral standards/reference discrepancy
-with a pinned reference-router source.
+with a pinned reference-router source. The closure record is
+[`plans/112-status.md`](plans/112-status.md).
 
 Required focused checks:
 

@@ -37,6 +37,8 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
   `blocked-inbound-layout-ambiguity`. See
   [`plans/111-short-build-final-local-conformance-correction.md`](plans/111-short-build-final-local-conformance-correction.md),
   [`plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`](plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md),
+  [`plans/112-outbound-short-build-pre-delivery-closure.md`](plans/112-outbound-short-build-pre-delivery-closure.md),
+  [`plans/112-status.md`](plans/112-status.md),
   the conformance fixture in
   [`crates/i2pr-tunnel/src/conformance_fixtures.rs`](crates/i2pr-tunnel/src/conformance_fixtures.rs),
   the frozen fixed-vector oracle in
