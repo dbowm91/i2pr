@@ -1,59 +1,67 @@
 # Plan 111 handoff
 
-- Status: **ready for implementation**
+- Historical implementation status: **landed**
+- Current authority status: **superseded by post-closure audit**
 - Date: 2026-08-15
 - Plan-of-record: `plans/111-short-build-final-local-conformance-correction.md`
-- Scope: final local short-build conformance correction
-- External network gate: **none**
+- Closure record: `plans/111-status.md`
+- Active amendment: `plans/111-post-closure-audit-amendment.md`
+- Successor roadmap: `plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`
+- Next executable plan: `plans/112-outbound-short-build-pre-delivery-closure.md`
 
-## Current authority
+## Historical Plan 111 result
 
-A post-Plan-110 specification audit found that the architecture and most short-record/multi-record structure landed, but the active conformance claims must remain reopened until Plan 111 corrects the remaining deterministic protocol defects.
-
-Known remaining corrections:
-
-```text
-Noise null-prologue MixHash         = missing
-request es HKDF split               = incorrect-second-HKDF
-record-slot nonce/IV                = incorrect-byte11-must-be-byte4
-OBEP garlic reply tag               = incorrect-16-must-be-8
-inbound creator ephemeral plaintext = missing
-per-hop receive/next tunnel IDs     = missing-or-synthesized
-hop responder role                  = flattened-to-participant
-fixed independent conformance oracle = insufficient
-```
-
-The next executable implementation is **Plan 111 only**.
-
-Do not start the external-delivery checkpoint until Plan 111 closes successfully.
-
-## Scope guard
-
-Plan 111 does not authorize:
-
-- NTCP2 activation/repair;
-- SSU2;
-- live i2pd/Java/Emissary execution as a closure gate;
-- public I2P access;
-- namespaces/containers/root;
-- Python interoperability machinery;
-- generic I2NP dispatch;
-- transit tunnels or tunnel data plane.
-
-## Expected successful handoff state
+Plan 111 landed the intended high-impact cryptographic corrections:
 
 ```text
-plan_111                           = passed-final-local-short-build-conformance
-noise_n_request_transcript         = locally-conformant-fixed-vectors
-record_slot_nonce_iv               = locally-conformant-byte4
-obep_garlic_material               = locally-conformant-32-key-8-tag
-inbound_creator_ephemeral          = locally-conformant
-per_hop_tunnel_ids                 = explicit-and-validated
-short_build_multirecord_processing = locally-conformant-fixed-vectors
-complete_stbm_payload              = locally-conformant-fixed-vectors
-external_build_delivery            = next-checkpoint
-live_mixed_router_build            = blocked-on-qualified-delivery
-normal_daemon_ntcp2                 = disabled-and-unenableable
+Noise null-prologue MixHash         = corrected
+request es HKDF split               = corrected-single-HKDF
+record-slot nonce/IV                = corrected-byte4
+OBEP garlic reply tag               = corrected-to-8
+per-hop receive/next tunnel IDs     = explicit
+hop responder role                  = authenticated-role-aware
+fixed cryptographic vectors         = committed
 ```
 
-If inbound creator-key placement cannot be resolved from the final spec plus a current reference implementation, Plan 111 must stop as `blocked-inbound-layout-ambiguity` rather than inventing a wire layout.
+These corrections remain retained.
+
+## Post-closure audit
+
+A subsequent audit against the current final I2P Tunnel Creation Specification plus current Java I2P and i2pd source found additional local pre-delivery issues:
+
+```text
+request plaintext padding           = zero-filled; Plan112
+reply plaintext padding             = zero-filled; Plan112
+direction/role topology             = not validated; Plan112
+production inbound gate             = not explicit; Plan112
+HopCryptoContext ephemeral accessor = wrong slice; Plan112
+STBM/OTBRM payload API contract      = count-prefix inconsistency; Plan112
+fixed-vector generator provenance   = stale/non-reproducible; Plan112
+inbound creator-key interpretation  = spec/reference discrepancy; Plan113
+```
+
+Therefore the old instruction to proceed directly from Plan 111 to external delivery is superseded.
+
+## Current handoff
+
+The next executable implementation is **Plan 112 only**.
+
+Plan 112 is the mandatory local blocker before the first outbound independent-router delivery attempt.
+
+Plan 113 is a separate inbound semantics reconciliation and does not block outbound delivery after Plan 112.
+
+Do not start a broad transport/harness program from this historical handoff.
+
+## Current expected sequence
+
+```text
+Plan111 core retained
+ -> Plan112 outbound pre-delivery closure
+ -> narrow outbound qualified external-delivery checkpoint
+
+Plan111 inbound ambiguity
+ -> Plan113 inbound spec/reference reconciliation
+ -> later inbound delivery checkpoint if enabled
+```
+
+See `plans/102-amendment-exploratory-tunnel-dependency.md` for current authority precedence.
