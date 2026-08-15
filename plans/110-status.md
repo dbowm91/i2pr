@@ -1,14 +1,33 @@
 # Plan 110 closure: short-build multi-record preprocessing and local conformance
 
-- Status: **passed-multirecord-local-conformance**
-- Date: 2026-08-15
+> **2026-08-15 conformance amendment:** A post-closure audit against the current official I2P ECIES-X25519 Tunnel Creation Specification found remaining local protocol defects in the shared Plan 109/110 implementation: missing Noise null-prologue MixHash, incorrect second-HKDF request-key derivation, record-slot nonce/IV at byte 11 instead of byte 4, 16-byte instead of 8-byte OBEP garlic reply tag, missing inbound creator-ephemeral plaintext semantics, synthesized/missing per-hop tunnel IDs, flattened responder role handling, and insufficiently independent fixed-vector evidence. The historical closure record below remains as an implementation audit record, but its `passed-multirecord-local-conformance` / `locally-conformant` claims are superseded until Plan 111 passes. Current authority: [`plans/111-short-build-final-local-conformance-correction.md`](111-short-build-final-local-conformance-correction.md) and [`plans/111-handoff.md`](111-handoff.md). The next executable implementation is Plan 111; do not proceed to external delivery first.
+
+- Status: **implementation-landed-conformance-reopened-by-plan111**
+- Historical closure date: 2026-08-15
 - Pre-Plan 110 commit: `b0a5907c64622ac1de48c2fbbb43649948578aa8`
-- Plan 110 implementation commit: `cf90793` ("tunnel: implement
-  Plan 110 multi-record short-build conformance").
+- Plan 110 implementation commit: `cf90793` ("tunnel: implement Plan 110 multi-record short-build conformance").
 - Plan-of-record:
-  [`plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md`](plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md)
-- Predecessor authority:
-  [`plans/109-short-build-record-and-noise-conformance-correction.md`](plans/109-short-build-record-and-noise-conformance-correction.md)
+  [`plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md`](110-short-build-multirecord-preprocessing-and-conformance-closure.md)
+- Corrective successor:
+  [`plans/111-short-build-final-local-conformance-correction.md`](111-short-build-final-local-conformance-correction.md)
+
+## Current authoritative state
+
+```text
+plan_108                         = superseded
+plan_109                         = implementation-landed-conformance-reopened-by-plan111
+plan_110                         = implementation-landed-conformance-reopened-by-plan111
+plan_111                         = ready-for-implementation
+short_build_local_conformance    = reopened
+external_build_delivery          = blocked-on-plan111
+live_mixed_router_build          = blocked-on-plan111-and-qualified-delivery
+normal_daemon_ntcp2              = disabled-and-unenableable
+ntcp2                            = experimental-non-advertised
+```
+
+## Historical Plan 110 closure record
+
+The remainder of this file records what the Plan 110 implementation believed it had closed at commit `cf90793`. It is retained for audit/history and must not be treated as current conformance authority where it conflicts with Plan 111.
 
 ## Summary
 
