@@ -1,13 +1,13 @@
 # Plan 111 handoff
 
 - Historical implementation status: **landed**
-- Current authority status: **superseded by post-closure audit**
+- Current authority status: **historical; successor corrective work closed**
 - Date: 2026-08-15
 - Plan-of-record: `plans/111-short-build-final-local-conformance-correction.md`
 - Closure record: `plans/111-status.md`
-- Active amendment: `plans/111-post-closure-audit-amendment.md`
-- Successor roadmap: `plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`
-- Next executable plan: `plans/112-outbound-short-build-pre-delivery-closure.md`
+- Closed amendment: `plans/111-post-closure-audit-amendment.md`
+- Closed successor roadmap: `plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`
+- Next executable action: qualified external-delivery checkpoint
 
 ## Historical Plan 111 result
 
@@ -44,11 +44,12 @@ Therefore the old instruction to proceed directly from Plan 111 to external deli
 
 ## Current handoff
 
-The next executable implementation is **Plan 112 only**.
+Plans 112 and 113 are now closed. The next executable action is the narrow
+qualified external-delivery checkpoint.
 
-Plan 112 is the mandatory local blocker before the first outbound independent-router delivery attempt.
-
-Plan 113 is a separate inbound semantics reconciliation and does not block outbound delivery after Plan 112.
+Plan 112 was the mandatory local blocker before the first outbound
+independent-router delivery attempt. Plan 113 subsequently closed the inbound
+semantics reconciliation under its reference-compatible policy.
 
 Do not start a broad transport/harness program from this historical handoff.
 
@@ -56,12 +57,9 @@ Do not start a broad transport/harness program from this historical handoff.
 
 ```text
 Plan111 core retained
- -> Plan112 outbound pre-delivery closure
- -> narrow outbound qualified external-delivery checkpoint
-
-Plan111 inbound ambiguity
- -> Plan113 inbound spec/reference reconciliation
- -> later inbound delivery checkpoint if enabled
+ -> Plan112 outbound pre-delivery closure [closed]
+ -> Plan113 inbound spec/reference reconciliation [closed]
+ -> qualified external-delivery checkpoint [unblocked; next]
 ```
 
 See `plans/102-amendment-exploratory-tunnel-dependency.md` for current authority precedence.

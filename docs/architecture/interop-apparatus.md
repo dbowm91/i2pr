@@ -1785,7 +1785,7 @@ manual Plan 095 GitHub Actions dispatch follows the Plan 098
 correction commit. The plan-of-record is
 [`plans/098-plan095-runner-provenance-boundary-corrective-pass.md`](../../plans/098-plan095-runner-provenance-boundary-corrective-pass.md).
 
-## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active roadmap)
+## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active parent; amendment closed)
 
 [Plan 102](../../plans/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
 is the active Milestone 4 parent authority that supersedes the
@@ -1796,7 +1796,10 @@ normal-daemon NTCP2 disabled and unenableable) is preserved as
 the authoritative NTCP2 development record. The Plan 099/100/101
 status blocks earlier in this document describe that result; the
 next substantial product work is now governed by Plan 102 and
-its child sequence (Plans 103 → 104 → 105 → 106).
+its child sequence (Plans 103 → 104 → 105 → 106). The local sequence has
+since completed through Plans 107–113. See
+[`plans/102-amendment-status.md`](../../plans/102-amendment-status.md) for
+the formal amendment closure and future-plan unblock audit.
 
 ### Plan 102 amendment — exploratory-tunnel dependency
 
@@ -1816,16 +1819,16 @@ Plan 103  RouterInfo validation + bounded local NetDB
    -> Plan 104  persistent cache + SU3 reseed trust/ingestion
    -> Plan 105  transport-neutral lookup/store/publication state machines
    -> Plan 106  daemon/bootstrap integration
-   -> Milestone 5 exploratory tunnel substrate
+   -> Milestone 5 exploratory tunnel substrate and short-build correction
+   -> qualified external-delivery checkpoint [unblocked; next]
    -> return to Milestone 4B external acceptance
 ```
 
-Plan 106 closes the local/bootstrap implementation phase, not
-the complete original Milestone 4 exit criteria. After Plan 106
-closes, Milestone 4A is
-`local-foundation-complete-external-transport-blocked` until
-Milestone 5 supplies exploratory inbound/outbound paths and a
-router transport is deliberately qualified. A direct
+Plan 106 closed the local/bootstrap implementation phase, not
+the complete original Milestone 4 exit criteria. Plans 107–113 have
+since supplied the local exploratory-tunnel substrate and corrected
+short-build construction, so the qualified external-delivery checkpoint
+is now eligible. A direct
 `DatabaseLookup` over NTCP2 is not accepted as a substitute for
 the standard exploratory-tunnel path.
 
@@ -1852,11 +1855,13 @@ exploratory reply path, the bounded gzip decompressor enforces
 explicit compressed and decompressed byte ceilings, and the local
 publication coordinator never re-signs the local RouterInfo on
 retry. Live standards-conformant NetDB lookup remains blocked on
-the Milestone 5 exploratory-tunnel substrate.
+the qualified external-delivery checkpoint and its independent-router
+evidence.
 
-The next executable implementation is **Plan 106** (daemon and
-bootstrap integration), then Milestone 5 (exploratory tunnel
-substrate), then a return to Milestone 4B external acceptance.
+The next executable action is the narrow qualified external-delivery
+checkpoint. Plans 103–113 have completed the local foundation and
+short-build correction sequence; this checkpoint is not a normal-daemon
+NTCP2 activation or a generic interoperability-harness restart.
 
 ## Plan 099 Milestone 3 interop exit, harness reduction, and router buildout (historical; retained NTCP2 result)
 

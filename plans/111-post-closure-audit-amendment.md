@@ -1,6 +1,6 @@
 # Plan 111 post-closure audit amendment
 
-- Status: **active amendment to `plans/111-status.md`**
+- Status: **closed; superseded by Plans 112 and 113**
 - Date: 2026-08-15
 - Audited implementation commit: `21b5e8a68cd78826c8f7c502455fb6e1ad14c7c1`
 - Successor roadmap: `plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`
@@ -169,23 +169,25 @@ direction_role_topology        = pending-plan112
 hop_context_ephemeral_accessor = pending-plan112
 payload_action_event_contract  = pending-plan112
 fixed_vector_reproducibility   = pending-plan112
-outbound_short_build           = local-core-correct-pre-delivery-closure-pending
-inbound_short_build            = blocked-on-plan113
-outbound_external_delivery     = blocked-on-plan112
-inbound_external_delivery      = blocked-on-plan113-and-later-delivery
+outbound_short_build           = locally-conformant-pre-delivery
+inbound_short_build            = reference-compatible-spec-text-discrepancy
+outbound_external_delivery     = eligible-for-qualified-checkpoint
+inbound_external_delivery      = eligible-for-qualified-checkpoint
 normal_daemon_ntcp2            = disabled-and-unenableable
 ```
 
-This supersedes any stronger `passed-final-local-short-build-conformance` interpretation in the historical closure record.
+This superseded any stronger `passed-final-local-short-build-conformance`
+interpretation in the historical closure record. Plans 112 and 113 have now
+closed the remaining outer-surface and inbound-semantics work; this amendment
+is retained as the audit record and is no longer an active authority.
 
 ## 6. New authority sequence
 
 ```text
 Plan 111 implementation retained
-   -> Plan 112 outbound pre-delivery closure        [next executable]
-      -> narrow outbound qualified delivery checkpoint
-   -> Plan 113 inbound spec/reference reconciliation
-      -> later inbound qualified delivery checkpoint if enabled
+   -> Plan 112 outbound pre-delivery closure        [closed]
+   -> Plan 113 inbound spec/reference reconciliation [closed]
+      -> narrow qualified external-delivery checkpoint [unblocked; next]
 ```
 
 Plan 113 does not block outbound delivery after Plan 112.
@@ -205,4 +207,5 @@ This amendment does not authorize:
 - generic I2NP dispatch;
 - privileged isolation machinery.
 
-The next implementation task is Plan 112 only.
+Plans 112 and 113 are closed. The next action is the narrow qualified
+external-delivery checkpoint recorded by the Plan 102 amendment closure.

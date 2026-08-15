@@ -3180,7 +3180,7 @@ bash scripts/check-runtime-boundaries.sh
 git diff --check
 ```
 
-## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active roadmap)
+## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active parent; amendment closed)
 
 [Plan 102](plans/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
 is the active Milestone 4 parent authority that supersedes the
@@ -3192,6 +3192,9 @@ the authoritative NTCP2 development record. The Plan 099/100/101
 status blocks in this file and in `README.md` describe that
 result; the next substantial product work is now governed by
 Plan 102 and its child sequence (Plans 103 → 104 → 105 → 106).
+The local child sequence has since completed through Plan 113; the formal
+amendment closure and future-plan unblock audit are recorded in
+`plans/102-amendment-status.md`.
 
 ### Plan 102 amendment — exploratory-tunnel dependency
 
@@ -3216,7 +3219,9 @@ Plan 103  RouterInfo validation + bounded local NetDB     [closed]
      -> Plan 109  short-record + Noise-N conformance correction  [superseded-by-plan111]
      -> Plan 110  multi-record preprocessing + local conformance closure [superseded-by-plan111]
      -> Plan 111  final local short-build conformance correction [passed-final-local-short-build-conformance]
-     -> narrow qualified external-delivery checkpoint
+     -> Plan 112  outbound pre-delivery closure [passed-outbound-pre-delivery-closure]
+     -> Plan 113  inbound reference reconciliation [passed-inbound-reference-reconciliation]
+     -> narrow qualified external-delivery checkpoint [unblocked; next]
      -> return to Milestone 4B external acceptance
 ```
 
@@ -3248,7 +3253,7 @@ Milestone 4A is now
 with `inbound_short_build = locally-reference-compatible`.
 A direct `DatabaseLookup` over NTCP2 is not accepted as a substitute
 for the standard exploratory-tunnel path. The next executable step
-is a narrow qualified external-delivery checkpoint, before
+is the now-unblocked narrow qualified external-delivery checkpoint, before
 Milestone 4B external acceptance.
 
 ## Plan 106 daemon NetDB/bootstrap integration and Milestone 5 handoff (closed)

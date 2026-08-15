@@ -7,7 +7,7 @@
 - Predecessor: `plans/111-status.md`
 - Scope class: **narrow local corrective pass**
 - External network gate: **none**
-- Blocks: first outbound qualified external-delivery checkpoint
+- Historical gate: first outbound qualified external-delivery checkpoint
 - Does not block on: Plan 113 inbound standards/reference reconciliation
 
 ## 1. Goal
@@ -583,7 +583,8 @@ On successful implementation:
 3. update `plans/102-amendment-exploratory-tunnel-dependency.md`;
 4. update `AGENTS.md` current-state block;
 5. update `README.md`, `docs/protocol-support.md`, `docs/architecture/i2pr-tunnel.md`, and `specs/support.toml` only where they currently claim a stronger short-build status than the implementation supports;
-6. keep inbound status as `blocked-on-plan113`;
+6. record the inbound handoff to Plan 113; after Plan 113 closes, use its
+   `reference-compatible-spec-text-discrepancy` status;
 7. do not mark live interoperability passed.
 
 Expected post-Plan-112 status:
@@ -600,8 +601,8 @@ stbm_payload_contract             = exact-count-prefixed
 otbrm_payload_contract            = exact-count-prefixed
 fixed_vector_reference            = reproducible-rust-only
 outbound_short_build              = locally-conformant-pre-delivery
-inbound_short_build               = blocked-on-plan113
-outbound_external_delivery        = next-qualified-checkpoint
+inbound_short_build               = passed-reference-compatible-discrepancy
+outbound_external_delivery        = eligible-for-qualified-checkpoint
 normal_daemon_ntcp2               = disabled-and-unenableable
 ```
 
@@ -691,8 +692,13 @@ Record the blocker in `plans/112-status.md` and create a narrowly scoped success
 
 ## 18. Handoff after success
 
-After Plan 112 passes, the project may create or execute the smallest possible **outbound-only qualified external-delivery checkpoint**.
+After Plan 112 passes, the project may create or execute the smallest
+possible qualified external-delivery checkpoint. Plan 113 has since closed
+the inbound reconciliation, so both locally eligible directions may be
+considered; this remains a delivery checkpoint rather than an interoperability
+or Milestone 4B pass.
 
 That future checkpoint must consume the already-correct count-prefixed STBM payload and must not reopen request-record crypto, multi-record preprocessing, random-padding semantics, or topology validation absent concrete independent-router rejection evidence.
 
-Plan 113 remains the sole authority for enabling inbound short builds.
+Plan 113 remains the sole authority for the inbound
+`reference-compatible-spec-text-discrepancy` policy.

@@ -11,7 +11,7 @@
   [`plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`](112-113-post-plan111-pre-delivery-corrective-roadmap.md)
 - Handoff: [`plans/112-handoff.md`](112-handoff.md)
 - Predecessor: [`plans/111-status.md`](111-status.md)
-- Successor: [`plans/113-inbound-short-build-spec-reference-reconciliation.md`](113-inbound-short-build-spec-reference-reconciliation.md)
+- Successor: [`plans/113-status.md`](113-status.md)
 
 ## Current authoritative state
 
@@ -22,14 +22,15 @@ request_padding                   = random-injected-csprng
 reply_padding                     = random-injected-csprng
 outbound_topology                 = validated
 inbound_topology                  = structurally-validated-production-disabled
-production_inbound_builder        = typed-fail-closed-pending-plan113
+production_inbound_builder        = reference-compatible-policy-from-plan113
 hop_context_ephemeral_accessor    = deleted
 stbm_payload_contract             = exact-count-prefixed
 otbrm_payload_contract            = exact-count-prefixed
 fixed_vector_reference            = reproducible-rust-only
 outbound_short_build              = locally-conformant-pre-delivery
 outbound_external_delivery        = next-qualified-checkpoint
-inbound_short_build               = blocked-on-plan113
+inbound_short_build               = passed-reference-compatible-discrepancy
+qualified_external_delivery       = unblocked-next-checkpoint
 normal_daemon_ntcp2               = disabled-and-unenableable
 ntcp2                             = experimental-non-advertised
 ```
@@ -234,9 +235,11 @@ reference provenance test.
 - Plan 112 closes a local outbound pre-delivery closure gate
   only. No live mixed-router NTCP2 or tunnel-build execution
   is claimed. The next executable step is a narrow
-  outbound-only qualified external-delivery checkpoint that
-  consumes the byte-correct count-prefixed STBM payload and
-  selects the smallest available qualified delivery lane.
+  qualified external-delivery checkpoint that consumes the
+  byte-correct count-prefixed STBM payload and selects the
+  smallest available qualified delivery lane. Plan 113 has
+  closed the inbound reconciliation, so this checkpoint is
+  eligible for both locally supported directions.
 
 ## Handoff after Plan 112
 
@@ -263,10 +266,10 @@ records) and the byte-correct OTBRM payload produced by
 re-open the Plan 109/110/111 wire/cryptographic surface or the
 Plan 112 direction/role topology validator.
 
-Inbound short-build construction remains gated behind
-`InboundBuildPendingReconciliation` until Plan 113 reconciles
-the inbound creator-ephemeral standards/reference discrepancy
-with a pinned reference-router source.
+Inbound short-build construction now follows Plan 113's
+`reference-compatible-spec-text-discrepancy` policy, with the
+pinned reference-router evidence and creator-side integrity check
+recorded in `plans/113-status.md`.
 
 The Plan 112 implementation surface is mandatory. Any change
 that removes or weakens the random-padded encoders, the

@@ -2,13 +2,14 @@
 
 ## Status and authority
 
-- Status: **planned; active Milestone 4 parent authority**.
+- Status: **active Milestone 4 parent authority; local child sequence complete, external acceptance pending**.
 - Date: 2026-08-13.
 - Baseline: `abf5c28cf37f5e293516e52dee173e510c63a801` or a clean descendant that preserves the Plan 101 activation boundary.
 - Parent roadmap: `plans/000-mvp-roadmap.md`, Milestone 4.
 - Protocol dossier: `specs/protocols/04-reseed-netdb.md`.
 - Milestone 3 closure authority: Plans 099, 100, and 101.
-- First executable child plan: Plan 103.
+- First executable child plan at roadmap initiation: Plan 103.
+- Amendment closure: [`plans/102-amendment-status.md`](102-amendment-status.md).
 
 This document is the authoritative handoff from the completed Milestone 3 development sequence into actual router construction. It intentionally replaces the many historical Milestone 3 "active" blocks as execution guidance. Those historical blocks remain useful audit records, but they do not control work after this plan.
 
@@ -35,6 +36,12 @@ milestone_4                 = active
 No child of Plan 102 may turn successful NTCP2 interoperability back into a prerequisite for local RouterInfo, local NetDB, persistence, reseed parsing/verification, or transport-neutral NetDB state-machine development.
 
 The next engineering objective is to convert the existing protocol/runtime foundation into a router that owns a validated local network database and can bootstrap safely. The project should spend the next implementation sequence predominantly in Rust product code, not in Python harnesses, CI topology, evidence schemas, or transport-specific test infrastructure.
+
+Plans 103–113 have since completed their local implementation and
+conformance-correction sequence. The parent remains active only for the
+qualified external-delivery checkpoint and the later Milestone 4B acceptance;
+the Plan 102 exploratory-tunnel amendment is formally closed in
+`plans/102-amendment-status.md`.
 
 ## Why this sequence is now correct
 

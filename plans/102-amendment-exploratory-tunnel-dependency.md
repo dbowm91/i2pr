@@ -4,8 +4,12 @@
 
 - Original amendment date: 2026-08-13.
 - Updated: 2026-08-15 after the Plan 111 post-closure reference-backed audit.
-- Authority: **active amendment to Plan 102**.
-- Reason: standards-conformant external NetDB acceptance depends on exploratory tunnels; Plan 111 repaired the core short-build cryptography, Plan 112 now owns the remaining outbound local pre-delivery closure, and Plan 113 separately owns the inbound specification/reference discrepancy.
+- Authority: **closed amendment to Plan 102**.
+- Closure record: [`plans/102-amendment-status.md`](102-amendment-status.md).
+- Reason: the dependency correction is implemented and propagated through the
+  closed Plans 107–113 sequence. The next qualified external-delivery
+  checkpoint is now unblocked; full Milestone 4B acceptance remains gated on
+  real independent-router evidence.
 
 ## Original dependency correction
 
@@ -34,9 +38,8 @@ Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
    -> Plan 110  multi-record construction/preprocessing               [superseded]
    -> Plan 111  core short-build cryptographic correction             [landed; amended]
 -> Plan 112  outbound short-build pre-delivery closure             [CLOSED]
-      -> narrow outbound qualified external-delivery checkpoint
-   -> Plan 113  inbound specification/reference reconciliation        [separate inbound authority]
-      -> later inbound qualified delivery checkpoint if enabled
+   -> Plan 113  inbound specification/reference reconciliation        [CLOSED; reference-compatible]
+      -> narrow qualified external-delivery checkpoint                [UNBLOCKED; NEXT]
    -> full exploratory inbound/outbound acceptance
    -> return to Milestone 4B external NetDB acceptance
 ```
@@ -128,10 +131,10 @@ exploratory tunnel substrate          = implemented
 short-build architecture              = implemented
 short-build cryptographic core        = Plan111-corrected
 outbound short-build pre-delivery      = passed-outbound-pre-delivery-closure
-inbound short-build                    = blocked-on-plan113
-outbound independent delivery          = next-qualified-checkpoint
-inbound independent delivery           = blocked-on-plan113-and-later-delivery
-live exploratory inbound/outbound pair = blocked-on-both-directions
+inbound short-build                    = passed-reference-compatible-discrepancy
+outbound independent delivery          = eligible-for-qualified-checkpoint
+inbound independent delivery           = eligible-for-qualified-checkpoint
+live exploratory inbound/outbound pair = blocked-on-qualified-delivery
 live RouterInfo lookup                 = blocked-on-live-exploratory-tunnels
 live publication verification         = blocked-on-live-exploratory-tunnels-and-qualified-transport
 normal daemon NTCP2                   = disabled/unenableable
@@ -140,7 +143,7 @@ ntcp2                                 = experimental/non-advertised
 
 This remains a successful local foundation state, but it is not `milestone4-passed` and it is not yet ready for the full exploratory-tunnel acceptance checkpoint.
 
-## Plan 112 boundary
+## Plan 112 boundary (closed)
 
 Plan 112 is deliberately local and deterministic. It owns only:
 
@@ -165,9 +168,12 @@ Plan 112 must not require:
 - new Python interoperability frameworks;
 - generic I2NP dispatch.
 
-Only after Plan 112 passes may the project select the smallest available **outbound-only** external delivery lane for one real mixed-router tunnel-build attempt.
+Plan 112 passed. The smallest available qualified external-delivery lane may
+now be selected for a real mixed-router tunnel-build attempt. This is a
+checkpoint, not a claim of interoperability or a normal-daemon transport
+activation.
 
-## Plan 113 boundary
+## Plan 113 boundary (closed)
 
 Plan 113 owns only the inbound specification/reference discrepancy and resulting local inbound policy.
 
@@ -179,7 +185,9 @@ Acceptable closure states are:
 2. current deployed-reference-compatible behavior explicitly documented and implemented without overstating strict final-spec conformance;
 3. discrepancy unresolved and inbound remains disabled.
 
-A fail-closed Plan 113 is acceptable and must not regress outbound progress.
+Plan 113 selected the deployed-reference-compatible policy and documented the
+remaining final-spec prose discrepancy. It does not regress outbound progress
+and does not claim strict final-spec conformance for that one semantic.
 
 ## Milestone 4B external acceptance
 
@@ -223,6 +231,30 @@ Plan 102 amendment (this file)
  -> older historical Milestone 3 active blocks
 ```
 
-The next executable action is the narrow outbound-only qualified
-external-delivery checkpoint after Plan 112. Plan 113 remains the sole
-authority for inbound short-build semantics and enablement.
+The next executable action is the narrow qualified external-delivery
+checkpoint after Plans 112 and 113. The amendment is closed; the Plan 102
+parent remains the active Milestone 4 authority for the subsequent Milestone
+4B acceptance decision.
+
+## Closure and future-plan unblock audit
+
+The amendment's dependency correction is complete. Plans 103–107 delivered
+the local NetDB and exploratory-tunnel substrate; Plans 108–111 corrected the
+short-build implementation; Plan 112 closed the outbound pre-delivery gate;
+and Plan 113 closed the inbound specification/reference reconciliation.
+
+The following status changes are authoritative:
+
+```text
+plan_102_amendment               = closed
+plans_112_113_corrective_roadmap = closed
+qualified_external_delivery     = unblocked-next-checkpoint
+milestone4b_external_acceptance = still-blocked-on-qualified-evidence
+normal_daemon_ntcp2             = disabled-and-unenableable
+ntcp2                           = experimental-non-advertised
+```
+
+No older deferred NTCP2 development plan is reactivated by this closure.
+Plan 079 remains deferred to the separate pre-normal-activation/public-
+network checkpoint, and the qualified delivery checkpoint must not be
+expanded into a generic interoperability-harness restart.

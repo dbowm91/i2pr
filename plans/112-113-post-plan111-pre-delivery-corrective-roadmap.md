@@ -1,10 +1,11 @@
 # Plans 112-113: Post-Plan 111 pre-delivery corrective roadmap
 
-- Status: **active corrective roadmap**
+- Status: **closed; corrective roadmap complete**
 - Date: 2026-08-15
 - Parent authority: `plans/102-amendment-exploratory-tunnel-dependency.md`
 - Predecessor: `plans/111-status.md`
-- Next executable plan: **Plan 112**
+- Closure records: `plans/112-status.md` and `plans/113-status.md`
+- Next executable action: **qualified external-delivery checkpoint**
 - External network work authorized by this roadmap: **none**
 
 ## 1. Purpose
@@ -241,8 +242,14 @@ For the specific inbound creator-key discrepancy, final spec text and two curren
 
 ## 9. Handoff
 
-The next executable implementation is:
+Plans 112 and 113 are closed. Plan 112 passed the outbound pre-delivery
+closure, and Plan 113 selected the deployed-reference-compatible inbound
+policy while preserving the explicitly documented final-spec discrepancy.
 
-`plans/112-outbound-short-build-pre-delivery-closure.md`
+The next executable action is:
 
-Plan 113 is already specified so the inbound question does not need another discovery/planning cycle after Plan 112.
+`qualified external-delivery checkpoint`
+
+This checkpoint is unblocked for both locally eligible directions. It is not
+Milestone 4B acceptance and must not activate normal-daemon NTCP2 or expand
+into a generic interoperability harness.

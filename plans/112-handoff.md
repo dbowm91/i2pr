@@ -23,11 +23,11 @@ OTBRM reply-event contract         = count-prefix docs inconsistent
 fixed-vector generator provenance  = stale/non-reproducible
 ```
 
-Plan 112 is now closed. Its next-step authority is the narrow
-outbound-only qualified external-delivery checkpoint described below;
-Plan 113 remains separate inbound work.
-
-Plan 113 is already written for the separate inbound standards/reference discrepancy and does not block outbound progress after Plan 112.
+Plan 112 is now closed. Plan 113 subsequently closed the separate
+inbound standards/reference discrepancy under its
+`reference-compatible-spec-text-discrepancy` policy. The qualified
+external-delivery checkpoint is now eligible for both locally supported
+directions.
 
 ## Research-backed constraints
 
@@ -74,7 +74,7 @@ request_padding                = random-injected-csprng
 reply_padding                  = random-injected-csprng
 outbound_topology              = validated
 inbound_topology               = structurally-validated-production-disabled
-production_inbound_builder     = typed-fail-closed-pending-plan113
+production_inbound_builder     = reference-compatible-policy-from-plan113
 hop_context_ephemeral_accessor = corrected-or-removed
 stbm_payload_contract          = exact-count-prefixed
 otbrm_payload_contract         = exact-count-prefixed

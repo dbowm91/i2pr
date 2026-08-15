@@ -647,7 +647,7 @@ bootstrap. Plan 079's 3/3 repeated-direction validation campaign is
 moved to the pre-normal-activation / pre-public-network integration
 checkpoint rather than gating offline/local router development.
 
-## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active roadmap)
+## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active parent; amendment closed)
 
 [Plan 102](../plans/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
 is the active Milestone 4 parent authority that supersedes the
@@ -660,6 +660,8 @@ exploratory tunnel substrate); Plan 108 landed the local
 short-build architecture but its wire/cryptographic algorithm
 diverges from the current official I2P Tunnel Creation
 Specification.
+The amendment closure and future-plan unblock audit are recorded in
+[`plans/102-amendment-status.md`](../plans/102-amendment-status.md).
 
 ### Plan 102 amendment — exploratory-tunnel dependency
 
@@ -685,7 +687,8 @@ Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
      -> Plan 110  multi-record preprocessing + local conformance close  [superseded-by-plan111]
      -> Plan 111  final local short-build conformance correction         [passed-final-local-short-build-conformance]
      -> Plan 112  outbound pre-delivery closure                           [passed-outbound-pre-delivery-closure]
-     -> narrow qualified external-delivery checkpoint
+     -> Plan 113  inbound reference reconciliation                        [passed-inbound-reference-reconciliation]
+     -> narrow qualified external-delivery checkpoint                     [unblocked; next]
      -> return to Milestone 4B external acceptance
 ```
 
