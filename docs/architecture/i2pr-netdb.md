@@ -130,7 +130,11 @@ no DNS. Filesystem I/O belongs to `i2pr-storage` (raw-byte seam) and
   `i2pr-tunnel` (not in this crate) and consumes
   `i2pr_netdb::ReplyPath` only through the Plan 107 reply-path
   provider — `i2pr-netdb` does not import the ECIES primitive or
-  the build state machine directly.
+  the build state machine directly. The Plan 108 wire/cryptographic
+  algorithm is not protocol-conformant against the current official
+  I2P Tunnel Creation Specification; see
+  [`plans/108-conformance-amendment.md`](../../plans/108-conformance-amendment.md)
+  and the Plan 109/110 corrective roadmap.
 - `store_message::handle_unsolicited_databasestore` — bounded
   ingestion handler for `DatabaseStore` messages that arrive outside
   an active lookup; rejects non-RouterInfo payloads and enforces the

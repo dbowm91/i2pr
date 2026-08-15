@@ -1,13 +1,92 @@
 # Plan 108 closure record — ECIES-X25519 short tunnel-build construction
 
-- Status: **passed-local-short-build-construction**
-- Date: 2026-08-14
-- Parent authority: Plan 102 + `plans/102-amendment-exploratory-tunnel-dependency.md`
-- Predecessor: Plan 107 (`plans/107-status.md`)
+- Status: **implementation-landed-protocol-conformance-reopened**
+  (original local-simulation closure: 2026-08-14;
+  protocol-conformance amendment: 2026-08-15)
+- Original implementation commit: `23961c9fed623ccf671a0c5ea958c9f464c84f88`
+- Superseded protocol-conformance authority:
+  [`plans/108-conformance-amendment.md`](108-conformance-amendment.md)
+- Successor corrective authority:
+  [`plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md`](109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md)
+- Next executable plan: **Plan 109**
+  ([`plans/109-short-build-record-and-noise-conformance-correction.md`](109-short-build-record-and-noise-conformance-correction.md))
+- Parent authority: Plan 102 + [`plans/102-amendment-exploratory-tunnel-dependency.md`](102-amendment-exploratory-tunnel-dependency.md)
+- Predecessor: Plan 107 ([`plans/107-status.md`](107-status.md))
 - Milestone: 5 — network tunnel data plane and exploratory tunnels
 - Scope class: **bounded Rust implementation pass; no live-network acceptance gate**
 
-## Summary
+## Protocol-conformance amendment (2026-08-15)
+
+The original Plan 108 closure was recorded as
+`passed-local-short-build-construction`. Subsequent comparison
+against the current official I2P Tunnel Creation Specification
+established that the Plan 108 short-build wire/cryptographic
+algorithm is **not protocol-conformant**. The amendment does
+**not** revert the Plan 108 implementation. It changes the status
+interpretation so downstream work does not treat internal
+round-trip success as I2P interoperability evidence.
+
+### Retained value
+
+These parts remain useful foundations subject to normal corrective
+refactoring:
+
+- runtime-neutral `i2pr-tunnel` structure;
+- bounded short-build state-machine ownership;
+- typed failure states;
+- success-only `ExploratoryPool` registration;
+- corrected I2NP type IDs 23/24/25/26;
+- generic HKDF helper in `i2pr-crypto` if its use is separately validated;
+- deterministic testing discipline;
+- transport/runtime separation;
+- fail-closed normal-daemon NTCP2 state.
+
+### Superseded protocol claims
+
+Do not treat these Plan 108 claims as valid protocol evidence:
+
+- Plan 108 short request plaintext field layout;
+- low-order role flag encoding (`0x01` / `0x02`);
+- layer encryption type `0x05`;
+- custom millisecond time/expiration wire fields;
+- custom request-key seed and nonce derivation;
+- custom `ECIES-X25519-Build-Session-v1` KDF path;
+- request envelope `ephemeral || nonce || AEAD body`;
+- empty request AEAD associated data;
+- fresh reply X25519 exchange;
+- Plan 108 reply plaintext fields/response code `1`;
+- concatenated-record message representation as a complete STBM payload;
+- creator/responder self-round-trip tests as independent conformance proof.
+
+The current official specification instead requires the exact
+layouts, Noise-N transcript, derived reply/layer keys,
+randomized records, raw-ChaCha20 preprocessing, and one-byte
+record count described in Plan 109 and Plan 110.
+
+### Current authoritative state
+
+```text
+plan_108                         = implementation-landed-protocol-conformance-reopened
+plan_109                         = ready-for-implementation
+plan_110                         = blocked-on-plan109
+exploratory_tunnel_substrate     = implemented
+short_build_state_machine        = architecture-retained-needs-protocol-correction
+short_build_request_wire         = nonconformant-plan108
+short_build_noise_state          = nonconformant-plan108
+short_build_reply_wire_crypto    = nonconformant-plan108
+short_build_multirecord          = incomplete-plan108
+external_build_delivery          = unavailable
+live_mixed_router_build          = blocked-do-not-attempt
+normal_daemon_ntcp2              = disabled-and-unenableable
+ntcp2                            = experimental-non-advertised
+```
+
+Do **not** skip directly from Plan 108 to live mixed-router
+validation. The next executable plan is **Plan 109**.
+
+---
+
+## Original closure summary (preserved verbatim as audit record)
 
 Plan 108 closed the local short-record construction gap left open by
 Plan 107. The implementation surface lands the cryptographic
@@ -16,7 +95,7 @@ success-only registrar, deterministic responder peer, and
 corrected I2NP wire constants. The Plan 108 surface is **local
 simulation only**; no live mixed-router tunnel build has occurred.
 
-## Achieved state
+## Achieved state (reclassified by the 2026-08-15 amendment)
 
 ```text
 plan_103                       = passed
@@ -24,19 +103,19 @@ plan_104                       = passed
 plan_105                       = passed
 plan_106                       = passed-local-bootstrap-integration
 plan_107                       = passed-exploratory-substrate
-plan_108                       = passed-local-short-build-construction
+plan_108                       = implementation-landed-protocol-conformance-reopened
 routerinfo_validation          = implemented
 local_netdb                    = implemented
 persistent_routerinfo_cache    = implemented
 su3_reseed_verification        = implemented
 netdb_query_state_machine      = implemented
 exploratory_tunnel_substrate   = implemented
-ecies_x25519_short_build_crypto = implemented-local
-short_build_state_machine      = implemented-local
-success_gated_pool_registration = implemented-local
-deterministic_responder_peer   = implemented-local
+ecies_x25519_short_build_crypto = implemented-local-nonconformant
+short_build_state_machine      = implemented-local-nonconformant
+success_gated_pool_registration = implemented-local-nonconformant
+deterministic_responder_peer   = implemented-local-nonconformant
 external_build_delivery        = unavailable
-live_mixed_router_build        = blocked-on-qualified-delivery
+live_mixed_router_build        = blocked-do-not-attempt
 live_routerinfo_lookup         = blocked-on-live-exploratory-path
 normal_daemon_ntcp2            = disabled-and-unenableable
 ntcp2                          = experimental-non-advertised

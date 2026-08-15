@@ -1,11 +1,28 @@
 # Plan 108: ECIES-X25519 short tunnel-build construction core
 
-- Status: **ready for implementation**
+- Status: **implementation-landed-protocol-conformance-reopened**
+  (original ready-for-implementation: 2026-08-14;
+  protocol-conformance amendment: 2026-08-15)
 - Date: 2026-08-14
 - Parent authority: Plan 102 + `plans/102-amendment-exploratory-tunnel-dependency.md`
 - Predecessor: Plan 107 (`plans/107-status.md`)
+- Successor corrective authority:
+  `plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md`
+- Next executable plan: **Plan 109**
+  (`plans/109-short-build-record-and-noise-conformance-correction.md`)
 - Milestone: 5 — network tunnel data plane and exploratory tunnels
 - Scope class: **bounded Rust implementation pass; no live-network acceptance gate**
+
+> **Protocol-conformance amendment (2026-08-15).** The Plan 108
+> implementation landed and the local simulation test suite
+> passes, but the wire/cryptographic algorithm is **not**
+> protocol-conformant against the current official I2P Tunnel
+> Creation Specification. The Plan 108 architecture and
+> implementation surface are retained as the corrective
+> foundation for Plan 109. Do not treat Plan 108 self-round-trip
+> success as I2P interoperability evidence. See
+> [`plans/108-conformance-amendment.md`](108-conformance-amendment.md)
+> for the superseded protocol claims and the authority chain.
 
 ## 1. Purpose
 

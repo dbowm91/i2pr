@@ -21,14 +21,22 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 - ECIES-X25519 short tunnel-build cryptography, typed short request/reply
   records, runtime-neutral `ShortBuildStateMachine`, success-only
   `ShortBuildRegistrar`, and deterministic `DeterministicResponder`
-  peer simulator (`i2pr-tunnel`)
+  peer simulator (`i2pr-tunnel`); the wire/cryptographic algorithm
+  is not yet protocol-conformant against the current official I2P
+  Tunnel Creation Specification — see
+  [`plans/108-conformance-amendment.md`](plans/108-conformance-amendment.md)
+  and the Plan 109/110 corrective roadmap
 - CLI daemon with config validation, identity generation, and dry-run (`i2pr-daemon`)
 
 **Not implemented:**
 - Live NTCP2 or SSU2 transport (NTCP2 experimental, non-advertised)
-- Live mixed-router tunnel build execution (Plan 108 closed the local
-  short-record construction core; live execution depends on a
-  qualified router-to-router transport)
+- Standards-conformant short tunnel-build construction (Plan 108 landed
+  the local architecture but its wire/cryptographic algorithm diverges
+  from the current official I2P Tunnel Creation Specification; Plan
+  109/110 corrective work is the next executable implementation)
+- Live mixed-router tunnel build execution (depends on the locally
+  conformant short-build path and a qualified router-to-router
+  transport)
 - NetDB lookup/publication over the network
 - I2NP message handling and router dispatch
 - Streaming, SAM, I2CP, garlic, LeaseSet management
@@ -50,7 +58,7 @@ crates/
   i2pr-runtime/             Tokio-owned supervision, cancellation, and I/O
   i2pr-netdb/               RouterInfo validation, NetDB store, lookup, publication
   i2pr-netdb-persist/       Persistent cache and SU3 reseed ingestion
-  i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build cryptography, runtime-neutral build state machine, reply-path provider
+  i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build cryptography (implementation-landed, protocol-conformance reopened; see plans/108-conformance-amendment.md), runtime-neutral build state machine, reply-path provider
   i2pr-daemon/              CLI, configuration, composition, supervision
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
 tools/

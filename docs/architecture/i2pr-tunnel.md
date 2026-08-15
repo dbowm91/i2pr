@@ -10,8 +10,10 @@ seam from `BlockedExploratoryTunnelUnavailable` to `Available` once a
 real inbound tunnel is registered, and to drive that registration
 through a fully constructed short tunnel-build attempt.
 
-> Status: experimental. Not production-ready. See `README.md` and
-> `GUARDRAILS.md`.
+> Status: experimental; Plan 108 implementation-landed but
+> protocol-conformance reopened. Not production-ready. See
+> `README.md`, `GUARDRAILS.md`, and
+> [`plans/108-conformance-amendment.md`](../../plans/108-conformance-amendment.md).
 
 ## Purpose
 
@@ -165,9 +167,10 @@ explicitly forbid adding any of these dependencies.
   an established outcome into `ExploratoryPool` and rejects every
   other terminal outcome.
 
-## Plan 108 acceptance criteria
+## Plan 108 acceptance criteria (superseded)
 
-Plan 108 closes when:
+Plan 108 was originally recorded as `passed-local-short-build-construction`
+when these local-only criteria were satisfied:
 
 1. `i2pr-tunnel` compiles and passes its own unit tests.
 2. `BuildRequestKind::ShortTunnelBuild.message_type() == 25`,
@@ -193,6 +196,20 @@ Plan 108 closes when:
    records the `EciesX25519BuildCryptography` produces, then
    produces a `ShortReplyRecord` that the
    `BuildCryptography::open_short_reply` path decrypts.
+
+These eight criteria prove only that the local creator and
+responder implementations agree with each other; they do **not**
+prove that either side agrees with the current official I2P
+Tunnel Creation Specification. Subsequent comparison against the
+specification established that the Plan 108 wire layout,
+Noise-N transcript, layer-encryption type, request/reply key
+derivation, response codes, and message framing diverge from
+normative behavior. The status is now
+`implementation-landed-protocol-conformance-reopened`. The
+corrective acceptance criteria live in
+[`plans/109-short-build-record-and-noise-conformance-correction.md`](../../plans/109-short-build-record-and-noise-conformance-correction.md)
+and
+[`plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md`](../../plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md).
 
 ## Distinctive design choices
 
@@ -226,6 +243,11 @@ Plan 108 closes when:
 ## Out of scope (Plan 109+)
 
 - live mixed-router tunnel build execution against Java I2P and i2pd;
+- standards-conformant short-build wire/Noise-N/reply-crypto semantics
+  (Plan 109 corrective scope);
+- randomized record slots, fake records, raw ChaCha20 preprocessing
+  (Plan 110 corrective scope);
+- exact one-byte-count STBM/OTBRM payload framing (Plan 110);
 - transit participation (Milestone 11);
 - destination-specific tunnel pools (Milestone 6);
 - LeaseSet publication from tunnel records;
@@ -245,4 +267,9 @@ Plan 108 closes when:
   the `ReplyPathProvider` trait that the new adapter implements.
 - [`i2pr-daemon`](i2pr-daemon.md) — composes the NetDB seam; the
   seam consumes the reply-path provider when one is injected.
-- Plan-of-record: [`plans/108-live-ecies-x25519-short-tunnel-build-construction.md`](../../plans/108-live-ecies-x25519-short-tunnel-build-construction.md).
+- Plan-of-record:
+  [`plans/108-live-ecies-x25519-short-tunnel-build-construction.md`](../../plans/108-live-ecies-x25519-short-tunnel-build-construction.md)
+  (implementation-landed, protocol-conformance reopened by
+  [`plans/108-conformance-amendment.md`](../../plans/108-conformance-amendment.md);
+  next executable plan is
+  [`plans/109-short-build-record-and-noise-conformance-correction.md`](../../plans/109-short-build-record-and-noise-conformance-correction.md)).

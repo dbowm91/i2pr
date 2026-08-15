@@ -19,7 +19,10 @@ Scope is intentionally narrow:
 - Secret memory hygiene: zeroize-on-drop wrappers, no `Debug`,
   no `Clone`, no accidental formatting of secret bytes.
 - HKDF-SHA256 helper the Milestone 5 ECIES-X25519 tunnel-build
-  cryptography primitive consumes (Plan 108).
+  cryptography primitive consumes (Plan 108 implementation-landed,
+  protocol-conformance reopened; the helper remains useful but
+  the Plan 108 derivation labels are superseded — see
+  [`plans/108-conformance-amendment.md`](../../plans/108-conformance-amendment.md)).
 
 The crate does **not** include:
 
@@ -174,7 +177,9 @@ There is no per-crate `tests/` directory or fixture directory owned by
    crate so the Milestone 5 ECIES-X25519 tunnel-build primitive can
    consume both directly. AES, ChaCha20-Poly1305, HMAC, and SipHash
    live in `i2pr-transport-ntcp2` (and ChaCha20-Poly1305 also in
-   `i2pr-tunnel` for the Plan 108 short-build cryptography).
+   `i2pr-tunnel` for the Plan 108 short-build cryptography; the
+   Plan 108 derivation is non-normative and is superseded by
+   Plan 109).
 2. **Dual X25519 wrappers.** `X25519PrivateKey` is for transport static
    keys (has DH); `EncryptionPrivateKey` is for identity encryption
    (no DH).
@@ -198,5 +203,7 @@ There is no per-crate `tests/` directory or fixture directory owned by
   `X25519PrivateKey` via `TransportStaticKey` for handshake state
 - [i2pr-tunnel](i2pr-tunnel.md) — consumes `X25519PrivateKey`,
   `X25519SharedSecret`, `hkdf_sha256_32`, and `sha256` in the Plan 108
-  ECIES-X25519 short tunnel-build cryptography primitive
+  ECIES-X25519 short tunnel-build cryptography primitive (Plan 108
+  implementation-landed, protocol-conformance reopened by
+  [`plans/108-conformance-amendment.md`](../../plans/108-conformance-amendment.md))
 - Plan-of-record: `plans/013-m1-identity-crypto-storage.md`

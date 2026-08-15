@@ -1617,10 +1617,10 @@ bash scripts/check-multipass-interop-boundary.sh
 git diff --check
 ```
 
-## Plan 108 ECIES-X25519 short tunnel-build construction (closed)
+## Plan 108 ECIES-X25519 short tunnel-build construction (implementation landed; protocol conformance reopened)
 
-Plan 108 is the active Milestone 5 implementation plan that closes
-the local construction gap from Plan 107. Plan 108 lands:
+Plan 108 is the Milestone 5 implementation plan that landed the
+local construction gap from Plan 107. Plan 108 implements:
 
 - a real ECIES-X25519 short-build cryptography primitive
   (`EciesX25519BuildCryptography`) over the existing
@@ -1643,13 +1643,47 @@ the local construction gap from Plan 107. Plan 108 lands:
   `OutboundTunnelBuildReply = 26` (Plan 107 carried incorrect
   values 24 / 225 in `BuildRequestKind`).
 
+> **Protocol-conformance amendment (2026-08-15).** Plan 108
+> implementation landed and the local simulation test suite
+> passes, but the wire/cryptographic algorithm is **not**
+> protocol-conformant against the current official I2P Tunnel
+> Creation Specification. The status is now
+> `implementation-landed-protocol-conformance-reopened`. The
+> Plan 108 architecture is retained as the corrective
+> foundation for Plan 109. See
+> [`plans/108-conformance-amendment.md`](plans/108-conformance-amendment.md)
+> for the superseded protocol claims and
+> [`plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md`](plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md)
+> for the successor corrective authority.
+
+Do **not** treat any of the following Plan 108 claims as
+protocol-conformance evidence:
+
+- Plan 108 short request plaintext field layout;
+- low-order role flag encoding (`0x01` / `0x02`);
+- layer encryption type `0x05`;
+- custom millisecond time/expiration wire fields;
+- custom request-key seed and nonce derivation;
+- custom `ECIES-X25519-Build-Session-v1` KDF path;
+- request envelope `ephemeral || nonce || AEAD body`;
+- empty request AEAD associated data;
+- fresh reply X25519 exchange;
+- Plan 108 reply plaintext fields/response code `1`;
+- concatenated-record message representation as a complete STBM payload;
+- creator/responder self-round-trip tests as independent conformance proof.
+
 Plan 108 does **not** activate NTCP2, advertise tunnels, run a
 live mixed-router build, or claim a network-facing
-interoperability result. The next substantial product
-roadmap is governed by [Plan 102][plans/102] and its child
-sequence, not by another NTCP2 evidence framework plan.
+interoperability result. The next executable plan is **Plan
+109** ([`plans/109-short-build-record-and-noise-conformance-correction.md`](plans/109-short-build-record-and-noise-conformance-correction.md)),
+followed by **Plan 110** ([`plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md`](plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md)).
+Do not skip directly to live mixed-router validation.
 
 ### Plan 108 focused checks
+
+The same workspace validation surface that closed Plan 108
+remains in force for the implementation surface; the static
+status language is governed by the conformance amendment.
 
 ```text
 cargo +1.95.0 fmt --all --check
@@ -1664,6 +1698,47 @@ bash scripts/check-ntcp2-vectors.sh
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-multipass-interop-boundary.sh
 git diff --check
+```
+
+## Plan 109-110 Plan 108 short-build protocol conformance corrective roadmap (active)
+
+The Plan 109-110 corrective roadmap is the **active** Milestone 5
+authority for short tunnel-build construction. It owns the local,
+deterministic, transport-neutral correction of the Plan 108 wire
+and cryptographic semantics, in two bounded passes:
+
+- **Plan 109** — exact 154-byte short request plaintext, exact
+  218-byte encrypted request record, literal Noise-N transcript
+  and KDF, exact 202-byte reply plaintext, exact 218-byte
+  hop-own reply AEAD, short-record KDF derivation, and
+  independent one-record fixtures. See
+  [`plans/109-short-build-record-and-noise-conformance-correction.md`](plans/109-short-build-record-and-noise-conformance-correction.md).
+- **Plan 110** — randomized record slots, fake records, raw
+  ChaCha20 preprocessing/postprocessing of other records, exact
+  one-byte-count STBM/OTBRM payload framing, multi-hop
+  deterministic simulation, and independent multi-hop fixtures.
+  See [`plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md`](plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md).
+
+Neither plan activates NTCP2, performs live mixed-router
+validation, requires public I2P access, requires Docker/Multipass
+isolation, or adds a new Python interoperability framework. After
+both plans pass, a separate narrow external-delivery checkpoint
+must select the smallest available qualified delivery lane and
+send one independent build.
+
+### Plan 109/110 current authoritative state
+
+```text
+plan_108                         = implementation-landed-protocol-conformance-reopened
+plan_109                         = ready-for-implementation
+plan_110                         = blocked-on-plan109
+short_build_record_format        = nonconformant
+short_build_noise_state          = nonconformant
+short_build_reply_crypto         = nonconformant
+short_build_multirecord_processing = missing
+live_mixed_router_build          = blocked-do-not-attempt
+normal_daemon_ntcp2              = disabled-and-unenableable
+ntcp2                            = experimental-non-advertised
 ```
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
@@ -2950,8 +3025,10 @@ Plan 103  RouterInfo validation + bounded local NetDB     [closed]
     -> Plan 105  transport-neutral lookup/store/publication state machines [closed]
     -> Plan 106  daemon/bootstrap integration                 [closed]
     -> Plan 107  Milestone 5 exploratory tunnel substrate     [closed]
-    -> Plan 108  ECIES-X25519 short record construction core   [closed]
-    -> Plan 109+ live mixed-router build + external acceptance [next executable]
+    -> Plan 108  ECIES-X25519 short record construction core   [implementation-landed]
+    -> Plan 109  short-record + Noise-N conformance correction  [next executable]
+    -> Plan 110  multi-record preprocessing + local conformance closure [blocked on 109]
+    -> narrow qualified external-delivery checkpoint
     -> return to Milestone 4B external acceptance
 ```
 
@@ -2960,13 +3037,20 @@ landed the runtime-neutral exploratory pool, the typed build-record
 layout surface, the build-cryptography seam, and the reply-path
 provider that flips the Plan 106 NetDB seam from
 `BlockedExploratoryTunnelUnavailable` to `Available` once a real
-inbound tunnel is registered. Plan 108 closed the local
-short-record construction phase. Milestone 4A is now
-`local-foundation-complete-short-build-construction-landed-live-build-pending`.
+inbound tunnel is registered. Plan 108 landed the local
+short-record construction architecture but its wire/cryptographic
+algorithm is **not** protocol-conformant against the current
+official I2P Tunnel Creation Specification; the implementation
+surface is retained as the corrective foundation for Plan 109.
+Milestone 4A is now
+`local-foundation-complete-short-build-architecture-landed-protocol-conformance-reopened`.
 A direct `DatabaseLookup` over NTCP2 is not accepted as a substitute
 for the standard exploratory-tunnel path. The next executable
-implementation is **Plan 109+** (live mixed-router build + external
-acceptance) and Milestone 4B external acceptance.
+implementation is **Plan 109** (short-record + Noise-N conformance
+correction), followed by **Plan 110** (multi-record preprocessing
++ local conformance closure) and then a narrow qualified
+external-delivery checkpoint, before Milestone 4B external
+acceptance.
 
 ## Plan 106 daemon NetDB/bootstrap integration and Milestone 5 handoff (closed)
 

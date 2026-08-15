@@ -42,7 +42,12 @@ What it **does not** do yet:
 - Run `Ntcp2RuntimeService` or register `ntcp2-transport`.
 - Apply live configuration changes.
 - Drive a live exploratory tunnel build (Plan 107 lands the
-  substrate; the live build lands in Plan 108+).
+  substrate; Plan 108 landed the local architecture but its
+  wire/cryptographic algorithm is not protocol-conformant against
+  the current official I2P Tunnel Creation Specification — see
+  [`plans/108-conformance-amendment.md`](../../plans/108-conformance-amendment.md);
+  the locally conformant build lands after Plan 109/110 corrective
+  work).
 - Accept HTTPS reseed at runtime (the offline source path is the
   only allowlisted Plan 106 acquisition path; HTTPS is deferred
   to a future plan).

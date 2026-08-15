@@ -1,5 +1,9 @@
-# Machine-readable workspace support inventory (current evidence through
-# the Plan 108 ECIES-X25519 short tunnel-build construction pass).
+# Machine-readable workspace support inventory (current evidence
+# through the Plan 108 ECIES-X25519 short tunnel-build
+# implementation landing; Plan 108 status is
+# `implementation-landed-protocol-conformance-reopened` per
+# plans/108-conformance-amendment.md, with the Plan 109/110
+# corrective roadmap as the next executable authority).
 # Structural evidence may be recorded before interoperability; all
 # entries remain non-advertised until the conformance requirements
 # are met.
@@ -11,6 +15,8 @@ plan_105_implementation_floor = "plans/105-status.md"
 plan_106_implementation_floor = "plans/106-status.md"
 plan_107_implementation_floor = "plans/107-status.md"
 plan_108_implementation_floor = "plans/108-status.md"
+plan_108_conformance_amendment = "plans/108-conformance-amendment.md"
+plan_109_110_corrective_roadmap = "plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -412,6 +418,7 @@ evidence = [
     "crates/i2pr-tunnel/src/build_crypto.rs",
     "plans/107-milestone-5-exploratory-tunnel-substrate.md",
     "plans/108-live-ecies-x25519-short-tunnel-build-construction.md",
+    "plans/108-conformance-amendment.md",
 ]
 advertised = false
 
@@ -420,7 +427,9 @@ id = "tunnel.ecies-x25519-short-build-crypto"
 protocol = "tunnels"
 structure = "local-ecies-x25519-short-build-cryptography-and-state-machine"
 scope = "required-later"
-status = "experimental"
+status = "nonconformant"
+conformant = false
+conformance_note = "Plan 108 implementation landed but its wire/cryptographic algorithm diverges from the current official I2P Tunnel Creation Specification; see plans/108-conformance-amendment.md and plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md. The Plan 109 corrective pass replaces the wire format, Noise-N transcript, layer-encryption type, request/reply key derivation, response codes, and message framing."
 evidence = [
     "crates/i2pr-tunnel/src/build_crypto.rs",
     "crates/i2pr-tunnel/src/short.rs",
@@ -429,6 +438,8 @@ evidence = [
     "crates/i2pr-tunnel/src/responder.rs",
     "crates/i2pr-crypto/src/hkdf.rs",
     "plans/108-live-ecies-x25519-short-tunnel-build-construction.md",
+    "plans/108-conformance-amendment.md",
+    "plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md",
 ]
 advertised = false
 

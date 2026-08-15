@@ -185,12 +185,17 @@ A live `i2pr run` today (Plan 106) follows this sequence:
      backed by `i2pr-tunnel`'s exploratory pool, so a registered
      inbound tunnel flips the seam's status to `Available` and a
      `NeedExploratoryReplyPath` lookup action is converted into a
-     real path on the state machine. Under Plan 108 the same crate
-     holds the ECIES-X25519 short-build cryptography primitive and
-     the runtime-neutral `ShortBuildStateMachine` that drives one
-     short tunnel-build attempt through the canonical state
-     machine; admission into the exploratory pool flows only through
-     the success-only `ShortBuildRegistrar`.
+      real path on the state machine. Under Plan 108 the same crate
+      holds the ECIES-X25519 short-build cryptography primitive and
+      the runtime-neutral `ShortBuildStateMachine` that drives one
+      short tunnel-build attempt through the canonical state
+      machine; admission into the exploratory pool flows only through
+      the success-only `ShortBuildRegistrar`. **The Plan 108
+      wire/cryptographic algorithm is not protocol-conformant
+      against the current official I2P Tunnel Creation
+      Specification; see
+      [`plans/108-conformance-amendment.md`](../../plans/108-conformance-amendment.md)
+      and the Plan 109/110 corrective roadmap.**
 6. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
    before startup, then spawns one supervisor manager per service via a
    `JoinSet`. Each service receives a narrowed `ServiceContext` (name,
