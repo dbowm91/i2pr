@@ -1,20 +1,28 @@
 # Plan 115 handoff
 
-- Status: **closed-branch-e-blocked-no-bounded-independent-consumer-seam**
+- Status: **reopened-targeted-completion-emissary-q0-pending**
 - Date: 2026-08-17
-- Closure: [`plans/115-status.md`](115-status.md)
-- Plan-of-record: [`plans/115-qualified-independent-short-build-consumption-and-external-delivery.md`](115-qualified-independent-short-build-consumption-and-external-delivery.md)
-- Predecessor: [`plans/114-status.md`](114-status.md)
-- Roadmap: [`plans/115-117-external-delivery-to-live-netdb-roadmap.md`](115-117-external-delivery-to-live-netdb-roadmap.md)
-- Successor: a future narrow qualified external-delivery checkpoint
-  on a host where the Plan 046 rootless sealed-namespace lane or
-  the Plan 048/049 Multipass recovery lane is runnable. Plan 116
-  remains gated on a future Plan 115-style Q0/Q1/Q2 pass.
+- Corrective/completion plan:
+  [`plans/115-completion-emissary-native-q0.md`](115-completion-emissary-native-q0.md)
+- Current status authority:
+  [`plans/115-status-amendment-emissary-q0.md`](115-status-amendment-emissary-q0.md)
+- Historical closure record:
+  [`plans/115-status.md`](115-status.md)
+- Roadmap amendment:
+  [`plans/115-117-roadmap-amendment-emissary-q0.md`](115-117-roadmap-amendment-emissary-q0.md)
+- Original roadmap:
+  [`plans/115-117-external-delivery-to-live-netdb-roadmap.md`](115-117-external-delivery-to-live-netdb-roadmap.md)
 
 ## Start here
 
-Do **not** reopen Plans 109-115. Their local short-build result
-is the input to any future plan that revisits this gate.
+Do **not** resume the historical Branch E successor instruction that waits for
+a rootless/Multipass-capable host.
+
+Do **not** reopen Plans 109-114, the old NTCP2 harness, i2pd adapter work, or
+namespace/VM work.
+
+The next executable task is one bounded upstream Emissary Q0 test using its
+existing in-process native short-build consumer.
 
 Current state:
 
@@ -23,184 +31,162 @@ plan_111                         = retained-core-crypto-corrected
 plan_112                         = passed-outbound-pre-delivery-closure
 plan_113                         = passed-inbound-reference-reconciliation
 plan_114                         = passed-terminal-routing-chain-correction
-plan_115                         = closed-branch-e-blocked-no-bounded-independent-consumer-seam
+plan_115_local_bridge            = passed
+plan_115_external_q0             = reopened-emissary-native-consumer-pending
 short_build_local_outbound       = strict-established
 short_build_local_inbound        = strict-established
 canonical_i2np_bridge            = locally-conformant-no-double-prefix
-qualified_external_delivery      = blocked-no-bounded-independent-consumer-seam
+Q1_authenticated_transport       = deferred
+Q2_external_return_established   = deferred
 normal_daemon_ntcp2              = disabled-and-unenableable
-ntcp2                            = experimental-non-advertised
-development_ntcp2                = protocol-defect-localized-at-noise_authenticated
+ntcp2                             = experimental-non-advertised
 ```
 
-Plan 115 closed the canonical production I2NP bridge
-(`ShortBuildI2npBridge` in
-[`crates/i2pr-tunnel/src/bridge.rs`](../crates/i2pr-tunnel/src/bridge.rs))
-and recorded Branch E because the cheapest i2pd tunnel-build
-consumer path exceeds the Plan 115 §11.G1 "small one-shot helper"
-budget on this host. The future Plan 116/Plan 117 sequence
-remains gated on a qualified external delivery lane.
+## Corrected finding
 
-## Execution decision in one page
-
-### First objective: Q0
-
-Feed the exact production-generated Plan-114 STBM into one independent implementation's **native** short-build processing path.
-
-Preferred order:
-
-1. i2pd if its pinned source can expose a small native consumer;
-2. Emissary if it offers a materially smaller native tunnel-build seam;
-3. Java I2P only as fallback.
-
-The independent code must actually perform its own target-record recognition, request decryption/validation, and accept/reject processing. Merely parsing I2NP type 25 does not pass Q0.
-
-### Second objective: Q1
-
-If Q0 passes and the existing Rust NTCP2/runtime tooling can carry the message with no more than one narrow, clearly i2pr-owned correction, attempt authenticated loopback delivery to the reference process.
-
-Do not rebuild the old environment/harness.
-
-### Third objective: Q2
-
-If the reference can return the native type-26 reply through the selected lane, feed the exact reply body to `BuildEvent::BuildReply` and require `ShortBuildOutcome::Established`.
-
-## Required product bridge
-
-The production source path must be:
+Upstream Emissary is pinned for this pass at:
 
 ```text
-ShortBuildStateMachine::prepare
-  -> deliver_action
-  -> ShortBuildAction::Deliver
-  -> canonical I2NP type-25 wrapper
-  -> reference/delivery lane
+https://github.com/eepnet/emissary.git
+9b43484a21d5a1291c4881cdae62a36c527f8c0f
+emissary-core 0.4.0
 ```
 
-Critical framing rule:
+That revision already has the bounded seam Plan 115 needed:
 
 ```text
-ShortBuildAction::Deliver.message
-    = [count byte] || [count * 218 record bytes]
-
-DeferredBuildRecords::new(...)
-    expects ONLY [count * 218 record bytes]
-
-I2npBody::ShortTunnelBuild encoder
-    writes the count byte again
+TestTransitTunnelManager<MockRuntime>
+    -> generated Emissary router hash + X25519 keypair
+    -> TransitTunnelManager::handle_short_tunnel_build
 ```
 
-Therefore:
+The production handler independently performs target-record recognition,
+Noise-N request decryption, request parsing, transit admission, tunnel-key
+creation, reply-record transformation, and OBEP forwarding/reply composition.
+Emissary's own unit tests invoke this path directly without a daemon or network.
 
-1. validate the existing delivery payload;
-2. split the first count byte from raw records;
-3. create `DeferredBuildRecords` from raw records only;
-4. encode I2NP type 25;
-5. decode it again and assert that its body equals the original count-prefixed delivery payload exactly.
+## Exact execution target
 
-Never pass the already count-prefixed buffer directly to `DeferredBuildRecords`.
+Use one outbound, one-real-hop i2pr short build whose single real hop is an
+Emissary `OutboundEndpoint`.
+
+The reference identity must be generated by Emissary. Give i2pr only:
+
+- the Emissary router hash; and
+- the Emissary X25519 static public key.
+
+Then drive:
+
+```text
+i2pr ShortBuildPath
+ -> i2pr ShortBuildStateMachine::prepare
+ -> i2pr deliver_action
+ -> i2pr ShortBuildI2npBridge (standard I2NP header)
+ -> exact complete I2NP type-25 bytes
+ -> Emissary Message::parse_standard
+ -> Emissary handle_short_tunnel_build
+```
+
+A pass requires **native Emissary acceptance**, not parser success alone.
+
+For the one-hop OBEP case, additionally require:
+
+```text
+returned next router = i2pr-declared reply router
+returned message type = TunnelGateway
+returned tunnel id = i2pr-declared reply tunnel
+TunnelGateway inner message type = Garlic
+```
+
+This proves the reference consumed the request and reached its native OBEP reply
+path. Do not expand the test into Q2 garlic decryption/return handling.
+
+## How to run it
+
+The preferred implementation is a temporary test-only patch to a detached
+upstream Emissary checkout:
+
+1. clone/check out the pinned revision in a temporary directory;
+2. symlink the current i2pr checkout into the temporary Emissary root;
+3. add `i2pr-proto` and `i2pr-tunnel` as **dev dependencies only** to
+   `emissary-core` using the symlinked relative path;
+4. add one `#[tokio::test]` under Emissary's existing tunnel test module;
+5. use `TestTransitTunnelManager::new(true)` for the reference router;
+6. generate the i2pr production STBM in the same test process;
+7. parse and process it through Emissary's own code;
+8. record only sanitized digest/stage metadata;
+9. delete the temporary checkout.
+
+Do not modify Emissary production code and do not add Emissary to the i2pr
+workspace.
+
+## Hard attempt budget
+
+Reference test execution gets exactly:
+
+```text
+1 baseline attempt
+1 trivial test/build/API correction if needed
+1 confirmation attempt
+```
+
+No switch back to i2pd. No Java fallback. No transport work.
+
+If a native protocol rejection is reached, localize only that exact defect and
+allow one narrow protocol correction.
+
+## Closure rule
+
+### Q0 passes
+
+```text
+plan_115                    = passed-independent-native-consumer-emissary
+Q0                          = passed
+Q1                          = deferred
+Q2                          = deferred
+plan_116_local_data_plane   = unblocked
+```
+
+Move directly to Plan 116. Do not add another validation plan.
+
+### Native Emissary processing localizes an i2pr protocol defect
+
+```text
+plan_115                    = protocol-defect-localized-emissary
+plan_116_local_data_plane   = temporarily-blocked-on-one-narrow-correction
+```
+
+Correct that exact defect, rerun the same focused Q0 once, then move on.
+
+### Reference build/tooling blocks the bounded test before native processing
+
+After the fixed attempt budget:
+
+```text
+plan_115                    = external-q0-deferred-environment-or-reference-build
+short_build_protocol_defect = not-demonstrated
+plan_116_local_data_plane   = unblocked-with-external-evidence-deferred
+mixed_router_milestone5_exit = still-blocked
+```
+
+Move on to Plan 116. Do not create another harness.
 
 ## Scope boundaries
 
-Allowed production changes are limited to the smallest bridge/composition work required to thread the existing `ShortBuildAction::Deliver` into the existing I2NP/transport boundaries.
+Forbidden in this pass:
 
-Likely owners:
-
-```text
-i2pr-proto         existing I2NP type 25/26 codec only
-
-i2pr-tunnel        existing ShortBuildAction producer; only small reusable adapter if dependency direction permits
-
-i2pr-transport     existing EncodedI2npMessage / DeliveryRequest contract; no replacement abstraction
-
-i2pr-runtime       existing NTCP2 authenticated-link composition if Q1 is attempted
-
-tools/i2pr-interop one-shot experimental composition only
-```
-
-Forbidden:
-
-- daemon NTCP2 activation or advertisement;
+- NTCP2 edits or activation;
 - SSU2;
-- public I2P participation;
-- generic I2NP router dispatcher;
-- new Python orchestration;
-- rootless namespaces, privileged namespaces, Docker/Multipass/VM dependency;
-- broad reference topology;
-- short-build crypto/layout changes inside Plan 115;
-- repeated NTCP2 correction passes.
+- rootless/privileged namespaces;
+- Docker/Multipass/VMs;
+- Python orchestration;
+- public-network participation;
+- generic I2NP dispatch infrastructure;
+- permanent cross-project harness packages;
+- another i2pd or Java adapter;
+- inbound garlic integration;
+- Q1/Q2;
+- speculative short-build crypto changes.
 
-## Evidence tiers
-
-```text
-Q0 = independent native short-build consumption
-Q1 = authenticated transport delivery into independent router
-Q2 = reply returned and i2pr reaches Established
-```
-
-A Q0 pass is intentionally useful on its own. If Q0 passes and Q1 remains transport-blocked, record that split result and proceed to local Milestone 5 data-plane work. Do not call Q0 a live mixed-router result.
-
-## Exact execution sequence
-
-1. Confirm HEAD is a clean descendant of Plan 114 closure.
-2. Read Plan 115 completely.
-3. Trace `ShortBuildAction::Deliver` and existing I2NP type-25/type-26 codec ownership.
-4. Inventory i2pd and Emissary native consumer seams before writing an adapter.
-5. Select one reference and pin repository revision/version.
-6. Implement/test the canonical production I2NP bridge with the no-double-prefix invariant.
-7. Run full local validation.
-8. Execute Q0 once.
-9. If Q0 hits a trivial adapter/build defect, make one correction and one confirmation run.
-10. If Q0 passes, attempt Q1 only if the existing Rust runtime lane is small enough.
-11. Q1 permits at most one unambiguously i2pr-owned narrow Rust correction and one confirmation run.
-12. Attempt Q2 only when the reference already exposes a return path; do not create new architecture solely for Q2.
-13. Create `plans/115-status.md` with the exact evidence classification.
-14. Update this handoff and the 115-117 roadmap note to point to the actual next action.
-
-## Stop immediately if
-
-- the selected independent router cannot expose a native short-build consumer without substantial internal surgery;
-- the result reaches a cryptographic disagreement with Plans 109-114;
-- Q1 requires changing NTCP2 Noise/handshake semantics;
-- a second transport correction would be required;
-- the environment again pushes toward namespace/VM/container machinery;
-- the only way to proceed is a generic new test harness.
-
-In those cases, record the exact blocker or localized protocol stage in `plans/115-status.md`. Do not improvise another validation program.
-
-## Required closure classifications
-
-Use one of the plan's typed outcomes. The most important are:
-
-```text
-passed-external-established
-passed-independent-native-consumer
-protocol-defect-localized
-blocked-no-bounded-independent-consumer-seam
-blocked-transport-before-authentication
-blocked-transport-after-authentication-before-i2np
-blocked-reference-api-no-return-path
-environment-or-build-blocked
-```
-
-If Q0 passes while Q1 is blocked, retain both facts separately:
-
-```text
-independent_short_build = passed-independent-native-consumer
-qualified_live_delivery = blocked-<exact-stage>
-plan_116_local_data_plane = unblocked
-```
-
-## Acceptance summary
-
-Plan 115 cannot close until:
-
-- production `ShortBuildAction::Deliver` bytes are the actual source of the reference input;
-- canonical I2NP wrapping is tested without double-prefixing;
-- one independent implementation reaches its native short-build processing path, or a precise bounded-consumer blocker is recorded;
-- all evidence is sanitized and pinned to exact revisions/hashes;
-- local workspace validation is green;
-- daemon NTCP2 remains disabled/unenableable and non-advertised;
-- no historical harness scope is revived.
-
-The desired next state is not "more validation infrastructure." It is either independently consumed short-build protocol bytes or one narrow, actionable defect.
+The required implementation and acceptance details are authoritative in
+[`plans/115-completion-emissary-native-q0.md`](115-completion-emissary-native-q0.md).
