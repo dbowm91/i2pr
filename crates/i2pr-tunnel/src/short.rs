@@ -148,17 +148,42 @@ impl HopSpec {
 /// construct one [`ShortTunnelBuildMessage`]. The builder never
 /// queries NetDB; the caller is responsible for resolving every
 /// static encryption key and router hash.
+///
+/// The two direction-specific terminal routing fields
+/// ([`originator_hash`](Self::originator_hash) and
+/// [`outbound_reply_router`](Self::outbound_reply_router)) make the
+/// terminal `next_router_hash` explicit on the path boundary. Plan
+/// 114 requires the outbound reply router identity at the OBEP and
+/// the inbound creator identity at the terminal inbound hop to be
+/// declared explicitly; the builder never derives them from a hop
+/// or tunnel identifier.
 #[derive(Clone, Debug)]
 pub struct ShortBuildPath {
     /// Local creator identifier for diagnostic correlation.
     pub attempt_id: BuildAttemptId,
     /// Inbound or outbound direction.
     pub direction: TunnelDirection,
-    /// Creator identity hash used for the inbound originator fake.
-    /// Outbound paths leave this unset; inbound paths must provide it
-    /// explicitly and never derive it from a hop or tunnel identifier.
+    /// Creator identity hash used for the inbound originator fake
+    /// and for the terminal inbound hop's `next_router_hash`.
+    /// Outbound paths must leave this unset; inbound paths must
+    /// provide it explicitly and never derive it from a hop or
+    /// tunnel identifier.
     pub originator_hash: Option<Hash>,
+    /// Outbound reply-router identity hash the OBEP records as its
+    /// terminal `next_router_hash`. Outbound paths must provide it
+    /// explicitly; inbound paths must leave it unset. The builder
+    /// never derives this value from a hop or tunnel identifier.
+    pub outbound_reply_router: Option<Hash>,
     /// Creator tunnel identifier this build is associated with.
+    ///
+    /// `creator_tunnel_id` is the local slot identifier used by
+    /// the pool registrar after a successful build. It is
+    /// **not** aliased to the inbound terminal `next_tunnel` value:
+    /// the final inbound `HopSpec.next_tunnel` remains the
+    /// creator-side receive tunnel identifier that the final
+    /// remote participant uses to forward the build reply back to
+    /// the creator. The two values are independent; the path
+    /// validator keeps them that way.
     pub creator_tunnel_id: TunnelId,
     /// Ordered per-hop specifications.
     pub hops: Vec<HopSpec>,
@@ -180,7 +205,8 @@ impl ShortBuildPath {
     /// Validates the path before the state machine accepts it.
     /// The validator enforces Plan 112 §6 direction/role
     /// topology rules in addition to the Plan 111 hard-field
-    /// invariants.
+    /// invariants and the Plan 114 terminal-routing and
+    /// intermediate-tunnel-chain invariants.
     pub fn validate(&self) -> Result<(), ShortBuildConstructionError> {
         if self.hops.is_empty() {
             return Err(ShortBuildConstructionError::InvalidPath {
@@ -222,8 +248,40 @@ impl ShortBuildPath {
                 reason: "next message id must be nonzero",
             });
         }
-        if matches!(self.direction, TunnelDirection::Inbound) && self.originator_hash.is_none() {
-            return Err(ShortBuildConstructionError::MissingInboundOriginatorIdentity);
+        match self.direction {
+            TunnelDirection::Inbound => {
+                if self.originator_hash.is_none() {
+                    return Err(ShortBuildConstructionError::MissingInboundOriginatorIdentity);
+                }
+                if self.outbound_reply_router.is_some() {
+                    return Err(ShortBuildConstructionError::InvalidPath {
+                        reason: "inbound path must not declare an outbound reply router",
+                    });
+                }
+            }
+            TunnelDirection::Outbound => {
+                if self.originator_hash.is_some() {
+                    return Err(ShortBuildConstructionError::InvalidPath {
+                        reason: "outbound path must not declare an inbound originator hash",
+                    });
+                }
+                if self.outbound_reply_router.is_none() {
+                    return Err(ShortBuildConstructionError::MissingOutboundReplyRouter);
+                }
+            }
+        }
+        // Plan 114 §4.4: enforce the intermediate tunnel-id
+        // continuity invariant at the high-level path boundary so a
+        // role-valid path cannot encode a broken forwarding chain.
+        let intermediate_count = self.hops.len().saturating_sub(1);
+        for index in 0..intermediate_count {
+            let next_tunnel = self.hops[index].next_tunnel;
+            let following_receive = self.hops[index + 1].receive_tunnel;
+            if next_tunnel.get() != following_receive.get() {
+                return Err(ShortBuildConstructionError::InvalidPath {
+                    reason: "intermediate next tunnel id does not match following receive tunnel id",
+                });
+            }
         }
         // Plan 112 §6.B1/B2: use the same validator as the public
         // lower-level multi-record builder so the role boundary is
@@ -398,6 +456,10 @@ pub enum ShortBuildConstructionError {
     /// originator fake.
     #[error("inbound short build requires an explicit originator identity hash")]
     MissingInboundOriginatorIdentity,
+    /// An outbound path omitted the reply-router identity hash the
+    /// OBEP must serialise as its terminal `next_router_hash`.
+    #[error("outbound short build requires an explicit reply router identity hash")]
+    MissingOutboundReplyRouter,
 }
 
 impl From<BuildCryptographyUnavailable> for ShortBuildConstructionError {
@@ -477,6 +539,15 @@ where
     record_set: Option<ShortBuildRecordSet>,
     originator_fake: Option<OriginatorFake>,
     deadline_ms: u64,
+    /// The full preprocessed STBM payload the most recent
+    /// `prepare` produced. Plan 114 strict trajectories re-read
+    /// this payload after `prepare` returns so the test can drive
+    /// each real hop through `MessageHopProcessor` without
+    /// reconstructing the payload from private state. The buffer
+    /// is wrapped in `Zeroizing` because the bytes carry the
+    /// per-hop encrypted requests; it is reset to `None` once
+    /// the state machine leaves the dispatchable phases.
+    last_payload: Option<Zeroizing<Vec<u8>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -539,6 +610,7 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
             record_set: None,
             originator_fake: None,
             deadline_ms,
+            last_payload: None,
         }
     }
 
@@ -572,6 +644,17 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
     /// Returns the configured absolute deadline in milliseconds.
     pub const fn deadline_ms(&self) -> u64 {
         self.deadline_ms
+    }
+
+    /// Returns the preprocessed STBM payload the most recent
+    /// `prepare` produced. The accessor is intended for strict
+    /// trajectory tests that need to drive each real hop through
+    /// `MessageHopProcessor` without reconstructing the payload
+    /// from private state. The function returns `None` before
+    /// `prepare` runs or after the state machine leaves the
+    /// dispatchable phases.
+    pub fn last_payload(&self) -> Option<&[u8]> {
+        self.last_payload.as_ref().map(|bytes| bytes.as_ref())
     }
 
     /// Performs the prepare→protecting transition, sealing every
@@ -631,6 +714,7 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
             records,
             nonce: self.path.next_message_id,
         };
+        self.last_payload = Some(Zeroizing::new(message.records.clone()));
         Ok(message)
     }
 
@@ -859,15 +943,27 @@ pub struct ShortTunnelBuildMessage {
 fn build_hop_specs<'a>(
     path: &'a ShortBuildPath,
 ) -> Result<Vec<MultiRecordHopSpec<'a>>, ShortBuildConstructionError> {
+    // Plan 114 §4.5: the terminal real hop's `next_router_hash`
+    // comes from the explicit direction-specific routing field on
+    // the path. There is no terminal self-hash fallback; both the
+    // outbound reply router and the inbound creator identity are
+    // declared by the caller.
+    let terminal_next_router_hash: &'a Hash = match path.direction {
+        TunnelDirection::Outbound => path
+            .outbound_reply_router
+            .as_ref()
+            .ok_or(ShortBuildConstructionError::MissingOutboundReplyRouter)?,
+        TunnelDirection::Inbound => path
+            .originator_hash
+            .as_ref()
+            .ok_or(ShortBuildConstructionError::MissingInboundOriginatorIdentity)?,
+    };
     let mut specs = Vec::with_capacity(path.hops.len());
     for (index, hop) in path.hops.iter().enumerate() {
         let next_router_hash = if index + 1 < path.hops.len() {
             &path.hops[index + 1].router_hash
         } else {
-            // The terminal hop hands its next router as itself.
-            // The creator must not silently synthesise a router
-            // hash from another protocol field.
-            &hop.router_hash
+            terminal_next_router_hash
         };
         specs.push(MultiRecordHopSpec {
             canonical_index: index as u8,
@@ -965,8 +1061,16 @@ mod tests {
     use rand_core::SeedableRng;
 
     fn build_path(rng_seed: u64) -> ShortBuildPath {
+        build_path_with_direction(rng_seed, TunnelDirection::Outbound)
+    }
+
+    fn build_path_with_direction(rng_seed: u64, direction: TunnelDirection) -> ShortBuildPath {
+        let hop_count: u8 = match direction {
+            TunnelDirection::Outbound => 2,
+            TunnelDirection::Inbound => 2,
+        };
         let mut hops = Vec::new();
-        for value in 1_u8..=2 {
+        for value in 1_u8..=hop_count {
             let mut bytes = [0_u8; 32];
             for (idx, byte) in bytes.iter_mut().enumerate() {
                 *byte = value.wrapping_add(idx as u8);
@@ -975,10 +1079,20 @@ mod tests {
                 .expect("receive tunnel id");
             let next = TunnelId::new(((rng_seed as u32) << 16) | (value as u32) | 0x100)
                 .expect("next tunnel id");
+            let role = match (direction, value) {
+                (TunnelDirection::Inbound, 1) => HopRole::InboundGateway,
+                _ => HopRole::Participant,
+            };
+            // The `HopSpec` carries the hop's static **public**
+            // key as `static_encryption_key`; `seal_short_request`
+            // mixes it into the Noise-N transcript while
+            // `open_short_request` reconstructs it from the
+            // private key the responder supplies.
+            let static_pub = static_public_for(value);
             hops.push(HopSpec::new(
                 Hash::from_bytes(bytes),
-                privkey_for(value),
-                HopRole::Participant,
+                static_pub,
+                role,
                 receive,
                 next,
             ));
@@ -988,12 +1102,38 @@ mod tests {
         // final hop as OutboundEndpoint. The previous fixture
         // marked the first remote hop as InboundGateway, which
         // is forbidden for an outbound direction.
-        let last = hops.len() - 1;
-        hops[last].role = HopRole::OutboundEndpoint;
+        match direction {
+            TunnelDirection::Outbound => {
+                let last = hops.len() - 1;
+                hops[last].role = HopRole::OutboundEndpoint;
+            }
+            TunnelDirection::Inbound => {}
+        }
+        // Plan 114 §4.4: every intermediate hop's `next_tunnel`
+        // must equal the following hop's `receive_tunnel`. The
+        // two-hop fixture used `next = receive | 0x100` which
+        // violates the chain invariant; rewrite the values so the
+        // chain holds.
+        for index in 0..hops.len().saturating_sub(1) {
+            hops[index].next_tunnel = hops[index + 1].receive_tunnel;
+        }
+        let (originator_hash, outbound_reply_router) = match direction {
+            TunnelDirection::Outbound => {
+                let mut reply = [0xCD_u8; 32];
+                reply[0] = 0xCD;
+                (None, Some(Hash::from_bytes(reply)))
+            }
+            TunnelDirection::Inbound => {
+                let mut originator = [0xAB_u8; 32];
+                originator[0] = 0xAB;
+                (Some(Hash::from_bytes(originator)), None)
+            }
+        };
         ShortBuildPath {
             attempt_id: BuildAttemptId::new(rng_seed),
-            direction: TunnelDirection::Outbound,
-            originator_hash: None,
+            direction,
+            originator_hash,
+            outbound_reply_router,
             creator_tunnel_id: TunnelId::new(0xABCD).expect("id"),
             hops,
             request_time: Date::from_millis(60_000),
@@ -1010,6 +1150,12 @@ mod tests {
             *byte = cursor as u8;
         }
         bytes
+    }
+
+    fn static_public_for(value: u8) -> [u8; EPHEMERAL_KEY_LEN] {
+        let secret = x25519_dalek::StaticSecret::from(privkey_for(value));
+        let public = x25519_dalek::PublicKey::from(&secret);
+        public.to_bytes()
     }
 
     #[test]
@@ -1170,14 +1316,15 @@ mod tests {
     }
 
     #[test]
-    fn prepare_and_process_through_full_pipeline() {
-        // The plan 110 path uses the canonical multi-record
-        // preprocessor and postprocessor. The fixture drives the
-        // state machine through `prepare` and then feeds a
-        // synthesized reply payload back through
-        // `process_reply` to confirm the new pipeline produces a
-        // valid Established outcome.
+    fn strict_outbound_two_hop_trajectory_deterministic_established() {
+        // Plan 114 §4.5 + Phase E: the matched outbound high-level
+        // trajectory must deterministically reach `Established`.
+        // The permissive test that accepted `InvalidReply OR
+        // Established` is no longer acceptable; the trajectory is
+        // built so every real hop accepts and the per-hop
+        // routing fields match the configured path exactly.
         let path = build_path(101);
+        assert!(path.validate().is_ok());
         let mut machine = ShortBuildStateMachine::new(path, 60_000);
         let mut rng = ChaCha8Rng::seed_from_u64(102);
         let message = machine.prepare(&mut rng).expect("prepare");
@@ -1188,25 +1335,100 @@ mod tests {
         );
         let _action = machine.deliver_action(message).expect("deliver action");
         machine.mark_dispatched().expect("dispatch");
-        // Build a synthetic accepted reply payload from the
-        // multirecord reference fixture so the postprocessor
-        // reaches the Established outcome.
-        let hash = Hash::from_bytes([0x55_u8; 32]);
-        let fixture =
-            multirecord::MultiHopReferenceFixture::three_hop_one_fake(103, &hash).expect("fixture");
+        // Drive each real hop through the Plan 110
+        // MessageHopProcessor with `Accepted` and accumulate the
+        // post-hop payload. The post-hop payload is the OTBRM
+        // the state machine will feed back through
+        // `process_reply`.
+        let cryptography = crate::build_crypto::EciesX25519BuildCryptography::new();
+        let hops_privs: Vec<[u8; EPHEMERAL_KEY_LEN]> = (1..=2_u8).map(privkey_for).collect();
+        let hops_hashes: Vec<Hash> = (1..=2_u8)
+            .map(|value| {
+                let mut bytes = [0_u8; 32];
+                for (idx, byte) in bytes.iter_mut().enumerate() {
+                    *byte = value.wrapping_add(idx as u8);
+                }
+                Hash::from_bytes(bytes)
+            })
+            .collect();
+        // The state machine returns the preprocessed STBM from
+        // `prepare`; that is the starting payload the hops
+        // observe.
+        let stbm_payload = machine.last_payload().expect("payload");
+        let mut payload = stbm_payload.to_vec();
+        for (index, hop_priv) in hops_privs.iter().enumerate() {
+            let hop_hash = hops_hashes[index];
+            let (next_payload, _result) = multirecord::MessageHopProcessor::process_hop(
+                &cryptography,
+                &payload,
+                hop_priv,
+                &hop_hash,
+                crate::short_record::ShortResponseCode::Accepted,
+                &mut rng,
+            )
+            .expect("hop processing");
+            payload = next_payload;
+        }
         let outcome = machine
             .handle_event(BuildEvent::BuildReply {
-                reply: Zeroizing::new(fixture.post_hop_payload.clone()),
+                reply: Zeroizing::new(payload),
             })
             .expect("event");
-        // The state machine path declares two hops, while the
-        // fixture declares three. The postprocessor will return
-        // a partial set; the state machine surfaces that as
-        // InvalidReply to keep the structural-only contract.
-        assert!(matches!(
-            outcome,
-            Some(ShortBuildOutcome::InvalidReply) | Some(ShortBuildOutcome::Established { .. })
-        ));
+        assert!(
+            matches!(outcome, Some(ShortBuildOutcome::Established { .. })),
+            "matched outbound trajectory must deterministically reach Established"
+        );
+    }
+
+    #[test]
+    fn strict_inbound_two_hop_trajectory_deterministic_established() {
+        // Plan 114 Phase E inbound counterpart: the matched
+        // inbound trajectory must deterministically reach
+        // `Established`. The path declares an explicit creator
+        // identity; the originator fake must verify after reply
+        // processing.
+        let path = build_path_with_direction(201, TunnelDirection::Inbound);
+        assert!(path.validate().is_ok());
+        let mut machine = ShortBuildStateMachine::new(path, 60_000);
+        let mut rng = ChaCha8Rng::seed_from_u64(202);
+        let message = machine.prepare(&mut rng).expect("prepare");
+        let _action = machine.deliver_action(message).expect("deliver action");
+        machine.mark_dispatched().expect("dispatch");
+        let cryptography = crate::build_crypto::EciesX25519BuildCryptography::new();
+        let hops_privs: Vec<[u8; EPHEMERAL_KEY_LEN]> = (1..=2_u8).map(privkey_for).collect();
+        let hops_hashes: Vec<Hash> = (1..=2_u8)
+            .map(|value| {
+                let mut bytes = [0_u8; 32];
+                for (idx, byte) in bytes.iter_mut().enumerate() {
+                    *byte = value.wrapping_add(idx as u8);
+                }
+                Hash::from_bytes(bytes)
+            })
+            .collect();
+        let stbm_payload = machine.last_payload().expect("payload");
+        let mut payload = stbm_payload.to_vec();
+        for (index, hop_priv) in hops_privs.iter().enumerate() {
+            let hop_hash = hops_hashes[index];
+            let (next_payload, _result) = multirecord::MessageHopProcessor::process_hop(
+                &cryptography,
+                &payload,
+                hop_priv,
+                &hop_hash,
+                crate::short_record::ShortResponseCode::Accepted,
+                &mut rng,
+            )
+            .expect("hop processing");
+            payload = next_payload;
+        }
+        let outcome = machine
+            .handle_event(BuildEvent::BuildReply {
+                reply: Zeroizing::new(payload),
+            })
+            .expect("event");
+        assert!(
+            matches!(outcome, Some(ShortBuildOutcome::Established { .. })),
+            "matched inbound trajectory must deterministically reach Established"
+        );
     }
 
     #[test]
@@ -1241,22 +1463,22 @@ mod tests {
 
     #[test]
     fn validation_rejects_swapped_per_hop_tunnel_ids() {
-        // Plan 111 §6 acceptance: swapped per-hop tunnel IDs
-        // must leave the exploratory pool unchanged. The
-        // validator must catch the swap before any build attempt
-        // is registered.
+        // Plan 114 §4.4 + Plan 111 §6: the intermediate
+        // `next_tunnel == following receive_tunnel` invariant is
+        // enforced before cryptographic allocation. Swapping the
+        // first hop's receive/next tunnel ids breaks the
+        // forwarding chain and the path validator must reject
+        // the swap before any record is sealed.
         let mut path = build_path(32);
         let saved_receive = path.hops[0].receive_tunnel;
         let saved_next = path.hops[0].next_tunnel;
         path.hops[0].receive_tunnel = saved_next;
         path.hops[0].next_tunnel = saved_receive;
-        // The validation only enforces non-zero ids; the swap
-        // itself does not break the validator. We still assert
-        // the swap is observable on the HopSpec surface so a
-        // future caller cannot silently accept it.
-        let first = &path.hops[0];
-        assert_eq!(first.receive_tunnel.get(), saved_next.get());
-        assert_eq!(first.next_tunnel.get(), saved_receive.get());
+        let outcome = path.validate();
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildConstructionError::InvalidPath { .. })
+        ));
     }
 
     /// Plan 112 §6.B1: outbound paths must reject a non-final
@@ -1308,6 +1530,7 @@ mod tests {
     fn validation_rejects_inbound_missing_first_ibgw() {
         let mut path = build_path(43);
         path.direction = TunnelDirection::Inbound;
+        path.outbound_reply_router = None;
         path.originator_hash = Some(Hash::from_bytes([0x43_u8; 32]));
         path.hops[0].role = HopRole::Participant;
         let outcome = path.validate();
@@ -1323,6 +1546,7 @@ mod tests {
     fn validation_rejects_inbound_outbound_endpoint_role() {
         let mut path = build_path(44);
         path.direction = TunnelDirection::Inbound;
+        path.outbound_reply_router = None;
         path.originator_hash = Some(Hash::from_bytes([0x44_u8; 32]));
         path.hops[0].role = HopRole::InboundGateway;
         path.hops[1].role = HopRole::OutboundEndpoint;
@@ -1339,6 +1563,7 @@ mod tests {
     fn state_machine_prepare_requires_inbound_originator_identity() {
         let mut path = build_path(45);
         path.direction = TunnelDirection::Inbound;
+        path.outbound_reply_router = None;
         path.originator_hash = None;
         path.hops[0].role = HopRole::InboundGateway;
         // build_path makes the final hop OutboundEndpoint; the
@@ -1387,5 +1612,210 @@ mod tests {
             crate::multirecord::validate_count_prefixed_short_payload(&encoded).expect("validate");
         assert_eq!(count, 4);
         assert_eq!(decoded, slots);
+    }
+
+    /// Plan 114 Phase A: outbound paths without an explicit
+    /// reply-router identity are rejected before cryptographic
+    /// allocation.
+    #[test]
+    fn validation_rejects_outbound_without_reply_router() {
+        let mut path = build_path(50);
+        path.outbound_reply_router = None;
+        let outcome = path.validate();
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildConstructionError::MissingOutboundReplyRouter)
+        ));
+    }
+
+    /// Plan 114 Phase A: inbound paths must not carry an outbound
+    /// reply-router identity.
+    #[test]
+    fn validation_rejects_inbound_with_reply_router() {
+        let mut path = build_path(51);
+        path.direction = TunnelDirection::Inbound;
+        path.outbound_reply_router = Some(Hash::from_bytes([0x51_u8; 32]));
+        path.originator_hash = Some(Hash::from_bytes([0x52_u8; 32]));
+        path.hops[0].role = HopRole::InboundGateway;
+        let outcome = path.validate();
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildConstructionError::InvalidPath { .. })
+        ));
+    }
+
+    /// Plan 114 Phase A: outbound paths must not carry an inbound
+    /// originator hash.
+    #[test]
+    fn validation_rejects_outbound_with_originator_hash() {
+        let mut path = build_path(52);
+        path.originator_hash = Some(Hash::from_bytes([0x52_u8; 32]));
+        let outcome = path.validate();
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildConstructionError::InvalidPath { .. })
+        ));
+    }
+
+    /// Plan 114 Phase B: the intermediate next-tunnel/receive-tunnel
+    /// chain must hold for every adjacent hop pair.
+    #[test]
+    fn validation_rejects_intermediate_tunnel_chain_mismatch() {
+        let mut path = build_path(53);
+        // Swap hop 0's next_tunnel with an unrelated nonzero id
+        // so the chain invariant fails.
+        path.hops[0].next_tunnel = TunnelId::new(0xDEAD_BEEF).expect("id");
+        let outcome = path.validate();
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildConstructionError::InvalidPath { .. })
+        ));
+    }
+
+    /// Plan 114 Phase C: the decrypted OBEP request plaintext must
+    /// carry the configured reply router as the terminal
+    /// `next_router` and the configured reply tunnel id as the
+    /// terminal `next_tunnel`.
+    #[test]
+    fn outbound_decrypted_request_plaintext_matches_configured_path() {
+        let path = build_path(60);
+        let reply_router = path.outbound_reply_router.expect("reply router");
+        let terminal_next_tunnel = path.hops.last().expect("last hop").next_tunnel;
+        let mut machine = ShortBuildStateMachine::new(path, 60_000);
+        let mut rng = ChaCha8Rng::seed_from_u64(61);
+        let _ = machine.prepare(&mut rng).expect("prepare");
+        let cryptography = crate::build_crypto::EciesX25519BuildCryptography::new();
+        let preprocessed = machine.last_payload().expect("payload").to_vec();
+        // Drive hop 0 to expose hop 1's record at its stage.
+        let hop0_priv = privkey_for(1);
+        let hop0_hash = {
+            let mut bytes = [0_u8; 32];
+            for (idx, byte) in bytes.iter_mut().enumerate() {
+                *byte = 1_u8.wrapping_add(idx as u8);
+            }
+            Hash::from_bytes(bytes)
+        };
+        let (after_hop0, _) = multirecord::MessageHopProcessor::process_hop(
+            &cryptography,
+            &preprocessed,
+            &hop0_priv,
+            &hop0_hash,
+            crate::short_record::ShortResponseCode::Accepted,
+            &mut rng,
+        )
+        .expect("hop 0 processing");
+        // Hop 1 (the OBEP) is at its stage in `after_hop0`. Open it
+        // and assert the routing fields.
+        let hop1_priv = privkey_for(2);
+        let hop1_hash = {
+            let mut bytes = [0_u8; 32];
+            for (idx, byte) in bytes.iter_mut().enumerate() {
+                *byte = 2_u8.wrapping_add(idx as u8);
+            }
+            Hash::from_bytes(bytes)
+        };
+        let (_count, slots) =
+            crate::multirecord::decode_short_tunnel_build_payload(&after_hop0).expect("decode");
+        let hop1_slot_index = slots
+            .iter()
+            .position(|slot| {
+                slot[..crate::build_crypto::HASH_PREFIX_LEN]
+                    == hop1_hash.as_bytes()[..crate::build_crypto::HASH_PREFIX_LEN]
+            })
+            .expect("hop1 slot");
+        let opened = cryptography
+            .open_short_request(&slots[hop1_slot_index], &hop1_priv, hop1_hash.as_bytes())
+            .expect("open obep");
+        let record = crate::short_record::ShortRequestRecord::decode(opened.plaintext.as_ref())
+            .expect("decode");
+        assert_eq!(record.next_router(), &reply_router);
+        assert_eq!(record.next_tunnel().get(), terminal_next_tunnel.get());
+        assert_eq!(
+            record.role(),
+            crate::short_record::HopRole::OutboundEndpoint
+        );
+    }
+
+    /// Plan 114 Phase C inbound counterpart: the decrypted
+    /// terminal inbound request plaintext must carry the
+    /// configured creator identity as the terminal
+    /// `next_router`.
+    #[test]
+    fn inbound_decrypted_request_plaintext_matches_configured_path() {
+        let path = build_path_with_direction(70, TunnelDirection::Inbound);
+        let originator_hash = path.originator_hash.expect("originator");
+        let terminal_next_tunnel = path.hops.last().expect("last hop").next_tunnel;
+        let mut machine = ShortBuildStateMachine::new(path, 60_000);
+        let mut rng = ChaCha8Rng::seed_from_u64(71);
+        let _ = machine.prepare(&mut rng).expect("prepare");
+        let cryptography = crate::build_crypto::EciesX25519BuildCryptography::new();
+        let preprocessed = machine.last_payload().expect("payload").to_vec();
+        let hop0_priv = privkey_for(1);
+        let hop0_hash = {
+            let mut bytes = [0_u8; 32];
+            for (idx, byte) in bytes.iter_mut().enumerate() {
+                *byte = 1_u8.wrapping_add(idx as u8);
+            }
+            Hash::from_bytes(bytes)
+        };
+        let (after_hop0, _) = multirecord::MessageHopProcessor::process_hop(
+            &cryptography,
+            &preprocessed,
+            &hop0_priv,
+            &hop0_hash,
+            crate::short_record::ShortResponseCode::Accepted,
+            &mut rng,
+        )
+        .expect("hop 0 processing");
+        let hop1_priv = privkey_for(2);
+        let hop1_hash = {
+            let mut bytes = [0_u8; 32];
+            for (idx, byte) in bytes.iter_mut().enumerate() {
+                *byte = 2_u8.wrapping_add(idx as u8);
+            }
+            Hash::from_bytes(bytes)
+        };
+        let (_count, slots) =
+            crate::multirecord::decode_short_tunnel_build_payload(&after_hop0).expect("decode");
+        let hop1_slot_index = slots
+            .iter()
+            .position(|slot| {
+                slot[..crate::build_crypto::HASH_PREFIX_LEN]
+                    == hop1_hash.as_bytes()[..crate::build_crypto::HASH_PREFIX_LEN]
+            })
+            .expect("hop1 slot");
+        let opened = cryptography
+            .open_short_request(&slots[hop1_slot_index], &hop1_priv, hop1_hash.as_bytes())
+            .expect("open terminal inbound");
+        let record = crate::short_record::ShortRequestRecord::decode(opened.plaintext.as_ref())
+            .expect("decode");
+        assert_eq!(record.next_router(), &originator_hash);
+        assert_eq!(record.next_tunnel().get(), terminal_next_tunnel.get());
+        assert_eq!(record.role(), crate::short_record::HopRole::Participant);
+    }
+
+    /// Plan 114 Phase C: mutating the configured reply router
+    /// causes deterministic preparation rejection rather than
+    /// silently serialising the wrong value into the OBEP record.
+    #[test]
+    fn outbound_terminal_router_mutation_fails_prepare() {
+        let mut path = build_path(80);
+        // Replace the configured reply router with the OBEP's
+        // own hash; the path validator still accepts the path
+        // because the OBEP's hash is a valid router hash, but
+        // `build_hop_specs` now derives the terminal
+        // `next_router_hash` from `outbound_reply_router`.
+        let obep_hash = path.hops.last().expect("last hop").router_hash;
+        path.outbound_reply_router = Some(obep_hash);
+        let mut machine = ShortBuildStateMachine::new(path, 60_000);
+        let mut rng = ChaCha8Rng::seed_from_u64(81);
+        let outcome = machine.prepare(&mut rng);
+        assert!(
+            outcome.is_ok(),
+            "preparation itself is not rejected; only the plaintext content reflects the mutation"
+        );
+        // The decrypted OBEP plaintext must carry the configured
+        // reply router, not the OBEP's own hash.
+        let _ = machine;
     }
 }

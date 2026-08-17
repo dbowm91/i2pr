@@ -149,7 +149,7 @@ tests, and any distinctive design choices.
 | `i2pr-core` | Service contracts | Runtime-neutral lifecycle, health, cancellation, and resource budgets. Zero dependencies. | [i2pr-core.md](i2pr-core.md) |
 | `i2pr-netdb` | Local NetDB | Runtime-neutral RouterInfo validation, bounded in-memory NetDB store, SU3/reseed verification, peer-selection primitives, transport-neutral lookup/publication state machines, and local signed RouterInfo construction. Plan 103/104/105. | [i2pr-netdb.md](i2pr-netdb.md) |
 | `i2pr-netdb-persist` | Cache composition | Composition owner for Plan 104 persistent RouterInfo cache and SU3 reseed ingestion. Bridges `i2pr-storage` (raw bytes) and `i2pr-netdb` (validation). | — |
-| `i2pr-tunnel` | Milestone 5 substrate | Runtime-neutral tunnel identity, exploratory pool, build-record layout surface, build-cryptography seam, ECIES-X25519 short tunnel-build construction primitive (Plan 111 final local short-build conformance + Plan 112 outbound pre-delivery closure), runtime-neutral build state machine, success-only registrar, deterministic responder peer simulator, and reply-path provider. Plans 107, 108, 109, 110, 111, 112. | [i2pr-tunnel.md](i2pr-tunnel.md) |
+| `i2pr-tunnel` | Milestone 5 substrate | Runtime-neutral tunnel identity, exploratory pool, build-record layout surface, build-cryptography seam, ECIES-X25519 short tunnel-build construction primitive (Plan 111 final local short-build conformance + Plan 112 outbound pre-delivery closure + Plan 113 inbound reference reconciliation + Plan 114 terminal routing and tunnel-chain correction), runtime-neutral build state machine, success-only registrar, deterministic responder peer simulator, and reply-path provider. Plans 107, 108, 109, 110, 111, 112, 113, 114. | [i2pr-tunnel.md](i2pr-tunnel.md) |
 | `i2pr-transport` | Transport contracts | Runtime-neutral link/delivery contracts. No Tokio, no I/O, no async. | [i2pr-transport.md](i2pr-transport.md) |
 | `i2pr-transport-ntcp2` | NTCP2 protocol | Runtime-neutral Noise handshake, AEAD frames, data-phase blocks. | [i2pr-transport-ntcp2.md](i2pr-transport-ntcp2.md) |
 | `i2pr-runtime` | Runtime owner | The only production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation. | [i2pr-runtime.md](i2pr-runtime.md) |
@@ -207,7 +207,17 @@ A live `i2pr run` today (Plan 106) follows this sequence:
        request keeps its fixed fields + Mapping/padding and exactly
        one originator fake carries the creator key. This does not
        claim strict final-spec text conformance for that semantic;
-       see `specs/references/short-build-inbound-creator-key.md`.**
+       see `specs/references/short-build-inbound-creator-key.md`.
+       Plan 114 closes the post-Plan-113 high-level routing/composition
+       defects: explicit outbound `outbound_reply_router` and inbound
+       `originator_hash` terminal-routing fields, intermediate
+       `hops[i].next_tunnel == hops[i+1].receive_tunnel` chain
+       continuity enforced at both the high-level
+       `ShortBuildPath::validate()` boundary and the public lower-level
+       `prepare_short_build_message()` entry point, and strict
+       outbound/inbound E2E trajectories that deterministically reach
+       `Established`. See
+       [`plans/114-status.md`](../../plans/114-status.md).**
 6. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
    before startup, then spawns one supervisor manager per service via a
    `JoinSet`. Each service receives a narrowed `ServiceContext` (name,

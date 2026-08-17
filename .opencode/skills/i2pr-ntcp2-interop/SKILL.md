@@ -7,12 +7,17 @@ description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/
 
 ## Current tunnel-build handoff boundary
 
-Plan 112 is closed as `passed-outbound-pre-delivery-closure` and Plan 113 is
-closed as `passed-inbound-reference-reconciliation` for the runtime-neutral
-ECIES-X25519 short-build surface. Outbound payloads are locally conformant and
-inbound construction is locally reference-compatible under the explicitly
-named `reference-compatible-spec-text-discrepancy` policy: the real request
-keeps fixed fields + Mapping/padding and exactly one originator fake carries
+Plan 112 is closed as `passed-outbound-pre-delivery-closure`, Plan 113 is
+closed as `passed-inbound-reference-reconciliation`, and Plan 114 is
+closed as `passed-terminal-routing-chain-correction` for the
+runtime-neutral ECIES-X25519 short-build surface. Outbound payloads are
+locally conformant, inbound construction is locally reference-compatible
+under the explicitly named `reference-compatible-spec-text-discrepancy`
+policy, and the terminal routing metadata and intermediate tunnel-id chain
+continuity are validated at both the high-level `ShortBuildPath::validate()`
+boundary and the public lower-level `prepare_short_build_message()` entry
+point: the real request keeps fixed fields + Mapping/padding and exactly
+one originator fake carries
 `hash16 || fresh X25519 pub32 || random remainder`. The final-spec prose is
 not claimed as strictly conformant for that unresolved semantic. This skill
 must not present local results as live interoperability. This NTCP2 skill does
@@ -23,9 +28,15 @@ reference-router evidence.
 The inbound creator identity is explicit at the `ShortBuildPath` boundary;
 the first remote hop is `InboundGateway`, later remote hops are `Participant`,
 and the creator verifies the originator fake after reply processing. The
-evidence note is `specs/references/short-build-inbound-creator-key.md` and the
-closure record is `plans/113-status.md`. The next inbound-specific activity
-is an independent-router delivery checkpoint, not an NTCP2 activation.
+outbound reply-router identity is also explicit at the `ShortBuildPath`
+boundary, the intermediate `hops[i].next_tunnel == hops[i+1].receive_tunnel`
+chain invariant is enforced at both the high-level and the public
+lower-level builder, and strict outbound/inbound E2E trajectories
+deterministically reach `Established`. The evidence note is
+`specs/references/short-build-inbound-creator-key.md`, the inbound closure
+record is `plans/113-status.md`, and the terminal-routing closure record is
+`plans/114-status.md`. The next inbound-specific activity is an
+independent-router delivery checkpoint, not an NTCP2 activation.
 
 Use this skill from the repository root for the **host-side** Ubuntu 24.04
 amd64 Plan 038 reference-router NTCP2 interoperability harness. This skill

@@ -694,6 +694,35 @@ pub(crate) fn validate_role_topology(
     Ok(())
 }
 
+/// Validates the intermediate tunnel-id forwarding chain for a
+/// short tunnel build. Plan 114 §4.4 requires that every
+/// non-terminal hop's `next_tunnel` equals the following hop's
+/// `receive_tunnel`; a role-valid path that violates this
+/// invariant cannot form a coherent forwarding chain and must be
+/// rejected before cryptographic allocation. The helper is shared
+/// between the high-level [`crate::short::ShortBuildPath`]
+/// validator and the public lower-level
+/// [`prepare_short_build_message`] entry point so a caller cannot
+/// bypass the chain invariant by going through the
+/// `MultiRecordHopSpec` API directly.
+pub(crate) fn validate_routing_chain(
+    path_hops: &[MultiRecordHopSpec<'_>],
+) -> Result<(), MultiRecordError> {
+    if path_hops.is_empty() {
+        return Err(MultiRecordError::EmptyPath);
+    }
+    for index in 0..path_hops.len().saturating_sub(1) {
+        let next_tunnel = path_hops[index].next_tunnel;
+        let following_receive = path_hops[index + 1].receive_tunnel;
+        if next_tunnel.get() != following_receive.get() {
+            return Err(MultiRecordError::RoleTopologyInvalid {
+                reason: "intermediate next tunnel id does not match following receive tunnel id",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn ephemeral_public(priv_bytes: &[u8; EPHEMERAL_KEY_LEN]) -> [u8; EPHEMERAL_KEY_LEN] {
     let secret = x25519_dalek::StaticSecret::from(*priv_bytes);
     let public = x25519_dalek::PublicKey::from(&secret);
@@ -819,6 +848,11 @@ pub fn prepare_short_build_message<R: CryptoRng + RngCore>(
     }
     let roles: Vec<HopRole> = path_hops.iter().map(|hop| hop.role).collect();
     validate_role_topology(direction, &roles)?;
+    // Plan 114 §4.4: enforce the intermediate tunnel-id
+    // forwarding chain at the lower-level API so callers cannot
+    // bypass the high-level invariant by going through
+    // `MultiRecordHopSpec` directly.
+    validate_routing_chain(path_hops)?;
     let record_set = assign_record_slots(path_hops.len() as u8, direction, rng)?;
     let mut hop_contexts: Vec<PreparedHopContext> = Vec::with_capacity(path_hops.len());
     for hop in path_hops {
@@ -2026,7 +2060,7 @@ mod tests {
             // an inbound-gateway remote-hop role.
             role: HopRole::Participant,
             receive_tunnel: TunnelId::new(0x1000).expect("id"),
-            next_tunnel: TunnelId::new(0x2000).expect("id"),
+            next_tunnel: TunnelId::new(0x3000).expect("id"),
             next_router_hash: &Hash::from_bytes([0x11_u8; 32]),
         };
         let hop1 = MultiRecordHopSpec {
@@ -2035,7 +2069,7 @@ mod tests {
             static_encryption_key: &[0xBB_u8; 32],
             role: HopRole::Participant,
             receive_tunnel: TunnelId::new(0x3000).expect("id"),
-            next_tunnel: TunnelId::new(0x4000).expect("id"),
+            next_tunnel: TunnelId::new(0x5000).expect("id"),
             next_router_hash: &Hash::from_bytes([0x12_u8; 32]),
         };
         let hop2 = MultiRecordHopSpec {
@@ -2076,7 +2110,7 @@ mod tests {
             static_encryption_key: &[0xAA_u8; 32],
             role: HopRole::InboundGateway,
             receive_tunnel: TunnelId::new(0x1000).expect("id"),
-            next_tunnel: TunnelId::new(0x2000).expect("id"),
+            next_tunnel: TunnelId::new(0x3000).expect("id"),
             next_router_hash: &Hash::from_bytes([0x11_u8; 32]),
         };
         let hop1 = MultiRecordHopSpec {
@@ -2135,8 +2169,17 @@ mod tests {
                 router_hash: &hop_hashes[index],
                 static_encryption_key: &hop_keys[index],
                 role: roles[index],
+                // Plan 114 §4.4: every intermediate hop's
+                // `next_tunnel` equals the following hop's
+                // `receive_tunnel`. The terminal hop's
+                // `next_tunnel` is the explicit reply tunnel id
+                // and is independent from the chain invariant.
                 receive_tunnel: TunnelId::new(0x1000 + index as u32).expect("receive id"),
-                next_tunnel: TunnelId::new(0x2000 + index as u32).expect("next id"),
+                next_tunnel: if index + 1 < 3 {
+                    TunnelId::new(0x1000 + index as u32 + 1).expect("next id")
+                } else {
+                    TunnelId::new(0x9000).expect("terminal next id")
+                },
                 next_router_hash: &next_hashes[index],
             })
             .collect();
@@ -2258,6 +2301,53 @@ mod tests {
     fn lower_level_builder_rejects_invalid_outbound_role_topology_before_crypto() {
         let roles = [HopRole::InboundGateway, HopRole::OutboundEndpoint];
         let outcome = validate_role_topology(TunnelDirection::Outbound, &roles);
+        assert!(matches!(
+            outcome,
+            Err(MultiRecordError::RoleTopologyInvalid { .. })
+        ));
+    }
+
+    /// Plan 114 Phase B: the lower-level multi-record builder
+    /// rejects inconsistent intermediate tunnel-id chains when
+    /// `MultiRecordHopSpec` values are supplied directly. A
+    /// caller must not be able to bypass the high-level invariant
+    /// by constructing the chain manually.
+    #[test]
+    fn lower_level_builder_rejects_intermediate_tunnel_chain_mismatch() {
+        let cryptography = EciesX25519BuildCryptography::new();
+        let hop0 = MultiRecordHopSpec {
+            canonical_index: 0,
+            router_hash: &Hash::from_bytes([0x10_u8; 32]),
+            static_encryption_key: &[0xAA_u8; 32],
+            role: HopRole::Participant,
+            receive_tunnel: TunnelId::new(0x1000).expect("id"),
+            // Break the chain: next_tunnel must equal
+            // hop1.receive_tunnel, not an arbitrary id.
+            next_tunnel: TunnelId::new(0xDEAD_BEEF).expect("id"),
+            next_router_hash: &Hash::from_bytes([0x11_u8; 32]),
+        };
+        let hop1 = MultiRecordHopSpec {
+            canonical_index: 1,
+            router_hash: &Hash::from_bytes([0x11_u8; 32]),
+            static_encryption_key: &[0xBB_u8; 32],
+            role: HopRole::OutboundEndpoint,
+            receive_tunnel: TunnelId::new(0x3000).expect("id"),
+            next_tunnel: TunnelId::new(0x4000).expect("id"),
+            next_router_hash: &Hash::from_bytes([0x13_u8; 32]),
+        };
+        let hops = vec![hop0, hop1];
+        let mut rng = ChaCha8Rng::seed_from_u64(91);
+        let outcome = prepare_short_build_message(
+            &cryptography,
+            &hops,
+            TunnelDirection::Outbound,
+            [0x10, 0x00, 0x00, 0x01],
+            60_000,
+            0x1234_5678,
+            Some(Hash::from_bytes([0x10_u8; 32])),
+            None,
+            &mut rng,
+        );
         assert!(matches!(
             outcome,
             Err(MultiRecordError::RoleTopologyInvalid { .. })

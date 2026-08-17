@@ -11,7 +11,8 @@ the substrate required to flip the Plan 106 NetDB seam from
 `BlockedExploratoryTunnelUnavailable` to `Available` once a real
 inbound tunnel is registered.
 
-> Status: Plan 113 inbound reference reconciliation after Plan 112
+> Status: Plan 114 terminal routing and tunnel-chain correction
+> after Plan 113 inbound reference reconciliation and Plan 112
 > outbound pre-delivery closure. Plan 109 corrected the wire format,
 > Noise-N transcript,
 > layer-encryption type, request/reply key derivation, response
@@ -43,14 +44,26 @@ inbound tunnel is registered.
 > integrity verification. The unresolved final-spec prose is not a
 > strict conformance claim for this one semantic. See
 > `specs/references/short-build-inbound-creator-key.md`.
-> Live mixed-router delivery is still blocked on a qualified
-> external delivery lane. Not production-ready. See `README.md`,
+> Plan 114 closes four post-Plan-113 high-level routing/composition
+> defects: the explicit `outbound_reply_router` (outbound) and
+> `originator_hash` (inbound) terminal-routing fields, the
+> intermediate `hops[i].next_tunnel == hops[i+1].receive_tunnel`
+> chain invariant enforced at both the high-level
+> `ShortBuildPath::validate()` boundary and the public
+> lower-level `prepare_short_build_message()` entry point, and
+> strict outbound/inbound E2E trajectories that deterministically
+> reach `Established` without the prior permissive
+> `InvalidReply OR Established` acceptance. Live mixed-router
+> delivery is still blocked on a qualified external delivery lane.
+> Not production-ready. See `README.md`,
 > `GUARDRAILS.md`,
 > [`plans/111-short-build-final-local-conformance-correction.md`](../../plans/111-short-build-final-local-conformance-correction.md),
 > [`plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`](../../plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md),
 > [`plans/112-outbound-short-build-pre-delivery-closure.md`](../../plans/112-outbound-short-build-pre-delivery-closure.md),
-> [`plans/111-status.md`](../../plans/111-status.md), and
-> [`plans/112-status.md`](../../plans/112-status.md).
+> [`plans/111-status.md`](../../plans/111-status.md),
+> [`plans/112-status.md`](../../plans/112-status.md),
+> [`plans/113-status.md`](../../plans/113-status.md), and
+> [`plans/114-status.md`](../../plans/114-status.md).
 
 ## Purpose
 
@@ -149,7 +162,7 @@ on `i2pr-proto`, `i2pr-crypto`, `i2pr-core`, and `i2pr-netdb`.
 | `build` | `BuildRecordLayout` (Short/Variable) over `DeferredBuildRecords`; `BuildRequestKind` / `BuildReplyKind` wire-type markers |
 | `build_crypto` | `BuildCryptography` trait + `LayerKeys` zeroizing wrapper + `ValidatedRecordSlot` typed nonce + `NoBuildCryptography` default + the Plan 109 ECIES-X25519 Noise-N implementation |
 | `short_record` | Typed 154-byte request and 202-byte reply record encoders (`encode_with_rng` + `encode_deterministic_zero_padded`); `HopRole`, `LayerEncryptionType`, `ShortResponseCode`, `BuildOptions`, `ShortBuildError::RandomnessUnavailable` |
-| `short` | Runtime-neutral `ShortBuildStateMachine` with bounded `Prepared → Protecting → ReadyForDelivery → AwaitingReply → Established` (plus terminal failures), exact count-prefixed delivery validation, shared direction/role validation, explicit inbound `originator_hash` ownership, and Plan 113 reference-compatible originator-fake construction |
+| `short` | Runtime-neutral `ShortBuildStateMachine` with bounded `Prepared → Protecting → ReadyForDelivery → AwaitingReply → Established` (plus terminal failures), exact count-prefixed delivery validation, shared direction/role validation, explicit inbound `originator_hash` and outbound `outbound_reply_router` terminal-routing fields, intermediate tunnel-id chain continuity validator, Plan 114 strict trajectory E2E tests, and Plan 113 reference-compatible originator-fake construction |
 | `short_state` | Success-only `ShortBuildRegistrar` that admits an established build into `ExploratoryPool` |
 | `responder` | Deterministic `DeterministicResponder` peer simulator |
 | `conformance_fixtures` | Plan 109 single-record conformance fixtures with independent reference Noise-N and SMTunnel KDF derivation |
@@ -346,6 +359,20 @@ when the following local conformance criteria were satisfied:
     the pinned Java/i2pd agreement. Inbound uses the explicit
     `reference-compatible-spec-text-discrepancy` policy; no guessed
     plaintext field is added.
+15. Plan 114 closes four post-Plan-113 routing/composition defects.
+    `ShortBuildPath` carries an explicit `outbound_reply_router`
+    (outbound) and `originator_hash` (inbound) terminal-routing
+    field. The intermediate
+    `hops[i].next_tunnel == hops[i+1].receive_tunnel` chain
+    invariant is enforced at the high-level
+    `ShortBuildPath::validate()` boundary and at the public
+    lower-level `prepare_short_build_message()` entry point. The
+    `last_payload()` accessor re-exposes the preprocessed STBM
+    payload for strict trajectory tests. The strict outbound and
+    inbound E2E tests drive each real hop through
+    `MessageHopProcessor::process_hop` with `Accepted` and assert
+    `Established` exactly; `InvalidReply` is no longer an
+    acceptable alternative.
 
 These criteria prove only that the local creator and
 independent-reference implementations agree with the production

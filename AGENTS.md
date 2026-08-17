@@ -1742,7 +1742,7 @@ Plan 110 closes, a separate narrow external-delivery checkpoint
 must select the smallest available qualified delivery lane and
 send one independent build.
 
-### Plan 109/110/111/112 current authoritative state
+### Plan 109/110/111/112/113/114 current authoritative state
 
 ```text
 plan_108                         = superseded-local-architecture-retained-wire-crypto-corrected
@@ -1751,6 +1751,7 @@ plan_110                         = superseded-by-plan111-corrected
 plan_111                         = passed-final-local-short-build-conformance
 plan_112                         = passed-outbound-pre-delivery-closure
 plan_113                         = passed-inbound-reference-reconciliation
+plan_114                         = passed-terminal-routing-chain-correction
 short_build_record_format        = locally-conformant-fixed-vectors
 short_build_noise_state          = locally-conformant-fixed-vectors
 short_build_reply_crypto         = locally-conformant-fixed-vectors
@@ -1759,6 +1760,12 @@ short_build_multirecord_processing = locally-conformant-fixed-vectors
 complete_stbm_payload            = locally-conformant-fixed-vectors
 outbound_short_build             = locally-conformant-pre-delivery
 inbound_short_build              = locally-reference-compatible-spec-text-discrepancy
+intermediate_next_tunnel_chain   = validated
+outbound_terminal_reply_router   = explicit-and-serialized
+inbound_terminal_creator_router  = explicit-and-serialized
+high_level_outbound_e2e          = strict-established
+high_level_inbound_e2e           = strict-established
+qualified_external_delivery      = unblocked-next-checkpoint
 live_mixed_router_build          = blocked-on-qualified-delivery
 normal_daemon_ntcp2              = disabled-and-unenableable
 ntcp2                            = experimental-non-advertised
@@ -1927,6 +1934,67 @@ and [`plans/113-status.md`](plans/113-status.md).
 
 The later inbound STBM delivery rule remains out of scope; Plan 113 adds no
 dispatcher, transport, NTCP2 activation, SSU2, or public-network behavior.
+
+## Plan 114 short-build terminal routing and tunnel-chain correction (closed)
+
+Plan 114 is the Milestone 5 routing-metadata correction pass
+that supersedes the previous "qualified external delivery is
+immediately unblocked" handoff statement after a post-Plan-113
+audit found four high-level routing/composition defects in
+`ShortBuildPath -> build_hop_specs`:
+
+1. the terminal real hop's `next_router_hash` fell back to the
+   terminal hop's own router hash;
+2. outbound `ShortBuildPath` could not explicitly represent the
+   OBEP reply-router identity;
+3. intermediate `next_tunnel` IDs were not required to equal the
+   following hop's `receive_tunnel` ID;
+4. the high-level E2E success test was permissive enough to
+   accept `InvalidReply`.
+
+Plan 114 closes all four without altering the cryptography,
+multi-record preprocessing, reply processor, inbound
+originator-fake policy, or the count-prefixed STBM/OTBRM codec.
+It lands:
+
+- `ShortBuildPath::outbound_reply_router: Option<Hash>` with
+  direction-specific terminal-routing validation
+  (`MissingOutboundReplyRouter` for outbound, cross-direction
+  `InvalidPath` for inbound);
+- a shared `validate_routing_chain` helper that enforces
+  `hops[i].next_tunnel == hops[i+1].receive_tunnel` at both the
+  high-level `ShortBuildPath::validate()` boundary and the
+  public lower-level `prepare_short_build_message()` entry point
+  so the invariant cannot be bypassed by constructing
+  `MultiRecordHopSpec` values directly;
+- direction-specific terminal `next_router_hash` derivation
+  (`outbound_reply_router` for outbound, `originator_hash` for
+  inbound) with no terminal self-hash fallback;
+- `outbound_decrypted_request_plaintext_matches_configured_path`
+  and
+  `inbound_decrypted_request_plaintext_matches_configured_path`
+  that drive each real hop through `MessageHopProcessor::process_hop`,
+  open the terminal hop's request, and assert exact routing
+  fields;
+- the strict
+  `strict_outbound_two_hop_trajectory_deterministic_established`
+  and
+  `strict_inbound_two_hop_trajectory_deterministic_established`
+  E2E trajectories that replace the prior permissive
+  `InvalidReply OR Established` acceptance.
+
+Plan 114 preserves all Plan 111/112/113 invariants including the
+`INBOUND_SHORT_BUILD_POLICY = "reference-compatible-spec-text-discrepancy"`
+value, the random-padding CSPRNG path, the count-prefixed STBM
+framing, the Plan 111 frozen fixed vectors, and the inbound
+originator-fake construction. Evidence and closure are
+[`plans/114-status.md`](plans/114-status.md).
+
+The next executable action is the smallest available qualified
+independent-router delivery checkpoint, which must consume the
+byte-correct count-prefixed STBM payload and the explicit
+direction-specific terminal routing metadata. It must not
+restart the historical broad interoperability harness program.
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
 
@@ -3221,6 +3289,7 @@ Plan 103  RouterInfo validation + bounded local NetDB     [closed]
      -> Plan 111  final local short-build conformance correction [passed-final-local-short-build-conformance]
      -> Plan 112  outbound pre-delivery closure [passed-outbound-pre-delivery-closure]
      -> Plan 113  inbound reference reconciliation [passed-inbound-reference-reconciliation]
+     -> Plan 114  terminal routing + tunnel-chain correction    [passed-terminal-routing-chain-correction]
      -> narrow qualified external-delivery checkpoint [unblocked; next]
      -> return to Milestone 4B external acceptance
 ```
@@ -3248,6 +3317,15 @@ fixed vectors). Plan 113 then closed inbound as
 `reference-compatible-spec-text-discrepancy`: pinned Java I2P and
 i2pd agree on exactly one originator fake, while the final-spec
 prose has no concrete separate plaintext creator-key encoding.
+Plan 114 closed as `passed-terminal-routing-chain-correction`:
+explicit outbound `outbound_reply_router` and inbound
+`originator_hash` terminal-routing metadata, intermediate
+`hops[i].next_tunnel == hops[i+1].receive_tunnel` chain continuity
+enforced at both the high-level `ShortBuildPath::validate()`
+boundary and the lower-level `prepare_short_build_message()`
+entry point, and strict outbound/inbound E2E trajectories that
+deterministically reach `Established` without the prior
+`InvalidReply OR Established` permissive acceptance.
 Milestone 4A is now
 `local-foundation-complete-short-build-outbound-conformant-fixed-vectors`
 with `inbound_short_build = locally-reference-compatible`.
