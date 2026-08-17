@@ -39,6 +39,7 @@
 #![warn(missing_docs)]
 #![allow(clippy::module_name_repetitions)]
 
+pub mod bridge;
 pub mod build;
 pub mod build_crypto;
 pub mod config;
@@ -53,6 +54,7 @@ pub mod short;
 pub mod short_record;
 pub mod short_state;
 
+pub use bridge::{BridgeError, BridgeHeader, BridgeRecord, ShortBuildI2npBridge};
 pub use build::{
     BuildCryptographyUnavailable, BuildRecordLayout, BuildRecordLayoutError, BuildReplyKind,
     BuildRequestKind,

@@ -1,15 +1,20 @@
 # Plan 115 handoff
 
-- Status: **ready for execution**
+- Status: **closed-branch-e-blocked-no-bounded-independent-consumer-seam**
 - Date: 2026-08-17
+- Closure: [`plans/115-status.md`](115-status.md)
 - Plan-of-record: [`plans/115-qualified-independent-short-build-consumption-and-external-delivery.md`](115-qualified-independent-short-build-consumption-and-external-delivery.md)
 - Predecessor: [`plans/114-status.md`](114-status.md)
 - Roadmap: [`plans/115-117-external-delivery-to-live-netdb-roadmap.md`](115-117-external-delivery-to-live-netdb-roadmap.md)
-- Primary target: one independent native short-build consumer, then the smallest already-existing authenticated delivery lane if available
+- Successor: a future narrow qualified external-delivery checkpoint
+  on a host where the Plan 046 rootless sealed-namespace lane or
+  the Plan 048/049 Multipass recovery lane is runnable. Plan 116
+  remains gated on a future Plan 115-style Q0/Q1/Q2 pass.
 
 ## Start here
 
-Do **not** reopen Plans 109-114. Their local short-build result is the input to this plan.
+Do **not** reopen Plans 109-115. Their local short-build result
+is the input to any future plan that revisits this gate.
 
 Current state:
 
@@ -18,15 +23,23 @@ plan_111                         = retained-core-crypto-corrected
 plan_112                         = passed-outbound-pre-delivery-closure
 plan_113                         = passed-inbound-reference-reconciliation
 plan_114                         = passed-terminal-routing-chain-correction
+plan_115                         = closed-branch-e-blocked-no-bounded-independent-consumer-seam
 short_build_local_outbound       = strict-established
 short_build_local_inbound        = strict-established
-qualified_external_delivery      = ready-plan115
+canonical_i2np_bridge            = locally-conformant-no-double-prefix
+qualified_external_delivery      = blocked-no-bounded-independent-consumer-seam
 normal_daemon_ntcp2              = disabled-and-unenableable
 ntcp2                            = experimental-non-advertised
 development_ntcp2                = protocol-defect-localized-at-noise_authenticated
 ```
 
-The purpose is to obtain independent evidence without allowing the historical NTCP2 harness to block router development again.
+Plan 115 closed the canonical production I2NP bridge
+(`ShortBuildI2npBridge` in
+[`crates/i2pr-tunnel/src/bridge.rs`](../crates/i2pr-tunnel/src/bridge.rs))
+and recorded Branch E because the cheapest i2pd tunnel-build
+consumer path exceeds the Plan 115 §11.G1 "small one-shot helper"
+budget on this host. The future Plan 116/Plan 117 sequence
+remains gated on a qualified external delivery lane.
 
 ## Execution decision in one page
 

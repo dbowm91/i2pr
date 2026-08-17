@@ -1996,6 +1996,70 @@ byte-correct count-prefixed STBM payload and the explicit
 direction-specific terminal routing metadata. It must not
 restart the historical broad interoperability harness program.
 
+## Plan 115 qualified independent short-build consumption and external-delivery checkpoint (closed)
+
+Plan 115 is the Milestone 5 independent-evidence checkpoint that
+separates tunnel-protocol interoperability from transport
+interoperability. The plan defines three evidence tiers — Q0
+(independent native short-build consumer), Q1 (authenticated
+transport delivery), and Q2 (reply round-trip to `Established`) —
+and explicitly anticipates a Branch E closure when no bounded
+independent consumer seam can be reached without substantial
+internal surgery.
+
+Plan 115 lands the canonical production I2NP bridge in
+[`crates/i2pr-tunnel/src/bridge.rs`](crates/i2pr-tunnel/src/bridge.rs):
+the new `ShortBuildI2npBridge` consumes a
+`ShortBuildAction::Deliver`, validates the
+`1 + count * 218` count-prefixed STBM body, splits the count byte
+from the raw records, builds
+`DeferredBuildRecords::new(count, 218, raw_records)`, wraps it in
+`I2npBody::ShortTunnelBuild`, encodes with the requested standard
+or short-transport I2NP header, and round-trips through the
+standard-header decoder to assert the recovered body equals the
+original count-prefixed payload exactly. The bridge never
+double-prefixes the count byte, never mutates, reorders, or
+regenerates records, and never logs raw record bytes through
+`Debug`.
+
+Plan 115 closes on this host as Branch E
+(`blocked-no-bounded-independent-consumer-seam`):
+
+- The mandatory local criteria are satisfied (Work Package B
+  bridge complete with nine regression tests covering one-record
+  and four-record STBM bodies, both standard and short-transport
+  headers, count-mismatch / truncated / zero-count / over-maximum
+  payload rejections, round-trip body equality, sanitized debug
+  output, and digest-only record surface).
+- The Plan 115 Q0 attempt requires calling
+  `i2p::RouterContext::DecryptTunnelShortRequestRecord` (or
+  `DecryptECIESTunnelBuildRecord`) from the pinned i2pd 2.60.0
+  source tree at revision
+  `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`. The native
+  consumer seam is buried inside the full `TransitTunnels`
+  queue + `RouterContext::Init()` + `i2p::crypto::InitCrypto` +
+  `i2p::context` global initialization. Building a small
+  one-shot adapter requires either rebuilding the pinned i2pd
+  libraries (significant time and disk) or extending the
+  existing Plan 076 driver with a new `stbm-consume` mode (the
+  Plan 076 driver source is 1626 lines and would require a new
+  parser field, mode handler, and full rebuild with the cached
+  pinned libraries). Both paths exceed the Plan 115 §11.G1
+  "small one-shot helper" budget on this host.
+- No Python harness, namespace, container, VM, or public-network
+  surface is added. NTCP2 remains experimental and
+  non-advertised; normal-daemon NTCP2 remains disabled and
+  unenableable.
+
+The expected future action is the Plan 060 / Plan 066 / Plan 116
+sequence with a qualified external delivery lane; until then,
+Milestone 3 and Milestone 5 mixed-router exits remain blocked on
+a live exploratory transport path. Evidence and closure are
+[`plans/115-status.md`](plans/115-status.md) and
+[`plans/115-handoff.md`](plans/115-handoff.md).
+
+## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
+
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
 
 Plan 096 is the active workflow correctness and pre-dispatch
@@ -3290,8 +3354,8 @@ Plan 103  RouterInfo validation + bounded local NetDB     [closed]
      -> Plan 112  outbound pre-delivery closure [passed-outbound-pre-delivery-closure]
      -> Plan 113  inbound reference reconciliation [passed-inbound-reference-reconciliation]
      -> Plan 114  terminal routing + tunnel-chain correction    [passed-terminal-routing-chain-correction]
-     -> narrow qualified external-delivery checkpoint [unblocked; next]
-     -> return to Milestone 4B external acceptance
+     -> Plan 115  canonical production I2NP bridge + Q0 attempted [closed-branch-e-blocked-no-bounded-independent-consumer-seam]
+     -> return to Milestone 4B external acceptance [blocked-on-qualified-external-delivery-lane]
 ```
 
 Plan 106 closed the local/bootstrap implementation phase; Plan 107
@@ -3325,14 +3389,25 @@ enforced at both the high-level `ShortBuildPath::validate()`
 boundary and the lower-level `prepare_short_build_message()`
 entry point, and strict outbound/inbound E2E trajectories that
 deterministically reach `Established` without the prior
-`InvalidReply OR Established` permissive acceptance.
-Milestone 4A is now
+`InvalidReply OR Established` permissive acceptance. Plan 115
+closed the canonical production I2NP bridge
+(`ShortBuildI2npBridge`) that converts a
+`ShortBuildAction::Deliver` into a complete I2NP type-25 message
+without double-prefixing the STBM record count, but closed on
+this host as Branch E
+(`blocked-no-bounded-independent-consumer-seam`) because the only
+available i2pd tunnel-build consumer seam is buried inside the full
+i2pd daemon runtime and exceeds the Plan 115 §11.G1 "small
+one-shot helper" budget. Milestone 4A is now
 `local-foundation-complete-short-build-outbound-conformant-fixed-vectors`
-with `inbound_short_build = locally-reference-compatible`.
+with `inbound_short_build = locally-reference-compatible` and
+`production_i2np_bridge = locally-conformant-no-double-prefix`.
 A direct `DatabaseLookup` over NTCP2 is not accepted as a substitute
 for the standard exploratory-tunnel path. The next executable step
-is the now-unblocked narrow qualified external-delivery checkpoint, before
-Milestone 4B external acceptance.
+is a future narrow qualified external-delivery checkpoint (the
+Plan 116/Plan 117 sequence), requiring a host with the Plan 046
+rootless sealed-namespace lane or the Plan 048/049 Multipass
+recovery lane runnable, before Milestone 4B external acceptance.
 
 ## Plan 106 daemon NetDB/bootstrap integration and Milestone 5 handoff (closed)
 

@@ -61,8 +61,8 @@ advertisement requirements in `specs/CONFORMANCE.md`.
 | NTCP2 handshake codecs and state machines | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0012, `plans/036-closure.md`, `plans/037-closure.md` | Fixed/malformed/bounded state and policy tests plus local corrective campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with `blocked_unprivileged_user_namespace`; Plan 066 fresh-candidate pass is `declared-not-executable` on this host with the typed blocker `blocked_execution_lane_unavailable`; see `plans/066-closure.md` and `specs/CONFORMANCE.md`; the Plan 067/068 active roadmap separates evidence into local-conformance, external-loopback-smoke, repeated-development-interop, conditional-differential, and release-qualification tiers (ADR 0023) |
 | NTCP2 authenticated data frames and payload blocks | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0013, `plans/036-closure.md`, `plans/037-closure.md` | Deterministic frame/block vectors, corrected repeated-block/termination ordering tests, partial-I/O cleanup, and local campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`); the Plan 066 fresh-candidate pass is `declared-not-executable` on this host, see `plans/066-closure.md`; the Plan 067/068/074 active roadmap defines Plan 069 (host-loopback smoke), Plan 075 (runner integrity), Plan 076 (real i2pd driver), and Plan 079 (repeated i2pd validation) for development interoperability; no real mixed-router attempt has yet occurred |
 | NTCP2 runtime link manager, addresses, and controlled TCP lifecycle | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0014, `plans/036-closure.md`, `plans/037-closure.md` | Bounded address/admission/replay/backoff/duplicate/RAII cleanup tests plus loopback lifecycle and preflight; runtime-owned wire adapter implemented and locally validated, mixed-router evidence pending | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`); the Plan 066 fresh-candidate pass is `declared-not-executable` on this host, see `plans/066-closure.md`; the Plan 067/068 active roadmap keeps NTCP2 experimental and non-advertised |
-| Reseed and RouterInfo publication | Plans 103–107 implemented locally on this host: RouterInfo validation, bounded local NetDB, persistent cache, SU3 reseed, transport-neutral query state machines, daemon bootstrap integration, and the Milestone 5 exploratory tunnel substrate. Plans 108–112 corrected and locally validated the ECIES-X25519 short-build wire, cryptography, records, slot/fake-record handling, and outbound construction. Plan 113 reconciles inbound construction against pinned Java I2P and i2pd source: the fixed request record remains the canonical 154-byte layout, and the creator-side inbound originator fake is exactly `hash16 || fresh X25519 public key || random remainder`; the final specification text discrepancy is recorded under the explicit `reference-compatible-spec-text-discrepancy` policy. Plan 114 closes four post-Plan-113 routing/composition defects: explicit outbound `outbound_reply_router` and inbound `originator_hash` terminal-routing fields, intermediate `hops[i].next_tunnel == hops[i+1].receive_tunnel` chain continuity enforced at both the high-level `ShortBuildPath::validate()` boundary and the public lower-level `prepare_short_build_message()` entry point, and strict outbound/inbound E2E trajectories that deterministically reach `Established`. | 4/5 | `specs/protocols/04-reseed-netdb.md`, `specs/protocols/05-tunnels.md`, `plans/103-status.md`, `plans/113-status.md`, `plans/114-status.md`, `specs/references/short-build-inbound-creator-key.md` | Local signed-region verification, bounded NetDB/reseed/bootstrap checks, short-build request/reply vectors, role/topology validation, randomized slot and fake-record construction, originator-fake integrity checks, deterministic multi-hop inbound trajectory, terminal routing field validation, intermediate tunnel-id chain continuity validation, and strict trajectory E2E tests; no live mixed-router tunnel execution or transit participation | None |
-| Network tunnels and transit participation | Experimental local subset; outbound short tunnel-build locally conformant against fixed vectors; inbound construction locally reference-compatible under Plan 113's `reference-compatible-spec-text-discrepancy` policy; exploratory substrate implemented; Plan 114 closed terminal routing and tunnel-chain corrections; live mixed-router build pending | 5 | `specs/protocols/05-tunnels.md`, `plans/107-milestone-5-exploratory-tunnel-substrate.md`, `plans/111-short-build-final-local-conformance-correction.md`, `plans/112-status.md`, `plans/113-status.md`, `plans/114-status.md`, `specs/references/short-build-inbound-creator-key.md` | Bounded tunnel identity/pool/build crypto types, role-validated short-build state machine, randomized multi-record construction, exactly one inbound originator fake with creator-side integrity verification, explicit terminal routing fields, intermediate tunnel-id chain continuity enforcement, strict trajectory E2E tests, and deterministic local inbound trajectory; no live mixed-router tunnel execution or transit participation | None |
+| Reseed and RouterInfo publication | Plans 103–107 implemented locally on this host: RouterInfo validation, bounded local NetDB, persistent cache, SU3 reseed, transport-neutral query state machines, daemon bootstrap integration, and the Milestone 5 exploratory tunnel substrate. Plans 108–112 corrected and locally validated the ECIES-X25519 short-build wire, cryptography, records, slot/fake-record handling, and outbound construction. Plan 113 reconciles inbound construction against pinned Java I2P and i2pd source: the fixed request record remains the canonical 154-byte layout, and the creator-side inbound originator fake is exactly `hash16 || fresh X25519 public key || random remainder`; the final specification text discrepancy is recorded under the explicit `reference-compatible-spec-text-discrepancy` policy. Plan 114 closes four post-Plan-113 routing/composition defects: explicit outbound `outbound_reply_router` and inbound `originator_hash` terminal-routing fields, intermediate `hops[i].next_tunnel == hops[i+1].receive_tunnel` chain continuity enforced at both the high-level `ShortBuildPath::validate()` boundary and the public lower-level `prepare_short_build_message()` entry point, and strict outbound/inbound E2E trajectories that deterministically reach `Established`. Plan 115 closes the canonical production I2NP bridge (`ShortBuildI2npBridge`) so the already count-prefixed `ShortBuildAction::Deliver.message` is wrapped in a single complete I2NP type-25 message without double-prefixing the STBM record count byte and with a round-trip body equality assertion. Plan 115 closed on this host as Branch E (`blocked-no-bounded-independent-consumer-seam`); no live mixed-router tunnel execution or transit participation has been attained. | 4/5 | `specs/protocols/04-reseed-netdb.md`, `specs/protocols/05-tunnels.md`, `plans/103-status.md`, `plans/113-status.md`, `plans/114-status.md`, `plans/115-status.md`, `specs/references/short-build-inbound-creator-key.md` | Local signed-region verification, bounded NetDB/reseed/bootstrap checks, short-build request/reply vectors, role/topology validation, randomized slot and fake-record construction, originator-fake integrity checks, deterministic multi-hop inbound trajectory, terminal routing field validation, intermediate tunnel-id chain continuity validation, strict trajectory E2E tests, and the canonical production I2NP bridge no-double-prefix invariant; no live mixed-router tunnel execution or transit participation | None |
+| Network tunnels and transit participation | Experimental local subset; outbound short tunnel-build locally conformant against fixed vectors; inbound construction locally reference-compatible under Plan 113's `reference-compatible-spec-text-discrepancy` policy; exploratory substrate implemented; Plan 114 closed terminal routing and tunnel-chain corrections; Plan 115 added the canonical production I2NP bridge and closed as Branch E on this host; live mixed-router build pending | 5 | `specs/protocols/05-tunnels.md`, `plans/107-milestone-5-exploratory-tunnel-substrate.md`, `plans/111-short-build-final-local-conformance-correction.md`, `plans/112-status.md`, `plans/113-status.md`, `plans/114-status.md`, `plans/115-status.md`, `plans/115-handoff.md`, `specs/references/short-build-inbound-creator-key.md` | Bounded tunnel identity/pool/build crypto types, role-validated short-build state machine, randomized multi-record construction, exactly one inbound originator fake with creator-side integrity verification, explicit terminal routing fields, intermediate tunnel-id chain continuity enforcement, strict trajectory E2E tests, deterministic local inbound trajectory, and the canonical production I2NP bridge no-double-prefix invariant; no live mixed-router tunnel execution or transit participation | None |
 | Classic LeaseSet structural codec | Experimental structural subset; LeaseSet2-family deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Local Lease/LeaseSet vectors and negative tests; no independent router vectors | None |
 | LeaseSet2, EncryptedLeaseSet, and MetaLeaseSet | Deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Explicit rejection/deferred framing only | None |
 | I2P streaming | Not implemented | 6 | `specs/protocols/07-streaming.md` | None imported | None |
@@ -678,18 +678,20 @@ The authoritative Plan 102 sequence is:
 
 ```text
 Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
-   -> Plan 104  persistent cache + SU3 reseed trust/ingestion         [closed]
-     -> Plan 105  transport-neutral lookup/store/publication states     [closed]
-     -> Plan 106  daemon/bootstrap integration                          [closed]
-     -> Plan 107  exploratory tunnel substrate                          [closed]
-     -> Plan 108  local short-build architecture                        [superseded-by-plan109]
-     -> Plan 109  exact short-record + Noise-N/KDF correction           [superseded-by-plan111]
-     -> Plan 110  multi-record preprocessing + local conformance close  [superseded-by-plan111]
-     -> Plan 111  final local short-build conformance correction         [passed-final-local-short-build-conformance]
-     -> Plan 112  outbound pre-delivery closure                           [passed-outbound-pre-delivery-closure]
-     -> Plan 113  inbound reference reconciliation                        [passed-inbound-reference-reconciliation]
-     -> narrow qualified external-delivery checkpoint                     [unblocked; next]
-     -> return to Milestone 4B external acceptance
+    -> Plan 104  persistent cache + SU3 reseed trust/ingestion         [closed]
+      -> Plan 105  transport-neutral lookup/store/publication states     [closed]
+      -> Plan 106  daemon/bootstrap integration                          [closed]
+      -> Plan 107  exploratory tunnel substrate                          [closed]
+      -> Plan 108  local short-build architecture                        [superseded-by-plan109]
+      -> Plan 109  exact short-record + Noise-N/KDF correction           [superseded-by-plan111]
+      -> Plan 110  multi-record preprocessing + local conformance close  [superseded-by-plan111]
+      -> Plan 111  final local short-build conformance correction         [passed-final-local-short-build-conformance]
+      -> Plan 112  outbound pre-delivery closure                           [passed-outbound-pre-delivery-closure]
+      -> Plan 113  inbound reference reconciliation                        [passed-inbound-reference-reconciliation]
+      -> Plan 114  terminal routing + tunnel-chain correction               [passed-terminal-routing-chain-correction]
+      -> Plan 115  canonical production I2NP bridge + Q0 attempted        [closed-branch-e-blocked-no-bounded-independent-consumer-seam]
+      -> narrow qualified external-delivery checkpoint                     [blocked-on-future-plan115-style-pass]
+      -> return to Milestone 4B external acceptance
 ```
 
 Plan 106 closed the local/bootstrap implementation phase; Plan 107
@@ -719,11 +721,27 @@ Inbound creator-ephemeral layout remains
 and i2pd agree on the originator fake, but the final-spec prose still does
 not define a concrete separate plaintext creator-key encoding. No guessed
 field is added; see `../specs/references/short-build-inbound-creator-key.md`.
-Milestone 4A is now
+Plan 114 closed four post-Plan-113 routing/composition defects
+(explicit outbound `outbound_reply_router` / inbound `originator_hash`
+terminal-routing, intermediate tunnel-id chain continuity enforcement,
+strict outbound/inbound E2E trajectories), and Plan 115 closed the
+canonical production I2NP bridge (`ShortBuildI2npBridge` in
+`crates/i2pr-tunnel/src/bridge.rs`) with the no-double-prefix
+STBM record count byte invariant. Plan 115 closed on this host as
+Branch E (`blocked-no-bounded-independent-consumer-seam`) because
+the cheapest i2pd tunnel-build consumer seam is buried in the full
+i2pd daemon runtime and exceeds the Plan 115 §11.G1 "small one-shot
+helper" budget; see [`plans/115-status.md`](../plans/115-status.md)
+and [`plans/115-handoff.md`](../plans/115-handoff.md). Milestone
+4A is now
 `local-foundation-complete-short-build-outbound-conformant-fixed-vectors`
-with `inbound_short_build = locally-reference-compatible`; the
-next executable step is a narrow qualified external-delivery
-checkpoint, before Milestone 4B external acceptance.
+with `inbound_short_build = locally-reference-compatible`,
+`canonical_i2np_bridge = locally-conformant-no-double-prefix`, and
+`qualified_external_delivery = blocked-no-bounded-independent-consumer-seam`;
+the next executable step remains a narrow qualified external-delivery
+checkpoint on a host where the Plan 046 rootless sealed-namespace
+lane or the Plan 048/049 Multipass recovery lane is runnable, before
+Milestone 4B external acceptance.
 
 ### Plan 113 inbound short-build reconciliation
 

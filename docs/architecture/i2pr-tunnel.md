@@ -53,7 +53,19 @@ inbound tunnel is registered.
 > lower-level `prepare_short_build_message()` entry point, and
 > strict outbound/inbound E2E trajectories that deterministically
 > reach `Established` without the prior permissive
-> `InvalidReply OR Established` acceptance. Live mixed-router
+> `InvalidReply OR Established` acceptance. Plan 115 adds the
+> canonical production I2NP bridge in
+> [`src/bridge.rs`](../../crates/i2pr-tunnel/src/bridge.rs) so the
+> already count-prefixed `ShortBuildAction::Deliver.message` is
+> wrapped in a single complete I2NP type-25 message without
+> double-prefixing the STBM record count byte, with a round-trip
+> standard-header decoder assertion that proves the body bytes
+> equal the original delivery payload exactly. Plan 115 closes
+> the canonical production seam but does **not** produce a
+> live mixed-router Q0/Q1/Q2 result on this host — see
+> [`plans/115-status.md`](../../plans/115-status.md) for the
+> Branch E `blocked-no-bounded-independent-consumer-seam`
+> closure and the future external-delivery lane. Live mixed-router
 > delivery is still blocked on a qualified external delivery lane.
 > Not production-ready. See `README.md`,
 > `GUARDRAILS.md`,
@@ -62,8 +74,9 @@ inbound tunnel is registered.
 > [`plans/112-outbound-short-build-pre-delivery-closure.md`](../../plans/112-outbound-short-build-pre-delivery-closure.md),
 > [`plans/111-status.md`](../../plans/111-status.md),
 > [`plans/112-status.md`](../../plans/112-status.md),
-> [`plans/113-status.md`](../../plans/113-status.md), and
-> [`plans/114-status.md`](../../plans/114-status.md).
+> [`plans/113-status.md`](../../plans/113-status.md),
+> [`plans/114-status.md`](../../plans/114-status.md), and
+> [`plans/115-status.md`](../../plans/115-status.md).
 
 ## Purpose
 
@@ -146,7 +159,13 @@ inbound tunnel is registered.
   reproductions match byte-for-byte;
 - the [`provider::ExploratoryPoolReplyPathProvider`](src/provider.rs)
   adapter that turns an `ExploratoryPool` into a
-  `i2pr_netdb::ReplyPathProvider`.
+  `i2pr_netdb::ReplyPathProvider`;
+- the Plan 115 [`bridge::ShortBuildI2npBridge`](src/bridge.rs) that
+  converts a `ShortBuildAction::Deliver` into one complete I2NP
+  type-25 message without double-prefixing the STBM record count
+  byte, with a standard-header round-trip assertion that the
+  recovered body equals the original count-prefixed delivery
+  payload exactly.
 
 The crate deliberately remains runtime-neutral: it does not open
 sockets, does not perform DNS, does not spawn tasks, and depends only
@@ -167,6 +186,7 @@ on `i2pr-proto`, `i2pr-crypto`, `i2pr-core`, and `i2pr-netdb`.
 | `responder` | Deterministic `DeterministicResponder` peer simulator |
 | `conformance_fixtures` | Plan 109 single-record conformance fixtures with independent reference Noise-N and SMTunnel KDF derivation |
 | `provider` | `ExploratoryPoolReplyPathProvider` that turns the pool into a `ReplyPathProvider` |
+| `bridge` | Plan 115 `ShortBuildI2npBridge` — the canonical production seam from `ShortBuildAction::Deliver` to a complete I2NP type-25 message; no double-prefix, round-trip body equality |
 
 ## Dependency boundary
 
@@ -240,6 +260,16 @@ no DNS. The plans-of-record forbid adding any of these dependencies.
   `derive_layer_keys` primitives.
 - `provider::ExploratoryPoolReplyPathProvider` — the
   `ReplyPathProvider` adapter.
+- `bridge::ShortBuildI2npBridge::wrap_deliver_action` accepts a
+  `ShortBuildAction::Deliver`, validates
+  `payload.len() == 1 + record_count * 218` and
+  `payload[0] == record_count`, splits the count byte from the
+  raw records, builds `DeferredBuildRecords::new(count, 218, …)`,
+  wraps in `I2npBody::ShortTunnelBuild`, encodes with the
+  requested standard or short-transport header, and asserts the
+  round-trip decoder recovers the original count-prefixed body
+  exactly. The bridge never mutates, reorders, or regenerates
+  records and never logs raw record bytes.
 
 ## Key contracts
 

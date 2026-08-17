@@ -4,9 +4,16 @@
 
 - Date: 2026-08-17.
 - This is a **gated roadmap**, not one monolithic implementation plan.
-- Executable now: **Plan 115 only**.
-- Plan 116 must be written/finalized from the actual Plan 115 closure evidence.
-- Plan 117 must be written/finalized from the actual Plan 116 tunnel data-plane boundary.
+- Plan 115 is **closed** as Branch E
+  (`blocked-no-bounded-independent-consumer-seam`) on this host.
+  See [`plans/115-status.md`](115-status.md) for the closure
+  record, the local canonical production I2NP bridge
+  implementation, and the exact missing reference boundary.
+- Plan 116 remains **gated** on a future Plan 115-style Q0/Q1/Q2
+  pass on a host where the Plan 046 rootless sealed-namespace
+  lane or the Plan 048/049 Multipass recovery lane is runnable.
+- Plan 117 remains **gated** on the future Plan 116 tunnel
+  data-plane boundary.
 - Parent roadmap: [`plans/000-mvp-roadmap.md`](000-mvp-roadmap.md).
 
 ## Why this roadmap exists
@@ -23,7 +30,7 @@ Plan 117: Can a real exploratory pair carry NetDB work and close the live Milest
 
 This sequencing keeps independent protocol evidence, tunnel data-plane construction, and final live-router integration distinct. A transport blocker may remain visible without forcing all local router construction to stop.
 
-## Current baseline after Plan 114
+## Current baseline after Plan 115 (Branch E)
 
 ```text
 M0-M2 foundation                         = closed
@@ -35,7 +42,8 @@ M4 live lookup/publication                 = blocked-on-live-exploratory-path
 M5 exploratory substrate/build control     = substantially-implemented
 M5 short-build local outbound              = strict-established
 M5 short-build local inbound               = strict-established
-M5 independent short-build evidence        = next-plan115
+M5 canonical production I2NP bridge        = locally-conformant-no-double-prefix
+M5 independent short-build evidence        = closed-branch-e-blocked-no-bounded-independent-consumer-seam
 M5 TunnelData forwarding/data plane        = not-yet-closed
 M5 mixed-router exploratory pair           = not-yet-proven
 M6 destination/garlic/LeaseSet/streaming   = not-authorized-yet
