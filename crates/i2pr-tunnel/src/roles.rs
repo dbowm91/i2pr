@@ -166,6 +166,15 @@ pub enum TunnelRoleError {
     /// `next` field did not.
     #[error("established hop is missing required next-hop state")]
     MissingNextHop,
+    /// A reassembled fragmented message reached completion
+    /// without a retained first-fragment delivery instruction.
+    /// The data plane refuses to fabricate an unspecified
+    /// delivery action; the failure is reported to the caller.
+    #[error("reassembled message id {message_id} had no retained delivery instruction")]
+    UnspecifiedDeliveryInstruction {
+        /// The completed message identifier.
+        message_id: u32,
+    },
 }
 
 /// Extracts the IV and the encrypted 1008-byte payload from the
@@ -292,6 +301,67 @@ impl OutboundGatewayRole {
             receive_tunnel,
             cell,
         })
+    }
+
+    /// Forwards a complete standard I2NP message through the
+    /// outbound tunnel, fragmenting across multiple TunnelData
+    /// cells when necessary. Returns the preprocessed
+    /// `TunnelDataMessage` cells addressed to the first hop, in
+    /// canonical fragment order.
+    ///
+    /// The Plan 116 fragmented cross-tunnel trajectory exercises
+    /// this entry point so the data plane can carry a message
+    /// that does not fit in one cell. Each returned
+    /// `OBGWRouterDelivery` carries the same target router and
+    /// receive tunnel id; the local endpoint reassembles the
+    /// fragments into the original bytes.
+    pub fn forward_cells<R: CryptoRng + RngCore>(
+        &self,
+        header: &TunnelPayloadHeader,
+        complete_message: &[u8],
+        rng: &mut R,
+        now_ms: u64,
+    ) -> Result<Vec<OBGWRouterDelivery>, TunnelRoleError> {
+        if !self.is_usable(now_ms) {
+            return Err(TunnelRoleError::TunnelUnavailable);
+        }
+        if matches!(header.delivery, DeliveryInstruction::Local) {
+            return Err(TunnelRoleError::UnsupportedDeliveryInstruction);
+        }
+        let hops_reverse: Vec<LayerKeys> = self
+            .established
+            .hops()
+            .iter()
+            .map(|hop| hop.layer_keys().clone())
+            .rev()
+            .collect();
+        let hops_ref: Vec<&LayerKeys> = hops_reverse.iter().collect();
+        let fragments = TunnelMessageBuilder::fragment_complete_message(
+            &header.delivery,
+            header.message_id,
+            complete_message,
+        )?;
+        let first_hop = self.established.first_hop_router();
+        let receive_tunnel = self.established.first_hop_receive_tunnel();
+        let mut cells = Vec::with_capacity(fragments.len());
+        for fragment in fragments {
+            let mut iv = [0_u8; TUNNEL_IV_LEN];
+            rng.try_fill_bytes(&mut iv).map_err(|_| {
+                TunnelRoleError::TunnelMessage(TunnelMessageError::RandomnessUnavailable)
+            })?;
+            let plaintext = TunnelMessageBuilder::new()
+                .pack_payload(&fragment, &iv, rng)
+                .map_err(TunnelRoleError::TunnelMessage)?;
+            let (cell_iv, cell_data) =
+                TunnelLayerTransform::outbound_preprocess(&hops_ref, iv, plaintext);
+            let cell = join_cell(receive_tunnel.get(), cell_iv, cell_data);
+            cells.push(OBGWRouterDelivery {
+                target_router: first_hop,
+                receive_tunnel,
+                cell,
+            });
+        }
+        Ok(cells)
     }
 
     /// Convenience helper for tests and unit data that supplies a
@@ -625,12 +695,19 @@ impl OutboundEndpointRole {
                         context_id: self.receive_tunnel.get(),
                         message_id,
                     };
-                    match self
-                        .reassembler
-                        .insert(key, TunnelFragment::First { message_id, body })
-                    {
-                        Ok(Some(message)) => {
-                            let action = action_from_delivery(&delivery, message, message_id, 0)?;
+                    match self.reassembler.insert_with_delivery(
+                        key,
+                        TunnelFragment::First { message_id, body },
+                        Some(delivery.clone()),
+                    ) {
+                        Ok(Some(reassembled)) => {
+                            let delivery_instruction = reassembled.delivery.unwrap_or(delivery);
+                            let action = action_from_delivery(
+                                &delivery_instruction,
+                                reassembled.message,
+                                message_id,
+                                0,
+                            )?;
                             last_action = Some(action.clone());
                             completed = Some(action);
                         }
@@ -648,7 +725,7 @@ impl OutboundEndpointRole {
                         context_id: self.receive_tunnel.get(),
                         message_id: fmid,
                     };
-                    match self.reassembler.insert(
+                    match self.reassembler.insert_with_delivery(
                         key,
                         TunnelFragment::FollowOn {
                             message_id: fmid,
@@ -656,15 +733,25 @@ impl OutboundEndpointRole {
                             is_last,
                             body,
                         },
+                        record.delivery.clone(),
                     ) {
-                        Ok(Some(message)) => {
-                            // Use the first delivery instruction
-                            // held in the registration if
-                            // available; the unfragmentated
-                            // delivery instruction is no longer
-                            // available once we complete.
-                            let _ = sequence;
-                            let action = action_from_unspecified(message, fmid)?;
+                        Ok(Some(reassembled)) => {
+                            // The reassembler retained the
+                            // first-fragment delivery instruction.
+                            // Without it the OBEP must reject the
+                            // completed message rather than
+                            // synthesise a LOCAL fallback.
+                            let delivery_instruction = reassembled.delivery.ok_or(
+                                TunnelRoleError::UnspecifiedDeliveryInstruction {
+                                    message_id: fmid,
+                                },
+                            )?;
+                            let action = action_from_delivery(
+                                &delivery_instruction,
+                                reassembled.message,
+                                fmid,
+                                0,
+                            )?;
                             last_action = Some(action.clone());
                             completed = Some(action);
                         }
@@ -714,24 +801,6 @@ fn action_from_delivery(
             })
         }
     }
-}
-
-fn action_from_unspecified(
-    message: Vec<u8>,
-    message_id: u32,
-) -> Result<RouterDeliveryAction, TunnelRoleError> {
-    // The OBEP did not retain the first-fragment delivery
-    // instruction; we synthesise a LOCAL action because the
-    // delivered standard I2NP message is the creator's local
-    // outbound delivery.
-    Ok(RouterDeliveryAction {
-        target_router: zero_hash(),
-        kind: RouterDeliveryKind::Local,
-        tunnel_id: None,
-        message,
-        message_id,
-        expiration_ms: 0,
-    })
 }
 
 fn zero_hash() -> Hash {
@@ -828,6 +897,60 @@ impl InboundGatewayRole {
             cell: join_cell(self.next.tunnel.get(), next_iv, next_data),
         })
     }
+
+    /// Wraps the supplied standard I2NP message in a
+    /// `TunnelGatewayMessage` and emits the ordered
+    /// `OutboundCell` set addressed to the next hop, one cell per
+    /// fragment. The Plan 116 fragmented cross-tunnel trajectory
+    /// uses this entry point when the inner I2NP message does
+    /// not fit in one TunnelData cell.
+    pub fn process_cells<R: CryptoRng + RngCore>(
+        &self,
+        gateway: &TunnelGatewayMessage,
+        rng: &mut R,
+        now_ms: u64,
+    ) -> Result<Vec<OutboundCell>, TunnelRoleError> {
+        if !self.is_usable(now_ms) {
+            return Err(TunnelRoleError::TunnelUnavailable);
+        }
+        let actual = TunnelId::new(gateway.tunnel_id).map_err(|_| TunnelRoleError::ZeroTunnelId)?;
+        if actual != self.receive_tunnel {
+            return Err(TunnelRoleError::GatewayTunnelMismatch {
+                actual,
+                expected: self.receive_tunnel,
+            });
+        }
+        let header = TunnelPayloadHeader {
+            delivery: DeliveryInstruction::Local,
+            message_id: 1,
+            expiration_ms: 0,
+        };
+        let inner_bytes = gateway
+            .message
+            .encode_standard_to_vec(i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+            .map_err(|_| TunnelRoleError::TunnelMessage(TunnelMessageError::EmptyMessage))?;
+        let fragments = TunnelMessageBuilder::fragment_complete_message(
+            &header.delivery,
+            header.message_id,
+            &inner_bytes,
+        )?;
+        let cells = TunnelMessageBuilder::new()
+            .build_cells(&fragments, rng)
+            .map_err(TunnelRoleError::TunnelMessage)?;
+        let mut outbound = Vec::with_capacity(cells.len());
+        for (iv, plaintext) in cells {
+            let (next_iv, next_data) =
+                TunnelLayerTransform::participant_forward(&self.layer_keys, &iv, &plaintext);
+            outbound.push(OutboundCell {
+                target_router: self.next.router,
+                tunnel_id: self.next.tunnel,
+                iv: next_iv,
+                data: next_data,
+                cell: join_cell(self.next.tunnel.get(), next_iv, next_data),
+            });
+        }
+        Ok(outbound)
+    }
 }
 
 /// Local inbound endpoint role. The owner is the creator; the
@@ -919,27 +1042,52 @@ impl LocalInboundEndpointRole {
         if records.is_empty() {
             return Ok(None);
         }
-        // The local endpoint MUST receive LOCAL delivery. We
-        // therefore walk every record, advancing the reassembler
-        // for fragmented records and surfacing the completed
-        // message (always LOCAL) when a fragment stream completes.
-        let mut completed: Option<Vec<u8>> = None;
-        let delivery = records[0]
-            .delivery
-            .clone()
-            .ok_or(TunnelRoleError::LocalInboundNonLocalDelivery)?;
-        if !matches!(delivery, DeliveryInstruction::Local) {
-            return Err(TunnelRoleError::LocalInboundNonLocalDelivery);
-        }
+        // The local endpoint MUST receive LOCAL delivery. Walk
+        // every record, advancing the reassembler with the
+        // record's first-fragment delivery instruction retained
+        // until completion, and surface the completed bytes when
+        // a fragment stream completes. The retained delivery
+        // instruction must be `Local`; a non-local delivery
+        // instruction is rejected as a hard violation of the
+        // local-endpoint contract.
         self.reassembler.set_now(now_ms);
+        let mut completed: Option<Vec<u8>> = None;
         for record in records {
+            let delivery = record.delivery.clone();
+            match &delivery {
+                Some(DeliveryInstruction::Router { .. })
+                | Some(DeliveryInstruction::Tunnel { .. }) => {
+                    return Err(TunnelRoleError::LocalInboundNonLocalDelivery);
+                }
+                _ => {}
+            }
             let message_id = record.fragment.message_id().unwrap_or(0);
             let key = ReassemblyKey {
                 context_id: self.local_receive_tunnel().get(),
                 message_id,
             };
-            match self.reassembler.insert(key, record.fragment.clone()) {
-                Ok(Some(message)) => completed = Some(message),
+            match self.reassembler.insert_with_delivery(
+                key,
+                record.fragment.clone(),
+                delivery.clone(),
+            ) {
+                Ok(Some(reassembled)) => {
+                    // Plan 116 F4: the reassembled message must
+                    // surface its retained delivery instruction.
+                    // The local endpoint accepts only `Local`
+                    // delivery; any other retained delivery
+                    // instruction is a hard violation.
+                    match reassembled.delivery {
+                        Some(DeliveryInstruction::Local) => {}
+                        Some(_) => return Err(TunnelRoleError::LocalInboundNonLocalDelivery),
+                        None => {
+                            return Err(TunnelRoleError::UnspecifiedDeliveryInstruction {
+                                message_id,
+                            });
+                        }
+                    }
+                    completed = Some(reassembled.message);
+                }
                 Ok(None) => {}
                 Err(error) => return Err(TunnelRoleError::Reassembly(error)),
             }
@@ -1346,9 +1494,15 @@ mod tests {
     }
 
     #[test]
-    fn outbound_to_inbound_tunnel_trajectory() {
-        // Build the outbound tunnel that targets the inbound
-        // tunnel's first IBGW.
+    fn outbound_to_inbound_tunnel_trajectory_exact_bytes() {
+        // Plan 116 §10 + §11: terminal closure trajectory. The
+        // test executes OBGW -> outbound participant(s) -> OBEP
+        // -> TunnelGateway construction -> IBGW -> inbound
+        // participant(s) -> local inbound endpoint and asserts
+        // the recovered standard I2NP bytes equal the original
+        // body bytes exactly. The trajectory also exercises one
+        // inbound participant hop (IBGW -> Participant).
+        use i2pr_proto::{Date, I2npBody};
         let (local_receive, inbound_tunnel) =
             build_three_hop_inbound_established(TunnelId::new(2).expect("id"));
         // Outbound gateway: two hops into the OBEP.
@@ -1377,28 +1531,40 @@ mod tests {
             None,
         )
         .expect("outbound");
-        // Set up OBEP so it sends a TUNNEL delivery to the IBGW.
         let gateway = OutboundGatewayRole::new(outbound_tunnel, 60_000);
         let mut rng = rng_seed(11);
-        let inner_bytes: Vec<u8> = (0..32_u8).collect();
+        // The original standard I2NP message we will recover on
+        // the local inbound endpoint. The body is a
+        // DeliveryStatusMessage; the canonical encoding of the
+        // standard I2NP header + payload round-trips through the
+        // tunnel data plane.
+        let original_message_id = 0x0102_0304_u32;
+        let original_timestamp_ms = 60_000_u64;
+        let original_inner = I2npMessage::new_standard(
+            original_message_id,
+            Date::from_millis(original_timestamp_ms),
+            I2npBody::DeliveryStatus(i2pr_proto::DeliveryStatusMessage::new(
+                original_message_id,
+                Date::from_millis(original_timestamp_ms),
+            )),
+        )
+        .expect("inner i2np");
+        let original_inner_bytes = original_inner
+            .encode_standard_to_vec(i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+            .expect("encode inner");
         let header = TunnelPayloadHeader {
             delivery: DeliveryInstruction::Tunnel {
                 tunnel_id: inbound_tunnel.hops()[0].receive_tunnel().get(),
                 gateway: inbound_tunnel.hops()[0].peer().hash(),
             },
-            message_id: 0x0102_0304,
-            expiration_ms: 60_000,
+            message_id: original_message_id,
+            expiration_ms: original_timestamp_ms,
         };
         let delivery = gateway
-            .forward(&header, &inner_bytes, &mut rng, 0)
+            .forward(&header, &original_inner_bytes, &mut rng, 0)
             .expect("forward");
         // The outbound is now travelling through:
         //   local OBGW -> outbound Participant (p1) -> outbound OBEP
-        // The OBEP exposes the inner Tunnel Message; we must wrap
-        // the inner bytes in a `TunnelGatewayMessage` and hand it
-        // to the IBGW. The IBGW then emits one TunnelData cell,
-        // which we pass to an inbound participant and finally to
-        // the local inbound endpoint.
         let outbound_hops_iter = gateway.established().hops();
         let mut out_p =
             OutboundParticipantRole::new(&outbound_hops_iter[0], DuplicateWindow::new(16), 60_000)
@@ -1412,8 +1578,6 @@ mod tests {
             60_000,
             0,
         );
-        // The action returned from the OBEP carries the target
-        // router and tunnel id of the IBGW.
         let cell_after_op = out_p
             .process(&peer(0).hash(), &delivery.cell, 0)
             .expect("op forward");
@@ -1421,6 +1585,9 @@ mod tests {
             .process(&peer(11).hash(), &cell_after_op, 0)
             .expect("obep")
             .expect("delivery");
+        // OBEP must report TunnelGateway to the IBGW with the
+        // exact target router + receive tunnel id configured by
+        // the inbound tunnel.
         let RouterDeliveryKind::TunnelGateway = obep_action.kind else {
             panic!("expected TunnelGateway");
         };
@@ -1428,16 +1595,242 @@ mod tests {
         let gateway_router = obep_action.target_router;
         assert_eq!(tunnel_id, inbound_tunnel.hops()[0].receive_tunnel());
         assert_eq!(gateway_router, inbound_tunnel.hops()[0].peer().hash());
-        let _ = local_receive;
-        // The exact-bytes assertion below is exercised in the
-        // single-direction tests; the cross-tunnel trajectory
-        // here asserts the routing metadata reaches the local
-        // endpoint before the wrapping round-trip is finalized
-        // through the I2NP encode boundary. The full round-trip
-        // is left to the runtime because the local IBGW/IBEP
-        // cross-tunnel seam wraps an opaque standard I2NP message.
-        let _ = inner_bytes;
-        let _ = tunnel_id;
-        let _ = gateway_router;
+        // Construct the TunnelGatewayMessage the IBGW consumes
+        // from the OBEP action. The inner `message` carries the
+        // original standard I2NP message bytes.
+        let nested_i2np =
+            I2npMessage::decode_standard(&obep_action.message, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+                .expect("decode obep inner i2np");
+        let gateway_msg = TunnelGatewayMessage {
+            tunnel_id: tunnel_id.get(),
+            message: Box::new(nested_i2np),
+        };
+        // IBGW -> inbound participant -> local inbound endpoint.
+        let ibgw_hop = &inbound_tunnel.hops()[0];
+        let ibgw =
+            InboundGatewayRole::new(ibgw_hop, DuplicateWindow::new(16), 60_000).expect("ibgw role");
+        let ibgw_out = ibgw.process(&gateway_msg, &mut rng, 0).expect("ibgw");
+        // The IBGW emitted cell is addressed to the next
+        // (participant) hop with the configured next-tunnel id.
+        assert_eq!(ibgw_out.target_router, inbound_tunnel.hops()[1].peer());
+        assert_eq!(
+            ibgw_out.tunnel_id.get(),
+            inbound_tunnel.hops()[1].receive_tunnel().get()
+        );
+        let inbound_hops: Vec<crate::established::EstablishedHop> = inbound_tunnel.hops().to_vec();
+        let mut in_p =
+            InboundParticipantRole::new(&inbound_hops[1], DuplicateWindow::new(16), 60_000)
+                .expect("inbound participant");
+        let in_p_cell = in_p
+            .process(&ibgw_hop.peer().hash(), &ibgw_out.cell, 0)
+            .expect("participant forward");
+        // The inbound participant's emitted cell targets the
+        // local inbound endpoint with the local receive tunnel id.
+        assert_eq!(in_p_cell.tunnel_id, local_receive.get());
+        let mut endpoint =
+            LocalInboundEndpointRole::new(inbound_tunnel, 16, 1 << 20, 60_000, 0, 60_000);
+        let recovered_bytes = endpoint
+            .process(&inbound_hops[1].peer().hash(), &in_p_cell, 0)
+            .expect("endpoint process")
+            .expect("reassembled message");
+        // The recovered standard I2NP bytes must equal the
+        // original inner bytes exactly. The local endpoint has
+        // no TunnelGateway wrapping (delivery is LOCAL); the
+        // bytes round-trip the inbound layer transforms and the
+        // reassembler without loss.
+        assert_eq!(recovered_bytes, original_inner_bytes);
+        // Decode the recovered standard I2NP message and verify
+        // every boundary-level field.
+        let recovered_message =
+            I2npMessage::decode_standard(&recovered_bytes, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+                .expect("decode recovered");
+        assert_eq!(
+            recovered_message.header().message_id(),
+            Some(original_message_id)
+        );
+        match recovered_message.body() {
+            I2npBody::DeliveryStatus(status) => {
+                assert_eq!(status.message_id, original_message_id);
+                assert_eq!(status.timestamp.as_millis(), original_timestamp_ms);
+            }
+            other => panic!("expected DeliveryStatus body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outbound_to_inbound_fragmented_trajectory_exact_bytes() {
+        // Plan 116 §10.6: large message that requires multiple
+        // outbound and/or inbound TunnelData cells. The test
+        // constructs a body big enough to fragment, runs the full
+        // cross-tunnel trajectory through every role, and asserts
+        // the recovered bytes equal the original.
+        use i2pr_proto::{Date, I2npBody};
+        let (_local_receive, inbound_tunnel) =
+            build_three_hop_inbound_established(TunnelId::new(2).expect("id"));
+        // Outbound gateway: two hops into the OBEP.
+        let obgw_id = TunnelId::new(0x211).expect("id");
+        let outbound_hops = vec![
+            EstablishedHop::with_next(
+                peer(20),
+                EstablishedRole::Participant,
+                TunnelId::new(0x501).expect("id"),
+                keys(0x30),
+                EstablishedNextHop::new(peer(21), TunnelId::new(0x601).expect("id")),
+            ),
+            EstablishedHop::terminal(
+                peer(21),
+                EstablishedRole::OutboundEndpoint,
+                TunnelId::new(0x601).expect("id"),
+                keys(0x31),
+            ),
+        ];
+        let outbound_tunnel = EstablishedTunnel::new(
+            TunnelDirection::Outbound,
+            obgw_id,
+            outbound_hops,
+            0,
+            None,
+            None,
+        )
+        .expect("outbound");
+        let gateway = OutboundGatewayRole::new(outbound_tunnel, 60_000);
+        let mut rng = rng_seed(31);
+        // Construct a standard I2NP message whose encoded
+        // standard-header + payload size is large enough to
+        // fragment. The DeliveryStatus body itself is small; we
+        // construct a `Data` body that carries an opaque payload
+        // we control byte-for-byte.
+        let payload: Vec<u8> = (0..4096_u32).map(|value| (value & 0xFF) as u8).collect();
+        let expected_payload = payload.clone();
+        let original_inner = I2npMessage::new_standard(
+            0x0203_0405_u32,
+            Date::from_millis(30_000),
+            I2npBody::Data(i2pr_proto::OpaqueMessageBody {
+                payload: i2pr_proto::DeferredPayload::new(
+                    payload,
+                    i2pr_proto::MAX_I2NP_PAYLOAD_SIZE,
+                )
+                .expect("payload size"),
+            }),
+        )
+        .expect("inner i2np");
+        let original_inner_bytes = original_inner
+            .encode_standard_to_vec(i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+            .expect("encode inner");
+        let header = TunnelPayloadHeader {
+            delivery: DeliveryInstruction::Tunnel {
+                tunnel_id: inbound_tunnel.hops()[0].receive_tunnel().get(),
+                gateway: inbound_tunnel.hops()[0].peer().hash(),
+            },
+            message_id: 0x0203_0405,
+            expiration_ms: 30_000,
+        };
+        let deliveries = gateway
+            .forward_cells(&header, &original_inner_bytes, &mut rng, 0)
+            .expect("forward_cells");
+        assert!(
+            deliveries.len() > 1,
+            "fragmented trajectory must produce more than one cell"
+        );
+        // Walk every outbound cell through the outbound chain.
+        // Each cell goes through the outbound participant then the
+        // OBEP. The OBEP reassembles the original complete I2NP
+        // message across fragments; when the last cell is
+        // processed the OBEP exposes a `RouterDeliveryAction`
+        // with the original delivery instruction and inner
+        // bytes.
+        let outbound_hops_iter = gateway.established().hops();
+        let mut out_p =
+            OutboundParticipantRole::new(&outbound_hops_iter[0], DuplicateWindow::new(16), 60_000)
+                .expect("op");
+        let mut out_obep = OutboundEndpointRole::new(
+            &outbound_hops_iter[1],
+            DuplicateWindow::new(16),
+            16,
+            1 << 20,
+            60_000,
+            60_000,
+            0,
+        );
+        let mut obep_action: Option<RouterDeliveryAction> = None;
+        for (index, delivery) in deliveries.iter().enumerate() {
+            let cell_after_op = out_p
+                .process(&peer(0).hash(), &delivery.cell, 0)
+                .expect("op forward");
+            let outcome = out_obep
+                .process(&peer(21).hash(), &cell_after_op, 0)
+                .expect("obep");
+            // The OBEP emits the delivery action exactly once,
+            // on the cell that completes reassembly.
+            if index + 1 == deliveries.len() {
+                obep_action = outcome;
+            } else {
+                assert!(
+                    outcome.is_none(),
+                    "OBEP must not emit a delivery action before the last fragment"
+                );
+            }
+        }
+        let obep_action = obep_action.expect("obep action after last fragment");
+        let RouterDeliveryKind::TunnelGateway = obep_action.kind else {
+            panic!("expected TunnelGateway");
+        };
+        let tunnel_id = obep_action.tunnel_id.expect("tunnel id");
+        // The large original I2NP message forces the OBEP
+        // reassembler to retain a partial first fragment until
+        // the inbound trajectory delivers the follow-on cells.
+        let nested_i2np =
+            I2npMessage::decode_standard(&obep_action.message, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+                .expect("decode obep inner i2np");
+        let gateway_msg = TunnelGatewayMessage {
+            tunnel_id: tunnel_id.get(),
+            message: Box::new(nested_i2np),
+        };
+        let ibgw_hop = &inbound_tunnel.hops()[0];
+        let ibgw =
+            InboundGatewayRole::new(ibgw_hop, DuplicateWindow::new(16), 60_000).expect("ibgw role");
+        let ibgw_cells = ibgw
+            .process_cells(&gateway_msg, &mut rng, 0)
+            .expect("ibgw cells");
+        assert!(
+            ibgw_cells.len() > 1,
+            "fragmented inbound trajectory must produce more than one cell"
+        );
+        let inbound_hops: Vec<crate::established::EstablishedHop> = inbound_tunnel.hops().to_vec();
+        let mut in_p =
+            InboundParticipantRole::new(&inbound_hops[1], DuplicateWindow::new(16), 60_000)
+                .expect("inbound participant");
+        let ibgw_hop_peer_hash = inbound_hops[0].peer().hash();
+        let inbound_participant_peer_hash = inbound_hops[1].peer().hash();
+        let mut endpoint =
+            LocalInboundEndpointRole::new(inbound_tunnel, 16, 1 << 20, 60_000, 0, 60_000);
+        let mut recovered_bytes: Option<Vec<u8>> = None;
+        for (index, ibgw_cell) in ibgw_cells.iter().enumerate() {
+            let in_p_cell = in_p
+                .process(&ibgw_hop_peer_hash, &ibgw_cell.cell, 0)
+                .expect("participant forward");
+            let outcome = endpoint
+                .process(&inbound_participant_peer_hash, &in_p_cell, 0)
+                .expect("endpoint process");
+            if index + 1 == ibgw_cells.len() {
+                recovered_bytes = outcome;
+            } else {
+                assert!(
+                    outcome.is_none(),
+                    "endpoint must not emit a message before the last fragment"
+                );
+            }
+        }
+        let recovered_bytes = recovered_bytes.expect("endpoint action after last fragment");
+        assert_eq!(recovered_bytes, original_inner_bytes);
+        let recovered_message =
+            I2npMessage::decode_standard(&recovered_bytes, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+                .expect("decode recovered");
+        match recovered_message.body() {
+            I2npBody::Data(data) => {
+                assert_eq!(data.payload.as_bytes(), expected_payload.as_slice());
+            }
+            other => panic!("expected Data body, got {other:?}"),
+        }
     }
 }

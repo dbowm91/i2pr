@@ -312,7 +312,7 @@ impl TunnelMessageBuilder {
                 maximum: MAX_FRAGMENT_BODY_BYTES,
             });
         }
-        pack_payload(fragments.first().expect("len == 1"), &iv, rng)
+        pack_payload_internal(fragments.first().expect("len == 1"), &iv, rng)
     }
 
     /// Builds the canonical `(iv, payload)` pair for one or more
@@ -344,7 +344,7 @@ impl TunnelMessageBuilder {
             let mut iv = [0_u8; 16];
             rng.try_fill_bytes(&mut iv)
                 .map_err(|_| TunnelMessageError::RandomnessUnavailable)?;
-            cells.push((iv, pack_payload(fragment, &iv, rng)?));
+            cells.push((iv, pack_payload_internal(fragment, &iv, rng)?));
         }
         Ok(cells)
     }
@@ -362,6 +362,20 @@ impl TunnelMessageBuilder {
         complete_message: &[u8],
     ) -> Result<Vec<FragmentDelivery>, TunnelMessageError> {
         fragment_complete_message(delivery, message_id, complete_message)
+    }
+
+    /// Packs a single `FragmentDelivery` into one 1008-byte
+    /// payload. The IV is supplied by the caller. The packing
+    /// helper is exposed for outbound roles that need to chain
+    /// their own fresh-IV generation per cell with the canonical
+    /// record layout.
+    pub fn pack_payload<R: CryptoRng + RngCore>(
+        &self,
+        record: &FragmentDelivery,
+        iv: &[u8; 16],
+        rng: &mut R,
+    ) -> Result<[u8; MAX_PLAINTEXT_DATA_BYTES], TunnelMessageError> {
+        pack_payload_internal(record, iv, rng)
     }
 }
 
@@ -761,7 +775,7 @@ fn append_delivery_extra(out: &mut Vec<u8>, delivery: &DeliveryInstruction) {
     }
 }
 
-fn pack_payload<R: CryptoRng + RngCore>(
+fn pack_payload_internal<R: CryptoRng + RngCore>(
     record: &FragmentDelivery,
     iv: &[u8; 16],
     rng: &mut R,
@@ -790,6 +804,41 @@ fn pack_payload<R: CryptoRng + RngCore>(
     Ok(out)
 }
 
+/// Per-delivery-mode overhead for the unfragmented record.
+///
+/// The exact byte cost of every control / addressing / size field
+/// the canonical I2P Tunnel Message Specification mandates for
+/// one unfragmented initial record. The numbers must match the
+/// `encode_record` / `append_delivery_extra` byte layout exactly.
+fn unfragmented_overhead(delivery: &DeliveryInstruction) -> usize {
+    // control (1) + size (2) + delivery-specific addressing bytes
+    match delivery {
+        DeliveryInstruction::Local => 1 + 2,
+        DeliveryInstruction::Router { .. } => 1 + 32 + 2,
+        DeliveryInstruction::Tunnel { .. } => 1 + 4 + 32 + 2,
+    }
+}
+
+/// Per-delivery-mode overhead for a fragmented-first record.
+///
+/// The exact byte cost of every control / addressing / message id
+/// / size field the canonical I2P Tunnel Message Specification
+/// mandates for the first fragmented record. The numbers must
+/// match the `encode_record` / `append_delivery_extra` byte layout
+/// exactly.
+fn fragmented_first_overhead(delivery: &DeliveryInstruction) -> usize {
+    // control (1) + delivery-specific addressing + message_id (4)
+    // + size (2)
+    match delivery {
+        DeliveryInstruction::Local => 1 + 4 + 2,
+        DeliveryInstruction::Router { .. } => 1 + 32 + 4 + 2,
+        DeliveryInstruction::Tunnel { .. } => 1 + 4 + 32 + 4 + 2,
+    }
+}
+
+/// Follow-on fragment overhead (no delivery instruction).
+const FOLLOW_ON_OVERHEAD: usize = 1 + 4 + 2;
+
 /// Splits a complete I2NP message into the canonical fragment
 /// representation. Emits one unfragmented fragment if the message
 /// fits in a single cell; otherwise emits a first fragment
@@ -812,19 +861,10 @@ fn fragment_complete_message(
     if message_id == 0 {
         return Err(TunnelMessageError::ZeroMessageId);
     }
-    let unfragmented_overhead = match delivery {
-        DeliveryInstruction::Local => 1 + 2,
-        DeliveryInstruction::Tunnel { .. } => 1 + 4 + 32 + 2,
-        DeliveryInstruction::Router { .. } => 1 + 32 + 2,
-    };
-    let first_overhead_extra = match delivery {
-        DeliveryInstruction::Local => 4,
-        DeliveryInstruction::Tunnel { .. } => 4 + 4 + 32,
-        DeliveryInstruction::Router { .. } => 4 + 32,
-    };
-    let follow_overhead_extra = 1 + 4 + 2;
+    let unfragmented = unfragmented_overhead(delivery);
+    let fragmented_first = fragmented_first_overhead(delivery);
     let cell_body_budget = MAX_PLAINTEXT_DATA_BYTES - CHECKSUM_LEN - 1;
-    if complete_message.len() + unfragmented_overhead <= cell_body_budget {
+    if complete_message.len() + unfragmented <= cell_body_budget {
         return Ok(vec![FragmentDelivery {
             delivery: Some(delivery.clone()),
             fragment: TunnelFragment::Unfragmented {
@@ -832,7 +872,7 @@ fn fragment_complete_message(
             },
         }]);
     }
-    let first_body_budget = cell_body_budget.saturating_sub(first_overhead_extra);
+    let first_body_budget = cell_body_budget.saturating_sub(fragmented_first);
     if first_body_budget == 0 {
         return Err(TunnelMessageError::FragmentBodyTooLarge {
             actual: complete_message.len(),
@@ -851,7 +891,7 @@ fn fragment_complete_message(
     });
     let mut cursor = first_len;
     let mut sequence: u8 = 0;
-    let follow_body_budget = cell_body_budget.saturating_sub(follow_overhead_extra);
+    let follow_body_budget = cell_body_budget.saturating_sub(FOLLOW_ON_OVERHEAD);
     while cursor < complete_message.len() {
         sequence = sequence
             .checked_add(1)
@@ -1342,5 +1382,232 @@ mod tests {
             .expect("b");
         // Two independent calls must yield different plaintext.
         assert_ne!(a, b);
+    }
+
+    // Plan 116 §7 boundary-length tests. The cell-body budget is
+    // `MAX_PLAINTEXT_DATA_BYTES - CHECKSUM_LEN - 1 = 1003`. The
+    // per-mode overheads are documented in the module doc and
+    // exercised by `fragment_complete_message`. The tests below
+    // assert that every generated fragment sequence successfully
+    // passes through `build_cells()` and that the parser recovers
+    // the original complete message exactly.
+    //
+    // Maximum unfragmented body sizes per cell:
+    //   LOCAL  = 1003 - 3  = 1000
+    //   ROUTER = 1003 - 35 = 968
+    //   TUNNEL = 1003 - 39 = 964
+
+    fn unfragmented_max_body(delivery: &DeliveryInstruction) -> usize {
+        let cell_body_budget = MAX_PLAINTEXT_DATA_BYTES - CHECKSUM_LEN - 1;
+        cell_body_budget
+            - match delivery {
+                DeliveryInstruction::Local => 1 + 2,
+                DeliveryInstruction::Router { .. } => 1 + 32 + 2,
+                DeliveryInstruction::Tunnel { .. } => 1 + 4 + 32 + 2,
+            }
+    }
+
+    fn first_max_body(delivery: &DeliveryInstruction) -> usize {
+        let cell_body_budget = MAX_PLAINTEXT_DATA_BYTES - CHECKSUM_LEN - 1;
+        cell_body_budget
+            - match delivery {
+                DeliveryInstruction::Local => 1 + 4 + 2,
+                DeliveryInstruction::Router { .. } => 1 + 32 + 4 + 2,
+                DeliveryInstruction::Tunnel { .. } => 1 + 4 + 32 + 4 + 2,
+            }
+    }
+
+    fn follow_max_body() -> usize {
+        MAX_PLAINTEXT_DATA_BYTES - CHECKSUM_LEN - 1 - (1 + 4 + 2)
+    }
+
+    /// Helper that turns a single-delivery + message into
+    /// `(iv, payload)` cells, parses each cell, and confirms the
+    /// reassembled message equals the original. The helper
+    /// accepts both unfragmented and fragmented variants and is
+    /// used by every boundary test below.
+    fn assert_round_trip(delivery: DeliveryInstruction, complete: &[u8]) {
+        let mut rng = ChaCha8Rng::seed_from_u64(0xF1_F2_F3_F4);
+        let fragments =
+            TunnelMessageBuilder::fragment_complete_message(&delivery, 0xAA00_0001, complete)
+                .expect("fragment");
+        let cells = TunnelMessageBuilder::new()
+            .build_cells(&fragments, &mut rng)
+            .expect("build cells");
+        assert!(!cells.is_empty(), "must produce at least one cell");
+        // Parse every cell and concatenate the recovered
+        // fragment bodies in cell order. The reassembled bytes
+        // must equal the original complete message exactly.
+        let mut recovered = Vec::new();
+        let mut delivery_seen: Option<DeliveryInstruction> = None;
+        for (iv, plaintext) in cells.iter() {
+            let records = TunnelMessageParser::new()
+                .parse(iv, plaintext)
+                .expect("parse");
+            for record in records {
+                if let Some(d) = &record.delivery {
+                    if delivery_seen.is_some() {
+                        panic!("multiple delivery instructions observed in cells");
+                    }
+                    delivery_seen = Some(d.clone());
+                }
+                match record.fragment {
+                    TunnelFragment::Unfragmented { body } => recovered.extend_from_slice(&body),
+                    TunnelFragment::First { body, .. } => recovered.extend_from_slice(&body),
+                    TunnelFragment::FollowOn { body, .. } => recovered.extend_from_slice(&body),
+                }
+            }
+        }
+        assert_eq!(recovered, complete.to_vec());
+        // Confirm the delivery instruction survived through the
+        // entire cell stream when the message was fragmented.
+        if fragments.len() > 1 {
+            assert!(
+                delivery_seen.is_some(),
+                "fragmented message must retain its delivery instruction"
+            );
+        }
+    }
+
+    /// Plan 116 §7: LOCAL mode round-trip at every required
+    /// boundary length.
+    #[test]
+    fn boundary_local_round_trips_at_each_boundary() {
+        let max_unfragmented = unfragmented_max_body(&DeliveryInstruction::Local);
+        let first_max = first_max_body(&DeliveryInstruction::Local);
+        let follow_max = follow_max_body();
+        let repo_max = MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES;
+        let cases: Vec<(usize, &str)> = vec![
+            (max_unfragmented.saturating_sub(1), "max_unfragmented - 1"),
+            (max_unfragmented, "max_unfragmented"),
+            (
+                max_unfragmented.saturating_add(1),
+                "max_unfragmented + 1 (first fragment)",
+            ),
+            (first_max, "first_max"),
+            (first_max + follow_max, "first + one follow"),
+            (first_max + follow_max * 2, "first + two follows"),
+            (first_max + follow_max * 3, "first + three follows"),
+            (repo_max, "repository max"),
+        ];
+        for (length, label) in cases {
+            let message = vec![0x11_u8; length];
+            assert_round_trip(DeliveryInstruction::Local, &message);
+            let _ = label;
+        }
+        // Repository max + 1 must be rejected by
+        // `fragment_complete_message`.
+        let oversize = vec![0x11_u8; repo_max + 1];
+        let outcome = TunnelMessageBuilder::fragment_complete_message(
+            &DeliveryInstruction::Local,
+            0xAA00_0001,
+            &oversize,
+        );
+        assert!(matches!(
+            outcome,
+            Err(TunnelMessageError::MessageTooLarge { .. })
+        ));
+    }
+
+    /// Plan 116 §7: ROUTER mode round-trip at every required
+    /// boundary length.
+    #[test]
+    fn boundary_router_round_trips_at_each_boundary() {
+        let delivery = DeliveryInstruction::Router {
+            router: Hash::from_bytes([0x77_u8; 32]),
+        };
+        let max_unfragmented = unfragmented_max_body(&delivery);
+        let first_max = first_max_body(&delivery);
+        let follow_max = follow_max_body();
+        let cases: Vec<(usize, &str)> = vec![
+            (max_unfragmented.saturating_sub(1), "max_unfragmented - 1"),
+            (max_unfragmented, "max_unfragmented"),
+            (
+                max_unfragmented.saturating_add(1),
+                "max_unfragmented + 1 (first fragment)",
+            ),
+            (first_max, "first_max"),
+            (first_max + follow_max, "first + one follow"),
+            (first_max + follow_max * 2, "first + two follows"),
+        ];
+        for (length, _label) in cases {
+            let message = vec![0x33_u8; length];
+            assert_round_trip(delivery.clone(), &message);
+        }
+    }
+
+    /// Plan 116 §7: TUNNEL mode round-trip at every required
+    /// boundary length.
+    #[test]
+    fn boundary_tunnel_round_trips_at_each_boundary() {
+        let delivery = DeliveryInstruction::Tunnel {
+            tunnel_id: 0x1234_5678,
+            gateway: Hash::from_bytes([0x21_u8; 32]),
+        };
+        let max_unfragmented = unfragmented_max_body(&delivery);
+        let first_max = first_max_body(&delivery);
+        let follow_max = follow_max_body();
+        let cases: Vec<(usize, &str)> = vec![
+            (max_unfragmented.saturating_sub(1), "max_unfragmented - 1"),
+            (max_unfragmented, "max_unfragmented"),
+            (
+                max_unfragmented.saturating_add(1),
+                "max_unfragmented + 1 (first fragment)",
+            ),
+            (first_max, "first_max"),
+            (first_max + follow_max, "first + one follow"),
+        ];
+        for (length, _label) in cases {
+            let message = vec![0x77_u8; length];
+            assert_round_trip(delivery.clone(), &message);
+        }
+    }
+
+    /// Plan 116 §7: confirm that the generated fragment sequence
+    /// is accepted by `build_cells()` (the precise claim from the
+    /// plan acceptance criteria). The test exercises every
+    /// delivery mode at the exact `first_max` boundary where
+    /// `fragment_complete_message` produces exactly one first
+    /// fragment + follow-ons.
+    #[test]
+    fn fragment_complete_message_outputs_are_accepted_by_build_cells() {
+        for (delivery, max) in [
+            (
+                DeliveryInstruction::Local,
+                unfragmented_max_body(&DeliveryInstruction::Local) + 1,
+            ),
+            (
+                DeliveryInstruction::Router {
+                    router: Hash::from_bytes([0xAA_u8; 32]),
+                },
+                unfragmented_max_body(&DeliveryInstruction::Router {
+                    router: Hash::from_bytes([0_u8; 32]),
+                }) + 1,
+            ),
+            (
+                DeliveryInstruction::Tunnel {
+                    tunnel_id: 0x4242_4242,
+                    gateway: Hash::from_bytes([0x21_u8; 32]),
+                },
+                unfragmented_max_body(&DeliveryInstruction::Tunnel {
+                    tunnel_id: 1,
+                    gateway: Hash::from_bytes([0u8; 32]),
+                }) + 1,
+            ),
+        ] {
+            let mut rng = ChaCha8Rng::seed_from_u64(0xFACA_DEAD);
+            let fragments = TunnelMessageBuilder::fragment_complete_message(
+                &delivery,
+                0xAB00_0001,
+                &vec![0x55; max],
+            )
+            .expect("fragment");
+            // The fragment sequence must be accepted by
+            // `build_cells()` without error.
+            let cells = TunnelMessageBuilder::new()
+                .build_cells(&fragments, &mut rng)
+                .expect("build cells");
+            assert!(!cells.is_empty());
+        }
     }
 }

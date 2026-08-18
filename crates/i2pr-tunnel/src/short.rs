@@ -39,7 +39,11 @@ use crate::build_crypto::{
     BuildCryptography, BuildCryptographyError, EPHEMERAL_KEY_LEN, EciesX25519BuildCryptography,
     LayerKeys, ValidatedRecordSlot,
 };
-use crate::identity::{TunnelDirection, TunnelId};
+use crate::established::{
+    EstablishedHop, EstablishedMaterial, EstablishedNextHop, EstablishedRole, EstablishedTunnel,
+    EstablishedTunnelError,
+};
+use crate::identity::{TunnelDirection, TunnelId, TunnelPeer};
 use crate::multirecord::{
     self, CreatorReplyPostprocessor, MultiRecordError, MultiRecordHopSpec, OriginatorFake,
     PreparedHopContext, ProcessedHopResult, ShortBuildRecordSet,
@@ -460,6 +464,22 @@ pub enum ShortBuildConstructionError {
     /// OBEP must serialise as its terminal `next_router_hash`.
     #[error("outbound short build requires an explicit reply router identity hash")]
     MissingOutboundReplyRouter,
+    /// The caller asked to take the established material before
+    /// the state machine reached the `Established` phase.
+    #[error("short build has not reached the Established phase")]
+    NotEstablished,
+    /// The caller asked to take the established material a second
+    /// time; the data-plane layer keys are zeroised by the first
+    /// take and the second take cannot succeed.
+    #[error("established material has already been extracted")]
+    EstablishedMaterialAlreadyTaken,
+    /// The state machine reached `Established` but the path
+    /// metadata cannot be turned into a valid established tunnel.
+    #[error("established path state is invalid: {reason}")]
+    EstablishedPathStateInvalid {
+        /// Description of the rejection.
+        reason: &'static str,
+    },
 }
 
 impl From<BuildCryptographyUnavailable> for ShortBuildConstructionError {
@@ -503,6 +523,20 @@ impl HopCryptoContext {
     /// Returns the assigned per-record slot for the hop's reply.
     pub const fn record_slot(&self) -> Option<ValidatedRecordSlot> {
         Some(self.inner.slot)
+    }
+
+    /// Consumes the per-hop layer keys, leaving a zeroising
+    /// placeholder in their place. The call is intended for the
+    /// Plan 116 canonical material-transfer seam that hands the
+    /// established `EstablishedHop` over to
+    /// `EstablishedMaterial`. The placeholder is dropped and
+    /// zeroised immediately after the move; the state machine
+    /// retains no second live copy of the data-plane key material.
+    pub fn take_layer_keys(&mut self) -> LayerKeys {
+        std::mem::replace(
+            &mut self.inner.layer_keys,
+            LayerKeys::new([0_u8; 32], [0_u8; 32], [0_u8; 32]),
+        )
     }
 }
 
@@ -851,6 +885,213 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
     pub fn cancel(mut self) -> ShortBuildOutcome {
         self.contexts.clear();
         ShortBuildOutcome::Cancelled
+    }
+
+    /// Consumes the state-machine-owned `EstablishedMaterial` after
+    /// a successful build, returns the secret-bearing owner the
+    /// data plane consumes.
+    ///
+    /// Required behaviour:
+    ///
+    /// - succeeds only when [`Self::current_state_label`] is
+    ///   `Established`;
+    /// - fails closed before `Established`;
+    /// - may succeed exactly once; a second call fails with
+    ///   [`ShortBuildConstructionError::EstablishedMaterialAlreadyTaken`];
+    /// - consumes every per-hop data-plane `LayerKeys` from
+    ///   `self.contexts` via [`HopCryptoContext::take_layer_keys`],
+    ///   so the state machine retains no second live copy of the
+    ///   post-extraction persistent layer keys;
+    /// - preserves real hop order from `self.path.hops`;
+    /// - preserves every hop's exact `router_hash`, `receive_tunnel`,
+    ///   role, and configured forwarding target;
+    /// - does not expose reply keys, garlic keys, raw request/reply
+    ///   records, or transcript state to the pool.
+    pub fn take_established_material(
+        &mut self,
+        established_at_seconds: u64,
+    ) -> Result<EstablishedMaterial, ShortBuildConstructionError> {
+        if !matches!(self.state, StatePhase::Established) {
+            return Err(ShortBuildConstructionError::NotEstablished);
+        }
+        // Second-take guard: the contexts are emptied by the
+        // first successful take; a subsequent call sees an empty
+        // vector and fails closed.
+        if self.contexts.is_empty() {
+            return Err(ShortBuildConstructionError::EstablishedMaterialAlreadyTaken);
+        }
+        if self.contexts.len() != self.path.hops.len() {
+            return Err(ShortBuildConstructionError::EstablishedPathStateInvalid {
+                reason: "context count does not match declared hop count",
+            });
+        }
+        // Build the per-hop `EstablishedHop` list in canonical path
+        // order. Each hop's identity comes from the path, the
+        // data-plane layer keys come from the context's
+        // `take_layer_keys` helper, and the next-hop state is
+        // derived from the explicit direction-specific terminal
+        // routing field on the path.
+        let mut hops: Vec<EstablishedHop> = Vec::with_capacity(self.path.hops.len());
+        for (index, hop_spec) in self.path.hops.iter().enumerate() {
+            // The context at index `i` must match the hop at
+            // index `i`; the preprocessor always builds one
+            // context per declared real hop.
+            if self.contexts[index].hop_index() != index as u8 {
+                return Err(ShortBuildConstructionError::EstablishedPathStateInvalid {
+                    reason: "context hop index does not match declared hop index",
+                });
+            }
+            let established_role = match hop_spec.role {
+                HopRole::InboundGateway => EstablishedRole::InboundGateway,
+                HopRole::Participant => EstablishedRole::Participant,
+                HopRole::OutboundEndpoint => EstablishedRole::OutboundEndpoint,
+            };
+            let peer = TunnelPeer::from_hash(hop_spec.router_hash);
+            let layer_keys = self.contexts[index].take_layer_keys();
+            let hop = match self.path.direction {
+                TunnelDirection::Outbound => {
+                    let is_terminal = index + 1 == self.path.hops.len();
+                    if is_terminal {
+                        // Outbound OBEP: delivery is per-message,
+                        // not fixed; the established hop carries no
+                        // `next` field.
+                        if !matches!(established_role, EstablishedRole::OutboundEndpoint) {
+                            return Err(ShortBuildConstructionError::EstablishedPathStateInvalid {
+                                reason: "outbound terminal hop is not classified as OBEP",
+                            });
+                        }
+                        EstablishedHop::terminal(
+                            peer,
+                            established_role,
+                            hop_spec.receive_tunnel,
+                            layer_keys,
+                        )
+                    } else {
+                        // Outbound intermediate participant:
+                        // forward to the next hop's router hash and
+                        // the configured `next_tunnel` (== following
+                        // hop's `receive_tunnel`).
+                        let next_router = self.path.hops[index + 1].router_hash;
+                        let next = EstablishedNextHop::new(
+                            TunnelPeer::from_hash(next_router),
+                            hop_spec.next_tunnel,
+                        );
+                        EstablishedHop::with_next(
+                            peer,
+                            established_role,
+                            hop_spec.receive_tunnel,
+                            layer_keys,
+                            next,
+                        )
+                    }
+                }
+                TunnelDirection::Inbound => {
+                    // Every inbound remote hop carries a `next`
+                    // because the chain forwards through every
+                    // remote hop.
+                    let next_router = if index + 1 < self.path.hops.len() {
+                        self.path.hops[index + 1].router_hash
+                    } else {
+                        // Terminal inbound hop forwards to the
+                        // local creator endpoint; the next-hop
+                        // router is the originator identity.
+                        let originator = self.path.originator_hash.as_ref().ok_or(
+                            ShortBuildConstructionError::EstablishedPathStateInvalid {
+                                reason: "inbound terminal hop has no originator identity",
+                            },
+                        )?;
+                        *originator
+                    };
+                    let next_tunnel = hop_spec.next_tunnel;
+                    let next =
+                        EstablishedNextHop::new(TunnelPeer::from_hash(next_router), next_tunnel);
+                    EstablishedHop::with_next(
+                        peer,
+                        established_role,
+                        hop_spec.receive_tunnel,
+                        layer_keys,
+                        next,
+                    )
+                }
+            };
+            hops.push(hop);
+        }
+        // Clear the contexts after consumption so the second-take
+        // guard fires on a subsequent call. The contexts vector's
+        // drop will zeroize the placeholder LayerKeys we left in
+        // each entry; the placeholder LayerKeys is harmless because
+        // it carries all-zero key bytes that the data plane never
+        // consumes.
+        self.contexts.clear();
+        // Compute the inbound gateway tuple and local receive id
+        // from the path metadata; the EstablishedTunnel
+        // constructor will then enforce topology.
+        let inbound_gateway = if matches!(self.path.direction, TunnelDirection::Inbound) {
+            let first = self.path.hops.first().ok_or(
+                ShortBuildConstructionError::EstablishedPathStateInvalid {
+                    reason: "inbound path declared no hops",
+                },
+            )?;
+            Some((
+                TunnelPeer::from_hash(first.router_hash),
+                first.receive_tunnel,
+            ))
+        } else {
+            None
+        };
+        let local_inbound_receive = if matches!(self.path.direction, TunnelDirection::Inbound) {
+            let last = self.path.hops.last().ok_or(
+                ShortBuildConstructionError::EstablishedPathStateInvalid {
+                    reason: "inbound path declared no hops",
+                },
+            )?;
+            Some(last.next_tunnel)
+        } else {
+            None
+        };
+        let tunnel = EstablishedTunnel::new(
+            self.path.direction,
+            self.path.creator_tunnel_id,
+            hops,
+            established_at_seconds,
+            inbound_gateway,
+            local_inbound_receive,
+        )
+        .map_err(
+            |error| ShortBuildConstructionError::EstablishedPathStateInvalid {
+                reason: match error {
+                    EstablishedTunnelError::EmptyHopList => "empty hop list",
+                    EstablishedTunnelError::TooManyHops { .. } => "too many hops",
+                    EstablishedTunnelError::MissingInboundGateway => "inbound gateway missing",
+                    EstablishedTunnelError::MissingLocalInboundReceive => {
+                        "local inbound receive missing"
+                    }
+                    EstablishedTunnelError::OutboundGatewaySpecified => {
+                        "outbound gateway field specified"
+                    }
+                    EstablishedTunnelError::OutboundLocalReceiveSpecified => {
+                        "outbound local receive field specified"
+                    }
+                    EstablishedTunnelError::FirstHopRoleInvalid { .. } => "first hop role invalid",
+                    EstablishedTunnelError::LastHopRoleInvalid { .. } => "last hop role invalid",
+                    EstablishedTunnelError::FirstHopRouterMismatch { .. } => {
+                        "first hop router mismatch"
+                    }
+                    EstablishedTunnelError::FirstHopReceiveTunnelMismatch { .. } => {
+                        "first hop receive tunnel mismatch"
+                    }
+                    EstablishedTunnelError::LocalInboundReceiveMismatch { .. } => {
+                        "local inbound receive mismatch"
+                    }
+                    EstablishedTunnelError::MissingNextHop { .. } => "missing next hop",
+                    EstablishedTunnelError::MissingIntermediateHopNext => {
+                        "missing intermediate hop next"
+                    }
+                    EstablishedTunnelError::OutboundEndpointHasNext => "outbound endpoint has next",
+                },
+            },
+        )?;
+        Ok(tunnel.into_extracted())
     }
 
     fn process_reply(
@@ -1817,5 +2058,295 @@ mod tests {
         // The decrypted OBEP plaintext must carry the configured
         // reply router, not the OBEP's own hash.
         let _ = machine;
+    }
+
+    /// Plan 116 F1: taking established material before the state
+    /// machine reaches `Established` fails closed with
+    /// `NotEstablished`.
+    #[test]
+    fn take_established_material_before_established_fails() {
+        let path = build_path(300);
+        let mut machine = ShortBuildStateMachine::new(path, 60_000);
+        let outcome = machine.take_established_material(0);
+        assert!(matches!(
+            outcome,
+            Err(ShortBuildConstructionError::NotEstablished)
+        ));
+    }
+
+    /// Plan 116 F1: a second take from the same state machine
+    /// fails closed with `EstablishedMaterialAlreadyTaken`.
+    #[test]
+    fn take_established_material_double_take_fails() {
+        let path = build_path(301);
+        let mut machine = ShortBuildStateMachine::new(path, 60_000);
+        let mut rng = ChaCha8Rng::seed_from_u64(302);
+        let message = machine.prepare(&mut rng).expect("prepare");
+        let _action = machine.deliver_action(message).expect("deliver action");
+        machine.mark_dispatched().expect("dispatch");
+        let cryptography = crate::build_crypto::EciesX25519BuildCryptography::new();
+        let hops_privs: Vec<[u8; EPHEMERAL_KEY_LEN]> = (1..=2_u8).map(privkey_for).collect();
+        let hops_hashes: Vec<Hash> = (1..=2_u8)
+            .map(|value| {
+                let mut bytes = [0_u8; 32];
+                for (idx, byte) in bytes.iter_mut().enumerate() {
+                    *byte = value.wrapping_add(idx as u8);
+                }
+                Hash::from_bytes(bytes)
+            })
+            .collect();
+        let stbm_payload = machine.last_payload().expect("payload");
+        let mut payload = stbm_payload.to_vec();
+        for (index, hop_priv) in hops_privs.iter().enumerate() {
+            let hop_hash = hops_hashes[index];
+            let (next_payload, _result) = multirecord::MessageHopProcessor::process_hop(
+                &cryptography,
+                &payload,
+                hop_priv,
+                &hop_hash,
+                crate::short_record::ShortResponseCode::Accepted,
+                &mut rng,
+            )
+            .expect("hop processing");
+            payload = next_payload;
+        }
+        let outcome = machine
+            .handle_event(BuildEvent::BuildReply {
+                reply: Zeroizing::new(payload),
+            })
+            .expect("event");
+        assert!(matches!(
+            outcome,
+            Some(ShortBuildOutcome::Established { .. })
+        ));
+        let material = machine.take_established_material(0).expect("first take");
+        assert_eq!(material.direction(), TunnelDirection::Outbound);
+        assert_eq!(material.hops().len(), 2);
+        let second = machine.take_established_material(0);
+        assert!(matches!(
+            second,
+            Err(ShortBuildConstructionError::EstablishedMaterialAlreadyTaken)
+        ));
+    }
+
+    /// Plan 116 F1: extracted outbound topology preserves hop
+    /// count/order/roles/router hashes/receive ids.
+    #[test]
+    fn outbound_take_established_material_topology_round_trip() {
+        let path = build_path(310);
+        let expected_hashes: Vec<Hash> = path
+            .hops
+            .iter()
+            .map(|hop| {
+                let mut bytes = [0_u8; 32];
+                let value = path
+                    .hops
+                    .first()
+                    .map(|h| h.router_hash.as_bytes()[0])
+                    .unwrap_or_default();
+                for (idx, byte) in bytes.iter_mut().enumerate() {
+                    *byte = value.wrapping_add(idx as u8);
+                }
+                // Just take the configured router_hash directly.
+                let _ = bytes;
+                hop.router_hash
+            })
+            .collect();
+        let expected_receives: Vec<u32> = path
+            .hops
+            .iter()
+            .map(|hop| hop.receive_tunnel.get())
+            .collect();
+        let mut machine = ShortBuildStateMachine::new(path, 60_000);
+        let mut rng = ChaCha8Rng::seed_from_u64(311);
+        let message = machine.prepare(&mut rng).expect("prepare");
+        let _action = machine.deliver_action(message).expect("deliver action");
+        machine.mark_dispatched().expect("dispatch");
+        let cryptography = crate::build_crypto::EciesX25519BuildCryptography::new();
+        let hops_privs: Vec<[u8; EPHEMERAL_KEY_LEN]> = (1..=2_u8).map(privkey_for).collect();
+        let hops_hashes: Vec<Hash> = (1..=2_u8)
+            .map(|value| {
+                let mut bytes = [0_u8; 32];
+                for (idx, byte) in bytes.iter_mut().enumerate() {
+                    *byte = value.wrapping_add(idx as u8);
+                }
+                Hash::from_bytes(bytes)
+            })
+            .collect();
+        let stbm_payload = machine.last_payload().expect("payload");
+        let mut payload = stbm_payload.to_vec();
+        for (index, hop_priv) in hops_privs.iter().enumerate() {
+            let hop_hash = hops_hashes[index];
+            let (next_payload, _result) = multirecord::MessageHopProcessor::process_hop(
+                &cryptography,
+                &payload,
+                hop_priv,
+                &hop_hash,
+                crate::short_record::ShortResponseCode::Accepted,
+                &mut rng,
+            )
+            .expect("hop processing");
+            payload = next_payload;
+        }
+        let outcome = machine
+            .handle_event(BuildEvent::BuildReply {
+                reply: Zeroizing::new(payload),
+            })
+            .expect("event");
+        assert!(matches!(
+            outcome,
+            Some(ShortBuildOutcome::Established { .. })
+        ));
+        let material = machine.take_established_material(0).expect("take");
+        let hops = material.hops();
+        assert_eq!(hops.len(), 2);
+        for (index, hop) in hops.iter().enumerate() {
+            assert_eq!(hop.peer().hash(), expected_hashes[index]);
+            assert_eq!(hop.receive_tunnel().get(), expected_receives[index]);
+        }
+        // Final hop (OBEP) carries no next.
+        assert!(hops.last().expect("last").next().is_none());
+        // Intermediate hop carries a next that targets the OBEP.
+        let obep_peer = expected_hashes[1];
+        let next = hops[0].next().expect("next");
+        assert_eq!(next.router.hash(), obep_peer);
+        // The state-machine contexts are now empty.
+        let _ = expected_hashes;
+    }
+
+    /// Plan 116 F1: a real successful inbound trajectory extracts
+    /// `[IBGW, Participant*]` topology with the configured local
+    /// receive tunnel id.
+    #[test]
+    fn inbound_take_established_material_topology_round_trip() {
+        let path = build_path_with_direction(320, TunnelDirection::Inbound);
+        let expected_originator = path.originator_hash.expect("originator");
+        let mut machine = ShortBuildStateMachine::new(path, 60_000);
+        let mut rng = ChaCha8Rng::seed_from_u64(321);
+        let message = machine.prepare(&mut rng).expect("prepare");
+        let _action = machine.deliver_action(message).expect("deliver action");
+        machine.mark_dispatched().expect("dispatch");
+        let cryptography = crate::build_crypto::EciesX25519BuildCryptography::new();
+        let hops_privs: Vec<[u8; EPHEMERAL_KEY_LEN]> = (1..=2_u8).map(privkey_for).collect();
+        let hops_hashes: Vec<Hash> = (1..=2_u8)
+            .map(|value| {
+                let mut bytes = [0_u8; 32];
+                for (idx, byte) in bytes.iter_mut().enumerate() {
+                    *byte = value.wrapping_add(idx as u8);
+                }
+                Hash::from_bytes(bytes)
+            })
+            .collect();
+        let stbm_payload = machine.last_payload().expect("payload");
+        let mut payload = stbm_payload.to_vec();
+        for (index, hop_priv) in hops_privs.iter().enumerate() {
+            let hop_hash = hops_hashes[index];
+            let (next_payload, _result) = multirecord::MessageHopProcessor::process_hop(
+                &cryptography,
+                &payload,
+                hop_priv,
+                &hop_hash,
+                crate::short_record::ShortResponseCode::Accepted,
+                &mut rng,
+            )
+            .expect("hop processing");
+            payload = next_payload;
+        }
+        let outcome = machine
+            .handle_event(BuildEvent::BuildReply {
+                reply: Zeroizing::new(payload),
+            })
+            .expect("event");
+        assert!(matches!(
+            outcome,
+            Some(ShortBuildOutcome::Established { .. })
+        ));
+        let material = machine.take_established_material(0).expect("take");
+        assert_eq!(material.direction(), TunnelDirection::Inbound);
+        let hops = material.hops();
+        assert_eq!(hops.len(), 2);
+        // First hop is the IBGW with the configured peer + receive id.
+        let (gw_router, gw_tunnel) = material.inbound_gateway();
+        assert_eq!(gw_router.hash(), hops[0].peer().hash());
+        assert_eq!(gw_tunnel.get(), hops[0].receive_tunnel().get());
+        // Local inbound receive equals the terminal hop's `next_tunnel`.
+        let local = material.local_inbound_receive();
+        let last = hops.last().expect("last");
+        assert_eq!(local.get(), last.next().expect("next").tunnel.get());
+        // Terminal hop forwards to the configured originator.
+        assert_eq!(
+            last.next().expect("next").router.hash(),
+            expected_originator
+        );
+    }
+
+    /// Plan 116 F1: a real successful build trajectory registers
+    /// the extracted material into the pool, and the pool exposes
+    /// the inserted secret-bearing entry at the assigned slot.
+    #[test]
+    fn registrar_admit_established_machine_inserts_into_pool() {
+        use crate::config::ExploratoryPoolConfig;
+        use crate::pool::ExploratoryPool;
+        use crate::short_state::{ShortBuildRegistrar, ShortRegistrarError};
+        let path = build_path(330);
+        let mut machine = ShortBuildStateMachine::new(path, 60_000);
+        let mut rng = ChaCha8Rng::seed_from_u64(331);
+        let message = machine.prepare(&mut rng).expect("prepare");
+        let _action = machine.deliver_action(message).expect("deliver action");
+        machine.mark_dispatched().expect("dispatch");
+        let cryptography = crate::build_crypto::EciesX25519BuildCryptography::new();
+        let hops_privs: Vec<[u8; EPHEMERAL_KEY_LEN]> = (1..=2_u8).map(privkey_for).collect();
+        let hops_hashes: Vec<Hash> = (1..=2_u8)
+            .map(|value| {
+                let mut bytes = [0_u8; 32];
+                for (idx, byte) in bytes.iter_mut().enumerate() {
+                    *byte = value.wrapping_add(idx as u8);
+                }
+                Hash::from_bytes(bytes)
+            })
+            .collect();
+        let stbm_payload = machine.last_payload().expect("payload");
+        let mut payload = stbm_payload.to_vec();
+        for (index, hop_priv) in hops_privs.iter().enumerate() {
+            let hop_hash = hops_hashes[index];
+            let (next_payload, _result) = multirecord::MessageHopProcessor::process_hop(
+                &cryptography,
+                &payload,
+                hop_priv,
+                &hop_hash,
+                crate::short_record::ShortResponseCode::Accepted,
+                &mut rng,
+            )
+            .expect("hop processing");
+            payload = next_payload;
+        }
+        let outcome = machine
+            .handle_event(BuildEvent::BuildReply {
+                reply: Zeroizing::new(payload),
+            })
+            .expect("event");
+        assert!(matches!(
+            outcome,
+            Some(ShortBuildOutcome::Established { .. })
+        ));
+        let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
+        let mut registrar = ShortBuildRegistrar::new(&mut pool);
+        let register = registrar.admit_established_machine(&mut machine, 1_000);
+        let slot = match register.expect("insert") {
+            crate::pool::RegisterOutcome::Inserted { slot, replaced } => {
+                assert!(replaced.is_none());
+                slot
+            }
+            other => panic!("unexpected register outcome {other:?}"),
+        };
+        assert_eq!(pool.outbound_len(), 1);
+        let material_ref = pool.established(slot).expect("material");
+        assert_eq!(material_ref.hops().len(), 2);
+        // A second call on the same state machine returns
+        // `EstablishedMaterialAlreadyTaken`.
+        let mut registrar2 = ShortBuildRegistrar::new(&mut pool);
+        let second = registrar2.admit_established_machine(&mut machine, 2_000);
+        assert!(matches!(second, Err(ShortRegistrarError::AlreadyConsumed)));
+        let _ = (pool.outbound_len(), slot);
     }
 }

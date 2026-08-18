@@ -47,6 +47,20 @@ pub const MAX_REASSEMBLY_BYTES_PER_MESSAGE: usize = 62_708 + 64;
 pub const FOLLOW_ON_SEQUENCE_MIN: u8 = 1;
 pub const FOLLOW_ON_SEQUENCE_MAX: u8 = 63;
 
+/// Completed reassembled message plus the first-fragment delivery
+/// instruction the reassembler retained. The data plane uses this
+/// to choose a router-delivery action without falling back to a
+/// synthetic unspecified-delivery rule.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReassembledFragment {
+    /// Reassembled complete message bytes.
+    pub message: Vec<u8>,
+    /// First-fragment delivery instruction retained from the
+    /// first sighting, or `None` when no delivery instruction
+    /// was supplied or the message was unfragmented.
+    pub delivery: Option<crate::data::DeliveryInstruction>,
+}
+
 /// Per-fragment record. The unfragmented initial record carries
 /// neither a message id nor a sequence; the first fragmented
 /// record carries the message id; follow-on fragments carry only
@@ -152,6 +166,11 @@ struct PartialMessage {
     observed_max_sequence: u8,
     has_last: bool,
     last_touched_ms: u64,
+    /// First-fragment delivery instruction retained until
+    /// reassembly completes. `None` for an unfragmented message
+    /// or for a partial that has not yet received its first
+    /// fragment.
+    first_delivery: Option<crate::data::DeliveryInstruction>,
 }
 
 impl PartialMessage {
@@ -163,6 +182,7 @@ impl PartialMessage {
             observed_max_sequence: 0,
             has_last: false,
             last_touched_ms: now_ms,
+            first_delivery: None,
         }
     }
 
@@ -234,6 +254,7 @@ impl PartialMessage {
                         self.observed_max_sequence = 0;
                         self.has_last = false;
                         self.total_fragments = None;
+                        self.first_delivery = None;
                         return Err(ReassemblyError::ConflictingDuplicate { sequence });
                     }
                     return Ok(());
@@ -428,17 +449,124 @@ impl BoundedReassembler {
         self.expiry_ms
     }
 
-    /// Inserts one fragment. Returns `Ok(Some(complete_message))`
-    /// when the fragment completes an in-flight partial message;
-    /// returns `Ok(None)` otherwise. The first fragment of a new
-    /// partial message may arrive before or after some follow-on
-    /// fragments; the bounded reassembler retains the partial
-    /// entry until completion or expiry.
+    /// Inserts one fragment and remembers the supplied first-fragment
+    /// delivery instruction until reassembly completes. Returns
+    /// `Ok(Some(ReassembledFragment { message, delivery }))` when
+    /// the fragment completes an in-flight partial message;
+    /// returns `Ok(None)` otherwise.
+    ///
+    /// The caller must supply the delivery instruction for the
+    /// first fragment of a fragmented message; the delivery
+    /// instruction is stored in the partial entry and returned
+    /// when reassembly completes. For follow-on fragments the
+    /// caller may pass `None`; the reassembler only stores the
+    /// first delivery instruction it sees for a given key.
+    ///
+    /// The reassembler never synthesises a delivery instruction
+    /// for a reassembled message: if the first fragment arrives
+    /// without a delivery instruction, completion returns the
+    /// message with `delivery = None`, and the caller must decide
+    /// how to handle it.
     ///
     /// On failure the reassembler does **not** retain partial
     /// state for the offending insertion: capacity, byte-budget,
     /// and per-message size failures are rolled back before the
     /// function returns.
+    pub fn insert_with_delivery(
+        &mut self,
+        key: ReassemblyKey,
+        fragment: TunnelFragment,
+        delivery: Option<crate::data::DeliveryInstruction>,
+    ) -> Result<Option<ReassembledFragment>, ReassemblyError> {
+        let message_id = fragment.message_id().unwrap_or(0);
+        if matches!(fragment, TunnelFragment::Unfragmented { .. }) {
+            // Unfragmented messages never participate in
+            // reassembly.
+            return Ok(Some(ReassembledFragment {
+                message: extract_unfragmented_body(&fragment),
+                delivery,
+            }));
+        }
+        if message_id == 0 {
+            return Err(ReassemblyError::SequenceOutOfRange { sequence: 0 });
+        }
+        self.expire_due();
+        let increment = fragment.body_len();
+        let existing = self.partials.get(&key).cloned();
+        // Pre-admission capacity and aggregate-byte checks.
+        if existing.is_none() {
+            if self.partials.len() >= self.capacity {
+                return Err(ReassemblyError::CapacityExceeded {
+                    capacity: self.capacity,
+                });
+            }
+            if self
+                .aggregate_bytes
+                .checked_add(increment)
+                .map(|sum| sum > self.aggregate_bytes_max)
+                .unwrap_or(true)
+            {
+                return Err(ReassemblyError::AggregateBytesExceeded {
+                    bytes: self.aggregate_bytes.saturating_add(increment),
+                    maximum: self.aggregate_bytes_max,
+                });
+            }
+        } else if self
+            .aggregate_bytes
+            .checked_add(increment)
+            .map(|sum| sum > self.aggregate_bytes_max)
+            .unwrap_or(true)
+        {
+            return Err(ReassemblyError::AggregateBytesExceeded {
+                bytes: self.aggregate_bytes.saturating_add(increment),
+                maximum: self.aggregate_bytes_max,
+            });
+        }
+        // Insert or update.
+        let partial = self
+            .partials
+            .entry(key)
+            .or_insert_with(|| PartialMessage::new(self.now_ms));
+        partial.last_touched_ms = self.now_ms;
+        // Record the first-fragment delivery instruction only on
+        // the first sighting; later follow-ons must not overwrite
+        // it.
+        if matches!(fragment, TunnelFragment::First { .. }) && partial.first_delivery.is_none() {
+            partial.first_delivery = delivery;
+        }
+        match partial.insert(fragment) {
+            Ok(()) => {}
+            Err(error) => {
+                // Roll back any retained state changes. We
+                // always remove the partial when the insertion
+                // returns an error; the conflicting-duplicate
+                // case must also drop the partial to satisfy the
+                // spec §11.4 invalidation rule.
+                if let Some(p) = self.partials.remove(&key) {
+                    self.aggregate_bytes = self.aggregate_bytes.saturating_sub(p.bytes);
+                }
+                return Err(error);
+            }
+        }
+        self.aggregate_bytes = self.aggregate_bytes.saturating_add(increment);
+        if let Some(message) = partial.assemble() {
+            let first_delivery = partial.first_delivery.clone();
+            let total = partial.bytes;
+            self.partials.remove(&key);
+            self.aggregate_bytes = self.aggregate_bytes.saturating_sub(total);
+            return Ok(Some(ReassembledFragment {
+                message,
+                delivery: first_delivery,
+            }));
+        }
+        Ok(None)
+    }
+
+    /// Convenience insert that drops the delivery-instruction
+    /// retention. The returned completion is a `Vec<u8>` instead
+    /// of a `ReassembledFragment`; callers that do not need the
+    /// first-fragment delivery instruction should keep using this
+    /// entry point.
     pub fn insert(
         &mut self,
         key: ReassemblyKey,
@@ -770,5 +898,121 @@ mod tests {
         // The capacity-bound check happens before insertion so
         // the second key never makes it in.
         assert_eq!(r.len(), before_len);
+    }
+
+    // Plan 116 F4 tests for delivery-instruction retention. The
+    // tests below exercise the `insert_with_delivery` API and
+    // assert that:
+    //  - the first-fragment delivery instruction survives a
+    //    fragmented reassembly;
+    //  - the delivery instruction is preserved when follow-on
+    //    fragments arrive before the first fragment;
+    //  - the delivery instruction is preserved across out-of-order
+    //    follow-on arrivals;
+    //  - the reassembler never synthesises a delivery
+    //    instruction for a reassembled message that did not retain
+    //    one.
+
+    use i2pr_proto::Hash;
+    fn router_delivery() -> crate::data::DeliveryInstruction {
+        crate::data::DeliveryInstruction::Router {
+            router: Hash::from_bytes([0x77_u8; 32]),
+        }
+    }
+
+    #[test]
+    fn first_follow_on_with_delivery_round_trip_retains_delivery() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0xA001);
+        let delivery = router_delivery();
+        // First fragment carries the delivery instruction.
+        assert!(
+            r.insert_with_delivery(k, first(0xA001, &[0xAA_u8; 50]), Some(delivery.clone()),)
+                .unwrap()
+                .is_none()
+        );
+        // Follow-on completes the message and must return the
+        // retained delivery instruction.
+        let outcome = r
+            .insert_with_delivery(k, follow(0xA001, 1, true, &[0xBB_u8; 30]), None)
+            .unwrap()
+            .expect("complete");
+        assert_eq!(outcome.message.len(), 80);
+        assert_eq!(outcome.delivery, Some(delivery));
+        assert!(r.is_empty());
+        assert_eq!(r.retained_bytes(), 0);
+    }
+
+    #[test]
+    fn out_of_order_follow_on_first_with_delivery_retains_delivery() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0xA002);
+        let delivery = router_delivery();
+        // Follow-on before first carries no delivery instruction;
+        // the reassembler must not crash and must not invent one.
+        r.insert_with_delivery(k, follow(0xA002, 2, true, &[0x22_u8; 10]), None)
+            .unwrap();
+        r.insert_with_delivery(k, follow(0xA002, 1, false, &[0x11_u8; 10]), None)
+            .unwrap();
+        let outcome = r
+            .insert_with_delivery(k, first(0xA002, &[0x00_u8; 10]), Some(delivery.clone()))
+            .unwrap()
+            .expect("complete");
+        assert_eq!(outcome.message.len(), 30);
+        assert_eq!(outcome.delivery, Some(delivery));
+    }
+
+    #[test]
+    fn conflicting_follow_on_invalidates_retained_delivery() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0xA003);
+        let delivery = router_delivery();
+        // First fragment with delivery instruction.
+        r.insert_with_delivery(k, first(0xA003, &[0x11_u8; 8]), Some(delivery.clone()))
+            .unwrap();
+        // A follow-on arrives, then a conflicting follow-on.
+        r.insert_with_delivery(k, follow(0xA003, 1, false, &[0x22_u8; 8]), None)
+            .unwrap();
+        let outcome = r.insert_with_delivery(k, follow(0xA003, 1, false, &[0x33_u8; 8]), None);
+        assert!(matches!(
+            outcome,
+            Err(ReassemblyError::ConflictingDuplicate { .. })
+        ));
+        assert!(r.is_empty());
+        assert_eq!(r.retained_bytes(), 0);
+    }
+
+    #[test]
+    fn reassembly_without_first_delivery_reports_none() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0xA004);
+        // Insert follow-ons only, then complete via first with no
+        // delivery instruction. The reassembler must surface
+        // `delivery = None` so the data plane can reject the
+        // completion as an unspecified-delivery failure.
+        r.insert_with_delivery(k, follow(0xA004, 2, true, &[0x44_u8; 4]), None)
+            .unwrap();
+        r.insert_with_delivery(k, follow(0xA004, 1, false, &[0x33_u8; 4]), None)
+            .unwrap();
+        let outcome = r
+            .insert_with_delivery(k, first(0xA004, &[0x22_u8; 4]), None)
+            .unwrap()
+            .expect("complete");
+        assert_eq!(outcome.message.len(), 12);
+        assert_eq!(outcome.delivery, None);
+    }
+
+    #[test]
+    fn delivery_instruction_expires_with_partial() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 1_000, 0);
+        let k = key(1, 0xA005);
+        let delivery = router_delivery();
+        r.insert_with_delivery(k, first(0xA005, &[0x11_u8; 8]), Some(delivery.clone()))
+            .unwrap();
+        assert_eq!(r.len(), 1);
+        // Advance time past the expiry window and trigger expiry.
+        r.set_now(1_500);
+        r.expire_due();
+        assert!(r.is_empty());
     }
 }

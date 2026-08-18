@@ -2047,7 +2047,10 @@ needs to ferry decrypted `TunnelData` payloads between hops. The
 Plan 116 completion/correction pass
 ([`plans/116-completion-correction.md`](plans/116-completion-correction.md),
 inventory defects `C1`–`C16`) closed Plan 116 as
-`passed-local-tunnel-data-plane`. Status authority lives in
+`passed-local-tunnel-data-plane`. The Plan 116 final closure pass
+([`plans/116-final-closure.md`](plans/116-final-closure.md),
+inventory defects `F1`–`F5`) closed Plan 116 as
+`passed-final-local-closure`. Status authority lives in
 [`plans/116-status.md`](plans/116-status.md).
 
 Plan 116 lands:
@@ -2067,14 +2070,19 @@ Plan 116 lands:
   first + follow-on fragmentation, the `TunnelMessageParser`
   that verifies `SHA256(post_zero_record_bytes || IV)[0..4]` and
   rejects every reserved delivery-type / delay / extended-options
-  flag, and CSPRNG-sourced fresh IVs and nonzero padding bytes
-  with a bounded per-byte retry ceiling.
+  flag, CSPRNG-sourced fresh IVs and nonzero padding bytes
+  with a bounded per-byte retry ceiling, and the canonical
+  `unfragmented_overhead` / `fragmented_first_overhead` /
+  `FOLLOW_ON_OVERHEAD` constants that drive the boundary tests.
 - `crates/i2pr-tunnel/src/fragment.rs` — the bounded
   `BoundedReassembler` with hard concurrent-message, per-message
   byte, and **aggregate retained-byte** ceilings, caller-driven
   expiry, and pre-insertion capacity checks that roll back any
   state that exceeded the bound. Conflicting duplicates invalidate
-  only the affected partial message.
+  only the affected partial message. The reassembler exposes
+  `ReassembledFragment { message, delivery }` and
+  `insert_with_delivery` so the first-fragment delivery
+  instruction survives reassembly.
 - `crates/i2pr-tunnel/src/established.rs` —
   `EstablishedHop`/`EstablishedTunnel` secret-material ownership
   with `Option<EstablishedNextHop>` next-hop state (no
@@ -2087,29 +2095,55 @@ Plan 116 lands:
   `register_*_with_material` insertion paths replace the legacy
   metadata-only path; pool replies use the first remote IBGW
   router hash and receive tunnel id (not the creator tunnel id).
+  The legacy `register_inbound`, `register_outbound`, and the
+  internal `build_placeholder_established` helper are now
+  `#[cfg(test)]`. Production callers must use
+  `register_*_with_material`.
 - `crates/i2pr-tunnel/src/roles.rs` — runtime-neutral
   outbound gateway / participant / endpoint / inbound gateway /
   participant / local-endpoint composition with CSPRNG-injection
   via `R: CryptoRng + RngCore` on the production send paths. The
   OBEP applies the **final forward participant layer** (not the
-  creator inverse), parses every record, and feeds every
-  fragment to the reassembler. The local endpoint applies the
-  reverse-path creator inverse over the inbound remote hops.
+  creator inverse), parses every record, feeds every fragment to
+  the reassembler, and rejects the completed message with
+  `TunnelRoleError::UnspecifiedDeliveryInstruction` when the
+  reassembler returns no delivery. The local endpoint applies the
+  reverse-path creator inverse over the inbound remote hops and
+  requires `DeliveryInstruction::Local` on the retained delivery.
+  Multi-cell forward/receive seams
+  (`OutboundGatewayRole::forward_cells`,
+  `InboundGatewayRole::process_cells`) carry large standard I2NP
+  messages across multiple TunnelData cells on both the outbound
+  and the inbound side.
 - `crates/i2pr-tunnel/src/short_state.rs` —
   `ShortBuildRegistrar::admit_material` performs the real
   pool insertion (the legacy placeholder `slot(0)` is gone for
-  the canonical material API).
+  the canonical material API). The canonical registrar surface is
+  `admit_established_machine(&mut machine, now_seconds)`. The
+  legacy `admit(&ShortBuildOutcome, slot, now_seconds)` fails
+  closed with `EstablishedMaterialRequired` for `Established`
+  outcomes and `NotEstablished` otherwise.
+- `crates/i2pr-tunnel/src/short.rs` —
+  `ShortBuildStateMachine::take_established_material(&mut self, established_at_seconds: u64)`
+  produces the canonical `EstablishedMaterial` directly from a
+  successful `StatePhase::Established` machine. The second call
+  returns `EstablishedMaterialAlreadyTaken`. `HopCryptoContext::take_layer_keys`
+  performs a zeroing `mem::replace` swap into the owned
+  `LayerKeys`.
 
 The crate compiles cleanly with `cargo check -p i2pr-tunnel` and
 the workspace passes `cargo check --workspace --all-targets`,
 `cargo clippy --workspace --all-targets -- -D warnings`, and
 `cargo doc --workspace --no-deps` with `-D warnings`. The
 `i2pr-tunnel` lib test suite is fully green
-(`cargo test --locked -p i2pr-tunnel --lib` reports 213 passing
+(`cargo test --locked -p i2pr-tunnel --lib` reports 229 passing
 tests and zero `Plan 116 provisional scaffolding` `#[ignore]`
-markers). Plan 117 is unblocked and may begin once a qualified
-external delivery lane becomes available. Status authority
-lives in [`plans/116-status.md`](plans/116-status.md).
+markers). The Plan 116 integration tests under
+`crates/i2pr-tunnel/tests/plan111_reference_vectors.rs` add 5
+passing reference-vector assertions (234 total tests). Plan 117
+is unblocked and may begin once a qualified external delivery
+lane becomes available. Status authority lives in
+[`plans/116-status.md`](plans/116-status.md).
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
 

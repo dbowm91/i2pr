@@ -11,9 +11,20 @@ the substrate required to flip the Plan 106 NetDB seam from
 `BlockedExploratoryTunnelUnavailable` to `Available` once a real
 inbound tunnel is registered.
 
-> Status: Plan 116 closed as `passed-local-tunnel-data-plane` by
-> the Plan 116 completion/correction pass (defects `C1`–`C16`).
-> Plan 114 terminal routing and tunnel-chain correction
+> Status: Plan 116 closed as `passed-final-local-closure` by the
+> Plan 116 final closure pass (defects `F1`–`F5`) on top of the
+> Plan 116 completion/correction pass (defects `C1`–`C16`) which
+> closed Plan 116 as `passed-local-tunnel-data-plane`. The final
+> closure pass landed a real `EstablishedMaterial` transfer from
+> `ShortBuildStateMachine` into `ExploratoryPool`, removed
+> production placeholder APIs to `#[cfg(test)]`, expressed the
+> canonical I2P Tunnel Message Specification fragment overheads
+> as named constants with boundary tests, retained the
+> first-fragment `DeliveryInstruction` through reassembly, and
+> proved the full outbound-to-inbound tunnel trajectory with
+> exact-byte equality for both unfragmented (`DeliveryStatus`
+> body) and fragmented (`Data` body across multiple TunnelData
+> cells) cases. Plan 114 terminal routing and tunnel-chain correction
 > after Plan 113 inbound reference reconciliation and Plan 112
 > outbound pre-delivery closure. Plan 109 corrected the wire format,
 > Noise-N transcript,
@@ -71,7 +82,9 @@ inbound tunnel is registered.
 > delivery is still blocked on a qualified external delivery lane.
 > Plan 116 lands the local tunnel data plane and the Plan 116
 > completion/correction pass closed every
-> `Plan 116 provisional scaffolding` test marker. The crate now
+> `Plan 116 provisional scaffolding` test marker; the Plan 116
+> final closure pass closes the remaining `F1`–`F5` closure
+> defects. The crate now
 > owns: the AES-256 ECB/CBC/ECB layer transform in
 > [`src/layer.rs`](../../crates/i2pr-tunnel/src/layer.rs)
 > (participant forward `ECB-ENC/CBC-ENC/ECB-ENC`, creator inverse
@@ -79,30 +92,49 @@ inbound tunnel is registered.
 >  `SHA256(post_zero_record_bytes || IV)[0..4]` checksum builder
 > and parser in
 > [`src/data.rs`](../../crates/i2pr-tunnel/src/data.rs) with
-> distinct unfragmented vs fragmented-first wire encodings and
-> automatic complete-message fragmentation; the bounded
+> distinct unfragmented vs fragmented-first wire encodings,
+> automatic complete-message fragmentation, and the canonical
+> `unfragmented_overhead` / `fragmented_first_overhead` /
+> `FOLLOW_ON_OVERHEAD` overhead constants; the bounded
 > `BoundedReassembler` in
 > [`src/fragment.rs`](../../crates/i2pr-tunnel/src/fragment.rs)
 > with caller-driven expiry, per-message + aggregate byte bounds,
-> and conflicting-duplicate invalidation; the
+> conflicting-duplicate invalidation, and
+> `insert_with_delivery` carrying the first-fragment
+> `DeliveryInstruction` through reassembly; the
 > `EstablishedTunnel` / `EstablishedHop` / `EstablishedMaterial`
 > secret-material ownership with `Option<EstablishedNextHop>`
-> next-hop state and one-shot `into_extracted` transfer in
+> next-hop state, one-shot `into_extracted` transfer, and
+> `EstablishedTunnel::into_extracted` material extraction in
 > [`src/established.rs`](../../crates/i2pr-tunnel/src/established.rs);
 > the runtime-neutral outbound/inbound/local role composition
-> with CSPRNG-injected IVs and padding in
+> with CSPRNG-injected IVs and padding, multi-cell
+> `forward_cells` / `process_cells` seams, and
+> `OutboundEndpointRole::assemble_actions` rejecting the completed
+> message with `UnspecifiedDeliveryInstruction` when the
+> reassembler returns no delivery, in
 > [`src/roles.rs`](../../crates/i2pr-tunnel/src/roles.rs); the
 > pool entries pairing `TunnelRegistration` and
 > `EstablishedMaterial` in
-> [`src/pool.rs`](../../crates/i2pr-tunnel/src/pool.rs); and the
-> success-only `ShortBuildRegistrar::admit_material` in
-> [`src/short_state.rs`](../../crates/i2pr-tunnel/src/short_state.rs).
+> [`src/pool.rs`](../../crates/i2pr-tunnel/src/pool.rs) with
+> `register_inbound`, `register_outbound`, and the internal
+> `build_placeholder_established` helper now `#[cfg(test)]`; the
+> success-only `ShortBuildRegistrar::admit_material` and
+> canonical `admit_established_machine` registrar surface, with
+> the legacy `admit(&ShortBuildOutcome, …)` failing closed, in
+> [`src/short_state.rs`](../../crates/i2pr-tunnel/src/short_state.rs);
+> and `ShortBuildStateMachine::take_established_material` plus
+> `HopCryptoContext::take_layer_keys` in
+> [`src/short.rs`](../../crates/i2pr-tunnel/src/short.rs) so a
+> successful `StatePhase::Established` machine produces the
+> canonical `EstablishedMaterial` directly.
 > See [`plans/116-status.md`](../../plans/116-status.md).
 > Not production-ready. See `README.md`,
 > `GUARDRAILS.md`,
 > [`plans/116-completion-correction.md`](../../plans/116-completion-correction.md),
+> [`plans/116-final-closure.md`](../../plans/116-final-closure.md),
 > [`plans/111-short-build-final-local-conformance-correction.md`](../../plans/111-short-build-final-local-conformance-correction.md),
-> [`plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`](../../plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md),
+> [`plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`](plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md),
 > [`plans/112-outbound-short-build-pre-delivery-closure.md`](../../plans/112-outbound-short-build-pre-delivery-closure.md),
 > [`plans/111-status.md`](../../plans/111-status.md),
 > [`plans/112-status.md`](../../plans/112-status.md),

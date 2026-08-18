@@ -176,8 +176,8 @@ impl RegisterOutcome {
     }
 }
 
-/// Failure categories for [`ExploratoryPool::register_inbound`] and
-/// [`ExploratoryPool::register_outbound`].
+/// Failure categories for [`ExploratoryPool::register_inbound_with_material`] and
+/// [`ExploratoryPool::register_outbound_with_material`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PoolFullError {
     /// The pool already holds the configured maximum number of
@@ -447,7 +447,9 @@ impl ExploratoryPool {
 
     /// Inserts an inbound registration only (testing seam used by
     /// existing pool tests that do not yet exercise established
-    /// material).
+    /// material). The function is `#[cfg(test)]` because the pool
+    /// must never produce a fake established entry outside tests.
+    #[cfg(test)]
     pub fn register_inbound(
         &mut self,
         tunnel_id: TunnelId,
@@ -492,6 +494,7 @@ impl ExploratoryPool {
     }
 
     /// Inserts an outbound registration only (testing seam).
+    #[cfg(test)]
     pub fn register_outbound(
         &mut self,
         tunnel_id: TunnelId,
@@ -670,7 +673,10 @@ impl TunnelEntry {
 /// Build a synthetic `EstablishedMaterial` placeholder for pool
 /// entry insertions that do not yet exercise established material.
 /// The placeholder carries a single zero-hop hop vector (which the
-/// registration hop list mirrors) and is zeroized on drop.
+/// registration hop list mirrors) and is zeroized on drop. This
+/// helper is `#[cfg(test)]` because production code must never
+/// produce a fake established entry.
+#[cfg(test)]
 fn build_placeholder_established(
     direction: TunnelDirection,
     tunnel_id: TunnelId,

@@ -1,9 +1,12 @@
 //! Short-build registrar and state-machine exports.
 //!
-//! Plan 108 §3.6 + §8 owns the success-gated registrar that
-//! converts a terminal `ShortBuildOutcome::Established` into a
-//! successful `ExploratoryPool` registration. The registrar is
-//! the only path through which completed builds enter the pool.
+//! Plan 116 §3.5 owns the success-gated registrar that converts a
+//! terminal `ShortBuildStateMachine` `Established` outcome into a
+//! successful `ExploratoryPool` registration by extracting the
+//! real build-derived `EstablishedMaterial`. The registrar is the
+//! only path through which completed builds enter the pool; it
+//! refuses to report successful insertion semantics for any
+//! outcome that lacks build-derived secret keys.
 //!
 //! The registrar and its supporting state module deliberately
 //! remain runtime-neutral: no sockets, no Tokio runtime, no
@@ -14,7 +17,7 @@
 use thiserror::Error;
 
 use crate::established::EstablishedMaterial;
-use crate::pool::{ExploratoryPool, PoolError, RegisterError, RegisterOutcome, TunnelSlot};
+use crate::pool::{ExploratoryPool, PoolError, RegisterError, RegisterOutcome};
 
 /// Per-hop reply outcome the registrar consumes.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,6 +34,10 @@ pub enum ShortRegistrarError {
     /// The state machine outcome was not `Established`.
     #[error("registrar received non-success outcome")]
     NotEstablished,
+    /// The state machine reported success but the build-derived
+    /// material could not be extracted.
+    #[error("registrar could not extract established material: {0}")]
+    Construction(String),
     /// The pool rejected the registration.
     #[error("registrar failed: {0}")]
     Registration(RegisterError),
@@ -41,13 +48,22 @@ pub enum ShortRegistrarError {
     /// internal extraction flag was already consumed (double-take).
     #[error("established material has already been consumed")]
     AlreadyConsumed,
+    /// The legacy `ShortBuildOutcome` surface was given an
+    /// `Established` outcome without material; the registrar
+    /// refuses to fabricate a successful registration.
+    #[error("established material is required for a successful registration")]
+    EstablishedMaterialRequired,
 }
 
 /// Short-build registrar that owns the ExploratoryPool integration.
 ///
 /// The registrar is the single interface the build state machine
 /// uses to admit tunnels into the pool. Pool admission happens
-/// only after the state machine reports `Established`.
+/// only after the state machine reports `Established` and after
+/// the registrar has extracted the real build-derived
+/// `EstablishedMaterial`. The legacy `admit(&ShortBuildOutcome,
+/// ...)` surface fails closed when given a successful
+/// `Established` outcome that is not paired with material.
 #[derive(Debug)]
 pub struct ShortBuildRegistrar<'a> {
     pool: &'a mut ExploratoryPool,
@@ -62,7 +78,7 @@ impl<'a> ShortBuildRegistrar<'a> {
     /// Inserts the supplied `EstablishedMaterial` into the pool.
     /// The registrar hands the assigned `TunnelSlot` back to the
     /// caller. The caller must come from a successful
-    /// `ShortBuildStateMachine::handle_event` outcome.
+    /// `ShortBuildStateMachine::take_established_material` call.
     pub fn admit_material(
         &mut self,
         established: EstablishedMaterial,
@@ -82,9 +98,43 @@ impl<'a> ShortBuildRegistrar<'a> {
         }
     }
 
-    /// Returns the assigned `TunnelSlot` from the supplied
-    /// outcome. Used by the registrar API surface that still
-    /// accepts the legacy `ShortBuildOutcome` argument.
+    /// Canonical success-only registrar path. The helper takes the
+    /// build-derived `EstablishedMaterial` from the state machine
+    /// in one expression and hands it to the pool. The state
+    /// machine must already be in the `Established` phase.
+    pub fn admit_established_machine(
+        &mut self,
+        machine: &mut super::short::ShortBuildStateMachine,
+        now_seconds: u64,
+    ) -> Result<RegisterOutcome, ShortRegistrarError> {
+        let material =
+            machine
+                .take_established_material(now_seconds)
+                .map_err(|error| match error {
+                    super::short::ShortBuildConstructionError::NotEstablished => {
+                        ShortRegistrarError::NotEstablished
+                    }
+                    super::short::ShortBuildConstructionError::EstablishedMaterialAlreadyTaken => {
+                        ShortRegistrarError::AlreadyConsumed
+                    }
+                    super::short::ShortBuildConstructionError::EstablishedPathStateInvalid {
+                        reason,
+                    } => ShortRegistrarError::Construction(reason.to_string()),
+                    other => ShortRegistrarError::Construction(other.to_string()),
+                })?;
+        self.admit_material(material, now_seconds)
+    }
+
+    /// Legacy registrar surface retained only for source-level
+    /// compatibility. The registrar refuses to fabricate a
+    /// successful registration from the legacy outcome alone:
+    /// the call returns [`ShortRegistrarError::EstablishedMaterialRequired`]
+    /// for an `Established` outcome (the registrar cannot rebuild
+    /// the layer keys the outcome discards) and
+    /// [`ShortRegistrarError::NotEstablished`] for every other
+    /// outcome. New code must call
+    /// [`Self::admit_material`] or
+    /// [`Self::admit_established_machine`] instead.
     pub fn admit(
         &mut self,
         outcome: &super::short::ShortBuildOutcome,
@@ -94,15 +144,8 @@ impl<'a> ShortBuildRegistrar<'a> {
         self.pool.advance_time(now_seconds);
         let _ = self.pool.consecutive_failures();
         match outcome {
-            super::short::ShortBuildOutcome::Established { slot, .. } => {
-                // The legacy `Establish` outcome carries only the
-                // creator tunnel id; the registrar cannot fabricate
-                // a real `EstablishedMaterial` from it, so the
-                // legacy surface returns the slot the caller
-                // already recorded without mutating the pool.
-                Ok(RegisterOutcome::Duplicate {
-                    slot: TunnelSlot::from_raw(slot.get()),
-                })
+            super::short::ShortBuildOutcome::Established { .. } => {
+                Err(ShortRegistrarError::EstablishedMaterialRequired)
             }
             _ => Err(ShortRegistrarError::NotEstablished),
         }
@@ -142,16 +185,34 @@ mod tests {
 
     use crate::config::ExploratoryPoolConfig;
     use crate::pool::ExploratoryPool;
+    use crate::short::{BuildAttemptId, ShortBuildOutcome};
 
     #[test]
     fn registrar_rejects_non_success_outcome() {
         let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
         let mut registrar = ShortBuildRegistrar::new(&mut pool);
-        let result = registrar.admit(
-            &super::super::short::ShortBuildOutcome::TimedOut,
-            crate::short::BuildAttemptId::new(1),
-            0,
-        );
+        let result = registrar.admit(&ShortBuildOutcome::TimedOut, BuildAttemptId::new(1), 0);
         assert!(matches!(result, Err(ShortRegistrarError::NotEstablished)));
+    }
+
+    #[test]
+    fn registrar_rejects_legacy_established_outcome_without_material() {
+        // Plan 116 §3.6: the legacy `admit` surface must fail
+        // closed with `EstablishedMaterialRequired` when the
+        // caller hands in an `Established` outcome without real
+        // material. The pool length must remain zero.
+        let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
+        let mut registrar = ShortBuildRegistrar::new(&mut pool);
+        let outcome = ShortBuildOutcome::Established {
+            slot: crate::TunnelId::new(1).expect("id"),
+            per_hop_replies: Vec::new(),
+        };
+        let result = registrar.admit(&outcome, BuildAttemptId::new(2), 0);
+        assert!(matches!(
+            result,
+            Err(ShortRegistrarError::EstablishedMaterialRequired)
+        ));
+        assert_eq!(pool.inbound_len(), 0);
+        assert_eq!(pool.outbound_len(), 0);
     }
 }

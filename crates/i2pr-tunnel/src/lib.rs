@@ -1,9 +1,11 @@
 //! Runtime-neutral tunnel identity, exploratory pool, build-record
-//! layout, build-cryptography seam, reply-path provider, and
-//! short-tunnel-build state machine for `i2pr`.
+//! layout, build-cryptography seam, reply-path provider, short-
+//! tunnel-build state machine, and local tunnel data plane for
+//! `i2pr`.
 //!
 //! This crate is the Milestone 5 implementation surface (Plans 107,
-//! 108, and 109). It owns:
+//! 108, 109, 111–115, and the Plan 116 local tunnel data plane +
+//! final closure pass). It owns:
 //!
 //! - typed tunnel identity ([`identity`])
 //! - bounded exploratory tunnel pool configuration ([`config`])
@@ -19,16 +21,40 @@
 //!   [`short_record`] module) and the per-hop crypto contexts that
 //!   drive the build state machine
 //! - the [`short_state::ShortBuildStateMachine`] runtime-neutral
-//!   build state machine
+//!   build state machine and the
+//!   [`short::ShortBuildStateMachine::take_established_material`]
+//!   success-only one-shot material transfer (Plan 116 F1)
 //! - the [`short_state::ShortBuildRegistrar`] that registers a
 //!   fully validated build in the [`pool::ExploratoryPool`] only
-//!   after every hop has accepted
+//!   after every hop has accepted, with the canonical
+//!   `admit_established_machine` and `admit_material` surfaces and
+//!   the legacy `admit(&ShortBuildOutcome, …)` failing closed
 //! - the deterministic [`responder::DeterministicResponder`]
 //!   peer simulator that exercises the Noise-N crypto primitive
 //!   end-to-end
 //! - the [`provider::ExploratoryPoolReplyPathProvider`] that turns
 //!   the pool into a [`i2pr_netdb::ReplyPath`] source the Plan 105
 //!   lookup state machine can consume
+//! - the Plan 115 canonical production I2NP bridge
+//!   ([`bridge::ShortBuildI2npBridge`]) that wraps a
+//!   `ShortBuildAction::Deliver` in a complete I2NP type-25 message
+//!   without double-prefixing the STBM record count byte
+//! - the Plan 116 local tunnel data plane:
+//!   - AES-256 ECB/CBC/ECB layer transforms and the duplicate
+//!     window in [`layer`]
+//!   - canonical I2P Tunnel Message Specification checksum builder
+//!     and parser, automatic complete-message fragmentation, and the
+//!     `unfragmented_overhead` / `fragmented_first_overhead` /
+//!     `FOLLOW_ON_OVERHEAD` constants in [`data`]
+//!   - the bounded [`fragment::BoundedReassembler`] with
+//!     `insert_with_delivery` carrying the first-fragment
+//!     `DeliveryInstruction` through reassembly
+//!   - the `EstablishedTunnel` / `EstablishedHop` /
+//!     `EstablishedMaterial` secret-material ownership with the
+//!     one-shot `into_extracted` transfer in [`established`]
+//!   - the runtime-neutral outbound/inbound/local role composition
+//!     with multi-cell `forward_cells` / `process_cells` seams in
+//!     [`roles`]
 //!
 //! The crate deliberately remains runtime-neutral: it does not open
 //! sockets, does not perform DNS, does not spawn tasks, and depends
