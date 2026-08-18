@@ -2050,7 +2050,16 @@ inventory defects `C1`–`C16`) closed Plan 116 as
 `passed-local-tunnel-data-plane`. The Plan 116 final closure pass
 ([`plans/116-final-closure.md`](plans/116-final-closure.md),
 inventory defects `F1`–`F5`) closed Plan 116 as
-`passed-final-local-closure`. Status authority lives in
+`passed-final-local-closure`. The Plan 116 terminal cleanup pass
+([`plans/116-terminal-cleanup.md`](plans/116-terminal-cleanup.md),
+inventory defects `T1`–`T4`) corrects the four remaining closure
+defects — duplicate-accounting classification (`T1`),
+first-fragment delivery metadata in duplicate identity (`T2`),
+out-of-order full role-level fragmented trajectory (`T3`), and
+status / handoff / evidence authority synchronization (`T4`) — and
+keeps Plan 116 closed as `passed-final-local-closure`. Plan 117
+is unblocked and may begin once a qualified external delivery
+lane becomes available. Status authority lives in
 [`plans/116-status.md`](plans/116-status.md).
 
 Plan 116 lands:
@@ -2082,7 +2091,14 @@ Plan 116 lands:
   only the affected partial message. The reassembler exposes
   `ReassembledFragment { message, delivery }` and
   `insert_with_delivery` so the first-fragment delivery
-  instruction survives reassembly.
+  instruction survives reassembly. The terminal cleanup pass
+  classifies insertions through `PartialMessage::classify()` into
+  `FragmentInsertDisposition::{Inserted { added_bytes },
+  ExactDuplicate}` so exact duplicates are pure no-ops for
+  memory, expiry, and aggregate budget; first-fragment delivery
+  metadata participates in duplicate identity via
+  `ConflictingFirstMetadata` and follow-on delivery metadata is
+  rejected with `UnexpectedFollowOnDeliveryInstruction`.
 - `crates/i2pr-tunnel/src/established.rs` —
   `EstablishedHop`/`EstablishedTunnel` secret-material ownership
   with `Option<EstablishedNextHop>` next-hop state (no
@@ -2114,7 +2130,10 @@ Plan 116 lands:
   (`OutboundGatewayRole::forward_cells`,
   `InboundGatewayRole::process_cells`) carry large standard I2NP
   messages across multiple TunnelData cells on both the outbound
-  and the inbound side.
+  and the inbound side. The terminal cleanup pass adds the
+  `outbound_to_inbound_fragmented_out_of_order_trajectory_exact_bytes`
+  proof that delivers inbound TunnelData cells to the local
+  endpoint with at least one follow-on before the first fragment.
 - `crates/i2pr-tunnel/src/short_state.rs` —
   `ShortBuildRegistrar::admit_material` performs the real
   pool insertion (the legacy placeholder `slot(0)` is gone for
@@ -2136,14 +2155,14 @@ the workspace passes `cargo check --workspace --all-targets`,
 `cargo clippy --workspace --all-targets -- -D warnings`, and
 `cargo doc --workspace --no-deps` with `-D warnings`. The
 `i2pr-tunnel` lib test suite is fully green
-(`cargo test --locked -p i2pr-tunnel --lib` reports 229 passing
+(`cargo test --locked -p i2pr-tunnel --lib` reports 240 passing
 tests and zero `Plan 116 provisional scaffolding` `#[ignore]`
 markers). The Plan 116 integration tests under
 `crates/i2pr-tunnel/tests/plan111_reference_vectors.rs` add 5
-passing reference-vector assertions (234 total tests). Plan 117
-is unblocked and may begin once a qualified external delivery
-lane becomes available. Status authority lives in
-[`plans/116-status.md`](plans/116-status.md).
+passing reference-vector assertions (245 total tests across all
+targets). Plan 117 is unblocked and may begin once a qualified
+external delivery lane becomes available. Status authority lives
+in [`plans/116-status.md`](plans/116-status.md).
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
 
@@ -3442,7 +3461,7 @@ Plan 103  RouterInfo validation + bounded local NetDB     [closed]
 -> Plan 113  inbound reference reconciliation [passed-inbound-reference-reconciliation]
       -> Plan 114  terminal routing + tunnel-chain correction    [passed-terminal-routing-chain-correction]
       -> Plan 115  canonical production I2NP bridge + Q0 native Emissary OBEP reply [passed-emissary-q0-construction-and-obep-reply-only]
-      -> Plan 116  local tunnel data plane [passed-local-tunnel-data-plane]
+      -> Plan 116  local tunnel data plane [passed-final-local-closure]
       -> Plan 117  live exploratory/NetDB integration [ready-for-planning-or-execution]
 ```
 
@@ -3497,15 +3516,15 @@ delivery lane. Milestone 4A is now
 with `inbound_short_build = locally-reference-compatible` and
 `production_i2np_bridge = locally-conformant-no-double-prefix`
 and `independent_short_build = passed-emissary-q0-native-consumer`.
-After the Plan 116 completion/correction pass, the local tunnel
-data plane is `passed-local-tunnel-data-plane` and Plan 117 is
-unblocked. A direct `DatabaseLookup` over NTCP2 is not accepted
-as a substitute for the standard exploratory-tunnel path. The
-next executable step is a future narrow qualified
-external-delivery checkpoint (the Plan 117 sequence), requiring a
-host with the Plan 046 rootless sealed-namespace lane or the
-Plan 048/049 Multipass recovery lane runnable, before
-Milestone 4B external acceptance.
+After the Plan 116 terminal cleanup pass, the local tunnel data
+plane is `passed-final-local-closure` and Plan 117 is unblocked.
+A direct `DatabaseLookup` over NTCP2 is not accepted as a
+substitute for the standard exploratory-tunnel path. The next
+executable step is a future narrow qualified external-delivery
+checkpoint (the Plan 117 sequence), requiring a host with the
+Plan 046 rootless sealed-namespace lane or the Plan 048/049
+Multipass recovery lane runnable, before Milestone 4B external
+acceptance.
 
 ## Plan 106 daemon NetDB/bootstrap integration and Milestone 5 handoff (closed)
 

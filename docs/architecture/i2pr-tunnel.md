@@ -25,7 +25,21 @@ inbound tunnel is registered.
 > proved the full outbound-to-inbound tunnel trajectory with
 > exact-byte equality for both unfragmented (`DeliveryStatus`
 > body) and fragmented (`Data` body across multiple TunnelData
-> cells) cases. Plan 114 terminal routing and tunnel-chain correction
+> cells) cases. The Plan 116 terminal cleanup pass
+> ([`plans/116-terminal-cleanup.md`](../../plans/116-terminal-cleanup.md),
+> defects `T1`–`T4`) closes the four remaining closure defects:
+> the `BoundedReassembler` now classifies every insertion
+> through `PartialMessage::classify()` into
+> `FragmentInsertDisposition::{Inserted { added_bytes },
+> ExactDuplicate}` so exact duplicates are pure no-ops for
+> memory, expiry, and aggregate budget (`T1`); first-fragment
+> delivery metadata participates in duplicate identity via
+> `ConflictingFirstMetadata` and follow-on delivery metadata is
+> rejected with `UnexpectedFollowOnDeliveryInstruction` (`T2`);
+> the outbound-to-inbound fragmented trajectory now proves
+> exact-byte recovery with at least one follow-on delivered
+> before the first fragment (`T3`); and the status / handoff
+> / evidence authority are synchronized (`T4`). Plan 114 terminal routing and tunnel-chain correction
 > after Plan 113 inbound reference reconciliation and Plan 112
 > outbound pre-delivery closure. Plan 109 corrected the wire format,
 > Noise-N transcript,
@@ -85,7 +99,10 @@ inbound tunnel is registered.
 > completion/correction pass closed every
 > `Plan 116 provisional scaffolding` test marker; the Plan 116
 > final closure pass closes the remaining `F1`–`F5` closure
-> defects. The crate now
+> defects. The Plan 116 terminal cleanup pass
+> ([`plans/116-terminal-cleanup.md`](../../plans/116-terminal-cleanup.md))
+> closes the four remaining `T1`–`T4` closure defects. The crate
+> now
 > owns: the AES-256 ECB/CBC/ECB layer transform in
 > [`src/layer.rs`](../../crates/i2pr-tunnel/src/layer.rs)
 > (participant forward `ECB-ENC/CBC-ENC/ECB-ENC`, creator inverse
@@ -100,8 +117,15 @@ inbound tunnel is registered.
 > `BoundedReassembler` in
 > [`src/fragment.rs`](../../crates/i2pr-tunnel/src/fragment.rs)
 > with caller-driven expiry, per-message + aggregate byte bounds,
-> conflicting-duplicate invalidation, and
-> `insert_with_delivery` carrying the first-fragment
+> `PartialMessage::classify()` distinguishing
+> `Inserted { added_bytes }` from `ExactDuplicate` so exact
+> duplicates are pure no-ops for memory, expiry, and aggregate
+> budget, conflicting-duplicate invalidation that releases the
+> partial's retained-byte accounting, first-fragment delivery
+> metadata participating in duplicate identity
+> (`ConflictingFirstMetadata`), and follow-on delivery metadata
+> rejected fail-closed (`UnexpectedFollowOnDeliveryInstruction`),
+> plus `insert_with_delivery` carrying the first-fragment
 > `DeliveryInstruction` through reassembly; the
 > `EstablishedTunnel` / `EstablishedHop` / `EstablishedMaterial`
 > secret-material ownership with `Option<EstablishedNextHop>`
@@ -134,6 +158,7 @@ inbound tunnel is registered.
 > `GUARDRAILS.md`,
 > [`plans/116-completion-correction.md`](../../plans/116-completion-correction.md),
 > [`plans/116-final-closure.md`](../../plans/116-final-closure.md),
+> [`plans/116-terminal-cleanup.md`](../../plans/116-terminal-cleanup.md),
 > [`plans/111-short-build-final-local-conformance-correction.md`](../../plans/111-short-build-final-local-conformance-correction.md),
 > [`plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`](plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md),
 > [`plans/112-outbound-short-build-pre-delivery-closure.md`](../../plans/112-outbound-short-build-pre-delivery-closure.md),

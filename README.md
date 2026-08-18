@@ -87,14 +87,18 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 - Runtime-neutral `ShortBuildStateMachine`, success-only
   `ShortBuildRegistrar`, and deterministic `DeterministicResponder`
   peer simulator (`i2pr-tunnel`)
-- Plan 116 local tunnel data plane + final closure pass:
-  real `EstablishedMaterial` transfer from `ShortBuildStateMachine`
-  into `ExploratoryPool`, `#[cfg(test)]`-only placeholder APIs,
-  canonical I2P Tunnel Message Specification fragment overheads,
-  first-fragment delivery retention through reassembly, and the
-  full outbound-to-inbound tunnel trajectory with exact-byte
-  equality for both the unfragmented and the fragmented cases
-  (`i2pr-tunnel`; see [`plans/116-status.md`](plans/116-status.md))
+- Plan 116 local tunnel data plane + final closure + terminal
+  cleanup pass: real `EstablishedMaterial` transfer from
+  `ShortBuildStateMachine` into `ExploratoryPool`,
+  `#[cfg(test)]`-only placeholder APIs, canonical I2P Tunnel
+  Message Specification fragment overheads, first-fragment
+  delivery retention through reassembly, exact-duplicate
+  no-op accounting (`T1`), first-delivery metadata in duplicate
+  identity (`T2`), and the full outbound-to-inbound tunnel
+  trajectory with exact-byte equality for both the unfragmented
+  and the fragmented cases, including the out-of-order
+  fragmented trajectory (`T3`) (`i2pr-tunnel`; see
+  [`plans/116-status.md`](plans/116-status.md))
 - Multi-record short tunnel-build construction: randomized slot
   allocation, originator + padding fake records, raw ChaCha20
   preprocessing/postprocessing (slot byte at offset 4 of the
@@ -134,7 +138,7 @@ crates/
   i2pr-runtime/             Tokio-owned supervision, cancellation, and I/O
   i2pr-netdb/               RouterInfo validation, NetDB store, lookup, publication
   i2pr-netdb-persist/       Persistent cache and SU3 reseed ingestion
-  i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build cryptography (Plan 111/112 outbound local conformance; Plan 113 inbound reference-compatible policy; Plan 114 terminal routing and tunnel-chain correction; Plan 116 final local closure), runtime-neutral build state machine, reply-path provider, Plan 115 canonical production I2NP bridge
+  i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build cryptography (Plan 111/112 outbound local conformance; Plan 113 inbound reference-compatible policy; Plan 114 terminal routing and tunnel-chain correction; Plan 116 final local closure + terminal cleanup), runtime-neutral build state machine, reply-path provider, Plan 115 canonical production I2NP bridge
   i2pr-daemon/              CLI, configuration, composition, supervision
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
 tools/
