@@ -67,6 +67,21 @@ inbound tunnel is registered.
 > transport) and Q2 (reply round-trip to Established) remain
 > pending. Live mixed-router
 > delivery is still blocked on a qualified external delivery lane.
+> Plan 116 lands the local tunnel data plane scaffolding: the
+> AES-256 CBC/ECB layer transform in
+> [`src/layer.rs`](../../crates/i2pr-tunnel/src/layer.rs), the
+> bounded 1..=63 fragment builder/parser in
+> [`src/data.rs`](../../crates/i2pr-tunnel/src/data.rs), the
+> bounded `BoundedReassembler` in
+> [`src/fragment.rs`](../../crates/i2pr-tunnel/src/fragment.rs), the
+> `EstablishedTunnel`/`EstablishedHop` secret-material ownership in
+> [`src/established.rs`](../../crates/i2pr-tunnel/src/established.rs),
+> and the runtime-neutral outbound/inbound/local role composition in
+> [`src/roles.rs`](../../crates/i2pr-tunnel/src/roles.rs). The
+> deterministic outbound → inbound pair, full fragmentation,
+> `ShortBuildRegistrar` wiring, and `ExploratoryPool` reply-path
+> semantics remain pending; see
+> [`plans/116-status.md`](../../plans/116-status.md).
 > Not production-ready. See `README.md`,
 > `GUARDRAILS.md`,
 > [`plans/111-short-build-final-local-conformance-correction.md`](../../plans/111-short-build-final-local-conformance-correction.md),
@@ -75,8 +90,9 @@ inbound tunnel is registered.
 > [`plans/111-status.md`](../../plans/111-status.md),
 > [`plans/112-status.md`](../../plans/112-status.md),
 > [`plans/113-status.md`](../../plans/113-status.md),
-> [`plans/114-status.md`](../../plans/114-status.md), and
-> [`plans/115-status.md`](../../plans/115-status.md).
+> [`plans/114-status.md`](../../plans/114-status.md),
+> [`plans/115-status.md`](../../plans/115-status.md), and
+> [`plans/116-status.md`](../../plans/116-status.md).
 
 ## Purpose
 

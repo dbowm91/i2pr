@@ -2039,6 +2039,49 @@ a live exploratory transport path. Evidence and closure are
 [`plans/115-status.md`](plans/115-status.md) and
 [`plans/115-handoff.md`](plans/115-handoff.md).
 
+## Plan 116 local tunnel data plane scaffolding
+
+Plan 116 is the active Milestone 5 implementation plan that lands
+the runtime-neutral tunnel data plane the established material
+needs to ferry decrypted `TunnelData` payloads between hops.
+
+Plan 116 lands:
+
+- `crates/i2pr-tunnel/src/layer.rs` — AES-256 ECB block encryptor,
+  AES-256 CBC encrypt/decrypt wrappers, the `TunnelLayerTransform`
+  participant forward and creator/inbound inverse transforms, and
+  the `DuplicateWindow` bounded exact-match replay window.
+- `crates/i2pr-tunnel/src/data.rs` — `TunnelPayloadHeader`,
+  `DeliveryInstruction`, `FragmentDelivery`, `TunnelFragment`, the
+  `TunnelMessageBuilder` with bounded fragmentation, the
+  `TunnelMessageParser` for first/follow-on records, and a
+  `fill_nonzero` fallback that prevents infinite loops when
+  deterministic test RNGs emit only zero bytes.
+- `crates/i2pr-tunnel/src/fragment.rs` — the bounded
+  `BoundedReassembler` with hard ceilings on stored messages and
+  bytes.
+- `crates/i2pr-tunnel/src/established.rs` —
+  `EstablishedHop`/`EstablishedTunnel` secret-material ownership
+  with manual `Zeroize` for `TunnelId` and `TunnelPeer`.
+- `crates/i2pr-tunnel/src/roles.rs` — runtime-neutral
+  outbound/inbound/local role composition plus the
+  `RouterDeliveryAction`/`OBGWRouterDelivery` envelopes.
+- `Cargo.toml` — `crypto-common = "=0.1.7"` pin forces the
+  aes/cbc cipher 0.4.x trait world to compile against a single
+  crypto-common version, side-stepping the `sha2 0.11.0`/`digest
+  0.11.3` duplicate crypto-common 0.2.x.
+
+The crate compiles cleanly with `cargo check -p i2pr-tunnel` and
+the workspace passes `cargo check --workspace --all-targets`,
+`cargo clippy --workspace --all-targets -- -D warnings`, and
+`cargo doc --workspace --no-deps` with `-D warnings`. Of the
+`i2pr-tunnel` lib test suite 182 tests pass and 17 provisional
+tests fail because the underlying protocol semantics are still
+being completed. Plan 116 is the active implementation surface for
+the local data plane; Plan 117 will cut the fresh candidate and
+drive the qualified external delivery lane. Status authority
+lives in [`plans/116-status.md`](plans/116-status.md).
+
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
@@ -3336,6 +3379,7 @@ Plan 103  RouterInfo validation + bounded local NetDB     [closed]
      -> Plan 113  inbound reference reconciliation [passed-inbound-reference-reconciliation]
      -> Plan 114  terminal routing + tunnel-chain correction    [passed-terminal-routing-chain-correction]
      -> Plan 115  canonical production I2NP bridge + Q0 native Emissary OBEP reply [passed-emissary-q0-construction-and-obep-reply-only]
+     -> Plan 116  local tunnel data plane scaffolding [implementation-landed-partial-scaffolding]
      -> return to Milestone 4B external acceptance [blocked-on-qualified-external-delivery-lane]
 ```
 
