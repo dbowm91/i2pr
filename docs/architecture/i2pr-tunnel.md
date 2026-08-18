@@ -12,6 +12,7 @@ the substrate required to flip the Plan 106 NetDB seam from
 inbound tunnel is registered.
 
 > Status: Plan 116 closed as `passed-final-local-closure` by the
+> Plan 116 final closure pass at commit `0330fb2e9e64dd0877472c930606ab4219ac18a9`
 > Plan 116 final closure pass (defects `F1`–`F5`) on top of the
 > Plan 116 completion/correction pass (defects `C1`–`C16`) which
 > closed Plan 116 as `passed-local-tunnel-data-plane`. The final

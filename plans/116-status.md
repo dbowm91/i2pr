@@ -2,7 +2,7 @@
 
 - Status: **passed-final-local-closure**
 - Date: **2026-08-18**
-- Current implementation floor: `78f1024c47ca5ba110656e9fe2936ca2719c319f` (closure pass landed on top)
+- Current implementation floor: `0330fb2e9e64dd0877472c930606ab4219ac18a9` (closure pass landed on top of `78f1024c47ca5ba110656e9fe2936ca2719c319f`)
 - Original plan: [`116-local-tunnel-data-plane.md`](116-local-tunnel-data-plane.md)
 - Completion/correction pass: [`116-completion-correction.md`](116-completion-correction.md)
 - Final closure pass: [`116-final-closure.md`](116-final-closure.md)
