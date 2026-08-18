@@ -18,14 +18,15 @@
 //! first_hop_receive_tunnel        the receive id the first remote
 //!                                 hop expects to receive TunnelData
 //!                                 on (== inbound external gateway)
-//! terminal_next_tunnel /
-//! terminal_inbound_receive_tunnel the receive id the terminal
-//!                                 inbound hop expects (local
-//!                                 inbound endpoint)
+//! terminal_inbound_receive_tunnel the receive id the local
+//!                                 inbound endpoint expects (local
+//!                                 creator endpoint, never a remote
+//!                                 short-build hop)
 //! ```
 //!
 //! Outbound OBEP does not encode a fixed data-plane destination;
-//! the data-plane delivery instruction is carried per message.
+//! the data-plane delivery instruction is carried per message. The
+//! OBEP next-hop field is therefore `Option::None`.
 
 #![forbid(unsafe_code)]
 #![allow(
@@ -45,47 +46,83 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::build_crypto::LayerKeys;
 use crate::identity::{TunnelDirection, TunnelId, TunnelPeer};
 
+/// Optional next-hop routing state attached to one remote hop.
+/// The struct exists only where the underlying role requires a
+/// forwarding target; participants and inbound gateways own
+/// `Some(next)`; outbound endpoints own `None` (delivery is
+/// per-message, not fixed).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EstablishedNextHop {
+    /// Next-hop router identity.
+    pub router: TunnelPeer,
+    /// Next-hop receive tunnel id.
+    pub tunnel: TunnelId,
+}
+
+impl EstablishedNextHop {
+    /// Builds a next-hop state from the supplied router and tunnel
+    /// identifier. Both fields are required to be non-sentinel.
+    pub fn new(router: TunnelPeer, tunnel: TunnelId) -> Self {
+        Self { router, tunnel }
+    }
+}
+
+impl Zeroize for EstablishedNextHop {
+    fn zeroize(&mut self) {
+        self.router.zeroize();
+        self.tunnel.zeroize();
+    }
+}
+
 /// One per-hop retained crypto context. The struct owns the
 /// canonical hop identity (`router_hash`, `role`, `receive_tunnel`)
 /// and the forward `LayerKeys` the data plane needs to apply the
-/// AES-256 ECB/CBC/ECB layer transform. The terminal data-plane
-/// destination for outbound endpoints is intentionally **not**
-/// stored here; it is encoded in the per-message delivery
-/// instruction. For inbound endpoints the terminal data-plane
-/// destination is the local inbound endpoint's `receive_tunnel`.
+/// AES-256 ECB/CBC/ECB layer transform. The `next` field is
+/// `Option<EstablishedNextHop>`:
+///   * participants and inbound gateways require `Some(next)`;
+///   * outbound endpoints own `None` because delivery is per-message.
+///
+/// No sentinel `u32::MAX` or zero-hash values are used.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct EstablishedHop {
     peer: TunnelPeer,
     role: EstablishedRole,
     receive_tunnel: TunnelId,
     layer_keys: LayerKeys,
-    /// Next router / next tunnel pair the participant or inbound
-    /// gateway must hand the cell to. Outbound endpoints store
-    /// `next_tunnel = TunnelId::ZERO_PLACEHOLDER` and
-    /// `next_router = TunnelPeer::from_hash(Hash::ZERO_PLACEHOLDER)`
-    /// to make the data-plane distinction explicit.
-    next_router: TunnelPeer,
-    next_tunnel: TunnelId,
+    next: Option<EstablishedNextHop>,
 }
 
 impl EstablishedHop {
-    /// Constructs a hop record. Callers must come from a successful
-    /// short-build path; the data plane never fabricates entries.
-    pub fn new(
+    /// Constructs a participant-style hop (with a next hop).
+    pub fn with_next(
         peer: TunnelPeer,
         role: EstablishedRole,
         receive_tunnel: TunnelId,
         layer_keys: LayerKeys,
-        next_router: TunnelPeer,
-        next_tunnel: TunnelId,
+        next: EstablishedNextHop,
     ) -> Self {
         Self {
             peer,
             role,
             receive_tunnel,
             layer_keys,
-            next_router,
-            next_tunnel,
+            next: Some(next),
+        }
+    }
+
+    /// Constructs a terminal outbound endpoint hop (no next hop).
+    pub fn terminal(
+        peer: TunnelPeer,
+        role: EstablishedRole,
+        receive_tunnel: TunnelId,
+        layer_keys: LayerKeys,
+    ) -> Self {
+        Self {
+            peer,
+            role,
+            receive_tunnel,
+            layer_keys,
+            next: None,
         }
     }
 
@@ -110,15 +147,19 @@ impl EstablishedHop {
         &self.layer_keys
     }
 
-    /// Returns the next router the hop forwards cells to. Returns
-    /// the zero placeholder when the role is `OutboundEndpoint`.
-    pub const fn next_router(&self) -> TunnelPeer {
-        self.next_router
+    /// Returns the next-hop routing state when one exists.
+    pub const fn next(&self) -> Option<&EstablishedNextHop> {
+        self.next.as_ref()
     }
 
-    /// Returns the next tunnel id the hop forwards cells to.
-    pub const fn next_tunnel(&self) -> TunnelId {
-        self.next_tunnel
+    /// Returns the next-hop router identity when `next` is set.
+    pub fn next_router(&self) -> Option<TunnelPeer> {
+        self.next.as_ref().map(|next| next.router)
+    }
+
+    /// Returns the next-hop tunnel id when `next` is set.
+    pub fn next_tunnel(&self) -> Option<TunnelId> {
+        self.next.as_ref().map(|next| next.tunnel)
     }
 }
 
@@ -130,17 +171,18 @@ impl fmt::Debug for EstablishedHop {
             .field("role", &self.role)
             .field("receive_tunnel", &self.receive_tunnel)
             .field("layer_keys", &"<redacted>")
-            .field("next_router", &self.next_router)
-            .field("next_tunnel", &self.next_tunnel)
+            .field("next", &self.next)
             .finish()
     }
 }
 
 /// Hop-role classification used by the data plane. This is a
 /// separate enumeration from the build-time [`crate::identity::TunnelRole`]
-/// because the data plane only cares about the four canonical
-/// roles that can be present in an established tunnel: participant,
-/// outbound endpoint, inbound gateway, and inbound endpoint.
+/// because the data plane only cares about the three canonical
+/// remote roles that can be present in an established tunnel:
+/// participant, outbound endpoint, and inbound gateway. The
+/// local creator-side inbound endpoint is **not** a remote
+/// short-build hop and is therefore not represented here.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, zeroize::Zeroize)]
 pub enum EstablishedRole {
     /// Intermediate hop that decrypts one layer and forwards.
@@ -151,8 +193,6 @@ pub enum EstablishedRole {
     /// Inbound gateway: receives a TunnelGateway and applies one
     /// outbound layer.
     InboundGateway,
-    /// Inbound endpoint: receives TunnelData and strips all layers.
-    InboundEndpoint,
 }
 
 impl fmt::Display for EstablishedRole {
@@ -161,7 +201,6 @@ impl fmt::Display for EstablishedRole {
             Self::Participant => "participant",
             Self::OutboundEndpoint => "obep",
             Self::InboundGateway => "ibgw",
-            Self::InboundEndpoint => "ibep",
         };
         formatter.write_str(label)
     }
@@ -173,21 +212,26 @@ impl fmt::Display for EstablishedRole {
 /// `EstablishedTunnel` is non-`Clone` and non-`Debug` (its
 /// `Debug` impl redacts every secret); the type holds the ordered
 /// hop list, the independent tunnel identifiers the data plane
-/// needs, and the per-hop `LayerKeys`. The struct moves out of the
-/// build state machine exactly once via a registered
-/// `take_established_material` seam in the short-build runtime.
+/// needs, and the per-hop `LayerKeys`.
+///
+/// The remote hop vector deliberately excludes the local creator
+/// endpoint. Inbound tunnels carry `[IBGW, Participant*]` only;
+/// the local inbound endpoint's identity is a separate field on
+/// the same `EstablishedTunnel` (`local_inbound_receive`).
 pub struct EstablishedTunnel {
     direction: TunnelDirection,
     creator_tunnel_id: TunnelId,
     hops: Vec<EstablishedHop>,
     created_at_seconds: u64,
-    /// The inbound external gateway router hash (first hop) and the
-    /// first remote hop's receive tunnel id. Only meaningful for
-    /// inbound tunnels; outbound tunnels use the zero placeholder.
+    /// Inbound external gateway router hash (first remote hop) and
+    /// the first remote hop's receive tunnel id. Only meaningful
+    /// for inbound tunnels; outbound tunnels carry the zero
+    /// peer placeholder and the zero tunnel id sentinel with no
+    /// public exposure.
     inbound_gateway: (TunnelPeer, TunnelId),
-    /// The local inbound endpoint's receive tunnel id. Only
-    /// meaningful for inbound tunnels; outbound tunnels use the
-    /// zero placeholder.
+    /// Local inbound endpoint receive tunnel id. Only meaningful
+    /// for inbound tunnels; outbound tunnels carry the zero
+    /// placeholder.
     local_inbound_receive: TunnelId,
 }
 
@@ -219,20 +263,19 @@ impl EstablishedTunnel {
                 if local_inbound_receive.is_none() {
                     return Err(EstablishedTunnelError::MissingLocalInboundReceive);
                 }
-                // Inbound: first hop must be InboundGateway, last
-                // hop must be InboundEndpoint.
+                // Inbound remote hops: [IBGW, Participant*].
                 if hops[0].role() != EstablishedRole::InboundGateway {
                     return Err(EstablishedTunnelError::FirstHopRoleInvalid {
                         expected: EstablishedRole::InboundGateway,
                         actual: hops[0].role(),
                     });
                 }
-                let last = hops.len() - 1;
-                if hops[last].role() != EstablishedRole::InboundEndpoint {
-                    return Err(EstablishedTunnelError::LastHopRoleInvalid {
-                        expected: EstablishedRole::InboundEndpoint,
-                        actual: hops[last].role(),
-                    });
+                // Every inbound remote hop must have a `next`
+                // because the chain forwards through every hop.
+                for (index, hop) in hops.iter().enumerate() {
+                    if hop.next().is_none() {
+                        return Err(EstablishedTunnelError::MissingNextHop { hop_index: index });
+                    }
                 }
             }
             TunnelDirection::Outbound => {
@@ -242,8 +285,7 @@ impl EstablishedTunnel {
                 if local_inbound_receive.is_some() {
                     return Err(EstablishedTunnelError::OutboundLocalReceiveSpecified);
                 }
-                // Outbound: first hop must be Participant or
-                // OutboundEndpoint, last hop must be OutboundEndpoint.
+                // Outbound remote hops: [Participant*, OBEP].
                 let last = hops.len() - 1;
                 if hops[last].role() != EstablishedRole::OutboundEndpoint {
                     return Err(EstablishedTunnelError::LastHopRoleInvalid {
@@ -251,10 +293,18 @@ impl EstablishedTunnel {
                         actual: hops[last].role(),
                     });
                 }
+                // Outbound OBEP carries no `next`; intermediate
+                // hops must carry one.
+                if hops[last].next().is_some() {
+                    return Err(EstablishedTunnelError::OutboundEndpointHasNext);
+                }
+                for hop in hops.iter().take(last) {
+                    if hop.next().is_none() {
+                        return Err(EstablishedTunnelError::MissingIntermediateHopNext);
+                    }
+                }
             }
         }
-        // The first remote hop receive id must equal the
-        // `inbound_gateway` tunnel id when one is declared.
         if let Some((expected_router, expected_tunnel)) = inbound_gateway {
             if hops[0].peer() != expected_router {
                 return Err(EstablishedTunnelError::FirstHopRouterMismatch {
@@ -269,14 +319,19 @@ impl EstablishedTunnel {
                 });
             }
         }
-        // The terminal inbound hop's receive id must equal the
-        // local inbound receive id when one is declared.
         if let Some(expected) = local_inbound_receive {
             let last = hops.len() - 1;
-            if hops[last].receive_tunnel() != expected {
+            // Inbound tunnels verify that the **terminal remote
+            // hop's next_tunnel** matches the local inbound
+            // receive id: that is the tunnel id the local creator
+            // endpoint listens on. The terminal hop's
+            // `receive_tunnel` is a separate field that the
+            // inbound participant's predecessor forwards into.
+            let next_tunnel = hops[last].next_tunnel().unwrap_or(zero_id());
+            if next_tunnel != expected {
                 return Err(EstablishedTunnelError::LocalInboundReceiveMismatch {
                     expected,
-                    actual: hops[last].receive_tunnel(),
+                    actual: next_tunnel,
                 });
             }
         }
@@ -332,6 +387,28 @@ impl EstablishedTunnel {
     /// Returns the first remote hop's receive tunnel id.
     pub fn first_hop_receive_tunnel(&self) -> TunnelId {
         self.hops[0].receive_tunnel()
+    }
+
+    /// Consumes the `EstablishedTunnel` and returns the
+    /// `EstablishedMaterial` the registrar stores. The function
+    /// is intended to be called exactly once per successful build.
+    pub fn into_extracted(self) -> EstablishedMaterial {
+        let mut tunnel = self;
+        let hops = std::mem::take(&mut tunnel.hops);
+        let direction = tunnel.direction;
+        let creator_tunnel_id = tunnel.creator_tunnel_id;
+        let created_at_seconds = tunnel.created_at_seconds;
+        let inbound_gateway = tunnel.inbound_gateway;
+        let local_inbound_receive = tunnel.local_inbound_receive;
+        EstablishedMaterial {
+            direction,
+            creator_tunnel_id,
+            hops,
+            created_at_seconds,
+            inbound_gateway,
+            local_inbound_receive,
+            extracted: true,
+        }
     }
 }
 
@@ -423,6 +500,16 @@ pub enum EstablishedTunnelError {
         /// Actual terminal hop receive id.
         actual: TunnelId,
     },
+    /// A remote hop in the chain lacks a `next` field that the
+    /// forwarding path requires.
+    MissingNextHop {
+        /// Index of the offending hop.
+        hop_index: usize,
+    },
+    /// Outbound intermediate hop lacks a `next` field.
+    MissingIntermediateHopNext,
+    /// Outbound endpoint unexpectedly carries a `next` field.
+    OutboundEndpointHasNext,
 }
 
 impl fmt::Display for EstablishedTunnelError {
@@ -467,6 +554,16 @@ impl fmt::Display for EstablishedTunnelError {
                 formatter,
                 "terminal inbound hop receive tunnel {actual} does not match expected local receive tunnel {expected}"
             ),
+            Self::MissingNextHop { hop_index } => write!(
+                formatter,
+                "remote hop {hop_index} missing required next-hop state"
+            ),
+            Self::MissingIntermediateHopNext => {
+                formatter.write_str("outbound intermediate hop missing required next-hop state")
+            }
+            Self::OutboundEndpointHasNext => {
+                formatter.write_str("outbound endpoint must not declare a next-hop field")
+            }
         }
     }
 }
@@ -485,14 +582,123 @@ pub fn zero_peer() -> TunnelPeer {
 }
 
 /// Returns the `TunnelId` the data plane uses for the
-/// "not-applicable" sentinel. `TunnelId` rejects zero by
-/// construction, so the data plane uses a bounded synthetic
-/// placeholder that is filtered out at every public data-plane
-/// boundary. The placeholder is intentionally **not** exposed
-/// through any public data-plane helper that returns `TunnelId`.
+/// "not-applicable" sentinel. The placeholder is filtered out at
+/// every public data-plane boundary.
 pub fn zero_id() -> TunnelId {
     TunnelId::new(u32::MAX).expect("nonzero")
 }
+
+/// Establish+extract material bundle the registrar stores in the
+/// pool. The struct is the secret-bearing companion of
+/// [`crate::pool::TunnelRegistration`]: one per successful build,
+/// consumed exactly once.
+/// Establish+extract material bundle the registrar stores in the
+/// pool. The struct is the secret-bearing companion of
+/// [`crate::pool::TunnelRegistration`]: one per successful build,
+/// consumed exactly once.
+pub struct EstablishedMaterial {
+    pub(super) direction: TunnelDirection,
+    pub(super) creator_tunnel_id: TunnelId,
+    pub(super) hops: Vec<EstablishedHop>,
+    pub(super) created_at_seconds: u64,
+    pub(super) inbound_gateway: (TunnelPeer, TunnelId),
+    pub(super) local_inbound_receive: TunnelId,
+    pub(super) extracted: bool,
+}
+
+impl EstablishedMaterial {
+    /// Returns the direction.
+    pub const fn direction(&self) -> TunnelDirection {
+        self.direction
+    }
+
+    /// Returns the creator tunnel id.
+    pub const fn creator_tunnel_id(&self) -> TunnelId {
+        self.creator_tunnel_id
+    }
+
+    /// Returns the ordered hop list.
+    pub fn hops(&self) -> &[EstablishedHop] {
+        &self.hops
+    }
+
+    /// Returns the creation timestamp in seconds.
+    pub const fn created_at_seconds(&self) -> u64 {
+        self.created_at_seconds
+    }
+
+    /// Returns the inbound gateway router hash and tunnel id.
+    pub const fn inbound_gateway(&self) -> (TunnelPeer, TunnelId) {
+        self.inbound_gateway
+    }
+
+    /// Returns the local inbound endpoint receive tunnel id.
+    pub const fn local_inbound_receive(&self) -> TunnelId {
+        self.local_inbound_receive
+    }
+
+    /// Returns whether the material is marked consumed.
+    pub const fn is_extracted(&self) -> bool {
+        self.extracted
+    }
+
+    /// Consumes the secret material and returns an
+    /// [`EstablishedTunnel`] the data plane can use. A second
+    /// call returns `None` because the secret material is
+    /// zeroized in place.
+    pub fn into_established_tunnel(&mut self) -> Option<EstablishedTunnel> {
+        if !self.extracted {
+            return None;
+        }
+        let hops = std::mem::take(&mut self.hops);
+        let direction = self.direction;
+        let creator_tunnel_id = self.creator_tunnel_id;
+        let created_at_seconds = self.created_at_seconds;
+        let inbound_gateway = self.inbound_gateway;
+        let local_inbound_receive = self.local_inbound_receive;
+        let tunnel = EstablishedTunnel {
+            direction,
+            creator_tunnel_id,
+            hops,
+            created_at_seconds,
+            inbound_gateway,
+            local_inbound_receive,
+        };
+        self.extracted = false;
+        Some(tunnel)
+    }
+}
+
+impl fmt::Debug for EstablishedMaterial {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EstablishedMaterial")
+            .field("direction", &self.direction)
+            .field("creator_tunnel_id", &self.creator_tunnel_id)
+            .field("hops", &format_args!("<{} redacted>", self.hops.len()))
+            .field("created_at_seconds", &self.created_at_seconds)
+            .field("inbound_gateway", &self.inbound_gateway)
+            .field("local_inbound_receive", &self.local_inbound_receive)
+            .field("extracted", &self.extracted)
+            .finish()
+    }
+}
+
+impl Drop for EstablishedMaterial {
+    fn drop(&mut self) {
+        self.hops.zeroize();
+        self.creator_tunnel_id.zeroize();
+    }
+}
+
+impl Zeroize for EstablishedMaterial {
+    fn zeroize(&mut self) {
+        self.hops.zeroize();
+        self.creator_tunnel_id.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for EstablishedMaterial {}
 
 #[cfg(test)]
 mod tests {
@@ -524,13 +730,15 @@ mod tests {
 
     #[test]
     fn outbound_established_tunnel_requires_obep_terminal() {
-        let hops = vec![EstablishedHop::new(
+        let hops = vec![EstablishedHop::with_next(
             peer(1),
             EstablishedRole::Participant,
             TunnelId::new(2).expect("id"),
             keys(),
-            peer(2),
-            TunnelId::new(3).expect("id"),
+            EstablishedNextHop {
+                router: peer(2),
+                tunnel: TunnelId::new(3).expect("id"),
+            },
         )];
         let error = EstablishedTunnel::new(
             TunnelDirection::Outbound,
@@ -548,15 +756,84 @@ mod tests {
     }
 
     #[test]
-    fn inbound_established_tunnel_requires_ibgw_and_ibep() {
-        let hops = vec![EstablishedHop::new(
+    fn outbound_single_hop_obep_is_valid() {
+        // A single-hop outbound tunnel is the degenerate
+        // [OBEP] form allowed by the canonical I2P specification.
+        let hops = vec![EstablishedHop::terminal(
             peer(1),
-            EstablishedRole::Participant,
+            EstablishedRole::OutboundEndpoint,
             TunnelId::new(2).expect("id"),
             keys(),
-            peer(2),
-            TunnelId::new(3).expect("id"),
         )];
+        let tunnel = EstablishedTunnel::new(
+            TunnelDirection::Outbound,
+            TunnelId::new(1).expect("id"),
+            hops,
+            0,
+            None,
+            None,
+        )
+        .expect("single-hop outbound accepted");
+        assert_eq!(tunnel.hops().len(), 1);
+    }
+
+    #[test]
+    fn outbound_intermediate_hop_without_next_is_rejected() {
+        // A multi-hop outbound tunnel where an intermediate
+        // participant lacks a `next` field is rejected.
+        let hops = vec![
+            EstablishedHop::terminal(
+                peer(1),
+                EstablishedRole::Participant,
+                TunnelId::new(2).expect("id"),
+                keys(),
+            ),
+            EstablishedHop::terminal(
+                peer(2),
+                EstablishedRole::OutboundEndpoint,
+                TunnelId::new(3).expect("id"),
+                keys(),
+            ),
+        ];
+        let error = EstablishedTunnel::new(
+            TunnelDirection::Outbound,
+            TunnelId::new(1).expect("id"),
+            hops,
+            0,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            EstablishedTunnelError::MissingIntermediateHopNext
+        ));
+    }
+
+    #[test]
+    fn inbound_established_tunnel_requires_ibgw_first() {
+        let hops = vec![
+            EstablishedHop::with_next(
+                peer(1),
+                EstablishedRole::Participant,
+                TunnelId::new(2).expect("id"),
+                keys(),
+                EstablishedNextHop {
+                    router: peer(2),
+                    tunnel: TunnelId::new(3).expect("id"),
+                },
+            ),
+            EstablishedHop::with_next(
+                peer(2),
+                EstablishedRole::Participant,
+                TunnelId::new(3).expect("id"),
+                keys(),
+                EstablishedNextHop {
+                    router: peer(3),
+                    tunnel: TunnelId::new(4).expect("id"),
+                },
+            ),
+        ];
         let error = EstablishedTunnel::new(
             TunnelDirection::Inbound,
             TunnelId::new(1).expect("id"),
@@ -573,23 +850,30 @@ mod tests {
     }
 
     #[test]
-    fn inbound_local_receive_must_match_terminal_hop() {
+    fn inbound_terminal_hop_must_match_local_receive() {
         let hops = vec![
-            EstablishedHop::new(
+            EstablishedHop::with_next(
                 peer(1),
                 EstablishedRole::InboundGateway,
                 TunnelId::new(2).expect("id"),
                 keys(),
-                peer(2),
-                TunnelId::new(3).expect("id"),
+                EstablishedNextHop {
+                    router: peer(2),
+                    tunnel: TunnelId::new(3).expect("id"),
+                },
             ),
-            EstablishedHop::new(
+            // The terminal participant's `next.tunnel` does NOT
+            // equal `local_inbound_receive`; the constructor
+            // rejects this with `LocalInboundReceiveMismatch`.
+            EstablishedHop::with_next(
                 peer(2),
-                EstablishedRole::InboundEndpoint,
-                TunnelId::new(7).expect("id"),
+                EstablishedRole::Participant,
+                TunnelId::new(3).expect("id"),
                 keys(),
-                peer(3),
-                zero_id(),
+                EstablishedNextHop {
+                    router: peer(3),
+                    tunnel: TunnelId::new(99).expect("id"),
+                },
             ),
         ];
         let error = EstablishedTunnel::new(
@@ -598,7 +882,7 @@ mod tests {
             hops,
             0,
             Some((peer(1), TunnelId::new(2).expect("id"))),
-            Some(TunnelId::new(99).expect("id")),
+            Some(TunnelId::new(0x901).expect("id")),
         )
         .unwrap_err();
         assert!(matches!(
@@ -608,49 +892,48 @@ mod tests {
     }
 
     #[test]
-    fn inbound_inbound_gateway_must_match_first_hop_router() {
+    fn inbound_terminal_next_tunnel_matches_local_receive() {
         let hops = vec![
-            EstablishedHop::new(
+            EstablishedHop::with_next(
                 peer(1),
                 EstablishedRole::InboundGateway,
                 TunnelId::new(2).expect("id"),
                 keys(),
-                peer(2),
-                TunnelId::new(3).expect("id"),
+                EstablishedNextHop {
+                    router: peer(2),
+                    tunnel: TunnelId::new(3).expect("id"),
+                },
             ),
-            EstablishedHop::new(
+            EstablishedHop::with_next(
                 peer(2),
-                EstablishedRole::InboundEndpoint,
-                TunnelId::new(99).expect("id"),
+                EstablishedRole::Participant,
+                TunnelId::new(3).expect("id"),
                 keys(),
-                peer(3),
-                zero_id(),
+                EstablishedNextHop {
+                    router: peer(3),
+                    tunnel: TunnelId::new(0x901).expect("id"),
+                },
             ),
         ];
-        let error = EstablishedTunnel::new(
+        let tunnel = EstablishedTunnel::new(
             TunnelDirection::Inbound,
             TunnelId::new(1).expect("id"),
             hops,
             0,
-            Some((peer(9), TunnelId::new(2).expect("id"))),
-            Some(TunnelId::new(99).expect("id")),
+            Some((peer(1), TunnelId::new(2).expect("id"))),
+            Some(TunnelId::new(0x901).expect("id")),
         )
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            EstablishedTunnelError::FirstHopRouterMismatch { .. }
-        ));
+        .expect("tunnel accepted");
+        assert_eq!(tunnel.local_inbound_receive().get(), 0x901);
     }
 
     #[test]
     fn outbound_established_tunnel_rejects_inbound_gateway_field() {
-        let hops = vec![EstablishedHop::new(
+        let hops = vec![EstablishedHop::terminal(
             peer(1),
             EstablishedRole::OutboundEndpoint,
             TunnelId::new(2).expect("id"),
             keys(),
-            zero_peer(),
-            zero_id(),
         )];
         let error = EstablishedTunnel::new(
             TunnelDirection::Outbound,
@@ -669,13 +952,11 @@ mod tests {
 
     #[test]
     fn established_hop_debug_redacts_keys() {
-        let hop = EstablishedHop::new(
+        let hop = EstablishedHop::terminal(
             peer(1),
             EstablishedRole::OutboundEndpoint,
             TunnelId::new(2).expect("id"),
             keys(),
-            zero_peer(),
-            zero_id(),
         );
         let rendered = format!("{hop:?}");
         assert!(rendered.contains("layer_keys: \"<redacted>\""));

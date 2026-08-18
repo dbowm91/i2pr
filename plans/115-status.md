@@ -147,10 +147,10 @@ independent_short_build           = passed-emissary-q0-native-consumer
 Q1_authenticated_transport        = deferred
 Q2_external_return_established    = deferred
 qualified_live_delivery           = deferred
-plan_116_local_data_plane         = unblocked-and-next
-plan_117_live_integration         = blocked-until-plan116-passes
+plan_116_local_data_plane         = passed-local-tunnel-data-plane
+plan_117_live_integration         = unblocked-next
 milestone3_two_reference_transport = still-requires-qualified-lane
-milestone5_mixed_router_exit      = still-requires-data-plane-and-live-evidence
+milestone5_mixed_router_exit      = still-requires-live-evidence
 normal_daemon_ntcp2               = disabled-and-unenableable
 ntcp2                              = experimental-non-advertised
 ```

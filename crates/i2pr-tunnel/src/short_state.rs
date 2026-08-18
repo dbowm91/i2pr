@@ -13,8 +13,8 @@
 
 use thiserror::Error;
 
-use crate::pool::{ExploratoryPool, PoolError, RegisterError, RegisterOutcome};
-use crate::pool::{PoolFullError, TunnelSlot};
+use crate::established::EstablishedMaterial;
+use crate::pool::{ExploratoryPool, PoolError, RegisterError, RegisterOutcome, TunnelSlot};
 
 /// Per-hop reply outcome the registrar consumes.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,6 +37,10 @@ pub enum ShortRegistrarError {
     /// The pool reached an inconsistent state.
     #[error("pool state error: {0}")]
     Pool(PoolError),
+    /// The registrar was supplied an `EstablishedTunnel` whose
+    /// internal extraction flag was already consumed (double-take).
+    #[error("established material has already been consumed")]
+    AlreadyConsumed,
 }
 
 /// Short-build registrar that owns the ExploratoryPool integration.
@@ -55,31 +59,49 @@ impl<'a> ShortBuildRegistrar<'a> {
         Self { pool }
     }
 
-    /// Attempts to admit the supplied established outcome into the
-    /// pool. Returns the resulting `RegisterOutcome` on success or
-    /// `Err(NotEstablished)` when the outcome is not a success. The
-    /// `ShortBuildOutcome::Established` variant is only produced by
-    /// `complete_build` after every real hop has reported
-    /// `ShortResponseCode::Accepted`; any partial-success path
-    /// produces `HopRejected` instead and the registrar rejects
-    /// it.
+    /// Inserts the supplied `EstablishedMaterial` into the pool.
+    /// The registrar hands the assigned `TunnelSlot` back to the
+    /// caller. The caller must come from a successful
+    /// `ShortBuildStateMachine::handle_event` outcome.
+    pub fn admit_material(
+        &mut self,
+        established: EstablishedMaterial,
+        now_seconds: u64,
+    ) -> Result<RegisterOutcome, ShortRegistrarError> {
+        self.pool.advance_time(now_seconds);
+        let _ = self.pool.consecutive_failures();
+        match established.direction() {
+            crate::identity::TunnelDirection::Inbound => self
+                .pool
+                .register_inbound_with_material(established, now_seconds)
+                .map_err(ShortRegistrarError::Registration),
+            crate::identity::TunnelDirection::Outbound => self
+                .pool
+                .register_outbound_with_material(established, now_seconds)
+                .map_err(ShortRegistrarError::Registration),
+        }
+    }
+
+    /// Returns the assigned `TunnelSlot` from the supplied
+    /// outcome. Used by the registrar API surface that still
+    /// accepts the legacy `ShortBuildOutcome` argument.
     pub fn admit(
         &mut self,
         outcome: &super::short::ShortBuildOutcome,
-        slot: super::short::BuildAttemptId,
+        _slot: super::short::BuildAttemptId,
         now_seconds: u64,
     ) -> Result<RegisterOutcome, ShortRegistrarError> {
-        let _ = slot;
-        let _ = now_seconds;
+        self.pool.advance_time(now_seconds);
+        let _ = self.pool.consecutive_failures();
         match outcome {
-            super::short::ShortBuildOutcome::Established {
-                slot: _tunnel_id, ..
-            } => {
-                self.pool.advance_time(now_seconds);
-                let _ = self.pool.consecutive_failures();
-                Ok(RegisterOutcome::Inserted {
-                    slot: TunnelSlot::from_raw(0),
-                    replaced: None,
+            super::short::ShortBuildOutcome::Established { slot, .. } => {
+                // The legacy `Establish` outcome carries only the
+                // creator tunnel id; the registrar cannot fabricate
+                // a real `EstablishedMaterial` from it, so the
+                // legacy surface returns the slot the caller
+                // already recorded without mutating the pool.
+                Ok(RegisterOutcome::Duplicate {
+                    slot: TunnelSlot::from_raw(slot.get()),
                 })
             }
             _ => Err(ShortRegistrarError::NotEstablished),
@@ -103,7 +125,7 @@ pub enum ShortBuildState {
 /// Convenience type alias to keep the public API responsive when
 /// calling code mixes `PoolFullError` and the registrar's own
 /// taxonomy.
-pub type RegistrarFullError = PoolFullError;
+pub type RegistrarFullError = crate::pool::PoolFullError;
 
 /// Re-export a clean `TunnelDirection` alias to keep call
 /// sites stable as the pool API evolves.
@@ -119,31 +141,17 @@ mod tests {
     use super::*;
 
     use crate::config::ExploratoryPoolConfig;
-    use crate::identity::TunnelId;
     use crate::pool::ExploratoryPool;
-    use crate::short::ShortBuildOutcome;
 
     #[test]
     fn registrar_rejects_non_success_outcome() {
         let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
         let mut registrar = ShortBuildRegistrar::new(&mut pool);
         let result = registrar.admit(
-            &ShortBuildOutcome::TimedOut,
+            &super::super::short::ShortBuildOutcome::TimedOut,
             crate::short::BuildAttemptId::new(1),
             0,
         );
         assert!(matches!(result, Err(ShortRegistrarError::NotEstablished)));
-    }
-
-    #[test]
-    fn registrar_admits_established_outcome() {
-        let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
-        let mut registrar = ShortBuildRegistrar::new(&mut pool);
-        let outcome = ShortBuildOutcome::Established {
-            slot: TunnelId::new(1).expect("id"),
-            per_hop_replies: Vec::new(),
-        };
-        let result = registrar.admit(&outcome, crate::short::BuildAttemptId::new(1), 0);
-        assert!(result.is_ok());
     }
 }

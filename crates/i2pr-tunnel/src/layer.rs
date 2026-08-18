@@ -16,9 +16,9 @@
 //!     next_iv    = AES256-ECB-ENC(ivKey, working_iv)
 //!
 //! creator_inverse_one_hop (one reverse hop step):
-//!     working_iv = AES256-ECB-ENC(ivKey, received_iv)
+//!     working_iv = AES256-ECB-DEC(ivKey, received_iv)
 //!     new_data   = AES256-CBC-DEC(layerKey, working_iv, received_data)
-//!     prev_iv    = AES256-ECB-ENC(ivKey, working_iv)
+//!     prev_iv    = AES256-ECB-DEC(ivKey, working_iv)
 //! ```
 //!
 //! Proposal 153 (ChaCha tunnel layer encryption) is explicitly out
@@ -39,7 +39,7 @@ use std::fmt;
 
 use aes::Aes256;
 use aes::cipher::block_padding::NoPadding;
-use aes::cipher::{BlockDecryptMut, BlockEncrypt, BlockEncryptMut, KeyIvInit};
+use aes::cipher::{BlockDecrypt, BlockDecryptMut, BlockEncrypt, BlockEncryptMut, KeyIvInit};
 use cbc::{Decryptor, Encryptor};
 use thiserror::Error;
 use zeroize::Zeroize;
@@ -68,6 +68,19 @@ fn aes256_ecb_encrypt_block(key: &[u8; 32], block: &[u8; TUNNEL_IV_LEN]) -> [u8;
     out.copy_from_slice(block);
     let mut block_ref = aes::cipher::generic_array::GenericArray::clone_from_slice(&out);
     cipher.encrypt_block(&mut block_ref);
+    out.copy_from_slice(&block_ref);
+    out
+}
+
+/// AES-256 ECB decryptor over a single 16-byte block.
+#[inline]
+fn aes256_ecb_decrypt_block(key: &[u8; 32], block: &[u8; TUNNEL_IV_LEN]) -> [u8; TUNNEL_IV_LEN] {
+    use aes::cipher::KeyInit;
+    let cipher = Aes256::new_from_slice(key).expect("AES-256 key is exactly 32 bytes");
+    let mut out = [0_u8; TUNNEL_IV_LEN];
+    out.copy_from_slice(block);
+    let mut block_ref = aes::cipher::generic_array::GenericArray::clone_from_slice(&out);
+    cipher.decrypt_block(&mut block_ref);
     out.copy_from_slice(&block_ref);
     out
 }
@@ -111,8 +124,7 @@ fn aes256_cbc_decrypt(
 pub struct TunnelLayerTransform;
 
 impl TunnelLayerTransform {
-    /// Constructs the transform. The struct is zero-sized; the
-    /// constructor exists for naming and future composition.
+    /// Constructs the transform.
     pub const fn new() -> Self {
         Self
     }
@@ -121,9 +133,7 @@ impl TunnelLayerTransform {
     ///
     /// The function operates over fixed-size buffers and never
     /// allocates. It returns the next `(next_iv, next_data)` pair
-    /// the participant hands to the next hop. The next tunnel id
-    /// is supplied by the caller because the per-hop `next_tunnel`
-    /// is independent of the cryptographic transform.
+    /// the participant hands to the next hop.
     pub fn participant_forward(
         layer_keys: &LayerKeys,
         received_iv: &[u8; TUNNEL_IV_LEN],
@@ -144,9 +154,9 @@ impl TunnelLayerTransform {
         received_iv: &[u8; TUNNEL_IV_LEN],
         received_data: &[u8; TUNNEL_PAYLOAD_LEN],
     ) -> ([u8; TUNNEL_IV_LEN], [u8; TUNNEL_PAYLOAD_LEN]) {
-        let working_iv = aes256_ecb_encrypt_block(layer_keys.iv_key(), received_iv);
+        let working_iv = aes256_ecb_decrypt_block(layer_keys.iv_key(), received_iv);
         let new_data = aes256_cbc_decrypt(layer_keys.layer_key(), &working_iv, received_data);
-        let prev_iv = aes256_ecb_encrypt_block(layer_keys.iv_key(), &working_iv);
+        let prev_iv = aes256_ecb_decrypt_block(layer_keys.iv_key(), &working_iv);
         (prev_iv, new_data)
     }
 
@@ -219,12 +229,6 @@ impl Zeroize for DuplicateToken {
 }
 
 /// Bounded exact-match replay window.
-///
-/// The window keeps at most [`MAX_DUPLICATE_WINDOW`] tokens. When
-/// the window reaches capacity, [`DuplicateWindow::observe`]
-/// fails closed with [`DuplicateWindowError::CapacityExceeded`]
-/// rather than silently evicting an unexpired token and re-enabling
-/// replay.
 #[derive(Debug)]
 pub struct DuplicateWindow {
     capacity: usize,
@@ -280,8 +284,7 @@ impl DuplicateWindow {
         Ok(true)
     }
 
-    /// Removes every observed token. The caller may invoke this on
-    /// expiry or cleanup so the bounded memory is released.
+    /// Removes every observed token.
     pub fn clear(&mut self) {
         self.tokens.clear();
     }
@@ -297,8 +300,7 @@ impl Default for DuplicateWindow {
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum DuplicateWindowError {
     /// The window reached capacity and refused to retain a new
-    /// token. The data plane must drop the offending cell rather
-    /// than silently evict an unexpired token.
+    /// token.
     #[error("duplicate window at capacity {capacity}")]
     CapacityExceeded {
         /// Configured capacity.
@@ -319,7 +321,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn one_hop_round_trip() {
         let layer_keys = keys(0x11);
         let original_iv = [0xAA_u8; TUNNEL_IV_LEN];
@@ -333,7 +334,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn multi_hop_outbound_inverse_chain_round_trip() {
         let keys_a = keys(0x21);
         let keys_b = keys(0x22);
@@ -353,27 +353,52 @@ mod tests {
         let (iv_after_b, data_after_b) =
             TunnelLayerTransform::participant_forward(&keys_b, &iv_after_a, &data_after_a);
         let (iv_after_c, data_after_c) =
-            TunnelLayerTransform::creator_inverse_one_hop(&keys_c, &iv_after_b, &data_after_b);
+            TunnelLayerTransform::participant_forward(&keys_c, &iv_after_b, &data_after_b);
         assert_eq!(iv_after_c, original_iv);
         assert_eq!(data_after_c, original_data);
     }
 
     #[test]
-    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
-    fn multi_hop_inbound_inverse_chain_round_trip() {
-        let keys_a = keys(0x31);
-        let keys_b = keys(0x32);
-        let original_iv = [0x99_u8; TUNNEL_IV_LEN];
+    fn forward_then_inverse_restores_input() {
+        let keys_a = keys(0x51);
+        let keys_b = keys(0x52);
+        let original_iv = [0x12_u8; TUNNEL_IV_LEN];
+        let original_data = [0x34_u8; TUNNEL_PAYLOAD_LEN];
+        // Path forward A then B.
+        let (iv_a, data_a) =
+            TunnelLayerTransform::participant_forward(&keys_a, &original_iv, &original_data);
+        let (iv_b, data_b) = TunnelLayerTransform::participant_forward(&keys_b, &iv_a, &data_a);
+        // Then inverse B then A.
+        let (iv_after_b, data_after_b) =
+            TunnelLayerTransform::creator_inverse_one_hop(&keys_b, &iv_b, &data_b);
+        let (iv_after_a, data_after_a) =
+            TunnelLayerTransform::creator_inverse_one_hop(&keys_a, &iv_after_b, &data_after_b);
+        assert_eq!(iv_after_a, original_iv);
+        assert_eq!(data_after_a, original_data);
+    }
+
+    #[test]
+    fn multi_hop_forward_then_multi_hop_inverse_restores_input() {
+        let keys_a = keys(0x71);
+        let keys_b = keys(0x72);
+        let keys_c = keys(0x73);
+        let original_iv = [0xAB_u8; TUNNEL_IV_LEN];
         let original_data: [u8; TUNNEL_PAYLOAD_LEN] =
-            std::array::from_fn(|i| (i.wrapping_mul(5).wrapping_add(11)) as u8);
-        // Inbound endpoint decryption over hops in reverse order.
-        let (iv, data) = TunnelLayerTransform::inbound_endpoint_decrypt(
-            &[&keys_b, &keys_a],
-            original_iv,
-            original_data,
-        );
-        assert_eq!(iv, original_iv);
-        assert_eq!(data, original_data);
+            std::array::from_fn(|i| (i.wrapping_mul(7).wrapping_add(13)) as u8);
+        // Remote forwards A, B, C in path order.
+        let (iv_a, data_a) =
+            TunnelLayerTransform::participant_forward(&keys_a, &original_iv, &original_data);
+        let (iv_b, data_b) = TunnelLayerTransform::participant_forward(&keys_b, &iv_a, &data_a);
+        let (iv_c, data_c) = TunnelLayerTransform::participant_forward(&keys_c, &iv_b, &data_b);
+        // Local creator/endpoint inverse over C, B, A in reverse.
+        let (iv_after_c, data_after_c) =
+            TunnelLayerTransform::creator_inverse_one_hop(&keys_c, &iv_c, &data_c);
+        let (iv_after_b, data_after_b) =
+            TunnelLayerTransform::creator_inverse_one_hop(&keys_b, &iv_after_c, &data_after_c);
+        let (iv_after_a, data_after_a) =
+            TunnelLayerTransform::creator_inverse_one_hop(&keys_a, &iv_after_b, &data_after_b);
+        assert_eq!(iv_after_a, original_iv);
+        assert_eq!(data_after_a, original_data);
     }
 
     #[test]
@@ -384,6 +409,21 @@ mod tests {
         let original_data = [0x34_u8; TUNNEL_PAYLOAD_LEN];
         let (next_iv, next_data) =
             TunnelLayerTransform::participant_forward(&layer_keys, &original_iv, &original_data);
+        let (prev_iv, prev_data) =
+            TunnelLayerTransform::creator_inverse_one_hop(&wrong, &next_iv, &next_data);
+        assert_ne!(prev_iv, original_iv);
+        assert_ne!(prev_data, original_data);
+    }
+
+    #[test]
+    fn wrong_iv_key_does_not_reproduce_plaintext() {
+        let layer_keys = keys(0x61);
+        let wrong = keys(0x71);
+        let original_iv = [0x55_u8; TUNNEL_IV_LEN];
+        let original_data = [0x77_u8; TUNNEL_PAYLOAD_LEN];
+        let (next_iv, next_data) =
+            TunnelLayerTransform::participant_forward(&layer_keys, &original_iv, &original_data);
+        // The wrong key must fail to recover the original.
         let (prev_iv, prev_data) =
             TunnelLayerTransform::creator_inverse_one_hop(&wrong, &next_iv, &next_data);
         assert_ne!(prev_iv, original_iv);
@@ -433,11 +473,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
-    fn swapping_iv_and_first_data_does_not_evade_token() {
-        // Token = iv XOR first_data_block. Swapping them changes
-        // the token, so the duplicate window still catches the
-        // altered cell.
+    fn swapping_iv_and_first_data_produces_equivalent_token() {
+        // Token = iv XOR first_data_block. Swapping the IV and
+        // the first 16 bytes of data produces an identical XOR,
+        // therefore an identical token. The duplicate window
+        // therefore treats the swapped cell as a duplicate.
         let mut window = DuplicateWindow::new(2);
         let iv = [0xAA_u8; TUNNEL_IV_LEN];
         let mut data = [0_u8; TUNNEL_PAYLOAD_LEN];
@@ -445,7 +485,6 @@ mod tests {
             *byte = if idx < TUNNEL_IV_LEN { 0xBB } else { 0xCC };
         }
         let original_token = DuplicateToken::compute(&iv, &data);
-        // Swap IV with the first 16 bytes of the data.
         let mut swapped_iv = [0_u8; TUNNEL_IV_LEN];
         swapped_iv.copy_from_slice(&data[..TUNNEL_IV_LEN]);
         let mut swapped_data = [0_u8; TUNNEL_PAYLOAD_LEN];
@@ -457,8 +496,11 @@ mod tests {
             };
         }
         let swapped_token = DuplicateToken::compute(&swapped_iv, &swapped_data);
-        assert_ne!(swapped_token, original_token);
+        assert_eq!(swapped_token, original_token);
         window.observe(original_token).expect("first");
-        assert!(!window.observe(swapped_token).expect("second"));
+        let observed = window.observe(swapped_token).expect("second");
+        // The swapped cell is treated as a duplicate because
+        // its token is identical to the original observation.
+        assert!(!observed);
     }
 }

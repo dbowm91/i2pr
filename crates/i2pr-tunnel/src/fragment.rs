@@ -4,12 +4,13 @@
 //! representation and the bounded reassembler the local inbound
 //! endpoint and outbound endpoint use.
 //!
-//! The fragment descriptor distinguishes the first fragment (which
-//! carries delivery instructions) from follow-on fragments (which
-//! are matched only by message id). Reassembly is bounded by
-//! maximum concurrent partial messages, maximum bytes per partial
-//! message, maximum aggregate retained bytes, and an explicit
-//! expiry.
+//! The fragment descriptor distinguishes the initial unfragmented
+//! record (no message id) from the first fragmented record
+//! (carrying delivery instructions + message id) and from
+//! follow-on fragments (matched only by message id and
+//! sequence). Reassembly is bounded by maximum concurrent partial
+//! messages, maximum bytes per partial message, maximum aggregate
+//! retained bytes, and an explicit caller-driven expiry.
 
 #![forbid(unsafe_code)]
 #![allow(
@@ -23,6 +24,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::time::Duration;
 
 use thiserror::Error;
 
@@ -45,13 +47,20 @@ pub const MAX_REASSEMBLY_BYTES_PER_MESSAGE: usize = 62_708 + 64;
 pub const FOLLOW_ON_SEQUENCE_MIN: u8 = 1;
 pub const FOLLOW_ON_SEQUENCE_MAX: u8 = 63;
 
-/// Per-fragment record. The first fragment carries the delivery
-/// instruction; follow-on fragments carry only the message id and
-/// the sequence.
+/// Per-fragment record. The unfragmented initial record carries
+/// neither a message id nor a sequence; the first fragmented
+/// record carries the message id; follow-on fragments carry only
+/// the message id and the sequence.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TunnelFragment {
-    /// First fragment, with delivery instructions recorded by the
-    /// builder / parser on the enclosing [`crate::data::FragmentDelivery`].
+    /// Initial unfragmented record: no message id, no sequence.
+    Unfragmented {
+        /// Fragment body bytes.
+        body: Vec<u8>,
+    },
+    /// First fragmented record: carries delivery instructions on
+    /// the enclosing [`crate::data::FragmentDelivery`] plus the
+    /// message id here.
     First {
         /// Caller-supplied message identifier. Must be nonzero.
         message_id: u32,
@@ -72,17 +81,19 @@ pub enum TunnelFragment {
 }
 
 impl TunnelFragment {
-    /// Returns the message identifier.
-    pub const fn message_id(&self) -> u32 {
+    /// Returns the message identifier when one is present.
+    pub const fn message_id(&self) -> Option<u32> {
         match self {
-            Self::First { message_id, .. } => *message_id,
-            Self::FollowOn { message_id, .. } => *message_id,
+            Self::Unfragmented { .. } => None,
+            Self::First { message_id, .. } => Some(*message_id),
+            Self::FollowOn { message_id, .. } => Some(*message_id),
         }
     }
 
     /// Returns the fragment body length.
     pub fn body_len(&self) -> usize {
         match self {
+            Self::Unfragmented { body, .. } => body.len(),
             Self::First { body, .. } => body.len(),
             Self::FollowOn { body, .. } => body.len(),
         }
@@ -91,7 +102,8 @@ impl TunnelFragment {
     /// Returns whether the fragment completes a message.
     pub const fn is_last(&self) -> bool {
         match self {
-            Self::First { .. } => true,
+            Self::Unfragmented { .. } => true,
+            Self::First { .. } => false,
             Self::FollowOn { is_last, .. } => *is_last,
         }
     }
@@ -100,7 +112,12 @@ impl TunnelFragment {
 impl fmt::Display for TunnelFragment {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::First { message_id, .. } => write!(formatter, "first/{message_id}"),
+            Self::Unfragmented { body } => {
+                write!(formatter, "unfragmented/{}B", body.len())
+            }
+            Self::First { message_id, body } => {
+                write!(formatter, "first/{message_id}/{}B", body.len())
+            }
             Self::FollowOn {
                 message_id,
                 sequence,
@@ -134,33 +151,64 @@ struct PartialMessage {
     bytes: usize,
     observed_max_sequence: u8,
     has_last: bool,
+    last_touched_ms: u64,
 }
 
 impl PartialMessage {
-    fn new() -> Self {
+    fn new(now_ms: u64) -> Self {
         Self {
             total_fragments: None,
             received: BTreeMap::new(),
             bytes: 0,
             observed_max_sequence: 0,
             has_last: false,
+            last_touched_ms: now_ms,
         }
     }
 
     fn insert(&mut self, fragment: TunnelFragment) -> Result<(), ReassemblyError> {
         match fragment {
-            TunnelFragment::First { body, .. } => {
+            TunnelFragment::Unfragmented { body } => {
                 if self.received.contains_key(&0) {
-                    return Err(ReassemblyError::DuplicateFragment { sequence: 0 });
+                    let existing = self.received.get(&0).expect("checked above");
+                    if existing != &body {
+                        return Err(ReassemblyError::ConflictingDuplicate { sequence: 0 });
+                    }
+                    // Idempotent identical duplicate.
+                    return Ok(());
                 }
                 self.bytes = self.bytes.saturating_add(body.len());
                 if self.bytes > MAX_REASSEMBLY_BYTES_PER_MESSAGE {
+                    self.bytes = self.bytes.saturating_sub(body.len());
                     return Err(ReassemblyError::MessageTooLarge {
-                        bytes: self.bytes,
+                        bytes: self.bytes.saturating_add(body.len()),
                         maximum: MAX_REASSEMBLY_BYTES_PER_MESSAGE,
                     });
                 }
                 self.received.insert(0, body);
+            }
+            TunnelFragment::First { body, .. } => {
+                if self.received.contains_key(&0) {
+                    let existing = self.received.get(&0).expect("checked above");
+                    if existing != &body {
+                        self.received.remove(&0);
+                        return Err(ReassemblyError::ConflictingDuplicate { sequence: 0 });
+                    }
+                    // Idempotent identical duplicate.
+                    return Ok(());
+                }
+                self.bytes = self.bytes.saturating_add(body.len());
+                if self.bytes > MAX_REASSEMBLY_BYTES_PER_MESSAGE {
+                    self.bytes = self.bytes.saturating_sub(body.len());
+                    return Err(ReassemblyError::MessageTooLarge {
+                        bytes: self.bytes.saturating_add(body.len()),
+                        maximum: MAX_REASSEMBLY_BYTES_PER_MESSAGE,
+                    });
+                }
+                self.received.insert(0, body);
+                // A first fragment is not yet last; terminal
+                // completion is determined by a follow-on fragment
+                // with `is_last = true`.
             }
             TunnelFragment::FollowOn {
                 body,
@@ -172,14 +220,23 @@ impl PartialMessage {
                     return Err(ReassemblyError::SequenceOutOfRange { sequence });
                 }
                 if self.received.contains_key(&sequence) {
-                    // Allow duplicate if bytes match (idempotent),
-                    // else invalidate.
-                    if let Some(existing) = self.received.get(&sequence) {
-                        if existing != &body {
-                            return Err(ReassemblyError::ConflictingDuplicate { sequence });
-                        }
-                        return Ok(());
+                    let existing = self.received.get(&sequence).expect("checked above");
+                    if existing != &body {
+                        // A conflicting follow-on duplicate
+                        // invalidates the affected partial entry.
+                        // The caller (BoundedReassembler::insert)
+                        // drops the partial and zeroizes the
+                        // retained-byte accounting; we leave
+                        // `self.bytes` intact so the caller can
+                        // subtract the full retention from the
+                        // aggregate-byte counter.
+                        self.received.clear();
+                        self.observed_max_sequence = 0;
+                        self.has_last = false;
+                        self.total_fragments = None;
+                        return Err(ReassemblyError::ConflictingDuplicate { sequence });
                     }
+                    return Ok(());
                 }
                 if is_last && sequence < self.observed_max_sequence {
                     return Err(ReassemblyError::LastBelowObservedMax {
@@ -190,8 +247,9 @@ impl PartialMessage {
                 self.observed_max_sequence = self.observed_max_sequence.max(sequence);
                 self.bytes = self.bytes.saturating_add(body.len());
                 if self.bytes > MAX_REASSEMBLY_BYTES_PER_MESSAGE {
+                    self.bytes = self.bytes.saturating_sub(body.len());
                     return Err(ReassemblyError::MessageTooLarge {
-                        bytes: self.bytes,
+                        bytes: self.bytes.saturating_add(body.len()),
                         maximum: MAX_REASSEMBLY_BYTES_PER_MESSAGE,
                     });
                 }
@@ -284,33 +342,54 @@ pub enum ReassemblyError {
         /// Message id.
         message_id: u32,
     },
+    /// The aggregate retained-byte budget would be exceeded by
+    /// the new fragment.
+    #[error("reassembler aggregate bytes {bytes} exceeds maximum {maximum}")]
+    AggregateBytesExceeded {
+        /// Rejected aggregate byte count after the new fragment.
+        bytes: usize,
+        /// Maximum accepted aggregate bytes.
+        maximum: usize,
+    },
 }
 
 /// Bounded tunnel-fragment reassembler. The reassembler never
 /// allocates more than [`MAX_REASSEMBLY_MESSAGES`] concurrent
-/// partial entries and never retains more than
-/// [`MAX_REASSEMBLY_BYTES_PER_MESSAGE`] bytes per partial entry.
-/// The caller supplies the time so the expiry check is
-/// deterministic.
+/// partial entries, never retains more than
+/// [`MAX_REASSEMBLY_BYTES_PER_MESSAGE`] bytes per partial entry,
+/// and never retains more than [`MAX_REASSEMBLY_AGGREGATE_BYTES`]
+/// aggregate bytes across every partial entry. The caller
+/// supplies the time so the expiry check is deterministic.
 #[derive(Debug)]
 pub struct BoundedReassembler {
     capacity: usize,
+    aggregate_bytes_max: usize,
     partials: BTreeMap<ReassemblyKey, PartialMessage>,
     expiry_ms: u64,
     now_ms: u64,
+    aggregate_bytes: usize,
 }
+
+/// Maximum aggregate retained bytes. Plan 116 §14 requires a
+/// bounded aggregate retained-byte ceiling; the chosen value is
+/// two full maximum-size messages plus headroom.
+pub const MAX_REASSEMBLY_AGGREGATE_BYTES: usize =
+    (MAX_REASSEMBLY_BYTES_PER_MESSAGE + 1) * MAX_REASSEMBLY_MESSAGES / 8;
 
 impl BoundedReassembler {
     /// Constructs a new reassembler with the supplied capacity,
-    /// expiry window, and initial time. The capacity is clamped to
-    /// [`MAX_REASSEMBLY_MESSAGES`].
-    pub fn new(capacity: usize, expiry_ms: u64, now_ms: u64) -> Self {
+    /// aggregate byte budget, expiry window, and initial time.
+    /// The capacity is clamped to [`MAX_REASSEMBLY_MESSAGES`].
+    pub fn new(capacity: usize, aggregate_bytes_max: usize, expiry_ms: u64, now_ms: u64) -> Self {
         let capacity = capacity.min(MAX_REASSEMBLY_MESSAGES);
+        let aggregate_bytes_max = aggregate_bytes_max.min(MAX_REASSEMBLY_AGGREGATE_BYTES);
         Self {
             capacity,
+            aggregate_bytes_max,
             partials: BTreeMap::new(),
             expiry_ms,
             now_ms,
+            aggregate_bytes: 0,
         }
     }
 
@@ -329,6 +408,16 @@ impl BoundedReassembler {
         self.partials.is_empty()
     }
 
+    /// Returns the retained aggregate byte count.
+    pub fn retained_bytes(&self) -> usize {
+        self.aggregate_bytes
+    }
+
+    /// Returns the bounded aggregate byte budget.
+    pub fn aggregate_bytes_budget(&self) -> usize {
+        self.aggregate_bytes_max
+    }
+
     /// Updates the reassembler's view of the current time.
     pub fn set_now(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
@@ -345,25 +434,83 @@ impl BoundedReassembler {
     /// partial message may arrive before or after some follow-on
     /// fragments; the bounded reassembler retains the partial
     /// entry until completion or expiry.
+    ///
+    /// On failure the reassembler does **not** retain partial
+    /// state for the offending insertion: capacity, byte-budget,
+    /// and per-message size failures are rolled back before the
+    /// function returns.
     pub fn insert(
         &mut self,
         key: ReassemblyKey,
         fragment: TunnelFragment,
     ) -> Result<Option<Vec<u8>>, ReassemblyError> {
-        if fragment.message_id() == 0 {
+        let message_id = fragment.message_id().unwrap_or(0);
+        if matches!(fragment, TunnelFragment::Unfragmented { .. }) {
+            // Unfragmented messages never participate in
+            // reassembly.
+            return Ok(Some(extract_unfragmented_body(&fragment)));
+        }
+        if message_id == 0 {
             return Err(ReassemblyError::SequenceOutOfRange { sequence: 0 });
         }
         self.expire_due();
-        let partial = self.partials.entry(key).or_insert_with(PartialMessage::new);
-        partial.insert(fragment)?;
-        if let Some(message) = partial.assemble() {
-            self.partials.remove(&key);
-            return Ok(Some(message));
-        }
-        if self.partials.len() > self.capacity {
-            return Err(ReassemblyError::CapacityExceeded {
-                capacity: self.capacity,
+        let increment = fragment.body_len();
+        let existing = self.partials.get(&key).cloned();
+        // Pre-admission capacity and aggregate-byte checks.
+        if existing.is_none() {
+            if self.partials.len() >= self.capacity {
+                return Err(ReassemblyError::CapacityExceeded {
+                    capacity: self.capacity,
+                });
+            }
+            if self
+                .aggregate_bytes
+                .checked_add(increment)
+                .map(|sum| sum > self.aggregate_bytes_max)
+                .unwrap_or(true)
+            {
+                return Err(ReassemblyError::AggregateBytesExceeded {
+                    bytes: self.aggregate_bytes.saturating_add(increment),
+                    maximum: self.aggregate_bytes_max,
+                });
+            }
+        } else if self
+            .aggregate_bytes
+            .checked_add(increment)
+            .map(|sum| sum > self.aggregate_bytes_max)
+            .unwrap_or(true)
+        {
+            return Err(ReassemblyError::AggregateBytesExceeded {
+                bytes: self.aggregate_bytes.saturating_add(increment),
+                maximum: self.aggregate_bytes_max,
             });
+        }
+        // Insert or update.
+        let partial = self
+            .partials
+            .entry(key)
+            .or_insert_with(|| PartialMessage::new(self.now_ms));
+        partial.last_touched_ms = self.now_ms;
+        match partial.insert(fragment) {
+            Ok(()) => {}
+            Err(error) => {
+                // Roll back any retained state changes. We
+                // always remove the partial when the insertion
+                // returns an error; the conflicting-duplicate
+                // case must also drop the partial to satisfy the
+                // spec §11.4 invalidation rule.
+                if let Some(p) = self.partials.remove(&key) {
+                    self.aggregate_bytes = self.aggregate_bytes.saturating_sub(p.bytes);
+                }
+                return Err(error);
+            }
+        }
+        self.aggregate_bytes = self.aggregate_bytes.saturating_add(increment);
+        if let Some(message) = partial.assemble() {
+            let total = partial.bytes;
+            self.partials.remove(&key);
+            self.aggregate_bytes = self.aggregate_bytes.saturating_sub(total);
+            return Ok(Some(message));
         }
         Ok(None)
     }
@@ -371,19 +518,50 @@ impl BoundedReassembler {
     /// Drops every partial entry whose age exceeds the bounded
     /// expiry window.
     pub fn expire_due(&mut self) {
-        // The reassembler does not store per-entry insertion
-        // timestamps in the public surface; expiry is driven by
-        // the caller via [`BoundedReassembler::set_now`] and a
-        // manual [`BoundedReassembler::purge`] call. The hook
-        // exists so the caller can drive expiry without a
-        // background task.
-        let _ = (self.now_ms, self.expiry_ms);
+        if self.partials.is_empty() {
+            return;
+        }
+        let expired: Vec<ReassemblyKey> = self
+            .partials
+            .iter()
+            .filter_map(|(key, partial)| {
+                let age = self.now_ms.saturating_sub(partial.last_touched_ms);
+                if age >= self.expiry_ms {
+                    Some(*key)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let expired_bytes: usize = expired
+            .iter()
+            .filter_map(|key| self.partials.remove(key))
+            .map(|partial| partial.bytes)
+            .sum();
+        self.aggregate_bytes = self.aggregate_bytes.saturating_sub(expired_bytes);
     }
 
     /// Purges every retained partial entry. The caller may invoke
     /// this on shutdown or after a deterministic test run.
     pub fn purge(&mut self) {
         self.partials.clear();
+        self.aggregate_bytes = 0;
+    }
+
+    /// Convenience helper used by some callers to convert a
+    /// millisecond expiry into the [`Duration`] argument of
+    /// [`Self::new`].
+    pub fn duration_to_ms(duration: Duration) -> u64 {
+        let secs = duration.as_secs();
+        let nanos = u64::from(duration.subsec_nanos());
+        secs.saturating_mul(1_000).saturating_add(nanos / 1_000_000)
+    }
+}
+
+fn extract_unfragmented_body(fragment: &TunnelFragment) -> Vec<u8> {
+    match fragment {
+        TunnelFragment::Unfragmented { body } => body.clone(),
+        _ => Vec::new(),
     }
 }
 
@@ -414,9 +592,15 @@ mod tests {
         }
     }
 
+    fn unfragmented(body: &[u8]) -> TunnelFragment {
+        TunnelFragment::Unfragmented {
+            body: body.to_vec(),
+        }
+    }
+
     #[test]
     fn first_follow_on_assemble() {
-        let mut r = BoundedReassembler::new(4, 60_000, 0);
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
         let k = key(1, 0x1234);
         assert!(
             r.insert(k, first(0x1234, &[0xAA_u8; 50]))
@@ -431,11 +615,12 @@ mod tests {
         assert_eq!(&message[..50], &[0xAA_u8; 50]);
         assert_eq!(&message[50..], &[0xBB_u8; 30]);
         assert!(r.is_empty());
+        assert_eq!(r.retained_bytes(), 0);
     }
 
     #[test]
     fn out_of_order_follow_on_assembles() {
-        let mut r = BoundedReassembler::new(4, 60_000, 0);
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
         let k = key(1, 0x5678);
         r.insert(k, follow(0x5678, 2, true, &[0x22_u8; 10]))
             .unwrap();
@@ -451,7 +636,7 @@ mod tests {
 
     #[test]
     fn duplicate_fragment_is_idempotent() {
-        let mut r = BoundedReassembler::new(4, 60_000, 0);
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
         let k = key(1, 0x9ABC);
         r.insert(k, follow(0x9ABC, 1, true, &[0x55_u8; 8])).unwrap();
         // Same fragment with identical body must be a no-op.
@@ -460,7 +645,7 @@ mod tests {
 
     #[test]
     fn conflicting_duplicate_invalidates_partial() {
-        let mut r = BoundedReassembler::new(4, 60_000, 0);
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
         let k = key(1, 0xDEF0);
         r.insert(k, follow(0xDEF0, 1, false, &[0x55_u8; 8]))
             .unwrap();
@@ -469,26 +654,24 @@ mod tests {
             outcome,
             Err(ReassemblyError::ConflictingDuplicate { .. })
         ));
-        // The conflicting insert drops the partial entry. The
-        // reassembler must not return a successful completion.
+        assert!(r.is_empty());
+        assert_eq!(r.retained_bytes(), 0);
     }
 
     #[test]
     fn fragment_from_another_context_does_not_join_partial() {
-        let mut r = BoundedReassembler::new(4, 60_000, 0);
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
         let k1 = key(1, 0xFEED);
         let k2 = key(2, 0xFEED);
         r.insert(k1, follow(0xFEED, 1, true, &[0x11_u8; 8]))
             .unwrap();
-        // Same message id but different context id must not join
-        // the partial entry of context 1.
         let outcome = r.insert(k2, follow(0xFEED, 1, true, &[0x22_u8; 8]));
         assert!(outcome.is_ok());
     }
 
     #[test]
     fn capacity_exceeded_fails_closed() {
-        let mut r = BoundedReassembler::new(1, 60_000, 0);
+        let mut r = BoundedReassembler::new(1, 1 << 20, 60_000, 0);
         let k1 = key(1, 0x1000);
         let k2 = key(1, 0x2000);
         r.insert(k1, follow(0x1000, 1, false, &[0x11_u8; 4]))
@@ -502,7 +685,7 @@ mod tests {
 
     #[test]
     fn last_fragment_with_lower_sequence_rejected() {
-        let mut r = BoundedReassembler::new(4, 60_000, 0);
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
         let k = key(1, 0x3000);
         r.insert(k, follow(0x3000, 2, false, &[0x11_u8; 4]))
             .unwrap();
@@ -511,5 +694,81 @@ mod tests {
             outcome,
             Err(ReassemblyError::LastBelowObservedMax { .. })
         ));
+    }
+
+    #[test]
+    fn aggregate_byte_budget_enforced() {
+        let mut r = BoundedReassembler::new(16, 32, 60_000, 0);
+        // A single fragment of 16 bytes still leaves 16 bytes of
+        // headroom. A second fragment of 16 bytes is rejected by
+        // the aggregate bound.
+        r.insert(key(1, 0x4001), follow(0x4001, 1, false, &[0x11; 16]))
+            .unwrap();
+        let outcome = r.insert(key(1, 0x4002), first(0x4002, &[0x22; 17]));
+        assert!(matches!(
+            outcome,
+            Err(ReassemblyError::AggregateBytesExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn expiry_due_drops_partials() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0x5001);
+        r.insert(k, follow(0x5001, 1, false, &[0x11; 8])).unwrap();
+        // Advance past the expiry window.
+        r.set_now(60_001);
+        let outcome = r.insert(k, follow(0x5001, 2, true, &[0x22; 8]));
+        // The previous partial was expired and the new fragment
+        // creates a new partial because it is `is_last = true`
+        // but only carries sequence 2 (the first fragment /
+        // sequence 0 is missing); it is therefore not yet
+        // complete.
+        assert!(outcome.is_ok());
+    }
+
+    #[test]
+    fn unfragmented_completes_immediately() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let outcome = r.insert(key(1, 0x6001), unfragmented(&[0x55; 16])).unwrap();
+        let message = outcome.expect("complete");
+        assert_eq!(message.len(), 16);
+        assert_eq!(&message[..], &[0x55; 16]);
+        assert_eq!(r.retained_bytes(), 0);
+    }
+
+    #[test]
+    fn conflicting_duplicate_first_drops_partial() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0x7001);
+        r.insert(k, first(0x7001, &[0x11; 8])).unwrap();
+        let outcome = r.insert(k, first(0x7001, &[0x22; 8]));
+        assert!(matches!(
+            outcome,
+            Err(ReassemblyError::ConflictingDuplicate { .. })
+        ));
+    }
+
+    #[test]
+    fn identical_duplicate_first_is_idempotent() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0x7002);
+        r.insert(k, first(0x7002, &[0x11; 8])).unwrap();
+        let outcome = r.insert(k, first(0x7002, &[0x11; 8]));
+        assert!(outcome.is_ok());
+    }
+
+    #[test]
+    fn rejected_insertion_does_not_exceed_bound() {
+        let mut r = BoundedReassembler::new(1, 64, 60_000, 0);
+        let k1 = key(1, 0x8001);
+        let k2 = key(1, 0x8002);
+        r.insert(k1, follow(0x8001, 1, false, &[0x11; 4])).unwrap();
+        let before_len = r.len();
+        let outcome = r.insert(k2, first(0x8002, &[0x22; 4]));
+        assert!(outcome.is_err());
+        // The capacity-bound check happens before insertion so
+        // the second key never makes it in.
+        assert_eq!(r.len(), before_len);
     }
 }

@@ -54,12 +54,14 @@ short-build outbound/inbound local state = strict-established
 independent short-build Q0                = passed-emissary-native-consumer
 Q1 authenticated router transport        = deferred
 Q2 live reply to i2pr Established        = deferred
-TunnelData local data plane               = Plan 116 active target
+TunnelData local data plane               = passed-local-tunnel-data-plane
 live mixed-router exploratory             = Plan 117 target
 ```
 
 Plan-of-record:
-[`plans/116-local-tunnel-data-plane.md`](../../plans/116-local-tunnel-data-plane.md)
+[`plans/116-local-tunnel-data-plane.md`](../../plans/116-local-tunnel-data-plane.md) +
+[`plans/116-completion-correction.md`](../../plans/116-completion-correction.md) +
+[`plans/116-status.md`](../../plans/116-status.md)
 
 ## Required MVP roles
 

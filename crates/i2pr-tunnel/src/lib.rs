@@ -74,15 +74,17 @@ pub use config::{
     MAX_EXPLORATORY_OUTBOUND, MAX_FAILURE_THRESHOLD, MAX_HOPS, MIN_HOPS,
 };
 pub use data::{
-    DeliveryInstruction, FragmentDelivery, MAX_FRAGMENT_COUNT, MAX_PLAINTEXT_DATA_BYTES,
-    MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES, TunnelMessageBuilder, TunnelMessageError,
-    TunnelMessageParser, TunnelPayloadHeader,
+    DeliveryInstruction, FragmentDelivery, MAX_FRAGMENT_BODY_BYTES, MAX_FRAGMENT_COUNT,
+    MAX_PLAINTEXT_DATA_BYTES, MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES, TunnelMessageBuilder,
+    TunnelMessageError, TunnelMessageParser, TunnelPayloadHeader,
 };
 pub use established::{
-    EstablishedHop, EstablishedRole, EstablishedTunnel, EstablishedTunnelError, zero_id, zero_peer,
+    EstablishedHop, EstablishedMaterial, EstablishedNextHop, EstablishedRole, EstablishedTunnel,
+    EstablishedTunnelError, zero_id, zero_peer,
 };
 pub use fragment::{
-    BoundedReassembler, MAX_REASSEMBLY_BYTES_PER_MESSAGE, MAX_REASSEMBLY_MESSAGES, TunnelFragment,
+    BoundedReassembler, MAX_REASSEMBLY_AGGREGATE_BYTES, MAX_REASSEMBLY_BYTES_PER_MESSAGE,
+    MAX_REASSEMBLY_MESSAGES, TunnelFragment,
 };
 pub use identity::{
     MAX_TUNNEL_ID, TunnelDirection, TunnelId, TunnelIdError, TunnelLifetime, TunnelLifetimeError,
@@ -106,7 +108,7 @@ pub use multirecord::{
 };
 pub use pool::{
     ExploratoryPool, MAX_HOPS_PER_TUNNEL, PoolError, PoolFullError, RegisterError, RegisterOutcome,
-    RegistrationError, TunnelRegistration, TunnelSlot,
+    RegistrationError, TunnelEntry, TunnelRegistration, TunnelSlot,
 };
 pub use provider::ExploratoryPoolReplyPathProvider;
 pub use responder::{DeterministicResponder, ResponderError};

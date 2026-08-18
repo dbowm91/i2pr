@@ -2039,47 +2039,76 @@ a live exploratory transport path. Evidence and closure are
 [`plans/115-status.md`](plans/115-status.md) and
 [`plans/115-handoff.md`](plans/115-handoff.md).
 
-## Plan 116 local tunnel data plane scaffolding
+## Plan 116 local tunnel data plane
 
-Plan 116 is the active Milestone 5 implementation plan that lands
+Plan 116 is the closed Milestone 5 implementation plan that lands
 the runtime-neutral tunnel data plane the established material
-needs to ferry decrypted `TunnelData` payloads between hops.
+needs to ferry decrypted `TunnelData` payloads between hops. The
+Plan 116 completion/correction pass
+([`plans/116-completion-correction.md`](plans/116-completion-correction.md),
+inventory defects `C1`–`C16`) closed Plan 116 as
+`passed-local-tunnel-data-plane`. Status authority lives in
+[`plans/116-status.md`](plans/116-status.md).
 
 Plan 116 lands:
 
-- `crates/i2pr-tunnel/src/layer.rs` — AES-256 ECB block encryptor,
-  AES-256 CBC encrypt/decrypt wrappers, the `TunnelLayerTransform`
-  participant forward and creator/inbound inverse transforms, and
-  the `DuplicateWindow` bounded exact-match replay window.
+- `crates/i2pr-tunnel/src/layer.rs` — AES-256 ECB block encryptor
+  and decryptor, AES-256 CBC encrypt/decrypt wrappers, the
+  `TunnelLayerTransform` participant forward and creator/inbound
+  inverse transforms, and the `DuplicateWindow` bounded
+  exact-match replay window. The creator inverse uses
+  `ECB-DEC / CBC-DEC / ECB-DEC` and the participant forward uses
+  `ECB-ENC / CBC-ENC / ECB-ENC` per the official I2P Tunnel
+  Message Specification.
 - `crates/i2pr-tunnel/src/data.rs` — `TunnelPayloadHeader`,
-  `DeliveryInstruction`, `FragmentDelivery`, `TunnelFragment`, the
-  `TunnelMessageBuilder` with bounded fragmentation, the
-  `TunnelMessageParser` for first/follow-on records, and a
-  `fill_nonzero` fallback that prevents infinite loops when
-  deterministic test RNGs emit only zero bytes.
+  `DeliveryInstruction`, `FragmentDelivery`,
+  `TunnelFragment::{Unfragmented, First, FollowOn}`, the
+  `TunnelMessageBuilder` with single-cell and complete-message →
+  first + follow-on fragmentation, the `TunnelMessageParser`
+  that verifies `SHA256(post_zero_record_bytes || IV)[0..4]` and
+  rejects every reserved delivery-type / delay / extended-options
+  flag, and CSPRNG-sourced fresh IVs and nonzero padding bytes
+  with a bounded per-byte retry ceiling.
 - `crates/i2pr-tunnel/src/fragment.rs` — the bounded
-  `BoundedReassembler` with hard ceilings on stored messages and
-  bytes.
+  `BoundedReassembler` with hard concurrent-message, per-message
+  byte, and **aggregate retained-byte** ceilings, caller-driven
+  expiry, and pre-insertion capacity checks that roll back any
+  state that exceeded the bound. Conflicting duplicates invalidate
+  only the affected partial message.
 - `crates/i2pr-tunnel/src/established.rs` —
   `EstablishedHop`/`EstablishedTunnel` secret-material ownership
-  with manual `Zeroize` for `TunnelId` and `TunnelPeer`.
+  with `Option<EstablishedNextHop>` next-hop state (no
+  `u32::MAX` / zero-hash sentinels), `[IBGW, Participant*]`
+  inbound remote-hop ordering, single-shot
+  `EstablishedTunnel::into_extracted` material extraction, and
+  `EstablishedMaterial` that owns the per-hop `LayerKeys`.
+- `crates/i2pr-tunnel/src/pool.rs` — `TunnelEntry` pairs each
+  `TunnelRegistration` with its `EstablishedMaterial`. Real
+  `register_*_with_material` insertion paths replace the legacy
+  metadata-only path; pool replies use the first remote IBGW
+  router hash and receive tunnel id (not the creator tunnel id).
 - `crates/i2pr-tunnel/src/roles.rs` — runtime-neutral
-  outbound/inbound/local role composition plus the
-  `RouterDeliveryAction`/`OBGWRouterDelivery` envelopes.
-- `Cargo.toml` — `crypto-common = "=0.1.7"` pin forces the
-  aes/cbc cipher 0.4.x trait world to compile against a single
-  crypto-common version, side-stepping the `sha2 0.11.0`/`digest
-  0.11.3` duplicate crypto-common 0.2.x.
+  outbound gateway / participant / endpoint / inbound gateway /
+  participant / local-endpoint composition with CSPRNG-injection
+  via `R: CryptoRng + RngCore` on the production send paths. The
+  OBEP applies the **final forward participant layer** (not the
+  creator inverse), parses every record, and feeds every
+  fragment to the reassembler. The local endpoint applies the
+  reverse-path creator inverse over the inbound remote hops.
+- `crates/i2pr-tunnel/src/short_state.rs` —
+  `ShortBuildRegistrar::admit_material` performs the real
+  pool insertion (the legacy placeholder `slot(0)` is gone for
+  the canonical material API).
 
 The crate compiles cleanly with `cargo check -p i2pr-tunnel` and
 the workspace passes `cargo check --workspace --all-targets`,
 `cargo clippy --workspace --all-targets -- -D warnings`, and
-`cargo doc --workspace --no-deps` with `-D warnings`. Of the
-`i2pr-tunnel` lib test suite 182 tests pass and 17 provisional
-tests fail because the underlying protocol semantics are still
-being completed. Plan 116 is the active implementation surface for
-the local data plane; Plan 117 will cut the fresh candidate and
-drive the qualified external delivery lane. Status authority
+`cargo doc --workspace --no-deps` with `-D warnings`. The
+`i2pr-tunnel` lib test suite is fully green
+(`cargo test --locked -p i2pr-tunnel --lib` reports 213 passing
+tests and zero `Plan 116 provisional scaffolding` `#[ignore]`
+markers). Plan 117 is unblocked and may begin once a qualified
+external delivery lane becomes available. Status authority
 lives in [`plans/116-status.md`](plans/116-status.md).
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
@@ -3376,11 +3405,11 @@ Plan 103  RouterInfo validation + bounded local NetDB     [closed]
      -> Plan 110  multi-record preprocessing + local conformance closure [superseded-by-plan111]
      -> Plan 111  final local short-build conformance correction [passed-final-local-short-build-conformance]
      -> Plan 112  outbound pre-delivery closure [passed-outbound-pre-delivery-closure]
-     -> Plan 113  inbound reference reconciliation [passed-inbound-reference-reconciliation]
-     -> Plan 114  terminal routing + tunnel-chain correction    [passed-terminal-routing-chain-correction]
-     -> Plan 115  canonical production I2NP bridge + Q0 native Emissary OBEP reply [passed-emissary-q0-construction-and-obep-reply-only]
-     -> Plan 116  local tunnel data plane scaffolding [implementation-landed-partial-scaffolding]
-     -> return to Milestone 4B external acceptance [blocked-on-qualified-external-delivery-lane]
+-> Plan 113  inbound reference reconciliation [passed-inbound-reference-reconciliation]
+      -> Plan 114  terminal routing + tunnel-chain correction    [passed-terminal-routing-chain-correction]
+      -> Plan 115  canonical production I2NP bridge + Q0 native Emissary OBEP reply [passed-emissary-q0-construction-and-obep-reply-only]
+      -> Plan 116  local tunnel data plane [passed-local-tunnel-data-plane]
+      -> Plan 117  live exploratory/NetDB integration [ready-for-planning-or-execution]
 ```
 
 Plan 106 closed the local/bootstrap implementation phase; Plan 107
@@ -3434,12 +3463,15 @@ delivery lane. Milestone 4A is now
 with `inbound_short_build = locally-reference-compatible` and
 `production_i2np_bridge = locally-conformant-no-double-prefix`
 and `independent_short_build = passed-emissary-q0-native-consumer`.
-A direct `DatabaseLookup` over NTCP2 is not accepted as a substitute
-for the standard exploratory-tunnel path. The next executable step
-is a future narrow qualified external-delivery checkpoint (the
-Plan 116/Plan 117 sequence), requiring a host with the Plan 046
-rootless sealed-namespace lane or the Plan 048/049 Multipass
-recovery lane runnable, before Milestone 4B external acceptance.
+After the Plan 116 completion/correction pass, the local tunnel
+data plane is `passed-local-tunnel-data-plane` and Plan 117 is
+unblocked. A direct `DatabaseLookup` over NTCP2 is not accepted
+as a substitute for the standard exploratory-tunnel path. The
+next executable step is a future narrow qualified
+external-delivery checkpoint (the Plan 117 sequence), requiring a
+host with the Plan 046 rootless sealed-namespace lane or the
+Plan 048/049 Multipass recovery lane runnable, before
+Milestone 4B external acceptance.
 
 ## Plan 106 daemon NetDB/bootstrap integration and Milestone 5 handoff (closed)
 

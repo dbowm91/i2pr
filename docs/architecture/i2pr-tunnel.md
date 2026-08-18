@@ -11,7 +11,9 @@ the substrate required to flip the Plan 106 NetDB seam from
 `BlockedExploratoryTunnelUnavailable` to `Available` once a real
 inbound tunnel is registered.
 
-> Status: Plan 114 terminal routing and tunnel-chain correction
+> Status: Plan 116 closed as `passed-local-tunnel-data-plane` by
+> the Plan 116 completion/correction pass (defects `C1`–`C16`).
+> Plan 114 terminal routing and tunnel-chain correction
 > after Plan 113 inbound reference reconciliation and Plan 112
 > outbound pre-delivery closure. Plan 109 corrected the wire format,
 > Noise-N transcript,
@@ -67,23 +69,38 @@ inbound tunnel is registered.
 > transport) and Q2 (reply round-trip to Established) remain
 > pending. Live mixed-router
 > delivery is still blocked on a qualified external delivery lane.
-> Plan 116 lands the local tunnel data plane scaffolding: the
-> AES-256 CBC/ECB layer transform in
-> [`src/layer.rs`](../../crates/i2pr-tunnel/src/layer.rs), the
-> bounded 1..=63 fragment builder/parser in
-> [`src/data.rs`](../../crates/i2pr-tunnel/src/data.rs), the
-> bounded `BoundedReassembler` in
-> [`src/fragment.rs`](../../crates/i2pr-tunnel/src/fragment.rs), the
-> `EstablishedTunnel`/`EstablishedHop` secret-material ownership in
-> [`src/established.rs`](../../crates/i2pr-tunnel/src/established.rs),
-> and the runtime-neutral outbound/inbound/local role composition in
-> [`src/roles.rs`](../../crates/i2pr-tunnel/src/roles.rs). The
-> deterministic outbound → inbound pair, full fragmentation,
-> `ShortBuildRegistrar` wiring, and `ExploratoryPool` reply-path
-> semantics remain pending; see
-> [`plans/116-status.md`](../../plans/116-status.md).
+> Plan 116 lands the local tunnel data plane and the Plan 116
+> completion/correction pass closed every
+> `Plan 116 provisional scaffolding` test marker. The crate now
+> owns: the AES-256 ECB/CBC/ECB layer transform in
+> [`src/layer.rs`](../../crates/i2pr-tunnel/src/layer.rs)
+> (participant forward `ECB-ENC/CBC-ENC/ECB-ENC`, creator inverse
+> `ECB-DEC/CBC-DEC/ECB-DEC`); the canonical
+>  `SHA256(post_zero_record_bytes || IV)[0..4]` checksum builder
+> and parser in
+> [`src/data.rs`](../../crates/i2pr-tunnel/src/data.rs) with
+> distinct unfragmented vs fragmented-first wire encodings and
+> automatic complete-message fragmentation; the bounded
+> `BoundedReassembler` in
+> [`src/fragment.rs`](../../crates/i2pr-tunnel/src/fragment.rs)
+> with caller-driven expiry, per-message + aggregate byte bounds,
+> and conflicting-duplicate invalidation; the
+> `EstablishedTunnel` / `EstablishedHop` / `EstablishedMaterial`
+> secret-material ownership with `Option<EstablishedNextHop>`
+> next-hop state and one-shot `into_extracted` transfer in
+> [`src/established.rs`](../../crates/i2pr-tunnel/src/established.rs);
+> the runtime-neutral outbound/inbound/local role composition
+> with CSPRNG-injected IVs and padding in
+> [`src/roles.rs`](../../crates/i2pr-tunnel/src/roles.rs); the
+> pool entries pairing `TunnelRegistration` and
+> `EstablishedMaterial` in
+> [`src/pool.rs`](../../crates/i2pr-tunnel/src/pool.rs); and the
+> success-only `ShortBuildRegistrar::admit_material` in
+> [`src/short_state.rs`](../../crates/i2pr-tunnel/src/short_state.rs).
+> See [`plans/116-status.md`](../../plans/116-status.md).
 > Not production-ready. See `README.md`,
 > `GUARDRAILS.md`,
+> [`plans/116-completion-correction.md`](../../plans/116-completion-correction.md),
 > [`plans/111-short-build-final-local-conformance-correction.md`](../../plans/111-short-build-final-local-conformance-correction.md),
 > [`plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`](../../plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md),
 > [`plans/112-outbound-short-build-pre-delivery-closure.md`](../../plans/112-outbound-short-build-pre-delivery-closure.md),

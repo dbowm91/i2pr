@@ -2,14 +2,13 @@
 //!
 //! Plan 107 §3.3 owns the deterministic exploratory pool. The pool
 //! stores up to the configured number of inbound and outbound tunnel
-//! registrations, performs bounded replacement and expiry, and
-//! exposes a deterministic `select_inbound_reply_path` selector that
-//! the `crate::provider::ExploratoryPoolReplyPathProvider` adapter consumes.
-//!
-//! The pool is intentionally **runtime-neutral**: it does not spawn
-//! tasks, does not own a clock, and never reaches into a transport.
-//! Time and randomness are supplied by the caller so the pool can be
-//! exercised under deterministic simulation.
+//! registrations together with their secret-bearing companion
+//! material. Each pool entry pairs the public metadata the pool
+//! exposes for non-secret inspection with the per-hop `LayerKeys`
+//! the data plane needs. The pool does not own a clock; callers
+//! must invoke [`ExploratoryPool::advance_time`] to advance the
+//! pool's view of time so expiry and replacement decisions stay
+//! deterministic.
 
 #![forbid(unsafe_code)]
 
@@ -19,16 +18,15 @@ use std::fmt;
 use i2pr_netdb::{ReplyPath, ReplyPathError, RouterHash};
 
 use crate::config::ExploratoryPoolConfig;
+use crate::established::EstablishedMaterial;
 use crate::identity::{TunnelDirection, TunnelId, TunnelPeer, TunnelState};
 
 /// The hard ceiling on the number of registered peer hops in a single
-/// tunnel. The I2P specification uses an eight-hop maximum; we keep
-/// the same ceiling for consistency.
+/// tunnel.
 pub const MAX_HOPS_PER_TUNNEL: u8 = 8;
 
 /// Stable identifier used to address a single tunnel slot in the
-/// pool. The pool hands out monotonic identifiers in insertion order
-/// to make deterministic simulation easy.
+/// pool.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TunnelSlot(u32);
 
@@ -51,11 +49,6 @@ impl fmt::Display for TunnelSlot {
 }
 
 /// Registration record describing a tunnel known to the pool.
-///
-/// The registration is intentionally narrow: identity, direction,
-/// state, hop list, and the absolute second timestamp at which the
-/// tunnel was created. The pool derives expiry from
-/// `created_at_seconds + config.lifetime.seconds()`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TunnelRegistration {
     slot: TunnelSlot,
@@ -144,12 +137,10 @@ impl fmt::Display for RegistrationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyHopList => formatter.write_str("tunnel hop list must not be empty"),
-            Self::TooManyHops { actual, maximum } => {
-                write!(
-                    formatter,
-                    "tunnel hop count {actual} exceeds maximum {maximum}"
-                )
-            }
+            Self::TooManyHops { actual, maximum } => write!(
+                formatter,
+                "tunnel hop count {actual} exceeds maximum {maximum}"
+            ),
         }
     }
 }
@@ -173,6 +164,16 @@ pub enum RegisterOutcome {
         /// The slot identifier of the existing tunnel.
         slot: TunnelSlot,
     },
+}
+
+impl RegisterOutcome {
+    /// Returns the assigned slot regardless of the variant.
+    pub fn slot(&self) -> TunnelSlot {
+        match self {
+            Self::Inserted { slot, .. } => *slot,
+            Self::Duplicate { slot } => *slot,
+        }
+    }
 }
 
 /// Failure categories for [`ExploratoryPool::register_inbound`] and
@@ -226,23 +227,58 @@ impl fmt::Display for RegisterError {
 
 impl std::error::Error for RegisterError {}
 
+/// Pool-bound entry that pairs the public `TunnelRegistration`
+/// metadata with the secret-bearing
+/// `EstablishedMaterial` the data plane consumes. Each pool slot
+/// owns exactly one entry.
+#[derive(Debug)]
+pub struct TunnelEntry {
+    registration: TunnelRegistration,
+    established: EstablishedMaterial,
+}
+
+impl TunnelEntry {
+    /// Constructs a new entry pairing a registration with the
+    /// established material that came out of the build state
+    /// machine.
+    pub fn new(registration: TunnelRegistration, established: EstablishedMaterial) -> Self {
+        Self {
+            registration,
+            established,
+        }
+    }
+
+    /// Returns the registration metadata.
+    pub fn registration(&self) -> &TunnelRegistration {
+        &self.registration
+    }
+
+    /// Returns the established material.
+    pub fn established(&self) -> &EstablishedMaterial {
+        &self.established
+    }
+
+    /// Mutable accessor for the established material. The caller
+    /// must not retain a clone of the secret material; pool
+    /// mutations are intended for one-time material transfer
+    /// seams.
+    pub fn established_mut(&mut self) -> &mut EstablishedMaterial {
+        &mut self.established
+    }
+}
+
 /// Bounded exploratory tunnel pool.
 ///
 /// The pool holds up to `max_inbound` inbound and `max_outbound`
 /// outbound tunnels. Each slot is keyed by `TunnelSlot` (monotonic).
 /// The pool does not own a clock; callers must invoke
-/// [`ExploratoryPool::advance_time`] to advance the pool's view of time so expiry and
-/// replacement decisions stay deterministic.
-///
-/// `advance_time` never allocates new tunnels. Callers who want
-/// to keep the pool at the configured capacity should call
-/// `register_inbound` / `register_outbound` after `advance_time`
-/// surfaces expiry or failure.
+/// [`ExploratoryPool::advance_time`] to advance the pool's view of time so
+/// expiry and replacement decisions stay deterministic.
 #[derive(Debug)]
 pub struct ExploratoryPool {
     config: ExploratoryPoolConfig,
-    inbound: BTreeMap<TunnelSlot, TunnelRegistration>,
-    outbound: BTreeMap<TunnelSlot, TunnelRegistration>,
+    inbound: BTreeMap<TunnelSlot, TunnelEntry>,
+    outbound: BTreeMap<TunnelSlot, TunnelEntry>,
     next_slot: u32,
     consecutive_failures: u16,
     paused: bool,
@@ -290,18 +326,128 @@ impl ExploratoryPool {
 
     /// Returns the current inbound registrations in insertion order.
     pub fn inbound_registrations(&self) -> Vec<TunnelRegistration> {
-        self.inbound.values().cloned().collect()
+        self.inbound
+            .values()
+            .map(|entry| entry.registration.clone())
+            .collect()
     }
 
     /// Returns the current outbound registrations in insertion order.
     pub fn outbound_registrations(&self) -> Vec<TunnelRegistration> {
-        self.outbound.values().cloned().collect()
+        self.outbound
+            .values()
+            .map(|entry| entry.registration.clone())
+            .collect()
     }
 
-    /// Inserts an inbound registration. Returns
-    /// [`PoolFullError::InboundPoolFull`] if the pool is at capacity
-    /// and the new registration does not displace a failed/expired
-    /// slot.
+    /// Inserts an inbound registration built from the supplied
+    /// established material. The function performs full capacity
+    /// and duplicate checks; on failure the established material is
+    /// dropped and zeroized by [`EstablishedMaterial`]'s `Drop`
+    /// impl.
+    pub fn register_inbound_with_material(
+        &mut self,
+        established: EstablishedMaterial,
+        now_seconds: u64,
+    ) -> Result<RegisterOutcome, RegisterError> {
+        let tunnel_id = established.creator_tunnel_id();
+        let hop_peers: Vec<TunnelPeer> = established.hops().iter().map(|hop| hop.peer()).collect();
+        let slot = self.next_slot();
+        let registration = match TunnelRegistration::new(
+            slot,
+            tunnel_id,
+            TunnelDirection::Inbound,
+            TunnelState::Established,
+            hop_peers,
+            now_seconds,
+        ) {
+            Ok(value) => value,
+            Err(error) => return Err(RegisterError::Invalid(error)),
+        };
+        if let Some(existing) = self.find_by_tunnel_id(tunnel_id) {
+            return Ok(RegisterOutcome::Duplicate { slot: existing });
+        }
+        let established_count = self
+            .inbound
+            .values()
+            .filter(|entry| entry.registration().state() == TunnelState::Established)
+            .count();
+        if established_count >= self.config.max_inbound() as usize {
+            return Err(RegisterError::Full {
+                kind: PoolFullError::InboundPoolFull,
+                registration,
+            });
+        }
+        self.inbound
+            .insert(slot, TunnelEntry::new(registration.clone(), established));
+        Ok(RegisterOutcome::Inserted {
+            slot,
+            replaced: None,
+        })
+    }
+
+    /// Inserts an outbound registration built from the supplied
+    /// established material.
+    pub fn register_outbound_with_material(
+        &mut self,
+        established: EstablishedMaterial,
+        now_seconds: u64,
+    ) -> Result<RegisterOutcome, RegisterError> {
+        let tunnel_id = established.creator_tunnel_id();
+        let hop_peers: Vec<TunnelPeer> = established.hops().iter().map(|hop| hop.peer()).collect();
+        let slot = self.next_slot();
+        let registration = match TunnelRegistration::new(
+            slot,
+            tunnel_id,
+            TunnelDirection::Outbound,
+            TunnelState::Established,
+            hop_peers,
+            now_seconds,
+        ) {
+            Ok(value) => value,
+            Err(error) => return Err(RegisterError::Invalid(error)),
+        };
+        if let Some(existing) = self.find_by_tunnel_id(tunnel_id) {
+            return Ok(RegisterOutcome::Duplicate { slot: existing });
+        }
+        let established_count = self
+            .outbound
+            .values()
+            .filter(|entry| entry.registration().state() == TunnelState::Established)
+            .count();
+        if established_count >= self.config.max_outbound() as usize {
+            return Err(RegisterError::Full {
+                kind: PoolFullError::OutboundPoolFull,
+                registration,
+            });
+        }
+        self.outbound
+            .insert(slot, TunnelEntry::new(registration.clone(), established));
+        Ok(RegisterOutcome::Inserted {
+            slot,
+            replaced: None,
+        })
+    }
+
+    /// Looks up the established material for the supplied slot.
+    pub fn established(&self, slot: TunnelSlot) -> Option<&EstablishedMaterial> {
+        self.inbound
+            .get(&slot)
+            .or_else(|| self.outbound.get(&slot))
+            .map(|entry| entry.established())
+    }
+
+    /// Looks up the registration for the supplied slot.
+    pub fn registration(&self, slot: TunnelSlot) -> Option<&TunnelRegistration> {
+        self.inbound
+            .get(&slot)
+            .or_else(|| self.outbound.get(&slot))
+            .map(|entry| entry.registration())
+    }
+
+    /// Inserts an inbound registration only (testing seam used by
+    /// existing pool tests that do not yet exercise established
+    /// material).
     pub fn register_inbound(
         &mut self,
         tunnel_id: TunnelId,
@@ -326,7 +472,7 @@ impl ExploratoryPool {
         let established_count = self
             .inbound
             .values()
-            .filter(|value| value.state() == TunnelState::Established)
+            .filter(|entry| entry.registration().state() == TunnelState::Established)
             .count();
         if established_count >= self.config.max_inbound() as usize {
             return Err(RegisterError::Full {
@@ -334,16 +480,18 @@ impl ExploratoryPool {
                 registration,
             });
         }
-        self.inbound.insert(slot, registration.clone());
+        // Build a placeholder `EstablishedMaterial` to satisfy the
+        // pool's storage invariant.
+        let placeholder = build_placeholder_established(TunnelDirection::Inbound, tunnel_id);
+        self.inbound
+            .insert(slot, TunnelEntry::new(registration.clone(), placeholder));
         Ok(RegisterOutcome::Inserted {
             slot,
             replaced: None,
         })
     }
 
-    /// Inserts an outbound registration. Returns
-    /// [`PoolFullError::OutboundPoolFull`] if the pool is at
-    /// capacity.
+    /// Inserts an outbound registration only (testing seam).
     pub fn register_outbound(
         &mut self,
         tunnel_id: TunnelId,
@@ -368,7 +516,7 @@ impl ExploratoryPool {
         let established_count = self
             .outbound
             .values()
-            .filter(|value| value.state() == TunnelState::Established)
+            .filter(|entry| entry.registration().state() == TunnelState::Established)
             .count();
         if established_count >= self.config.max_outbound() as usize {
             return Err(RegisterError::Full {
@@ -376,7 +524,9 @@ impl ExploratoryPool {
                 registration,
             });
         }
-        self.outbound.insert(slot, registration.clone());
+        let placeholder = build_placeholder_established(TunnelDirection::Outbound, tunnel_id);
+        self.outbound
+            .insert(slot, TunnelEntry::new(registration.clone(), placeholder));
         Ok(RegisterOutcome::Inserted {
             slot,
             replaced: None,
@@ -384,29 +534,35 @@ impl ExploratoryPool {
     }
 
     /// Advances the pool's view of time and returns the slots that
-    /// transitioned to [`TunnelState::Expired`] or
-    /// [`TunnelState::Failed`]. The caller may then call
-    /// `register_*` to fill the freed slots.
+    /// transitioned to [`TunnelState::Expired`].
     pub fn advance_time(&mut self, now_seconds: u64) -> Vec<TunnelSlot> {
         let lifetime = self.config.lifetime().seconds() as u64;
         let mut evicted = Vec::new();
-        for (slot, registration) in self.inbound.iter_mut() {
-            if registration.state() != TunnelState::Established {
+        let mut to_remove: Vec<TunnelSlot> = Vec::new();
+        for (slot, entry) in self.inbound.iter_mut() {
+            let reg = entry.registration_mut();
+            if reg.state() != TunnelState::Established {
                 continue;
             }
-            if now_seconds.saturating_sub(registration.created_at_seconds) >= lifetime {
-                registration.state = TunnelState::Expired;
+            if now_seconds.saturating_sub(reg.created_at_seconds()) >= lifetime {
+                reg.state = TunnelState::Expired;
                 evicted.push(*slot);
+                to_remove.push(*slot);
             }
         }
-        for (slot, registration) in self.outbound.iter_mut() {
-            if registration.state() != TunnelState::Established {
+        for (slot, entry) in self.outbound.iter_mut() {
+            let reg = entry.registration_mut();
+            if reg.state() != TunnelState::Established {
                 continue;
             }
-            if now_seconds.saturating_sub(registration.created_at_seconds) >= lifetime {
-                registration.state = TunnelState::Expired;
+            if now_seconds.saturating_sub(reg.created_at_seconds()) >= lifetime {
+                reg.state = TunnelState::Expired;
                 evicted.push(*slot);
+                to_remove.push(*slot);
             }
+        }
+        for slot in to_remove {
+            let _ = self.remove(slot);
         }
         evicted
     }
@@ -414,34 +570,31 @@ impl ExploratoryPool {
     /// Marks the supplied slot as failed and removes it from the
     /// pool. Returns the removed registration when present.
     pub fn mark_failed(&mut self, slot: TunnelSlot) -> Option<TunnelRegistration> {
-        let removed = self
-            .inbound
-            .remove(&slot)
-            .or_else(|| self.outbound.remove(&slot));
+        let removed = self.remove(slot);
         if removed.is_some() {
             self.consecutive_failures = self.consecutive_failures.saturating_add(1);
             self.paused = self.consecutive_failures >= self.config.failure_threshold();
         }
-        removed
+        removed.map(|entry| entry.registration)
     }
 
     /// Marks the supplied slot as established (used when a build
     /// completes after registration). Resets the failure counter.
     pub fn mark_established(&mut self, slot: TunnelSlot) -> Result<(), PoolError> {
-        let registration = self
+        let entry = self
             .inbound
             .get_mut(&slot)
             .or_else(|| self.outbound.get_mut(&slot))
             .ok_or(PoolError::UnknownSlot(slot))?;
-        registration.state = TunnelState::Established;
+        entry.registration.state = TunnelState::Established;
         self.consecutive_failures = 0;
         self.paused = false;
         Ok(())
     }
 
     /// Removes the supplied slot unconditionally. Returns the removed
-    /// registration when present.
-    pub fn remove(&mut self, slot: TunnelSlot) -> Option<TunnelRegistration> {
+    /// entry (containing the established material) when present.
+    pub fn remove(&mut self, slot: TunnelSlot) -> Option<TunnelEntry> {
         self.inbound
             .remove(&slot)
             .or_else(|| self.outbound.remove(&slot))
@@ -452,47 +605,47 @@ impl ExploratoryPool {
     /// tunnel whose `created_at_seconds` value is still inside the
     /// configured lifetime window. Expired and failed tunnels are
     /// never returned.
+    ///
+    /// The selector returns the **first remote IBGW router hash
+    /// and its receive tunnel id**; subsequent hops are reachable
+    /// through the established material.
     pub fn select_inbound_reply_path(
         &self,
         now_seconds: u64,
     ) -> Option<Result<ReplyPath, ReplyPathError>> {
         let lifetime = self.config.lifetime().seconds() as u64;
         let mut best: Option<&TunnelRegistration> = None;
-        for registration in self.inbound.values() {
+        for entry in self.inbound.values() {
+            let registration = entry.registration();
             if registration.state() != TunnelState::Established {
                 continue;
             }
-            if now_seconds.saturating_sub(registration.created_at_seconds) >= lifetime {
+            if now_seconds.saturating_sub(registration.created_at_seconds()) >= lifetime {
                 continue;
             }
-            let gateway = registration.hops.first().expect("validated hop list");
-            let router_hash = router_hash_from_peer(*gateway);
-            let reply_path = ReplyPath::new(router_hash, registration.tunnel_id().get());
-            match reply_path {
-                Ok(path) => {
-                    if best.is_none()
-                        || registration.created_at_seconds
-                            < best.expect("set above").created_at_seconds
-                    {
-                        best = Some(registration);
-                        let _ = path;
-                    }
-                }
-                Err(_) => continue,
+            let (_, _) = entry.established().inbound_gateway();
+            if best.is_none()
+                || registration.created_at_seconds() < best.expect("set above").created_at_seconds()
+            {
+                best = Some(registration);
             }
         }
         let chosen = best?;
-        let gateway = chosen.hops.first().expect("validated hop list");
-        let router_hash = router_hash_from_peer(*gateway);
-        Some(ReplyPath::new(router_hash, chosen.tunnel_id().get()))
+        let entry = self
+            .inbound
+            .values()
+            .find(|entry| entry.registration().tunnel_id() == chosen.tunnel_id())
+            .expect("entry exists for chosen registration");
+        let (router, tunnel) = entry.established().inbound_gateway();
+        Some(ReplyPath::new(router_hash_from_peer(router), tunnel.get()))
     }
 
     fn find_by_tunnel_id(&self, tunnel_id: TunnelId) -> Option<TunnelSlot> {
         self.inbound
             .iter()
             .chain(self.outbound.iter())
-            .find_map(|(slot, registration)| {
-                if registration.tunnel_id() == tunnel_id {
+            .find_map(|(slot, entry)| {
+                if entry.registration().tunnel_id() == tunnel_id {
                     Some(*slot)
                 } else {
                     None
@@ -504,6 +657,66 @@ impl ExploratoryPool {
         let slot = TunnelSlot(self.next_slot);
         self.next_slot = self.next_slot.saturating_add(1);
         slot
+    }
+}
+
+impl TunnelEntry {
+    /// Mutable accessor for the registration. Internal helper.
+    fn registration_mut(&mut self) -> &mut TunnelRegistration {
+        &mut self.registration
+    }
+}
+
+/// Build a synthetic `EstablishedMaterial` placeholder for pool
+/// entry insertions that do not yet exercise established material.
+/// The placeholder carries a single zero-hop hop vector (which the
+/// registration hop list mirrors) and is zeroized on drop.
+fn build_placeholder_established(
+    direction: TunnelDirection,
+    tunnel_id: TunnelId,
+) -> EstablishedMaterial {
+    use crate::build_crypto::LayerKeys;
+    use crate::established::{
+        EstablishedHop, EstablishedMaterial, EstablishedNextHop, EstablishedRole,
+    };
+    let hop = match direction {
+        TunnelDirection::Inbound => EstablishedHop::with_next(
+            TunnelPeer::from_hash(i2pr_proto::Hash::from_bytes([0; 32])),
+            EstablishedRole::InboundGateway,
+            tunnel_id,
+            LayerKeys::new([0; 32], [1; 32], [2; 32]),
+            EstablishedNextHop::new(
+                TunnelPeer::from_hash(i2pr_proto::Hash::from_bytes([0; 32])),
+                tunnel_id,
+            ),
+        ),
+        TunnelDirection::Outbound => EstablishedHop::terminal(
+            TunnelPeer::from_hash(i2pr_proto::Hash::from_bytes([0; 32])),
+            EstablishedRole::OutboundEndpoint,
+            tunnel_id,
+            LayerKeys::new([0; 32], [1; 32], [2; 32]),
+        ),
+    };
+    let inbound_gateway = if matches!(direction, TunnelDirection::Inbound) {
+        Some((hop.peer(), tunnel_id))
+    } else {
+        None
+    };
+    let local_inbound_receive = match direction {
+        TunnelDirection::Inbound => Some(tunnel_id),
+        TunnelDirection::Outbound => None,
+    };
+    EstablishedMaterial {
+        direction,
+        creator_tunnel_id: tunnel_id,
+        hops: vec![hop],
+        created_at_seconds: 0,
+        inbound_gateway: inbound_gateway.unwrap_or((
+            TunnelPeer::from_hash(i2pr_proto::Hash::from_bytes([0; 32])),
+            tunnel_id,
+        )),
+        local_inbound_receive: local_inbound_receive.unwrap_or(tunnel_id),
+        extracted: true,
     }
 }
 
