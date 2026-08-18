@@ -91,9 +91,6 @@ pub use build::{
     BuildCryptographyUnavailable, BuildRecordLayout, BuildRecordLayoutError, BuildReplyKind,
     BuildRequestKind,
 };
-pub use data_plane_registry::{
-    DataPlaneCapacity, DataPlaneRegistry, RegistryError,
-};
 pub use build_crypto::{
     AEAD_KEY_LEN, AEAD_NONCE_LEN, BuildCryptography, BuildCryptographyError, EPHEMERAL_KEY_LEN,
     EciesX25519BuildCryptography, HASH_PREFIX_LEN, LayerKeys, NoBuildCryptography,
@@ -108,6 +105,7 @@ pub use data::{
     MAX_PLAINTEXT_DATA_BYTES, MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES, TunnelMessageBuilder,
     TunnelMessageError, TunnelMessageParser, TunnelPayloadHeader,
 };
+pub use data_plane_registry::{DataPlaneCapacity, DataPlaneRegistry, RegistryError};
 pub use established::{
     EstablishedHop, EstablishedMaterial, EstablishedNextHop, EstablishedRole, EstablishedTunnel,
     EstablishedTunnelError, zero_id, zero_peer,

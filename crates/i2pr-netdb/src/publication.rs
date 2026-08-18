@@ -208,8 +208,7 @@ impl PublicationCoordinator {
         // reserved for the optional verification path; when a
         // nonzero token is set, both reply_tunnel_id and
         // reply_gateway must be present.
-        let gzip_payload =
-            gzip_encode(&encoded).map_err(|_| PublicationError::NoLocalSnapshot)?;
+        let gzip_payload = gzip_encode(&encoded).map_err(|_| PublicationError::NoLocalSnapshot)?;
         if gzip_payload.len() > i2pr_proto::MAX_I2NP_PAYLOAD_SIZE - 64 {
             return Err(PublicationError::NoLocalSnapshot);
         }
@@ -516,11 +515,12 @@ mod tests {
         let local_hash = local.router_hash();
         let mut coordinator = PublicationCoordinator::new(PublicationCoordinator::default_policy());
         coordinator.register_local(local);
-        let record = coordinator
-            .begin_attempt(peer, &store)
-            .expect("attempt");
+        let record = coordinator.begin_attempt(peer, &store).expect("attempt");
         let body = record.store_message;
-        assert_eq!(body.key, i2pr_proto::Hash::from_bytes(*local_hash.as_bytes()));
+        assert_eq!(
+            body.key,
+            i2pr_proto::Hash::from_bytes(*local_hash.as_bytes())
+        );
         match body.data {
             DatabaseStoreData::RouterInfoCompressed(payload) => {
                 let decompressed = decompress_router_info(payload.as_bytes()).expect("decompress");

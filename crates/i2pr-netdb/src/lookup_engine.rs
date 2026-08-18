@@ -430,17 +430,17 @@ impl RouterInfoLookup {
                 .chain(state.queried.iter().copied())
                 .filter(|hash| *hash != key)
                 .collect();
-            let message = match build_databaselookup(&state.target, state.kind, Some(&path), &excluded)
-            {
-                Ok(message) => message,
-                Err(_) => {
-                    // The body builder refused the request. We do
-                    // not advance to the next peer because the
-                    // exclusion budget is exhausted — bail closed.
-                    self.active = Some(state);
-                    return AdvanceOutcome::Terminal(LookupFinalState::PeerExhausted);
-                }
-            };
+            let message =
+                match build_databaselookup(&state.target, state.kind, Some(&path), &excluded) {
+                    Ok(message) => message,
+                    Err(_) => {
+                        // The body builder refused the request. We do
+                        // not advance to the next peer because the
+                        // exclusion budget is exhausted — bail closed.
+                        self.active = Some(state);
+                        return AdvanceOutcome::Terminal(LookupFinalState::PeerExhausted);
+                    }
+                };
             self.active = Some(state);
             return AdvanceOutcome::Attempt(key, message);
         }
@@ -848,7 +848,10 @@ mod tests {
         };
         let expected_peer = router_hash(signer.identity()).expect("peer hash");
         assert_eq!(peer, expected_peer);
-        assert_eq!(message.key, i2pr_proto::Hash::from_bytes(*target.as_bytes()));
+        assert_eq!(
+            message.key,
+            i2pr_proto::Hash::from_bytes(*target.as_bytes())
+        );
         assert_eq!(
             message.from,
             i2pr_proto::Hash::from_bytes(*gateway.as_bytes())

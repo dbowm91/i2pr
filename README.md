@@ -99,6 +99,28 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
   and the fragmented cases, including the out-of-order
   fragmented trajectory (`T3`) (`i2pr-tunnel`; see
   [`plans/116-status.md`](plans/116-status.md))
+ - Plan 117 Phases A–F exploratory NetDB composition: typed
+  `DatabaseLookupMessage` and `DatabaseStoreMessage` carriers on
+  `LookupAction` and `PublicationAttemptRecord`, the one-shot
+  `ExploratoryPool::activate` seam, the bounded
+  `DataPlaneRegistry` for activated local roles, the daemon
+  `NetDbSeam` composition state machine, the outbound
+  `OutboundGatewayRole` `DatabaseLookup`/`DatabaseStore`
+  tunnel-data composition (Plan 117 §8/§10), and the
+  inbound `LocalInboundEndpointRole` `TunnelData` dispatch
+  (`crates/i2pr-daemon::inbound_dispatch`,
+  `crates/i2pr-daemon::outbound_lookup`;
+  see [`plans/117-live-exploratory-netdb-integration.md`](plans/117-live-exploratory-netdb-integration.md))
+ - Multi-record short tunnel-build construction: randomized slot
+  allocation, originator + padding fake records, raw ChaCha20
+  preprocessing/postprocessing (slot byte at offset 4 of the
+  12-byte nonce), and the one-byte-count STBM/OTBRM payload
+  framing validated through
+  `validate_count_prefixed_short_payload` /
+  `encode_count_prefixed_short_payload` (Plan 110 closed; Plan
+  109 corrected the byte-11 regression to byte 4; Plan 112 made
+  the count-prefixed contract explicit and makes the state-machine
+  delivery action validate the exact prefix and payload length)
 - Multi-record short tunnel-build construction: randomized slot
   allocation, originator + padding fake records, raw ChaCha20
   preprocessing/postprocessing (slot byte at offset 4 of the
@@ -115,7 +137,11 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 - Live NTCP2 or SSU2 transport (NTCP2 experimental, non-advertised)
 - Live mixed-router tunnel build execution (depends on a qualified
   external delivery lane)
-- NetDB lookup/publication over the network
+- NetDB lookup/publication over the network (Plan 117 §8/§10
+  composition is local-only; the exploratory outbound path is
+  wired through `DataPlaneRegistry` and `OutboundGatewayRole`,
+  but the network transport adapter still owns the NTCP2/SSU2
+  handshake surface)
 - I2NP message handling and router dispatch
 - Streaming, SAM, I2CP, garlic, LeaseSet management
 - Client proxies (HTTP, SOCKS5)

@@ -64,7 +64,9 @@ Flat — six files at the crate root:
 | `src/config.rs` | Strict versioned TOML configuration (`serde(deny_unknown_fields)` everywhere) | `CURRENT_SCHEMA_VERSION`, `DEFAULT_MAX_TASKS`, `DEFAULT_MAX_BUFFERED_BYTES`, `RouterProfile`, `LogFormat`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `Config`, `ConfigError` |
 | `src/error.rs` | Typed error hierarchy and stable exit-code mapping | `ExitCode`, `DaemonError` |
 | `src/bootstrap.rs` | Plan 106 NetDB/bootstrap state machine | `BootstrapState`, `BootstrapPolicy`, `BootstrapSnapshot`, `BootstrapReport`, `ReseedAttemptSummary`, `Bootstrap`, `bootstrap_daemon`, `bootstrap_with_offline_reseed`, `build_trust_set`, `store_summary` |
-| `src/netdb_seam.rs` | Plan 106 runtime-facing seam for Plan 105 actions | `NetDbSeam`, `ExploratoryPathStatus` |
+| `src/netdb_seam.rs` | Plan 106/117 runtime-facing seam for Plan 105 actions | `NetDbSeam`, `CompositionOutcome`, `ExploratoryPathStatus` |
+| `src/outbound_lookup.rs` | Plan 117 §8/§10 outbound exploratory data-plane composition | `compose_outbound_lookup`, `compose_outbound_publication`, `OutboundLookupDispatch`, `MAX_OUTBOUND_LOOKUP_CELLS`, `MAX_OUTBOUND_PUBLICATION_CELLS` |
+| `src/inbound_dispatch.rs` | Plan 117 §9 inbound exploratory `TunnelData` dispatch | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE` |
 
 There are no subdirectories.
 
@@ -75,7 +77,9 @@ There are no subdirectories.
 - `pub mod cli;`
 - `pub mod config;`
 - `pub mod error;`
+- `pub mod inbound_dispatch;`
 - `pub mod netdb_seam;`
+- `pub mod outbound_lookup;`
 - `pub use error::DaemonError;`
 - `enum CommandOutcome`:
   - `Validated { dry_run, config }`
@@ -281,6 +285,45 @@ otherwise. `set_reply_path_provider` accepts any `Box<dyn
 ReplyPathProvider>`; the production wiring is the
 `i2pr_tunnel::ExploratoryPoolReplyPathProvider` adapter. A peer
 transport link is not equivalent to a complete reply path.
+
+### Plan 117 composition state machine (`src/netdb_seam.rs`)
+
+Plan 117 §7.2–7.3 replaces the Plan 107/108 post-path placeholder
+with the live composition root. After `accept_reply_path` succeeds,
+`advance_after_path` drives the lookup state machine through
+`RouterInfoLookup::handle_pending_after_path` and emits the next
+typed `LookupAction::SendDatabaselookup` so the runtime adapter
+never has to reach into private fields. The seam exposes the
+bounded `CompositionOutcome` vocabulary
+(`NeedInboundExploratory`, `NeedOutboundExploratory`,
+`LookupReadyForTunnelDispatch`, `NoEligibleCandidates`) so the
+runtime scheduler can request the right exploratory build at every
+step.
+
+### Plan 117 outbound composition (`src/outbound_lookup.rs`)
+
+The outbound composition root wraps a typed `DatabaseLookupMessage`
+or `DatabaseStoreMessage` in the standard I2NP envelope through
+`i2pr-proto`, drives `OutboundGatewayRole::forward_cells` against a
+`Router`-delivery `TunnelPayloadHeader`, and packages the resulting
+`TunnelData` cells as `i2pr_transport::DeliveryRequest`s addressed
+to the outbound first hop. No hand-built STBM, no second I2NP
+codec, no direct transport-to-floodfill fallback. The composition
+hard-ceilings are `MAX_OUTBOUND_LOOKUP_CELLS` and
+`MAX_OUTBOUND_PUBLICATION_CELLS`.
+
+### Plan 117 inbound dispatch (`src/inbound_dispatch.rs`)
+
+The inbound dispatch helper routes one `TunnelDataMessage` by
+`tunnel_id` to the activated `LocalInboundEndpointRole` in the
+`i2pr_tunnel::DataPlaneRegistry`, decodes the recovered standard
+I2NP envelope exactly once through the existing `i2pr-proto`
+decoder, and supports only `DatabaseStore`, `DatabaseSearchReply`,
+and `DeliveryStatus` body kinds. Unknown tunnel ids fail closed
+without allocating role state. The recovered envelope ceiling is
+`MAX_RECOVERED_ENVELOPE`. `route_databasestore` and
+`route_database_search_reply` drive the Plan 105 ingestion
+helpers.
 
 ### Which crates are wired in today
 

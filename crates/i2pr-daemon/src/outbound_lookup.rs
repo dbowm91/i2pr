@@ -25,7 +25,9 @@
 use std::fmt;
 
 use i2pr_netdb::LookupAction;
-use i2pr_proto::{DatabaseLookupMessage, DatabaseStoreMessage, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE};
+use i2pr_proto::{
+    DatabaseLookupMessage, DatabaseStoreMessage, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE,
+};
 use i2pr_transport::{Deadline, DeliveryRequest, EncodedI2npMessage, PeerId};
 use i2pr_tunnel::data::{DeliveryInstruction as TunnelDelivery, TunnelPayloadHeader};
 use i2pr_tunnel::roles::OutboundGatewayRole;
@@ -70,8 +72,6 @@ pub enum OutboundLookupError {
     Codec(String),
 }
 
-
-
 /// Result of one outbound lookup composition. The runtime scheduler
 /// dispatches every [`DeliveryRequest`] to the supplied peer. The
 /// `cell_count` exposes the number of TunnelData cells the
@@ -96,7 +96,11 @@ impl OutboundLookupDispatch {
 
 impl fmt::Display for OutboundLookupDispatch {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "OutboundLookupDispatch(cells={})", self.cell_count)
+        write!(
+            formatter,
+            "OutboundLookupDispatch(cells={})",
+            self.cell_count
+        )
     }
 }
 
@@ -162,9 +166,7 @@ pub fn compose_outbound_lookup<R: CryptoRng + RngCore>(
     };
     let envelope = encode_standard_envelope(lookup, message_id, expiration_ms)?;
     let payload_header = TunnelPayloadHeader {
-        delivery: TunnelDelivery::Router {
-            router: lookup.key,
-        },
+        delivery: TunnelDelivery::Router { router: lookup.key },
         message_id,
         expiration_ms,
     };

@@ -416,6 +416,8 @@ evidence = [
     "crates/i2pr-daemon/tests/netdb_integration.rs",
     "plans/106-daemon-netdb-bootstrap-integration-and-milestone-5-handoff.md",
     "plans/106-status.md",
+    "plans/117-live-exploratory-netdb-integration.md",
+    "plans/117-status.md",
 ]
 advertised = false
 

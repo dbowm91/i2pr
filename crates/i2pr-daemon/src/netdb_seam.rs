@@ -234,10 +234,9 @@ impl NetDbSeam {
             StartOutcome::PendingAttempt(action) => action,
             StartOutcome::NeedsReplyPath(action) => action,
             StartOutcome::Terminal(result) => {
-                let lookup_id = self
-                    .lookup
-                    .active_lookup()
-                    .unwrap_or_else(|| LookupId::new(0, LookupKind::RouterInfo, RouterHash::from_bytes([0; 32])));
+                let lookup_id = self.lookup.active_lookup().unwrap_or_else(|| {
+                    LookupId::new(0, LookupKind::RouterInfo, RouterHash::from_bytes([0; 32]))
+                });
                 let final_state = match *result {
                     i2pr_netdb::LookupResult::Failure { final_state, .. } => final_state,
                     i2pr_netdb::LookupResult::Success { .. } => LookupFinalState::Success,

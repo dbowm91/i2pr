@@ -75,7 +75,9 @@ impl std::fmt::Display for RegistryError {
             Self::DuplicateInbound(id) => {
                 write!(formatter, "inbound receive tunnel {id} is already bound")
             }
-            Self::DirectionMismatch => formatter.write_str("tunnel direction does not match registry entry"),
+            Self::DirectionMismatch => {
+                formatter.write_str("tunnel direction does not match registry entry")
+            }
         }
     }
 }
@@ -153,7 +155,8 @@ impl DataPlaneRegistry {
         let first_hop = established.first_hop_router().hash();
         let receive_tunnel = established.first_hop_receive_tunnel();
         let role = OutboundGatewayRole::new(established, expires_at_ms);
-        self.outbound_first_hop.insert(slot, (first_hop, receive_tunnel));
+        self.outbound_first_hop
+            .insert(slot, (first_hop, receive_tunnel));
         self.outbound.insert(slot, role);
         Ok(self.outbound.get(&slot).expect("just inserted"))
     }
@@ -320,7 +323,10 @@ mod tests {
         );
         // Second activation on the same slot fails closed.
         let duplicate = registry.activate_outbound(slot, outbound_established(0x2000), 60_000);
-        assert!(matches!(duplicate, Err(RegistryError::DuplicateOutbound(_))));
+        assert!(matches!(
+            duplicate,
+            Err(RegistryError::DuplicateOutbound(_))
+        ));
     }
 
     #[test]
@@ -336,14 +342,7 @@ mod tests {
         );
         // Second activation on the same local receive id fails closed.
         let (_id, duplicate_tunnel) = inbound_established();
-        let duplicate = registry.activate_inbound(
-            duplicate_tunnel,
-            16,
-            4096,
-            60_000,
-            0,
-            60_000,
-        );
+        let duplicate = registry.activate_inbound(duplicate_tunnel, 16, 4096, 60_000, 0, 60_000);
         assert!(matches!(duplicate, Err(RegistryError::DuplicateInbound(_))));
     }
 
@@ -371,7 +370,11 @@ mod tests {
     fn capacity_overflow_rejects_excess_activation() {
         let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(1, 1));
         registry
-            .activate_outbound(TunnelSlot::from_raw(1), outbound_established(0x4000), 60_000)
+            .activate_outbound(
+                TunnelSlot::from_raw(1),
+                outbound_established(0x4000),
+                60_000,
+            )
             .expect("first");
         let err = registry.activate_outbound(
             TunnelSlot::from_raw(2),

@@ -24,10 +24,9 @@
 #![forbid(unsafe_code)]
 
 use i2pr_netdb::{
-    handle_databasestore_message, handle_searchreply_message, RouterInfoLookup,
-    RouterInfoStore,
+    RouterInfoLookup, RouterInfoStore, handle_databasestore_message, handle_searchreply_message,
 };
-use i2pr_proto::{I2npBody, I2npMessage, MessageType, TunnelDataMessage, MAX_I2NP_PAYLOAD_SIZE};
+use i2pr_proto::{I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE, MessageType, TunnelDataMessage};
 use i2pr_tunnel::data_plane_registry::DataPlaneRegistry;
 use i2pr_tunnel::identity::TunnelId;
 use i2pr_tunnel::roles::TunnelRoleError;
@@ -194,7 +193,8 @@ pub fn dispatch_inbound_tunnel_data(
     cell: &TunnelDataMessage,
     now_ms: u64,
 ) -> Result<InboundDispatchOutcome, InboundDispatchError> {
-    let tunnel_id = TunnelId::new(cell.tunnel_id).map_err(|_| InboundDispatchError::InvalidTunnelId)?;
+    let tunnel_id =
+        TunnelId::new(cell.tunnel_id).map_err(|_| InboundDispatchError::InvalidTunnelId)?;
     let previous_peer = registry
         .inbound_first_hop(tunnel_id)
         .ok_or(InboundDispatchError::UnknownTunnelId(cell.tunnel_id))?;
@@ -219,16 +219,14 @@ pub fn dispatch_inbound_tunnel_data(
         I2npBody::DatabaseStore(_) => Ok(InboundDispatchOutcome::DatabaseStoreComplete {
             bytes: bytes.to_vec(),
         }),
-        I2npBody::DatabaseSearchReply(_) => Ok(
-            InboundDispatchOutcome::DatabaseSearchReplyComplete {
+        I2npBody::DatabaseSearchReply(_) => {
+            Ok(InboundDispatchOutcome::DatabaseSearchReplyComplete {
                 bytes: bytes.to_vec(),
-            },
-        ),
-        I2npBody::DeliveryStatus(_) => Ok(
-            InboundDispatchOutcome::DeliveryStatusComplete {
-                bytes: bytes.to_vec(),
-            },
-        ),
+            })
+        }
+        I2npBody::DeliveryStatus(_) => Ok(InboundDispatchOutcome::DeliveryStatusComplete {
+            bytes: bytes.to_vec(),
+        }),
         other => {
             let _ = body_kind(other);
             let type_byte = other.message_type().code();
@@ -245,10 +243,7 @@ pub fn route_databasestore(
     lookup_id: i2pr_netdb::LookupId,
     envelope: &I2npMessage,
     context: i2pr_netdb::ValidationContext,
-) -> Result<
-    i2pr_netdb::ResponseOutcome,
-    i2pr_netdb::LookupEngineError,
-> {
+) -> Result<i2pr_netdb::ResponseOutcome, i2pr_netdb::LookupEngineError> {
     handle_databasestore_message(lookup, store, lookup_id, envelope, context)
 }
 
@@ -260,10 +255,7 @@ pub fn route_database_search_reply(
     lookup_id: i2pr_netdb::LookupId,
     envelope: &I2npMessage,
     policy: &i2pr_netdb::LookupPolicy,
-) -> Result<
-    i2pr_netdb::ResponseOutcome,
-    i2pr_netdb::LookupEngineError,
-> {
+) -> Result<i2pr_netdb::ResponseOutcome, i2pr_netdb::LookupEngineError> {
     handle_searchreply_message(lookup, lookup_id, envelope, policy)
 }
 

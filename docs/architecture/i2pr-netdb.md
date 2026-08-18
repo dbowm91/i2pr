@@ -104,7 +104,8 @@ no DNS. Filesystem I/O belongs to `i2pr-storage` (raw-byte seam) and
   ceilings.
 - `lookup_action::LookupAction` — the small action vocabulary the
   state machine emits (`SendDatabaselookup`, `NeedExploratoryReplyPath`,
-  `Complete`).
+  `Complete`). `SendDatabaselookup` now carries the typed
+  `DatabaseLookupMessage` it asks the runtime to dispatch (Plan 117 §5.1).
 - `databaselookup::build_databaselookup` — standards-conformant
   `DatabaseLookupMessage` builder; the on-wire key is the raw
   RouterHash (not the daily routing key), the `from`/reply-tunnel
@@ -121,6 +122,10 @@ no DNS. Filesystem I/O belongs to `i2pr-storage` (raw-byte seam) and
   semantics; tracks acknowledgement tokens, never re-signs the
   local RouterInfo, and surfaces a `needs_verification_lookup()`
   signal for the future Milestone 5 verification path.
+  `PublicationAttemptRecord` (Plan 117 §5.2) now carries the typed
+  `DatabaseStoreMessage` the runtime must transmit; the runtime
+  owns standard-header field assignment and a single canonical
+  envelope encode.
 - `lookup_id::ReplyPathProvider` — the trait the Plan 107
   `i2pr-tunnel::provider::ExploratoryPoolReplyPathProvider` adapter
   implements. `i2pr-daemon`'s `NetDbSeam` consumes the trait; the
