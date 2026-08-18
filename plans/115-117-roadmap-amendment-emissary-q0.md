@@ -1,113 +1,128 @@
-# Plans 115-117 roadmap amendment: Emissary Q0 and non-blocking local progression
+# Plans 115-117 roadmap amendment: Q0 passed, local data plane active
 
-- Date: 2026-08-17.
-- Supersedes the original 115-117 roadmap only where it requires a future
-  rootless/Multipass-capable host before Plan 116 can start.
+- Date: 2026-08-18.
+- This amendment is the authority where older 115-117 text conflicts with the
+  Plan 115 Emissary Q0 completion.
 - Final mixed-router interoperability requirements remain unchanged.
 
-## Corrected sequence
+## Current sequence
 
 ```text
-Plan 115 local short-build + I2NP bridge     = complete
+Plan 115 short-build + I2NP bridge                 PASSED
         |
         v
-bounded upstream Emissary Q0
+Plan 115 pinned upstream Emissary native Q0        PASSED
         |
-        +--> native pass --------------------------> Plan 116
+        v
+Plan 116 local transport-neutral tunnel data plane ACTIVE / NEXT
         |
-        +--> native protocol defect
-        |       -> one narrow correction
-        |       -> same focused Q0 ----------------> Plan 116
-        |
-        +--> reference/build blocker before native processing
-                -> external evidence deferred -----> Plan 116
+        v
+Plan 117 live exploratory + NetDB integration      GATED ON PLAN 116
 ```
 
-The exact Q0 plan is
-[`plans/115-completion-emissary-native-q0.md`](115-completion-emissary-native-q0.md).
+There is no intervening Q1/Q2 requirement before Plan 116.
 
-## Gate 115
+## Gate 115 — closed for local progression
 
-Use pinned upstream Emissary revision
-`9b43484a21d5a1291c4881cdae62a36c527f8c0f` and its existing
-`TestTransitTunnelManager<MockRuntime> -> handle_short_tunnel_build` seam.
-
-Sufficient success is native accepted processing through:
+Pinned upstream Emissary revision:
 
 ```text
-I2NP type-25 parse
- -> target record selection
- -> Noise-N decrypt
- -> short request parse
- -> transit admission
- -> OBEP reply-envelope construction
+9b43484a21d5a1291c4881cdae62a36c527f8c0f
+emissary-core 0.4.0
 ```
 
-Q1 authenticated transport delivery and Q2 live returned reply are deferred.
-They are integration evidence, not prerequisites for implementing TunnelData.
+The production i2pr type-25 ShortTunnelBuild reached Emissary's native
+`handle_short_tunnel_build()` path and produced the accepted OBEP
+TunnelGateway/Garlic reply path.
 
-## Gate 116
-
-Plan 116 is local product construction and remains transport-neutral:
+Therefore:
 
 ```text
-established path metadata + keys
- -> TunnelGateway injection
- -> fragmentation
- -> TunnelData construction
- -> layer/IV transformation
- -> participant forwarding
- -> endpoint reassembly/delivery
- -> inbound path
- -> expiry/replacement/cleanup
+Q0 independent native short-build consumption = passed
+Q1 authenticated transport delivery            = deferred
+Q2 live reply -> i2pr Established               = deferred
 ```
 
-Use deterministic in-memory delivery first. Do not hard-code NTCP2.
+Q1/Q2 remain useful later integration evidence. They are not prerequisites for
+implementing the established tunnel data plane.
 
-Plan 116 is temporarily blocked only if Emissary reaches native processing and
-reproducibly demonstrates an i2pr short-build protocol defect.
+Do not rerun Q0 merely because the temporary test patch digest was not retained;
+that is a recorded evidence-bookkeeping limitation, not a demonstrated protocol
+defect.
 
-A reference build/tooling blocker without native protocol evidence does **not**
-block Plan 116.
+## Gate 116 — executable now
 
-## Gate 117
+Plan-of-record:
+[`plans/116-local-tunnel-data-plane.md`](116-local-tunnel-data-plane.md)
 
-Plan 117 remains the live integration checkpoint. It must eventually prove:
+Handoff:
+[`plans/116-handoff.md`](116-handoff.md)
+
+Required progression:
 
 ```text
-real router delivery
+real established tunnel material + keys
+ -> real pool registration
+ -> TunnelData payload builder/parser
+ -> fragmentation/reassembly
+ -> AES layer/IV transforms
+ -> participant/endpoint processing
+ -> deterministic outbound tunnel
+ -> deterministic outbound-to-inbound tunnel delivery
+ -> local exploratory pair closure
+```
+
+Plan 116 is local product construction. Use deterministic in-memory role
+delivery. Do not hard-code NTCP2 or require a live independent router.
+
+## Gate 117 — not executable yet
+
+Plan 117 starts only after:
+
+```text
+plan_116 = passed-local-tunnel-data-plane
+```
+
+Then the project may revisit the smallest available real router-delivery lane to
+prove:
+
+```text
+real transport delivery
  -> independent tunnel hop(s)
  -> TunnelData forwarding
- -> exploratory DatabaseLookup
- -> reply through inbound exploratory tunnel
+ -> outbound exploratory DatabaseLookup
+ -> response through inbound exploratory tunnel
  -> NetDB validation/persistence
+ -> RouterInfo publication verification
 ```
 
-If the environment still lacks a qualified transport lane then, record that as
-an integration/evidence blocker. Do not back-propagate it into unrelated local
-router implementation work.
+If the current environment still cannot execute the real transport lane at that
+point, record the limitation as a **Plan 117 integration/evidence blocker**. Do
+not back-propagate it into Plan 116 or reopen short-build construction.
 
 ## Anti-loop rules
 
-1. Prefer native in-process reference seams over process/network harnesses.
-2. Do not rebuild deleted Python/NTCP2 orchestration to answer tunnel-protocol
-   questions.
-3. Separate `protocol defect` from `environment cannot execute evidence`.
-4. Every external checkpoint has a fixed attempt budget and typed terminal
-   outcome.
-5. A successful Emissary Q0 goes directly to Plan 116; no extra validation plan.
-6. Environment blockers may defer interoperability claims, but they do not
-   automatically halt transport-neutral implementation.
+1. Plan 115 Q0 is complete; do not create another short-build validation plan
+   without new affirmative defect evidence.
+2. Do not rebuild historical Python/NTCP2 orchestration to implement the local
+   tunnel data plane.
+3. Separate protocol defects, implementation defects, and environment/evidence
+   limitations.
+4. Prefer deterministic production-code trajectories before external runtime
+   integration.
+5. Plan 116 must end with router capability, not additional validation
+   infrastructure.
+6. Q1/Q2 belong to later integration once the TunnelData data plane exists.
 
-Current authority:
+## Current authority
 
 ```text
-plan_115_local_bridge          = passed
-plan_115_external_q0           = reopened-emissary-native-consumer-pending
-Q1_authenticated_transport     = deferred
-Q2_external_return_established = deferred
-plan_116_local_data_plane      = next-after-bounded-q0
-plan_117_live_integration      = external-lane-dependent
-normal_daemon_ntcp2            = disabled-and-unenableable
-ntcp2                           = experimental-non-advertised
+plan_115                         = passed-emissary-q0-construction-and-obep-reply-only
+Q0_native_emissary               = passed
+Q1_authenticated_transport       = deferred
+Q2_external_return_established   = deferred
+plan_116_local_data_plane        = unblocked-and-next
+plan_117_live_integration        = blocked-until-plan116-passes
+normal_daemon_ntcp2              = disabled-and-unenableable
+ntcp2                             = experimental-non-advertised
 ```
