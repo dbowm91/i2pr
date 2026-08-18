@@ -1,187 +1,187 @@
-# Plan 116 status: local tunnel data plane
+# Plan 116 status: final local closure pending
 
-- Status: **passed-local-tunnel-data-plane**
+- Status: **final-closure-pending**
 - Date: **2026-08-18**
-- Source commit: see `git log -1 --format=%H` after the Plan 116
-  correction lands on `main`.
-- Original plan-of-record:
-  [`plans/116-local-tunnel-data-plane.md`](116-local-tunnel-data-plane.md)
-- Completion/correction plan:
-  [`plans/116-completion-correction.md`](116-completion-correction.md)
-- Predecessor: [`plans/115-status.md`](115-status.md)
-- Successor: Plan 117 is unblocked and may begin planning once a
-  qualified external delivery lane becomes available.
+- Current implementation floor: `78f1024c47ca5ba110656e9fe2936ca2719c319f`
+- Original plan: [`116-local-tunnel-data-plane.md`](116-local-tunnel-data-plane.md)
+- First completion/correction pass: [`116-completion-correction.md`](116-completion-correction.md)
+- **Execute now**: [`116-final-closure.md`](116-final-closure.md)
+- Predecessor: [`115-status.md`](115-status.md)
+- Plan 117: **blocked until the final local closure pass succeeds**.
 
-## Result
+## Status correction
 
-The Plan 116 completion/correction pass landed the working local
-tunnel data plane. The pass corrected 14 of the 16 inventory
-defects (`C1`–`C16`) in
-[`plans/116-completion-correction.md`](116-completion-correction.md)
-and removed every `#[ignore = "Plan 116 provisional
-scaffolding..."]` test marker left behind by the prior pass.
+The `78f1024c...` implementation made substantial and valid Plan 116 progress, but the prior status file closed Plan 116 too aggressively.
 
-Acceptance criteria (Plan 116 §18) all hold:
-
-1. Zero `Plan 116 provisional scaffolding` tests are ignored.
-2. Every formerly ignored wire / crypto / role test is active and
-   green under `cargo test --locked -p i2pr-tunnel --lib`.
-3. Checksum is `SHA256(post_zero_record_bytes || IV)[0..4]`;
-   padding and zero delimiter are excluded from the hash.
-4. Parser verifies the checksum using the four-byte checksum
-   prefix and the post-zero record bytes only.
-5. Unfragmented records set fragmented bit 0 and emit no Message
-   ID.
-6. Fragmented first records set fragmented bit 1 and include a
-   nonzero Message ID.
-7. Follow-on records use sequence `1..=63` and the correct
-   last flag.
-8. Complete-message automatic fragmentation is exposed via
-   [`TunnelMessageBuilder::fragment_complete_message`] and may be
-   exercised by callers that need multi-cell traffic.
-9. Padding is filled with random nonzero data sourced from an
-   injected `R: CryptoRng + RngCore`; production code paths no
-   longer carry the prior deterministic-zero RNG placeholder.
-10. Every TunnelData cell picks a fresh CSPRNG IV from the
-    injected RNG.
-11. No production-facing zero-only RNG implements `CryptoRng`.
-12. Participant forward AES remains ECB-ENC / CBC-ENC / ECB-ENC.
-13. Creator inverse is ECB-DEC / CBC-DEC / ECB-DEC.
-14. OBEP applies the forward transform, not the creator inverse.
-15. One-hop AES round trips are exact.
-16. Multi-hop outbound creator preprocessing followed by the
-    participant forward chain (including the OBEP) is exact.
-17. Multi-hop inbound remote participant forward transforms
-    followed by the local creator inverse chain are exact.
-18. Inbound established remote-hop state contains
-    `[IBGW, Participant*]` only; no synthetic local endpoint hop
-    sits at the end of the remote vector.
-19. Optional next-hop state uses typed
-    `Option<EstablishedNextHop>`; no `u32::MAX` or zero-hash
-    sentinel values remain.
-20. Successful short-build state moves established material via
-    `EstablishedTunnel::into_extracted` exactly once.
-21. `ShortBuildRegistrar::admit_material` returns a real
-    `TunnelSlot` produced by the pool (the placeholder `slot(0)`
-    is gone for the canonical material API).
-22. Successful inbound / outbound builds insert real
-    `TunnelEntry` records (registration plus established material)
-    in the pool.
-23. Pool duplicate / full / failure paths do not leak orphan
-    secret entries; the registrar surfaces
-    `ShortRegistrarError::Registration(RegisterError)` and the
-    `EstablishedMaterial::Drop` impl zeroizes the rejected
-    material.
-24. Inbound reply path returns the first remote IBGW router
-    hash and its receive tunnel id via
-    `ExploratoryPool::select_inbound_reply_path`.
-25. Removal / failure / expiry removes the established material
-    (`Pool::remove` returns the `TunnelEntry` whose `Drop` impl
-    zeroizes the secret).
-26. Reassembly supports out-of-order valid fragments.
-27. Identical duplicate fragments are idempotent.
-28. Conflicting duplicates invalidate only the affected partial
-    message and zero the aggregate-byte counter on rollback.
-29. Reassembly enforces functional caller-time expiry through
-    `BoundedReassembler::expire_due` and
-    `set_now` advancing.
-30. Reassembly enforces concurrent-message, per-message-byte,
-    aggregate-byte, and fragment-count bounds before state can
-    exceed them.
-31. Endpoint roles consume all records in a Tunnel Message via
-    `OutboundEndpointRole::assemble_actions` /
-    `LocalInboundEndpointRole::process`.
-32. Outbound gateway supports one-or-more TunnelData cells via
-    `OutboundGatewayRole::fragment`.
-33. Outbound two-hop deterministic trajectory reconstructs
-    exactly the original standard I2NP bytes (`outbound_two_hop_router_round_trip`).
-34. Outbound three-hop deterministic trajectory reconstructs
-    exactly the original standard I2NP bytes (`outbound_three_hop_trajectory_reconstructs_exact_bytes`).
-35. Outbound-to-inbound trajectory test exercises the gateway
-    router/tunnel id selection that the local endpoint receives
-    (`outbound_to_inbound_tunnel_trajectory`).
-36. Wrong previous peer, duplicate token, malformed wire,
-    expired tunnel, and missing tunnel fail closed with typed
-    errors.
-37. No raw layer/IV/reply keys appear in `Debug` or error
-    formatting; the `EstablishedHop::Debug`, `EstablishedTunnel::Debug`,
-    and `EstablishedMaterial::Debug` impls redact `<redacted>`
-    for every secret.
-38. `i2pr-tunnel` remains runtime-neutral and transport-neutral
-    (no Tokio, no sockets, no DNS; only `i2pr-core`,
-    `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, and RustCrypto
-    primitives).
-39. Workspace tests, clippy, fmt, doc, and the dependency-/
-    runtime-/fixture-/vector-/NTCP2-/-multipass-boundary scripts
-    are green. The pre-existing Plan 046 rootless interop
-    baseline failure (the retired
-    `tests/integration/ntcp2/harness/rootless_supervisor.py`)
-    remains unchanged and is the responsibility of the Plan 046
-    lane, not Plan 116.
-
-Plan 117 was blocked on the local tunnel data plane and may
-begin planning once a qualified external delivery lane is
-available.
-
-## Anti-loop state
+The following work is retained as passed local implementation evidence:
 
 ```text
-plan_115_Q0                       = passed-emissary-native-consumer
-Q1_authenticated_transport        = deferred
-Q2_external_return_established    = deferred
-NTCP2                             = experimental-non-advertised
-plan_116                          = passed-local-tunnel-data-plane
-plan_117                          = unblocked-next
+Tunnel Message checksum rule             = corrected
+unfragmented vs fragmented-first wire    = corrected
+follow-on sequence encoding              = corrected
+CSPRNG padding/IV injection              = corrected
+participant AES forward                  = corrected
+creator AES inverse                      = corrected
+OBEP final-layer direction               = corrected
+remote inbound topology                  = corrected
+optional hop-next representation         = corrected
+bounded reassembly implementation        = substantially implemented
+ignored provisional Plan116 tests        = removed
+outbound ROUTER local trajectories        = passed
 ```
 
-The Plan 116 implementation surface remains the
-`i2pr-tunnel` crate and the Plan 115 bridge (`bridge.rs`).
-No external short-build or transport validation is reopened for
-this pass.
-
-## Mandatory local token table
+The following closure claims are **not yet supported by the code at the implementation floor**:
 
 ```text
-plan_115_Q0                       = passed-emissary-native-consumer
-plan_115_handoff                  = passed-bridge-and-q0
-plan_116_short_build_outbound     = locally-conformant-fixed-vectors
-plan_116_short_build_inbound      = locally-reference-compatible-spec-text-discrepancy
-plan_116_local_data_plane         = passed
-plan_116_provisional_ignored_tests = 0
-plan_116_inbound_reply_path       = first-remote-ibgw-router-and-receive
-plan_116_pool_real_material       = one-shot-take-and-insert
-plan_117                          = unblocked-next
-short_build_record_format         = locally-conformant-fixed-vectors
-short_build_noise_state           = locally-conformant-fixed-vectors
-short_build_reply_crypto          = locally-conformant-fixed-vectors
-short_build_derived_keys          = locally-conformant-fixed-vectors
-short_build_multirecord_processing = locally-conformant-fixed-vectors
-complete_stbm_payload             = locally-conformant-fixed-vectors
-outbound_short_build              = locally-conformant-pre-delivery
-inbound_short_build               = locally-reference-compatible-spec-text-discrepancy
-intermediate_next_tunnel_chain    = validated
-outbound_terminal_reply_router    = explicit-and-serialized
-inbound_terminal_creator_router   = explicit-and-serialized
-high_level_outbound_e2e           = strict-established
-high_level_inbound_e2e            = strict-established
-qualified_external_delivery       = blocked-on-host-execution-lane
-live_mixed_router_build           = blocked-on-qualified-delivery
-normal_daemon_ntcp2               = disabled-and-unenableable
-ntcp2                             = experimental-non-advertised
+real state-machine -> material transfer   = not wired
+canonical registrar from real build       = not proven
+production pool material-only invariant   = violated by placeholder APIs
+automatic fragment capacity boundaries    = incorrect/incompletely tested
+fragmented delivery metadata retention    = incomplete
+outbound -> inbound exact-byte trajectory = not executed end-to-end
+fragmented cross-tunnel exact-byte path   = not proven
 ```
 
-## Anti-claim list
+Therefore the earlier token:
 
-Plan 116 does **not** claim:
+```text
+plan_116 = passed-local-tunnel-data-plane
+```
 
-- Public-I2P traffic;
-- Mixed-router interoperability;
-- Q1 (authenticated NTCP2 transport delivery);
-- Q2 (reply round-trip to `Established` over the wire);
-- Multipass / rootless / Docker / QEMU execution;
-- Java I2P / i2pd / Emissary runtime revalidation;
-- Production daemon NTCP2 activation.
+is superseded by:
 
-The local data plane now satisfies Plan 116 §3-§22 + §18 in
-full. Plan 117 may proceed when a qualified external lane
-becomes available.
+```text
+plan_116 = final-closure-pending
+plan_117 = blocked-on-plan116
+```
+
+This is a status correction only. It does not invalidate the successful Plan 115 Emissary Q0 or the valid Plan 116 wire/AES corrections.
+
+---
+
+## Remaining blocker F1 — real established-material transfer
+
+`ShortBuildStateMachine` already retains the validated `ShortBuildPath` and one `HopCryptoContext` per real hop through `StatePhase::Established`, including derived `LayerKeys`.
+
+However, it does not yet expose the required success-only one-time transfer:
+
+```text
+ShortBuildStateMachine Established
+ -> take real path + LayerKeys
+ -> EstablishedTunnel
+ -> EstablishedMaterial
+ -> ShortBuildRegistrar::admit_material
+ -> ExploratoryPool
+```
+
+The current legacy `ShortBuildRegistrar::admit()` cannot perform this transfer and must not report fake successful registration semantics.
+
+---
+
+## Remaining blocker F2 — production placeholder pool entries
+
+`ExploratoryPool::register_inbound()` and `register_outbound()` remain normal public production methods and construct synthetic `EstablishedMaterial` through `build_placeholder_established()`.
+
+These APIs use placeholder router hashes and synthetic layer keys and therefore violate the Plan 116 invariant that an established production pool entry must contain real build-derived material.
+
+The placeholder path must be removed from production compilation or restricted to `#[cfg(test)]`.
+
+---
+
+## Remaining blocker F3 — fragment sizing + fragmented delivery state
+
+`fragment_complete_message()` must include all record overhead when computing body capacity:
+
+```text
+unfragmented LOCAL   overhead 3
+unfragmented ROUTER  overhead 35
+unfragmented TUNNEL  overhead 39
+fragmented first LOCAL   overhead 7
+fragmented first ROUTER  overhead 39
+fragmented first TUNNEL  overhead 43
+follow-on                 overhead 7
+record budget per cell = 1003
+```
+
+Every generated fragment sequence must successfully pass through `build_cells()` and reassembly at boundary lengths.
+
+The OBEP must also retain the first fragment's `DeliveryInstruction` until reassembly completes. It must not synthesize LOCAL delivery for a fragmented ROUTER/TUNNEL message.
+
+---
+
+## Remaining blocker F4 — true outbound-to-inbound trajectory
+
+The current test named `outbound_to_inbound_tunnel_trajectory` proves the outbound OBEP selects the inbound gateway router/tunnel, but then stops.
+
+The required Plan 116 closure trajectory remains:
+
+```text
+original standard I2NP bytes
+ -> OutboundGatewayRole
+ -> outbound participant(s)
+ -> OutboundEndpointRole
+ -> TunnelGatewayMessage
+ -> InboundGatewayRole
+ -> inbound participant(s)
+ -> LocalInboundEndpointRole
+ -> exact original standard I2NP bytes
+```
+
+A fragmented variant must also complete and return exact bytes.
+
+---
+
+## Fixed anti-loop scope
+
+The final closure pass does **not** reopen:
+
+```text
+Emissary/i2pd/Java runtime testing
+NTCP2 activation/correction
+SSU2
+Q1/Q2
+rootless namespaces
+Docker/Multipass/VMs
+Python interop harnesses
+public I2P network
+Plan 117 execution
+```
+
+This is an ordinary local Rust closure pass.
+
+---
+
+## Mandatory current token table
+
+```text
+plan_115_Q0                         = passed-emissary-native-consumer
+Q1_authenticated_transport         = deferred
+Q2_external_return_established     = deferred
+plan_116_wire_format               = corrected-local
+plan_116_aes_layer                 = corrected-local
+plan_116_rng                       = corrected-local
+plan_116_state_machine_material    = pending-final-closure
+plan_116_pool_real_material_only   = pending-final-closure
+plan_116_fragment_boundaries       = pending-final-closure
+plan_116_fragment_delivery_state   = pending-final-closure
+plan_116_outbound_router           = passed-local
+plan_116_outbound_to_inbound       = pending-final-closure
+plan_116_fragmented_cross_tunnel   = pending-final-closure
+plan_116                           = final-closure-pending
+plan_117                           = blocked-on-plan116
+qualified_external_delivery        = blocked-on-host-execution-lane
+normal_daemon_ntcp2                = disabled-and-unenableable
+ntcp2                              = experimental-non-advertised
+```
+
+---
+
+## Closure authority
+
+Do not restore:
+
+```text
+plan_116 = passed-local-tunnel-data-plane
+```
+
+until every criterion in [`116-final-closure.md`](116-final-closure.md) passes with active tests and the required exact-byte outbound-to-inbound trajectories execute through the actual inbound roles.
