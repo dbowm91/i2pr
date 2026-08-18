@@ -12,6 +12,7 @@
 use std::fmt;
 
 use i2pr_proto::Hash;
+use zeroize::Zeroize;
 
 /// The hard ceiling on the per-tunnel identifier accepted by this
 /// crate. I2P reserves the value zero to mean "no tunnel"; the
@@ -21,6 +22,12 @@ pub const MAX_TUNNEL_ID: u32 = u32::MAX;
 /// A non-zero tunnel identifier.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TunnelId(u32);
+
+impl Zeroize for TunnelId {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
 
 impl TunnelId {
     /// Constructs a tunnel identifier, rejecting zero.
@@ -214,6 +221,12 @@ impl fmt::Display for TunnelState {
 /// Router hash identifying a tunnel's gateway or endpoint.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TunnelPeer(Hash);
+
+impl Zeroize for TunnelPeer {
+    fn zeroize(&mut self) {
+        *self = TunnelPeer(Hash::from_bytes([0_u8; 32]));
+    }
+}
 
 impl TunnelPeer {
     /// Constructs a tunnel peer from a router hash.

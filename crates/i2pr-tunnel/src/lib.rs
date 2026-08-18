@@ -44,12 +44,17 @@ pub mod build;
 pub mod build_crypto;
 pub mod config;
 pub mod conformance_fixtures;
+pub mod data;
+pub mod established;
 pub mod fixed_vectors;
+pub mod fragment;
 pub mod identity;
+pub mod layer;
 pub mod multirecord;
 pub mod pool;
 pub mod provider;
 pub mod responder;
+pub mod roles;
 pub mod short;
 pub mod short_record;
 pub mod short_state;
@@ -68,9 +73,24 @@ pub use config::{
     ExploratoryConfigError, ExploratoryPoolConfig, MAX_BUILD_CONCURRENCY, MAX_EXPLORATORY_INBOUND,
     MAX_EXPLORATORY_OUTBOUND, MAX_FAILURE_THRESHOLD, MAX_HOPS, MIN_HOPS,
 };
+pub use data::{
+    DeliveryInstruction, FragmentDelivery, MAX_FRAGMENT_COUNT, MAX_PLAINTEXT_DATA_BYTES,
+    MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES, TunnelMessageBuilder, TunnelMessageError,
+    TunnelMessageParser, TunnelPayloadHeader,
+};
+pub use established::{
+    EstablishedHop, EstablishedRole, EstablishedTunnel, EstablishedTunnelError, zero_id, zero_peer,
+};
+pub use fragment::{
+    BoundedReassembler, MAX_REASSEMBLY_BYTES_PER_MESSAGE, MAX_REASSEMBLY_MESSAGES, TunnelFragment,
+};
 pub use identity::{
     MAX_TUNNEL_ID, TunnelDirection, TunnelId, TunnelIdError, TunnelLifetime, TunnelLifetimeError,
     TunnelPeer, TunnelRole, TunnelState,
+};
+pub use layer::{
+    DuplicateToken, DuplicateWindow, DuplicateWindowError, TUNNEL_IV_LEN, TUNNEL_PAYLOAD_LEN,
+    TunnelLayerTransform,
 };
 pub use multirecord::{
     CHACHA20_KEY_LEN, CreatorReplyPostprocessor, MAX_RECORD_COUNT, MIN_PRODUCTION_RECORD_COUNT,
@@ -90,6 +110,11 @@ pub use pool::{
 };
 pub use provider::ExploratoryPoolReplyPathProvider;
 pub use responder::{DeterministicResponder, ResponderError};
+pub use roles::{
+    InboundGatewayRole, InboundParticipantRole, LocalInboundEndpointRole, OBGWRouterDelivery,
+    OutboundEndpointRole, OutboundGatewayRole, OutboundParticipantRole, RouterDeliveryAction,
+    RouterDeliveryKind, TunnelRoleError,
+};
 pub use short::{
     BuildAttemptId, BuildEvent, HopCryptoContext, HopIndex, HopSpec, PerHopReply, ShortBuildAction,
     ShortBuildConstructionError, ShortBuildOutcome, ShortBuildPath, ShortTunnelBuildMessage,

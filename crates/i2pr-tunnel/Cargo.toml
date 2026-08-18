@@ -8,6 +8,8 @@ description = "Runtime-neutral tunnel identity, exploratory pool, and reply-path
 publish = false
 
 [dependencies]
+aes = { workspace = true }
+cbc = { version = "0.1", features = ["block-padding"] }
 chacha20.workspace = true
 chacha20poly1305.workspace = true
 i2pr-core = { path = "../i2pr-core" }
@@ -21,7 +23,6 @@ x25519-dalek = { workspace = true, features = ["static_secrets"] }
 zeroize.workspace = true
 
 [dev-dependencies]
-aes = { workspace = true }
 rand_chacha.workspace = true
 rand_core = { workspace = true, features = ["std"] }
 x25519-dalek = { workspace = true, features = ["static_secrets"] }
