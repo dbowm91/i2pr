@@ -1833,4 +1833,222 @@ mod tests {
             other => panic!("expected Data body, got {other:?}"),
         }
     }
+
+    #[test]
+    fn outbound_to_inbound_fragmented_out_of_order_trajectory_exact_bytes() {
+        // Plan 116 T3: same role-level trajectory as
+        // `outbound_to_inbound_fragmented_trajectory_exact_bytes`,
+        // but the local endpoint receives the inbound TunnelData
+        // cells in an order where at least one follow-on arrives
+        // before the first fragment. The endpoint must not emit
+        // any message until all unique fragments are present, and
+        // must emit the recovered message exactly once with
+        // byte-exact equality to the original standard I2NP bytes.
+        use i2pr_proto::{Date, I2npBody};
+        let (_local_receive, inbound_tunnel) =
+            build_three_hop_inbound_established(TunnelId::new(2).expect("id"));
+        // Outbound gateway: two hops into the OBEP.
+        let obgw_id = TunnelId::new(0x311).expect("id");
+        let outbound_hops = vec![
+            EstablishedHop::with_next(
+                peer(30),
+                EstablishedRole::Participant,
+                TunnelId::new(0x701).expect("id"),
+                keys(0x40),
+                EstablishedNextHop::new(peer(31), TunnelId::new(0x801).expect("id")),
+            ),
+            EstablishedHop::terminal(
+                peer(31),
+                EstablishedRole::OutboundEndpoint,
+                TunnelId::new(0x801).expect("id"),
+                keys(0x41),
+            ),
+        ];
+        let outbound_tunnel = EstablishedTunnel::new(
+            TunnelDirection::Outbound,
+            obgw_id,
+            outbound_hops,
+            0,
+            None,
+            None,
+        )
+        .expect("outbound");
+        let gateway = OutboundGatewayRole::new(outbound_tunnel, 60_000);
+        let mut rng = rng_seed(71);
+        // Same payload size as the canonical fragmented trajectory
+        // test to guarantee enough fragments for an out-of-order
+        // acceptance criterion.
+        let payload: Vec<u8> = (0..4096_u32).map(|value| (value & 0xFF) as u8).collect();
+        let expected_payload = payload.clone();
+        let original_inner = I2npMessage::new_standard(
+            0x0303_0405_u32,
+            Date::from_millis(40_000),
+            I2npBody::Data(i2pr_proto::OpaqueMessageBody {
+                payload: i2pr_proto::DeferredPayload::new(
+                    payload,
+                    i2pr_proto::MAX_I2NP_PAYLOAD_SIZE,
+                )
+                .expect("payload size"),
+            }),
+        )
+        .expect("inner i2np");
+        let original_inner_bytes = original_inner
+            .encode_standard_to_vec(i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+            .expect("encode inner");
+        let header = TunnelPayloadHeader {
+            delivery: DeliveryInstruction::Tunnel {
+                tunnel_id: inbound_tunnel.hops()[0].receive_tunnel().get(),
+                gateway: inbound_tunnel.hops()[0].peer().hash(),
+            },
+            message_id: 0x0303_0405,
+            expiration_ms: 40_000,
+        };
+        let deliveries = gateway
+            .forward_cells(&header, &original_inner_bytes, &mut rng, 0)
+            .expect("forward_cells");
+        assert!(
+            deliveries.len() > 1,
+            "fragmented trajectory must produce more than one cell"
+        );
+        // Outbound leg: every cell goes through the outbound
+        // participant and OBEP. The OBEP must emit exactly one
+        // TUNNEL action after the last fragment; the action must
+        // carry the exact IBGW router and inbound receive tunnel
+        // id.
+        let outbound_hops_iter = gateway.established().hops();
+        let mut out_p =
+            OutboundParticipantRole::new(&outbound_hops_iter[0], DuplicateWindow::new(16), 60_000)
+                .expect("op");
+        let mut out_obep = OutboundEndpointRole::new(
+            &outbound_hops_iter[1],
+            DuplicateWindow::new(16),
+            16,
+            1 << 20,
+            60_000,
+            60_000,
+            0,
+        );
+        let mut obep_action: Option<RouterDeliveryAction> = None;
+        for (index, delivery) in deliveries.iter().enumerate() {
+            let cell_after_op = out_p
+                .process(&peer(0).hash(), &delivery.cell, 0)
+                .expect("op forward");
+            let outcome = out_obep
+                .process(&peer(31).hash(), &cell_after_op, 0)
+                .expect("obep");
+            if index + 1 == deliveries.len() {
+                obep_action = outcome;
+            } else {
+                assert!(
+                    outcome.is_none(),
+                    "OBEP must not emit a delivery action before the last fragment"
+                );
+            }
+        }
+        let obep_action = obep_action.expect("obep action after last fragment");
+        let RouterDeliveryKind::TunnelGateway = obep_action.kind else {
+            panic!("expected TunnelGateway");
+        };
+        let tunnel_id = obep_action.tunnel_id.expect("tunnel id");
+        assert_eq!(
+            tunnel_id.get(),
+            inbound_tunnel.hops()[0].receive_tunnel().get()
+        );
+        let nested_i2np =
+            I2npMessage::decode_standard(&obep_action.message, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+                .expect("decode obep inner i2np");
+        let gateway_msg = TunnelGatewayMessage {
+            tunnel_id: tunnel_id.get(),
+            message: Box::new(nested_i2np),
+        };
+        // Inbound leg: run every IBGW-produced cell through the
+        // inbound participant and collect the resulting endpoint
+        // TunnelData cells. The reassembler must accept out-of-
+        // order delivery, so the endpoint receives all cells and
+        // only emits a complete message once the first fragment
+        // has finally arrived.
+        let ibgw_hop = &inbound_tunnel.hops()[0];
+        let ibgw =
+            InboundGatewayRole::new(ibgw_hop, DuplicateWindow::new(16), 60_000).expect("ibgw role");
+        let ibgw_cells = ibgw
+            .process_cells(&gateway_msg, &mut rng, 0)
+            .expect("ibgw cells");
+        assert!(
+            ibgw_cells.len() > 1,
+            "fragmented inbound trajectory must produce more than one cell"
+        );
+        let inbound_hops: Vec<crate::established::EstablishedHop> = inbound_tunnel.hops().to_vec();
+        let mut in_p =
+            InboundParticipantRole::new(&inbound_hops[1], DuplicateWindow::new(16), 60_000)
+                .expect("inbound participant");
+        let ibgw_hop_peer_hash = inbound_hops[0].peer().hash();
+        let inbound_participant_peer_hash = inbound_hops[1].peer().hash();
+        // Build the canonical endpoint-delivery order first so we
+        // can detect the first-fragment cell unambiguously and
+        // move it to the end of the delivery order.
+        let mut endpoint_cells: Vec<TunnelDataMessage> = Vec::with_capacity(ibgw_cells.len());
+        for ibgw_cell in &ibgw_cells {
+            let in_p_cell = in_p
+                .process(&ibgw_hop_peer_hash, &ibgw_cell.cell, 0)
+                .expect("participant forward");
+            endpoint_cells.push(in_p_cell);
+        }
+        // The first IBGW-produced cell is the first-fragment cell
+        // and carries the LOCAL delivery instruction that drives
+        // the local endpoint's reassembler. Move that cell to the
+        // end of the delivery order so at least one follow-on
+        // (including the `is_last = true` cell) arrives first.
+        assert!(!endpoint_cells.is_empty());
+        let first_fragment_cell = endpoint_cells[0].clone();
+        let mut reordered = Vec::with_capacity(endpoint_cells.len());
+        for cell in endpoint_cells.iter().skip(1).cloned() {
+            reordered.push(cell);
+        }
+        reordered.push(first_fragment_cell);
+        assert!(
+            reordered.len() > 1,
+            "reordered delivery vector must contain multiple cells"
+        );
+        // Now feed the cells to the local endpoint in the
+        // reordered order. The endpoint must not emit anything
+        // until every unique fragment has arrived, and must emit
+        // exactly once.
+        let mut endpoint =
+            LocalInboundEndpointRole::new(inbound_tunnel, 16, 1 << 20, 60_000, 0, 60_000);
+        let mut completion_count = 0usize;
+        let mut recovered_bytes: Option<Vec<u8>> = None;
+        for (index, cell) in reordered.iter().enumerate() {
+            let outcome = endpoint
+                .process(&inbound_participant_peer_hash, cell, 0)
+                .expect("endpoint process");
+            let is_last_cell = index + 1 == reordered.len();
+            if let Some(bytes) = outcome {
+                completion_count += 1;
+                if is_last_cell {
+                    recovered_bytes = Some(bytes);
+                } else {
+                    panic!(
+                        "endpoint must not emit a message before all unique fragments are present"
+                    );
+                }
+            } else {
+                assert!(
+                    !is_last_cell,
+                    "endpoint must emit exactly once after all unique fragments are present"
+                );
+            }
+        }
+        assert_eq!(completion_count, 1, "endpoint must emit exactly once");
+        let recovered_bytes = recovered_bytes.expect("recovered bytes");
+        assert_eq!(recovered_bytes, original_inner_bytes);
+        let recovered_message =
+            I2npMessage::decode_standard(&recovered_bytes, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+                .expect("decode recovered");
+        match recovered_message.body() {
+            I2npBody::Data(data) => {
+                assert_eq!(data.payload.as_bytes(), expected_payload.as_slice());
+            }
+            other => panic!("expected Data body, got {other:?}"),
+        }
+    }
 }
