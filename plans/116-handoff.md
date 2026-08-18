@@ -1,204 +1,165 @@
 # Plan 116 handoff
 
-- Status: **final-closure-pending**
+- Status: **terminal-cleanup-pending**
 - Date: 2026-08-18
 - Original plan: [`116-local-tunnel-data-plane.md`](116-local-tunnel-data-plane.md)
 - Prior correction: [`116-completion-correction.md`](116-completion-correction.md)
-- **Execute now**: [`116-final-closure.md`](116-final-closure.md)
+- Prior final-closure pass: [`116-final-closure.md`](116-final-closure.md)
+- **Execute now:** [`116-terminal-cleanup.md`](116-terminal-cleanup.md)
 - Current status authority: [`116-status.md`](116-status.md)
 - Predecessor: [`115-status.md`](115-status.md)
-- Plan 117: **blocked until this final local closure pass succeeds**.
+- Plan 117: **blocked until this terminal cleanup succeeds**.
 
 ## Start here
 
-Do not start Plan 117 and do not reopen external short-build/transport validation.
+Do not restart Plan 116 from the beginning.
 
-The `78f1024c...` corrective implementation fixed most of the wire/AES/data-plane defects, but a post-implementation audit found four remaining closure blockers plus one directly coupled fragmented-delivery bug.
+The major local data-plane implementation is already present and should be retained. The only remaining work is the terminal cleanup described in [`116-terminal-cleanup.md`](116-terminal-cleanup.md).
 
-Current high-level state:
+Current substantive implementation:
 
 ```text
-plan_115_Q0                     = passed-emissary-native-consumer
-plan_116_wire_format            = corrected-local
-plan_116_aes_layer              = corrected-local
-plan_116_rng                    = corrected-local
-plan_116_outbound_router        = passed-local
-plan_116                        = final-closure-pending
-plan_117                        = blocked-on-plan116
-Q1_authenticated_transport      = deferred
-Q2_external_return_established  = deferred
-normal_daemon_ntcp2             = disabled-and-unenableable
-ntcp2                           = experimental-non-advertised
+0330fb2e9e64dd0877472c930606ab4219ac18a9
 ```
 
-## Retain the implementation
-
-Do not rewrite these modules:
+Current state:
 
 ```text
-short.rs        short-build state machine and retained hop contexts
-short_state.rs  registrar
+plan_115_Q0                       = passed-emissary-native-consumer
+plan_116_material_transfer       = passed-local
+plan_116_pool_material_only      = passed-local
+plan_116_fragment_boundaries     = passed-local
+plan_116_exact_byte_cross_tunnel = passed-ordered-local
+plan_116                         = terminal-cleanup-pending
+plan_117                         = blocked-on-plan116-terminal-cleanup
+Q1_authenticated_transport       = deferred
+Q2_external_return_established   = deferred
+normal_daemon_ntcp2              = disabled-and-unenableable
+ntcp2                            = experimental-non-advertised
+```
+
+## Do not rewrite
+
+Retain the existing implementations of:
+
+```text
+short.rs        real EstablishedMaterial extraction
+short_state.rs  canonical registrar -> pool seam
 established.rs  established secret/path ownership
-pool.rs         exploratory pool + TunnelEntry
-data.rs         Tunnel Message framing/fragment creation
-fragment.rs     bounded reassembly
-layer.rs        AES layer crypto
-roles.rs        runtime-neutral tunnel roles
+pool.rs         material-bearing production entries
+data.rs         Tunnel Message framing + exact fragment sizing
+layer.rs        AES layer transforms + duplicate token window
+roles.rs        runtime-neutral outbound/inbound role composition
 ```
 
-Correct the remaining seams in place.
-
----
-
-## Closure order
-
-### F1 — wire the successful short-build state into real established material
-
-`ShortBuildStateMachine` already owns:
+Expected production changes are narrowly concentrated in:
 
 ```text
-validated ShortBuildPath
-HopCryptoContext[]
-  -> LayerKeys for each real hop
-StatePhase::Established after all replies accept
+fragment.rs     duplicate accounting / expiry / delivery metadata integrity
+roles.rs        out-of-order fragmented cross-tunnel acceptance test
 ```
 
-Implement the success-only one-time transfer described in `116-final-closure.md`:
+## Remaining defects
+
+### T1 — exact duplicates are not resource-accounting no-ops
+
+Current behavior can logically retain no new fragment bytes while still incrementing `aggregate_bytes` by `fragment.body_len()`.
+
+The duplicate is also processed after `last_touched_ms` is refreshed, allowing duplicate traffic to extend the life of an incomplete partial.
+
+Required behavior for an exact duplicate:
 
 ```text
-machine reaches Established
- -> take path + retained LayerKeys once
- -> EstablishedTunnel
- -> EstablishedMaterial
- -> ShortBuildRegistrar::admit_material
- -> real pool entry + real TunnelSlot
+retained bytes unchanged
+partial count unchanged
+aggregate_bytes unchanged
+last_touched_ms unchanged
+no aggregate-limit rejection merely for being a duplicate
 ```
 
-Required topology mapping:
+Classify duplicate vs new unique fragment before applying added-byte accounting.
+
+### T2 — first-fragment delivery metadata must participate in duplicate identity
+
+For a fragmented message, the first fragment owns the delivery instruction.
+
+These are not equivalent duplicates:
 
 ```text
-outbound remote hops = Participant* -> OBEP
-inbound remote hops  = IBGW -> Participant*
+same first body + ROUTER A
+same first body + ROUTER B
 ```
 
-The local inbound endpoint remains separate creator-side state.
-
-The terminal inbound remote hop's `next_tunnel` is the local inbound receive tunnel.
-
-The outbound OBEP has no fixed data-plane next hop.
-
-The old material-less `ShortBuildRegistrar::admit()` must either be removed or fail with a typed material-required error. It must not fabricate `Duplicate` or insertion success.
-
-### F2 — enforce material-only established pool entries in production
-
-Remove the production path:
+or:
 
 ```text
-register_inbound/register_outbound
- -> build_placeholder_established
- -> synthetic peers/keys
- -> Established pool entry
+same first body + TUNNEL(router A, id X)
+same first body + TUNNEL(router A, id Y)
 ```
 
-Move metadata-only helpers under `#[cfg(test)]` or migrate tests to deterministic real `EstablishedMaterial` fixtures.
+A metadata conflict must invalidate only that partial and release its retained-byte accounting.
 
-Production established entries must enter only through material-bearing registration.
-
-### F3 — fix automatic fragmentation boundaries
-
-Record budget after checksum + delimiter:
+An exact first duplicate requires both:
 
 ```text
-1003 bytes
+same body
+same delivery instruction
 ```
 
-Exact overheads:
+### T3 — add the missing out-of-order full cross-tunnel proof
+
+The existing fragmented cross-tunnel test now executes all roles and returns exact bytes, but endpoint delivery is still canonical-order.
+
+Extend it or add a new test so that after IBGW + inbound-participant processing, valid endpoint TunnelData cells are reordered.
+
+At minimum:
 
 ```text
-unfragmented LOCAL    3
-unfragmented ROUTER  35
-unfragmented TUNNEL  39
-first LOCAL           7
-first ROUTER         39
-first TUNNEL         43
-follow-on             7
+follow-on arrives before first
+last follow-on may arrive before first
+first fragment arrives later with delivery metadata
+endpoint emits exactly once
+final bytes == original standard I2NP bytes
 ```
 
-Therefore exact payload capacities are:
+Do not call `BoundedReassembler` directly in this terminal role-level proof.
+
+## Required implementation order
 
 ```text
-unfragmented LOCAL   1000
-unfragmented ROUTER   968
-unfragmented TUNNEL   964
-first LOCAL           996
-first ROUTER          964
-first TUNNEL          960
-follow-on              996
+1. duplicate classification + exact accounting delta
+2. duplicate expiry no-refresh
+3. first-delivery metadata conflict detection
+4. targeted fragment/reassembly tests
+5. out-of-order full cross-tunnel exact-byte test
+6. full workspace validation
+7. synchronize status/handoff/current documentation
 ```
 
-Do not merely assert that fragmentation returns `First + FollowOn` enums. Every accepted generated fragment set must pass:
+## Mandatory tests
+
+The implementation must include active tests covering at least:
 
 ```text
-fragment_complete_message
- -> build_cells
- -> parse
- -> reassemble
- -> exact original bytes
+exact duplicate first retained bytes unchanged
+exact duplicate follow-on retained bytes unchanged
+exact duplicate accepted at aggregate budget ceiling
+exact duplicate does not refresh expiry
+completion after duplicates leaves retained_bytes == 0
+exact first duplicate + same delivery is idempotent
+first duplicate + different ROUTER target invalidates partial
+first duplicate + different TUNNEL target invalidates partial
+out-of-order full fragmented outbound -> inbound exact-byte trajectory
 ```
 
-for LOCAL, ROUTER, and TUNNEL boundary sizes.
-
-### F4 — retain fragmented delivery instructions
-
-A fragmented first record owns the complete message's `DeliveryInstruction`.
-
-The OBEP currently loses this state and may synthesize LOCAL after follow-on completion. Remove that behavior.
-
-A fragmented message must complete as the original:
-
-```text
-LOCAL  -> LOCAL
-ROUTER -> ROUTER / exact router
-TUNNEL -> TunnelGateway / exact router + tunnel
-```
-
-Delete the unspecified-delivery fallback once the reassembler retains the first-fragment metadata correctly.
-
-### F5 — execute the full outbound-to-inbound trajectory
-
-The terminal acceptance test is not routing metadata. It is exact-byte recovery through every actual role:
-
-```text
-original standard I2NP bytes
- -> OutboundGatewayRole
- -> outbound participant(s)
- -> OutboundEndpointRole
- -> RouterDeliveryAction::TunnelGateway
- -> canonical TunnelGatewayMessage
- -> InboundGatewayRole
- -> inbound participant(s)
- -> LocalInboundEndpointRole
- -> exact original standard I2NP bytes
-```
-
-Required assertion:
-
-```rust
-assert_eq!(recovered, original);
-```
-
-Then repeat with a message large enough to require fragmentation and reorder valid follow-on cells before the local endpoint to exercise bounded reassembly.
-
-The existing test comment that leaves the full round trip “to runtime” must be removed; Plan 116 is specifically responsible for proving the runtime-neutral local data-plane trajectory before external integration.
-
----
+The detailed plan gives preferred names and exact semantics.
 
 ## Fixed scope boundary
 
 Forbidden during this pass:
 
 ```text
-Emissary/i2pd/Java runtime validation
+Emissary/i2pd/Java validation
 NTCP2 correction/activation
 SSU2
 Q1/Q2
@@ -206,42 +167,17 @@ rootless namespaces
 Docker / Multipass / VM work
 Python interoperability harnesses
 public I2P network
+NetDB live integration
 new generic router dispatcher
 garlic / LeaseSet / streaming / SAM / I2CP
 Plan 117 execution
 ```
 
-This pass has no environment blocker: all acceptance tests are local and deterministic.
-
----
-
-## Required source-policy checks
-
-At closure run:
-
-```bash
-rg -n 'Plan 116 provisional scaffolding' crates/i2pr-tunnel/src
-rg -n 'build_placeholder_established' crates/i2pr-tunnel/src
-rg -n 'action_from_unspecified' crates/i2pr-tunnel/src
-rg -n 'full round-trip is left to the runtime|left to the runtime' crates/i2pr-tunnel/src/roles.rs
-```
-
-Expected production-state result:
-
-```text
-provisional ignored tests        = 0
-production placeholder material  = 0
-unspecified delivery fallback    = 0
-cross-tunnel runtime exemption   = 0
-```
-
-A test-only placeholder helper is acceptable only when explicitly `#[cfg(test)]` and absent from production compilation.
-
----
+There is no environment blocker for this work.
 
 ## Validation bar
 
-Before closure:
+Run targeted tests first, then at minimum:
 
 ```bash
 cargo fmt --all --check
@@ -260,34 +196,25 @@ bash scripts/check-ntcp2-interoperability.sh
 git diff --check
 ```
 
-Do not modify historical interoperability harnesses to make Plan 116 pass.
+Do not modify historical interoperability harnesses to make this pass green.
 
----
+## Terminal state
 
-## Terminal acceptance state
-
-Do not close until all of these are true:
+Do not close until:
 
 ```text
-state_machine_material_take_once          = passed
-state_machine_material_second_take        = rejected
-real_registrar_pool_insertion             = passed
-legacy_materialless_registrar_success     = impossible
-production_placeholder_pool_entries       = impossible
-inbound_reply_path_real_ibgw              = passed
-fragment_boundary_local                   = passed
-fragment_boundary_router                  = passed
-fragment_boundary_tunnel                  = passed
-fragment_generated_cells_roundtrip        = passed
-fragmented_delivery_metadata_retained     = passed
-fragmented_router_action                  = passed
-fragmented_tunnel_action                  = passed
-outbound_router_trajectory                = passed
-outbound_to_inbound_exact_bytes           = passed
-outbound_to_inbound_fragmented_exact      = passed
-out_of_order_fragmented_cross_tunnel      = passed
-workspace_validation                      = passed
-plan_116                                  = passed-local-tunnel-data-plane
+exact_duplicate_accounting             = passed-noop
+exact_duplicate_budget_behavior        = passed-noop-at-limit
+exact_duplicate_expiry                 = passed-no-refresh
+completion_accounting                  = passed-zero-after-complete
+first_delivery_duplicate_identity      = passed
+first_delivery_conflict_invalidation   = passed
+fragmented_cross_tunnel_out_of_order   = passed-exact-bytes
+current_test_names_recorded             = exact
+status_handoff_authority                = synchronized
+workspace_validation                    = passed-or-preexisting-env-only
+plan_116                                = passed-final-local-closure
+plan_117                                = unblocked-ready-for-planning
 ```
 
-Only then may Plan 117 become the next executable line of work.
+Only after that should planning move to Plan 117.
