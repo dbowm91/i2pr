@@ -8,44 +8,41 @@
 - Terminal cleanup pass: [`116-terminal-cleanup.md`](116-terminal-cleanup.md)
 - Current status authority: [`116-status.md`](116-status.md)
 - Predecessor: [`115-status.md`](115-status.md)
-- Plan 117: **unblocked — ready for planning or execution**.
+- **Successor plan:** [`117-live-exploratory-netdb-integration.md`](117-live-exploratory-netdb-integration.md)
+- **Successor handoff:** [`117-handoff.md`](117-handoff.md)
+- Plan 117: **ready for execution**.
 
 ## Start here
 
-Do not restart Plan 116 from the beginning. The terminal cleanup
-pass landed the last four closure defects (`T1`–`T4`) and
-synchronized the status / handoff / evidence authority.
+Plan 116 is closed. Do not restart it from the beginning and do not create another Plan 116 validation pass merely because authenticated external transport remains unavailable in the current host environment.
 
-Current substantive implementation:
-
-```text
-0330fb2e9e64dd0877472c930606ab4219ac18a9  (data plane)
-+ this terminal cleanup commit              (T1-T4 corrections)
-```
+The terminal cleanup pass landed the final local closure defects and later fragment hardening extended follow-on duplicate identity and fresh-key validation.
 
 Current state:
 
 ```text
-plan_115_Q0                       = passed-emissary-native-consumer
-plan_116_material_transfer       = passed-local
-plan_116_pool_material_only      = passed-local
-plan_116_fragment_boundaries     = passed-local
-plan_116_exact_byte_cross_tunnel = passed-ordered-local
+plan_115_Q0                         = passed-emissary-native-consumer
+plan_116_material_transfer         = passed-local
+plan_116_pool_material_only        = passed-local
+plan_116_fragment_boundaries       = passed-local
+plan_116_exact_byte_cross_tunnel   = passed-ordered-local
 plan_116_out_of_order_cross_tunnel = passed-local
-plan_116_duplicate_accounting    = passed-noop-exact-duplicates
-plan_116_duplicate_expiry        = passed-no-refresh
-plan_116_first_delivery_identity = passed-conflict-detected
-plan_116                         = passed-final-local-closure
-plan_117                         = unblocked-ready-for-planning
-Q1_authenticated_transport       = deferred
-Q2_external_return_established   = deferred
-normal_daemon_ntcp2              = disabled-and-unenableable
-ntcp2                            = experimental-non-advertised
+plan_116_duplicate_accounting      = passed-noop-exact-duplicates
+plan_116_duplicate_expiry          = passed-no-refresh
+plan_116_first_delivery_identity   = passed-conflict-detected
+plan_116_follow_on_control_identity = passed-is-last-conflict-detected
+plan_116_fresh_key_validation      = passed
+plan_116                            = passed-final-local-closure
+plan_117                            = ready-for-execution
+Q1_authenticated_transport         = deferred
+Q2_external_return_established     = deferred
+normal_daemon_ntcp2                = disabled-and-unenableable
+ntcp2                              = experimental-non-advertised
 ```
 
-## Do not rewrite
+## Retain the Plan 116 implementation
 
-Retain the existing implementations of:
+Do not rewrite these surfaces during Plan 117 unless independent native processing produces a reproducible defect localized to them:
 
 ```text
 short.rs        real EstablishedMaterial extraction
@@ -55,126 +52,138 @@ pool.rs         material-bearing production entries
 data.rs         Tunnel Message framing + exact fragment sizing
 layer.rs        AES layer transforms + duplicate token window
 roles.rs        runtime-neutral outbound/inbound role composition
-fragment.rs     bounded reassembler (T1+T2 corrections applied)
+fragment.rs     bounded reassembly + duplicate/control metadata hardening
 ```
 
-## What the terminal cleanup changed
+The next work is **composition**, not reconstruction.
 
-### T1 — exact duplicates are resource-accounting no-ops
+---
 
-`PartialMessage::classify()` returns a `FragmentInsertDisposition`
-that distinguishes `Inserted { added_bytes }` from
-`ExactDuplicate`. The reassembler classifies before applying the
-aggregate budget check; exact duplicates are accepted as a no-op
-even when the budget is already full. `last_touched_ms` is not
-refreshed on duplicates. `self.partials.get(&key).cloned()` was
-removed; classification borrows the partial immutably.
+## What Plan 116 proved
 
-### T2 — first-fragment delivery metadata participates in duplicate identity
-
-Two first fragments are exact duplicates only when both their body
-bytes and their delivery instruction match. A same-body first
-fragment with a different delivery instruction is rejected with
-`ConflictingFirstMetadata`; only the affected partial is dropped.
-A follow-on fragment that carries a delivery instruction is
-rejected with `UnexpectedFollowOnDeliveryInstruction`.
-
-### T3 — out-of-order full cross-tunnel proof
-
-`outbound_to_inbound_fragmented_out_of_order_trajectory_exact_bytes`
-runs the same outbound -> OBEP -> TunnelGateway -> IBGW -> inbound
-participant trajectory as the ordered test, but feeds the local
-endpoint with the first-fragment cell moved to the end of the
-delivery order. The endpoint does not emit before all unique
-fragments are present, emits exactly once, and the recovered
-standard I2NP bytes equal the original encoded bytes.
-
-### T4 — status/handoff/evidence authority
-
-Both `plans/116-status.md` and `plans/116-handoff.md` agree on
-closure state and Plan 117 successor state. The recorded test
-names match the actual implemented identifiers.
-
-## Mandatory tests
-
-The terminal cleanup tests are recorded under the existing
-`cargo test` surface. Exact identifiers:
+The local runtime-neutral path is now established:
 
 ```text
-fragment::tests::exact_duplicate_first_does_not_increase_retained_bytes
-fragment::tests::exact_duplicate_follow_on_does_not_increase_retained_bytes
-fragment::tests::exact_duplicate_at_aggregate_limit_is_accepted_as_noop
-fragment::tests::exact_duplicate_does_not_refresh_expiry
-fragment::tests::reassembly_completion_returns_aggregate_bytes_to_zero_after_duplicates
-fragment::tests::exact_duplicate_first_with_same_delivery_is_idempotent
-fragment::tests::conflicting_first_router_target_invalidates_partial
-fragment::tests::conflicting_first_tunnel_id_invalidates_partial
-fragment::tests::conflicting_first_tunnel_gateway_invalidates_partial
-fragment::tests::unexpected_follow_on_delivery_fails_closed
-roles::tests::outbound_to_inbound_fragmented_out_of_order_trajectory_exact_bytes
+ShortBuild Established
+ -> real per-hop LayerKeys
+ -> EstablishedMaterial
+ -> real ExploratoryPool entry
+ -> OutboundGatewayRole
+ -> participant(s)
+ -> OutboundEndpointRole
+ -> ROUTER / TUNNEL delivery
+ -> InboundGatewayRole
+ -> participant(s)
+ -> LocalInboundEndpointRole
+ -> exact original standard I2NP bytes
 ```
 
-## Validation bar
+Both ordered and out-of-order fragmented trajectories pass locally.
 
-Run targeted tests first, then at minimum:
+This is sufficient substrate for Plan 117 to join the tunnel data plane to the NetDB lookup/publication state machines.
+
+---
+
+## Non-blocking carry-forward hardening
+
+One post-closure hardening case remains non-blocking:
+
+```text
+if follow-on sequence N has already declared is_last=true,
+a later new fragment sequence > N should be rejected as contradictory terminal state
+```
+
+Do not reopen Plan 116 for this item.
+
+If `fragment.rs` is already touched for a directly related Plan 117 reason, it may be corrected opportunistically with one narrow test. Otherwise leave it for the security/hardening backlog.
+
+---
+
+## Plan 117 starts from these concrete gaps
+
+Plan 117 should not begin with an external harness. It begins with current product-composition gaps:
+
+1. `LookupAction::SendDatabaselookup` currently carries only `encoded_len`, not the real `DatabaseLookupMessage` the state machine constructed.
+2. `PublicationAttemptRecord` currently does not retain the real `DatabaseStoreMessage` it validated.
+3. `NetDbSeam::pending_action_after_path()` still returns the old placeholder after accepting a reply path.
+4. Established pool material needs a bounded one-shot activation owner for local OBGW/local inbound endpoint roles.
+5. `i2pr-daemon` is still intentionally non-networked and does not yet compose `i2pr-tunnel`; Plan 117 may add that composition dependency without enabling normal-daemon NTCP2.
+
+See [`117-handoff.md`](117-handoff.md) for the execution order.
+
+---
+
+## Plan 117 evidence semantics
+
+Do not conflate these:
+
+```text
+117-L  local production composition
+117-N  independent native Emissary composition
+117-X  authenticated transport / live-process delivery
+```
+
+The pinned native reference remains upstream Emissary:
+
+```text
+revision = 9b43484a21d5a1291c4881cdae62a36c527f8c0f
+package  = emissary-core 0.4.0
+```
+
+117-L and 117-N are the mandatory next product checkpoint.
+
+117-X is attempted only if an already-qualified authenticated host lane is runnable. If not, record the environment defer once and continue router construction; do not rebuild the historical namespace/VM/Python harness.
+
+---
+
+## Fixed scope boundary carried forward
+
+Plan 116 closure does not authorize:
+
+```text
+normal-daemon NTCP2 activation
+SSU2
+public-network participation
+new Python interoperability harnesses
+new rootless namespace work
+Docker / Multipass / VM orchestration
+LeaseSet/client tunnel implementation
+general garlic subsystem
+streaming
+SAM
+I2CP
+SOCKS/HTTP proxying
+```
+
+Plan 117 has its own explicit scope in [`117-live-exploratory-netdb-integration.md`](117-live-exploratory-netdb-integration.md).
+
+---
+
+## Validation floor to preserve
+
+Before and after Plan 117 changes, keep the Plan 116 data-plane surfaces green under the repository-wide validation bar, including at least:
 
 ```bash
 cargo fmt --all --check
 cargo check --locked --workspace --all-targets
-cargo test --locked -p i2pr-tunnel --lib
 cargo test --locked -p i2pr-tunnel --all-targets
-cargo test --locked -p i2pr-proto --all-targets
 cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh
-bash scripts/check-fixture-manifest.sh
-bash scripts/check-ntcp2-vectors.sh
-bash scripts/check-ntcp2-interoperability.sh
 git diff --check
 ```
 
-Do not modify historical interoperability harnesses to make this pass green.
+Do not modify historical interoperability scripts merely to make Plan 117 green.
 
-## Fixed scope boundary
+---
 
-Forbidden during this pass:
+## Successor
 
-```text
-Emissary/i2pd/Java validation
-NTCP2 correction/activation
-SSU2
-Q1/Q2
-rootless namespaces
-Docker / Multipass / VM work
-Python interoperability harnesses
-public I2P network
-NetDB live integration
-new generic router dispatcher
-garlic / LeaseSet / streaming / SAM / I2CP
-Plan 117 execution
-```
+Execute now:
 
-There is no environment blocker for this work.
+- [`117-live-exploratory-netdb-integration.md`](117-live-exploratory-netdb-integration.md)
+- [`117-handoff.md`](117-handoff.md)
 
-## Terminal state
-
-The terminal cleanup is complete:
-
-```text
-exact_duplicate_accounting             = passed-noop-exact-duplicates
-exact_duplicate_budget_behavior        = passed-noop-at-limit
-exact_duplicate_expiry                 = passed-no-refresh
-completion_accounting                  = passed-zero-after-complete
-first_delivery_duplicate_identity      = passed-conflict-detected
-first_delivery_conflict_invalidation   = passed
-fragmented_cross_tunnel_out_of_order   = passed-out-of-order-exact-bytes
-current_test_names_recorded             = exact
-status_handoff_authority                = synchronized
-workspace_validation                    = passed-or-preexisting-env-only
-plan_116                                = passed-final-local-closure
-plan_117                                = unblocked-ready-for-planning
-```
-
-Planning may now move to Plan 117.
+Plan 117 must turn the closed local tunnel data plane into a working exploratory NetDB composition and then validate that path once against the pinned independent Emissary implementation.
