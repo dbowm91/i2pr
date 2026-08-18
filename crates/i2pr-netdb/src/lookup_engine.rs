@@ -17,8 +17,8 @@
 use std::collections::BTreeMap;
 
 use i2pr_proto::{
-    DatabaseSearchReplyMessage, DatabaseStoreData, DatabaseStoreMessage, I2npBody, I2npMessage,
-    RouterInfo,
+    DatabaseLookupMessage, DatabaseSearchReplyMessage, DatabaseStoreData, DatabaseStoreMessage,
+    I2npBody, I2npMessage, RouterInfo,
 };
 use thiserror::Error;
 
@@ -92,8 +92,9 @@ pub struct LookupDiagnostics {
 }
 
 /// Internal state of one active lookup.
+#[doc(hidden)]
 #[derive(Clone, Debug)]
-struct ActiveLookup {
+pub struct ActiveLookup {
     kind: LookupKind,
     target: RouterHash,
     reply_path: Option<ReplyPath>,
@@ -105,11 +106,42 @@ struct ActiveLookup {
 }
 
 impl ActiveLookup {
+    /// Returns the active lookup suggestion list (test-only).
+    #[doc(hidden)]
+    pub fn suggestions(&self) -> &[RouterHash] {
+        &self.suggestions
+    }
+
     fn new(lookup_id: LookupId, policy_max_suggested_hashes: usize) -> Self {
         Self {
             kind: lookup_id.kind(),
             target: lookup_id.target(),
             reply_path: None,
+            excluded: vec![lookup_id.target()],
+            queried: Vec::new(),
+            suggestions: Vec::with_capacity(policy_max_suggested_hashes),
+            attempts: 0,
+            suggestions_merged: 0,
+        }
+    }
+
+    /// Test-only constructor that pre-seeds the reply path so
+    /// composition tests in adjacent crates can drive the
+    /// ingestion paths without racing `accept_reply_path`.
+    #[doc(hidden)]
+    pub fn new_with_reply_path(
+        lookup_id: LookupId,
+        policy_max_suggested_hashes: usize,
+        reply_gateway: RouterHash,
+        reply_tunnel_id: u32,
+    ) -> Self {
+        use crate::lookup_id::ReplyPath;
+        Self {
+            kind: lookup_id.kind(),
+            target: lookup_id.target(),
+            reply_path: Some(
+                ReplyPath::new(reply_gateway, reply_tunnel_id).expect("non-zero tunnel id"),
+            ),
             excluded: vec![lookup_id.target()],
             queried: Vec::new(),
             suggestions: Vec::with_capacity(policy_max_suggested_hashes),
@@ -206,11 +238,11 @@ impl RouterInfoLookup {
         lookup_id: LookupId,
     ) -> StartOutcome {
         match result {
-            AdvanceOutcome::Attempt(peer, len) => {
+            AdvanceOutcome::Attempt(peer, message) => {
                 StartOutcome::PendingAttempt(LookupAction::SendDatabaselookup {
                     lookup_id,
                     peer,
-                    encoded_len: len,
+                    message,
                 })
             }
             AdvanceOutcome::NeedsPath => {
@@ -270,16 +302,96 @@ impl RouterInfoLookup {
         true
     }
 
+    /// Advance the active lookup to the next action after the reply
+    /// path has been supplied. Plan 117 §7 requires the lookup
+    /// state machine to immediately emit the next
+    /// `SendDatabaselookup` action when the reply path is
+    /// available so the daemon seam can drive the active lookup
+    /// without reaching into private fields.
+    pub fn handle_pending_after_path(
+        &mut self,
+        store: &RouterInfoStore,
+        routing_key: &RouterHash,
+    ) -> StartOutcome {
+        let active_id = match self.active_lookup() {
+            Some(id) => id,
+            None => {
+                return StartOutcome::Terminal(Box::new(LookupResult::Failure {
+                    lookup_id: LookupId::new(
+                        0,
+                        LookupKind::RouterInfo,
+                        RouterHash::from_bytes([0; 32]),
+                    ),
+                    final_state: LookupFinalState::Cancelled,
+                    diagnostics: LookupDiagnostics::default(),
+                }));
+            }
+        };
+        let state = match self.active.take() {
+            Some(state) => state,
+            None => {
+                return StartOutcome::Terminal(Box::new(LookupResult::Failure {
+                    lookup_id: active_id,
+                    final_state: LookupFinalState::Cancelled,
+                    diagnostics: LookupDiagnostics::default(),
+                }));
+            }
+        };
+        if state.reply_path.is_none() {
+            self.active = Some(state);
+            return StartOutcome::NeedsReplyPath(LookupAction::NeedExploratoryReplyPath {
+                lookup_id: active_id,
+            });
+        }
+        let selection = crate::lookup_policy::select_floodfill_candidates(
+            store,
+            &state.target,
+            routing_key,
+            &state.excluded,
+            &self.policy,
+        );
+        let outcome = self.advance_attempt(state, selection);
+        self.handle_start_outcome(outcome, active_id)
+    }
+
     /// Returns the current active lookup's diagnostics, if any.
     pub fn diagnostics(&self) -> Option<LookupDiagnostics> {
         self.active.as_ref().map(|state| state.diagnostics())
+    }
+
+    /// Test-only seam that pre-seeds the active lookup state so
+    /// composition tests in adjacent crates can drive the response
+    /// ingestion path without going through the full state-machine
+    /// start. Production callers must continue to drive the state
+    /// machine through `start` / `accept_reply_path` /
+    /// `handle_pending_after_path`.
+    #[doc(hidden)]
+    pub fn seed_active_with_reply_path_for_test(
+        &mut self,
+        lookup_id: LookupId,
+        reply_gateway: RouterHash,
+        reply_tunnel_id: u32,
+    ) {
+        self.active_request_id = Some(lookup_id.request_id());
+        self.active = Some(ActiveLookup::new_with_reply_path(
+            lookup_id,
+            self.policy.max_suggested_hashes(),
+            reply_gateway,
+            reply_tunnel_id,
+        ));
+    }
+
+    /// Test-only accessor that returns the active lookup state.
+    #[doc(hidden)]
+    pub fn active_for_test(&self) -> Option<&ActiveLookup> {
+        self.active.as_ref()
     }
 }
 
 // Internal helpers --------------------------------------------------
 
 enum AdvanceOutcome {
-    Attempt(RouterHash, usize),
+    Attempt(RouterHash, DatabaseLookupMessage),
     NeedsPath,
     Terminal(LookupFinalState),
 }
@@ -291,22 +403,26 @@ impl RouterInfoLookup {
         selection: crate::lookup_policy::FloodfillSelection,
     ) -> AdvanceOutcome {
         // Pick the next candidate that has not yet been queried or
-        // excluded.
+        // excluded. The state machine does not record `queried`
+        // bookkeeping until we actually emit an attempt; if the
+        // reply path is missing, we preserve the active state and
+        // return without consuming a candidate.
         for entry in selection.entries() {
             let key = entry.key;
             if state.queried.contains(&key) || state.excluded.contains(&key) {
                 continue;
             }
-            state.queried.push(key);
-            state.attempts += 1;
             let path = match state.reply_path {
                 Some(path) => path,
                 None => {
-                    // Store state for the next call.
+                    // Store state for the next call without
+                    // advancing the queried counter.
                     self.active = Some(state);
                     return AdvanceOutcome::NeedsPath;
                 }
             };
+            state.queried.push(key);
+            state.attempts += 1;
             let excluded: Vec<RouterHash> = state
                 .excluded
                 .iter()
@@ -314,9 +430,9 @@ impl RouterInfoLookup {
                 .chain(state.queried.iter().copied())
                 .filter(|hash| *hash != key)
                 .collect();
-            let body = match build_databaselookup(&state.target, state.kind, Some(&path), &excluded)
+            let message = match build_databaselookup(&state.target, state.kind, Some(&path), &excluded)
             {
-                Ok(body) => body,
+                Ok(message) => message,
                 Err(_) => {
                     // The body builder refused the request. We do
                     // not advance to the next peer because the
@@ -325,14 +441,8 @@ impl RouterInfoLookup {
                     return AdvanceOutcome::Terminal(LookupFinalState::PeerExhausted);
                 }
             };
-            let body_len = body.excluded_peers.len()
-                + body.key.as_bytes().len()
-                + body.from.as_bytes().len()
-                + std::mem::size_of::<u8>()
-                + std::mem::size_of::<u32>();
-            let _ = body;
             self.active = Some(state);
-            return AdvanceOutcome::Attempt(key, body_len);
+            return AdvanceOutcome::Attempt(key, message);
         }
         // No eligible candidate remains.
         let queried_is_empty = state.queried.is_empty();
@@ -710,6 +820,42 @@ mod tests {
         };
         assert_eq!(action.lookup_id(), lookup_id);
         assert!(lookup.active_lookup().is_some());
+    }
+
+    #[test]
+    fn send_action_carries_exact_lookup_target_and_body() {
+        let mut store = RouterInfoStore::default();
+        let signer = bundle(0x603);
+        store.insert(floodfill(&signer, 1));
+        let target = RouterHash::from_bytes([0xC0u8; 32]);
+        let gateway = RouterHash::from_bytes([0x77u8; 32]);
+        let lookup_id = LookupId::new(0xC1, LookupKind::RouterInfo, target);
+        let path = ReplyPath::new(gateway, 0xCAFE).expect("path");
+        let mut lookup = RouterInfoLookup::new(LookupPolicy::default());
+        let routing_key = RouterHash::from_bytes([0x11u8; 32]);
+        let outcome = lookup.start(&store, lookup_id, &routing_key);
+        let _action = match outcome {
+            StartOutcome::NeedsReplyPath(action) => action,
+            other => panic!("expected NeedsReplyPath, got {other:?}"),
+        };
+        assert!(lookup.accept_reply_path(lookup_id, path));
+        let action = match lookup.handle_pending_after_path(&store, &routing_key) {
+            StartOutcome::PendingAttempt(action) => action,
+            other => panic!("expected PendingAttempt, got {other:?}"),
+        };
+        let LookupAction::SendDatabaselookup { message, peer, .. } = action else {
+            panic!("expected SendDatabaselookup");
+        };
+        let expected_peer = router_hash(signer.identity()).expect("peer hash");
+        assert_eq!(peer, expected_peer);
+        assert_eq!(message.key, i2pr_proto::Hash::from_bytes(*target.as_bytes()));
+        assert_eq!(
+            message.from,
+            i2pr_proto::Hash::from_bytes(*gateway.as_bytes())
+        );
+        assert!(message.delivery_flag);
+        assert_eq!(message.reply_tunnel_id, Some(0xCAFE));
+        assert_eq!(message.lookup_type, LookupKind::RouterInfo.wire_code());
     }
 
     #[test]

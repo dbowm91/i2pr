@@ -77,6 +77,30 @@ pub struct PublicationAttempt {
     state: PublicationAttemptState,
 }
 
+impl PublicationAttempt {
+    /// Returns the peer RouterHash this attempt targets.
+    pub const fn peer(&self) -> RouterHash {
+        self.peer
+    }
+
+    /// Returns the bounded reply token the coordinator minted for
+    /// this attempt.
+    pub const fn reply_token(&self) -> u32 {
+        self.reply_token
+    }
+
+    /// Returns the request identifier the runtime uses to drive
+    /// delivery outcomes.
+    pub const fn request_id(&self) -> u64 {
+        self.request_id
+    }
+
+    /// Returns the current attempt state.
+    pub const fn state(&self) -> PublicationAttemptState {
+        self.state
+    }
+}
+
 /// Snapshot returned by [`PublicationCoordinator::snapshot`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicationSnapshot {
@@ -184,20 +208,24 @@ impl PublicationCoordinator {
         // reserved for the optional verification path; when a
         // nonzero token is set, both reply_tunnel_id and
         // reply_gateway must be present.
+        let gzip_payload =
+            gzip_encode(&encoded).map_err(|_| PublicationError::NoLocalSnapshot)?;
+        if gzip_payload.len() > i2pr_proto::MAX_I2NP_PAYLOAD_SIZE - 64 {
+            return Err(PublicationError::NoLocalSnapshot);
+        }
         let store_message = DatabaseStoreMessage {
             key: Hash::from_bytes(*local.router_hash().as_bytes()),
             reply_token: 0,
             reply_tunnel_id: None,
             reply_gateway: None,
             data: DatabaseStoreData::RouterInfoCompressed(
-                DeferredPayload::new(encoded.clone(), i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+                DeferredPayload::new(gzip_payload, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
                     .map_err(|_| PublicationError::NoLocalSnapshot)?,
             ),
         };
-        let body = I2npBody::DatabaseStore(Box::new(store_message));
+        let body = I2npBody::DatabaseStore(Box::new(store_message.clone()));
         body.encode_to_vec(i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
             .map_err(|_| PublicationError::NoLocalSnapshot)?;
-        let _ = body;
         let attempt = PublicationAttempt {
             request_id,
             peer,
@@ -206,7 +234,11 @@ impl PublicationCoordinator {
         };
         self.attempts.insert(request_id, attempt.clone());
         self.tokens_by_value.insert(reply_token, request_id);
-        Ok(PublicationAttemptRecord { attempt, encoded })
+        Ok(PublicationAttemptRecord {
+            attempt,
+            encoded,
+            store_message,
+        })
     }
 
     /// Reuses a previously built attempt record. The function only
@@ -375,6 +407,11 @@ pub struct PublicationAttemptRecord {
     /// Already-encoded local RouterInfo bytes the runtime should
     /// transmit. The bytes never change across retry attempts.
     pub encoded: Vec<u8>,
+    /// Typed `DatabaseStore` body the runtime must deliver. The
+    /// coordinator is the authoritative owner of the message; the
+    /// runtime adapter assigns standard-header fields and encodes
+    /// the body exactly once.
+    pub store_message: DatabaseStoreMessage,
 }
 
 /// Correlation result for a successful DeliveryStatus ack.
@@ -386,9 +423,22 @@ pub struct PublicationCorrelation {
     pub message_id: u32,
 }
 
+/// Gzip-compress the supplied bytes into a single I2NP
+/// `DatabaseStore` `RouterInfoCompressed` payload. The helper is
+/// `pub(crate)` so production callers can verify the publication
+/// payload independently decompresses to the local RouterInfo
+/// snapshot (Plan 117 §5.3 acceptance criterion).
+pub(crate) fn gzip_encode(input: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    use std::io::Write as _;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(input)?;
+    encoder.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decompress_router_info;
     use crate::router_info::{ValidationContext, router_hash};
     use i2pr_crypto::RouterIdentityBundle;
     use i2pr_proto::{Date, Mapping};
@@ -453,6 +503,31 @@ mod tests {
         assert!(record.attempt.reply_token > 0);
         let _ = local_hash;
         assert!(!record.encoded.is_empty());
+    }
+
+    #[test]
+    fn publication_attempt_carries_typed_database_store_body() {
+        let signer = bundle(0x702);
+        let floodfill = bundle(0x703);
+        let mut store = RouterInfoStore::default();
+        store.insert(validate(&floodfill));
+        let peer = router_hash(floodfill.identity()).unwrap();
+        let local = local_router_info(&signer);
+        let local_hash = local.router_hash();
+        let mut coordinator = PublicationCoordinator::new(PublicationCoordinator::default_policy());
+        coordinator.register_local(local);
+        let record = coordinator
+            .begin_attempt(peer, &store)
+            .expect("attempt");
+        let body = record.store_message;
+        assert_eq!(body.key, i2pr_proto::Hash::from_bytes(*local_hash.as_bytes()));
+        match body.data {
+            DatabaseStoreData::RouterInfoCompressed(payload) => {
+                let decompressed = decompress_router_info(payload.as_bytes()).expect("decompress");
+                assert_eq!(decompressed, record.encoded);
+            }
+            other => panic!("expected RouterInfoCompressed, got {other:?}"),
+        }
     }
 
     #[test]

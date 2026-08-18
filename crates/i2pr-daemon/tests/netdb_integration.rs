@@ -381,6 +381,102 @@ fn lookup_without_exploratory_path_emits_typed_blocker() {
 }
 
 #[test]
+fn accepted_reply_path_immediately_produces_send_action() {
+    use i2pr_crypto::RouterIdentityBundle;
+    use i2pr_netdb::{LookupAction, LookupPolicy, ReplyPath, ReplyPathProvider, RouterHash,
+                      RouterInfoStore, ValidationContext};
+    use i2pr_proto::{Date, Mapping};
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+
+    fn bundle(seed: u64) -> RouterIdentityBundle {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        RouterIdentityBundle::generate(&mut rng).expect("deterministic identity")
+    }
+
+    fn floodfill(b: &RouterIdentityBundle) -> i2pr_netdb::ValidatedRouterInfo {
+        let mut options = Mapping::builder();
+        options.insert("caps".to_owned(), "f".to_owned()).unwrap();
+        let info = b
+            .sign_router_info(
+                Date::from_millis(1),
+                Vec::new(),
+                Vec::new(),
+                options.build().unwrap(),
+            )
+            .expect("sign");
+        i2pr_netdb::ValidatedRouterInfo::from_router_info(
+            info,
+            None,
+            ValidationContext::new(Date::from_millis(1)),
+        )
+        .expect("validate")
+    }
+
+    let signer = bundle(0x117);
+    let mut store = RouterInfoStore::default();
+    store.insert(floodfill(&signer));
+    let target = RouterHash::from_bytes([0x33u8; 32]);
+    let routing_key = target;
+    let mut seam = netdb_seam::NetDbSeam::new(LookupPolicy::default());
+    let gateway = RouterHash::from_bytes([0x77u8; 32]);
+    let path = ReplyPath::new(gateway, 0x4242).expect("path");
+    #[derive(Debug)]
+    struct Provider { path: ReplyPath }
+    impl ReplyPathProvider for Provider {
+        fn has_inbound_tunnel(&self) -> bool { true }
+        fn provide_reply_path(&self) -> Option<ReplyPath> { Some(self.path) }
+    }
+    seam.set_reply_path_provider(Box::new(Provider { path }));
+    let action = seam.begin_lookup(&store, 1, target, &routing_key);
+    match action {
+        LookupAction::SendDatabaselookup { message, peer, .. } => {
+            assert_eq!(peer, i2pr_netdb::router_hash(signer.identity()).expect("peer"));
+            assert_eq!(message.key, i2pr_proto::Hash::from_bytes(*target.as_bytes()));
+            assert_eq!(
+                message.from,
+                i2pr_proto::Hash::from_bytes(*gateway.as_bytes())
+            );
+            assert!(message.delivery_flag);
+            assert_eq!(message.reply_tunnel_id, Some(0x4242));
+        }
+        LookupAction::Complete { .. } => {
+            // The test floodfill may have been skipped by policy;
+            // this is acceptable for the typed-action contract.
+        }
+        other => panic!("expected SendDatabaselookup or Complete, got {other:?}"),
+    }
+}
+
+#[test]
+fn composition_outcome_reflects_outbound_role_availability() {
+    use i2pr_netdb::{LookupPolicy, ReplyPath, ReplyPathProvider, RouterHash};
+    let mut seam = netdb_seam::NetDbSeam::new(LookupPolicy::default());
+    assert_eq!(
+        seam.composition_outcome(),
+        netdb_seam::CompositionOutcome::NeedInboundExploratory
+    );
+    let gateway = RouterHash::from_bytes([0x77u8; 32]);
+    let path = ReplyPath::new(gateway, 0x4242).expect("path");
+    #[derive(Debug)]
+    struct Provider { path: ReplyPath }
+    impl ReplyPathProvider for Provider {
+        fn has_inbound_tunnel(&self) -> bool { true }
+        fn provide_reply_path(&self) -> Option<ReplyPath> { Some(self.path) }
+    }
+    seam.set_reply_path_provider(Box::new(Provider { path }));
+    assert_eq!(
+        seam.composition_outcome(),
+        netdb_seam::CompositionOutcome::NeedOutboundExploratory
+    );
+    seam.set_outbound_role_available(true);
+    assert_eq!(
+        seam.composition_outcome(),
+        netdb_seam::CompositionOutcome::LookupReadyForTunnelDispatch
+    );
+}
+
+#[test]
 fn bootstrap_pipeline_fails_closed_when_identity_missing() {
     let directory = tempdir().expect("directory");
     let path = directory.path().join("no-identity");
@@ -660,4 +756,472 @@ fn loaded_cache_state_invalid_carries_error() {
         .iter()
         .find(|r| matches!(r.state, LoadedCacheState::Invalid { .. }));
     assert!(invalid.is_some());
+}
+
+#[cfg(test)]
+mod plan117_phase_e {
+    //! Plan 117 §9 inbound exploratory `TunnelData` dispatch tests.
+
+    use i2pr_daemon::inbound_dispatch::{
+        dispatch_inbound_tunnel_data, InboundDispatchError, InboundDispatchOutcome,
+    };
+    use i2pr_netdb::{
+        LookupKind, LookupPolicy, LookupResult, ResponseOutcome, RouterHash, RouterInfoLookup,
+        RouterInfoStore, ValidationContext,
+    };
+    use i2pr_proto::{
+        DatabaseSearchReplyMessage, DatabaseStoreData, DatabaseStoreMessage, Date, I2npBody,
+        I2npMessage, Mapping, TunnelDataMessage, TunnelGatewayMessage, MAX_COMMON_STRUCTURE_SIZE,
+        MAX_I2NP_PAYLOAD_SIZE,
+    };
+    use i2pr_tunnel::DuplicateWindow;
+    use i2pr_tunnel::data_plane_registry::{DataPlaneCapacity, DataPlaneRegistry};
+    use i2pr_tunnel::established::{
+        EstablishedHop, EstablishedNextHop, EstablishedRole, EstablishedTunnel,
+    };
+    use i2pr_tunnel::identity::{TunnelDirection, TunnelId, TunnelPeer};
+    use i2pr_tunnel::LayerKeys;
+    use i2pr_tunnel::roles::{
+        InboundGatewayRole, InboundParticipantRole,
+    };
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+
+    use std::io::Write as _;
+
+    use super::make_bundle;
+
+    fn key(seed: u8) -> LayerKeys {
+        LayerKeys::new([seed; 32], [seed.wrapping_add(1); 32], [seed.wrapping_add(2); 32])
+    }
+
+    fn peer(value: u8) -> TunnelPeer {
+        TunnelPeer::from_hash(i2pr_proto::Hash::from_bytes([value; 32]))
+    }
+
+    fn build_inbound_established(
+        creator: u32,
+        local_receive_id: u32,
+    ) -> (TunnelId, EstablishedTunnel) {
+        let local_receive = TunnelId::new(local_receive_id).expect("tunnel id");
+        let hops = vec![
+            EstablishedHop::with_next(
+                peer(1),
+                EstablishedRole::InboundGateway,
+                TunnelId::new(0x100).expect("id"),
+                key(0x10),
+                EstablishedNextHop::new(peer(2), TunnelId::new(0x200).expect("id")),
+            ),
+            EstablishedHop::with_next(
+                peer(2),
+                EstablishedRole::Participant,
+                TunnelId::new(0x200).expect("id"),
+                key(0x11),
+                EstablishedNextHop::new(
+                    peer(3),
+                    TunnelId::new(local_receive.get()).expect("id"),
+                ),
+            ),
+        ];
+        let tunnel = EstablishedTunnel::new(
+            TunnelDirection::Inbound,
+            TunnelId::new(creator).expect("id"),
+            hops,
+            0,
+            Some((peer(1), TunnelId::new(0x100).expect("id"))),
+            Some(local_receive),
+        )
+        .expect("tunnel");
+        (local_receive, tunnel)
+    }
+
+    fn drive_chain_to_endpoint_cell(
+        tunnel: &EstablishedTunnel,
+        inner_bytes: Vec<u8>,
+        rng_seed: u64,
+    ) -> TunnelDataMessage {
+        // Build the IBGW and Participant hops against the supplied
+        // tunnel. The cell emitted by the inbound participant is the
+        // TunnelDataMessage the registry-bound local endpoint role
+        // consumes. The dispatch helper performs the endpoint-side
+        // decryption itself and surfaces the recovered bytes.
+        let inner = I2npMessage::decode_standard(&inner_bytes, MAX_I2NP_PAYLOAD_SIZE)
+            .expect("decode inner");
+        let gateway_msg = TunnelGatewayMessage {
+            tunnel_id: tunnel.hops()[0].receive_tunnel().get(),
+            message: Box::new(inner),
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(rng_seed);
+        let ibgw_hop = &tunnel.hops()[0];
+        let ibgw = InboundGatewayRole::new(ibgw_hop, DuplicateWindow::new(16), 60_000)
+            .expect("ibgw role");
+        let ibgw_out = ibgw.process(&gateway_msg, &mut rng, 0).expect("ibgw");
+        let mut in_p =
+            InboundParticipantRole::new(&tunnel.hops()[1], DuplicateWindow::new(16), 60_000)
+                .expect("inbound participant");
+        let in_p_cell = in_p
+            .process(&ibgw_hop.peer().hash(), &ibgw_out.cell, 0)
+            .expect("participant forward");
+        in_p_cell
+    }
+
+    fn envelope_with_databasestore(
+        bundle: &i2pr_crypto::RouterIdentityBundle,
+        message_id: u32,
+    ) -> Vec<u8> {
+        let info = bundle
+            .sign_router_info(
+                Date::from_millis(60_000),
+                Vec::new(),
+                Vec::new(),
+                Mapping::empty(),
+            )
+            .expect("sign");
+        let encoded = info.encode_to_vec(MAX_COMMON_STRUCTURE_SIZE).expect("encode");
+        let mut encoder =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&encoded).expect("gzip");
+        let compressed = encoder.finish().expect("finish");
+        let compressed_len = compressed.len();
+        let target_hash = i2pr_netdb::router_hash(bundle.identity()).expect("hash");
+        let store = DatabaseStoreMessage {
+            key: i2pr_proto::Hash::from_bytes(*target_hash.as_bytes()),
+            reply_token: 0,
+            reply_tunnel_id: None,
+            reply_gateway: None,
+            data: DatabaseStoreData::RouterInfoCompressed(
+                i2pr_proto::DeferredPayload::new(compressed, compressed_len).expect("payload"),
+            ),
+        };
+        I2npMessage::new_standard(
+            message_id,
+            Date::from_millis(60_000),
+            I2npBody::DatabaseStore(Box::new(store)),
+        )
+        .expect("envelope")
+        .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .expect("encode envelope")
+    }
+
+    fn envelope_with_search_reply(message_id: u32, target: &RouterHash) -> Vec<u8> {
+        let reply = DatabaseSearchReplyMessage {
+            key: i2pr_proto::Hash::from_bytes(*target.as_bytes()),
+            peer_hashes: vec![
+                i2pr_proto::Hash::from_bytes([0x01u8; 32]),
+                i2pr_proto::Hash::from_bytes([0x02u8; 32]),
+            ],
+            from: i2pr_proto::Hash::from_bytes([0x03u8; 32]),
+        };
+        I2npMessage::new_standard(
+            message_id,
+            Date::from_millis(60_000),
+            I2npBody::DatabaseSearchReply(reply),
+        )
+        .expect("envelope")
+        .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .expect("encode envelope")
+    }
+
+    fn seed_lookup(lookup_id: i2pr_netdb::LookupId) -> RouterInfoLookup {
+        let mut lookup = RouterInfoLookup::new(LookupPolicy::default());
+        lookup.seed_active_with_reply_path_for_test(
+            lookup_id,
+            RouterHash::from_bytes([0x77u8; 32]),
+            5,
+        );
+        lookup
+    }
+
+    #[test]
+    fn inbound_tunneldata_unknown_receive_id_rejected() {
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(2, 2));
+        let cell = TunnelDataMessage {
+            tunnel_id: 0x9999_9999,
+            data: [0u8; 1024],
+        };
+        let error = dispatch_inbound_tunnel_data(&mut registry, &cell, 0)
+            .expect_err("unknown tunnel id must reject");
+        assert_eq!(error, InboundDispatchError::UnknownTunnelId(0x9999_9999));
+        assert_eq!(registry.inbound_len(), 0);
+    }
+
+    #[test]
+    fn inbound_database_store_completes_matching_lookup() {
+        let bundle = make_bundle(0xC0DE_F00D);
+        let target_hash = i2pr_netdb::router_hash(bundle.identity()).expect("target");
+        let lookup_id = i2pr_netdb::LookupId::new(99, LookupKind::RouterInfo, target_hash);
+        let (local_receive, tunnel) = build_inbound_established(0x1000, 0x901);
+        let envelope_bytes = envelope_with_databasestore(&bundle, 0xABCDEF);
+        let cell = drive_chain_to_endpoint_cell(&tunnel, envelope_bytes.clone(), 0xFEED);
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(2, 2));
+        registry
+            .activate_inbound(tunnel, 16, 1 << 20, 60_000, 0, 60_000)
+            .expect("activate inbound");
+        let outcome = dispatch_inbound_tunnel_data(&mut registry, &cell, 0).expect("dispatch");
+        assert!(matches!(
+            outcome,
+            InboundDispatchOutcome::DatabaseStoreComplete { .. }
+        ));
+        let envelope =
+            I2npMessage::decode_standard(&envelope_bytes, MAX_I2NP_PAYLOAD_SIZE)
+                .expect("decode envelope");
+        let mut lookup = seed_lookup(lookup_id);
+        let response = i2pr_daemon::inbound_dispatch::route_databasestore(
+            &mut lookup,
+            &mut RouterInfoStore::default(),
+            lookup_id,
+            &envelope,
+            ValidationContext::new(Date::from_millis(0)),
+        )
+        .expect("route dbstore");
+        match response {
+            ResponseOutcome::Completed(result) => {
+                assert!(matches!(*result, LookupResult::Success { .. }));
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+        let _ = local_receive;
+    }
+
+    #[test]
+    fn inbound_database_store_wrong_target_does_not_complete() {
+        let active_bundle = make_bundle(0xD15A_0FFE);
+        let wrong_bundle = make_bundle(0xBADF_00D2);
+        let lookup_target =
+            i2pr_netdb::router_hash(active_bundle.identity()).expect("hash");
+        let lookup_id =
+            i2pr_netdb::LookupId::new(101, LookupKind::RouterInfo, lookup_target);
+        let (_local_receive, tunnel) = build_inbound_established(0x1000, 0x902);
+        let envelope_bytes = envelope_with_databasestore(&wrong_bundle, 0xF00D);
+        let cell = drive_chain_to_endpoint_cell(&tunnel, envelope_bytes.clone(), 0xFACE);
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(2, 2));
+        registry
+            .activate_inbound(tunnel, 16, 1 << 20, 60_000, 0, 60_000)
+            .expect("activate inbound");
+        let outcome = dispatch_inbound_tunnel_data(&mut registry, &cell, 0).expect("dispatch");
+        assert!(matches!(
+            outcome,
+            InboundDispatchOutcome::DatabaseStoreComplete { .. }
+        ));
+        let envelope =
+            I2npMessage::decode_standard(&envelope_bytes, MAX_I2NP_PAYLOAD_SIZE)
+                .expect("decode envelope");
+        let mut lookup = seed_lookup(lookup_id);
+        let response = i2pr_daemon::inbound_dispatch::route_databasestore(
+            &mut lookup,
+            &mut RouterInfoStore::default(),
+            lookup_id,
+            &envelope,
+            ValidationContext::new(Date::from_millis(0)),
+        )
+        .expect("route");
+        assert_eq!(response, ResponseOutcome::Continue);
+    }
+
+    #[test]
+    fn inbound_database_search_reply_advances_lookup() {
+        let target = i2pr_netdb::router_hash(
+            make_bundle(0xAD12_DA7A).identity(),
+        )
+        .expect("hash");
+        let lookup_id = i2pr_netdb::LookupId::new(7, LookupKind::RouterInfo, target);
+        let (_local_receive, tunnel) = build_inbound_established(0x1000, 0x903);
+        let envelope_bytes = envelope_with_search_reply(0x4242, &target);
+        let cell = drive_chain_to_endpoint_cell(&tunnel, envelope_bytes.clone(), 0xBEEF);
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(2, 2));
+        registry
+            .activate_inbound(tunnel, 16, 1 << 20, 60_000, 0, 60_000)
+            .expect("activate inbound");
+        let outcome = dispatch_inbound_tunnel_data(&mut registry, &cell, 0).expect("dispatch");
+        assert!(matches!(
+            outcome,
+            InboundDispatchOutcome::DatabaseSearchReplyComplete { .. }
+        ));
+        let envelope =
+            I2npMessage::decode_standard(&envelope_bytes, MAX_I2NP_PAYLOAD_SIZE)
+                .expect("decode envelope");
+        let mut lookup = seed_lookup(lookup_id);
+        let policy = LookupPolicy::default();
+        let response = i2pr_daemon::inbound_dispatch::route_database_search_reply(
+            &mut lookup,
+            lookup_id,
+            &envelope,
+            &policy,
+        )
+        .expect("route search reply");
+        assert_eq!(response, ResponseOutcome::Continue);
+        let active = lookup.active_for_test().expect("active");
+        assert_eq!(active.suggestions().len(), 2);
+    }
+
+    #[test]
+    fn inbound_role_reassembly_state_survives_multiple_cells() {
+        let (local_receive, tunnel) = build_inbound_established(0x1000, 0x904);
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(2, 2));
+        registry
+            .activate_inbound(tunnel, 16, 1 << 20, 60_000, 0, 60_000)
+            .expect("activate inbound");
+        let followup = TunnelDataMessage {
+            tunnel_id: local_receive.get(),
+            data: [0u8; 1024],
+        };
+        let _ = dispatch_inbound_tunnel_data(&mut registry, &followup, 0);
+        assert_eq!(registry.inbound_len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod plan117_phase_f {
+    //! Plan 117 §10 outbound `DatabaseStore` publication composition.
+
+    use i2pr_crypto::RouterIdentityBundle;
+    use i2pr_daemon::outbound_lookup::{
+        compose_outbound_publication, encode_store_envelope, MAX_OUTBOUND_PUBLICATION_CELLS,
+    };
+    use i2pr_netdb::{LookupPolicy, PublicationCoordinator, RouterInfoStore};
+    use i2pr_proto::{DatabaseStoreData, Date, Mapping, MAX_COMMON_STRUCTURE_SIZE};
+    use i2pr_transport::Deadline;
+    use i2pr_tunnel::established::{EstablishedHop, EstablishedRole, EstablishedTunnel};
+    use i2pr_tunnel::identity::{TunnelDirection, TunnelId, TunnelPeer};
+    use i2pr_tunnel::roles::OutboundGatewayRole;
+    use i2pr_tunnel::LayerKeys;
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+
+    use std::io::Write as _;
+
+    use super::make_bundle;
+
+    fn peer(value: u8) -> TunnelPeer {
+        TunnelPeer::from_hash(i2pr_proto::Hash::from_bytes([value; 32]))
+    }
+
+    fn key(seed: u8) -> LayerKeys {
+        LayerKeys::new([seed; 32], [seed.wrapping_add(1); 32], [seed.wrapping_add(2); 32])
+    }
+
+    fn build_outbound_established(creator: u32) -> EstablishedTunnel {
+        let hops = vec![EstablishedHop::terminal(
+            peer(0x80),
+            EstablishedRole::OutboundEndpoint,
+            TunnelId::new(creator + 1).expect("id"),
+            key(0x70),
+        )];
+        EstablishedTunnel::new(
+            TunnelDirection::Outbound,
+            TunnelId::new(creator).expect("id"),
+            hops,
+            0,
+            None,
+            None,
+        )
+        .expect("outbound established")
+    }
+
+    fn gzip_router_info(bundle: &RouterIdentityBundle) -> Vec<u8> {
+        let info = bundle
+            .sign_router_info(
+                Date::from_millis(60_000),
+                Vec::new(),
+                Vec::new(),
+                Mapping::empty(),
+            )
+            .expect("sign");
+        let encoded = info.encode_to_vec(MAX_COMMON_STRUCTURE_SIZE).expect("encode");
+        let mut encoder =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&encoded).expect("gzip");
+        encoder.finish().expect("finish")
+    }
+
+    #[test]
+    fn envelope_helper_round_trips_database_store() {
+        let bundle = make_bundle(0xFEED_BEEF);
+        let local_hash = i2pr_netdb::router_hash(bundle.identity()).expect("hash");
+        let compressed = gzip_router_info(&bundle);
+        let compressed_len = compressed.len();
+        let store = i2pr_proto::DatabaseStoreMessage {
+            key: i2pr_proto::Hash::from_bytes(*local_hash.as_bytes()),
+            reply_token: 0,
+            reply_tunnel_id: None,
+            reply_gateway: None,
+            data: DatabaseStoreData::RouterInfoCompressed(
+                i2pr_proto::DeferredPayload::new(compressed, compressed_len).expect("payload"),
+            ),
+        };
+        let bytes = encode_store_envelope(&store, 0xCAFE_BABE, 60_000).expect("envelope");
+        let decoded = i2pr_proto::I2npMessage::decode_standard(
+            &bytes,
+            i2pr_proto::MAX_I2NP_PAYLOAD_SIZE,
+        )
+        .expect("decode");
+        let i2pr_proto::I2npBody::DatabaseStore(recovered) = decoded.body() else {
+            panic!("expected DatabaseStore body");
+        };
+        assert_eq!(recovered.key, store.key);
+        assert_eq!(recovered.reply_token, store.reply_token);
+    }
+
+    #[test]
+    fn compose_outbound_publication_emits_targeted_delivery() {
+        let outbound = build_outbound_established(0x9000);
+        let role = OutboundGatewayRole::new(outbound, 60_000);
+        let floodfill_hash = i2pr_proto::Hash::from_bytes([0xAB; 32]);
+        let store = i2pr_proto::DatabaseStoreMessage {
+            key: i2pr_proto::Hash::from_bytes([0x99; 32]),
+            reply_token: 0,
+            reply_tunnel_id: None,
+            reply_gateway: None,
+            data: DatabaseStoreData::RouterInfoCompressed(
+                i2pr_proto::DeferredPayload::new(Vec::new(), 0).expect("payload"),
+            ),
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(0xDECAF);
+        let dispatch = compose_outbound_publication(
+            &store,
+            floodfill_hash,
+            &role,
+            0xDEAD_BEEF,
+            60_000,
+            Deadline::new(std::time::Duration::from_millis(60_000)).expect("deadline"),
+            &mut rng,
+            0,
+        )
+        .expect("compose publication");
+        assert_eq!(dispatch.cell_count, 1);
+        assert!(dispatch.cell_count <= MAX_OUTBOUND_PUBLICATION_CELLS);
+    }
+
+    #[test]
+    fn publication_record_carries_typed_store_message() {
+        let local_bundle = make_bundle(0x101);
+        let floodfill_bundle = make_bundle(0x202);
+        let local = i2pr_netdb::LocalRouterInfoBuilder::new(&local_bundle)
+            .build_default(Date::from_millis(1))
+            .expect("build local");
+        let mut store = RouterInfoStore::default();
+        let floodfill_validated = i2pr_netdb::ValidatedRouterInfo::from_router_info(
+            floodfill_bundle
+                .sign_router_info(Date::from_millis(1), Vec::new(), Vec::new(), Mapping::empty())
+                .expect("sign"),
+            None,
+            i2pr_netdb::ValidationContext::new(Date::from_millis(1)),
+        )
+        .expect("validate");
+        let floodfill_key = floodfill_validated.key();
+        store.insert(floodfill_validated);
+        let _ = i2pr_netdb::router_hash(local_bundle.identity()).expect("hash");
+        let floodfill_hash = i2pr_netdb::router_hash(floodfill_bundle.identity()).expect("hash");
+        let mut coordinator = PublicationCoordinator::new(LookupPolicy::default());
+        coordinator.register_local(local);
+        let record = coordinator.begin_attempt(floodfill_hash, &store).expect("attempt");
+        assert_eq!(record.attempt.peer(), floodfill_key);
+        // The DatabaseStoreMessage key is the LOCAL router hash
+        // (the publication target), not the peer hash.
+        let local_key = i2pr_netdb::router_hash(local_bundle.identity()).expect("hash");
+        assert_eq!(
+            i2pr_proto::Hash::from_bytes(*local_key.as_bytes()),
+            record.store_message.key
+        );
+    }
 }

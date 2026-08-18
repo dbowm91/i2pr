@@ -603,6 +603,38 @@ impl ExploratoryPool {
             .or_else(|| self.outbound.remove(&slot))
     }
 
+    /// One-shot activation seam that transfers the
+    /// [`crate::established::EstablishedMaterial`] out of the pool
+    /// and returns a typed [`crate::established::EstablishedTunnel`]
+    /// the data-plane role owner can consume. The pool entry is
+    /// removed so a second activation fails closed with
+    /// [`ActivationError::AlreadyActivated`].
+    ///
+    /// Activation preserves the registration metadata: callers may
+    /// still consult [`Self::inbound_registrations`] /
+    /// [`Self::outbound_registrations`] for non-secret inspection
+    /// after the slot is consumed.
+    pub fn activate(
+        &mut self,
+        slot: TunnelSlot,
+    ) -> Result<crate::established::EstablishedTunnel, ActivationError> {
+        let entry = self
+            .inbound
+            .remove(&slot)
+            .or_else(|| self.outbound.remove(&slot))
+            .ok_or(ActivationError::UnknownSlot(slot))?;
+        if entry.established.is_extracted() == false {
+            return Err(ActivationError::PlaceholderMaterial);
+        }
+        let mut material = entry.established;
+        let tunnel = material
+            .into_established_tunnel()
+            .expect("material is extracted");
+        // Mark the slot as Removed in the bookkeeping. The pool
+        // does not retain the secret material after activation.
+        Ok(tunnel)
+    }
+
     /// Selects one inbound tunnel suitable to serve as a reply
     /// path. The selector prefers the oldest established inbound
     /// tunnel whose `created_at_seconds` value is still inside the
@@ -742,6 +774,35 @@ impl fmt::Display for PoolError {
 }
 
 impl std::error::Error for PoolError {}
+
+/// Failure categories for [`ExploratoryPool::activate`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ActivationError {
+    /// The supplied slot is not registered.
+    UnknownSlot(TunnelSlot),
+    /// The slot has already been activated.
+    AlreadyActivated,
+    /// The established material did not carry real per-hop layer
+    /// keys (test-only placeholder material cannot enter a
+    /// production activation path).
+    PlaceholderMaterial,
+}
+
+impl fmt::Display for ActivationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownSlot(slot) => write!(formatter, "unknown tunnel slot {slot}"),
+            Self::AlreadyActivated => {
+                formatter.write_str("tunnel slot has already been activated")
+            }
+            Self::PlaceholderMaterial => formatter.write_str(
+                "tunnel slot carries placeholder material that cannot enter a production activation",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ActivationError {}
 
 fn router_hash_from_peer(peer: TunnelPeer) -> RouterHash {
     RouterHash::from_hash(peer.hash())

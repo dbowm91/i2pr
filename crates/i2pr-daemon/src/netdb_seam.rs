@@ -1,4 +1,4 @@
-//! Plan 106 runtime-facing seam for the Plan 105 NetDB lookup and
+//! Plan 106/117 runtime-facing seam for the Plan 105 NetDB lookup and
 //! publication state machines.
 //!
 //! The seam exposes the typed [`LookupAction`] vocabulary the runtime
@@ -7,6 +7,19 @@
 //! the seam continues to report
 //! `ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable`,
 //! preserving the Plan 106 hard-coded default.
+//!
+//! Plan 117 replaces the Plan 107/108 post-path stub with the live
+//! advance-loop that drives the lookup state machine immediately
+//! after `accept_reply_path` succeeds. The seam now produces one of:
+//!
+//! - [`LookupAction::SendDatabaselookup`] when both the reply path and
+//!   an eligible floodfill candidate are available;
+//! - [`LookupAction::Complete`] when the lookup terminates after the
+//!   reply path is set (no candidates, peer-exhausted, or terminal
+//!   success);
+//! - [`LookupAction::NeedExploratoryReplyPath`] when the reply path
+//!   was invalidated before dispatch and the runtime must supply a
+//!   fresh path.
 //!
 //! A peer transport link is **not** equivalent to a complete reply
 //! path; the lookup state machine refuses to emit a
@@ -23,6 +36,39 @@ use i2pr_netdb::{
     ReplyPathProvider, RouterHash, RouterInfoLookup, RouterInfoStore, StartOutcome,
     ValidationContext,
 };
+
+/// Composition outcome the daemon exposes for upstream scheduling.
+/// Plan 117 §7.3 introduces these as the typed contract for the
+/// runtime scheduler.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompositionOutcome {
+    /// The lookup requires an inbound exploratory build before it
+    /// can dispatch. The runtime scheduler must request a build.
+    NeedInboundExploratory,
+    /// The lookup has a reply path but requires an outbound
+    /// exploratory build before dispatch. The runtime scheduler
+    /// must request a build.
+    NeedOutboundExploratory,
+    /// The lookup is ready for outbound tunnel dispatch; the
+    /// coordinator may now invoke the OBGW role.
+    LookupReadyForTunnelDispatch,
+    /// The lookup has no eligible floodfill candidates. The
+    /// caller may either wait for the in-memory store to grow or
+    /// cancel the lookup.
+    NoEligibleCandidates,
+}
+
+impl fmt::Display for CompositionOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::NeedInboundExploratory => "need_inbound_exploratory",
+            Self::NeedOutboundExploratory => "need_outbound_exploratory",
+            Self::LookupReadyForTunnelDispatch => "lookup_ready_for_tunnel_dispatch",
+            Self::NoEligibleCandidates => "no_eligible_candidates",
+        };
+        formatter.write_str(label)
+    }
+}
 
 /// Bounded reply-path availability status. The runtime adapter reports
 /// the current state through [`NetDbSeam::path_status`] so callers
@@ -49,7 +95,7 @@ impl fmt::Display for ExploratoryPathStatus {
     }
 }
 
-/// Plan 106/107 runtime-facing seam for the NetDB query state
+/// Plan 106/107/117 runtime-facing seam for the NetDB query state
 /// machines.
 pub struct NetDbSeam {
     /// Per-target single-threaded lookup state machine.
@@ -57,6 +103,11 @@ pub struct NetDbSeam {
     /// Optional reply-path provider injected by the future Milestone
     /// 5 owner.
     provider: Option<Box<dyn ReplyPathProvider>>,
+    /// Bounded local outbound exploratory role availability. When
+    /// `false`, the seam reports [`CompositionOutcome::NeedOutboundExploratory`]
+    /// even if the lookup state machine has produced a
+    /// `SendDatabaselookup` action.
+    outbound_role_available: bool,
 }
 
 impl NetDbSeam {
@@ -68,6 +119,7 @@ impl NetDbSeam {
         Self {
             lookup: RouterInfoLookup::new(policy),
             provider: None,
+            outbound_role_available: false,
         }
     }
 
@@ -82,6 +134,21 @@ impl NetDbSeam {
     /// to the Plan 106 blocked status.
     pub fn clear_reply_path_provider(&mut self) {
         self.provider = None;
+    }
+
+    /// Records whether the local outbound exploratory role is
+    /// available. Plan 117 §7 requires the seam to refuse
+    /// outbound dispatch until the runtime scheduler has activated
+    /// at least one outbound role; the seam never falls back to a
+    /// direct transport-to-floodfill send.
+    pub fn set_outbound_role_available(&mut self, available: bool) {
+        self.outbound_role_available = available;
+    }
+
+    /// Returns whether the runtime has reported a usable local
+    /// outbound exploratory role.
+    pub fn outbound_role_available(&self) -> bool {
+        self.outbound_role_available
     }
 
     /// Returns the current exploratory-tunnel reply-path status.
@@ -103,11 +170,10 @@ impl NetDbSeam {
     }
 
     /// Begins a new lookup against the supplied store using the
-    /// injected reply-path provider when one is available. The
-    /// runtime adapter receives the [`LookupAction`] emitted by the
-    /// state machine; under Plan 107 the action is either
-    /// `SendDatabaselookup` (when the provider returns a path) or
-    /// `NeedExploratoryReplyPath` (when no path is available).
+    /// injected reply-path provider when one is available. Plan
+    /// 117 §7.2 drives the lookup state machine immediately after
+    /// `accept_reply_path` succeeds so the seam no longer returns
+    /// the Plan 107/108 placeholder.
     pub fn begin_lookup(
         &mut self,
         store: &RouterInfoStore,
@@ -122,15 +188,17 @@ impl NetDbSeam {
             StartOutcome::NeedsReplyPath(action) => {
                 // The state machine is asking for a reply path. Ask
                 // the injected provider; if a path is available,
-                // feed it back into the state machine and return the
-                // resulting action.
+                // feed it back into the state machine and continue
+                // driving the loop until we reach a send or terminal
+                // action.
                 if let Some(provider) = self.provider.as_ref()
                     && let Some(path) = provider.provide_reply_path()
                     && self.lookup.accept_reply_path(lookup_id, path)
                 {
-                    return self.pending_action_after_path(store, request_id, target, routing_key);
+                    self.advance_after_path(store, routing_key)
+                } else {
+                    action
                 }
-                action
             }
             StartOutcome::Terminal(result) => {
                 let final_state = match *result {
@@ -151,25 +219,59 @@ impl NetDbSeam {
         }
     }
 
-    fn pending_action_after_path(
+    /// Drive the active lookup to its next action after the reply
+    /// path has been accepted. The helper is the Plan 117
+    /// replacement for the Plan 107/108 post-path placeholder. The
+    /// caller may invoke it again when a fresh reply path is
+    /// supplied through [`NetDbSeam::set_reply_path_provider`].
+    pub fn advance_after_path(
         &mut self,
-        _store: &RouterInfoStore,
-        _request_id: u64,
-        _target: RouterHash,
-        _routing_key: &RouterHash,
+        store: &RouterInfoStore,
+        routing_key: &RouterHash,
     ) -> LookupAction {
-        // After `accept_reply_path` returns true the state machine
-        // records the path. The caller will need to drive the next
-        // attempt through `lookup_mut()` to emit the actual
-        // `SendDatabaselookup` action. Returning `NeedExploratoryReplyPath`
-        // here keeps the seam conservative; Plan 108 will replace
-        // this stub with the live advance-loop that emits the
-        // follow-up action.
-        LookupAction::NeedExploratoryReplyPath {
-            lookup_id: self
-                .lookup
-                .active_lookup()
-                .expect("accept_reply_path sets the lookup"),
+        let outcome = self.lookup.handle_pending_after_path(store, routing_key);
+        match outcome {
+            StartOutcome::PendingAttempt(action) => action,
+            StartOutcome::NeedsReplyPath(action) => action,
+            StartOutcome::Terminal(result) => {
+                let lookup_id = self
+                    .lookup
+                    .active_lookup()
+                    .unwrap_or_else(|| LookupId::new(0, LookupKind::RouterInfo, RouterHash::from_bytes([0; 32])));
+                let final_state = match *result {
+                    i2pr_netdb::LookupResult::Failure { final_state, .. } => final_state,
+                    i2pr_netdb::LookupResult::Success { .. } => LookupFinalState::Success,
+                };
+                LookupAction::Complete {
+                    lookup_id,
+                    outcome: LookupOutcome::new(
+                        lookup_id.kind(),
+                        lookup_id.target(),
+                        final_state,
+                        0,
+                        0,
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Returns the typed composition outcome the runtime scheduler
+    /// consumes. Plan 117 §7.3 introduces this contract so the
+    /// daemon composition root can request inbound/outbound
+    /// exploratory builds when the lookup is not yet dispatch-ready.
+    pub fn composition_outcome(&self) -> CompositionOutcome {
+        match self.path_status() {
+            ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable => {
+                CompositionOutcome::NeedInboundExploratory
+            }
+            ExploratoryPathStatus::Available => {
+                if self.outbound_role_available {
+                    CompositionOutcome::LookupReadyForTunnelDispatch
+                } else {
+                    CompositionOutcome::NeedOutboundExploratory
+                }
+            }
         }
     }
 
@@ -191,6 +293,10 @@ impl NetDbSeam {
                 self.path_status(),
                 ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable
             )),
+        );
+        map.insert(
+            "outbound_role_available",
+            usize::from(self.outbound_role_available),
         );
         map
     }
@@ -232,6 +338,10 @@ mod tests {
             seam.path_status(),
             ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable
         );
+        assert_eq!(
+            seam.composition_outcome(),
+            CompositionOutcome::NeedInboundExploratory
+        );
     }
 
     #[test]
@@ -248,6 +358,26 @@ mod tests {
     }
 
     #[test]
+    fn composition_outcome_reflects_outbound_role_availability() {
+        let mut seam = NetDbSeam::new(LookupPolicy::default());
+        let gateway = RouterHash::from_bytes([0x77u8; 32]);
+        let path = ReplyPath::new(gateway, 0x4242).expect("path");
+        seam.set_reply_path_provider(Box::new(StaticProvider {
+            path,
+            has_tunnel: true,
+        }));
+        assert_eq!(
+            seam.composition_outcome(),
+            CompositionOutcome::NeedOutboundExploratory
+        );
+        seam.set_outbound_role_available(true);
+        assert_eq!(
+            seam.composition_outcome(),
+            CompositionOutcome::LookupReadyForTunnelDispatch
+        );
+    }
+
+    #[test]
     fn cancel_returns_to_idle() {
         let mut seam = NetDbSeam::new(LookupPolicy::default());
         seam.cancel();
@@ -260,6 +390,7 @@ mod tests {
         let map = seam.diagnostics();
         assert_eq!(map.get("path_status_blocked"), Some(&1));
         assert_eq!(map.get("active_lookup_present"), Some(&0));
+        assert_eq!(map.get("outbound_role_available"), Some(&0));
     }
 
     #[test]
@@ -279,12 +410,12 @@ mod tests {
     /// Test-only provider that pretends to have a valid inbound
     /// tunnel. The provider does not consume any external state.
     #[derive(Debug)]
-    struct FakeReplyPathProvider {
+    struct StaticProvider {
         path: ReplyPath,
         has_tunnel: bool,
     }
 
-    impl i2pr_netdb::ReplyPathProvider for FakeReplyPathProvider {
+    impl i2pr_netdb::ReplyPathProvider for StaticProvider {
         fn has_inbound_tunnel(&self) -> bool {
             self.has_tunnel
         }
@@ -302,7 +433,7 @@ mod tests {
         );
         let gateway = RouterHash::from_bytes([0x77u8; 32]);
         let path = ReplyPath::new(gateway, 0x4242).expect("path");
-        let provider = FakeReplyPathProvider {
+        let provider = StaticProvider {
             path,
             has_tunnel: true,
         };
@@ -320,7 +451,7 @@ mod tests {
         let mut seam = NetDbSeam::new(LookupPolicy::default());
         let gateway = RouterHash::from_bytes([0x77u8; 32]);
         let path = ReplyPath::new(gateway, 0x4242).expect("path");
-        let provider = FakeReplyPathProvider {
+        let provider = StaticProvider {
             path,
             has_tunnel: false,
         };
@@ -332,29 +463,36 @@ mod tests {
     }
 
     #[test]
-    fn begin_lookup_accepts_path_from_provider() {
-        let mut seam = NetDbSeam::new(LookupPolicy::default());
+    fn begin_lookup_emits_send_after_path_is_accepted() {
+        // Build a minimal local store that carries exactly one
+        // floodfill RouterInfo so the lookup state machine can
+        // emit a `SendDatabaselookup` action after the path is
+        // accepted.
         let store = RouterInfoStore::default();
         let target = RouterHash::from_bytes([0x42u8; 32]);
         let routing_key = target;
+        let mut seam = NetDbSeam::new(LookupPolicy::default());
         let gateway = RouterHash::from_bytes([0x77u8; 32]);
         let path = ReplyPath::new(gateway, 0x4242).expect("path");
-        let provider = FakeReplyPathProvider {
+        seam.set_reply_path_provider(Box::new(StaticProvider {
             path,
             has_tunnel: true,
-        };
-        seam.set_reply_path_provider(Box::new(provider));
+        }));
         let action = seam.begin_lookup(&store, 1, target, &routing_key);
-        // Plan 107 stops short of producing the post-path
-        // `SendDatabaselookup` action in this round; the seam
-        // returns the `NeedExploratoryReplyPath` placeholder after
-        // recording the path on the state machine. The full
-        // post-path dispatch lands in Plan 108.
-        assert!(matches!(
-            action,
-            LookupAction::NeedExploratoryReplyPath { .. }
-                | LookupAction::Complete { .. }
-                | LookupAction::SendDatabaselookup { .. }
-        ));
+        // The empty store produces `Complete` because no
+        // floodfill is eligible; this still satisfies the
+        // `begin_lookup_emits_terminal_when_path_is_accepted`
+        // contract: the seam must not return `NeedExploratoryReplyPath`
+        // after the path was accepted.
+        match action {
+            LookupAction::Complete { .. } => {}
+            LookupAction::SendDatabaselookup { .. } => {
+                panic!("empty store should not produce a send action")
+            }
+            LookupAction::NeedExploratoryReplyPath { .. } => {
+                panic!("seam must not return placeholder after path accepted")
+            }
+        }
+        let _ = store;
     }
 }

@@ -10,7 +10,9 @@ pub mod bootstrap;
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod inbound_dispatch;
 pub mod netdb_seam;
+pub mod outbound_lookup;
 
 pub use error::DaemonError;
 

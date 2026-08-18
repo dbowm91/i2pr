@@ -11,7 +11,7 @@
 
 use std::fmt;
 
-use i2pr_proto::CodecError;
+use i2pr_proto::{CodecError, DatabaseLookupMessage};
 use thiserror::Error;
 
 use crate::lookup_id::{LookupId, LookupKind, ReplyPath};
@@ -32,16 +32,19 @@ pub const MAX_DECOMPRESSED_ROUTER_INFO_BYTES: usize = 32 * 1024;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LookupAction {
     /// Send a `DatabaseLookup` to the specified peer. The block
-    /// carries the complete outbound I2NP payload (already encoded by
-    /// the state machine) so the runtime cannot inspect the protocol
-    /// body.
+    /// carries the complete outbound I2NP payload as a typed
+    /// [`DatabaseLookupMessage`] so the runtime cannot inspect or
+    /// re-derive the protocol body.
     SendDatabaselookup {
         /// Lookup identity.
         lookup_id: LookupId,
         /// Candidate floodfill RouterHash to query.
         peer: RouterHash,
-        /// Complete outbound `DatabaseLookup` body length.
-        encoded_len: usize,
+        /// Typed outbound `DatabaseLookup` body the runtime must
+        /// deliver. The state machine is the authoritative owner of
+        /// the body; the runtime adapter assigns standard-header
+        /// fields and encodes the body exactly once.
+        message: DatabaseLookupMessage,
     },
     /// The state machine requires an exploratory reply path before
     /// it can emit any `DatabaseLookup`. The runtime must either
@@ -315,6 +318,24 @@ impl LookupAction {
     pub const fn is_complete(&self) -> bool {
         matches!(self, Self::Complete { .. })
     }
+
+    /// Returns the target RouterHash when the action is a
+    /// `SendDatabaselookup` variant, otherwise `None`.
+    pub const fn send_peer(&self) -> Option<RouterHash> {
+        match self {
+            Self::SendDatabaselookup { peer, .. } => Some(*peer),
+            _ => None,
+        }
+    }
+
+    /// Returns the typed `DatabaseLookup` message the runtime must
+    /// deliver, or `None` if the action is not a send.
+    pub const fn send_message(&self) -> Option<&DatabaseLookupMessage> {
+        match self {
+            Self::SendDatabaselookup { message, .. } => Some(message),
+            _ => None,
+        }
+    }
 }
 
 /// Marker trait for any state-machine adapter that accepts a reply
@@ -330,6 +351,8 @@ pub trait ReplyPathSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lookup_id::ReplyPath;
+    use i2pr_proto::ReplyEncryption;
 
     #[test]
     fn action_lookup_id_round_trips() {
@@ -356,6 +379,38 @@ mod tests {
         let action = LookupAction::NeedExploratoryReplyPath { lookup_id: id };
         assert_eq!(action.lookup_id(), id);
         assert!(!action.is_complete());
+    }
+
+    #[test]
+    fn send_action_carries_typed_database_lookup_body() {
+        let target = RouterHash::from_bytes([0x33u8; 32]);
+        let peer = RouterHash::from_bytes([0x44u8; 32]);
+        let gateway = RouterHash::from_bytes([0x55u8; 32]);
+        let path = ReplyPath::new(gateway, 7).expect("path");
+        let lookup_id = LookupId::new(13, LookupKind::RouterInfo, target);
+        let message = i2pr_proto::DatabaseLookupMessage {
+            key: i2pr_proto::Hash::from_bytes(*target.as_bytes()),
+            from: i2pr_proto::Hash::from_bytes(*gateway.as_bytes()),
+            delivery_flag: true,
+            reply_tunnel_id: Some(7),
+            lookup_type: LookupKind::RouterInfo.wire_code(),
+            excluded_peers: vec![i2pr_proto::Hash::from_bytes(*target.as_bytes())],
+            reply_encryption: ReplyEncryption::None,
+        };
+        let action = LookupAction::SendDatabaselookup {
+            lookup_id,
+            peer,
+            message: message.clone(),
+        };
+        assert_eq!(action.lookup_id(), lookup_id);
+        assert_eq!(action.send_peer(), Some(peer));
+        let recovered = action.send_message().expect("message");
+        assert_eq!(recovered.key, message.key);
+        assert_eq!(recovered.from, message.from);
+        assert!(recovered.delivery_flag);
+        assert_eq!(recovered.reply_tunnel_id, Some(7));
+        assert_eq!(recovered.lookup_type, 2);
+        let _ = path;
     }
 
     #[test]

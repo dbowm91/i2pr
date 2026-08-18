@@ -71,6 +71,7 @@ pub mod build_crypto;
 pub mod config;
 pub mod conformance_fixtures;
 pub mod data;
+pub mod data_plane_registry;
 pub mod established;
 pub mod fixed_vectors;
 pub mod fragment;
@@ -89,6 +90,9 @@ pub use bridge::{BridgeError, BridgeHeader, BridgeRecord, ShortBuildI2npBridge};
 pub use build::{
     BuildCryptographyUnavailable, BuildRecordLayout, BuildRecordLayoutError, BuildReplyKind,
     BuildRequestKind,
+};
+pub use data_plane_registry::{
+    DataPlaneCapacity, DataPlaneRegistry, RegistryError,
 };
 pub use build_crypto::{
     AEAD_KEY_LEN, AEAD_NONCE_LEN, BuildCryptography, BuildCryptographyError, EPHEMERAL_KEY_LEN,

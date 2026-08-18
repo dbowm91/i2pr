@@ -91,6 +91,14 @@ pub struct ReplySecret<const N: usize> {
     bytes: Zeroizing<[u8; N]>,
 }
 
+impl<const N: usize> Clone for ReplySecret<N> {
+    fn clone(&self) -> Self {
+        Self {
+            bytes: Zeroizing::new(*self.bytes.clone()),
+        }
+    }
+}
+
 impl<const N: usize> ReplySecret<N> {
     /// Creates a reply-secret value from protocol bytes.
     pub fn from_bytes(bytes: [u8; N]) -> Self {
@@ -134,7 +142,7 @@ pub struct DatabaseStoreMessage {
 }
 
 /// Reply encryption material in DatabaseLookup.
-#[derive(Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum ReplyEncryption {
     /// No encrypted reply requested.
     None,
@@ -173,7 +181,7 @@ impl fmt::Debug for ReplyEncryption {
 }
 
 /// DatabaseLookup message body.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DatabaseLookupMessage {
     /// Hash key to look up.
     pub key: Hash,
