@@ -3335,7 +3335,7 @@ Plan 103  RouterInfo validation + bounded local NetDB     [closed]
      -> Plan 112  outbound pre-delivery closure [passed-outbound-pre-delivery-closure]
      -> Plan 113  inbound reference reconciliation [passed-inbound-reference-reconciliation]
      -> Plan 114  terminal routing + tunnel-chain correction    [passed-terminal-routing-chain-correction]
-     -> Plan 115  canonical production I2NP bridge + Q0 attempted [closed-branch-e-blocked-no-bounded-independent-consumer-seam]
+     -> Plan 115  canonical production I2NP bridge + Q0 native Emissary OBEP reply [passed-emissary-q0-construction-and-obep-reply-only]
      -> return to Milestone 4B external acceptance [blocked-on-qualified-external-delivery-lane]
 ```
 
@@ -3374,15 +3374,22 @@ deterministically reach `Established` without the prior
 closed the canonical production I2NP bridge
 (`ShortBuildI2npBridge`) that converts a
 `ShortBuildAction::Deliver` into a complete I2NP type-25 message
-without double-prefixing the STBM record count, but closed on
-this host as Branch E
-(`blocked-no-bounded-independent-consumer-seam`) because the only
-available i2pd tunnel-build consumer seam is buried inside the full
-i2pd daemon runtime and exceeds the Plan 115 §11.G1 "small
-one-shot helper" budget. Milestone 4A is now
+without double-prefixing the STBM record count, and closed the
+Plan 115 Q0 independent-consumer seam on this host as
+`passed-emissary-q0-construction-and-obep-reply-only` against
+pinned Emissary revision
+`9b43484a21d5a1291c4881cdae62a36c527f8c0f` (emissary-core 0.4.0).
+The i2pr-emitted STBM is consumed by Emissary's native
+short-build handler (the same code path Emissary uses in
+production), Emissary replies with a `TunnelGateway` wrapping a
+Garlic inner message, and a feedback channel is returned. Q1
+(authenticated transport delivery) and Q2 (reply round-trip to
+`Established`) remain pending and depend on a qualified external
+delivery lane. Milestone 4A is now
 `local-foundation-complete-short-build-outbound-conformant-fixed-vectors`
 with `inbound_short_build = locally-reference-compatible` and
-`production_i2np_bridge = locally-conformant-no-double-prefix`.
+`production_i2np_bridge = locally-conformant-no-double-prefix`
+and `independent_short_build = passed-emissary-q0-native-consumer`.
 A direct `DatabaseLookup` over NTCP2 is not accepted as a substitute
 for the standard exploratory-tunnel path. The next executable step
 is a future narrow qualified external-delivery checkpoint (the

@@ -1867,14 +1867,23 @@ NTCP2 activation or a generic interoperability-harness restart.
 
 Plan 115 Emissary Q0 construction + native OBEP reply has passed
 locally; see [`plans/115-status.md`](../../plans/115-status.md) for
-digests and the pinned Emissary revision. The Q0 was added as a single
-`#[tokio::test]` in a temporary Emissary worktree at the pinned
-revision; the i2pr production code was not modified. Q1/Q2 + qualified
-external delivery remain pending. The Plan 115 bridge
+digests and the pinned Emissary revision
+(`9b43484a21d5a1291c4881cdae62a36c527f8c0f`, emissary-core 0.4.0).
+The Q0 test was added as a new `#[tokio::test]` module inside
+Emissary's `tunnel/tests/mod.rs` (the only seam that has access to
+the private `TestTransitTunnelManager`). `i2pr-proto` and
+`i2pr-tunnel` were added to Emissary's `[dev-dependencies]` only
+in the temporary combined worktree at
+`/tmp/opencode/plan115-q0/combined/emissary-core-pkg/`; the upstream
+Emissary source and `Cargo.toml` were not modified. The i2pr
+production code was not modified either; the test exercises the
+existing `ShortBuildStateMachine::prepare → deliver_action` and
+`ShortBuildI2npBridge::wrap_deliver_action` chain unchanged. Q1/Q2 +
+qualified external delivery remain pending. The Plan 115 bridge
 (`ShortBuildI2npBridge` in `crates/i2pr-tunnel/src/bridge.rs`)
 converts a `ShortBuildAction::Deliver` into a complete I2NP type-25
 message; the Emissary native handler accepts it and returns
-TunnelGateway + Garlic inner message.
+TunnelGateway + Garlic inner message plus a feedback channel.
 
 ## Plan 099 Milestone 3 interop exit, harness reduction, and router buildout (historical; retained NTCP2 result)
 

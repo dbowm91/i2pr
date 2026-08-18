@@ -72,12 +72,16 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
   body equals the original count-prefixed payload exactly. The
   bridge never double-prefixes the STBM record count, never
   mutates, reorders, or regenerates records, and never logs raw
-  record bytes. Plan 115 closes as Branch E
-  (`blocked-no-bounded-independent-consumer-seam`): the
-  mandatory local criteria are satisfied, but the only available
-  i2pd tunnel-build consumer seam is buried inside the full i2pd
-  daemon runtime and exceeds the Plan 115 §11.G1 "small one-shot
-  helper" budget on this host. See
+  record bytes. Plan 115 closes as
+  `passed-emissary-q0-construction-and-obep-reply-only`:
+  the i2pr-emitted STBM is consumed by Emissary's native
+  short-build handler (the same code path Emissary uses in
+  production), Emissary replies with a `TunnelGateway` wrapping
+  a Garlic inner message, and a feedback channel is returned.
+  Plinned Emissary revision: `9b43484a21d5a1291c4881cdae62a36c527f8c0f`
+  (emissary-core 0.4.0). Q1 (authenticated transport delivery)
+  and Q2 (reply round-trip to `Established`) remain pending and
+  depend on a qualified external delivery lane. See
   [`plans/115-status.md`](plans/115-status.md) and
   [`plans/115-handoff.md`](plans/115-handoff.md).
 - Runtime-neutral `ShortBuildStateMachine`, success-only

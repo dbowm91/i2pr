@@ -26,10 +26,18 @@ generic I2NP dispatcher, or use a local/vector/testkit result as
 reference-router evidence.
 
 Plan 115 Emissary Q0 construction + native OBEP reply has passed
-locally; Plan 115 Branch E (closed-no-bounded-independent-consumer-seam)
-is preserved as historical context in `plans/115-status.md`. The full
-Plan 115-117 acceptance (Q0 + Q1 + Q2 + qualified external delivery)
-is not yet complete.
+locally against pinned Emissary revision
+`9b43484a21d5a1291c4881cdae62a36c527f8c0f` (emissary-core 0.4.0).
+The Q0 test was added as a new `#[tokio::test]` module inside
+Emissary's `tunnel/tests/mod.rs`; `i2pr-proto` and `i2pr-tunnel`
+were added to Emissary's `[dev-dependencies]` only in the
+temporary combined worktree at
+`/tmp/opencode/plan115-q0/combined/emissary-core-pkg/`. Plan 115
+Branch E (closed-no-bounded-independent-consumer-seam) is
+preserved as historical context in `plans/115-status.md`. Q1 (authenticated
+transport delivery) and Q2 (reply round-trip to `Established`)
+remain pending. The full Plan 115-117 acceptance
+(Q0 + Q1 + Q2 + qualified external delivery) is not yet complete.
 
 The inbound creator identity is explicit at the `ShortBuildPath` boundary;
 the first remote hop is `InboundGateway`, later remote hops are `Participant`,

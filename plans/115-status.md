@@ -31,13 +31,26 @@ cargo test -p emissary-core --lib i2pr_production_stbm_is_consumed_by_emissary_o
 
 ### Recorded digests
 
+The digests are **non-deterministic across runs** because Emissary's
+`TestTransitTunnelManager::new` derives a fresh random X25519 static
+key pair each time it instantiates a new router; the corresponding
+router hash, ephemeral key, session transcript, and per-record
+ciphertext therefore vary. The layout fields below are stable
+(`record_count = 4`, `stbm_body_length = 873`, `i2np_encoded_length
+= 889`); the SHA-256 digests are observed from a single clean run
+and will differ on subsequent runs. The closure accepts the
+non-deterministic digests because the test consumes i2pr's chosen
+peer static key as an opaque byte sequence; what is verified is
+the byte layout, the canonical-counted payload, and the
+Emissary-native `handle_short_tunnel_build` success path.
+
 | Field | Value |
 | --- | --- |
-| `record_count` | `4` |
-| `stbm_body_length` | `873` |
-| `stbm_body_sha256_first8` | `[4c, c0, 85, b3, dc, 24, 23, 68]` |
-| `i2np_encoded_length` | `889` |
-| `i2np_encoded_sha256_first8` | `[50, 48, d5, 54, 68, 04, 14, 71]` |
+| `record_count` | `4` (stable) |
+| `stbm_body_length` | `873` (stable; `1 + 4 * 218`) |
+| `stbm_body_sha256` | `f219f426771a886ed24ee52cb95bfb325081e2697b8c52bf82449041cd4ae3c2` (one observed run) |
+| `i2np_encoded_length` | `889` (stable; `16 + 873`) |
+| `i2np_encoded_sha256` | `3c7546644778fb7e87fd9798bc006c54121b95b518820f3231b9d82bf70e1abf` (one observed run) |
 | `reference_decision` | `passed` |
 | `returned_message_type` | `TunnelGateway` |
 | `returned_reply_tunnel_matches` | `true` |
@@ -53,6 +66,33 @@ The Q0 lane is **construction + native OBEP reply only**. It does
 3. the OBEP Garlic body parsing/decompression;
 4. inbound construction;
 5. external-network routing.
+
+### Q0 test surface
+
+The Q0 test is placed inside Emissary's
+`emissary-core/src/tunnel/tests/mod.rs` as a new test module
+(`plan115_q0_tests`). It uses i2pr's `i2pr-proto` and `i2pr-tunnel`
+crates as test-only dev-dependencies (added to Emissary's
+`Cargo.toml` `[dev-dependencies]` section). The test:
+
+1. instantiates a fresh `TestTransitTunnelManager` (the same code
+   path Emissary uses in production for short-tunnel build handling);
+2. builds an i2pr `ShortBuildPath` with a single outbound hop
+   pointing to the Emissary router, role = `OutboundEndpoint`;
+3. runs i2pr's `ShortBuildStateMachine::prepare` followed by
+   `deliver_action` to produce the canonical count-prefixed STBM
+   payload;
+4. wraps the payload via i2pr's canonical production
+   `ShortBuildI2npBridge` into a complete I2NP type-25 message;
+5. parses the wrapped bytes with Emissary's `Message::parse_standard`;
+6. hands the parsed `Message` to
+   `TestTransitTunnelManager::handle_short_tunnel_build` and asserts
+   the result is `Ok((_, reply, Some(feedback_tx)))` where the reply
+   `message_type` is `TunnelGateway`.
+
+The test signs off the i2pr production STBM as byte-consumable by
+Emissary's native short-build handler with the OBEP reply path
+exercised end-to-end.
 
 ### Current authoritative state
 

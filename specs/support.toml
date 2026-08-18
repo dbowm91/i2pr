@@ -472,7 +472,7 @@ structure = "local-ecies-x25519-noise-n-short-build-cryptography-and-state-machi
 scope = "required-later"
 status = "experimental"
 conformant = true
-conformance_note = "Plan 111/112 preserve local outbound conformance. Plan 113 closes inbound as `reference-compatible-spec-text-discrepancy`: the final specification mentions a creator ephemeral key in inbound plaintext but gives no serializable location, while pinned Java I2P and i2pd agree on the deployed originator fake. The real request retains fixed fields + Mapping/padding; exactly one originator fake carries `hash16 || fresh X25519 pub32 || random remainder` and is integrity-checked after reply processing. Plan 114 closes the four post-Plan-113 routing/composition defects: explicit outbound `outbound_reply_router` and inbound `originator_hash` terminal-routing fields, intermediate `hops[i].next_tunnel == hops[i+1].receive_tunnel` chain continuity enforced at both the high-level `ShortBuildPath::validate()` boundary and the public lower-level `prepare_short_build_message()` entry point, and strict outbound/inbound E2E trajectories that deterministically reach `Established`. This is not a strict final-spec conformance claim for the unresolved inbound creator-key sentence. Live mixed-router execution remains blocked on a qualified external delivery lane."
+conformance_note = "Plan 111/112 preserve local outbound conformance. Plan 113 closes inbound as `reference-compatible-spec-text-discrepancy`: the final specification mentions a creator ephemeral key in inbound plaintext but gives no serializable location, while pinned Java I2P and i2pd agree on the deployed originator fake. The real request retains fixed fields + Mapping/padding; exactly one originator fake carries `hash16 || fresh X25519 pub32 || random remainder` and is integrity-checked after reply processing. Plan 114 closes the four post-Plan-113 routing/composition defects: explicit outbound `outbound_reply_router` and inbound `originator_hash` terminal-routing fields, intermediate `hops[i].next_tunnel == hops[i+1].receive_tunnel` chain continuity enforced at both the high-level `ShortBuildPath::validate()` boundary and the public lower-level `prepare_short_build_message()` entry point, and strict outbound/inbound E2E trajectories that deterministically reach `Established`. Plan 115 Emissary Q0 construction + native OBEP reply has passed locally against pinned Emissary at 9b43484a21d5a1291c4881cdae62a36c527f8c0f: the i2pr-produced STBM is consumed by Emissary's native short-build handler, Emissary replies with `TunnelGateway` + Garlic inner message + feedback channel. This is not a strict final-spec conformance claim for the unresolved inbound creator-key sentence. Q1 (authenticated transport delivery) and Q2 (reply round-trip to `Established`) remain pending on a qualified external delivery lane."
 notes = "Plan 115 Emissary Q0 construction + native OBEP reply: passed locally against pinned Emissary at 9b43484a21d5a1291c4881cdae62a36c527f8c0f. Q1/Q2/qualified-external-delivery still pending."
 evidence = [
     "crates/i2pr-tunnel/src/build_crypto.rs",
@@ -482,11 +482,13 @@ evidence = [
     "crates/i2pr-tunnel/src/responder.rs",
     "crates/i2pr-tunnel/src/conformance_fixtures.rs",
     "crates/i2pr-tunnel/src/fixed_vectors.rs",
+    "crates/i2pr-tunnel/src/bridge.rs",
     "crates/i2pr-crypto/src/hkdf.rs",
     "plans/111-short-build-final-local-conformance-correction.md",
     "plans/111-status.md",
     "plans/112-status.md",
     "plans/113-status.md",
+    "plans/115-status.md",
     "specs/references/short-build-inbound-creator-key.md",
 ]
 advertised = false

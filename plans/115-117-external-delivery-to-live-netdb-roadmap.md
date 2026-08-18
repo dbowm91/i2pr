@@ -105,7 +105,13 @@ Record the exact missing reference boundary. Do not automatically start another 
 
 ## Gate 116 — Milestone 5 tunnel data plane and exploratory-pool completion
 
-Plan 116 is **not executable until Plan 115 closes with branch 115-A or 115-B**. Its exact plan file should be generated from the actual Plan 115 implementation surface rather than guessed in advance. The current Q0 status is `passed-construction-and-obep-reply-only` (branch 115-B); the implementation-floor line for Plan 116 must reference this partial Q0 status.
+Plan 116 is **now unblocked** under branch 115-B: Plan 115 closed
+with `passed-emissary-q0-construction-and-obep-reply-only` (Q0
+passed for construction + OBEP reply; Q1/Q2 deferred). The
+implementation-floor line for Plan 116 must reference this Q0
+status. The exact plan file for Plan 116 should be generated from
+the actual Plan 115 implementation surface rather than guessed in
+advance.
 
 The scope below is the required boundary for that future plan.
 
