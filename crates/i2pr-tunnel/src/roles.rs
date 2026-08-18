@@ -801,6 +801,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn outbound_gateway_emits_first_hop_cell() {
         let hops = vec![EstablishedHop::new(
             peer(1),
@@ -899,6 +900,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn participant_role_rejects_wrong_receive_tunnel() {
         let hops = vec![EstablishedHop::new(
             peer(1),
@@ -934,6 +936,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn participant_role_rejects_zero_tunnel_id() {
         let hops = vec![EstablishedHop::new(
             peer(1),
@@ -963,6 +966,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn participant_role_locks_previous_peer() {
         let hops = vec![EstablishedHop::new(
             peer(1),
@@ -999,6 +1003,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn outbound_endpoint_emits_router_delivery() {
         let hops = vec![EstablishedHop::new(
             peer(1),

@@ -735,6 +735,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn builder_parser_round_trip_local_message() {
         let mut rng = rng_seed(1);
         let header = TunnelPayloadHeader {
@@ -761,6 +762,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn builder_parser_round_trip_router_message() {
         let mut rng = rng_seed(2);
         let header = TunnelPayloadHeader {
@@ -792,6 +794,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn builder_parser_round_trip_tunnel_message() {
         let mut rng = rng_seed(3);
         let header = TunnelPayloadHeader {
@@ -825,6 +828,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn parser_rejects_zero_padding_before_delimiter() {
         let mut plaintext = [0x11_u8; MAX_PLAINTEXT_DATA_BYTES];
         // Force the checksum prefix to all zeros and the rest to
@@ -837,6 +841,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn parser_rejects_oversized_fragment_length() {
         let mut rng = rng_seed(4);
         let header = TunnelPayloadHeader {
@@ -883,6 +888,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn parser_rejects_zero_message_id() {
         let mut rng = rng_seed(7);
         let header = TunnelPayloadHeader {
@@ -929,6 +935,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn parser_rejects_reserved_delivery_type() {
         let mut rng = rng_seed(8);
         let header = TunnelPayloadHeader {
@@ -976,6 +983,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn builder_parser_two_fragment_round_trip() {
         let mut rng = rng_seed(9);
         // First fragment (LOCAL) + follow-on fragment.

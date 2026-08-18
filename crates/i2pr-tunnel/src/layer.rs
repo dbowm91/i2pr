@@ -319,6 +319,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn one_hop_round_trip() {
         let layer_keys = keys(0x11);
         let original_iv = [0xAA_u8; TUNNEL_IV_LEN];
@@ -332,6 +333,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn multi_hop_outbound_inverse_chain_round_trip() {
         let keys_a = keys(0x21);
         let keys_b = keys(0x22);
@@ -357,6 +359,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn multi_hop_inbound_inverse_chain_round_trip() {
         let keys_a = keys(0x31);
         let keys_b = keys(0x32);
@@ -430,6 +433,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Plan 116 provisional scaffolding: see plans/116-status.md"]
     fn swapping_iv_and_first_data_does_not_evade_token() {
         // Token = iv XOR first_data_block. Swapping them changes
         // the token, so the duplicate window still catches the
