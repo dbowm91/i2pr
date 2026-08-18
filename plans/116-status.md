@@ -1,86 +1,144 @@
-# Plan 116 status: passed-final-local-closure
+# Plan 116 status: terminal-cleanup-pending
 
-- Status: **passed-final-local-closure**
+- Status: **terminal-cleanup-pending**
 - Date: **2026-08-18**
-- Current implementation floor: `0330fb2e9e64dd0877472c930606ab4219ac18a9` (closure pass landed on top of `78f1024c47ca5ba110656e9fe2936ca2719c319f`)
+- Current repository planning floor: `8057c34c7208dd5f561d4ebf2b51b582293e8432` plus [`116-terminal-cleanup.md`](116-terminal-cleanup.md).
+- Substantive local data-plane implementation: `0330fb2e9e64dd0877472c930606ab4219ac18a9`.
 - Original plan: [`116-local-tunnel-data-plane.md`](116-local-tunnel-data-plane.md)
 - Completion/correction pass: [`116-completion-correction.md`](116-completion-correction.md)
-- Final closure pass: [`116-final-closure.md`](116-final-closure.md)
+- Prior final-closure pass: [`116-final-closure.md`](116-final-closure.md)
+- **Execute now:** [`116-terminal-cleanup.md`](116-terminal-cleanup.md)
+- Handoff: [`116-handoff.md`](116-handoff.md)
 - Predecessor: [`115-status.md`](115-status.md)
-- Plan 117: **unblocked, ready for planning**
+- Plan 117: **blocked until the terminal cleanup passes**.
 
-## Closure result
+## Why Plan 116 is temporarily reopened
 
-Plan 116 final closure landed all five closure-level defects. The
-`i2pr-tunnel` crate now exposes a real established-material transfer,
-test-only placeholder APIs, exact fragment-boundary sizing with the
-canonical I2P Tunnel Message Specification overheads, retained first-
-fragment delivery metadata through reassembly, and the complete
-outbound-to-inbound tunnel trajectory with exact-byte equality — both
-in the unfragmented case (DeliveryStatus body) and the fragmented case
-(Data body across multiple TunnelData cells on both sides).
+The `0330fb2e...` implementation successfully landed the major Plan 116 data-plane work. A strict post-closure audit found three remaining technical closure defects and one authority/evidence inconsistency. These are narrow local issues; they do not invalidate the major wire/AES/material-transfer work and they do not justify reopening external validation.
+
+Current remaining defects:
 
 ```text
-F1 state-machine material transfer                = landed
-F2 production placeholder APIs                    = removed (#[cfg(test)])
-F3 fragment sizing + boundary tests               = landed
-F4 fragmented delivery metadata retention         = landed
-F5 outbound-to-inbound trajectory (unfragmented)  = passed-exact-bytes
-F5 outbound-to-inbound trajectory (fragmented)    = passed-exact-bytes
+T1 exact duplicate fragments increase aggregate retained-byte accounting
+   even though the partial stores no additional bytes; duplicate handling
+   also refreshes last_touched_ms before idempotence is established.
+
+T2 first-fragment delivery metadata is not part of duplicate identity;
+   a body-identical duplicate first fragment with a different delivery
+   target can be silently treated as an idempotent duplicate.
+
+T3 the fragmented outbound -> inbound exact-byte role trajectory is
+   executed only in canonical fragment order. The Plan 116 final closure
+   explicitly required an out-of-order full role-level trajectory.
+
+T4 status/handoff authority diverged and the prior status listed several
+   intended F4 test names rather than exact implemented identifiers.
 ```
 
-## Acceptance evidence
+Detailed correction and acceptance criteria live in [`116-terminal-cleanup.md`](116-terminal-cleanup.md).
 
-The Plan 116 closure pass is supported by the following active tests
-in `crates/i2pr-tunnel/src/`:
+## Work that remains accepted
 
-| Surface | Tests |
-| --- | --- |
-| F1 real transfer | `take_established_material_before_established_fails`, `take_established_material_double_take_fails`, `outbound_take_established_material_topology_round_trip`, `inbound_take_established_material_topology_round_trip`, `registrar_admit_established_machine_inserts_into_pool` |
-| F3 fragment boundaries | `boundary_local_round_trips_at_each_boundary`, `boundary_router_round_trips_at_each_boundary`, `boundary_tunnel_round_trips_at_each_boundary`, `fragment_complete_message_outputs_are_accepted_by_build_cells` |
-| F4 delivery retention | `reassembler_retains_first_delivery_through_complete_message`, `reassembler_clears_first_delivery_on_conflicting_duplicate`, `reassembler_emits_local_delivery_for_local_unfragmented`, `reassembler_unfragmented_message_clears_first_delivery`, `reassembler_rejects_conflicting_follow_on_with_retained_delivery` |
-| F5 trajectory | `outbound_to_inbound_tunnel_trajectory_exact_bytes`, `outbound_to_inbound_fragmented_trajectory_exact_bytes` |
-| Independent reference | `plan111_reference_vectors_match_production_open`, `plan111_reference_vectors_match_production_seal`, `plan111_reference_vectors_match_production_layer_keys`, `plan111_reference_vectors_match_pure_rust_oracle`, `plan111_reference_vectors_sealed_envelope_re_encrypts_to_same_bytes` |
+The following surfaces remain accepted and should **not** be rewritten:
 
-Total: 229 lib tests + 5 integration tests, all green locally.
+```text
+F1 state-machine material transfer                = passed-local
+F2 production placeholder APIs                    = test-only / production blocked
+F3 fragment sizing + boundary tests               = passed-local
+F4 first-fragment delivery retention basic path   = passed-local
+F5 outbound-to-inbound unfragmented trajectory    = passed-exact-bytes-local
+F5 outbound-to-inbound fragmented trajectory      = passed-exact-bytes-ordered-local
+Tunnel Message checksum/control framing           = corrected-local
+AES participant/creator transforms                = corrected-local
+production IV/padding randomness                  = corrected-local
+```
 
-## Architectural surface added by the final closure pass
+The terminal cleanup is about bounded reassembly integrity and the missing out-of-order acceptance dimension only.
 
-- `ShortBuildStateMachine::take_established_material(&mut self, established_at_seconds: u64) -> Result<EstablishedMaterial, ShortBuildConstructionError>` produces the canonical `EstablishedMaterial` directly from a successful `StatePhase::Established` machine. Outbound paths keep their `[Participant*]+OBEP` topology; inbound paths keep their `[IBGW, Participant*]` topology with the originator as terminal next-hop. The second call returns `EstablishedMaterialAlreadyTaken`.
-- `HopCryptoContext::take_layer_keys(&mut self)` performs a zeroing `mem::replace` swap into the owned `LayerKeys`. The context refuses subsequent layer-key access after the swap.
-- `ShortBuildRegistrar` exposes `admit_material(EstablishedMaterial, now_seconds)` and the canonical `admit_established_machine(&mut machine, now_seconds)` surface. The legacy `admit(&ShortBuildOutcome, slot, now_seconds)` fails closed: `EstablishedMaterialRequired` for `Established` outcomes, `NotEstablished` otherwise.
-- `ExploratoryPool::register_inbound`, `register_outbound`, and the internal `build_placeholder_established` are now `#[cfg(test)]`. Production callers must go through `register_inbound_with_material` / `register_outbound_with_material`.
-- `data::unfragmented_overhead(DeliveryInstruction) -> usize`, `fragmented_first_overhead(DeliveryInstruction) -> usize`, and the `FOLLOW_ON_OVERHEAD = 7` constant now express the canonical I2P Tunnel Message Specification overheads. `fragment_complete_message` uses them.
-- `fragment::ReassembledFragment { message: Vec<u8>, delivery: Option<DeliveryInstruction> }` and `BoundedReassembler::insert_with_delivery(key, fragment, Option<DeliveryInstruction>) -> Result<Option<ReassembledFragment>, ReassemblyError>` carry the first-fragment delivery instruction through reassembly. Conflicting duplicates clear it. The unfragmented path returns `delivery: Some(...)`.
-- `roles::action_from_unspecified` is removed. `OutboundEndpointRole::assemble_actions` consumes the reassembled fragment's `delivery` and returns `TunnelRoleError::UnspecifiedDeliveryInstruction { message_id }` when the reassembler returns no delivery. `LocalInboundEndpointRole::process` uses `insert_with_delivery`, requires `DeliveryInstruction::Local`, and rejects non-local retained delivery with `LocalInboundNonLocalDelivery`.
-- `OutboundGatewayRole::forward_cells(&self, header, complete_message, rng, now_ms) -> Result<Vec<OBGWRouterDelivery>, TunnelRoleError>` returns the ordered multi-cell forward path. `InboundGatewayRole::process_cells(&self, gateway, rng, now_ms) -> Result<Vec<OutboundCell>, TunnelRoleError>` returns the ordered multi-cell fragment set. The single-cell `forward` and `process` paths remain for small messages.
+## Current implementation facts
 
-## Mandatory current token table
+### Real established material transfer
+
+`ShortBuildStateMachine::take_established_material()` now consumes retained per-hop `LayerKeys` after a real `Established` transition and constructs the existing `EstablishedMaterial` topology. `ShortBuildRegistrar::admit_established_machine()` passes that material to the pool. The material-less legacy registrar path fails closed.
+
+### Material-only production pool
+
+`ExploratoryPool::register_inbound()` / `register_outbound()` and `build_placeholder_established()` are `#[cfg(test)]`. Production registration uses `register_*_with_material()`.
+
+### Fragment boundaries
+
+`fragment_complete_message()` now uses exact LOCAL/ROUTER/TUNNEL unfragmented and first-fragment overheads plus the 7-byte follow-on overhead. Active boundary tests run generated fragment sets through `build_cells()` and parsing.
+
+### Cross-tunnel trajectory
+
+The current role test executes:
+
+```text
+OutboundGatewayRole
+ -> outbound participant
+ -> OutboundEndpointRole
+ -> TunnelGatewayMessage
+ -> InboundGatewayRole
+ -> inbound participant
+ -> LocalInboundEndpointRole
+ -> exact original standard I2NP bytes
+```
+
+for both small and fragmented messages. The fragmented case currently delivers inbound cells to the endpoint in canonical order; the terminal cleanup must add the required out-of-order role-level proof.
+
+## Current token table
 
 ```text
 plan_115_Q0                          = passed-emissary-native-consumer
-Q1_authenticated_transport            = deferred
-Q2_external_return_established        = deferred
-plan_116_wire_format                  = corrected-local
-plan_116_aes_layer                    = corrected-local
-plan_116_rng                          = corrected-local
-plan_116_state_machine_material       = landed-real-transfer
-plan_116_pool_real_material_only      = landed-cfg-test-only-placeholders
-plan_116_fragment_boundaries          = landed-exact-overheads
-plan_116_fragment_delivery_state      = landed-first-fragment-retained
-plan_116_outbound_router              = passed-local
-plan_116_outbound_to_inbound          = passed-exact-bytes
-plan_116_fragmented_cross_tunnel      = passed-exact-bytes
-plan_116                              = passed-final-local-closure
-plan_117                              = unblocked-ready-for-planning
-qualified_external_delivery           = blocked-on-host-execution-lane
-normal_daemon_ntcp2                   = disabled-and-unenableable
-ntcp2                                 = experimental-non-advertised
+Q1_authenticated_transport          = deferred
+Q2_external_return_established      = deferred
+plan_116_wire_format                = corrected-local
+plan_116_aes_layer                  = corrected-local
+plan_116_rng                        = corrected-local
+plan_116_state_machine_material     = passed-real-transfer
+plan_116_pool_real_material_only    = passed-cfg-test-only-placeholders
+plan_116_fragment_boundaries        = passed-exact-overheads
+plan_116_fragment_delivery_state    = passed-basic-retention
+plan_116_outbound_router            = passed-local
+plan_116_outbound_to_inbound        = passed-exact-bytes
+plan_116_fragmented_cross_tunnel    = passed-exact-bytes-ordered-only
+plan_116_duplicate_accounting       = correction-required
+plan_116_duplicate_expiry           = correction-required
+plan_116_first_delivery_identity    = correction-required
+plan_116                             = terminal-cleanup-pending
+plan_117                             = blocked-on-plan116-terminal-cleanup
+qualified_external_delivery         = blocked-on-host-execution-lane
+normal_daemon_ntcp2                 = disabled-and-unenableable
+ntcp2                               = experimental-non-advertised
+```
+
+## Required terminal result
+
+Do not restore Plan 116 closure until the terminal cleanup proves:
+
+```text
+exact_duplicate_retained_bytes       = unchanged
+exact_duplicate_at_budget_limit      = accepted-noop
+exact_duplicate_expiry               = no-refresh
+completion_after_duplicates          = retained-bytes-zero
+first_delivery_exact_duplicate       = idempotent
+first_delivery_conflict              = rejected-partial-invalidated
+fragmented_cross_tunnel_out_of_order = passed-exact-bytes
+current_test_evidence_names           = exact-source-identifiers
+status_handoff_authority              = synchronized
+workspace_validation                  = passed-or-preexisting-env-blocker-only
+```
+
+Only then record:
+
+```text
+plan_116 = passed-final-local-closure
+plan_117 = unblocked-ready-for-planning
 ```
 
 ## Fixed anti-loop scope
 
-The final closure pass does **not** reopen:
+This terminal cleanup must not reopen:
 
 ```text
 Emissary/i2pd/Java runtime testing
@@ -89,11 +147,10 @@ SSU2
 Q1/Q2
 rootless namespaces
 Docker/Multipass/VMs
-Python interop harnesses
+Python interoperability harnesses
 public I2P network
+NetDB live integration
 Plan 117 execution
 ```
 
-The Plan 117 planning/execution pass remains a separate future plan.
-This status file documents the closure of the local Rust substrate
-that Plan 117 will compose.
+This is an ordinary local Rust correctness pass over `fragment.rs`, the fragmented trajectory in `roles.rs`, and closure documentation.
