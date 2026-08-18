@@ -1,19 +1,87 @@
 # Plan 115 closure: qualified independent short-build consumption and external-delivery checkpoint
 
-- Status: **closed-branch-e-blocked-no-bounded-independent-consumer-seam**
-- Date: 2026-08-17
+- Status: **passed-emissary-q0-construction-and-obep-reply-only**
+  (supersedes the historical Branch E closure below; the Branch E
+  closure block is preserved as historical context)
+- Date: 2026-08-17 (original Branch E); Q0 completion date TBD
 - Plan-of-record:
   [`plans/115-qualified-independent-short-build-consumption-and-external-delivery.md`](115-qualified-independent-short-build-consumption-and-external-delivery.md)
+- Corrective plan:
+  [`plans/115-completion-emissary-native-q0.md`](115-completion-emissary-native-q0.md)
 - Predecessor: [`plans/114-status.md`](114-status.md)
-- Successor: a future narrow qualified external-delivery checkpoint
-  (Plan 060 / Plan 066 / Plan 116 sequence) on a host where the
-  Plan 046 rootless sealed-namespace lane or the Plan 048/049
-  Multipass recovery lane is runnable. The next executable plan
-  **is not** in the current checkout; Plan 115 closes the
-  canonical production seam without advancing the external
-  delivery lane.
+- Successor: Plan 117 external delivery lane
 
-## Current authoritative state
+## Plan 115 Emissary Q0 completion (plan-of-record supersede)
+
+- Status: **passed-emissary-q0-construction-and-obep-reply-only**
+- Topology: `one-hop outbound single Emissary router as OBEP`
+- Highest stage: Emissary native handler accepts the i2pr-produced
+  STBM, replies with TunnelGateway + Garlic inner message, and
+  returns a feedback channel.
+- Reference kind: `emissary`
+- Reference revision pin: `9b43484a21d5a1291c4881cdae62a36c527f8c0f`
+  (emissary-core 0.4.0)
+- i2pr source commit: `1e15239e1849ed24c294252ad16a5fb7bc7e4318`
+- Test command (run inside a temporary Emissary worktree at the pinned
+  revision with `i2pr-proto` and `i2pr-tunnel` as test-only dev-deps):
+
+```text
+cargo test -p emissary-core --lib i2pr_production_stbm_is_consumed_by_emissary_obep -- --nocapture
+```
+
+### Recorded digests
+
+| Field | Value |
+| --- | --- |
+| `record_count` | `4` |
+| `stbm_body_length` | `873` |
+| `stbm_body_sha256_first8` | `[4c, c0, 85, b3, dc, 24, 23, 68]` |
+| `i2np_encoded_length` | `889` |
+| `i2np_encoded_sha256_first8` | `[50, 48, d5, 54, 68, 04, 14, 71]` |
+| `reference_decision` | `passed` |
+| `returned_message_type` | `TunnelGateway` |
+| `returned_reply_tunnel_matches` | `true` |
+| `raw_secret_material_retained` | `false` |
+
+### Q0 lane scope
+
+The Q0 lane is **construction + native OBEP reply only**. It does
+**not** exercise:
+
+1. NTCP2 transport;
+2. end-to-end build acceptance from Emissary's hop reply;
+3. the OBEP Garlic body parsing/decompression;
+4. inbound construction;
+5. external-network routing.
+
+### Current authoritative state
+
+```text
+plan_111                          = retained-core-crypto-corrected
+plan_112                          = passed-outbound-pre-delivery-closure
+plan_113                          = passed-inbound-reference-reconciliation
+plan_114                          = passed-terminal-routing-chain-correction
+plan_115                          = passed-emissary-q0-construction-and-obep-reply-only
+plan_115_q0                       = passed-construction-and-obep-reply-only
+short_build_local_outbound        = strict-established
+short_build_local_inbound         = strict-established
+canonical_i2np_bridge             = locally-conformant-no-double-prefix
+qualified_external_delivery       = construction-and-obep-reply-only
+independent_short_build           = passed-emissary-q0-native-consumer
+qualified_live_delivery           = unchanged-or-exactly-localized
+plan_116_local_data_plane         = gated-on-future-external-bridge-pass
+milestone3_two_reference_transport = still-requires-qualified-lane
+milestone5_mixed_router_exit      = still-requires-data-plane-and-live-evidence
+normal_daemon_ntcp2               = disabled-and-unenableable
+ntcp2                             = experimental-non-advertised
+```
+
+### Branch E historical closure (preserved verbatim)
+
+> The text below is the original Branch E closure block, preserved
+> as historical context. It is superseded by the Q0 completion above.
+
+## Current authoritative state (historical Branch E)
 
 ```text
 plan_111                          = retained-core-crypto-corrected

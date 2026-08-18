@@ -1,6 +1,6 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090/091/092/093/094/099/100 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness (Plan 099/100 closed as protocol-defect-localized; Plan 095 historical). Plan 101 corrects the daemon NTCP2 activation boundary; normal-daemon NTCP2 is disabled. Plan 115 closed as Branch E (`blocked-no-bounded-independent-consumer-seam`) with the canonical production I2NP bridge (`ShortBuildI2npBridge` in `crates/i2pr-tunnel/src/bridge.rs`) and no live Q0/Q1/Q2 result on this host. The harness includes the Plan 085-088 host-loopback development execution roadmap (historical), the Plan 090 i2pd RouterInfo and pre-TCP classification correction, the Plan 091 i2pd Noise-handshake preconditions, the Plan 092 forward-handshake evidence integrity (superseded by Plan 093), the Plan 093 Plan 087 forward data-phase and reference-observer closure, the Plan 094 Plan 093 completion pass and Plan 087 -> Plan 088 handoff, the Plan 099 Milestone 3 interop exit and router buildout, and the Plan 100 one-time exit-gate cleanup and router handoff. Use when an agent is asked to read or reproduce the historical harness surface, run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, or validate evidence. The active development interop lane is closed; NTCP2 remains experimental and non-advertised. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090/091/092/093/094/099/100 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness (Plan 099/100 closed as protocol-defect-localized; Plan 095 historical). Plan 101 corrects the daemon NTCP2 activation boundary; normal-daemon NTCP2 is disabled. Plan 115 Emissary Q0 construction + native OBEP reply has passed locally with the canonical production I2NP bridge (`ShortBuildI2npBridge` in `crates/i2pr-tunnel/src/bridge.rs`); Q1/Q2/qualified external delivery still pending. The harness includes the Plan 085-088 host-loopback development execution roadmap (historical), the Plan 090 i2pd RouterInfo and pre-TCP classification correction, the Plan 091 i2pd Noise-handshake preconditions, the Plan 092 forward-handshake evidence integrity (superseded by Plan 093), the Plan 093 Plan 087 forward data-phase and reference-observer closure, the Plan 094 Plan 093 completion pass and Plan 087 -> Plan 088 handoff, the Plan 099 Milestone 3 interop exit and router buildout, and the Plan 100 one-time exit-gate cleanup and router handoff. Use when an agent is asked to read or reproduce the historical harness surface, run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, or validate evidence. The active development interop lane is closed; NTCP2 remains experimental and non-advertised. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
 # I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/081/082/083/084)
@@ -25,23 +25,11 @@ not own that tunnel-build implementation and must not activate NTCP2, add a
 generic I2NP dispatcher, or use a local/vector/testkit result as
 reference-router evidence.
 
-Plan 115 is closed as
-`closed-branch-e-blocked-no-bounded-independent-consumer-seam`.
-Plan 115 added the canonical production I2NP bridge
-(`ShortBuildI2npBridge` in
-`crates/i2pr-tunnel/src/bridge.rs`) so the already count-prefixed
-`ShortBuildAction::Deliver.message` is wrapped in a single
-complete I2NP type-25 message without double-prefixing the STBM
-record count byte, with a round-trip standard-header decoder
-assertion that the body bytes equal the original delivery
-payload exactly. Plan 115 closes the canonical production seam
-but does **not** produce a live mixed-router Q0/Q1/Q2 result on
-this host. The cheapest i2pd tunnel-build consumer seam
-(`i2p::RouterContext::DecryptTunnelShortRequestRecord`) requires
-full i2pd daemon runtime initialization that exceeds the Plan 115
-§11.G1 "small one-shot helper" budget. See
-`plans/115-status.md` and `plans/115-handoff.md` for the
-closure record and the future external-delivery lane.
+Plan 115 Emissary Q0 construction + native OBEP reply has passed
+locally; Plan 115 Branch E (closed-no-bounded-independent-consumer-seam)
+is preserved as historical context in `plans/115-status.md`. The full
+Plan 115-117 acceptance (Q0 + Q1 + Q2 + qualified external delivery)
+is not yet complete.
 
 The inbound creator identity is explicit at the `ShortBuildPath` boundary;
 the first remote hop is `InboundGateway`, later remote hops are `Participant`,

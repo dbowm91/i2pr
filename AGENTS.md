@@ -1752,6 +1752,8 @@ plan_111                         = passed-final-local-short-build-conformance
 plan_112                         = passed-outbound-pre-delivery-closure
 plan_113                         = passed-inbound-reference-reconciliation
 plan_114                         = passed-terminal-routing-chain-correction
+plan_115                         = passed-emissary-q0-construction-and-obep-reply-only
+plan_115_q0                      = passed-construction-and-obep-reply-only
 short_build_record_format        = locally-conformant-fixed-vectors
 short_build_noise_state          = locally-conformant-fixed-vectors
 short_build_reply_crypto         = locally-conformant-fixed-vectors
@@ -2022,34 +2024,13 @@ double-prefixes the count byte, never mutates, reorders, or
 regenerates records, and never logs raw record bytes through
 `Debug`.
 
-Plan 115 closes on this host as Branch E
-(`blocked-no-bounded-independent-consumer-seam`):
+Q0 construction + native OBEP reply: passed locally against pinned
+Emissary. The original Branch E closure
+(`blocked-no-bounded-independent-consumer-seam`) is superseded by
+the Q0 completion; see [`plans/115-status.md`](plans/115-status.md).
 
-- The mandatory local criteria are satisfied (Work Package B
-  bridge complete with nine regression tests covering one-record
-  and four-record STBM bodies, both standard and short-transport
-  headers, count-mismatch / truncated / zero-count / over-maximum
-  payload rejections, round-trip body equality, sanitized debug
-  output, and digest-only record surface).
-- The Plan 115 Q0 attempt requires calling
-  `i2p::RouterContext::DecryptTunnelShortRequestRecord` (or
-  `DecryptECIESTunnelBuildRecord`) from the pinned i2pd 2.60.0
-  source tree at revision
-  `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`. The native
-  consumer seam is buried inside the full `TransitTunnels`
-  queue + `RouterContext::Init()` + `i2p::crypto::InitCrypto` +
-  `i2p::context` global initialization. Building a small
-  one-shot adapter requires either rebuilding the pinned i2pd
-  libraries (significant time and disk) or extending the
-  existing Plan 076 driver with a new `stbm-consume` mode (the
-  Plan 076 driver source is 1626 lines and would require a new
-  parser field, mode handler, and full rebuild with the cached
-  pinned libraries). Both paths exceed the Plan 115 §11.G1
-  "small one-shot helper" budget on this host.
-- No Python harness, namespace, container, VM, or public-network
-  surface is added. NTCP2 remains experimental and
-  non-advertised; normal-daemon NTCP2 remains disabled and
-  unenableable.
+The historical Branch E closure recorded these findings (superseded
+by the Q0 completion):
 
 The expected future action is the Plan 060 / Plan 066 / Plan 116
 sequence with a qualified external delivery lane; until then,

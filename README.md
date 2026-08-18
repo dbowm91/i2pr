@@ -17,7 +17,7 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 - Persistent RouterInfo cache, SU3 reseed verification, and reseed ingestion (`i2pr-netdb-persist`)
 - Transport-neutral lookup, store, and publication state machines (`i2pr-netdb`)
 - Daemon bootstrap integration with `NetDbSeam` (`i2pr-daemon`)
-- Exploratory tunnel substrate, pool, and reply-path provider (`i2pr-tunnel`)
+- Exploratory tunnel substrate, pool, and reply-path provider (`i2pr-tunnel`). The Q0 independent-consumer seam (pinned Emissary) has been exercised against the production `ShortBuildStateMachine` + `ShortBuildI2npBridge`; the OBEP returned TunnelGateway + Garlic inner message. Q1/Q2 and external delivery are still pending.
 - ECIES-X25519 short tunnel-build cryptography — Plan 111 final
   local short-build conformance correction landing plus the Plan
   112 outbound pre-delivery closure. Outbound construction is
@@ -106,6 +106,8 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 - Any network-facing behavior
 
 The NTCP2 development interoperability result is `protocol-defect-localized` at `noise_authenticated`. No passed mixed-router NTCP2 result exists.
+
+Plan 115 Emissary Q0 construction + native OBEP reply: passed locally (`plans/115-status.md`).
 
 ## Workspace
 

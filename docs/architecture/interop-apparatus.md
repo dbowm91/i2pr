@@ -1863,6 +1863,19 @@ checkpoint. Plans 103–113 have completed the local foundation and
 short-build correction sequence; this checkpoint is not a normal-daemon
 NTCP2 activation or a generic interoperability-harness restart.
 
+## Plan 115 Emissary Q0 construction + native OBEP reply
+
+Plan 115 Emissary Q0 construction + native OBEP reply has passed
+locally; see [`plans/115-status.md`](../../plans/115-status.md) for
+digests and the pinned Emissary revision. The Q0 was added as a single
+`#[tokio::test]` in a temporary Emissary worktree at the pinned
+revision; the i2pr production code was not modified. Q1/Q2 + qualified
+external delivery remain pending. The Plan 115 bridge
+(`ShortBuildI2npBridge` in `crates/i2pr-tunnel/src/bridge.rs`)
+converts a `ShortBuildAction::Deliver` into a complete I2NP type-25
+message; the Emissary native handler accepts it and returns
+TunnelGateway + Garlic inner message.
+
 ## Plan 099 Milestone 3 interop exit, harness reduction, and router buildout (historical; retained NTCP2 result)
 
 Plan 099 is the corrective and exit plan from the multi-job

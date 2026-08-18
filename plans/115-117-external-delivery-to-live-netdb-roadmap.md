@@ -4,12 +4,15 @@
 
 - Date: 2026-08-17.
 - This is a **gated roadmap**, not one monolithic implementation plan.
-- Plan 115 is **closed** as Branch E
-  (`blocked-no-bounded-independent-consumer-seam`) on this host.
-  See [`plans/115-status.md`](115-status.md) for the closure
-  record, the local canonical production I2NP bridge
-  implementation, and the exact missing reference boundary.
-- Plan 116 remains **gated** on a future Plan 115-style Q0/Q1/Q2
+- Plan 115 Q0 construction + native OBEP reply has **passed** locally
+  against pinned Emissary. The original Branch E closure
+  (`blocked-no-bounded-independent-consumer-seam`) is superseded
+  by this Q0 completion but is preserved as historical context in
+  [`plans/115-status.md`](115-status.md). The full Q0 acceptance
+  for the 115-117 amendment requires both Q0 native Emissary
+  acceptance AND Q1/Q2 transport evidence; Q0 has now closed for
+  the construction+OBEP-reply stage only.
+- Plan 116 remains **gated** on a future Plan 115-style Q1/Q2
   pass on a host where the Plan 046 rootless sealed-namespace
   lane or the Plan 048/049 Multipass recovery lane is runnable.
 - Plan 117 remains **gated** on the future Plan 116 tunnel
@@ -30,7 +33,7 @@ Plan 117: Can a real exploratory pair carry NetDB work and close the live Milest
 
 This sequencing keeps independent protocol evidence, tunnel data-plane construction, and final live-router integration distinct. A transport blocker may remain visible without forcing all local router construction to stop.
 
-## Current baseline after Plan 115 (Branch E)
+## Current baseline after Plan 115 Q0 completion
 
 ```text
 M0-M2 foundation                         = closed
@@ -43,7 +46,7 @@ M5 exploratory substrate/build control     = substantially-implemented
 M5 short-build local outbound              = strict-established
 M5 short-build local inbound               = strict-established
 M5 canonical production I2NP bridge        = locally-conformant-no-double-prefix
-M5 independent short-build evidence        = closed-branch-e-blocked-no-bounded-independent-consumer-seam
+M5 independent short-build evidence        = passed-emissary-q0-construction-and-obep-reply-only
 M5 TunnelData forwarding/data plane        = not-yet-closed
 M5 mixed-router exploratory pair           = not-yet-proven
 M6 destination/garlic/LeaseSet/streaming   = not-authorized-yet
@@ -76,14 +79,14 @@ live transport dependency = available-for-one-reference-development-lane
 #### 115-B: independent native consumer passes, transport remains blocked
 
 ```text
-Q0 = passed
+Q0 = passed (construction + OBEP reply only; Q1/Q2 deferred)
 Q1 = blocked/not-exercised
 Q2 = blocked/not-exercised
 Plan 116 local data plane = unblocked
 mixed-router M5 exit = still blocked on qualified live lane
 ```
 
-This is a valid continuation branch. It prevents the old transport harness from blocking actual tunnel-router development.
+This is a valid continuation branch. It prevents the old transport harness from blocking actual tunnel-router development. **The current status is this branch: Q0 has passed for construction + native OBEP reply against pinned Emissary.**
 
 #### 115-C: protocol defect localized
 
@@ -102,7 +105,7 @@ Record the exact missing reference boundary. Do not automatically start another 
 
 ## Gate 116 — Milestone 5 tunnel data plane and exploratory-pool completion
 
-Plan 116 is **not executable until Plan 115 closes with branch 115-A or 115-B**. Its exact plan file should be generated from the actual Plan 115 implementation surface rather than guessed in advance.
+Plan 116 is **not executable until Plan 115 closes with branch 115-A or 115-B**. Its exact plan file should be generated from the actual Plan 115 implementation surface rather than guessed in advance. The current Q0 status is `passed-construction-and-obep-reply-only` (branch 115-B); the implementation-floor line for Plan 116 must reference this partial Q0 status.
 
 The scope below is the required boundary for that future plan.
 
@@ -231,7 +234,7 @@ Keep peer-selection policy inputs separate from wire codecs.
 
 Plan 116 should emit transport-neutral router-delivery requests. It must not require NTCP2 specifically.
 
-A deterministic in-memory delivery adapter is sufficient for local Plan 116 acceptance when Plan 115 closed under 115-B. The same messages must be compatible with the `EncodedI2npMessage`/`DeliveryRequest` boundary used by a later live lane.
+A deterministic in-memory delivery adapter is sufficient for local Plan 116 acceptance when Plan 115 closed under 115-B (Q0 passed for construction + OBEP reply; Q1/Q2 deferred). The same messages must be compatible with the `EncodedI2npMessage`/`DeliveryRequest` boundary used by a later live lane.
 
 ### 116 acceptance criteria
 
@@ -254,7 +257,7 @@ Plan 116 local closure requires all of the following:
 plan_116 = passed-local-tunnel-data-plane
 ```
 
-is enough to proceed to Plan 117 integration even if Plan 115 Q1 remained blocked, but Plan 117 cannot fully pass without a qualified live transport lane.
+is enough to proceed to Plan 117 integration even if Plan 115 Q1 remained blocked (the current state: Q0 passed for construction + OBEP reply only), but Plan 117 cannot fully pass without a qualified live transport lane.
 
 If Plan 115 produced Q2 and the same reference lane remains usable, Plan 116 should include one small live forwarding smoke only after deterministic local data-plane correctness is established. Do not make live execution the development loop for data-plane implementation.
 

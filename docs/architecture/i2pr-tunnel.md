@@ -60,12 +60,12 @@ inbound tunnel is registered.
 > wrapped in a single complete I2NP type-25 message without
 > double-prefixing the STBM record count byte, with a round-trip
 > standard-header decoder assertion that proves the body bytes
-> equal the original delivery payload exactly. Plan 115 closes
-> the canonical production seam but does **not** produce a
-> live mixed-router Q0/Q1/Q2 result on this host — see
-> [`plans/115-status.md`](../../plans/115-status.md) for the
-> Branch E `blocked-no-bounded-independent-consumer-seam`
-> closure and the future external-delivery lane. Live mixed-router
+> equal the original delivery payload exactly. Plan 115 Q0
+> construction + native OBEP reply has passed locally against
+> pinned Emissary; see [`plans/115-status.md`](../../plans/115-status.md).
+> The Q0 covers construction + OBEP reply only; Q1 (authenticated
+> transport) and Q2 (reply round-trip to Established) remain
+> pending. Live mixed-router
 > delivery is still blocked on a qualified external delivery lane.
 > Not production-ready. See `README.md`,
 > `GUARDRAILS.md`,
@@ -165,7 +165,19 @@ inbound tunnel is registered.
   type-25 message without double-prefixing the STBM record count
   byte, with a standard-header round-trip assertion that the
   recovered body equals the original count-prefixed delivery
-  payload exactly.
+  payload exactly. The Plan 115 Q0 test (one outbound hop, pinned
+  Emissary as OBEP) passes locally: the production
+  `ShortBuildStateMachine::prepare → deliver_action` and
+  `ShortBuildI2npBridge::wrap_deliver_action` produce a
+  standard-header I2NP type-25 message that Emissary's
+  `Message::parse_standard` accepts and
+  `TestTransitTunnelManager::handle_short_tunnel_build` consumes;
+  the OBEP returns TunnelGateway + Garlic inner message plus a
+  feedback channel. Digests and exact pinned revision live in
+  [`plans/115-status.md`](../../plans/115-status.md). This Q0
+  covers construction + OBEP reply only; Q1 (authenticated
+  transport) and Q2 (reply round-trip to Established) remain
+  pending.
 
 The crate deliberately remains runtime-neutral: it does not open
 sockets, does not perform DNS, does not spawn tasks, and depends only

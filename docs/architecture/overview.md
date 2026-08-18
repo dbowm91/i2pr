@@ -222,10 +222,10 @@ and the closure record
         `ShortBuildAction::Deliver` payload is wrapped in a single
         complete I2NP type-25 message without double-prefixing the STBM
         record count byte and with a round-trip body equality assertion.
-        Plan 115 closed on this host as Branch E
-        (`blocked-no-bounded-independent-consumer-seam`) — see
-        [`plans/115-status.md`](../../plans/115-status.md) and
-        [`plans/115-handoff.md`](../../plans/115-handoff.md).**
+        Plan 115 Q0 construction + native OBEP reply has passed
+        locally against pinned Emissary — see
+        [`plans/115-status.md`](../../plans/115-status.md). Q1/Q2
+        and qualified external delivery remain pending.**
 6. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
    before startup, then spawns one supervisor manager per service via a
    `JoinSet`. Each service receives a narrowed `ServiceContext` (name,

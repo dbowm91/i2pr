@@ -1,19 +1,52 @@
 # Plan 115 handoff
 
-- Status: **reopened-targeted-completion-emissary-q0-pending**
-- Date: 2026-08-17
+- Status: **passed-emissary-q0-construction-and-obep-reply-only**
+- Date: 2026-08-17 (original); Q0 completion
 - Corrective/completion plan:
   [`plans/115-completion-emissary-native-q0.md`](115-completion-emissary-native-q0.md)
-- Current status authority:
-  [`plans/115-status-amendment-emissary-q0.md`](115-status-amendment-emissary-q0.md)
-- Historical closure record:
+- Status authority:
   [`plans/115-status.md`](115-status.md)
-- Roadmap amendment:
-  [`plans/115-117-roadmap-amendment-emissary-q0.md`](115-117-roadmap-amendment-emissary-q0.md)
 - Original roadmap:
   [`plans/115-117-external-delivery-to-live-netdb-roadmap.md`](115-117-external-delivery-to-live-netdb-roadmap.md)
 
-## Start here
+## Current handoff state
+
+Plan 115 Emissary Q0 construction + native OBEP reply has passed
+locally. The Q0 test (`i2pr_production_stbm_is_consumed_by_emissary_obep`)
+confirms the production `ShortBuildStateMachine` + `ShortBuildI2npBridge`
+produce a standard-header I2NP type-25 message that pinned Emissary's
+native handler accepts and replies with TunnelGateway + Garlic inner
+message.
+
+The next executable step is the Plan 117 external delivery lane.
+Q1 (authenticated transport) and Q2 (reply round-trip to
+`Established`) remain pending. The Milestone 3 mixed-router
+certificate gate stays blocked on Q1/Q2 + qualified external delivery.
+
+Current state:
+
+```text
+plan_111                         = retained-core-crypto-corrected
+plan_112                         = passed-outbound-pre-delivery-closure
+plan_113                         = passed-inbound-reference-reconciliation
+plan_114                         = passed-terminal-routing-chain-correction
+plan_115_local_bridge            = passed
+plan_115_external_q0             = passed-emissary-q0-construction-and-obep-reply-only
+short_build_local_outbound       = strict-established
+short_build_local_inbound        = strict-established
+canonical_i2np_bridge            = locally-conformant-no-double-prefix
+Q0_native_emissary               = passed-construction-and-obep-reply-only
+Q1_authenticated_transport       = deferred
+Q2_external_return_established   = deferred
+normal_daemon_ntcp2              = disabled-and-unenableable
+ntcp2                             = experimental-non-advertised
+```
+
+### Historical (Branch E) handoff
+
+> The text below is the original Branch E handoff, preserved as
+> historical context. It is superseded by the current handoff state
+> above.
 
 Do **not** resume the historical Branch E successor instruction that waits for
 a rootless/Multipass-capable host.
@@ -24,7 +57,7 @@ namespace/VM work.
 The next executable task is one bounded upstream Emissary Q0 test using its
 existing in-process native short-build consumer.
 
-Current state:
+Current state (historical Branch E):
 
 ```text
 plan_111                         = retained-core-crypto-corrected
@@ -42,7 +75,7 @@ normal_daemon_ntcp2              = disabled-and-unenableable
 ntcp2                             = experimental-non-advertised
 ```
 
-## Corrected finding
+## Corrected finding (historical Branch E context)
 
 Upstream Emissary is pinned for this pass at:
 
@@ -65,7 +98,7 @@ Noise-N request decryption, request parsing, transit admission, tunnel-key
 creation, reply-record transformation, and OBEP forwarding/reply composition.
 Emissary's own unit tests invoke this path directly without a daemon or network.
 
-## Exact execution target
+## Exact execution target (historical Branch E context)
 
 Use one outbound, one-real-hop i2pr short build whose single real hop is an
 Emissary `OutboundEndpoint`.
@@ -101,7 +134,7 @@ TunnelGateway inner message type = Garlic
 This proves the reference consumed the request and reached its native OBEP reply
 path. Do not expand the test into Q2 garlic decryption/return handling.
 
-## How to run it
+## How to run it (historical Branch E context)
 
 The preferred implementation is a temporary test-only patch to a detached
 upstream Emissary checkout:
@@ -120,7 +153,7 @@ upstream Emissary checkout:
 Do not modify Emissary production code and do not add Emissary to the i2pr
 workspace.
 
-## Hard attempt budget
+## Hard attempt budget (historical Branch E context)
 
 Reference test execution gets exactly:
 
@@ -135,7 +168,7 @@ No switch back to i2pd. No Java fallback. No transport work.
 If a native protocol rejection is reached, localize only that exact defect and
 allow one narrow protocol correction.
 
-## Closure rule
+## Closure rule (historical Branch E context)
 
 ### Q0 passes
 
@@ -171,7 +204,7 @@ mixed_router_milestone5_exit = still-blocked
 
 Move on to Plan 116. Do not create another harness.
 
-## Scope boundaries
+## Scope boundaries (historical Branch E context)
 
 Forbidden in this pass:
 
