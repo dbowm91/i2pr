@@ -1742,7 +1742,7 @@ Plan 110 closes, a separate narrow external-delivery checkpoint
 must select the smallest available qualified delivery lane and
 send one independent build.
 
-### Plan 109/110/111/112/113/114 current authoritative state
+### Plan 109/110/111/112/113/114/115 current authoritative state
 
 ```text
 plan_108                         = superseded-local-architecture-retained-wire-crypto-corrected

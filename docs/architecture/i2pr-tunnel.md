@@ -473,8 +473,10 @@ short-build surface:
   X25519 public key, and random remainder; Plan 113 requires exactly
   one fake for inbound builds and verifies it after reply processing;
 - `chacha20_transform` and `chacha20_xor` — raw ChaCha20 stream
-  transforms using `crypto::chacha20::ChaCha20` with the canonical
-  12-byte nonce (zero in bytes 0..10, target slot byte at 11);
+  transforms using `crypto::chacha::ChaCha20` with the canonical
+  12-byte nonce (zero in bytes 0..3 and 5..11, target slot byte at
+  offset 4, with the eight-byte little-endian nonce occupying
+  bytes 4..11);
 - `prepare_short_build_message` — the creator-side preprocessor that
   seals every real-hop request, applies raw ChaCha20 transforms for
   each prior hop's reply key, and produces a `count + count*218`
