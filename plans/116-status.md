@@ -1,90 +1,123 @@
 # Plan 116 status: local tunnel data plane
 
-- Status: **implementation-landed-partial-scaffolding**
-- Implementation date: **2026-08-18**
-- Plan-of-record:
+- Status: **correction-required-local-data-plane-not-closed**
+- Date: **2026-08-18**
+- Original plan-of-record:
   [`plans/116-local-tunnel-data-plane.md`](116-local-tunnel-data-plane.md)
+- Active completion/correction plan:
+  [`plans/116-completion-correction.md`](116-completion-correction.md)
 - Predecessor: [`plans/115-status.md`](115-status.md)
-- Immediate successor:
-  [`plans/117-milestone-5-qualified-external-delivery-lane.md`](117-milestone-5-qualified-external-delivery-lane.md)
+- Plan 117: **blocked until Plan 116 passes the local completion criteria**.
 
-## Closure result
+## Current result
 
-Plan 116's data-plane scaffolding has been implemented and integrated
-into `i2pr-tunnel`, but the full deterministic pair, fragmentation
-boundary, and registrar wiring are not yet complete. The crate
-compiles cleanly with `cargo check -p i2pr-tunnel` and the broader
-workspace passes `cargo check --workspace --all-targets`. Of the
-`i2pr-tunnel` lib test suite 182 tests pass and 17 provisional tests
-fail because the underlying protocol semantics are still being
-completed.
+The first Plan 116 implementation pass landed useful runtime-neutral scaffolding but did **not** close the local tunnel data plane.
 
-### Delivered in this commit
-
-- `crates/i2pr-tunnel/Cargo.toml` — production `aes` and `cbc`
-  dependencies for the AES-256 CBC layer transforms.
-- `crates/i2pr-tunnel/src/lib.rs` — module declarations and public
-  re-exports for the new data plane modules.
-- `crates/i2pr-tunnel/src/identity.rs` — manual `Zeroize`
-  implementations for `TunnelId` and `TunnelPeer` (the latter via a
-  manual byte loop because `i2pr_proto::Hash` does not impl
-  `Zeroize`).
-- `crates/i2pr-tunnel/src/data.rs` (new) — `TunnelPayloadHeader`,
-  `DeliveryInstruction`, `FragmentDelivery`, `TunnelFragment`,
-  `TunnelMessageBuilder` (with bounded fragmentation and
-  `fill_nonzero` bounded by a `(idx as u8).wrapping_add(1)` fallback),
-  and `TunnelMessageParser` for first/follow-on fragment records.
-- `crates/i2pr-tunnel/src/fragment.rs` (new) — bounded
-  `BoundedReassembler` with hard ceilings on stored messages and
-  bytes.
-- `crates/i2pr-tunnel/src/layer.rs` (new) — AES-256 ECB block
-  encryptor plus AES-256 CBC encrypt/decrypt wrappers, the
-  `TunnelLayerTransform` outbound/inbound inverse transforms, and
-  the `DuplicateWindow` bounded exact-match replay window.
-- `crates/i2pr-tunnel/src/roles.rs` (new) — runtime-neutral
-  outbound/inbound/local role types (`OutboundGatewayRole`,
-  `OutboundParticipantRole`, `OutboundEndpointRole`,
-  `InboundGatewayRole`, `InboundParticipantRole`,
-  `LocalInboundEndpointRole`), `RouterDeliveryAction` envelope, and
-  the `OBGWRouterDelivery` carrier.
-- `crates/i2pr-tunnel/src/established.rs` (new) —
-  `EstablishedHop`, `EstablishedTunnel`, secret-material ownership,
-  zeroization-on-drop, and the `EstablishedTunnelError` taxonomy.
-- `Cargo.lock` and `Cargo.toml` workspace — `crypto-common = "=0.1.7"`
-  pin forces the aes/cbc cipher 0.4.x trait world to compile against
-  a single crypto-common version, side-stepping the
-  `sha2 0.11.0`/`digest 0.11.3` duplicate crypto-common 0.2.x.
-
-### Pending for closure
-
-- Full 1..=63 fragment generation and reassembly (current builder
-  emits a single first fragment for short messages and rejects
-  > 965-byte messages).
-- Deterministic outbound → OBEP → TunnelGateway → inbound-hop → IBEP
-  pair round trip with real IV extraction.
-- `EstablishedTunnel` integration with `ShortBuildRegistrar` and the
-  `ExploratoryPool` registration path.
-- `ExploratoryPool::select_inbound_reply_path` returning the
-  first inbound-hop receive tunnel id rather than the registration
-  tunnel id.
-- The 17 currently failing lib tests in `data::tests`, `layer::tests`,
-  and `roles::tests`.
-
-### Build/test posture
+Current implementation floor before the correction plan:
 
 ```text
-cargo check -p i2pr-tunnel        = clean (0 errors, 12 warnings)
-cargo check --workspace --all-targets = clean
-cargo test -p i2pr-tunnel --lib   = 182 passed; 17 failed (provisional)
-cargo test --workspace --lib      = all other crates pass
+91d3a8569ee20d71ab7a4ae27b6c54a1e5009429
 ```
 
-## Anti-loop compliance
+Useful surfaces now exist in:
 
-- No Emissary, i2pd, or Java short-build work was attempted.
-- No NTCP2 correction, NTCP2 activation, SSU2 work, Docker, QEMU,
-  Multipass, namespacing, or Python interoperability harness work
-  was attempted.
-- No public I2P access, live mixed-router tunnels, Q1, Q2, generic
-  I2NP router dispatch, garlic message construction, LeaseSet
-  management, or streaming layer work was attempted.
+```text
+crates/i2pr-tunnel/src/established.rs
+crates/i2pr-tunnel/src/data.rs
+crates/i2pr-tunnel/src/fragment.rs
+crates/i2pr-tunnel/src/layer.rs
+crates/i2pr-tunnel/src/roles.rs
+```
+
+The scaffold also promoted RustCrypto AES/CBC support into the production tunnel crate.
+
+These modules should be corrected and completed rather than replaced wholesale.
+
+## Why Plan 116 is reopened
+
+The implementation pass reported 182 passing tunnel tests and 17 failing provisional tests, then committed those 17 tests as ignored. Those ignored tests cover core Plan 116 wire, AES, and role behavior and therefore cannot serve as a closure state.
+
+In addition, repository review localized concrete defects/incompleteness:
+
+```text
+checksum builder includes zero delimiter                 = incorrect
+checksum parser prefix handling                          = incorrect
+unfragmented vs fragmented-first header                  = conflated
+complete-message automatic fragmentation                 = incomplete
+creator AES inverse ECB direction                        = incorrect
+OBEP final-hop transform direction                       = incorrect
+production role IV/RNG path                              = deterministic placeholder
+padding randomness                                       = repeated/deterministic fallback
+ShortBuildRegistrar real pool insertion                  = still placeholder slot 0
+successful build -> EstablishedTunnel one-time transfer  = absent
+inbound remote-hop vs local-endpoint ownership            = conflated
+sentinel u32::MAX/zero-hash next-hop state               = provisional
+reassembly expiry                                        = no-op
+aggregate reassembly byte bound                          = absent
+pre-insertion capacity enforcement                       = incomplete
+endpoint processing of all cell records                  = incomplete
+full outbound -> inbound deterministic pair              = not passing/present
+Plan 116 provisional ignored tests                       = 17
+```
+
+## Normative correction authority
+
+The active correction plan pins the required behavior to:
+
+- <https://geti2p.net/spec/tunnel-message>
+- <https://geti2p.net/docs/tunnels/implementation>
+- pinned Emissary source revision `9b43484a21d5a1291c4881cdae62a36c527f8c0f` for deployed-source comparison only.
+
+Key wire/crypto rules:
+
+```text
+TunnelData body                       = 4-byte ID + 16-byte IV + 1008-byte data
+checksum                              = SHA256(bytes after zero delimiter || IV)[0..4]
+checksum covers padding               = no
+checksum covers zero delimiter        = no
+unfragmented initial bit3             = 0, Message ID absent
+fragmented first bit3                 = 1, Message ID present
+follow-on sequence                    = 1..63
+participant/IBGW/OBEP transform       = ECB-ENC / CBC-ENC / ECB-ENC
+creator inverse                       = ECB-DEC / CBC-DEC / ECB-DEC
+```
+
+## Anti-loop state
+
+No additional external short-build or transport validation is required to correct Plan 116.
+
+```text
+plan_115_Q0                    = passed-emissary-native-consumer
+Q1_authenticated_transport     = deferred
+Q2_external_return_established = deferred
+NTCP2                          = experimental-non-advertised
+Plan_116                       = active-local-correction
+Plan_117                       = blocked-on-Plan116-local-pass
+```
+
+Do not reopen Emissary/i2pd/Java execution, NTCP2 harnessing, namespaces, VMs, or public-network work during this correction.
+
+## Required closure
+
+Plan 116 may close only as:
+
+```text
+plan_116 = passed-local-tunnel-data-plane
+```
+
+and only after all criteria in
+[`plans/116-completion-correction.md`](116-completion-correction.md) pass, including:
+
+- zero Plan 116 provisional ignored tests;
+- canonical Tunnel Message checksum and fragment headers;
+- correct forward/inverse AES round trips;
+- injected production CSPRNG with fresh IV/padding;
+- real one-time established-material transfer and pool registration;
+- correct inbound reply-path gateway tunnel ID;
+- functional bounded expiry/aggregate reassembly accounting;
+- active outbound ROUTER deterministic trajectory;
+- active outbound TUNNEL -> inbound tunnel -> local endpoint deterministic trajectory;
+- active fragmented/out-of-order end-to-end trajectory;
+- full local workspace validation green.
+
+Until then, documentation must describe Plan 116 as incomplete and Plan 117 as blocked.
