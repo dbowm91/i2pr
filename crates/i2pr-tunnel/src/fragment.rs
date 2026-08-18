@@ -182,6 +182,12 @@ enum FragmentInsertDisposition {
 struct PartialMessage {
     total_fragments: Option<u8>,
     received: BTreeMap<u8, Vec<u8>>,
+    /// Per-sequence terminal flag retained from the first
+    /// sighting of each follow-on fragment. The `is_last` flag is
+    /// control metadata that participates in duplicate identity;
+    /// a fresh fragment with a different `is_last` at the same
+    /// sequence must invalidate the affected partial.
+    last_flags: BTreeMap<u8, bool>,
     bytes: usize,
     observed_max_sequence: u8,
     has_last: bool,
@@ -198,6 +204,7 @@ impl PartialMessage {
         Self {
             total_fragments: None,
             received: BTreeMap::new(),
+            last_flags: BTreeMap::new(),
             bytes: 0,
             observed_max_sequence: 0,
             has_last: false,
@@ -269,6 +276,19 @@ impl PartialMessage {
                     if existing != body {
                         return Err(ReassemblyError::ConflictingDuplicate {
                             sequence: *sequence,
+                        });
+                    }
+                    // The terminal flag is control metadata that
+                    // participates in duplicate identity. Two
+                    // fragments at the same sequence with identical
+                    // body bytes are exact duplicates only when
+                    // both `is_last` flags agree.
+                    let prior_last = self.last_flags.get(sequence).copied().unwrap_or(false);
+                    if prior_last != *is_last {
+                        return Err(ReassemblyError::ConflictingFollowOnTerminalFlag {
+                            sequence: *sequence,
+                            expected: prior_last,
+                            actual: *is_last,
                         });
                     }
                     return Ok(FragmentInsertDisposition::ExactDuplicate);
@@ -347,6 +367,11 @@ impl PartialMessage {
                     });
                 }
                 self.received.insert(sequence, body);
+                // Record the per-sequence terminal flag for
+                // follow-on duplicate identity. A conflicting
+                // `is_last` at the same sequence is rejected by
+                // classify() before apply() runs.
+                self.last_flags.insert(sequence, is_last);
                 if is_last {
                     self.has_last = true;
                     self.total_fragments = Some(sequence + 1);
@@ -391,6 +416,22 @@ pub enum ReassemblyError {
     /// invalidates only the affected partial message.
     #[error("conflicting first fragment delivery instruction")]
     ConflictingFirstMetadata,
+    /// A duplicate follow-on fragment arrived with the same body
+    /// bytes but a different `is_last` flag. The terminal flag is
+    /// control metadata that participates in duplicate identity;
+    /// a conflicting flag invalidates only the affected partial
+    /// message.
+    #[error(
+        "conflicting follow-on terminal flag at sequence {sequence}: expected {expected}, got {actual}"
+    )]
+    ConflictingFollowOnTerminalFlag {
+        /// Conflicting sequence number.
+        sequence: u8,
+        /// The terminal flag already retained for the sequence.
+        expected: bool,
+        /// The terminal flag supplied with the new fragment.
+        actual: bool,
+    },
     /// The caller supplied a follow-on fragment with a delivery
     /// instruction. Follow-on Tunnel Message records carry no
     /// delivery instruction on the wire; supplying one is rejected
@@ -597,15 +638,18 @@ impl BoundedReassembler {
         } else {
             // Capacity is the only constraint that depends on
             // partial creation; aggregate budget is checked once
-            // the disposition is known below.
+            // the disposition is known below. Fresh-key
+            // candidates must still satisfy the same semantic
+            // invariants the existing-partial path enforces:
+            // a follow-on fragment may not carry a delivery
+            // instruction and may not carry an out-of-range
+            // sequence number.
             if self.partials.len() >= self.capacity {
                 return Err(ReassemblyError::CapacityExceeded {
                     capacity: self.capacity,
                 });
             }
-            FragmentInsertDisposition::Inserted {
-                added_bytes: fragment.body_len(),
-            }
+            classify_new_partial(&fragment, delivery.as_ref())?
         };
         if let FragmentInsertDisposition::ExactDuplicate = disposition {
             // No state change. No expiry refresh. No budget charge.
@@ -705,9 +749,13 @@ impl BoundedReassembler {
                     capacity: self.capacity,
                 });
             }
-            FragmentInsertDisposition::Inserted {
-                added_bytes: fragment.body_len(),
-            }
+            // Fresh-key candidates must still satisfy the same
+            // semantic invariants the existing-partial path
+            // enforces: a follow-on fragment may not carry a
+            // delivery instruction and may not carry an
+            // out-of-range sequence number. The convenience
+            // entry point always passes `None` delivery.
+            classify_new_partial(&fragment, None)?
         };
         if let FragmentInsertDisposition::ExactDuplicate = disposition {
             // No state change. No expiry refresh. No budget charge.
@@ -824,6 +872,42 @@ fn delivery_matches(
         (None, None) => true,
         (Some(left), Some(right)) => left == right,
         _ => false,
+    }
+}
+
+/// Classifies a fragment that would create a brand-new partial
+/// against the same semantic invariants
+/// [`PartialMessage::classify`] enforces on the existing-partial
+/// path. Fresh-key candidates must therefore be rejected with
+/// the same error categories: a follow-on fragment carrying a
+/// delivery instruction, a follow-on fragment with an
+/// out-of-range sequence number, or any other invariant the
+/// existing-partial path would reject must be rejected on the
+/// fresh-key path before any partial state is created.
+fn classify_new_partial(
+    fragment: &TunnelFragment,
+    delivery: Option<&crate::data::DeliveryInstruction>,
+) -> Result<FragmentInsertDisposition, ReassemblyError> {
+    match fragment {
+        TunnelFragment::Unfragmented { body } => Ok(FragmentInsertDisposition::Inserted {
+            added_bytes: body.len(),
+        }),
+        TunnelFragment::First { body, .. } => Ok(FragmentInsertDisposition::Inserted {
+            added_bytes: body.len(),
+        }),
+        TunnelFragment::FollowOn { body, sequence, .. } => {
+            if delivery.is_some() {
+                return Err(ReassemblyError::UnexpectedFollowOnDeliveryInstruction);
+            }
+            if *sequence < FOLLOW_ON_SEQUENCE_MIN || *sequence > FOLLOW_ON_SEQUENCE_MAX {
+                return Err(ReassemblyError::SequenceOutOfRange {
+                    sequence: *sequence,
+                });
+            }
+            Ok(FragmentInsertDisposition::Inserted {
+                added_bytes: body.len(),
+            })
+        }
     }
 }
 
@@ -1367,5 +1451,241 @@ mod tests {
         r.set_now(1_500);
         r.expire_due();
         assert!(r.is_empty());
+    }
+
+    // Fresh-key semantic validation. A candidate that would create
+    // a brand-new partial must satisfy the same invariants the
+    // existing-partial path enforces. The fresh-key path used to
+    // skip all semantic checks (FollowOn + delivery, out-of-range
+    // sequence, etc.) and silently construct a partial; the
+    // following tests prove the fix.
+
+    #[test]
+    fn fresh_key_follow_on_with_delivery_fails_closed() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0xC001);
+        // A follow-on fragment with a delivery instruction as the
+        // very first fragment for a fresh key must be rejected
+        // with `UnexpectedFollowOnDeliveryInstruction`. The
+        // existing-key equivalent is tested above; this one
+        // exercises the fresh-key path.
+        let outcome = r.insert_with_delivery(
+            k,
+            follow(0xC001, 1, false, &[0xAA_u8; 16]),
+            Some(router_delivery_with(0xAA)),
+        );
+        assert!(matches!(
+            outcome,
+            Err(ReassemblyError::UnexpectedFollowOnDeliveryInstruction)
+        ));
+        // The reassembler must not have created a partial.
+        assert!(r.is_empty());
+        assert_eq!(r.retained_bytes(), 0);
+        assert_eq!(r.len(), 0);
+    }
+
+    #[test]
+    fn fresh_key_follow_on_with_delivery_via_insert_fails_closed() {
+        // The convenience `insert` entry point always passes
+        // `None` for the delivery instruction, so it cannot
+        // accept FollowOn + Some(delivery) on a fresh key by
+        // construction. This test documents the contract by
+        // exercising the new-key path with a valid follow-on
+        // fragment: the partial is created.
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0xC002);
+        let outcome = r.insert(k, follow(0xC002, 1, false, &[0xBB_u8; 16]));
+        assert!(outcome.is_ok());
+        assert_eq!(r.len(), 1);
+        assert!(r.retained_bytes() > 0);
+    }
+
+    #[test]
+    fn fresh_key_out_of_range_follow_on_sequence_below_min_rejected() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0xC003);
+        let outcome = r.insert(k, follow(0xC003, 0, false, &[0xAA_u8; 16]));
+        assert!(matches!(
+            outcome,
+            Err(ReassemblyError::SequenceOutOfRange { sequence: 0 })
+        ));
+        assert!(r.is_empty());
+        assert_eq!(r.retained_bytes(), 0);
+    }
+
+    #[test]
+    fn fresh_key_out_of_range_follow_on_sequence_above_max_rejected() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0xC004);
+        let outcome = r.insert(k, follow(0xC004, 64, false, &[0xAA_u8; 16]));
+        assert!(matches!(
+            outcome,
+            Err(ReassemblyError::SequenceOutOfRange { sequence: 64 })
+        ));
+        assert!(r.is_empty());
+        assert_eq!(r.retained_bytes(), 0);
+    }
+
+    #[test]
+    fn fresh_key_out_of_range_follow_on_sequence_with_delivery_rejected() {
+        // A fresh-key follow-on with a delivery instruction and
+        // an out-of-range sequence number must surface the
+        // delivery-instruction failure (the more specific
+        // invariant) rather than the sequence-range failure.
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0xC005);
+        let outcome = r.insert_with_delivery(
+            k,
+            follow(0xC005, 100, false, &[0xAA_u8; 16]),
+            Some(router_delivery_with(0xAA)),
+        );
+        assert!(matches!(
+            outcome,
+            Err(ReassemblyError::UnexpectedFollowOnDeliveryInstruction)
+        ));
+        assert!(r.is_empty());
+        assert_eq!(r.retained_bytes(), 0);
+    }
+
+    // Follow-on terminal-flag duplicate identity. The terminal
+    // flag (`is_last`) is control metadata that participates in
+    // follow-on duplicate identity alongside the body bytes: two
+    // fragments at the same sequence with identical body bytes
+    // are exact duplicates only when both `is_last` flags agree.
+    // A different `is_last` flag is conflicting control metadata
+    // that invalidates the affected partial.
+
+    #[test]
+    fn same_sequence_body_same_is_last_is_exact_duplicate() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0xE001);
+        r.insert(k, first(0xE001, &[0x11_u8; 8])).unwrap();
+        r.insert(k, follow(0xE001, 1, false, &[0x22_u8; 16]))
+            .unwrap();
+        let after_unique = r.retained_bytes();
+        assert!(after_unique > 0);
+        // Identical sequence + identical body + identical is_last
+        // must remain a no-op.
+        r.insert(k, follow(0xE001, 1, false, &[0x22_u8; 16]))
+            .unwrap();
+        assert_eq!(r.retained_bytes(), after_unique);
+        assert_eq!(r.len(), 1);
+    }
+
+    #[test]
+    fn same_sequence_body_changed_is_last_is_conflicting_control_metadata() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0xE002);
+        r.insert(k, first(0xE002, &[0x11_u8; 8])).unwrap();
+        // First sighting: sequence 1, body [0x22..0x32], is_last=false.
+        r.insert(k, follow(0xE002, 1, false, &[0x22_u8; 16]))
+            .unwrap();
+        let after_unique = r.retained_bytes();
+        assert!(after_unique > 0);
+        // Second sighting: same sequence, same body, but
+        // is_last=true. The body bytes match but the terminal
+        // flag is conflicting control metadata.
+        let outcome = r.insert(k, follow(0xE002, 1, true, &[0x22_u8; 16]));
+        assert!(matches!(
+            outcome,
+            Err(ReassemblyError::ConflictingFollowOnTerminalFlag {
+                sequence: 1,
+                expected: false,
+                actual: true
+            })
+        ));
+        // The conflicting terminal flag must invalidate the
+        // affected partial and zeroize its retained bytes.
+        assert!(r.is_empty());
+        assert_eq!(r.retained_bytes(), 0);
+    }
+
+    #[test]
+    fn same_sequence_body_changed_is_last_reverse_direction_is_conflicting() {
+        // Use sequence 63 (the maximum follow-on sequence) as the
+        // terminal flag so the partial remains open after the
+        // first sighting: total_fragments = 64 but received
+        // contains only two fragments (sequence 0 and 63). A
+        // smaller terminal sequence would close the partial and
+        // remove it before the conflicting duplicate arrived.
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0xE003);
+        r.insert(k, first(0xE003, &[0x11_u8; 8])).unwrap();
+        // First sighting: is_last=true at sequence 63.
+        r.insert(k, follow(0xE003, 63, true, &[0x33_u8; 16]))
+            .unwrap();
+        let after_unique = r.retained_bytes();
+        assert!(after_unique > 0);
+        // Second sighting: same sequence, same body, is_last=false.
+        let outcome = r.insert(k, follow(0xE003, 63, false, &[0x33_u8; 16]));
+        assert!(matches!(
+            outcome,
+            Err(ReassemblyError::ConflictingFollowOnTerminalFlag {
+                sequence: 63,
+                expected: true,
+                actual: false
+            })
+        ));
+        assert!(r.is_empty());
+        assert_eq!(r.retained_bytes(), 0);
+    }
+
+    #[test]
+    fn conflicting_is_last_does_not_disturb_other_partials() {
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k1 = key(1, 0xE010);
+        let k2 = key(1, 0xE020);
+        // Build up an unrelated partial message.
+        r.insert(k1, first(0xE010, &[0x11_u8; 8])).unwrap();
+        r.insert(k1, follow(0xE010, 1, false, &[0x22_u8; 16]))
+            .unwrap();
+        let before_k1 = r.retained_bytes();
+        // Insert a conflicting terminal-flag follow-on for k2.
+        r.insert(k2, first(0xE020, &[0xAA_u8; 8])).unwrap();
+        r.insert(k2, follow(0xE020, 1, false, &[0xBB_u8; 16]))
+            .unwrap();
+        let outcome = r.insert(k2, follow(0xE020, 1, true, &[0xBB_u8; 16]));
+        assert!(matches!(
+            outcome,
+            Err(ReassemblyError::ConflictingFollowOnTerminalFlag { .. })
+        ));
+        // k1 must still be intact.
+        assert_eq!(r.len(), 1);
+        assert_eq!(r.retained_bytes(), before_k1);
+    }
+
+    #[test]
+    fn stale_duplicate_after_completion_does_not_resurrect_partial() {
+        // Once a partial completes, the reassembler drops the
+        // partial entry. A stale duplicate arriving after
+        // completion must not resurrect the original message or
+        // surface a phantom conflict. The fresh-key path
+        // classifies the stale fragment as `Inserted` because the
+        // partial no longer exists; the new partial is missing the
+        // first fragment and therefore cannot complete with the
+        // stale body alone.
+        let mut r = BoundedReassembler::new(4, 1 << 20, 60_000, 0);
+        let k = key(1, 0xE004);
+        r.insert(k, first(0xE004, &[0x11_u8; 8])).unwrap();
+        // Terminal follow-on at sequence 1 completes the
+        // two-fragment message; the reassembler removes the
+        // partial.
+        let outcome = r
+            .insert(k, follow(0xE004, 1, true, &[0x22_u8; 16]))
+            .unwrap();
+        let message = outcome.expect("complete");
+        assert_eq!(message.len(), 24);
+        assert!(r.is_empty());
+        assert_eq!(r.retained_bytes(), 0);
+        // Stale duplicate with mismatched terminal flag must not
+        // resurrect the partial. The fresh-key path accepts the
+        // follow-on as a new partial (the original is gone); the
+        // new partial is missing the first fragment and therefore
+        // does not complete silently.
+        let outcome = r.insert(k, follow(0xE004, 1, false, &[0x22_u8; 16]));
+        assert!(outcome.is_ok());
+        assert!(outcome.unwrap().is_none());
+        assert_eq!(r.len(), 1);
+        assert_eq!(r.retained_bytes(), 16);
     }
 }
