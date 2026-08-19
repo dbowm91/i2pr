@@ -11,5 +11,10 @@ publish = false
 sha2.workspace = true
 zeroize.workspace = true
 
+[dev-dependencies]
+i2pr-crypto = { path = "../i2pr-crypto" }
+rand_chacha.workspace = true
+rand_core.workspace = true
+
 [lints]
 workspace = true

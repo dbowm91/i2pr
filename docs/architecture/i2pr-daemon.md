@@ -363,8 +363,12 @@ Phase I authenticated transport remains
 separately under the external acceptance debt ledger in
 [`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md).
 
-The next executable plan is **Plan 119** (LeaseSet2 protocol
-foundation) under the same Milestone 6 roadmap.
+Plan 119 closed as `passed-leaseset2-protocol-foundation` per
+[`plans/119-status.md`](../../plans/119-status.md); the ordinary
+online-signed published Standard LeaseSet2 carrier is wired into
+`i2pr-proto` and `i2pr-netdb`. The next executable plan is
+**Plan 120** (destination lifecycle and dedicated tunnel pools)
+under the same Milestone 6 roadmap.
 
 ### Which crates are wired in today
 

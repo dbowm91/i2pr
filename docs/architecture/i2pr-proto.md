@@ -13,12 +13,18 @@ Path: `crates/i2pr-proto/`
   `SigningKeyType`/`CryptoKeyType`, `PublicKey`, `SigningPublicKey`,
   `SignatureValue`, `Certificate`/`KeyCertificate`, `KeyAndCert`,
   `RouterIdentity`, `Destination`, `RouterAddress`, `RouterInfo`, `Lease`,
-  classic `LeaseSet`.
+  classic `LeaseSet`. Plus the modern Standard LeaseSet2 carrier
+  (`Lease2`, `LeaseSet2Flags`, `LeaseSet2Header`,
+  `LeaseSet2EncryptionKey`, `LeaseSet2`, signature domain
+  `0x03 || signed_bytes`).
 - **I2NP wire codecs**: headers (`Standard`/`ShortSsu`/`ShortTransport`),
   body registry (`I2npBody`), framing, `DeliveryStatusMessage`,
   `TunnelDataMessage`/`TunnelGatewayMessage`/`DeferredBuildRecords`,
   `DatabaseStore`/`DatabaseLookup`/`DatabaseSearchReply`,
   `ReplySecret<N>` (zeroizing), `DeferredPayload`, `OpaqueMessageBody`.
+  `DatabaseStoreData::LeaseSet2` owns the type-3 Standard LeaseSet2
+  carrier; types 5 (EncryptedLeaseSet) and 7 (MetaLeaseSet) remain
+  explicitly `Deferred`.
 
 It owns framing and structural validation. Anything requiring later
 cryptography, state machines, or interpretation is stored as a bounded
@@ -26,7 +32,11 @@ opaque payload (`DeferredPayload` / `OpaqueMessageBody` /
 `DeferredBuildRecords`) with bytes redacted in `Debug`.
 
 It does **not** own: routing, transport state machines, NetDB behavior,
-tunnel build execution, crypto policy, runtime integration, I/O.
+tunnel build execution, crypto policy, runtime integration, I/O,
+destination lifecycle, destination keys, ECIES session state,
+Garlic encryption, or destination tunnel pools. The Standard LeaseSet2
+codec and signature-domain byte are structural; private destination
+signing material stays out of `i2pr-proto`.
 
 ## Module layout
 
@@ -37,7 +47,7 @@ The crate is single-directory with two top-level submodules under
 | --- | --- | --- |
 | `src/lib.rs` | Crate root: `ProtocolErrorKind`, `Namespace`, glob re-exports | `ProtocolErrorKind`, `Namespace` |
 | `src/codec.rs` | Primitive bounded codec mechanics | `CodecError`, `DecodeCursor<'a>`, `EncodeBuffer<'a>`, `decode_exact`, `encode_to_vec` |
-| `src/common/mod.rs` | Bounds constants, helpers, glob re-exports | `MAX_COMMON_STRUCTURE_SIZE`, `MAX_MAPPING_BODY_SIZE`, `MAX_ROUTER_ADDRESSES`, `MAX_LEASES`, `MAX_ENCRYPTION_KEYS`, `Mapping`, `Hash`, `Date`, `Date32`, key/cert/identity types, `RouterAddress`, `RouterInfo`, `Lease`, `LeaseSet` |
+| `src/common/mod.rs` | Bounds constants, helpers, glob re-exports | `MAX_COMMON_STRUCTURE_SIZE`, `MAX_MAPPING_BODY_SIZE`, `MAX_ROUTER_ADDRESSES`, `MAX_LEASES`, `MAX_ENCRYPTION_KEYS`, `MAX_LEASE_SET2_BYTES`, `MAX_LEASE_SET2_ENCRYPTION_KEYS`, `MAX_LEASE_SET2_ENCRYPTION_KEY_BYTES`, `MAX_LEASE_SET2_OPTIONS_BYTES`, `LEASE_SET2_SIGNATURE_DOMAIN_BYTE`, `Mapping`, `Hash`, `Date`, `Date32`, key/cert/identity types, `RouterAddress`, `RouterInfo`, classic `Lease`/`LeaseSet`, Standard LeaseSet2 (`Lease2`, `LeaseSet2Flags`, `LeaseSet2Header`, `LeaseSet2EncryptionKey`, `LeaseSet2`, error enums) |
 | `src/common/mapping.rs` | Canonical sorted Java-style `Mapping` | `Mapping`, `MappingEntry`, `MappingBuilder` |
 | `src/common/hash.rs` | 32-byte `Hash` (SHA-256) | `Hash` |
 | `src/common/date.rs` | `Date` (8-byte ms) and `Date32` (4-byte s) | `Date`, `Date32` |
@@ -46,16 +56,19 @@ The crate is single-directory with two top-level submodules under
 | `src/common/identity.rs` | 384-byte `KeyAndCert` plus `RouterIdentity`/`Destination` | `KeyAndCert`, `RouterIdentity`, `Destination` |
 | `src/common/router_address.rs` | Transport-address record | `RouterAddress` |
 | `src/common/router_info.rs` | Signed descriptor with retained `signed_bytes` | `RouterInfo`, `ProtocolVersion`, `Capabilities` |
-| `src/common/lease.rs` | Classic `Lease`/`LeaseSet` with deferred variants explicitly rejected | `Lease`, `LeaseSet`, `DeferredLeaseSetVariant`, `decode_lease_set_variant` |
+| `src/common/lease.rs` | Classic `Lease`/`LeaseSet` with deferred variants explicitly rejected | `Lease`, `LeaseSet`, `DeferredLeaseSetVariant`, `decode_lease_set_variant`, `decode_lease_set2_variant` |
+| `src/common/lease2.rs` | Standard LeaseSet2 carrier (Plan 119 ordinary online-signed published subset) | `Lease2`, `LeaseSet2Flags`, `LeaseSet2Header`, `LeaseSet2EncryptionKey`, `LeaseSet2`, `LeaseSet2BuildError`, `LeaseSet2HeaderError`, `LeaseSet2KeySelectionError`, `LEASE_SET2_SIGNATURE_DOMAIN_BYTE`, `LEASE_SET2_DATABASE_STORE_TYPE`, `MAX_LEASE_SET2_*` |
 | `src/i2np/mod.rs` | I2NP wire constants and glob re-exports | `MAX_I2NP_PAYLOAD_SIZE`, `STANDARD_HEADER_SIZE`, `SHORT_SSU_HEADER_SIZE`, `SHORT_TRANSPORT_HEADER_SIZE`, `MAX_DATABASE_LOOKUP_EXCLUDED_PEERS`, `MAX_DATABASE_SEARCH_REPLY_PEERS`, `MAX_BUILD_RECORDS`, `VARIABLE_BUILD_RECORD_SIZE`, `SHORT_BUILD_RECORD_SIZE`, `TUNNEL_DATA_PAYLOAD_SIZE` |
 | `src/i2np/header.rs` | Three-variant header enum, `MessageType` registry | `MessageType`, `I2npHeader` |
 | `src/i2np/message.rs` | Top-level dispatch + 14-variant `I2npBody` | `I2npBody`, `I2npMessage` |
 | `src/i2np/delivery.rs` | `DeliveryStatusMessage` body | `DeliveryStatusMessage` |
 | `src/i2np/tunnel.rs` | Tunnel data, gateway, deferred build records | `TunnelDataMessage`, `TunnelGatewayMessage`, `DeferredBuildRecords` |
-| `src/i2np/netdb.rs` | `DatabaseStore`, `Lookup`, `SearchReply`, `ReplyEncryption`, zeroizing `ReplySecret<N>` | `DatabaseStoreType`, `DatabaseStoreData`, `DatabaseStoreMessage`, `DatabaseLookupMessage`, `DatabaseSearchReplyMessage`, `ReplyEncryption`, `ReplySecret<N>` |
+| `src/i2np/netdb.rs` | `DatabaseStore`, `Lookup`, `SearchReply`, `ReplyEncryption`, zeroizing `ReplySecret<N>` | `DatabaseStoreType`, `DatabaseStoreData` (`RouterInfoCompressed`/`LeaseSet`/`LeaseSet2`/`Deferred`), `DatabaseStoreMessage`, `DatabaseLookupMessage`, `DatabaseSearchReplyMessage`, `ReplyEncryption`, `ReplySecret<N>` |
 | `src/i2np/deferred.rs` | Bounded opaque payloads | `DeferredPayload`, `OpaqueMessageBody` |
 
-Integration tests live in `tests/i2np_fixtures.rs`.
+Integration tests live in `tests/i2np_fixtures.rs` (existing I2NP
+coverage) and `tests/lease_set2_fixture.rs` (Plan 119 frozen LS2 +
+i2np-level round-trip coverage).
 
 ## Public surface
 
@@ -140,12 +153,36 @@ via `CodecError::kind()`.
 - `src/lib.rs:57-78` — `Namespace::as_str()` and `ProtocolErrorKind` distinctness.
 - `src/codec.rs:608-917` — 18 cursor/encoder/round-trip/redaction/error-display tests.
 - `src/common/mod.rs:97-319` — 8 tests on Mapping, Hash, dates, certificates, identity truncation, RouterInfo and Lease round-trips.
+- `src/common/lease2.rs` — Plan 119 Lease2/LeaseSet2 unit tests covering Phase A
+  (Lease2 exact wire length, big-endian field order, trailing bytes,
+  truncation, checked time conversion), Phase B (header round-trip,
+  reserved/unsupported flag typed errors, expiration overflow, trailing
+  data), Phase C (single/multiple typed keys, unknown keys retained but
+  not selectable, X25519 wrong length, zero keys rejected, duplicate
+  X25519 deterministic, aggregate key bytes bounded), Phase D
+  (canonical options ordering, signed_bytes preservation, noncanonical
+  mapping cannot gain a valid signature), Phase E (full round-trip,
+  signature preimage prepended type byte), and the negative paths
+  (zero leases, signature type mismatch).
 - `src/i2np/message.rs:966-1147` — 10 tests on body registry, headers, fixture vectors, search-reply bounding, DH mode rejection, deferred redaction.
 - `tests/i2np_fixtures.rs` — Loads hex fixtures via `include_str!` from `tests/fixtures/i2np/`. Tests:
   - every positive fixture decodes and re-encodes canonically;
   - positive fixture truncations fail without panics;
   - malformed fixtures produce typed errors;
   - `ReplySecret` debug is redacted and only memory hygiene is claimed.
+- `tests/lease_set2_fixture.rs` — Plan 119 LeaseSet2 integration tests:
+  - frozen LS2 round-trip through `LeaseSet2` codec and signature
+    verification;
+  - signature verification against the embedded destination signing
+    key;
+  - usable X25519 selector returns the key;
+  - duplicate X25519 deterministic rejection;
+  - i2np-level `DatabaseStore` round-trip through the standard and
+    short-transport envelopes with the LS2 byte 0x03 verified in the
+    wire form;
+  - types 5 (EncryptedLeaseSet) and 7 (MetaLeaseSet) remain explicitly
+    `Deferred`;
+  - reserved/unsupported flags yield typed errors.
 - Fixture corpus: `tests/fixtures/i2np/` — 31 hex fixtures + manifest
   (`manifest.tsv`) + README. Covers all header variants, major body
   types, and 16 malformed inputs.

@@ -143,11 +143,11 @@ tests, and any distinctive design choices.
 
 | Crate | Role | One-liner | Deep dive |
 | --- | --- | --- | --- |
-| `i2pr-proto` | Foundation | Bounded wire codecs for I2P common structures and I2NP messages. No runtime, no I/O. | [i2pr-proto.md](i2pr-proto.md) |
+| `i2pr-proto` | Foundation | Bounded wire codecs for I2P common structures and I2NP messages, including the Plan 119 Standard LeaseSet2 carrier (`Lease2`, `LeaseSet2Header`, `LeaseSet2EncryptionKey`, `LeaseSet2`, signature domain `0x03 || signed_bytes`) and the typed `DatabaseStoreData::LeaseSet2` body. No runtime, no I/O. | [i2pr-proto.md](i2pr-proto.md) |
 | `i2pr-crypto` | Identity crypto | Protocol-specific wrappers around Ed25519, X25519, SHA-256. Secret material is zeroized. | [i2pr-crypto.md](i2pr-crypto.md) |
 | `i2pr-storage` | Persistence | Versioned, atomic, permission-hardened storage for router identity and NTCP2 static key. | [i2pr-storage.md](i2pr-storage.md) |
 | `i2pr-core` | Service contracts | Runtime-neutral lifecycle, health, cancellation, and resource budgets. Zero dependencies. | [i2pr-core.md](i2pr-core.md) |
-| `i2pr-netdb` | Local NetDB | Runtime-neutral RouterInfo validation, bounded in-memory NetDB store, SU3/reseed verification, peer-selection primitives, transport-neutral lookup/publication state machines, and local signed RouterInfo construction. Plan 103/104/105. | [i2pr-netdb.md](i2pr-netdb.md) |
+| `i2pr-netdb` | Local NetDB | Runtime-neutral RouterInfo validation, bounded in-memory NetDB store, SU3/reseed verification, peer-selection primitives, transport-neutral lookup/publication state machines, and local signed RouterInfo construction. Plan 103/104/105/119. | [i2pr-netdb.md](i2pr-netdb.md) |
 | `i2pr-netdb-persist` | Cache composition | Composition owner for Plan 104 persistent RouterInfo cache and SU3 reseed ingestion. Bridges `i2pr-storage` (raw bytes) and `i2pr-netdb` (validation). | — |
 | `i2pr-tunnel` | Milestone 5 substrate | Runtime-neutral tunnel identity, exploratory pool, build-record layout surface, build-cryptography seam, ECIES-X25519 short tunnel-build construction primitive (Plan 111 final local short-build conformance + Plan 112 outbound pre-delivery closure + Plan 113 inbound reference reconciliation + Plan 114 terminal routing and tunnel-chain correction + Plan 115 canonical production I2NP bridge with no-double-prefix STBM record count byte invariant + Plan 116 local tunnel data plane + Plan 117 outbound/inbound exploratory NetDB composition), runtime-neutral build state machine, success-only registrar, deterministic responder peer simulator, and reply-path provider. Plans 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117. | [i2pr-tunnel.md](i2pr-tunnel.md) |
 | `i2pr-transport` | Transport contracts | Runtime-neutral link/delivery contracts. No Tokio, no I/O, no async. | [i2pr-transport.md](i2pr-transport.md) |
@@ -251,8 +251,13 @@ bridge (`ShortBuildI2npBridge` in
          composition is local-only; the network transport adapter
          still owns the NTCP2/SSU2 handshake surface, and authenticated
          external transport remains `deferred-host-lane-unavailable`.
-         The next executable plan is **Plan 119** (LeaseSet2 protocol
-         foundation) under
+         Plan 119 closed as `passed-leaseset2-protocol-foundation` per
+         [`plans/119-status.md`](../../plans/119-status.md); the ordinary
+         online-signed published Standard LeaseSet2 carrier is wired
+         into `i2pr-proto` and `i2pr-netdb` (LS2 validation, bounded
+         store, `LookupKind::LeaseSet2`, typed `DatabaseStoreData::LeaseSet2`).
+         The next executable plan is **Plan 120** (destination lifecycle
+         and dedicated tunnel pools) under
          [`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md).
 6. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
    before startup, then spawns one supervisor manager per service via a

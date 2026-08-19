@@ -610,8 +610,13 @@ handler emits a request-prefixed reply instead of the normative
 the pinned Emissary revision
 `9b43484a21d5a1291c4881cdae62a36c527f8c0f`; no upstream correction
 is available. The i2pr parser is not relaxed; publication, lookup,
-and inbound return stages are not claimed. The next executable
-plan is **Plan 119** (LeaseSet2 protocol foundation) under
+and inbound return stages are not claimed. Plan 119 closed as
+`passed-leaseset2-protocol-foundation` per
+[`plans/119-status.md`](../../plans/119-status.md); the ordinary
+online-signed published Standard LeaseSet2 carrier is wired into
+`i2pr-proto` and `i2pr-netdb` for the local Phase G production
+seam. The next executable plan is **Plan 120** (destination
+lifecycle and dedicated tunnel pools) under
 [`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md).
 
 ## Out of scope (next plans)

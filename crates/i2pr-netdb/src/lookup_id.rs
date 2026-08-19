@@ -18,6 +18,8 @@ use crate::router_info::RouterHash;
 pub enum LookupKind {
     /// Standard `DatabaseLookup` for a `RouterInfo` record.
     RouterInfo,
+    /// Standard `DatabaseLookup` for a Standard `LeaseSet2` record.
+    LeaseSet2,
 }
 
 impl LookupKind {
@@ -25,6 +27,7 @@ impl LookupKind {
     pub const fn wire_code(self) -> u8 {
         match self {
             Self::RouterInfo => 2,
+            Self::LeaseSet2 => 1,
         }
     }
 }
@@ -273,6 +276,11 @@ mod tests {
     #[test]
     fn lookup_kind_router_info_wire_code_is_two() {
         assert_eq!(LookupKind::RouterInfo.wire_code(), 2);
+    }
+
+    #[test]
+    fn lookup_kind_lease_set2_wire_code_is_one() {
+        assert_eq!(LookupKind::LeaseSet2.wire_code(), 1);
     }
 
     #[test]

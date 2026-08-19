@@ -505,7 +505,9 @@ pub fn handle_database_store(
     }
     let compressed = match &store_message.data {
         DatabaseStoreData::RouterInfoCompressed(payload) => payload.as_bytes().to_vec(),
-        DatabaseStoreData::LeaseSet(_) | DatabaseStoreData::Deferred { .. } => {
+        DatabaseStoreData::LeaseSet(_)
+        | DatabaseStoreData::LeaseSet2(_)
+        | DatabaseStoreData::Deferred { .. } => {
             return Ok(ResponseOutcome::Continue);
         }
     };

@@ -535,15 +535,22 @@ fn decode_database_store(
             let bytes = cursor.take(cursor.remaining())?;
             DatabaseStoreData::LeaseSet(Box::new(LeaseSet::decode(bytes, bytes.len())?))
         }
-        DatabaseStoreType::LeaseSet2
-        | DatabaseStoreType::EncryptedLeaseSet
-        | DatabaseStoreType::MetaLeaseSet => DatabaseStoreData::Deferred {
-            store_type,
-            payload: DeferredPayload::new(
-                cursor.take(cursor.remaining())?.to_vec(),
-                maximum.min(MAX_I2NP_PAYLOAD_SIZE),
-            )?,
-        },
+        DatabaseStoreType::LeaseSet2 => {
+            let bytes = cursor.take(cursor.remaining())?;
+            DatabaseStoreData::LeaseSet2(Box::new(LeaseSet2::decode(
+                bytes,
+                bytes.len().min(maximum),
+            )?))
+        }
+        DatabaseStoreType::EncryptedLeaseSet | DatabaseStoreType::MetaLeaseSet => {
+            DatabaseStoreData::Deferred {
+                store_type,
+                payload: DeferredPayload::new(
+                    cursor.take(cursor.remaining())?.to_vec(),
+                    maximum.min(MAX_I2NP_PAYLOAD_SIZE),
+                )?,
+            }
+        }
     };
     Ok(DatabaseStoreMessage {
         key,
@@ -703,6 +710,7 @@ fn encode_database_store(
     let store_type = match &value.data {
         DatabaseStoreData::RouterInfoCompressed(_) => DatabaseStoreType::RouterInfo,
         DatabaseStoreData::LeaseSet(_) => DatabaseStoreType::LeaseSet,
+        DatabaseStoreData::LeaseSet2(_) => DatabaseStoreType::LeaseSet2,
         DatabaseStoreData::Deferred { store_type, .. } => *store_type,
     };
     encoder.write_u8(store_type.code())?;
@@ -735,6 +743,10 @@ fn encode_database_store(
             encoder.write_raw(payload.as_bytes())
         }
         DatabaseStoreData::LeaseSet(value) => {
+            let bytes = value.encode_to_vec(MAX_I2NP_PAYLOAD_SIZE)?;
+            encoder.write_raw(&bytes)
+        }
+        DatabaseStoreData::LeaseSet2(value) => {
             let bytes = value.encode_to_vec(MAX_I2NP_PAYLOAD_SIZE)?;
             encoder.write_raw(&bytes)
         }

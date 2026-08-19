@@ -2062,8 +2062,14 @@ inventory defects `F1`–`F5`) closed Plan 116 as
  `closed-for-progression-with-evidence-gap`; see
  [`plans/117-status.md`](plans/117-status.md) and
  [`plans/118-planning-authority-cleanup-and-plan117-disposition.md`](plans/118-planning-authority-cleanup-and-plan117-disposition.md).
- The next executable plan is **Plan 119** (LeaseSet2 protocol
- foundation) under the Milestone 6 router-construction roadmap in
+ Plan 119 closed as `passed-leaseset2-protocol-foundation` per
+ [`plans/119-status.md`](plans/119-status.md); the ordinary
+ online-signed published Standard LeaseSet2 carrier is wired into
+ `i2pr-proto` and `i2pr-netdb` and `DatabaseStoreData::LeaseSet2`
+ replaces the type-3 `Deferred` payload for the ordinary subset.
+ The next executable plan is **Plan 120** (destination lifecycle
+ and dedicated tunnel pools) under the Milestone 6
+ router-construction roadmap in
  [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
 
 Plan 116 lands:
@@ -2234,12 +2240,25 @@ plan_117_local_composition           = passed-all-i2pr-production-seam-netdb
 plan_117_native_reference            = blocked-reference-defect
 plan_117_external_transport          = deferred-host-lane-unavailable
 plan_117                             = closed-for-progression-with-evidence-gap
+plan_119                             = passed-leaseset2-protocol-foundation
 router_construction                  = may-continue
-next_router_construction_plan        = Plan 119 (LeaseSet2 protocol foundation)
+next_router_construction_plan        = Plan 120 (destination lifecycle and dedicated tunnel pools)
 ```
 
-The next executable plan is **Plan 119** (LeaseSet2 protocol
-foundation) under the Milestone 6 router-construction roadmap in
+Plan 119 closed as `passed-leaseset2-protocol-foundation` per
+[`plans/119-status.md`](plans/119-status.md). The ordinary
+online-signed published Standard LeaseSet2 carrier is wired into
+`i2pr-proto` (40-byte `Lease2`, `LeaseSet2Header`,
+`LeaseSet2EncryptionKey`, canonical `Mapping` options, signature
+domain `0x03 || signed_bytes`) and into `i2pr-netdb`
+(`ValidatedLeaseSet2`, `LeaseSet2Store`, `DestinationHash`,
+`LookupKind::LeaseSet2`). `DatabaseStoreData::LeaseSet2` replaces
+the type-3 `Deferred` payload for the ordinary subset; types 5/7
+remain explicitly deferred. EncryptedLeaseSet, MetaLeaseSet, blinded,
+offline-signing, leased, and PQ-hybrid variants remain future work
+tracked by the Milestone 6 roadmap. The next executable plan is
+**Plan 120** (destination lifecycle and dedicated tunnel pools)
+under the Milestone 6 router-construction roadmap in
 [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
 The Plan 117 evidence gap is tracked separately under the
 external acceptance debt ledger in the same roadmap. Router
@@ -3549,7 +3568,7 @@ Plan 103  RouterInfo validation + bounded local NetDB     [closed]
       -> Plan 116  local tunnel data plane [passed-final-local-closure]
       -> Plan 117  live exploratory/NetDB integration [closed-for-progression-with-evidence-gap]
       -> Plan 118  planning authority cleanup + Plan 117 disposition [closed]
-      -> Plan 119  LeaseSet2 protocol foundation [next implementation frontier]
+      -> Plan 119  LeaseSet2 protocol foundation [passed-leaseset2-protocol-foundation]
 ```
 
 Plan 106 closed the local/bootstrap implementation phase; Plan 107
@@ -3611,9 +3630,19 @@ opening, then rejects the reference-side request-prefixed reply
 during strict i2pr Mapping decoding. Parser-only compatibility is
 not native interoperability evidence.
 A direct `DatabaseLookup` over NTCP2 is not accepted as a
-substitute for the standard exploratory-tunnel path. The next
-executable plan is **Plan 119** (LeaseSet2 protocol foundation)
-under the Milestone 6 router-construction roadmap in
+substitute for the standard exploratory-tunnel path. Plan 119
+closed as `passed-leaseset2-protocol-foundation` per
+[`plans/119-status.md`](plans/119-status.md); the ordinary
+online-signed published Standard LeaseSet2 carrier is wired into
+`i2pr-proto` (40-byte `Lease2`, `LeaseSet2Header`,
+`LeaseSet2EncryptionKey`, canonical `Mapping` options, signature
+domain `0x03 || signed_bytes`) and into `i2pr-netdb`
+(`ValidatedLeaseSet2`, `LeaseSet2Store`, `DestinationHash`,
+`LookupKind::LeaseSet2`). `DatabaseStoreData::LeaseSet2` replaces
+the type-3 `Deferred` payload for the ordinary subset; types 5/7
+remain explicitly deferred. The next executable plan is **Plan
+120** (destination lifecycle and dedicated tunnel pools) under the
+Milestone 6 router-construction roadmap in
 [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
 Authenticated external transport and final mixed-router certificate
 remain separate deferred evidence items tracked in the same

@@ -18,6 +18,7 @@
 
 mod base64;
 mod databaselookup;
+mod lease_set2;
 mod local;
 mod lookup_action;
 mod lookup_engine;
@@ -32,6 +33,11 @@ mod store_message;
 
 pub use base64::{I2pBase64Error, MAX_DECODED_LEN, encode_filename_prefix};
 pub use databaselookup::{DatabaseLookupBuildError, build_databaselookup};
+pub use lease_set2::{
+    DestinationHash, LeaseSet2InsertOutcome, LeaseSet2Store, LeaseSet2StoreConfig,
+    LeaseSet2StoreStats, LeaseSet2ValidationContext, LeaseSet2ValidationError,
+    LeaseSet2ValidationPolicy, ValidatedLeaseSet2,
+};
 pub use local::{LocalRouterInfo, LocalRouterInfoBuilder, LocalRouterInfoError};
 pub use lookup_action::{
     DecompressionError, LOOKUP_EXCLUDED_PEER_BUDGET, LookupAction, LookupFinalState, LookupOutcome,

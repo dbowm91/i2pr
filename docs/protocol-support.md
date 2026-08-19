@@ -10,8 +10,16 @@ Emissary revision
 `9b43484a21d5a1291c4881cdae62a36c527f8c0f`; Plan 118 Phase B1 confirmed
 no usable upstream correction exists, so the bounded Plan 117 native
 closure campaign is closed for progression. Native mixed-router NetDB
-evidence is not claimed. Router construction is `may-continue`. The next
-executable plan is **Plan 119** (LeaseSet2 protocol foundation) under
+evidence is not claimed. Router construction is `may-continue`. Plan 119
+closed as `passed-leaseset2-protocol-foundation` per
+[`plans/119-status.md`](../plans/119-status.md); the ordinary
+online-signed published Standard LeaseSet2 carrier is wired into
+`i2pr-proto` and `i2pr-netdb` and `DatabaseStoreData::LeaseSet2`
+replaces the type-3 `Deferred` payload for the ordinary subset.
+EncryptedLeaseSet, MetaLeaseSet, blinded, offline-signing, leased, and
+PQ-hybrid variants remain future work tracked by the Milestone 6
+roadmap. The next executable plan is **Plan 120** (destination lifecycle
+and dedicated tunnel pools) under
 [`plans/118-123-milestone6-router-construction-roadmap.md`](../plans/118-123-milestone6-router-construction-roadmap.md);
 see [`plans/117-status.md`](../plans/117-status.md) and
 [`plans/118-planning-authority-cleanup-and-plan117-disposition.md`](../plans/118-planning-authority-cleanup-and-plan117-disposition.md).
@@ -81,7 +89,8 @@ advertisement requirements in `specs/CONFORMANCE.md`.
 | Reseed and RouterInfo publication | Plans 103–107 implemented locally on this host: RouterInfo validation, bounded local NetDB, persistent cache, SU3 reseed, transport-neutral query state machines, daemon bootstrap integration, and the Milestone 5 exploratory tunnel substrate. Plans 108–112 corrected and locally validated the ECIES-X25519 short-build wire, cryptography, records, slot/fake-record handling, and outbound construction. Plan 113 reconciles inbound construction against pinned Java I2P and i2pd source: the fixed request record remains the canonical 154-byte layout, and the creator-side inbound originator fake is exactly `hash16 || fresh X25519 public key || random remainder`; the final specification text discrepancy is recorded under the explicit `reference-compatible-spec-text-discrepancy` policy. Plan 114 closes four post-Plan-113 routing/composition defects: explicit outbound `outbound_reply_router` and inbound `originator_hash` terminal-routing fields, intermediate `hops[i].next_tunnel == hops[i+1].receive_tunnel` chain continuity enforced at both the high-level `ShortBuildPath::validate()` boundary and the public lower-level `prepare_short_build_message()` entry point, and strict outbound/inbound E2E trajectories that deterministically reach `Established`. Plan 115 closes the canonical production I2NP bridge (`ShortBuildI2npBridge`) so the already count-prefixed `ShortBuildAction::Deliver.message` is wrapped in a single complete I2NP type-25 message without double-prefixing the STBM record count byte and with a round-trip body equality assertion. Plan 115 Q0 construction + native OBEP reply has passed locally against pinned Emissary at 9b43484a21d5a1291c4881cdae62a36c527f8c0f: the i2pr-produced STBM is consumed by Emissary's native short-build handler, Emissary replies with `TunnelGateway` + Garlic inner message + feedback channel. Q1 (authenticated transport delivery) and Q2 (reply round-trip to `Established`) remain pending on a qualified external delivery lane; no live mixed-router tunnel execution or transit participation has been attained. | 4/5 | `specs/protocols/04-reseed-netdb.md`, `specs/protocols/05-tunnels.md`, `plans/103-status.md`, `plans/113-status.md`, `plans/114-status.md`, `plans/115-status.md`, `specs/references/short-build-inbound-creator-key.md` | Local signed-region verification, bounded NetDB/reseed/bootstrap checks, short-build request/reply vectors, role/topology validation, randomized slot and fake-record construction, originator-fake integrity checks, deterministic multi-hop inbound trajectory, terminal routing field validation, intermediate tunnel-id chain continuity validation, strict trajectory E2E tests, the canonical production I2NP bridge no-double-prefix invariant, and the Plan 115 Q0 Emissary-native OBEP consumption test; no live mixed-router tunnel execution or transit participation | None |
 | Network tunnels and transit participation | Experimental local subset; outbound short tunnel-build locally conformant against fixed vectors; inbound construction locally reference-compatible under Plan 113's `reference-compatible-spec-text-discrepancy` policy; exploratory substrate implemented; Plan 114 closed terminal routing and tunnel-chain corrections; Plan 115 added the canonical production I2NP bridge and Q0 construction + native OBEP reply (passed locally against pinned Emissary); live mixed-router build pending | 5 | `specs/protocols/05-tunnels.md`, `plans/107-milestone-5-exploratory-tunnel-substrate.md`, `plans/111-short-build-final-local-conformance-correction.md`, `plans/112-status.md`, `plans/113-status.md`, `plans/114-status.md`, `plans/115-status.md`, `plans/115-handoff.md`, `specs/references/short-build-inbound-creator-key.md` | Bounded tunnel identity/pool/build crypto types, role-validated short-build state machine, randomized multi-record construction, exactly one inbound originator fake with creator-side integrity verification, explicit terminal routing fields, intermediate tunnel-id chain continuity enforcement, strict trajectory E2E tests, deterministic local inbound trajectory, the canonical production I2NP bridge no-double-prefix invariant, and the Plan 115 Q0 Emissary-native OBEP consumption test; no live mixed-router tunnel execution or transit participation | None |
 | Classic LeaseSet structural codec | Experimental structural subset; LeaseSet2-family deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Local Lease/LeaseSet vectors and negative tests; no independent router vectors | None |
-| LeaseSet2, EncryptedLeaseSet, and MetaLeaseSet | Deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Explicit rejection/deferred framing only | None |
+| Standard LeaseSet2 structural codec (ordinary online-signed published subset) | Experimental | 6 | `specs/protocols/06-garlic-ecies-leasesets.md`, [`plans/119-status.md`](../plans/119-status.md) | 40-byte Lease2, LeaseSet2Header, LeaseSet2EncryptionKey, canonical Mapping options, signature domain `0x03 || signed_bytes`, strict fresh/Lease accounting, frozen wire-format fixture, i2np-level DatabaseStore round-trip; EncryptedLeaseSet / MetaLeaseSet / blinded / offline-signing / leased / PQ-hybrid variants remain deferred | None |
+| EncryptedLeaseSet and MetaLeaseSet | Deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Explicit `DatabaseStoreData::Deferred` framing only | None |
 | I2P streaming | Not implemented | 6 | `specs/protocols/07-streaming.md` | None imported | None |
 | SAM | Not implemented | 7 | `specs/protocols/08-sam.md` | None imported | None |
 | SSU2 | Not implemented | 8 | `specs/protocols/09-ssu2.md` | None imported | None |
@@ -710,8 +719,8 @@ Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
       -> Plan 116  local tunnel data plane                                 [passed-final-local-closure]
       -> Plan 117  exploratory NetDB composition                           [closed-for-progression-with-evidence-gap]
       -> Plan 118  planning authority cleanup + Plan 117 disposition       [closed]
-      -> Plan 119  LeaseSet2 protocol foundation                           [next implementation frontier]
-      -> Plan 120  destination lifecycle and tunnel pools                  [queued]
+      -> Plan 119  LeaseSet2 protocol foundation                           [passed-leaseset2-protocol-foundation]
+      -> Plan 120  destination lifecycle and tunnel pools                  [next implementation frontier]
       -> Plan 121  ECIES-X25519 Garlic/session layer                        [queued]
       -> Plan 122  destination routing and NetDB composition                [queued]
       -> Plan 123  minimal streaming core                                    [queued]
@@ -779,9 +788,10 @@ pinned reference's request-prefixed reply during strict i2pr
 Mapping decoding; the reference-side defect is localized to the
 pinned Emissary revision, and Plan 118 Phase B1 confirmed no
 upstream correction is available. Router construction is
-`may-continue`; the next executable plan is **Plan 119**
-(LeaseSet2 protocol foundation) under the Milestone 6
-router-construction roadmap at
+`may-continue`. Plan 119 closed as `passed-leaseset2-protocol-foundation`
+per [`plans/119-status.md`](../plans/119-status.md); the next executable
+plan is **Plan 120** (destination lifecycle and dedicated tunnel pools)
+under the Milestone 6 router-construction roadmap at
 [`plans/118-123-milestone6-router-construction-roadmap.md`](../plans/118-123-milestone6-router-construction-roadmap.md).
 
 ### Plan 113 inbound short-build reconciliation

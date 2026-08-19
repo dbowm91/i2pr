@@ -36,7 +36,14 @@ RouterInfo publication coordinator.
   bounded `DatabaseStore` per nearest floodfill without becoming a
   live effects service (`publication`);
 - the bounded unsolicited `DatabaseStore` handler outside an active
-  lookup (`store_message`).
+  lookup (`store_message`);
+- the Standard LeaseSet2 carrier surface (`lease_set2`):
+  `DestinationHash`, `LeaseSet2ValidationPolicy` /
+  `LeaseSet2ValidationContext`, `ValidatedLeaseSet2`,
+  `LeaseSet2Store` (bounded record count + aggregate bytes, deterministic
+  replacement/conflict/stale semantics), `LeaseSet2InsertOutcome`,
+  `LeaseSet2StoreConfig`, `LeaseSet2StoreStats` (Plan 119 ordinary
+  online-signed published subset).
 
 ## Module layout
 
@@ -55,6 +62,7 @@ RouterInfo publication coordinator.
 | `lookup_engine` | Iterative `RouterInfo` lookup state machine |
 | `publication` | Local RouterInfo publication coordinator |
 | `store_message` | Unsolicited `DatabaseStore` ingestion handler |
+| `lease_set2` | Plan 119 Standard LeaseSet2 validation, freshness, and bounded store |
 
 ## Dependency boundary
 
@@ -143,15 +151,39 @@ no DNS. Filesystem I/O belongs to `i2pr-storage` (raw-byte seam) and
   defect is localized to the pinned Emissary revision
   `9b43484a21d5a1291c4881cdae62a36c527f8c0f`; the i2pr parser is not
   relaxed, and publication / lookup / inbound return stages are not
-  claimed. The next executable plan is **Plan 119** (LeaseSet2
-  protocol foundation) under
+  claimed. Plan 119 closed as `passed-leaseset2-protocol-foundation`
+  per [`plans/119-status.md`](../../plans/119-status.md); the
+  ordinary online-signed published Standard LeaseSet2 carrier is
+  wired into `i2pr-proto` and `i2pr-netdb` for the local Phase G
+  production seam. The next executable plan is **Plan 120**
+  (destination lifecycle and dedicated tunnel pools) under
   [`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md);
   see [`plans/117-status.md`](../../plans/117-status.md) and
   [`plans/118-planning-authority-cleanup-and-plan117-disposition.md`](../../plans/118-planning-authority-cleanup-and-plan117-disposition.md).
 - `store_message::handle_unsolicited_databasestore` — bounded
   ingestion handler for `DatabaseStore` messages that arrive outside
-  an active lookup; rejects non-RouterInfo payloads and enforces the
-  Plan 103 validator after decompression.
+  an active lookup; rejects non-RouterInfo payloads (including
+  `DatabaseStoreData::LeaseSet2`) and enforces the Plan 103 validator
+  after decompression.
+- `lease_set2::ValidatedLeaseSet2` — the only constructor for a
+  validated LeaseSet2; enforces the Plan 119 §10 checklist (length →
+  key derivation → expected-key check → signature verification → X25519
+  policy → freshness policy → wrap). The signing key comes from the
+  destination embedded in the LS2 header; the signature preimage is
+  `0x03 || LeaseSet2::signed_bytes()`. EncryptedLeaseSet,
+  MetaLeaseSet, blinded, offline-signing, leased, and PQ-hybrid
+  variants are deliberately deferred.
+- `lease_set2::LeaseSet2Store` — bounded in-memory store of validated
+  Standard LeaseSet2 records, indexed independently of the RouterInfo
+  store so the two entry classes cannot starve each other. Replacement
+  semantics follow the published timestamp; equal published + identical
+  signed bytes is idempotent; equal published + different bytes is a
+  conflict; older is `StaleReplacement`; capacity exceeded is
+  fail-closed.
+- `lookup_id::LookupKind::LeaseSet2` — the wire-code `1` lookup-kind
+  variant for Standard LeaseSet2; Plan 119 wires the structural
+  surface only. The full `DatabaseLookup` state machine wiring belongs
+  to Plan 122.
 
 ## Key contracts
 
@@ -190,3 +222,23 @@ Plan 105 test suite covers routing-key derivation, candidate
 selection, lookup identity/coalescing, action emission, decompressor
 bounds, lookup state-machine progression, publication correlation,
 and unsolicited store ingestion.
+
+Plan 119 adds the Standard LeaseSet2 test matrix at
+`crates/i2pr-netdb/src/lease_set2.rs` and
+`crates/i2pr-netdb/tests/lease_set2_integration.rs`:
+
+- in-module unit tests cover the validation checklist (length,
+  expected-key derivation, signature verification against the
+  embedded destination signing key with the `0x03 || signed_bytes`
+  preimage, X25519 policy, freshness policy), the bounded store
+  (capacity exceeded, fresh replace, equal-publish idempotent,
+  conflict-on-equal-publish-different-bytes, stale rejection), and
+  the `LeaseSet2StoreStats`/`LeaseSet2StoreConfig` deterministic
+  counters;
+- integration tests cover DestinationHash indexing, integration of
+  `ValidatedLeaseSet2` with the Plan 119 signature path, typed
+  rejection of an invalid signature, typed rejection of a wrong
+  expected key, typed rejection of an expired LS2, deterministic
+  replacement idempotency, swap-on-different-bytes, capacity
+  isolation from `RouterInfoStore`, and the `LeaseSet2StoreStats`
+  contract.

@@ -17,8 +17,8 @@ use std::convert::TryInto;
 
 use ed25519_dalek::Signer;
 use i2pr_proto::{
-    Certificate, CodecError, CryptoKeyType, Date, Hash, KeyAndCert, KeyCertificate, Mapping,
-    PublicKey, RouterAddress, RouterIdentity, RouterInfo, SignatureValue, SigningKeyType,
+    Certificate, CodecError, CryptoKeyType, Date, Hash, KeyAndCert, KeyCertificate, LeaseSet2,
+    Mapping, PublicKey, RouterAddress, RouterIdentity, RouterInfo, SignatureValue, SigningKeyType,
     SigningPublicKey,
 };
 use rand_core::TryCryptoRng;
@@ -436,6 +436,25 @@ pub fn verify_router_info(info: &RouterInfo) -> Result<(), CryptoError> {
         info.router_identity().signing_key(),
         info.signed_bytes(),
         info.signature(),
+    )
+}
+
+/// Verifies the signature on a Standard LeaseSet2.
+///
+/// The signature preimage is the exact byte region retained by the
+/// LeaseSet2 plus the single signature-domain byte
+/// (`i2pr_proto::LEASE_SET2_SIGNATURE_DOMAIN_BYTE`). The destination
+/// signing key embedded in the LS2 header is the verification key.
+///
+/// Re-encoding the LS2 with different options bytes will not produce a
+/// valid signature because the retained signed bytes are taken from the
+/// wire form, not from a re-decoded/re-encoded view.
+pub fn verify_lease_set2(lease_set2: &LeaseSet2) -> Result<(), CryptoError> {
+    let preimage = lease_set2.signature_preimage();
+    verify_signature(
+        lease_set2.destination().signing_key(),
+        &preimage,
+        lease_set2.signature(),
     )
 }
 

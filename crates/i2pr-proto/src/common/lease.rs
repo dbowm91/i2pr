@@ -272,3 +272,29 @@ pub fn decode_lease_set_variant(
         )),
     }
 }
+
+/// Decodes the LeaseSet2 wire form from a DatabaseStore type-3 payload.
+///
+/// Type 5 (EncryptedLeaseSet) and type 7 (MetaLeaseSet) are explicitly
+/// rejected; callers must inspect [`crate::DatabaseStoreData::LeaseSet2`]
+/// or [`crate::DatabaseStoreData::Deferred`] themselves. This helper
+/// exists so existing classic-LeaseSet test fixtures keep their current
+/// rejection semantics while a separate LeaseSet2 path is wired into
+/// the NetDB layer.
+pub fn decode_lease_set2_variant(
+    store_type: u8,
+    input: &[u8],
+    maximum: usize,
+) -> Result<LeaseSet2, CodecError> {
+    match store_type {
+        3 => LeaseSet2::decode(input, maximum),
+        1 => Err(unsupported(0, "classic LeaseSet variant", 1)),
+        5 => Err(unsupported(0, "EncryptedLeaseSet variant", 5)),
+        7 => Err(unsupported(0, "MetaLeaseSet variant", 7)),
+        other => Err(unsupported(
+            0,
+            "LeaseSet2 DatabaseStore type",
+            u64::from(other),
+        )),
+    }
+}

@@ -84,6 +84,9 @@ plan_116_closure = "plans/116-status.md"
 plan_117_status = "closed-for-progression-with-evidence-gap"
 plan_118_plan_of_record = "plans/118-planning-authority-cleanup-and-plan117-disposition.md"
 plan_118_116_milestone6_roadmap = "plans/118-123-milestone6-router-construction-roadmap.md"
+plan_119_plan_of_record = "plans/119-m6-leaseset2-protocol-foundation.md"
+plan_119_closure = "plans/119-status.md"
+plan_119_status = "passed-leaseset2-protocol-foundation"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -144,8 +147,17 @@ id = "common.leaseset2-family"
 protocol = "common-structures"
 structure = "leaseset2-encryptedleaseset-metaleaseset"
 scope = "required-later"
-status = "deferred"
-evidence = ["crates/i2pr-proto/src/common/lease.rs", "specs/protocols/01-common-identity-crypto.md"]
+status = "experimental"
+notes = "Plan 119 closed as `passed-leaseset2-protocol-foundation` for the ordinary online-signed published Standard LeaseSet2 subset (40-byte Lease2, LeaseSet2Header, LeaseSet2EncryptionKey, LeaseSet2, signature domain 0x03 || signed_bytes, canonical Mapping options, strict fresh/Lease accounting). Plan 119 keeps EncryptedLeaseSet, MetaLeaseSet, blinded, offline-signing, leased, and PQ-hybrid variants deferred. The proto crate carries the type-3 typed path (`DatabaseStoreData::LeaseSet2`); types 5/7 remain explicitly Deferred."
+evidence = [
+    "crates/i2pr-proto/src/common/lease2.rs",
+    "crates/i2pr-proto/src/i2np/netdb.rs",
+    "crates/i2pr-proto/src/i2np/message.rs",
+    "crates/i2pr-netdb/src/lease_set2.rs",
+    "crates/i2pr-netdb/src/lookup_id.rs",
+    "plans/119-m6-leaseset2-protocol-foundation.md",
+    "plans/119-status.md",
+]
 advertised = false
 
 [[surface]]
@@ -337,8 +349,16 @@ id = "i2np.store-payloads"
 protocol = "i2np"
 structure = "router-info-compression-and-leaseset-family-deferred-payloads"
 scope = "required-later"
-status = "deferred"
-evidence = ["crates/i2pr-proto/src/i2np/tunnel.rs", "specs/protocols/02-i2np.md", "plans/014-closure.md"]
+status = "experimental"
+notes = "Plan 119 closed the type-3 LeaseSet2 typed path; EncryptedLeaseSet (type 5) and MetaLeaseSet (type 7) remain explicitly Deferred until their later encryption/policy plans."
+evidence = [
+    "crates/i2pr-proto/src/i2np/netdb.rs",
+    "crates/i2pr-proto/src/i2np/message.rs",
+    "crates/i2pr-proto/tests/lease_set2_fixture.rs",
+    "specs/protocols/02-i2np.md",
+    "plans/119-m6-leaseset2-protocol-foundation.md",
+    "plans/119-status.md",
+]
 advertised = false
 
 [[surface]]

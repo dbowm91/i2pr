@@ -9,7 +9,7 @@ pub enum DatabaseStoreType {
     RouterInfo,
     /// Classic LeaseSet.
     LeaseSet,
-    /// LeaseSet2, whose semantics are deferred.
+    /// Standard LeaseSet2 (Plan 119 ordinary online-signed subset).
     LeaseSet2,
     /// EncryptedLeaseSet, whose semantics are deferred.
     EncryptedLeaseSet,
@@ -51,6 +51,8 @@ pub enum DatabaseStoreData {
     RouterInfoCompressed(DeferredPayload),
     /// A structurally decoded classic LeaseSet.
     LeaseSet(Box<LeaseSet>),
+    /// A structurally decoded Standard LeaseSet2.
+    LeaseSet2(Box<LeaseSet2>),
     /// A recognized later LeaseSet-family type retained for a later decoder.
     Deferred {
         /// The recognized type identifier.
@@ -68,6 +70,7 @@ impl fmt::Debug for DatabaseStoreData {
                 .field(payload)
                 .finish(),
             Self::LeaseSet(value) => formatter.debug_tuple("LeaseSet").field(value).finish(),
+            Self::LeaseSet2(value) => formatter.debug_tuple("LeaseSet2").field(value).finish(),
             Self::Deferred {
                 store_type,
                 payload,
