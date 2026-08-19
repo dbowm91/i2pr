@@ -706,7 +706,7 @@ dependencies = [
  "i2pr-proto",
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "subtle",
  "thiserror",
  "x25519-dalek",
@@ -774,7 +774,7 @@ dependencies = [
  "rand_core 0.6.4",
  "rand_core 0.9.5",
  "sad-rsa",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror",
  "x509-parser",
  "zip",
@@ -801,7 +801,7 @@ dependencies = [
  "i2pr-crypto",
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "zeroize",
 ]
 
@@ -844,7 +844,7 @@ dependencies = [
  "i2pr-transport-ntcp2",
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tokio",
 ]
 
@@ -866,7 +866,7 @@ dependencies = [
  "i2pr-crypto",
  "i2pr-proto",
  "i2pr-transport",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "siphasher",
  "thiserror",
  "zeroize",
@@ -886,7 +886,7 @@ dependencies = [
  "i2pr-proto",
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror",
  "x25519-dalek",
  "zeroize",
