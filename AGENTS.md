@@ -7,18 +7,19 @@ relevant `docs/adr/` records before changing code.
 
 ## Workspace Layout
 
-Ten-crate workspace under `crates/`:
+Eleven-crate workspace under `crates/`:
 
 - `i2pr-proto` — bounded wire codecs (crate-root façade, borrowed cursors, strict decoding, typed errors)
 - `i2pr-crypto` — Ed25519/X25519/AES/ChaCha20-Poly1305/HMAC/SipHash wrappers
 - `i2pr-storage` — versioned persistence; identity, NTCP2 static-key records, and Plan 104 raw-byte cache seam
 - `i2pr-core` — runtime-neutral service contracts
-- `i2pr-netdb` — runtime-neutral RouterInfo validation, local NetDB store, SU3/reseed verification, local signed RouterInfo construction, and transport-neutral query/publication state machines (Plan 103/104/105; consumes `i2pr-crypto`/`i2pr-proto` + reviewed third-party crates)
+- `i2pr-netdb` — runtime-neutral RouterInfo validation, local NetDB store, SU3/reseed verification, local signed RouterInfo construction, and transport-neutral query/publication state machines (Plan 103/104/105/119; consumes `i2pr-crypto`/`i2pr-proto` + reviewed third-party crates)
 - `i2pr-netdb-persist` — composition owner for Plan 104 persistent cache and SU3 reseed ingestion
 - `i2pr-transport` — runtime-neutral link/delivery contracts (no Tokio, no I/O)
 - `i2pr-transport-ntcp2` — runtime-neutral NTCP2 handshake + data frames
 - `i2pr-runtime` — **only** production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation
 - `i2pr-daemon` — composition root + CLI
+- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`)
 - `i2pr-testkit` — deterministic simulation; production crates must not depend on it
 
 Fixtures: `tests/fixtures/i2np/` (manifest at `tests/fixtures/i2np/manifest.tsv`),
@@ -35,9 +36,10 @@ These are checked on CI and will reject the change:
   `i2pr-crypto`/`i2pr-proto`/`i2pr-transport`; `i2pr-netdb` consumes
   `i2pr-crypto`/`i2pr-proto` + reviewed third-party crates (Plan 103/104/105);
   `i2pr-netdb-persist` consumes `i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-storage`
-  (Plan 104); and `i2pr-runtime` may compose
-  `i2pr-transport-ntcp2` for Plan 042. **No production crate may
-  depend on `i2pr-testkit`.**
+  (Plan 104); `i2pr-client` consumes `i2pr-core`/`i2pr-crypto`/
+  `i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel` (Plan 120); and `i2pr-runtime`
+  may compose `i2pr-transport-ntcp2` for Plan 042. **No production crate
+  may depend on `i2pr-testkit`.**
 - Runtime boundaries (`scripts/check-runtime-boundaries.sh`):
   - No `unbounded_channel`, `UnboundedSender`, `UnboundedReceiver` in
     `i2pr-runtime`/`i2pr-testkit`/`i2pr-transport`/`i2pr-transport-ntcp2`.
@@ -2062,15 +2064,24 @@ inventory defects `F1`–`F5`) closed Plan 116 as
  `closed-for-progression-with-evidence-gap`; see
  [`plans/117-status.md`](plans/117-status.md) and
  [`plans/118-planning-authority-cleanup-and-plan117-disposition.md`](plans/118-planning-authority-cleanup-and-plan117-disposition.md).
- Plan 119 closed as `passed-leaseset2-protocol-foundation` per
- [`plans/119-status.md`](plans/119-status.md); the ordinary
- online-signed published Standard LeaseSet2 carrier is wired into
- `i2pr-proto` and `i2pr-netdb` and `DatabaseStoreData::LeaseSet2`
- replaces the type-3 `Deferred` payload for the ordinary subset.
- The next executable plan is **Plan 120** (destination lifecycle
- and dedicated tunnel pools) under the Milestone 6
- router-construction roadmap in
- [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
+  Plan 119 closed as `passed-leaseset2-protocol-foundation` per
+  [`plans/119-status.md`](plans/119-status.md); the ordinary
+  online-signed published Standard LeaseSet2 carrier is wired into
+  `i2pr-proto` and `i2pr-netdb` and `DatabaseStoreData::LeaseSet2`
+  replaces the type-3 `Deferred` payload for the ordinary subset.
+  Plan 120 closed as `passed-destination-lifecycle-and-pools` per
+  [`plans/120-status.md`](plans/120-status.md) and lands the first
+  `i2pr-client` destination runtime: local destination identity
+  (independent Ed25519 signing + X25519 static keys, non-`Clone`,
+  non-`Debug` secrets), destination-specific tunnel pools that
+  consume real one-shot `EstablishedMaterial`, local Standard
+  LeaseSet2 construction and signing with self-validation through
+  `i2pr-netdb`, LeaseSet2 lifecycle with bounded
+  rotation/withdrawal, bounded local payload contracts, and a
+  router-local destination registry. The next executable plan is
+  **Plan 121** (ECIES-X25519-AEAD-Ratchet Garlic session layer)
+  under the Milestone 6 router-construction roadmap in
+  [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
 
 Plan 116 lands:
 

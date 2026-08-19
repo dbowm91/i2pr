@@ -678,6 +678,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "i2pr-client"
+version = "0.1.0"
+dependencies = [
+ "i2pr-core",
+ "i2pr-crypto",
+ "i2pr-netdb",
+ "i2pr-proto",
+ "i2pr-tunnel",
+ "rand_chacha 0.9.0",
+ "rand_core 0.9.5",
+ "thiserror",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "i2pr-core"
 version = "0.1.0"
 

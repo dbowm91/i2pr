@@ -174,7 +174,9 @@ Plan 115 Emissary Q0 construction + native OBEP reply: passed locally (`plans/11
 
 Plan 117 status: `closed-for-progression-with-evidence-gap` per Plan 118. The Plan 117 local production composition (Phase G) is retained; the corrected native reference test reached Emissary OBEP admission and reply AEAD opening but rejected the pinned reference's request-prefixed reply plaintext during strict i2pr Mapping decoding. The reference-side defect is localized to the pinned Emissary revision; no upstream correction is available.
 
-Plan 119 status: `passed-leaseset2-protocol-foundation` (`plans/119-status.md`). The ordinary online-signed published Standard LeaseSet2 carrier is wired into `i2pr-proto` (40-byte `Lease2`, `LeaseSet2Header`, `LeaseSet2EncryptionKey`, canonical `Mapping` options, signature domain `0x03 || signed_bytes`) and into `i2pr-netdb` (`ValidatedLeaseSet2`, `LeaseSet2Store`, `DestinationHash`, `LookupKind::LeaseSet2`). `DatabaseStoreData::LeaseSet2` replaces the type-3 `Deferred` payload for the ordinary subset; types 5/7 remain explicitly deferred. The next executable plan is **Plan 120** (destination lifecycle and dedicated tunnel pools).
+Plan 119 status: `passed-leaseset2-protocol-foundation` (`plans/119-status.md`). The ordinary online-signed published Standard LeaseSet2 carrier is wired into `i2pr-proto` (40-byte `Lease2`, `LeaseSet2Header`, `LeaseSet2EncryptionKey`, canonical `Mapping` options, signature domain `0x03 || signed_bytes`) and into `i2pr-netdb` (`ValidatedLeaseSet2`, `LeaseSet2Store`, `DestinationHash`, `LookupKind::LeaseSet2`). `DatabaseStoreData::LeaseSet2` replaces the type-3 `Deferred` payload for the ordinary subset; types 5/7 remain explicitly deferred.
+
+Plan 120 status: `passed-destination-lifecycle-and-pools` (`plans/120-status.md`). Plan 120 lands the first `i2pr-client` destination runtime: local destination identity (independent Ed25519 signing + X25519 static keys, non-`Clone`, non-`Debug` secrets), destination-specific tunnel pools that consume real one-shot `EstablishedMaterial`, local Standard LeaseSet2 construction and signing with self-validation through `i2pr-netdb`, LeaseSet2 lifecycle with bounded rotation/withdrawal, bounded local payload contracts that never inject plaintext into tunnel delivery, and a router-local destination registry with explicit capacity and duplicate-rejection guards. The `plan_120_deterministic_local_trajectory` integration test drives the full production-seam trajectory through `i2pr-tunnel` and `i2pr-netdb`. Garlic encryption, remote destination routing, and the streaming protocol remain Plan 121/122/123 scope. The next executable plan is **Plan 121** (ECIES-X25519-AEAD-Ratchet Garlic session layer).
 
 ## Workspace
 
@@ -190,6 +192,7 @@ crates/
   i2pr-netdb/               RouterInfo validation, NetDB store, lookup, publication, Standard LeaseSet2 validation and bounded store (Plan 119)
   i2pr-netdb-persist/       Persistent cache and SU3 reseed ingestion
   i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build cryptography (Plan 111/112 outbound local conformance; Plan 113 inbound reference-compatible policy; Plan 114 terminal routing and tunnel-chain correction; Plan 115 canonical production I2NP bridge; Plan 116 final local closure + terminal cleanup), runtime-neutral build state machine, reply-path provider, Plan 117 outbound/inbound exploratory NetDB composition
+  i2pr-client/              Local destination identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, router-local destination registry (Plan 120)
   i2pr-daemon/              CLI, configuration, composition, supervision, Plan 117 outbound/inbound dispatch
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
 tools/
@@ -228,7 +231,7 @@ bash scripts/check-runtime-boundaries.sh
 
 The feature MVP includes: CLI router daemon, persistent identity, I2NP handling, NTCP2/SSU2 transport, NetDB client/floodfill, tunnel construction, destination/LeaseSet management, streaming, SAM/I2CP interfaces, HTTP/SOCKS5 proxies, and bounded resource accounting.
 
-Development targets a smaller interoperable-router milestone before the complete MVP. The current product milestone after Plan 119 is **Milestone 6** (destinations, garlic, LeaseSet2, streaming), sequenced in [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md) (Plan 119 closed as `passed-leaseset2-protocol-foundation`; Plan 120 → Plan 123 remain). The next executable plan is **Plan 120** (destination lifecycle and dedicated tunnel pools).
+Development targets a smaller interoperable-router milestone before the complete MVP. The current product milestone is **Milestone 6** (destinations, garlic, LeaseSet2, streaming), sequenced in [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md). Plan 119 closed as `passed-leaseset2-protocol-foundation`; Plan 120 closed as `passed-destination-lifecycle-and-pools` and lands the first `i2pr-client` destination runtime. The next executable plan is **Plan 121** (ECIES-X25519-AEAD-Ratchet Garlic session layer).
 
 ## License
 

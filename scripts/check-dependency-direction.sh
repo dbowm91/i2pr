@@ -41,6 +41,9 @@ expected = {
     "i2pr-runtime": {
         "i2pr-core", "i2pr-transport", "i2pr-transport-ntcp2"
     },
+    "i2pr-client": {
+        "i2pr-core", "i2pr-crypto", "i2pr-netdb", "i2pr-proto", "i2pr-tunnel"
+    },
 }
 
 for name, allowed in expected.items():

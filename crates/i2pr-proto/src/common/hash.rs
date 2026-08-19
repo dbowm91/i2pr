@@ -24,6 +24,13 @@ impl Hash {
         &self.0
     }
 
+    /// Returns a copied hash value. Useful when an API exposes `&Hash` but the
+    /// caller needs an owned value (e.g. for a hash-valued accessor that does
+    /// not need a lifetime).
+    pub const fn copy(&self) -> Self {
+        Self(self.0)
+    }
+
     /// Decodes one complete Hash value.
     pub fn decode(input: &[u8], maximum: usize) -> Result<Self, CodecError> {
         decode_exact(input, maximum, Self::decode_from)

@@ -23,6 +23,7 @@ from this production graph; they are allowed to support crate-local tests.
 | `i2pr-runtime` | `i2pr-core`, `i2pr-transport`, `i2pr-transport-ntcp2` + `tokio`, `tokio-util`, `futures-util`, `tracing` |
 | `i2pr-daemon` | `i2pr-crypto`, `i2pr-core`, `i2pr-proto`, `i2pr-runtime`, `i2pr-storage`, `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-transport` + `clap`, `serde`, `toml`, `thiserror`, `tracing`, `tracing-subscriber` |
 | `i2pr-testkit` (test-only) | every transport-and-runtime crate + `rand_chacha`, `rand_core`, `sha2`, `tokio` |
+| `i2pr-client` (Plan 120) | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, `i2pr-tunnel` + `rand_chacha`, `rand_core`, `thiserror`, `zeroize` |
 
 Reverse edges (i.e. "may NOT depend on"):
 
@@ -33,6 +34,14 @@ Reverse edges (i.e. "may NOT depend on"):
   `i2pr-transport-ntcp2`, `i2pr-runtime`, `i2pr-daemon`, or
   `i2pr-testkit` (Plan 103; cache seam goes in `i2pr-storage`,
   composition goes in `i2pr-netdb-persist`).
+- `i2pr-tunnel` may not depend on `i2pr-client` (Plan 120 composition
+  flows from `i2pr-tunnel` upward only; the client reuses
+  `BoundedTunnelPool` but does not live inside `i2pr-tunnel`).
+- `i2pr-netdb` may not depend on `i2pr-client` (the LeaseSet2 validation
+  path is consumed by the client; the client does not flow back into
+  NetDB).
+- `i2pr-client` may not depend on `i2pr-daemon`; the daemon is the
+  future composition root, not a client library.
 - `i2pr-netdb-persist` may not depend on `i2pr-transport`,
   `i2pr-transport-ntcp2`, `i2pr-runtime`, `i2pr-daemon`, or
   `i2pr-testkit` (Plan 104).

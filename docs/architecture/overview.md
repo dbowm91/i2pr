@@ -21,7 +21,7 @@ Four conceptual planes run through every crate:
 | --- | --- | --- |
 | Data | Protocol representations, authenticated links, messages, network tunnel traffic | Bounded: common-structure codecs, initial I2NP models, NTCP2 handshake + data-phase frames, and runtime-neutral transport contracts. No public-network behavior. |
 | Control | Configuration, lifecycle, health, cancellation, supervision, resource budgets | Runtime-neutral core contracts + bounded `i2pr-runtime` supervisor + NTCP2 runtime service. Daemon composition and live execution are not yet wired in. |
-| Client | Destinations, LeaseSets, streaming, SAM, I2CP adapters | Not implemented. |
+| Client | Destinations, LeaseSets, streaming, SAM, I2CP adapters | Plan 120 lands the first local-destination runtime (`i2pr-client`): identity, dedicated tunnel pools, signed Standard LeaseSet2, lifecycle, bounded local payloads, registry. Garlic encryption, remote destination routing, and streaming are Plan 121/122/123 scope. |
 | Service | HTTP, SOCKS5, IRC, generic TCP, local service tunnels | Not implemented. |
 
 Network tunnels (router-to-router) and application service tunnels
@@ -133,7 +133,11 @@ i2pr-testkit (test-only; may depend on transport crates;
 
 Reading from the arrows: lower crates stay pure, runtime-neutral, and
 narrow. Higher crates widen scope and (in the case of `i2pr-runtime`)
-take exclusive ownership of Tokio and sockets.
+take exclusive ownership of Tokio and sockets. Plan 120 adds
+`i2pr-client` alongside the runtime, with its own short edges into
+`i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, and
+`i2pr-tunnel`; it never composes back into `i2pr-tunnel` or
+`i2pr-netdb` and never imports `i2pr-daemon`.
 
 ## Crate index
 
@@ -154,6 +158,7 @@ tests, and any distinctive design choices.
 | `i2pr-transport-ntcp2` | NTCP2 protocol | Runtime-neutral Noise handshake, AEAD frames, data-phase blocks. | [i2pr-transport-ntcp2.md](i2pr-transport-ntcp2.md) |
 | `i2pr-runtime` | Runtime owner | The only production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation. | [i2pr-runtime.md](i2pr-runtime.md) |
 | `i2pr-daemon` | Composition root | CLI + config + identity lifecycle + Plan 106 NetDB/bootstrap pipeline + Plan 117 outbound `OutboundGatewayRole` exploratory `DatabaseLookup`/`DatabaseStore` composition and inbound `LocalInboundEndpointRole` `TunnelData` dispatch through `crates/i2pr-daemon/src/{outbound_lookup,inbound_dispatch}.rs`. Live daemon runs through the supervisor with no I2P transport. | [i2pr-daemon.md](i2pr-daemon.md) |
+| `i2pr-client` | Destination runtime | Plan 120: local destination identity, destination-specific tunnel pools that consume real one-shot `EstablishedMaterial`, local Standard LeaseSet2 construction and signing with self-validation through `i2pr-netdb`, LeaseSet2 lifecycle with bounded rotation/withdrawal, bounded local payload contracts, and a router-local destination registry. No NTCP2 / SSU2 / public-network transport. Garlic encryption, remote destination routing, and streaming remain Plan 121/122/123 scope. | [i2pr-client.md](i2pr-client.md) |
 | `i2pr-testkit` | Test simulation | Deterministic clocks, virtual links, scripted faults. Test-only; never a production dep. | [i2pr-testkit.md](i2pr-testkit.md) |
 | `scripts/` + `tests/` + `fuzz/` | Tooling | Guardrails, fixtures, integration lanes, opt-in fuzzing. | [tooling.md](tooling.md) |
 
@@ -251,14 +256,33 @@ bridge (`ShortBuildI2npBridge` in
          composition is local-only; the network transport adapter
          still owns the NTCP2/SSU2 handshake surface, and authenticated
          external transport remains `deferred-host-lane-unavailable`.
-         Plan 119 closed as `passed-leaseset2-protocol-foundation` per
-         [`plans/119-status.md`](../../plans/119-status.md); the ordinary
-         online-signed published Standard LeaseSet2 carrier is wired
-         into `i2pr-proto` and `i2pr-netdb` (LS2 validation, bounded
-         store, `LookupKind::LeaseSet2`, typed `DatabaseStoreData::LeaseSet2`).
-         The next executable plan is **Plan 120** (destination lifecycle
-         and dedicated tunnel pools) under
-         [`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md).
+          Plan 119 closed as `passed-leaseset2-protocol-foundation` per
+          [`plans/119-status.md`](../../plans/119-status.md); the ordinary
+          online-signed published Standard LeaseSet2 carrier is wired
+          into `i2pr-proto` and `i2pr-netdb` (LS2 validation, bounded
+          store, `LookupKind::LeaseSet2`, typed `DatabaseStoreData::LeaseSet2`).
+          Plan 120 closed as `passed-destination-lifecycle-and-pools` and
+          lands the first `i2pr-client` destination runtime: local
+          destination identity (independent Ed25519 signing + X25519
+          static keys, non-`Clone`, non-`Debug` secrets), destination-
+          specific tunnel pools that consume real one-shot
+          `EstablishedMaterial` through a thin `BoundedTunnelPool`
+          alias in `i2pr-tunnel`, local Standard LeaseSet2
+          construction and signing with self-validation through
+          `i2pr-netdb`, LeaseSet2 lifecycle with bounded
+          rotation/withdrawal, bounded local payload contracts that
+          never inject plaintext into tunnel delivery, and a
+          router-local destination registry with explicit capacity
+          and duplicate-rejection guards. The
+          `plan_120_deterministic_local_trajectory` integration test
+          drives the real short-build state machine to `Established`
+          through the production seams and walks one full
+          start → tunnel → LeaseSet2 → rotation → shutdown trajectory.
+          Garlic encryption, remote destination routing, and the
+          streaming protocol remain Plan 121/122/123 scope. The next
+          executable plan is **Plan 121** (ECIES-X25519-AEAD-Ratchet
+          Garlic session layer) under
+          [`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md).
 6. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
    before startup, then spawns one supervisor manager per service via a
    `JoinSet`. Each service receives a narrowed `ServiceContext` (name,

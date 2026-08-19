@@ -612,12 +612,18 @@ the pinned Emissary revision
 is available. The i2pr parser is not relaxed; publication, lookup,
 and inbound return stages are not claimed. Plan 119 closed as
 `passed-leaseset2-protocol-foundation` per
-[`plans/119-status.md`](../../plans/119-status.md); the ordinary
-online-signed published Standard LeaseSet2 carrier is wired into
-`i2pr-proto` and `i2pr-netdb` for the local Phase G production
-seam. The next executable plan is **Plan 120** (destination
-lifecycle and dedicated tunnel pools) under
-[`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md).
+  [`plans/119-status.md`](../../plans/119-status.md); the ordinary
+  online-signed published Standard LeaseSet2 carrier is wired into
+  `i2pr-proto` and `i2pr-netdb` for the local Phase G production
+  seam. Plan 120 closed as `passed-destination-lifecycle-and-pools`
+  per [`plans/120-status.md`](../../plans/120-status.md). Plan 120
+  reuses the `BoundedTunnelPool` (= `ExploratoryPool`) container
+  through type aliases in [`src/lib.rs`](src/lib.rs) and never
+  modifies the cryptography, registrar, or data-plane code; the
+  destination-side policy lives in `i2pr-client`. The next
+  executable plan is **Plan 121** (ECIES-X25519-AEAD-Ratchet
+  Garlic session layer) under
+  [`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md).
 
 ## Out of scope (next plans)
 
@@ -627,7 +633,8 @@ lifecycle and dedicated tunnel pools) under
   [`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md));
 - transit participation (Milestone 11);
 - destination-specific tunnel pools and LeaseSet2 publication
-  (Milestone 6, owned by Plan 119 → Plan 122);
+  (Milestone 6, owned by Plan 120 → Plan 122; `i2pr-client` already
+  ships the Plan 120 destination runtime);
 - legacy 528-byte ECIES build implementation beyond preserving
   existing parsing/layout types;
 - ElGamal/ECIES mixed-router construction.

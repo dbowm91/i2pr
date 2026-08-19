@@ -2,6 +2,7 @@
 members = [
     "crates/i2pr-crypto",
     "crates/i2pr-proto",
+    "crates/i2pr-client",
     "crates/i2pr-core",
     "crates/i2pr-daemon",
     "crates/i2pr-netdb",

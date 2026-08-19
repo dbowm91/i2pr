@@ -49,13 +49,25 @@
 # still pending. Plan 118 closed the planning authority surface and
 # made the Plan 117 terminal disposition; the next executable plan
 # is **Plan 119** (LeaseSet2 protocol foundation) under
-# plans/118-123-milestone6-router-construction-roadmap.md. Router
-# construction is not blocked on the unavailable authenticated
-# external transport lane; external acceptance debt is tracked
-# separately. Structural evidence may be recorded before
-# interoperability; all entries remain non-advertised.
+# plans/118-123-milestone6-router-construction-roadmap.md. Plan 120
+# (Milestone 6 destination lifecycle and dedicated tunnel pools)
+# closed as `passed-destination-lifecycle-and-pools` and lands the
+# first `i2pr-client` destination runtime: local destination
+# identity (independent Ed25519 signing + X25519 static keys,
+# non-`Clone`, non-`Debug` secrets), destination-specific tunnel
+# pools that consume real one-shot `EstablishedMaterial`, local
+# Standard LeaseSet2 construction and signing with self-validation
+# through `i2pr-netdb`, LeaseSet2 lifecycle with bounded
+# rotation/withdrawal, bounded local payload contracts, and a
+# router-local destination registry. Garlic encryption, remote
+# destination routing, and the streaming protocol remain Plan
+# 121/122/123 scope. Router construction is not blocked on the
+# unavailable authenticated external transport lane; external
+# acceptance debt is tracked separately. Structural evidence may
+# be recorded before interoperability; all entries remain
+# non-advertised.
 schema = 1
-milestone = 5
+milestone = 6
 plan_103_implementation_floor = "plans/103-status.md"
 plan_104_implementation_floor = "plans/104-status.md"
 plan_105_implementation_floor = "plans/105-status.md"
@@ -87,6 +99,8 @@ plan_118_116_milestone6_roadmap = "plans/118-123-milestone6-router-construction-
 plan_119_plan_of_record = "plans/119-m6-leaseset2-protocol-foundation.md"
 plan_119_closure = "plans/119-status.md"
 plan_119_status = "passed-leaseset2-protocol-foundation"
+plan_120_plan_of_record = "plans/120-m6-destination-lifecycle-and-tunnel-pools.md"
+plan_120_status = "passed-destination-lifecycle-and-pools"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -157,6 +171,26 @@ evidence = [
     "crates/i2pr-netdb/src/lookup_id.rs",
     "plans/119-m6-leaseset2-protocol-foundation.md",
     "plans/119-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "client.destination-lifecycle"
+protocol = "destination"
+structure = "local-destination-identity-dedicated-tunnel-pools-leaseSet2-lifecycle"
+scope = "required"
+status = "experimental"
+notes = "Plan 120 closed as `passed-destination-lifecycle-and-pools`. `i2pr-client` owns local destination identity (independent Ed25519 signing + static X25519 private keys, non-`Clone`, non-`Debug` secrets), destination-specific tunnel pools that consume real one-shot `EstablishedMaterial`, local Standard LeaseSet2 construction and signing with self-validation through `i2pr-netdb`, LeaseSet2 lifecycle with bounded rotation/withdrawal, bounded local payload contracts that never inject plaintext into tunnel delivery, and a router-local destination registry. Garlic encryption, remote destination routing, and the streaming protocol remain Plan 121/122/123 scope."
+evidence = [
+    "crates/i2pr-client/src/lib.rs",
+    "crates/i2pr-client/src/config.rs",
+    "crates/i2pr-client/src/identity.rs",
+    "crates/i2pr-client/src/pool.rs",
+    "crates/i2pr-client/src/leaseset.rs",
+    "crates/i2pr-client/src/message.rs",
+    "crates/i2pr-client/src/registry.rs",
+    "crates/i2pr-client/tests/plan120_trajectory.rs",
+    "plans/120-m6-destination-lifecycle-and-tunnel-pools.md",
 ]
 advertised = false
 

@@ -141,6 +141,18 @@ pub use pool::{
     RegistrationError, TunnelEntry, TunnelRegistration, TunnelSlot,
 };
 pub use provider::ExploratoryPoolReplyPathProvider;
+
+/// Plan 120 shared bounded tunnel-pool abstraction.
+///
+/// The exploratory pool's slot lifetime, activation ownership, failure
+/// accounting, and expiry logic are direction- and policy-neutral. Plan 120
+/// reuses that container for destination-owned tunnel pools rather than
+/// forking it; the destination *policy* stays in `i2pr-client`.
+pub type BoundedTunnelPool = ExploratoryPool;
+
+/// Bounded configuration shared by the router-wide exploratory pool and
+/// destination-owned pools (Plan 120).
+pub type BoundedTunnelPoolConfig = ExploratoryPoolConfig;
 pub use responder::{DeterministicResponder, ResponderError};
 pub use roles::{
     InboundGatewayRole, InboundParticipantRole, LocalInboundEndpointRole, OBGWRouterDelivery,
