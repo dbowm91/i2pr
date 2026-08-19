@@ -1,243 +1,111 @@
-# Plan 117 status — local-native-complete-external-deferred
+# Plan 117 status — terminal native-reference correction pending
 
-- Status: **local-native-complete-external-deferred**
+- Status: **terminal-native-reference-correction-pending**
 - Date: 2026-08-18
-- Plan of record: [`117-live-exploratory-netdb-integration.md`](117-live-exploratory-netdb-integration.md)
-- Corrective closure plan: [`117-corrective-closure.md`](117-corrective-closure.md)
-- Predecessor: [`116-status.md`](116-status.md) — **passed-final-local-closure**
-- Roadmap: [`115-117-external-delivery-to-live-netdb-roadmap.md`](115-117-external-delivery-to-live-netdb-roadmap.md)
+- Original plan: [`117-live-exploratory-netdb-integration.md`](117-live-exploratory-netdb-integration.md)
+- First corrective closure: [`117-corrective-closure.md`](117-corrective-closure.md)
+- Current terminal correction: [`117-terminal-native-reference-correction.md`](117-terminal-native-reference-correction.md)
 - Handoff: [`117-handoff.md`](117-handoff.md)
-- First A–F implementation floor: `0b2a487e6a318de8c62b924dd0969ca2e3b6a7db`
-- Audit floor: `1608f5e5be3d2003b82340fb0293776087c3672c`
-- Corrective closure commit: `9fdfc1038f5cd018ad7a69d06fcc10400406f604`
+- Roadmap: [`115-117-external-delivery-to-live-netdb-roadmap.md`](115-117-external-delivery-to-live-netdb-roadmap.md)
+- Predecessor Plan 116: **passed-final-local-closure**
+- Current implementation floor: `b7e12e09d84089b5459d29aa962d01a963554b29`
+- Terminal-plan commit: `b96ab35c2a12431c4f45e4596f43ccba62981a53`
 
 ## Current authority
 
 ```text
 plan_115                              = passed-emissary-q0-construction-and-obep-reply-only
 plan_116                              = passed-final-local-closure
-plan_117                              = local-native-complete-external-deferred
+plan_117                              = terminal-native-reference-correction-pending
 plan_117_c1_routing                   = passed
 plan_117_c2_transport_framing         = passed-short-transport-tunneldata
 plan_117_c3_activation_ownership      = passed-metadata-retained-secrets-once
 plan_117_c4_runtime_readiness         = passed-registry-derived
 plan_117_c5_regression                = passed
 plan_117_g_local_production_seam      = passed-all-i2pr-production-seam-netdb
-plan_117_h_native_reference           = passed-emissary-wire-format-compatibility
+plan_117_h_parser_compatibility       = passed-emissary-wire-format-compatibility
+plan_117_h_native_reference           = pending-corrected-in-tree-emissary-test
 plan_117_i_authenticated_transport    = deferred-host-lane-unavailable
-plan_117_x_q1_authenticated_transport = deferred
-plan_117_x_q2_external_return         = deferred
-router_construction                   = may-continue
+Q1_authenticated_transport            = deferred
+Q2_external_return_established        = deferred
+router_construction                   = hold-on-plan117-native-terminal-pass
 normal_daemon_ntcp2                   = disabled-and-unenableable
 ntcp2                                 = experimental-non-advertised
-external_netdb_over_ntcp2             = blocked-on-transport-lane
 ```
 
-Plan 116 remains closed. The correction is entirely within Plan 117 composition and evidence.
+Plan 116 remains closed. Do not reopen it for this work.
+
+The `b7e12e09...` commit contains useful and retained Plan 117 product work, but
+its final `local-native-complete-external-deferred` label was premature because
+the independent reference stopped at parser compatibility rather than the
+required native mixed-router NetDB path.
 
 ---
 
-## What landed successfully in the first A–F pass
+## Retained implementation state
 
-Retain these surfaces:
+The following are considered passed unless a new native reference failure
+localizes a concrete protocol defect:
 
-- `LookupAction::SendDatabaselookup` now owns the real typed `DatabaseLookupMessage`.
-- `PublicationAttemptRecord` now owns the real typed `DatabaseStoreMessage`.
-- RouterInfo publication produces an actual gzip-compressed `RouterInfoCompressed` payload.
-- `RouterInfoLookup::handle_pending_after_path()` exists and the daemon seam no longer stops at the old post-path placeholder.
-- `DataPlaneRegistry` exists as the bounded runtime owner of activated local tunnel roles.
-- `outbound_lookup.rs` composes nested standard-header NetDB messages through `OutboundGatewayRole`.
-- `inbound_dispatch.rs` dispatches inbound TunnelData by local receive tunnel ID and fails closed on unknown IDs.
-- Normal-daemon NTCP2 remains disabled.
-
-The first implementation therefore remains the base for the corrective pass; do not restart Plan 117.
-
----
-
-## Blocking defects found by post-landing audit
-
-### C1 — outbound lookup ROUTER destination uses the lookup key, not the selected floodfill
-
-Current `compose_outbound_lookup()` uses `DatabaseLookupMessage.key` as the tunnel `ROUTER` delivery destination.
-
-Correct semantics require three distinct identities:
+### C1 — routing identity
 
 ```text
 K = requested RouterInfo key
-F = selected floodfill peer (`LookupAction.peer`)
+F = selected floodfill
 P = outbound first hop
 
-DatabaseLookup.key       = K
-Tunnel ROUTER target     = F
-DeliveryRequest.target   = P
+DatabaseLookup.key      = K
+Tunnel ROUTER target    = F
+DeliveryRequest.target  = P
 ```
 
-This is a blocking routing defect.
+The regression and Phase G path use distinct K/F/P identities.
 
-### C2 — transport-facing TunnelData is only a raw 1028-byte body
+### C2 — authenticated-link TunnelData framing
 
-The first implementation serializes `TunnelDataMessage` as:
+Nested NetDB I2NP remains standard-header I2NP. Transport-facing TunnelData is
+encoded as complete short-transport I2NP type 18 before entering
+`EncodedI2npMessage` / `DeliveryRequest`.
+
+### C3 — activation ownership
+
+`ExploratoryPool::activate(slot)` moves established secret material once while
+retaining public registration/routing metadata for capacity, duplicate,
+lifetime, and reply-path behavior. A second activation returns
+`AlreadyActivated`.
+
+One small lifecycle cleanup remains in the terminal plan: bind inbound registry
+roles to `TunnelSlot` so pool expiry/failure slots can remove matching runtime
+roles without an out-of-band local receive ID.
+
+### C4 — readiness
+
+The production Plan 117 readiness seam is
+`NetDbSeam::composition_outcome_with_registry(...)`, which derives readiness
+from actual usable `DataPlaneRegistry` roles. The older sticky boolean seam is
+legacy/deprecated compatibility only.
+
+### Phase G — local production composition
+
+`plan117_all_i2pr_production_seam_routerinfo_lookup_success` builds real inbound
+and outbound short-build state machines, registers/extracts real
+`EstablishedMaterial`, activates the roles, composes an outbound lookup through
+TunnelData, returns a DatabaseStore through the activated inbound path, validates
+and stores the RouterInfo, and reaches lookup Success.
+
+Therefore:
 
 ```text
-TunnelId || 1024-byte data
+117-L = passed
 ```
 
-and places those bytes directly in `EncodedI2npMessage`.
-
-The repository NTCP2 boundary requires an already encoded short-transport I2NP message. The correction must use:
-
-```text
-I2npBody::TunnelData
- -> I2npMessage::new_short_transport
- -> encode_short_transport_to_vec
- -> EncodedI2npMessage
- -> DeliveryRequest
-```
-
-Nested `DatabaseLookup` / `DatabaseStore` inside the tunnel remains standard-header I2NP.
-
-This is a blocking authenticated-link framing defect.
-
-### C3 — pool activation removes the registration/reply-path authority
-
-`ExploratoryPool::activate(slot)` currently removes the complete pool entry in order to transfer secret material.
-
-That makes an activated inbound tunnel disappear from `select_inbound_reply_path()` and from normal pool lifetime/duplicate/capacity bookkeeping.
-
-Correct invariant:
-
-```text
-EstablishedMaterial / LayerKeys transfer once to runtime role owner
-public registration + routing metadata remain in pool until expiry/failure/removal
-```
-
-A second activation must return `AlreadyActivated`, not `UnknownSlot`.
-
-This is a blocking ownership/lifetime defect.
-
-### C4 — NetDbSeam readiness is a caller-set boolean
-
-The first implementation can be forced to `LookupReadyForTunnelDispatch` with `set_outbound_role_available(true)` even if no usable outbound role exists.
-
-Correct readiness must derive from actual `DataPlaneRegistry` state at the supplied deterministic time.
-
-### C5 — Phase G is not executed
-
-The required terminal all-i2pr production-seam test has not yet proven:
-
-```text
-successful production short builds
- -> real EstablishedMaterial
- -> pool registration
- -> one-shot activation
- -> DataPlaneRegistry
- -> real lookup action
- -> outbound TunnelData
- -> inbound response TunnelData
- -> RouterInfo validation/store
- -> lookup Success
-```
-
-Several current tests directly fabricate `EstablishedTunnel` values. Those tests remain useful unit coverage but are not Phase G closure evidence.
-
-### C6 — Phase H is misclassified in the current first-pass documentation
-
-The first status pass incorrectly states that the pinned Emissary native mixed-router checkpoint requires the old Plan 046 rootless namespace or Multipass lane.
-
-That conclusion is superseded.
-
-Phase H is the temporary **in-process pinned Emissary native** checkpoint specified by Plan 117 and [`117-corrective-closure.md`](117-corrective-closure.md). It must not rebuild the historical NTCP2 harness.
-
-Use:
-
-```text
-repo     = eepnet/emissary
-revision = 9b43484a21d5a1291c4881cdae62a36c527f8c0f
-package  = emissary-core 0.4.0
-```
-
-with a temporary test-only reference patch whose SHA-256 is recorded before deletion.
-
-### C7 — authenticated transport remains a separate evidence level
-
-117-X may still be unavailable on this host. That does not invalidate successful 117-L or 117-N.
-
-Do not work on rootless namespaces, Multipass, Docker, VMs, or Python harnesses to change 117-X during this pass.
+Do not redo Phase G except as regression validation.
 
 ---
 
-## Corrective execution order
+## Prior Phase H evidence retained, but insufficient for closure
 
-Execute [`117-corrective-closure.md`](117-corrective-closure.md) in this order:
-
-```text
-117-C1  selected floodfill vs lookup-key routing identity
-117-C2  complete short-transport TunnelData framing
-117-C3  metadata-retaining one-shot pool activation
-117-C4  registry-derived readiness
-117-C5  focused A–F regressions
-117-G   terminal all-i2pr production-seam lookup/publication
-117-H   pinned in-process Emissary mixed-router lookup/publication
-117-I   authenticated transport classification only if an existing lane is runnable
-117-J   closure authority synchronization
-```
-
-Do not start Phase H before Phase G passes.
-
----
-
-## Validation evidence currently retained
-
-The first implementation recorded local checks at `0b2a487...`:
-
-```text
-cargo +1.95.0 fmt --all --check
-cargo +1.95.0 check --locked --workspace --all-targets
-cargo +1.95.0 test --locked --workspace
-cargo +1.95.0 test --locked -p i2pr-daemon --all-targets
-```
-
-Those checks demonstrate that the initial A–F code compiled and its then-current tests passed. They do **not** close the semantic defects above.
-
-No GitHub commit status checks were available for the audit floor through the connected GitHub status surface.
-
----
-
-## Closure gate
-
-Plan 117 remains open until the corrective plan's terminal acceptance criteria pass.
-
-Minimum closure labels:
-
-```text
-plan_117_corrective_routing          = passed
-plan_117_transport_framing           = passed-short-transport-tunneldata
-plan_117_activation_ownership        = passed-metadata-retained-secrets-once
-plan_117_runtime_readiness           = passed-registry-derived
-plan_117_local_composition           = passed-all-i2pr-production-seam-netdb
-plan_117_native_reference            = passed-emissary-mixed-router-netdb
-```
-
-Then classify 117-X separately.
-
-If authenticated transport is unavailable on the current host, the valid closure state is:
-
-```text
-plan_117_authenticated_transport     = deferred-host-lane-unavailable
-Q1_authenticated_transport           = deferred
-Q2_external_return_established       = deferred-or-not-proven-test-q2-bypass
-plan_117                             = local-native-complete-external-deferred
-milestone4b_authenticated_external   = blocked
-router_construction                  = may-continue
-```
-
-Do not advance to the next roadmap plan before 117-L and 117-N are both green.
-
----
-
-## Phase H record — pinned Emissary wire-format compatibility
-
-### Reference pin
+Reference pin:
 
 ```text
 repo     = https://github.com/eepnet/emissary.git
@@ -245,60 +113,195 @@ revision = 9b43484a21d5a1291c4881cdae62a36c527f8c0f
 package  = emissary-core 0.4.0
 ```
 
-### Patch digest (recorded before checkout deletion)
+Prior method:
 
 ```text
-i2pr-emissary-test/src/lib.rs     = 8106c7f11fc256cf4083c15bc1772045c7f4c949ea0f335fb2d75dcefda0d4ff
-i2pr-emissary-test/Cargo.toml     = 255c1b7c1e56b8bd84492416b3e040a83266ea8042d58a1d04820fd17429c597
-i2pr-emissary-test/Cargo.lock     = 4d5c0b512fe4b5459591ccd25779ee5ee295671a0f3fb7beb53dcc8599cdebf3
+external helper crate = i2pr-emissary-test
+emissary-core usage    = normal path dependency
 ```
 
-### Test matrix
-
-| Test | Result |
-| --- | --- |
-| `i2pr_router_lookup_is_consumed_by_emissary_native_parser` | passed |
-| `i2pr_leaseset_lookup_is_consumed_by_emissary_native_parser` | passed |
-| `i2pr_router_lookup_with_direct_reply_is_consumed_by_emissary_parser` | passed |
-| `i2pr_router_lookup_with_ignore_list_is_consumed_by_emissary_parser` | passed |
-| `i2pr_exploration_lookup_is_consumed_by_emissary_native_parser` | passed |
-| `i2pr_normal_lookup_is_consumed_by_emissary_native_parser` | passed |
-| `i2pr_full_database_lookup_message_is_consumed_by_emissary` | passed (full 16-byte I2NP envelope round-trip) |
-
-### Highest stage reached
+Prior highest stage:
 
 ```text
 h_emissary_database_lookup_parsed
 ```
 
-### Phase H strict attempt budget
+Prior valid label:
 
-| # | Step | Outcome |
-| --- | --- | --- |
-| 1 | baseline compile/test | 7 tests pass (path dep on i2pr-proto + emissary-core) |
-| 2 | narrow correction (strengthen envelope test) | 7 tests pass (full I2NP envelope round-trip added) |
-| 3 | confirmation run | 7 tests pass |
-| 4 | STOP | per plan §13.10 |
+```text
+passed-emissary-wire-format-compatibility
+```
 
-### What Phase H proved
+Prior test results:
 
-The i2pr encoder and Emissary's native parser are wire-format compatible across the four lookup types (Normal/LeaseSet/Router/Exploration), both reply types (Direct to router / Tunnel with reply tunnel ID), and both empty and populated exclude lists. The full 16-byte standard I2NP envelope round-trips through Emissary's `Message::parse_standard` parser with the payload extracting to byte equality with the i2pr-encoded payload.
+```text
+i2pr_router_lookup_is_consumed_by_emissary_native_parser              = passed
+i2pr_leaseset_lookup_is_consumed_by_emissary_native_parser            = passed
+i2pr_router_lookup_with_direct_reply_is_consumed_by_emissary_parser   = passed
+i2pr_router_lookup_with_ignore_list_is_consumed_by_emissary_parser    = passed
+i2pr_exploration_lookup_is_consumed_by_emissary_native_parser         = passed
+i2pr_normal_lookup_is_consumed_by_emissary_native_parser              = passed
+i2pr_full_database_lookup_message_is_consumed_by_emissary             = passed
+```
 
-### What Phase H did not prove
+Individual file digests retained by that attempt:
 
-The current Phase H result stops at the parser boundary. It does **not** exercise Emissary's native short-build handler, transit role, RTT through Emissary's floodfill NetDB, or the i2pr-side tunnel-build supervision. Those later stages (`h_emissary_ibgw_build_accepted` through `h_i2pr_lookup_success`) require a complete native mixed-router harness that was not constructed under Phase H's strict attempt budget.
+```text
+i2pr-emissary-test/src/lib.rs = 8106c7f11fc256cf4083c15bc1772045c7f4c949ea0f335fb2d75dcefda0d4ff
+i2pr-emissary-test/Cargo.toml = 255c1b7c1e56b8bd84492416b3e040a83266ea8042d58a1d04820fd17429c597
+i2pr-emissary-test/Cargo.lock = 4d5c0b512fe4b5459591ccd25779ee5ee295671a0f3fb7beb53dcc8599cdebf3
+```
 
-The closure label is therefore `passed-emissary-wire-format-compatibility`, not `passed-emissary-mixed-router-netdb`. This is a real, confirmed result, but it is not the full Phase H acceptance label.
-
-### Cleanup
-
-The temporary `/tmp/emissary-checkout/i2pr-emissary-test/` directory has been deleted. The patch digest above is the only retained reference. The Emissary clone at `/tmp/emissary-checkout/` was also deleted.
+These hashes are retained as historical evidence, but they are **not** the
+canonical final binary-patch SHA required by the terminal native pass.
 
 ---
 
-## Phase I record — authenticated transport lane unavailable
+## Research result: why the prior native attempt stopped early
 
-The current host is the Plan 046 `apparmor_restrict_on` negative baseline. The constrained-host execution lane (Plan 077) and the Multipass recovery lane (Plan 048/049) cannot complete a TCP authentication probe on this host. Per plan §14.3, the valid Phase I closure is:
+The blocker was the **placement of the reference test**.
+
+Pinned Emissary declares its key native harness under `#[cfg(test)]` inside
+`emissary-core`:
+
+```text
+emissary-core/src/tunnel/tests/mod.rs
+    TestTransitTunnelManager
+    make_router
+    connect_routers
+    build_outbound_tunnel
+    build_inbound_tunnel
+
+emissary-core/src/tunnel/pool/handle.rs
+    TunnelPoolHandle::create
+
+emissary-core/src/tunnel/mod.rs
+    #[cfg(test)] mod tests
+    #[cfg(test)] exports for GarlicHandler / TunnelMessage
+```
+
+A separate path-dependency crate does not compile dependency code with the
+dependency's `cfg(test)` enabled. It therefore could use Emissary's public I2NP
+parser, but not the intended native tunnel test machinery.
+
+The pinned source itself provides the required in-process production seams:
+
+```text
+TransitTunnelManager::handle_short_tunnel_build
+native IBGW / Participant / OBEP transit roles
+SubsystemManager message/tunnel routing
+OBEP TunnelData decrypt/checksum/fragment/I2NP processing
+native floodfill DatabaseLookup handling
+native floodfill RouterInfo DatabaseStore handling
+IBGW TunnelGateway -> TunnelData
+Participant TunnelData forwarding
+```
+
+No reference switch and no host/network workaround are justified by the source.
+
+Correct method:
+
+```text
+temporary pinned Emissary checkout
+ -> add i2pr crates as emissary-core dev-dependencies
+ -> add one test inside emissary-core/src/tunnel/tests/
+ -> compile `cargo test -p emissary-core --lib ...`
+ -> use native #[cfg(test)] harness + production handlers
+```
+
+See [`117-terminal-native-reference-correction.md`](117-terminal-native-reference-correction.md).
+
+---
+
+## Current required native path
+
+The terminal test must prove:
+
+```text
+i2pr outbound short build
+ -> Emissary native OBEP admission
+ -> i2pr outbound Established via explicit test-only pre-Garlic Q2 reply boundary
+
+and
+
+i2pr inbound short build
+ -> Emissary native IBGW admission
+ -> Emissary native Participant admission
+ -> i2pr inbound Established
+
+then
+
+i2pr RouterInfo publication
+ -> corrected i2pr outbound TunnelData
+ -> Emissary production OBEP
+ -> Emissary native floodfill accepts RouterInfo K
+
+then
+
+i2pr DatabaseLookup(K), selected peer F
+ -> corrected i2pr outbound TunnelData
+ -> Emissary production OBEP
+ -> native Emissary floodfill lookup
+ -> native TunnelDeliveryViaRoute(I, inbound_tunnel) observed
+ -> Emissary native IBGW
+ -> Emissary native Participant
+ -> final TunnelData to i2pr endpoint
+ -> DatabaseStore(K)
+ -> i2pr validation/store
+ -> i2pr lookup Success
+```
+
+The native floodfill's own outbound exploratory tunnel is **not** required for
+this checkpoint. The test may observe its native `TunnelDeliveryViaRoute` and
+begin the native inbound transit path at the corresponding TunnelGateway. This
+keeps the test focused on i2pr interoperability rather than testing an Emissary
+creator-side tunnel pool against itself.
+
+The boundary must be recorded explicitly.
+
+---
+
+## Native closure gate
+
+Plan 117 remains open until:
+
+```text
+plan_117_h_native_reference = passed-emissary-mixed-router-netdb
+```
+
+Minimum native evidence:
+
+```text
+native Emissary OBEP short-build admission                = passed
+native Emissary IBGW short-build admission                = passed
+native Emissary Participant short-build admission         = passed
+native Emissary OBEP TunnelData processing                = passed
+native Emissary floodfill RouterInfo publication          = passed
+native Emissary floodfill DatabaseLookup                  = passed
+native floodfill reply router/tunnel decision             = passed
+native Emissary IBGW return                               = passed
+native Emissary Participant return                        = passed
+i2pr DatabaseStore recovery                               = passed
+i2pr RouterInfo validation/store                          = passed
+i2pr lookup Success                                       = passed
+publication read-after-write observation                  = passed-preferred
+final temporary binary patch SHA-256                      = recorded-before-deletion
+```
+
+The outbound build-reply test seam may capture the already-native transformed
+raw reply immediately before Emissary's Garlic wrapping. If used:
+
+```text
+Q2_external_return_established = not-proven-test-q2-bypass
+```
+
+Do not implement general garlic in Plan 117.
+
+---
+
+## Phase I remains separately deferred
+
+Current host classification remains:
 
 ```text
 117-X = deferred-host-lane-unavailable
@@ -306,23 +309,43 @@ Q1_authenticated_transport = deferred
 Q2_external_return_established = deferred
 ```
 
-This is a valid Plan 117 local/native closure outcome. No rootless namespace, Multipass, Docker, VM, or Python-harness engineering is invoked to change this classification.
+Do not rebuild namespaces, Multipass, Docker, VMs, or Python harnesses to change
+this status.
+
+A successful 117-N with 117-X still deferred is an accepted Plan 117 product
+closure state.
 
 ---
 
-## Phase J record — closure authority synchronized
+## Expected final success state
 
-The following documents have been synchronized to the corrective closure state:
+After the terminal native pass succeeds:
 
 ```text
-plans/117-status.md                                       = updated (this file)
-plans/117-handoff.md                                      = updated
-plans/115-117-external-delivery-to-live-netdb-roadmap.md  = updated
-AGENTS.md                                                 = updated
-README.md                                                 = updated
-docs/architecture/i2pr-daemon.md                          = updated
-docs/architecture/i2pr-netdb.md                           = updated
-specs/support.toml                                        = updated
+plan_117_c1_routing                   = passed
+plan_117_c2_transport_framing         = passed-short-transport-tunneldata
+plan_117_c3_activation_ownership      = passed-metadata-retained-secrets-once
+plan_117_c4_runtime_readiness         = passed-registry-derived
+plan_117_g_local_production_seam      = passed-all-i2pr-production-seam-netdb
+plan_117_h_native_reference           = passed-emissary-mixed-router-netdb
+plan_117_h_q2_build_return            = not-proven-test-q2-bypass
+plan_117_h_floodfill_response_route   = native-TunnelDeliveryViaRoute-observed
+plan_117_i_authenticated_transport    = deferred-host-lane-unavailable
+Q1_authenticated_transport            = deferred
+Q2_external_return_established        = deferred
+plan_117                              = local-native-complete-external-deferred
+milestone4b_authenticated_external    = blocked
+router_construction                   = may-continue
+normal_daemon_ntcp2                   = disabled-and-unenableable
+ntcp2                                 = experimental-non-advertised
 ```
 
-The stale claim that the pinned Emissary native mixed-router checkpoint requires rootless/Multipass has been removed. The Phase H corrected execution path is in-process path-dep on `i2pr-proto` + `emissary-core`, no namespace, no Multipass, no Docker.
+At that point the next router-construction plan is **not** blocked on the
+unavailable authenticated transport lane. The external evidence gap remains
+tracked separately.
+
+Until then:
+
+```text
+next_roadmap_plan = blocked-on-plan117-native-terminal-pass
+```
