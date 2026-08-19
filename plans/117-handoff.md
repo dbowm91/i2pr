@@ -1,13 +1,13 @@
 # Plan 117 handoff — terminal native-reference correction
 
-- Status: **ready-for-terminal-native-reference-correction**
-- Date: 2026-08-18
-- Execute now: [`117-terminal-native-reference-correction.md`](117-terminal-native-reference-correction.md)
+- Status: **native-reference-terminal-pending**
+- Date: 2026-08-19
+- Next decision: resolve the pinned Emissary native reply-layout defect or select a corrected pinned revision.
 - Status authority: [`117-status.md`](117-status.md)
 - Original plan: [`117-live-exploratory-netdb-integration.md`](117-live-exploratory-netdb-integration.md)
 - Prior corrective pass: [`117-corrective-closure.md`](117-corrective-closure.md)
 - Predecessor Plan 116: **closed**
-- Current implementation floor: `b7e12e09d84089b5459d29aa962d01a963554b29`
+- Pre-correction source commit: `2c764ab6263e2407dbb62a0a767b58b5f5bb44e8`
 - Pinned independent reference: `eepnet/emissary@9b43484a21d5a1291c4881cdae62a36c527f8c0f`, `emissary-core 0.4.0`
 
 ## Start here
@@ -35,6 +35,18 @@ highest stage = h_emissary_database_lookup_parsed
 ```
 
 is valid parser evidence but **not** `117-N` closure.
+
+## Terminal correction result
+
+The corrected test was compiled inside the pinned `emissary-core` test build,
+not as a path-dependency helper. It reached native Emissary OBEP admission,
+registered the live role, returned a 4-record/873-byte pre-Garlic reply, and
+opened that reply's AEAD with i2pr-derived context. Strict i2pr reply decoding
+then rejected the authenticated plaintext because the pinned Emissary handler
+leaves the request envelope prefix in the reply body rather than emitting the
+normative reply Mapping at offset zero. Publication, lookup, and inbound
+return stages were therefore not reached. The result is recorded in
+[`117-status.md`](117-status.md); no parser relaxation was made.
 
 ---
 
@@ -454,5 +466,7 @@ transport lane once the local + native Plan 117 evidence is green.
 Until 117-N passes:
 
 ```text
+plan_117_native_reference = blocked-emissary-native-reply-layout
+plan_117                  = native-reference-terminal-pending
 next_router_construction_plan = blocked-on-plan117-native-terminal-pass
 ```

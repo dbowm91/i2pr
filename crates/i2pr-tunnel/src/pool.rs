@@ -1214,15 +1214,17 @@ mod tests {
         let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
         let slot = register_real_inbound(&mut pool, 0x1600, 0x907);
         let activated = pool.activate(slot).expect("activate");
-        let local_receive = activated.local_inbound_receive();
         let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
         registry
-            .activate_inbound(activated, 16, 4096, 60_000, 0, 60_000)
+            .activate_inbound(slot, activated, 16, 4096, 60_000, 0, 60_000)
             .expect("registry activate");
         assert_eq!(registry.inbound_len(), 1);
         let _ = pool.mark_failed(slot);
-        let removed = registry.remove_inbound(local_receive);
-        assert!(removed.is_some());
+        let removed = registry.remove_slot(slot);
+        assert!(matches!(
+            removed,
+            crate::data_plane_registry::RegistryRemoval::Inbound(_)
+        ));
         assert_eq!(registry.inbound_len(), 0);
     }
 

@@ -1,5 +1,12 @@
 # Protocol support matrix
 
+Current Plan 117 override (2026-08-19): local Phase G remains passed; the
+corrected in-tree Emissary test reaches native OBEP admission and reply AEAD
+opening, then rejects the pinned reference's request-prefixed reply during
+strict i2pr Mapping decoding. Native mixed-router NetDB evidence is not
+claimed; see [`plans/117-status.md`](../plans/117-status.md). The historical
+row text below is retained for auditability.
+
 This matrix is intentionally explicit: every row describes the exact evidence
 available, not just code presence. “Experimental structural subset” means
 bounded codecs exist and are tested locally, but no mixed-router interoperability

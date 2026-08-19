@@ -2,13 +2,13 @@
 
 ## Current status
 
-- Date: 2026-08-18.
+- Date: 2026-08-19.
 - Parent roadmap: [`000-mvp-roadmap.md`](000-mvp-roadmap.md).
 - Plan 115 independent native short-build Q0: **passed**.
 - Plan 116 local TunnelData data plane: **passed-final-local-closure**.
 - Plan 117 local production composition: **passed through Phase G**.
 - Plan 117 parser compatibility with pinned Emissary: **passed**.
-- Plan 117 full native reference composition: **terminal correction pending**.
+- Plan 117 full native reference composition: **blocked at pinned Emissary reply layout**.
 - Plan 117 authenticated transport: **deferred-host-lane-unavailable**.
 - Current Plan 117 execution file:
   [`117-terminal-native-reference-correction.md`](117-terminal-native-reference-correction.md).
@@ -27,20 +27,26 @@ plan_117_c3_activation_ownership      = passed-metadata-retained-secrets-once
 plan_117_c4_runtime_readiness         = passed-registry-derived
 plan_117_g_local_production_seam      = passed-all-i2pr-production-seam-netdb
 plan_117_h_parser_compatibility       = passed-emissary-wire-format-compatibility
-plan_117_h_native_reference           = pending-corrected-in-tree-emissary-test
+plan_117_h_native_reference           = blocked-emissary-native-reply-layout
 plan_117_i_authenticated_transport    = deferred-host-lane-unavailable
-plan_117                              = terminal-native-reference-correction-pending
+plan_117                              = native-reference-terminal-pending
 Q1_authenticated_transport            = deferred
 Q2_external_return_established        = deferred
 normal_daemon_ntcp2                   = disabled-and-unenableable
 ntcp2                                 = experimental-non-advertised
-router_construction                   = hold-on-plan117-native-terminal-pass
+router_construction                   = hold-on-one-native-reference-decision
 ```
 
 This roadmap continues to separate local router functionality, native
 cross-implementation evidence, and authenticated external transport. Host
 limitations may defer the last category; they must not repeatedly block
 unrelated router construction after the first two are green.
+
+The corrected in-tree Emissary test reached native OBEP admission and reply
+AEAD opening, but strict i2pr reply decoding rejected the pinned reference's
+request-prefixed reply plaintext. The failure is recorded in
+[`117-status.md`](117-status.md); parser-only compatibility remains historical
+evidence and is not promoted to native mixed-router evidence.
 
 ---
 

@@ -334,20 +334,23 @@ without allocating role state. The recovered envelope ceiling is
 `route_database_search_reply` drive the Plan 105 ingestion
 helpers.
 
-### Plan 117 closure status
+### Plan 117 status
 
-Plan 117 corrective closure lands at commit
-`9fdfc1038f5cd018ad7a69d06fcc10400406f604` and closes as
-`local-native-complete-external-deferred`. The Phase G all-i2pr
-production-seam trajectory test drives real `EstablishedMaterial`
-through the canonical `TunnelEntry` / `EstablishedTunnel` pool and
-exercises both lookup success, wrong-target rejection,
-`DatabaseSearchReply` iteration, and publication. The Phase H
-Emissary wire-format compatibility test achieves
-`passed-emissary-wire-format-compatibility` against pinned Emissary
-revision `9b43484a21d5a1291c4881cdae62a36c527f8c0f` (`emissary-core
-0.4.0`) at stage `h_emissary_database_lookup_parsed`. Phase I
-authenticated transport is `deferred-host-lane-unavailable` on this
+Plan 117's all-i2pr Phase G production-seam trajectory remains passed: it
+drives real `EstablishedMaterial` through the canonical
+`TunnelEntry` / `EstablishedTunnel` pool and exercises lookup success,
+wrong-target rejection, `DatabaseSearchReply` iteration, and publication.
+The historical Phase H Emissary parser result remains
+`passed-emissary-wire-format-compatibility` at
+`h_emissary_database_lookup_parsed` against pinned Emissary revision
+`9b43484a21d5a1291c4881cdae62a36c527f8c0f` (`emissary-core 0.4.0`).
+
+The corrected native test now belongs to `emissary-core`'s own `#[cfg(test)]`
+build and reaches native OBEP admission plus reply AEAD opening, but strict
+i2pr reply Mapping decoding rejects the pinned reference's request-prefixed
+reply plaintext. Native publication, lookup, and inbound return evidence is
+not claimed; see [`plans/117-status.md`](../../plans/117-status.md). Phase I
+authenticated transport remains `deferred-host-lane-unavailable` on this
 host.
 
 ### Which crates are wired in today

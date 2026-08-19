@@ -1863,6 +1863,16 @@ checkpoint. Plans 103–113 have completed the local foundation and
 short-build correction sequence; this checkpoint is not a normal-daemon
 NTCP2 activation or a generic interoperability-harness restart.
 
+Plan 117's terminal native-reference correction is a separate bounded
+qualification step. Its temporary pinned Emissary checkout compiles the test
+inside `emissary-core`'s own `#[cfg(test)]` build and may use only test/dev
+dependencies plus a test-only pre-Garlic observer. The current attempt reaches
+native OBEP admission and reply AEAD opening, then rejects the pinned
+reference's request-prefixed reply during strict i2pr Mapping decoding. The
+result is `native-reference-terminal-pending`; parser compatibility and the
+local Phase G composition are retained but are not promoted to mixed-router
+NetDB evidence. See [`plans/117-status.md`](../../plans/117-status.md).
+
 ## Plan 115 Emissary Q0 construction + native OBEP reply
 
 Plan 115 Emissary Q0 construction + native OBEP reply has passed

@@ -988,7 +988,15 @@ mod plan117_phase_e {
         let cell = drive_chain_to_endpoint_cell(&tunnel, envelope_bytes.clone(), 0xFEED);
         let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(2, 2));
         registry
-            .activate_inbound(tunnel, 16, 1 << 20, 60_000, 0, 60_000)
+            .activate_inbound(
+                i2pr_tunnel::pool::TunnelSlot::from_raw(1),
+                tunnel,
+                16,
+                1 << 20,
+                60_000,
+                0,
+                60_000,
+            )
             .expect("activate inbound");
         let outcome = dispatch_inbound_tunnel_data(&mut registry, &cell, 0).expect("dispatch");
         assert!(matches!(
@@ -1026,7 +1034,15 @@ mod plan117_phase_e {
         let cell = drive_chain_to_endpoint_cell(&tunnel, envelope_bytes.clone(), 0xFACE);
         let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(2, 2));
         registry
-            .activate_inbound(tunnel, 16, 1 << 20, 60_000, 0, 60_000)
+            .activate_inbound(
+                i2pr_tunnel::pool::TunnelSlot::from_raw(1),
+                tunnel,
+                16,
+                1 << 20,
+                60_000,
+                0,
+                60_000,
+            )
             .expect("activate inbound");
         let outcome = dispatch_inbound_tunnel_data(&mut registry, &cell, 0).expect("dispatch");
         assert!(matches!(
@@ -1056,7 +1072,15 @@ mod plan117_phase_e {
         let cell = drive_chain_to_endpoint_cell(&tunnel, envelope_bytes.clone(), 0xBEEF);
         let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(2, 2));
         registry
-            .activate_inbound(tunnel, 16, 1 << 20, 60_000, 0, 60_000)
+            .activate_inbound(
+                i2pr_tunnel::pool::TunnelSlot::from_raw(1),
+                tunnel,
+                16,
+                1 << 20,
+                60_000,
+                0,
+                60_000,
+            )
             .expect("activate inbound");
         let outcome = dispatch_inbound_tunnel_data(&mut registry, &cell, 0).expect("dispatch");
         assert!(matches!(
@@ -1084,7 +1108,15 @@ mod plan117_phase_e {
         let (local_receive, tunnel) = build_inbound_established(0x1000, 0x904);
         let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(2, 2));
         registry
-            .activate_inbound(tunnel, 16, 1 << 20, 60_000, 0, 60_000)
+            .activate_inbound(
+                i2pr_tunnel::pool::TunnelSlot::from_raw(1),
+                tunnel,
+                16,
+                1 << 20,
+                60_000,
+                0,
+                60_000,
+            )
             .expect("activate inbound");
         let followup = TunnelDataMessage {
             tunnel_id: local_receive.get(),
@@ -1574,7 +1606,7 @@ mod plan117_phase_g {
             .activate_outbound(outbound_slot, outbound_tunnel, 60_000)
             .expect("registry outbound");
         registry
-            .activate_inbound(inbound_tunnel, 16, 1 << 20, 60_000, 0, 60_000)
+            .activate_inbound(inbound_slot, inbound_tunnel, 16, 1 << 20, 60_000, 0, 60_000)
             .expect("registry inbound");
 
         let path_after = pool
@@ -1829,7 +1861,7 @@ mod plan117_phase_g {
             .activate_outbound(outbound_slot, outbound_tunnel, 60_000)
             .expect("registry outbound");
         registry
-            .activate_inbound(inbound_tunnel, 16, 1 << 20, 60_000, 0, 60_000)
+            .activate_inbound(inbound_slot, inbound_tunnel, 16, 1 << 20, 60_000, 0, 60_000)
             .expect("registry inbound");
 
         let target_bundle = make_bundle(0x901);
@@ -1969,7 +2001,7 @@ mod plan117_phase_g {
 
         let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
         registry
-            .activate_inbound(inbound_tunnel, 16, 1 << 20, 60_000, 0, 60_000)
+            .activate_inbound(inbound_slot, inbound_tunnel, 16, 1 << 20, 60_000, 0, 60_000)
             .expect("registry inbound");
 
         let target_bundle = make_bundle(0xA01);
@@ -2046,7 +2078,7 @@ mod plan117_phase_g {
             .activate_outbound(outbound_slot, outbound_tunnel, 60_000)
             .expect("registry outbound");
         registry
-            .activate_inbound(inbound_tunnel, 16, 1 << 20, 60_000, 0, 60_000)
+            .activate_inbound(inbound_slot, inbound_tunnel, 16, 1 << 20, 60_000, 0, 60_000)
             .expect("registry inbound");
 
         let routing = pool.routing(inbound_slot).expect("routing");

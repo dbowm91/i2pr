@@ -39,6 +39,28 @@ transport delivery) and Q2 (reply round-trip to `Established`)
 remain pending. The full Plan 115-117 acceptance
 (Q0 + Q1 + Q2 + qualified external delivery) is not yet complete.
 
+## Plan 117 terminal native-reference correction
+
+Plan 117's local Phase G production composition remains passed, and its
+`DataPlaneRegistry` now binds inbound roles to both `TunnelSlot` and local
+receive `TunnelId`. `remove_slot(slot)` removes outbound or inbound roles and
+all reverse metadata atomically without cloning `LayerKeys`.
+
+The corrected reference attempt must use a fresh temporary checkout of
+`eepnet/emissary@9b43484a21d5a1291c4881cdae62a36c527f8c0f` and place its test
+inside `emissary-core`'s own `#[cfg(test)]` build. Only temporary dev-deps and
+a narrow test-only pre-Garlic reply observer are permitted; do not add a
+permanent Emissary adapter, sockets, namespaces, or a normal-daemon transport
+path. The current attempt reaches native OBEP admission and opens the reply
+AEAD with i2pr-derived context, but strict i2pr Mapping decoding rejects the
+pinned reference's request-prefixed reply plaintext. Record this as
+`plan_117 = native-reference-terminal-pending` and
+`plan_117_h_native_reference = blocked-emissary-native-reply-layout`; do not
+relax the parser or promote parser-only evidence to native mixed-router NetDB
+evidence. Publication, lookup, and inbound return stages remain unproven.
+The authenticated transport lane remains separately deferred and NTCP2 stays
+experimental/non-advertised. Authority: `plans/117-status.md`.
+
 The inbound creator identity is explicit at the `ShortBuildPath` boundary;
 the first remote hop is `InboundGateway`, later remote hops are `Participant`,
 and the creator verifies the originator fake after reply processing. The

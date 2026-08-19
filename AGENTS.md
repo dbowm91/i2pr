@@ -2160,19 +2160,22 @@ tests and zero `Plan 116 provisional scaffolding` `#[ignore]`
 markers). The Plan 116 integration tests under
  `crates/i2pr-tunnel/tests/plan111_reference_vectors.rs` add 5
  passing reference-vector assertions (245 total tests across all
- targets). Plan 117 is unblocked and may begin once a qualified
- external delivery lane becomes available. Status authority lives
- in [`plans/116-status.md`](plans/116-status.md).
+ targets). Plan 117's local Phase G composition is retained, but its
+ corrected native-reference test is pending a decision on the pinned
+ Emissary reply-layout defect. Status authority lives in
+ [`plans/117-status.md`](plans/117-status.md).
 
-## Plan 117 exploratory NetDB composition (closed)
+## Plan 117 exploratory NetDB composition (native reference pending)
 
-Plan 117 is the closed Milestone 5 implementation plan that lands
+Plan 117 is the Milestone 5 implementation plan that lands
 the local composition between the Plan 116 exploratory tunnel
 substrate and the Plan 105/106 NetDB state machines.
 
 The Plan 117 status authority is [`plans/117-status.md`](plans/117-status.md).
-The current state is `local-native-complete-external-deferred` at commit
-`9fdfc1038f5cd018ad7a69d06fcc10400406f604` (corrective closure commit).
+The current state is `native-reference-terminal-pending` after the corrected
+in-tree Emissary attempt. The pre-correction source commit was
+`2c764ab6263e2407dbb62a0a767b58b5f5bb44e8`; authority is
+[`plans/117-status.md`](plans/117-status.md).
 
 The corrective closure plan [`plans/117-corrective-closure.md`](plans/117-corrective-closure.md)
 corrected the four routing/framing/activation/readiness defects (C1–C4)
@@ -2186,14 +2189,14 @@ and ran the terminal closure checkpoints (G, H, I, J):
   trajectory using real `EstablishedMaterial` derived from successful
   short-build paths through the canonical `TunnelEntry` / `EstablishedTunnel`
   pool (`crates/i2pr-daemon/tests/netdb_integration.rs` `mod plan117_phase_g`).
-- **Phase H**: pinned Emissary wire-format compatibility via a temporary
-  path-dep test crate (`i2pr-emissary-test`) using `i2pr-proto` +
-  `emissary-core` (`9b43484a21d5a1291c4881cdae62a36c527f8c0f`). All 7 tests
-  pass through the full 16-byte standard I2NP envelope round-trip. Stage
-  reached: `h_emissary_database_lookup_parsed`. Highest label achieved:
-  `passed-emissary-wire-format-compatibility`. The full
-  `passed-emissary-mixed-router-netdb` label was not attempted under the
-  plan's strict 3-attempt budget.
+- **Phase H**: historical parser compatibility remains
+  `passed-emissary-wire-format-compatibility` at
+  `h_emissary_database_lookup_parsed`. The corrected temporary test now runs
+  inside pinned `emissary-core`'s own `#[cfg(test)]` build and reaches native
+  OBEP admission plus reply AEAD opening, but strict i2pr reply Mapping
+  decoding rejects the pinned reference's request-prefixed reply plaintext.
+  Native publication, lookup, and inbound return evidence is therefore not
+  claimed; do not relax the i2pr parser to accept that reference-side layout.
 - **Phase I**: authenticated transport lane is
   `deferred-host-lane-unavailable` — the host is the Plan 046
   `apparmor_restrict_on` negative baseline; the constrained-host lane
@@ -2210,14 +2213,14 @@ public-network socket, and never advertises a tunnel. The
 production transport adapter still owns the NTCP2/SSU2 surface; no
 new transport code lands in Plan 117.
 
-Roadmap next steps after Plan 117 closure:
+Roadmap next steps after the Plan 117 native-reference decision:
 
 - A future narrow qualified external-delivery checkpoint that selects the
   smallest available qualified delivery lane and runs the four Plan 045
   primary directions through the corrected production composition.
-- The current `local-native-complete-external-deferred` status is the
-  intended anti-loop outcome; it does not block subsequent router
-  construction work.
+- The current `native-reference-terminal-pending` status keeps the native
+  criterion visible and does not promote parser-only or reference-only
+  results to interoperability evidence.
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
 
@@ -3572,7 +3575,12 @@ with `inbound_short_build = locally-reference-compatible` and
 `production_i2np_bridge = locally-conformant-no-double-prefix`
 and `independent_short_build = passed-emissary-q0-native-consumer`.
 After the Plan 116 terminal cleanup pass, the local tunnel data
-plane is `passed-final-local-closure` and Plan 117 is unblocked.
+plane is `passed-final-local-closure`. Plan 117 is currently
+`native-reference-terminal-pending`: the in-tree pinned Emissary
+test reaches native OBEP admission and reply AEAD opening, then
+rejects the reference-side request-prefixed reply during strict
+i2pr Mapping decoding. Parser-only compatibility is not native
+interoperability evidence.
 A direct `DatabaseLookup` over NTCP2 is not accepted as a
 substitute for the standard exploratory-tunnel path. The next
 executable step is a future narrow qualified external-delivery

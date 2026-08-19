@@ -590,6 +590,22 @@ calls `CreatorReplyPostprocessor::process_reply`. The registrar
 ([`short_state`](src/short_state.rs)) admits only `Established`
 outcomes.
 
+## Plan 117 activated-role lifecycle
+
+`DataPlaneRegistry` keeps outbound roles keyed by `TunnelSlot` and binds each
+activated inbound role to both its `TunnelSlot` and local receive `TunnelId`.
+The bounded reverse maps let pool expiry/failure reports call
+`remove_slot(slot)` for either direction; removal clears role, routing
+metadata, and both reverse indexes atomically. `RegistryRemoval` is a typed
+consumed-role result, and no `LayerKeys` clone is introduced. Duplicate slot
+and receive-id activation remains fail-closed.
+
+Plan 117's corrected native reference attempt is documented as pending: the
+pinned Emissary test reaches native OBEP admission and reply AEAD opening but
+its request-prefixed reply is rejected by i2pr's strict Mapping decoder. This
+does not change the local wire model or promote parser-only evidence to native
+interoperability.
+
 ## Out of scope (next plans)
 
 - live mixed-router tunnel build execution against Java I2P and i2pd;

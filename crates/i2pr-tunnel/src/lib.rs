@@ -105,7 +105,9 @@ pub use data::{
     MAX_PLAINTEXT_DATA_BYTES, MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES, TunnelMessageBuilder,
     TunnelMessageError, TunnelMessageParser, TunnelPayloadHeader,
 };
-pub use data_plane_registry::{DataPlaneCapacity, DataPlaneRegistry, RegistryError};
+pub use data_plane_registry::{
+    DataPlaneCapacity, DataPlaneRegistry, RegistryError, RegistryRemoval,
+};
 pub use established::{
     EstablishedHop, EstablishedMaterial, EstablishedNextHop, EstablishedRole, EstablishedTunnel,
     EstablishedTunnelError, zero_id, zero_peer,

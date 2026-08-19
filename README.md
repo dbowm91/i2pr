@@ -99,8 +99,8 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
   and the fragmented cases, including the out-of-order
   fragmented trajectory (`T3`) (`i2pr-tunnel`; see
   [`plans/116-status.md`](plans/116-status.md))
-- Plan 117 exploratory NetDB composition (closed):
-   `local-native-complete-external-deferred`. Phases A–F land
+- Plan 117 exploratory NetDB composition (local Phase G passed;
+  native reference terminal pending): Phases A–F land
    the typed `DatabaseLookupMessage` and `DatabaseStoreMessage`
    carriers on `LookupAction` and `PublicationAttemptRecord`,
    the metadata-retaining one-shot `ExploratoryPool::activate`
@@ -118,11 +118,13 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
    trajectory with real `EstablishedMaterial` (Phase G),
    achieved `passed-emissary-wire-format-compatibility` against
    pinned Emissary revision
-   `9b43484a21d5a1291c4881cdae62a36c527f8c0f` (Phase H),
-   classified Phase I as
-   `deferred-host-lane-unavailable`, and synchronized the closure
-   authority across `README.md`, `AGENTS.md`, and the
-   architecture docs (Phase J).
+   `9b43484a21d5a1291c4881cdae62a36c527f8c0f` (historical parser
+   evidence). The corrected in-tree native test reaches Emissary
+   OBEP admission and reply AEAD opening but rejects the pinned
+   reference's request-prefixed reply plaintext during strict i2pr
+   Mapping decoding, so native publication/lookup evidence is not
+   claimed. Phase I remains `deferred-host-lane-unavailable`; see
+   [`plans/117-status.md`](plans/117-status.md).
  - Multi-record short tunnel-build construction: randomized slot
   allocation, originator + padding fake records, raw ChaCha20
   preprocessing/postprocessing (slot byte at offset 4 of the

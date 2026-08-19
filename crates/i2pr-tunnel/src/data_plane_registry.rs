@@ -4,7 +4,7 @@
 //!
 //! - one outbound slot per [`TunnelSlot`] maps to one
 //!   [`OutboundGatewayRole`];
-//! - one local receive tunnel id maps to one
+//! - one inbound [`TunnelSlot`] maps to one local receive tunnel id and
 //!   [`LocalInboundEndpointRole`].
 //!
 //! The registry holds secret material exclusively inside the role
@@ -58,6 +58,8 @@ pub enum RegistryError {
     /// The supplied local receive tunnel id is already bound to an
     /// inbound role.
     DuplicateInbound(TunnelId),
+    /// The supplied pool slot is already bound to an inbound role.
+    DuplicateInboundSlot(TunnelSlot),
     /// The supplied tunnel direction does not match the registry
     /// entry. The caller must activate outbound tunnels in the
     /// outbound map and inbound tunnels in the inbound map.
@@ -75,6 +77,9 @@ impl std::fmt::Display for RegistryError {
             Self::DuplicateInbound(id) => {
                 write!(formatter, "inbound receive tunnel {id} is already bound")
             }
+            Self::DuplicateInboundSlot(slot) => {
+                write!(formatter, "inbound slot {slot} is already bound")
+            }
             Self::DirectionMismatch => {
                 formatter.write_str("tunnel direction does not match registry entry")
             }
@@ -83,6 +88,17 @@ impl std::fmt::Display for RegistryError {
 }
 
 impl std::error::Error for RegistryError {}
+
+/// Role removed by a pool-slot lifecycle event.
+#[derive(Debug)]
+pub enum RegistryRemoval {
+    /// An outbound role was removed.
+    Outbound(OutboundGatewayRole),
+    /// An inbound role and its reverse metadata were removed.
+    Inbound(LocalInboundEndpointRole),
+    /// The slot was not present in the registry.
+    Unknown(TunnelSlot),
+}
 
 /// Bounded runtime-side registry for activated local roles. The
 /// registry keeps the public registration metadata of the pool so
@@ -103,6 +119,14 @@ pub struct DataPlaneRegistry {
     /// activation so the registry can serve reply-path selection
     /// without cloning the role's secret material.
     inbound_first_hop: BTreeMap<TunnelId, i2pr_proto::Hash>,
+    /// Reverse mapping from the pool's canonical inbound slot to the
+    /// local receive tunnel id. Pool expiry/failure reports slots, so
+    /// this mapping keeps lifecycle cleanup independent of an
+    /// out-of-band receive-id copy.
+    inbound_slot_to_receive: BTreeMap<TunnelSlot, TunnelId>,
+    /// Reverse mapping used to remove all inbound metadata atomically
+    /// when callers still have the local receive id.
+    inbound_receive_to_slot: BTreeMap<TunnelId, TunnelSlot>,
 }
 
 impl DataPlaneRegistry {
@@ -116,6 +140,8 @@ impl DataPlaneRegistry {
             inbound: BTreeMap::new(),
             outbound_first_hop: BTreeMap::new(),
             inbound_first_hop: BTreeMap::new(),
+            inbound_slot_to_receive: BTreeMap::new(),
+            inbound_receive_to_slot: BTreeMap::new(),
         }
     }
 
@@ -162,10 +188,12 @@ impl DataPlaneRegistry {
     }
 
     /// Activates an established inbound tunnel and binds it to
-    /// the local inbound receive tunnel id. Returns the role the
-    /// data plane can consume.
+    /// the supplied pool slot and local inbound receive tunnel id.
+    /// Returns the role the data plane can consume.
+    #[allow(clippy::too_many_arguments)]
     pub fn activate_inbound(
         &mut self,
+        slot: TunnelSlot,
         established: EstablishedTunnel,
         reassembler_capacity: usize,
         reassembler_aggregate_bytes: usize,
@@ -175,6 +203,9 @@ impl DataPlaneRegistry {
     ) -> Result<&LocalInboundEndpointRole, RegistryError> {
         if established.direction() != crate::identity::TunnelDirection::Inbound {
             return Err(RegistryError::DirectionMismatch);
+        }
+        if self.inbound_slot_to_receive.contains_key(&slot) || self.outbound.contains_key(&slot) {
+            return Err(RegistryError::DuplicateInboundSlot(slot));
         }
         let local_receive = established.local_inbound_receive();
         if self.inbound.contains_key(&local_receive) {
@@ -193,6 +224,8 @@ impl DataPlaneRegistry {
             expires_at_ms,
         );
         self.inbound_first_hop.insert(local_receive, ibgw_router);
+        self.inbound_slot_to_receive.insert(slot, local_receive);
+        self.inbound_receive_to_slot.insert(local_receive, slot);
         self.inbound.insert(local_receive, role);
         Ok(self.inbound.get(&local_receive).expect("just inserted"))
     }
@@ -203,6 +236,12 @@ impl DataPlaneRegistry {
     /// `ReplyPath` tokens without retaining secret material.
     pub fn inbound_first_hop(&self, local_receive: TunnelId) -> Option<i2pr_proto::Hash> {
         self.inbound_first_hop.get(&local_receive).copied()
+    }
+
+    /// Returns the pool slot bound to the supplied local receive
+    /// tunnel id, when the inbound role is registered.
+    pub fn inbound_slot(&self, local_receive: TunnelId) -> Option<TunnelSlot> {
+        self.inbound_receive_to_slot.get(&local_receive).copied()
     }
 
     /// Returns the outbound first hop router hash and receive
@@ -246,7 +285,27 @@ impl DataPlaneRegistry {
     pub fn remove_inbound(&mut self, local_receive: TunnelId) -> Option<LocalInboundEndpointRole> {
         let role = self.inbound.remove(&local_receive);
         self.inbound_first_hop.remove(&local_receive);
+        if let Some(slot) = self.inbound_receive_to_slot.remove(&local_receive) {
+            self.inbound_slot_to_receive.remove(&slot);
+        }
         role
+    }
+
+    /// Removes the role associated with a pool slot and all of its
+    /// public metadata. Pool expiry and failure paths should call this
+    /// method with the slots returned by `advance_time` or `mark_failed`.
+    /// An unknown slot is returned as a typed bounded outcome.
+    pub fn remove_slot(&mut self, slot: TunnelSlot) -> RegistryRemoval {
+        if let Some(role) = self.remove_outbound(slot) {
+            return RegistryRemoval::Outbound(role);
+        }
+        if let Some(local_receive) = self.inbound_slot_to_receive.get(&slot).copied() {
+            return self
+                .remove_inbound(local_receive)
+                .map(RegistryRemoval::Inbound)
+                .unwrap_or(RegistryRemoval::Unknown(slot));
+        }
+        RegistryRemoval::Unknown(slot)
     }
 
     /// Returns whether the registry currently holds at least one
@@ -303,12 +362,16 @@ mod tests {
         .expect("outbound established")
     }
 
-    fn inbound_established() -> (TunnelId, EstablishedTunnel) {
-        let local_receive = TunnelId::new(0xC0DE).expect("id");
+    fn inbound_established_with(
+        creator: u32,
+        local_receive_value: u32,
+    ) -> (TunnelId, EstablishedTunnel) {
+        let local_receive = TunnelId::new(local_receive_value).expect("id");
+        let ibgw_tunnel = TunnelId::new(creator + 0x20).expect("id");
         let hops = vec![EstablishedHop::with_next(
             peer(0x20),
             EstablishedRole::InboundGateway,
-            TunnelId::new(0x20).expect("id"),
+            ibgw_tunnel,
             keys(),
             EstablishedNextHop {
                 router: peer(0x21),
@@ -317,14 +380,18 @@ mod tests {
         )];
         let tunnel = EstablishedTunnel::new(
             TunnelDirection::Inbound,
-            TunnelId::new(0x1000).expect("id"),
+            TunnelId::new(creator).expect("id"),
             hops,
             0,
-            Some((peer(0x20), TunnelId::new(0x20).expect("id"))),
+            Some((peer(0x20), ibgw_tunnel)),
             Some(local_receive),
         )
         .expect("inbound established");
         (local_receive, tunnel)
+    }
+
+    fn inbound_established() -> (TunnelId, EstablishedTunnel) {
+        inbound_established_with(0x1000, 0xC0DE)
     }
 
     #[test]
@@ -351,17 +418,42 @@ mod tests {
     fn activate_inbound_once_and_first_hop_persists() {
         let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
         let (local_receive, tunnel) = inbound_established();
+        let slot = TunnelSlot::from_raw(1);
         registry
-            .activate_inbound(tunnel, 16, 4096, 60_000, 0, 60_000)
+            .activate_inbound(slot, tunnel, 16, 4096, 60_000, 0, 60_000)
             .expect("activate");
         assert_eq!(
             registry.inbound_first_hop(local_receive),
             Some(peer(0x20).hash())
         );
+        assert_eq!(registry.inbound_slot(local_receive), Some(slot));
         // Second activation on the same local receive id fails closed.
-        let (_id, duplicate_tunnel) = inbound_established();
-        let duplicate = registry.activate_inbound(duplicate_tunnel, 16, 4096, 60_000, 0, 60_000);
+        let (_id, duplicate_tunnel) = inbound_established_with(0x1001, 0xC0DE);
+        let duplicate = registry.activate_inbound(
+            TunnelSlot::from_raw(2),
+            duplicate_tunnel,
+            16,
+            4096,
+            60_000,
+            0,
+            60_000,
+        );
         assert!(matches!(duplicate, Err(RegistryError::DuplicateInbound(_))));
+    }
+
+    #[test]
+    fn inbound_duplicate_slot_is_rejected() {
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
+        let slot = TunnelSlot::from_raw(9);
+        let (_, first) = inbound_established();
+        registry
+            .activate_inbound(slot, first, 16, 4096, 60_000, 0, 60_000)
+            .expect("first activation");
+        let (_, second) = inbound_established_with(0x1001, 0xC0DF);
+        let error = registry
+            .activate_inbound(slot, second, 16, 4096, 60_000, 0, 60_000)
+            .expect_err("duplicate slot");
+        assert_eq!(error, RegistryError::DuplicateInboundSlot(slot));
     }
 
     #[test]
@@ -382,6 +474,69 @@ mod tests {
         let _ = registry.remove_outbound(slot).expect("role");
         assert!(registry.outbound_first_hop(slot).is_none());
         assert_eq!(registry.outbound_len(), 0);
+    }
+
+    #[test]
+    fn remove_slot_removes_outbound_role() {
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
+        let slot = TunnelSlot::from_raw(3);
+        registry
+            .activate_outbound(slot, outbound_established(0x4000), 60_000)
+            .expect("activate");
+        assert!(matches!(
+            registry.remove_slot(slot),
+            RegistryRemoval::Outbound(_)
+        ));
+        assert_eq!(registry.outbound_len(), 0);
+        assert!(registry.outbound_first_hop(slot).is_none());
+    }
+
+    #[test]
+    fn remove_slot_removes_inbound_role_and_reverse_metadata() {
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
+        let slot = TunnelSlot::from_raw(4);
+        let (local_receive, tunnel) = inbound_established();
+        registry
+            .activate_inbound(slot, tunnel, 16, 4096, 60_000, 0, 60_000)
+            .expect("activate");
+        assert!(matches!(
+            registry.remove_slot(slot),
+            RegistryRemoval::Inbound(_)
+        ));
+        assert_eq!(registry.inbound_len(), 0);
+        assert!(registry.inbound(local_receive).is_none());
+        assert!(registry.inbound_first_hop(local_receive).is_none());
+        assert!(registry.inbound_slot(local_receive).is_none());
+        assert!(matches!(
+            registry.remove_slot(slot),
+            RegistryRemoval::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn remove_inbound_clears_reverse_mapping() {
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
+        let slot = TunnelSlot::from_raw(5);
+        let (local_receive, tunnel) = inbound_established();
+        registry
+            .activate_inbound(slot, tunnel, 16, 4096, 60_000, 0, 60_000)
+            .expect("activate");
+        assert!(registry.remove_inbound(local_receive).is_some());
+        assert!(registry.inbound_slot(local_receive).is_none());
+        assert!(matches!(
+            registry.remove_slot(slot),
+            RegistryRemoval::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn unknown_slot_cleanup_is_bounded_and_typed() {
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(1, 1));
+        let slot = TunnelSlot::from_raw(u32::MAX);
+        assert!(matches!(
+            registry.remove_slot(slot),
+            RegistryRemoval::Unknown(unknown) if unknown == slot
+        ));
     }
 
     #[test]

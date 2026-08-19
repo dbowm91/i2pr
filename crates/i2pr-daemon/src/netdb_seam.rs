@@ -639,7 +639,15 @@ mod tests {
         // Need inbound too:
         let inbound = inbound_tunnel(0x2000, 0x901);
         registry
-            .activate_inbound(inbound, 16, 1 << 20, 60_000, 0, 60_000)
+            .activate_inbound(
+                i2pr_tunnel::pool::TunnelSlot::from_raw(2),
+                inbound,
+                16,
+                1 << 20,
+                60_000,
+                0,
+                60_000,
+            )
             .expect("activate inbound");
         assert_eq!(
             seam.composition_outcome_with_registry(&registry, 0),
@@ -662,7 +670,15 @@ mod tests {
         // expiration so it remains usable when the outbound
         // role expires at now_ms = 120_000.
         registry
-            .activate_inbound(inbound, 16, 1 << 20, 60_000, 0, u64::MAX)
+            .activate_inbound(
+                i2pr_tunnel::pool::TunnelSlot::from_raw(2),
+                inbound,
+                16,
+                1 << 20,
+                60_000,
+                0,
+                u64::MAX,
+            )
             .expect("activate inbound");
         // At now_ms = 120_000 the outbound role has expired.
         assert_eq!(
@@ -681,7 +697,15 @@ mod tests {
             .expect("activate");
         let inbound = inbound_tunnel(0x6000, 0x903);
         registry
-            .activate_inbound(inbound, 16, 1 << 20, 60_000, 0, 60_000)
+            .activate_inbound(
+                i2pr_tunnel::pool::TunnelSlot::from_raw(2),
+                inbound,
+                16,
+                1 << 20,
+                60_000,
+                0,
+                60_000,
+            )
             .expect("activate");
         assert_eq!(
             seam.composition_outcome_with_registry(&registry, 0),

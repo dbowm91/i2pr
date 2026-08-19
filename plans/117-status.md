@@ -1,22 +1,22 @@
-# Plan 117 status — terminal native-reference correction pending
+# Plan 117 status — native reference terminal result pending
 
-- Status: **terminal-native-reference-correction-pending**
-- Date: 2026-08-18
+- Status: **native-reference-terminal-pending**
+- Date: 2026-08-19
 - Original plan: [`117-live-exploratory-netdb-integration.md`](117-live-exploratory-netdb-integration.md)
 - First corrective closure: [`117-corrective-closure.md`](117-corrective-closure.md)
 - Current terminal correction: [`117-terminal-native-reference-correction.md`](117-terminal-native-reference-correction.md)
 - Handoff: [`117-handoff.md`](117-handoff.md)
 - Roadmap: [`115-117-external-delivery-to-live-netdb-roadmap.md`](115-117-external-delivery-to-live-netdb-roadmap.md)
 - Predecessor Plan 116: **passed-final-local-closure**
-- Current implementation floor: `b7e12e09d84089b5459d29aa962d01a963554b29`
-- Terminal-plan commit: `b96ab35c2a12431c4f45e4596f43ccba62981a53`
+- Pre-correction source commit: `2c764ab6263e2407dbb62a0a767b58b5f5bb44e8`
+- Terminal-plan commit: `2c764ab6263e2407dbb62a0a767b58b5f5bb44e8`
 
 ## Current authority
 
 ```text
 plan_115                              = passed-emissary-q0-construction-and-obep-reply-only
 plan_116                              = passed-final-local-closure
-plan_117                              = terminal-native-reference-correction-pending
+plan_117                              = native-reference-terminal-pending
 plan_117_c1_routing                   = passed
 plan_117_c2_transport_framing         = passed-short-transport-tunneldata
 plan_117_c3_activation_ownership      = passed-metadata-retained-secrets-once
@@ -24,21 +24,25 @@ plan_117_c4_runtime_readiness         = passed-registry-derived
 plan_117_c5_regression                = passed
 plan_117_g_local_production_seam      = passed-all-i2pr-production-seam-netdb
 plan_117_h_parser_compatibility       = passed-emissary-wire-format-compatibility
-plan_117_h_native_reference           = pending-corrected-in-tree-emissary-test
+plan_117_h_native_reference           = blocked-emissary-native-reply-layout
 plan_117_i_authenticated_transport    = deferred-host-lane-unavailable
 Q1_authenticated_transport            = deferred
 Q2_external_return_established        = deferred
-router_construction                   = hold-on-plan117-native-terminal-pass
+router_construction                   = hold-on-one-native-reference-decision
 normal_daemon_ntcp2                   = disabled-and-unenableable
 ntcp2                                 = experimental-non-advertised
 ```
 
 Plan 116 remains closed. Do not reopen it for this work.
 
-The `b7e12e09...` commit contains useful and retained Plan 117 product work, but
-its final `local-native-complete-external-deferred` label was premature because
-the independent reference stopped at parser compatibility rather than the
-required native mixed-router NetDB path.
+The retained Plan 117 product work is still valid, and the inbound registry
+slot reverse map is now implemented. The corrected in-tree Emissary test did
+reach the native OBEP and produced a cryptographically authenticated reply,
+but the pinned reference's reply plaintext is not the normative 202-byte
+short-reply layout: its production handler mutates the request-derived record
+body and leaves the reply mapping at the wrong offset. i2pr therefore rejects
+the reply during strict `ShortReplyRecord` decoding. No i2pr parser relaxation
+was made to accept a non-conformant reply.
 
 ---
 
@@ -74,9 +78,9 @@ retaining public registration/routing metadata for capacity, duplicate,
 lifetime, and reply-path behavior. A second activation returns
 `AlreadyActivated`.
 
-One small lifecycle cleanup remains in the terminal plan: bind inbound registry
-roles to `TunnelSlot` so pool expiry/failure slots can remove matching runtime
-roles without an out-of-band local receive ID.
+The terminal lifecycle cleanup is complete: inbound registry roles bind to
+`TunnelSlot`, and `remove_slot` removes either direction plus all reverse
+metadata without cloning `LayerKeys`.
 
 ### C4 — readiness
 
@@ -259,6 +263,49 @@ creator-side tunnel pool against itself.
 
 The boundary must be recorded explicitly.
 
+## Terminal correction execution result
+
+The temporary checkout was pinned to `eepnet/emissary@9b43484a21d5a1291c4881cdae62a36c527f8c0f` and compiled `emissary-core`'s own `#[cfg(test)]` target with the i2pr crates as dev-dependencies. The focused native test command was:
+
+```text
+cargo test --manifest-path /tmp/i2pr-plan117-native.2G7uME/emissary/Cargo.toml \
+  -p emissary-core --lib \
+  tunnel::tests::i2pr_plan117_native::i2pr_plan117_native_mixed_router_netdb \
+  -- --exact --nocapture
+```
+
+Observed bounded stages:
+
+```text
+production i2pr STBM -> native Emissary Message::parse_standard       = passed
+native Emissary OBEP admission and live role                       = passed
+native pre-Garlic reply shape (count=4, bytes=873)                  = passed
+native reply AEAD opening with i2pr-derived context                 = passed
+strict i2pr reply Mapping/response decoding                         = rejected
+native publication / lookup / return path                           = not reached
+```
+
+The rejection is `ShortRecord(Protocol(LengthExceeded { context:
+"reply mapping body" }))`. The pinned Emissary handler's source mutates
+the encrypted request-derived record at offsets used for the reply status,
+so the authenticated plaintext retains the request envelope prefix instead
+of beginning with the normative reply Mapping. This is a reference-side
+protocol/layout defect at the native OBEP reply boundary, not a reason to
+weaken i2pr's strict reply decoder. The temporary diagnostic source edit that
+copied the decrypted request body into the response was reverted before the
+patch digest was recorded.
+
+The tracked temporary Emissary patch was recorded before checkout deletion:
+
+```text
+git diff --binary bytes = 25485
+git diff --binary sha256 = 3564319346ffb99ab9e933c2e8da0ea934f7003e8e9a1b9f69b45e6fa725eda7
+```
+
+This is not native mixed-router NetDB evidence. The plan remains open as
+`native-reference-terminal-pending` pending a decision on the pinned
+reference's reply-layout defect or a corrected pinned reference revision.
+
 ---
 
 ## Native closure gate
@@ -317,7 +364,7 @@ closure state.
 
 ---
 
-## Expected final success state
+## Expected final success state after the native reference decision
 
 After the terminal native pass succeeds:
 
@@ -347,5 +394,7 @@ tracked separately.
 Until then:
 
 ```text
-next_roadmap_plan = blocked-on-plan117-native-terminal-pass
+plan_117_h_native_reference           = blocked-emissary-native-reply-layout
+plan_117                              = native-reference-terminal-pending
+next_roadmap_plan                     = blocked-on-one-native-reference-decision
 ```

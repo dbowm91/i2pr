@@ -135,9 +135,10 @@ no DNS. Filesystem I/O belongs to `i2pr-storage` (raw-byte seam) and
   `i2pr-tunnel` (not in this crate) and consumes
   `i2pr_netdb::ReplyPath` only through the Plan 107 reply-path
   provider — `i2pr-netdb` does not import the ECIES primitive or
-  the build state machine directly. Plan 117 corrective closure
-  ([`plans/117-corrective-closure.md`](../../plans/117-corrective-closure.md))
-  closed as `local-native-complete-external-deferred`; see
+  the build state machine directly. Plan 117's local Phase G composition
+  remains passed, while the corrected native Emissary reference test is
+  `native-reference-terminal-pending` after strict i2pr reply Mapping decode
+  rejected the pinned reference's request-prefixed reply; see
   [`plans/117-status.md`](../../plans/117-status.md).
 - `store_message::handle_unsolicited_databasestore` — bounded
   ingestion handler for `DatabaseStore` messages that arrive outside
