@@ -107,7 +107,7 @@ jobs:
           sudo -E bash scripts/interop/verify-clean-host.sh --verify
       - name: Upload sanitized Plan 043 evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: ntcp2-interop-ubuntu-${{ github.run_id }}
           if-no-files-found: ignore
