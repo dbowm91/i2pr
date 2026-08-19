@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
       - name: rust-toolchain
         uses: dtolnay/rust-toolchain@1.100.0
       - name: cargo-fmt
@@ -79,7 +79,7 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
       - name: rust-toolchain
         uses: dtolnay/rust-toolchain@1.100.0
       - name: rootless-dependency-contract
