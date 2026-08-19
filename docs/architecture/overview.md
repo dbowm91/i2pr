@@ -149,11 +149,11 @@ tests, and any distinctive design choices.
 | `i2pr-core` | Service contracts | Runtime-neutral lifecycle, health, cancellation, and resource budgets. Zero dependencies. | [i2pr-core.md](i2pr-core.md) |
 | `i2pr-netdb` | Local NetDB | Runtime-neutral RouterInfo validation, bounded in-memory NetDB store, SU3/reseed verification, peer-selection primitives, transport-neutral lookup/publication state machines, and local signed RouterInfo construction. Plan 103/104/105. | [i2pr-netdb.md](i2pr-netdb.md) |
 | `i2pr-netdb-persist` | Cache composition | Composition owner for Plan 104 persistent RouterInfo cache and SU3 reseed ingestion. Bridges `i2pr-storage` (raw bytes) and `i2pr-netdb` (validation). | — |
-| `i2pr-tunnel` | Milestone 5 substrate | Runtime-neutral tunnel identity, exploratory pool, build-record layout surface, build-cryptography seam, ECIES-X25519 short tunnel-build construction primitive (Plan 111 final local short-build conformance + Plan 112 outbound pre-delivery closure + Plan 113 inbound reference reconciliation + Plan 114 terminal routing and tunnel-chain correction + Plan 115 canonical production I2NP bridge with no-double-prefix STBM record count byte invariant), runtime-neutral build state machine, success-only registrar, deterministic responder peer simulator, and reply-path provider. Plans 107, 108, 109, 110, 111, 112, 113, 114, 115. | [i2pr-tunnel.md](i2pr-tunnel.md) |
+| `i2pr-tunnel` | Milestone 5 substrate | Runtime-neutral tunnel identity, exploratory pool, build-record layout surface, build-cryptography seam, ECIES-X25519 short tunnel-build construction primitive (Plan 111 final local short-build conformance + Plan 112 outbound pre-delivery closure + Plan 113 inbound reference reconciliation + Plan 114 terminal routing and tunnel-chain correction + Plan 115 canonical production I2NP bridge with no-double-prefix STBM record count byte invariant + Plan 116 local tunnel data plane + Plan 117 outbound/inbound exploratory NetDB composition), runtime-neutral build state machine, success-only registrar, deterministic responder peer simulator, and reply-path provider. Plans 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117. | [i2pr-tunnel.md](i2pr-tunnel.md) |
 | `i2pr-transport` | Transport contracts | Runtime-neutral link/delivery contracts. No Tokio, no I/O, no async. | [i2pr-transport.md](i2pr-transport.md) |
 | `i2pr-transport-ntcp2` | NTCP2 protocol | Runtime-neutral Noise handshake, AEAD frames, data-phase blocks. | [i2pr-transport-ntcp2.md](i2pr-transport-ntcp2.md) |
 | `i2pr-runtime` | Runtime owner | The only production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation. | [i2pr-runtime.md](i2pr-runtime.md) |
-| `i2pr-daemon` | Composition root | CLI + config + identity lifecycle + Plan 106 NetDB/bootstrap pipeline. Live daemon runs through the supervisor with no I2P transport. | [i2pr-daemon.md](i2pr-daemon.md) |
+| `i2pr-daemon` | Composition root | CLI + config + identity lifecycle + Plan 106 NetDB/bootstrap pipeline + Plan 117 outbound `OutboundGatewayRole` exploratory `DatabaseLookup`/`DatabaseStore` composition and inbound `LocalInboundEndpointRole` `TunnelData` dispatch through `crates/i2pr-daemon/src/{outbound_lookup,inbound_dispatch}.rs`. Live daemon runs through the supervisor with no I2P transport. | [i2pr-daemon.md](i2pr-daemon.md) |
 | `i2pr-testkit` | Test simulation | Deterministic clocks, virtual links, scripted faults. Test-only; never a production dep. | [i2pr-testkit.md](i2pr-testkit.md) |
 | `scripts/` + `tests/` + `fuzz/` | Tooling | Guardrails, fixtures, integration lanes, opt-in fuzzing. | [tooling.md](tooling.md) |
 
@@ -217,15 +217,43 @@ and the closure record
         `prepare_short_build_message()` entry point, and strict
         outbound/inbound E2E trajectories that deterministically reach
         `Established`. Plan 115 adds the canonical production I2NP
-        bridge (`ShortBuildI2npBridge` in
-        `crates/i2pr-tunnel/src/bridge.rs`) so a
-        `ShortBuildAction::Deliver` payload is wrapped in a single
-        complete I2NP type-25 message without double-prefixing the STBM
-        record count byte and with a round-trip body equality assertion.
-        Plan 115 Q0 construction + native OBEP reply has passed
-        locally against pinned Emissary — see
-        [`plans/115-status.md`](../../plans/115-status.md). Q1/Q2
-        and qualified external delivery remain pending.**
+bridge (`ShortBuildI2npBridge` in
+         `crates/i2pr-tunnel/src/bridge.rs`) so a
+         `ShortBuildAction::Deliver` payload is wrapped in a single
+         complete I2NP type-25 message without double-prefixing the STBM
+         record count byte and with a round-trip body equality assertion.
+         Plan 115 Q0 construction + native OBEP reply has passed
+         locally against pinned Emissary — see
+         [`plans/115-status.md`](../../plans/115-status.md). Q1/Q2
+         and qualified external delivery remain pending.**
+         Plan 116 closed the local tunnel data plane
+         (`passed-final-local-closure` via the
+         completion/correction/terminal-cleanup sequence). Plan 117
+         closed as `closed-for-progression-with-evidence-gap` per
+         Plan 118: the local production exploratory NetDB composition
+         (Phase G) is passed, but the corrected in-tree native Emissary
+         reference test rejects the pinned reference's request-prefixed
+         reply plaintext during strict i2pr Mapping decoding. Plan 117
+         adds the typed `DatabaseLookupMessage`/`DatabaseStoreMessage`
+         carriers on `LookupAction`/`PublicationAttemptRecord`, the
+         metadata-retaining one-shot `ExploratoryPool::activate`, the
+         bounded `DataPlaneRegistry` for activated local roles
+         (`crates/i2pr-tunnel/src/data_plane_registry.rs`), the daemon
+         `NetDbSeam` composition state machine
+         (`crates/i2pr-daemon/src/netdb_seam.rs`), the outbound
+         `OutboundGatewayRole::forward_cells` exploratory
+         `DatabaseLookup`/`DatabaseStore` composition
+         (`crates/i2pr-daemon/src/outbound_lookup.rs`), and the inbound
+         `LocalInboundEndpointRole` `TunnelData` dispatch through
+         `dispatch_inbound_tunnel_data`/`route_databasestore`/
+         `route_database_search_reply`
+         (`crates/i2pr-daemon/src/inbound_dispatch.rs`). The Plan 117
+         composition is local-only; the network transport adapter
+         still owns the NTCP2/SSU2 handshake surface, and authenticated
+         external transport remains `deferred-host-lane-unavailable`.
+         The next executable plan is **Plan 119** (LeaseSet2 protocol
+         foundation) under
+         [`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md).
 6. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
    before startup, then spawns one supervisor manager per service via a
    `JoinSet`. Each service receives a narrowed `ServiceContext` (name,

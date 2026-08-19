@@ -99,8 +99,8 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
   and the fragmented cases, including the out-of-order
   fragmented trajectory (`T3`) (`i2pr-tunnel`; see
   [`plans/116-status.md`](plans/116-status.md))
-- Plan 117 exploratory NetDB composition (local Phase G passed;
-  native reference terminal pending): Phases A–F land
+- Plan 117 exploratory NetDB composition (closed for
+  progression with reference evidence gap): Phases A–F land
    the typed `DatabaseLookupMessage` and `DatabaseStoreMessage`
    carriers on `LookupAction` and `PublicationAttemptRecord`,
    the metadata-retaining one-shot `ExploratoryPool::activate`
@@ -115,16 +115,21 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
    ([`plans/117-corrective-closure.md`](plans/117-corrective-closure.md))
    corrected the four routing/framing/activation/readiness
    defects (C1–C4), proved the all-i2pr production-seam
-   trajectory with real `EstablishedMaterial` (Phase G),
+   trajectory with real `EstablishedMaterial` (Phase G), and
    achieved `passed-emissary-wire-format-compatibility` against
    pinned Emissary revision
    `9b43484a21d5a1291c4881cdae62a36c527f8c0f` (historical parser
    evidence). The corrected in-tree native test reaches Emissary
    OBEP admission and reply AEAD opening but rejects the pinned
-   reference's request-prefixed reply plaintext during strict i2pr
-   Mapping decoding, so native publication/lookup evidence is not
-   claimed. Phase I remains `deferred-host-lane-unavailable`; see
-   [`plans/117-status.md`](plans/117-status.md).
+   reference's request-prefixed reply plaintext during strict
+   i2pr Mapping decoding, so native publication/lookup evidence
+   is not claimed. Plan 117 closes as
+   `closed-for-progression-with-evidence-gap` per Plan 118;
+   `router_construction = may-continue`. The next executable
+   plan is **Plan 119** (LeaseSet2 protocol foundation) under
+   [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md);
+   see [`plans/117-status.md`](plans/117-status.md) and
+   [`plans/117-handoff.md`](plans/117-handoff.md).
  - Multi-record short tunnel-build construction: randomized slot
   allocation, originator + padding fake records, raw ChaCha20
   preprocessing/postprocessing (slot byte at offset 4 of the
@@ -157,13 +162,17 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
   but the network transport adapter still owns the NTCP2/SSU2
   handshake surface)
 - I2NP message handling and router dispatch
-- Streaming, SAM, I2CP, garlic, LeaseSet management
+- Destinations, LeaseSet2, ECIES garlic, streaming, SAM, I2CP
+  (the Milestone 6 frontier — see
+  [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md))
 - Client proxies (HTTP, SOCKS5)
 - Any network-facing behavior
 
 The NTCP2 development interoperability result is `protocol-defect-localized` at `noise_authenticated`. No passed mixed-router NTCP2 result exists.
 
 Plan 115 Emissary Q0 construction + native OBEP reply: passed locally (`plans/115-status.md`).
+
+Plan 117 status: `closed-for-progression-with-evidence-gap` per Plan 118. The Plan 117 local production composition (Phase G) is retained; the corrected native reference test reached Emissary OBEP admission and reply AEAD opening but rejected the pinned reference's request-prefixed reply plaintext during strict i2pr Mapping decoding. The reference-side defect is localized to the pinned Emissary revision; no upstream correction is available. The next executable plan is **Plan 119** (LeaseSet2 protocol foundation).
 
 ## Workspace
 
@@ -178,8 +187,8 @@ crates/
   i2pr-runtime/             Tokio-owned supervision, cancellation, and I/O
   i2pr-netdb/               RouterInfo validation, NetDB store, lookup, publication
   i2pr-netdb-persist/       Persistent cache and SU3 reseed ingestion
-  i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build cryptography (Plan 111/112 outbound local conformance; Plan 113 inbound reference-compatible policy; Plan 114 terminal routing and tunnel-chain correction; Plan 116 final local closure + terminal cleanup), runtime-neutral build state machine, reply-path provider, Plan 115 canonical production I2NP bridge
-  i2pr-daemon/              CLI, configuration, composition, supervision
+  i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build cryptography (Plan 111/112 outbound local conformance; Plan 113 inbound reference-compatible policy; Plan 114 terminal routing and tunnel-chain correction; Plan 115 canonical production I2NP bridge; Plan 116 final local closure + terminal cleanup), runtime-neutral build state machine, reply-path provider, Plan 117 outbound/inbound exploratory NetDB composition
+  i2pr-daemon/              CLI, configuration, composition, supervision, Plan 117 outbound/inbound dispatch
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
 tools/
   i2pr-interop/             Non-production interop launcher (test only)
@@ -217,7 +226,7 @@ bash scripts/check-runtime-boundaries.sh
 
 The feature MVP includes: CLI router daemon, persistent identity, I2NP handling, NTCP2/SSU2 transport, NetDB client/floodfill, tunnel construction, destination/LeaseSet management, streaming, SAM/I2CP interfaces, HTTP/SOCKS5 proxies, and bounded resource accounting.
 
-Development targets a smaller interoperable-router milestone before the complete MVP.
+Development targets a smaller interoperable-router milestone before the complete MVP. The current product milestone after Plan 118 is **Milestone 6** (destinations, garlic, LeaseSet2, streaming), sequenced in [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md) (Plan 119 → Plan 123). The next executable plan is **Plan 119** (LeaseSet2 protocol foundation).
 
 ## License
 

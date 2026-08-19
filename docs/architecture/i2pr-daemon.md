@@ -336,22 +336,35 @@ helpers.
 
 ### Plan 117 status
 
-Plan 117's all-i2pr Phase G production-seam trajectory remains passed: it
-drives real `EstablishedMaterial` through the canonical
-`TunnelEntry` / `EstablishedTunnel` pool and exercises lookup success,
-wrong-target rejection, `DatabaseSearchReply` iteration, and publication.
-The historical Phase H Emissary parser result remains
+Plan 117 closed per Plan 118 as
+`closed-for-progression-with-evidence-gap`. The all-i2pr Phase G
+production-seam trajectory remains passed: it drives real
+`EstablishedMaterial` through the canonical `TunnelEntry` /
+`EstablishedTunnel` pool and exercises lookup success, wrong-target
+rejection, `DatabaseSearchReply` iteration, and publication. The
+historical Phase H Emissary parser result remains
 `passed-emissary-wire-format-compatibility` at
-`h_emissary_database_lookup_parsed` against pinned Emissary revision
-`9b43484a21d5a1291c4881cdae62a36c527f8c0f` (`emissary-core 0.4.0`).
+`h_emissary_database_lookup_parsed` against pinned Emissary
+revision `9b43484a21d5a1291c4881cdae62a36c527f8c0f`
+(`emissary-core 0.4.0`).
 
-The corrected native test now belongs to `emissary-core`'s own `#[cfg(test)]`
-build and reaches native OBEP admission plus reply AEAD opening, but strict
-i2pr reply Mapping decoding rejects the pinned reference's request-prefixed
-reply plaintext. Native publication, lookup, and inbound return evidence is
-not claimed; see [`plans/117-status.md`](../../plans/117-status.md). Phase I
-authenticated transport remains `deferred-host-lane-unavailable` on this
-host.
+The corrected native test now belongs to `emissary-core`'s own
+`#[cfg(test)]` build and reaches native OBEP admission plus reply
+AEAD opening, but strict i2pr reply Mapping decoding rejects the
+pinned reference's request-prefixed reply plaintext. Native
+publication, lookup, and inbound return evidence is not claimed;
+the reference-side defect is localized to the pinned Emissary
+revision, and no upstream correction is available. See
+[`plans/117-status.md`](../../plans/117-status.md) and the Plan 118
+disposition in
+[`plans/118-planning-authority-cleanup-and-plan117-disposition.md`](../../plans/118-planning-authority-cleanup-and-plan117-disposition.md).
+Phase I authenticated transport remains
+`deferred-host-lane-unavailable` on this host and is tracked
+separately under the external acceptance debt ledger in
+[`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md).
+
+The next executable plan is **Plan 119** (LeaseSet2 protocol
+foundation) under the same Milestone 6 roadmap.
 
 ### Which crates are wired in today
 

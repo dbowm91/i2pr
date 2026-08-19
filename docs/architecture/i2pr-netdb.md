@@ -135,11 +135,19 @@ no DNS. Filesystem I/O belongs to `i2pr-storage` (raw-byte seam) and
   `i2pr-tunnel` (not in this crate) and consumes
   `i2pr_netdb::ReplyPath` only through the Plan 107 reply-path
   provider — `i2pr-netdb` does not import the ECIES primitive or
-  the build state machine directly. Plan 117's local Phase G composition
-  remains passed, while the corrected native Emissary reference test is
-  `native-reference-terminal-pending` after strict i2pr reply Mapping decode
-  rejected the pinned reference's request-prefixed reply; see
-  [`plans/117-status.md`](../../plans/117-status.md).
+  the build state machine directly. Plan 117 closed per Plan 118 as
+  `closed-for-progression-with-evidence-gap`: the local Phase G
+  composition remains passed, while the corrected native Emissary
+  reference test rejected the pinned reference's request-prefixed
+  reply during strict i2pr Mapping decode. The reference-side
+  defect is localized to the pinned Emissary revision
+  `9b43484a21d5a1291c4881cdae62a36c527f8c0f`; the i2pr parser is not
+  relaxed, and publication / lookup / inbound return stages are not
+  claimed. The next executable plan is **Plan 119** (LeaseSet2
+  protocol foundation) under
+  [`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md);
+  see [`plans/117-status.md`](../../plans/117-status.md) and
+  [`plans/118-planning-authority-cleanup-and-plan117-disposition.md`](../../plans/118-planning-authority-cleanup-and-plan117-disposition.md).
 - `store_message::handle_unsolicited_databasestore` — bounded
   ingestion handler for `DatabaseStore` messages that arrive outside
   an active lookup; rejects non-RouterInfo payloads and enforces the

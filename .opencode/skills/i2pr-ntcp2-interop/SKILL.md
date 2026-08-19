@@ -1,6 +1,6 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090/091/092/093/094/099/100 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness (Plan 099/100 closed as protocol-defect-localized; Plan 095 historical). Plan 101 corrects the daemon NTCP2 activation boundary; normal-daemon NTCP2 is disabled. Plan 115 Emissary Q0 construction + native OBEP reply has passed locally with the canonical production I2NP bridge (`ShortBuildI2npBridge` in `crates/i2pr-tunnel/src/bridge.rs`); Q1/Q2/qualified external delivery still pending. The harness includes the Plan 085-088 host-loopback development execution roadmap (historical), the Plan 090 i2pd RouterInfo and pre-TCP classification correction, the Plan 091 i2pd Noise-handshake preconditions, the Plan 092 forward-handshake evidence integrity (superseded by Plan 093), the Plan 093 Plan 087 forward data-phase and reference-observer closure, the Plan 094 Plan 093 completion pass and Plan 087 -> Plan 088 handoff, the Plan 099 Milestone 3 interop exit and router buildout, and the Plan 100 one-time exit-gate cleanup and router handoff. Use when an agent is asked to read or reproduce the historical harness surface, run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, or validate evidence. The active development interop lane is closed; NTCP2 remains experimental and non-advertised. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090/091/092/093/094/099/100 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness (Plan 099/100 closed as protocol-defect-localized; Plan 095 historical). Plan 101 corrects the daemon NTCP2 activation boundary; normal-daemon NTCP2 is disabled. Plan 115 Emissary Q0 construction + native OBEP reply has passed locally with the canonical production I2NP bridge (`ShortBuildI2npBridge` in `crates/i2pr-tunnel/src/bridge.rs`); Q1/Q2/qualified external delivery still pending. Plan 117 closed per Plan 118 as `closed-for-progression-with-evidence-gap` (local Phase G passed; corrected native Emissary reference test rejected the pinned reference's request-prefixed reply during strict i2pr Mapping decoding). The harness includes the Plan 085-088 host-loopback development execution roadmap (historical), the Plan 090 i2pd RouterInfo and pre-TCP classification correction, the Plan 091 i2pd Noise-handshake preconditions, the Plan 092 forward-handshake evidence integrity (superseded by Plan 093), the Plan 093 Plan 087 forward data-phase and reference-observer closure, the Plan 094 Plan 093 completion pass and Plan 087 -> Plan 088 handoff, the Plan 099 Milestone 3 interop exit and router buildout, and the Plan 100 one-time exit-gate cleanup and router handoff. Use when an agent is asked to read or reproduce the historical harness surface, run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, or validate evidence. The active development interop lane is closed; NTCP2 remains experimental and non-advertised. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. The next executable product plan is Plan 119 (LeaseSet2 protocol foundation); external acceptance debt is tracked separately under the Milestone 6 roadmap. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
 # I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/081/082/083/084)
@@ -39,27 +39,56 @@ transport delivery) and Q2 (reply round-trip to `Established`)
 remain pending. The full Plan 115-117 acceptance
 (Q0 + Q1 + Q2 + qualified external delivery) is not yet complete.
 
-## Plan 117 terminal native-reference correction
+## Plan 117 terminal disposition (closed for progression with evidence gap)
 
-Plan 117's local Phase G production composition remains passed, and its
-`DataPlaneRegistry` now binds inbound roles to both `TunnelSlot` and local
-receive `TunnelId`. `remove_slot(slot)` removes outbound or inbound roles and
-all reverse metadata atomically without cloning `LayerKeys`.
+Plan 117 closed per Plan 118 as
+`closed-for-progression-with-evidence-gap`. The local Phase G
+production composition remains passed, and the `DataPlaneRegistry`
+binds inbound roles to both `TunnelSlot` and local receive
+`TunnelId`. `remove_slot(slot)` removes outbound or inbound roles
+and all reverse metadata atomically without cloning `LayerKeys`.
 
-The corrected reference attempt must use a fresh temporary checkout of
-`eepnet/emissary@9b43484a21d5a1291c4881cdae62a36c527f8c0f` and place its test
-inside `emissary-core`'s own `#[cfg(test)]` build. Only temporary dev-deps and
-a narrow test-only pre-Garlic reply observer are permitted; do not add a
-permanent Emissary adapter, sockets, namespaces, or a normal-daemon transport
-path. The current attempt reaches native OBEP admission and opens the reply
-AEAD with i2pr-derived context, but strict i2pr Mapping decoding rejects the
-pinned reference's request-prefixed reply plaintext. Record this as
-`plan_117 = native-reference-terminal-pending` and
-`plan_117_h_native_reference = blocked-emissary-native-reply-layout`; do not
-relax the parser or promote parser-only evidence to native mixed-router NetDB
-evidence. Publication, lookup, and inbound return stages remain unproven.
-The authenticated transport lane remains separately deferred and NTCP2 stays
-experimental/non-advertised. Authority: `plans/117-status.md`.
+The corrected reference attempt used a fresh temporary checkout of
+`eepnet/emissary@9b43484a21d5a1291c4881cdae62a36c527f8c0f` and
+placed its test inside `emissary-core`'s own `#[cfg(test)]` build.
+Only temporary dev-deps and a narrow test-only pre-Garlic reply
+observer were used; no permanent Emissary adapter, sockets,
+namespaces, or a normal-daemon transport path was added. The
+corrected attempt reached native OBEP admission and opened the
+reply AEAD with i2pr-derived context, but strict i2pr Mapping
+decoding rejected the pinned reference's request-prefixed reply
+plaintext. The reference-side defect is localized to the pinned
+Emissary revision, and Plan 118 Phase B1 confirmed no usable
+upstream correction exists.
+
+The authoritative terminal state is:
+
+```text
+plan_117_local_composition           = passed-all-i2pr-production-seam-netdb
+plan_117_native_reference            = blocked-reference-defect
+plan_117_external_transport          = deferred-host-lane-unavailable
+plan_117                             = closed-for-progression-with-evidence-gap
+router_construction                  = may-continue
+next_router_construction_plan        = Plan 119 (LeaseSet2 protocol foundation)
+```
+
+Do not relax the parser or promote parser-only evidence to native
+mixed-router NetDB evidence. Publication, lookup, and inbound
+return stages remain unproven on this host. The authenticated
+transport lane remains separately deferred and NTCP2 stays
+experimental/non-advertised. Authority:
+`plans/117-status.md`,
+`plans/117-handoff.md`,
+`plans/118-planning-authority-cleanup-and-plan117-disposition.md`.
+
+The next executable plan is **Plan 119** (LeaseSet2 protocol
+foundation) under the Milestone 6 router-construction roadmap in
+`plans/118-123-milestone6-router-construction-roadmap.md`.
+External acceptance debt (Q1/Q2 authenticated external transport,
+live exploratory tunnel pair, live NetDB publication/lookup, live
+LS2 publication/lookup) is tracked separately under the same
+roadmap's external acceptance debt ledger and does not block the
+Milestone 6 product construction.
 
 The inbound creator identity is explicit at the `ShortBuildPath` boundary;
 the first remote hop is `InboundGateway`, later remote hops are `Participant`,

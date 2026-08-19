@@ -575,3 +575,42 @@ Each milestone must be preceded by a detailed plan that includes:
 - Handoff checklist.
 
 Milestones may be split or reordered when implementation evidence justifies it, but dependency order and security prerequisites must not be bypassed for superficial feature progress.
+
+## Current execution state (Plan 118)
+
+The functional milestone definitions above remain the original
+specification. The current execution state as of Plan 118
+(2026-08-19) is:
+
+```text
+M0-M2 foundation                     = retained
+M3 transport-neutral / NTCP2 code    = retained experimental
+M4 local NetDB machinery             = retained
+M5 local exploratory tunnel + NetDB  = complete for progression
+M6 destinations / garlic / LS2       = next implementation frontier
+```
+
+The Milestone 5 evidence floor is:
+
+```text
+plan_117_local_composition         = passed-all-i2pr-production-seam-netdb
+plan_117_native_reference          = blocked-reference-defect
+plan_117_external_transport        = deferred-host-lane-unavailable
+plan_117                           = closed-for-progression-with-evidence-gap
+router_construction                = may-continue
+normal_daemon_ntcp2                = disabled-and-unenableable
+ntcp2                              = experimental-non-advertised
+```
+
+The Milestone 5 closure is **not** a mixed-router acceptance
+statement. The pinned Emissary native reply-layout defect is a
+reference-side defect; the i2pr ShortReplyRecord parser is not
+relaxed. Authenticated external transport and any final
+mixed-router certificate remain separate external acceptance debt
+tracked in the Milestone 6 roadmap.
+
+The active transport-neutral router-construction sequence lives
+under
+[`118-123-milestone6-router-construction-roadmap.md`](118-123-milestone6-router-construction-roadmap.md)
+(Plan 119 → Plan 123). The next executable plan is
+**Plan 119** (LeaseSet2 protocol foundation).

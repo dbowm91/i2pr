@@ -2052,15 +2052,19 @@ inventory defects `C1`–`C16`) closed Plan 116 as
 inventory defects `F1`–`F5`) closed Plan 116 as
 `passed-final-local-closure`. The Plan 116 terminal cleanup pass
 ([`plans/116-terminal-cleanup.md`](plans/116-terminal-cleanup.md),
-inventory defects `T1`–`T4`) corrects the four remaining closure
-defects — duplicate-accounting classification (`T1`),
-first-fragment delivery metadata in duplicate identity (`T2`),
-out-of-order full role-level fragmented trajectory (`T3`), and
-status / handoff / evidence authority synchronization (`T4`) — and
-keeps Plan 116 closed as `passed-final-local-closure`. Plan 117
-is unblocked and may begin once a qualified external delivery
-lane becomes available. Status authority lives in
-[`plans/116-status.md`](plans/116-status.md).
+ inventory defects `T1`–`T4`) corrects the four remaining closure
+ defects — duplicate-accounting classification (`T1`),
+ first-fragment delivery metadata in duplicate identity (`T2`),
+ out-of-order full role-level fragmented trajectory (`T3`), and
+ status / handoff / evidence authority synchronization (`T4`) — and
+ keeps Plan 116 closed as `passed-final-local-closure`. Plan 117
+ is closed per Plan 118 as
+ `closed-for-progression-with-evidence-gap`; see
+ [`plans/117-status.md`](plans/117-status.md) and
+ [`plans/118-planning-authority-cleanup-and-plan117-disposition.md`](plans/118-planning-authority-cleanup-and-plan117-disposition.md).
+ The next executable plan is **Plan 119** (LeaseSet2 protocol
+ foundation) under the Milestone 6 router-construction roadmap in
+ [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
 
 Plan 116 lands:
 
@@ -2165,17 +2169,17 @@ markers). The Plan 116 integration tests under
  Emissary reply-layout defect. Status authority lives in
  [`plans/117-status.md`](plans/117-status.md).
 
-## Plan 117 exploratory NetDB composition (native reference pending)
+## Plan 117 exploratory NetDB composition (closed for progression with evidence gap)
 
 Plan 117 is the Milestone 5 implementation plan that lands
 the local composition between the Plan 116 exploratory tunnel
 substrate and the Plan 105/106 NetDB state machines.
 
 The Plan 117 status authority is [`plans/117-status.md`](plans/117-status.md).
-The current state is `native-reference-terminal-pending` after the corrected
-in-tree Emissary attempt. The pre-correction source commit was
-`2c764ab6263e2407dbb62a0a767b58b5f5bb44e8`; authority is
-[`plans/117-status.md`](plans/117-status.md).
+The current state is `closed-for-progression-with-evidence-gap`
+per Plan 118 Phase B (Outcome 2). The Plan 118 plan-of-record
+is [`plans/118-planning-authority-cleanup-and-plan117-disposition.md`](plans/118-planning-authority-cleanup-and-plan117-disposition.md);
+the source floor is `99374cf498227cf8ab1c4ec6ec4216b5d4d2e08e`.
 
 The corrective closure plan [`plans/117-corrective-closure.md`](plans/117-corrective-closure.md)
 corrected the four routing/framing/activation/readiness defects (C1–C4)
@@ -2213,14 +2217,37 @@ public-network socket, and never advertises a tunnel. The
 production transport adapter still owns the NTCP2/SSU2 surface; no
 new transport code lands in Plan 117.
 
-Roadmap next steps after the Plan 117 native-reference decision:
+### Plan 118 terminal disposition
 
-- A future narrow qualified external-delivery checkpoint that selects the
-  smallest available qualified delivery lane and runs the four Plan 045
-  primary directions through the corrected production composition.
-- The current `native-reference-terminal-pending` status keeps the native
-  criterion visible and does not promote parser-only or reference-only
-  results to interoperability evidence.
+Plan 118 Phase B1 inspected Emissary history newer than the pinned
+revision `9b43484a21d5a1291c4881cdae62a36c527f8c0f` for the native
+short-build reply construction used by the Plan 117 test. The
+remote master HEAD still equals the pinned revision; no newer
+usable Emissary revision emits the normative short-build reply
+plaintext layout that i2pr already expects. The defect is
+reproducible and localized to the pinned Emissary revision.
+
+Therefore, per Plan 118 Phase B Outcome 2:
+
+```text
+plan_117_local_composition           = passed-all-i2pr-production-seam-netdb
+plan_117_native_reference            = blocked-reference-defect
+plan_117_external_transport          = deferred-host-lane-unavailable
+plan_117                             = closed-for-progression-with-evidence-gap
+router_construction                  = may-continue
+next_router_construction_plan        = Plan 119 (LeaseSet2 protocol foundation)
+```
+
+The next executable plan is **Plan 119** (LeaseSet2 protocol
+foundation) under the Milestone 6 router-construction roadmap in
+[`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
+The Plan 117 evidence gap is tracked separately under the
+external acceptance debt ledger in the same roadmap. Router
+construction is not blocked on the unavailable authenticated
+external transport lane; the current `closed-for-progression` state
+keeps the native criterion visible and does not promote
+parser-only or reference-only results to interoperability
+evidence.
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
 
@@ -3510,17 +3537,19 @@ Plan 103  RouterInfo validation + bounded local NetDB     [closed]
     -> Plan 104  persistent cache + SU3 reseed trust/ingestion [closed]
      -> Plan 105  transport-neutral lookup/store/publication state machines [closed]
      -> Plan 106  daemon/bootstrap integration                 [closed]
-     -> Plan 107  Milestone 5 exploratory tunnel substrate     [closed]
-     -> Plan 108  ECIES-X25519 short record construction core   [superseded-by-plan109]
-     -> Plan 109  short-record + Noise-N conformance correction  [superseded-by-plan111]
-     -> Plan 110  multi-record preprocessing + local conformance closure [superseded-by-plan111]
-     -> Plan 111  final local short-build conformance correction [passed-final-local-short-build-conformance]
-     -> Plan 112  outbound pre-delivery closure [passed-outbound-pre-delivery-closure]
+-> Plan 107  Milestone 5 exploratory tunnel substrate     [closed]
+      -> Plan 108  ECIES-X25519 short record construction core   [superseded-by-plan109]
+      -> Plan 109  short-record + Noise-N conformance correction  [superseded-by-plan111]
+      -> Plan 110  multi-record preprocessing + local conformance closure [superseded-by-plan111]
+      -> Plan 111  final local short-build conformance correction [passed-final-local-short-build-conformance]
+      -> Plan 112  outbound pre-delivery closure [passed-outbound-pre-delivery-closure]
 -> Plan 113  inbound reference reconciliation [passed-inbound-reference-reconciliation]
       -> Plan 114  terminal routing + tunnel-chain correction    [passed-terminal-routing-chain-correction]
       -> Plan 115  canonical production I2NP bridge + Q0 native Emissary OBEP reply [passed-emissary-q0-construction-and-obep-reply-only]
       -> Plan 116  local tunnel data plane [passed-final-local-closure]
-      -> Plan 117  live exploratory/NetDB integration [ready-for-planning-or-execution]
+      -> Plan 117  live exploratory/NetDB integration [closed-for-progression-with-evidence-gap]
+      -> Plan 118  planning authority cleanup + Plan 117 disposition [closed]
+      -> Plan 119  LeaseSet2 protocol foundation [next implementation frontier]
 ```
 
 Plan 106 closed the local/bootstrap implementation phase; Plan 107
@@ -3575,19 +3604,20 @@ with `inbound_short_build = locally-reference-compatible` and
 `production_i2np_bridge = locally-conformant-no-double-prefix`
 and `independent_short_build = passed-emissary-q0-native-consumer`.
 After the Plan 116 terminal cleanup pass, the local tunnel data
-plane is `passed-final-local-closure`. Plan 117 is currently
-`native-reference-terminal-pending`: the in-tree pinned Emissary
-test reaches native OBEP admission and reply AEAD opening, then
-rejects the reference-side request-prefixed reply during strict
-i2pr Mapping decoding. Parser-only compatibility is not native
-interoperability evidence.
+plane is `passed-final-local-closure`. Plan 117 closes per Plan 118
+as `closed-for-progression-with-evidence-gap`: the in-tree pinned
+Emissary test reaches native OBEP admission and reply AEAD
+opening, then rejects the reference-side request-prefixed reply
+during strict i2pr Mapping decoding. Parser-only compatibility is
+not native interoperability evidence.
 A direct `DatabaseLookup` over NTCP2 is not accepted as a
 substitute for the standard exploratory-tunnel path. The next
-executable step is a future narrow qualified external-delivery
-checkpoint (the Plan 117 sequence), requiring a host with the
-Plan 046 rootless sealed-namespace lane or the Plan 048/049
-Multipass recovery lane runnable, before Milestone 4B external
-acceptance.
+executable plan is **Plan 119** (LeaseSet2 protocol foundation)
+under the Milestone 6 router-construction roadmap in
+[`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
+Authenticated external transport and final mixed-router certificate
+remain separate deferred evidence items tracked in the same
+roadmap's external acceptance debt ledger.
 
 ## Plan 106 daemon NetDB/bootstrap integration and Milestone 5 handoff (closed)
 

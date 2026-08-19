@@ -600,20 +600,29 @@ metadata, and both reverse indexes atomically. `RegistryRemoval` is a typed
 consumed-role result, and no `LayerKeys` clone is introduced. Duplicate slot
 and receive-id activation remains fail-closed.
 
-Plan 117's corrected native reference attempt is documented as pending: the
-pinned Emissary test reaches native OBEP admission and reply AEAD opening but
-its request-prefixed reply is rejected by i2pr's strict Mapping decoder. This
-does not change the local wire model or promote parser-only evidence to native
-interoperability.
+Plan 117 closes per Plan 118 as
+`closed-for-progression-with-evidence-gap`. The corrected in-tree
+native Emissary reference test reached native OBEP admission and
+reply AEAD opening, but the reply plaintext was rejected by i2pr's
+strict `ShortReplyRecord` decoder because the pinned Emissary
+handler emits a request-prefixed reply instead of the normative
+202-byte reply layout. The reference-side defect is localized to
+the pinned Emissary revision
+`9b43484a21d5a1291c4881cdae62a36c527f8c0f`; no upstream correction
+is available. The i2pr parser is not relaxed; publication, lookup,
+and inbound return stages are not claimed. The next executable
+plan is **Plan 119** (LeaseSet2 protocol foundation) under
+[`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md).
 
 ## Out of scope (next plans)
 
-- live mixed-router tunnel build execution against Java I2P and i2pd;
-- narrow qualified external-delivery checkpoint that carries one
-  already-correct STBM payload to an independent router;
+- live mixed-router tunnel build execution against Java I2P and i2pd
+  (deferred to a qualified external delivery lane; tracked under the
+  external acceptance debt ledger in
+  [`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md));
 - transit participation (Milestone 11);
-- destination-specific tunnel pools (Milestone 6);
-- LeaseSet publication from tunnel records;
+- destination-specific tunnel pools and LeaseSet2 publication
+  (Milestone 6, owned by Plan 119 → Plan 122);
 - legacy 528-byte ECIES build implementation beyond preserving
   existing parsing/layout types;
 - ElGamal/ECIES mixed-router construction.

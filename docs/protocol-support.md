@@ -1,11 +1,21 @@
 # Protocol support matrix
 
-Current Plan 117 override (2026-08-19): local Phase G remains passed; the
-corrected in-tree Emissary test reaches native OBEP admission and reply AEAD
-opening, then rejects the pinned reference's request-prefixed reply during
-strict i2pr Mapping decoding. Native mixed-router NetDB evidence is not
-claimed; see [`plans/117-status.md`](../plans/117-status.md). The historical
-row text below is retained for auditability.
+Current Plan 118 override (2026-08-19): Plan 117 is closed for progression
+with the typed disposition `closed-for-progression-with-evidence-gap`. The
+local Phase G production composition remains passed; the corrected in-tree
+Emissary test reaches native OBEP admission and reply AEAD opening, then
+rejects the pinned reference's request-prefixed reply during strict i2pr
+Mapping decoding. The reference-side defect is localized to the pinned
+Emissary revision
+`9b43484a21d5a1291c4881cdae62a36c527f8c0f`; Plan 118 Phase B1 confirmed
+no usable upstream correction exists, so the bounded Plan 117 native
+closure campaign is closed for progression. Native mixed-router NetDB
+evidence is not claimed. Router construction is `may-continue`. The next
+executable plan is **Plan 119** (LeaseSet2 protocol foundation) under
+[`plans/118-123-milestone6-router-construction-roadmap.md`](../plans/118-123-milestone6-router-construction-roadmap.md);
+see [`plans/117-status.md`](../plans/117-status.md) and
+[`plans/118-planning-authority-cleanup-and-plan117-disposition.md`](../plans/118-planning-authority-cleanup-and-plan117-disposition.md).
+The historical row text below is retained for auditability.
 
 This matrix is intentionally explicit: every row describes the exact evidence
 available, not just code presence. “Experimental structural subset” means
@@ -697,8 +707,14 @@ Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
       -> Plan 113  inbound reference reconciliation                        [passed-inbound-reference-reconciliation]
       -> Plan 114  terminal routing + tunnel-chain correction               [passed-terminal-routing-chain-correction]
       -> Plan 115  canonical production I2NP bridge + Q0 native Emissary OBEP reply [passed-emissary-q0-construction-and-obep-reply-only]
-      -> narrow qualified external-delivery checkpoint                     [blocked-on-future-plan115-style-pass]
-      -> return to Milestone 4B external acceptance
+      -> Plan 116  local tunnel data plane                                 [passed-final-local-closure]
+      -> Plan 117  exploratory NetDB composition                           [closed-for-progression-with-evidence-gap]
+      -> Plan 118  planning authority cleanup + Plan 117 disposition       [closed]
+      -> Plan 119  LeaseSet2 protocol foundation                           [next implementation frontier]
+      -> Plan 120  destination lifecycle and tunnel pools                  [queued]
+      -> Plan 121  ECIES-X25519 Garlic/session layer                        [queued]
+      -> Plan 122  destination routing and NetDB composition                [queued]
+      -> Plan 123  minimal streaming core                                    [queued]
 ```
 
 Plan 106 closed the local/bootstrap implementation phase; Plan 107
@@ -752,11 +768,21 @@ remain pending on a qualified external delivery lane. Milestone
 `local-foundation-complete-short-build-outbound-conformant-fixed-vectors`
 with `inbound_short_build = locally-reference-compatible`,
 `canonical_i2np_bridge = locally-conformant-no-double-prefix`, and
-`independent_short_build = passed-emissary-q0-native-consumer`;
-the next executable step remains a narrow qualified external-delivery
-checkpoint on a host where the Plan 046 rootless sealed-namespace
-lane or the Plan 048/049 Multipass recovery lane is runnable, before
-Milestone 4B external acceptance.
+`independent_short_build = passed-emissary-q0-native-consumer`.
+Plan 116 closed the local tunnel data plane
+(`passed-final-local-closure` via the
+completion/correction/terminal-cleanup sequence). Plan 117 closed
+per Plan 118 as `closed-for-progression-with-evidence-gap`: the
+local Phase G production composition remains passed, while the
+corrected in-tree native Emissary reference test rejected the
+pinned reference's request-prefixed reply during strict i2pr
+Mapping decoding; the reference-side defect is localized to the
+pinned Emissary revision, and Plan 118 Phase B1 confirmed no
+upstream correction is available. Router construction is
+`may-continue`; the next executable plan is **Plan 119**
+(LeaseSet2 protocol foundation) under the Milestone 6
+router-construction roadmap at
+[`plans/118-123-milestone6-router-construction-roadmap.md`](../plans/118-123-milestone6-router-construction-roadmap.md).
 
 ### Plan 113 inbound short-build reconciliation
 

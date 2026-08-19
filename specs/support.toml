@@ -1,7 +1,7 @@
 # Machine-readable workspace support inventory (current evidence
-# through the Plan 117 terminal native-reference correction plus the prior
-# Plan 115 canonical production I2NP bridge closure and Emissary Q0
-# construction + native OBEP reply completion; Plan 111 status is
+# through the Plan 117 disposition plus the prior Plan 115 canonical
+# production I2NP bridge closure and Emissary Q0 construction +
+# native OBEP reply completion; Plan 111 status is
 # `passed-final-local-short-build-conformance` per
 # plans/111-short-build-final-local-conformance-correction.md and
 # plans/111-status.md, Plan 112 status is
@@ -12,25 +12,27 @@
 # `passed-inbound-reference-reconciliation`, Plan 114 status is
 # `passed-terminal-routing-chain-correction`, Plan 115 status is
 # `passed-emissary-q0-construction-and-obep-reply-only`, Plan 116
-# status is `passed-final-local-closure` (terminal cleanup pass), and
-# Plan 117 current status is
-# `native-reference-terminal-pending`; the corrected in-tree Emissary test
-# reached native OBEP admission and reply AEAD opening, then rejected the
-# pinned reference's non-normative request-prefixed reply plaintext. Plan 117
-# corrective
-# closure ([plans/117-corrective-closure.md](plans/117-corrective-closure.md))
+# status is `passed-final-local-closure` (terminal cleanup pass),
+# Plan 117 status is `closed-for-progression-with-evidence-gap` per
+# Plan 118 Phase B (Outcome 2); the corrected in-tree Emissary test
+# reached native OBEP admission and reply AEAD opening, then
+# rejected the pinned reference's non-normative request-prefixed
+# reply plaintext. The pinned Emissary revision
+# `9b43484a21d5a1291c4881cdae62a36c527f8c0f` (emissary-core 0.4.0)
+# remains the reference pin; Plan 118 Phase B1 confirmed no usable
+# upstream correction exists, so the bounded Plan 117 native closure
+# campaign is closed for progression. Plan 117 corrective closure
+# ([plans/117-corrective-closure.md](plans/117-corrective-closure.md))
 # corrected four routing/framing/activation/readiness defects (C1–C4),
 # passed Phase G all-i2pr production-seam terminal trajectory,
 # achieved `passed-emissary-wire-format-compatibility` at stage
-# `h_emissary_database_lookup_parsed` against pinned Emissary revision
-# `9b43484a21d5a1291c4881cdae62a36c527f8c0f` (emissary-core 0.4.0), and
-# classified Phase I authenticated transport as
-# `deferred-host-lane-unavailable` on this host. Plan 109 and Plan 110
-# are superseded by Plan 111 for the short-build local conformance
-# surface; inbound uses the explicitly named
-# `reference-compatible-spec-text-discrepancy` policy because the
-# final-spec prose has no concrete plaintext encoding while Java I2P
-# and i2pd agree on the originator fake. Plan 114 closes four
+# `h_emissary_database_lookup_parsed`, and classified Phase I
+# authenticated transport as `deferred-host-lane-unavailable` on this
+# host. Plan 109 and Plan 110 are superseded by Plan 111 for the
+# short-build local conformance surface; inbound uses the explicitly
+# named `reference-compatible-spec-text-discrepancy` policy because
+# the final-spec prose has no concrete plaintext encoding while Java
+# I2P and i2pd agree on the originator fake. Plan 114 closes four
 # post-Plan-113 routing/composition defects: explicit outbound
 # `outbound_reply_router` and inbound `originator_hash` terminal-
 # routing fields, intermediate tunnel-id chain continuity enforced
@@ -44,9 +46,14 @@
 # 115 Q0 construction + native OBEP reply has passed locally against
 # pinned Emissary — see plans/115-status.md for the closure record,
 # digests, and pinned revision. Q1/Q2/qualified-external-delivery
-# still pending. Structural evidence may be recorded before
-# interoperability; all entries remain non-advertised until the
-# external delivery; all entries remain non-advertised.
+# still pending. Plan 118 closed the planning authority surface and
+# made the Plan 117 terminal disposition; the next executable plan
+# is **Plan 119** (LeaseSet2 protocol foundation) under
+# plans/118-123-milestone6-router-construction-roadmap.md. Router
+# construction is not blocked on the unavailable authenticated
+# external transport lane; external acceptance debt is tracked
+# separately. Structural evidence may be recorded before
+# interoperability; all entries remain non-advertised.
 schema = 1
 milestone = 5
 plan_103_implementation_floor = "plans/103-status.md"
@@ -73,6 +80,10 @@ plan_115_canonical_bridge = "plans/115-qualified-independent-short-build-consump
 plan_115_closure = "plans/115-status.md"
 plan_115_handoff = "plans/115-handoff.md"
 plan_115_117_roadmap = "plans/115-117-external-delivery-to-live-netdb-roadmap.md"
+plan_116_closure = "plans/116-status.md"
+plan_117_status = "closed-for-progression-with-evidence-gap"
+plan_118_plan_of_record = "plans/118-planning-authority-cleanup-and-plan117-disposition.md"
+plan_118_116_milestone6_roadmap = "plans/118-123-milestone6-router-construction-roadmap.md"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -488,7 +499,7 @@ scope = "required-later"
 status = "experimental"
 conformant = true
 conformance_note = "Plan 111/112 preserve local outbound conformance. Plan 113 closes inbound as `reference-compatible-spec-text-discrepancy`: the final specification mentions a creator ephemeral key in inbound plaintext but gives no serializable location, while pinned Java I2P and i2pd agree on the deployed originator fake. The real request retains fixed fields + Mapping/padding; exactly one originator fake carries `hash16 || fresh X25519 pub32 || random remainder` and is integrity-checked after reply processing. Plan 114 closes the four post-Plan-113 routing/composition defects: explicit outbound `outbound_reply_router` and inbound `originator_hash` terminal-routing fields, intermediate `hops[i].next_tunnel == hops[i+1].receive_tunnel` chain continuity enforced at both the high-level `ShortBuildPath::validate()` boundary and the public lower-level `prepare_short_build_message()` entry point, and strict outbound/inbound E2E trajectories that deterministically reach `Established`. Plan 115 Emissary Q0 construction + native OBEP reply has passed locally against pinned Emissary at 9b43484a21d5a1291c4881cdae62a36c527f8c0f: the i2pr-produced STBM is consumed by Emissary's native short-build handler, Emissary replies with `TunnelGateway` + Garlic inner message + feedback channel. This is not a strict final-spec conformance claim for the unresolved inbound creator-key sentence. Q1 (authenticated transport delivery) and Q2 (reply round-trip to `Established`) remain pending on a qualified external delivery lane. Plan 116 closed as `passed-local-tunnel-data-plane` via the Plan 116 completion/correction pass (defects `C1`–`C16`): canonical `SHA256(post_zero_record_bytes || IV)[0..4]` checksum builder/parser with distinct unfragmented vs fragmented-first wire encodings; AES-256 ECB-DEC/CBC-DEC/ECB-DEC creator inverse with OBEP applying the participant forward transform; CSPRNG-injected fresh IV per cell and random nonzero padding; `Option<EstablishedNextHop>` typed next-hop state with no `u32::MAX` / zero-hash sentinels; one-shot `EstablishedTunnel::into_extracted` material transfer; success-only `ShortBuildRegistrar::admit_material` that inserts a real `TunnelEntry` carrying registration plus `EstablishedMaterial` into the `ExploratoryPool`; inbound reply path uses the first remote IBGW router hash and receive tunnel id; and deterministic two- and three-hop outbound trajectories plus an outbound-to-inbound trajectory that round-trip exact original standard I2NP bytes through the canonical TunnelMessage + participant layer transform chain. Zero `Plan 116 provisional scaffolding` tests remain ignored. Q1/Q2/qualified-external-delivery still pending; see `plans/116-status.md` and `plans/116-completion-correction.md`."
-notes = "Plan 115 Emissary Q0 construction + native OBEP reply: passed locally against pinned Emissary at 9b43484a21d5a1291c4881cdae62a36c527f8c0f. Q1/Q2/qualified-external-delivery still pending. Plan 116 local tunnel data plane passed via the completion/correction pass; all active i2pr-tunnel tests are green. Plan 117 local production composition and Phase G remain passed; the corrected in-tree native Emissary test reaches OBEP admission and reply AEAD opening but rejects the pinned reference's request-prefixed reply plaintext during strict Mapping decode. Current authority is `native-reference-terminal-pending`; no external mixed-router evidence or support promotion is claimed."
+notes = "Plan 115 Emissary Q0 construction + native OBEP reply: passed locally against pinned Emissary at 9b43484a21d5a1291c4881cdae62a36c527f8c0f. Q1/Q2/qualified-external-delivery still pending. Plan 116 local tunnel data plane passed via the completion/correction pass; all active i2pr-tunnel tests are green. Plan 117 closed per Plan 118 as `closed-for-progression-with-evidence-gap`: local production composition (Phase G) is passed; the corrected in-tree native Emissary test reaches OBEP admission and reply AEAD opening but rejects the pinned reference's request-prefixed reply plaintext during strict Mapping decode; the reference-side defect is localized to the pinned Emissary revision and no upstream correction is available. The next executable plan is Plan 119 (LeaseSet2 protocol foundation) under the Milestone 6 router-construction roadmap; router construction is not blocked on the unavailable authenticated external transport lane."
 evidence = [
     "crates/i2pr-tunnel/src/build_crypto.rs",
     "crates/i2pr-tunnel/src/short.rs",

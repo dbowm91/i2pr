@@ -1,22 +1,42 @@
-# Plan 117 status — native reference terminal result pending
+# Plan 117 status — closed for progression with reference evidence gap
 
-- Status: **native-reference-terminal-pending**
+- Status: **closed-for-progression-with-evidence-gap**
 - Date: 2026-08-19
+- Plan-of-record: [`118-planning-authority-cleanup-and-plan117-disposition.md`](118-planning-authority-cleanup-and-plan117-disposition.md)
 - Original plan: [`117-live-exploratory-netdb-integration.md`](117-live-exploratory-netdb-integration.md)
 - First corrective closure: [`117-corrective-closure.md`](117-corrective-closure.md)
-- Current terminal correction: [`117-terminal-native-reference-correction.md`](117-terminal-native-reference-correction.md)
+- Terminal native-reference correction: [`117-terminal-native-reference-correction.md`](117-terminal-native-reference-correction.md)
 - Handoff: [`117-handoff.md`](117-handoff.md)
 - Roadmap: [`115-117-external-delivery-to-live-netdb-roadmap.md`](115-117-external-delivery-to-live-netdb-roadmap.md)
 - Predecessor Plan 116: **passed-final-local-closure**
-- Pre-correction source commit: `2c764ab6263e2407dbb62a0a767b58b5f5bb44e8`
-- Terminal-plan commit: `2c764ab6263e2407dbb62a0a767b58b5f5bb44e8`
+- Source floor: `99374cf498227cf8ab1c4ec6ec4216b5d4d2e08e`
+
+## Terminal disposition (Plan 118 Outcome 2)
+
+Plan 118 closed the planning authority surface and recorded the
+terminal disposition of Plan 117:
+
+```text
+plan_117_local_composition           = passed-all-i2pr-production-seam-netdb
+plan_117_native_reference            = blocked-reference-defect
+plan_117_external_transport          = deferred-host-lane-unavailable
+plan_117                             = closed-for-progression-with-evidence-gap
+router_construction                  = may-continue
+```
+
+The previous `native-reference-terminal-pending` state is now
+**closed-for-progression-with-evidence-gap**. The product floor
+remains valid for the next Milestone 6 plan. The exact native
+stage reached and the reference-side failure are retained as
+historical evidence; the i2pr parser is not relaxed to accept a
+non-conformant reference-side reply.
 
 ## Current authority
 
 ```text
 plan_115                              = passed-emissary-q0-construction-and-obep-reply-only
 plan_116                              = passed-final-local-closure
-plan_117                              = native-reference-terminal-pending
+plan_117_local_composition            = passed-all-i2pr-production-seam-netdb
 plan_117_c1_routing                   = passed
 plan_117_c2_transport_framing         = passed-short-transport-tunneldata
 plan_117_c3_activation_ownership      = passed-metadata-retained-secrets-once
@@ -24,14 +44,33 @@ plan_117_c4_runtime_readiness         = passed-registry-derived
 plan_117_c5_regression                = passed
 plan_117_g_local_production_seam      = passed-all-i2pr-production-seam-netdb
 plan_117_h_parser_compatibility       = passed-emissary-wire-format-compatibility
-plan_117_h_native_reference           = blocked-emissary-native-reply-layout
+plan_117_h_native_reference           = blocked-reference-defect
 plan_117_i_authenticated_transport    = deferred-host-lane-unavailable
+plan_117                             = closed-for-progression-with-evidence-gap
 Q1_authenticated_transport            = deferred
 Q2_external_return_established        = deferred
-router_construction                   = hold-on-one-native-reference-decision
+router_construction                   = may-continue
 normal_daemon_ntcp2                   = disabled-and-unenableable
 ntcp2                                 = experimental-non-advertised
 ```
+
+## Plan 118 B1 result: no upstream Emissary fix available
+
+Plan 118 Phase B1 inspected Emissary history newer than the
+pinned revision `9b43484a21d5a1291c4881cdae62a36c527f8c0f`
+specifically for the native short-build reply construction used
+by the Plan 117 temporary in-tree test. The remote master HEAD
+still equals the pinned revision; no newer usable Emissary
+revision emits the normative short-build reply plaintext layout
+that i2pr already expects.
+
+The defect is reproducible and localized to the pinned reference
+itself. Per Plan 118 Phase B, the bounded upstream-correction
+decision is exhausted; Plan 117 closes as
+`closed-for-progression-with-evidence-gap`, not as
+`passed-emissary-mixed-router-netdb`. Plan 117 does not reopen
+i2pr protocol work and does not switch to a different reference
+or a different host lane in this pass.
 
 Plan 116 remains closed. Do not reopen it for this work.
 
@@ -302,21 +341,29 @@ git diff --binary bytes = 25485
 git diff --binary sha256 = 3564319346ffb99ab9e933c2e8da0ea934f7003e8e9a1b9f69b45e6fa725eda7
 ```
 
-This is not native mixed-router NetDB evidence. The plan remains open as
-`native-reference-terminal-pending` pending a decision on the pinned
-reference's reply-layout defect or a corrected pinned reference revision.
+This is not native mixed-router NetDB evidence. The reference-side
+defect is reproducible and localized to the pinned Emissary
+revision itself; no upstream correction is available. Plan 117
+closes as `closed-for-progression-with-evidence-gap` per Plan 118
+Phase B. The next executable plan is **Plan 119** (LeaseSet2
+protocol foundation); router construction is not blocked on the
+unavailable authenticated transport lane.
 
 ---
 
 ## Native closure gate
 
-Plan 117 remains open until:
+The Plan 117 native closure gate is recorded as
+`plan_117_h_native_reference = blocked-reference-defect`. The
+minimum native evidence below was the original acceptance target
+and is retained for reference only; the gate is closed for
+progression with the documented evidence gap.
 
 ```text
-plan_117_h_native_reference = passed-emissary-mixed-router-netdb
+plan_117_h_native_reference = blocked-reference-defect   (closed for progression)
 ```
 
-Minimum native evidence:
+Original acceptance target (no longer required):
 
 ```text
 native Emissary OBEP short-build admission                = passed
@@ -359,39 +406,47 @@ Q2_external_return_established = deferred
 Do not rebuild namespaces, Multipass, Docker, VMs, or Python harnesses to change
 this status.
 
-A successful 117-N with 117-X still deferred is an accepted Plan 117 product
-closure state.
+A successful 117-N with 117-X still deferred is no longer the
+Plan 117 closure pathway. The accepted terminal disposition is
+`closed-for-progression-with-evidence-gap`; the next executable
+plan is **Plan 119**.
 
 ---
 
-## Expected final success state after the native reference decision
+## Closing state (Plan 118 disposition)
 
-After the terminal native pass succeeds:
+The terminal state after Plan 118 is:
 
 ```text
-plan_117_c1_routing                   = passed
-plan_117_c2_transport_framing         = passed-short-transport-tunneldata
-plan_117_c3_activation_ownership      = passed-metadata-retained-secrets-once
-plan_117_c4_runtime_readiness         = passed-registry-derived
-plan_117_g_local_production_seam      = passed-all-i2pr-production-seam-netdb
-plan_117_h_native_reference           = passed-emissary-mixed-router-netdb
-plan_117_h_q2_build_return            = not-proven-test-q2-bypass
-plan_117_h_floodfill_response_route   = native-TunnelDeliveryViaRoute-observed
-plan_117_i_authenticated_transport    = deferred-host-lane-unavailable
-Q1_authenticated_transport            = deferred
-Q2_external_return_established        = deferred
-plan_117                              = local-native-complete-external-deferred
-milestone4b_authenticated_external    = blocked
-router_construction                   = may-continue
-normal_daemon_ntcp2                   = disabled-and-unenableable
-ntcp2                                 = experimental-non-advertised
+plan_117_local_composition           = passed-all-i2pr-production-seam-netdb
+plan_117_native_reference            = blocked-reference-defect
+plan_117_external_transport          = deferred-host-lane-unavailable
+plan_117_c1_routing                  = passed
+plan_117_c2_transport_framing        = passed-short-transport-tunneldata
+plan_117_c3_activation_ownership     = passed-metadata-retained-secrets-once
+plan_117_c4_runtime_readiness        = passed-registry-derived
+plan_117_c5_regression               = passed
+plan_117_g_local_production_seam     = passed-all-i2pr-production-seam-netdb
+plan_117_h_parser_compatibility      = passed-emissary-wire-format-compatibility
+plan_117_h_native_reference          = blocked-reference-defect
+plan_117_i_authenticated_transport   = deferred-host-lane-unavailable
+plan_117                             = closed-for-progression-with-evidence-gap
+Q1_authenticated_transport           = deferred
+Q2_external_return_established       = deferred
+router_construction                  = may-continue
+normal_daemon_ntcp2                  = disabled-and-unenableable
+ntcp2                                = experimental-non-advertised
+next_router_construction_plan        = unblocked
 ```
 
-At that point the next router-construction plan is **not** blocked on the
-unavailable authenticated transport lane. The external evidence gap remains
-tracked separately.
+The next router-construction plan is **Plan 119** (LeaseSet2
+protocol foundation). The external evidence gap is tracked
+separately under the Milestone 6 deferred-evidence ledger in
+[`plans/118-123-milestone6-router-construction-roadmap.md`](118-123-milestone6-router-construction-roadmap.md).
 
-Until then:
+The historical `expected final success state after the native
+reference decision` block is retained below as audit context only
+and is no longer the active authoritative state.
 
 ```text
 plan_117_h_native_reference           = blocked-emissary-native-reply-layout
