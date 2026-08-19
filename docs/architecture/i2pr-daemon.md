@@ -298,7 +298,11 @@ bounded `CompositionOutcome` vocabulary
 (`NeedInboundExploratory`, `NeedOutboundExploratory`,
 `LookupReadyForTunnelDispatch`, `NoEligibleCandidates`) so the
 runtime scheduler can request the right exploratory build at every
-step.
+step. The
+[`composition_outcome_with_registry`](../daemon/src/netdb_seam.rs)
+helper derives the readiness outcome from the real
+`DataPlaneRegistry` state at the supplied deterministic time; the
+legacy caller-set readiness bits are deprecated.
 
 ### Plan 117 outbound composition (`src/outbound_lookup.rs`)
 
@@ -306,11 +310,16 @@ The outbound composition root wraps a typed `DatabaseLookupMessage`
 or `DatabaseStoreMessage` in the standard I2NP envelope through
 `i2pr-proto`, drives `OutboundGatewayRole::forward_cells` against a
 `Router`-delivery `TunnelPayloadHeader`, and packages the resulting
-`TunnelData` cells as `i2pr_transport::DeliveryRequest`s addressed
-to the outbound first hop. No hand-built STBM, no second I2NP
-codec, no direct transport-to-floodfill fallback. The composition
-hard-ceilings are `MAX_OUTBOUND_LOOKUP_CELLS` and
-`MAX_OUTBOUND_PUBLICATION_CELLS`.
+`TunnelData` cells as complete short-transport I2NP messages
+addressed to the outbound first hop. The Plan 117 corrective
+closure ([`plans/117-corrective-closure.md`](../../plans/117-corrective-closure.md))
+corrected two bugs: the ROUTER delivery target was the lookup key
+rather than the selected floodfill peer, and the raw 1028-byte
+`TunnelData` body was being placed directly in `EncodedI2npMessage`
+instead of being wrapped in a complete short-transport I2NP
+envelope. No hand-built STBM, no second I2NP codec, no direct
+transport-to-floodfill fallback. The composition hard-ceilings are
+`MAX_OUTBOUND_LOOKUP_CELLS` and `MAX_OUTBOUND_PUBLICATION_CELLS`.
 
 ### Plan 117 inbound dispatch (`src/inbound_dispatch.rs`)
 
@@ -324,6 +333,22 @@ without allocating role state. The recovered envelope ceiling is
 `MAX_RECOVERED_ENVELOPE`. `route_databasestore` and
 `route_database_search_reply` drive the Plan 105 ingestion
 helpers.
+
+### Plan 117 closure status
+
+Plan 117 corrective closure lands at commit
+`9fdfc1038f5cd018ad7a69d06fcc10400406f604` and closes as
+`local-native-complete-external-deferred`. The Phase G all-i2pr
+production-seam trajectory test drives real `EstablishedMaterial`
+through the canonical `TunnelEntry` / `EstablishedTunnel` pool and
+exercises both lookup success, wrong-target rejection,
+`DatabaseSearchReply` iteration, and publication. The Phase H
+Emissary wire-format compatibility test achieves
+`passed-emissary-wire-format-compatibility` against pinned Emissary
+revision `9b43484a21d5a1291c4881cdae62a36c527f8c0f` (`emissary-core
+0.4.0`) at stage `h_emissary_database_lookup_parsed`. Phase I
+authenticated transport is `deferred-host-lane-unavailable` on this
+host.
 
 ### Which crates are wired in today
 

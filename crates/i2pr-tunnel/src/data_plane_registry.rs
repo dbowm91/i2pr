@@ -248,6 +248,24 @@ impl DataPlaneRegistry {
         self.inbound_first_hop.remove(&local_receive);
         role
     }
+
+    /// Returns whether the registry currently holds at least one
+    /// outbound role whose role-level `is_usable` check passes at
+    /// the supplied time. The check filters out expired roles and
+    /// direction mismatches; an empty registry always returns
+    /// `false`.
+    pub fn has_usable_outbound_role(&self, now_ms: u64) -> bool {
+        self.outbound.values().any(|role| role.is_usable(now_ms))
+    }
+
+    /// Returns whether the registry currently holds at least one
+    /// inbound endpoint role whose role-level `is_usable` check
+    /// passes at the supplied time. The check filters out expired
+    /// roles and direction mismatches; an empty registry always
+    /// returns `false`.
+    pub fn has_usable_inbound_role(&self, now_ms: u64) -> bool {
+        self.inbound.values().any(|role| role.is_usable(now_ms))
+    }
 }
 
 #[cfg(test)]

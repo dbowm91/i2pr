@@ -227,14 +227,107 @@ impl fmt::Display for RegisterError {
 
 impl std::error::Error for RegisterError {}
 
+/// Public, non-secret routing metadata the pool exposes for the
+/// registered tunnel. The struct survives one-shot secret
+/// activation: the data plane registry owns the secret material,
+/// while the pool keeps the routing metadata so reply-path
+/// selection and outbound first-hop routing continue to work.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicTunnelRouting {
+    /// First remote hop router hash (for outbound dispatch, this is
+    /// the outbound first hop; for inbound tunnels, this is the
+    /// remote IBGW).
+    first_hop_router: i2pr_proto::Hash,
+    /// First remote hop receive tunnel id (for inbound tunnels,
+    /// the inbound gateway receive tunnel; for outbound, the
+    /// outbound first hop receive tunnel).
+    first_hop_receive_tunnel: TunnelId,
+    /// Local inbound endpoint receive tunnel id. Only meaningful
+    /// for inbound tunnels; outbound entries carry the zero
+    /// placeholder.
+    local_inbound_receive: TunnelId,
+}
+
+impl PublicTunnelRouting {
+    /// Constructs public routing metadata from the supplied
+    /// established material.
+    pub fn from_material(material: &EstablishedMaterial) -> Self {
+        let (peer, tunnel) = material.inbound_gateway();
+        let first_hop_router = if material.direction() == TunnelDirection::Inbound {
+            peer.hash()
+        } else if let Some(first) = material.hops().first() {
+            first.peer().hash()
+        } else {
+            i2pr_proto::Hash::from_bytes([0; 32])
+        };
+        let first_hop_receive_tunnel = if material.direction() == TunnelDirection::Inbound {
+            tunnel
+        } else if let Some(first) = material.hops().first() {
+            first.receive_tunnel()
+        } else {
+            TunnelId::new(u32::MAX).expect("nonzero")
+        };
+        Self {
+            first_hop_router,
+            first_hop_receive_tunnel,
+            local_inbound_receive: material.local_inbound_receive(),
+        }
+    }
+
+    /// Returns the first hop router hash.
+    pub const fn first_hop_router(&self) -> i2pr_proto::Hash {
+        self.first_hop_router
+    }
+
+    /// Returns the first hop receive tunnel id.
+    pub const fn first_hop_receive_tunnel(&self) -> TunnelId {
+        self.first_hop_receive_tunnel
+    }
+
+    /// Returns the local inbound receive tunnel id.
+    pub const fn local_inbound_receive(&self) -> TunnelId {
+        self.local_inbound_receive
+    }
+}
+
+/// State of the secret-bearing material bound to one pool entry.
+/// The pool keeps the entry and its public routing metadata after
+/// activation; the runtime role owner takes the secret material
+/// exactly once.
+#[derive(Debug)]
+pub enum MaterialState {
+    /// Secret material is available and has not been activated.
+    Available(EstablishedMaterial),
+    /// Secret material has been transferred to the runtime role
+    /// owner. A second activation attempt returns
+    /// [`ActivationError::AlreadyActivated`].
+    Activated,
+}
+
+impl MaterialState {
+    /// Returns whether the material is still available for
+    /// activation.
+    pub const fn is_available(&self) -> bool {
+        matches!(self, Self::Available(_))
+    }
+
+    /// Returns whether the material has been activated.
+    pub const fn is_activated(&self) -> bool {
+        matches!(self, Self::Activated)
+    }
+}
+
 /// Pool-bound entry that pairs the public `TunnelRegistration`
-/// metadata with the secret-bearing
+/// metadata and `PublicTunnelRouting` with the secret-bearing
 /// `EstablishedMaterial` the data plane consumes. Each pool slot
-/// owns exactly one entry.
+/// owns exactly one entry. After activation, the entry remains in
+/// the pool while the secret material is moved to the runtime role
+/// owner.
 #[derive(Debug)]
 pub struct TunnelEntry {
     registration: TunnelRegistration,
-    established: EstablishedMaterial,
+    routing: PublicTunnelRouting,
+    material: MaterialState,
 }
 
 impl TunnelEntry {
@@ -242,9 +335,11 @@ impl TunnelEntry {
     /// established material that came out of the build state
     /// machine.
     pub fn new(registration: TunnelRegistration, established: EstablishedMaterial) -> Self {
+        let routing = PublicTunnelRouting::from_material(&established);
         Self {
             registration,
-            established,
+            routing,
+            material: MaterialState::Available(established),
         }
     }
 
@@ -253,17 +348,24 @@ impl TunnelEntry {
         &self.registration
     }
 
-    /// Returns the established material.
-    pub fn established(&self) -> &EstablishedMaterial {
-        &self.established
+    /// Returns the public routing metadata.
+    pub const fn routing(&self) -> &PublicTunnelRouting {
+        &self.routing
     }
 
-    /// Mutable accessor for the established material. The caller
-    /// must not retain a clone of the secret material; pool
-    /// mutations are intended for one-time material transfer
-    /// seams.
-    pub fn established_mut(&mut self) -> &mut EstablishedMaterial {
-        &mut self.established
+    /// Returns the material state.
+    pub const fn material_state(&self) -> &MaterialState {
+        &self.material
+    }
+
+    /// Returns the established material when it has not yet been
+    /// activated. Returns `None` when the material is already in
+    /// the activated state.
+    pub fn available_material(&self) -> Option<&EstablishedMaterial> {
+        match &self.material {
+            MaterialState::Available(material) => Some(material),
+            MaterialState::Activated => None,
+        }
     }
 }
 
@@ -430,11 +532,14 @@ impl ExploratoryPool {
     }
 
     /// Looks up the established material for the supplied slot.
+    /// Returns `None` when the slot has already been activated
+    /// (the secret material has moved to the runtime role owner)
+    /// or when the slot is unregistered.
     pub fn established(&self, slot: TunnelSlot) -> Option<&EstablishedMaterial> {
         self.inbound
             .get(&slot)
             .or_else(|| self.outbound.get(&slot))
-            .map(|entry| entry.established())
+            .and_then(|entry| entry.available_material())
     }
 
     /// Looks up the registration for the supplied slot.
@@ -443,6 +548,15 @@ impl ExploratoryPool {
             .get(&slot)
             .or_else(|| self.outbound.get(&slot))
             .map(|entry| entry.registration())
+    }
+
+    /// Looks up the public routing metadata for the supplied slot.
+    /// Returns `None` when the slot is unregistered.
+    pub fn routing(&self, slot: TunnelSlot) -> Option<&PublicTunnelRouting> {
+        self.inbound
+            .get(&slot)
+            .or_else(|| self.outbound.get(&slot))
+            .map(|entry| entry.routing())
     }
 
     /// Inserts an inbound registration only (testing seam used by
@@ -542,26 +656,34 @@ impl ExploratoryPool {
         let lifetime = self.config.lifetime().seconds() as u64;
         let mut evicted = Vec::new();
         let mut to_remove: Vec<TunnelSlot> = Vec::new();
-        for (slot, entry) in self.inbound.iter_mut() {
-            let reg = entry.registration_mut();
-            if reg.state() != TunnelState::Established {
+        let inbound_iter = self
+            .inbound
+            .iter_mut()
+            .map(|(slot, entry)| (*slot, entry))
+            .collect::<Vec<_>>();
+        for (slot, entry) in inbound_iter {
+            if entry.registration.state() != TunnelState::Established {
                 continue;
             }
-            if now_seconds.saturating_sub(reg.created_at_seconds()) >= lifetime {
-                reg.state = TunnelState::Expired;
-                evicted.push(*slot);
-                to_remove.push(*slot);
+            if now_seconds.saturating_sub(entry.registration.created_at_seconds()) >= lifetime {
+                entry.registration.state = TunnelState::Expired;
+                evicted.push(slot);
+                to_remove.push(slot);
             }
         }
-        for (slot, entry) in self.outbound.iter_mut() {
-            let reg = entry.registration_mut();
-            if reg.state() != TunnelState::Established {
+        let outbound_iter = self
+            .outbound
+            .iter_mut()
+            .map(|(slot, entry)| (*slot, entry))
+            .collect::<Vec<_>>();
+        for (slot, entry) in outbound_iter {
+            if entry.registration.state() != TunnelState::Established {
                 continue;
             }
-            if now_seconds.saturating_sub(reg.created_at_seconds()) >= lifetime {
-                reg.state = TunnelState::Expired;
-                evicted.push(*slot);
-                to_remove.push(*slot);
+            if now_seconds.saturating_sub(entry.registration.created_at_seconds()) >= lifetime {
+                entry.registration.state = TunnelState::Expired;
+                evicted.push(slot);
+                to_remove.push(slot);
             }
         }
         for slot in to_remove {
@@ -607,32 +729,35 @@ impl ExploratoryPool {
     /// [`crate::established::EstablishedMaterial`] out of the pool
     /// and returns a typed [`crate::established::EstablishedTunnel`]
     /// the data-plane role owner can consume. The pool entry is
-    /// removed so a second activation fails closed with
+    /// **preserved**: the registration and the public routing
+    /// metadata remain in the pool so reply-path selection and
+    /// capacity accounting continue to work. The material state
+    /// transitions to [`MaterialState::Activated`] so a second
+    /// activation attempt fails closed with
     /// [`ActivationError::AlreadyActivated`].
-    ///
-    /// Activation preserves the registration metadata: callers may
-    /// still consult [`Self::inbound_registrations`] /
-    /// [`Self::outbound_registrations`] for non-secret inspection
-    /// after the slot is consumed.
     pub fn activate(
         &mut self,
         slot: TunnelSlot,
     ) -> Result<crate::established::EstablishedTunnel, ActivationError> {
         let entry = self
             .inbound
-            .remove(&slot)
-            .or_else(|| self.outbound.remove(&slot))
+            .get_mut(&slot)
+            .or_else(|| self.outbound.get_mut(&slot))
             .ok_or(ActivationError::UnknownSlot(slot))?;
-        if entry.established.is_extracted() == false {
+        let material = match std::mem::replace(&mut entry.material, MaterialState::Activated) {
+            MaterialState::Available(material) => material,
+            MaterialState::Activated => return Err(ActivationError::AlreadyActivated),
+        };
+        if !material.is_extracted() {
+            // Restore the material state and reject placeholder
+            // entries; pool integrity forbids second mutations.
+            entry.material = MaterialState::Activated;
             return Err(ActivationError::PlaceholderMaterial);
         }
-        let mut material = entry.established;
-        let tunnel = material
+        let mut material = material;
+        material
             .into_established_tunnel()
-            .expect("material is extracted");
-        // Mark the slot as Removed in the bookkeeping. The pool
-        // does not retain the secret material after activation.
-        Ok(tunnel)
+            .ok_or(ActivationError::PlaceholderMaterial)
     }
 
     /// Selects one inbound tunnel suitable to serve as a reply
@@ -643,13 +768,16 @@ impl ExploratoryPool {
     ///
     /// The selector returns the **first remote IBGW router hash
     /// and its receive tunnel id**; subsequent hops are reachable
-    /// through the established material.
+    /// through the registered public routing metadata. The selector
+    /// continues to work after the secret material has been
+    /// activated into the runtime role owner because the public
+    /// routing metadata is retained in the pool.
     pub fn select_inbound_reply_path(
         &self,
         now_seconds: u64,
     ) -> Option<Result<ReplyPath, ReplyPathError>> {
         let lifetime = self.config.lifetime().seconds() as u64;
-        let mut best: Option<&TunnelRegistration> = None;
+        let mut best: Option<&TunnelEntry> = None;
         for entry in self.inbound.values() {
             let registration = entry.registration();
             if registration.state() != TunnelState::Established {
@@ -658,21 +786,20 @@ impl ExploratoryPool {
             if now_seconds.saturating_sub(registration.created_at_seconds()) >= lifetime {
                 continue;
             }
-            let (_, _) = entry.established().inbound_gateway();
             if best.is_none()
-                || registration.created_at_seconds() < best.expect("set above").created_at_seconds()
+                || registration.created_at_seconds()
+                    < best.expect("set above").registration().created_at_seconds()
             {
-                best = Some(registration);
+                best = Some(entry);
             }
         }
         let chosen = best?;
-        let entry = self
-            .inbound
-            .values()
-            .find(|entry| entry.registration().tunnel_id() == chosen.tunnel_id())
-            .expect("entry exists for chosen registration");
-        let (router, tunnel) = entry.established().inbound_gateway();
-        Some(ReplyPath::new(router_hash_from_peer(router), tunnel.get()))
+        let routing = chosen.routing();
+        let router = RouterHash::from_hash(routing.first_hop_router());
+        Some(ReplyPath::new(
+            router,
+            routing.first_hop_receive_tunnel().get(),
+        ))
     }
 
     fn find_by_tunnel_id(&self, tunnel_id: TunnelId) -> Option<TunnelSlot> {
@@ -692,13 +819,6 @@ impl ExploratoryPool {
         let slot = TunnelSlot(self.next_slot);
         self.next_slot = self.next_slot.saturating_add(1);
         slot
-    }
-}
-
-impl TunnelEntry {
-    /// Mutable accessor for the registration. Internal helper.
-    fn registration_mut(&mut self) -> &mut TunnelRegistration {
-        &mut self.registration
     }
 }
 
@@ -804,14 +924,11 @@ impl fmt::Display for ActivationError {
 
 impl std::error::Error for ActivationError {}
 
-fn router_hash_from_peer(peer: TunnelPeer) -> RouterHash {
-    RouterHash::from_hash(peer.hash())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::ExploratoryPoolConfig;
+    use crate::data_plane_registry::{DataPlaneCapacity, DataPlaneRegistry};
 
     fn peer(value: u8) -> TunnelPeer {
         TunnelPeer::from_hash(i2pr_proto::Hash::from_bytes([value; 32]))
@@ -972,5 +1089,174 @@ mod tests {
             other => panic!("expected empty hop list, got {other:?}"),
         }
         assert_eq!(pool.inbound_len(), 0);
+    }
+
+    // ---- Plan 117 corrective closure Phase C3 regression matrix ----
+
+    fn real_inbound_material(creator: u32, local_receive: u32) -> EstablishedMaterial {
+        use crate::build_crypto::LayerKeys;
+        use crate::established::{
+            EstablishedHop, EstablishedMaterial, EstablishedNextHop, EstablishedRole,
+        };
+        let creator_id = TunnelId::new(creator).expect("id");
+        let local = TunnelId::new(local_receive).expect("id");
+        let ibgw_tunnel = TunnelId::new(creator + 0x10).expect("id");
+        let hop = EstablishedHop::with_next(
+            peer(0x20),
+            EstablishedRole::InboundGateway,
+            ibgw_tunnel,
+            LayerKeys::new([0; 32], [1; 32], [2; 32]),
+            EstablishedNextHop::new(peer(0x21), local),
+        );
+        EstablishedMaterial {
+            direction: TunnelDirection::Inbound,
+            creator_tunnel_id: creator_id,
+            hops: vec![hop],
+            created_at_seconds: 0,
+            inbound_gateway: (peer(0x20), ibgw_tunnel),
+            local_inbound_receive: local,
+            extracted: true,
+        }
+    }
+
+    fn register_real_inbound(
+        pool: &mut ExploratoryPool,
+        creator: u32,
+        local_receive: u32,
+    ) -> TunnelSlot {
+        let material = real_inbound_material(creator, local_receive);
+        let outcome = pool
+            .register_inbound_with_material(material, 0)
+            .expect("register");
+        outcome.slot()
+    }
+
+    #[test]
+    fn activate_preserves_inbound_reply_path() {
+        let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
+        let slot = register_real_inbound(&mut pool, 0x1000, 0x901);
+        let path_before = pool
+            .select_inbound_reply_path(0)
+            .expect("path present")
+            .expect("ok");
+        pool.activate(slot).expect("activate");
+        let path_after = pool
+            .select_inbound_reply_path(0)
+            .expect("path present")
+            .expect("ok");
+        assert_eq!(path_before.tunnel_id(), path_after.tunnel_id());
+        assert_eq!(
+            path_before.gateway().as_hash(),
+            path_after.gateway().as_hash()
+        );
+        // Reply-path selection must remain after activation.
+        let _ = path_after;
+    }
+
+    #[test]
+    fn activate_preserves_registration_count() {
+        let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
+        let slot = register_real_inbound(&mut pool, 0x1100, 0x902);
+        assert_eq!(pool.inbound_len(), 1);
+        pool.activate(slot).expect("activate");
+        assert_eq!(pool.inbound_len(), 1);
+    }
+
+    #[test]
+    fn activate_preserves_duplicate_identity() {
+        let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
+        let slot = register_real_inbound(&mut pool, 0x1200, 0x903);
+        pool.activate(slot).expect("activate");
+        // A duplicate registration (same tunnel id) must still be
+        // treated as a duplicate rather than a new slot.
+        let material = real_inbound_material(0x1200, 0x903);
+        let outcome = pool
+            .register_inbound_with_material(material, 0)
+            .expect("duplicate deduped");
+        assert!(matches!(outcome, RegisterOutcome::Duplicate { .. }));
+    }
+
+    #[test]
+    fn second_activation_returns_already_activated() {
+        let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
+        let slot = register_real_inbound(&mut pool, 0x1300, 0x904);
+        pool.activate(slot).expect("first");
+        let error = pool.activate(slot).expect_err("second must fail closed");
+        assert_eq!(error, ActivationError::AlreadyActivated);
+    }
+
+    #[test]
+    fn activated_entry_expires_normally() {
+        let config = ExploratoryPoolConfig::try_new(2, 2, 2, 60, 1, 4).expect("config");
+        let mut pool = ExploratoryPool::new(config);
+        let slot = register_real_inbound(&mut pool, 0x1400, 0x905);
+        pool.activate(slot).expect("activate");
+        let evicted = pool.advance_time(60);
+        assert_eq!(evicted, vec![slot]);
+        assert_eq!(pool.inbound_len(), 0);
+    }
+
+    #[test]
+    fn activated_entry_mark_failed_removes_registration() {
+        let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
+        let slot = register_real_inbound(&mut pool, 0x1500, 0x906);
+        pool.activate(slot).expect("activate");
+        let removed = pool.mark_failed(slot).expect("removed");
+        assert_eq!(removed.slot(), slot);
+        assert_eq!(pool.inbound_len(), 0);
+    }
+
+    #[test]
+    fn pool_eviction_can_remove_matching_registry_role() {
+        // The pool and the registry cooperate: when the pool
+        // evicts an entry, the registry can drop the corresponding
+        // role by slot.
+        let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
+        let slot = register_real_inbound(&mut pool, 0x1600, 0x907);
+        let activated = pool.activate(slot).expect("activate");
+        let local_receive = activated.local_inbound_receive();
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
+        registry
+            .activate_inbound(activated, 16, 4096, 60_000, 0, 60_000)
+            .expect("registry activate");
+        assert_eq!(registry.inbound_len(), 1);
+        let _ = pool.mark_failed(slot);
+        let removed = registry.remove_inbound(local_receive);
+        assert!(removed.is_some());
+        assert_eq!(registry.inbound_len(), 0);
+    }
+
+    #[test]
+    fn activation_transfers_secret_material_once() {
+        let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
+        let slot = register_real_inbound(&mut pool, 0x1700, 0x908);
+        // First activation succeeds and the entry remains with
+        // MaterialState::Activated.
+        let tunnel = pool.activate(slot).expect("activate");
+        assert_eq!(tunnel.direction(), TunnelDirection::Inbound);
+        let entry = pool.routing(slot).expect("routing preserved");
+        assert_eq!(entry.first_hop_router(), peer(0x20).hash());
+    }
+
+    #[test]
+    fn unknown_slot_activation_returns_unknown_slot() {
+        let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
+        let error = pool
+            .activate(TunnelSlot::from_raw(0xFFFF))
+            .expect_err("must reject");
+        assert_eq!(
+            error,
+            ActivationError::UnknownSlot(TunnelSlot::from_raw(0xFFFF))
+        );
+    }
+
+    #[test]
+    fn public_routing_metadata_is_derived_from_established_material() {
+        let mut pool = ExploratoryPool::new(ExploratoryPoolConfig::balanced());
+        let slot = register_real_inbound(&mut pool, 0x1800, 0x909);
+        let routing = pool.routing(slot).expect("routing");
+        assert_eq!(routing.first_hop_router(), peer(0x20).hash());
+        assert_eq!(routing.first_hop_receive_tunnel().get(), 0x1810);
+        assert_eq!(routing.local_inbound_receive().get(), 0x909);
     }
 }

@@ -36,6 +36,7 @@ expected = {
         "i2pr-runtime",
         "i2pr-storage",
         "i2pr-transport",
+        "i2pr-tunnel",
     },
     "i2pr-runtime": {
         "i2pr-core", "i2pr-transport", "i2pr-transport-ntcp2"

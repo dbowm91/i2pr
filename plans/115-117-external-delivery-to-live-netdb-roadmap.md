@@ -6,8 +6,7 @@
 - Parent roadmap: [`000-mvp-roadmap.md`](000-mvp-roadmap.md).
 - Plan 115 independent native short-build Q0: **passed**.
 - Plan 116 local TunnelData data plane: **passed-final-local-closure**.
-- Plan 117 exploratory/NetDB composition: **corrective-closure-required**.
-- Original Plan 117: [`117-live-exploratory-netdb-integration.md`](117-live-exploratory-netdb-integration.md).
+- Plan 117 exploratory/NetDB composition: **local-native-complete-external-deferred**.
 - Corrective Plan 117: [`117-corrective-closure.md`](117-corrective-closure.md).
 - Plan 117 handoff: [`117-handoff.md`](117-handoff.md).
 - Plan 117 status: [`117-status.md`](117-status.md).
@@ -20,16 +19,20 @@ The sequence deliberately separates protocol construction, local router function
 plan_115                              = passed-emissary-q0-construction-and-obep-reply-only
 Q0_native_emissary                    = passed
 plan_116                              = passed-final-local-closure
-plan_117                              = corrective-closure-required
-plan_117_local_composition            = pending-corrective-closure
-plan_117_native_reference             = pending
-plan_117_authenticated_transport      = deferred-until-local-native-pass
+plan_117                              = local-native-complete-external-deferred
+plan_117_c1_routing                   = passed
+plan_117_c2_transport_framing         = passed-short-transport-tunneldata
+plan_117_c3_activation_ownership      = passed-metadata-retained-secrets-once
+plan_117_c4_runtime_readiness         = passed-registry-derived
+plan_117_g_local_production_seam      = passed-all-i2pr-production-seam-netdb
+plan_117_h_native_reference           = passed-emissary-wire-format-compatibility
+plan_117_i_authenticated_transport    = deferred-host-lane-unavailable
 Q1_authenticated_transport            = deferred
 Q2_external_return_established        = deferred
 normal_daemon_ntcp2                   = disabled-and-unenableable
 ntcp2                                 = experimental-non-advertised
-router_construction                   = active-plan117-current-line
-next_roadmap_plan                     = blocked-until-plan117-local-native-closure
+router_construction                   = may-continue
+next_roadmap_plan                     = blocked-until-external-delivery-lane-available
 ```
 
 ---

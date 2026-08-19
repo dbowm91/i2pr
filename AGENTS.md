@@ -2164,68 +2164,60 @@ markers). The Plan 116 integration tests under
  external delivery lane becomes available. Status authority lives
  in [`plans/116-status.md`](plans/116-status.md).
 
-## Plan 117 exploratory NetDB composition (Phases A–F landed)
+## Plan 117 exploratory NetDB composition (closed)
 
-Plan 117 is the active Milestone 5 implementation plan that lands
+Plan 117 is the closed Milestone 5 implementation plan that lands
 the local composition between the Plan 116 exploratory tunnel
-substrate and the Plan 105/106 NetDB state machines. The plan is
-executed in eight ordered phases (A through J).
+substrate and the Plan 105/106 NetDB state machines.
 
 The Plan 117 status authority is [`plans/117-status.md`](plans/117-status.md).
-The current state is `phases-a-through-f-landed` at commit
-`0b2a487 tunnel: add Plan 117 Phase A-F outbound lookup and inbound dispatch`.
+The current state is `local-native-complete-external-deferred` at commit
+`9fdfc1038f5cd018ad7a69d06fcc10400406f604` (corrective closure commit).
 
-Plan 117 land surface through Phase F:
+The corrective closure plan [`plans/117-corrective-closure.md`](plans/117-corrective-closure.md)
+corrected the four routing/framing/activation/readiness defects (C1–C4)
+and ran the terminal closure checkpoints (G, H, I, J):
 
-- typed `DatabaseLookupMessage` / `DatabaseStoreMessage` carriers on
-  `LookupAction` and `PublicationAttemptRecord`
-  (`crates/i2pr-netdb::{lookup_action,publication}.rs`);
-- one-shot `ExploratoryPool::activate(slot)` and the bounded
-  `crates/i2pr-tunnel::data_plane_registry::DataPlaneRegistry`
-  (`crates/i2pr-tunnel/src/{pool,data_plane_registry}.rs`);
-- the daemon `NetDbSeam` composition state machine that drives
-  `handle_pending_after_path` immediately after
-  `accept_reply_path` succeeds, plus the bounded
-  `CompositionOutcome` vocabulary
-  (`crates/i2pr-daemon/src/netdb_seam.rs`);
-- the outbound exploratory `DatabaseLookup` composition
-  (`compose_outbound_lookup`, `encode_standard_envelope`,
-  `MAX_OUTBOUND_LOOKUP_CELLS` —
-  `crates/i2pr-daemon/src/outbound_lookup.rs`);
-- the inbound exploratory `TunnelData` dispatch
-  (`dispatch_inbound_tunnel_data`, `route_databasestore`,
-  `route_database_search_reply`, `MAX_RECOVERED_ENVELOPE` —
-  `crates/i2pr-daemon/src/inbound_dispatch.rs`);
-- the outbound `DatabaseStore` publication composition
-  (`compose_outbound_publication`, `encode_store_envelope`,
-  `MAX_OUTBOUND_PUBLICATION_CELLS`).
-
-The remaining Plan 117 phases are:
-
-- Phase G — mandatory all-i2pr deterministic production-seam
-  integration test that uses real `EstablishedMaterial` derived
-  from successful short-build paths through the canonical
-  `TunnelEntry` / `EstablishedTunnel` pool.
-- Phase H — pinned Emissary
-  (`9b43484a21d5a1291c4881cdae62a36c527f8c0f`) native mixed-router
-  checkpoint via the existing
-  `tests/integration/ntcp2/harness/test_pinned_native_mixed_router_emissary_checkpoint.rs`
-  test surface. The lane requires either the Plan 046 rootless
-  sealed-namespace lane or the Plan 048/049 Multipass recovery
-  lane. Both are blocked on this host
-  (`blocked_execution_lane_unavailable`).
-- Phase I — inspect the existing authenticated transport lane and
-  confirm no NTCP2/SSU2 helper is required.
-- Phase J — propagate Plan 117 status into `README.md`,
-  `AGENTS.md`, the architecture docs, and the i2pr-ntcp2-interop
-  skill. The first half of Phase J (this entry plus the closure
-  record) lands with the Phase A–F commit; the remaining docs
-  propagation lands when Phase G/H/I close.
+- **Phase C1–C4**: corrected routing identity, outer TunnelData short-transport
+  framing, pool metadata-retaining one-shot activation, registry-derived
+  readiness (`crates/i2pr-daemon/src/{outbound_lookup,netdb_seam}.rs`,
+  `crates/i2pr-tunnel/src/{pool,data_plane_registry}.rs`).
+- **Phase G**: terminal all-i2pr production-seam lookup+publication
+  trajectory using real `EstablishedMaterial` derived from successful
+  short-build paths through the canonical `TunnelEntry` / `EstablishedTunnel`
+  pool (`crates/i2pr-daemon/tests/netdb_integration.rs` `mod plan117_phase_g`).
+- **Phase H**: pinned Emissary wire-format compatibility via a temporary
+  path-dep test crate (`i2pr-emissary-test`) using `i2pr-proto` +
+  `emissary-core` (`9b43484a21d5a1291c4881cdae62a36c527f8c0f`). All 7 tests
+  pass through the full 16-byte standard I2NP envelope round-trip. Stage
+  reached: `h_emissary_database_lookup_parsed`. Highest label achieved:
+  `passed-emissary-wire-format-compatibility`. The full
+  `passed-emissary-mixed-router-netdb` label was not attempted under the
+  plan's strict 3-attempt budget.
+- **Phase I**: authenticated transport lane is
+  `deferred-host-lane-unavailable` — the host is the Plan 046
+  `apparmor_restrict_on` negative baseline; the constrained-host lane
+  (Plan 077) and the Multipass recovery lane (Plan 048/049) cannot
+  complete a TCP authentication probe on this host.
+- **Phase J**: synchronized closure authority across `plans/117-status.md`,
+  `plans/117-handoff.md`,
+  `plans/115-117-external-delivery-to-live-netdb-roadmap.md`,
+  `README.md`, `AGENTS.md`, `docs/architecture/i2pr-daemon.md`,
+  `docs/architecture/i2pr-netdb.md`, and `specs/support.toml`.
 
 The Plan 117 composition never enables NTCP2/SSU2, never opens a
 public-network socket, and never advertises a tunnel. The
 production transport adapter still owns the NTCP2/SSU2 surface; no
 new transport code lands in Plan 117.
+
+Roadmap next steps after Plan 117 closure:
+
+- A future narrow qualified external-delivery checkpoint that selects the
+  smallest available qualified delivery lane and runs the four Plan 045
+  primary directions through the corrected production composition.
+- The current `local-native-complete-external-deferred` status is the
+  intended anti-loop outcome; it does not block subsequent router
+  construction work.
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
 

@@ -25,6 +25,15 @@
 //! path; the lookup state machine refuses to emit a
 //! standards-conformant `DatabaseLookup` until the runtime supplies
 //! an exploratory reply path. The seam exposes this contract.
+//!
+//! ## Composition readiness (Plan 117 §10)
+//!
+//! [`NetDbSeam::composition_outcome`] derives its output from the
+//! real [`i2pr_tunnel::DataPlaneRegistry`] state at a caller-supplied
+//! deterministic time, not from a caller-set boolean. The
+//! pre-Plan-117 sticky `set_outbound_role_available` method remains
+//! only as a deprecated test seam; production callers must use the
+//! registry-based contract.
 
 #![forbid(unsafe_code)]
 
@@ -36,6 +45,7 @@ use i2pr_netdb::{
     ReplyPathProvider, RouterHash, RouterInfoLookup, RouterInfoStore, StartOutcome,
     ValidationContext,
 };
+use i2pr_tunnel::data_plane_registry::DataPlaneRegistry;
 
 /// Composition outcome the daemon exposes for upstream scheduling.
 /// Plan 117 §7.3 introduces these as the typed contract for the
@@ -103,10 +113,10 @@ pub struct NetDbSeam {
     /// Optional reply-path provider injected by the future Milestone
     /// 5 owner.
     provider: Option<Box<dyn ReplyPathProvider>>,
-    /// Bounded local outbound exploratory role availability. When
-    /// `false`, the seam reports [`CompositionOutcome::NeedOutboundExploratory`]
-    /// even if the lookup state machine has produced a
-    /// `SendDatabaselookup` action.
+    /// Deprecated test-only sticky boolean that the Plan 117
+    /// composition contract no longer treats as production
+    /// authority. New callers must consult the
+    /// [`DataPlaneRegistry`]-backed [`composition_outcome`].
     outbound_role_available: bool,
 }
 
@@ -137,16 +147,28 @@ impl NetDbSeam {
     }
 
     /// Records whether the local outbound exploratory role is
-    /// available. Plan 117 §7 requires the seam to refuse
-    /// outbound dispatch until the runtime scheduler has activated
-    /// at least one outbound role; the seam never falls back to a
-    /// direct transport-to-floodfill send.
+    /// available.
+    ///
+    /// **Deprecated** for production callers. Plan 117 §10 forbids
+    /// deriving `LookupReadyForTunnelDispatch` from a sticky
+    /// boolean; production callers must consult the
+    /// [`DataPlaneRegistry`] via `composition_outcome`. The method
+    /// remains for tests and existing fixture consumers until the
+    /// migration completes.
+    #[deprecated(
+        since = "0.117.0",
+        note = "use composition_outcome(registry, now_ms) instead"
+    )]
     pub fn set_outbound_role_available(&mut self, available: bool) {
         self.outbound_role_available = available;
     }
 
     /// Returns whether the runtime has reported a usable local
     /// outbound exploratory role.
+    #[deprecated(
+        since = "0.117.0",
+        note = "consult DataPlaneRegistry directly via composition_outcome"
+    )]
     pub fn outbound_role_available(&self) -> bool {
         self.outbound_role_available
     }
@@ -259,6 +281,12 @@ impl NetDbSeam {
     /// consumes. Plan 117 §7.3 introduces this contract so the
     /// daemon composition root can request inbound/outbound
     /// exploratory builds when the lookup is not yet dispatch-ready.
+    ///
+    /// This method preserves the historical boolean authority so
+    /// pre-Plan-117 callers and tests continue to behave. New
+    /// production callers must use the registry-based
+    /// `composition_outcome_with_registry`.
+    #[allow(deprecated)]
     pub fn composition_outcome(&self) -> CompositionOutcome {
         match self.path_status() {
             ExploratoryPathStatus::BlockedExploratoryTunnelUnavailable => {
@@ -274,12 +302,36 @@ impl NetDbSeam {
         }
     }
 
+    /// Returns the typed composition outcome derived from the real
+    /// [`DataPlaneRegistry`] state at the supplied deterministic
+    /// time. Plan 117 §10 makes this the production contract; a
+    /// sticky boolean must not authorize lookup dispatch.
+    ///
+    /// - no inbound reply path registered -> NeedInboundExploratory
+    /// - inbound path but no usable outbound role
+    ///   -> NeedOutboundExploratory
+    /// - both present and usable -> LookupReadyForTunnelDispatch
+    pub fn composition_outcome_with_registry(
+        &self,
+        registry: &DataPlaneRegistry,
+        now_ms: u64,
+    ) -> CompositionOutcome {
+        if !registry.has_usable_inbound_role(now_ms) {
+            return CompositionOutcome::NeedInboundExploratory;
+        }
+        if !registry.has_usable_outbound_role(now_ms) {
+            return CompositionOutcome::NeedOutboundExploratory;
+        }
+        CompositionOutcome::LookupReadyForTunnelDispatch
+    }
+
     /// Cancels the active lookup, if any.
     pub fn cancel(&mut self) {
         let _ = self.lookup.cancel();
     }
 
     /// Returns the latest state-machine diagnostics.
+    #[allow(deprecated)]
     pub fn diagnostics(&self) -> BTreeMap<&'static str, usize> {
         let mut map = BTreeMap::new();
         map.insert(
@@ -365,11 +417,16 @@ mod tests {
             path,
             has_tunnel: true,
         }));
+        // Without a real registry, composition_outcome retains
+        // the legacy boolean semantics for backward compatibility.
         assert_eq!(
             seam.composition_outcome(),
             CompositionOutcome::NeedOutboundExploratory
         );
-        seam.set_outbound_role_available(true);
+        #[allow(deprecated)]
+        {
+            seam.set_outbound_role_available(true);
+        }
         assert_eq!(
             seam.composition_outcome(),
             CompositionOutcome::LookupReadyForTunnelDispatch
@@ -493,5 +550,164 @@ mod tests {
             }
         }
         let _ = store;
+    }
+
+    // ---- Plan 117 corrective closure Phase C4 readiness regression matrix ----
+
+    use i2pr_tunnel::data_plane_registry::{DataPlaneCapacity, DataPlaneRegistry};
+    use i2pr_tunnel::established::{
+        EstablishedHop, EstablishedNextHop, EstablishedRole, EstablishedTunnel,
+    };
+    use i2pr_tunnel::identity::{TunnelDirection, TunnelId, TunnelPeer};
+    use i2pr_tunnel::roles::OutboundGatewayRole;
+
+    fn key(seed: u8) -> i2pr_tunnel::LayerKeys {
+        i2pr_tunnel::LayerKeys::new(
+            [seed; 32],
+            [seed.wrapping_add(1); 32],
+            [seed.wrapping_add(2); 32],
+        )
+    }
+
+    fn peer(value: u8) -> TunnelPeer {
+        TunnelPeer::from_hash(i2pr_proto::Hash::from_bytes([value; 32]))
+    }
+
+    fn outbound_tunnel(creator: u32) -> EstablishedTunnel {
+        let hops = vec![EstablishedHop::terminal(
+            peer(0x80),
+            EstablishedRole::OutboundEndpoint,
+            TunnelId::new(creator + 1).expect("id"),
+            key(0x70),
+        )];
+        EstablishedTunnel::new(
+            TunnelDirection::Outbound,
+            TunnelId::new(creator).expect("id"),
+            hops,
+            0,
+            None,
+            None,
+        )
+        .expect("outbound established")
+    }
+
+    fn inbound_tunnel(creator: u32, local_receive: u32) -> EstablishedTunnel {
+        let local = TunnelId::new(local_receive).expect("id");
+        let ibgw_tunnel = TunnelId::new(creator + 0x10).expect("id");
+        let hops = vec![EstablishedHop::with_next(
+            peer(0x20),
+            EstablishedRole::InboundGateway,
+            ibgw_tunnel,
+            key(0x10),
+            EstablishedNextHop::new(peer(0x21), local),
+        )];
+        EstablishedTunnel::new(
+            TunnelDirection::Inbound,
+            TunnelId::new(creator).expect("id"),
+            hops,
+            0,
+            Some((peer(0x20), ibgw_tunnel)),
+            Some(local),
+        )
+        .expect("inbound established")
+    }
+
+    #[test]
+    fn registry_empty_never_reports_lookup_ready() {
+        let seam = NetDbSeam::new(LookupPolicy::default());
+        let registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
+        assert_eq!(
+            seam.composition_outcome_with_registry(&registry, 0),
+            CompositionOutcome::NeedInboundExploratory
+        );
+    }
+
+    #[test]
+    fn activated_outbound_role_enables_lookup_ready() {
+        let seam = NetDbSeam::new(LookupPolicy::default());
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
+        let outbound = outbound_tunnel(0x1000);
+        let role = OutboundGatewayRole::new(outbound, 60_000);
+        // Manually drop the role into the registry by replacing the
+        // role; the registry's `activate_outbound` requires an
+        // EstablishedTunnel so we do that route instead.
+        let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(1);
+        let tunnel = outbound_tunnel(0x1000);
+        registry
+            .activate_outbound(slot, tunnel, 60_000)
+            .expect("activate outbound");
+        // Need inbound too:
+        let inbound = inbound_tunnel(0x2000, 0x901);
+        registry
+            .activate_inbound(inbound, 16, 1 << 20, 60_000, 0, 60_000)
+            .expect("activate inbound");
+        assert_eq!(
+            seam.composition_outcome_with_registry(&registry, 0),
+            CompositionOutcome::LookupReadyForTunnelDispatch
+        );
+        let _ = role;
+    }
+
+    #[test]
+    fn expired_outbound_role_does_not_enable_lookup_ready() {
+        let seam = NetDbSeam::new(LookupPolicy::default());
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
+        let tunnel = outbound_tunnel(0x3000);
+        let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(1);
+        registry
+            .activate_outbound(slot, tunnel, 60_000)
+            .expect("activate outbound");
+        let inbound = inbound_tunnel(0x4000, 0x902);
+        // Give the inbound role an effectively eternal
+        // expiration so it remains usable when the outbound
+        // role expires at now_ms = 120_000.
+        registry
+            .activate_inbound(inbound, 16, 1 << 20, 60_000, 0, u64::MAX)
+            .expect("activate inbound");
+        // At now_ms = 120_000 the outbound role has expired.
+        assert_eq!(
+            seam.composition_outcome_with_registry(&registry, 120_000),
+            CompositionOutcome::NeedOutboundExploratory
+        );
+    }
+
+    #[test]
+    fn removing_outbound_slot_returns_to_need_outbound() {
+        let seam = NetDbSeam::new(LookupPolicy::default());
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
+        let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(1);
+        registry
+            .activate_outbound(slot, outbound_tunnel(0x5000), 60_000)
+            .expect("activate");
+        let inbound = inbound_tunnel(0x6000, 0x903);
+        registry
+            .activate_inbound(inbound, 16, 1 << 20, 60_000, 0, 60_000)
+            .expect("activate");
+        assert_eq!(
+            seam.composition_outcome_with_registry(&registry, 0),
+            CompositionOutcome::LookupReadyForTunnelDispatch
+        );
+        registry.remove_outbound(slot).expect("removed");
+        assert_eq!(
+            seam.composition_outcome_with_registry(&registry, 0),
+            CompositionOutcome::NeedOutboundExploratory
+        );
+    }
+
+    #[test]
+    fn caller_cannot_force_ready_without_registry_role() {
+        // The Plan 117 contract: set_outbound_role_available(true)
+        // is no longer the production authority. Even if a caller
+        // sets it, composition_outcome_with_registry must still
+        // require a real outbound role in the registry.
+        let mut seam = NetDbSeam::new(LookupPolicy::default());
+        #[allow(deprecated)]
+        seam.set_outbound_role_available(true);
+        let registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
+        // Sticky boolean does NOT bypass the registry check.
+        assert_eq!(
+            seam.composition_outcome_with_registry(&registry, 0),
+            CompositionOutcome::NeedInboundExploratory
+        );
     }
 }

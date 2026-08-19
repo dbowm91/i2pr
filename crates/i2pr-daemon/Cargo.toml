@@ -36,6 +36,8 @@ i2pr-tunnel = { path = "../i2pr-tunnel" }
 rand_chacha = "0.9"
 rand_core = "0.9"
 tempfile = "3.14"
+x25519-dalek.workspace = true
+zeroize.workspace = true
 
 [[bin]]
 name = "i2pr"

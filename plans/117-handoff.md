@@ -1,6 +1,6 @@
 # Plan 117 handoff — corrective closure
 
-- Status: **corrective-closure-ready-for-execution**
+- Status: **local-native-complete-external-deferred**
 - Date: 2026-08-18
 - Corrective plan of record: [`117-corrective-closure.md`](117-corrective-closure.md)
 - Original Plan 117: [`117-live-exploratory-netdb-integration.md`](117-live-exploratory-netdb-integration.md)
@@ -8,6 +8,7 @@
 - Predecessor: [`116-status.md`](116-status.md) — **passed-final-local-closure**
 - Roadmap: [`115-117-external-delivery-to-live-netdb-roadmap.md`](115-117-external-delivery-to-live-netdb-roadmap.md)
 - Current implementation floor: `1608f5e5be3d2003b82340fb0293776087c3672c`
+- Corrective closure commit: `9fdfc1038f5cd018ad7a69d06fcc10400406f604`
 - Pinned independent reference: upstream Emissary `9b43484a21d5a1291c4881cdae62a36c527f8c0f` (`emissary-core 0.4.0`)
 
 ## Start here

@@ -99,18 +99,30 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
   and the fragmented cases, including the out-of-order
   fragmented trajectory (`T3`) (`i2pr-tunnel`; see
   [`plans/116-status.md`](plans/116-status.md))
- - Plan 117 Phases A–F exploratory NetDB composition: typed
-  `DatabaseLookupMessage` and `DatabaseStoreMessage` carriers on
-  `LookupAction` and `PublicationAttemptRecord`, the one-shot
-  `ExploratoryPool::activate` seam, the bounded
-  `DataPlaneRegistry` for activated local roles, the daemon
-  `NetDbSeam` composition state machine, the outbound
-  `OutboundGatewayRole` `DatabaseLookup`/`DatabaseStore`
-  tunnel-data composition (Plan 117 §8/§10), and the
-  inbound `LocalInboundEndpointRole` `TunnelData` dispatch
-  (`crates/i2pr-daemon::inbound_dispatch`,
-  `crates/i2pr-daemon::outbound_lookup`;
-  see [`plans/117-live-exploratory-netdb-integration.md`](plans/117-live-exploratory-netdb-integration.md))
+- Plan 117 exploratory NetDB composition (closed):
+   `local-native-complete-external-deferred`. Phases A–F land
+   the typed `DatabaseLookupMessage` and `DatabaseStoreMessage`
+   carriers on `LookupAction` and `PublicationAttemptRecord`,
+   the metadata-retaining one-shot `ExploratoryPool::activate`
+   seam, the bounded `DataPlaneRegistry` for activated local
+   roles, the daemon `NetDbSeam` composition state machine, the
+   outbound `OutboundGatewayRole` `DatabaseLookup`/`DatabaseStore`
+   tunnel-data composition, and the inbound
+   `LocalInboundEndpointRole` `TunnelData` dispatch
+   (`crates/i2pr-daemon::inbound_dispatch`,
+   `crates/i2pr-daemon::outbound_lookup`).
+   The corrective closure plan
+   ([`plans/117-corrective-closure.md`](plans/117-corrective-closure.md))
+   corrected the four routing/framing/activation/readiness
+   defects (C1–C4), proved the all-i2pr production-seam
+   trajectory with real `EstablishedMaterial` (Phase G),
+   achieved `passed-emissary-wire-format-compatibility` against
+   pinned Emissary revision
+   `9b43484a21d5a1291c4881cdae62a36c527f8c0f` (Phase H),
+   classified Phase I as
+   `deferred-host-lane-unavailable`, and synchronized the closure
+   authority across `README.md`, `AGENTS.md`, and the
+   architecture docs (Phase J).
  - Multi-record short tunnel-build construction: randomized slot
   allocation, originator + padding fake records, raw ChaCha20
   preprocessing/postprocessing (slot byte at offset 4 of the
