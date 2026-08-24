@@ -27,6 +27,22 @@ The new `routing` module owns `DestinationRouting`, `LeaseSelector`,
 per-destination application queue. The router-delivery seam produces
 `OBGWRouterDelivery` cells for the future transport adapter; the
 
+Plan 124
+([Plan 124](../plans/124-m6-plan122-destination-routing-corrective-closure.md))
+corrects the Plan 122 composition defect where `compose_outbound_delivery`
+built an ECIES Garlic envelope but fed the plaintext inner I2NP `Data`
+envelope into the outbound tunnel role. The corrected composition
+wraps the encrypted envelope in an `I2npBody::Garlic` carrier and feeds
+the standard-encoded I2NP Garlic message bytes into the outbound tunnel
+data plane. `OutboundDeliveryPlan` exposes `garlic_i2np_bytes: Vec<u8>`
+as the canonical carrier; `inner_envelope_bytes` is retained for
+diagnostic comparison only. The eleven deterministic tests in
+`crates/i2pr-client/tests/plan124_trajectory.rs` cover Phases A–G of the
+plan, including the canonical
+`authenticated-router-link-bypassed-local-seam` boundary, byte-identity
+regression at the OBEP, and successful A → B → A New Session trajectory
+through real destination-owned outbound and inbound tunnel roles.
+
 Plan 123 layers the first I2P Streaming core on top of Plan 122
 ([Plan 123](../plans/123-m6-minimal-streaming-core.md)). The new
 `streaming` module owns `StreamingManager`, the per-destination
@@ -38,10 +54,12 @@ event surface. The wire codec is supplied by the new
 RESET, `build_signature_preimage`, and the protocol-6 `ClientPayload`
 envelope). Plan 123 composes with `compose_outbound_delivery` for
 outbound composition and `DestinationDispatcher` for inbound
-routing; it never owns sockets, timers, or DNS. The future Plan 124
-will add the runtime adapter that hands `TransportSendRequest` into
-the I2P transport layer and feeds inbound envelopes back through
-`process_inbound_envelope`.
+routing; it never owns sockets, timers, or DNS. Plan 123 remains
+`provisional-awaiting-plan125-correction` until Plan 125 corrects the
+`ClientPayload` framing (canonical RFC 1952 gzip, no SHA-256 prefix,
+no custom compressed-length prefix) and the connection-establishment
+state machine (no optimistic local Established before peer SYN
+response).
 authenticated-router link between an outbound endpoint and the remote
 inbound gateway remains the only transport omission.
 
@@ -75,12 +93,13 @@ i2pr-client::streaming
     -> inbound routing: i2pr-client::dispatch::DestinationDispatcher (Plan 122)
 ```
 
-The streaming layer is runtime-neutral: it composes with Plan 122's
-`compose_outbound_delivery` for outbound composition and Plan 122's
-`DestinationDispatcher` for inbound routing. It never owns sockets,
-timers, or DNS. The future Plan 124 will add the runtime adapter that
-hands the typed `TransportSendRequest` stream into the I2P transport
-layer and feeds inbound envelopes back through `process_inbound_envelope`.
+The streaming layer is runtime-neutral: it composes with Plan 124's
+corrected `compose_outbound_delivery` for outbound composition and
+Plan 124's dispatcher binding for inbound routing. It never owns
+sockets, timers, or DNS. Plan 125 (Streaming protocol-6 framing
+correction + reply round-trip) is the next executable plan and
+restores the canonical RFC 1952 gzip framing and the
+connection-establishment state machine.
 
 `i2pr-client` is **not** allowed to depend on `i2pr-daemon`; the daemon is
 the future composition root, not a client library. `i2pr-tunnel` and
@@ -109,7 +128,8 @@ crates/i2pr-client/
 └── tests/
     ├── plan120_trajectory.rs   Plan 120 §12 deterministic local trajectory
     ├── plan121_trajectory.rs   Plan 121 §16 deterministic local NS -> NSR -> ES trajectory
-    └── plan122_trajectory.rs   Plan 122 §13 deterministic local two-destination composition
+    ├── plan122_trajectory.rs   Plan 122 §13 deterministic local two-destination composition
+    └── plan124_trajectory.rs   Plan 124 Phases A–G corrected destination-routing trajectory
 ```
 
 ## Identity ownership

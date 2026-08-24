@@ -12,7 +12,7 @@ use i2pr_client::{
     DestinationConfig, DestinationIdentity, DestinationOutboundRole, DestinationPayload,
     DestinationRouting, DestinationRoutingConfig, DestinationTunnelPool, EciesSessionConfig,
     EciesSessionManager, LeaseSelector, LeaseSetLifecycle, OutboundRequest,
-    build_signed_lease_set2, lease_selection::LeaseSelectionPolicy,
+    build_signed_lease_set2, compose_outbound_delivery, lease_selection::LeaseSelectionPolicy,
 };
 use i2pr_netdb::{LeaseSet2InsertOutcome, LeaseSet2Store as NetDbLeaseSet2Store};
 use i2pr_proto::{Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE};
@@ -204,13 +204,15 @@ fn plan_122_phase_f_outbound_composition_produces_delivery_plan() {
             None,
         )
         .expect("tunnel"),
-        now_ms,
+        now_ms + 60_000,
     );
 
     let mut routing = DestinationRouting::new(DestinationRoutingConfig::balanced());
     let _ = routing.lease_set2_store_mut().insert(validated_b.clone());
+    let _ = routing.register_resolved_remote(validated_b.clone());
+    let remote_hash = identity_b.id().as_netdb_key();
 
-    let session = EciesSessionManager::new(EciesSessionConfig::balanced());
+    let mut session = EciesSessionManager::new(EciesSessionConfig::balanced());
     let request = OutboundRequest::new(
         6,
         b"hello",
@@ -225,19 +227,37 @@ fn plan_122_phase_f_outbound_composition_produces_delivery_plan() {
     )
     .expect("request");
 
-    // `compose_outbound_delivery` requires the routing layer to
-    // know the remote destination's static key. The routing helper
-    // currently expects the caller to pre-populate `active_remotes`,
-    // so we drive the routing through the public API path that the
-    // outbound composition consumes. This unit test only verifies
-    // the Lease2 selection + request construction succeeds.
-    let _ = (
-        request,
-        session,
-        outbound_role,
-        identity_a,
-        identity_b,
-        hash_b,
+    // Plan 124: drive the full composition path and verify the
+    // outbound delivery plan emits the encoded Garlic carrier through
+    // the tunnel data plane.
+    let plan = compose_outbound_delivery(
+        &routing,
+        &mut session,
+        &outbound_role,
+        identity_a.id(),
+        &identity_a.static_public_bytes(),
+        remote_hash,
+        &request,
+        now_u32,
+        now_ms,
+        &mut ChaCha8Rng::seed_from_u64(0x1234_5678),
+    )
+    .expect("compose_outbound_delivery");
+
+    assert!(!plan.cells.is_empty(), "must emit at least one cell");
+    assert!(
+        !plan.garlic_i2np_bytes.is_empty(),
+        "must record the encoded Garlic carrier"
+    );
+    assert_ne!(
+        plan.inner_envelope_bytes, plan.garlic_i2np_bytes,
+        "the Garlic carrier must differ from the plaintext inner envelope"
+    );
+    let recovered = I2npMessage::decode_standard(&plan.garlic_i2np_bytes, MAX_I2NP_PAYLOAD_SIZE)
+        .expect("decode garlic");
+    assert!(
+        matches!(recovered.body(), I2npBody::Garlic(_)),
+        "garlic_i2np_bytes must encode an I2NP Garlic body"
     );
 }
 

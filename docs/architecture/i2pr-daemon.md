@@ -387,8 +387,22 @@ online-signed published Standard LeaseSet2 carrier is wired into
 AEAD-Ratchet destination session layer in `i2pr-client` (with the
 primitive audit, wrapped primitives in `i2pr-crypto`, and the
 bounded structural Garlic payload block codec in `i2pr-proto`).
-The next executable plan is **Plan 122** (destination routing and
-LeaseSet2 NetDB composition) under the same Milestone 6 roadmap.
+Plan 122 closed as `passed-corrected-local-destination-routing` per
+[`plans/122-status.md`](../../plans/122-status.md) and
+[`plans/124-status.md`](../../plans/124-status.md); it composes the
+Plan 119 LeaseSet2 lookup surface, the Plan 120 destination runtime,
+the Plan 121 ECIES session layer, and the Plan 116 tunnel data plane
+into the first complete local destination routing pipeline. Plan 124
+closed as `passed-plan122-corrective-closure` and corrected the
+Plan 122 composition defect where `compose_outbound_delivery`
+retained an ECIES Garlic envelope but fed the plaintext inner I2NP
+`Data` envelope into the outbound tunnel role. The corrected
+composition wraps the encrypted envelope in an `I2npBody::Garlic`
+carrier and feeds the standard-encoded I2NP Garlic message bytes
+into the outbound tunnel data plane; `OutboundDeliveryPlan` exposes
+`garlic_i2np_bytes: Vec<u8>` as the canonical carrier. The next
+executable plan is **Plan 125** (Streaming protocol-6 framing
+correction + reply round-trip) under the same Milestone 6 roadmap.
 
 ### Which crates are wired in today
 

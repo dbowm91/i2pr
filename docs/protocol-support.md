@@ -23,8 +23,9 @@ per [`plans/121-status.md`](../plans/121-status.md); the
 `EciesSessionManager` in `i2pr-client` owns the bounded
 ECIES-X25519-AEAD-Ratchet destination session layer with the
 trajectory test `plan_121_deterministic_local_trajectory`.
-Plan 122 closed as `passed-local-destination-routing` per
-[`plans/122-status.md`](../plans/122-status.md); it composes the
+Plan 122 closed as `passed-corrected-local-destination-routing` per
+[`plans/122-status.md`](../plans/122-status.md) and
+[`plans/124-status.md`](../plans/124-status.md); it composes the
 Plan 119 LeaseSet2 lookup surface, the Plan 120 destination runtime,
 the Plan 121 ECIES session layer, and the Plan 116 tunnel data plane
 into the first complete local destination routing pipeline. The
@@ -33,20 +34,45 @@ the full Phase A/B/C/F/H path against real `i2pr-netdb` and
 `i2pr-client` surfaces without touching sockets, DNS, or any
 external I2P reference.
 
-Plan 123 closed as `passed-minimal-streaming-core` per
-[`plans/123-status.md`](../plans/123-status.md); it lands the first
-interoperable I2P Streaming core. The wire codec lives in
+Plan 124 closed as `passed-plan122-corrective-closure` per
+[`plans/124-status.md`](../plans/124-status.md); it corrects the
+Plan 122 composition defect where `compose_outbound_delivery`
+retained an ECIES Garlic envelope but fed the plaintext inner I2NP
+`Data` envelope into the outbound tunnel role. The corrected
+composition wraps the encrypted envelope in an `I2npBody::Garlic`
+carrier and feeds the standard-encoded I2NP Garlic message bytes
+into the outbound tunnel data plane. `OutboundDeliveryPlan` exposes
+`garlic_i2np_bytes: Vec<u8>` as the canonical carrier; `inner_envelope_bytes`
+is retained for diagnostic comparison only. The eleven deterministic
+tests in
+[`crates/i2pr-client/tests/plan124_trajectory.rs`](../crates/i2pr-client/tests/plan124_trajectory.rs)
+cover Phases A–G, including the canonical
+`authenticated-router-link-bypassed-local-seam` boundary, the
+byte-identity regression at the OBEP, and the successful A → B → A
+New Session trajectory through real destination-owned outbound and
+inbound tunnel roles. Plan 124 does not activate NTCP2, SSU2, SAM,
+I2CP, Docker, namespaces, Multipass, or any public-network access.
+
+Plan 123 closed as `passed-minimal-streaming-core` per its original
+closure, but Plan 124 audit reopened the lower Plan 122 composition
+defect and Plan 124 lands the corrective closure. Plan 123 remains
+`provisional-awaiting-plan125-correction` per
+[`plans/123-status.md`](../plans/123-status.md) until Plan 125 restores
+the canonical RFC 1952 gzip `ClientPayload` framing (no SHA-256
+prefix, no custom compressed-length prefix) and the
+connection-establishment state machine (no optimistic local
+`Established` before peer SYN response). The retained Plan 123
+surface remains: the wire codec lives in
 [`crates/i2pr-proto/src/streaming/`](../crates/i2pr-proto/src/streaming/)
 (`StreamingPacket`, `StreamingPacketBuilder`, `StreamingFlags`,
 `validate_syn_policy`, `encode_syn_replay_binding`,
 `verify_syn_replay_binding`, `build_signature_preimage`, the
-signed-SYN/CLOSE/RESET option region with Ed25519 signatures, and
-the protocol-6 `ClientPayload` envelope with zlib compression +
-SHA-256 + CRC32). The streaming runtime lives in
+signed-SYN/CLOSE/RESET option region with Ed25519 signatures).
+The streaming runtime lives in
 [`crates/i2pr-client/src/streaming/`](../crates/i2pr-client/src/streaming/)
 (synchronous, Tokio-free, deterministic-clock `StreamingManager`
-with per-destination outbound and inbound connection tables,
-listener backlogs, send/receive window and congestion policies,
+with per-destination outbound and inbound connection tables, listener
+backlogs, send/receive window and congestion policies,
 retransmit/timeout policy, and a typed event surface). Sixteen
 deterministic integration tests in
 [`crates/i2pr-client/tests/plan123_trajectory.rs`](../crates/i2pr-client/tests/plan123_trajectory.rs)
@@ -57,10 +83,10 @@ full two-destination SYN → data → CLOSE trajectory, loss recovery
 via retransmit, duplicate packet idempotence, RESET termination,
 send window backpressure, connection table ceiling, and signed
 CLOSE / signed RESET packet shapes. The streaming layer is
-runtime-neutral; it composes with Plan 122's `compose_outbound_delivery`
-for outbound composition and Plan 122's `DestinationDispatcher` for
-inbound routing. The next executable plan is **Plan 124** (streaming
-runtime adapter + UDP/TCP transport handoff) under
+runtime-neutral; it composes with Plan 124's `compose_outbound_delivery`
+for outbound composition and Plan 124's `DestinationDispatcher` for
+inbound routing. The next executable plan is **Plan 125** (Streaming
+protocol-6 framing correction + reply round-trip) under
 [`plans/118-123-milestone6-router-construction-roadmap.md`](../plans/118-123-milestone6-router-construction-roadmap.md);
 see [`plans/117-status.md`](../plans/117-status.md) and
 [`plans/118-planning-authority-cleanup-and-plan117-disposition.md`](../plans/118-planning-authority-cleanup-and-plan117-disposition.md).
@@ -761,12 +787,13 @@ Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
       -> Plan 115  canonical production I2NP bridge + Q0 native Emissary OBEP reply [passed-emissary-q0-construction-and-obep-reply-only]
       -> Plan 116  local tunnel data plane                                 [passed-final-local-closure]
       -> Plan 117  exploratory NetDB composition                           [closed-for-progression-with-evidence-gap]
-      -> Plan 118  planning authority cleanup + Plan 117 disposition       [closed]
--> Plan 119  LeaseSet2 protocol foundation                           [passed-leaseset2-protocol-foundation]
-       -> Plan 120  destination lifecycle and tunnel pools                  [passed-destination-lifecycle-and-pools]
-       -> Plan 121  ECIES-X25519 Garlic/session layer                        [passed-ecies-destination-session-layer]
-       -> Plan 122  destination routing and NetDB composition                [passed-local-destination-routing]
-       -> Plan 123  minimal streaming core                                    [passed-minimal-streaming-core]
+       -> Plan 118  planning authority cleanup + Plan 117 disposition       [closed]
+ -> Plan 119  LeaseSet2 protocol foundation                           [passed-leaseset2-protocol-foundation]
+        -> Plan 120  destination lifecycle and tunnel pools                  [passed-destination-lifecycle-and-pools]
+        -> Plan 121  ECIES-X25519 Garlic/session layer                        [passed-ecies-destination-session-layer]
+        -> Plan 122  destination routing and NetDB composition                [passed-corrected-local-destination-routing]
+        -> Plan 123  minimal streaming core                                    [provisional-awaiting-plan125-correction]
+        -> Plan 124  destination-routing corrective closure                   [passed-plan122-corrective-closure]
 ```
 
 Plan 106 closed the local/bootstrap implementation phase; Plan 107
@@ -841,7 +868,8 @@ ECIES-X25519-AEAD-Ratchet destination Garlic/session layer (audited
 primitives in `i2pr-crypto`, bounded structural Garlic payload block
 codec in `i2pr-proto`, and bounded destination-context
 `EciesSessionManager` in `i2pr-client`). Plan 122 closed as
-`passed-local-destination-routing` per [`plans/122-status.md`](../plans/122-status.md)
+`passed-corrected-local-destination-routing` per [`plans/122-status.md`](../plans/122-status.md)
+and [`plans/124-status.md`](../plans/124-status.md)
 and composes the Plan 119 LeaseSet2 lookup surface, the Plan 120
 destination runtime, the Plan 121 ECIES session layer, and the
 Plan 116 tunnel data plane into the first complete local

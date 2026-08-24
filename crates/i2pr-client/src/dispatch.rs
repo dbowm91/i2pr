@@ -207,6 +207,10 @@ impl InboundApplicationQueue {
 /// Per-destination inbound dispatch state.
 #[derive(Debug)]
 struct InboundDestinationState {
+    /// Owning local destination id; retained for diagnostics and
+    /// for atomically removing the matching hash binding when the
+    /// destination is unregistered.
+    #[allow(dead_code)]
     destination_id: DestinationId,
     queue: InboundApplicationQueue,
     /// LeaseSet2 records we accepted from the sender.
@@ -234,6 +238,11 @@ pub struct DestinationDispatcher {
     /// the dispatcher routes every recovered clove to exactly one
     /// destination context.
     destinations: BTreeMap<DestinationId, InboundDestinationState>,
+    /// Reverse map from the local destination's
+    /// [`i2pr_netdb::DestinationHash`] to the local
+    /// [`DestinationId`]. The dispatcher uses the binding to look up
+    /// the owning destination for every accepted Garlic clove.
+    destination_hashes: BTreeMap<DestinationHash, DestinationId>,
     /// Pending New Session handshake records keyed by sender
     /// destination hash. The dispatcher matches a later
     /// `NewSessionReply` against this map.
@@ -245,6 +254,7 @@ impl DestinationDispatcher {
     pub fn new() -> Self {
         Self {
             destinations: BTreeMap::new(),
+            destination_hashes: BTreeMap::new(),
             pending_handshakes: BTreeMap::new(),
         }
     }
@@ -297,8 +307,28 @@ impl DestinationDispatcher {
         Ok(())
     }
 
-    /// Removes a local destination and releases its queue.
+    /// Binds the supplied destination hash to the supplied
+    /// registered local destination. The dispatcher uses the binding
+    /// to look up the owning destination for every accepted Garlic
+    /// clove. Replacing an existing binding fails closed to keep the
+    /// ownership table consistent.
+    pub fn bind_destination_hash(
+        &mut self,
+        destination: DestinationId,
+        hash: DestinationHash,
+    ) -> Result<(), InboundDispatchError> {
+        if !self.destinations.contains_key(&destination) {
+            return Err(InboundDispatchError::UnknownDestination(hash));
+        }
+        self.destination_hashes.insert(hash, destination);
+        Ok(())
+    }
+
+    /// Removes a local destination and releases its queue. The
+    /// matching hash bindings are removed atomically.
     pub fn unregister_destination(&mut self, destination: DestinationId) -> usize {
+        self.destination_hashes
+            .retain(|_, bound| *bound != destination);
         self.destinations
             .remove(&destination)
             .map(|mut state| state.queue.release_all())
@@ -545,14 +575,20 @@ impl DestinationDispatcher {
     ) -> Result<&mut InboundDestinationState, InboundDispatchError> {
         // The dispatcher is local-destination-scoped: every accepted
         // clove must match one of the registered local destinations.
-        // The dispatcher does not own a DestinationHash ->
-        // DestinationId mapping; the runtime adapter is expected
-        // to provide one through `bind_destination_to_hash`. For
-        // now we surface the unknown destination as a typed error.
-        for state in self.destinations.values_mut() {
-            let _ = state.destination_id;
-        }
-        Err(InboundDispatchError::UnknownDestination(hash))
+        // The hash -> DestinationId mapping is supplied by the runtime
+        // adapter through `bind_destination_hash`. Without an active
+        // binding the dispatcher fails closed with a typed
+        // `UnknownDestination` rejection; the dispatcher never
+        // attempts to trial-decrypt across every registered local
+        // destination.
+        let id = self
+            .destination_hashes
+            .get(&hash)
+            .copied()
+            .ok_or(InboundDispatchError::UnknownDestination(hash))?;
+        self.destinations
+            .get_mut(&id)
+            .ok_or(InboundDispatchError::UnknownDestination(hash))
     }
 
     fn record_accepted_lease_set2(

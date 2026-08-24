@@ -138,6 +138,19 @@ impl DestinationIdentity {
         self.static_key.public_bytes()
     }
 
+    /// Borrows the raw static X25519 secret for the ECIES destination
+    /// session layer and the recipient-side dispatcher.
+    ///
+    /// The accessor exists only because the [`crate::session`] and
+    /// [`crate::dispatch`] modules must hand the secret to the ECIES
+    /// primitives during outbound encryption and inbound decryption.
+    /// Both owners wrap the secret through a non-cloneable,
+    /// non-`Debug` type so this accessor is the single documented path
+    /// to the bytes.
+    pub const fn static_secret_bytes(&self) -> &[u8; X25519_KEY_LENGTH] {
+        self.static_key.secret_bytes()
+    }
+
     /// Signs the supplied message with the destination signing private key.
     ///
     /// This is the only secret-consuming operation the identity owner exposes.

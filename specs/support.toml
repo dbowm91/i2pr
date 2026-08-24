@@ -110,9 +110,13 @@ plan_120_status = "passed-destination-lifecycle-and-pools"
 plan_121_plan_of_record = "plans/121-m6-ecies-garlic-session-layer.md"
 plan_121_status = "passed-ecies-destination-session-layer"
 plan_122_plan_of_record = "plans/122-m6-destination-routing-and-netdb-composition.md"
-plan_122_status = "passed-local-destination-routing"
+plan_122_corrective_plan_of_record = "plans/124-m6-plan122-destination-routing-corrective-closure.md"
+plan_122_status = "passed-corrected-local-destination-routing"
 plan_123_plan_of_record = "plans/123-m6-minimal-streaming-core.md"
-plan_123_status = "passed-minimal-streaming-core"
+plan_123_status = "provisional-awaiting-plan125-correction"
+plan_124_plan_of_record = "plans/124-m6-plan122-destination-routing-corrective-closure.md"
+plan_124_closure = "plans/124-status.md"
+plan_124_status = "passed-plan122-corrective-closure"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -229,7 +233,7 @@ protocol = "destination-routing"
 structure = "local-destination-routing-and-leaseset2-netdb-composition"
 scope = "required"
 status = "experimental"
-notes = "Plan 122 closed as `passed-local-destination-routing`. `i2pr-netdb::lookup_id::LookupEngine` accepts the Plan 119 typed LS2 ingest path and emits `LookupResult::LeaseSet2Success`; the daemon `NetDbSeam` exposes `begin_lease_set2_lookup`, `ingest_lease_set2_response`, and `cancel_lease_set2_lookup`; `i2pr-client::lease_selection` owns the bounded `LeaseSelector` and `LeaseSelectionPolicy`; `i2pr-client::routing` owns `OutboundRequest`, `compose_outbound_delivery`, and the `DestinationRouting` cache; `i2pr-client::dispatch::DestinationDispatcher` performs inbound Garlic decryption, bundled LeaseSet2 validation, and per-destination application queues. The bounded router-delivery seam produces `OBGWRouterDelivery` cells for the future transport adapter. The Plan 122 deterministic local composition integration test `plan122_two_destination_local_composition` exercises Phases A/B/C/F/H. Plan 123 adds the minimal streaming core on top of `compose_outbound_delivery` and `DestinationDispatcher`."
+notes = "Plan 122 closed as `passed-corrected-local-destination-routing` per Plan 124 corrective closure. `i2pr-netdb::lookup_id::LookupEngine` accepts the Plan 119 typed LS2 ingest path and emits `LookupResult::LeaseSet2Success`; the daemon `NetDbSeam` exposes `begin_lease_set2_lookup`, `ingest_lease_set2_response`, and `cancel_lease_set2_lookup`; `i2pr-client::lease_selection` owns the bounded `LeaseSelector` and `LeaseSelectionPolicy`; `i2pr-client::routing` owns `OutboundRequest`, `compose_outbound_delivery`, `OutboundDeliveryPlan`, and the `DestinationRouting` cache; `i2pr-client::dispatch::DestinationDispatcher` performs inbound Garlic decryption, bundled LeaseSet2 validation, and per-destination application queues. Plan 124 corrected the Plan 122 composition defect: `compose_outbound_delivery` now wraps the ECIES-encrypted envelope in an `I2npBody::Garlic` carrier and feeds the standard-encoded I2NP Garlic message bytes into the outbound tunnel data plane; `OutboundDeliveryPlan::garlic_i2np_bytes` is the canonical carrier the tunnel observes. The eleven Plan 124 deterministic tests in `crates/i2pr-client/tests/plan124_trajectory.rs` cover Phases A–G, including the canonical `authenticated-router-link-bypassed-local-seam` boundary, byte-identity regression at the OBEP, and the successful A → B → A New Session trajectory through real destination-owned outbound and inbound tunnel roles. Plan 123 remains `provisional-awaiting-plan125-correction` until Plan 125 corrects the Streaming protocol-6 framing and connection-establishment state machine."
 evidence = [
     "crates/i2pr-netdb/src/lookup_id.rs",
     "crates/i2pr-netdb/src/lookup_engine.rs",
@@ -237,9 +241,12 @@ evidence = [
     "crates/i2pr-client/src/lease_selection.rs",
     "crates/i2pr-client/src/routing.rs",
     "crates/i2pr-client/src/dispatch.rs",
-    "crates/i2pr-client/tests/plan122_two_destination_local_composition.rs",
+    "crates/i2pr-client/tests/plan122_trajectory.rs",
+    "crates/i2pr-client/tests/plan124_trajectory.rs",
     "plans/122-m6-destination-routing-and-netdb-composition.md",
     "plans/122-status.md",
+    "plans/124-m6-plan122-destination-routing-corrective-closure.md",
+    "plans/124-status.md",
 ]
 advertised = false
 
@@ -249,7 +256,7 @@ protocol = "streaming"
 structure = "minimal-interoperable-i2p-streaming-core"
 scope = "required"
 status = "experimental"
-notes = "Plan 123 closed as `passed-minimal-streaming-core`. `i2pr-proto::streaming` owns the wire codec (`StreamingPacket`, `StreamingPacketBuilder`, `StreamingFlags`, `validate_syn_policy`, `encode_syn_replay_binding`, `verify_syn_replay_binding`, `build_signature_preimage`, signed-SYN/CLOSE/RESET option region with Ed25519 signatures, and the protocol-6 `ClientPayload` envelope with zlib compression + SHA-256 + CRC32). `i2pr-client::streaming` owns the synchronous, Tokio-free, deterministic-clock `StreamingManager` with per-destination outbound and inbound connection tables, listener backlogs, send/receive window and congestion policies, retransmit/timeout policy, and a typed event surface. The integration test `plan123_trajectory` (16 cases) covers the signed-SYN payload round trip, canonical preimage signature verification, SYN replay binding rejection, MAX_PACKET_SIZE_INCLUDED policy, corrupt-signature rejection, the full two-destination SYN -> data -> CLOSE trajectory, loss recovery via retransmit, duplicate packet idempotence, RESET termination, send window backpressure, connection table ceiling, and signed CLOSE / signed RESET packet shapes. Plan 123 is runtime-neutral; the next executable plan is Plan 124 (streaming runtime adapter + UDP/TCP transport handoff)."
+notes = "Plan 123 closed as `passed-minimal-streaming-core` per its original closure, but Plan 124 audit reopened the lower Plan 122 composition defect and Plan 124 lands the corrective closure. Plan 123 remains `provisional-awaiting-plan125-correction` until Plan 125 restores the canonical RFC 1952 gzip `ClientPayload` framing (no SHA-256 prefix, no custom compressed-length prefix) and the connection-establishment state machine (no optimistic local `Established` before peer SYN response). The retained Plan 123 surface remains: `i2pr-proto::streaming` owns the wire codec (`StreamingPacket`, `StreamingPacketBuilder`, `StreamingFlags`, `validate_syn_policy`, `encode_syn_replay_binding`, `verify_syn_replay_binding`, `build_signature_preimage`, signed-SYN/CLOSE/RESET option region with Ed25519 signatures, and the protocol-6 `ClientPayload` envelope). `i2pr-client::streaming` owns the synchronous, Tokio-free, deterministic-clock `StreamingManager` with per-destination outbound and inbound connection tables, listener backlogs, send/receive window and congestion policies, retransmit/timeout policy, and a typed event surface. The integration test `plan123_trajectory` (16 cases) covers the signed-SYN payload round trip, canonical preimage signature verification, SYN replay binding rejection, MAX_PACKET_SIZE_INCLUDED policy, corrupt-signature rejection, the full two-destination SYN -> data -> CLOSE trajectory, loss recovery via retransmit, duplicate packet idempotence, RESET termination, send window backpressure, connection table ceiling, and signed CLOSE / signed RESET packet shapes. Plan 123 is runtime-neutral; the next executable plan is Plan 125 (Streaming protocol-6 framing correction + reply round-trip)."
 evidence = [
     "crates/i2pr-proto/src/streaming/mod.rs",
     "crates/i2pr-proto/src/streaming/packet.rs",
@@ -262,6 +269,8 @@ evidence = [
     "crates/i2pr-client/tests/plan123_trajectory.rs",
     "plans/123-m6-minimal-streaming-core.md",
     "plans/123-status.md",
+    "plans/124-m6-plan122-destination-routing-corrective-closure.md",
+    "plans/124-status.md",
 ]
 advertised = false
 

@@ -77,7 +77,7 @@ pub use registry::{
 };
 pub use routing::{
     DestinationOutboundRole, DestinationRouting, DestinationRoutingConfig, DestinationRoutingError,
-    LookupIngestError, LookupIngestOutcome, MAX_CONCURRENT_REMOTE_LOOKUPS,
+    EncryptedOutbound, LookupIngestError, LookupIngestOutcome, MAX_CONCURRENT_REMOTE_LOOKUPS,
     MAX_PENDING_OUTBOUND_PER_REMOTE, OutboundDeliveryPlan, OutboundRequest, SendError,
     compose_outbound_delivery,
 };

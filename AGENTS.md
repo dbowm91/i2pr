@@ -2090,8 +2090,9 @@ Plan 121 closed as `passed-ecies-destination-session-layer`
     drives the two-destination NS → NSR → Existing Session
     trajectory with exact-once payload delivery, tag ratchet
     advancement, and replay rejection. Plan 122 closed as
-    `passed-local-destination-routing` per
-    [`plans/122-status.md`](plans/122-status.md): it composes the
+    `passed-corrected-local-destination-routing` per
+    [`plans/122-status.md`](plans/122-status.md) and
+    [`plans/124-status.md`](plans/124-status.md): it composes the
     Plan 119 LeaseSet2 NetDB surface, the Plan 120 destination
     runtime, the Plan 121 ECIES Garlic session layer, and the
     Plan 116 tunnel data plane into a complete local destination
@@ -2108,8 +2109,29 @@ Plan 121 closed as `passed-ecies-destination-session-layer`
     `DestinationDispatcher` inbound surface (`i2pr-client`).
     The `plan_122_two_destination_local_composition` integration
     test exercises Phase A/B/C/F/H without touching sockets,
-    DNS, or any external I2P reference. The next executable plan
-    is **Plan 123** (minimal streaming core) under the Milestone
+    DNS, or any external I2P reference.
+
+    Plan 124 closed as `passed-plan122-corrective-closure` and
+    corrected the Plan 122 composition defect where
+    `compose_outbound_delivery` retained an ECIES Garlic envelope
+    but fed the plaintext inner I2NP `Data` envelope into the
+    outbound tunnel role. The corrected composition wraps the
+    encrypted envelope in an `I2npBody::Garlic` carrier and feeds
+    the standard-encoded I2NP Garlic message bytes into the
+    outbound tunnel data plane. `OutboundDeliveryPlan` exposes
+    `garlic_i2np_bytes: Vec<u8>` as the canonical carrier. The
+    eleven Plan 124 deterministic tests in
+    `crates/i2pr-client/tests/plan124_trajectory.rs` cover
+    Phases A, B, C, D (existing-session carrier), E (ciphertext
+    isolation, unregister atomically drops ownership), F (stale
+    lease), and G (tampered / malformed / non-Garlic fault paths).
+    The Plan 124 master trajectory
+    `plan_124_trajectory_a_to_b_carries_garlic_through_obep`
+    drives two destination identities through every tunnel role,
+    the canonical `authenticated-router-link-bypassed-local-seam`,
+    and the dispatcher to surface the exact application payload.
+    The next executable plan is **Plan 125** (Streaming protocol-6
+    framing correction + reply round-trip) under the Milestone
     6 router-construction roadmap in
     [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
 
@@ -2282,8 +2304,13 @@ plan_117_native_reference            = blocked-reference-defect
 plan_117_external_transport          = deferred-host-lane-unavailable
 plan_117                             = closed-for-progression-with-evidence-gap
 plan_119                             = passed-leaseset2-protocol-foundation
+plan_120                             = passed-destination-lifecycle-and-pools
+plan_121                             = passed-ecies-destination-session-layer
+plan_122                             = passed-corrected-local-destination-routing
+plan_123                             = provisional-awaiting-plan125-correction
+plan_124                             = passed-plan122-corrective-closure
 router_construction                  = may-continue
-next_router_construction_plan        = Plan 120 (destination lifecycle and dedicated tunnel pools)
+next_router_construction_plan        = Plan 125 (Streaming protocol-6 framing correction + reply round-trip)
 ```
 
 Plan 119 closed as `passed-leaseset2-protocol-foundation` per
@@ -2309,9 +2336,10 @@ keeps the native criterion visible and does not promote
 parser-only or reference-only results to interoperability
 evidence.
 
-Plan 123 closed as `passed-minimal-streaming-core` per
-[`plans/123-status.md`](plans/123-status.md). Plan 123 lands the
-first interoperable I2P Streaming layer. The wire codec lives in
+Plan 123 remains `provisional-awaiting-plan125-correction` per
+[`plans/123-status.md`](plans/123-status.md) after the Plan 124
+audit reopened the lower Plan 122 composition defect. The wire
+codec lives in
 [`crates/i2pr-proto/src/streaming/`](crates/i2pr-proto/src/streaming/)
 (`StreamingPacket`, `StreamingPacketBuilder`, `StreamingFlags`,
 `validate_syn_policy`, `encode_syn_replay_binding`, `verify_syn_replay_binding`,
@@ -2338,9 +2366,16 @@ MAX_PACKET_SIZE_INCLUDED policy, corrupt-signature rejection, the
 full two-destination SYN → data → CLOSE trajectory, loss recovery
 via retransmit, duplicate packet idempotence, RESET termination,
 send window backpressure, connection table ceiling, and signed
-CLOSE / signed RESET packet shapes. Streaming remains
-runtime-neutral until Plan 124 (streaming runtime adapter + UDP/TCP
-transport handoff).
+CLOSE / signed RESET packet shapes. Plan 123 must not be restored
+to `passed-minimal-streaming-core` until Plan 125 corrects the
+`ClientPayload` framing (canonical RFC 1952 gzip, no SHA-256
+prefix, no custom compressed-length prefix) and the
+connection-establishment state machine (no optimistic local
+Established before peer SYN response). The next executable plan
+is **Plan 125** (Streaming protocol-6 framing correction +
+reply round-trip) per the Milestone 6 router-construction
+roadmap in
+[`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
 external acceptance debt ledger in the same roadmap. Router
 construction is not blocked on the unavailable authenticated
 external transport lane; the current `closed-for-progression` state

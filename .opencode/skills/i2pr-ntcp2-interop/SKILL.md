@@ -1,6 +1,6 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090/091/092/093/094/099/100 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness (Plan 099/100 closed as protocol-defect-localized; Plan 095 historical). Plan 101 corrects the daemon NTCP2 activation boundary; normal-daemon NTCP2 is disabled. Plan 115 Emissary Q0 construction + native OBEP reply has passed locally with the canonical production I2NP bridge (`ShortBuildI2npBridge` in `crates/i2pr-tunnel/src/bridge.rs`); Q1/Q2/qualified external delivery still pending. Plan 117 closed per Plan 118 as `closed-for-progression-with-evidence-gap` (local Phase G passed; corrected native Emissary reference test rejected the pinned reference's request-prefixed reply during strict i2pr Mapping decoding). The harness includes the Plan 085-088 host-loopback development execution roadmap (historical), the Plan 090 i2pd RouterInfo and pre-TCP classification correction, the Plan 091 i2pd Noise-handshake preconditions, the Plan 092 forward-handshake evidence integrity (superseded by Plan 093), the Plan 093 Plan 087 forward data-phase and reference-observer closure, the Plan 094 Plan 093 completion pass and Plan 087 -> Plan 088 handoff, the Plan 099 Milestone 3 interop exit and router buildout, the Plan 100 one-time exit-gate cleanup and router handoff. Use when an agent is asked to read or reproduce the historical harness surface, run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, or validate evidence. The active development interop lane is closed; NTCP2 remains experimental and non-advertised. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. Plan 119 closed as `passed-leaseset2-protocol-foundation`; Plan 120 closed as `passed-destination-lifecycle-and-pools` and lands the first `i2pr-client` destination runtime (local identity, dedicated tunnel pools, signed Standard LeaseSet2, lifecycle, bounded local payloads, registry); Plan 121 closed as `passed-ecies-destination-session-layer` and lands the first real ECIES-X25519-AEAD-Ratchet destination Garlic/session layer (`crates/i2pr-crypto/src/ecies.rs`, `crates/i2pr-proto/src/ecies_payload.rs`, `crates/i2pr-client/src/session.rs`, `crates/i2pr-client/tests/plan121_trajectory.rs`); Plan 122 closed as `passed-local-destination-routing` and lands the local destination routing pipeline (Plan 122 `compose_outbound_delivery` / `DestinationDispatcher`, daemon `NetDbSeam` `begin_lease_set2_lookup` / `ingest_lease_set2_response` / `cancel_lease_set2_lookup`); Plan 123 closed as `passed-minimal-streaming-core` and lands the first I2P Streaming core (`StreamingManager` in `crates/i2pr-client/src/streaming/`, wire codec in `crates/i2pr-proto/src/streaming/`, 16 deterministic tests in `crates/i2pr-client/tests/plan123_trajectory.rs`). The next executable product plan is Plan 124 (streaming runtime adapter + UDP/TCP transport handoff). External acceptance debt is tracked separately under the Milestone 6 roadmap. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
+description: Operate, diagnose, or extend the repository's Plan 038/040/041/043/044/045/052/053/054/055/058/059/062/063/064/065/067/068/074/075/076/077/078/080/081/082/083/084/085/086/087/088/090/091/092/093/094/099/100 host-side Ubuntu 24.04 reference-router NTCP2 interoperability harness (Plan 099/100 closed as protocol-defect-localized; Plan 095 historical). Plan 101 corrects the daemon NTCP2 activation boundary; normal-daemon NTCP2 is disabled. Plan 115 Emissary Q0 construction + native OBEP reply has passed locally with the canonical production I2NP bridge (`ShortBuildI2npBridge` in `crates/i2pr-tunnel/src/bridge.rs`); Q1/Q2/qualified external delivery still pending. Plan 117 closed per Plan 118 as `closed-for-progression-with-evidence-gap` (local Phase G passed; corrected native Emissary reference test rejected the pinned reference's request-prefixed reply during strict i2pr Mapping decoding). The harness includes the Plan 085-088 host-loopback development execution roadmap (historical), the Plan 090 i2pd RouterInfo and pre-TCP classification correction, the Plan 091 i2pd Noise-handshake preconditions, the Plan 092 forward-handshake evidence integrity (superseded by Plan 093), the Plan 093 Plan 087 forward data-phase and reference-observer closure, the Plan 094 Plan 093 completion pass and Plan 087 -> Plan 088 handoff, the Plan 099 Milestone 3 interop exit and router buildout, the Plan 100 one-time exit-gate cleanup and router handoff. Use when an agent is asked to read or reproduce the historical harness surface, run a bounded interop profile, prepare or validate reference routers, add or modify a scenario, or validate evidence. The active development interop lane is closed; NTCP2 remains experimental and non-advertised. Do not activate Plan 072 or build a general Emissary lane unless Plan 088 records `decision = ambiguous-reference-divergence` with one exact wire-stage question. Plan 119 closed as `passed-leaseset2-protocol-foundation`; Plan 120 closed as `passed-destination-lifecycle-and-pools` and lands the first `i2pr-client` destination runtime (local identity, dedicated tunnel pools, signed Standard LeaseSet2, lifecycle, bounded local payloads, registry); Plan 121 closed as `passed-ecies-destination-session-layer` and lands the first real ECIES-X25519-AEAD-Ratchet destination Garlic/session layer (`crates/i2pr-crypto/src/ecies.rs`, `crates/i2pr-proto/src/ecies_payload.rs`, `crates/i2pr-client/src/session.rs`, `crates/i2pr-client/tests/plan121_trajectory.rs`); Plan 122 closed as `passed-corrected-local-destination-routing` and lands the local destination routing pipeline (Plan 122 `compose_outbound_delivery` / `DestinationDispatcher`, daemon `NetDbSeam` `begin_lease_set2_lookup` / `ingest_lease_set2_response` / `cancel_lease_set2_lookup`); Plan 124 closed as `passed-plan122-corrective-closure` and corrects the Plan 122 composition defect where `compose_outbound_delivery` retained an ECIES Garlic envelope but fed the plaintext inner I2NP `Data` envelope into the outbound tunnel role — the corrected composition wraps the encrypted envelope in an `I2npBody::Garlic` carrier and feeds the standard-encoded I2NP Garlic message bytes into the outbound tunnel data plane (`crates/i2pr-client/src/routing.rs`, `crates/i2pr-client/tests/plan124_trajectory.rs`); Plan 123 remains `provisional-awaiting-plan125-correction`. The next executable product plan is Plan 125 (Streaming protocol-6 framing correction + reply round-trip). External acceptance debt is tracked separately under the Milestone 6 roadmap. The companion skills `i2pr-rootless-sandbox` and `i2pr-multipass-recovery` cover the Plan 046 sealed-namespace lane and the Plan 048/049/050/051 recovery lane.
 ---
 
 # I2PR NTCP2 Interoperability (host harness, Plans 038/040/041/043/045/055/056/058/059/081/082/083/084)
@@ -70,7 +70,7 @@ plan_117_external_transport          = deferred-host-lane-unavailable
 plan_117                             = closed-for-progression-with-evidence-gap
 plan_119                             = passed-leaseset2-protocol-foundation
 router_construction                  = may-continue
-next_router_construction_plan        = Plan 122 (destination routing and LeaseSet2 NetDB composition)
+next_router_construction_plan        = Plan 125 (Streaming protocol-6 framing correction + reply round-trip)
 ```
 
 Do not relax the parser or promote parser-only evidence to native
@@ -97,16 +97,24 @@ future work tracked by the Milestone 6 roadmap. Plan 120 closed
 as `passed-destination-lifecycle-and-pools` and lands the first
 `i2pr-client` destination runtime (local identity, dedicated
 tunnel pools, signed Standard LeaseSet2, lifecycle, bounded local
-payloads, registry). Plan 121 closed as
-`passed-ecies-destination-session-layer` and lands the first real
-ECIES-X25519-AEAD-Ratchet destination Garlic/session layer. The
-next executable plan is **Plan 122** (destination routing and
-LeaseSet2 NetDB composition) under the Milestone 6
-router-construction roadmap in
-`plans/118-123-milestone6-router-construction-roadmap.md`.
-External acceptance debt (Q1/Q2 authenticated external transport,
-live exploratory tunnel pair, live NetDB publication/lookup, live
-LS2 publication/lookup) is tracked separately under the same
+ payloads, registry). Plan 121 closed as
+ `passed-ecies-destination-session-layer` and lands the first real
+ ECIES-X25519-AEAD-Ratchet destination Garlic/session layer.
+ Plan 122 closed as `passed-corrected-local-destination-routing`
+ and Plan 124 closed as `passed-plan122-corrective-closure` (the
+ canonical ECIES Garlic carrier through the outbound tunnel data
+ plane; `OutboundDeliveryPlan::garlic_i2np_bytes` is the canonical
+ carrier; `DestinationDispatcher::bind_destination_hash` enforces
+ the `DestinationId` → `DestinationHash` binding so the dispatcher
+ fails closed on `UnknownDestination` without trial-decryption).
+ Plan 123 remains `provisional-awaiting-plan125-correction`. The
+ next executable plan is **Plan 125** (Streaming protocol-6
+ framing correction + reply round-trip) under the Milestone 6
+ router-construction roadmap in
+ `plans/118-123-milestone6-router-construction-roadmap.md`.
+ External acceptance debt (Q1/Q2 authenticated external transport,
+ live exploratory tunnel pair, live NetDB publication/lookup, live
+ LS2 publication/lookup) is tracked separately under the same
 roadmap's external acceptance debt ledger and does not block the
 Milestone 6 product construction.
 

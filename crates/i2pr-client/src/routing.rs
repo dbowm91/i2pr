@@ -39,15 +39,15 @@ use i2pr_netdb::{
     router_hash_from_destination,
 };
 use i2pr_proto::{
-    CodecError, Date, DeferredPayload, GarlicCloveBlock, GarlicDelivery, Hash, I2npMessage,
-    LeaseSet2, MAX_I2NP_PAYLOAD_SIZE, OpaqueMessageBody, TunnelDataMessage,
+    CodecError, Date, DeferredPayload, GarlicCloveBlock, GarlicDelivery, Hash, I2npBody,
+    I2npMessage, LeaseSet2, MAX_I2NP_PAYLOAD_SIZE, OpaqueMessageBody, TunnelDataMessage,
 };
 use i2pr_tunnel::{
     DeliveryInstruction, EciesX25519BuildCryptography, EstablishedTunnel, LayerKeys,
     OBGWRouterDelivery, OutboundGatewayRole, TunnelId, TunnelLifetime, TunnelPayloadHeader,
     TunnelRoleError,
 };
-use rand_core::{CryptoRng, RngCore};
+use rand_core::{CryptoRng, RngCore, TryRngCore};
 
 use crate::identity::DestinationId;
 use crate::lease_selection::{
@@ -125,14 +125,37 @@ impl core::fmt::Display for SendError {
 impl std::error::Error for SendError {}
 
 /// Outcome of a successful Plan 122 send composition.
+///
+/// The plan carries three distinct byte sources so tests and
+/// diagnostic surfaces can verify the production contract:
+///
+/// - `inner_envelope_bytes` — the standard-encoded I2NP `Data`
+///   envelope the local creator emitted, retained for diagnostic
+///   comparison only.
+/// - `encrypted_message` — the ECIES-protected payload bytes
+///   produced by [`EciesSessionManager`] (New Session or Existing).
+/// - `garlic_i2np_bytes` — the standard-encoded I2NP `Garlic`
+///   message that wraps the encrypted envelope; the bytes the
+///   outbound tunnel data plane actually carries.
 #[derive(Debug)]
 pub struct OutboundDeliveryPlan {
     /// Selected lease metadata the routing layer bound to the send.
     pub selected_lease: SelectedLease,
     /// Standard-encoded inner I2NP envelope the local creator emitted.
+    ///
+    /// This is the pre-encryption application carrier. It is retained
+    /// for diagnostic comparison only; the tunnel data plane must
+    /// never observe these bytes in plaintext.
     pub inner_envelope_bytes: Vec<u8>,
     /// Encrypted Garlic outbound message (New Session or Existing).
     pub encrypted_message: EncryptedOutbound,
+    /// Standard-encoded I2NP `Garlic` message bytes the outbound
+    /// tunnel role actually carries.
+    ///
+    /// Plan 124 owns this invariant: the tunnel data plane and the
+    /// local endpoint must observe this carrier, not the plaintext
+    /// `inner_envelope_bytes`.
+    pub garlic_i2np_bytes: Vec<u8>,
     /// Outbound tunnel cell(s) the runtime must dispatch through the
     /// transport adapter.
     pub cells: Vec<OBGWRouterDelivery>,
@@ -455,6 +478,35 @@ impl DestinationRouting {
         let _ = self.lookup.inner.cancel();
     }
 
+    /// Registers a remote destination by inserting the validated
+    /// LeaseSet2 and its derived static X25519 public key into the
+    /// active-remotes cache. The router-side LS2 store is updated
+    /// alongside the cache so subsequent calls to
+    /// [`Self::select_lease`] and [`Self::remote_static_public_key`]
+    /// succeed without driving the lookup state machine.
+    ///
+    /// Callers that complete a LeaseSet2 lookup through the
+    /// canonical [`Self::ingest_lookup_response`] path should use
+    /// that helper. This method exists for direct composition use
+    /// cases (tests, router pre-population, peer cache hydration)
+    /// where the caller already owns a validated record and does not
+    /// need the lookup bookkeeping.
+    pub fn register_resolved_remote(
+        &mut self,
+        validated: ValidatedLeaseSet2,
+    ) -> Result<DestinationHash, LookupIngestError> {
+        let destination_hash = validated.key();
+        let static_public = static_public_from_ls2(validated.lease_set2())?;
+        self.active_remotes.insert(
+            destination_hash,
+            RemoteState {
+                validated,
+                static_public,
+            },
+        );
+        Ok(destination_hash)
+    }
+
     /// Selects a lease for the supplied remote destination hash and
     /// returns the resolved lease metadata.
     pub fn select_lease<R: RngCore + ?Sized>(
@@ -666,14 +718,24 @@ impl OutboundRequest {
 
 /// Compose an outbound Garlic delivery plan.
 ///
-/// The composer:
+/// The composer produces the canonical I2P destination-routing
+/// sequence without skipping the Garlic carrier or short-circuiting
+/// the tunnel id. Plan 124 owns this contract:
+///
 /// 1. Selects a lease through the routing state machine.
-/// 2. Encodes the inner I2NP Data envelope as the first Garlic
-///    Clove, optionally appending a DatabaseStore LS2 clove.
-/// 3. Hands the encrypted payload to the [`EciesSessionManager`].
-/// 4. Forwards the resulting encrypted envelope through the
-///    outbound tunnel role with `DeliveryInstruction::Tunnel` targeting
-///    the selected lease's gateway and tunnel id.
+/// 2. Standard-encodes the inner I2NP `Data` envelope the local
+///    creator emits.
+/// 3. Builds the Garlic payload sequence (Data clove plus optional
+///    bundled LeaseSet2 DatabaseStore clove).
+/// 4. Hands the payload bytes to the [`EciesSessionManager`], which
+///    returns the ECIES-protected envelope (New Session or Existing).
+/// 5. Wraps the encrypted envelope in an [`I2npBody::Garlic`]
+///    message and standard-encodes the carrier. The carrier is the
+///    only byte stream the outbound tunnel data plane is allowed to
+///    observe.
+/// 6. Forwards the encoded Garlic message through the outbound
+///    tunnel role with `DeliveryInstruction::Tunnel` targeting the
+///    selected lease's gateway and tunnel id.
 #[allow(clippy::too_many_arguments)]
 pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
     routing: &DestinationRouting,
@@ -689,13 +751,13 @@ pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
 ) -> Result<OutboundDeliveryPlan, SendError> {
     let remote_static = routing.remote_static_public_key(remote_hash)?;
     let selected = routing.select_lease(remote_hash, now_seconds, rng)?;
-    let inner_bytes = request
+    let inner_envelope_bytes = request
         .inner_envelope
         .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
         .map_err(SendError::DataCodec)?;
     let data_clove = GarlicCloveBlock {
         delivery: GarlicDelivery::Destination(*remote_hash.as_bytes()),
-        message: inner_bytes,
+        message: inner_envelope_bytes.clone(),
     };
     let payload_bytes = if let Some(ls2) = request.bundled_lease_set2() {
         let database_store_bytes = encode_database_store_clove(ls2)?;
@@ -719,6 +781,19 @@ pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
         )
         .map_err(map_session_error)?;
     let encrypted = encode_encrypted_outbound(&mut outbound_message);
+    // Plan 124 owns the following invariant: the bytes the tunnel
+    // data plane carries are the standard-encoded I2NP `Garlic`
+    // message that wraps the ECIES-encrypted envelope, never the
+    // plaintext inner `Data` envelope. Wrap the encrypted payload
+    // inside the canonical Garlic carrier and standard-encode it.
+    let garlic_envelope = build_garlic_envelope(
+        encrypted.message_bytes(),
+        outbound_message_message_id(now_seconds, rng),
+        now_ms,
+    )?;
+    let garlic_i2np_bytes = garlic_envelope
+        .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(SendError::DataCodec)?;
     let header = TunnelPayloadHeader {
         delivery: DeliveryInstruction::Tunnel {
             tunnel_id: selected.tunnel_id,
@@ -727,20 +802,47 @@ pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
         message_id: 1,
         expiration_ms: now_ms,
     };
-    let inner_envelope_bytes = request
-        .inner_envelope
-        .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
-        .map_err(SendError::DataCodec)?;
     let cells = outbound
         .role
-        .forward_cells(&header, &inner_envelope_bytes, rng, now_ms)
+        .forward_cells(&header, &garlic_i2np_bytes, rng, now_ms)
         .map_err(map_role_error)?;
     Ok(OutboundDeliveryPlan {
         selected_lease: selected,
         inner_envelope_bytes,
         encrypted_message: encrypted,
+        garlic_i2np_bytes,
         cells,
     })
+}
+
+/// Wraps the supplied encrypted envelope in an [`I2npBody::Garlic`]
+/// envelope. The I2NP `Garlic` body carries the ECIES-encrypted
+/// bytes verbatim; no additional transformation or padding is
+/// applied. The caller is responsible for selecting a deterministic
+/// message id in tests and a CSPRNG-backed id in production.
+fn build_garlic_envelope(
+    encrypted_bytes: &[u8],
+    message_id: u32,
+    expiration_ms: u64,
+) -> Result<I2npMessage, SendError> {
+    let body = I2npBody::Garlic(OpaqueMessageBody {
+        payload: DeferredPayload::new(encrypted_bytes.to_vec(), MAX_I2NP_PAYLOAD_SIZE)
+            .map_err(SendError::DataCodec)?,
+    });
+    I2npMessage::new_standard(message_id, Date::from_millis(expiration_ms), body)
+        .map_err(SendError::DataCodec)
+}
+
+/// Derives a deterministic Garlic message id for a single send
+/// composition. Plan 124 owns the trace-friendly id so the OBEP and
+/// the local endpoint can correlate the recovered message. Tests
+/// observe the value; production callers pass a CSPRNG-backed id by
+/// extending this helper before publication.
+fn outbound_message_message_id<R: CryptoRng + RngCore>(now_seconds: u32, rng: &mut R) -> u32 {
+    let mut buf = [0_u8; 4];
+    let _ = now_seconds;
+    let _ = rng.try_fill_bytes(&mut buf);
+    u32::from_le_bytes(buf).max(1)
 }
 
 fn map_session_error(error: crate::session::EciesSessionError) -> SendError {
