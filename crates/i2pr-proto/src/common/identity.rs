@@ -325,8 +325,8 @@ impl Destination {
     }
 
     /// Decodes a destination from a cursor without consuming trailing
-    /// bytes. The cursor-based [`Self::decode_from`] is the canonical
-    /// decoder but is `pub(super)`. This helper re-exports the cursor
+    /// bytes. The cursor-based `decode_from` is the canonical decoder
+    /// but is `pub(super)`. This helper re-exports the cursor
     /// decoding through a public surface for callers that need to
     /// extract the destination out of a larger option region without
     /// tripping the strict top-level decoder's `TrailingBytes` policy.
