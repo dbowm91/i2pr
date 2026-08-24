@@ -788,9 +788,7 @@ fn encode_encrypted_outbound(message: &mut EciesOutboundMessage) -> EncryptedOut
 
 fn encode_database_store_clove(ls2: &LeaseSet2) -> Result<Vec<u8>, SendError> {
     let body = i2pr_proto::I2npBody::DatabaseStore(Box::new(i2pr_proto::DatabaseStoreMessage {
-        key: ls2
-            .key_hash()
-            .map_err(SendError::DataCodec)?,
+        key: ls2.key_hash().map_err(SendError::DataCodec)?,
         reply_token: 0,
         reply_tunnel_id: None,
         reply_gateway: None,
