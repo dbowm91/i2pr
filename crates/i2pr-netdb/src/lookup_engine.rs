@@ -23,6 +23,9 @@ use i2pr_proto::{
 use thiserror::Error;
 
 use crate::databaselookup::build_databaselookup;
+use crate::lease_set2::{
+    DestinationHash, LeaseSet2Store, LeaseSet2ValidationContext, ValidatedLeaseSet2,
+};
 use crate::lookup_action::{
     LookupAction, LookupFinalState, MAX_DECOMPRESSED_ROUTER_INFO_BYTES, decompress_router_info,
 };
@@ -69,6 +72,16 @@ pub enum LookupResult {
         lookup_id: LookupId,
         /// Validated target `RouterInfo`.
         router_info: Box<ValidatedRouterInfo>,
+    },
+    /// The lookup completed successfully with a validated
+    /// Standard `LeaseSet2`. Plan 122 §A extends the typed result
+    /// surface so destination lookups can resolve remote LS2s
+    /// through the existing state machine.
+    LeaseSet2Success {
+        /// Lookup identity.
+        lookup_id: LookupId,
+        /// Validated target `LeaseSet2`.
+        lease_set2: Box<ValidatedLeaseSet2>,
     },
     /// The lookup terminated without finding a usable response.
     Failure {
@@ -265,7 +278,6 @@ impl RouterInfoLookup {
     /// terminal action when a lookup was active.
     pub fn cancel(&mut self) -> Option<LookupAction> {
         let lookup = self.active.take()?;
-        self.active_request_id = None;
         let lookup_id = LookupId::new(
             self.active_request_id
                 .take()
@@ -545,6 +557,67 @@ pub fn handle_database_store(
     let result = LookupResult::Success {
         lookup_id,
         router_info: Box::new(validated),
+    };
+    lookup.active = None;
+    lookup.active_request_id = None;
+    Ok(ResponseOutcome::Completed(Box::new(result)))
+}
+
+/// Ingest a `DatabaseStore` carrying a Standard `LeaseSet2`. Plan
+/// 122 §A extends the lookup state machine so destination lookups
+/// produce a `LeaseSet2Success` outcome.
+pub fn handle_database_store_lease_set2(
+    lookup: &mut RouterInfoLookup,
+    store: &mut LeaseSet2Store,
+    lookup_id: LookupId,
+    store_message: &DatabaseStoreMessage,
+    context: LeaseSet2ValidationContext,
+) -> Result<ResponseOutcome, LookupEngineError> {
+    let active = match lookup.active.as_ref() {
+        Some(active) => active,
+        None => return Ok(ResponseOutcome::Ignored),
+    };
+    let active_id = LookupId::new(
+        lookup
+            .active_request_id
+            .ok_or(LookupEngineError::LookupTerminal)?,
+        active.kind,
+        active.target,
+    );
+    if active_id != lookup_id {
+        return Err(LookupEngineError::IdentityMismatch {
+            actual: lookup_id,
+            expected: active_id,
+        });
+    }
+    if active.kind != LookupKind::LeaseSet2 {
+        // Plan 122 §A: only LeaseSet2 lookups accept LS2 responses.
+        return Ok(ResponseOutcome::Continue);
+    }
+    // The DatabaseStore key for an LS2 lookup is the SHA-256 of the
+    // canonical destination encoding. The lookup state machine
+    // already tracks the same 32-byte value through `RouterHash`; the
+    // LS2 store uses the same bytes via `DestinationHash`. We compare
+    // the canonical bytes directly to keep the typed wrappers
+    // distinct.
+    let target_bytes = active.target.as_bytes();
+    if store_message.key.as_bytes() != target_bytes {
+        return Ok(ResponseOutcome::Continue);
+    }
+    let expected = DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(*target_bytes));
+    let ls2 = match &store_message.data {
+        DatabaseStoreData::LeaseSet2(boxed) => boxed,
+        _ => return Ok(ResponseOutcome::Continue),
+    };
+    let validated =
+        match ValidatedLeaseSet2::from_lease_set2(ls2.as_ref().clone(), Some(expected), context) {
+            Ok(validated) => validated,
+            Err(_) => return Ok(ResponseOutcome::Continue),
+        };
+    let _ = store.insert(validated.clone());
+    let result = LookupResult::LeaseSet2Success {
+        lookup_id,
+        lease_set2: Box::new(validated),
     };
     lookup.active = None;
     lookup.active_request_id = None;

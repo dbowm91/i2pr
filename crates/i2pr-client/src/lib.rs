@@ -29,11 +29,14 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod dispatch;
 pub mod identity;
+pub mod lease_selection;
 pub mod leaseset;
 pub mod message;
 pub mod pool;
 pub mod registry;
+pub mod routing;
 pub mod session;
 pub mod testing;
 
@@ -45,7 +48,15 @@ pub use config::{
     MAX_LEASE_ROTATION_MARGIN_SECONDS, MAX_LOCAL_DESTINATIONS, MAX_PENDING_DESTINATION_BYTES,
     MAX_PENDING_DESTINATION_MESSAGES, RegistryConfig,
 };
+pub use dispatch::{
+    DestinationDispatcher, InboundDispatchError, InboundDispatchOutcome, MAX_INBOUND_DESTINATIONS,
+    MAX_INBOUND_PAYLOAD_BYTES_PER_DESTINATION, MAX_INBOUND_PENDING_MESSAGES,
+};
 pub use identity::{DestinationId, DestinationIdentity, DestinationIdentityError};
+pub use lease_selection::{
+    LeaseSelectionError, LeaseSelectionPolicy, LeaseSelector, MAX_LEASE_SAFETY_MARGIN_SECONDS,
+    SelectedLease,
+};
 pub use leaseset::{
     LEASE_SET2_SIGNATURE_DOMAIN, LeaseSetDecision, LeaseSetError, LeaseSetLifecycle,
     LeaseSetRotationCause, LeaseSetSummary, LocalLeaseSet, build_signed_lease_set2, encoded_hash,
@@ -62,6 +73,12 @@ pub use registry::{
     DestinationCommand, DestinationEvent, DestinationHandle, DestinationProgress,
     DestinationRegistry, DestinationRuntime, DestinationRuntimeError, DestinationShutdown,
     DestinationState, RegistryError,
+};
+pub use routing::{
+    DestinationOutboundRole, DestinationRouting, DestinationRoutingConfig, DestinationRoutingError,
+    LookupIngestError, LookupIngestOutcome, MAX_CONCURRENT_REMOTE_LOOKUPS,
+    MAX_PENDING_OUTBOUND_PER_REMOTE, OutboundDeliveryPlan, OutboundRequest, SendError,
+    compose_outbound_delivery,
 };
 pub use session::{
     DEFAULT_SESSION_IDLE_SECONDS, EciesAdvanceReport, EciesOutboundMessage, EciesPayloadError,

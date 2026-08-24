@@ -16,9 +16,21 @@ bounded structural Garlic payload block codec integration, and the
 typed New Session / New Session Reply / Existing Session trajectory
 producers.
 
-NTCP2 / SSU2 / public-network transport, remote destination routing,
-and the streaming protocol are all out of scope here; they live in
-the Plan 122/123 follow-on plans.
+Plan 122 composes the Plan 119 LS2 lookup surface, the Plan 120 destination
+runtime, the Plan 121 ECIES session layer, and the Plan 116 tunnel data
+plane into the first complete local destination routing pipeline
+([Plan 122](../plans/122-m6-destination-routing-and-netdb-composition.md)).
+The new `routing` module owns `DestinationRouting`, `LeaseSelector`,
+`OutboundRequest`, `compose_outbound_delivery`, and the typed
+`OutboundDeliveryPlan` boundary; the new `dispatch` module owns
+`DestinationDispatcher`, the inbound Garlic decryption surface, and the
+per-destination application queue. The router-delivery seam produces
+`OBGWRouterDelivery` cells for the future transport adapter; the
+authenticated-router link between an outbound endpoint and the remote
+inbound gateway remains the only transport omission.
+
+NTCP2 / SSU2 / public-network transport and the streaming protocol are out
+of scope here; they live in the Plan 123 follow-on plan.
 
 ## Layering
 
@@ -43,18 +55,22 @@ five-edge contract.
 crates/i2pr-client/
 ├── Cargo.toml
 ├── src/
-│   ├── lib.rs        facade and re-exports
-│   ├── config.rs     DestinationConfig, RegistryConfig, bounded defaults
-│   ├── identity.rs   DestinationIdentity, DestinationId (non-Clone secret owner)
-│   ├── pool.rs       DestinationTunnelPool wrapping BoundedTunnelPool
-│   ├── leaseset.rs   LeaseSet2 builder, LeaseSetLifecycle, LocalLeaseSet
-│   ├── message.rs    BoundedPayloadQueue, DestinationPayload, RoutingUnavailable
-│   ├── registry.rs   DestinationRuntime, DestinationHandle, DestinationRegistry
-│   ├── session.rs    Plan 121 EciesSessionManager, EciesSessionConfig, New Session / Existing Session producers
-│   └── testing.rs    deterministic inbound/outbound EstablishedMaterial fixtures
+│   ├── lib.rs            facade and re-exports
+│   ├── config.rs         DestinationConfig, RegistryConfig, bounded defaults
+│   ├── identity.rs       DestinationIdentity, DestinationId (non-Clone secret owner)
+│   ├── pool.rs           DestinationTunnelPool wrapping BoundedTunnelPool
+│   ├── leaseset.rs       LeaseSet2 builder, LeaseSetLifecycle, LocalLeaseSet
+│   ├── message.rs        BoundedPayloadQueue, DestinationPayload, RoutingUnavailable
+│   ├── registry.rs       DestinationRuntime, DestinationHandle, DestinationRegistry
+│   ├── session.rs        Plan 121 EciesSessionManager, EciesSessionConfig, New Session / Existing Session producers
+│   ├── lease_selection.rs Plan 122 LeaseSelector / LeaseSelectionPolicy / SelectedLease
+│   ├── routing.rs        Plan 122 DestinationRouting, OutboundRequest, compose_outbound_delivery, OutboundDeliveryPlan
+│   ├── dispatch.rs       Plan 122 DestinationDispatcher, InboundDispatchOutcome / InboundDispatchError
+│   └── testing.rs        deterministic inbound/outbound EstablishedMaterial fixtures
 └── tests/
     ├── plan120_trajectory.rs   Plan 120 §12 deterministic local trajectory
-    └── plan121_trajectory.rs   Plan 121 §16 deterministic local NS -> NSR -> ES trajectory
+    ├── plan121_trajectory.rs   Plan 121 §16 deterministic local NS -> NSR -> ES trajectory
+    └── plan122_trajectory.rs   Plan 122 §13 deterministic local two-destination composition
 ```
 
 ## Identity ownership
@@ -236,3 +252,50 @@ advancing state. The `EciesSessionManager` is exercised against
 real `i2pr-crypto` ECIES primitives; the test never reaches into
 private state or reaches the third-party `curve25519-elligator2`
 type directly.
+
+## Destination routing composition (Plan 122)
+
+`routing.rs` composes the Plan 119 LS2 lookup surface, the Plan 120
+destination runtime, the Plan 121 ECIES session layer, and the Plan 116
+tunnel data plane into a single outbound pipeline:
+
+1. The `DestinationRouting` cache holds the validated LeaseSet2
+   records the local destination has resolved through the router's
+   NetDB lookup state machine and the active remote destination
+   map keyed by `DestinationHash`.
+2. `LeaseSelector` (in `lease_selection.rs`) picks one lease from
+   the resolved LeaseSet2 with caller-supplied CSPRNG, enforcing
+   expiry filtering, near-expiry margin, and non-zero receive
+   tunnel id.
+3. `OutboundRequest::new` wraps the application bytes in an I2NP
+   `Data` envelope and optionally bundles the sender's signed
+   `LeaseSet2` DatabaseStore clove the New Session will carry.
+4. `compose_outbound_delivery` constructs the Garlic payload
+   sequence (DateTime + Garlic Clove(s)), seals it through
+   `EciesSessionManager::encrypt_to_remote`, then forwards the
+   encrypted envelope through `OutboundGatewayRole::forward_cells`
+   with `DeliveryInstruction::Tunnel { tunnel_id, gateway }`
+   targeting the selected lease.
+5. The router-delivery boundary emits `OBGWRouterDelivery` cells
+   addressed to the first hop of the local creator's outbound
+   destination tunnel; the only transport omission is the
+   explicit `authenticated-router-link-bypassed-local-seam` label
+   Plan 122 calls for.
+
+`dispatch.rs` owns the recipient-side path:
+
+1. `DestinationDispatcher::dispatch_garlic_envelope` decodes the
+   I2NP `Garlic` body, routes the 0xE0 flag to
+   `EciesSessionManager::accept_new_session`, and routes the 0xE2
+   flag to `accept_new_session_reply`.
+2. The dispatcher walks the decrypted ECIES payload sequence,
+   validates any bundled `DatabaseStore(LeaseSet2)` clove through
+   `i2pr_netdb::ValidatedLeaseSet2`, and routes the recovered
+   application `Data` body into the matching destination's inbound
+   queue only after AEAD authentication succeeds.
+3. Every malformed input fails closed; the dispatcher never
+   surfaces plaintext before session authentication.
+
+The `plan122_trajectory` integration test drives the full
+deterministic local surface end-to-end across Phases A/B/C/F/H
+without touching sockets, DNS, or any external I2P reference.

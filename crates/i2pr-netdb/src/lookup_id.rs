@@ -246,6 +246,14 @@ pub fn router_hash_from_proto_hash(hash: Hash) -> RouterHash {
     RouterHash::from_hash(hash)
 }
 
+/// Plan 122 helper: project a [`crate::DestinationHash`] into the
+/// [`RouterHash`] the lookup state machine uses as its
+/// per-target identifier. The two types wrap the same 32-byte SHA-256
+/// digest, so the conversion is a strict byte copy.
+pub fn router_hash_from_destination(destination: crate::DestinationHash) -> RouterHash {
+    RouterHash::from_bytes(*destination.as_bytes())
+}
+
 /// Reply-path provider implemented by the future Milestone 5
 /// exploratory-tunnel owner. The seam consults the provider before
 /// emitting any [`crate::LookupAction::SendDatabaselookup`] action.

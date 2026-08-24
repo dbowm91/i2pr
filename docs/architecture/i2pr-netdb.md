@@ -182,8 +182,13 @@ no DNS. Filesystem I/O belongs to `i2pr-storage` (raw-byte seam) and
   fail-closed.
 - `lookup_id::LookupKind::LeaseSet2` — the wire-code `1` lookup-kind
   variant for Standard LeaseSet2; Plan 119 wires the structural
-  surface only. The full `DatabaseLookup` state machine wiring belongs
-  to Plan 122.
+  surface only. Plan 122 owns the `RouterInfoLookup` extension that
+  produces `LookupResult::LeaseSet2Success` from `DatabaseStore(LeaseSet2)`
+  responses, the dedicated `handle_database_store_lease_set2` helper
+  that validates the response against the `LeaseSet2ValidationContext`
+  and routes the validated record into the `LeaseSet2Store`, and the
+  `router_hash_from_destination` helper that maps the destination hash
+  onto the lookup state machine's `RouterHash` target.
 
 ## Key contracts
 

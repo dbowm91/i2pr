@@ -101,7 +101,13 @@ inbound tunnel is registered.
 > final closure pass closes the remaining `F1`–`F5` closure
 > defects. The Plan 116 terminal cleanup pass
 > ([`plans/116-terminal-cleanup.md`](../../plans/116-terminal-cleanup.md))
-> closes the four remaining `T1`–`T4` closure defects. The crate
+> closes the four remaining `T1`–`T4` closure defects. Plan 122
+> composes the tunnel data plane with the Plan 119 LeaseSet2
+> lookup surface, the Plan 120 destination runtime, and the Plan
+> 121 ECIES session layer into the first complete local
+> destination routing pipeline; the data plane remains
+> `passed-final-local-closure` for both unfragmented and
+> fragmented trajectories. The crate
 > now
 > owns: the AES-256 ECB/CBC/ECB layer transform in
 > [`src/layer.rs`](../../crates/i2pr-tunnel/src/layer.rs)

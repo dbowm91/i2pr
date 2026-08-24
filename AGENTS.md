@@ -2079,21 +2079,39 @@ inventory defects `F1`–`F5`) closed Plan 116 as
    `i2pr-netdb`, LeaseSet2 lifecycle with bounded
    rotation/withdrawal, bounded local payload contracts, and a
    router-local destination registry.
-   Plan 121 closed as `passed-ecies-destination-session-layer`
-   per [`plans/121-status.md`](plans/121-status.md): the
-   `curve25519-elligator2 = 0.1.0-alpha.2` primitive audit
-   (Plan 121 §2 / §12), the wrapped ECIES primitives in
-   `i2pr-crypto`, the bounded Garlic payload block codec in
-   `i2pr-proto`, and the bounded destination-context
-   `EciesSessionManager` in `i2pr-client`. The
-   `plan_121_deterministic_local_trajectory` integration test
-   drives the two-destination NS → NSR → Existing Session
-   trajectory with exact-once payload delivery, tag ratchet
-   advancement, and replay rejection. The next executable plan
-   is **Plan 122** (destination routing and LeaseSet2 NetDB
-   composition) under the Milestone 6 router-construction
-   roadmap in
-   [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
+Plan 121 closed as `passed-ecies-destination-session-layer`
+    per [`plans/121-status.md`](plans/121-status.md): the
+    `curve25519-elligator2 = 0.1.0-alpha.2` primitive audit
+    (Plan 121 §2 / §12), the wrapped ECIES primitives in
+    `i2pr-crypto`, the bounded Garlic payload block codec in
+    `i2pr-proto`, and the bounded destination-context
+    `EciesSessionManager` in `i2pr-client`. The
+    `plan_121_deterministic_local_trajectory` integration test
+    drives the two-destination NS → NSR → Existing Session
+    trajectory with exact-once payload delivery, tag ratchet
+    advancement, and replay rejection. Plan 122 closed as
+    `passed-local-destination-routing` per
+    [`plans/122-status.md`](plans/122-status.md): it composes the
+    Plan 119 LeaseSet2 NetDB surface, the Plan 120 destination
+    runtime, the Plan 121 ECIES Garlic session layer, and the
+    Plan 116 tunnel data plane into a complete local destination
+    routing pipeline. The Plan 122 surface lands the
+    `handle_database_store_lease_set2` ingestion path and the
+    `LookupResult::LeaseSet2Success` variant on the NetDB
+    lookup engine (`i2pr-netdb`), the dedicated
+    `begin_lease_set2_lookup` / `ingest_lease_set2_response` /
+    `cancel_lease_set2_lookup` path on the daemon `NetDbSeam`
+    (`i2pr-daemon`), the bounded `LeaseSelector` /
+    `LeaseSelectionPolicy` selector (`i2pr-client`), the typed
+    `OutboundRequest` builder, the `compose_outbound_delivery`
+    planner, the `DestinationRouting` cache, and the
+    `DestinationDispatcher` inbound surface (`i2pr-client`).
+    The `plan_122_two_destination_local_composition` integration
+    test exercises Phase A/B/C/F/H without touching sockets,
+    DNS, or any external I2P reference. The next executable plan
+    is **Plan 123** (minimal streaming core) under the Milestone
+    6 router-construction roadmap in
+    [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
 
 Plan 116 lands:
 

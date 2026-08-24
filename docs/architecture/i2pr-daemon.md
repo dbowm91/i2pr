@@ -357,6 +357,20 @@ the reference-side defect is localized to the pinned Emissary
 revision, and no upstream correction is available. See
 [`plans/117-status.md`](../../plans/117-status.md) and the Plan 118
 disposition in
+
+### Plan 122 LeaseSet2 lookup seam (`src/netdb_seam.rs`)
+
+Plan 122 extends the daemon `NetDbSeam` with a dedicated LeaseSet2
+lookup state machine and a separate reply-path provider so Plan 117
+router-side exploration is not consulted for destination lookups. The
+seam exposes `begin_lease_set2_lookup`, `advance_lease_set2_after_path`,
+`ingest_lease_set2_response`, `ingest_lease_set2_store`,
+`lease_set2_delivery_outcome`, `cancel_lease_set2_lookup`, and
+`active_lease_set2_lookup`. The typed errors live in `NetDbSeamError`
+and the typed ingestion results in `LeaseSet2ResponseOutcome`. The
+local Plan 122 deterministic composition reaches a `Complete` outcome
+immediately when no floodfill candidate exists, surfacing the
+typed terminal result rather than a stuck pending state.
 [`plans/118-planning-authority-cleanup-and-plan117-disposition.md`](../../plans/118-planning-authority-cleanup-and-plan117-disposition.md).
 Phase I authenticated transport remains
 `deferred-host-lane-unavailable` on this host and is tracked

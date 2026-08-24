@@ -47,13 +47,14 @@ pub use lookup_action::{
 pub use lookup_engine::{
     CoalescedRouterInfoLookup, DeliveryOutcome, LookupDiagnostics, LookupEngineError, LookupResult,
     ResponseOutcome, RouterInfoLookup, StartOutcome, handle_database_store,
-    handle_databasestore_message, handle_delivery_outcome, handle_search_reply,
-    handle_searchreply_message,
+    handle_database_store_lease_set2, handle_databasestore_message, handle_delivery_outcome,
+    handle_search_reply, handle_searchreply_message,
 };
 
 pub use lookup_id::{
     CoalescedTargets, LookupId, LookupKind, MAX_COALESCED_LOOKUPS, MAX_WAITERS_PER_LOOKUP,
-    ReplyPath, ReplyPathError, ReplyPathProvider, WaiterSet, router_hash_from_proto_hash,
+    ReplyPath, ReplyPathError, ReplyPathProvider, WaiterSet, router_hash_from_destination,
+    router_hash_from_proto_hash,
 };
 pub use lookup_policy::{
     DEFAULT_MAX_CANDIDATES_CONSIDERED, DEFAULT_MAX_PEERS_PER_LOOKUP, DEFAULT_MAX_SUGGESTED_HASHES,

@@ -15,6 +15,9 @@ pub mod netdb_seam;
 pub mod outbound_lookup;
 
 pub use error::DaemonError;
+pub use netdb_seam::{
+    CompositionOutcome, ExploratoryPathStatus, LeaseSet2ResponseOutcome, NetDbSeam, NetDbSeamError,
+};
 
 use cli::{CheckConfigArgs, Cli, Command, IdentityCommand, RunArgs};
 use config::Config;

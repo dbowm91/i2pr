@@ -554,6 +554,20 @@ impl PendingHandshakeRecord {
     pub fn set_remote_static_public(&mut self, public_key: &[u8; X25519_KEY_LENGTH]) {
         self.remote_static_public.copy_from_slice(public_key);
     }
+
+    /// Constructs a placeholder record used by callers that need to
+    /// move an existing record out of a `Box` through a `mem::replace`.
+    /// The placeholder is never exposed to production callers.
+    #[doc(hidden)]
+    pub fn dummy_for_swap() -> Self {
+        Self {
+            remote_static_public: [0u8; X25519_KEY_LENGTH],
+            handshake: PendingHandshake {
+                ephemeral_secret: [0u8; REPRESENTATIVE_LENGTH],
+                static_secret: [0u8; X25519_KEY_LENGTH],
+            },
+        }
+    }
 }
 
 /// Aggregated report from [`EciesSessionManager::advance_time`].
