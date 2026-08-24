@@ -324,6 +324,17 @@ impl Destination {
         encode_to_vec(maximum, |encoder| self.keys.encode_into(encoder))
     }
 
+    /// Decodes a destination from a cursor without consuming trailing
+    /// bytes. The cursor-based [`Self::decode_from`] is the canonical
+    /// decoder but is `pub(super)`. This helper re-exports the cursor
+    /// decoding through a public surface for callers that need to
+    /// extract the destination out of a larger option region without
+    /// tripping the strict top-level decoder's `TrailingBytes` policy.
+    pub fn decode_from_cursor(input: &[u8], maximum: usize) -> Result<Self, CodecError> {
+        let mut cursor = DecodeCursor::new(input, maximum)?;
+        Self::decode_from(&mut cursor)
+    }
+
     /// Returns the SHA-256 hash of the exact canonical destination encoding.
     pub fn hash(&self) -> Result<Hash, CodecError> {
         Ok(Hash::digest(

@@ -8,6 +8,7 @@ description = "Foundational protocol namespace and error categories for i2pr"
 publish = false
 
 [dependencies]
+flate2.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
 

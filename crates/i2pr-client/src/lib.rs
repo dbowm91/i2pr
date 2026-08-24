@@ -38,6 +38,7 @@ pub mod pool;
 pub mod registry;
 pub mod routing;
 pub mod session;
+pub mod streaming;
 pub mod testing;
 
 pub use config::{
