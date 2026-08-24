@@ -25,6 +25,16 @@ Path: `crates/i2pr-proto/`
   `DatabaseStoreData::LeaseSet2` owns the type-3 Standard LeaseSet2
   carrier; types 5 (EncryptedLeaseSet) and 7 (MetaLeaseSet) remain
   explicitly `Deferred`.
+- **ECIES Garlic payload block codec** (Plan 121,
+  `src/ecies_payload.rs`): the bounded structural payload block
+  codec consumed by the destination session layer in `i2pr-client`.
+  Encodes DateTime (4-byte Unix seconds), Garlic Clove (ECIES-flavoured
+  with Local and Destination delivery variants), and Padding; rejects
+  Termination and MessageNumbers. The decoder enforces a
+  block-count ceiling, a mandatory first-block DateTime policy for
+  New Session payloads, a last-only Padding ordering, a per-clove
+  message length ceiling, and a maximum payload byte length of
+  `65_507`.
 
 It owns framing and structural validation. Anything requiring later
 cryptography, state machines, or interpretation is stored as a bounded
@@ -34,9 +44,13 @@ opaque payload (`DeferredPayload` / `OpaqueMessageBody` /
 It does **not** own: routing, transport state machines, NetDB behavior,
 tunnel build execution, crypto policy, runtime integration, I/O,
 destination lifecycle, destination keys, ECIES session state,
-Garlic encryption, or destination tunnel pools. The Standard LeaseSet2
-codec and signature-domain byte are structural; private destination
-signing material stays out of `i2pr-proto`.
+ECIES ephemeral key generation, ECIES HKDF transcript, or
+destination tunnel pools. The Standard LeaseSet2 codec and
+signature-domain byte are structural; private destination signing
+material stays out of `i2pr-proto`. The ECIES Garlic payload
+block codec is structural — encryption, session ratchet, and
+ephemeral key handling stay out of `i2pr-proto` and live in
+`i2pr-crypto` (primitives) and `i2pr-client` (manager).
 
 ## Module layout
 
@@ -65,6 +79,7 @@ The crate is single-directory with two top-level submodules under
 | `src/i2np/tunnel.rs` | Tunnel data, gateway, deferred build records | `TunnelDataMessage`, `TunnelGatewayMessage`, `DeferredBuildRecords` |
 | `src/i2np/netdb.rs` | `DatabaseStore`, `Lookup`, `SearchReply`, `ReplyEncryption`, zeroizing `ReplySecret<N>` | `DatabaseStoreType`, `DatabaseStoreData` (`RouterInfoCompressed`/`LeaseSet`/`LeaseSet2`/`Deferred`), `DatabaseStoreMessage`, `DatabaseLookupMessage`, `DatabaseSearchReplyMessage`, `ReplyEncryption`, `ReplySecret<N>` |
 | `src/i2np/deferred.rs` | Bounded opaque payloads | `DeferredPayload`, `OpaqueMessageBody` |
+| `src/ecies_payload.rs` | Bounded structural ECIES Garlic payload block codec (Plan 121) | `EciesPayloadSequence`, `EciesPayloadBlock`, `GarlicCloveBlock`, `GarlicDelivery`, `EciesPayloadError` |
 
 Integration tests live in `tests/i2np_fixtures.rs` (existing I2NP
 coverage) and `tests/lease_set2_fixture.rs` (Plan 119 frozen LS2 +
@@ -110,6 +125,8 @@ i2np-level round-trip coverage).
 | `I2npMessage` | `i2np/message.rs:128` | Top-level dispatch; three decode paths, three encode paths. |
 | `TunnelGatewayMessage` | `i2np/tunnel.rs` | Nesting a full `I2npMessage` (recursive decode path). |
 | `ReplySecret<N>` | `i2np/netdb.rs:90` | Non-cloneable, zeroizing wrapper. `Debug` redacts bytes. Memory hygiene only — no crypto. |
+| `EciesPayloadSequence` | `ecies_payload.rs` | Bounded structural ECIES Garlic payload block sequence. DateTime-first / Garlic Clove / last-only Padding policy. Rejects Termination and MessageNumbers. |
+| `EciesPayloadBlock`, `GarlicCloveBlock`, `GarlicDelivery` | `ecies_payload.rs` | Bounded block types: DateTime (type 0, 4-byte Unix seconds), Garlic Clove (type 1, ECIES), Padding (type 254, last-only). Rejects oversized cloves, padding-then-non-padding, unknown delivery flags, and truncated headers. |
 
 ## Codec architecture
 
@@ -165,6 +182,17 @@ via `CodecError::kind()`.
   signature preimage prepended type byte), and the negative paths
   (zero leases, signature type mismatch).
 - `src/i2np/message.rs:966-1147` — 10 tests on body registry, headers, fixture vectors, search-reply bounding, DH mode rejection, deferred redaction.
+- `src/ecies_payload.rs` — Plan 121 inline deterministic tests covering:
+  successful round-trip with one DateTime + one Clove + one Padding;
+  oversized clove rejection (`> MAX_CLOVE_PAYLOAD_BYTES`);
+  oversized payload rejection (`> MAX_PAYLOAD_BYTES = 65_507`);
+  truncated header rejection;
+  truncated clove body rejection;
+  DateTime-not-first rejection;
+  Padding-then-non-Padding rejection;
+  unknown delivery flag rejection;
+  the maximum-block-count guard; and the malformed-entry-count
+  guard.
 - `tests/i2np_fixtures.rs` — Loads hex fixtures via `include_str!` from `tests/fixtures/i2np/`. Tests:
   - every positive fixture decodes and re-encodes canonically;
   - positive fixture truncations fail without panics;
@@ -205,6 +233,11 @@ via `CodecError::kind()`.
 - **Key-certificate excess material** — `KeyCertificate` stores
   `excess_signing`/`excess_crypto` byte vectors to support longer
   algorithm keys without truncation.
+- **ECIES Garlic payload block codec is structurally bounded** — every
+  decode call requires an explicit `maximum`, the block-count cap
+  is fixed, and Termination / MessageNumbers are rejected at the
+  block layer. The codec never carries ephemeral keys, session
+  state, or AEAD ciphertexts — it is structural only.
 
 ## Cross-references
 
@@ -214,3 +247,5 @@ via `CodecError::kind()`.
 - [sources](../../specs/SOURCES.md)
 - Plan-of-record for codec work: `plans/011-m1-codec-foundation.md`
   and its closure at `plans/011-closure.md`
+- Plan-of-record for ECIES payload work: [`plans/121-m6-ecies-garlic-session-layer.md`](../../plans/121-m6-ecies-garlic-session-layer.md)
+  and its closure at `plans/121-status.md`

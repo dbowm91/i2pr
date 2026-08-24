@@ -31,8 +31,17 @@ use zeroize::{Zeroize, Zeroizing};
 /// Operating-system-backed randomness for explicit production injection.
 pub use rand_core::OsRng;
 
+pub mod ecies;
 pub mod hkdf;
 
+pub use ecies::{
+    ECIES_EXISTING_SESSION_FLAG, ECIES_NEW_SESSION_FLAG, ECIES_SESSION_TAG_LEN,
+    EciesEphemeralKeypair, EciesEphemeralRepresentative, EciesEphemeralSecret, EciesError,
+    EciesSessionState, ExistingSessionMessage, MAX_NEW_SESSION_CIPHERTEXT, NewSessionMessage,
+    NewSessionReplyMessage, REPRESENTATIVE_LENGTH, decode_representative, open_existing_session,
+    open_new_session, open_new_session_reply, seal_existing_session, seal_new_session,
+    seal_new_session_reply,
+};
 pub use hkdf::{HkdfError, MAX_HKDF_OUTPUT_LEN, hkdf_sha256_32, hkdf_sha256_extract_and_expand};
 
 /// The generated I2P signature algorithm: EdDSA over Ed25519 (type 7).

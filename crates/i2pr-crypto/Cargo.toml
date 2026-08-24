@@ -8,6 +8,8 @@ description = "Protocol-specific cryptographic wrappers for i2pr identity operat
 publish = false
 
 [dependencies]
+chacha20poly1305.workspace = true
+curve25519-elligator2.workspace = true
 ed25519-dalek.workspace = true
 hmac.workspace = true
 i2pr-proto = { path = "../i2pr-proto" }

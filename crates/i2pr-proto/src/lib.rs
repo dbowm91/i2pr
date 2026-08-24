@@ -9,10 +9,12 @@
 
 mod codec;
 mod common;
+mod ecies_payload;
 mod i2np;
 
 pub use codec::{CodecError, DecodeCursor, EncodeBuffer, decode_exact, encode_to_vec};
 pub use common::*;
+pub use ecies_payload::*;
 pub use i2np::*;
 
 /// Stable structural outcomes shared by protocol parsers.

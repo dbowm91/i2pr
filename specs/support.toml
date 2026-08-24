@@ -59,13 +59,19 @@
 # Standard LeaseSet2 construction and signing with self-validation
 # through `i2pr-netdb`, LeaseSet2 lifecycle with bounded
 # rotation/withdrawal, bounded local payload contracts, and a
-# router-local destination registry. Garlic encryption, remote
-# destination routing, and the streaming protocol remain Plan
-# 121/122/123 scope. Router construction is not blocked on the
-# unavailable authenticated external transport lane; external
-# acceptance debt is tracked separately. Structural evidence may
-# be recorded before interoperability; all entries remain
-# non-advertised.
+# router-local destination registry. Plan 121 closed as
+# `passed-ecies-destination-session-layer` and lands the first
+# real ECIES-X25519-AEAD-Ratchet destination Garlic/session layer
+# with the audited `curve25519-elligator2 = 0.1.0-alpha.2`
+# primitive, the wrapped ECIES primitives in `i2pr-crypto`, the
+# bounded structural Garlic payload block codec in `i2pr-proto`,
+# and the bounded destination-context `EciesSessionManager` in
+# `i2pr-client`. Remote destination routing and the streaming
+# protocol remain Plan 122/123 scope. Router construction is not
+# blocked on the unavailable authenticated external transport
+# lane; external acceptance debt is tracked separately.
+# Structural evidence may be recorded before interoperability;
+# all entries remain non-advertised.
 schema = 1
 milestone = 6
 plan_103_implementation_floor = "plans/103-status.md"
@@ -101,6 +107,8 @@ plan_119_closure = "plans/119-status.md"
 plan_119_status = "passed-leaseset2-protocol-foundation"
 plan_120_plan_of_record = "plans/120-m6-destination-lifecycle-and-tunnel-pools.md"
 plan_120_status = "passed-destination-lifecycle-and-pools"
+plan_121_plan_of_record = "plans/121-m6-ecies-garlic-session-layer.md"
+plan_121_status = "passed-ecies-destination-session-layer"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -180,7 +188,7 @@ protocol = "destination"
 structure = "local-destination-identity-dedicated-tunnel-pools-leaseSet2-lifecycle"
 scope = "required"
 status = "experimental"
-notes = "Plan 120 closed as `passed-destination-lifecycle-and-pools`. `i2pr-client` owns local destination identity (independent Ed25519 signing + static X25519 private keys, non-`Clone`, non-`Debug` secrets), destination-specific tunnel pools that consume real one-shot `EstablishedMaterial`, local Standard LeaseSet2 construction and signing with self-validation through `i2pr-netdb`, LeaseSet2 lifecycle with bounded rotation/withdrawal, bounded local payload contracts that never inject plaintext into tunnel delivery, and a router-local destination registry. Garlic encryption, remote destination routing, and the streaming protocol remain Plan 121/122/123 scope."
+notes = "Plan 120 closed as `passed-destination-lifecycle-and-pools`. `i2pr-client` owns local destination identity (independent Ed25519 signing + static X25519 private keys, non-`Clone`, non-`Debug` secrets), destination-specific tunnel pools that consume real one-shot `EstablishedMaterial`, local Standard LeaseSet2 construction and signing with self-validation through `i2pr-netdb`, LeaseSet2 lifecycle with bounded rotation/withdrawal, bounded local payload contracts that never inject plaintext into tunnel delivery, and a router-local destination registry. Plan 121 adds the ECIES-X25519-AEAD-Ratchet destination session layer (see `client.destination-ecies-session`); remote destination routing and the streaming protocol remain Plan 122/123 scope."
 evidence = [
     "crates/i2pr-client/src/lib.rs",
     "crates/i2pr-client/src/config.rs",
@@ -191,6 +199,23 @@ evidence = [
     "crates/i2pr-client/src/registry.rs",
     "crates/i2pr-client/tests/plan120_trajectory.rs",
     "plans/120-m6-destination-lifecycle-and-tunnel-pools.md",
+]
+advertised = false
+
+[[surface]]
+id = "client.destination-ecies-session"
+protocol = "destination-garlic"
+structure = "ecies-x25519-aead-ratchet-destination-session-layer"
+scope = "required"
+status = "experimental"
+notes = "Plan 121 closed as `passed-ecies-destination-session-layer`. The destination session layer wraps an audited `curve25519-elligator2 = 0.1.0-alpha.2` representative codec and a single-tag-key ChaCha20-Poly1305 ratchet. `i2pr-crypto::ecies` exposes the typed NS / NSR / ES primitives; `i2pr-proto::ecies_payload` enforces the bounded structural Garlic payload block codec (DateTime-first, Garlic Clove, last-only Padding); `i2pr-client::session` exposes the bounded `EciesSessionManager` (per-remote session caps, pending-handshake cap, tag look-ahead cap, replay cache cap, idle eviction). The integration test `plan121_trajectory` drives the two-destination NS -> NSR -> Existing Session path with exact-once payload delivery, tag ratchet advancement, and replay rejection. Remote destination routing and the streaming protocol remain Plan 122/123 scope."
+evidence = [
+    "crates/i2pr-crypto/src/ecies.rs",
+    "crates/i2pr-proto/src/ecies_payload.rs",
+    "crates/i2pr-client/src/session.rs",
+    "crates/i2pr-client/tests/plan121_trajectory.rs",
+    "plans/121-m6-ecies-garlic-session-layer.md",
+    "plans/121-status.md",
 ]
 advertised = false
 

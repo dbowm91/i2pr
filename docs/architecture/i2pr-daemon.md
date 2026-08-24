@@ -366,9 +366,15 @@ separately under the external acceptance debt ledger in
 Plan 119 closed as `passed-leaseset2-protocol-foundation` per
 [`plans/119-status.md`](../../plans/119-status.md); the ordinary
 online-signed published Standard LeaseSet2 carrier is wired into
-`i2pr-proto` and `i2pr-netdb`. The next executable plan is
-**Plan 120** (destination lifecycle and dedicated tunnel pools)
-under the same Milestone 6 roadmap.
+`i2pr-proto` and `i2pr-netdb`. Plan 120 closed as
+`passed-destination-lifecycle-and-pools` and lands the first
+`i2pr-client` destination runtime. Plan 121 closed as
+`passed-ecies-destination-session-layer` and adds the ECIES-X25519-
+AEAD-Ratchet destination session layer in `i2pr-client` (with the
+primitive audit, wrapped primitives in `i2pr-crypto`, and the
+bounded structural Garlic payload block codec in `i2pr-proto`).
+The next executable plan is **Plan 122** (destination routing and
+LeaseSet2 NetDB composition) under the same Milestone 6 roadmap.
 
 ### Which crates are wired in today
 

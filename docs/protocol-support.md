@@ -18,8 +18,7 @@ online-signed published Standard LeaseSet2 carrier is wired into
 replaces the type-3 `Deferred` payload for the ordinary subset.
 EncryptedLeaseSet, MetaLeaseSet, blinded, offline-signing, leased, and
 PQ-hybrid variants remain future work tracked by the Milestone 6
-roadmap. The next executable plan is **Plan 120** (destination lifecycle
-and dedicated tunnel pools) under
+roadmap. The next executable plan is **Plan 121** (ECIES-X25519-AEAD-Ratchet Garlic/session layer) under
 [`plans/118-123-milestone6-router-construction-roadmap.md`](../plans/118-123-milestone6-router-construction-roadmap.md);
 see [`plans/117-status.md`](../plans/117-status.md) and
 [`plans/118-planning-authority-cleanup-and-plan117-disposition.md`](../plans/118-planning-authority-cleanup-and-plan117-disposition.md).
@@ -720,9 +719,9 @@ Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
       -> Plan 117  exploratory NetDB composition                           [closed-for-progression-with-evidence-gap]
       -> Plan 118  planning authority cleanup + Plan 117 disposition       [closed]
       -> Plan 119  LeaseSet2 protocol foundation                           [passed-leaseset2-protocol-foundation]
-      -> Plan 120  destination lifecycle and tunnel pools                  [next implementation frontier]
-      -> Plan 121  ECIES-X25519 Garlic/session layer                        [queued]
-      -> Plan 122  destination routing and NetDB composition                [queued]
+      -> Plan 120  destination lifecycle and tunnel pools                  [passed-destination-lifecycle-and-pools]
+      -> Plan 121  ECIES-X25519 Garlic/session layer                        [passed-ecies-destination-session-layer]
+      -> Plan 122  destination routing and NetDB composition                [next implementation frontier]
       -> Plan 123  minimal streaming core                                    [queued]
 ```
 
@@ -789,8 +788,16 @@ Mapping decoding; the reference-side defect is localized to the
 pinned Emissary revision, and Plan 118 Phase B1 confirmed no
 upstream correction is available. Router construction is
 `may-continue`. Plan 119 closed as `passed-leaseset2-protocol-foundation`
-per [`plans/119-status.md`](../plans/119-status.md); the next executable
-plan is **Plan 120** (destination lifecycle and dedicated tunnel pools)
+per [`plans/119-status.md`](../plans/119-status.md); Plan 120 closed
+as `passed-destination-lifecycle-and-pools` and lands the first
+`i2pr-client` destination runtime; Plan 121 closed as
+`passed-ecies-destination-session-layer` and lands the first real
+ECIES-X25519-AEAD-Ratchet destination Garlic/session layer (audited
+`curve25519-elligator2 = 0.1.0-alpha.2` primitive, wrapped ECIES
+primitives in `i2pr-crypto`, bounded structural Garlic payload block
+codec in `i2pr-proto`, and bounded destination-context
+`EciesSessionManager` in `i2pr-client`). The next executable plan is
+**Plan 122** (destination routing and LeaseSet2 NetDB composition)
 under the Milestone 6 router-construction roadmap at
 [`plans/118-123-milestone6-router-construction-roadmap.md`](../plans/118-123-milestone6-router-construction-roadmap.md).
 

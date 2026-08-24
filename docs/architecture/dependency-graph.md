@@ -13,7 +13,7 @@ from this production graph; they are allowed to support crate-local tests.
 | Crate | May depend on |
 | --- | --- |
 | `i2pr-proto` | (no production crate) + `sha2`, `zeroize` |
-| `i2pr-crypto` | `i2pr-proto` + `ed25519-dalek`, `x25519-dalek`, `sha2`, `subtle`, `zeroize`, `rand_core`, `thiserror` |
+| `i2pr-crypto` | `i2pr-proto` + `ed25519-dalek`, `x25519-dalek`, `sha2`, `subtle`, `zeroize`, `rand_core`, `thiserror`, `chacha20poly1305`, `curve25519-elligator2` (Plan 121) |
 | `i2pr-storage` | `i2pr-crypto` + `rand_core`, `thiserror`, `zeroize` |
 | `i2pr-core` | (zero deps) |
 | `i2pr-netdb` | `i2pr-crypto`, `i2pr-proto` + `thiserror`, `base64ct`, `sha2`, `x509-parser`, `zip`, `rsa` |
@@ -23,7 +23,7 @@ from this production graph; they are allowed to support crate-local tests.
 | `i2pr-runtime` | `i2pr-core`, `i2pr-transport`, `i2pr-transport-ntcp2` + `tokio`, `tokio-util`, `futures-util`, `tracing` |
 | `i2pr-daemon` | `i2pr-crypto`, `i2pr-core`, `i2pr-proto`, `i2pr-runtime`, `i2pr-storage`, `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-transport` + `clap`, `serde`, `toml`, `thiserror`, `tracing`, `tracing-subscriber` |
 | `i2pr-testkit` (test-only) | every transport-and-runtime crate + `rand_chacha`, `rand_core`, `sha2`, `tokio` |
-| `i2pr-client` (Plan 120) | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, `i2pr-tunnel` + `rand_chacha`, `rand_core`, `thiserror`, `zeroize` |
+| `i2pr-client` (Plan 120 / Plan 121) | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, `i2pr-tunnel` + `rand_chacha`, `rand_core`, `thiserror`, `zeroize` |
 
 Reverse edges (i.e. "may NOT depend on"):
 

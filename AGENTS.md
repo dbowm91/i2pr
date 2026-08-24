@@ -2069,19 +2069,31 @@ inventory defects `F1`–`F5`) closed Plan 116 as
   online-signed published Standard LeaseSet2 carrier is wired into
   `i2pr-proto` and `i2pr-netdb` and `DatabaseStoreData::LeaseSet2`
   replaces the type-3 `Deferred` payload for the ordinary subset.
-  Plan 120 closed as `passed-destination-lifecycle-and-pools` per
-  [`plans/120-status.md`](plans/120-status.md) and lands the first
-  `i2pr-client` destination runtime: local destination identity
-  (independent Ed25519 signing + X25519 static keys, non-`Clone`,
-  non-`Debug` secrets), destination-specific tunnel pools that
-  consume real one-shot `EstablishedMaterial`, local Standard
-  LeaseSet2 construction and signing with self-validation through
-  `i2pr-netdb`, LeaseSet2 lifecycle with bounded
-  rotation/withdrawal, bounded local payload contracts, and a
-  router-local destination registry. The next executable plan is
-  **Plan 121** (ECIES-X25519-AEAD-Ratchet Garlic session layer)
-  under the Milestone 6 router-construction roadmap in
-  [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
+   Plan 120 closed as `passed-destination-lifecycle-and-pools` per
+   [`plans/120-status.md`](plans/120-status.md) and lands the first
+   `i2pr-client` destination runtime: local destination identity
+   (independent Ed25519 signing + X25519 static keys, non-`Clone`,
+   non-`Debug` secrets), destination-specific tunnel pools that
+   consume real one-shot `EstablishedMaterial`, local Standard
+   LeaseSet2 construction and signing with self-validation through
+   `i2pr-netdb`, LeaseSet2 lifecycle with bounded
+   rotation/withdrawal, bounded local payload contracts, and a
+   router-local destination registry.
+   Plan 121 closed as `passed-ecies-destination-session-layer`
+   per [`plans/121-status.md`](plans/121-status.md): the
+   `curve25519-elligator2 = 0.1.0-alpha.2` primitive audit
+   (Plan 121 §2 / §12), the wrapped ECIES primitives in
+   `i2pr-crypto`, the bounded Garlic payload block codec in
+   `i2pr-proto`, and the bounded destination-context
+   `EciesSessionManager` in `i2pr-client`. The
+   `plan_121_deterministic_local_trajectory` integration test
+   drives the two-destination NS → NSR → Existing Session
+   trajectory with exact-once payload delivery, tag ratchet
+   advancement, and replay rejection. The next executable plan
+   is **Plan 122** (destination routing and LeaseSet2 NetDB
+   composition) under the Milestone 6 router-construction
+   roadmap in
+   [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
 
 Plan 116 lands:
 

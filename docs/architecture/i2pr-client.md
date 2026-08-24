@@ -8,9 +8,17 @@ destination identity ownership, destination-specific tunnel pools, local
 Standard LeaseSet2 generation and signing, LeaseSet2 lifecycle, bounded local
 payload contracts, and the destination registry that holds them.
 
-NTCP2 / SSU2 / public-network transport, Garlic encryption, remote
-destination routing, and the streaming protocol are all out of scope here;
-they live in the Plan 121/122/123 follow-on plans.
+Plan 121 extends `i2pr-client` with the first real ECIES-X25519-AEAD-Ratchet
+destination session layer
+([Plan 121](../plans/121-m6-ecies-garlic-session-layer.md)):
+`EciesSessionManager` with bounded outbound/inbound session counts, the
+bounded structural Garlic payload block codec integration, and the
+typed New Session / New Session Reply / Existing Session trajectory
+producers.
+
+NTCP2 / SSU2 / public-network transport, remote destination routing,
+and the streaming protocol are all out of scope here; they live in
+the Plan 122/123 follow-on plans.
 
 ## Layering
 
@@ -42,9 +50,11 @@ crates/i2pr-client/
 │   ├── leaseset.rs   LeaseSet2 builder, LeaseSetLifecycle, LocalLeaseSet
 │   ├── message.rs    BoundedPayloadQueue, DestinationPayload, RoutingUnavailable
 │   ├── registry.rs   DestinationRuntime, DestinationHandle, DestinationRegistry
+│   ├── session.rs    Plan 121 EciesSessionManager, EciesSessionConfig, New Session / Existing Session producers
 │   └── testing.rs    deterministic inbound/outbound EstablishedMaterial fixtures
 └── tests/
-    └── plan120_trajectory.rs   Plan 120 §12 deterministic local trajectory
+    ├── plan120_trajectory.rs   Plan 120 §12 deterministic local trajectory
+    └── plan121_trajectory.rs   Plan 121 §16 deterministic local NS -> NSR -> ES trajectory
 ```
 
 ## Identity ownership
@@ -148,6 +158,45 @@ Plan 120 §10 defines only the local contracts Plan 122 will consume:
 No payload is ever injected directly into tunnel delivery as a shortcut
 around the Garlic session layer.
 
+## ECIES destination session layer (Plan 121)
+
+`session.rs` exposes the Plan 121 ECIES-X25519-AEAD-Ratchet destination
+session layer. The manager is **destination-scoped** (one manager per
+`DestinationIdentity`); it owns outbound session vectors keyed by remote
+destination, inbound session vectors keyed by remote destination, a
+bounded pending-handshake queue, a bounded replay-cache slot, and the
+deterministic `advance_time` eviction policy.
+
+Configuration (in `EciesSessionConfig`) is bounded by:
+
+```text
+MAX_OUTBOUND_SESSIONS_PER_REMOTE = 16
+MAX_INBOUND_SESSIONS_PER_REMOTE   = 16
+MAX_PENDING_NEW_SESSIONS         = 64
+MAX_TAG_LOOK_AHEAD               = 32
+MAX_REPLAY_CACHE_ENTRIES         = 64
+DEFAULT_SESSION_IDLE_SECONDS     = 600
+MAX_SESSION_IDLE_SECONDS         = 1800
+```
+
+The manager never sees the `curve25519-elligator2` third-party type —
+`i2pr-crypto::ecies` is the only API surface. The manager returns typed
+errors (`EciesSessionError`) for: bound exceeded, replay rejected,
+destination mismatch, truncated message, missing DateTime block,
+non-DateTime first block, oversized payload, oversized clove, unknown
+delivery flag, padding-then-non-padding, AEAD authentication failure,
+and unknown message type. `RngCore` is injected via the
+`SessionRng: RngCore + CryptoRng` trait bound; production surfaces must
+inject the system RNG, and tests inject a deterministic ChaCha
+generator. The manager produces typed primitives only:
+
+- `EciesOutboundMessage::{NewSession(NewSessionMessage),
+  Existing(ExistingSessionMessage)}`
+- `PendingHandshakeRecord`
+- `EciesAdvanceReport`
+- payload encode/decode helpers (`encode_new_session_payload`,
+  `encode_existing_session_payload`, `decode_decrypted_payload`)
+
 ## Health projection
 
 `DestinationState::health()` projects the destination state onto the
@@ -175,3 +224,15 @@ The crate ships 45 unit tests across every module plus the
 trajectory (create destination → reach `Established` → admit real
 `EstablishedMaterial` → derive Lease2 entries → build and sign
 LeaseSet2 → self-validate → advance time → evict → replace → shut down).
+
+Plan 121 adds `plan121_trajectory.rs` — the deterministic two-destination
+local ECIES session trajectory: Alice encrypts a bound New Session
+Garlic Clove to Bob, Bob decrypts/authenticates the New Session, Bob
+emits a New Session Reply, Alice authenticates and installs the paired
+session state, the two destinations exchange Existing Session Garlic
+messages in both directions with exact-once payload delivery, and the
+manager rejects replay / wrong-destination / tag-reuse without
+advancing state. The `EciesSessionManager` is exercised against
+real `i2pr-crypto` ECIES primitives; the test never reaches into
+private state or reaches the third-party `curve25519-elligator2`
+type directly.

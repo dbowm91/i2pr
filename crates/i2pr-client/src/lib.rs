@@ -34,6 +34,7 @@ pub mod leaseset;
 pub mod message;
 pub mod pool;
 pub mod registry;
+pub mod session;
 pub mod testing;
 
 pub use config::{
@@ -61,4 +62,10 @@ pub use registry::{
     DestinationCommand, DestinationEvent, DestinationHandle, DestinationProgress,
     DestinationRegistry, DestinationRuntime, DestinationRuntimeError, DestinationShutdown,
     DestinationState, RegistryError,
+};
+pub use session::{
+    DEFAULT_SESSION_IDLE_SECONDS, EciesAdvanceReport, EciesOutboundMessage, EciesPayloadError,
+    EciesSessionConfig, EciesSessionConfigError, EciesSessionError, EciesSessionManager,
+    MAX_REPLAY_CACHE_ENTRIES, MAX_SESSION_IDLE_SECONDS, MAX_TAG_LOOK_AHEAD, PendingHandshakeRecord,
+    decode_decrypted_payload, encode_garlic_clove_payload, encode_new_session_payload, local_clove,
 };

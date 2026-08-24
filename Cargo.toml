@@ -25,6 +25,7 @@ repository = "https://github.com/dbowm91/i2pr"
 
 [workspace.dependencies]
 aes = { version = "0.8.4", default-features = false }
+curve25519-elligator2 = { version = "0.1.0-alpha.2", default-features = false, features = ["alloc", "elligator2", "precomputed-tables", "zeroize"] }
 crypto-common = "=0.1.7"
 base64ct = { version = "1.8", default-features = false, features = ["alloc"] }
 cbc = { version = "0.1", default-features = false, features = ["block-padding"] }
