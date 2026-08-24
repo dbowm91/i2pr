@@ -22,17 +22,14 @@ use std::collections::VecDeque;
 use i2pr_client::identity::DestinationIdentity;
 use i2pr_client::streaming::config::StreamingConfig;
 use i2pr_client::streaming::manager::{
-    ConnectOutcome, ListenerOutcome, RemoteDestination,
-    StreamingManager,
+    ConnectOutcome, ListenerOutcome, RemoteDestination, StreamingManager,
 };
 use i2pr_client::streaming::transport::TransportSendRequest;
 use i2pr_crypto::verify_signature as crypto_verify_signature;
 use i2pr_proto::SignatureValue;
 use i2pr_proto::streaming::{
-    ClientPayload,
-    MAX_STREAMING_PAYLOAD_BYTES, SYN_REPLAY_NACK_COUNT,
-    decode_client_payload, decode_streaming_packet, encode_client_payload,
-    encode_syn_replay_binding,
+    ClientPayload, MAX_STREAMING_PAYLOAD_BYTES, SYN_REPLAY_NACK_COUNT, decode_client_payload,
+    decode_streaming_packet, encode_client_payload, encode_syn_replay_binding,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;

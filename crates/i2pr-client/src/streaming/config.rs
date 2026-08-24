@@ -6,7 +6,6 @@
 //! streaming core. Every bound is enforced at configuration time so
 //! the runtime never needs to check ceilings after construction.
 
-
 /// Maximum application payload bytes inside one streaming packet.
 pub const MAX_PACKET_PAYLOAD_BYTES: usize = i2pr_proto::streaming::MAX_STREAMING_PAYLOAD_BYTES;
 

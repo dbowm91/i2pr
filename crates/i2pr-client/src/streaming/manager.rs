@@ -21,12 +21,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use i2pr_crypto::verify_signature;
 use i2pr_proto::streaming::{
-    ClientPayload, FLAG_CLOSE, FLAG_FROM_INCLUDED,
-    FLAG_RESET, FLAG_SIGNATURE_INCLUDED, MAX_STREAMING_PACKET_BYTES,
-    MAX_STREAMING_PAYLOAD_BYTES, STREAMING_OPTION_MAX_PACKET_SIZE,
-    STREAMING_OPTION_SIGNATURE, SignatureOptionLocation, StreamingFlags,
-    StreamingPacket, StreamingPacketBuilder, StreamingPacketError, StreamingReceiveLimit,
-    StreamingSendLimit, build_signature_preimage, decode_streaming_packet, encode_client_payload,
+    ClientPayload, FLAG_CLOSE, FLAG_FROM_INCLUDED, FLAG_RESET, FLAG_SIGNATURE_INCLUDED,
+    MAX_STREAMING_PACKET_BYTES, MAX_STREAMING_PAYLOAD_BYTES, STREAMING_OPTION_MAX_PACKET_SIZE,
+    STREAMING_OPTION_SIGNATURE, SignatureOptionLocation, StreamingFlags, StreamingPacket,
+    StreamingPacketBuilder, StreamingPacketError, StreamingReceiveLimit, StreamingSendLimit,
+    build_signature_preimage, decode_streaming_packet, encode_client_payload,
     encode_streaming_packet, encode_syn_replay_binding, validate_syn_policy,
 };
 use i2pr_proto::{CodecError, SignatureValue};
@@ -37,7 +36,7 @@ use crate::streaming::connection::{
     ConnectionId, ConnectionState, ConnectionTransition, StreamDirection, StreamingConnection,
 };
 use crate::streaming::errors::StreamingError;
-use crate::streaming::events::{WirePacketObservation};
+use crate::streaming::events::WirePacketObservation;
 use crate::streaming::transport::TransportSendRequest;
 
 /// Hard ceiling on the number of streams per local destination.
