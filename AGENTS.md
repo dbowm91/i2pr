@@ -19,7 +19,7 @@ Eleven-crate workspace under `crates/`:
 - `i2pr-transport-ntcp2` — runtime-neutral NTCP2 handshake + data frames
 - `i2pr-runtime` — **only** production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation
 - `i2pr-daemon` — composition root + CLI
-- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`)
+- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`); Plan 122 local destination routing / LeaseSet2 NetDB composition; Plan 123 minimal I2P Streaming core (`StreamingManager`, signed SYN/CLOSE/RESET, sequence/ACK/NACK, retransmit, congestion, send/receive windows, listener backlogs).
 - `i2pr-testkit` — deterministic simulation; production crates must not depend on it
 
 Fixtures: `tests/fixtures/i2np/` (manifest at `tests/fixtures/i2np/manifest.tsv`),
@@ -2302,6 +2302,45 @@ tracked by the Milestone 6 roadmap. The next executable plan is
 under the Milestone 6 router-construction roadmap in
 [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
 The Plan 117 evidence gap is tracked separately under the
+external acceptance debt ledger in the same roadmap. Router
+construction is not blocked on the unavailable authenticated
+external transport lane; the current `closed-for-progression` state
+keeps the native criterion visible and does not promote
+parser-only or reference-only results to interoperability
+evidence.
+
+Plan 123 closed as `passed-minimal-streaming-core` per
+[`plans/123-status.md`](plans/123-status.md). Plan 123 lands the
+first interoperable I2P Streaming layer. The wire codec lives in
+[`crates/i2pr-proto/src/streaming/`](crates/i2pr-proto/src/streaming/)
+(`StreamingPacket`, `StreamingPacketBuilder`, `StreamingFlags`,
+`validate_syn_policy`, `encode_syn_replay_binding`, `verify_syn_replay_binding`,
+`build_signature_preimage`, signed-SYN/CLOSE/RESET option region with
+Ed25519 signatures, and the protocol-6 `ClientPayload` envelope
+with zlib compression + SHA-256 + CRC32). The streaming runtime
+lives in [`crates/i2pr-client/src/streaming/`](crates/i2pr-client/src/streaming/)
+(`StreamingManager` synchronous, Tokio-free, deterministic-clock,
+per-destination outbound and inbound connection tables, listener
+backlogs, send/receive window and congestion policies,
+retransmit/timeout policy, typed event surface, `connect`,
+`listen`, `accept`, `send_data`, `send_close`, `send_reset`,
+`process_inbound_packet`, `process_inbound_envelope`,
+`drain_outbound`, `lookup_outbound`, `lookup_inbound`, and
+`get_connection`/`get_connection_mut`). Plan 123 wires into
+Plan 122's `compose_outbound_delivery` for outbound composition
+and Plan 122's `DestinationDispatcher` for inbound routing; the
+layer never owns sockets, timers, or DNS. Sixteen deterministic
+integration tests in
+[`crates/i2pr-client/tests/plan123_trajectory.rs`](crates/i2pr-client/tests/plan123_trajectory.rs)
+cover the signed-SYN round trip, canonical preimage signature
+verification, SYN replay binding rejection,
+MAX_PACKET_SIZE_INCLUDED policy, corrupt-signature rejection, the
+full two-destination SYN → data → CLOSE trajectory, loss recovery
+via retransmit, duplicate packet idempotence, RESET termination,
+send window backpressure, connection table ceiling, and signed
+CLOSE / signed RESET packet shapes. Streaming remains
+runtime-neutral until Plan 124 (streaming runtime adapter + UDP/TCP
+transport handoff).
 external acceptance debt ledger in the same roadmap. Router
 construction is not blocked on the unavailable authenticated
 external transport lane; the current `closed-for-progression` state

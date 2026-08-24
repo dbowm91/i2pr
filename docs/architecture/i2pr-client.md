@@ -26,6 +26,22 @@ The new `routing` module owns `DestinationRouting`, `LeaseSelector`,
 `DestinationDispatcher`, the inbound Garlic decryption surface, and the
 per-destination application queue. The router-delivery seam produces
 `OBGWRouterDelivery` cells for the future transport adapter; the
+
+Plan 123 layers the first I2P Streaming core on top of Plan 122
+([Plan 123](../plans/123-m6-minimal-streaming-core.md)). The new
+`streaming` module owns `StreamingManager`, the per-destination
+outbound and inbound connection tables, listener backlogs, send /
+receive windows, congestion and retransmit policies, and a typed
+event surface. The wire codec is supplied by the new
+`i2pr-proto::streaming` module (`StreamingPacket`,
+`StreamingPacketBuilder`, signed SYN replay binding, signed CLOSE /
+RESET, `build_signature_preimage`, and the protocol-6 `ClientPayload`
+envelope). Plan 123 composes with `compose_outbound_delivery` for
+outbound composition and `DestinationDispatcher` for inbound
+routing; it never owns sockets, timers, or DNS. The future Plan 124
+will add the runtime adapter that hands `TransportSendRequest` into
+the I2P transport layer and feeds inbound envelopes back through
+`process_inbound_envelope`.
 authenticated-router link between an outbound endpoint and the remote
 inbound gateway remains the only transport omission.
 
@@ -39,9 +55,32 @@ i2pr-client
   -> i2pr-core       (service lifecycle, HealthState projection)
   -> i2pr-crypto     (Ed25519 signing, X25519 static keys, Zeroize wrappers)
   -> i2pr-netdb      (Plan 119 LeaseSet2 validation / self-verification)
-  -> i2pr-proto      (Destination, KeyAndCert, LeaseSet2, Mapping)
+  -> i2pr-proto      (Destination, KeyAndCert, LeaseSet2, Mapping, Streaming)
   -> i2pr-tunnel     (BoundedTunnelPool = ExploratoryPool, EstablishedMaterial)
 ```
+
+Plan 123 adds the first I2P Streaming core to `i2pr-client`:
+
+```text
+i2pr-client::streaming
+  -> StreamingManager (per-destination, synchronous, deterministic clock)
+    -> StreamingConnection state machine (OutboundSynSent, InboundSynReceived,
+       Established, ClosingLocal, ClosingRemote, Reset, Closed)
+    -> wire codec: i2pr-proto::streaming
+       (StreamingPacket, StreamingPacketBuilder, StreamingFlags,
+        signed SYN replay binding, signed CLOSE / RESET, build_signature_preimage,
+        protocol-6 ClientPayload envelope)
+    -> outbound composition: i2pr-client::routing::compose_outbound_delivery
+       (Plan 122)
+    -> inbound routing: i2pr-client::dispatch::DestinationDispatcher (Plan 122)
+```
+
+The streaming layer is runtime-neutral: it composes with Plan 122's
+`compose_outbound_delivery` for outbound composition and Plan 122's
+`DestinationDispatcher` for inbound routing. It never owns sockets,
+timers, or DNS. The future Plan 124 will add the runtime adapter that
+hands the typed `TransportSendRequest` stream into the I2P transport
+layer and feeds inbound envelopes back through `process_inbound_envelope`.
 
 `i2pr-client` is **not** allowed to depend on `i2pr-daemon`; the daemon is
 the future composition root, not a client library. `i2pr-tunnel` and
