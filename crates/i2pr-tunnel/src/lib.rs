@@ -156,8 +156,8 @@ pub type BoundedTunnelPoolConfig = ExploratoryPoolConfig;
 pub use responder::{DeterministicResponder, ResponderError};
 pub use roles::{
     InboundGatewayRole, InboundParticipantRole, LocalInboundEndpointRole, OBGWRouterDelivery,
-    OutboundEndpointRole, OutboundGatewayRole, OutboundParticipantRole, RouterDeliveryAction,
-    RouterDeliveryKind, TunnelRoleError,
+    OutboundCell, OutboundEndpointRole, OutboundGatewayRole, OutboundParticipantRole,
+    RouterDeliveryAction, RouterDeliveryKind, TunnelRoleError,
 };
 pub use short::{
     BuildAttemptId, BuildEvent, HopCryptoContext, HopIndex, HopSpec, PerHopReply, ShortBuildAction,

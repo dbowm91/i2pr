@@ -100,13 +100,33 @@ zeroed-placeholder preimage signed once, eight Proposal 164 replay
 NACK words on the initial SYN only, split
 `validate_initial_syn` / `validate_syn_response`, and
 `min(local advertised, remote advertised)` payload negotiation.
-Plan 125 composes with `compose_outbound_delivery` for outbound
-composition and `DestinationDispatcher` for inbound routing
-through the runtime-neutral
-`StreamingDestinationAdapter`; it never owns sockets, timers, or
-DNS. Plan 125 closed as `passed-milestone6-local-corrective-closure`;
-Plan 128 closed as
-`passed-streaming-wire-protocol-corrective-closure`.
+Plan 129 closes the Milestone 6 integrated gate
+([Plan 129](../plans/129-m6-integrated-destination-streaming-final-gate.md),
+[`plans/129-status.md`](../plans/129-status.md)) and completes the
+adapter boundary: the outbound adapter bounds the gzip-encoded
+complete Streaming packet against the client-payload/I2NP limit
+(`MAX_STREAMING_ADAPTER_PAYLOAD_BYTES = MAX_CLIENT_PAYLOAD_BYTES`, not
+the negotiated payload MTU) and builds no redundant inner I2NP Data
+envelope (`OutboundRequest::new` inside the routing composer is the
+single canonical Data-envelope owner); the inbound adapter decodes the
+recovered standard I2NP message, requires an `I2npBody::Data` body,
+decodes the canonical gzip client payload, requires protocol 6 for the
+Streaming path (typed `UnsupportedProtocol` outcome for future
+datagram/I2CP layers), reads I2P source/destination ports (no local
+TCP privileged-port policy), and passes only the decoded Streaming
+packet bytes to the owning destination's `StreamingManager`. The
+streaming core gained the pieces the integrated two-direction gate
+required: real retransmission over the destination path
+(`poll_retransmits` re-emits tracked original requests under an
+attempt cap), cumulative end-to-end ACKs applied on receipt and
+clearing tracked packets, ordered delivered-byte surfacing after
+reorder (`drain_delivered`), and CLOSE/RESET completion policy where a
+side never marks itself Closed merely because it queued a CLOSE and
+nothing delivers after RESET. The adapter never owns sockets, timers,
+or DNS. Final statuses: Plan 125 is superseded by the final corrective
+closure; Plans 123/128 closed wire-correct; Plan 129 closed as
+`passed-milestone6-integrated-local-product-gate`
+(`milestone6_interoperable` remains not claimed).
 
 The authenticated-router link between an outbound endpoint and the
 remote inbound gateway remains the only transport omission: tests
@@ -141,9 +161,15 @@ i2pr-client::streaming
        (StreamingPacket, StreamingPacketBuilder, StreamingFlags,
         signed SYN replay binding, signed CLOSE / RESET,
         build_signature_preimage, RFC 1952 gzip ClientPayload envelope)
-    -> outbound composition: i2pr-client::streaming_adapter::StreamingDestinationAdapter
-       -> i2pr-client::routing::compose_outbound_delivery (Plan 122, corrected by Plan 124)
-    -> inbound routing: i2pr-client::dispatch::DestinationDispatcher (Plan 122, bound by Plan 124)
+    -> integrated ACK/NACK/retransmit over the destination stack
+       (poll_retransmits, cumulative ackThrough, drain_delivered)
+    -> outbound composition: i2pr-client::streaming_adapter::StreamingDestinationAdapter::send
+       (bounds against MAX_CLIENT_PAYLOAD_BYTES; single canonical
+        Data-envelope owner inside compose_outbound_delivery;
+        Plan 122, corrected by Plan 124)
+    -> inbound routing: i2pr-client::dispatch::DestinationDispatcher
+       then StreamingDestinationAdapter::receive (I2NP Data ->
+       gzip client payload -> protocol/ports -> Streaming packet)
 ```
 
 The streaming layer is runtime-neutral: it composes with Plan 124's
@@ -174,8 +200,8 @@ crates/i2pr-client/
 │   ├── lease_selection.rs Plan 122 LeaseSelector / LeaseSelectionPolicy / SelectedLease
 │   ├── routing.rs        Plan 122/127 DestinationRouting, OutboundRequest, compose_outbound_delivery, OutboundDeliveryPlan, install_remote_lease_set2
 │   ├── dispatch.rs       Plan 122/127 DestinationDispatcher, bound-NS LS2 sender binding, InboundDispatchOutcome / InboundDispatchError
-│   ├── streaming.rs      Plan 125 StreamingManager, StreamingConnection, signed SYN / CLOSE / RESET, RFC 1952 gzip envelope
-│   ├── streaming_adapter.rs Plan 125 StreamingDestinationAdapter (TransportSendRequest -> compose_outbound_delivery)
+│   ├── streaming.rs      Plan 125/128/129 StreamingManager, StreamingConnection, signed SYN / CLOSE / RESET, RFC 1952 gzip envelope, poll_retransmits, drain_delivered
+│   ├── streaming_adapter.rs Plan 129 combined outbound/inbound StreamingDestinationAdapter (TransportSendRequest -> compose_outbound_delivery; recovered I2NP Data -> gzip -> protocol-6 dispatch)
 │   └── testing.rs        deterministic inbound/outbound EstablishedMaterial fixtures
 └── tests/
     ├── plan120_trajectory.rs   Plan 120 §12 deterministic local trajectory
@@ -186,7 +212,8 @@ crates/i2pr-client/
     ├── plan125_trajectory.rs   Plan 125 real SYN / SYN-response lifecycle and gzip wire-format trajectory
     ├── plan126_trajectory.rs   Plan 126 manager-level lifecycle + negative/ceiling controls
     ├── plan127_trajectory.rs   Plan 127 master NS -> NSR -> ES x4 destination-routing closure + §9 negative controls
-    └── plan128_trajectory.rs   Plan 128 manager handshake stream-id ownership, CLOSE/RESET shapes, negotiation
+    ├── plan128_trajectory.rs   Plan 128 manager handshake stream-id ownership, CLOSE/RESET shapes, negotiation
+    └── plan129_trajectory.rs   Plan 129 integrated destination+Streaming final gate (master SYN/SYN-response both directions, steady-state ES data, post-OBEP drop/duplicate/reorder, corruption at protocol layers, graceful CLOSE, RESET survivor streams, non-protocol-6 dispatch, ceiling and 0-RTT scope)
 ```
 
 ## Identity ownership

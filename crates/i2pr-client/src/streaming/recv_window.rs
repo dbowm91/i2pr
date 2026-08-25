@@ -44,6 +44,13 @@ pub enum RecvWindowDecision {
     Delivered {
         /// Sequence number of the delivered packet.
         sequence: u32,
+        /// Ordered payloads delivered by this receive: the in-order
+        /// packet first, then any contiguous reorder-buffer entries in
+        /// ascending sequence order. Plan 129 requires the receiver to
+        /// observe the original application byte order after a
+        /// reorder, so the drained entries are surfaced instead of
+        /// being discarded.
+        delivered: Vec<ReorderEntry>,
     },
     /// The packet was accepted into the reorder buffer.
     Buffered {
@@ -101,15 +108,19 @@ impl RecvWindowPolicy {
         // Exactly the expected sequence: deliver and drain any
         // contiguous packets from the reorder buffer.
         if sequence == self.next_expected {
+            let mut delivered = vec![ReorderEntry { sequence, payload }];
             self.next_expected = self.next_expected.wrapping_add(1);
             self.delivered_count = self.delivered_count.saturating_add(1);
             // Drain contiguous packets from the reorder buffer.
             while let Some(entry) = self.reorder.remove(&self.next_expected) {
                 self.next_expected = self.next_expected.wrapping_add(1);
                 self.delivered_count = self.delivered_count.saturating_add(1);
-                let _ = entry;
+                delivered.push(entry);
             }
-            return RecvWindowDecision::Delivered { sequence };
+            return RecvWindowDecision::Delivered {
+                sequence,
+                delivered,
+            };
         }
 
         // Too far ahead: drop.

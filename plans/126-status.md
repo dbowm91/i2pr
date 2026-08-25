@@ -93,3 +93,16 @@ plan_126 = passed-ecies-destination-ratchet-corrective-foundation
 milestone6_local_product = not-closed
 next = plans/127-m6-destination-session-routing-final-closure.md
 ```
+
+## Final gate handoff (Plan 129)
+
+Plan 127 and Plan 128 closed after this record; the Plan 129
+integrated Milestone 6 local-product gate passed on 2026-08-25. The
+final classification is recorded in [`plans/129-status.md`](129-status.md):
+
+```text
+plan_126 = passed-ecies-destination-ratchet-corrective-foundation
+milestone6_local_product = passed
+milestone6_interoperable = not-yet-claimed
+next_product_layer = SAM baseline planning (Milestone 7)
+```

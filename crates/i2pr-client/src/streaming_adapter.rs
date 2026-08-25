@@ -1,58 +1,66 @@
-//! Plan 125 §9 / §G-H: Streaming-to-destination-routing adapter.
+//! Plan 125 §9 / Plan 129 §1-§3: Streaming-to-destination-routing
+//! adapter boundary.
 //!
-//! The adapter consumes a typed `TransportSendRequest` from the
-//! streaming layer and routes it through the corrected Plan 122
-//! LeaseSet2 -> ECIES Garlic -> outbound-tunnel path. The runtime
-//! adapter then drives the resulting `OutboundDeliveryPlan` through
-//! the local outbound tunnel role; the recipient runs the matching
-//! `DestinationDispatcher` against the inbound tunnel role and the
-//! ECIES session manager.
+//! The adapter is the single runtime-neutral composition surface
+//! between the Streaming layer and the corrected destination-routing
+//! pipeline. It owns no sockets, DNS, Tokio tasks, or router
+//! transport.
 //!
-//! The adapter is intentionally runtime-neutral. It owns no sockets,
-//! timers, or DNS, and never bypasses the destination routing
-//! pipeline. The full local I2P destination-routing composition is:
+//! Outbound (Plan 129 §2):
 //!
 //! ```text
-//! TransportSendRequest (streaming packet bytes)
-//!  -> StreamingDestinationAdapter::send
-//!     -> Plan 122 compose_outbound_delivery
-//!        -> ECIES Garlic envelope (New Session / Existing)
+//! TransportSendRequest (the gzip-encoded complete Streaming packet)
+//!  -> ceiling check against MAX_CLIENT_PAYLOAD_BYTES
+//!  -> Plan 122 compose_outbound_delivery
+//!     -> canonical I2NP Data envelope (single construction owner:
+//!        OutboundRequest::new inside the routing composer)
+//!        -> ECIES Garlic envelope (bound NS / NSR / ES)
 //!           -> standard-encoded I2NP `Garlic` carrier
 //!              -> outbound tunnel data plane (Plan 116 OBEP)
 //! ```
 //!
-//! Inbound:
+//! Inbound (Plan 129 §3):
 //!
 //! ```text
-//! inbound TunnelData bytes
-//!  -> DestinationDispatcher::dispatch_garlic_envelope
-//!     -> ECIES authenticate / decrypt
-//!        -> decrypted I2NP `Data` body
-//!           -> protocol-6 gzip client payload decode
-//!              -> StreamingManager::process_inbound_packet
+//! recovered inner I2NP message bytes (from DestinationDispatcher)
+//!  -> decode standard I2NP message; require I2npBody::Data
+//!     -> decode canonical I2P gzip client payload
+//!        -> require protocol == 6 for the Streaming path
+//!           -> read source_port / destination_port (I2P ports;
+//!              no local TCP privileged-port policy applies)
+//!           -> pass only the decoded Streaming packet bytes to
+//!              StreamingManager::process_inbound_packet
 //! ```
+//!
+//! Non-protocol-6 client payloads never reach Streaming; they surface
+//! as [`InboundStreamingOutcome::UnsupportedProtocol`] for future
+//! datagram/I2CP layers.
 
 #![forbid(unsafe_code)]
 
 use i2pr_netdb::DestinationHash;
-use i2pr_proto::{CodecError, Date, DeferredPayload, I2npBody, I2npMessage, OpaqueMessageBody};
+use i2pr_proto::{
+    ClientPayloadDecodeError, CodecError, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE,
+};
 use i2pr_tunnel::TunnelRoleError;
 use rand_core::{CryptoRng, RngCore};
 
-use crate::identity::DestinationId;
+use crate::identity::{DestinationId, DestinationIdentity};
 use crate::routing::{
-    DestinationOutboundRole, DestinationRouting, DestinationRoutingError, OutboundDeliveryPlan,
-    OutboundRequest, SendError,
+    DestinationOutboundRole, DestinationRouting, OutboundDeliveryPlan, SendError,
 };
+use crate::streaming::events::WirePacketObservation;
+use crate::streaming::manager::{StreamingManager, StreamingManagerError};
 use crate::streaming::transport::TransportSendRequest;
 
-/// Hard ceiling on the per-payload byte count for the streaming
-/// adapter. The streaming protocol enforces its own per-packet
-/// ceilings; the adapter bounds the incoming `application_payload`
-/// (the protocol-6 gzip-framed bytes) at the full encoded streaming
-/// packet ceiling plus bounded compression-framing headroom.
+/// Hard ceiling on the encoded client payload the outbound adapter
+/// accepts. `TransportSendRequest.application_payload` carries the
+/// **gzip-encoded complete Streaming packet**, not the application
+/// payload inside one Streaming packet (Plan 128 separates the two
+/// concepts), so the source floor is the client-payload/I2NP limit —
+/// never the negotiated Streaming application payload MTU.
 pub const MAX_STREAMING_ADAPTER_PAYLOAD_BYTES: usize =
-    i2pr_proto::streaming::MAX_STREAMING_PACKET_BYTES + 256;
+    i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES;
 
 /// Typed outcome of an adapter send attempt.
 #[derive(Debug)]
@@ -61,7 +69,7 @@ pub enum StreamingAdapterError {
     PayloadTooLarge { actual: usize, maximum: usize },
     /// The streaming payload is empty.
     EmptyPayload,
-    /// The I2NP codec rejected the inner Data message.
+    /// The I2NP codec rejected an envelope.
     DataCodec(CodecError),
     /// The Plan 122 send composer failed.
     Send(SendError),
@@ -69,6 +77,12 @@ pub enum StreamingAdapterError {
     Tunnel(TunnelRoleError),
     /// The streaming destination hash is missing or invalid.
     UnknownDestination(DestinationHash),
+    /// The inbound I2NP body was not `Data`.
+    NotI2npData,
+    /// The inbound client payload failed to decode.
+    ClientPayload(ClientPayloadDecodeError),
+    /// The owning streaming manager rejected the decoded packet.
+    Streaming(StreamingManagerError),
 }
 
 impl core::fmt::Display for StreamingAdapterError {
@@ -86,6 +100,13 @@ impl core::fmt::Display for StreamingAdapterError {
                 formatter,
                 "streaming adapter unknown destination hash {hash:?}"
             ),
+            Self::NotI2npData => {
+                formatter.write_str("inbound inner I2NP message is not a Data body")
+            }
+            Self::ClientPayload(error) => {
+                write!(formatter, "streaming adapter client payload: {error}")
+            }
+            Self::Streaming(error) => write!(formatter, "streaming manager: {error}"),
         }
     }
 }
@@ -104,19 +125,43 @@ impl From<TunnelRoleError> for StreamingAdapterError {
     }
 }
 
+/// Outcome of the inbound protocol-6 dispatch (Plan 129 §3).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InboundStreamingOutcome {
+    /// A protocol-6 client payload was decoded and its Streaming
+    /// packet bytes dispatched to the owning local destination's
+    /// [`StreamingManager`].
+    StreamingDispatched {
+        /// Sender's I2P destination port carried by the client payload.
+        source_port: u16,
+        /// Receiver's I2P destination port carried by the client payload.
+        destination_port: u16,
+        /// Observation returned by the streaming manager.
+        observation: WirePacketObservation,
+    },
+    /// The client payload carried a non-streaming protocol number.
+    /// The payload never reaches Streaming; future datagram/I2CP
+    /// layers dispatch from this typed outcome.
+    UnsupportedProtocol {
+        /// Observed I2P protocol number.
+        protocol: u8,
+    },
+}
+
 /// Streaming-destination adapter.
 ///
-/// The adapter is a thin function object that bridges the streaming
-/// layer and the Plan 122 destination routing pipeline. It owns no
-/// per-connection state and is therefore cheap to clone; production
-/// callers construct it once and pass it through the runtime adapter
-/// to the streaming layer.
+/// The adapter is a thin stateless function object bridging the
+/// streaming layer and the destination routing pipeline. It owns no
+/// per-connection state and is therefore cheap to copy. Selecting the
+/// owning local destination's [`StreamingManager`] for an inbound
+/// delivery belongs to the destination registry/runtime, which passes
+/// the manager reference into [`Self::receive`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamingDestinationAdapter;
 
 impl StreamingDestinationAdapter {
     /// Builds a new adapter. No state is captured; this exists for
-    /// API symmetry with future adapter extensions.
+    /// API symmetry.
     pub const fn new() -> Self {
         Self
     }
@@ -124,17 +169,18 @@ impl StreamingDestinationAdapter {
     /// Routes a streaming `TransportSendRequest` through the Plan 122
     /// destination-routing pipeline.
     ///
-    /// The streaming packet bytes (`request.application_payload`)
-    /// carry the protocol-6 gzip-framed streaming packet produced by
-    /// the streaming manager. The adapter builds an `OutboundRequest`
-    /// that wraps the bytes in a standard-encoded I2NP `Data`
-    /// envelope, bundles the local destination's current signed
-    /// Standard LeaseSet2 (Plan 127 §2: a fresh bound New Session
-    /// must carry it so the receiver can bind and route back), and
-    /// hands the request to `compose_outbound_delivery`.
-    /// The resulting `OutboundDeliveryPlan` carries the standard
-    /// ECIES-encrypted Garlic envelope plus the tunnel cells the
-    /// runtime must dispatch.
+    /// `request.application_payload` must already be the gzip-encoded
+    /// complete Streaming packet produced by the streaming manager.
+    /// The adapter bounds those bytes against
+    /// [`MAX_STREAMING_ADAPTER_PAYLOAD_BYTES`] (the client-payload
+    /// limit), wraps them through the single canonical Data-envelope
+    /// construction owner ([`crate::routing::OutboundRequest::new`]
+    /// inside the routing composer — no redundant local I2NP
+    /// envelope is built or discarded here), bundles the local
+    /// destination's current signed Standard LeaseSet2 (Plan 127 §2:
+    /// a fresh bound New Session must carry it so the receiver can
+    /// bind and route back), and returns the resulting
+    /// [`OutboundDeliveryPlan`] whose cells the runtime dispatches.
     #[allow(clippy::too_many_arguments)]
     pub fn send<R: CryptoRng + RngCore>(
         request: &TransportSendRequest,
@@ -159,15 +205,13 @@ impl StreamingDestinationAdapter {
         }
         let remote_hash =
             DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(request.destination_hash));
-        let inner_envelope = build_inner_data_envelope(&request.application_payload, now_ms)?;
-        let outbound_request = OutboundRequest::new(
+        let outbound_request = crate::routing::OutboundRequest::new(
             i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
             &request.application_payload,
             now_ms,
             Some(local_lease_set2.clone()),
         )
         .map_err(StreamingAdapterError::Send)?;
-        let _ = inner_envelope;
         let plan = crate::routing::compose_outbound_delivery(
             routing,
             session,
@@ -183,6 +227,56 @@ impl StreamingDestinationAdapter {
         .map_err(StreamingAdapterError::Send)?;
         Ok(plan)
     }
+
+    /// Inbound inverse (Plan 129 §3): decodes the recovered inner
+    /// I2NP message, requires an `I2npBody::Data` body, decodes the
+    /// canonical gzip client payload, requires protocol 6 for the
+    /// Streaming path, and passes only the decoded Streaming packet
+    /// bytes to the owning local destination's [`StreamingManager`].
+    ///
+    /// Destination ports are I2P ports; no local TCP privileged-port
+    /// policy applies. `listener_port` names the local listening port
+    /// whose backlog should receive a pending inbound SYN, when the
+    /// delivery targets a listener.
+    pub fn receive(
+        recovered_i2np_bytes: &[u8],
+        owning_destination: &DestinationIdentity,
+        listener_port: Option<u16>,
+        streaming: &mut StreamingManager,
+        from_destination_hash: &[u8; 32],
+        now_ms: u64,
+    ) -> Result<InboundStreamingOutcome, StreamingAdapterError> {
+        let message = I2npMessage::decode_standard(recovered_i2np_bytes, MAX_I2NP_PAYLOAD_SIZE)
+            .map_err(StreamingAdapterError::DataCodec)?;
+        let data_payload = match message.body() {
+            I2npBody::Data(body) => body.payload.as_bytes().to_vec(),
+            _ => return Err(StreamingAdapterError::NotI2npData),
+        };
+        let envelope = i2pr_proto::streaming::decode_client_payload(
+            &data_payload,
+            MAX_STREAMING_ADAPTER_PAYLOAD_BYTES,
+        )
+        .map_err(StreamingAdapterError::ClientPayload)?;
+        if envelope.protocol != i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER {
+            return Ok(InboundStreamingOutcome::UnsupportedProtocol {
+                protocol: envelope.protocol,
+            });
+        }
+        let observation = streaming
+            .process_inbound_packet(
+                &envelope.payload,
+                from_destination_hash,
+                owning_destination,
+                listener_port,
+                now_ms,
+            )
+            .map_err(StreamingAdapterError::Streaming)?;
+        Ok(InboundStreamingOutcome::StreamingDispatched {
+            source_port: envelope.source_port,
+            destination_port: envelope.destination_port,
+            observation,
+        })
+    }
 }
 
 impl Default for StreamingDestinationAdapter {
@@ -191,38 +285,27 @@ impl Default for StreamingDestinationAdapter {
     }
 }
 
-/// Builds the canonical I2NP `Data` envelope that wraps a streaming
-/// payload. The envelope is the canonical I2P `I2npBody::Data`
-/// carrier for application bytes destined for the remote I2P
-/// destination; the streaming payload bytes already carry the
-/// protocol-6 gzip framing produced by the streaming manager.
-fn build_inner_data_envelope(
-    payload: &[u8],
-    now_ms: u64,
-) -> Result<I2npMessage, StreamingAdapterError> {
-    let body = I2npBody::Data(OpaqueMessageBody {
-        payload: DeferredPayload::new(payload.to_vec(), i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
-            .map_err(StreamingAdapterError::DataCodec)?,
-    });
-    I2npMessage::new_standard(0, Date::from_millis(now_ms), body)
-        .map_err(StreamingAdapterError::DataCodec)
-}
-
-// Suppress an "unused" warning for items kept for the future
-// destination routing extension.
-#[allow(dead_code)]
-type _RoutingErrorUnused = DestinationRoutingError;
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn empty_payload_guard_is_a_const() {
-        // The empty-payload guard runs before any pipeline state is
-        // touched; verify the constant is the typed maximum used by the
-        // adapter.
-        const { assert!(MAX_STREAMING_ADAPTER_PAYLOAD_BYTES > 0) };
+    fn adapter_ceiling_is_the_client_payload_limit_not_the_streaming_mtu() {
+        // Plan 129 §2: the source floor equals MAX_CLIENT_PAYLOAD_BYTES
+        // because application_payload is the gzip-encoded complete
+        // Streaming packet, not the in-packet application payload.
+        const {
+            assert!(
+                MAX_STREAMING_ADAPTER_PAYLOAD_BYTES
+                    == i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES
+            )
+        };
+        const {
+            assert!(
+                MAX_STREAMING_ADAPTER_PAYLOAD_BYTES
+                    > i2pr_proto::streaming::MAX_STREAMING_PACKET_BYTES
+            )
+        };
     }
 
     #[test]

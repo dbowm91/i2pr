@@ -91,5 +91,6 @@ pub use session::{
     encode_garlic_clove_payload, encode_new_session_payload, local_clove,
 };
 pub use streaming_adapter::{
-    MAX_STREAMING_ADAPTER_PAYLOAD_BYTES, StreamingAdapterError, StreamingDestinationAdapter,
+    InboundStreamingOutcome, MAX_STREAMING_ADAPTER_PAYLOAD_BYTES, StreamingAdapterError,
+    StreamingDestinationAdapter,
 };

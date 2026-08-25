@@ -1,44 +1,40 @@
-# Plan 122 status — provisional pending final destination-session correction
+# Plan 122 status — final local closure (restored by Plans 126/127)
 
 ## Current authority
 
-- Status: **`provisional-blocked-on-plan126-plan127`**.
+- Status: **`passed-corrected-local-destination-routing`**.
+- Final closure: **2026-08-25** by the Plan 127 destination-session
+  routing final closure, confirmed by the Plan 129 integrated
+  Milestone 6 local-product gate.
 - Milestone 6 authority: `126-129-milestone6-final-corrective-roadmap.md`.
-- Lower-layer corrective prerequisite: Plan 126.
-- Destination-routing final closure: Plan 127.
+- Corrective closures: Plan 124 (Garlic-carrier composition fix) and
+  Plan 127 (bound NS/NSR/ES lifecycle over destination tunnels).
 
-## Retained work
+## Retained and completed work
 
-Retain the useful Plan 122/124 product surface:
+The full Plan 122/124 product surface is closed under the corrected
+ECIES protocol/session lifecycle:
 
 - typed Standard LeaseSet2 lookup/cache/selection;
 - destination-owned tunnel pools;
-- outbound I2NP Data construction;
-- I2NP Garlic carrier composition;
+- canonical outbound I2NP Data construction (`OutboundRequest::new`
+  remains the single Data-envelope construction owner; Plan 129
+  removed the adapter's redundant duplicate);
+- I2NP Garlic carrier composition (`garlic_i2np_bytes` through the
+  tunnel data plane, never plaintext);
 - destination dispatcher ownership mapping;
 - explicit bounded local router-link seam;
-- Plan 124 correction that makes the outbound tunnel carry `garlic_i2np_bytes` rather than plaintext `inner_envelope_bytes`.
-
-## Remaining closure defects
-
-The stronger destination-routing closure depends on the corrected ECIES protocol/session lifecycle.
-
-Current production gaps include:
-
-- no spec-correct bound NS/NSR/ES manager lifecycle;
-- bundled sender LeaseSet2 is not yet correctly bound to the authenticated NS static key;
-- accepted sender LS2 bookkeeping/reverse-routing handoff is incomplete;
-- the full B -> A NSR and bidirectional Existing Session trajectory over the destination tunnel path is not established.
+- reverse routing via `install_remote_lease_set2`.
 
 ## Current classification
 
 ```text
-plan_121 = corrective-reopened-plan126
-plan_122 = provisional-blocked-on-plan126-plan127
-plan_124 = primary-composition-fix-retained-full-closure-reopened-plan127
-milestone6_local_product = not-closed
-next = plans/126-m6-ecies-destination-ratchet-corrective-foundation.md
-then = plans/127-m6-destination-session-routing-final-closure.md
+plan_122 = passed-corrected-local-destination-routing
+plan_124 = passed-corrected-destination-routing-local-closure
+milestone6_local_product = passed
+milestone6_interoperable = not-yet-claimed
+next_product_layer = SAM baseline planning (Milestone 7)
 ```
 
-The Plan 124 plaintext-tunnel regression remains a required invariant and must stay green.
+The Plan 124 plaintext-tunnel regression remains a required invariant
+and must stay green.

@@ -478,6 +478,11 @@ impl StreamingConnection {
         &self.send_window
     }
 
+    /// Returns a mutable reference to the send window.
+    pub fn send_window_mut(&mut self) -> &mut SendWindowPolicy {
+        &mut self.send_window
+    }
+
     /// Returns a reference to the recv window.
     pub fn recv_window(&self) -> &RecvWindowPolicy {
         &self.recv_window

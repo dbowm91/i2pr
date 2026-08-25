@@ -148,15 +148,17 @@ Plans 126–129 MUST NOT reopen:
 
 Use ordinary Rust unit/integration tests and the existing tunnel/data-plane types. A narrow test-local fixture is preferable to another reusable harness unless production code genuinely needs the abstraction.
 
-## Milestone 6 status during execution
+## Milestone 6 status after closure
 
 Plan 126 closed as `passed-ecies-destination-ratchet-corrective-foundation`
 (`plans/126-status.md`). Plan 127 closed as
 `passed-destination-session-routing-final-closure`
 (`plans/127-status.md`), restoring the local destination-layer claims.
 Plan 128 closed as `passed-streaming-wire-protocol-corrective-closure`
-(`plans/128-status.md`) and restored Plan 123/125 as
-`passed-corrected-streaming-wire-local`:
+(`plans/128-status.md`) and restored Plan 123/125 as streaming-wire
+correct. Plan 129 closed as
+`passed-milestone6-integrated-local-product-gate`
+([`plans/129-status.md`](129-status.md)):
 
 ```text
 plan_119 = passed-leaseset2-protocol-foundation
@@ -165,32 +167,52 @@ plan_121 = passed-corrected-ecies-destination-session-layer-local
 plan_122 = passed-corrected-local-destination-routing
 plan_123 = passed-corrected-streaming-wire-local
 plan_124 = passed-corrected-destination-routing-local-closure
-plan_125 = passed-milestone6-local-corrective-closure
+plan_125 = superseded-by-final-corrective-closure
 plan_126 = passed-ecies-destination-ratchet-corrective-foundation
 plan_127 = passed-destination-session-routing-final-closure
 plan_128 = passed-streaming-wire-protocol-corrective-closure
-milestone6_local_product = not-closed
-milestone6_interoperable = not-claimed
+plan_129 = passed-milestone6-integrated-local-product-gate
+milestone6_local_product = passed
+milestone6_interoperable = not-yet-claimed
 external_acceptance_debt = retained-separately
-next = Plan 129
+next_product_layer = SAM baseline planning (Milestone 7)
 ```
 
 ## Final gate
 
-Plan 129 may close Milestone 6 only if all of the following are true:
+The Plan 129 integrated gate **passed** on 2026-08-25; the closure record is [`plans/129-status.md`](129-status.md). Every row of the gate below is satisfied by the Plan 129 integrated trajectory suite (`crates/i2pr-client/tests/plan129_trajectory.rs`):
 
 ```text
-Standard LeaseSet2                         correct local product path
-ECIES bound NS/NSR/ES wire                corrected to current spec
-Destination session binding/pairing       correct and bounded
-Garlic-through-tunnel composition         correct in both directions
-Streaming client payload gzip             current I2P format
-Streaming packet wire format              current I2P format
-Streaming handshake                       real SYN/SYN response
-Streaming data/ACK/NACK/retransmit         works over destination stack
-CLOSE/RESET                               works over destination stack
-Resource ceilings                         retained
-Mixed-router interoperability             not falsely claimed
+Standard LeaseSet2                         correct local product path      [x]
+ECIES bound NS/NSR/ES wire                corrected to current spec       [x]
+Destination session binding/pairing       correct and bounded             [x]
+Garlic-through-tunnel composition         correct in both directions      [x]
+Streaming client payload gzip             current I2P format              [x]
+Streaming packet wire format              current I2P format              [x]
+Streaming handshake                       real SYN/SYN response           [x]
+Streaming data/ACK/NACK/retransmit         works over destination stack    [x]
+CLOSE/RESET                               works over destination stack     [x]
+Resource ceilings                         retained                        [x]
+Mixed-router interoperability             not falsely claimed             [x]
 ```
 
-If that gate passes, the next product layer is **SAM baseline planning (Milestone 7)**. Do not create another Milestone 6 plan merely for generalized validation unless Plan 129 reveals a concrete local protocol/product defect.
+With that gate passed, the next product layer is **SAM baseline planning (Milestone 7)**. Do not create another Milestone 6 plan merely for generalized validation unless a concrete local protocol/product defect appears.
+
+```text
+plan_119 = passed-leaseset2-protocol-foundation
+plan_120 = passed-destination-lifecycle-and-pools
+plan_121 = passed-corrected-ecies-destination-session-layer-local
+plan_122 = passed-corrected-local-destination-routing
+plan_123 = passed-corrected-streaming-wire-local
+plan_124 = passed-corrected-destination-routing-local-closure
+plan_125 = superseded-by-final-corrective-closure
+plan_126 = passed-ecies-destination-ratchet-corrective-foundation
+plan_127 = passed-destination-session-routing-final-closure
+plan_128 = passed-streaming-wire-protocol-corrective-closure
+plan_129 = passed-milestone6-integrated-local-product-gate
+milestone6_local_product = passed
+milestone6_interoperable = not-yet-claimed
+external_acceptance_debt = retained-separately
+router_construction = may-continue
+next_product_layer = SAM baseline planning (Milestone 7)
+```

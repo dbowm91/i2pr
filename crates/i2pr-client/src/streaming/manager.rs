@@ -218,17 +218,34 @@ pub enum StreamingManagerError {
     DestinationIdentity(#[from] crate::identity::DestinationIdentityError),
 }
 
-/// Tracked outbound packet for retransmission.
+/// Tracked outbound packet for retransmission. Plan 129 owns the
+/// integrated-path contract: the tracked record keeps the exact
+/// [`TransportSendRequest`] that was originally queued so a
+/// retransmission re-encodes nothing and re-signs nothing; it simply
+/// traverses the gzip -> ECIES -> outbound-tunnel pipeline again.
 #[derive(Clone, Debug)]
 struct OutboundPacket {
     sequence: u32,
     payload_len: usize,
     sent_at_ms: u64,
     retransmit_count: u32,
-    /// Serialized wire bytes for retransmission.
-    wire_bytes: Vec<u8>,
+    /// The original transport request (client-payload framing
+    /// included) ready for redelivery.
+    request: TransportSendRequest,
     /// Whether the packet was signed (SYN / SYN response / CLOSE / RESET).
     signed: bool,
+}
+
+/// Application bytes delivered in order by one processed inbound
+/// packet. Surfaced through [`StreamingManager::drain_delivered`] so
+/// the runtime adapter can hand the original byte order to the
+/// application (Plan 129 §8 reorder contract).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeliveredApplicationBytes {
+    /// Connection that received the bytes.
+    pub connection_id: ConnectionId,
+    /// Concatenated payloads in ascending sequence order.
+    pub bytes: Vec<u8>,
 }
 
 /// A buffered inbound packet whose stream ID is not yet known.
@@ -263,6 +280,9 @@ pub struct StreamingManager {
     /// Next inbound stream ID candidate (the id we assign as our
     /// `local_receive_stream_id`).
     next_inbound_stream_id: u32,
+    /// In-order application bytes delivered by processed inbound
+    /// packets, awaiting the runtime drain.
+    pending_delivered: VecDeque<DeliveredApplicationBytes>,
 }
 
 impl StreamingManager {
@@ -280,6 +300,7 @@ impl StreamingManager {
             next_connection_id: 1,
             // The non-zero range is canonical for I2P Streaming.
             next_inbound_stream_id: 0x8000_0000,
+            pending_delivered: VecDeque::new(),
         }
     }
 
@@ -815,7 +836,7 @@ impl StreamingManager {
             payload_len: 0,
             sent_at_ms: now_ms,
             retransmit_count: 0,
-            wire_bytes: decode_payload_from_request(&request)?,
+            request: request.clone(),
             signed: true,
         };
         self.outbound_packets
@@ -977,21 +998,80 @@ impl StreamingManager {
             .get_mut(&connection_id)
             .ok_or(StreamingManagerError::UnknownConnection)?;
 
-        let payload = packet.payload.clone();
-        let decision = conn
-            .receive_packet(packet.sequence_num, payload, now_ms)
-            .map_err(StreamingManagerError::Streaming)?;
-
+        // Plan 129 §10/§11: control flags first, then delivery.
+        // A CLOSE received while Established moves the connection to
+        // `ClosingRemote` (draining); a CLOSE received while the
+        // local side already sent its own CLOSE (`ClosingLocal`)
+        // completes the graceful close — the local side never marks
+        // itself Closed merely because it queued a CLOSE.
         if packet.flags.close() {
-            let _ = conn.remote_close_received(now_ms);
+            match conn.state() {
+                ConnectionState::Established => {
+                    let _ = conn.remote_close_received(now_ms);
+                }
+                ConnectionState::ClosingLocal => {
+                    let _ = conn.close(now_ms);
+                }
+                _ => {}
+            }
         }
         if packet.flags.reset() {
             let _ = conn.reset(now_ms);
         }
 
+        // Plan 129 §11: after RESET or full close no queued or
+        // subsequent application bytes are ever delivered.
+        let terminated = matches!(
+            conn.state(),
+            ConnectionState::Closed | ConnectionState::Reset
+        );
+
+        // Plan 129 §8: apply the cumulative acknowledgement the peer
+        // carried on this packet and clear the matching tracked
+        // retransmission records. `ack_through` 0 means "no ack
+        // information" because sequence numbers start at zero.
+        let ack_through = packet.ack_through;
+        if ack_through != 0 && !terminated {
+            let observation = conn.receive_ack(ack_through, packet.nacks.len(), now_ms);
+            let _ = observation;
+            if let Some(tracked) = self.outbound_packets.get_mut(&connection_id) {
+                let covered: Vec<u32> = tracked
+                    .range(..=ack_through)
+                    .map(|(&sequence, _)| sequence)
+                    .collect();
+                for sequence in covered {
+                    tracked.remove(&sequence);
+                }
+            }
+        }
+
+        let payload = packet.payload.clone();
+        let mut decision_opt = None;
+        if !terminated {
+            let decision = conn
+                .receive_packet(packet.sequence_num, payload, now_ms)
+                .map_err(StreamingManagerError::Streaming)?;
+            decision_opt = Some(decision);
+        }
+
         let state = conn.state();
-        if state == ConnectionState::ClosingRemote && packet.flags.close() {
-            let _ = conn.close(now_ms);
+
+        // Surface in-order delivered payloads (including reorder
+        // buffer drains) so the adapter observes the original byte
+        // order (Plan 129 §8).
+        if let Some(crate::streaming::recv_window::RecvWindowDecision::Delivered {
+            delivered,
+            ..
+        }) = decision_opt
+        {
+            let mut bytes = Vec::new();
+            for entry in delivered {
+                bytes.extend_from_slice(&entry.payload);
+            }
+            self.pending_delivered.push_back(DeliveredApplicationBytes {
+                connection_id,
+                bytes,
+            });
         }
 
         let observation = WirePacketObservation {
@@ -1005,7 +1085,7 @@ impl StreamingManager {
             payload_len: packet.payload.len(),
         };
 
-        let _ = decision;
+        let _ = state;
 
         Ok(observation)
     }
@@ -1050,14 +1130,21 @@ impl StreamingManager {
 
         // The data packet uses our peer receive stream id as
         // `sendStreamId` and our local receive stream id as
-        // `receiveStreamId`.
+        // `receiveStreamId`. Plan 129 §8: every data packet carries
+        // the cumulative acknowledgement of what this side has
+        // received in order (`next_expected - 1`, inclusive); 0 means
+        // nothing received yet because sequence numbers start at 0.
+        let ack_through = match conn.recv_window().next_expected() {
+            0 => 0,
+            next => next.wrapping_sub(1),
+        };
         let option_bytes = Vec::new();
         let flags = StreamingFlags::new(0).expect("empty flags");
         let builder = StreamingPacketBuilder {
             send_stream_id: peer_receive_stream_id,
             receive_stream_id: local_receive_stream_id,
             sequence_num: sequence,
-            ack_through: 0,
+            ack_through,
             nacks: Vec::new(),
             resend_delay: 0,
             flags,
@@ -1092,7 +1179,7 @@ impl StreamingManager {
             payload_len: payload.len(),
             sent_at_ms: now_ms,
             retransmit_count: 0,
-            wire_bytes,
+            request: request.clone(),
             signed: false,
         };
         self.outbound_packets
@@ -1108,6 +1195,14 @@ impl StreamingManager {
     /// connection. Plan 128 §9: CLOSE carries `CLOSE_FLAGS`
     /// (`0x000A`, CLOSE | SIGNATURE_INCLUDED) with the raw signature
     /// as the final option field; FROM is not included.
+    ///
+    /// Plan 129 §10 graceful-close policy: calling this from
+    /// `Established` begins the local close (`ClosingLocal`) and the
+    /// side stays there until the peer's CLOSE response arrives over
+    /// the reverse destination path. Calling this from
+    /// `ClosingRemote` (a close already received from the peer)
+    /// emits the required CLOSE response and completes the local
+    /// half of the shutdown.
     pub fn send_close(
         &mut self,
         connection_id: ConnectionId,
@@ -1121,8 +1216,21 @@ impl StreamingManager {
             .connections
             .get_mut(&connection_id)
             .ok_or(StreamingManagerError::UnknownConnection)?;
-        conn.begin_close(now_ms)
-            .map_err(StreamingManagerError::Streaming)?;
+        match conn.state() {
+            ConnectionState::Established => {
+                conn.begin_close(now_ms)
+                    .map_err(StreamingManagerError::Streaming)?;
+            }
+            ConnectionState::ClosingRemote => {}
+            other => {
+                return Err(StreamingManagerError::Streaming(
+                    StreamingError::InvalidStateTransition {
+                        from: other.label(),
+                        to: "ClosingLocal",
+                    },
+                ));
+            }
+        }
         let local_receive_stream_id = conn.local_stream_id();
         let peer_receive_stream_id = conn.remote_stream_id();
         let sequence_num = conn.send_window().next_sequence();
@@ -1148,12 +1256,24 @@ impl StreamingManager {
             remote_port,
         )?;
 
+        // A CLOSE emitted from `ClosingRemote` answers the peer's
+        // CLOSE; once our own CLOSE is on the wire this side's half
+        // of the shutdown is complete.
+        if self
+            .connections
+            .get(&connection_id)
+            .is_some_and(|conn| conn.state() == ConnectionState::ClosingRemote)
+            && let Some(conn) = self.connections.get_mut(&connection_id)
+        {
+            let _ = conn.close(now_ms);
+        }
+
         let outbound = OutboundPacket {
             sequence: u32::MAX,
             payload_len: 0,
             sent_at_ms: now_ms,
             retransmit_count: 0,
-            wire_bytes: decode_payload_from_request(&request)?,
+            request: request.clone(),
             signed: true,
         };
         self.outbound_packets
@@ -1210,6 +1330,69 @@ impl StreamingManager {
         self.outbound_queue.push_back(request.clone());
 
         Ok(request)
+    }
+
+    /// Re-emits every tracked outbound packet whose retransmission
+    /// deadline has expired. Plan 129 §8 owns the integrated-path
+    /// retransmission contract: the retransmitted request carries the
+    /// exact original client-payload bytes (no re-encoding, no
+    /// re-signing) so it traverses the gzip -> ECIES -> outbound
+    /// tunnel pipeline again and the receiver's Streaming sequence
+    /// dedup delivers the application bytes exactly once.
+    ///
+    /// The per-attempt window is the connection's current RTO;
+    /// attempts beyond the configured maximum drop the tracking entry
+    /// instead of retrying forever.
+    pub fn poll_retransmits(&mut self, now_ms: u64) -> Vec<TransportSendRequest> {
+        let mut out = Vec::new();
+        let ids: Vec<ConnectionId> = self.outbound_packets.keys().copied().collect();
+        for id in ids {
+            let Some(rto_ms) = self
+                .connections
+                .get(&id)
+                .map(|conn| conn.retransmit().current_rto_ms())
+            else {
+                continue;
+            };
+            let max_attempts = u32::from(self.config.max_retransmit_count);
+            let Some(tracked) = self.outbound_packets.get_mut(&id) else {
+                continue;
+            };
+            let sequences: Vec<u32> = tracked.keys().copied().collect();
+            for sequence in sequences {
+                let Some(packet) = tracked.get_mut(&sequence) else {
+                    continue;
+                };
+                if now_ms.saturating_sub(packet.sent_at_ms) < rto_ms {
+                    continue;
+                }
+                if packet.retransmit_count >= max_attempts {
+                    tracked.remove(&sequence);
+                    continue;
+                }
+                packet.retransmit_count = packet.retransmit_count.saturating_add(1);
+                packet.sent_at_ms = now_ms;
+                if let Some(conn) = self.connections.get_mut(&id) {
+                    conn.send_window_mut().mark_retransmitted(sequence, now_ms);
+                }
+                self.outbound_queue.push_back(packet.request.clone());
+                out.push(packet.request.clone());
+            }
+        }
+        out
+    }
+
+    /// Drains the in-order application bytes delivered by processed
+    /// inbound packets (Plan 129 §8: after a reorder the receiver
+    /// observes the original byte order through this drain).
+    pub fn drain_delivered(&mut self) -> Vec<DeliveredApplicationBytes> {
+        self.pending_delivered.drain(..).collect()
+    }
+
+    /// Returns the number of tracked retransmission records across
+    /// every connection.
+    pub fn tracked_retransmit_count(&self) -> usize {
+        self.outbound_packets.values().map(BTreeMap::len).sum()
     }
 
     /// Returns the connection ID matching the local receive stream id
@@ -1272,17 +1455,6 @@ impl StreamingManager {
 #[allow(dead_code)]
 pub trait CryptoRngStub: rand_core::CryptoRng {}
 impl<T: rand_core::CryptoRng + ?Sized> CryptoRngStub for T {}
-
-fn decode_payload_from_request(
-    request: &TransportSendRequest,
-) -> Result<Vec<u8>, StreamingManagerError> {
-    let envelope = decode_client_payload(
-        &request.application_payload,
-        MAX_STREAMING_PACKET_BYTES + 256,
-    )
-    .map_err(|error| StreamingManagerError::Streaming(StreamingError::InboundEnvelope(error)))?;
-    Ok(envelope.payload)
-}
 
 // Suppress an "unused import" warning for BTreeSet (kept for future use
 // when we add per-connection ID sets to the pre-SYN buffer eviction policy).

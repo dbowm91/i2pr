@@ -19,7 +19,7 @@ Eleven-crate workspace under `crates/`:
 - `i2pr-transport-ntcp2` — runtime-neutral NTCP2 handshake + data frames
 - `i2pr-runtime` — **only** production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation
 - `i2pr-daemon` — composition root + CLI
-- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`); Plan 126 normative ECIES-X25519-AEAD-Ratchet destination session layer (bound NS/NSR/ES, paired sessions keyed by remote static key, classify-driven dispatch); Plan 127 destination-session routing final closure (bundled-LS2 sender binding under the sender's own Destination hash, planned outbound form state machine with retained NSR context, production reverse routing through `install_remote_lease_set2`, active-remote ceiling); Plan 122 local destination routing / LeaseSet2 NetDB composition; Plan 125 protocol-correct I2P Streaming core (`StreamingManager` with real SYN/SYN-response lifecycle, stream-id ownership, RFC 1952 gzip client payload wire format, MTU negotiation, signed SYN/CLOSE/RESET, sequence/ACK/NACK, retransmit, congestion, send/receive windows, listener backlogs) and the runtime-neutral `StreamingDestinationAdapter` that bridges streaming packets into the Plan 122 destination-routing pipeline; Plan 128 normative Streaming wire correction (normative flag map with policy sets `0x04A9`/`0x00A9`/`0x000A`/`0x000C`, no option-data TLVs, flag-driven option order, 2-byte big-endian payload-only MAX_PACKET_SIZE defaulting to 1730, raw final signatures from signing-key context, canonical zeroed-placeholder preimage, Proposal 164 replay NACKs on the initial SYN only, retained peer signing key for CLOSE/RESET verification without FROM; provenance in `specs/references/streaming-packet-wire.md`).
+- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`); Plan 126 normative ECIES-X25519-AEAD-Ratchet destination session layer (bound NS/NSR/ES, paired sessions keyed by remote static key, classify-driven dispatch); Plan 127 destination-session routing final closure (bundled-LS2 sender binding under the sender's own Destination hash, planned outbound form state machine with retained NSR context, production reverse routing through `install_remote_lease_set2`, active-remote ceiling); Plan 122 local destination routing / LeaseSet2 NetDB composition; Plan 125 protocol-correct I2P Streaming core (`StreamingManager` with real SYN/SYN-response lifecycle, stream-id ownership, RFC 1952 gzip client payload wire format, MTU negotiation, signed SYN/CLOSE/RESET, sequence/ACK/NACK, retransmit, congestion, send/receive windows, listener backlogs) and the runtime-neutral `StreamingDestinationAdapter` that bridges streaming packets into the Plan 122 destination-routing pipeline; Plan 128 normative Streaming wire correction (normative flag map with policy sets `0x04A9`/`0x00A9`/`0x000A`/`0x000C`, no option-data TLVs, flag-driven option order, 2-byte big-endian payload-only MAX_PACKET_SIZE defaulting to 1730, raw final signatures from signing-key context, canonical zeroed-placeholder preimage, Proposal 164 replay NACKs on the initial SYN only, retained peer signing key for CLOSE/RESET verification without FROM; provenance in `specs/references/streaming-packet-wire.md`); and Plan 129 integrated Milestone 6 destination+Streaming final gate (`passed-milestone6-integrated-local-product-gate`: combined outbound/inbound `StreamingDestinationAdapter` with client-payload-bound sizing and a single canonical Data-envelope owner, inbound I2NP Data -> gzip -> protocol-6 -> ports -> Streaming dispatch, integrated `poll_retransmits`/cumulative-ACK/reorder surfacing, CLOSE/RESET completion policy; evidence in `crates/i2pr-client/tests/plan129_trajectory.rs`, closure in `plans/129-status.md`).
 - `i2pr-testkit` — deterministic simulation; production crates must not depend on it
 
 Fixtures: `tests/fixtures/i2np/` (manifest at `tests/fixtures/i2np/manifest.tsv`),
@@ -2306,13 +2306,17 @@ plan_119                             = passed-leaseset2-protocol-foundation
 plan_120                             = passed-destination-lifecycle-and-pools
 plan_121                             = passed-corrected-ecies-destination-session-layer-local
 plan_122                             = passed-corrected-local-destination-routing
-plan_123                             = passed-corrected-minimal-streaming-local
+plan_123                             = passed-corrected-streaming-wire-local
 plan_124                             = passed-corrected-destination-routing-local-closure
-plan_125                             = passed-milestone6-local-corrective-closure
+plan_125                             = superseded-by-final-corrective-closure
 plan_126                             = passed-ecies-destination-ratchet-corrective-foundation
 plan_127                             = passed-destination-session-routing-final-closure
+plan_128                             = passed-streaming-wire-protocol-corrective-closure
+plan_129                             = passed-milestone6-integrated-local-product-gate
+milestone6_local_product             = passed
+milestone6_interoperable             = not-yet-claimed
 router_construction                  = may-continue
-next_router_construction_plan        = Plan 129 (integrated M6 destination-streaming final gate)
+next_router_construction_plan        = SAM baseline planning (Milestone 7)
 ```
 
 Plan 119 closed as `passed-leaseset2-protocol-foundation` per
@@ -2338,9 +2342,11 @@ keeps the native criterion visible and does not promote
 parser-only or reference-only results to interoperability
 evidence.
 
-Plan 125 closed as `passed-milestone6-local-corrective-closure` per
-[`plans/125-status.md`](plans/125-status.md); Plan 123 is restored as
-`passed-corrected-minimal-streaming-local`. The wire codec lives in
+Plan 125's corrective surface landed (final classification now
+`superseded-by-final-corrective-closure` after the post-Plan-125
+audit; see [`plans/125-status.md`](plans/125-status.md) and
+[`plans/129-status.md`](plans/129-status.md)); Plan 123 is restored as
+`passed-corrected-streaming-wire-local` by Plans 128/129. The wire codec lives in
 [`crates/i2pr-proto/src/streaming/`](crates/i2pr-proto/src/streaming/)
 (`StreamingPacket`, `StreamingPacketBuilder`, `StreamingFlags`,
 `validate_initial_syn` / `validate_syn_response`,
@@ -2380,13 +2386,15 @@ shapes); six additional deterministic tests in
 cover the real Plan 125 §6/§7 SYN / SYN-response lifecycle, the
 RFC 1952 gzip wire format, the stream-id ownership contract, the
 `SystemClock` monotonicity fix, and the listener outcome surface.
-Plan 125 is the Milestone 6 local-product gate.
-to `passed-minimal-streaming-core` was reopened; Plan 125 corrects the
-`ClientPayload` framing (canonical RFC 1952 gzip, no SHA-256
-prefix, no custom compressed-length prefix) and the
-connection-establishment state machine (no optimistic local
-Established before peer SYN response) and now closes as
-`passed-milestone6-local-corrective-closure`.
+The Plan 125 `passed-milestone6-local-corrective-closure` status was
+later withdrawn by the post-Plan-125 audit and superseded by the
+Plans 126-129 corrective roadmap; Plan 125's final classification is
+`superseded-by-final-corrective-closure` (see `plans/125-status.md`
+and `plans/129-status.md`). Its retained fixes — the canonical RFC
+1952 gzip framing (no SHA-256 prefix, no custom compressed-length
+prefix) and the real connection-establishment state machine with no
+optimistic local Established before the peer SYN response — remain
+load-bearing in the product.
 
 ## Plan 126 ECIES destination ratchet corrective foundation
 
@@ -2440,14 +2448,11 @@ Per the plan handoff:
 ```text
 plan_121 = passed-corrected-ecies-destination-session-layer-local (restored by Plan 127)
 plan_126 = passed-ecies-destination-ratchet-corrective-foundation
-milestone6_local_product = not-closed
-next = plans/128-m6-streaming-wire-protocol-corrective-closure.md
+milestone6_local_product = passed (closed by Plans 128 and 129; see plans/129-status.md)
 ```
 
-Do not restore the Plan 121/122/124 final-closure claims beyond the
-`local`-qualified statuses recorded by Plan 127 until an external
-interoperability checkpoint proves destination ECIES against another
-router. NTCP2 stays experimental and non-advertised; no tunnel, NetDB
+Do not claim destination ECIES interoperability against another router
+without external evidence. NTCP2 stays experimental and non-advertised; no tunnel, NetDB
 composition, transport, SAM, I2CP, or public-network work was
 introduced by Plan 126.
 
@@ -2594,11 +2599,93 @@ bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh
 ```
 
-The next executable product work is Plan 129 per the Milestone 6
-final corrective roadmap in
-[`plans/126-129-milestone6-final-corrective-roadmap.md`](plans/126-129-milestone6-final-corrective-roadmap.md).
+## Plan 129 Milestone 6 integrated destination + Streaming final gate
 
-## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
+Plan 129 closed as `passed-milestone6-integrated-local-product-gate`
+per [`plans/129-status.md`](plans/129-status.md). It is the final
+local-product gate for Milestone 6 and proves that the corrected
+destination and Streaming layers compose through the actual local
+product architecture in both directions; `TransportSendRequest` is
+never transferred directly between Streaming managers.
+
+The corrected surface:
+
+- `crates/i2pr-client/src/streaming_adapter.rs` (rewritten) — one
+  combined runtime-neutral adapter. The outbound bound is the encoded
+  client-payload/I2NP limit (`MAX_STREAMING_ADAPTER_PAYLOAD_BYTES =
+  i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES`, not the Streaming
+  payload MTU) because `TransportSendRequest.application_payload`
+  carries the gzip-encoded complete Streaming packet. The redundant
+  source-floor inner I2NP Data construction is removed;
+  `OutboundRequest::new` inside the routing composer is the single
+  canonical Data-envelope owner. The inbound adapter
+  (`StreamingDestinationAdapter::receive`) decodes standard I2NP,
+  requires `I2npBody::Data`, decodes the canonical protocol-6 gzip
+  client payload, requires protocol == 6 for the Streaming path
+  (typed `InboundStreamingOutcome::UnsupportedProtocol` otherwise),
+  reads I2P ports, and passes only decoded Streaming packet bytes to
+  the owning destination's `StreamingManager`.
+- `crates/i2pr-client/src/streaming/manager.rs` — real retransmission
+  over the integrated path (`poll_retransmits` re-emits tracked
+  original requests with an attempt cap), cumulative end-to-end ACKs
+  applied on receipt and clearing tracked packets, delivered-byte
+  surfacing (`drain_delivered`), and CLOSE/RESET completion policy
+  where no side closes merely because it queued a CLOSE and nothing
+  delivers after RESET.
+- `crates/i2pr-client/src/streaming/connection.rs` — mutable send
+  window accessor for retransmission bookkeeping; `ClosingLocal` +
+  inbound CLOSE completes the graceful close.
+- `crates/i2pr-client/src/streaming/recv_window.rs` —
+  `RecvWindowDecision::Delivered` surfaces the ordered payloads
+  (in-order packet plus drained reorder entries).
+- `crates/i2pr-tunnel` — `OutboundCell` re-exported for the multi-cell
+  inbound seam used by the integration fixture.
+- `crates/i2pr-client/tests/plan129_trajectory.rs` — twelve
+  deterministic tests over the full stack: master SYN / SYN-response
+  handshake both directions (NS then NSR, zero response NACKs, NO_ACK
+  clear, min-of-advertisements negotiation, plaintext-absence at the
+  seam), steady-state Existing Session data both directions with exact
+  ordered bytes, integrated drop/duplicate/reorder faults injected
+  only after real OBEP processing, invalid-signature / bad-gzip-CRC /
+  ECIES-tamper corruption at protocol-appropriate layers, graceful
+  CLOSE through peer response, RESET termination with survivor
+  streams, non-protocol-6 dispatch rejection, adapter ceiling bounds,
+  and the 0-RTT scope assertion.
+
+The §13 SAM-readiness review answer is **yes**: a future SAM v3
+adapter consumes the destination/Streaming APIs without bypassing
+LeaseSet2, ECIES, Garlic, destination tunnels, or Streaming wire
+semantics; SAM does not own tunnel selection or NTCP2/SSU2 and needs
+no client-to-client shortcut.
+
+```text
+plan_121 = passed-corrected-ecies-destination-session-layer-local
+plan_122 = passed-corrected-local-destination-routing
+plan_123 = passed-corrected-streaming-wire-local
+plan_124 = passed-corrected-destination-routing-local-closure
+plan_125 = superseded-by-final-corrective-closure
+plan_129 = passed-milestone6-integrated-local-product-gate
+milestone6_local_product = passed
+milestone6_interoperable = not-yet-claimed
+external_acceptance_debt = retained-separately
+router_construction = may-continue
+next_product_layer = SAM baseline planning (Milestone 7)
+```
+
+Required focused checks:
+
+```text
+cargo +1.95.0 fmt --all --check
+cargo +1.95.0 check --locked --workspace --all-targets
+cargo +1.95.0 test --locked --workspace
+cargo +1.95.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo +1.95.0 doc --locked --workspace --no-deps
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+bash scripts/check-fixture-manifest.sh
+bash scripts/check-ntcp2-vectors.sh
+bash scripts/check-ntcp2-interoperability.sh
+```
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
 

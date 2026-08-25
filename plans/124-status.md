@@ -1,12 +1,14 @@
-# Plan 124 status — primary composition fix retained; full closure reopened
+# Plan 124 status — final local closure (restored by Plans 126/127)
 
 ## Current authority
 
-- Status: **`primary-composition-fix-retained-full-closure-reopened-plan127`**.
+- Status: **`passed-corrected-destination-routing-local-closure`**.
+- Final closure: **2026-08-25** by the Plan 127 destination-session
+  routing final closure, confirmed by the Plan 129 integrated
+  Milestone 6 local-product gate.
 - Milestone 6 authority: `126-129-milestone6-final-corrective-roadmap.md`.
-- Final destination-layer closure: `127-m6-destination-session-routing-final-closure.md`.
 
-## What remains valid
+## What remains authoritative
 
 Plan 124 corrected a real and important defect:
 
@@ -15,30 +17,23 @@ before: outbound tunnel received plaintext inner I2NP Data
 now:    outbound tunnel receives standard-encoded I2NP Garlic carrying encrypted destination bytes
 ```
 
-The byte-identity regression proving `garlic_i2np_bytes` crosses the outbound tunnel and is not equal to `inner_envelope_bytes` remains authoritative and must not regress.
-
-The successful local A -> B New Session-shaped trajectory also remains useful composition evidence for the tunnel boundary.
-
-## Why the full Plan 124 label is reopened
-
-The original Plan 124 acceptance required a complete reverse/session lifecycle:
-
-```text
-A -> B New Session
-B -> A New Session Reply
-A -> B Existing Session
-B -> A Existing Session
-```
-
-The current suite explicitly does not complete the real NSR session handshake, and the lower ECIES/session layer now requires Plan 126 correction before those requirements can be satisfied honestly.
+The byte-identity regression proving `garlic_i2np_bytes` crosses the
+outbound tunnel and is not equal to `inner_envelope_bytes` remains
+authoritative and must not regress. The complete reverse/session
+lifecycle that the original acceptance required (bound NS, NSR,
+bidirectional Existing Session over the destination tunnel path) was
+subsequently proven by Plan 127 and re-proven with Streaming payloads
+by Plan 129.
 
 ## Current classification
 
 ```text
-plan_124_primary_plaintext_fix = passed-retained
-plan_124_full_closure = reopened-plan127
-milestone6_local_product = not-closed
-next = Plan 126, then Plan 127
+plan_124 = passed-corrected-destination-routing-local-closure
+milestone6_local_product = passed
+milestone6_interoperable = not-yet-claimed
+next_product_layer = SAM baseline planning (Milestone 7)
 ```
 
-The only permitted network omission remains `authenticated-router-link-bypassed-local-seam` after real OBEP processing.
+The only permitted network omission remains
+`authenticated-router-link-bypassed-local-seam` after real OBEP
+processing.

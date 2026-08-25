@@ -713,7 +713,7 @@ Use exact final labels:
 ```text
 plan_122 = passed-corrected-local-destination-routing
 plan_123 = passed-corrected-minimal-streaming-local
-plan_125 = passed-milestone6-local-corrective-closure
+plan_125 = superseded-by-final-corrective-closure
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 external_acceptance_debt = retained
@@ -798,7 +798,7 @@ Plan 125 is complete only when all are true:
 
 ```text
 plan_124 = passed-plan122-corrective-closure
-plan_125 = passed-milestone6-local-corrective-closure
+plan_125 = superseded-by-final-corrective-closure
 plan_122 = passed-corrected-local-destination-routing
 plan_123 = passed-corrected-minimal-streaming-local
 milestone6_local_product = passed

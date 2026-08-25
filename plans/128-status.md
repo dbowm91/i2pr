@@ -124,3 +124,19 @@ RUSTDOCFLAGS="-D warnings" cargo +1.95.0 doc --workspace --no-deps  pass
 bash scripts/check-dependency-direction.sh               pass
 bash scripts/check-runtime-boundaries.sh                 pass
 ```
+
+## Final gate handoff (Plan 129)
+
+The Plan 129 integrated Milestone 6 local-product gate passed on
+2026-08-25 over this wire-corrected surface; `plan_123` stays
+`passed-corrected-streaming-wire-local` and Plan 125 becomes
+`superseded-by-final-corrective-closure`. See
+[`plans/129-status.md`](129-status.md).
+
+```text
+plan_128 = passed-streaming-wire-protocol-corrective-closure
+plan_129 = passed-milestone6-integrated-local-product-gate
+milestone6_local_product = passed
+milestone6_interoperable = not-yet-claimed
+next_product_layer = SAM baseline planning (Milestone 7)
+```

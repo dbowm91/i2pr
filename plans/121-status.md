@@ -1,45 +1,35 @@
-# Plan 121 status — corrective closure required
+# Plan 121 status — final local closure (restored by Plans 126/127)
 
 ## Current authority
 
-- Status: **`corrective-reopened-plan126`**.
-- Reopened: **2026-08-25** after post-Plan-125 protocol/source audit.
+- Status: **`passed-corrected-ecies-destination-session-layer-local`**.
+- Final closure: **2026-08-25** by the Plan 127 destination-session
+  routing final closure, confirmed by the Plan 129 integrated
+  Milestone 6 local-product gate.
 - Original plan: `121-m6-ecies-garlic-session-layer.md`.
 - Corrective plan: `126-m6-ecies-destination-ratchet-corrective-foundation.md`.
+- Destination-layer closure: `127-m6-destination-session-routing-final-closure.md`.
+- Integrated gate: `plans/129-status.md`.
 - Milestone 6 authority: `126-129-milestone6-final-corrective-roadmap.md`.
 
-## Retained work
+## What carries the `local` qualifier
 
-The existing Plan 121 work remains useful for:
-
-- external Elligator2 dependency selection;
-- X25519/ChaChaPoly/HKDF building blocks;
-- typed ECIES payload-block structures;
-- destination-scoped bounded session configuration;
-- deterministic cryptographic test infrastructure.
-
-## Why final closure is reopened
-
-The source-floor destination ratchet is not current I2P wire compatible. In particular:
-
-```text
-current Noise initializer = Noise_NK_25519_ChaChaPoly_SHA256
-current NS representation = i2pr-only 0xE0 + clear static + representative + ciphertext
-current NSR/ES classifier = i2pr-only 0xE2 marker
-```
-
-The current I2P destination ECIES protocol uses the IKelg2 initializer, encrypted bound static-key section, tag-prefixed NSR/ES formats, and destination-bound paired sessions.
-
-The production `EciesSessionManager` also does not yet retain/bind the complete NS -> NSR -> Existing Session state required for repliable Streaming traffic.
+The original Plan 121 i2pr-internal ECIES dialect (Noise-NK
+initializer, `0xE0`/`0xE2` marker bytes, clear static-key field) was
+superseded and replaced by the Plan 126 normative
+ECIES-X25519-AEAD-Ratchet contract. Plan 127 then proved bound sender
+LeaseSet2 validation, reverse routing, NSR, and bidirectional Existing
+Session traffic over actual destination tunnels. The word `local` is
+mandatory: mixed-router destination ECIES interoperability remains
+separate external acceptance debt.
 
 ## Current classification
 
 ```text
-plan_121 = corrective-reopened-plan126
-plan_122 = provisional-blocked-on-plan126-plan127
-plan_124 = primary-composition-fix-retained-full-closure-reopened-plan127
-milestone6_local_product = not-closed
-next = plans/126-m6-ecies-destination-ratchet-corrective-foundation.md
+plan_121 = passed-corrected-ecies-destination-session-layer-local
+plan_122 = passed-corrected-local-destination-routing
+plan_124 = passed-corrected-destination-routing-local-closure
+milestone6_local_product = passed
+milestone6_interoperable = not-yet-claimed
+next_product_layer = SAM baseline planning (Milestone 7)
 ```
-
-No mixed-router ECIES interoperability is claimed.

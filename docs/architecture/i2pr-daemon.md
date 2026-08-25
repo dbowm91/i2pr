@@ -400,9 +400,12 @@ retained an ECIES Garlic envelope but fed the plaintext inner I2NP
 composition wraps the encrypted envelope in an `I2npBody::Garlic`
 carrier and feeds the standard-encoded I2NP Garlic message bytes
 into the outbound tunnel data plane; `OutboundDeliveryPlan` exposes
-`garlic_i2np_bytes: Vec<u8>` as the canonical carrier. The next
-executable plan is **Plan 125** (Streaming protocol-6 framing
-correction + reply round-trip) under the same Milestone 6 roadmap.
+`garlic_i2np_bytes: Vec<u8>` as the canonical carrier. Milestone 6
+subsequently closed through the Plans 126–129 corrective sequence;
+the integrated destination+Streaming final gate passed as
+`passed-milestone6-integrated-local-product-gate`
+([`plans/129-status.md`](../../plans/129-status.md)) and the next
+product layer is SAM baseline planning (Milestone 7).
 
 ### Which crates are wired in today
 
