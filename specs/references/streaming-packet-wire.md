@@ -126,3 +126,67 @@ receiveStreamId = responder selected nonzero id
 sequenceNum = 0, flags = 0x00A9 (no NO_ACK), nackCount = 0
 ackThrough is valid and acknowledges the initial SYN
 ```
+
+## Plan 130 sequence / ACK-NACK / port semantics
+
+Corrective reference record (2026-08-25) for the Plan 130 runtime
+changes; sources are the current Streaming Protocol Specification
+(i2p.net/en/docs/specs/streaming/, last updated 2023-10, accurate for
+0.9.59), Java I2P `apps/streaming/java/src/net/i2p/client/streaming/impl/`
+(`ConnectionPacketHandler.java`, `Connection.java`,
+`MessageInputStream.java`, branch `master`, inspected 2026-08-25), and
+the Streaming Library option documentation.
+
+Sequence numbers:
+
+- The SYN occupies sequence 0; the SYN response occupies sequence 0.
+- Ordinary application data starts at sequence **1** and increments by
+  one per message except plain ACKs and retransmissions.
+- "If the sequenceNum is 0 and the SYN flag is not set, this is a plain
+  ACK packet that should not be ACKed" (specification, sequenceNum
+  field). A seq-0 non-SYN packet never enters the application receive
+  window; a payload attached to that form is dropped.
+
+Acknowledgements:
+
+- `ackThrough` is the highest received sequence number on the stream;
+  it is valid including value 0 (which acknowledges the handshake slot)
+  and is ignored only when the NO_ACK flag is set (and on the initial
+  connection packet). Java processes ACKs whenever
+  `!(isSYN && sendStreamId <= 0)` — there is no "zero means absent"
+  rule.
+- NACKs list sequences strictly below `ackThrough` that were not yet
+  received (`MessageInputStream.locked_getNacks`: gaps between the
+  contiguous-ready point and the highest received block). Two NACKs of
+  one sequence request a fast retransmit.
+- Receiver-side generation (Java `MessageInputStream.updateAcks`):
+  `ackThrough = highest received block id`, `NACKs = missing blocks in
+  (ready point, highest)`; bounded naturally by the reorder window and
+  by the one-byte wire count (max 255).
+- Sender-side application (Java `Connection.ackPackets`): packets at or
+  below `ackThrough` are cleared unless explicitly NACKed; with NACKs
+  present the cumulative floor only advances to `lowestNack - 1`;
+  duplicate ACKs (below the recorded floor) change nothing.
+- Delayed standalone ACK default: 750 ms (`i2p.streaming.initialAckDelay`
+  default); a DELAY_REQUESTED value of 0 requests an immediate ack.
+- Plain-ACK packets are unsigned, carry no payload, and are never
+  acknowledged themselves (no ACK-of-ACK loop).
+
+I2P ports:
+
+- Listener dispatch follows the I2CP demultiplexer contract
+  (`I2PSessionDemultiplexer.findListener`): exact `destination_port`
+  listener first, then the wildcard listener bound to port 0
+  (`PORT_ANY`); if neither exists the message is dropped ("No listener
+  found").
+- `source_port == 0` (PORT_UNSPECIFIED/PORT_ANY) is legal on inbound
+  SYNs; no TCP privileged-port policy applies.
+- An established stream retains the local/remote port tuple fixed by
+  its SYN and echoes it on every subsequent packet (Java replies set
+  `localPort`/`remotePort` from the incoming packet).
+
+Plan 130 implements exactly these rules in
+`crates/i2pr-client/src/streaming/` (sequence space, NACK-aware
+cumulative acknowledgement, `poll_acks` delayed-ACK scheduling,
+piggyback suppression) and in the inbound adapter boundary (wire
+destination-port authority).

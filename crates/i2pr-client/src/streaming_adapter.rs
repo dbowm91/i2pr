@@ -228,20 +228,22 @@ impl StreamingDestinationAdapter {
         Ok(plan)
     }
 
-    /// Inbound inverse (Plan 129 §3): decodes the recovered inner
-    /// I2NP message, requires an `I2npBody::Data` body, decodes the
-    /// canonical gzip client payload, requires protocol 6 for the
-    /// Streaming path, and passes only the decoded Streaming packet
-    /// bytes to the owning local destination's [`StreamingManager`].
+    /// Inbound inverse (Plan 129 §3 / Plan 130 §8): decodes the
+    /// recovered inner I2NP message, requires an `I2npBody::Data`
+    /// body, decodes the canonical gzip client payload, requires
+    /// protocol 6 for the Streaming path, and passes the decoded
+    /// Streaming packet bytes **together with the wire I2P ports** to
+    /// the owning local destination's [`StreamingManager`].
     ///
-    /// Destination ports are I2P ports; no local TCP privileged-port
-    /// policy applies. `listener_port` names the local listening port
-    /// whose backlog should receive a pending inbound SYN, when the
-    /// delivery targets a listener.
+    /// Plan 130 §8 E1: there is no caller-supplied listener port. The
+    /// wire `destination_port` is authoritative — it selects the
+    /// target listener through the reference matching rules and fixes
+    /// the established port tuple — so a runtime caller can name the
+    /// destination owner/manager but can never redirect one I2P port
+    /// into another listener.
     pub fn receive(
         recovered_i2np_bytes: &[u8],
         owning_destination: &DestinationIdentity,
-        listener_port: Option<u16>,
         streaming: &mut StreamingManager,
         from_destination_hash: &[u8; 32],
         now_ms: u64,
@@ -267,7 +269,8 @@ impl StreamingDestinationAdapter {
                 &envelope.payload,
                 from_destination_hash,
                 owning_destination,
-                listener_port,
+                envelope.source_port,
+                envelope.destination_port,
                 now_ms,
             )
             .map_err(StreamingAdapterError::Streaming)?;

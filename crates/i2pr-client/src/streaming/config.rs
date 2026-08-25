@@ -57,6 +57,17 @@ pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 300_000;
 /// Default close timeout in milliseconds.
 pub const DEFAULT_CLOSE_TIMEOUT_MS: u64 = 10_000;
 
+/// Default delayed-ACK deadline in milliseconds (Plan 130 §7 D3).
+/// The current I2P reference default is 750 ms
+/// (`i2p.streaming.initialAckDelay`); a receiver coalesces the
+/// acknowledgements of packets arriving inside one deadline into a
+/// single standalone ACK.
+pub const DEFAULT_DELAYED_ACK_MS: u64 = 750;
+
+/// Hard ceiling on the delayed-ACK deadline. The Streaming
+/// specification bounds advisory delay values at 60000 ms.
+pub const MAX_DELAYED_ACK_MS: u64 = 60_000;
+
 /// Configuration for the streaming layer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamingConfig {
@@ -82,6 +93,8 @@ pub struct StreamingConfig {
     pub idle_timeout_ms: u64,
     /// Close timeout in milliseconds.
     pub close_timeout_ms: u64,
+    /// Delayed-ACK deadline in milliseconds (Plan 130 §7 D3).
+    pub delayed_ack_ms: u64,
     /// Maximum pre-SYN reorder buffer size.
     pub max_pre_syn_buffer: u16,
 }
@@ -101,6 +114,7 @@ impl StreamingConfig {
         setup_timeout_ms: u64,
         idle_timeout_ms: u64,
         close_timeout_ms: u64,
+        delayed_ack_ms: u64,
         max_pre_syn_buffer: u16,
     ) -> Result<Self, StreamingConfigError> {
         if max_streams_per_destination == 0 {
@@ -181,6 +195,15 @@ impl StreamingConfig {
         if close_timeout_ms == 0 {
             return Err(StreamingConfigError::ZeroCloseTimeout);
         }
+        if delayed_ack_ms == 0 {
+            return Err(StreamingConfigError::ZeroDelayedAck);
+        }
+        if delayed_ack_ms > MAX_DELAYED_ACK_MS {
+            return Err(StreamingConfigError::DelayedAckExceedsLimit {
+                actual: delayed_ack_ms,
+                maximum: MAX_DELAYED_ACK_MS,
+            });
+        }
         if (max_pre_syn_buffer as usize) > MAX_PRE_SYN_BUFFER {
             return Err(StreamingConfigError::PreSynBufferExceedsLimit {
                 actual: max_pre_syn_buffer,
@@ -199,6 +222,7 @@ impl StreamingConfig {
             setup_timeout_ms,
             idle_timeout_ms,
             close_timeout_ms,
+            delayed_ack_ms,
             max_pre_syn_buffer,
         })
     }
@@ -217,6 +241,7 @@ impl StreamingConfig {
             DEFAULT_SETUP_TIMEOUT_MS,
             DEFAULT_IDLE_TIMEOUT_MS,
             DEFAULT_CLOSE_TIMEOUT_MS,
+            DEFAULT_DELAYED_ACK_MS,
             4,
         )
         .expect("balanced streaming config is within every ceiling")
@@ -269,6 +294,10 @@ pub enum StreamingConfigError {
     ZeroIdleTimeout,
     #[error("streaming close timeout must be nonzero")]
     ZeroCloseTimeout,
+    #[error("streaming delayed ack must be nonzero")]
+    ZeroDelayedAck,
+    #[error("streaming delayed ack {actual} ms exceeds limit {maximum} ms")]
+    DelayedAckExceedsLimit { actual: u64, maximum: u64 },
     #[error("streaming pre-syn buffer {actual} exceeds limit {maximum}")]
     PreSynBufferExceedsLimit { actual: u16, maximum: u16 },
 }

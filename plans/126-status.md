@@ -3,6 +3,15 @@
 Status: **passed-ecies-destination-ratchet-corrective-foundation**
 (local protocol conformance; no network-facing claim).
 
+Plan 130 note: the cryptographic foundation (wire formats, KDF, Noise
+transcript, ratchet) is unchanged and retained. Plan 130 corrected only
+the production ephemeral **representation choice** — on-wire
+representatives now carry the normative randomized high bits while the
+deterministic vector constructor keeps reproducing every frozen Plan
+126 constant. See
+[`specs/references/elligator2-production-representation.md`](../specs/references/elligator2-production-representation.md)
+and [`plans/130-status.md`](130-status.md).
+
 ## What landed
 
 - `crates/i2pr-crypto/src/ecies.rs` — complete rewrite to the

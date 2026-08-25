@@ -200,31 +200,65 @@ pub struct EciesEphemeralKeypair {
 }
 
 impl EciesEphemeralKeypair {
-    /// Generates a new ephemeral keypair. The Elligator2 mapping
-    /// succeeds for roughly half of the 32-byte inputs from a CSPRNG;
-    /// this constructor retries on the rare RFC 9380 non-representable
-    /// failure rather than corrupting the handshake.
+    /// Generates a new ephemeral keypair for production wire use.
+    ///
+    /// Plan 130: the on-wire Elligator2 representation is randomized
+    /// exactly as the current I2P ECIES specification requires — two
+    /// CSPRNG bits are ORed into the most significant byte of the
+    /// encoded representative (`ENCODE_ELG2`: `encodedKey[31] |=
+    /// randomByte & 0xc0`) so ephemeral representatives look
+    /// uniformly random instead of carrying an
+    /// implementation-fixed bit pattern. The canonical decoded
+    /// X25519 public key (and therefore every transcript hash and
+    /// Diffie-Hellman operation) is unaffected by the randomized
+    /// bits because every conforming decoder masks them off before
+    /// mapping (`DECODE_ELG2`).
+    ///
+    /// The Elligator2 mapping succeeds for roughly half of the
+    /// 32-byte inputs from a CSPRNG; this constructor retries on the
+    /// rare non-representable failure rather than corrupting the
+    /// handshake. Attempts are hard-bounded and entropy failures
+    /// surface as [`EciesError::RandomnessUnavailable`].
     pub fn generate<R: TryCryptoRng + ?Sized>(rng: &mut R) -> Result<Self, EciesError> {
         const MAX_ATTEMPTS: usize = 64;
         for _ in 0..MAX_ATTEMPTS {
             let mut seed_bytes = Zeroizing::new([0_u8; REPRESENTATIVE_LENGTH]);
             rng.try_fill_bytes(&mut *seed_bytes)
                 .map_err(|_| EciesError::RandomnessUnavailable)?;
-            if let Some(candidate) = Self::from_seed_bytes(*seed_bytes) {
+            let mut tweak = [0_u8; 1];
+            rng.try_fill_bytes(&mut tweak)
+                .map_err(|_| EciesError::RandomnessUnavailable)?;
+            if let Some(candidate) = Self::build(*seed_bytes, tweak[0]) {
                 return Ok(candidate);
             }
         }
         Err(EciesError::RandomnessUnavailable)
     }
 
-    /// Builds a keypair from an explicit seed. Returns `None` when
-    /// the seed does not map to a decodable representative; callers
-    /// must retry with a fresh seed.
+    /// Builds a keypair from an explicit seed with a **fixed**
+    /// representation choice (tweak `0`). This is the deterministic
+    /// test/vector constructor only: its representatives carry the
+    /// implementation-fixed high-bit pattern `00`, which is suitable
+    /// for frozen KDF/Noise vectors but must never be used for
+    /// production on-wire anonymity. Production callers must use
+    /// [`Self::generate`]. Returns `None` when the seed does not map
+    /// to a decodable representative; callers must retry with a
+    /// fresh seed.
     pub fn from_seed_bytes(seed: [u8; REPRESENTATIVE_LENGTH]) -> Option<Self> {
+        Self::build(seed, 0)
+    }
+
+    /// Shared construction seam. Canonicalizes the seed, computes the
+    /// canonical (least-square-root) RFC 9380 representative, and ORs
+    /// the supplied tweak's two high-order bits into the final byte —
+    /// the normative I2P `ENCODE_ELG2` post-processing step. Decoders
+    /// mask those bits back off before mapping, so the tweak changes
+    /// no protocol value.
+    fn build(seed: [u8; REPRESENTATIVE_LENGTH], tweak: u8) -> Option<Self> {
         let mut canonical_seed = seed;
         canonical_seed[REPRESENTATIVE_LENGTH - 1] &= 0x3f;
         let representative_opt: Option<[u8; REPRESENTATIVE_LENGTH]> =
-            RFC9380::to_representative(&canonical_seed, 0).into();
+            RFC9380::to_representative(&canonical_seed, tweak & 0xc0).into();
         let representative = representative_opt?;
         if representative.iter().all(|byte| *byte == 0) {
             return None;
@@ -2190,6 +2224,179 @@ mod tests {
         let recovered = decode_representative(&keypair.representative()).expect("decodes");
         let expected = ephemeral_public_key_for_test(keypair.secret().as_bytes());
         assert_eq!(recovered, expected);
+    }
+
+    // ---- Plan 130: production Elligator2 representation randomization ----
+
+    /// Independent pure-Python reference fixtures (Plan 130 Phase A1).
+    ///
+    /// Generated once by `DECODE_ELG2`/`ENCODE_ELG2` implemented
+    /// directly from the current I2P ECIES specification plus the
+    /// Java I2P `Elligator2.java` branch structure — entirely
+    /// independent of i2pr and of `curve25519-elligator2`. The full
+    /// generator (including a pure-Python RFC 7748 X25519 ladder
+    /// cross-checked against the Python `cryptography` library) is
+    /// recorded in `specs/references/ecies-destination-ratchet.md`.
+    mod reference_fixtures {
+        pub const X_COORDINATE: [u8; 32] = [
+            0xf1, 0xbc, 0x54, 0x94, 0x20, 0x1d, 0xec, 0xa9, 0x39, 0x31, 0xa9, 0x42, 0x38, 0xfb,
+            0xcd, 0x65, 0x7b, 0x06, 0x60, 0x15, 0xb9, 0x3c, 0x0a, 0x40, 0xbd, 0xa2, 0xf7, 0x57,
+            0xff, 0xfb, 0xae, 0x42,
+        ];
+        pub const REPRESENTATIVE_FALSE_BRANCH: [u8; 32] = [
+            0x41, 0x78, 0x20, 0xeb, 0x10, 0x86, 0x41, 0xea, 0xac, 0xa4, 0x9c, 0x4a, 0xd8, 0x82,
+            0x99, 0x7e, 0xeb, 0x7d, 0xfa, 0x85, 0x13, 0x00, 0x5e, 0x08, 0x6d, 0x1c, 0x6c, 0x09,
+            0xbd, 0x90, 0x2e, 0x0e,
+        ];
+        pub const REPRESENTATIVE_TRUE_BRANCH: [u8; 32] = [
+            0xfb, 0xce, 0x79, 0xc9, 0x96, 0xc0, 0x77, 0xa9, 0xee, 0xc2, 0xff, 0xed, 0x41, 0x4b,
+            0x75, 0x27, 0x11, 0x28, 0x8a, 0x10, 0x14, 0xd5, 0xb0, 0x78, 0xd0, 0xf8, 0x2e, 0x31,
+            0x66, 0x25, 0xe3, 0x27,
+        ];
+        pub const REPRESENTATIVE_HIGH_00: [u8; 32] = [
+            0x41, 0x78, 0x20, 0xeb, 0x10, 0x86, 0x41, 0xea, 0xac, 0xa4, 0x9c, 0x4a, 0xd8, 0x82,
+            0x99, 0x7e, 0xeb, 0x7d, 0xfa, 0x85, 0x13, 0x00, 0x5e, 0x08, 0x6d, 0x1c, 0x6c, 0x09,
+            0xbd, 0x90, 0x2e, 0x0e,
+        ];
+        pub const REPRESENTATIVE_HIGH_40: [u8; 32] = [
+            0x41, 0x78, 0x20, 0xeb, 0x10, 0x86, 0x41, 0xea, 0xac, 0xa4, 0x9c, 0x4a, 0xd8, 0x82,
+            0x99, 0x7e, 0xeb, 0x7d, 0xfa, 0x85, 0x13, 0x00, 0x5e, 0x08, 0x6d, 0x1c, 0x6c, 0x09,
+            0xbd, 0x90, 0x2e, 0x4e,
+        ];
+        pub const REPRESENTATIVE_HIGH_80: [u8; 32] = [
+            0x41, 0x78, 0x20, 0xeb, 0x10, 0x86, 0x41, 0xea, 0xac, 0xa4, 0x9c, 0x4a, 0xd8, 0x82,
+            0x99, 0x7e, 0xeb, 0x7d, 0xfa, 0x85, 0x13, 0x00, 0x5e, 0x08, 0x6d, 0x1c, 0x6c, 0x09,
+            0xbd, 0x90, 0x2e, 0x8e,
+        ];
+        pub const REPRESENTATIVE_HIGH_C0: [u8; 32] = [
+            0x41, 0x78, 0x20, 0xeb, 0x10, 0x86, 0x41, 0xea, 0xac, 0xa4, 0x9c, 0x4a, 0xd8, 0x82,
+            0x99, 0x7e, 0xeb, 0x7d, 0xfa, 0x85, 0x13, 0x00, 0x5e, 0x08, 0x6d, 0x1c, 0x6c, 0x09,
+            0xbd, 0x90, 0x2e, 0xce,
+        ];
+    }
+
+    #[test]
+    fn production_generator_decodes_to_the_exact_intended_public_key() {
+        // Plan 130 B3.2/B3.6: every production representative must
+        // decode to the canonical X25519 public key the secret will
+        // actually use for DH; randomized representation bytes never
+        // change the transcript's decoded point.
+        let mut rng = ChaCha8Rng::seed_from_u64(0x130A);
+        for _ in 0..64 {
+            let keypair = EciesEphemeralKeypair::generate(&mut rng).expect("keypair");
+            let recovered = decode_representative(&keypair.representative()).expect("decodes");
+            let expected = ephemeral_public_key_for_test(keypair.secret().as_bytes());
+            assert_eq!(recovered, expected);
+        }
+    }
+
+    #[test]
+    fn production_generator_randomizes_the_two_high_representation_bits() {
+        // Plan 130 B3.4: over a deterministic seeded-CSPRNG sample the
+        // two most significant on-wire bits are not fixed and all four
+        // values occur. This is a regression/fingerprint test with a
+        // fixed seed, not a randomness certification.
+        let mut rng = ChaCha8Rng::seed_from_u64(0x130B);
+        let mut observed = [false; 4];
+        for _ in 0..256 {
+            let keypair = EciesEphemeralKeypair::generate(&mut rng).expect("keypair");
+            let top = keypair.representative().as_bytes()[31] >> 6;
+            observed[usize::from(top)] = true;
+        }
+        assert!(
+            observed.iter().all(|seen| *seen),
+            "all four high-bit values must occur across the sample, got {observed:?}"
+        );
+    }
+
+    #[test]
+    fn deterministic_constructor_keeps_the_fixed_vector_representation() {
+        // Plan 130 B3.1: the deterministic constructor still produces
+        // the implementation-fixed high-bit pattern (`00`) so every
+        // frozen Plan 126 KDF/Noise vector remains reproducible. It is
+        // documented as non-production precisely because of this.
+        let keypair = EciesEphemeralKeypair::from_seed_bytes(fv::ALICE_EPHEMERAL_SEED)
+            .expect("deterministic keypair");
+        assert_eq!(keypair.representative().as_bytes()[31] & 0xc0, 0);
+        let recovered = decode_representative(&keypair.representative()).expect("decodes");
+        let expected = ephemeral_public_key_for_test(keypair.secret().as_bytes());
+        assert_eq!(recovered, expected);
+    }
+
+    #[test]
+    fn reference_high_bit_variants_all_decode_to_the_same_public_key() {
+        // Plan 130 B3.3/A1: representatives produced by the normative
+        // ENCODE_ELG2 randomization (all four high-bit values) decode
+        // through i2pr's decoder to exactly the intended public key.
+        for representative in [
+            reference_fixtures::REPRESENTATIVE_HIGH_00,
+            reference_fixtures::REPRESENTATIVE_HIGH_40,
+            reference_fixtures::REPRESENTATIVE_HIGH_80,
+            reference_fixtures::REPRESENTATIVE_HIGH_C0,
+        ] {
+            let decoded = decode_representative(&EciesEphemeralRepresentative(representative))
+                .expect("reference randomized representative decodes");
+            assert_eq!(decoded, reference_fixtures::X_COORDINATE);
+        }
+    }
+
+    #[test]
+    fn both_reference_encode_branches_decode_to_the_same_public_key() {
+        // Plan 130 B3.5: Java I2P and i2pd additionally randomize the
+        // Elligator2 pre-image branch on encode. Both branches are
+        // canonical least-square-root representatives after their
+        // normalization step, and both decode through i2pr to the same
+        // Montgomery u-coordinate. The frozen fixtures were produced
+        // by the independent Python reference, not by i2pr or by the
+        // Rust dependency.
+        let false_branch = decode_representative(&EciesEphemeralRepresentative(
+            reference_fixtures::REPRESENTATIVE_FALSE_BRANCH,
+        ))
+        .expect("false-branch representative decodes");
+        let true_branch = decode_representative(&EciesEphemeralRepresentative(
+            reference_fixtures::REPRESENTATIVE_TRUE_BRANCH,
+        ))
+        .expect("true-branch representative decodes");
+        assert_eq!(false_branch, reference_fixtures::X_COORDINATE);
+        assert_eq!(true_branch, reference_fixtures::X_COORDINATE);
+        assert_ne!(
+            reference_fixtures::REPRESENTATIVE_FALSE_BRANCH,
+            reference_fixtures::REPRESENTATIVE_TRUE_BRANCH,
+            "the two branches are distinct encodings of one point"
+        );
+    }
+
+    #[test]
+    fn production_generator_accepts_entropy_failure_as_typed_error() {
+        // A failing CSPRNG surfaces RandomnessUnavailable rather than
+        // panicking or silently degrading to a fixed representation.
+        #[derive(Debug)]
+        struct FailingRng;
+        #[derive(Debug)]
+        struct FailingRngError;
+        impl core::fmt::Display for FailingRngError {
+            fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                formatter.write_str("failing rng")
+            }
+        }
+        impl rand_core::TryRngCore for FailingRng {
+            type Error = FailingRngError;
+
+            fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+                Err(FailingRngError)
+            }
+
+            fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+                Err(FailingRngError)
+            }
+
+            fn try_fill_bytes(&mut self, _: &mut [u8]) -> Result<(), Self::Error> {
+                Err(FailingRngError)
+            }
+        }
+        impl rand_core::TryCryptoRng for FailingRng {}
+        let outcome = EciesEphemeralKeypair::generate(&mut FailingRng);
+        assert_eq!(outcome.err(), Some(EciesError::RandomnessUnavailable));
     }
 
     #[test]

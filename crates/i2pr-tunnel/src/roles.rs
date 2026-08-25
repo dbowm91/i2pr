@@ -114,6 +114,11 @@ pub enum TunnelRoleError {
     /// tunnel.
     #[error("tunnel is no longer usable")]
     TunnelUnavailable,
+    /// The role received a byte-exact replay of a cell its
+    /// duplicate window already admitted (Plan 130 §9: the window
+    /// is an enforcement point, not a passive counter).
+    #[error("duplicate tunnel data cell rejected by the replay window")]
+    DuplicateCell,
     /// The role received a tunnel-data cell addressed to a
     /// receive id that does not match the role's configured
     /// tunnel.
@@ -476,7 +481,11 @@ impl ParticipantState {
         }
         let (iv, ciphertext) = split_cell(cell);
         let token = DuplicateToken::compute(&iv, &ciphertext);
-        self.duplicates.observe(token)?;
+        // Plan 130 §9: an exact cell replay is rejected by the live
+        // duplicate window instead of being forwarded again.
+        if !self.duplicates.observe(token)? {
+            return Err(TunnelRoleError::DuplicateCell);
+        }
         let (next_iv, next_data) =
             TunnelLayerTransform::participant_forward(&self.layer_keys, &iv, &ciphertext);
         Ok(join_cell(self.next.tunnel.get(), next_iv, next_data))
@@ -649,7 +658,11 @@ impl OutboundEndpointRole {
         let _ = previous_peer;
         let (iv, ciphertext) = split_cell(cell);
         let token = DuplicateToken::compute(&iv, &ciphertext);
-        self.duplicates.observe(token)?;
+        // Plan 130 §9: an exact cell replay is rejected by the live
+        // duplicate window instead of being reassembled again.
+        if !self.duplicates.observe(token)? {
+            return Err(TunnelRoleError::DuplicateCell);
+        }
         // The OBEP applies the **final forward participant layer**
         // and recovers the original (next_iv, plaintext) the
         // creator preprocessed. The plaintext checksum must be

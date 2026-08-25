@@ -259,8 +259,16 @@ handshake split, NSR derivation, directional tag sets, ES AEAD
 bodies), plus full production-function handshakes, wire-layout
 offset assertions, unbound/tamper/wrong-key/wrong-tag negative
 controls, Elligator2 representative sweeps, and redacted-Debug
-checks. Provenance lives in
-[`specs/references/ecies-destination-ratchet.md`](../../specs/references/ecies-destination-ratchet.md).
+checks. Plan 130 added the production-representation suite:
+`generate` draws the two normative CSPRNG high bits into the on-wire
+representative while `from_seed_bytes` stays the deterministic vector
+constructor (fixed tweak 0) that reproduces every frozen constant;
+independent pure-Python fixtures pin all four high-bit variants and
+both Java/i2pd encode branches decoding to one X25519 public key.
+Provenance lives in
+[`specs/references/ecies-destination-ratchet.md`](../../specs/references/ecies-destination-ratchet.md)
+and
+[`specs/references/elligator2-production-representation.md`](../../specs/references/elligator2-production-representation.md).
 The `i2pr-client` corrected trajectory test
 (`crates/i2pr-client/tests/plan121_trajectory.rs`
 `plan_126_corrected_deterministic_local_trajectory`) drives the full
@@ -294,7 +302,11 @@ NS → NSR → bidirectional ES path.
    `curve25519-elligator2` primitive is an internal implementation
    detail and is never reachable from `i2pr-client` or `i2pr-proto`.
    This keeps the Plan 121 dependency audit (`Cargo.toml` lock) and
-   the wrapper's invariants in a single bounded module.
+   the wrapper's invariants in a single bounded module. Since Plan
+   130 the wrapper also separates deterministic vector construction
+   (`from_seed_bytes`, fixed tweak 0) from randomized production
+   generation (`generate`, CSPRNG high bits per normative
+   `ENCODE_ELG2`).
 7. **No `unsafe`** — `#![forbid(unsafe_code)]`.
 
 ## Cross-references

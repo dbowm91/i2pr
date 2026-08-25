@@ -6,7 +6,7 @@
 //! maximum in-flight count, and provides backpressure to the
 //! application writer.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::streaming::config::StreamingConfig;
 
@@ -54,6 +54,29 @@ pub enum SendWindowDecision {
     Backpressure,
 }
 
+/// Outcome of a NACK-aware cumulative acknowledgement (Plan 130 §7
+/// D4). Mirrors the reference contract: packets at or below
+/// `ack_through` are cleared unless they were explicitly NACKed;
+/// duplicate acknowledgements are idempotent and never regress state.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AckOutcome {
+    /// Entries removed because this acknowledgement covered them.
+    pub newly_acked: Vec<UnackedEntry>,
+    /// Sequences still tracked that the receiver explicitly NACKed
+    /// (they remain eligible for retransmission).
+    pub retained_nacks: Vec<u32>,
+    /// The acknowledgement carried no new information (`ackThrough`
+    /// below the already-highest acknowledged sequence).
+    pub duplicate_ack: bool,
+}
+
+/// The first application sequence number on an established stream
+/// (Plan 130 §6 C1). I2P Streaming reserves sequence 0 for the SYN,
+/// the SYN response, and the plain-ACK control form; ordinary post-
+/// SYN data begins at sequence 1 and increments by one per message
+/// except plain ACKs and retransmissions.
+pub const FIRST_APPLICATION_SEQUENCE: u32 = 1;
+
 /// Manages the outbound send window. Tracks unacked packets,
 /// provides backpressure, and enforces hard bounds.
 #[derive(Debug)]
@@ -70,12 +93,14 @@ pub struct SendWindowPolicy {
 }
 
 impl SendWindowPolicy {
-    /// Creates a new send window with the given configuration.
+    /// Creates a new send window with the given configuration. The
+    /// first application packet receives sequence **1**; sequence 0
+    /// is owned by the SYN / SYN-response / plain-ACK forms.
     pub fn new(config: SendWindowConfig) -> Self {
         Self {
             config,
             unacked: BTreeMap::new(),
-            next_sequence: 0,
+            next_sequence: FIRST_APPLICATION_SEQUENCE,
             unacked_bytes: 0,
             last_ack: 0,
         }
@@ -121,26 +146,63 @@ impl SendWindowPolicy {
         Ok(seq)
     }
 
-    /// Marks a packet as acknowledged and removes it from the unacked
-    /// map. Returns all entries that were removed (may be multiple if
-    /// `ack_through` covers a range).
-    pub fn ack_through(&mut self, ack_through: u32) -> Vec<UnackedEntry> {
-        let mut removed = Vec::new();
+    /// Applies one inbound cumulative acknowledgement with its NACK
+    /// list (Plan 130 §7 D4, reference contract from the Java I2P
+    /// `Connection.ackPackets` behavior and the Streaming
+    /// specification):
+    ///
+    /// - every tracked packet at or below `ack_through` is cleared,
+    ///   **except** sequences listed in `nacks`, which stay tracked;
+    /// - `ack_through == 0` is a valid acknowledgement of sequence 0
+    ///   (the SYN / SYN-response slot) — validity is decided by the
+    ///   caller from packet flags, never by this numeric value;
+    /// - NACKed entries below the lowest NACK bound the cumulative
+    ///   floor (`last_ack` never advances past `lowest_nack - 1`);
+    /// - duplicate acknowledgements (`ackThrough` below the recorded
+    ///   floor) are idempotent: nothing is removed and no state
+    ///   regresses;
+    /// - NACK values at or above `ack_through` violate the wire
+    ///   contract ("sequence numbers less than ackThrough") and are
+    ///   ignored fail-closed.
+    pub fn acknowledge(&mut self, ack_through: u32, nacks: &[u32]) -> AckOutcome {
+        let nack_set: BTreeSet<u32> = nacks
+            .iter()
+            .copied()
+            .filter(|&sequence| sequence < ack_through)
+            .collect();
+        let duplicate_ack = ack_through < self.last_ack;
+        let mut outcome = AckOutcome {
+            newly_acked: Vec::new(),
+            retained_nacks: Vec::new(),
+            duplicate_ack,
+        };
+        if duplicate_ack {
+            return outcome;
+        }
         let keys: Vec<u32> = self
             .unacked
             .range(..=ack_through)
-            .map(|(&k, _)| k)
+            .map(|(&key, _)| key)
             .collect();
         for key in keys {
+            if nack_set.contains(&key) {
+                outcome.retained_nacks.push(key);
+                continue;
+            }
             if let Some(entry) = self.unacked.remove(&key) {
                 self.unacked_bytes = self.unacked_bytes.saturating_sub(entry.payload_len);
-                removed.push(entry);
+                outcome.newly_acked.push(entry);
             }
         }
-        if ack_through > self.last_ack {
-            self.last_ack = ack_through;
+        match nack_set.iter().next() {
+            Some(&lowest) => {
+                self.last_ack = self.last_ack.max(lowest.saturating_sub(1));
+            }
+            None => {
+                self.last_ack = self.last_ack.max(ack_through);
+            }
         }
-        removed
+        outcome
     }
 
     /// Returns the entries that have exceeded the given RTO threshold.

@@ -13,7 +13,7 @@ pub fn test_config() -> StreamingConfig {
 
 /// Returns a minimal test configuration with small windows.
 pub fn minimal_config() -> StreamingConfig {
-    StreamingConfig::try_new(4, 2, 2, 4, 4, 4, 8, 4, 5_000, 30_000, 5_000, 2)
+    StreamingConfig::try_new(4, 2, 2, 4, 4, 4, 8, 4, 5_000, 30_000, 5_000, 750, 2)
         .expect("minimal streaming config")
 }
 

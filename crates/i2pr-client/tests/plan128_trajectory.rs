@@ -100,7 +100,8 @@ fn establish_pair(
             &syn_streaming,
             &alice_remote.destination_hash,
             &bob_dest,
-            Some(REMOTE_PORT),
+            LOCAL_PORT,
+            REMOTE_PORT,
             0,
         )
         .expect("bob process SYN");
@@ -112,8 +113,8 @@ fn establish_pair(
             &bob_dest,
             &alice_remote,
             bob_inbound,
-            LOCAL_PORT,
             REMOTE_PORT,
+            LOCAL_PORT,
             bob_advertised_max,
             0,
             &mut rng,
@@ -126,7 +127,8 @@ fn establish_pair(
             &response_streaming,
             &bob_remote.destination_hash,
             &alice_dest,
-            Some(REMOTE_PORT),
+            REMOTE_PORT,
+            LOCAL_PORT,
             0,
         )
         .expect("alice process syn response");
@@ -184,9 +186,12 @@ fn plan128_manager_handshake_and_bidirectional_data_stream_ids() {
         )
         .expect("alice data");
     let from_alice = alice_mgr.drain_outbound();
+    // Plan 130: the first ordinary application packet carries
+    // sequence 1; sequence 0 is owned by the SYN / SYN-response /
+    // plain-ACK forms.
     let ping = from_alice
         .iter()
-        .find(|request| request.sequence == 0)
+        .find(|request| request.sequence == 1)
         .expect("alice ping packet");
     let ping_streaming = decode_envelope(&ping.application_payload);
 
@@ -195,7 +200,8 @@ fn plan128_manager_handshake_and_bidirectional_data_stream_ids() {
             &ping_streaming,
             &alice_remote.destination_hash,
             &bob_dest,
-            Some(REMOTE_PORT),
+            LOCAL_PORT,
+            REMOTE_PORT,
             20,
         )
         .expect("bob receive ping");
@@ -228,7 +234,7 @@ fn plan128_manager_handshake_and_bidirectional_data_stream_ids() {
     let from_bob = bob_mgr.drain_outbound();
     let pong = from_bob
         .iter()
-        .find(|request| request.sequence == 0)
+        .find(|request| request.sequence == 1)
         .expect("bob pong packet");
     let pong_streaming = decode_envelope(&pong.application_payload);
     let pong_wire_send_id = {
@@ -241,7 +247,8 @@ fn plan128_manager_handshake_and_bidirectional_data_stream_ids() {
             &pong_streaming,
             &bob_remote.destination_hash,
             &alice_dest,
-            Some(REMOTE_PORT),
+            REMOTE_PORT,
+            LOCAL_PORT,
             30,
         )
         .expect("alice receive pong");
@@ -330,7 +337,8 @@ fn plan128_close_shape_and_retained_peer_verification() {
             &close_streaming,
             &alice_remote.destination_hash,
             &bob_dest,
-            Some(REMOTE_PORT),
+            LOCAL_PORT,
+            REMOTE_PORT,
             40,
         )
         .expect("bob verify close");
@@ -344,7 +352,8 @@ fn plan128_close_shape_and_retained_peer_verification() {
         &corrupted,
         &alice_remote.destination_hash,
         &bob_dest,
-        Some(REMOTE_PORT),
+        LOCAL_PORT,
+        REMOTE_PORT,
         41,
     );
     assert!(
@@ -402,7 +411,8 @@ fn plan128_reset_shape_and_unsigned_control_rejection() {
             &reset_streaming,
             &alice_remote.destination_hash,
             &bob_dest,
-            Some(REMOTE_PORT),
+            LOCAL_PORT,
+            REMOTE_PORT,
             50,
         )
         .expect("bob verify reset");
@@ -423,7 +433,8 @@ fn plan128_reset_shape_and_unsigned_control_rejection() {
         &unsigned,
         &alice_remote.destination_hash,
         &bob_dest,
-        Some(REMOTE_PORT),
+        LOCAL_PORT,
+        REMOTE_PORT,
         51,
     );
     assert!(
@@ -473,7 +484,8 @@ fn plan128_unknown_standalone_signed_control_fails_closed() {
         &stray,
         &alice_remote.destination_hash,
         &build_destination(53),
-        Some(REMOTE_PORT),
+        LOCAL_PORT,
+        REMOTE_PORT,
         60,
     );
     assert!(
@@ -566,7 +578,8 @@ fn plan128_originator_stays_outbound_syn_sent_until_valid_response() {
             &syn_streaming,
             &alice_remote.destination_hash,
             &bob_dest,
-            Some(REMOTE_PORT),
+            LOCAL_PORT,
+            REMOTE_PORT,
             0,
         )
         .expect("bob process syn");
@@ -576,8 +589,8 @@ fn plan128_originator_stays_outbound_syn_sent_until_valid_response() {
             &bob_dest,
             &alice_remote,
             bob_inbound,
-            LOCAL_PORT,
             REMOTE_PORT,
+            LOCAL_PORT,
             i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
@@ -595,7 +608,8 @@ fn plan128_originator_stays_outbound_syn_sent_until_valid_response() {
             &response_streaming,
             &bob_remote.destination_hash,
             &alice_dest,
-            Some(REMOTE_PORT),
+            REMOTE_PORT,
+            LOCAL_PORT,
             0,
         )
         .expect("process response");

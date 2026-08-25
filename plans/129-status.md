@@ -1,5 +1,19 @@
 # Plan 129 status — Milestone 6 integrated destination + Streaming final gate
 
+Status: **`superseded-by-plan130-final-gate`**. The historical
+`passed-milestone6-integrated-local-product-gate` classification below
+was reopened by the post-Plan-129 audit and superseded by Plan 130,
+which corrected the production Elligator2 representation choice,
+application sequence numbering, ACK-state/zero confusion, wire
+destination-port authority, and the rebuild-inbound-chain fixture
+defect. See [`plans/130-status.md`](130-status.md) for the current
+Milestone 6 authority; the Plan 129 integrated topology remains the
+closure path.
+
+Historical record follows.
+
+---
+
 Status: **`passed-milestone6-integrated-local-product-gate`** (local
 product gate only; no network-facing or external interoperability
 claim).

@@ -126,26 +126,28 @@ Plan 130 SHALL:
 
 ## Current authoritative classification
 
-Until Plan 130 passes:
+Plan 130 closed as `passed-milestone6-final-wire-runtime-corrective-closure`
+(see [`plans/130-status.md`](130-status.md)); the corrective reopenings
+below are resolved:
 
 ```text
 plan_119 = passed-leaseset2-protocol-foundation
 plan_120 = passed-destination-lifecycle-and-pools
-plan_121 = corrective-reopened-through-plan130-elligator-wire-randomization
+plan_121 = passed-corrected-ecies-destination-session-layer-local
 plan_122 = passed-corrected-local-destination-routing
-plan_123 = corrective-reopened-through-plan130-sequence-ack-semantics
+plan_123 = passed-corrected-streaming-wire-local
 plan_124 = passed-corrected-destination-routing-local-closure
 plan_125 = superseded-by-final-corrective-line
-plan_126 = corrective-reopened-plan130-elligator-wire-randomization
+plan_126 = passed-ecies-destination-ratchet-corrective-foundation (production Elligator representation corrected by Plan 130)
 plan_127 = passed-destination-session-routing-final-closure
-plan_128 = corrective-reopened-plan130-streaming-sequence-ack
-plan_129 = corrective-reopened-plan130
-plan_130 = ready-for-execution
-milestone6_local_product = not-closed
+plan_128 = passed-streaming-wire-protocol-corrective-closure (sequence/ACK semantics corrected by Plan 130)
+plan_129 = superseded-by-plan130-final-gate
+plan_130 = passed-milestone6-final-wire-runtime-corrective-closure
+milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 external_acceptance_debt = retained-separately
-router_construction = hold-for-plan130-only
-next = plans/130-m6-final-wire-runtime-corrective-closure.md
+router_construction = may-continue
+next_product_layer = SAM baseline planning (Milestone 7)
 ```
 
 ## Non-goals / anti-overengineering rules

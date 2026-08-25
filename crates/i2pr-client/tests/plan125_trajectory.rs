@@ -213,7 +213,8 @@ fn plan125_established_pair_both_sides_reach_established() {
             &syn_streaming,
             &alice_remote.destination_hash,
             &bob_dest,
-            Some(REMOTE_PORT),
+            LOCAL_PORT,
+            REMOTE_PORT,
             0,
         )
         .expect("bob process SYN");
@@ -225,8 +226,8 @@ fn plan125_established_pair_both_sides_reach_established() {
             &bob_dest,
             &alice_remote,
             bob_inbound,
-            LOCAL_PORT,
             REMOTE_PORT,
+            LOCAL_PORT,
             i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
@@ -239,7 +240,8 @@ fn plan125_established_pair_both_sides_reach_established() {
             &response_streaming,
             &bob_remote.destination_hash,
             &alice_dest,
-            Some(REMOTE_PORT),
+            REMOTE_PORT,
+            LOCAL_PORT,
             0,
         )
         .expect("alice process syn response");
@@ -308,7 +310,8 @@ fn plan125_data_packet_routing_finds_outbound_connection() {
             &syn_streaming,
             &alice_remote.destination_hash,
             &bob_dest,
-            Some(REMOTE_PORT),
+            LOCAL_PORT,
+            REMOTE_PORT,
             0,
         )
         .expect("bob process SYN");
@@ -318,8 +321,8 @@ fn plan125_data_packet_routing_finds_outbound_connection() {
             &bob_dest,
             &alice_remote,
             bob_inbound,
-            LOCAL_PORT,
             REMOTE_PORT,
+            LOCAL_PORT,
             i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,

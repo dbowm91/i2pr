@@ -334,12 +334,13 @@ impl Side {
         )
     }
 
-    /// Runs the Plan 129 §3 inbound adapter against the next queued
-    /// dispatcher payload.
+    /// Runs the Plan 130 §8 inbound adapter against the next queued
+    /// dispatcher payload. The adapter derives both wire ports from
+    /// the decoded ClientPayload itself; no caller-side listener port
+    /// exists anymore.
     fn receive_next_payload(
         &mut self,
         from_destination_hash: &[u8; 32],
-        listener_port: Option<u16>,
         now_ms: u64,
     ) -> Result<InboundStreamingOutcome, StreamingAdapterError> {
         let payload = self
@@ -354,7 +355,6 @@ impl Side {
         StreamingDestinationAdapter::receive(
             payload.bytes(),
             identity,
-            listener_port,
             streaming,
             from_destination_hash,
             now_ms,
@@ -425,6 +425,10 @@ fn obep_actions(sender: &Side, plan: &OutboundDeliveryPlan) -> Vec<RouterDeliver
 /// rewrites the target gateway or tunnel id. Large Garlic carriers
 /// fragment across multiple inbound TunnelData cells exactly like the
 /// production IBGW path.
+///
+/// Plan 130 §9 F1: the inbound roles are created **once** per side,
+/// so their duplicate windows stay live across every ordinary
+/// delivery. Ordinary deliveries never rebuild tunnel state.
 fn feed_action(receiver: &mut Side, action: &RouterDeliveryAction) -> Vec<u8> {
     let inner_i2np =
         I2npMessage::decode_standard(&action.message, MAX_I2NP_PAYLOAD_SIZE).expect("decode i2np");
@@ -432,7 +436,6 @@ fn feed_action(receiver: &mut Side, action: &RouterDeliveryAction) -> Vec<u8> {
         tunnel_id: action.tunnel_id.expect("tunnel id").get(),
         message: Box::new(inner_i2np),
     };
-    receiver.inbound = InboundChain::new(receiver.seed);
     let mut rng = ChaCha8Rng::seed_from_u64(0x51EA);
     let cells = receiver
         .inbound
@@ -492,7 +495,6 @@ fn pipe(
     request: &TransportSendRequest,
     rng_seed: u64,
     now_ms: u64,
-    listener_port: Option<u16>,
 ) -> (OutboundDeliveryPlan, InboundStreamingOutcome) {
     let plan = sender
         .send_via_adapter(request, rng_seed, now_ms)
@@ -502,7 +504,7 @@ fn pipe(
     let envelope = recovered_envelope(recovered);
     expect_processed_ok(receiver.dispatch(&envelope));
     let outcome = receiver
-        .receive_next_payload(&sender.hash_bytes(), listener_port, now_ms)
+        .receive_next_payload(&sender.hash_bytes(), now_ms)
         .expect("inbound adapter protocol-6 dispatch");
     (plan, outcome)
 }
@@ -583,7 +585,7 @@ fn establish_stream(
     )
     .expect("syn client payload")
     .payload;
-    let (plan_ns, outcome) = pipe(a, b, &syn_requests[0], seed_base + 1, *clock, Some(PORT_B));
+    let (plan_ns, outcome) = pipe(a, b, &syn_requests[0], seed_base + 1, *clock);
     assert_eq!(plan_ns.encrypted_message.form_name(), expected_first_form);
     match outcome {
         InboundStreamingOutcome::StreamingDispatched {
@@ -693,7 +695,7 @@ fn establish_stream(
         "SYN response must not set NO_ACK"
     );
 
-    let (plan_reply, _) = pipe(b, a, &response_request, seed_base + 3, *clock, None);
+    let (plan_reply, _) = pipe(b, a, &response_request, seed_base + 3, *clock);
     if !paired_already {
         assert_eq!(
             plan_reply.encrypted_message.form_name(),
@@ -785,7 +787,6 @@ fn plan_129_master_handshake_both_directions_through_full_stack() {
             &request,
             0x1290_0100 + index as u64,
             clock,
-            None,
         );
         assert_eq!(
             plan.encrypted_message.form_name(),
@@ -834,7 +835,6 @@ fn plan_129_master_handshake_both_directions_through_full_stack() {
             &request,
             0x1290_0200 + index as u64,
             clock,
-            None,
         );
         assert_eq!(plan.encrypted_message.form_name(), "existing-session");
     }
@@ -930,7 +930,7 @@ fn plan_129_integrated_drop_causes_real_retransmission_and_exact_once_delivery()
     let recovered = feed_action(&mut side_b, &actions_first[0]);
     expect_processed_ok(side_b.dispatch(&recovered_envelope(recovered)));
     side_b
-        .receive_next_payload(&side_a.hash_bytes(), None, clock)
+        .receive_next_payload(&side_a.hash_bytes(), clock)
         .expect("first delivery reaches B");
 
     // Advance the ManualClock past the retransmission deadline.
@@ -968,7 +968,7 @@ fn plan_129_integrated_drop_causes_real_retransmission_and_exact_once_delivery()
     let recovered_dup = feed_action(&mut side_b, &dup_actions[0]);
     expect_processed_ok(side_b.dispatch(&recovered_envelope(recovered_dup)));
     let dup_outcome = side_b
-        .receive_next_payload(&side_a.hash_bytes(), None, clock)
+        .receive_next_payload(&side_a.hash_bytes(), clock)
         .expect("retransmitted seq0 decrypts");
     assert!(matches!(
         dup_outcome,
@@ -980,7 +980,7 @@ fn plan_129_integrated_drop_causes_real_retransmission_and_exact_once_delivery()
     let recovered_retry = feed_action(&mut side_b, &retry_actions[0]);
     expect_processed_ok(side_b.dispatch(&recovered_envelope(recovered_retry)));
     side_b
-        .receive_next_payload(&side_a.hash_bytes(), None, clock)
+        .receive_next_payload(&side_a.hash_bytes(), clock)
         .expect("retransmitted seq1 delivers");
 
     let delivered = side_b.streaming.drain_delivered();
@@ -995,7 +995,7 @@ fn plan_129_integrated_drop_causes_real_retransmission_and_exact_once_delivery()
         "receiver delivers each byte exactly once"
     );
     let b_conn_state = side_b.streaming.get_connection(b_conn).expect("b conn");
-    assert_eq!(b_conn_state.recv_window().next_expected(), 2);
+    assert_eq!(b_conn_state.recv_window().next_expected(), 3);
 
     // ACK eventually clears the tracked packets: B's reverse traffic
     // carries the cumulative acknowledgement.
@@ -1015,14 +1015,7 @@ fn plan_129_integrated_drop_causes_real_retransmission_and_exact_once_delivery()
             )
             .expect("b reply")
     };
-    let (ack_plan, _) = pipe(
-        &mut side_b,
-        &mut side_a,
-        &ack_carrier,
-        0x1290_1300,
-        clock,
-        None,
-    );
+    let (ack_plan, _) = pipe(&mut side_b, &mut side_a, &ack_carrier, 0x1290_1300, clock);
     assert_eq!(ack_plan.encrypted_message.form_name(), "existing-session");
     let _ = side_a.streaming.drain_delivered();
     assert_eq!(
@@ -1082,18 +1075,18 @@ fn plan_129_integrated_duplicate_is_idempotent_and_state_stays_healthy() {
     let first = feed_action(&mut side_b, &actions[0]);
     expect_processed_ok(side_b.dispatch(&recovered_envelope(first)));
     side_b
-        .receive_next_payload(&side_a.hash_bytes(), None, clock)
+        .receive_next_payload(&side_a.hash_bytes(), clock)
         .expect("first copy delivers");
 
-    // The replayed tunnel cell is rejected by the inbound duplicate
-    // window before any ECIES work; nothing is queued or delivered.
+    // The replayed tunnel cell is rejected by the persistent inbound
+    // duplicate window before any ECIES work: the tolerant feed
+    // recovers no carrier and nothing reaches the dispatcher
+    // (Plan 130 §9 F2.1 — tunnel-layer evidence).
     let second = feed_action_replay_tolerant(&mut side_b, &actions[0]);
-    if let Some(envelope) = second {
-        let outcome = side_b.dispatch(&recovered_envelope(envelope));
-        if !matches!(outcome, InboundDispatchOutcome::Rejected(_)) {
-            panic!("duplicate tunnel cell must not produce new delivery");
-        }
-    }
+    assert!(
+        second.is_none(),
+        "the exact tunnel replay must be suppressed by the live duplicate window"
+    );
     assert!(
         side_b
             .dispatcher
@@ -1115,7 +1108,7 @@ fn plan_129_integrated_duplicate_is_idempotent_and_state_stays_healthy() {
     let recovered_reseal = feed_action(&mut side_b, &reseal_actions[0]);
     expect_processed_ok(side_b.dispatch(&recovered_envelope(recovered_reseal)));
     let reseal_outcome = side_b
-        .receive_next_payload(&side_a.hash_bytes(), None, clock)
+        .receive_next_payload(&side_a.hash_bytes(), clock)
         .expect("fresh-seal duplicate decrypts");
     assert!(matches!(
         reseal_outcome,
@@ -1132,7 +1125,7 @@ fn plan_129_integrated_duplicate_is_idempotent_and_state_stays_healthy() {
     );
     assert_eq!(delivered[0].bytes, payload);
     let b_state = side_b.streaming.get_connection(b_conn).expect("b conn");
-    assert_eq!(b_state.recv_window().next_expected(), 1);
+    assert_eq!(b_state.recv_window().next_expected(), 2);
     assert_eq!(b_state.recv_window().delivered_count(), 1);
     assert_eq!(
         b_state.state(),
@@ -1141,9 +1134,10 @@ fn plan_129_integrated_duplicate_is_idempotent_and_state_stays_healthy() {
     );
 }
 
-/// Feeds an action like [`feed_action`] but tolerates the inbound
-/// tunnel duplicate window rejecting a replayed cell; returns the
-/// recovered carrier when the chain accepts it.
+/// Feeds an action like [`feed_action`] but tolerates the persistent
+/// inbound chain rejecting the delivery (tunnel duplicate window or
+/// reassembler); returns the recovered carrier only when the whole
+/// chain accepts it.
 fn feed_action_replay_tolerant(
     receiver: &mut Side,
     action: &RouterDeliveryAction,
@@ -1153,14 +1147,33 @@ fn feed_action_replay_tolerant(
         tunnel_id: action.tunnel_id.expect("tunnel id").get(),
         message: Box::new(inner_i2np),
     };
-    receiver.inbound = InboundChain::new(receiver.seed);
-    let mut rng = ChaCha8Rng::seed_from_u64(0x51EB);
+    // Same deterministic cell-builder seed as `feed_action`: an
+    // identical action regenerates byte-identical TunnelData cells,
+    // so an exact router-delivery replay hits the live duplicate
+    // window rather than being masked by fresh randomness.
+    let mut rng = ChaCha8Rng::seed_from_u64(0x51EA);
     let cells = receiver
         .inbound
         .ibgw
         .process_cells(&gateway_msg, &mut rng, 0)
         .ok()?;
-    run_inbound_cells(receiver, &cells)
+    let mut recovered = None;
+    for cell in cells {
+        let forwarded = receiver
+            .inbound
+            .participant
+            .process(&hop_router_hash(receiver.seed, 1), &cell.cell, 0)
+            .ok()?;
+        if let Some(message) = receiver
+            .inbound
+            .endpoint
+            .process(&hop_router_hash(receiver.seed, 2), &forwarded, 0)
+            .expect("local endpoint process")
+        {
+            recovered = Some(message);
+        }
+    }
+    recovered
 }
 
 #[test]
@@ -1213,7 +1226,7 @@ fn plan_129_integrated_reorder_yields_original_application_byte_order() {
         let recovered = feed_action(&mut side_b, action);
         expect_processed_ok(side_b.dispatch(&recovered_envelope(recovered)));
         side_b
-            .receive_next_payload(&side_a.hash_bytes(), None, clock)
+            .receive_next_payload(&side_a.hash_bytes(), clock)
             .expect("each reordered delivery decrypts");
     }
 
@@ -1229,8 +1242,12 @@ fn plan_129_integrated_reorder_yields_original_application_byte_order() {
     assert_eq!(received, expected);
     let b_state = side_b.streaming.get_connection(b_conn).expect("b conn");
     assert_eq!(b_state.recv_window().reorder_count(), 0);
-    assert_eq!(b_state.recv_window().next_expected(), 2);
-    assert!(b_state.generate_nacks(2).is_empty());
+    assert_eq!(b_state.recv_window().next_expected(), 3);
+    // After full in-order convergence the reference ack view carries
+    // the highest received sequence and zero NACKs.
+    let (ack_through, nacks) = b_state.recv_window().ack_view();
+    assert_eq!(ack_through, 2);
+    assert!(nacks.is_empty());
 }
 
 // ---- §9 corruption tests at protocol-appropriate layers ----
@@ -1289,7 +1306,7 @@ fn plan_129_invalid_streaming_signature_rejected_after_valid_destination_deliver
     let recovered = feed_action(&mut side_b, &actions[0]);
     expect_processed_ok(side_b.dispatch(&recovered_envelope(recovered)));
     let error = side_b
-        .receive_next_payload(&side_a.hash_bytes(), Some(PORT_B), clock)
+        .receive_next_payload(&side_a.hash_bytes(), clock)
         .expect_err("signature verification must fail");
     assert!(
         matches!(error, StreamingAdapterError::Streaming(_)),
@@ -1348,7 +1365,7 @@ fn plan_129_bad_gzip_crc_rejected_before_streaming_processing() {
     let recovered = feed_action(&mut side_b, &actions[0]);
     expect_processed_ok(side_b.dispatch(&recovered_envelope(recovered)));
     let error = side_b
-        .receive_next_payload(&side_a.hash_bytes(), Some(PORT_B), clock)
+        .receive_next_payload(&side_a.hash_bytes(), clock)
         .expect_err("gzip CRC mismatch must fail typed");
     match error {
         StreamingAdapterError::ClientPayload(
@@ -1461,7 +1478,7 @@ fn plan_129_non_protocol_six_client_payload_never_reaches_streaming() {
         receive_stream_id: 0,
     };
     let connections_before = side_b.streaming.connection_count();
-    let (_, outcome) = pipe(&mut side_a, &mut side_b, &request, 0x1290_7100, clock, None);
+    let (_, outcome) = pipe(&mut side_a, &mut side_b, &request, 0x1290_7100, clock);
     match outcome {
         InboundStreamingOutcome::UnsupportedProtocol { protocol } => assert_eq!(protocol, 17),
         other => panic!("expected UnsupportedProtocol, got {other:?}"),
@@ -1566,14 +1583,7 @@ fn plan_129_graceful_close_completes_only_through_peer_response_over_full_path()
     // The CLOSE crosses the full ES destination path; B verifies the
     // signature using the established peer identity and enters its
     // close-drain state.
-    let (_, _) = pipe(
-        &mut side_a,
-        &mut side_b,
-        &close_request,
-        0x1290_9100,
-        clock,
-        None,
-    );
+    let (_, _) = pipe(&mut side_a, &mut side_b, &close_request, 0x1290_9100, clock);
     assert_eq!(
         side_b
             .streaming
@@ -1608,7 +1618,6 @@ fn plan_129_graceful_close_completes_only_through_peer_response_over_full_path()
         &close_response,
         0x1290_9200,
         clock,
-        None,
     );
     assert_eq!(
         side_a
@@ -1688,14 +1697,8 @@ fn plan_129_reset_terminates_immediately_and_unrelated_streams_survive() {
             .send_reset(conn1_a, &side_a.identity, &remote_b, PORT_A, PORT_B, clock)
             .expect("reset")
     };
-    let (reset_plan, reset_outcome) = pipe(
-        &mut side_a,
-        &mut side_b,
-        &reset_request,
-        0x1290_a300,
-        clock,
-        None,
-    );
+    let (reset_plan, reset_outcome) =
+        pipe(&mut side_a, &mut side_b, &reset_request, 0x1290_a300, clock);
     assert_eq!(
         reset_plan.encrypted_message.form_name(),
         "existing-session",
@@ -1719,7 +1722,7 @@ fn plan_129_reset_terminates_immediately_and_unrelated_streams_survive() {
     let recovered_held = feed_action(&mut side_b, &held_actions[0]);
     expect_processed_ok(side_b.dispatch(&recovered_envelope(recovered_held)));
     let held_outcome = side_b
-        .receive_next_payload(&side_a.hash_bytes(), None, clock)
+        .receive_next_payload(&side_a.hash_bytes(), clock)
         .expect("late data decrypts but must not surface");
     assert!(matches!(
         held_outcome,
@@ -1754,7 +1757,6 @@ fn plan_129_reset_terminates_immediately_and_unrelated_streams_survive() {
         &survivor_request,
         0x1290_a400,
         clock,
-        None,
     );
     let delivered = side_b.streaming.drain_delivered();
     assert_eq!(delivered.len(), 1);

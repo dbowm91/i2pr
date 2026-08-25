@@ -202,6 +202,25 @@ pub enum StreamingManagerError {
     UnknownConnection,
     #[error("streaming manager invalid connection state")]
     InvalidConnectionState,
+    #[error("no streaming listener matches destination port {destination_port}")]
+    NoMatchingListener {
+        /// The wire destination port no listener claimed.
+        destination_port: u16,
+    },
+    #[error(
+        "streaming port tuple mismatch: expected source {expected_source}/destination \
+         {expected_destination}, got source {actual_source}/destination {actual_destination}"
+    )]
+    PortTupleMismatch {
+        /// Local port recorded at establishment.
+        expected_destination: u16,
+        /// Remote port recorded at establishment.
+        expected_source: u16,
+        /// Wire source port of the rejected delivery.
+        actual_source: u16,
+        /// Wire destination port of the rejected delivery.
+        actual_destination: u16,
+    },
     #[error("streaming: {0}")]
     Streaming(#[from] StreamingError),
     #[error("streaming codec: {0}")]
@@ -275,6 +294,10 @@ pub struct StreamingManager {
     outbound_queue: VecDeque<TransportSendRequest>,
     /// Per-connection outbound packet tracking for retransmit.
     outbound_packets: BTreeMap<ConnectionId, BTreeMap<u32, OutboundPacket>>,
+    /// Per-connection standalone delayed-ACK deadlines (Plan 130 §7
+    /// D3). Bounded by the connection count; entries are cancelled by
+    /// any piggybacking outbound packet and purged on termination.
+    pending_acks: BTreeMap<ConnectionId, u64>,
     /// Next connection ID.
     next_connection_id: u64,
     /// Next inbound stream ID candidate (the id we assign as our
@@ -297,6 +320,7 @@ impl StreamingManager {
             pre_syn_buffer: BTreeMap::new(),
             outbound_queue: VecDeque::new(),
             outbound_packets: BTreeMap::new(),
+            pending_acks: BTreeMap::new(),
             next_connection_id: 1,
             // The non-zero range is canonical for I2P Streaming.
             next_inbound_stream_id: 0x8000_0000,
@@ -368,6 +392,9 @@ impl StreamingManager {
             local_receive_stream_id,
             0,
             remote.signing_public_key.clone(),
+            remote.destination_hash,
+            local_port,
+            remote_port,
             now_ms,
         );
         conn.set_local_advertised_max_payload(advertised_max_payload);
@@ -507,7 +534,9 @@ impl StreamingManager {
     /// `SYN_RESPONSE_FLAGS` (`0x00A9`), zero replay NACKs, and a valid
     /// `ackThrough`; the response's `sendStreamId` is the originator's
     /// receive stream id and its `receiveStreamId` is the freshly
-    /// selected local id.
+    /// selected local id. The `ackThrough` field carries this side's
+    /// current acknowledgement state (Plan 130 §7: it acknowledges the
+    /// peer's sequence-0 SYN).
     #[allow(clippy::too_many_arguments)]
     fn build_syn_response_packet(
         &self,
@@ -524,16 +553,17 @@ impl StreamingManager {
             max_payload_size: Some(advertised_max_payload),
             signature: None,
         };
+        let (ack_through, nacks) = inbound_connection.recv_window().ack_view();
         self.build_signed_packet(
             local_dest,
             remote,
             inbound_connection.remote_stream_id(),
             inbound_connection.local_stream_id(),
             0,
-            0,
+            ack_through,
             SYN_RESPONSE_FLAGS,
             &options,
-            Vec::new(),
+            nacks,
             local_port,
             remote_port,
         )
@@ -551,43 +581,61 @@ impl StreamingManager {
 
     /// Processes a streaming payload envelope received from the
     /// transport. The envelope is the protocol-6 client payload frame
-    /// that wraps every inbound streaming packet.
+    /// that wraps every inbound streaming packet. The envelope's wire
+    /// ports are authoritative (Plan 130 §8): the caller cannot
+    /// redirect a delivery to another listener.
     pub fn process_inbound_envelope(
         &mut self,
         wire_bytes: &[u8],
         from_destination_hash: &[u8; 32],
         to_destination: &DestinationIdentity,
-        listener_port: Option<u16>,
+        source_port: u16,
+        destination_port: u16,
         now_ms: u64,
     ) -> Result<WirePacketObservation, StreamingManagerError> {
         let envelope = decode_client_payload(wire_bytes, MAX_STREAMING_PACKET_BYTES + 256)
             .map_err(|error| {
                 StreamingManagerError::Streaming(StreamingError::InboundEnvelope(error))
             })?;
+        if envelope.source_port != source_port || envelope.destination_port != destination_port {
+            return Err(StreamingManagerError::PortTupleMismatch {
+                expected_destination: destination_port,
+                expected_source: source_port,
+                actual_source: envelope.source_port,
+                actual_destination: envelope.destination_port,
+            });
+        }
         let streaming_bytes = envelope.payload;
         self.process_inbound_packet(
             &streaming_bytes,
             from_destination_hash,
             to_destination,
-            listener_port,
+            source_port,
+            destination_port,
             now_ms,
         )
     }
 
     /// Processes a raw inbound streaming packet (after the protocol-6
-    /// client payload envelope has been stripped).
+    /// client payload envelope has been stripped). The `source_port`
+    /// and `destination_port` arguments are the **wire** I2P ports
+    /// decoded from the client payload; they select the listener for
+    /// an inbound SYN and are validated against the established port
+    /// tuple otherwise (Plan 130 §8).
     ///
     /// The packet header is peeked first to route the packet; the full
     /// strict decode then runs with the option context the route
     /// requires (SYN/SYN-response packets carry FROM; established
     /// connection control packets verify against the retained peer
     /// signing key).
+    #[allow(clippy::too_many_arguments)]
     pub fn process_inbound_packet(
         &mut self,
         wire_bytes: &[u8],
         from_destination_hash: &[u8; 32],
         to_destination: &DestinationIdentity,
-        listener_port: Option<u16>,
+        source_port: u16,
+        destination_port: u16,
         now_ms: u64,
     ) -> Result<WirePacketObservation, StreamingManagerError> {
         let peek = peek_streaming_header(wire_bytes)?;
@@ -613,7 +661,8 @@ impl StreamingManager {
                 wire_bytes,
                 from_destination_hash,
                 to_destination,
-                listener_port,
+                source_port,
+                destination_port,
                 now_ms,
             );
         }
@@ -641,16 +690,40 @@ impl StreamingManager {
             );
         }
 
-        // Data / CLOSE / RESET on an established connection. Signed
-        // control packets without FROM verify against the retained
-        // peer signing key, so resolve the connection before the full
-        // strict decode supplies its option context.
+        // Data / CLOSE / RESET / plain ACK on an established
+        // connection. Signed control packets without FROM verify
+        // against the retained peer signing key, so resolve the
+        // connection before the full strict decode supplies its option
+        // context.
         let connection_id = self
             .inbound_by_stream
             .get(&peek.send_stream_id)
             .copied()
             .or_else(|| self.outbound_by_stream.get(&peek.send_stream_id).copied())
             .ok_or(StreamingManagerError::UnknownConnection)?;
+
+        // Plan 130 §8 E3: established traffic must carry the exact
+        // port tuple fixed by the handshake. A mismatched delivery is
+        // rejected without corrupting connection state.
+        let tuple_ok = self
+            .connections
+            .get(&connection_id)
+            .map(|conn| conn.ports_match(source_port, destination_port))
+            .unwrap_or(false);
+        if !tuple_ok {
+            let (expected_source, expected_destination) = self
+                .connections
+                .get(&connection_id)
+                .map(|conn| (conn.remote_port(), conn.local_port()))
+                .expect("connection exists");
+            return Err(StreamingManagerError::PortTupleMismatch {
+                expected_destination,
+                expected_source,
+                actual_source: source_port,
+                actual_destination: destination_port,
+            });
+        }
+
         let peer_signing_key = self
             .connections
             .get(&connection_id)
@@ -674,7 +747,7 @@ impl StreamingManager {
         )
     }
 
-    #[allow(clippy::too_many_arguments, unused_variables)]
+    #[allow(clippy::too_many_arguments)]
     fn handle_inbound_syn(
         &mut self,
         packet: &StreamingPacket,
@@ -682,7 +755,8 @@ impl StreamingManager {
         wire_bytes: &[u8],
         from_destination_hash: &[u8; 32],
         to_destination: &DestinationIdentity,
-        listener_port: Option<u16>,
+        source_port: u16,
+        destination_port: u16,
         now_ms: u64,
     ) -> Result<WirePacketObservation, StreamingManagerError> {
         // The SYN replay binding NACK field carries the receiver
@@ -740,6 +814,9 @@ impl StreamingManager {
             local_receive_stream_id,
             remote_send_stream_id,
             destination.signing_key().clone(),
+            *from_destination_hash,
+            destination_port,
+            source_port,
             now_ms,
         );
         if let Some(max) = remote_advertised_max {
@@ -757,10 +834,26 @@ impl StreamingManager {
             .insert(local_receive_stream_id, connection_id);
         self.outbound_packets.insert(connection_id, BTreeMap::new());
 
-        let port = listener_port.unwrap_or(0);
+        // Plan 130 §8 E2: listener selection follows the reference
+        // I2P demultiplexer contract. The wire `destination_port` is
+        // authoritative: an exact listener wins; otherwise a listener
+        // explicitly bound to the wildcard port 0 (`PORT_ANY`)
+        // catches the delivery. No listener is created by side
+        // effect, and unclaimed ports fail closed with a typed
+        // error instead of entering any backlog.
+        let matched_listener = if self.listeners.contains_key(&destination_port) {
+            destination_port
+        } else if self.listeners.contains_key(&0) {
+            0
+        } else {
+            self.connections.remove(&connection_id);
+            self.inbound_by_stream.remove(&local_receive_stream_id);
+            self.outbound_packets.remove(&connection_id);
+            return Err(StreamingManagerError::NoMatchingListener { destination_port });
+        };
         let backlog_full = self
             .listeners
-            .get(&port)
+            .get(&matched_listener)
             .map(|q| q.len() >= self.config.max_listener_backlog as usize)
             .unwrap_or(false);
         if backlog_full {
@@ -769,8 +862,9 @@ impl StreamingManager {
             self.outbound_packets.remove(&connection_id);
             return Err(StreamingManagerError::ListenerBacklogFull);
         }
-        let entry = self.listeners.entry(port).or_default();
-        entry.push_back(connection_id);
+        if let Some(entry) = self.listeners.get_mut(&matched_listener) {
+            entry.push_back(connection_id);
+        }
 
         Ok(WirePacketObservation {
             connection_id: Some(connection_id),
@@ -803,6 +897,22 @@ impl StreamingManager {
         now_ms: u64,
         _rng: &mut R,
     ) -> Result<TransportSendRequest, StreamingManagerError> {
+        // Plan 130 §8 E3: the accept path may not redirect the stream
+        // to a different port tuple than the SYN established.
+        {
+            let conn = self
+                .connections
+                .get(&connection_id)
+                .ok_or(StreamingManagerError::UnknownConnection)?;
+            if conn.local_port() != local_port || conn.remote_port() != remote_port {
+                return Err(StreamingManagerError::PortTupleMismatch {
+                    expected_destination: conn.local_port(),
+                    expected_source: conn.remote_port(),
+                    actual_source: remote_port,
+                    actual_destination: local_port,
+                });
+            }
+        }
         let conn = self
             .connections
             .get(&connection_id)
@@ -1019,25 +1129,33 @@ impl StreamingManager {
             let _ = conn.reset(now_ms);
         }
 
-        // Plan 129 §11: after RESET or full close no queued or
-        // subsequent application bytes are ever delivered.
+        // Plan 130 §7 D1: acknowledgement information is present
+        // whenever the packet semantics carry it. Numeric zero is a
+        // valid cumulative ACK (it acknowledges sequence 0); only the
+        // NO_ACK flag suppresses processing. The previous
+        // "ackThrough == 0 means no ack" reading was wrong.
         let terminated = matches!(
             conn.state(),
             ConnectionState::Closed | ConnectionState::Reset
         );
-
-        // Plan 129 §8: apply the cumulative acknowledgement the peer
-        // carried on this packet and clear the matching tracked
-        // retransmission records. `ack_through` 0 means "no ack
-        // information" because sequence numbers start at zero.
-        let ack_through = packet.ack_through;
-        if ack_through != 0 && !terminated {
-            let observation = conn.receive_ack(ack_through, packet.nacks.len(), now_ms);
+        if !packet.flags.no_ack() && !terminated {
+            let observation = conn.receive_ack(packet.ack_through, &packet.nacks, now_ms);
             let _ = observation;
             if let Some(tracked) = self.outbound_packets.get_mut(&connection_id) {
+                // NACK-aware clearing (Plan 130 §7 D4): sequences the
+                // receiver explicitly NACKed stay tracked so their
+                // retransmission records survive; everything else at
+                // or below ack_through is cleared.
+                let nacked: std::collections::BTreeSet<u32> = packet
+                    .nacks
+                    .iter()
+                    .copied()
+                    .filter(|&sequence| sequence < packet.ack_through)
+                    .collect();
                 let covered: Vec<u32> = tracked
-                    .range(..=ack_through)
+                    .range(..=packet.ack_through)
                     .map(|(&sequence, _)| sequence)
+                    .filter(|sequence| !nacked.contains(sequence))
                     .collect();
                 for sequence in covered {
                     tracked.remove(&sequence);
@@ -1045,9 +1163,16 @@ impl StreamingManager {
             }
         }
 
-        let payload = packet.payload.clone();
+        // Plan 130 §6 C2: sequence 0 without SYNCHRONIZE is the
+        // plain-ACK control form (or a hostile seq-0 data attempt).
+        // It never enters the application receive window: no
+        // delivery, no reorder buffering, no delivered-count advance,
+        // and no new pending ACK (an ACK-only packet must not cause
+        // an ACK-of-ACK loop).
+        let plain_ack_form = packet.sequence_num == 0 && !packet.flags.synchronize();
         let mut decision_opt = None;
-        if !terminated {
+        if !terminated && !plain_ack_form {
+            let payload = packet.payload.clone();
             let decision = conn
                 .receive_packet(packet.sequence_num, payload, now_ms)
                 .map_err(StreamingManagerError::Streaming)?;
@@ -1055,6 +1180,49 @@ impl StreamingManager {
         }
 
         let state = conn.state();
+        // Plan 130 §7 D3/D5: newly received data — delivered in order
+        // OR accepted into the reorder buffer — schedules (or keeps)
+        // one coalescing standalone ACK per connection with a bounded
+        // deadline, so reorder feedback reaches the peer without
+        // waiting for reverse application traffic. Duplicates and
+        // window-overflow drops do not extend any deadline; a
+        // terminated connection never retains a pending standalone
+        // ACK.
+        let received_new_data = matches!(
+            decision_opt,
+            Some(crate::streaming::recv_window::RecvWindowDecision::Delivered { .. })
+                | Some(crate::streaming::recv_window::RecvWindowDecision::Buffered { .. })
+        );
+        let connection_active = !matches!(
+            state,
+            ConnectionState::ClosingLocal
+                | ConnectionState::ClosingRemote
+                | ConnectionState::Closed
+                | ConnectionState::Reset
+        );
+        let delay_requested_now =
+            received_new_data && connection_active && packet.options.delay_requested == Some(0);
+        let _ = conn;
+
+        if terminated {
+            self.pending_acks.remove(&connection_id);
+        }
+
+        if received_new_data && connection_active {
+            // An explicit zero-delay request from the peer is honored
+            // immediately (specification: delay value 0 requests an
+            // immediate ack); otherwise the reference default delayed-
+            // ACK deadline applies.
+            if delay_requested_now {
+                let request = self.build_simple_ack_request(connection_id);
+                if let Some(request) = request {
+                    self.outbound_queue.push_back(request);
+                }
+            } else {
+                let deadline = now_ms.saturating_add(self.config.delayed_ack_ms);
+                self.pending_acks.entry(connection_id).or_insert(deadline);
+            }
+        }
 
         // Surface in-order delivered payloads (including reorder
         // buffer drains) so the adapter observes the original byte
@@ -1084,8 +1252,6 @@ impl StreamingManager {
             nack_count: packet.nacks.len(),
             payload_len: packet.payload.len(),
         };
-
-        let _ = state;
 
         Ok(observation)
     }
@@ -1130,14 +1296,12 @@ impl StreamingManager {
 
         // The data packet uses our peer receive stream id as
         // `sendStreamId` and our local receive stream id as
-        // `receiveStreamId`. Plan 129 §8: every data packet carries
-        // the cumulative acknowledgement of what this side has
-        // received in order (`next_expected - 1`, inclusive); 0 means
-        // nothing received yet because sequence numbers start at 0.
-        let ack_through = match conn.recv_window().next_expected() {
-            0 => 0,
-            next => next.wrapping_sub(1),
-        };
+        // `receiveStreamId`. Plan 130 §7 D3/D5: every data packet
+        // piggybacks this side's current acknowledgement state
+        // (`ackThrough` = highest received sequence, plus any bounded
+        // missing-sequence NACKs) and cancels a pending standalone
+        // ACK for the connection.
+        let (ack_through, ack_nacks) = conn.recv_window().ack_view();
         let option_bytes = Vec::new();
         let flags = StreamingFlags::new(0).expect("empty flags");
         let builder = StreamingPacketBuilder {
@@ -1145,7 +1309,7 @@ impl StreamingManager {
             receive_stream_id: local_receive_stream_id,
             sequence_num: sequence,
             ack_through,
-            nacks: Vec::new(),
+            nacks: ack_nacks,
             resend_delay: 0,
             flags,
             option_bytes,
@@ -1187,6 +1351,9 @@ impl StreamingManager {
             .or_default()
             .insert(sequence, outbound);
         self.outbound_queue.push_back(request.clone());
+        // Plan 130 §7 D3: the piggybacked acknowledgement state
+        // satisfies any pending standalone ACK.
+        self.pending_acks.remove(&connection_id);
 
         Ok(request)
     }
@@ -1233,7 +1400,11 @@ impl StreamingManager {
         }
         let local_receive_stream_id = conn.local_stream_id();
         let peer_receive_stream_id = conn.remote_stream_id();
+        // Plan 130 §6 C1: CLOSE is an ordinary message in the stream
+        // sequence space (only plain ACKs and retransmissions are
+        // exempt), so it allocates the next sequence number.
         let sequence_num = conn.send_window().next_sequence();
+        let (ack_through, ack_nacks) = conn.recv_window().ack_view();
         let _ = conn;
 
         let options = StreamingOptions {
@@ -1248,10 +1419,10 @@ impl StreamingManager {
             peer_receive_stream_id,
             local_receive_stream_id,
             sequence_num,
-            0,
+            ack_through,
             CLOSE_FLAGS,
             &options,
-            Vec::new(),
+            ack_nacks,
             local_port,
             remote_port,
         )?;
@@ -1269,7 +1440,7 @@ impl StreamingManager {
         }
 
         let outbound = OutboundPacket {
-            sequence: u32::MAX,
+            sequence: sequence_num,
             payload_len: 0,
             sent_at_ms: now_ms,
             retransmit_count: 0,
@@ -1279,8 +1450,9 @@ impl StreamingManager {
         self.outbound_packets
             .entry(connection_id)
             .or_default()
-            .insert(u32::MAX, outbound);
+            .insert(sequence_num, outbound);
         self.outbound_queue.push_back(request.clone());
+        self.pending_acks.remove(&connection_id);
 
         Ok(request)
     }
@@ -1306,6 +1478,11 @@ impl StreamingManager {
             .map_err(StreamingManagerError::Streaming)?;
         let local_receive_stream_id = conn.local_stream_id();
         let peer_receive_stream_id = conn.remote_stream_id();
+        // Plan 130 §7 D3: a reset connection never retains a pending
+        // standalone ACK, and the RESET carries the final cumulative
+        // acknowledgement state.
+        self.pending_acks.remove(&connection_id);
+        let (ack_through, ack_nacks) = conn.recv_window().ack_view();
         let _ = conn;
 
         let options = StreamingOptions {
@@ -1320,16 +1497,107 @@ impl StreamingManager {
             peer_receive_stream_id,
             local_receive_stream_id,
             0,
-            0,
+            ack_through,
             RESET_FLAGS,
             &options,
-            Vec::new(),
+            ack_nacks,
             local_port,
             remote_port,
         )?;
         self.outbound_queue.push_back(request.clone());
 
         Ok(request)
+    }
+
+    /// Builds one unsigned plain-ACK request for the connection's
+    /// current acknowledgement state (Plan 130 §7 D2). The packet
+    /// follows the reference simple-ACK form: sequence number 0,
+    /// SYNCHRONIZE clear, no payload, valid cumulative `ackThrough`
+    /// and bounded NACK fields. Per the Streaming specification a
+    /// plain ACK "should not be ACKed", so receiving it never
+    /// schedules another acknowledgement — no ACK-of-ACK loop.
+    ///
+    /// Returns `None` when the connection vanished between the
+    /// deadline scan and this build.
+    fn build_simple_ack_request(
+        &mut self,
+        connection_id: ConnectionId,
+    ) -> Option<TransportSendRequest> {
+        let conn = self.connections.get(&connection_id)?;
+        let (ack_through, nacks) = conn.recv_window().ack_view();
+        let flags = StreamingFlags::new(0).expect("empty flags");
+        let builder = StreamingPacketBuilder {
+            send_stream_id: conn.remote_stream_id(),
+            receive_stream_id: conn.local_stream_id(),
+            sequence_num: 0,
+            ack_through,
+            nacks,
+            resend_delay: 0,
+            flags,
+            option_bytes: Vec::new(),
+            payload: Vec::new(),
+        };
+        let wire_bytes = encode_streaming_packet(&builder, StreamingSendLimit::default()).ok()?;
+        let envelope = ClientPayload {
+            protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
+            source_port: conn.local_port(),
+            destination_port: conn.remote_port(),
+            payload: wire_bytes,
+        };
+        let application_bytes = encode_client_payload(&envelope)
+            .map_err(StreamingManagerError::OutboundEnvelope)
+            .ok()?;
+        Some(TransportSendRequest {
+            destination_hash: *conn.peer_destination_hash(),
+            source_port: conn.local_port(),
+            destination_port: conn.remote_port(),
+            application_payload: application_bytes,
+            sequence: 0,
+            send_stream_id: conn.remote_stream_id(),
+            receive_stream_id: conn.local_stream_id(),
+        })
+    }
+
+    /// Emits every due standalone delayed ACK (Plan 130 §7 D3). The
+    /// caller polls with the current monotonic clock exactly as it
+    /// polls [`Self::poll_retransmits`]; nothing here allocates a
+    /// timer, task, or socket. Before any deadline the poll returns
+    /// an empty vector; after a deadline each eligible connection
+    /// emits at most one coalesced plain-ACK request, so the output
+    /// is bounded by the pending-ACK (connection) count. Terminated
+    /// or vanished connections are pruned without emitting.
+    pub fn poll_acks(&mut self, now_ms: u64) -> Vec<TransportSendRequest> {
+        let mut out = Vec::new();
+        while let Some((&connection_id, _)) = self
+            .pending_acks
+            .iter()
+            .find(|(_, deadline)| **deadline <= now_ms)
+        {
+            self.pending_acks.remove(&connection_id);
+            let emit = self.connections.get(&connection_id).is_some_and(|conn| {
+                !matches!(
+                    conn.state(),
+                    ConnectionState::ClosingLocal
+                        | ConnectionState::ClosingRemote
+                        | ConnectionState::Closed
+                        | ConnectionState::Reset
+                )
+            });
+            if !emit {
+                continue;
+            }
+            if let Some(request) = self.build_simple_ack_request(connection_id) {
+                self.outbound_queue.push_back(request.clone());
+                out.push(request);
+            }
+        }
+        out
+    }
+
+    /// Returns the number of connections with a pending standalone
+    /// ACK (Plan 130 §7 D3 diagnostic).
+    pub fn pending_ack_count(&self) -> usize {
+        self.pending_acks.len()
     }
 
     /// Re-emits every tracked outbound packet whose retransmission
@@ -1436,6 +1704,9 @@ impl StreamingManager {
             }
         }
         self.outbound_packets.remove(&id);
+        // Plan 130 §7 D3: closed/reset/removed connections never leak
+        // pending ACK state.
+        self.pending_acks.remove(&id);
         removed
     }
 

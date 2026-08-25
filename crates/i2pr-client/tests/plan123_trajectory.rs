@@ -100,7 +100,8 @@ fn complete_syn_handshake(
         syn_streaming,
         &alice_remote.destination_hash,
         bob_dest,
-        Some(listener_port),
+        LOCAL_PORT,
+        listener_port,
         now_ms,
     )
     .expect("bob process SYN");
@@ -110,8 +111,8 @@ fn complete_syn_handshake(
             bob_dest,
             alice_remote,
             inbound_connection_id,
-            LOCAL_PORT,
             REMOTE_PORT,
+            LOCAL_PORT,
             i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PAYLOAD,
             now_ms,
             rng,
@@ -123,7 +124,8 @@ fn complete_syn_handshake(
             &syn_response_streaming,
             &alice_remote.destination_hash,
             alice_dest,
-            Some(listener_port),
+            REMOTE_PORT,
+            LOCAL_PORT,
             now_ms,
         )
         .expect("alice process syn response");
@@ -339,7 +341,8 @@ fn plan123_full_two_destination_trajectory() {
             &syn_streaming,
             &alice_remote.destination_hash,
             &bob_dest,
-            Some(REMOTE_PORT),
+            LOCAL_PORT,
+            REMOTE_PORT,
             clock_ms,
         )
         .expect("bob process SYN");
@@ -359,8 +362,8 @@ fn plan123_full_two_destination_trajectory() {
             &bob_dest,
             &alice_remote,
             inbound_connection_id,
-            LOCAL_PORT,
             REMOTE_PORT,
+            LOCAL_PORT,
             i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PAYLOAD,
             clock_ms,
             &mut rng,
@@ -381,7 +384,8 @@ fn plan123_full_two_destination_trajectory() {
             &syn_response_streaming,
             &bob_remote.destination_hash,
             &alice_dest,
-            Some(REMOTE_PORT),
+            REMOTE_PORT,
+            LOCAL_PORT,
             clock_ms,
         )
         .expect("alice process syn response");
@@ -420,20 +424,23 @@ fn plan123_full_two_destination_trajectory() {
             &data_streaming,
             &alice_remote.destination_hash,
             &bob_dest,
-            Some(REMOTE_PORT),
+            LOCAL_PORT,
+            REMOTE_PORT,
             clock_ms,
         )
         .expect("bob process data");
     assert!((observation.flags & 0x0001) == 0);
     assert_eq!(observation.payload_len, b"GET / HTTP/1.0\r\n\r\n".len());
 
-    // The receive window delivered the bytes.
+    // The receive window delivered the bytes. Plan 130: ordinary
+    // application data begins at sequence 1, so one delivered packet
+    // advances next expected to 2.
     let inbound = bob
         .get_connection(inbound_connection_id)
         .expect("bob inbound connection");
     let recv_window = inbound.recv_window();
     assert_eq!(recv_window.delivered_count(), 1);
-    assert_eq!(recv_window.next_expected(), 1);
+    assert_eq!(recv_window.next_expected(), 2);
     let _ = recv_window;
 
     // Bob replies.
@@ -465,7 +472,8 @@ fn plan123_full_two_destination_trajectory() {
             &reply_streaming,
             &bob_remote.destination_hash,
             &alice_dest,
-            Some(REMOTE_PORT),
+            REMOTE_PORT,
+            LOCAL_PORT,
             clock_ms,
         )
         .expect("alice process reply");
@@ -473,7 +481,7 @@ fn plan123_full_two_destination_trajectory() {
         .get_connection(alice_connection_id)
         .expect("alice connection");
     assert_eq!(alice_conn.recv_window().delivered_count(), 1);
-    assert_eq!(alice_conn.recv_window().next_expected(), 1);
+    assert_eq!(alice_conn.recv_window().next_expected(), 2);
 
     // Alice closes gracefully.
     clock_ms = clock_ms.wrapping_add(5);
@@ -546,7 +554,8 @@ fn plan123_syn_replay_binding_rejects_wrong_receiver_hash() {
         &streaming_bytes,
         &attacker_remote.destination_hash,
         &attacker_dest,
-        Some(REMOTE_PORT),
+        LOCAL_PORT,
+        REMOTE_PORT,
         0,
     );
     assert!(
@@ -598,7 +607,8 @@ fn plan123_loss_recovery_via_retransmit() {
                 &streaming,
                 &alice_remote.destination_hash,
                 &bob_dest,
-                Some(REMOTE_PORT),
+                LOCAL_PORT,
+                REMOTE_PORT,
                 10 + u64::from(*seq) * 5,
             )
             .expect("bob process data");
@@ -647,7 +657,8 @@ fn plan123_duplicate_packet_does_not_double_deliver() {
                 &streaming,
                 &alice_remote.destination_hash,
                 &bob_dest,
-                Some(REMOTE_PORT),
+                LOCAL_PORT,
+                REMOTE_PORT,
                 10,
             )
             .expect("bob process");
@@ -779,7 +790,8 @@ fn plan123_corrupt_signature_is_rejected() {
         &syn_streaming,
         &alice_remote.destination_hash,
         &bob_dest,
-        Some(REMOTE_PORT),
+        LOCAL_PORT,
+        REMOTE_PORT,
         0,
     );
     assert!(
@@ -1027,7 +1039,8 @@ fn plan123_unsupported_protocol_envelope_is_rejected() {
         &tampered,
         &alice_remote.destination_hash,
         &build_destination(2525),
-        Some(REMOTE_PORT),
+        LOCAL_PORT,
+        REMOTE_PORT,
         0,
     );
     assert!(

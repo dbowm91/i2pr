@@ -401,11 +401,12 @@ composition wraps the encrypted envelope in an `I2npBody::Garlic`
 carrier and feeds the standard-encoded I2NP Garlic message bytes
 into the outbound tunnel data plane; `OutboundDeliveryPlan` exposes
 `garlic_i2np_bytes: Vec<u8>` as the canonical carrier. Milestone 6
-subsequently closed through the Plans 126–129 corrective sequence;
-the integrated destination+Streaming final gate passed as
-`passed-milestone6-integrated-local-product-gate`
-([`plans/129-status.md`](../../plans/129-status.md)) and the next
-product layer is SAM baseline planning (Milestone 7).
+subsequently closed through the Plans 126–130 corrective sequence;
+Plan 129's integrated gate is `superseded-by-plan130-final-gate` and
+Plan 130 closed as
+`passed-milestone6-final-wire-runtime-corrective-closure`
+([`plans/130-status.md`](../../plans/130-status.md)); the next product
+layer is SAM baseline planning (Milestone 7).
 
 ### Which crates are wired in today
 

@@ -79,6 +79,9 @@ fn endpoint_error(error: TunnelRoleError) -> InboundDispatchError {
         TunnelRoleError::TunnelUnavailable => {
             InboundDispatchError::EndpointRole("tunnel unavailable".to_owned())
         }
+        TunnelRoleError::DuplicateCell => {
+            InboundDispatchError::EndpointRole("duplicate cell rejected".to_owned())
+        }
         TunnelRoleError::ZeroTunnelId => {
             InboundDispatchError::EndpointRole("zero tunnel id".to_owned())
         }

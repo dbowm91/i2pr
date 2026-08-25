@@ -3,9 +3,18 @@
 ```text
 plan_123 = passed-corrected-streaming-wire-local
 plan_128 = passed-streaming-wire-protocol-corrective-closure
-milestone6_local_product = not-closed
-next = plans/129-m6-integrated-destination-streaming-final-gate.md
+next = plans/130-m6-final-wire-runtime-corrective-closure.md (closed)
 ```
+
+Plan 130 note: the Plan 128 packet codec is unchanged and retained.
+Plan 130 corrected the runtime semantics around it — application
+sequence numbering starts at 1 post-SYN, `ackThrough == 0` is a valid
+cumulative acknowledgement driven by packet flags rather than numeric
+zero, plain-ACK/simple-ACK forms follow the reference contract, NACK
+feedback follows `MessageInputStream.updateAcks`, and delayed ACKs use
+the 750 ms reference default through a synchronous `poll_acks` poll.
+See [`plans/130-status.md`](130-status.md) and the Plan 130 addendum in
+`specs/references/streaming-packet-wire.md`.
 
 ## Scope delivered
 

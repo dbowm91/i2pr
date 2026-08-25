@@ -151,3 +151,8 @@ Cross-checked references during implementation:
   proposal 144.
 - i2pd 2.60.0 (`ECIES.cpp`, `Garlic.cpp`, `crypto/cpp/Crypto.cpp`) at the
   repository-pinned revision `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`.
+
+Plan 130 addendum: production ephemeral representatives now carry the
+normative randomized high bits while the deterministic vector
+constructor is unchanged; see
+[`specs/references/elligator2-production-representation.md`](elligator2-production-representation.md).

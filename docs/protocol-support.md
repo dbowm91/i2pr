@@ -151,6 +151,29 @@ No destination-tunnel, SAM, external transport, or live-network work
 was introduced; Streaming interoperability is not claimed until
 independent-router evidence exists.
 
+Plan 129 is now `superseded-by-plan130-final-gate`; its integrated
+topology remains the closure path. Plan 130 closed as
+`passed-milestone6-final-wire-runtime-corrective-closure` and corrected
+the four post-closure-audit defects while retaining the Plans 126-128
+surfaces: production Elligator2 representatives carry the normative
+randomized high bits (deterministic vector constructor unchanged;
+independent frozen fixtures in
+`specs/references/elligator2-production-representation.md`), ordinary
+Streaming application data starts at sequence 1 with seq 0 owned by
+SYN/SYN-response/plain-ACK, `ackThrough == 0` is a flag-driven valid
+acknowledgement (no "zero means absent" rule), NACK-aware cumulative
+ACKs retain explicitly NACKed packets per the Java `ackPackets`
+contract, receiver ACK/NACK views follow `MessageInputStream.updateAcks`
+with bounded NACK generation, a synchronous `poll_acks(now_ms)` emits
+coalesced standalone delayed ACKs on the 750 ms reference default with
+piggyback suppression and no ACK-of-ACK loop, the wire destination_port
+owns listener dispatch (exact match, wildcard port-0 fallback, typed
+`NoMatchingListener`) with enforced established port tuples
+(`PortTupleMismatch`), tunnel duplicate windows persist across fixture
+deliveries with exact replays failing as typed `DuplicateCell`, and
+eleven full-stack trajectories in `plan130_trajectory.rs` close the
+gate. Historically:
+
 Plan 129 closed as `passed-milestone6-integrated-local-product-gate`
 per [`plans/129-status.md`](../plans/129-status.md) and is the final
 local-product gate for Milestone 6. It completes the adapter boundary:
@@ -185,6 +208,27 @@ streams, non-protocol-6 dispatch, ceiling bounds, 0-RTT scope). The
 `milestone6_interoperable = not-yet-claimed`; Streaming stays
 experimental and non-advertised until independent-router evidence
 exists. The next product layer is SAM baseline planning (Milestone 7).
+
+Plan 130 (`passed-milestone6-final-wire-runtime-corrective-closure`,
+evidence in [`plans/130-status.md`](../plans/130-status.md),
+[`crates/i2pr-client/tests/plan130_trajectory.rs`](../crates/i2pr-client/tests/plan130_trajectory.rs),
+and the reference addenda in
+[`specs/references/streaming-packet-wire.md`](../specs/references/streaming-packet-wire.md)
+plus
+[`specs/references/elligator2-production-representation.md`](../specs/references/elligator2-production-representation.md))
+supersedes the Plan 129 gate and closes Milestone 6 locally: production
+Elligator2 randomization with independent frozen fixtures; sequence
+space SYN=0/response=0/first-app=1; semantic ACK presence where
+`ackThrough == 0` acknowledges the handshake slot; NACK-aware cumulative
+ACKs retaining explicitly NACKed packets; bounded receiver ACK/NACK
+views per `MessageInputStream.updateAcks`; synchronous coalescing
+delayed standalone ACKs (750 ms default) via `poll_acks(now_ms)` with
+piggyback suppression and no ACK-of-ACK loop; wire destination-port
+listener authority (exact match → wildcard port-0 → typed
+`NoMatchingListener`) with enforced established tuples; persistent
+tunnel duplicate windows with typed `DuplicateCell` replay rejection;
+and eleven full-stack corrective trajectories. Plan 129's historical
+gate remains the topology of record.
 
 This matrix is intentionally explicit: every row describes the exact evidence
 available, not just code presence. “Experimental structural subset” means
@@ -254,7 +298,7 @@ advertisement requirements in `specs/CONFORMANCE.md`.
 | ECIES-X25519-AEAD-Ratchet destination session layer | Experimental structural subset | 6 | `specs/protocols/06-garlic-ecies-leasesets.md`, [`plans/121-status.md`](../plans/121-status.md) | Bounded `EciesSessionManager` with `MAX_OUTBOUND_SESSIONS_PER_REMOTE = 16`, `MAX_INBOUND_SESSIONS_PER_REMOTE = 16`, `MAX_PENDING_NEW_SESSIONS = 64`, `MAX_TAG_LOOK_AHEAD = 32`, `MAX_REPLAY_CACHE_ENTRIES = 64`, `DEFAULT_SESSION_IDLE_SECONDS = 600`, `MAX_SESSION_IDLE_SECONDS = 1800`; structural Garlic payload block codec (`GarlicClove`, DateTime + Garlic encryption envelope) in `i2pr-proto`; deterministic two-destination NS → NSR → Existing Session trajectory with exact-once payload delivery, tag ratchet advancement, and replay rejection (`plan_121_deterministic_local_trajectory`); no remote router exercise | None |
 | Destination routing and Garlic composition | Experimental structural subset | 6 | [`plans/122-status.md`](../plans/122-status.md) | Bounded `LeaseSelector` / `LeaseSelectionPolicy` with expiry / safety-margin / zero-tunnel-id / destination-mismatch / uniform-distribution rejection; typed `OutboundRequest` builder; `compose_outbound_delivery` planner that drives ECIES encryption then `OutboundGatewayRole::forward_cells` with `DeliveryInstruction::Tunnel` targeting the selected lease; `DestinationRouting` cache with bounded `MAX_CONCURRENT_REMOTE_LOOKUPS = 256` and `MAX_PENDING_OUTBOUND_PER_REMOTE = 64`; `DestinationDispatcher` inbound surface with bounded `MAX_INBOUND_DESTINATIONS = 256`, `MAX_INBOUND_PENDING_MESSAGES = 256`, `MAX_INBOUND_PAYLOAD_BYTES_PER_DESTINATION = 512 * 1024`; deterministic two-destination Phase A/B/C/F/H local composition (`plan_122_two_destination_local_composition`); router-delivery seam emits `OBGWRouterDelivery` cells addressed to the local outbound creator's first hop; authenticated-router link between outbound endpoint and remote inbound gateway remains a transport-level omission | None |
 | EncryptedLeaseSet and MetaLeaseSet | Deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Explicit `DatabaseStoreData::Deferred` framing only | None |
-| I2P streaming | Experimental minimal core | 6 | `specs/protocols/07-streaming.md`, [`plans/128-status.md`](../plans/128-status.md), [`plans/129-status.md`](../plans/129-status.md), [`specs/references/streaming-packet-wire.md`](../specs/references/streaming-packet-wire.md) | Synchronous Tokio-free deterministic `StreamingManager` in `i2pr-client::streaming` with per-destination outbound and inbound connection tables, listener backlogs, send/receive window and congestion policies, retransmit/timeout policy, and a typed event surface. Wire codec in `i2pr-proto::streaming` (Plan 128 normative form): normative flag map with policy sets `0x04A9`/`0x00A9`/`0x000A`/`0x000C`, no option-data TLVs, flag-driven option order, 2-byte big-endian payload-only MAX_PACKET_SIZE defaulting to 1730, raw final signatures from signing-key context, canonical zeroed-placeholder preimage signed once, eight Proposal 164 replay NACK words on the initial SYN only, retained peer signing key for CLOSE/RESET verification without FROM, and the protocol-6 RFC 1952 gzip `ClientPayload` envelope (Plan 125). Sixteen deterministic integration tests in `plan123_trajectory` cover the signed-SYN payload round trip, canonical preimage signature verification, SYN replay binding rejection, MAX_PACKET_SIZE_INCLUDED policy, corrupt-signature rejection, the full two-destination SYN → data → CLOSE trajectory, loss recovery via retransmit, duplicate packet idempotence, RESET termination, send window backpressure, connection table ceiling, and signed CLOSE / signed RESET packet shapes. The streaming layer is runtime-neutral; the combined outbound/inbound `StreamingDestinationAdapter` (Plan 129) bridges it into Plan 122's `compose_outbound_delivery` and `DestinationDispatcher`, and the Plan 129 integrated gate (`plan129_trajectory`, twelve deterministic tests) drives the complete destination stack in both directions. Interoperability against an independent router is not claimed. | None |
+| I2P streaming | Experimental minimal core | 6 | `specs/protocols/07-streaming.md`, [`plans/128-status.md`](../plans/128-status.md), [`plans/130-status.md`](../plans/130-status.md), [`specs/references/streaming-packet-wire.md`](../specs/references/streaming-packet-wire.md) | Synchronous Tokio-free deterministic `StreamingManager` in `i2pr-client::streaming` with per-destination outbound and inbound connection tables, listener backlogs, send/receive window and congestion policies, retransmit/timeout policy, and a typed event surface. Wire codec in `i2pr-proto::streaming` (Plan 128 normative form): normative flag map with policy sets `0x04A9`/`0x00A9`/`0x000A`/`0x000C`, no option-data TLVs, flag-driven option order, 2-byte big-endian payload-only MAX_PACKET_SIZE defaulting to 1730, raw final signatures from signing-key context, canonical zeroed-placeholder preimage signed once, eight Proposal 164 replay NACK words on the initial SYN only, retained peer signing key for CLOSE/RESET verification without FROM, and the protocol-6 RFC 1952 gzip `ClientPayload` envelope (Plan 125). Sixteen deterministic integration tests in `plan123_trajectory` cover the signed-SYN payload round trip, canonical preimage signature verification, SYN replay binding rejection, MAX_PACKET_SIZE_INCLUDED policy, corrupt-signature rejection, the full two-destination SYN → data → CLOSE trajectory, loss recovery via retransmit, duplicate packet idempotence, RESET termination, send window backpressure, connection table ceiling, and signed CLOSE / signed RESET packet shapes. The streaming layer is runtime-neutral; the combined outbound/inbound `StreamingDestinationAdapter` (Plan 129) bridges it into Plan 122's `compose_outbound_delivery` and `DestinationDispatcher`, and the Plan 129 integrated gate (`plan129_trajectory`, twelve deterministic tests) drives the complete destination stack in both directions. Interoperability against an independent router is not claimed. | None |
 | SAM | Not implemented | 7 | `specs/protocols/08-sam.md` | None imported | None |
 | SSU2 | Not implemented | 8 | `specs/protocols/09-ssu2.md` | None imported | None |
 | I2CP | Not implemented | 9 | `specs/protocols/10-i2cp-service-tunnels.md` | None imported | None |
@@ -889,10 +933,11 @@ Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
         -> Plan 123  minimal streaming core                                    [passed-corrected-streaming-wire-local]
         -> Plan 124  destination-routing corrective closure                   [passed-corrected-destination-routing-local-closure]
         -> Plan 125  Streaming corrective closure                             [superseded-by-final-corrective-closure]
-        -> Plan 126  ECIES-X25519 ratchet corrective foundation                [passed-ecies-destination-ratchet-corrective-foundation]
+        -> Plan 126  ECIES-X25519 ratchet corrective foundation                [passed-ecies-destination-ratchet-corrective-foundation; production representation corrected by Plan 130]
         -> Plan 127  destination-session routing final closure                 [passed-destination-session-routing-final-closure]
         -> Plan 128  Streaming wire-protocol corrective closure                 [passed-streaming-wire-protocol-corrective-closure]
-        -> Plan 129  integrated destination+Streaming final gate                [passed-milestone6-integrated-local-product-gate] (milestone6_local_product = passed; interoperability not claimed)
+        -> Plan 129  integrated destination+Streaming final gate                [superseded-by-plan130-final-gate]
+        -> Plan 130  final wire/runtime corrective closure                       [passed-milestone6-final-wire-runtime-corrective-closure] (milestone6_local_product = passed; interoperability not claimed)
 ```
 
 Plan 106 closed the local/bootstrap implementation phase; Plan 107

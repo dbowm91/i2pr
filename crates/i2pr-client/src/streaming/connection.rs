@@ -125,6 +125,16 @@ pub struct StreamingConnection {
     /// packets without FROM (CLOSE/RESET since 0.9.20) verify against
     /// this key.
     peer_signing_key: SigningPublicKey,
+    /// Peer destination hash retained for outbound addressing of
+    /// unsigned control packets such as plain ACKs (Plan 130 §7 D2).
+    peer_destination_hash: [u8; 32],
+    /// Local I2P destination port of the established stream tuple
+    /// (Plan 130 §8 E3). Fixed by the wire handshake and validated on
+    /// every subsequent delivery.
+    local_port: u16,
+    /// Remote I2P source port of the established stream tuple
+    /// (Plan 130 §8 E3).
+    remote_port: u16,
     /// Maximum payload bytes the local side advertised through its own
     /// MAX_PACKET_SIZE option.
     local_advertised_max_payload: u16,
@@ -141,12 +151,16 @@ pub struct StreamingConnection {
 
 impl StreamingConnection {
     /// Creates a new outbound connection in `OutboundSynSent` state.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_outbound(
         id: ConnectionId,
         config: StreamingConfig,
         local_stream_id: u32,
         remote_stream_id: u32,
         peer_signing_key: SigningPublicKey,
+        peer_destination_hash: [u8; 32],
+        local_port: u16,
+        remote_port: u16,
         now_ms: u64,
     ) -> Self {
         let send_config = SendWindowConfig::from_config(&config);
@@ -165,6 +179,9 @@ impl StreamingConnection {
             local_stream_id,
             remote_stream_id,
             peer_signing_key,
+            peer_destination_hash,
+            local_port,
+            remote_port,
             local_advertised_max_payload: crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u16,
             remote_advertised_max_payload: None,
             max_payload_size: crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u32,
@@ -174,12 +191,16 @@ impl StreamingConnection {
     }
 
     /// Creates a new inbound connection in `InboundSynReceived` state.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_inbound(
         id: ConnectionId,
         config: StreamingConfig,
         local_stream_id: u32,
         remote_stream_id: u32,
         peer_signing_key: SigningPublicKey,
+        peer_destination_hash: [u8; 32],
+        local_port: u16,
+        remote_port: u16,
         now_ms: u64,
     ) -> Self {
         let send_config = SendWindowConfig::from_config(&config);
@@ -198,6 +219,9 @@ impl StreamingConnection {
             local_stream_id,
             remote_stream_id,
             peer_signing_key,
+            peer_destination_hash,
+            local_port,
+            remote_port,
             local_advertised_max_payload: crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u16,
             remote_advertised_max_payload: None,
             max_payload_size: crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u32,
@@ -243,6 +267,30 @@ impl StreamingConnection {
         &self.peer_signing_key
     }
 
+    /// Returns the local I2P destination port of the established
+    /// stream tuple (Plan 130 §8 E3).
+    pub const fn local_port(&self) -> u16 {
+        self.local_port
+    }
+
+    /// Returns the remote I2P source port of the established stream
+    /// tuple (Plan 130 §8 E3).
+    pub const fn remote_port(&self) -> u16 {
+        self.remote_port
+    }
+
+    /// Returns whether the supplied wire port tuple matches the tuple
+    /// this connection established through its handshake.
+    pub const fn ports_match(&self, source_port: u16, destination_port: u16) -> bool {
+        self.remote_port == source_port && self.local_port == destination_port
+    }
+
+    /// Returns the peer destination hash retained for outbound
+    /// addressing (Plan 130 §7 D2).
+    pub const fn peer_destination_hash(&self) -> &[u8; 32] {
+        &self.peer_destination_hash
+    }
+
     /// Records the maximum payload bytes the peer advertised through
     /// its MAX_PACKET_SIZE option.
     pub fn set_remote_advertised_max_payload(&mut self, max: u16) {
@@ -282,6 +330,9 @@ impl StreamingConnection {
             local_stream_id: self.local_stream_id,
             remote_stream_id: self.remote_stream_id,
             peer_signing_key: self.peer_signing_key.clone(),
+            peer_destination_hash: self.peer_destination_hash,
+            local_port: self.local_port,
+            remote_port: self.remote_port,
             local_advertised_max_payload: self.local_advertised_max_payload,
             remote_advertised_max_payload: self.remote_advertised_max_payload,
             max_payload_size: self.max_payload_size,
@@ -433,24 +484,23 @@ impl StreamingConnection {
         Ok(self.recv_window.receive(sequence, payload))
     }
 
-    /// Processes an incoming acknowledgement.
-    pub fn receive_ack(
-        &mut self,
-        ack_through: u32,
-        nack_count: usize,
-        now_ms: u64,
-    ) -> AckObservation {
+    /// Processes an incoming acknowledgement with its NACK list
+    /// (Plan 130 §7 D4). The send window applies the reference
+    /// cumulative/NACK contract; congestion registers an ack sample
+    /// for newly acknowledged data and a loss signal when the peer
+    /// explicitly NACKed retained packets.
+    pub fn receive_ack(&mut self, ack_through: u32, nacks: &[u32], now_ms: u64) -> AckObservation {
         self.last_activity_ms = now_ms;
-        let _ = self.send_window.ack_through(ack_through);
-        for _ in 0..nack_count.min(1) {
+        let outcome = self.send_window.acknowledge(ack_through, nacks);
+        if !outcome.newly_acked.is_empty() {
             self.congestion.record_acked();
         }
-        // For cumulative ack, record a single ack for the congestion
-        // window.
-        self.congestion.record_acked();
+        if !outcome.retained_nacks.is_empty() {
+            self.congestion.record_loss();
+        }
         AckObservation {
             ack_through,
-            nack_count,
+            nack_count: nacks.len(),
         }
     }
 

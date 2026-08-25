@@ -124,9 +124,59 @@ reorder (`drain_delivered`), and CLOSE/RESET completion policy where a
 side never marks itself Closed merely because it queued a CLOSE and
 nothing delivers after RESET. The adapter never owns sockets, timers,
 or DNS. Final statuses: Plan 125 is superseded by the final corrective
-closure; Plans 123/128 closed wire-correct; Plan 129 closed as
-`passed-milestone6-integrated-local-product-gate`
-(`milestone6_interoperable` remains not claimed).
+closure; Plans 123/128 closed wire-correct; Plan 129 is superseded by
+the Plan 130 final gate, which retains its topology.
+
+Plan 130 closes Milestone 6 with the final wire/runtime corrective
+closure ([Plan 130](../plans/130-m6-final-wire-runtime-corrective-closure.md),
+[`plans/130-status.md`](../plans/130-status.md)), correcting four
+post-129-audit defects while retaining every retained surface above:
+
+- **Production Elligator2 randomization** (with `i2pr-crypto`):
+  `EciesEphemeralKeypair::generate` draws the two normative CSPRNG
+  high bits into the on-wire representative (`encodedKey[31] |=
+  random & 0xc0`) while `from_seed_bytes` stays the deterministic
+  vector constructor (fixed tweak 0) that reproduces every frozen Plan
+  126 constant. Library mode remains the reviewed `RFC9380`
+  Elligator2 API — no hand-written mapping — and independent
+  pure-Python frozen fixtures prove all four high-bit variants and
+  both Java/i2pd encode branches decode to one X25519 public key
+  ([reference addendum](../specs/references/elligator2-production-representation.md)).
+- **Corrected sequence space**: ordinary application data starts at
+  sequence 1 (`FIRST_APPLICATION_SEQUENCE`); sequence 0 is owned by
+  the SYN, the SYN response, and the plain-ACK control form. A seq-0
+  non-SYN packet never enters the receive window, never delivers, and
+  never schedules an acknowledgement.
+- **Spec-correct ACK/NACK semantics**: ACK presence is flag-driven
+  (`ackThrough == 0` validly acknowledges the handshake slot unless
+  NO_ACK is set), cumulative acknowledgements are NACK-aware
+  (`SendWindowPolicy::acknowledge` retains explicitly NACKed packets),
+  receiver ACK/NACK views follow Java `MessageInputStream.updateAcks`
+  (`RecvWindowPolicy::ack_view`: ackThrough = highest received
+  including buffered out-of-order packets, bounded missing-sequence
+  NACKs), and a synchronous coalescing delayed standalone ACK
+  (`StreamingConfig::delayed_ack_ms`, 750 ms reference default;
+  `poll_acks(now_ms)`) serves one-way streams with piggyback
+  suppression and no ACK-of-ACK loop.
+- **Wire destination-port authority**: the inbound adapter lost its
+  caller-supplied listener port; listener matching is exact
+  destination port → wildcard listener bound to port 0 → typed
+  `NoMatchingListener`, connections retain their established
+  local/remote tuple and reject mismatched traffic with typed
+  `PortTupleMismatch`, and `accept_inbound_syn` refuses redirected
+  tuples.
+- **Persistent tunnel duplicate windows**: the integrated fixture
+  keeps inbound roles alive across ordinary deliveries, and tunnel
+  roles treat byte-exact cell replays as typed `DuplicateCell`
+  rejections — distinct from ECIES tag replay and Streaming sequence
+  dedup, each proven independently.
+
+Eleven full-stack trajectories in
+[`crates/i2pr-client/tests/plan130_trajectory.rs`](../../crates/i2pr-client/tests/plan130_trajectory.rs)
+are the closure evidence, including a frozen spec-derived simple-ACK
+byte fixture and a frozen reference ACK/NACK expectation table.
+`milestone6_local_product = passed`;
+`milestone6_interoperable` remains not claimed.
 
 The authenticated-router link between an outbound endpoint and the
 remote inbound gateway remains the only transport omission: tests
@@ -213,7 +263,8 @@ crates/i2pr-client/
     ├── plan126_trajectory.rs   Plan 126 manager-level lifecycle + negative/ceiling controls
     ├── plan127_trajectory.rs   Plan 127 master NS -> NSR -> ES x4 destination-routing closure + §9 negative controls
     ├── plan128_trajectory.rs   Plan 128 manager handshake stream-id ownership, CLOSE/RESET shapes, negotiation
-    └── plan129_trajectory.rs   Plan 129 integrated destination+Streaming final gate (master SYN/SYN-response both directions, steady-state ES data, post-OBEP drop/duplicate/reorder, corruption at protocol layers, graceful CLOSE, RESET survivor streams, non-protocol-6 dispatch, ceiling and 0-RTT scope)
+    ├── plan129_trajectory.rs   Plan 129 integrated destination+Streaming gate (`superseded-by-plan130-final-gate`; persistent inbound chains across ordinary deliveries)
+    └── plan130_trajectory.rs   Plan 130 final wire/runtime corrective closure (frozen simple-ACK byte fixture, reference ACK/NACK table, sequence transition, one-way delayed ACK, piggyback suppression, reorder+NACK convergence, port authority + wildcard fallback, replay-layer separation, production-Elligator establishment)
 ```
 
 ## Identity ownership
