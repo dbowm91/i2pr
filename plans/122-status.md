@@ -1,93 +1,44 @@
-# Plan 122 status — corrective closure required
+# Plan 122 status — provisional pending final destination-session correction
 
 ## Current authority
 
-- Status: **`corrective-reopened-plan124`**.
-- Reopened: **2026-08-24** after post-closure source audit.
-- Original implementation plan: [`122-m6-destination-routing-and-netdb-composition.md`](122-m6-destination-routing-and-netdb-composition.md).
-- Corrective plan of record: [`124-m6-plan122-destination-routing-corrective-closure.md`](124-m6-plan122-destination-routing-corrective-closure.md).
-- Successor after correction: [`125-m6-streaming-corrective-and-local-closure.md`](125-m6-streaming-corrective-and-local-closure.md).
-- Historical closure commit and tests remain useful component evidence; this file corrects the stronger end-to-end acceptance classification.
+- Status: **`provisional-blocked-on-plan126-plan127`**.
+- Milestone 6 authority: `126-129-milestone6-final-corrective-roadmap.md`.
+- Lower-layer corrective prerequisite: Plan 126.
+- Destination-routing final closure: Plan 127.
 
-## Why the prior closure is reopened
+## Retained work
 
-The post-closure audit found a concrete production-composition defect in
-`i2pr_client::routing::compose_outbound_delivery()`.
+Retain the useful Plan 122/124 product surface:
 
-The function successfully constructs an ECIES-protected Garlic payload and
-retains it in `OutboundDeliveryPlan.encrypted_message`, but the actual outbound
-tunnel call is fed the standard-encoded plaintext inner I2NP `Data` envelope:
+- typed Standard LeaseSet2 lookup/cache/selection;
+- destination-owned tunnel pools;
+- outbound I2NP Data construction;
+- I2NP Garlic carrier composition;
+- destination dispatcher ownership mapping;
+- explicit bounded local router-link seam;
+- Plan 124 correction that makes the outbound tunnel carry `garlic_i2np_bytes` rather than plaintext `inner_envelope_bytes`.
 
-```text
-ECIES Garlic constructed                     yes
-ECIES Garlic retained in returned plan        yes
-bytes passed to outbound tunnel role           plaintext inner I2NP Data
-```
+## Remaining closure defects
 
-The required product path is instead:
+The stronger destination-routing closure depends on the corrected ECIES protocol/session lifecycle.
 
-```text
-inner I2NP Data
- -> ECIES Garlic ciphertext
- -> I2NP Garlic carrier
- -> destination-owned outbound tunnel
- -> OBEP TUNNEL(remote Lease2 gateway/id, Garlic)
-```
+Current production gaps include:
 
-Therefore the previous `passed-local-destination-routing` label overstated the
-actual integrated path.
+- no spec-correct bound NS/NSR/ES manager lifecycle;
+- bundled sender LeaseSet2 is not yet correctly bound to the authenticated NS static key;
+- accepted sender LS2 bookkeeping/reverse-routing handoff is incomplete;
+- the full B -> A NSR and bidirectional Existing Session trajectory over the destination tunnel path is not established.
 
-The prior `plan122_trajectory.rs` tests also do not provide successful full-path
-closure evidence. The nominal outbound-composition test constructs inputs but
-does not execute `compose_outbound_delivery()`, and the inbound dispatcher test
-is negative malformed-input coverage rather than a successful authenticated
-A -> B delivery.
-
-## Retained valid work
-
-The following Plan 122 surfaces remain useful and should not be reimplemented
-without a concrete defect:
+## Current classification
 
 ```text
-typed LeaseSet2 lookup/result path
-LeaseSet2 daemon NetDbSeam extension
-bounded lease selection policy
-DestinationRouting cache/state
-OutboundRequest I2NP Data construction
-ECIES session/Garlic construction from Plan 121
-DestinationDispatcher typed failure paths
-resource bounds and typed errors
-```
-
-Plan 124 is a composition correction and successful-trajectory closure, not a
-rewrite of Plans 119-121.
-
-## Current state
-
-```text
-plan_118 = closed
-plan_119 = passed-leaseset2-protocol-foundation
-plan_120 = passed-destination-lifecycle-and-pools
-plan_121 = passed-ecies-destination-session-layer
-plan_122 = corrective-reopened-plan124
-plan_123 = provisional-blocked-on-plan122-correction
+plan_121 = corrective-reopened-plan126
+plan_122 = provisional-blocked-on-plan126-plan127
+plan_124 = primary-composition-fix-retained-full-closure-reopened-plan127
 milestone6_local_product = not-closed
-external_interop = not-claimed
-next = plans/124-m6-plan122-destination-routing-corrective-closure.md
+next = plans/126-m6-ecies-destination-ratchet-corrective-foundation.md
+then = plans/127-m6-destination-session-routing-final-closure.md
 ```
 
-## Closure requirement
-
-Plan 122 may return to a passed state only when Plan 124 proves that the actual
-outbound tunnel path carries an encoded I2NP Garlic message containing the ECIES
-ciphertext, that the OBEP emits the selected Lease2 TUNNEL delivery, and that a
-successful A -> B -> A trajectory traverses real destination-owned outbound and
-inbound tunnel roles with only the explicit post-OBEP local router-link seam.
-
-Required eventual label:
-
-```text
-plan_122 = passed-corrected-local-destination-routing
-plan_122_transport_boundary = authenticated-router-link-bypassed-local-seam
-plan_122_external_interop = not-claimed
-```
+The Plan 124 plaintext-tunnel regression remains a required invariant and must stay green.
