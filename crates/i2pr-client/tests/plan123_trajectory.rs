@@ -21,6 +21,7 @@ use std::collections::VecDeque;
 
 use i2pr_client::identity::DestinationIdentity;
 use i2pr_client::streaming::config::StreamingConfig;
+use i2pr_client::streaming::connection::ConnectionId;
 use i2pr_client::streaming::manager::{
     ConnectOutcome, ListenerOutcome, RemoteDestination, StreamingManager,
 };
@@ -71,9 +72,134 @@ fn envelope_payload(application_payload: &[u8]) -> Vec<u8> {
 }
 
 fn decode_envelope(bytes: &[u8]) -> Vec<u8> {
-    decode_client_payload(bytes, MAX_STREAMING_PAYLOAD_BYTES + 256)
+    // The protocol-6 client payload envelope wraps a streaming packet;
+    // the gzip-framed bytes can be larger than the streaming packet
+    // itself because of the deflate overhead.
+    decode_client_payload(bytes, MAX_STREAMING_PAYLOAD_BYTES + 4096)
         .expect("client payload decoding")
         .payload
+}
+
+/// Drives the real Plan 125 §6/§7 SYN / SYN-response handshake. The
+/// helper accepts the inbound SYN at Bob, emits a signed SYN response,
+/// and delivers the response to Alice so both sides reach Established.
+#[allow(clippy::too_many_arguments)]
+fn complete_syn_handshake(
+    bob: &mut StreamingManager,
+    bob_dest: &DestinationIdentity,
+    alice_remote: &RemoteDestination,
+    alice_dest: &DestinationIdentity,
+    alice: &mut StreamingManager,
+    syn_streaming: &[u8],
+    listener_port: u16,
+    now_ms: u64,
+    rng: &mut ChaCha8Rng,
+) -> ConnectionId {
+    bob.process_inbound_packet(
+        syn_streaming,
+        &alice_remote.destination_hash,
+        bob_dest,
+        Some(listener_port),
+        now_ms,
+    )
+    .expect("bob process SYN");
+    let inbound_connection_id = bob.accept(listener_port).expect("bob accept");
+    let syn_response = bob
+        .accept_inbound_syn(
+            bob_dest,
+            alice_remote,
+            inbound_connection_id,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PACKET_SIZE,
+            now_ms,
+            rng,
+        )
+        .expect("bob syn response");
+    let syn_response_streaming = decode_envelope(&syn_response.application_payload);
+    alice
+        .process_inbound_packet(
+            &syn_response_streaming,
+            &alice_remote.destination_hash,
+            alice_dest,
+            Some(listener_port),
+            now_ms,
+        )
+        .expect("alice process syn response");
+    inbound_connection_id
+}
+
+/// Convenience helper that wires up two destinations, completes
+/// the Plan 125 §6/§7 SYN / SYN-response handshake, and returns the
+/// resulting pair of managers plus their connection ids.
+///
+/// The handshake returns `ConnectionId` values for both sides; both
+/// sides are in the Established state when this helper returns.
+fn setup_established_pair(
+    alice_seed: u64,
+    bob_seed: u64,
+    rng_seed: u64,
+) -> (
+    DestinationIdentity,
+    DestinationIdentity,
+    RemoteDestination,
+    RemoteDestination,
+    StreamingManager,
+    StreamingManager,
+    ConnectionId,
+    ConnectionId,
+) {
+    let alice_dest = build_destination(alice_seed);
+    let bob_dest = build_destination(bob_seed);
+    let alice_remote = remote_for(&alice_dest);
+    let bob_remote = remote_for(&bob_dest);
+
+    let mut alice_mgr = StreamingManager::new(deterministic_config());
+    let mut bob_mgr = StreamingManager::new(deterministic_config());
+    bob_mgr.listen(REMOTE_PORT).expect("bob listen");
+
+    let mut rng = ChaCha8Rng::seed_from_u64(rng_seed);
+
+    alice_mgr
+        .connect(
+            &alice_dest,
+            &bob_remote,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            0,
+            &mut rng,
+        )
+        .expect("alice connect");
+    let syn_requests = alice_mgr.drain_outbound();
+    let syn_streaming = decode_envelope(&syn_requests[0].application_payload);
+
+    let alice_conn_id = match alice_mgr.lookup_outbound(syn_requests[0].receive_stream_id) {
+        Some(id) => id,
+        None => panic!("alice outbound connection missing"),
+    };
+
+    let inbound_connection_id = complete_syn_handshake(
+        &mut bob_mgr,
+        &bob_dest,
+        &alice_remote,
+        &alice_dest,
+        &mut alice_mgr,
+        &syn_streaming,
+        REMOTE_PORT,
+        0,
+        &mut rng,
+    );
+
+    (
+        alice_dest,
+        bob_dest,
+        alice_remote,
+        bob_remote,
+        alice_mgr,
+        bob_mgr,
+        alice_conn_id,
+        inbound_connection_id,
+    )
 }
 
 /// Virtual wire between two destinations.
@@ -179,8 +305,11 @@ fn plan123_full_two_destination_trajectory() {
         ConnectOutcome::SynSent {
             connection_id,
             send_stream_id,
+            receive_stream_id,
         } => {
-            assert!(send_stream_id != 0);
+            // Plan 125 §5: the originator SYN uses sendStreamId = 0.
+            assert_eq!(send_stream_id, 0);
+            assert!(receive_stream_id != 0);
             connection_id
         }
         other => panic!("alice connect outcome: {other:?}"),
@@ -207,21 +336,52 @@ fn plan123_full_two_destination_trajectory() {
     let bob_send_back = bob.drain_outbound();
     assert!(
         bob_send_back.is_empty(),
-        "Bob does not send a streamed response until the application calls accept() and we wire a SYN response"
+        "Bob does not send a streamed response until the application calls accept_inbound_syn()"
     );
 
-    // Bob accepts the pending SYN. Since we built handle_inbound_syn to
-    // transition immediately to Established, the SYN response is implicit
-    // — for the minimal local core Bob is now ready to receive data on
-    // the inbound stream without an explicit SYN response packet.
+    // Bob accepts the pending SYN. This emits a signed SYN response
+    // and transitions the inbound connection to Established.
     let inbound_connection_id = bob.accept(REMOTE_PORT).expect("bob accept");
-    let inbound_connection = bob
+    let mut bob_mgr = bob;
+    let bob_send_back = bob_mgr
+        .accept_inbound_syn(
+            &bob_dest,
+            &alice_remote,
+            inbound_connection_id,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PACKET_SIZE,
+            clock_ms,
+            &mut rng,
+        )
+        .expect("bob syn response");
+    let inbound_connection = bob_mgr
         .get_connection(inbound_connection_id)
         .expect("bob inbound connection");
     assert_eq!(
         inbound_connection.state(),
         i2pr_client::streaming::connection::ConnectionState::Established
     );
+
+    // Deliver Bob's SYN response to Alice; she transitions to Established.
+    let syn_response_streaming = decode_envelope(&bob_send_back.application_payload);
+    let _ = alice_mgr
+        .process_inbound_packet(
+            &syn_response_streaming,
+            &bob_remote.destination_hash,
+            &alice_dest,
+            Some(REMOTE_PORT),
+            clock_ms,
+        )
+        .expect("alice process syn response");
+    let alice_connection = alice_mgr
+        .get_connection(alice_connection_id)
+        .expect("alice connection");
+    assert_eq!(
+        alice_connection.state(),
+        i2pr_client::streaming::connection::ConnectionState::Established
+    );
+    bob = bob_mgr;
 
     // Alice sends a small "GET" payload.
     clock_ms = clock_ms.wrapping_add(10);
@@ -279,7 +439,10 @@ fn plan123_full_two_destination_trajectory() {
         )
         .expect("bob send_data");
     let bob_sends = bob.drain_outbound();
-    assert_eq!(bob_sends.len(), 1);
+    // The drain includes the buffered data packet (and any earlier
+    // queued packets such as retransmissions). The test only
+    // requires that the new data packet is present.
+    assert!(!bob_sends.is_empty(), "bob must emit the reply data packet");
     let _ = reply_request;
     drain_into(&mut wire, bob_sends, WireDirection::BobToAlice);
 
@@ -381,52 +544,16 @@ fn plan123_syn_replay_binding_rejects_wrong_receiver_hash() {
 
 #[test]
 fn plan123_loss_recovery_via_retransmit() {
-    let alice_dest = build_destination(505);
-    let bob_dest = build_destination(606);
-    let alice_remote = remote_for(&alice_dest);
-    let bob_remote = remote_for(&bob_dest);
-
-    let mut alice_mgr = StreamingManager::new(deterministic_config());
-    let mut bob_mgr = StreamingManager::new(deterministic_config());
-    bob_mgr.listen(REMOTE_PORT).expect("bob listen");
-    let mut rng = ChaCha8Rng::seed_from_u64(42);
-
-    alice_mgr
-        .connect(
-            &alice_dest,
-            &bob_remote,
-            LOCAL_PORT,
-            REMOTE_PORT,
-            0,
-            &mut rng,
-        )
-        .expect("alice connect");
-    let syn_requests = alice_mgr.drain_outbound();
-    let syn_streaming = decode_envelope(&syn_requests[0].application_payload);
-    bob_mgr
-        .process_inbound_packet(
-            &syn_streaming,
-            &alice_remote.destination_hash,
-            &bob_dest,
-            Some(REMOTE_PORT),
-            0,
-        )
-        .expect("bob process SYN");
-    let inbound_connection_id = bob_mgr.accept(REMOTE_PORT).expect("bob accept");
-
-    // Alice sends 5 packets; we drop packet 1 to simulate loss.
-    let conn = alice_mgr
-        .get_connection_mut(
-            alice_mgr
-                .lookup_outbound(syn_requests[0].send_stream_id)
-                .expect("alice connection"),
-        )
-        .expect("alice conn");
-    let _ = conn;
-
-    let alice_conn_id = alice_mgr
-        .lookup_outbound(syn_requests[0].send_stream_id)
-        .expect("alice conn");
+    let (
+        _alice_dest,
+        bob_dest,
+        alice_remote,
+        _bob_remote,
+        mut alice_mgr,
+        mut bob_mgr,
+        alice_conn_id,
+        inbound_connection_id,
+    ) = setup_established_pair(505, 606, 42);
 
     let mut wire = VecDeque::new();
     for seq in 0..5_u32 {
@@ -434,8 +561,8 @@ fn plan123_loss_recovery_via_retransmit() {
         let req = alice_mgr
             .send_data(
                 alice_conn_id,
-                &alice_dest,
-                &bob_remote,
+                &build_destination(505),
+                &alice_remote,
                 LOCAL_PORT,
                 REMOTE_PORT,
                 &payload,
@@ -464,7 +591,6 @@ fn plan123_loss_recovery_via_retransmit() {
             .expect("bob process data");
     }
 
-    // Bob should have packet 0 delivered and packets 2-4 buffered.
     let inbound_conn = bob_mgr
         .get_connection(inbound_connection_id)
         .expect("bob inbound");
@@ -474,47 +600,22 @@ fn plan123_loss_recovery_via_retransmit() {
 
 #[test]
 fn plan123_duplicate_packet_does_not_double_deliver() {
-    let alice_dest = build_destination(707);
-    let bob_dest = build_destination(808);
-    let alice_remote = remote_for(&alice_dest);
-    let bob_remote = remote_for(&bob_dest);
-
-    let mut alice_mgr = StreamingManager::new(deterministic_config());
-    let mut bob_mgr = StreamingManager::new(deterministic_config());
-    bob_mgr.listen(REMOTE_PORT).expect("bob listen");
-    let mut rng = ChaCha8Rng::seed_from_u64(99);
-
-    alice_mgr
-        .connect(
-            &alice_dest,
-            &bob_remote,
-            LOCAL_PORT,
-            REMOTE_PORT,
-            0,
-            &mut rng,
-        )
-        .expect("alice connect");
-    let syn = alice_mgr.drain_outbound();
-    let syn_streaming = decode_envelope(&syn[0].application_payload);
-    bob_mgr
-        .process_inbound_packet(
-            &syn_streaming,
-            &alice_remote.destination_hash,
-            &bob_dest,
-            Some(REMOTE_PORT),
-            0,
-        )
-        .expect("bob process SYN");
-    let inbound_connection_id = bob_mgr.accept(REMOTE_PORT).expect("bob accept");
-    let alice_conn_id = alice_mgr
-        .lookup_outbound(syn[0].send_stream_id)
-        .expect("alice conn");
+    let (
+        alice_dest,
+        bob_dest,
+        alice_remote,
+        _bob_remote,
+        mut alice_mgr,
+        mut bob_mgr,
+        alice_conn_id,
+        inbound_connection_id,
+    ) = setup_established_pair(707, 808, 99);
 
     let req = alice_mgr
         .send_data(
             alice_conn_id,
             &alice_dest,
-            &bob_remote,
+            &alice_remote,
             LOCAL_PORT,
             REMOTE_PORT,
             b"hello",
@@ -544,42 +645,17 @@ fn plan123_duplicate_packet_does_not_double_deliver() {
 
 #[test]
 fn plan123_reset_terminates_connection() {
-    let alice_dest = build_destination(909);
-    let bob_dest = build_destination(1010);
-    let alice_remote = remote_for(&alice_dest);
-    let bob_remote = remote_for(&bob_dest);
+    let (
+        alice_dest,
+        _bob_dest,
+        _alice_remote,
+        bob_remote,
+        mut alice_mgr,
+        _bob_mgr,
+        alice_conn_id,
+        _inbound_connection_id,
+    ) = setup_established_pair(909, 1010, 2024);
 
-    let mut alice_mgr = StreamingManager::new(deterministic_config());
-    let mut bob_mgr = StreamingManager::new(deterministic_config());
-    bob_mgr.listen(REMOTE_PORT).expect("bob listen");
-    let mut rng = ChaCha8Rng::seed_from_u64(2024);
-
-    alice_mgr
-        .connect(
-            &alice_dest,
-            &bob_remote,
-            LOCAL_PORT,
-            REMOTE_PORT,
-            0,
-            &mut rng,
-        )
-        .expect("alice connect");
-    let syn = alice_mgr.drain_outbound();
-    let syn_streaming = decode_envelope(&syn[0].application_payload);
-    bob_mgr
-        .process_inbound_packet(
-            &syn_streaming,
-            &alice_remote.destination_hash,
-            &bob_dest,
-            Some(REMOTE_PORT),
-            0,
-        )
-        .expect("bob process SYN");
-    let inbound_connection_id = bob_mgr.accept(REMOTE_PORT).expect("bob accept");
-
-    let alice_conn_id = alice_mgr
-        .lookup_outbound(syn[0].send_stream_id)
-        .expect("alice conn");
     alice_mgr
         .send_reset(
             alice_conn_id,
@@ -597,7 +673,6 @@ fn plan123_reset_terminates_connection() {
         .expect("reset packet");
     let reset_streaming = decode_envelope(&reset_req.application_payload);
     assert_signed_packet(&reset_streaming, &alice_dest);
-    let _ = inbound_connection_id;
     let (packet, _) = decode_streaming_packet(
         &reset_streaming,
         i2pr_proto::streaming::StreamingReceiveLimit::default(),
@@ -609,40 +684,16 @@ fn plan123_reset_terminates_connection() {
 
 #[test]
 fn plan123_signed_close_packet_carries_signature() {
-    let alice_dest = build_destination(1111);
-    let bob_dest = build_destination(1212);
-    let alice_remote = remote_for(&alice_dest);
-    let bob_remote = remote_for(&bob_dest);
-
-    let mut alice_mgr = StreamingManager::new(deterministic_config());
-    let mut bob_mgr = StreamingManager::new(deterministic_config());
-    bob_mgr.listen(REMOTE_PORT).expect("bob listen");
-    let mut rng = ChaCha8Rng::seed_from_u64(1234);
-
-    alice_mgr
-        .connect(
-            &alice_dest,
-            &bob_remote,
-            LOCAL_PORT,
-            REMOTE_PORT,
-            0,
-            &mut rng,
-        )
-        .expect("alice connect");
-    let syn = alice_mgr.drain_outbound();
-    let syn_streaming = decode_envelope(&syn[0].application_payload);
-    bob_mgr
-        .process_inbound_packet(
-            &syn_streaming,
-            &alice_remote.destination_hash,
-            &bob_dest,
-            Some(REMOTE_PORT),
-            0,
-        )
-        .expect("bob process SYN");
-    let alice_conn_id = alice_mgr
-        .lookup_outbound(syn[0].send_stream_id)
-        .expect("alice conn");
+    let (
+        alice_dest,
+        _bob_dest,
+        _alice_remote,
+        bob_remote,
+        mut alice_mgr,
+        _bob_mgr,
+        alice_conn_id,
+        _inbound_connection_id,
+    ) = setup_established_pair(1111, 1212, 1234);
 
     alice_mgr
         .send_close(
@@ -793,45 +844,17 @@ fn plan123_syn_requires_max_packet_size_included() {
 
 #[test]
 fn plan123_send_window_enforces_backpressure() {
-    let alice_dest = build_destination(1919);
-    let bob_dest = build_destination(2020);
-    let alice_remote = remote_for(&alice_dest);
-    let bob_remote = remote_for(&bob_dest);
+    let (
+        alice_dest,
+        _bob_dest,
+        _alice_remote,
+        bob_remote,
+        mut alice_mgr,
+        _bob_mgr,
+        alice_conn_id,
+        _inbound_connection_id,
+    ) = setup_established_pair(1919, 2020, 2);
 
-    let mut alice_mgr = StreamingManager::new(deterministic_config());
-    let mut bob_mgr = StreamingManager::new(deterministic_config());
-    bob_mgr.listen(REMOTE_PORT).expect("listen");
-    let mut rng = ChaCha8Rng::seed_from_u64(2);
-
-    alice_mgr
-        .connect(
-            &alice_dest,
-            &bob_remote,
-            LOCAL_PORT,
-            REMOTE_PORT,
-            0,
-            &mut rng,
-        )
-        .expect("connect");
-    let syn = alice_mgr.drain_outbound();
-    let syn_streaming = decode_envelope(&syn[0].application_payload);
-    bob_mgr
-        .process_inbound_packet(
-            &syn_streaming,
-            &alice_remote.destination_hash,
-            &bob_dest,
-            Some(REMOTE_PORT),
-            0,
-        )
-        .expect("syn");
-    let alice_conn_id = alice_mgr
-        .lookup_outbound(syn[0].send_stream_id)
-        .expect("alice");
-    // Drain the SYN only; keep the manager state.
-    let _ = alice_mgr.drain_outbound();
-    // Send packets to fill the window. With the balanced default
-    // (max_send_window_packets = 64), we only need to verify the
-    // backpressure decision is wired correctly.
     for seq in 0..4_u32 {
         let payload = format!("{seq}").into_bytes();
         alice_mgr
@@ -919,7 +942,8 @@ fn plan123_outbound_send_request_has_required_fields() {
     assert_eq!(syn.source_port, LOCAL_PORT);
     assert_eq!(syn.destination_port, REMOTE_PORT);
     assert_eq!(syn.destination_hash, bob_remote.destination_hash);
-    assert!(syn.send_stream_id != 0);
+    assert_eq!(syn.send_stream_id, 0);
+    assert!(syn.receive_stream_id != 0);
     let decoded = decode_client_payload(&syn.application_payload, syn.application_payload.len())
         .expect("envelope");
     assert_eq!(

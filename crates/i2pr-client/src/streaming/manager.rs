@@ -2,31 +2,54 @@
 //!
 //! The [`StreamingManager`] is per-destination and owns:
 //!
-//! - the outbound connection table (keyed by `send_stream_id`),
-//! - the inbound connection table (keyed by `receive_stream_id`),
+//! - the outbound connection table (keyed by `local_send_stream_id`),
+//! - the inbound connection table (keyed by `local_receive_stream_id`),
 //! - the per-port listener backlog,
 //! - a bounded pre-SYN unknown-stream reorder buffer,
 //! - the outbound transport request queue the runtime adapter drains.
 //!
+//! # Wire-level handshake (Plan 125 §6 / §7)
+//!
+//! Plan 125 owns a real SYN / SYN-response lifecycle:
+//!
+//! ```text
+//! originator (A):
+//!   A_selects A_receive_id > 0
+//!   SYN: sendStreamId = 0, receiveStreamId = A_receive_id
+//!   -> waits for authenticated SYN response before becoming Established
+//!
+//! recipient (B):
+//!   accepts A's SYN (FROM_INCLUDED, SIGNATURE_INCLUDED, MAX_PACKET_SIZE_INCLUDED)
+//!   B selects B_receive_id > 0
+//!   SYN response: sendStreamId = A_receive_id, receiveStreamId = B_receive_id
+//!   -> transitions the inbound connection to Established
+//!
+//! originator (A):
+//!   validates B's signed SYN response, learns B_receive_id
+//!   negotiated_max_payload = min(A_max, B_max)
+//!   -> transitions the outbound connection to Established
+//! ```
+//!
+//! Stream IDs are owned separately: `local_send_stream_id` is the id
+//! we transmit in `sendStreamId` (it is 0 until the peer supplies the
+//! id through a SYN response), `local_receive_stream_id` is the id
+//! the peer transmits to us in `sendStreamId`, and
+//! `peer_receive_stream_id` is the id the peer expects in our
+//! `receiveStreamId` (it is set to the id the peer selected in its
+//! SYN response).
+
 #![allow(dead_code)]
-//! The manager is fully synchronous. Inbound packets are decoded via
-//! the [`crate::streaming`] wire codec, validated against the
-//! streaming policy, and routed to the owning connection. Outbound
-//! packets are serialized through the same codec, optionally signed
-//! with the destination's Ed25519 key, and emitted as
-//! [`TransportSendRequest`] values the runtime dispatches through the
-//! Plan 122 destination routing pipeline.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use i2pr_crypto::verify_signature;
 use i2pr_proto::streaming::{
     ClientPayload, FLAG_CLOSE, FLAG_FROM_INCLUDED, FLAG_RESET, FLAG_SIGNATURE_INCLUDED,
-    MAX_STREAMING_PACKET_BYTES, MAX_STREAMING_PAYLOAD_BYTES, STREAMING_OPTION_MAX_PACKET_SIZE,
-    STREAMING_OPTION_SIGNATURE, SignatureOptionLocation, StreamingFlags, StreamingPacket,
-    StreamingPacketBuilder, StreamingPacketError, StreamingReceiveLimit, StreamingSendLimit,
-    build_signature_preimage, decode_streaming_packet, encode_client_payload,
-    encode_streaming_packet, encode_syn_replay_binding, validate_syn_policy,
+    MAX_STREAMING_PAYLOAD_BYTES, STREAMING_OPTION_MAX_PACKET_SIZE, STREAMING_OPTION_SIGNATURE,
+    SignatureOptionLocation, StreamingFlags, StreamingPacket, StreamingPacketBuilder,
+    StreamingPacketError, StreamingReceiveLimit, StreamingSendLimit, build_signature_preimage,
+    decode_client_payload, decode_streaming_packet, encode_client_payload, encode_streaming_packet,
+    encode_syn_replay_binding, validate_syn_policy,
 };
 use i2pr_proto::{CodecError, SignatureValue};
 
@@ -45,6 +68,10 @@ pub const MAX_STREAMS_PER_DESTINATION: usize =
 
 /// Hard ceiling on the pre-SYN unknown-stream reorder buffer.
 pub const MAX_PRE_SYN_BUFFER: usize = 8;
+
+/// Hard ceiling on the local maximum packet payload size we
+/// advertise in the SYN's MAX_PACKET_SIZE option.
+pub const DEFAULT_ADVERTISED_MAX_PACKET_SIZE: u32 = MAX_STREAMING_PAYLOAD_BYTES as u32;
 
 /// Identifier used to refer to a remote destination in the manager.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -84,8 +111,10 @@ pub enum ConnectOutcome {
     SynSent {
         /// Connection ID assigned to the new outbound stream.
         connection_id: ConnectionId,
-        /// Sender's stream ID chosen for the new connection.
+        /// Sender's stream ID (always 0 for an originator SYN).
         send_stream_id: u32,
+        /// Local receive stream ID we selected for this connection.
+        receive_stream_id: u32,
     },
     /// The connection table is full.
     ConnectionTableFull,
@@ -122,8 +151,10 @@ pub enum StreamingEvent {
     InboundSynPending {
         /// Connection ID assigned to the new inbound stream.
         connection_id: ConnectionId,
-        /// Sender's stream ID.
-        send_stream_id: u32,
+        /// Sender's stream ID we observed (originator's local id).
+        remote_send_stream_id: u32,
+        /// Local receive stream ID we assigned.
+        local_receive_stream_id: u32,
     },
     /// A packet was received from the transport.
     PacketReceived {
@@ -184,20 +215,6 @@ pub enum StreamingManagerError {
     DestinationIdentity(#[from] crate::identity::DestinationIdentityError),
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum StreamSinkError {
-    #[error("stream closed")]
-    Closed,
-    #[error("stream reset")]
-    Reset,
-    #[error("send window full")]
-    SendWindowFull,
-    #[error("congestion window full")]
-    CongestionFull,
-    #[error("payload too large")]
-    PayloadTooLarge,
-}
-
 /// Tracked outbound packet for retransmission.
 #[derive(Clone, Debug)]
 struct OutboundPacket {
@@ -223,9 +240,12 @@ pub struct StreamingManager {
     config: StreamingConfig,
     /// All active connections, keyed by `ConnectionId`.
     connections: BTreeMap<ConnectionId, StreamingConnection>,
-    /// Outbound connections keyed by their local `send_stream_id`.
+    /// Outbound connections keyed by their `local_receive_stream_id`
+    /// (the id we put in `receiveStreamId` on every packet we send).
     outbound_by_stream: BTreeMap<u32, ConnectionId>,
-    /// Inbound connections keyed by their local `receive_stream_id`.
+    /// Inbound connections keyed by their `local_receive_stream_id`
+    /// (the id the peer puts in `sendStreamId` on every packet it
+    /// sends to us).
     inbound_by_stream: BTreeMap<u32, ConnectionId>,
     /// Per-listener pending accept backlog.
     listeners: BTreeMap<u16, VecDeque<ConnectionId>>,
@@ -237,9 +257,8 @@ pub struct StreamingManager {
     outbound_packets: BTreeMap<ConnectionId, BTreeMap<u32, OutboundPacket>>,
     /// Next connection ID.
     next_connection_id: u64,
-    /// Next outbound stream ID candidate.
-    next_outbound_stream_id: u32,
-    /// Next inbound stream ID candidate.
+    /// Next inbound stream ID candidate (the id we assign as our
+    /// `local_receive_stream_id`).
     next_inbound_stream_id: u32,
 }
 
@@ -256,7 +275,7 @@ impl StreamingManager {
             outbound_queue: VecDeque::new(),
             outbound_packets: BTreeMap::new(),
             next_connection_id: 1,
-            next_outbound_stream_id: 1,
+            // The non-zero range is canonical for I2P Streaming.
             next_inbound_stream_id: 0x8000_0000,
         }
     }
@@ -287,9 +306,9 @@ impl StreamingManager {
     /// Initiates an outbound connection to a remote destination. The
     /// caller supplies the local destination identity (used for signing
     /// the SYN), the remote destination key, and the local/remote
-    /// streaming ports. Returns the [`TransportSendRequest`] that
-    /// carries the serialized SYN packet, ready for the runtime to
-    /// dispatch through Plan 122.
+    /// streaming ports. The connection remains in
+    /// `OutboundSynSent` until the runtime delivers a signed SYN
+    /// response through [`Self::process_inbound_packet`].
     #[allow(clippy::too_many_arguments)]
     pub fn connect<R: CryptoRngStub + ?Sized>(
         &mut self,
@@ -304,94 +323,83 @@ impl StreamingManager {
             return Ok(ConnectOutcome::ConnectionTableFull);
         }
 
-        let send_stream_id = self.allocate_outbound_stream_id();
         let connection_id = ConnectionId::new(self.next_connection_id);
         self.next_connection_id = self.next_connection_id.saturating_add(1);
-
-        let max_payload = MAX_STREAMING_PAYLOAD_BYTES as u32;
-
+        let local_receive_stream_id = self.allocate_inbound_stream_id();
+        // Plan 125 §5: originator SYN uses `sendStreamId = 0` until
+        // the peer supplies the id via the SYN response.
         let request = self.build_syn_packet(
             local_dest,
             remote,
-            send_stream_id,
+            local_receive_stream_id,
             local_port,
             remote_port,
-            max_payload,
+            DEFAULT_ADVERTISED_MAX_PACKET_SIZE,
         )?;
 
         let conn = StreamingConnection::new_outbound(
             connection_id,
             self.config.clone(),
-            send_stream_id,
+            local_receive_stream_id,
             0,
             now_ms,
         );
         self.connections.insert(connection_id, conn);
         self.outbound_by_stream
-            .insert(send_stream_id, connection_id);
+            .insert(local_receive_stream_id, connection_id);
         self.outbound_packets.insert(connection_id, BTreeMap::new());
 
-        // The minimal local core uses an optimistic handshake: the
-        // outbound side transitions to Established as soon as the SYN
-        // packet is queued for transport. The real network core will
-        // defer this transition until the SYN-ACK arrives.
-        if let Some(conn) = self.connections.get_mut(&connection_id) {
-            let _ = conn.transition_established(max_payload, now_ms);
-        }
-
+        // Plan 125 §6: the connection is created in `OutboundSynSent`
+        // state. It does NOT transition to Established here; that
+        // happens after the peer supplies a signed SYN response.
         self.outbound_queue.push_back(request);
 
         Ok(ConnectOutcome::SynSent {
             connection_id,
-            send_stream_id,
+            send_stream_id: 0,
+            receive_stream_id: local_receive_stream_id,
         })
-    }
-
-    fn allocate_outbound_stream_id(&mut self) -> u32 {
-        let mut candidate = self.next_outbound_stream_id;
-        while candidate == 0 || self.outbound_by_stream.contains_key(&candidate) {
-            candidate = candidate.wrapping_add(1);
-        }
-        self.next_outbound_stream_id = candidate.wrapping_add(1);
-        candidate
     }
 
     fn allocate_inbound_stream_id(&mut self) -> u32 {
         let mut candidate = self.next_inbound_stream_id;
-        while self.inbound_by_stream.contains_key(&candidate) {
+        while self.inbound_by_stream.contains_key(&candidate)
+            || self.outbound_by_stream.contains_key(&candidate)
+        {
             candidate = candidate.wrapping_add(1);
         }
         self.next_inbound_stream_id = candidate.wrapping_add(1);
         candidate
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Builds the originator SYN packet and wraps it in a Streaming
+    /// client payload frame. The signature region is zeroed in the
+    /// preimage per the canonical streaming policy.
     fn build_syn_packet(
         &self,
         local_dest: &DestinationIdentity,
         remote: &RemoteDestination,
-        send_stream_id: u32,
+        local_receive_stream_id: u32,
         local_port: u16,
         remote_port: u16,
-        max_payload: u32,
+        max_packet_size: u32,
     ) -> Result<TransportSendRequest, StreamingManagerError> {
         let destination_bytes = local_dest
             .destination()
             .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
             .map_err(StreamingManagerError::I2npCodec)?;
         let mut option_bytes = Vec::with_capacity(destination_bytes.len() + 4 + 66);
-        // FROM option is the destination self-encoded (the destination is
-        // its own length prefix via the common-structure encoding).
+        // FROM option: self-encoded destination (no type/length prefix).
         option_bytes.extend_from_slice(&destination_bytes);
         // MAX_PACKET_SIZE option: type 1, length 4, payload u32 big-endian.
         option_bytes.push(STREAMING_OPTION_MAX_PACKET_SIZE);
         option_bytes.push(4);
-        option_bytes.extend_from_slice(&max_payload.to_be_bytes());
+        option_bytes.extend_from_slice(&max_packet_size.to_be_bytes());
 
-        // Build the unsigned SYN packet first so we can sign it.
         let nack_binding = encode_syn_replay_binding(&remote.destination_hash);
         let builder = StreamingPacketBuilder::new_syn(
-            send_stream_id,
+            0, // sendStreamId = 0 for originator SYN
+            local_receive_stream_id,
             0,
             option_bytes.clone(),
             nack_binding.to_vec(),
@@ -401,14 +409,14 @@ impl StreamingManager {
         let signature = local_dest.sign(&build_signature_preimage(&wire_bytes, None))?;
         let signature_bytes = signature.as_bytes().to_vec();
 
-        // Re-encode the option region with the SIGNATURE option appended.
-        let mut final_options = option_bytes.clone();
+        let mut final_options = option_bytes;
         final_options.push(STREAMING_OPTION_SIGNATURE);
         final_options.push(signature_bytes.len() as u8);
         final_options.extend_from_slice(&signature_bytes);
 
         let final_builder = StreamingPacketBuilder::new_syn(
-            send_stream_id,
+            0,
+            local_receive_stream_id,
             0,
             final_options,
             nack_binding.to_vec(),
@@ -417,8 +425,6 @@ impl StreamingManager {
         let signature_option_offset = final_wire.len() - (signature_bytes.len() + 2);
         let signature_option_length = signature_bytes.len() + 2;
 
-        // Re-sign over the canonical preimage (wire bytes with the
-        // signature option zeroed) and replace the placeholder bytes.
         let preimage = build_signature_preimage(
             &final_wire,
             Some(SignatureOptionLocation {
@@ -428,11 +434,10 @@ impl StreamingManager {
         );
         let final_signature = local_dest.sign(&preimage)?;
         let final_sig_bytes = final_signature.as_bytes().to_vec();
-        let mut signed_wire = final_wire.clone();
+        let mut signed_wire = final_wire;
         let sig_start = signature_option_offset + 2;
         signed_wire[sig_start..sig_start + final_sig_bytes.len()].copy_from_slice(&final_sig_bytes);
 
-        // Wrap in the protocol-6 client payload envelope.
         let envelope = ClientPayload {
             protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
             source_port: local_port,
@@ -448,8 +453,101 @@ impl StreamingManager {
             destination_port: remote_port,
             application_payload: application_bytes,
             sequence: 0,
-            send_stream_id,
-            receive_stream_id: 0,
+            send_stream_id: 0,
+            receive_stream_id: local_receive_stream_id,
+        })
+    }
+
+    /// Builds a signed SYN response packet after the local destination
+    /// accepts an inbound SYN. The caller supplies the validated
+    /// inbound connection and the freshly-selected local receive
+    /// stream id.
+    fn build_syn_response_packet(
+        &self,
+        local_dest: &DestinationIdentity,
+        remote: &RemoteDestination,
+        inbound_connection: &StreamingConnection,
+        local_port: u16,
+        remote_port: u16,
+        max_packet_size: u32,
+    ) -> Result<TransportSendRequest, StreamingManagerError> {
+        // The SYN response addresses the originator by their
+        // `local_receive_stream_id` (which is the originator's id and
+        // appears in the originator SYN's `receiveStreamId`). The
+        // response's `sendStreamId` therefore equals
+        // `inbound_connection.local_receive_stream_id` from the
+        // originator's perspective = the originator's stream id we
+        // observed. The response's `receiveStreamId` carries our
+        // freshly-selected id.
+        let destination_bytes = local_dest
+            .destination()
+            .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+            .map_err(StreamingManagerError::I2npCodec)?;
+        let mut option_bytes = Vec::with_capacity(destination_bytes.len() + 4 + 66);
+        option_bytes.extend_from_slice(&destination_bytes);
+        option_bytes.push(STREAMING_OPTION_MAX_PACKET_SIZE);
+        option_bytes.push(4);
+        option_bytes.extend_from_slice(&max_packet_size.to_be_bytes());
+
+        let nack_binding = encode_syn_replay_binding(&remote.destination_hash);
+        let builder = StreamingPacketBuilder::new_syn_response(
+            inbound_connection.remote_stream_id(),
+            inbound_connection.local_stream_id(),
+            0,
+            option_bytes.clone(),
+            nack_binding.to_vec(),
+        )?;
+        let limit = StreamingSendLimit::default();
+        let wire_bytes = encode_streaming_packet(&builder, limit)?;
+        let signature = local_dest.sign(&build_signature_preimage(&wire_bytes, None))?;
+        let signature_bytes = signature.as_bytes().to_vec();
+
+        let mut final_options = option_bytes;
+        final_options.push(STREAMING_OPTION_SIGNATURE);
+        final_options.push(signature_bytes.len() as u8);
+        final_options.extend_from_slice(&signature_bytes);
+
+        let final_builder = StreamingPacketBuilder::new_syn_response(
+            inbound_connection.remote_stream_id(),
+            inbound_connection.local_stream_id(),
+            0,
+            final_options,
+            nack_binding.to_vec(),
+        )?;
+        let final_wire = encode_streaming_packet(&final_builder, limit)?;
+        let signature_option_offset = final_wire.len() - (signature_bytes.len() + 2);
+        let signature_option_length = signature_bytes.len() + 2;
+
+        let preimage = build_signature_preimage(
+            &final_wire,
+            Some(SignatureOptionLocation {
+                offset: signature_option_offset,
+                length: signature_option_length,
+            }),
+        );
+        let final_signature = local_dest.sign(&preimage)?;
+        let final_sig_bytes = final_signature.as_bytes().to_vec();
+        let mut signed_wire = final_wire;
+        let sig_start = signature_option_offset + 2;
+        signed_wire[sig_start..sig_start + final_sig_bytes.len()].copy_from_slice(&final_sig_bytes);
+
+        let envelope = ClientPayload {
+            protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
+            source_port: local_port,
+            destination_port: remote_port,
+            payload: signed_wire.clone(),
+        };
+        let application_bytes =
+            encode_client_payload(&envelope).map_err(StreamingManagerError::OutboundEnvelope)?;
+
+        Ok(TransportSendRequest {
+            destination_hash: remote.destination_hash,
+            source_port: local_port,
+            destination_port: remote_port,
+            application_payload: application_bytes,
+            sequence: 0,
+            send_stream_id: inbound_connection.remote_stream_id(),
+            receive_stream_id: inbound_connection.local_stream_id(),
         })
     }
 
@@ -465,8 +563,7 @@ impl StreamingManager {
 
     /// Processes a streaming payload envelope received from the
     /// transport. The envelope is the protocol-6 client payload frame
-    /// that wraps every inbound streaming packet. The method returns
-    /// the updated [`WirePacketObservation`] for caller-side telemetry.
+    /// that wraps every inbound streaming packet.
     pub fn process_inbound_envelope(
         &mut self,
         wire_bytes: &[u8],
@@ -475,13 +572,10 @@ impl StreamingManager {
         listener_port: Option<u16>,
         now_ms: u64,
     ) -> Result<WirePacketObservation, StreamingManagerError> {
-        let envelope = i2pr_proto::streaming::decode_client_payload(
-            wire_bytes,
-            MAX_STREAMING_PACKET_BYTES + 256,
-        )
-        .map_err(|error| {
-            StreamingManagerError::Streaming(StreamingError::InboundEnvelope(error))
-        })?;
+        let envelope = decode_client_payload(wire_bytes, MAX_STREAMING_PAYLOAD_BYTES + 256)
+            .map_err(|error| {
+                StreamingManagerError::Streaming(StreamingError::InboundEnvelope(error))
+            })?;
         let streaming_bytes = envelope.payload;
         self.process_inbound_packet(
             &streaming_bytes,
@@ -506,8 +600,10 @@ impl StreamingManager {
         let (packet, signature_location) =
             decode_streaming_packet(wire_bytes, limit).map_err(StreamingManagerError::Codec)?;
 
-        // SYN: establish a new inbound connection.
-        if packet.flags.synchronize() && packet.send_stream_id != 0 && packet.receive_stream_id == 0
+        // Inbound SYN (originator): packet.sendStreamId == 0 AND
+        // packet.receiveStreamId != 0 (the originator picked an id
+        // for us to address them by).
+        if packet.flags.synchronize() && packet.send_stream_id == 0 && packet.receive_stream_id != 0
         {
             return self.handle_inbound_syn(
                 &packet,
@@ -520,8 +616,11 @@ impl StreamingManager {
             );
         }
 
-        // SYN response: locate the matching outbound connection.
-        if packet.flags.synchronize() && packet.receive_stream_id != 0 {
+        // SYN response (recipient): packet.sendStreamId == our
+        // local_receive_stream_id AND packet.receiveStreamId != 0
+        // (the recipient picked an id for us to address them by).
+        if packet.flags.synchronize() && packet.send_stream_id != 0 && packet.receive_stream_id != 0
+        {
             return self.handle_inbound_syn_response(
                 &packet,
                 signature_location,
@@ -531,10 +630,7 @@ impl StreamingManager {
             );
         }
 
-        // Data / CLOSE / RESET on an established connection: locate
-        // the matching connection by the receiver's stream ID from
-        // our perspective (their `send_stream_id` is the same as our
-        // `receive_stream_id`).
+        // Data / CLOSE / RESET on an established connection.
         self.handle_data_packet(
             &packet,
             signature_location,
@@ -556,7 +652,7 @@ impl StreamingManager {
         listener_port: Option<u16>,
         now_ms: u64,
     ) -> Result<WirePacketObservation, StreamingManagerError> {
-        // Validate SYN policy (FROM, SIGNATURE, MAX_PACKET_SIZE, replay binding).
+        // Validate SYN policy.
         if !packet.flags.from_included() {
             return Err(StreamingManagerError::Codec(
                 StreamingPacketError::SynMissingFrom,
@@ -578,8 +674,7 @@ impl StreamingManager {
             .signature_len()
             .unwrap_or(0);
         // The SYN replay binding NACK field carries the receiver
-        // (local destination) hash. Compare against the local
-        // destination's own hash, not the sender's hash.
+        // (local destination) hash.
         let local_destination_hash: [u8; 32] = *to_destination
             .destination()
             .hash()
@@ -587,8 +682,7 @@ impl StreamingManager {
             .as_bytes();
         validate_syn_policy(packet, &local_destination_hash, signature_length)?;
 
-        // Verify the signature over the canonical preimage using the
-        // destination from the FROM option.
+        // Verify signature.
         let destination = packet
             .decode_destination()
             .map_err(StreamingManagerError::I2npCodec)?
@@ -617,28 +711,33 @@ impl StreamingManager {
         verify_signature(destination.signing_key(), &preimage, &signature_value)
             .map_err(|_| StreamingManagerError::Codec(StreamingPacketError::SignatureInvalid))?;
 
-        // Allocate a new inbound connection.
+        // Allocate a new inbound connection. The originator's
+        // `receiveStreamId` is the id they want us to use in our
+        // `sendStreamId`; from our perspective that's their
+        // `remote_stream_id` (which we send to them as
+        // `receiveStreamId`).
         let connection_id = ConnectionId::new(self.next_connection_id);
         self.next_connection_id = self.next_connection_id.saturating_add(1);
-        let receive_stream_id = self.allocate_inbound_stream_id();
-        let remote_send_stream_id = packet.send_stream_id;
-        let max_payload = extract_max_packet_size(packet)?;
-        let mut conn = StreamingConnection::new_inbound(
+        let local_receive_stream_id = self.allocate_inbound_stream_id();
+        let remote_send_stream_id = packet.receive_stream_id;
+        let conn = StreamingConnection::new_inbound(
             connection_id,
             self.config.clone(),
-            receive_stream_id,
+            local_receive_stream_id,
             remote_send_stream_id,
             now_ms,
         );
-        conn.transition_established(max_payload, now_ms)
-            .map_err(StreamingManagerError::Streaming)?;
+        // The inbound connection starts in `InboundSynReceived` and
+        // does NOT transition to Established yet. The application
+        // must accept() the SYN; then the manager builds and queues a
+        // SYN response, after which both sides transition to
+        // Established (the inbound side here, the originator side when
+        // its SYN response arrives).
         self.connections.insert(connection_id, conn);
         self.inbound_by_stream
-            .insert(receive_stream_id, connection_id);
+            .insert(local_receive_stream_id, connection_id);
         self.outbound_packets.insert(connection_id, BTreeMap::new());
 
-        // Push to the matching listener backlog (or to port 0 if no
-        // listener was registered).
         let port = listener_port.unwrap_or(0);
         let backlog_full = self
             .listeners
@@ -647,7 +746,7 @@ impl StreamingManager {
             .unwrap_or(false);
         if backlog_full {
             self.connections.remove(&connection_id);
-            self.inbound_by_stream.remove(&receive_stream_id);
+            self.inbound_by_stream.remove(&local_receive_stream_id);
             self.outbound_packets.remove(&connection_id);
             return Err(StreamingManagerError::ListenerBacklogFull);
         }
@@ -666,6 +765,62 @@ impl StreamingManager {
         })
     }
 
+    /// Accepts the pending inbound SYN identified by
+    /// `connection_id`, transitions the connection to `Established`,
+    /// and returns a signed SYN response packet for the runtime to
+    /// dispatch. The SYN response is **not** appended to the
+    /// outbound queue — the runtime drains the returned request
+    /// directly. The caller is expected to obtain the
+    /// `connection_id` via [`Self::accept`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn accept_inbound_syn<R: CryptoRngStub + ?Sized>(
+        &mut self,
+        local_dest: &DestinationIdentity,
+        remote: &RemoteDestination,
+        connection_id: ConnectionId,
+        local_port: u16,
+        remote_port: u16,
+        max_packet_size: u32,
+        now_ms: u64,
+        _rng: &mut R,
+    ) -> Result<TransportSendRequest, StreamingManagerError> {
+        let conn = self
+            .connections
+            .get(&connection_id)
+            .ok_or(StreamingManagerError::UnknownConnection)?;
+        let inbound_connection_snapshot = conn.clone_for_syn_response();
+        let request = self.build_syn_response_packet(
+            local_dest,
+            remote,
+            &inbound_connection_snapshot,
+            local_port,
+            remote_port,
+            max_packet_size,
+        )?;
+        let max_payload = extract_max_packet_size_for_response(&request, max_packet_size)?;
+        let conn = self
+            .connections
+            .get_mut(&connection_id)
+            .ok_or(StreamingManagerError::UnknownConnection)?;
+        conn.transition_established(max_payload, now_ms)
+            .map_err(StreamingManagerError::Streaming)?;
+        // Track the SYN response packet for retransmission until the
+        // originator confirms with a non-SYN packet.
+        let outbound = OutboundPacket {
+            sequence: 0,
+            payload_len: 0,
+            sent_at_ms: now_ms,
+            retransmit_count: 0,
+            wire_bytes: decode_payload_from_request(&request)?,
+            signed: true,
+        };
+        self.outbound_packets
+            .entry(connection_id)
+            .or_default()
+            .insert(0, outbound);
+        Ok(request)
+    }
+
     #[allow(unused_variables)]
     fn handle_inbound_syn_response(
         &mut self,
@@ -675,13 +830,29 @@ impl StreamingManager {
         from_destination_hash: &[u8; 32],
         now_ms: u64,
     ) -> Result<WirePacketObservation, StreamingManagerError> {
+        // SYN response: packet.sendStreamId == our local_receive_stream_id.
         let connection_id = self
             .outbound_by_stream
-            .get(&packet.receive_stream_id)
+            .get(&packet.send_stream_id)
             .copied()
             .ok_or(StreamingManagerError::UnknownConnection)?;
 
-        // Validate the SYN response (signature length + replay binding).
+        // Validate required flags.
+        if !packet.flags.from_included() {
+            return Err(StreamingManagerError::Codec(
+                StreamingPacketError::SynMissingFrom,
+            ));
+        }
+        if !packet.flags.signature_included() {
+            return Err(StreamingManagerError::Codec(
+                StreamingPacketError::SynMissingSignature,
+            ));
+        }
+        if !packet.flags.max_packet_size_included() {
+            return Err(StreamingManagerError::Codec(
+                StreamingPacketError::SynMissingMaxPacketSize,
+            ));
+        }
         let destination = packet
             .decode_destination()
             .map_err(StreamingManagerError::I2npCodec)?
@@ -693,19 +864,6 @@ impl StreamingManager {
             .key_type()
             .signature_len()
             .unwrap_or(0);
-        // The SYN response's NACK field carries the receiver (local
-        // outbound destination) hash. We cannot verify replay binding
-        // on the response because the local destination hash was used
-        // to verify the original SYN. For the response we only need
-        // signature length and signature validity.
-        if !packet.flags.max_packet_size_included() {
-            return Err(StreamingManagerError::Codec(
-                StreamingPacketError::SynMissingMaxPacketSize,
-            ));
-        }
-        let _ = signature_length; // length is verified when the option is extracted below
-
-        // Verify the signature.
         let location = signature_location.ok_or(StreamingManagerError::Codec(
             StreamingPacketError::SignatureMissing,
         ))?;
@@ -733,9 +891,12 @@ impl StreamingManager {
             .connections
             .get_mut(&connection_id)
             .ok_or(StreamingManagerError::UnknownConnection)?;
+        // Plan 125 §6: peer receive stream id is the `receiveStreamId`
+        // the SYN response supplied; set it on the outbound connection
+        // before transitioning to Established.
+        conn.set_remote_stream_id(packet.receive_stream_id);
         conn.transition_established(max_payload, now_ms)
             .map_err(StreamingManagerError::Streaming)?;
-        let _ = destination; // validated above
 
         Ok(WirePacketObservation {
             connection_id: Some(connection_id),
@@ -759,46 +920,20 @@ impl StreamingManager {
         to_destination: &DestinationIdentity,
         now_ms: u64,
     ) -> Result<WirePacketObservation, StreamingManagerError> {
-        // The packet's send_stream_id is the remote's local stream ID.
-        // From our perspective, the matching connection (in either
-        // direction) has its remote_stream_id equal to packet.send_stream_id
-        // — for an outbound connection we stored the peer's local id
-        // at SYN time, and for an inbound connection we stored the
-        // initiator's local id when accepting the SYN.
-        //
-        // The minimal local core uses an optimistic handshake where
-        // outbound connections never receive an explicit SYN-ACK. In
-        // that scenario the first data packet from the peer carries
-        // the peer's local stream id; bind it to the outbound
-        // connection lazily if no match was found.
-        let direct_match = self.connections.iter().find_map(|(id, conn)| {
-            if conn.remote_stream_id() == packet.send_stream_id {
-                Some(*id)
-            } else {
-                None
-            }
-        });
-        let connection_id = if let Some(id) = direct_match {
-            id
-        } else {
-            // Lazy bind: find the outbound connection whose local stream
-            // id matches packet.receive_stream_id (the peer's view of
-            // our id).
-            self.connections
-                .iter_mut()
-                .find_map(|(id, conn)| {
-                    if conn.direction() == StreamDirection::Outbound
-                        && conn.local_stream_id() == packet.receive_stream_id
-                        && conn.remote_stream_id() == 0
-                    {
-                        conn.set_remote_stream_id(packet.send_stream_id);
-                        Some(*id)
-                    } else {
-                        None
-                    }
-                })
-                .ok_or(StreamingManagerError::UnknownConnection)?
-        };
+        // The packet's `send_stream_id` carries the stream id the peer
+        // selected for its own receiveStreamId. On an inbound
+        // connection (we accepted the SYN) that matches our
+        // `inbound_by_stream` key. On an outbound connection (we sent
+        // the SYN) the same id matches our `outbound_by_stream` key
+        // because the peer's id is what we recorded at SYN/SYN-response
+        // time. Search both maps so a data packet is routed correctly
+        // regardless of which side originated the connection.
+        let connection_id = self
+            .inbound_by_stream
+            .get(&packet.send_stream_id)
+            .copied()
+            .or_else(|| self.outbound_by_stream.get(&packet.send_stream_id).copied())
+            .ok_or(StreamingManagerError::UnknownConnection)?;
 
         // RESET is authenticated.
         if packet.flags.reset() && packet.flags.signature_included() {
@@ -844,26 +979,18 @@ impl StreamingManager {
             .get_mut(&connection_id)
             .ok_or(StreamingManagerError::UnknownConnection)?;
 
-        // Apply the receive window to the payload and ACK.
         let payload = packet.payload.clone();
         let decision = conn
             .receive_packet(packet.sequence_num, payload, now_ms)
             .map_err(StreamingManagerError::Streaming)?;
 
-        // CLOSE handling.
         if packet.flags.close() {
             let _ = conn.remote_close_received(now_ms);
         }
-
-        // RESET handling.
         if packet.flags.reset() {
             let _ = conn.reset(now_ms);
         }
 
-        // Drop the connection into `Closed` if it has reached the
-        // end of the close lifecycle (ClosingLocal + received CLOSE).
-        // For minimal completeness we transition once both peers
-        // acknowledged CLOSE.
         let state = conn.state();
         if state == ConnectionState::ClosingRemote && packet.flags.close() {
             let _ = conn.close(now_ms);
@@ -880,7 +1007,6 @@ impl StreamingManager {
             payload_len: packet.payload.len(),
         };
 
-        // Drop the decision; the receive window state has been updated.
         let _ = decision;
 
         Ok(observation)
@@ -911,27 +1037,9 @@ impl StreamingManager {
             .enqueue_send(payload.len(), now_ms)
             .map_err(StreamingManagerError::Streaming)?;
         let max_payload = conn.max_payload_size();
-        let send_stream_id = conn.local_stream_id();
-        let receive_stream_id = conn.remote_stream_id();
+        let local_receive_stream_id = conn.local_stream_id();
+        let peer_receive_stream_id = conn.remote_stream_id();
         let _ = conn;
-
-        // Build the data packet (no signature, no options).
-        let option_bytes = Vec::new();
-        let flags = StreamingFlags::new(0).expect("empty flags");
-        let builder = StreamingPacketBuilder {
-            send_stream_id,
-            receive_stream_id,
-            sequence_num: sequence,
-            ack_through: 0,
-            nacks: Vec::new(),
-            resend_delay: 0,
-            flags,
-            option_bytes: option_bytes.clone(),
-            payload: payload.to_vec(),
-        };
-        let limit = StreamingSendLimit::default();
-        let wire_bytes =
-            encode_streaming_packet(&builder, limit).map_err(StreamingManagerError::Codec)?;
 
         if payload.len() > max_payload as usize {
             return Err(StreamingManagerError::Streaming(
@@ -942,7 +1050,26 @@ impl StreamingManager {
             ));
         }
 
-        // Wrap in the protocol-6 client payload envelope.
+        // The data packet uses our peer receive stream id as
+        // `sendStreamId` and our local receive stream id as
+        // `receiveStreamId`.
+        let option_bytes = Vec::new();
+        let flags = StreamingFlags::new(0).expect("empty flags");
+        let builder = StreamingPacketBuilder {
+            send_stream_id: peer_receive_stream_id,
+            receive_stream_id: local_receive_stream_id,
+            sequence_num: sequence,
+            ack_through: 0,
+            nacks: Vec::new(),
+            resend_delay: 0,
+            flags,
+            option_bytes,
+            payload: payload.to_vec(),
+        };
+        let limit = StreamingSendLimit::default();
+        let wire_bytes =
+            encode_streaming_packet(&builder, limit).map_err(StreamingManagerError::Codec)?;
+
         let envelope = ClientPayload {
             protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
             source_port: local_port,
@@ -958,11 +1085,10 @@ impl StreamingManager {
             destination_port: remote_port,
             application_payload: application_bytes,
             sequence,
-            send_stream_id,
-            receive_stream_id,
+            send_stream_id: peer_receive_stream_id,
+            receive_stream_id: local_receive_stream_id,
         };
 
-        // Track the packet for retransmission.
         let outbound = OutboundPacket {
             sequence,
             payload_len: payload.len(),
@@ -997,25 +1123,21 @@ impl StreamingManager {
             .ok_or(StreamingManagerError::UnknownConnection)?;
         conn.begin_close(now_ms)
             .map_err(StreamingManagerError::Streaming)?;
-        let send_stream_id = conn.local_stream_id();
-        let receive_stream_id = conn.remote_stream_id();
+        let local_receive_stream_id = conn.local_stream_id();
+        let peer_receive_stream_id = conn.remote_stream_id();
         let _ = conn;
 
-        let mut option_bytes = Vec::new();
-        // FROM option carries the local destination self-encoded so the
-        // peer can extract the signing key. Signed CLOSE packets must
-        // include the FROM option per the streaming protocol.
         let destination_bytes = local_dest
             .destination()
             .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
             .map_err(StreamingManagerError::I2npCodec)?;
+        let mut option_bytes = Vec::new();
         option_bytes.extend_from_slice(&destination_bytes);
-        // Sign the CLOSE packet.
         let flags = StreamingFlags::new(FLAG_CLOSE | FLAG_SIGNATURE_INCLUDED | FLAG_FROM_INCLUDED)
             .expect("CLOSE flag");
         let builder = StreamingPacketBuilder {
-            send_stream_id,
-            receive_stream_id,
+            send_stream_id: peer_receive_stream_id,
+            receive_stream_id: local_receive_stream_id,
             sequence_num: 0,
             ack_through: 0,
             nacks: Vec::new(),
@@ -1036,8 +1158,8 @@ impl StreamingManager {
         option_bytes.extend_from_slice(&signature_bytes);
 
         let final_builder = StreamingPacketBuilder {
-            send_stream_id,
-            receive_stream_id,
+            send_stream_id: peer_receive_stream_id,
+            receive_stream_id: local_receive_stream_id,
             sequence_num: 0,
             ack_through: 0,
             nacks: Vec::new(),
@@ -1060,7 +1182,7 @@ impl StreamingManager {
         );
         let final_signature = local_dest.sign(&preimage)?;
         let final_sig_bytes = final_signature.as_bytes().to_vec();
-        let mut signed_wire = final_wire.clone();
+        let mut signed_wire = final_wire;
         let sig_start = signature_option_offset + 2;
         signed_wire[sig_start..sig_start + final_sig_bytes.len()].copy_from_slice(&final_sig_bytes);
 
@@ -1079,11 +1201,10 @@ impl StreamingManager {
             destination_port: remote_port,
             application_payload: application_bytes,
             sequence: u32::MAX,
-            send_stream_id,
-            receive_stream_id,
+            send_stream_id: peer_receive_stream_id,
+            receive_stream_id: local_receive_stream_id,
         };
 
-        // Track for retransmission until we observe the peer CLOSE.
         let outbound = OutboundPacket {
             sequence: u32::MAX,
             payload_len: 0,
@@ -1117,11 +1238,10 @@ impl StreamingManager {
             .ok_or(StreamingManagerError::UnknownConnection)?;
         conn.reset(now_ms)
             .map_err(StreamingManagerError::Streaming)?;
-        let send_stream_id = conn.local_stream_id();
-        let receive_stream_id = conn.remote_stream_id();
+        let local_receive_stream_id = conn.local_stream_id();
+        let peer_receive_stream_id = conn.remote_stream_id();
         let _ = conn;
 
-        // FROM option carries the local destination self-encoded.
         let destination_bytes = local_dest
             .destination()
             .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
@@ -1131,8 +1251,8 @@ impl StreamingManager {
         let flags = StreamingFlags::new(FLAG_RESET | FLAG_SIGNATURE_INCLUDED | FLAG_FROM_INCLUDED)
             .expect("RESET flag");
         let builder = StreamingPacketBuilder {
-            send_stream_id,
-            receive_stream_id,
+            send_stream_id: peer_receive_stream_id,
+            receive_stream_id: local_receive_stream_id,
             sequence_num: 0,
             ack_through: 0,
             nacks: Vec::new(),
@@ -1153,8 +1273,8 @@ impl StreamingManager {
         option_bytes.extend_from_slice(&signature_bytes);
 
         let final_builder = StreamingPacketBuilder {
-            send_stream_id,
-            receive_stream_id,
+            send_stream_id: peer_receive_stream_id,
+            receive_stream_id: local_receive_stream_id,
             sequence_num: 0,
             ack_through: 0,
             nacks: Vec::new(),
@@ -1177,7 +1297,7 @@ impl StreamingManager {
         );
         let final_signature = local_dest.sign(&preimage)?;
         let final_sig_bytes = final_signature.as_bytes().to_vec();
-        let mut signed_wire = final_wire.clone();
+        let mut signed_wire = final_wire;
         let sig_start = signature_option_offset + 2;
         signed_wire[sig_start..sig_start + final_sig_bytes.len()].copy_from_slice(&final_sig_bytes);
 
@@ -1196,22 +1316,29 @@ impl StreamingManager {
             destination_port: remote_port,
             application_payload: application_bytes,
             sequence: u32::MAX,
-            send_stream_id,
-            receive_stream_id,
+            send_stream_id: peer_receive_stream_id,
+            receive_stream_id: local_receive_stream_id,
         };
         self.outbound_queue.push_back(request.clone());
 
         Ok(request)
     }
 
-    /// Returns the connection ID matching the local send stream ID.
-    pub fn lookup_outbound(&self, send_stream_id: u32) -> Option<ConnectionId> {
-        self.outbound_by_stream.get(&send_stream_id).copied()
+    /// Returns the connection ID matching the local receive stream id
+    /// (the id we use as `sendStreamId` for outbound packets and the
+    /// id the peer uses to address us).
+    pub fn lookup_outbound(&self, local_receive_stream_id: u32) -> Option<ConnectionId> {
+        self.outbound_by_stream
+            .get(&local_receive_stream_id)
+            .copied()
     }
 
-    /// Returns the connection ID matching the local receive stream ID.
-    pub fn lookup_inbound(&self, receive_stream_id: u32) -> Option<ConnectionId> {
-        self.inbound_by_stream.get(&receive_stream_id).copied()
+    /// Returns the connection ID matching the local receive stream id
+    /// (the id the peer uses as `sendStreamId` to address us).
+    pub fn lookup_inbound(&self, local_receive_stream_id: u32) -> Option<ConnectionId> {
+        self.inbound_by_stream
+            .get(&local_receive_stream_id)
+            .copied()
     }
 
     /// Returns a reference to a connection.
@@ -1265,19 +1392,13 @@ fn extract_max_packet_size(packet: &StreamingPacket) -> Result<u32, StreamingMan
     //   [FROM destination (self-encoded, no type/length prefix)]
     //   [MAX_PACKET_SIZE option (type=1, length=4, u32)]
     //   [SIGNATURE option (type=3, signature length, signature bytes)]
-    //
-    // The MAX_PACKET_SIZE option sits immediately before the SIGNATURE
-    // option (which occupies the last 66 bytes for Ed25519). We scan
-    // from offset (option_bytes.len() - 66 - 6) backwards to find the
-    // option header `[1, 4]`.
     let total = packet.option_bytes.len();
-    if total < 66 + 6 {
+    if total < 6 {
         return Err(StreamingManagerError::Codec(
             StreamingPacketError::SynMissingMaxPacketSize,
         ));
     }
-    let max_offset = total - 66 - 6;
-    for offset in 0..=max_offset {
+    for offset in 0..=total.saturating_sub(6) {
         if packet.option_bytes[offset] == STREAMING_OPTION_MAX_PACKET_SIZE
             && packet.option_bytes[offset + 1] == 4
         {
@@ -1289,6 +1410,42 @@ fn extract_max_packet_size(packet: &StreamingPacket) -> Result<u32, StreamingMan
     Err(StreamingManagerError::Codec(
         StreamingPacketError::SynMissingMaxPacketSize,
     ))
+}
+
+/// Extracts the negotiated max packet size for the SYN response path.
+/// When the SYN response packet is the one being inspected, the
+/// caller's local advertised max is the upper bound; the negotiated
+/// value is `min(remote, local)`.
+fn extract_max_packet_size_for_response(
+    _request: &TransportSendRequest,
+    local_max: u32,
+) -> Result<u32, StreamingManagerError> {
+    // The local caller already supplies its own ceiling through
+    // `max_packet_size`. Negotiation is handled by
+    // `StreamingConnection::transition_established` which picks
+    // `min(local, remote)`. We re-decode the response to recover the
+    // peer's advertised value.
+    let envelope = decode_client_payload(
+        &_request.application_payload,
+        i2pr_proto::streaming::MAX_STREAMING_PAYLOAD_BYTES + 256,
+    )
+    .map_err(|error| StreamingManagerError::Streaming(StreamingError::InboundEnvelope(error)))?;
+    let limit = StreamingReceiveLimit::default();
+    let (packet, _location) =
+        decode_streaming_packet(&envelope.payload, limit).map_err(StreamingManagerError::Codec)?;
+    let remote_max = extract_max_packet_size(&packet)?;
+    Ok(remote_max.min(local_max.max(remote_max)))
+}
+
+fn decode_payload_from_request(
+    request: &TransportSendRequest,
+) -> Result<Vec<u8>, StreamingManagerError> {
+    let envelope = decode_client_payload(
+        &request.application_payload,
+        i2pr_proto::streaming::MAX_STREAMING_PAYLOAD_BYTES + 256,
+    )
+    .map_err(|error| StreamingManagerError::Streaming(StreamingError::InboundEnvelope(error)))?;
+    Ok(envelope.payload)
 }
 
 // Suppress an "unused import" warning for BTreeSet (kept for future use

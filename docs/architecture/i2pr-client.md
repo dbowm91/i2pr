@@ -43,28 +43,30 @@ plan, including the canonical
 regression at the OBEP, and successful A → B → A New Session trajectory
 through real destination-owned outbound and inbound tunnel roles.
 
-Plan 123 layers the first I2P Streaming core on top of Plan 122
-([Plan 123](../plans/123-m6-minimal-streaming-core.md)). The new
-`streaming` module owns `StreamingManager`, the per-destination
+Plan 125 layers the corrected I2P Streaming core on top of Plan 122
+([Plan 125](../plans/125-m6-streaming-corrective-and-local-closure.md)).
+The new `streaming` module owns `StreamingManager`, the per-destination
 outbound and inbound connection tables, listener backlogs, send /
-receive windows, congestion and retransmit policies, and a typed
-event surface. The wire codec is supplied by the new
-`i2pr-proto::streaming` module (`StreamingPacket`,
-`StreamingPacketBuilder`, signed SYN replay binding, signed CLOSE /
-RESET, `build_signature_preimage`, and the protocol-6 `ClientPayload`
-envelope). Plan 123 composes with `compose_outbound_delivery` for
-outbound composition and `DestinationDispatcher` for inbound
-routing; it never owns sockets, timers, or DNS. Plan 123 remains
-`provisional-awaiting-plan125-correction` until Plan 125 corrects the
-`ClientPayload` framing (canonical RFC 1952 gzip, no SHA-256 prefix,
-no custom compressed-length prefix) and the connection-establishment
-state machine (no optimistic local Established before peer SYN
-response).
+receive windows, congestion and retransmit policies, the corrected
+`SystemClock`, and the typed event surface. The wire codec is
+supplied by the new `i2pr-proto::streaming` module
+(`StreamingPacket`, `StreamingPacketBuilder`, signed SYN replay
+binding, signed CLOSE / RESET, `build_signature_preimage`, and the
+canonical RFC 1952 gzip protocol-6 `ClientPayload` envelope — no
+SHA-256 integrity prefix, no custom compressed-length prefix, bounded
+decompressed-size enforcement, explicit trailing-byte rejection).
+Plan 125 composes with `compose_outbound_delivery` for outbound
+composition and `DestinationDispatcher` for inbound routing
+through the runtime-neutral
+`StreamingDestinationAdapter`; it never owns sockets, timers, or
+DNS. Plan 125 closed as `passed-milestone6-local-corrective-closure`
+and is the Milestone 6 local-product gate.
+
 authenticated-router link between an outbound endpoint and the remote
 inbound gateway remains the only transport omission.
 
-NTCP2 / SSU2 / public-network transport and the streaming protocol are out
-of scope here; they live in the Plan 123 follow-on plan.
+NTCP2 / SSU2 / public-network transport is out of scope here; the
+SAM / I2CP adapters live in the Milestone 7 follow-on planning.
 
 ## Layering
 
@@ -77,29 +79,28 @@ i2pr-client
   -> i2pr-tunnel     (BoundedTunnelPool = ExploratoryPool, EstablishedMaterial)
 ```
 
-Plan 123 adds the first I2P Streaming core to `i2pr-client`:
+Plan 125 adds the corrected I2P Streaming core to `i2pr-client`:
 
 ```text
 i2pr-client::streaming
-  -> StreamingManager (per-destination, synchronous, deterministic clock)
+  -> StreamingManager (per-destination, synchronous, deterministic clock,
+     real Plan 125 §6/§7 SYN / SYN-response lifecycle, bidirectional
+     inbound_by_stream / outbound_by_stream connection lookup)
     -> StreamingConnection state machine (OutboundSynSent, InboundSynReceived,
        Established, ClosingLocal, ClosingRemote, Reset, Closed)
     -> wire codec: i2pr-proto::streaming
        (StreamingPacket, StreamingPacketBuilder, StreamingFlags,
-        signed SYN replay binding, signed CLOSE / RESET, build_signature_preimage,
-        protocol-6 ClientPayload envelope)
-    -> outbound composition: i2pr-client::routing::compose_outbound_delivery
-       (Plan 122)
-    -> inbound routing: i2pr-client::dispatch::DestinationDispatcher (Plan 122)
+        signed SYN replay binding, signed CLOSE / RESET,
+        build_signature_preimage, RFC 1952 gzip ClientPayload envelope)
+    -> outbound composition: i2pr-client::streaming_adapter::StreamingDestinationAdapter
+       -> i2pr-client::routing::compose_outbound_delivery (Plan 122, corrected by Plan 124)
+    -> inbound routing: i2pr-client::dispatch::DestinationDispatcher (Plan 122, bound by Plan 124)
 ```
 
 The streaming layer is runtime-neutral: it composes with Plan 124's
 corrected `compose_outbound_delivery` for outbound composition and
 Plan 124's dispatcher binding for inbound routing. It never owns
-sockets, timers, or DNS. Plan 125 (Streaming protocol-6 framing
-correction + reply round-trip) is the next executable plan and
-restores the canonical RFC 1952 gzip framing and the
-connection-establishment state machine.
+sockets, timers, or DNS.
 
 `i2pr-client` is **not** allowed to depend on `i2pr-daemon`; the daemon is
 the future composition root, not a client library. `i2pr-tunnel` and
@@ -124,12 +125,16 @@ crates/i2pr-client/
 │   ├── lease_selection.rs Plan 122 LeaseSelector / LeaseSelectionPolicy / SelectedLease
 │   ├── routing.rs        Plan 122 DestinationRouting, OutboundRequest, compose_outbound_delivery, OutboundDeliveryPlan
 │   ├── dispatch.rs       Plan 122 DestinationDispatcher, InboundDispatchOutcome / InboundDispatchError
+│   ├── streaming.rs      Plan 125 StreamingManager, StreamingConnection, signed SYN / CLOSE / RESET, RFC 1952 gzip envelope
+│   ├── streaming_adapter.rs Plan 125 StreamingDestinationAdapter (TransportSendRequest -> compose_outbound_delivery)
 │   └── testing.rs        deterministic inbound/outbound EstablishedMaterial fixtures
 └── tests/
     ├── plan120_trajectory.rs   Plan 120 §12 deterministic local trajectory
     ├── plan121_trajectory.rs   Plan 121 §16 deterministic local NS -> NSR -> ES trajectory
     ├── plan122_trajectory.rs   Plan 122 §13 deterministic local two-destination composition
-    └── plan124_trajectory.rs   Plan 124 Phases A–G corrected destination-routing trajectory
+    ├── plan123_trajectory.rs   Plan 125 retained VirtualWire Streaming-only fault tests
+    ├── plan124_trajectory.rs   Plan 124 Phases A–G corrected destination-routing trajectory
+    └── plan125_trajectory.rs   Plan 125 real SYN / SYN-response lifecycle and gzip wire-format trajectory
 ```
 
 ## Identity ownership

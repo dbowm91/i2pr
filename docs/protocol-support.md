@@ -53,30 +53,47 @@ New Session trajectory through real destination-owned outbound and
 inbound tunnel roles. Plan 124 does not activate NTCP2, SSU2, SAM,
 I2CP, Docker, namespaces, Multipass, or any public-network access.
 
-Plan 123 closed as `passed-minimal-streaming-core` per its original
-closure, but Plan 124 audit reopened the lower Plan 122 composition
-defect and Plan 124 lands the corrective closure. Plan 123 remains
-`provisional-awaiting-plan125-correction` per
-[`plans/123-status.md`](../plans/123-status.md) until Plan 125 restores
-the canonical RFC 1952 gzip `ClientPayload` framing (no SHA-256
-prefix, no custom compressed-length prefix) and the
-connection-establishment state machine (no optimistic local
-`Established` before peer SYN response). The retained Plan 123
-surface remains: the wire codec lives in
+Plan 125 closed as `passed-milestone6-local-corrective-closure` per
+[`plans/125-status.md`](../plans/125-status.md) and restored Plan 123 to
+`passed-corrected-minimal-streaming-local` per
+[`plans/123-status.md`](../plans/123-status.md). Plan 125 replaces the
+custom Plan 123 `ClientPayload` framing with the canonical RFC 1952
+gzip wire format (no SHA-256 prefix, no custom compressed-length
+prefix; bounded decompressed-size enforcement; explicit
+trailing-byte rejection) and restores the real Plan 125 §6/§7 SYN
+/ SYN-response lifecycle (originator SYN uses `sendStreamId = 0`;
+recipient SYN response uses `sendStreamId = originator receiveStreamId`
+and `receiveStreamId = recipient-selected id`). Stream-id ownership
+splits between `local_receive_stream_id` and `peer_receive_stream_id`;
+the maximum packet payload is negotiated as `min(local, remote)`;
+the broken `SystemClock` is fixed to anchor at an origin `Instant`
+and report elapsed time. The wire codec lives in
 [`crates/i2pr-proto/src/streaming/`](../crates/i2pr-proto/src/streaming/)
 (`StreamingPacket`, `StreamingPacketBuilder`, `StreamingFlags`,
 `validate_syn_policy`, `encode_syn_replay_binding`,
 `verify_syn_replay_binding`, `build_signature_preimage`, the
-signed-SYN/CLOSE/RESET option region with Ed25519 signatures).
+signed-SYN/CLOSE/RESET option region with Ed25519 signatures, and
+the canonical RFC 1952 gzip protocol-6 `ClientPayload` envelope).
 The streaming runtime lives in
 [`crates/i2pr-client/src/streaming/`](../crates/i2pr-client/src/streaming/)
 (synchronous, Tokio-free, deterministic-clock `StreamingManager`
 with per-destination outbound and inbound connection tables, listener
 backlogs, send/receive window and congestion policies,
-retransmit/timeout policy, and a typed event surface). Sixteen
-deterministic integration tests in
+retransmit/timeout policy, typed event surface, real Plan 125 §6/§7
+SYN / SYN-response lifecycle, bidirectional `inbound_by_stream` /
+`outbound_by_stream` connection lookup). The runtime-neutral
+`StreamingDestinationAdapter` lives in
+[`crates/i2pr-client/src/streaming_adapter.rs`](../crates/i2pr-client/src/streaming_adapter.rs)
+and bridges `TransportSendRequest` into the Plan 122
+`compose_outbound_delivery` pipeline. Sixteen deterministic
+integration tests in
 [`crates/i2pr-client/tests/plan123_trajectory.rs`](../crates/i2pr-client/tests/plan123_trajectory.rs)
-cover the signed-SYN round trip, canonical preimage signature
+remain as fast Streaming-only VirtualWire fault tests; six
+additional deterministic tests in
+[`crates/i2pr-client/tests/plan125_trajectory.rs`](../crates/i2pr-client/tests/plan125_trajectory.rs)
+cover the real handshake lifecycle, the RFC 1952 gzip wire format,
+the stream-id ownership contract, the `SystemClock` monotonicity
+fix, and the listener outcome surface.
 verification, SYN replay binding rejection,
 MAX_PACKET_SIZE_INCLUDED policy, corrupt-signature rejection, the
 full two-destination SYN → data → CLOSE trajectory, loss recovery
@@ -792,8 +809,9 @@ Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
         -> Plan 120  destination lifecycle and tunnel pools                  [passed-destination-lifecycle-and-pools]
         -> Plan 121  ECIES-X25519 Garlic/session layer                        [passed-ecies-destination-session-layer]
         -> Plan 122  destination routing and NetDB composition                [passed-corrected-local-destination-routing]
-        -> Plan 123  minimal streaming core                                    [provisional-awaiting-plan125-correction]
+        -> Plan 123  minimal streaming core                                    [passed-corrected-minimal-streaming-local]
         -> Plan 124  destination-routing corrective closure                   [passed-plan122-corrective-closure]
+        -> Plan 125  Streaming corrective closure and local-product gate      [passed-milestone6-local-corrective-closure]
 ```
 
 Plan 106 closed the local/bootstrap implementation phase; Plan 107

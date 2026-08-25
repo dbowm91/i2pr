@@ -597,12 +597,13 @@ pub struct StreamingPacketBuilder {
 impl StreamingPacketBuilder {
     /// Constructs a SYN packet builder with the canonical
     /// `SYNCHRONIZE | FROM_INCLUDED | SIGNATURE_INCLUDED |
-    /// MAX_PACKET_SIZE_INCLUDED` flag set. The caller is responsible for
-    /// supplying the option bytes (including the FROM Destination, the
-    /// MAX_PACKET_SIZE option, and the SIGNATURE option) and the NACK
-    /// replay binding.
+    /// MAX_PACKET_SIZE_INCLUDED` flag set. Plan 125 §5:
+    /// `send_stream_id` must be 0 (originator-side) and
+    /// `receive_stream_id` carries the local receive stream id the
+    /// recipient must use when addressing the originator.
     pub fn new_syn(
         send_stream_id: u32,
+        receive_stream_id: u32,
         sequence_num: u32,
         option_bytes: Vec<u8>,
         nacks: Vec<u32>,
@@ -615,7 +616,7 @@ impl StreamingPacketBuilder {
         )?;
         Ok(Self {
             send_stream_id,
-            receive_stream_id: 0,
+            receive_stream_id,
             sequence_num,
             ack_through: 0,
             nacks,
@@ -953,7 +954,7 @@ mod tests {
         option_bytes.extend_from_slice(&signature);
 
         let builder =
-            StreamingPacketBuilder::new_syn(0, 1, option_bytes, binding.to_vec()).unwrap();
+            StreamingPacketBuilder::new_syn(0, 1, 0, option_bytes, binding.to_vec()).unwrap();
         let encoded = encode_streaming_packet(&builder, StreamingSendLimit::default()).unwrap();
         let (packet, location) =
             decode_streaming_packet(&encoded, StreamingReceiveLimit::default()).unwrap();

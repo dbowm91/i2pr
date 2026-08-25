@@ -19,7 +19,7 @@ Eleven-crate workspace under `crates/`:
 - `i2pr-transport-ntcp2` — runtime-neutral NTCP2 handshake + data frames
 - `i2pr-runtime` — **only** production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation
 - `i2pr-daemon` — composition root + CLI
-- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`); Plan 122 local destination routing / LeaseSet2 NetDB composition; Plan 123 minimal I2P Streaming core (`StreamingManager`, signed SYN/CLOSE/RESET, sequence/ACK/NACK, retransmit, congestion, send/receive windows, listener backlogs).
+- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`); Plan 122 local destination routing / LeaseSet2 NetDB composition; Plan 125 protocol-correct I2P Streaming core (`StreamingManager` with real SYN/SYN-response lifecycle, stream-id ownership, RFC 1952 gzip client payload wire format, MTU negotiation, signed SYN/CLOSE/RESET, sequence/ACK/NACK, retransmit, congestion, send/receive windows, listener backlogs) and the runtime-neutral `StreamingDestinationAdapter` that bridges streaming packets into the Plan 122 destination-routing pipeline.
 - `i2pr-testkit` — deterministic simulation; production crates must not depend on it
 
 Fixtures: `tests/fixtures/i2np/` (manifest at `tests/fixtures/i2np/manifest.tsv`),
@@ -2307,7 +2307,7 @@ plan_119                             = passed-leaseset2-protocol-foundation
 plan_120                             = passed-destination-lifecycle-and-pools
 plan_121                             = passed-ecies-destination-session-layer
 plan_122                             = passed-corrected-local-destination-routing
-plan_123                             = provisional-awaiting-plan125-correction
+plan_123                             = passed-corrected-minimal-streaming-local
 plan_124                             = passed-plan122-corrective-closure
 router_construction                  = may-continue
 next_router_construction_plan        = Plan 125 (Streaming protocol-6 framing correction + reply round-trip)
@@ -2336,44 +2336,56 @@ keeps the native criterion visible and does not promote
 parser-only or reference-only results to interoperability
 evidence.
 
-Plan 123 remains `provisional-awaiting-plan125-correction` per
-[`plans/123-status.md`](plans/123-status.md) after the Plan 124
-audit reopened the lower Plan 122 composition defect. The wire
-codec lives in
+Plan 125 closed as `passed-milestone6-local-corrective-closure` per
+[`plans/125-status.md`](plans/125-status.md); Plan 123 is restored as
+`passed-corrected-minimal-streaming-local`. The wire codec lives in
 [`crates/i2pr-proto/src/streaming/`](crates/i2pr-proto/src/streaming/)
 (`StreamingPacket`, `StreamingPacketBuilder`, `StreamingFlags`,
 `validate_syn_policy`, `encode_syn_replay_binding`, `verify_syn_replay_binding`,
 `build_signature_preimage`, signed-SYN/CLOSE/RESET option region with
-Ed25519 signatures, and the protocol-6 `ClientPayload` envelope
-with zlib compression + SHA-256 + CRC32). The streaming runtime
-lives in [`crates/i2pr-client/src/streaming/`](crates/i2pr-client/src/streaming/)
+Ed25519 signatures, and the protocol-6 RFC 1952 gzip `ClientPayload`
+envelope — no SHA-256 integrity prefix, no custom compressed-length
+prefix, with bounded decompressed-size enforcement and explicit
+trailing-byte rejection). The streaming runtime lives in
+[`crates/i2pr-client/src/streaming/`](crates/i2pr-client/src/streaming/)
 (`StreamingManager` synchronous, Tokio-free, deterministic-clock,
 per-destination outbound and inbound connection tables, listener
 backlogs, send/receive window and congestion policies,
 retransmit/timeout policy, typed event surface, `connect`,
-`listen`, `accept`, `send_data`, `send_close`, `send_reset`,
-`process_inbound_packet`, `process_inbound_envelope`,
-`drain_outbound`, `lookup_outbound`, `lookup_inbound`, and
-`get_connection`/`get_connection_mut`). Plan 123 wires into
-Plan 122's `compose_outbound_delivery` for outbound composition
-and Plan 122's `DestinationDispatcher` for inbound routing; the
-layer never owns sockets, timers, or DNS. Sixteen deterministic
-integration tests in
+`listen`, `accept`, `accept_inbound_syn`, `send_data`,
+`send_close`, `send_reset`, `process_inbound_packet`,
+`process_inbound_envelope`, `drain_outbound`, `lookup_outbound`,
+`lookup_inbound`, and `get_connection`/`get_connection_mut`).
+Plan 125 wires streaming into Plan 122's `compose_outbound_delivery`
+through the runtime-neutral
+[`crates/i2pr-client/src/streaming_adapter.rs`](crates/i2pr-client/src/streaming_adapter.rs)
+(`StreamingDestinationAdapter`) so a future SAM adapter can drive
+the existing `StreamingManager` and `DestinationDispatcher`
+without inventing new protocol layers; the layer never owns
+sockets, timers, or DNS. Sixteen deterministic integration tests
+in
 [`crates/i2pr-client/tests/plan123_trajectory.rs`](crates/i2pr-client/tests/plan123_trajectory.rs)
-cover the signed-SYN round trip, canonical preimage signature
-verification, SYN replay binding rejection,
-MAX_PACKET_SIZE_INCLUDED policy, corrupt-signature rejection, the
-full two-destination SYN → data → CLOSE trajectory, loss recovery
-via retransmit, duplicate packet idempotence, RESET termination,
-send window backpressure, connection table ceiling, and signed
-CLOSE / signed RESET packet shapes. Plan 123 must not be restored
-to `passed-minimal-streaming-core` until Plan 125 corrects the
+remain as fast Streaming-only VirtualWire fault tests
+(signed-SYN round trip, canonical preimage signature verification,
+SYN replay binding rejection, MAX_PACKET_SIZE_INCLUDED policy,
+corrupt-signature rejection, full two-destination SYN → data →
+CLOSE trajectory, loss recovery via retransmit, duplicate packet
+idempotence, RESET termination, send window backpressure,
+connection table ceiling, signed CLOSE / signed RESET packet
+shapes); six additional deterministic tests in
+[`crates/i2pr-client/tests/plan125_trajectory.rs`](crates/i2pr-client/tests/plan125_trajectory.rs)
+cover the real Plan 125 §6/§7 SYN / SYN-response lifecycle, the
+RFC 1952 gzip wire format, the stream-id ownership contract, the
+`SystemClock` monotonicity fix, and the listener outcome surface.
+Plan 125 is the Milestone 6 local-product gate.
+to `passed-minimal-streaming-core` was reopened; Plan 125 corrects the
 `ClientPayload` framing (canonical RFC 1952 gzip, no SHA-256
 prefix, no custom compressed-length prefix) and the
 connection-establishment state machine (no optimistic local
-Established before peer SYN response). The next executable plan
-is **Plan 125** (Streaming protocol-6 framing correction +
-reply round-trip) per the Milestone 6 router-construction
+Established before peer SYN response) and now closes as
+`passed-milestone6-local-corrective-closure`. The next executable
+product work is the SAM baseline planning (Milestone 7) per the
+Milestone 6 router-construction
 roadmap in
 [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
 external acceptance debt ledger in the same roadmap. Router

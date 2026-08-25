@@ -12,7 +12,7 @@ use crate::streaming::config::StreamingConfig;
 use crate::streaming::congestion::{CongestionConfig, CongestionDecision, CongestionPolicy};
 use crate::streaming::errors::StreamingError;
 use crate::streaming::events::{AckObservation, InboundStreamEvent, OutboundStreamEvent};
-use crate::streaming::recv_window::{RecvWindowDecision, RecvWindowPolicy};
+use crate::streaming::recv_window::{RecvWindowConfig, RecvWindowDecision, RecvWindowPolicy};
 use crate::streaming::retransmit::{RetransmitConfig, RetransmitPolicy};
 use crate::streaming::send_window::{SendWindowConfig, SendWindowDecision, SendWindowPolicy};
 
@@ -211,11 +211,32 @@ impl StreamingConnection {
         self.remote_stream_id
     }
 
-    /// Sets the remote stream id. Used by the optimistic handshake to
-    /// lazily bind the peer's local stream id on the first inbound
-    /// data packet.
+    /// Sets the remote stream id. Used by the SYN response handler
+    /// to learn the peer receive stream id before transitioning the
+    /// outbound connection to Established.
     pub fn set_remote_stream_id(&mut self, id: u32) {
         self.remote_stream_id = id;
+    }
+
+    /// Returns a lightweight snapshot for SYN response construction.
+    /// The snapshot only carries the stream-id fields and direction,
+    /// which is what the SYN response builder needs.
+    pub fn clone_for_syn_response(&self) -> Self {
+        Self {
+            id: self.id,
+            direction: self.direction,
+            state: self.state,
+            config: self.config.clone(),
+            send_window: SendWindowPolicy::new(SendWindowConfig::from_config(&self.config)),
+            recv_window: RecvWindowPolicy::new(RecvWindowConfig::from_config(&self.config)),
+            congestion: CongestionPolicy::new(CongestionConfig::from_config(&self.config)),
+            retransmit: RetransmitPolicy::new(RetransmitConfig::from_config(&self.config)),
+            local_stream_id: self.local_stream_id,
+            remote_stream_id: self.remote_stream_id,
+            max_payload_size: self.max_payload_size,
+            last_activity_ms: self.last_activity_ms,
+            created_at_ms: self.created_at_ms,
+        }
     }
 
     /// Returns the negotiated max payload size.

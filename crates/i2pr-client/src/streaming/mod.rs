@@ -58,8 +58,8 @@ pub use errors::StreamingError;
 pub use events::{AckObservation, InboundStreamEvent, OutboundStreamEvent, WirePacketObservation};
 #[allow(unused_imports)]
 pub use manager::{
-    ConnectOutcome, ConnectionRefused, ListenerOutcome, MAX_STREAMS_PER_DESTINATION,
-    StreamSinkError, StreamingEvent, StreamingManager, StreamingManagerError,
+    ConnectOutcome, ConnectionRefused, DEFAULT_ADVERTISED_MAX_PACKET_SIZE, ListenerOutcome,
+    MAX_STREAMS_PER_DESTINATION, StreamingEvent, StreamingManager, StreamingManagerError,
 };
 #[allow(unused_imports)]
 pub use recv_window::{RecvWindowConfig, RecvWindowDecision, RecvWindowPolicy};

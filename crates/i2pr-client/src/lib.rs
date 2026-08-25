@@ -39,6 +39,7 @@ pub mod registry;
 pub mod routing;
 pub mod session;
 pub mod streaming;
+pub mod streaming_adapter;
 pub mod testing;
 
 pub use config::{
@@ -86,4 +87,7 @@ pub use session::{
     EciesSessionConfig, EciesSessionConfigError, EciesSessionError, EciesSessionManager,
     MAX_REPLAY_CACHE_ENTRIES, MAX_SESSION_IDLE_SECONDS, MAX_TAG_LOOK_AHEAD, PendingHandshakeRecord,
     decode_decrypted_payload, encode_garlic_clove_payload, encode_new_session_payload, local_clove,
+};
+pub use streaming_adapter::{
+    MAX_STREAMING_ADAPTER_PAYLOAD_BYTES, StreamingAdapterError, StreamingDestinationAdapter,
 };
