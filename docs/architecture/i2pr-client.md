@@ -84,12 +84,29 @@ binding, signed CLOSE / RESET, `build_signature_preimage`, and the
 canonical RFC 1952 gzip protocol-6 `ClientPayload` envelope — no
 SHA-256 integrity prefix, no custom compressed-length prefix, bounded
 decompressed-size enforcement, explicit trailing-byte rejection).
+Plan 128 corrects that wire format to the current I2P Streaming
+specification ([Plan 128](../plans/128-m6-streaming-wire-protocol-
+corrective-closure.md), provenance in
+[specs/references/streaming-packet-wire.md](../specs/references/streaming-packet-wire.md)):
+normative flag map with M6 policy sets (`0x04A9` initial SYN,
+`0x00A9` SYN response, `0x000A` CLOSE, `0x000C` RESET), no option-data
+TLVs, flag-driven option ordering (DELAY / FROM / MAX / SIGNATURE),
+`MAX_PACKET_SIZE` as a 2-byte big-endian integer bounding the payload
+only (default 1730; full packet bounds are an independent checked sum),
+variable-length raw final signatures whose length comes from signing
+context (FROM destination or the peer signing key retained on the
+connection for CLOSE/RESET without FROM since 0.9.20), the canonical
+zeroed-placeholder preimage signed once, eight Proposal 164 replay
+NACK words on the initial SYN only, split
+`validate_initial_syn` / `validate_syn_response`, and
+`min(local advertised, remote advertised)` payload negotiation.
 Plan 125 composes with `compose_outbound_delivery` for outbound
 composition and `DestinationDispatcher` for inbound routing
 through the runtime-neutral
 `StreamingDestinationAdapter`; it never owns sockets, timers, or
-DNS. Plan 125 closed as `passed-milestone6-local-corrective-closure`
-and is the Milestone 6 local-product gate.
+DNS. Plan 125 closed as `passed-milestone6-local-corrective-closure`;
+Plan 128 closed as
+`passed-streaming-wire-protocol-corrective-closure`.
 
 The authenticated-router link between an outbound endpoint and the
 remote inbound gateway remains the only transport omission: tests
@@ -168,7 +185,8 @@ crates/i2pr-client/
     ├── plan124_trajectory.rs   Plan 124 Phases A–G corrected destination-routing trajectory
     ├── plan125_trajectory.rs   Plan 125 real SYN / SYN-response lifecycle and gzip wire-format trajectory
     ├── plan126_trajectory.rs   Plan 126 manager-level lifecycle + negative/ceiling controls
-    └── plan127_trajectory.rs   Plan 127 master NS -> NSR -> ES x4 destination-routing closure + §9 negative controls
+    ├── plan127_trajectory.rs   Plan 127 master NS -> NSR -> ES x4 destination-routing closure + §9 negative controls
+    └── plan128_trajectory.rs   Plan 128 manager handshake stream-id ownership, CLOSE/RESET shapes, negotiation
 ```
 
 ## Identity ownership

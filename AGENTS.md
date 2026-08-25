@@ -19,7 +19,7 @@ Eleven-crate workspace under `crates/`:
 - `i2pr-transport-ntcp2` — runtime-neutral NTCP2 handshake + data frames
 - `i2pr-runtime` — **only** production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation
 - `i2pr-daemon` — composition root + CLI
-- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`); Plan 126 normative ECIES-X25519-AEAD-Ratchet destination session layer (bound NS/NSR/ES, paired sessions keyed by remote static key, classify-driven dispatch); Plan 127 destination-session routing final closure (bundled-LS2 sender binding under the sender's own Destination hash, planned outbound form state machine with retained NSR context, production reverse routing through `install_remote_lease_set2`, active-remote ceiling); Plan 122 local destination routing / LeaseSet2 NetDB composition; Plan 125 protocol-correct I2P Streaming core (`StreamingManager` with real SYN/SYN-response lifecycle, stream-id ownership, RFC 1952 gzip client payload wire format, MTU negotiation, signed SYN/CLOSE/RESET, sequence/ACK/NACK, retransmit, congestion, send/receive windows, listener backlogs) and the runtime-neutral `StreamingDestinationAdapter` that bridges streaming packets into the Plan 122 destination-routing pipeline.
+- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`); Plan 126 normative ECIES-X25519-AEAD-Ratchet destination session layer (bound NS/NSR/ES, paired sessions keyed by remote static key, classify-driven dispatch); Plan 127 destination-session routing final closure (bundled-LS2 sender binding under the sender's own Destination hash, planned outbound form state machine with retained NSR context, production reverse routing through `install_remote_lease_set2`, active-remote ceiling); Plan 122 local destination routing / LeaseSet2 NetDB composition; Plan 125 protocol-correct I2P Streaming core (`StreamingManager` with real SYN/SYN-response lifecycle, stream-id ownership, RFC 1952 gzip client payload wire format, MTU negotiation, signed SYN/CLOSE/RESET, sequence/ACK/NACK, retransmit, congestion, send/receive windows, listener backlogs) and the runtime-neutral `StreamingDestinationAdapter` that bridges streaming packets into the Plan 122 destination-routing pipeline; Plan 128 normative Streaming wire correction (normative flag map with policy sets `0x04A9`/`0x00A9`/`0x000A`/`0x000C`, no option-data TLVs, flag-driven option order, 2-byte big-endian payload-only MAX_PACKET_SIZE defaulting to 1730, raw final signatures from signing-key context, canonical zeroed-placeholder preimage, Proposal 164 replay NACKs on the initial SYN only, retained peer signing key for CLOSE/RESET verification without FROM; provenance in `specs/references/streaming-packet-wire.md`).
 - `i2pr-testkit` — deterministic simulation; production crates must not depend on it
 
 Fixtures: `tests/fixtures/i2np/` (manifest at `tests/fixtures/i2np/manifest.tsv`),
@@ -2312,7 +2312,7 @@ plan_125                             = passed-milestone6-local-corrective-closur
 plan_126                             = passed-ecies-destination-ratchet-corrective-foundation
 plan_127                             = passed-destination-session-routing-final-closure
 router_construction                  = may-continue
-next_router_construction_plan        = Plan 128 (streaming wire protocol corrective closure)
+next_router_construction_plan        = Plan 129 (integrated M6 destination-streaming final gate)
 ```
 
 Plan 119 closed as `passed-leaseset2-protocol-foundation` per
@@ -2343,10 +2343,11 @@ Plan 125 closed as `passed-milestone6-local-corrective-closure` per
 `passed-corrected-minimal-streaming-local`. The wire codec lives in
 [`crates/i2pr-proto/src/streaming/`](crates/i2pr-proto/src/streaming/)
 (`StreamingPacket`, `StreamingPacketBuilder`, `StreamingFlags`,
-`validate_syn_policy`, `encode_syn_replay_binding`, `verify_syn_replay_binding`,
-`build_signature_preimage`, signed-SYN/CLOSE/RESET option region with
-Ed25519 signatures, and the protocol-6 RFC 1952 gzip `ClientPayload`
-envelope — no SHA-256 integrity prefix, no custom compressed-length
+`validate_initial_syn` / `validate_syn_response`,
+`encode_syn_replay_binding`, `verify_syn_replay_binding`,
+`build_signature_preimage`, flag-ordered raw final signatures with Ed25519
+(Plan 128 corrected the wire format; see below), and the protocol-6 RFC
+1952 gzip `ClientPayload` envelope — no SHA-256 integrity prefix, no custom compressed-length
 prefix, with bounded decompressed-size enforcement and explicit
 trailing-byte rejection). The streaming runtime lives in
 [`crates/i2pr-client/src/streaming/`](crates/i2pr-client/src/streaming/)
@@ -2508,15 +2509,94 @@ bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh
 ```
 
-The next executable product work is Plan 127 per the Milestone 6
-final corrective roadmap in
-[`plans/126-129-milestone6-final-corrective-roadmap.md`](plans/126-129-milestone6-final-corrective-roadmap.md).
 external acceptance debt ledger in the same roadmap. Router
 construction is not blocked on the unavailable authenticated
 external transport lane; the current `closed-for-progression` state
 keeps the native criterion visible and does not promote
 parser-only or reference-only results to interoperability
 evidence.
+
+## Plan 128 Milestone 6 Streaming wire-protocol corrective closure
+
+Plan 128 closed as `passed-streaming-wire-protocol-corrective-closure`
+per [`plans/128-status.md`](plans/128-status.md); Plan 123 is restored
+as `passed-corrected-streaming-wire-local`. It makes the
+`i2pr-proto::streaming` packet codec and the `i2pr-client::streaming`
+control packets match the current I2P Streaming specification while
+preserving Plan 125's RFC 1952 gzip client-payload work and real
+SYN/SYN-response state progression. Normative provenance lives in
+[`specs/references/streaming-packet-wire.md`](specs/references/streaming-packet-wire.md).
+
+The corrected surface:
+
+- `crates/i2pr-proto/src/streaming/packet.rs` (rewritten) — normative
+  flag map (`SYNCHRONIZE 0x0001` … `OFFLINE_SIGNATURE 0x0800`,
+  reserved `0xF000` rejected), policy sets `INITIAL_SYN_FLAGS = 0x04A9`,
+  `SYN_RESPONSE_FLAGS = 0x00A9`, `CLOSE_FLAGS = 0x000A`,
+  `RESET_FLAGS = 0x000C`; no option-data TLVs (`STREAMING_OPTION_*`
+  constants removed; unparsed trailing option bytes rejected);
+  flag-driven `StreamingOptions` / `StreamingOptionDecodeContext` /
+  `SignatureLocation` codec writing DELAY → FROM → MAX → SIGNATURE in
+  normative order; `MAX_PACKET_SIZE` is a 2-byte big-endian integer
+  bounding the payload only with `DEFAULT_ADVERTISED_MAX_PAYLOAD =
+  1730`; `MAX_STREAMING_PAYLOAD_BYTES` is no longer defined as the
+  packet ceiling minus the header and `MAX_STREAMING_PACKET_BYTES` is
+  an independent checked sum; variable-length raw final signatures
+  whose length comes from signing-key context; canonical preimage via
+  zeroed signature placeholder (`encode_with_placeholder`) +
+  `install_packet_signature`; `peek_streaming_header` two-phase
+  routing decode; typed `UnsupportedOfflineSignature`,
+  `SignatureContextUnavailable`, `CloseMissingSignature`,
+  `ResetMissingSignature`. Legacy aliases `MAX_STREAMING_HEADER_BYTES`
+  and `MAX_STEAMING_NACK_COUNT` are removed.
+- `crates/i2pr-client/src/streaming/manager.rs` — one signed-builder
+  helper for SYN / SYN-response / CLOSE / RESET; initial SYN carries
+  eight Proposal 164 replay NACK words covered by the signature;
+  SYN response carries zero NACKs, no NO_ACK, valid `ackThrough`;
+  `validate_syn_policy` split into `validate_initial_syn` /
+  `validate_syn_response`; CLOSE/RESET emit `0x000A`/`0x000C` without
+  FROM and require signatures on receipt, verifying against the peer
+  signing key retained in connection state (the prior wrong-side
+  local-key RESET verification is fixed); unknown standalone signed
+  control fails closed; `connect()` takes the advertised maximum
+  payload and negotiation is `min(local advertised, remote
+  advertised)`.
+- `crates/i2pr-client/src/streaming/connection.rs` — connections
+  retain `peer_signing_key` plus both advertised payload maxima.
+- `crates/i2pr-proto/tests/plan128_wire.rs` — §11 fixture/reference
+  tests pinning every constant numerically, the exact SYN wire layout
+  (`06 c2` MAX bytes, eight exact hash NACK words, raw final
+  signature, no TLV markers), response shape, option ordering,
+  fail-closed trailing-garbage rejection, and the preimage-differs-
+  only-by-zeroing rule.
+- `crates/i2pr-client/tests/plan128_trajectory.rs` — §12 manager
+  handshake with exact stream-id ownership on ordinary data packets
+  both directions, OutboundSynSent retention until the valid response,
+  CLOSE/RESET shapes verified against retained peer identity,
+  corrupted-signature and unsigned-control fail-closed paths, and
+  min-of-advertisements negotiation.
+
+No destination-tunnel, SAM, external transport, or live-network work
+was introduced. Streaming interoperability is not claimed until
+independent-router evidence exists.
+
+Required focused checks:
+
+```text
+cargo +1.95.0 fmt --all --check
+cargo +1.95.0 check --locked --workspace --all-targets
+cargo +1.95.0 test --locked -p i2pr-proto --all-targets
+cargo +1.95.0 test --locked -p i2pr-client --all-targets
+cargo +1.95.0 test --locked --workspace
+cargo +1.95.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo +1.95.0 doc --locked --workspace --no-deps
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+```
+
+The next executable product work is Plan 129 per the Milestone 6
+final corrective roadmap in
+[`plans/126-129-milestone6-final-corrective-roadmap.md`](plans/126-129-milestone6-final-corrective-roadmap.md).
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure
 

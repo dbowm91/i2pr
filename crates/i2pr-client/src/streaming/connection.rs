@@ -8,6 +8,8 @@
 
 use core::fmt;
 
+use i2pr_proto::SigningPublicKey;
+
 use crate::streaming::config::StreamingConfig;
 use crate::streaming::congestion::{CongestionConfig, CongestionDecision, CongestionPolicy};
 use crate::streaming::errors::StreamingError;
@@ -119,6 +121,16 @@ pub struct StreamingConnection {
     local_stream_id: u32,
     /// Remote stream ID (what we send as receiveStreamId for outbound).
     remote_stream_id: u32,
+    /// Peer signing key retained in connection state. Signed control
+    /// packets without FROM (CLOSE/RESET since 0.9.20) verify against
+    /// this key.
+    peer_signing_key: SigningPublicKey,
+    /// Maximum payload bytes the local side advertised through its own
+    /// MAX_PACKET_SIZE option.
+    local_advertised_max_payload: u16,
+    /// Maximum payload bytes the peer advertised through its
+    /// MAX_PACKET_SIZE option, when observed.
+    remote_advertised_max_payload: Option<u16>,
     /// Negotiated max payload size.
     max_payload_size: u32,
     /// Timestamp of last activity.
@@ -134,6 +146,7 @@ impl StreamingConnection {
         config: StreamingConfig,
         local_stream_id: u32,
         remote_stream_id: u32,
+        peer_signing_key: SigningPublicKey,
         now_ms: u64,
     ) -> Self {
         let send_config = SendWindowConfig::from_config(&config);
@@ -151,6 +164,9 @@ impl StreamingConnection {
             config,
             local_stream_id,
             remote_stream_id,
+            peer_signing_key,
+            local_advertised_max_payload: crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u16,
+            remote_advertised_max_payload: None,
             max_payload_size: crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u32,
             last_activity_ms: now_ms,
             created_at_ms: now_ms,
@@ -163,6 +179,7 @@ impl StreamingConnection {
         config: StreamingConfig,
         local_stream_id: u32,
         remote_stream_id: u32,
+        peer_signing_key: SigningPublicKey,
         now_ms: u64,
     ) -> Self {
         let send_config = SendWindowConfig::from_config(&config);
@@ -180,6 +197,9 @@ impl StreamingConnection {
             config,
             local_stream_id,
             remote_stream_id,
+            peer_signing_key,
+            local_advertised_max_payload: crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u16,
+            remote_advertised_max_payload: None,
             max_payload_size: crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u32,
             last_activity_ms: now_ms,
             created_at_ms: now_ms,
@@ -218,6 +238,34 @@ impl StreamingConnection {
         self.remote_stream_id = id;
     }
 
+    /// Returns the peer signing key retained in connection state.
+    pub const fn peer_signing_key(&self) -> &SigningPublicKey {
+        &self.peer_signing_key
+    }
+
+    /// Records the maximum payload bytes the peer advertised through
+    /// its MAX_PACKET_SIZE option.
+    pub fn set_remote_advertised_max_payload(&mut self, max: u16) {
+        self.remote_advertised_max_payload = Some(max);
+    }
+
+    /// Returns the maximum payload bytes the peer advertised, when
+    /// observed.
+    pub const fn remote_advertised_max_payload(&self) -> Option<u16> {
+        self.remote_advertised_max_payload
+    }
+
+    /// Records the maximum payload bytes the local side advertised
+    /// through its own MAX_PACKET_SIZE option.
+    pub fn set_local_advertised_max_payload(&mut self, max: u16) {
+        self.local_advertised_max_payload = max;
+    }
+
+    /// Returns the maximum payload bytes the local side advertised.
+    pub const fn local_advertised_max_payload(&self) -> u16 {
+        self.local_advertised_max_payload
+    }
+
     /// Returns a lightweight snapshot for SYN response construction.
     /// The snapshot only carries the stream-id fields and direction,
     /// which is what the SYN response builder needs.
@@ -233,6 +281,9 @@ impl StreamingConnection {
             retransmit: RetransmitPolicy::new(RetransmitConfig::from_config(&self.config)),
             local_stream_id: self.local_stream_id,
             remote_stream_id: self.remote_stream_id,
+            peer_signing_key: self.peer_signing_key.clone(),
+            local_advertised_max_payload: self.local_advertised_max_payload,
+            remote_advertised_max_payload: self.remote_advertised_max_payload,
             max_payload_size: self.max_payload_size,
             last_activity_ms: self.last_activity_ms,
             created_at_ms: self.created_at_ms,
@@ -264,8 +315,9 @@ impl StreamingConnection {
         }
         self.state = ConnectionState::Established;
         self.last_activity_ms = now_ms;
-        // Negotiated max payload = min(local, remote).
-        let local_max = crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u32;
+        // Negotiated max payload = min(local advertised, remote
+        // advertised).
+        let local_max = u32::from(self.local_advertised_max_payload);
         self.max_payload_size = local_max.min(remote_max_payload);
         Ok(ConnectionTransition {
             from,

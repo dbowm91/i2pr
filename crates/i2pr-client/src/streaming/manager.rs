@@ -44,12 +44,13 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use i2pr_crypto::verify_signature;
 use i2pr_proto::streaming::{
-    ClientPayload, FLAG_CLOSE, FLAG_FROM_INCLUDED, FLAG_RESET, FLAG_SIGNATURE_INCLUDED,
-    MAX_STREAMING_PAYLOAD_BYTES, STREAMING_OPTION_MAX_PACKET_SIZE, STREAMING_OPTION_SIGNATURE,
-    SignatureOptionLocation, StreamingFlags, StreamingPacket, StreamingPacketBuilder,
-    StreamingPacketError, StreamingReceiveLimit, StreamingSendLimit, build_signature_preimage,
-    decode_client_payload, decode_streaming_packet, encode_client_payload, encode_streaming_packet,
-    encode_syn_replay_binding, validate_syn_policy,
+    CLOSE_FLAGS, ClientPayload, INITIAL_SYN_FLAGS, MAX_STREAMING_PACKET_BYTES, RESET_FLAGS,
+    SYN_RESPONSE_FLAGS, SignatureLocation, StreamingFlags, StreamingOptionDecodeContext,
+    StreamingOptions, StreamingPacket, StreamingPacketBuilder, StreamingPacketError,
+    StreamingReceiveLimit, StreamingSendLimit, build_signature_preimage, decode_client_payload,
+    decode_streaming_packet, encode_client_payload, encode_streaming_packet,
+    encode_syn_replay_binding, install_packet_signature, peek_streaming_header,
+    validate_initial_syn, validate_syn_response,
 };
 use i2pr_proto::{CodecError, SignatureValue};
 
@@ -69,9 +70,11 @@ pub const MAX_STREAMS_PER_DESTINATION: usize =
 /// Hard ceiling on the pre-SYN unknown-stream reorder buffer.
 pub const MAX_PRE_SYN_BUFFER: usize = 8;
 
-/// Hard ceiling on the local maximum packet payload size we
-/// advertise in the SYN's MAX_PACKET_SIZE option.
-pub const DEFAULT_ADVERTISED_MAX_PACKET_SIZE: u32 = MAX_STREAMING_PAYLOAD_BYTES as u32;
+/// Default local maximum Streaming payload bytes advertised through
+/// the SYN's MAX_PACKET_SIZE option. This bounds the payload only;
+/// the full encoded packet is larger (header + NACKs + options).
+pub const DEFAULT_ADVERTISED_MAX_PAYLOAD: u16 =
+    i2pr_proto::streaming::DEFAULT_ADVERTISED_MAX_PAYLOAD;
 
 /// Identifier used to refer to a remote destination in the manager.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -316,6 +319,7 @@ impl StreamingManager {
         remote: &RemoteDestination,
         local_port: u16,
         remote_port: u16,
+        advertised_max_payload: u16,
         now_ms: u64,
         _rng: &mut R,
     ) -> Result<ConnectOutcome, StreamingManagerError> {
@@ -334,16 +338,18 @@ impl StreamingManager {
             local_receive_stream_id,
             local_port,
             remote_port,
-            DEFAULT_ADVERTISED_MAX_PACKET_SIZE,
+            advertised_max_payload,
         )?;
 
-        let conn = StreamingConnection::new_outbound(
+        let mut conn = StreamingConnection::new_outbound(
             connection_id,
             self.config.clone(),
             local_receive_stream_id,
             0,
+            remote.signing_public_key.clone(),
             now_ms,
         );
+        conn.set_local_advertised_max_payload(advertised_max_payload);
         self.connections.insert(connection_id, conn);
         self.outbound_by_stream
             .insert(local_receive_stream_id, connection_id);
@@ -372,9 +378,78 @@ impl StreamingManager {
         candidate
     }
 
+    /// Encodes, signs, and wraps one signed streaming packet
+    /// (SYN / SYN response / CLOSE / RESET). The option region ends
+    /// with a zeroed signature placeholder of the exact signing-key
+    /// length; the complete placeholder packet is signed directly (it
+    /// already equals the canonical preimage) and the real signature
+    /// is patched into place.
+    #[allow(clippy::too_many_arguments)]
+    fn build_signed_packet(
+        &self,
+        local_dest: &DestinationIdentity,
+        remote: &RemoteDestination,
+        send_stream_id: u32,
+        receive_stream_id: u32,
+        sequence_num: u32,
+        ack_through: u32,
+        flags_bits: u16,
+        options: &StreamingOptions,
+        nacks: Vec<u32>,
+        local_port: u16,
+        remote_port: u16,
+    ) -> Result<TransportSendRequest, StreamingManagerError> {
+        let flags = StreamingFlags::new(flags_bits)?;
+        let signature_length = local_dest
+            .signing_public_key()
+            .key_type()
+            .signature_len()
+            .ok_or(StreamingPacketError::SignatureContextUnavailable)?;
+        let option_bytes = options.encode_with_placeholder(flags, signature_length)?;
+        let builder = StreamingPacketBuilder {
+            send_stream_id,
+            receive_stream_id,
+            sequence_num,
+            ack_through,
+            nacks,
+            resend_delay: 0,
+            flags,
+            option_bytes,
+            payload: Vec::new(),
+        };
+        let mut wire_bytes = encode_streaming_packet(&builder, StreamingSendLimit::default())?;
+        // `wire_bytes` still carries the zeroed placeholder, so it is
+        // exactly the canonical preimage.
+        let signature = local_dest.sign(&wire_bytes)?;
+        install_packet_signature(&mut wire_bytes, signature.as_bytes())?;
+
+        let envelope = ClientPayload {
+            protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
+            source_port: local_port,
+            destination_port: remote_port,
+            payload: wire_bytes,
+        };
+        let application_bytes =
+            encode_client_payload(&envelope).map_err(StreamingManagerError::OutboundEnvelope)?;
+
+        Ok(TransportSendRequest {
+            destination_hash: remote.destination_hash,
+            source_port: local_port,
+            destination_port: remote_port,
+            application_payload: application_bytes,
+            sequence: sequence_num,
+            send_stream_id,
+            receive_stream_id,
+        })
+    }
+
     /// Builds the originator SYN packet and wraps it in a Streaming
-    /// client payload frame. The signature region is zeroed in the
-    /// preimage per the canonical streaming policy.
+    /// client payload frame. Plan 128 §7: the SYN carries
+    /// `INITIAL_SYN_FLAGS` (`0x04A9`), advertises the default maximum
+    /// payload (1730), and carries eight replay-binding NACK words
+    /// holding the remote Destination hash. The signature covers the
+    /// replay hash through the canonical preimage.
+    #[allow(clippy::too_many_arguments)]
     fn build_syn_packet(
         &self,
         local_dest: &DestinationIdentity,
@@ -382,86 +457,37 @@ impl StreamingManager {
         local_receive_stream_id: u32,
         local_port: u16,
         remote_port: u16,
-        max_packet_size: u32,
+        advertised_max_payload: u16,
     ) -> Result<TransportSendRequest, StreamingManagerError> {
-        let destination_bytes = local_dest
-            .destination()
-            .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
-            .map_err(StreamingManagerError::I2npCodec)?;
-        let mut option_bytes = Vec::with_capacity(destination_bytes.len() + 4 + 66);
-        // FROM option: self-encoded destination (no type/length prefix).
-        option_bytes.extend_from_slice(&destination_bytes);
-        // MAX_PACKET_SIZE option: type 1, length 4, payload u32 big-endian.
-        option_bytes.push(STREAMING_OPTION_MAX_PACKET_SIZE);
-        option_bytes.push(4);
-        option_bytes.extend_from_slice(&max_packet_size.to_be_bytes());
-
-        let nack_binding = encode_syn_replay_binding(&remote.destination_hash);
-        let builder = StreamingPacketBuilder::new_syn(
+        let options = StreamingOptions {
+            delay_requested: None,
+            from_destination: Some(local_dest.destination().clone()),
+            max_payload_size: Some(advertised_max_payload),
+            signature: None,
+        };
+        let nack_binding = encode_syn_replay_binding(&remote.destination_hash).to_vec();
+        self.build_signed_packet(
+            local_dest,
+            remote,
             0, // sendStreamId = 0 for originator SYN
             local_receive_stream_id,
             0,
-            option_bytes.clone(),
-            nack_binding.to_vec(),
-        )?;
-        let limit = StreamingSendLimit::default();
-        let wire_bytes = encode_streaming_packet(&builder, limit)?;
-        let signature = local_dest.sign(&build_signature_preimage(&wire_bytes, None))?;
-        let signature_bytes = signature.as_bytes().to_vec();
-
-        let mut final_options = option_bytes;
-        final_options.push(STREAMING_OPTION_SIGNATURE);
-        final_options.push(signature_bytes.len() as u8);
-        final_options.extend_from_slice(&signature_bytes);
-
-        let final_builder = StreamingPacketBuilder::new_syn(
             0,
-            local_receive_stream_id,
-            0,
-            final_options,
-            nack_binding.to_vec(),
-        )?;
-        let final_wire = encode_streaming_packet(&final_builder, limit)?;
-        let signature_option_offset = final_wire.len() - (signature_bytes.len() + 2);
-        let signature_option_length = signature_bytes.len() + 2;
-
-        let preimage = build_signature_preimage(
-            &final_wire,
-            Some(SignatureOptionLocation {
-                offset: signature_option_offset,
-                length: signature_option_length,
-            }),
-        );
-        let final_signature = local_dest.sign(&preimage)?;
-        let final_sig_bytes = final_signature.as_bytes().to_vec();
-        let mut signed_wire = final_wire;
-        let sig_start = signature_option_offset + 2;
-        signed_wire[sig_start..sig_start + final_sig_bytes.len()].copy_from_slice(&final_sig_bytes);
-
-        let envelope = ClientPayload {
-            protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
-            source_port: local_port,
-            destination_port: remote_port,
-            payload: signed_wire.clone(),
-        };
-        let application_bytes =
-            encode_client_payload(&envelope).map_err(StreamingManagerError::OutboundEnvelope)?;
-
-        Ok(TransportSendRequest {
-            destination_hash: remote.destination_hash,
-            source_port: local_port,
-            destination_port: remote_port,
-            application_payload: application_bytes,
-            sequence: 0,
-            send_stream_id: 0,
-            receive_stream_id: local_receive_stream_id,
-        })
+            INITIAL_SYN_FLAGS,
+            &options,
+            nack_binding,
+            local_port,
+            remote_port,
+        )
     }
 
     /// Builds a signed SYN response packet after the local destination
-    /// accepts an inbound SYN. The caller supplies the validated
-    /// inbound connection and the freshly-selected local receive
-    /// stream id.
+    /// accepts an inbound SYN. Plan 128 §8: the response carries
+    /// `SYN_RESPONSE_FLAGS` (`0x00A9`), zero replay NACKs, and a valid
+    /// `ackThrough`; the response's `sendStreamId` is the originator's
+    /// receive stream id and its `receiveStreamId` is the freshly
+    /// selected local id.
+    #[allow(clippy::too_many_arguments)]
     fn build_syn_response_packet(
         &self,
         local_dest: &DestinationIdentity,
@@ -469,86 +495,27 @@ impl StreamingManager {
         inbound_connection: &StreamingConnection,
         local_port: u16,
         remote_port: u16,
-        max_packet_size: u32,
+        advertised_max_payload: u16,
     ) -> Result<TransportSendRequest, StreamingManagerError> {
-        // The SYN response addresses the originator by their
-        // `local_receive_stream_id` (which is the originator's id and
-        // appears in the originator SYN's `receiveStreamId`). The
-        // response's `sendStreamId` therefore equals
-        // `inbound_connection.local_receive_stream_id` from the
-        // originator's perspective = the originator's stream id we
-        // observed. The response's `receiveStreamId` carries our
-        // freshly-selected id.
-        let destination_bytes = local_dest
-            .destination()
-            .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
-            .map_err(StreamingManagerError::I2npCodec)?;
-        let mut option_bytes = Vec::with_capacity(destination_bytes.len() + 4 + 66);
-        option_bytes.extend_from_slice(&destination_bytes);
-        option_bytes.push(STREAMING_OPTION_MAX_PACKET_SIZE);
-        option_bytes.push(4);
-        option_bytes.extend_from_slice(&max_packet_size.to_be_bytes());
-
-        let nack_binding = encode_syn_replay_binding(&remote.destination_hash);
-        let builder = StreamingPacketBuilder::new_syn_response(
-            inbound_connection.remote_stream_id(),
-            inbound_connection.local_stream_id(),
-            0,
-            option_bytes.clone(),
-            nack_binding.to_vec(),
-        )?;
-        let limit = StreamingSendLimit::default();
-        let wire_bytes = encode_streaming_packet(&builder, limit)?;
-        let signature = local_dest.sign(&build_signature_preimage(&wire_bytes, None))?;
-        let signature_bytes = signature.as_bytes().to_vec();
-
-        let mut final_options = option_bytes;
-        final_options.push(STREAMING_OPTION_SIGNATURE);
-        final_options.push(signature_bytes.len() as u8);
-        final_options.extend_from_slice(&signature_bytes);
-
-        let final_builder = StreamingPacketBuilder::new_syn_response(
-            inbound_connection.remote_stream_id(),
-            inbound_connection.local_stream_id(),
-            0,
-            final_options,
-            nack_binding.to_vec(),
-        )?;
-        let final_wire = encode_streaming_packet(&final_builder, limit)?;
-        let signature_option_offset = final_wire.len() - (signature_bytes.len() + 2);
-        let signature_option_length = signature_bytes.len() + 2;
-
-        let preimage = build_signature_preimage(
-            &final_wire,
-            Some(SignatureOptionLocation {
-                offset: signature_option_offset,
-                length: signature_option_length,
-            }),
-        );
-        let final_signature = local_dest.sign(&preimage)?;
-        let final_sig_bytes = final_signature.as_bytes().to_vec();
-        let mut signed_wire = final_wire;
-        let sig_start = signature_option_offset + 2;
-        signed_wire[sig_start..sig_start + final_sig_bytes.len()].copy_from_slice(&final_sig_bytes);
-
-        let envelope = ClientPayload {
-            protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
-            source_port: local_port,
-            destination_port: remote_port,
-            payload: signed_wire.clone(),
+        let options = StreamingOptions {
+            delay_requested: None,
+            from_destination: Some(local_dest.destination().clone()),
+            max_payload_size: Some(advertised_max_payload),
+            signature: None,
         };
-        let application_bytes =
-            encode_client_payload(&envelope).map_err(StreamingManagerError::OutboundEnvelope)?;
-
-        Ok(TransportSendRequest {
-            destination_hash: remote.destination_hash,
-            source_port: local_port,
-            destination_port: remote_port,
-            application_payload: application_bytes,
-            sequence: 0,
-            send_stream_id: inbound_connection.remote_stream_id(),
-            receive_stream_id: inbound_connection.local_stream_id(),
-        })
+        self.build_signed_packet(
+            local_dest,
+            remote,
+            inbound_connection.remote_stream_id(),
+            inbound_connection.local_stream_id(),
+            0,
+            0,
+            SYN_RESPONSE_FLAGS,
+            &options,
+            Vec::new(),
+            local_port,
+            remote_port,
+        )
     }
 
     /// Drains the outbound transport send queue.
@@ -572,7 +539,7 @@ impl StreamingManager {
         listener_port: Option<u16>,
         now_ms: u64,
     ) -> Result<WirePacketObservation, StreamingManagerError> {
-        let envelope = decode_client_payload(wire_bytes, MAX_STREAMING_PAYLOAD_BYTES + 256)
+        let envelope = decode_client_payload(wire_bytes, MAX_STREAMING_PACKET_BYTES + 256)
             .map_err(|error| {
                 StreamingManagerError::Streaming(StreamingError::InboundEnvelope(error))
             })?;
@@ -588,6 +555,12 @@ impl StreamingManager {
 
     /// Processes a raw inbound streaming packet (after the protocol-6
     /// client payload envelope has been stripped).
+    ///
+    /// The packet header is peeked first to route the packet; the full
+    /// strict decode then runs with the option context the route
+    /// requires (SYN/SYN-response packets carry FROM; established
+    /// connection control packets verify against the retained peer
+    /// signing key).
     pub fn process_inbound_packet(
         &mut self,
         wire_bytes: &[u8],
@@ -596,15 +569,23 @@ impl StreamingManager {
         listener_port: Option<u16>,
         now_ms: u64,
     ) -> Result<WirePacketObservation, StreamingManagerError> {
-        let limit = StreamingReceiveLimit::default();
-        let (packet, signature_location) =
-            decode_streaming_packet(wire_bytes, limit).map_err(StreamingManagerError::Codec)?;
+        let peek = peek_streaming_header(wire_bytes)?;
+        let flags_bits = peek.flags_bits & !i2pr_proto::streaming::FLAG_RESERVED_MASK;
 
         // Inbound SYN (originator): packet.sendStreamId == 0 AND
         // packet.receiveStreamId != 0 (the originator picked an id
         // for us to address them by).
-        if packet.flags.synchronize() && packet.send_stream_id == 0 && packet.receive_stream_id != 0
+        if flags_bits & i2pr_proto::streaming::FLAG_SYNCHRONIZE != 0
+            && peek.send_stream_id == 0
+            && peek.receive_stream_id != 0
         {
+            let limit = StreamingReceiveLimit::default();
+            let (packet, signature_location) = decode_streaming_packet(
+                wire_bytes,
+                limit,
+                StreamingOptionDecodeContext::anonymous(),
+            )
+            .map_err(StreamingManagerError::Codec)?;
             return self.handle_inbound_syn(
                 &packet,
                 signature_location,
@@ -619,8 +600,17 @@ impl StreamingManager {
         // SYN response (recipient): packet.sendStreamId == our
         // local_receive_stream_id AND packet.receiveStreamId != 0
         // (the recipient picked an id for us to address them by).
-        if packet.flags.synchronize() && packet.send_stream_id != 0 && packet.receive_stream_id != 0
+        if flags_bits & i2pr_proto::streaming::FLAG_SYNCHRONIZE != 0
+            && peek.send_stream_id != 0
+            && peek.receive_stream_id != 0
         {
+            let limit = StreamingReceiveLimit::default();
+            let (packet, signature_location) = decode_streaming_packet(
+                wire_bytes,
+                limit,
+                StreamingOptionDecodeContext::anonymous(),
+            )
+            .map_err(StreamingManagerError::Codec)?;
             return self.handle_inbound_syn_response(
                 &packet,
                 signature_location,
@@ -630,13 +620,35 @@ impl StreamingManager {
             );
         }
 
-        // Data / CLOSE / RESET on an established connection.
+        // Data / CLOSE / RESET on an established connection. Signed
+        // control packets without FROM verify against the retained
+        // peer signing key, so resolve the connection before the full
+        // strict decode supplies its option context.
+        let connection_id = self
+            .inbound_by_stream
+            .get(&peek.send_stream_id)
+            .copied()
+            .or_else(|| self.outbound_by_stream.get(&peek.send_stream_id).copied())
+            .ok_or(StreamingManagerError::UnknownConnection)?;
+        let peer_signing_key = self
+            .connections
+            .get(&connection_id)
+            .ok_or(StreamingManagerError::UnknownConnection)?
+            .peer_signing_key()
+            .clone();
+        let limit = StreamingReceiveLimit::default();
+        let (packet, signature_location) = decode_streaming_packet(
+            wire_bytes,
+            limit,
+            StreamingOptionDecodeContext::with_peer_key(&peer_signing_key),
+        )
+        .map_err(StreamingManagerError::Codec)?;
         self.handle_data_packet(
             &packet,
             signature_location,
             wire_bytes,
             from_destination_hash,
-            to_destination,
+            connection_id,
             now_ms,
         )
     }
@@ -645,34 +657,13 @@ impl StreamingManager {
     fn handle_inbound_syn(
         &mut self,
         packet: &StreamingPacket,
-        signature_location: Option<SignatureOptionLocation>,
+        signature_location: Option<SignatureLocation>,
         wire_bytes: &[u8],
         from_destination_hash: &[u8; 32],
         to_destination: &DestinationIdentity,
         listener_port: Option<u16>,
         now_ms: u64,
     ) -> Result<WirePacketObservation, StreamingManagerError> {
-        // Validate SYN policy.
-        if !packet.flags.from_included() {
-            return Err(StreamingManagerError::Codec(
-                StreamingPacketError::SynMissingFrom,
-            ));
-        }
-        if !packet.flags.signature_included() {
-            return Err(StreamingManagerError::Codec(
-                StreamingPacketError::SynMissingSignature,
-            ));
-        }
-        if !packet.flags.max_packet_size_included() {
-            return Err(StreamingManagerError::Codec(
-                StreamingPacketError::SynMissingMaxPacketSize,
-            ));
-        }
-        let signature_length = to_destination
-            .signing_public_key()
-            .key_type()
-            .signature_len()
-            .unwrap_or(0);
         // The SYN replay binding NACK field carries the receiver
         // (local destination) hash.
         let local_destination_hash: [u8; 32] = *to_destination
@@ -680,34 +671,34 @@ impl StreamingManager {
             .hash()
             .map_err(StreamingManagerError::I2npCodec)?
             .as_bytes();
-        validate_syn_policy(packet, &local_destination_hash, signature_length)?;
+        validate_initial_syn(packet, &local_destination_hash)?;
 
-        // Verify signature.
-        let destination = packet
-            .decode_destination()
-            .map_err(StreamingManagerError::I2npCodec)?
-            .ok_or(StreamingManagerError::Codec(
-                StreamingPacketError::SynMissingFrom,
-            ))?;
+        // Verify the originator's signature over the canonical
+        // preimage (the full packet with the raw signature zeroed)
+        // against the FROM destination's signing key.
+        let destination =
+            packet
+                .options
+                .from_destination
+                .clone()
+                .ok_or(StreamingManagerError::Codec(
+                    StreamingPacketError::SynMissingFrom,
+                ))?;
         let location = signature_location.ok_or(StreamingManagerError::Codec(
             StreamingPacketError::SignatureMissing,
         ))?;
         let preimage = build_signature_preimage(wire_bytes, Some(location));
         let signature = packet
+            .options
             .signature
             .clone()
             .ok_or(StreamingManagerError::Codec(
                 StreamingPacketError::SignatureMissing,
             ))?;
-        let signature_value =
-            SignatureValue::new(destination.signing_key().key_type(), signature.clone()).map_err(
-                |_| {
-                    StreamingManagerError::Codec(StreamingPacketError::SignatureLengthMismatch {
-                        expected: signature_length,
-                        actual: signature.len(),
-                    })
-                },
-            )?;
+        let signature_value = SignatureValue::new(destination.signing_key().key_type(), signature)
+            .map_err(|_| {
+                StreamingManagerError::Codec(StreamingPacketError::SignatureContextUnavailable)
+            })?;
         verify_signature(destination.signing_key(), &preimage, &signature_value)
             .map_err(|_| StreamingManagerError::Codec(StreamingPacketError::SignatureInvalid))?;
 
@@ -715,18 +706,25 @@ impl StreamingManager {
         // `receiveStreamId` is the id they want us to use in our
         // `sendStreamId`; from our perspective that's their
         // `remote_stream_id` (which we send to them as
-        // `receiveStreamId`).
+        // `receiveStreamId`). The peer signing key is retained so
+        // later signed control packets can verify without FROM.
         let connection_id = ConnectionId::new(self.next_connection_id);
         self.next_connection_id = self.next_connection_id.saturating_add(1);
         let local_receive_stream_id = self.allocate_inbound_stream_id();
         let remote_send_stream_id = packet.receive_stream_id;
-        let conn = StreamingConnection::new_inbound(
+        let remote_advertised_max = packet.options.max_payload_size;
+        let mut conn = StreamingConnection::new_inbound(
             connection_id,
             self.config.clone(),
             local_receive_stream_id,
             remote_send_stream_id,
+            destination.signing_key().clone(),
             now_ms,
         );
+        if let Some(max) = remote_advertised_max {
+            conn.set_remote_advertised_max_payload(max);
+        }
+        conn.set_local_advertised_max_payload(DEFAULT_ADVERTISED_MAX_PAYLOAD);
         // The inbound connection starts in `InboundSynReceived` and
         // does NOT transition to Established yet. The application
         // must accept() the SYN; then the manager builds and queues a
@@ -780,7 +778,7 @@ impl StreamingManager {
         connection_id: ConnectionId,
         local_port: u16,
         remote_port: u16,
-        max_packet_size: u32,
+        advertised_max_payload: u16,
         now_ms: u64,
         _rng: &mut R,
     ) -> Result<TransportSendRequest, StreamingManagerError> {
@@ -795,14 +793,20 @@ impl StreamingManager {
             &inbound_connection_snapshot,
             local_port,
             remote_port,
-            max_packet_size,
+            advertised_max_payload,
         )?;
-        let max_payload = extract_max_packet_size_for_response(&request, max_packet_size)?;
+        let remote_max = conn.remote_advertised_max_payload();
         let conn = self
             .connections
             .get_mut(&connection_id)
             .ok_or(StreamingManagerError::UnknownConnection)?;
-        conn.transition_established(max_payload, now_ms)
+        // Record our own advertisement so negotiation is
+        // `min(local advertised, remote advertised)`.
+        conn.set_local_advertised_max_payload(advertised_max_payload);
+        // Negotiation is `min(local, remote)`; the connection records
+        // the peer's advertised payload max from its SYN.
+        let negotiated = remote_max.unwrap_or(DEFAULT_ADVERTISED_MAX_PAYLOAD);
+        conn.transition_established(u32::from(negotiated), now_ms)
             .map_err(StreamingManagerError::Streaming)?;
         // Track the SYN response packet for retransmission until the
         // originator confirms with a non-SYN packet.
@@ -825,7 +829,7 @@ impl StreamingManager {
     fn handle_inbound_syn_response(
         &mut self,
         packet: &StreamingPacket,
-        signature_location: Option<SignatureOptionLocation>,
+        signature_location: Option<SignatureLocation>,
         wire_bytes: &[u8],
         from_destination_hash: &[u8; 32],
         now_ms: u64,
@@ -837,65 +841,51 @@ impl StreamingManager {
             .copied()
             .ok_or(StreamingManagerError::UnknownConnection)?;
 
-        // Validate required flags.
-        if !packet.flags.from_included() {
-            return Err(StreamingManagerError::Codec(
-                StreamingPacketError::SynMissingFrom,
-            ));
-        }
-        if !packet.flags.signature_included() {
-            return Err(StreamingManagerError::Codec(
-                StreamingPacketError::SynMissingSignature,
-            ));
-        }
-        if !packet.flags.max_packet_size_included() {
-            return Err(StreamingManagerError::Codec(
-                StreamingPacketError::SynMissingMaxPacketSize,
-            ));
-        }
-        let destination = packet
-            .decode_destination()
-            .map_err(StreamingManagerError::I2npCodec)?
-            .ok_or(StreamingManagerError::Codec(
-                StreamingPacketError::SynMissingFrom,
-            ))?;
-        let signature_length = destination
-            .signing_key()
-            .key_type()
-            .signature_len()
-            .unwrap_or(0);
+        validate_syn_response(packet)?;
+
+        // Verify the responder's signature over the canonical
+        // preimage against the FROM destination's signing key.
+        let destination =
+            packet
+                .options
+                .from_destination
+                .clone()
+                .ok_or(StreamingManagerError::Codec(
+                    StreamingPacketError::SynMissingFrom,
+                ))?;
         let location = signature_location.ok_or(StreamingManagerError::Codec(
             StreamingPacketError::SignatureMissing,
         ))?;
         let preimage = build_signature_preimage(wire_bytes, Some(location));
         let signature = packet
+            .options
             .signature
             .clone()
             .ok_or(StreamingManagerError::Codec(
                 StreamingPacketError::SignatureMissing,
             ))?;
-        let signature_value =
-            SignatureValue::new(destination.signing_key().key_type(), signature.clone()).map_err(
-                |_| {
-                    StreamingManagerError::Codec(StreamingPacketError::SignatureLengthMismatch {
-                        expected: signature_length,
-                        actual: signature.len(),
-                    })
-                },
-            )?;
+        let signature_value = SignatureValue::new(destination.signing_key().key_type(), signature)
+            .map_err(|_| {
+                StreamingManagerError::Codec(StreamingPacketError::SignatureContextUnavailable)
+            })?;
         verify_signature(destination.signing_key(), &preimage, &signature_value)
             .map_err(|_| StreamingManagerError::Codec(StreamingPacketError::SignatureInvalid))?;
 
-        let max_payload = extract_max_packet_size(packet)?;
+        let remote_max = packet.options.max_payload_size;
         let conn = self
             .connections
             .get_mut(&connection_id)
             .ok_or(StreamingManagerError::UnknownConnection)?;
-        // Plan 125 §6: peer receive stream id is the `receiveStreamId`
-        // the SYN response supplied; set it on the outbound connection
-        // before transitioning to Established.
+        if let Some(max) = remote_max {
+            conn.set_remote_advertised_max_payload(max);
+        }
+        // Plan 125 §6 / Plan 128 §12: peer receive stream id is the
+        // `receiveStreamId` the SYN response supplied; set it on the
+        // outbound connection before transitioning to Established.
+        // Negotiated payload max is `min(local, remote)`.
+        let negotiated = remote_max.unwrap_or(DEFAULT_ADVERTISED_MAX_PAYLOAD);
         conn.set_remote_stream_id(packet.receive_stream_id);
-        conn.transition_established(max_payload, now_ms)
+        conn.transition_established(u32::from(negotiated), now_ms)
             .map_err(StreamingManagerError::Streaming)?;
 
         Ok(WirePacketObservation {
@@ -914,64 +904,72 @@ impl StreamingManager {
     fn handle_data_packet(
         &mut self,
         packet: &StreamingPacket,
-        signature_location: Option<SignatureOptionLocation>,
+        signature_location: Option<SignatureLocation>,
         wire_bytes: &[u8],
         from_destination_hash: &[u8; 32],
-        to_destination: &DestinationIdentity,
+        connection_id: ConnectionId,
         now_ms: u64,
     ) -> Result<WirePacketObservation, StreamingManagerError> {
-        // The packet's `send_stream_id` carries the stream id the peer
-        // selected for its own receiveStreamId. On an inbound
-        // connection (we accepted the SYN) that matches our
-        // `inbound_by_stream` key. On an outbound connection (we sent
-        // the SYN) the same id matches our `outbound_by_stream` key
-        // because the peer's id is what we recorded at SYN/SYN-response
-        // time. Search both maps so a data packet is routed correctly
-        // regardless of which side originated the connection.
-        let connection_id = self
-            .inbound_by_stream
-            .get(&packet.send_stream_id)
-            .copied()
-            .or_else(|| self.outbound_by_stream.get(&packet.send_stream_id).copied())
-            .ok_or(StreamingManagerError::UnknownConnection)?;
+        // CLOSE and RESET require SIGNATURE_INCLUDED; FROM is not
+        // required since 0.9.20 because verification uses the peer
+        // signing key retained in connection state.
+        if packet.flags.close() && !packet.flags.signature_included() {
+            return Err(StreamingManagerError::Codec(
+                StreamingPacketError::CloseMissingSignature,
+            ));
+        }
+        if packet.flags.reset() && !packet.flags.signature_included() {
+            return Err(StreamingManagerError::Codec(
+                StreamingPacketError::ResetMissingSignature,
+            ));
+        }
+        let peer_signing_key = self
+            .connections
+            .get(&connection_id)
+            .ok_or(StreamingManagerError::UnknownConnection)?
+            .peer_signing_key()
+            .clone();
 
-        // RESET is authenticated.
-        if packet.flags.reset() && packet.flags.signature_included() {
-            let signature_length = to_destination
-                .signing_public_key()
+        // Verify any signed packet (CLOSE / RESET / signed data)
+        // against the retained peer identity.
+        if packet.flags.signature_included() {
+            let expected = peer_signing_key
                 .key_type()
                 .signature_len()
-                .unwrap_or(0);
-            if packet.signature.as_ref().map(Vec::len) == Some(signature_length) {
-                let location = signature_location.ok_or(StreamingManagerError::Codec(
-                    StreamingPacketError::SignatureMissing,
-                ))?;
-                let preimage = build_signature_preimage(wire_bytes, Some(location));
-                let signature = packet
+                .ok_or(StreamingPacketError::SignatureContextUnavailable)?;
+            let signature =
+                packet
+                    .options
                     .signature
-                    .clone()
+                    .as_ref()
                     .ok_or(StreamingManagerError::Codec(
                         StreamingPacketError::SignatureMissing,
                     ))?;
-                let signature_value = SignatureValue::new(
-                    to_destination.signing_public_key().key_type(),
-                    signature.clone(),
-                )
-                .map_err(|_| {
-                    StreamingManagerError::Codec(StreamingPacketError::SignatureLengthMismatch {
-                        expected: signature_length,
+            if signature.len() != expected {
+                return Err(StreamingManagerError::Codec(
+                    StreamingPacketError::SignatureLengthMismatch {
+                        expected,
                         actual: signature.len(),
-                    })
-                })?;
-                verify_signature(
-                    to_destination.signing_public_key(),
-                    &preimage,
-                    &signature_value,
-                )
-                .map_err(|_| {
-                    StreamingManagerError::Codec(StreamingPacketError::SignatureInvalid)
-                })?;
+                    },
+                ));
             }
+            let location = signature_location.ok_or(StreamingManagerError::Codec(
+                StreamingPacketError::SignatureMissing,
+            ))?;
+            let preimage = build_signature_preimage(wire_bytes, Some(location));
+            let signature_value = SignatureValue::new(
+                peer_signing_key.key_type(),
+                signature.clone(),
+            )
+            .map_err(|_| {
+                StreamingManagerError::Codec(StreamingPacketError::SignatureLengthMismatch {
+                    expected,
+                    actual: signature.len(),
+                })
+            })?;
+            verify_signature(&peer_signing_key, &preimage, &signature_value).map_err(|_| {
+                StreamingManagerError::Codec(StreamingPacketError::SignatureInvalid)
+            })?;
         }
 
         let conn = self
@@ -1107,7 +1105,9 @@ impl StreamingManager {
     }
 
     /// Builds and queues a signed CLOSE packet for the given
-    /// connection.
+    /// connection. Plan 128 §9: CLOSE carries `CLOSE_FLAGS`
+    /// (`0x000A`, CLOSE | SIGNATURE_INCLUDED) with the raw signature
+    /// as the final option field; FROM is not included.
     pub fn send_close(
         &mut self,
         connection_id: ConnectionId,
@@ -1125,92 +1125,35 @@ impl StreamingManager {
             .map_err(StreamingManagerError::Streaming)?;
         let local_receive_stream_id = conn.local_stream_id();
         let peer_receive_stream_id = conn.remote_stream_id();
+        let sequence_num = conn.send_window().next_sequence();
         let _ = conn;
 
-        let destination_bytes = local_dest
-            .destination()
-            .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
-            .map_err(StreamingManagerError::I2npCodec)?;
-        let mut option_bytes = Vec::new();
-        option_bytes.extend_from_slice(&destination_bytes);
-        let flags = StreamingFlags::new(FLAG_CLOSE | FLAG_SIGNATURE_INCLUDED | FLAG_FROM_INCLUDED)
-            .expect("CLOSE flag");
-        let builder = StreamingPacketBuilder {
-            send_stream_id: peer_receive_stream_id,
-            receive_stream_id: local_receive_stream_id,
-            sequence_num: 0,
-            ack_through: 0,
-            nacks: Vec::new(),
-            resend_delay: 0,
-            flags,
-            option_bytes: option_bytes.clone(),
-            payload: Vec::new(),
+        let options = StreamingOptions {
+            delay_requested: None,
+            from_destination: None,
+            max_payload_size: None,
+            signature: None,
         };
-        let limit = StreamingSendLimit::default();
-        let wire_bytes =
-            encode_streaming_packet(&builder, limit).map_err(StreamingManagerError::Codec)?;
-
-        let signature = local_dest.sign(&build_signature_preimage(&wire_bytes, None))?;
-        let signature_bytes = signature.as_bytes().to_vec();
-
-        option_bytes.push(STREAMING_OPTION_SIGNATURE);
-        option_bytes.push(signature_bytes.len() as u8);
-        option_bytes.extend_from_slice(&signature_bytes);
-
-        let final_builder = StreamingPacketBuilder {
-            send_stream_id: peer_receive_stream_id,
-            receive_stream_id: local_receive_stream_id,
-            sequence_num: 0,
-            ack_through: 0,
-            nacks: Vec::new(),
-            resend_delay: 0,
-            flags: StreamingFlags::new(FLAG_CLOSE | FLAG_SIGNATURE_INCLUDED | FLAG_FROM_INCLUDED)
-                .expect("CLOSE flag"),
-            option_bytes: option_bytes.clone(),
-            payload: Vec::new(),
-        };
-        let final_wire =
-            encode_streaming_packet(&final_builder, limit).map_err(StreamingManagerError::Codec)?;
-        let signature_option_offset = final_wire.len() - (signature_bytes.len() + 2);
-        let signature_option_length = signature_bytes.len() + 2;
-        let preimage = build_signature_preimage(
-            &final_wire,
-            Some(SignatureOptionLocation {
-                offset: signature_option_offset,
-                length: signature_option_length,
-            }),
-        );
-        let final_signature = local_dest.sign(&preimage)?;
-        let final_sig_bytes = final_signature.as_bytes().to_vec();
-        let mut signed_wire = final_wire;
-        let sig_start = signature_option_offset + 2;
-        signed_wire[sig_start..sig_start + final_sig_bytes.len()].copy_from_slice(&final_sig_bytes);
-
-        let envelope = ClientPayload {
-            protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
-            source_port: local_port,
-            destination_port: remote_port,
-            payload: signed_wire.clone(),
-        };
-        let application_bytes =
-            encode_client_payload(&envelope).map_err(StreamingManagerError::OutboundEnvelope)?;
-
-        let request = TransportSendRequest {
-            destination_hash: remote.destination_hash,
-            source_port: local_port,
-            destination_port: remote_port,
-            application_payload: application_bytes,
-            sequence: u32::MAX,
-            send_stream_id: peer_receive_stream_id,
-            receive_stream_id: local_receive_stream_id,
-        };
+        let request = self.build_signed_packet(
+            local_dest,
+            remote,
+            peer_receive_stream_id,
+            local_receive_stream_id,
+            sequence_num,
+            0,
+            CLOSE_FLAGS,
+            &options,
+            Vec::new(),
+            local_port,
+            remote_port,
+        )?;
 
         let outbound = OutboundPacket {
             sequence: u32::MAX,
             payload_len: 0,
             sent_at_ms: now_ms,
             retransmit_count: 0,
-            wire_bytes: signed_wire,
+            wire_bytes: decode_payload_from_request(&request)?,
             signed: true,
         };
         self.outbound_packets
@@ -1222,7 +1165,10 @@ impl StreamingManager {
         Ok(request)
     }
 
-    /// Builds and queues a signed RESET packet.
+    /// Builds and queues a signed RESET packet. Plan 128 §9: RESET
+    /// carries `RESET_FLAGS` (`0x000C`, RESET | SIGNATURE_INCLUDED)
+    /// with the raw signature as the final option field; FROM is not
+    /// required since 0.9.20.
     pub fn send_reset(
         &mut self,
         connection_id: ConnectionId,
@@ -1242,83 +1188,25 @@ impl StreamingManager {
         let peer_receive_stream_id = conn.remote_stream_id();
         let _ = conn;
 
-        let destination_bytes = local_dest
-            .destination()
-            .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
-            .map_err(StreamingManagerError::I2npCodec)?;
-        let mut option_bytes = Vec::new();
-        option_bytes.extend_from_slice(&destination_bytes);
-        let flags = StreamingFlags::new(FLAG_RESET | FLAG_SIGNATURE_INCLUDED | FLAG_FROM_INCLUDED)
-            .expect("RESET flag");
-        let builder = StreamingPacketBuilder {
-            send_stream_id: peer_receive_stream_id,
-            receive_stream_id: local_receive_stream_id,
-            sequence_num: 0,
-            ack_through: 0,
-            nacks: Vec::new(),
-            resend_delay: 0,
-            flags,
-            option_bytes: option_bytes.clone(),
-            payload: Vec::new(),
+        let options = StreamingOptions {
+            delay_requested: None,
+            from_destination: None,
+            max_payload_size: None,
+            signature: None,
         };
-        let limit = StreamingSendLimit::default();
-        let wire_bytes =
-            encode_streaming_packet(&builder, limit).map_err(StreamingManagerError::Codec)?;
-
-        let signature = local_dest.sign(&build_signature_preimage(&wire_bytes, None))?;
-        let signature_bytes = signature.as_bytes().to_vec();
-
-        option_bytes.push(STREAMING_OPTION_SIGNATURE);
-        option_bytes.push(signature_bytes.len() as u8);
-        option_bytes.extend_from_slice(&signature_bytes);
-
-        let final_builder = StreamingPacketBuilder {
-            send_stream_id: peer_receive_stream_id,
-            receive_stream_id: local_receive_stream_id,
-            sequence_num: 0,
-            ack_through: 0,
-            nacks: Vec::new(),
-            resend_delay: 0,
-            flags: StreamingFlags::new(FLAG_RESET | FLAG_SIGNATURE_INCLUDED | FLAG_FROM_INCLUDED)
-                .expect("RESET flag"),
-            option_bytes: option_bytes.clone(),
-            payload: Vec::new(),
-        };
-        let final_wire =
-            encode_streaming_packet(&final_builder, limit).map_err(StreamingManagerError::Codec)?;
-        let signature_option_offset = final_wire.len() - (signature_bytes.len() + 2);
-        let signature_option_length = signature_bytes.len() + 2;
-        let preimage = build_signature_preimage(
-            &final_wire,
-            Some(SignatureOptionLocation {
-                offset: signature_option_offset,
-                length: signature_option_length,
-            }),
-        );
-        let final_signature = local_dest.sign(&preimage)?;
-        let final_sig_bytes = final_signature.as_bytes().to_vec();
-        let mut signed_wire = final_wire;
-        let sig_start = signature_option_offset + 2;
-        signed_wire[sig_start..sig_start + final_sig_bytes.len()].copy_from_slice(&final_sig_bytes);
-
-        let envelope = ClientPayload {
-            protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
-            source_port: local_port,
-            destination_port: remote_port,
-            payload: signed_wire.clone(),
-        };
-        let application_bytes =
-            encode_client_payload(&envelope).map_err(StreamingManagerError::OutboundEnvelope)?;
-
-        let request = TransportSendRequest {
-            destination_hash: remote.destination_hash,
-            source_port: local_port,
-            destination_port: remote_port,
-            application_payload: application_bytes,
-            sequence: u32::MAX,
-            send_stream_id: peer_receive_stream_id,
-            receive_stream_id: local_receive_stream_id,
-        };
+        let request = self.build_signed_packet(
+            local_dest,
+            remote,
+            peer_receive_stream_id,
+            local_receive_stream_id,
+            0,
+            0,
+            RESET_FLAGS,
+            &options,
+            Vec::new(),
+            local_port,
+            remote_port,
+        )?;
         self.outbound_queue.push_back(request.clone());
 
         Ok(request)
@@ -1385,64 +1273,12 @@ impl StreamingManager {
 pub trait CryptoRngStub: rand_core::CryptoRng {}
 impl<T: rand_core::CryptoRng + ?Sized> CryptoRngStub for T {}
 
-fn extract_max_packet_size(packet: &StreamingPacket) -> Result<u32, StreamingManagerError> {
-    // Locate the MAX_PACKET_SIZE option (`type=1, length=4, u32 BE`).
-    // The option region layout is:
-    //
-    //   [FROM destination (self-encoded, no type/length prefix)]
-    //   [MAX_PACKET_SIZE option (type=1, length=4, u32)]
-    //   [SIGNATURE option (type=3, signature length, signature bytes)]
-    let total = packet.option_bytes.len();
-    if total < 6 {
-        return Err(StreamingManagerError::Codec(
-            StreamingPacketError::SynMissingMaxPacketSize,
-        ));
-    }
-    for offset in 0..=total.saturating_sub(6) {
-        if packet.option_bytes[offset] == STREAMING_OPTION_MAX_PACKET_SIZE
-            && packet.option_bytes[offset + 1] == 4
-        {
-            let mut bytes = [0_u8; 4];
-            bytes.copy_from_slice(&packet.option_bytes[offset + 2..offset + 6]);
-            return Ok(u32::from_be_bytes(bytes));
-        }
-    }
-    Err(StreamingManagerError::Codec(
-        StreamingPacketError::SynMissingMaxPacketSize,
-    ))
-}
-
-/// Extracts the negotiated max packet size for the SYN response path.
-/// When the SYN response packet is the one being inspected, the
-/// caller's local advertised max is the upper bound; the negotiated
-/// value is `min(remote, local)`.
-fn extract_max_packet_size_for_response(
-    _request: &TransportSendRequest,
-    local_max: u32,
-) -> Result<u32, StreamingManagerError> {
-    // The local caller already supplies its own ceiling through
-    // `max_packet_size`. Negotiation is handled by
-    // `StreamingConnection::transition_established` which picks
-    // `min(local, remote)`. We re-decode the response to recover the
-    // peer's advertised value.
-    let envelope = decode_client_payload(
-        &_request.application_payload,
-        i2pr_proto::streaming::MAX_STREAMING_PAYLOAD_BYTES + 256,
-    )
-    .map_err(|error| StreamingManagerError::Streaming(StreamingError::InboundEnvelope(error)))?;
-    let limit = StreamingReceiveLimit::default();
-    let (packet, _location) =
-        decode_streaming_packet(&envelope.payload, limit).map_err(StreamingManagerError::Codec)?;
-    let remote_max = extract_max_packet_size(&packet)?;
-    Ok(remote_max.min(local_max.max(remote_max)))
-}
-
 fn decode_payload_from_request(
     request: &TransportSendRequest,
 ) -> Result<Vec<u8>, StreamingManagerError> {
     let envelope = decode_client_payload(
         &request.application_payload,
-        i2pr_proto::streaming::MAX_STREAMING_PAYLOAD_BYTES + 256,
+        MAX_STREAMING_PACKET_BYTES + 256,
     )
     .map_err(|error| StreamingManagerError::Streaming(StreamingError::InboundEnvelope(error)))?;
     Ok(envelope.payload)

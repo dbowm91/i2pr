@@ -1,6 +1,5 @@
-//! Streaming packet wire codec.
+//! Streaming packet wire codec (Plan 128 normative form).
 //!
-//! Plan 123 owns the minimal interoperable I2P Streaming wire structure.
 //! The packet layout follows the current official Streaming
 //! specification:
 //!
@@ -18,79 +17,138 @@
 //! payload           remaining bytes
 //! ```
 //!
-//! SYN uses `SYNCHRONIZE`, requires `FROM_INCLUDED` and `SIGNATURE_INCLUDED`,
-//! and uses `nackCount = 8` with the receiver's 32-byte Destination hash in
-//! the NACK field as the current replay binding. The signature preimage is
-//! the full packet bytes with the signature option bytes zeroed while
-//! computing/verifying the signature.
+//! # Flag bits (normative I2P assignment)
+//!
+//! ```text
+//! bit 0   SYNCHRONIZE              0x0001
+//! bit 1   CLOSE                    0x0002
+//! bit 2   RESET                    0x0004
+//! bit 3   SIGNATURE_INCLUDED       0x0008
+//! bit 4   SIGNATURE_REQUESTED      0x0010
+//! bit 5   FROM_INCLUDED            0x0020
+//! bit 6   DELAY_REQUESTED          0x0040
+//! bit 7   MAX_PACKET_SIZE_INCLUDED 0x0080
+//! bit 8   PROFILE_INTERACTIVE      0x0100
+//! bit 9   ECHO                     0x0200
+//! bit 10  NO_ACK                   0x0400
+//! bit 11  OFFLINE_SIGNATURE        0x0800
+//! bits 12-15 reserved              0xF000
+//! ```
+//!
+//! # Option region (not a TLV list)
+//!
+//! The 2-byte `optionSize` field gives the total option-data length.
+//! The flags determine which structures are present and the
+//! specification fixes their order:
+//!
+//! ```text
+//! 1. DELAY_REQUESTED          2-byte integer, if present
+//! 2. FROM_INCLUDED            self-encoded Destination, if present
+//! 3. MAX_PACKET_SIZE_INCLUDED 2-byte big-endian integer, if present
+//! 4. OFFLINE_SIGNATURE        OfflineSig, if present (unsupported here)
+//! 5. SIGNATURE_INCLUDED       raw variable-length Signature, if present
+//! ```
+//!
+//! There are no type/length/value records inside the option region.
+//! The SIGNATURE field is the final option field and contains only the
+//! raw signature bytes; its length is inferred from the signing key in
+//! the `FROM_INCLUDED` Destination or, on an established connection,
+//! from the peer signing key retained in connection state.
+//!
+//! The signature preimage is the complete packet with the raw
+//! signature bytes set to zero.
 //!
 //! Unknown flag bits 12-15 must be zero for current compatibility.
-//! Unsupported known flags/options must receive deliberate policy rather
-//! than being silently interpreted.
 
 use core::fmt;
 
 use crate::codec::{CodecError, DecodeCursor, encode_to_vec};
 use crate::common::{Destination, SigningPublicKey};
 
-/// Minimum packet header size: `4 + 4 + 4 + 4 + 1 + 1 + 2 + 2` = 22 bytes.
+/// Minimum fixed packet header size: `4 + 4 + 4 + 4 + 1 + 1 + 2 + 2`
+/// = 22 bytes (with `nackCount == 0`).
 pub const MIN_STREAMING_HEADER_BYTES: usize = 22;
-/// Hard ceiling on the full Streaming packet bytes including payload.
-pub const MAX_STREAMING_PACKET_BYTES: usize = 1730;
+/// Default advertised maximum payload bytes carried by the
+/// `MAX_PACKET_SIZE_INCLUDED` option. This bounds the Streaming
+/// payload only, never the total packet size.
+pub const DEFAULT_ADVERTISED_MAX_PAYLOAD: u16 = 1730;
+/// Hard ceiling on the application payload region inside one packet.
+/// This is the negotiated-payload ceiling only; the full encoded
+/// packet may be larger because of header, NACKs, and options.
+pub const MAX_STREAMING_PAYLOAD_BYTES: usize = DEFAULT_ADVERTISED_MAX_PAYLOAD as usize;
 /// Hard ceiling on the option region size.
 ///
-/// The streaming packet format reserves up to 65535 bytes for the option
-/// region (a `u16` width); Plan 123 keeps the upper bound below the
-/// maximum packet size ceiling while accommodating the FROM destination
-/// option (typically ~397 bytes for Ed25519+X25519 destinations) plus
-/// the MAX_PACKET_SIZE and SIGNATURE options.
+/// The streaming packet format reserves up to 65535 bytes for the
+/// option region (a `u16` width); this implementation keeps the upper
+/// bound below the maximum packet size ceiling while accommodating a
+/// FROM destination (~397 bytes for Ed25519+X25519 destinations) plus
+/// the DELAY / MAX_PACKET_SIZE / SIGNATURE fields.
 pub const MAX_STREAMING_OPTION_BYTES: usize = 1024;
-/// Hard ceiling on the application payload region inside one packet.
-pub const MAX_STREAMING_PAYLOAD_BYTES: usize =
-    MAX_STREAMING_PACKET_BYTES - MIN_STREAMING_HEADER_BYTES;
 /// Hard ceiling on the number of NACK identifiers carried in one packet.
 pub const MAX_STREAMING_NACK_COUNT: usize = 64;
-/// Number of NACK entries the SYN replay binding uses. Each entry is
-/// `u32`, so 8 entries carry exactly 32 bytes of receiver Destination hash.
+/// Number of NACK entries the initial-SYN replay binding uses. Each
+/// entry is `u32`, so 8 entries carry exactly 32 bytes of receiver
+/// Destination hash (Proposal 164 replay prevention).
 pub const SYN_REPLAY_NACK_COUNT: usize = 8;
+/// Full encoded packet ceiling: checked sum of minimum header, NACKs,
+/// options, and payload. Payload and option regions are bounded
+/// independently of this value.
+pub const MAX_STREAMING_PACKET_BYTES: usize = MIN_STREAMING_HEADER_BYTES
+    + MAX_STREAMING_NACK_COUNT * 4
+    + MAX_STREAMING_OPTION_BYTES
+    + MAX_STREAMING_PAYLOAD_BYTES;
 
-/// Bit 0 (`0x0001`).
+/// Bit 0 (`0x0001`) — `SYNCHRONIZE`.
 pub const FLAG_SYNCHRONIZE: u16 = 0x0001;
-/// Bit 1 (`0x0002`).
+/// Bit 1 (`0x0002`) — `CLOSE`.
 pub const FLAG_CLOSE: u16 = 0x0002;
-/// Bit 2 (`0x0004`).
+/// Bit 2 (`0x0004`) — `RESET`.
 pub const FLAG_RESET: u16 = 0x0004;
-/// Bit 3 (`0x0008`) — `FROM_INCLUDED`.
-pub const FLAG_FROM_INCLUDED: u16 = 0x0008;
-/// Bit 4 (`0x0010`) — `SIGNATURE_INCLUDED`.
-pub const FLAG_SIGNATURE_INCLUDED: u16 = 0x0010;
-/// Bit 5 (`0x0020`) — `MAX_PACKET_SIZE_INCLUDED` (negotiated max).
-pub const FLAG_MAX_PACKET_SIZE_INCLUDED: u16 = 0x0020;
-/// Bit 6 (`0x0040`) — `NO_ACK`.
-pub const FLAG_NO_ACK: u16 = 0x0040;
-/// Bit 7 (`0x0080`) — `DELAY_REQUESTED` (informational, optional).
-pub const FLAG_DELAY_REQUESTED: u16 = 0x0080;
-/// Bit 8 (`0x0100`) — `INTERACTIVE_PROFILE` (optional, deferred).
+/// Bit 3 (`0x0008`) — `SIGNATURE_INCLUDED`.
+pub const FLAG_SIGNATURE_INCLUDED: u16 = 0x0008;
+/// Bit 4 (`0x0010`) — `SIGNATURE_REQUESTED`.
+pub const FLAG_SIGNATURE_REQUESTED: u16 = 0x0010;
+/// Bit 5 (`0x0020`) — `FROM_INCLUDED`.
+pub const FLAG_FROM_INCLUDED: u16 = 0x0020;
+/// Bit 6 (`0x0040`) — `DELAY_REQUESTED`.
+pub const FLAG_DELAY_REQUESTED: u16 = 0x0040;
+/// Bit 7 (`0x0080`) — `MAX_PACKET_SIZE_INCLUDED`.
+pub const FLAG_MAX_PACKET_SIZE_INCLUDED: u16 = 0x0080;
+/// Bit 8 (`0x0100`) — `PROFILE_INTERACTIVE`.
 pub const FLAG_PROFILE_INTERACTIVE: u16 = 0x0100;
-/// Bit 9 (`0x0200`) — `ECHO` (deferred).
+/// Bit 9 (`0x0200`) — `ECHO`.
 pub const FLAG_ECHO: u16 = 0x0200;
-/// Bit 10 (`0x0400`) — `SIGNATURE_REQUESTED` (deferred).
-pub const FLAG_SIGNATURE_REQUESTED: u16 = 0x0400;
-/// Bit 11 (`0x0800`) — `OFFLINE_SIGNATURE` (deferred).
+/// Bit 10 (`0x0400`) — `NO_ACK`.
+pub const FLAG_NO_ACK: u16 = 0x0400;
+/// Bit 11 (`0x0800`) — `OFFLINE_SIGNATURE`.
 pub const FLAG_OFFLINE_SIGNATURE: u16 = 0x0800;
-/// Reserved flag bits 12..=15. Receivers must reject packets with any of
-/// these bits set.
+/// Reserved flag bits 12..=15. Receivers must reject packets with any
+/// of these bits set.
 pub const FLAG_RESERVED_MASK: u16 = 0xF000;
 
-/// Type alias retained for backwards compatibility with the initial
-/// Phase-B module surface.
-pub const MAX_STREAMING_HEADER_BYTES: usize = MIN_STREAMING_HEADER_BYTES;
-/// Type alias retained for backwards compatibility with the initial
-/// Phase-B module surface.
-pub const MAX_STEAMING_NACK_COUNT: usize = MAX_STREAMING_NACK_COUNT;
+/// Initial originator SYN flag set:
+/// `SYNCHRONIZE | SIGNATURE_INCLUDED | FROM_INCLUDED |
+/// MAX_PACKET_SIZE_INCLUDED | NO_ACK` = `0x04A9`.
+pub const INITIAL_SYN_FLAGS: u16 = FLAG_SYNCHRONIZE
+    | FLAG_SIGNATURE_INCLUDED
+    | FLAG_FROM_INCLUDED
+    | FLAG_MAX_PACKET_SIZE_INCLUDED
+    | FLAG_NO_ACK;
+/// SYN response flag set:
+/// `SYNCHRONIZE | SIGNATURE_INCLUDED | FROM_INCLUDED |
+/// MAX_PACKET_SIZE_INCLUDED` = `0x00A9`. Proposal 164 explicitly
+/// excludes both `NO_ACK` and the replay-prevention NACKs here.
+pub const SYN_RESPONSE_FLAGS: u16 =
+    FLAG_SYNCHRONIZE | FLAG_SIGNATURE_INCLUDED | FLAG_FROM_INCLUDED | FLAG_MAX_PACKET_SIZE_INCLUDED;
+/// CLOSE flag set: `CLOSE | SIGNATURE_INCLUDED` = `0x000A`. FROM is
+/// not required since 0.9.20; verification uses the retained peer
+/// signing key.
+pub const CLOSE_FLAGS: u16 = FLAG_CLOSE | FLAG_SIGNATURE_INCLUDED;
+/// RESET flag set: `RESET | SIGNATURE_INCLUDED` = `0x000C`.
+pub const RESET_FLAGS: u16 = FLAG_RESET | FLAG_SIGNATURE_INCLUDED;
 
-/// Flag set captured as a typed value. Builders use this to avoid silent
-/// flag-bit mixups at the connection layer.
+/// Flag set captured as a typed value. Builders use this to avoid
+/// silent flag-bit mixups at the connection layer.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct StreamingFlags(u16);
 
@@ -133,14 +191,24 @@ impl StreamingFlags {
         self.0 & FLAG_RESET != 0
     }
 
+    /// Returns whether `SIGNATURE_INCLUDED` is set.
+    pub const fn signature_included(self) -> bool {
+        self.0 & FLAG_SIGNATURE_INCLUDED != 0
+    }
+
+    /// Returns whether `SIGNATURE_REQUESTED` is set.
+    pub const fn signature_requested(self) -> bool {
+        self.0 & FLAG_SIGNATURE_REQUESTED != 0
+    }
+
     /// Returns whether `FROM_INCLUDED` is set.
     pub const fn from_included(self) -> bool {
         self.0 & FLAG_FROM_INCLUDED != 0
     }
 
-    /// Returns whether `SIGNATURE_INCLUDED` is set.
-    pub const fn signature_included(self) -> bool {
-        self.0 & FLAG_SIGNATURE_INCLUDED != 0
+    /// Returns whether `DELAY_REQUESTED` is set.
+    pub const fn delay_requested(self) -> bool {
+        self.0 & FLAG_DELAY_REQUESTED != 0
     }
 
     /// Returns whether `MAX_PACKET_SIZE_INCLUDED` is set.
@@ -148,22 +216,33 @@ impl StreamingFlags {
         self.0 & FLAG_MAX_PACKET_SIZE_INCLUDED != 0
     }
 
+    /// Returns whether `PROFILE_INTERACTIVE` is set.
+    pub const fn profile_interactive(self) -> bool {
+        self.0 & FLAG_PROFILE_INTERACTIVE != 0
+    }
+
+    /// Returns whether `ECHO` is set.
+    pub const fn echo(self) -> bool {
+        self.0 & FLAG_ECHO != 0
+    }
+
     /// Returns whether `NO_ACK` is set.
     pub const fn no_ack(self) -> bool {
         self.0 & FLAG_NO_ACK != 0
     }
 
-    /// Returns whether `DELAY_REQUESTED` is set.
-    pub const fn delay_requested(self) -> bool {
-        self.0 & FLAG_DELAY_REQUESTED != 0
+    /// Returns whether `OFFLINE_SIGNATURE` is set.
+    pub const fn offline_signature(self) -> bool {
+        self.0 & FLAG_OFFLINE_SIGNATURE != 0
     }
 }
 
-/// Caller-supplied decoder limits. The strict decoder never allocates based
-/// solely on attacker-controlled byte counts.
+/// Caller-supplied decoder limits. The strict decoder never allocates
+/// based solely on attacker-controlled byte counts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamingReceiveLimit {
-    /// Maximum allowed packet bytes including header, NACKs, options, payload.
+    /// Maximum allowed packet bytes including header, NACKs, options,
+    /// payload.
     pub max_packet_bytes: usize,
     /// Maximum allowed option region size in bytes.
     pub max_option_bytes: usize,
@@ -256,8 +335,8 @@ pub enum StreamingPacketError {
     SynMissingReplayBinding,
     /// The packet carries reserved flag bits 12-15 set.
     ReservedFlagBits(u16),
-    /// A signed packet has a signature option whose length disagrees with
-    /// the destination's signing key type.
+    /// A signed packet's raw signature length disagrees with the length
+    /// inferred from the signing-key context.
     SignatureLengthMismatch {
         /// Expected signature length.
         expected: usize,
@@ -271,10 +350,23 @@ pub enum StreamingPacketError {
     },
     /// An arithmetic operation overflowed during decode.
     ArithmeticOverflow,
-    /// The signature option is missing from a packet that requires it.
+    /// The signature field is missing from a packet that requires it.
     SignatureMissing,
     /// A signed packet's preimage signature verification failed.
     SignatureInvalid,
+    /// A signed packet carries neither `FROM_INCLUDED` nor a peer
+    /// signing key in the decode context, so the signature length
+    /// cannot be inferred. The decoder fails closed instead of
+    /// guessing.
+    SignatureContextUnavailable,
+    /// The packet sets `OFFLINE_SIGNATURE`, which this implementation
+    /// does not support. The decoder rejects before misparsing later
+    /// option fields.
+    UnsupportedOfflineSignature,
+    /// A CLOSE packet was sent without `SIGNATURE_INCLUDED`.
+    CloseMissingSignature,
+    /// A RESET packet was sent without `SIGNATURE_INCLUDED`.
+    ResetMissingSignature,
 }
 
 impl fmt::Display for StreamingPacketError {
@@ -316,7 +408,7 @@ impl fmt::Display for StreamingPacketError {
             ),
             Self::SignatureLengthMismatch { expected, actual } => write!(
                 formatter,
-                "streaming signature option length {actual} disagrees with expected {expected}"
+                "streaming signature length {actual} disagrees with expected {expected}"
             ),
             Self::SynReplayNackCountMismatch { observed } => write!(
                 formatter,
@@ -325,9 +417,21 @@ impl fmt::Display for StreamingPacketError {
             Self::ArithmeticOverflow => {
                 formatter.write_str("streaming decoder arithmetic overflow")
             }
-            Self::SignatureMissing => formatter.write_str("streaming signature option missing"),
+            Self::SignatureMissing => formatter.write_str("streaming signature missing"),
             Self::SignatureInvalid => {
                 formatter.write_str("streaming signature verification failed")
+            }
+            Self::SignatureContextUnavailable => formatter.write_str(
+                "streaming signature context unavailable (no FROM and no peer signing key)",
+            ),
+            Self::UnsupportedOfflineSignature => {
+                formatter.write_str("streaming OFFLINE_SIGNATURE not supported")
+            }
+            Self::CloseMissingSignature => {
+                formatter.write_str("streaming CLOSE missing SIGNATURE_INCLUDED")
+            }
+            Self::ResetMissingSignature => {
+                formatter.write_str("streaming RESET missing SIGNATURE_INCLUDED")
             }
         }
     }
@@ -357,10 +461,104 @@ impl From<CodecError> for StreamingPacketError {
     }
 }
 
-/// Decoded Streaming packet with raw option region and payload bytes.
-///
-/// The signature and replay-binding fields are exposed through typed
-/// helpers so connection code never has to know the wire layout.
+/// Parsed semantic Streaming option fields, decoded per the packet
+/// flags in normative order. The encoder writes these fields in the
+/// same order; there are no type/length/value records.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StreamingOptions {
+    /// `DELAY_REQUESTED` 2-byte integer, when the flag is set.
+    pub delay_requested: Option<u16>,
+    /// `FROM_INCLUDED` self-encoded Destination, when the flag is set.
+    pub from_destination: Option<Destination>,
+    /// `MAX_PACKET_SIZE_INCLUDED` 2-byte big-endian integer bounding
+    /// the Streaming payload only, when the flag is set.
+    pub max_payload_size: Option<u16>,
+    /// `SIGNATURE_INCLUDED` raw signature bytes, when the flag is set.
+    /// The length comes from signing-key context, never from a wire
+    /// prefix.
+    pub signature: Option<Vec<u8>>,
+}
+
+impl StreamingOptions {
+    /// Encodes the option region in normative flag order with exactly
+    /// `signature_length` zero bytes occupying the final
+    /// `SIGNATURE_INCLUDED` position. The caller signs the resulting
+    /// full packet (whose signature bytes are already zero, i.e. the
+    /// canonical preimage) and then patches the real signature in via
+    /// [`install_packet_signature`].
+    ///
+    /// Requires `signature: None`; the signing path must never encode
+    /// over live signature bytes. Passing a populated `signature`
+    /// field fails closed with [`StreamingPacketError::SignatureMissing`].
+    #[allow(clippy::result_large_err)]
+    pub fn encode_with_placeholder(
+        &self,
+        flags: StreamingFlags,
+        signature_length: usize,
+    ) -> Result<Vec<u8>, StreamingPacketError> {
+        if self.signature.is_some() {
+            return Err(StreamingPacketError::SignatureMissing);
+        }
+        let mut out = Vec::new();
+        if flags.delay_requested() {
+            let delay = self
+                .delay_requested
+                .ok_or(StreamingPacketError::LengthExceeded {
+                    context: "delay requested option",
+                    declared: 0,
+                    maximum: 0,
+                })?;
+            out.extend_from_slice(&delay.to_be_bytes());
+        }
+        if flags.from_included() {
+            let destination = self
+                .from_destination
+                .as_ref()
+                .ok_or(StreamingPacketError::SynMissingFrom)?;
+            out.extend_from_slice(
+                &destination.encode_to_vec(crate::common::MAX_COMMON_STRUCTURE_SIZE)?,
+            );
+        }
+        if flags.max_packet_size_included() {
+            let max = self
+                .max_payload_size
+                .ok_or(StreamingPacketError::SynMissingMaxPacketSize)?;
+            out.extend_from_slice(&max.to_be_bytes());
+        }
+        if flags.offline_signature() {
+            return Err(StreamingPacketError::UnsupportedOfflineSignature);
+        }
+        if flags.signature_included() {
+            out.resize(out.len() + signature_length, 0_u8);
+        }
+        if out.len() > MAX_STREAMING_OPTION_BYTES {
+            return Err(StreamingPacketError::OptionOverflow {
+                declared: out.len(),
+                maximum: MAX_STREAMING_OPTION_BYTES,
+            });
+        }
+        Ok(out)
+    }
+}
+
+fn destination_len(destination: &Destination) -> Result<usize, StreamingPacketError> {
+    let encoded = destination.encode_to_vec(crate::common::MAX_COMMON_STRUCTURE_SIZE)?;
+    Ok(encoded.len())
+}
+
+/// Identifies where in the wire buffer the raw signature bytes live so
+/// the verification layer can zero them while computing the canonical
+/// signature preimage. The location covers only the signature bytes —
+/// there is no type/length prefix on the wire.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SignatureLocation {
+    /// Absolute offset of the first raw signature byte.
+    pub offset: usize,
+    /// Number of raw signature bytes.
+    pub length: usize,
+}
+
+/// Decoded Streaming packet with parsed options and payload bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamingPacket {
     /// The sender's stream identifier.
@@ -377,54 +575,98 @@ pub struct StreamingPacket {
     pub resend_delay: u8,
     /// Decoded flag set.
     pub flags: StreamingFlags,
-    /// Raw option region bytes (signature option bytes preserved for
-    /// verification; the wire bytes remain available for canonical signing).
+    /// Raw option region bytes (signature bytes preserved).
     pub option_bytes: Vec<u8>,
-    /// Optional signature extracted from the option region. `None` when
-    /// `SIGNATURE_INCLUDED` is not set.
-    pub signature: Option<Vec<u8>>,
+    /// Parsed semantic options per the packet flags.
+    pub options: StreamingOptions,
     /// Application payload bytes after the option region.
     pub payload: Vec<u8>,
 }
 
-impl StreamingPacket {
-    /// Returns the option-region byte slice that carries the
-    /// `FROM_INCLUDED` Destination when `FROM_INCLUDED` is set.
-    pub fn from_destination_bytes(&self) -> Option<&[u8]> {
-        if !self.flags.from_included() {
-            return None;
+/// Explicit decode context for option fields whose lengths depend on
+/// connection state rather than the packet itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamingOptionDecodeContext<'a> {
+    /// Peer signing key retained in connection state. Used to infer
+    /// the `SIGNATURE_INCLUDED` field length when `FROM_INCLUDED` is
+    /// absent (established-connection control packets such as
+    /// CLOSE/RESET after 0.9.20).
+    pub peer_signing_key: Option<&'a SigningPublicKey>,
+}
+
+impl<'a> StreamingOptionDecodeContext<'a> {
+    /// Context without retained peer state. Signed packets must then
+    /// carry `FROM_INCLUDED` for their signatures to parse.
+    pub const fn anonymous() -> Self {
+        Self {
+            peer_signing_key: None,
         }
-        Some(self.option_bytes.as_slice())
     }
 
-    /// Reconstructs the Destination carried in the option region. Returns
-    /// `None` when `FROM_INCLUDED` is not set.
-    pub fn decode_destination(&self) -> Result<Option<Destination>, CodecError> {
-        if !self.flags.from_included() {
-            return Ok(None);
+    /// Context carrying the established connection's peer signing key.
+    pub const fn with_peer_key(key: &'a SigningPublicKey) -> Self {
+        Self {
+            peer_signing_key: Some(key),
         }
-        let destination = Destination::decode_from_cursor(
-            &self.option_bytes,
-            crate::common::MAX_COMMON_STRUCTURE_SIZE,
-        )?;
-        Ok(Some(destination))
-    }
-
-    /// Returns the signature option byte length declared in the option
-    /// region when `SIGNATURE_INCLUDED` is set.
-    pub fn signature_option_length(&self) -> Option<usize> {
-        self.signature.as_ref().map(Vec::len)
     }
 }
 
+/// Lightweight header peek used to route a packet before full option
+/// parsing. Routing decisions (initial SYN vs SYN response vs
+/// established-connection traffic) need only the stream IDs and flag
+/// bits; the full decode runs afterwards with the correct option
+/// context.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamingHeaderPeek {
+    /// The sender's stream identifier.
+    pub send_stream_id: u32,
+    /// The receiver's stream identifier chosen by the sender.
+    pub receive_stream_id: u32,
+    /// The packet's sequence number.
+    pub sequence_num: u32,
+    /// Raw flag bits (reserved-bit validation happens in the strict
+    /// decoder).
+    pub flags_bits: u16,
+}
+
+/// Peeks the fixed streaming header fields without parsing the option
+/// region. Fails closed when the input cannot hold the declared
+/// header plus NACK words.
+#[allow(clippy::result_large_err)]
+pub fn peek_streaming_header(input: &[u8]) -> Result<StreamingHeaderPeek, StreamingPacketError> {
+    if input.len() < MIN_STREAMING_HEADER_BYTES {
+        return Err(StreamingPacketError::Truncated);
+    }
+    let send_stream_id = u32::from_be_bytes([input[0], input[1], input[2], input[3]]);
+    let receive_stream_id = u32::from_be_bytes([input[4], input[5], input[6], input[7]]);
+    let sequence_num = u32::from_be_bytes([input[8], input[9], input[10], input[11]]);
+    let nack_count = input[16] as usize;
+    let header_end = MIN_STREAMING_HEADER_BYTES
+        .checked_add(nack_count * 4)
+        .ok_or(StreamingPacketError::ArithmeticOverflow)?;
+    if input.len() < header_end {
+        return Err(StreamingPacketError::Truncated);
+    }
+    let flags_offset = 18 + nack_count * 4;
+    let flags_bits = u16::from_be_bytes([input[flags_offset], input[flags_offset + 1]]);
+    Ok(StreamingHeaderPeek {
+        send_stream_id,
+        receive_stream_id,
+        sequence_num,
+        flags_bits,
+    })
+}
+
 /// Decodes a streaming packet from the wire form, also returning the
-/// absolute offset and length of the signature option region (when present)
+/// absolute offset and length of the raw signature bytes (when present)
 /// so the caller can verify the signature over the canonical bytes with
-/// the signature option zeroed.
+/// the signature zeroed.
+#[allow(clippy::result_large_err)]
 pub fn decode_streaming_packet(
     input: &[u8],
     limit: StreamingReceiveLimit,
-) -> Result<(StreamingPacket, Option<SignatureOptionLocation>), StreamingPacketError> {
+    context: StreamingOptionDecodeContext<'_>,
+) -> Result<(StreamingPacket, Option<SignatureLocation>), StreamingPacketError> {
     if input.len() > limit.max_packet_bytes {
         return Err(StreamingPacketError::PayloadOverflow {
             declared: input.len(),
@@ -470,9 +712,8 @@ pub fn decode_streaming_packet(
         return Err(StreamingPacketError::Truncated);
     }
     let option_bytes = input[option_start..option_end].to_vec();
-    let payload_end = input.len();
-    let payload = if option_end < payload_end {
-        input[option_end..payload_end].to_vec()
+    let payload = if option_end < input.len() {
+        input[option_end..].to_vec()
     } else {
         Vec::new()
     };
@@ -483,16 +724,7 @@ pub fn decode_streaming_packet(
         });
     }
 
-    let mut signature = None;
-    let mut signature_location = None;
-    if flags.signature_included() {
-        let (offset, length, sig) = extract_signature_option(&option_bytes)?;
-        signature = Some(sig);
-        signature_location = Some(SignatureOptionLocation {
-            offset: option_start + offset,
-            length,
-        });
-    }
+    let (options, location) = parse_options(&flags, &option_bytes, option_start, &context)?;
 
     Ok((
         StreamingPacket {
@@ -504,65 +736,123 @@ pub fn decode_streaming_packet(
             resend_delay,
             flags,
             option_bytes,
-            signature,
+            options,
             payload,
         },
-        signature_location,
+        location,
     ))
 }
 
-/// Identifies where in the wire buffer the signature option bytes live so
-/// the verification layer can zero them while computing the canonical
-/// signature preimage.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SignatureOptionLocation {
-    /// Offset of the signature option bytes (covering type + length
-    /// prefix plus signature bytes; the full byte region is zeroed).
-    pub offset: usize,
-    /// Length of the signature option bytes covered by the zero-fill.
-    pub length: usize,
-}
-
-fn extract_signature_option(
+/// Parses the option region according to the packet flags in normative
+/// order. Fails closed on unsupported layouts, truncated fields, and
+/// unparsed trailing option data.
+#[allow(clippy::result_large_err)]
+fn parse_options(
+    flags: &StreamingFlags,
     option_bytes: &[u8],
-) -> Result<(usize, usize, Vec<u8>), StreamingPacketError> {
-    // The SIGNATURE option is always the LAST option in the option
-    // region. The option region is laid out as:
-    //
-    //   [FROM destination (self-encoded, no type/length prefix)]
-    //   [MAX_PACKET_SIZE option (type=1, length=4, u32)]
-    //   [SIGNATURE option (type=3, length=u8, sig_bytes)]
-    //
-    // For a 64-byte Ed25519 signature the SIGNATURE option occupies
-    // exactly 66 bytes (`type + length + 64 sig bytes`). We locate the
-    // SIGNATURE option by reading its length byte at offset
-    // `total_len - 65` and verifying the type byte at `total_len - 66`.
-    if option_bytes.len() < 66 {
-        return Err(StreamingPacketError::SignatureMissing);
+    option_start: usize,
+    context: &StreamingOptionDecodeContext<'_>,
+) -> Result<(StreamingOptions, Option<SignatureLocation>), StreamingPacketError> {
+    let mut options = StreamingOptions::default();
+    let mut position = 0usize;
+
+    // 1. DELAY_REQUESTED — 2-byte integer.
+    if flags.delay_requested() {
+        let end = position
+            .checked_add(2)
+            .ok_or(StreamingPacketError::ArithmeticOverflow)?;
+        let field = option_bytes
+            .get(position..end)
+            .ok_or(StreamingPacketError::Truncated)?;
+        options.delay_requested = Some(u16::from_be_bytes([field[0], field[1]]));
+        position = end;
     }
-    let total_len = option_bytes.len();
-    let length = option_bytes[total_len - 65] as usize;
-    if length != 64 {
-        return Err(StreamingPacketError::SignatureMissing);
+
+    // 2. FROM_INCLUDED — self-encoded Destination (no prefix).
+    if flags.from_included() {
+        let remaining = option_bytes
+            .get(position..)
+            .ok_or(StreamingPacketError::Truncated)?;
+        let destination =
+            Destination::decode_from_cursor(remaining, crate::common::MAX_COMMON_STRUCTURE_SIZE)
+                .map_err(StreamingPacketError::from)?;
+        // The canonical re-encoding length equals the consumed wire
+        // length because the common-structure codecs are canonical.
+        let consumed = destination_len(&destination)?;
+        options.from_destination = Some(destination);
+        position += consumed;
     }
-    let opt_type = option_bytes[total_len - 66];
-    if opt_type != STREAMING_OPTION_SIGNATURE {
-        return Err(StreamingPacketError::SignatureMissing);
+
+    // 3. MAX_PACKET_SIZE_INCLUDED — 2-byte big-endian integer bounding
+    //    the Streaming payload only.
+    if flags.max_packet_size_included() {
+        let end = position
+            .checked_add(2)
+            .ok_or(StreamingPacketError::ArithmeticOverflow)?;
+        let field = option_bytes
+            .get(position..end)
+            .ok_or(StreamingPacketError::Truncated)?;
+        options.max_payload_size = Some(u16::from_be_bytes([field[0], field[1]]));
+        position = end;
     }
-    let sig_offset = total_len - 66;
-    let signature = option_bytes[sig_offset + 2..total_len].to_vec();
-    let total = 66_usize;
-    Ok((sig_offset, total, signature))
+
+    // 4. OFFLINE_SIGNATURE — rejected before any later field could be
+    //    misparsed against the wrong layout.
+    if flags.offline_signature() {
+        return Err(StreamingPacketError::UnsupportedOfflineSignature);
+    }
+
+    // 5. SIGNATURE_INCLUDED — final field, raw variable-length
+    //    signature bytes. Length inference: FROM destination signing
+    //    key first, retained peer signing key second; no context means
+    //    fail closed.
+    let mut location = None;
+    if flags.signature_included() {
+        let expected = if let Some(destination) = options.from_destination.as_ref() {
+            destination
+                .signing_key()
+                .key_type()
+                .signature_len()
+                .ok_or(StreamingPacketError::SignatureContextUnavailable)?
+        } else if let Some(key) = context.peer_signing_key {
+            key.key_type()
+                .signature_len()
+                .ok_or(StreamingPacketError::SignatureContextUnavailable)?
+        } else {
+            return Err(StreamingPacketError::SignatureContextUnavailable);
+        };
+        let end = position
+            .checked_add(expected)
+            .ok_or(StreamingPacketError::ArithmeticOverflow)?;
+        let signature = option_bytes
+            .get(position..end)
+            .ok_or(StreamingPacketError::SignatureLengthMismatch {
+                expected,
+                actual: option_bytes.len().saturating_sub(position),
+            })?
+            .to_vec();
+        location = Some(SignatureLocation {
+            offset: option_start + position,
+            length: expected,
+        });
+        options.signature = Some(signature);
+        position = end;
+    }
+
+    if position != option_bytes.len() {
+        return Err(StreamingPacketError::TrailingBytes);
+    }
+    Ok((options, location))
 }
 
 /// Builds a Streaming signature preimage: the supplied wire bytes with
-/// the supplied signature option region zeroed.
+/// the supplied raw signature bytes zeroed.
 pub fn build_signature_preimage(
     wire_bytes: &[u8],
-    signature_option: Option<SignatureOptionLocation>,
+    signature_location: Option<SignatureLocation>,
 ) -> Vec<u8> {
     let mut preimage = wire_bytes.to_vec();
-    if let Some(location) = signature_option {
+    if let Some(location) = signature_location {
         let end = location
             .offset
             .checked_add(location.length)
@@ -580,6 +870,30 @@ pub fn build_signature_preimage(
     preimage
 }
 
+/// Overwrites the zeroed signature placeholder at the tail of the
+/// encoded packet with the real signature bytes and returns the
+/// absolute wire offset written. The placeholder must be exactly
+/// `signature.len()` zero bytes at the end of the packet; anything
+/// else fails closed.
+#[allow(clippy::result_large_err)]
+pub fn install_packet_signature(
+    wire: &mut [u8],
+    signature: &[u8],
+) -> Result<usize, StreamingPacketError> {
+    if signature.is_empty() {
+        return Err(StreamingPacketError::SignatureMissing);
+    }
+    if wire.len() < signature.len() {
+        return Err(StreamingPacketError::Truncated);
+    }
+    let offset = wire.len() - signature.len();
+    if wire[offset..].iter().any(|byte| *byte != 0) {
+        return Err(StreamingPacketError::SignatureInvalid);
+    }
+    wire[offset..].copy_from_slice(signature);
+    Ok(offset)
+}
+
 /// Builder input for [`encode_streaming_packet`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamingPacketBuilder {
@@ -595,25 +909,21 @@ pub struct StreamingPacketBuilder {
 }
 
 impl StreamingPacketBuilder {
-    /// Constructs a SYN packet builder with the canonical
-    /// `SYNCHRONIZE | FROM_INCLUDED | SIGNATURE_INCLUDED |
-    /// MAX_PACKET_SIZE_INCLUDED` flag set. Plan 125 §5:
-    /// `send_stream_id` must be 0 (originator-side) and
-    /// `receive_stream_id` carries the local receive stream id the
-    /// recipient must use when addressing the originator.
-    pub fn new_syn(
+    /// Constructs an initial originator SYN packet builder with the
+    /// canonical `INITIAL_SYN_FLAGS` (`0x04A9`). Plan 128 §7:
+    /// `send_stream_id` must be 0, `receive_stream_id` carries the
+    /// locally selected nonzero id, `sequence_num` is 0, and `nacks`
+    /// carries the eight replay-binding words (the remote Destination
+    /// hash).
+    #[allow(clippy::result_large_err)]
+    pub fn new_initial_syn(
         send_stream_id: u32,
         receive_stream_id: u32,
         sequence_num: u32,
         option_bytes: Vec<u8>,
         nacks: Vec<u32>,
     ) -> Result<Self, StreamingPacketError> {
-        let flags = StreamingFlags::new(
-            FLAG_SYNCHRONIZE
-                | FLAG_FROM_INCLUDED
-                | FLAG_SIGNATURE_INCLUDED
-                | FLAG_MAX_PACKET_SIZE_INCLUDED,
-        )?;
+        let flags = StreamingFlags::new(INITIAL_SYN_FLAGS)?;
         Ok(Self {
             send_stream_id,
             receive_stream_id,
@@ -627,27 +937,25 @@ impl StreamingPacketBuilder {
         })
     }
 
-    /// Constructs a SYN response packet builder.
+    /// Constructs a SYN response packet builder with the canonical
+    /// `SYN_RESPONSE_FLAGS` (`0x00A9`). Proposal 164: the response
+    /// carries no replay-prevention NACKs and does not set `NO_ACK`;
+    /// `ack_through` remains valid and acknowledges the initial SYN.
+    #[allow(clippy::result_large_err)]
     pub fn new_syn_response(
         send_stream_id: u32,
         receive_stream_id: u32,
         sequence_num: u32,
+        ack_through: u32,
         option_bytes: Vec<u8>,
-        nacks: Vec<u32>,
     ) -> Result<Self, StreamingPacketError> {
-        let flags = StreamingFlags::new(
-            FLAG_SYNCHRONIZE
-                | FLAG_FROM_INCLUDED
-                | FLAG_SIGNATURE_INCLUDED
-                | FLAG_MAX_PACKET_SIZE_INCLUDED
-                | FLAG_NO_ACK,
-        )?;
+        let flags = StreamingFlags::new(SYN_RESPONSE_FLAGS)?;
         Ok(Self {
             send_stream_id,
             receive_stream_id,
             sequence_num,
-            ack_through: 0,
-            nacks,
+            ack_through,
+            nacks: Vec::new(),
             resend_delay: 0,
             flags,
             option_bytes,
@@ -657,9 +965,12 @@ impl StreamingPacketBuilder {
 }
 
 /// Encodes a streaming packet from the typed builder input and returns
-/// the wire bytes. Callers that need to sign the packet must compute the
-/// canonical preimage via [`build_signature_preimage`] over the returned
-/// bytes with the signature option zeroed.
+/// the wire bytes. Callers producing signed packets must encode the
+/// option region with a zeroed signature placeholder
+/// ([`StreamingOptions::encode_with_placeholder`]), sign the returned
+/// zeroed bytes directly (they already equal the canonical preimage),
+/// and patch the signature in with [`install_packet_signature`].
+#[allow(clippy::result_large_err)]
 pub fn encode_streaming_packet(
     packet: &StreamingPacketBuilder,
     limit: StreamingSendLimit,
@@ -727,9 +1038,11 @@ pub fn encode_streaming_packet(
     Ok(out)
 }
 
-/// Verifies a SYN replay binding against the supplied receiver Destination
-/// hash. Returns `Ok(true)` when the binding matches, `Ok(false)` when the
-/// binding does not match the supplied hash, and an error otherwise.
+/// Verifies a SYN replay binding against the supplied receiver
+/// Destination hash. Returns `Ok(true)` when the binding matches,
+/// `Ok(false)` when the binding does not match the supplied hash, and
+/// an error otherwise.
+#[allow(clippy::result_large_err)]
 pub fn verify_syn_replay_binding(
     packet: &StreamingPacket,
     receiver_destination_hash: &[u8; 32],
@@ -747,9 +1060,9 @@ pub fn verify_syn_replay_binding(
     Ok(buffer == *receiver_destination_hash)
 }
 
-/// Encodes the canonical 32-byte SYN replay binding value (the receiver
-/// Destination hash) as the eight `u32` NACK entries the SYN packet
-/// carries.
+/// Encodes the canonical 32-byte SYN replay binding value (the
+/// receiver Destination hash) as the eight `u32` NACK entries the
+/// initial SYN packet carries.
 pub fn encode_syn_replay_binding(
     receiver_destination_hash: &[u8; 32],
 ) -> [u32; SYN_REPLAY_NACK_COUNT] {
@@ -763,23 +1076,42 @@ pub fn encode_syn_replay_binding(
             receiver_destination_hash[offset + 3],
         ]);
     }
-    out.to_vec().try_into().expect("constant size")
+    out
 }
 
-/// Option type code for the SIGNATURE option.
-pub const STREAMING_OPTION_SIGNATURE: u8 = 3;
-/// Option type code for the FROM option (carries the full Destination).
-pub const STREAMING_OPTION_FROM: u8 = 4;
-/// Option type code for the MAX_PACKET_SIZE option (4-byte value).
-pub const STREAMING_OPTION_MAX_PACKET_SIZE: u8 = 1;
-
-/// Validates a `SYNCHRONIZE` packet against the minimal-core policy
-/// described in Plan 123 §5.
-pub fn validate_syn_policy(
+/// Validates an initial originator SYN against the current protocol
+/// policy (Plan 128 §7): SYNCHRONIZE with FROM, SIGNATURE, and
+/// MAX_PACKET_SIZE included, plus the Proposal 164 replay binding
+/// (exactly eight NACK words carrying the receiver Destination hash).
+#[allow(clippy::result_large_err)]
+pub fn validate_initial_syn(
     packet: &StreamingPacket,
     receiver_destination_hash: &[u8; 32],
-    expected_signature_length: usize,
 ) -> Result<(), StreamingPacketError> {
+    if !packet.flags.synchronize() {
+        return Err(StreamingPacketError::SynMissingReplayBinding);
+    }
+    if !packet.flags.from_included() {
+        return Err(StreamingPacketError::SynMissingFrom);
+    }
+    if !packet.flags.signature_included() {
+        return Err(StreamingPacketError::SynMissingSignature);
+    }
+    if !packet.flags.max_packet_size_included() {
+        return Err(StreamingPacketError::SynMissingMaxPacketSize);
+    }
+    if !verify_syn_replay_binding(packet, receiver_destination_hash)? {
+        return Err(StreamingPacketError::SynMissingReplayBinding);
+    }
+    Ok(())
+}
+
+/// Validates a SYN response against the current protocol policy
+/// (Plan 128 §8): SYNCHRONIZE with FROM, SIGNATURE, and
+/// MAX_PACKET_SIZE included. The initial-SYN Bob-hash replay binding
+/// is deliberately NOT required on the response (Proposal 164).
+#[allow(clippy::result_large_err)]
+pub fn validate_syn_response(packet: &StreamingPacket) -> Result<(), StreamingPacketError> {
     if !packet.flags.synchronize() {
         return Err(StreamingPacketError::SynMissingFrom);
     }
@@ -792,36 +1124,22 @@ pub fn validate_syn_policy(
     if !packet.flags.max_packet_size_included() {
         return Err(StreamingPacketError::SynMissingMaxPacketSize);
     }
-    let length = packet
-        .signature
-        .as_ref()
-        .map(Vec::len)
-        .ok_or(StreamingPacketError::SignatureMissing)?;
-    if length != expected_signature_length {
-        return Err(StreamingPacketError::SignatureLengthMismatch {
-            expected: expected_signature_length,
-            actual: length,
-        });
-    }
-    if !verify_syn_replay_binding(packet, receiver_destination_hash)? {
-        return Err(StreamingPacketError::SynMissingReplayBinding);
-    }
     Ok(())
 }
 
-/// Validates a signed packet has a signature option whose length matches
-/// the supplied destination's signing key type.
+/// Validates a signed packet has raw signature bytes whose length
+/// matches the supplied signing key type.
+#[allow(clippy::result_large_err)]
 pub fn validate_signature_policy(
     packet: &StreamingPacket,
-    destination: &SigningPublicKey,
+    signing_key: &SigningPublicKey,
 ) -> Result<(), StreamingPacketError> {
-    let expected = destination.key_type().signature_len().ok_or(
-        StreamingPacketError::SignatureLengthMismatch {
-            expected: 0,
-            actual: 0,
-        },
-    )?;
+    let expected = signing_key
+        .key_type()
+        .signature_len()
+        .ok_or(StreamingPacketError::SignatureContextUnavailable)?;
     let actual = packet
+        .options
         .signature
         .as_ref()
         .map(Vec::len)
@@ -835,6 +1153,28 @@ pub fn validate_signature_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::{Certificate, CryptoKeyType, KeyAndCert, KeyCertificate, SigningKeyType};
+
+    fn ed_destination() -> Destination {
+        let public_len = CryptoKeyType::X25519.public_key_len().unwrap();
+        let signing_len = SigningKeyType::EdDsaSha512Ed25519.public_key_len().unwrap();
+        let padding_len = 384 - public_len - signing_len;
+        let keys = KeyAndCert::new(
+            crate::PublicKey::new(CryptoKeyType::X25519, vec![0x11; public_len]).unwrap(),
+            SigningPublicKey::new(SigningKeyType::EdDsaSha512Ed25519, vec![0x22; signing_len])
+                .unwrap(),
+            vec![0x33; padding_len],
+            Certificate::Key(
+                KeyCertificate::for_types(
+                    SigningKeyType::EdDsaSha512Ed25519,
+                    CryptoKeyType::X25519,
+                )
+                .unwrap(),
+            ),
+        )
+        .unwrap();
+        Destination::new(keys).unwrap()
+    }
 
     #[test]
     fn empty_packet_round_trip_minimum_header_only() {
@@ -851,15 +1191,19 @@ mod tests {
         };
         let encoded = encode_streaming_packet(&builder, StreamingSendLimit::default()).unwrap();
         assert_eq!(encoded.len(), MIN_STREAMING_HEADER_BYTES);
-        let (packet, location) =
-            decode_streaming_packet(&encoded, StreamingReceiveLimit::default()).unwrap();
+        let (packet, location) = decode_streaming_packet(
+            &encoded,
+            StreamingReceiveLimit::default(),
+            StreamingOptionDecodeContext::anonymous(),
+        )
+        .unwrap();
         assert_eq!(packet.send_stream_id, 0);
         assert_eq!(packet.receive_stream_id, 0);
         assert_eq!(packet.sequence_num, 0);
         assert_eq!(packet.ack_through, 0);
         assert!(packet.nacks.is_empty());
         assert!(packet.payload.is_empty());
-        assert!(packet.signature.is_none());
+        assert!(packet.options.signature.is_none());
         assert!(location.is_none());
     }
 
@@ -884,6 +1228,7 @@ mod tests {
                 max_nack_count: 16,
                 max_payload_bytes: 4096,
             },
+            StreamingOptionDecodeContext::anonymous(),
         )
         .unwrap_err();
         assert!(matches!(error, StreamingPacketError::NackOverflow { .. }));
@@ -906,6 +1251,7 @@ mod tests {
                 max_nack_count: 16,
                 max_payload_bytes: 4096,
             },
+            StreamingOptionDecodeContext::anonymous(),
         )
         .unwrap_err();
         assert!(matches!(error, StreamingPacketError::OptionOverflow { .. }));
@@ -914,7 +1260,12 @@ mod tests {
     #[test]
     fn payload_overflow_is_rejected_at_decode() {
         let bytes = vec![0_u8; MAX_STREAMING_PACKET_BYTES + 1];
-        let error = decode_streaming_packet(&bytes, StreamingReceiveLimit::default()).unwrap_err();
+        let error = decode_streaming_packet(
+            &bytes,
+            StreamingReceiveLimit::default(),
+            StreamingOptionDecodeContext::anonymous(),
+        )
+        .unwrap_err();
         assert!(matches!(
             error,
             StreamingPacketError::PayloadOverflow { .. }
@@ -922,16 +1273,17 @@ mod tests {
     }
 
     #[test]
-    fn signature_preimage_zeroes_signature_option_bytes() {
-        let bytes = [0u8; MIN_STREAMING_HEADER_BYTES];
+    fn signature_preimage_zeroes_raw_signature_bytes() {
+        let bytes = [7u8; MIN_STREAMING_HEADER_BYTES];
         let preimage = build_signature_preimage(
             &bytes,
-            Some(SignatureOptionLocation {
+            Some(SignatureLocation {
                 offset: MIN_STREAMING_HEADER_BYTES - 5,
                 length: 5,
             }),
         );
         assert_eq!(preimage.len(), bytes.len());
+        assert_eq!(&preimage[..MIN_STREAMING_HEADER_BYTES - 5], &[7u8; 17]);
         for byte in &preimage[MIN_STREAMING_HEADER_BYTES - 5..MIN_STREAMING_HEADER_BYTES] {
             assert_eq!(*byte, 0);
         }
@@ -943,26 +1295,182 @@ mod tests {
         let binding = encode_syn_replay_binding(&hash);
         assert_eq!(binding.len(), SYN_REPLAY_NACK_COUNT);
 
-        // Build a SYN packet with a stub signature option so the decoder
-        // can locate the signature bytes (the policy validators run later
-        // and reject mismatched signature lengths for an actual Ed25519
-        // destination).
-        let signature = vec![0u8; 64];
-        let mut option_bytes = Vec::new();
-        option_bytes.push(STREAMING_OPTION_SIGNATURE);
-        option_bytes.push(signature.len() as u8);
-        option_bytes.extend_from_slice(&signature);
+        let destination = ed_destination();
+        let options = StreamingOptions {
+            delay_requested: None,
+            from_destination: Some(destination.clone()),
+            max_payload_size: Some(DEFAULT_ADVERTISED_MAX_PAYLOAD),
+            signature: None,
+        };
+        let option_bytes = options
+            .encode_with_placeholder(StreamingFlags::new(INITIAL_SYN_FLAGS).unwrap(), 64)
+            .unwrap();
 
         let builder =
-            StreamingPacketBuilder::new_syn(0, 1, 0, option_bytes, binding.to_vec()).unwrap();
+            StreamingPacketBuilder::new_initial_syn(0, 1, 0, option_bytes, binding.to_vec())
+                .unwrap();
         let encoded = encode_streaming_packet(&builder, StreamingSendLimit::default()).unwrap();
-        let (packet, location) =
-            decode_streaming_packet(&encoded, StreamingReceiveLimit::default()).unwrap();
+        let (packet, location) = decode_streaming_packet(
+            &encoded,
+            StreamingReceiveLimit::default(),
+            StreamingOptionDecodeContext::anonymous(),
+        )
+        .unwrap();
         assert!(packet.flags.synchronize());
-        assert!(packet.flags.from_included());
-        assert!(packet.flags.signature_included());
-        assert!(packet.flags.max_packet_size_included());
+        assert!(packet.flags.no_ack());
+        assert_eq!(packet.flags.bits(), INITIAL_SYN_FLAGS);
+        assert!(packet.options.from_destination.is_some());
+        assert_eq!(
+            packet.options.max_payload_size,
+            Some(DEFAULT_ADVERTISED_MAX_PAYLOAD)
+        );
+        assert_eq!(packet.options.signature.as_ref().map(Vec::len), Some(64));
         assert!(location.is_some());
         assert!(verify_syn_replay_binding(&packet, &hash).unwrap());
+        assert!(validate_initial_syn(&packet, &hash).is_ok());
+    }
+
+    #[test]
+    fn syn_response_carries_no_replay_nacks() {
+        let destination = ed_destination();
+        let options = StreamingOptions {
+            delay_requested: None,
+            from_destination: Some(destination.clone()),
+            max_payload_size: Some(DEFAULT_ADVERTISED_MAX_PAYLOAD),
+            signature: None,
+        };
+        let option_bytes = options
+            .encode_with_placeholder(StreamingFlags::new(SYN_RESPONSE_FLAGS).unwrap(), 64)
+            .unwrap();
+        let builder = StreamingPacketBuilder::new_syn_response(5, 6, 0, 0, option_bytes).unwrap();
+        let encoded = encode_streaming_packet(&builder, StreamingSendLimit::default()).unwrap();
+        let (packet, _) = decode_streaming_packet(
+            &encoded,
+            StreamingReceiveLimit::default(),
+            StreamingOptionDecodeContext::anonymous(),
+        )
+        .unwrap();
+        assert_eq!(packet.flags.bits(), SYN_RESPONSE_FLAGS);
+        assert!(!packet.flags.no_ack());
+        assert!(packet.nacks.is_empty());
+        assert!(validate_syn_response(&packet).is_ok());
+    }
+
+    #[test]
+    fn signed_control_without_context_fails_closed() {
+        // A signed packet without FROM and without peer-signing-key
+        // context must be rejected before any signature misparse.
+        let destination = ed_destination();
+        let options = StreamingOptions {
+            delay_requested: None,
+            from_destination: Some(destination),
+            max_payload_size: None,
+            signature: None,
+        };
+        let option_bytes = options
+            .encode_with_placeholder(StreamingFlags::new(CLOSE_FLAGS).unwrap(), 64)
+            .unwrap();
+        let mut builder = StreamingPacketBuilder {
+            send_stream_id: 1,
+            receive_stream_id: 2,
+            sequence_num: 0,
+            ack_through: 0,
+            nacks: Vec::new(),
+            resend_delay: 0,
+            flags: StreamingFlags::new(CLOSE_FLAGS).unwrap(),
+            option_bytes,
+            payload: Vec::new(),
+        };
+        builder
+            .option_bytes
+            .truncate(builder.option_bytes.len() - 64);
+        let encoded = encode_streaming_packet(&builder, StreamingSendLimit::default()).unwrap();
+        // Re-add opaque signature-length bytes at the tail of the
+        // option region: the decoder has no way to infer their length
+        // without identity context and must fail closed.
+        let mut tampered = encoded.clone();
+        tampered[20..22].copy_from_slice(&64_u16.to_be_bytes());
+        tampered.resize(tampered.len() + 64, 0xAA);
+        let error = decode_streaming_packet(
+            &tampered,
+            StreamingReceiveLimit::default(),
+            StreamingOptionDecodeContext::anonymous(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            StreamingPacketError::SignatureContextUnavailable
+        ));
+
+        // With peer-key context the same bytes parse cleanly.
+        let key = ed_destination().signing_key().clone();
+        let (packet, location) = decode_streaming_packet(
+            &tampered,
+            StreamingReceiveLimit::default(),
+            StreamingOptionDecodeContext::with_peer_key(&key),
+        )
+        .unwrap();
+        assert_eq!(packet.options.signature.as_ref().map(Vec::len), Some(64));
+        assert_eq!(location.map(|l| l.length), Some(64));
+    }
+
+    #[test]
+    fn offline_signature_is_rejected_before_misparsing() {
+        let destination = ed_destination();
+        let flags = StreamingFlags::new(CLOSE_FLAGS | FLAG_OFFLINE_SIGNATURE).unwrap();
+        let options = StreamingOptions {
+            delay_requested: None,
+            from_destination: Some(destination.clone()),
+            max_payload_size: None,
+            signature: None,
+        };
+        // The encoder refuses to produce an OFFLINE_SIGNATURE packet.
+        let error = options.encode_with_placeholder(flags, 64).unwrap_err();
+        assert!(matches!(
+            error,
+            StreamingPacketError::UnsupportedOfflineSignature
+        ));
+
+        // A hand-built offline-signature packet is also rejected at
+        // decode time even though the trailing fields would otherwise
+        // look plausible.
+        let mut option_bytes = destination
+            .encode_to_vec(crate::common::MAX_COMMON_STRUCTURE_SIZE)
+            .unwrap();
+        option_bytes.extend_from_slice(&[0u8; 64]);
+        let builder = StreamingPacketBuilder {
+            send_stream_id: 1,
+            receive_stream_id: 2,
+            sequence_num: 0,
+            ack_through: 0,
+            nacks: Vec::new(),
+            resend_delay: 0,
+            flags,
+            option_bytes,
+            payload: Vec::new(),
+        };
+        let encoded = encode_streaming_packet(&builder, StreamingSendLimit::default()).unwrap();
+        let error = decode_streaming_packet(
+            &encoded,
+            StreamingReceiveLimit::default(),
+            StreamingOptionDecodeContext::anonymous(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            StreamingPacketError::UnsupportedOfflineSignature
+        ));
+    }
+
+    #[test]
+    fn install_packet_signature_fails_closed_on_nonzero_tail() {
+        let mut wire = vec![0_u8; 30];
+        wire[29] = 1;
+        let error = install_packet_signature(&mut wire, &[2u8; 4]).unwrap_err();
+        assert!(matches!(error, StreamingPacketError::SignatureInvalid));
+        let mut wire = vec![0_u8; 30];
+        let offset = install_packet_signature(&mut wire, &[2u8; 4]).unwrap();
+        assert_eq!(offset, 26);
+        assert_eq!(&wire[26..], &[2, 2, 2, 2]);
     }
 }

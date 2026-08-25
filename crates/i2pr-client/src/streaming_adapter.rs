@@ -47,11 +47,12 @@ use crate::routing::{
 use crate::streaming::transport::TransportSendRequest;
 
 /// Hard ceiling on the per-payload byte count for the streaming
-/// adapter. The streaming protocol already enforces its own per-packet
-/// ceiling; the adapter adds a defense-in-depth ceiling on the
-/// incoming `application_payload`.
+/// adapter. The streaming protocol enforces its own per-packet
+/// ceilings; the adapter bounds the incoming `application_payload`
+/// (the protocol-6 gzip-framed bytes) at the full encoded streaming
+/// packet ceiling plus bounded compression-framing headroom.
 pub const MAX_STREAMING_ADAPTER_PAYLOAD_BYTES: usize =
-    i2pr_proto::streaming::MAX_STREAMING_PAYLOAD_BYTES;
+    i2pr_proto::streaming::MAX_STREAMING_PACKET_BYTES + 256;
 
 /// Typed outcome of an adapter send attempt.
 #[derive(Debug)]

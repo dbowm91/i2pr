@@ -22,7 +22,8 @@ use i2pr_client::identity::DestinationIdentity;
 use i2pr_client::streaming::config::StreamingConfig;
 use i2pr_client::streaming::connection::ConnectionState;
 use i2pr_client::streaming::manager::{
-    ConnectOutcome, ListenerOutcome, RemoteDestination, StreamingManager,
+    ConnectOutcome, DEFAULT_ADVERTISED_MAX_PAYLOAD, ListenerOutcome, RemoteDestination,
+    StreamingManager,
 };
 use i2pr_crypto::verify_signature as crypto_verify_signature;
 use i2pr_proto::SignatureValue;
@@ -69,6 +70,11 @@ fn assert_signed_packet(payload: &[u8], expected_from: &DestinationIdentity) {
     let (packet, location) = decode_streaming_packet(
         payload,
         i2pr_proto::streaming::StreamingReceiveLimit::default(),
+        // CLOSE/RESET carry no FROM since 0.9.20; verification infers
+        // the signature layout from the retained peer identity.
+        i2pr_proto::streaming::StreamingOptionDecodeContext::with_peer_key(
+            expected_from.signing_public_key(),
+        ),
     )
     .expect("decode streaming packet");
     assert!(
@@ -76,21 +82,26 @@ fn assert_signed_packet(payload: &[u8], expected_from: &DestinationIdentity) {
         "signed packet must include signature flag (flags={:#06x})",
         packet.flags.bits(),
     );
-    let destination = packet.decode_destination().expect("decode destination");
-    let destination = destination.expect("destination present for signed packet");
-    let signature = packet.signature.clone().expect("signature present");
+    let signature = packet.options.signature.clone().expect("signature present");
+    let signing_key = match &packet.options.from_destination {
+        Some(destination) => {
+            // Sanity check: the FROM option carries the source
+            // destination whose signing key matches the signature.
+            assert_eq!(
+                destination.signing_key().as_bytes(),
+                expected_from.signing_public_key().as_bytes(),
+                "FROM option carries the source destination"
+            );
+            destination.signing_key()
+        }
+        None => expected_from.signing_public_key(),
+    };
     let signature_value =
-        SignatureValue::new(destination.signing_key().key_type(), signature.clone())
-            .expect("signature value");
+        SignatureValue::new(signing_key.key_type(), signature).expect("signature value");
     let location = location.expect("signature location present");
     let preimage = i2pr_proto::streaming::build_signature_preimage(payload, Some(location));
-    crypto_verify_signature(destination.signing_key(), &preimage, &signature_value)
+    crypto_verify_signature(signing_key, &preimage, &signature_value)
         .expect("signed packet signature verifies");
-    assert_eq!(
-        destination.signing_key().as_bytes(),
-        expected_from.signing_public_key().as_bytes(),
-        "FROM option carries the source destination"
-    );
 }
 
 #[test]
@@ -131,6 +142,7 @@ fn plan125_originator_syn_uses_send_stream_id_zero() {
             &bob_remote,
             LOCAL_PORT,
             REMOTE_PORT,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
         )
@@ -156,6 +168,7 @@ fn plan125_originator_syn_uses_send_stream_id_zero() {
     let (packet, _location) = decode_streaming_packet(
         &streaming,
         i2pr_proto::streaming::StreamingReceiveLimit::default(),
+        i2pr_proto::streaming::StreamingOptionDecodeContext::anonymous(),
     )
     .expect("decode SYN");
     assert_eq!(packet.send_stream_id, 0, "SYN sendStreamId must be 0");
@@ -187,6 +200,7 @@ fn plan125_established_pair_both_sides_reach_established() {
             &bob_remote,
             LOCAL_PORT,
             REMOTE_PORT,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
         )
@@ -213,7 +227,7 @@ fn plan125_established_pair_both_sides_reach_established() {
             bob_inbound,
             LOCAL_PORT,
             REMOTE_PORT,
-            i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PACKET_SIZE,
+            i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
         )
@@ -281,6 +295,7 @@ fn plan125_data_packet_routing_finds_outbound_connection() {
             &bob_remote,
             LOCAL_PORT,
             REMOTE_PORT,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
         )
@@ -305,7 +320,7 @@ fn plan125_data_packet_routing_finds_outbound_connection() {
             bob_inbound,
             LOCAL_PORT,
             REMOTE_PORT,
-            i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PACKET_SIZE,
+            i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
         )

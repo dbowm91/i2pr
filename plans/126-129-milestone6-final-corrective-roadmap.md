@@ -153,22 +153,26 @@ Use ordinary Rust unit/integration tests and the existing tunnel/data-plane type
 Plan 126 closed as `passed-ecies-destination-ratchet-corrective-foundation`
 (`plans/126-status.md`). Plan 127 closed as
 `passed-destination-session-routing-final-closure`
-(`plans/127-status.md`), restoring the local destination-layer claims:
+(`plans/127-status.md`), restoring the local destination-layer claims.
+Plan 128 closed as `passed-streaming-wire-protocol-corrective-closure`
+(`plans/128-status.md`) and restored Plan 123/125 as
+`passed-corrected-streaming-wire-local`:
 
 ```text
 plan_119 = passed-leaseset2-protocol-foundation
 plan_120 = passed-destination-lifecycle-and-pools
 plan_121 = passed-corrected-ecies-destination-session-layer-local
 plan_122 = passed-corrected-local-destination-routing
-plan_123 = corrective-reopened-plan128
+plan_123 = passed-corrected-streaming-wire-local
 plan_124 = passed-corrected-destination-routing-local-closure
-plan_125 = corrective-reopened-plans126-129
+plan_125 = passed-milestone6-local-corrective-closure
 plan_126 = passed-ecies-destination-ratchet-corrective-foundation
 plan_127 = passed-destination-session-routing-final-closure
+plan_128 = passed-streaming-wire-protocol-corrective-closure
 milestone6_local_product = not-closed
 milestone6_interoperable = not-claimed
 external_acceptance_debt = retained-separately
-next = Plan 128
+next = Plan 129
 ```
 
 ## Final gate

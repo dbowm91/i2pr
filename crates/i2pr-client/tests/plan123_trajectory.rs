@@ -23,7 +23,8 @@ use i2pr_client::identity::DestinationIdentity;
 use i2pr_client::streaming::config::StreamingConfig;
 use i2pr_client::streaming::connection::ConnectionId;
 use i2pr_client::streaming::manager::{
-    ConnectOutcome, ListenerOutcome, RemoteDestination, StreamingManager,
+    ConnectOutcome, DEFAULT_ADVERTISED_MAX_PAYLOAD, ListenerOutcome, RemoteDestination,
+    StreamingManager,
 };
 use i2pr_client::streaming::transport::TransportSendRequest;
 use i2pr_crypto::verify_signature as crypto_verify_signature;
@@ -111,7 +112,7 @@ fn complete_syn_handshake(
             inbound_connection_id,
             LOCAL_PORT,
             REMOTE_PORT,
-            i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PACKET_SIZE,
+            i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PAYLOAD,
             now_ms,
             rng,
         )
@@ -166,6 +167,7 @@ fn setup_established_pair(
             &bob_remote,
             LOCAL_PORT,
             REMOTE_PORT,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
         )
@@ -241,6 +243,11 @@ fn assert_signed_packet(payload: &[u8], expected_from: &DestinationIdentity) {
     let (packet, location) = decode_streaming_packet(
         payload,
         i2pr_proto::streaming::StreamingReceiveLimit::default(),
+        // CLOSE/RESET carry no FROM since 0.9.20; verification infers
+        // the signature layout from the retained peer identity.
+        i2pr_proto::streaming::StreamingOptionDecodeContext::with_peer_key(
+            expected_from.signing_public_key(),
+        ),
     )
     .expect("decode streaming packet");
     assert!(
@@ -248,23 +255,26 @@ fn assert_signed_packet(payload: &[u8], expected_from: &DestinationIdentity) {
         "signed packet must include signature flag (flags={:#06x})",
         packet.flags.bits(),
     );
-    let destination = packet.decode_destination().expect("decode destination");
-    let destination = destination.expect("destination present for signed packet");
-    let signature = packet.signature.clone().expect("signature present");
+    let signature = packet.options.signature.clone().expect("signature present");
+    let signing_key = match &packet.options.from_destination {
+        Some(destination) => {
+            // Sanity check: the FROM option carries the source
+            // destination whose signing key matches the signature.
+            assert_eq!(
+                destination.signing_key().as_bytes(),
+                expected_from.signing_public_key().as_bytes(),
+                "FROM option carries the source destination"
+            );
+            destination.signing_key()
+        }
+        None => expected_from.signing_public_key(),
+    };
     let signature_value =
-        SignatureValue::new(destination.signing_key().key_type(), signature.clone())
-            .expect("signature value");
+        SignatureValue::new(signing_key.key_type(), signature).expect("signature value");
     let location = location.expect("signature location present");
     let preimage = i2pr_proto::streaming::build_signature_preimage(payload, Some(location));
-    crypto_verify_signature(destination.signing_key(), &preimage, &signature_value)
+    crypto_verify_signature(signing_key, &preimage, &signature_value)
         .expect("signed packet signature verifies");
-    // Sanity check: the FROM option carries the source destination whose
-    // signing key matches the signature.
-    assert_eq!(
-        destination.signing_key().as_bytes(),
-        expected_from.signing_public_key().as_bytes(),
-        "FROM option carries the source destination"
-    );
 }
 
 #[test]
@@ -297,6 +307,7 @@ fn plan123_full_two_destination_trajectory() {
             &bob_remote,
             LOCAL_PORT,
             REMOTE_PORT,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
             clock_ms,
             &mut rng,
         )
@@ -350,7 +361,7 @@ fn plan123_full_two_destination_trajectory() {
             inbound_connection_id,
             LOCAL_PORT,
             REMOTE_PORT,
-            i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PACKET_SIZE,
+            i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PAYLOAD,
             clock_ms,
             &mut rng,
         )
@@ -501,6 +512,7 @@ fn plan123_syn_replay_binding_rejects_wrong_receiver_hash() {
             &bob_remote,
             LOCAL_PORT,
             REMOTE_PORT,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
         )
@@ -512,6 +524,7 @@ fn plan123_syn_replay_binding_rejects_wrong_receiver_hash() {
     let (packet, _location) = decode_streaming_packet(
         &streaming_bytes,
         i2pr_proto::streaming::StreamingReceiveLimit::default(),
+        i2pr_proto::streaming::StreamingOptionDecodeContext::anonymous(),
     )
     .expect("decode syn");
     assert!(packet.flags.synchronize());
@@ -676,6 +689,11 @@ fn plan123_reset_terminates_connection() {
     let (packet, _) = decode_streaming_packet(
         &reset_streaming,
         i2pr_proto::streaming::StreamingReceiveLimit::default(),
+        // RESET carries no FROM; the signature layout comes from the
+        // retained peer identity.
+        i2pr_proto::streaming::StreamingOptionDecodeContext::with_peer_key(
+            alice_dest.signing_public_key(),
+        ),
     )
     .expect("decode reset");
     assert!(packet.flags.reset());
@@ -715,6 +733,11 @@ fn plan123_signed_close_packet_carries_signature() {
     let (packet, _) = decode_streaming_packet(
         &close_streaming,
         i2pr_proto::streaming::StreamingReceiveLimit::default(),
+        // CLOSE carries no FROM; the signature layout comes from the
+        // retained peer identity.
+        i2pr_proto::streaming::StreamingOptionDecodeContext::with_peer_key(
+            alice_dest.signing_public_key(),
+        ),
     )
     .expect("decode close");
     assert!(packet.flags.close());
@@ -739,6 +762,7 @@ fn plan123_corrupt_signature_is_rejected() {
             &bob_remote,
             LOCAL_PORT,
             REMOTE_PORT,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
         )
@@ -798,13 +822,29 @@ fn plan123_connection_table_is_bounded() {
 
     for _ in 0..2 {
         let outcome = alice_mgr
-            .connect(&alice_dest, &remote, LOCAL_PORT, REMOTE_PORT, 0, &mut rng)
+            .connect(
+                &alice_dest,
+                &remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                0,
+                &mut rng,
+            )
             .expect("connect");
         assert!(matches!(outcome, ConnectOutcome::SynSent { .. }));
     }
 
     let overflow = alice_mgr
-        .connect(&alice_dest, &remote, LOCAL_PORT, REMOTE_PORT, 0, &mut rng)
+        .connect(
+            &alice_dest,
+            &remote,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
+            0,
+            &mut rng,
+        )
         .expect("connect");
     assert!(matches!(overflow, ConnectOutcome::ConnectionTableFull));
 }
@@ -828,6 +868,7 @@ fn plan123_syn_requires_max_packet_size_included() {
             &bob_remote,
             LOCAL_PORT,
             REMOTE_PORT,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
         )
@@ -837,6 +878,7 @@ fn plan123_syn_requires_max_packet_size_included() {
     let (packet, _) = decode_streaming_packet(
         &streaming,
         i2pr_proto::streaming::StreamingReceiveLimit::default(),
+        i2pr_proto::streaming::StreamingOptionDecodeContext::anonymous(),
     )
     .expect("decode");
     assert!(packet.flags.max_packet_size_included());
@@ -886,6 +928,7 @@ fn plan123_signed_syn_signature_verifies_via_canonical_preimage() {
             &bob_remote,
             LOCAL_PORT,
             REMOTE_PORT,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
         )
@@ -908,6 +951,7 @@ fn plan123_signed_syn_payload_bytes_inbound_envelope_round_trips() {
             &bob_remote,
             LOCAL_PORT,
             REMOTE_PORT,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
         )
@@ -934,6 +978,7 @@ fn plan123_outbound_send_request_has_required_fields() {
             &bob_remote,
             LOCAL_PORT,
             REMOTE_PORT,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
         )
@@ -967,6 +1012,7 @@ fn plan123_unsupported_protocol_envelope_is_rejected() {
             &bob_remote,
             LOCAL_PORT,
             REMOTE_PORT,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
             0,
             &mut rng,
         )

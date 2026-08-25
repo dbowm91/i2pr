@@ -58,7 +58,7 @@ pub use errors::StreamingError;
 pub use events::{AckObservation, InboundStreamEvent, OutboundStreamEvent, WirePacketObservation};
 #[allow(unused_imports)]
 pub use manager::{
-    ConnectOutcome, ConnectionRefused, DEFAULT_ADVERTISED_MAX_PACKET_SIZE, ListenerOutcome,
+    ConnectOutcome, ConnectionRefused, DEFAULT_ADVERTISED_MAX_PAYLOAD, ListenerOutcome,
     MAX_STREAMS_PER_DESTINATION, StreamingEvent, StreamingManager, StreamingManagerError,
 };
 #[allow(unused_imports)]

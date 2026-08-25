@@ -80,10 +80,16 @@ The crate is single-directory with two top-level submodules under
 | `src/i2np/netdb.rs` | `DatabaseStore`, `Lookup`, `SearchReply`, `ReplyEncryption`, zeroizing `ReplySecret<N>` | `DatabaseStoreType`, `DatabaseStoreData` (`RouterInfoCompressed`/`LeaseSet`/`LeaseSet2`/`Deferred`), `DatabaseStoreMessage`, `DatabaseLookupMessage`, `DatabaseSearchReplyMessage`, `ReplyEncryption`, `ReplySecret<N>` |
 | `src/i2np/deferred.rs` | Bounded opaque payloads | `DeferredPayload`, `OpaqueMessageBody` |
 | `src/ecies_payload.rs` | Bounded structural ECIES Garlic payload block codec (Plan 121) | `EciesPayloadSequence`, `EciesPayloadBlock`, `GarlicCloveBlock`, `GarlicDelivery`, `EciesPayloadError` |
+| `src/streaming/packet.rs` | Streaming packet wire codec (Plan 128 normative form) | flag constants, `INITIAL_SYN_FLAGS`/`SYN_RESPONSE_FLAGS`/`CLOSE_FLAGS`/`RESET_FLAGS`, `StreamingFlags`, `StreamingOptions`, `StreamingOptionDecodeContext`, `SignatureLocation`, `StreamingHeaderPeek`, `StreamingPacket`, `StreamingPacketBuilder`, `peek_streaming_header`, `decode_streaming_packet`, `encode_streaming_packet`, `encode_with_placeholder`, `install_packet_signature`, `build_signature_preimage`, replay-binding encode/verify, `validate_initial_syn`/`validate_syn_response` |
+| `src/streaming/payload.rs` | Protocol-6 RFC 1952 gzip client payload envelope (Plan 125) | `ClientPayload`, `encode_client_payload`, `decode_client_payload`, `STREAMING_PROTOCOL_NUMBER` |
 
 Integration tests live in `tests/i2np_fixtures.rs` (existing I2NP
-coverage) and `tests/lease_set2_fixture.rs` (Plan 119 frozen LS2 +
-i2np-level round-trip coverage).
+coverage), `tests/lease_set2_fixture.rs` (Plan 119 frozen LS2 +
+i2np-level round-trip coverage), and `tests/plan128_wire.rs`
+(Plan 128 §11 wire fixtures pinning the normative flag map, exact SYN
+layout, TLV absence, raw final-signature placement, and the
+zeroed-signature preimage; provenance in
+[specs/references/streaming-packet-wire.md](../specs/references/streaming-packet-wire.md)).
 
 ## Public surface
 
