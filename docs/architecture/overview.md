@@ -21,7 +21,7 @@ Four conceptual planes run through every crate:
 | --- | --- | --- |
 | Data | Protocol representations, authenticated links, messages, network tunnel traffic | Bounded: common-structure codecs, initial I2NP models, NTCP2 handshake + data-phase frames, and runtime-neutral transport contracts. No public-network behavior. |
 | Control | Configuration, lifecycle, health, cancellation, supervision, resource budgets | Runtime-neutral core contracts + bounded `i2pr-runtime` supervisor + NTCP2 runtime service. Daemon composition and live execution are not yet wired in. |
-| Client | Destinations, LeaseSets, streaming, SAM, I2CP adapters | Plan 120 lands the first local-destination runtime (`i2pr-client`): identity, dedicated tunnel pools, signed Standard LeaseSet2, lifecycle, bounded local payloads, registry. Plan 121 added the first ECIES destination session layer; Plan 126 rewrites it to the normative I2P ECIES-X25519-AEAD-Ratchet contract (`crates/i2pr-crypto/src/ecies.rs`, corrected `EciesSessionManager`). Plan 122 composes the Plan 119 LeaseSet2 lookup surface, the Plan 120 destination runtime, the Plan 121 ECIES session layer, and the Plan 116 tunnel data plane into the first complete local destination routing pipeline: `LeaseSelector`, `OutboundRequest`, `compose_outbound_delivery`, `DestinationRouting`, and `DestinationDispatcher`. Streaming and SAM/I2CP adapters remain Plan 123+ scope. |
+| Client | Destinations, LeaseSets, streaming, SAM, I2CP adapters | Plan 120 lands the first local-destination runtime (`i2pr-client`): identity, dedicated tunnel pools, signed Standard LeaseSet2, lifecycle, bounded local payloads, registry. Plan 121 added the first ECIES destination session layer; Plan 126 rewrites it to the normative I2P ECIES-X25519-AEAD-Ratchet contract (`crates/i2pr-crypto/src/ecies.rs`, corrected `EciesSessionManager`); Plan 127 binds accepted sessions to resolved Destinations through bundled-LS2 validation under the sender's own Destination hash with a planned outbound form state machine and production reverse routing. Plan 122 composes the Plan 119 LeaseSet2 lookup surface, the Plan 120 destination runtime, the Plan 121 ECIES session layer, and the Plan 116 tunnel data plane into the first complete local destination routing pipeline: `LeaseSelector`, `OutboundRequest`, `compose_outbound_delivery`, `DestinationRouting`, and `DestinationDispatcher`. Streaming and SAM/I2CP adapters remain Plan 123+ scope. |
 | Service | HTTP, SOCKS5, IRC, generic TCP, local service tunnels | Not implemented. |
 
 Network tunnels (router-to-router) and application service tunnels
@@ -158,7 +158,7 @@ tests, and any distinctive design choices.
 | `i2pr-transport-ntcp2` | NTCP2 protocol | Runtime-neutral Noise handshake, AEAD frames, data-phase blocks. | [i2pr-transport-ntcp2.md](i2pr-transport-ntcp2.md) |
 | `i2pr-runtime` | Runtime owner | The only production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation. | [i2pr-runtime.md](i2pr-runtime.md) |
 | `i2pr-daemon` | Composition root | CLI + config + identity lifecycle + Plan 106 NetDB/bootstrap pipeline + Plan 117 outbound `OutboundGatewayRole` exploratory `DatabaseLookup`/`DatabaseStore` composition and inbound `LocalInboundEndpointRole` `TunnelData` dispatch through `crates/i2pr-daemon/src/{outbound_lookup,inbound_dispatch}.rs`. Live daemon runs through the supervisor with no I2P transport. | [i2pr-daemon.md](i2pr-daemon.md) |
-| `i2pr-client` | Destination runtime | Plan 120: local destination identity, destination-specific tunnel pools that consume real one-shot `EstablishedMaterial`, local Standard LeaseSet2 construction and signing with self-validation through `i2pr-netdb`, LeaseSet2 lifecycle with bounded rotation/withdrawal, bounded local payload contracts, and a router-local destination registry. Plan 126: normative ECIES-X25519-AEAD-Ratchet destination session layer — paired sessions keyed by remote static key, bounded remove-on-hit tag windows, pre-derived pending reply windows, provisional responder state, classify-driven dispatch. Plan 122: destination routing and NetDB composition — `LeaseSelector` / `LeaseSelectionPolicy`, typed `OutboundRequest` builder, `compose_outbound_delivery` planner, `DestinationRouting` cache, and `DestinationDispatcher` inbound surface that classifies envelopes through `EciesSessionManager::classify`. Plan 124: destination-routing corrective closure — `compose_outbound_delivery` wraps the encrypted envelope in an `I2npBody::Garlic` carrier and feeds the standard-encoded I2NP Garlic message bytes into the outbound tunnel data plane; `OutboundDeliveryPlan::garlic_i2np_bytes` is the canonical carrier the tunnel observes; `DestinationDispatcher::bind_destination_hash` enforces the `DestinationId` → `DestinationHash` binding so the dispatcher fails closed on `UnknownDestination` without trial-decryption. No NTCP2 / SSU2 / public-network transport. Streaming and SAM/I2CP adapters remain Plan 123/Plan 125 scope. | [i2pr-client.md](i2pr-client.md) |
+| `i2pr-client` | Destination runtime | Plan 120: local destination identity, destination-specific tunnel pools that consume real one-shot `EstablishedMaterial`, local Standard LeaseSet2 construction and signing with self-validation through `i2pr-netdb`, LeaseSet2 lifecycle with bounded rotation/withdrawal, bounded local payload contracts, and a router-local destination registry. Plan 126: normative ECIES-X25519-AEAD-Ratchet destination session layer — paired sessions keyed by remote static key, bounded remove-on-hit tag windows, pre-derived pending reply windows, provisional responder state, classify-driven dispatch. Plan 127: destination-session routing final closure — bundled-LS2 sender binding under the sender's own Destination hash, `PlannedOutboundForm` outbound form state machine with retained NSR context, production reverse routing through `install_remote_lease_set2`, active-remote ceiling, master NS → NSR → ES ×4 trajectory through real tunnel roles. Plan 122: destination routing and NetDB composition — `LeaseSelector` / `LeaseSelectionPolicy`, typed `OutboundRequest` builder, `compose_outbound_delivery` planner, `DestinationRouting` cache, and `DestinationDispatcher` inbound surface that classifies envelopes through `EciesSessionManager::classify`. Plan 124: destination-routing corrective closure — `compose_outbound_delivery` wraps the encrypted envelope in an `I2npBody::Garlic` carrier and feeds the standard-encoded I2NP Garlic message bytes into the outbound tunnel data plane; `OutboundDeliveryPlan::garlic_i2np_bytes` is the canonical carrier the tunnel observes; `DestinationDispatcher::bind_destination_hash` enforces the `DestinationId` → `DestinationHash` binding so the dispatcher fails closed on `UnknownDestination` without trial-decryption. No NTCP2 / SSU2 / public-network transport. Streaming and SAM/I2CP adapters remain Plan 123/Plan 125 scope. | [i2pr-client.md](i2pr-client.md) |
 | `i2pr-testkit` | Test simulation | Deterministic clocks, virtual links, scripted faults. Test-only; never a production dep. | [i2pr-testkit.md](i2pr-testkit.md) |
 | `scripts/` + `tests/` + `fuzz/` | Tooling | Guardrails, fixtures, integration lanes, opt-in fuzzing. | [tooling.md](tooling.md) |
 
@@ -294,7 +294,19 @@ bridge (`ShortBuildI2npBridge` in
           provenance in
           [`specs/references/ecies-destination-ratchet.md`](../../specs/references/ecies-destination-ratchet.md)).
           The pairing stays Provisional until Plan 127 binds it to a
-          resolved Destination context. Plan 122 closed as
+          resolved Destination context. Plan 127 closed as
+          **`passed-destination-session-routing-final-closure`**
+          ([`plans/127-status.md`](../../plans/127-status.md)) and
+          bound it: a fresh bound New Session always bundles the
+          local current signed Standard LeaseSet2, the dispatcher
+          validates exactly one bundled sender LS2 under its own
+          contained Destination hash with a type-4 key equal to the
+          authenticated static key before binding, the retained NSR
+          reply context is the only first-reply form
+          (`PlannedOutboundForm`), reverse routing installs the
+          validated record through `install_remote_lease_set2`, and
+          the master trajectory drives NS → NSR → ES ×4 through real
+          tunnel roles in both directions. Plan 122 closed as
           `passed-corrected-local-destination-routing` per
           [`plans/122-status.md`](../../plans/122-status.md) and
           [`plans/124-status.md`](../../plans/124-status.md) and
@@ -321,8 +333,8 @@ bridge (`ShortBuildI2npBridge` in
           and the successful A → B → A trajectory. Plan 126 drops the
           dispatcher's parallel pending-handshake map; inbound
           envelopes classify through `EciesSessionManager::classify`.
-          The next executable plan is **Plan 127**
-          (destination-session routing final closure) under
+          The next executable plan is **Plan 128**
+          (streaming wire protocol corrective closure) under
           [`plans/126-129-milestone6-final-corrective-roadmap.md`](../../plans/126-129-milestone6-final-corrective-roadmap.md).
 6. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
    before startup, then spawns one supervisor manager per service via a

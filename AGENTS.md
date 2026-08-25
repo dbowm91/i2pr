@@ -19,7 +19,7 @@ Eleven-crate workspace under `crates/`:
 - `i2pr-transport-ntcp2` — runtime-neutral NTCP2 handshake + data frames
 - `i2pr-runtime` — **only** production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation
 - `i2pr-daemon` — composition root + CLI
-- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`); Plan 126 normative ECIES-X25519-AEAD-Ratchet destination session layer (bound NS/NSR/ES, paired sessions keyed by remote static key, classify-driven dispatch); Plan 122 local destination routing / LeaseSet2 NetDB composition; Plan 125 protocol-correct I2P Streaming core (`StreamingManager` with real SYN/SYN-response lifecycle, stream-id ownership, RFC 1952 gzip client payload wire format, MTU negotiation, signed SYN/CLOSE/RESET, sequence/ACK/NACK, retransmit, congestion, send/receive windows, listener backlogs) and the runtime-neutral `StreamingDestinationAdapter` that bridges streaming packets into the Plan 122 destination-routing pipeline.
+- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`); Plan 126 normative ECIES-X25519-AEAD-Ratchet destination session layer (bound NS/NSR/ES, paired sessions keyed by remote static key, classify-driven dispatch); Plan 127 destination-session routing final closure (bundled-LS2 sender binding under the sender's own Destination hash, planned outbound form state machine with retained NSR context, production reverse routing through `install_remote_lease_set2`, active-remote ceiling); Plan 122 local destination routing / LeaseSet2 NetDB composition; Plan 125 protocol-correct I2P Streaming core (`StreamingManager` with real SYN/SYN-response lifecycle, stream-id ownership, RFC 1952 gzip client payload wire format, MTU negotiation, signed SYN/CLOSE/RESET, sequence/ACK/NACK, retransmit, congestion, send/receive windows, listener backlogs) and the runtime-neutral `StreamingDestinationAdapter` that bridges streaming packets into the Plan 122 destination-routing pipeline.
 - `i2pr-testkit` — deterministic simulation; production crates must not depend on it
 
 Fixtures: `tests/fixtures/i2np/` (manifest at `tests/fixtures/i2np/manifest.tsv`),
@@ -2304,14 +2304,15 @@ plan_117_external_transport          = deferred-host-lane-unavailable
 plan_117                             = closed-for-progression-with-evidence-gap
 plan_119                             = passed-leaseset2-protocol-foundation
 plan_120                             = passed-destination-lifecycle-and-pools
-plan_121                             = corrected-ecies-ratchet-foundation-awaiting-plan127-binding
+plan_121                             = passed-corrected-ecies-destination-session-layer-local
 plan_122                             = passed-corrected-local-destination-routing
 plan_123                             = passed-corrected-minimal-streaming-local
-plan_124                             = passed-plan122-corrective-closure
+plan_124                             = passed-corrected-destination-routing-local-closure
 plan_125                             = passed-milestone6-local-corrective-closure
 plan_126                             = passed-ecies-destination-ratchet-corrective-foundation
+plan_127                             = passed-destination-session-routing-final-closure
 router_construction                  = may-continue
-next_router_construction_plan        = Plan 127 (destination-session routing final closure)
+next_router_construction_plan        = Plan 128 (streaming wire protocol corrective closure)
 ```
 
 Plan 119 closed as `passed-leaseset2-protocol-foundation` per
@@ -2436,17 +2437,76 @@ normative I2P ECIES-X25519-AEAD-Ratchet contract:
 Per the plan handoff:
 
 ```text
-plan_121 = corrected-ecies-ratchet-foundation-awaiting-plan127-binding
+plan_121 = passed-corrected-ecies-destination-session-layer-local (restored by Plan 127)
 plan_126 = passed-ecies-destination-ratchet-corrective-foundation
 milestone6_local_product = not-closed
-next = plans/127-m6-destination-session-routing-final-closure.md
+next = plans/128-m6-streaming-wire-protocol-corrective-closure.md
 ```
 
-Do not restore the Plan 121/122/124 final-closure claims until
-Plan 127 proves destination binding and routing through tunnels.
-NTCP2 stays experimental and non-advertised; no tunnel, NetDB
+Do not restore the Plan 121/122/124 final-closure claims beyond the
+`local`-qualified statuses recorded by Plan 127 until an external
+interoperability checkpoint proves destination ECIES against another
+router. NTCP2 stays experimental and non-advertised; no tunnel, NetDB
 composition, transport, SAM, I2CP, or public-network work was
-introduced.
+introduced by Plan 126.
+
+## Plan 127 Milestone 6 destination-session routing final closure
+
+Plan 127 closed as `passed-destination-session-routing-final-closure`
+per [`plans/127-status.md`](plans/127-status.md). It composes the
+Plan 126 ratchet with Standard LeaseSet2 binding, destination-owned
+tunnel pools, the Plan 124 Garlic carrier, reverse routing, and
+application delivery. The closure is strictly local: mixed-router
+destination ECIES interoperability remains separate evidence debt.
+
+The corrected surface:
+
+- `crates/i2pr-client/src/session.rs` — `PlannedOutboundForm` state
+  machine (`BoundNewSession` / `NewSessionReply` /
+  `ExistingSession`) with strict precedence; `encrypt_to_remote`
+  seals the planned form so the first reply to a bound NS uses the
+  retained Plan 126 reply context; `drop_provisional_responder`
+  prevents any NSR after a failed binding;
+  `EciesOutboundMessage::NewSessionReply`.
+- `crates/i2pr-client/src/routing.rs` — `compose_outbound_delivery`
+  builds payload per planned form; a fresh bound New Session always
+  bundles the local current signed Standard LeaseSet2 (typed
+  `SendError::MissingBundledLeaseSet2` otherwise);
+  `DestinationRouting::install_remote_lease_set2` is the §4 typed
+  handoff between the router-side LS2 store and the active-remote
+  cache; new `MAX_ACTIVE_REMOTES` ceiling.
+- `crates/i2pr-client/src/dispatch.rs` — bound NS binding order:
+  authenticate → decode all blocks → require exactly one bundled
+  sender LeaseSet2 → validate under its **own contained Destination
+  hash** → type-4 key must equal the authenticated static key → bind.
+  Remote identity comes only from the validated record (never from
+  static-key bytes or tags); local target ownership resolves only
+  through the delivery instruction against the tunnel owner; no
+  trial decryption across destinations. `record_accepted_lease_set2`
+  is real and exposed through `accepted_lease_set2_for`. New typed
+  errors `MissingSenderLeaseSet2` / `SenderKeyMismatch`.
+- `crates/i2pr-client/tests/plan127_trajectory.rs` — the master
+  trajectory `plan_127_master_trajectory_ns_nsr_es_bidirectional_exact_once`
+  plus fifteen deterministic negative controls covering every §9
+  case. Plan 124 fixtures now bundle the sender's own signed LS2, so
+  B validates and binds A's record inside the Plan 124 master
+  trajectory as well.
+
+Plan 127 does not add Streaming logic, SAM, I2CP, transports,
+external routers, Python harnesses, or isolation lanes.
+
+Required focused checks:
+
+```text
+cargo +1.95.0 fmt --all --check
+cargo +1.95.0 check --locked --workspace --all-targets
+cargo +1.95.0 test --locked -p i2pr-client --all-targets
+cargo +1.95.0 test --locked --workspace
+cargo +1.95.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo +1.95.0 doc --locked --workspace --no-deps
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+```
 
 The next executable product work is Plan 127 per the Milestone 6
 final corrective roadmap in

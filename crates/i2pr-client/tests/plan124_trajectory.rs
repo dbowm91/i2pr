@@ -383,8 +383,13 @@ fn plan_124_phase_a_b_compose_emits_garlic_through_obep() {
     let outbound_role = DestinationOutboundRole::new(outbound_tunnel, NOW_MS + 60_000);
 
     let mut session = EciesSessionManager::new(EciesSessionConfig::balanced());
-    let request = OutboundRequest::new(6, APPLICATION_PAYLOAD, NOW_MS, None).expect("request");
-
+    let request = OutboundRequest::new(
+        6,
+        APPLICATION_PAYLOAD,
+        NOW_MS,
+        Some(build_signed_ls2(&identity_a, A_SEED)),
+    )
+    .expect("request");
     let plan = compose_outbound_delivery(
         &routing,
         &mut session,
@@ -484,8 +489,13 @@ fn plan_124_trajectory_a_to_b_carries_garlic_through_obep() {
     let outbound_role = DestinationOutboundRole::new(outbound_tunnel, NOW_MS + 60_000);
 
     let mut session_a = EciesSessionManager::new(EciesSessionConfig::balanced());
-    let request = OutboundRequest::new(6, APPLICATION_PAYLOAD, NOW_MS, None).expect("request");
-
+    let request = OutboundRequest::new(
+        6,
+        APPLICATION_PAYLOAD,
+        NOW_MS,
+        Some(build_signed_ls2(&identity_a, A_SEED)),
+    )
+    .expect("request");
     let plan = compose_outbound_delivery(
         &routing,
         &mut session_a,
@@ -599,7 +609,13 @@ fn plan_124_phase_b_obep_does_not_carry_plaintext_data() {
     let outbound_role = DestinationOutboundRole::new(outbound_tunnel, NOW_MS + 60_000);
 
     let mut session = EciesSessionManager::new(EciesSessionConfig::balanced());
-    let request = OutboundRequest::new(6, APPLICATION_PAYLOAD, NOW_MS, None).expect("request");
+    let request = OutboundRequest::new(
+        6,
+        APPLICATION_PAYLOAD,
+        NOW_MS,
+        Some(build_signed_ls2(&identity_a, A_SEED)),
+    )
+    .expect("request");
     let plan = compose_outbound_delivery(
         &routing,
         &mut session,
@@ -663,7 +679,13 @@ fn plan_124_phase_e_inbound_ciphertext_isolated_to_owner() {
     .expect("rebuild outbound tunnel");
     let outbound_role = DestinationOutboundRole::new(outbound_tunnel, NOW_MS + 60_000);
     let mut session_a = EciesSessionManager::new(EciesSessionConfig::balanced());
-    let request = OutboundRequest::new(6, APPLICATION_PAYLOAD, NOW_MS, None).expect("request");
+    let request = OutboundRequest::new(
+        6,
+        APPLICATION_PAYLOAD,
+        NOW_MS,
+        Some(build_signed_ls2(&identity_a, A_SEED)),
+    )
+    .expect("request");
     let plan = compose_outbound_delivery(
         &routing,
         &mut session_a,
@@ -760,7 +782,13 @@ fn plan_124_phase_f_expired_lease_blocks_send() {
     .expect("rebuild outbound tunnel");
     let outbound_role = DestinationOutboundRole::new(outbound_tunnel, NOW_MS + 60_000);
     let mut session = EciesSessionManager::new(EciesSessionConfig::balanced());
-    let request = OutboundRequest::new(6, APPLICATION_PAYLOAD, NOW_MS, None).expect("request");
+    let request = OutboundRequest::new(
+        6,
+        APPLICATION_PAYLOAD,
+        NOW_MS,
+        Some(build_signed_ls2(&identity_a, A_SEED)),
+    )
+    .expect("request");
     let result = compose_outbound_delivery(
         &routing,
         &mut session,
@@ -967,7 +995,13 @@ fn plan_124_phase_b_existing_session_carries_garlic_through_obep() {
     let outbound_role = DestinationOutboundRole::new(outbound_tunnel, NOW_MS + 60_000);
     let mut session = EciesSessionManager::new(EciesSessionConfig::balanced());
 
-    let first_request = OutboundRequest::new(6, b"first", NOW_MS, None).expect("first request");
+    let first_request = OutboundRequest::new(
+        6,
+        b"first",
+        NOW_MS,
+        Some(build_signed_ls2(&identity_a, A_SEED)),
+    )
+    .expect("first request");
     let first_plan = compose_outbound_delivery(
         &routing,
         &mut session,
@@ -982,7 +1016,13 @@ fn plan_124_phase_b_existing_session_carries_garlic_through_obep() {
     )
     .expect("first compose");
 
-    let second_request = OutboundRequest::new(6, b"second", NOW_MS, None).expect("second request");
+    let second_request = OutboundRequest::new(
+        6,
+        b"second",
+        NOW_MS,
+        Some(build_signed_ls2(&identity_a, A_SEED)),
+    )
+    .expect("second request");
     let second_plan = compose_outbound_delivery(
         &routing,
         &mut session,
@@ -1042,7 +1082,13 @@ fn plan_124_phase_b_obep_target_router_matches_selected_lease() {
     .expect("rebuild outbound tunnel");
     let outbound_role = DestinationOutboundRole::new(outbound_tunnel, NOW_MS + 60_000);
     let mut session = EciesSessionManager::new(EciesSessionConfig::balanced());
-    let request = OutboundRequest::new(6, APPLICATION_PAYLOAD, NOW_MS, None).expect("request");
+    let request = OutboundRequest::new(
+        6,
+        APPLICATION_PAYLOAD,
+        NOW_MS,
+        Some(build_signed_ls2(&identity_a, A_SEED)),
+    )
+    .expect("request");
     let plan = compose_outbound_delivery(
         &routing,
         &mut session,

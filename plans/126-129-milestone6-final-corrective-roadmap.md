@@ -150,20 +150,25 @@ Use ordinary Rust unit/integration tests and the existing tunnel/data-plane type
 
 ## Milestone 6 status during execution
 
-Until Plan 129 closes, authoritative classification is:
+Plan 126 closed as `passed-ecies-destination-ratchet-corrective-foundation`
+(`plans/126-status.md`). Plan 127 closed as
+`passed-destination-session-routing-final-closure`
+(`plans/127-status.md`), restoring the local destination-layer claims:
 
 ```text
 plan_119 = passed-leaseset2-protocol-foundation
 plan_120 = passed-destination-lifecycle-and-pools
-plan_121 = corrective-reopened-plan126
-plan_122 = provisional-blocked-on-plan126-plan127
+plan_121 = passed-corrected-ecies-destination-session-layer-local
+plan_122 = passed-corrected-local-destination-routing
 plan_123 = corrective-reopened-plan128
-plan_124 = primary-composition-fix-retained-full-closure-reopened-plan127
+plan_124 = passed-corrected-destination-routing-local-closure
 plan_125 = corrective-reopened-plans126-129
+plan_126 = passed-ecies-destination-ratchet-corrective-foundation
+plan_127 = passed-destination-session-routing-final-closure
 milestone6_local_product = not-closed
 milestone6_interoperable = not-claimed
 external_acceptance_debt = retained-separately
-next = Plan 126
+next = Plan 128
 ```
 
 ## Final gate

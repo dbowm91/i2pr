@@ -54,8 +54,8 @@ use crate::lease_selection::{
     LeaseSelectionError, LeaseSelectionPolicy, LeaseSelector, SelectedLease,
 };
 use crate::session::{
-    EciesOutboundMessage, EciesPayloadError, EciesSessionManager, decode_decrypted_payload,
-    encode_new_session_payload,
+    EciesOutboundMessage, EciesPayloadError, EciesSessionManager, PlannedOutboundForm,
+    decode_decrypted_payload, encode_new_session_payload,
 };
 
 /// Hard ceiling on the number of distinct remote destinations the
@@ -67,6 +67,10 @@ pub const MAX_PENDING_OUTBOUND_PER_REMOTE: usize = 64;
 /// Hard ceiling on the number of bytes the router-side LS2 cache
 /// will retain for a single local destination lookup context.
 pub const MAX_ROUTER_SIDE_LS2_BYTES_PER_REMOTE: usize = 16 * 1024;
+/// Hard ceiling on the number of validated remote LeaseSet2 records
+/// the routing layer retains in its per-destination active-remote
+/// cache (Plan 127 §10).
+pub const MAX_ACTIVE_REMOTES: usize = 256;
 
 /// Typed outcome of a Plan 122 send composition.
 #[derive(Debug)]
@@ -95,6 +99,10 @@ pub enum SendError {
     /// The local destination's tunnel pool has no usable outbound
     /// tunnel registered.
     NoOutboundTunnel,
+    /// A fresh bound New Session must bundle the local
+    /// destination's current Standard LeaseSet2 so the receiver can
+    /// bind and route back (Plan 127 §2); the request carried none.
+    MissingBundledLeaseSet2,
 }
 
 impl core::fmt::Display for SendError {
@@ -118,6 +126,9 @@ impl core::fmt::Display for SendError {
             Self::NoOutboundTunnel => {
                 formatter.write_str("local destination has no usable outbound tunnel")
             }
+            Self::MissingBundledLeaseSet2 => formatter.write_str(
+                "fresh bound New Session requires the local destination's bundled LeaseSet2",
+            ),
         }
     }
 }
@@ -164,12 +175,24 @@ pub struct OutboundDeliveryPlan {
 /// One encrypted outbound payload. Plan 122 exposes the raw
 /// cryptographic envelope so the local receiver can drive the
 /// matching decryption path against its own EciesSessionManager.
+/// Plan 127 extends the surface with the New Session Reply form so
+/// `OutboundDeliveryPlan` diagnostics expose exactly which
+/// destination ECIES form was emitted.
 #[derive(Debug)]
 pub enum EncryptedOutbound {
     /// A bound New Session handshake message; the session manager
-    /// retains the reply window internally.
+    /// retains the reply window internally. A fresh bound New
+    /// Session always bundles the local destination's current
+    /// Standard LeaseSet2 (Plan 127 §2).
     NewSession {
         /// Encoded bound New Session message bytes.
+        message: Vec<u8>,
+    },
+    /// A New Session Reply sealed from the retained Plan 126
+    /// responder context; the paired session is promoted on both
+    /// sides when the peer accepts it.
+    NewSessionReply {
+        /// Encoded New Session Reply message bytes.
         message: Vec<u8>,
     },
     /// An Existing Session message; no pending state.
@@ -183,7 +206,20 @@ impl EncryptedOutbound {
     /// Returns the encoded message bytes.
     pub fn message_bytes(&self) -> &[u8] {
         match self {
-            Self::NewSession { message, .. } | Self::Existing { message } => message,
+            Self::NewSession { message }
+            | Self::NewSessionReply { message }
+            | Self::Existing { message } => message,
+        }
+    }
+
+    /// Diagnostic name of the emitted destination ECIES form,
+    /// derived from the typed variant (never from a magic first
+    /// byte).
+    pub const fn form_name(&self) -> &'static str {
+        match self {
+            Self::NewSession { .. } => "new-session",
+            Self::NewSessionReply { .. } => "new-session-reply",
+            Self::Existing { .. } => "existing-session",
         }
     }
 }
@@ -261,6 +297,9 @@ pub struct DestinationRoutingConfig {
     max_pending_outbound_per_remote: u16,
     /// Lease safety margin used when selecting leases.
     lease_safety_margin_seconds: u32,
+    /// Hard ceiling on the active-remote validated-LeaseSet2 cache
+    /// (Plan 127 §10).
+    max_active_remotes: u16,
 }
 
 impl DestinationRoutingConfig {
@@ -269,6 +308,7 @@ impl DestinationRoutingConfig {
         max_concurrent_remote_lookups: u16,
         max_pending_outbound_per_remote: u16,
         lease_safety_margin_seconds: u32,
+        max_active_remotes: u16,
     ) -> Result<Self, DestinationRoutingError> {
         if (max_concurrent_remote_lookups as usize) > MAX_CONCURRENT_REMOTE_LOOKUPS {
             return Err(DestinationRoutingError::RemoteLookupBudgetExceeded);
@@ -279,16 +319,23 @@ impl DestinationRoutingConfig {
         if lease_safety_margin_seconds > 600 {
             return Err(DestinationRoutingError::InvalidLeaseSafetyMargin);
         }
+        if max_active_remotes == 0 {
+            return Err(DestinationRoutingError::ZeroActiveRemotes);
+        }
+        if (max_active_remotes as usize) > MAX_ACTIVE_REMOTES {
+            return Err(DestinationRoutingError::ActiveRemoteBudgetExceeded);
+        }
         Ok(Self {
             max_concurrent_remote_lookups,
             max_pending_outbound_per_remote,
             lease_safety_margin_seconds,
+            max_active_remotes,
         })
     }
 
     /// Returns a balanced experimental default.
     pub fn balanced() -> Self {
-        Self::try_new(64, 32, 60).expect("balanced routing config is within every ceiling")
+        Self::try_new(64, 32, 60, 64).expect("balanced routing config is within every ceiling")
     }
 
     /// Returns the concurrent-lookup ceiling.
@@ -305,6 +352,11 @@ impl DestinationRoutingConfig {
     pub const fn lease_safety_margin_seconds(&self) -> u32 {
         self.lease_safety_margin_seconds
     }
+
+    /// Returns the active-remote cache ceiling.
+    pub const fn max_active_remotes(&self) -> u16 {
+        self.max_active_remotes
+    }
 }
 
 /// Typed routing configuration failures.
@@ -316,6 +368,10 @@ pub enum DestinationRoutingError {
     PendingOutboundBudgetExceeded,
     /// The lease safety margin exceeded the local bound.
     InvalidLeaseSafetyMargin,
+    /// The active-remote ceiling was zero.
+    ZeroActiveRemotes,
+    /// The active-remote ceiling exceeded the local bound.
+    ActiveRemoteBudgetExceeded,
 }
 
 impl core::fmt::Display for DestinationRoutingError {
@@ -328,6 +384,10 @@ impl core::fmt::Display for DestinationRoutingError {
                 formatter.write_str("pending outbound budget exceeded")
             }
             Self::InvalidLeaseSafetyMargin => formatter.write_str("invalid lease safety margin"),
+            Self::ZeroActiveRemotes => formatter.write_str("active-remote ceiling must be nonzero"),
+            Self::ActiveRemoteBudgetExceeded => {
+                formatter.write_str("active-remote budget exceeded")
+            }
         }
     }
 }
@@ -438,6 +498,13 @@ impl DestinationRouting {
                 } => {
                     let destination_hash = lease_set2.key();
                     let static_public = static_public_from_ls2(lease_set2.lease_set2())?;
+                    if !self.active_remotes.contains_key(&destination_hash)
+                        && self.active_remotes.len() >= self.config.max_active_remotes as usize
+                    {
+                        return Err(LookupIngestError::ActiveRemoteCapacity {
+                            maximum: self.config.max_active_remotes,
+                        });
+                    }
                     self.active_remotes.insert(
                         destination_hash,
                         RemoteState {
@@ -474,6 +541,31 @@ impl DestinationRouting {
         let _ = self.lookup.inner.cancel();
     }
 
+    /// Plan 127 §4 explicit typed handoff between the router-side
+    /// NetDB store and the per-destination active-remote cache:
+    /// installs one already-validated LeaseSet2 into **both** without
+    /// re-validating or reparsing raw bytes.
+    ///
+    /// The reverse-routing composition calls this after an inbound
+    /// bound New Session carries a validated sender LeaseSet2, so the
+    /// next reply selects a non-expired sender lease and downstream
+    /// sender-identity resolution can consult the store.
+    pub fn install_remote_lease_set2(
+        &mut self,
+        validated: ValidatedLeaseSet2,
+    ) -> Result<DestinationHash, LookupIngestError> {
+        let destination_hash = validated.key();
+        if !self.active_remotes.contains_key(&destination_hash)
+            && self.active_remotes.len() >= self.config.max_active_remotes as usize
+        {
+            return Err(LookupIngestError::ActiveRemoteCapacity {
+                maximum: self.config.max_active_remotes,
+            });
+        }
+        let _ = self.lease_set2_store.insert(validated.clone());
+        self.register_resolved_remote(validated)
+    }
+
     /// Registers a remote destination by inserting the validated
     /// LeaseSet2 and its derived static X25519 public key into the
     /// active-remotes cache. The router-side LS2 store is updated
@@ -483,16 +575,25 @@ impl DestinationRouting {
     ///
     /// Callers that complete a LeaseSet2 lookup through the
     /// canonical [`Self::ingest_lookup_response`] path should use
-    /// that helper. This method exists for direct composition use
-    /// cases (tests, router pre-population, peer cache hydration)
-    /// where the caller already owns a validated record and does not
-    /// need the lookup bookkeeping.
+    /// that helper. This method is also the Plan 127 §4 typed
+    /// handoff for reverse routing: after an inbound bound New
+    /// Session carries a validated sender LeaseSet2, the runtime
+    /// installs that exact record here — no raw reparse and no
+    /// re-validation under the local destination hash — so the next
+    /// reply selects a non-expired sender lease.
     pub fn register_resolved_remote(
         &mut self,
         validated: ValidatedLeaseSet2,
     ) -> Result<DestinationHash, LookupIngestError> {
         let destination_hash = validated.key();
         let static_public = static_public_from_ls2(validated.lease_set2())?;
+        if !self.active_remotes.contains_key(&destination_hash)
+            && self.active_remotes.len() >= self.config.max_active_remotes as usize
+        {
+            return Err(LookupIngestError::ActiveRemoteCapacity {
+                maximum: self.config.max_active_remotes,
+            });
+        }
         self.active_remotes.insert(
             destination_hash,
             RemoteState {
@@ -627,6 +728,12 @@ pub enum LookupIngestError {
     WrongResult(Box<i2pr_netdb::LookupResult>),
     /// The LeaseSet2 carried no usable X25519 key.
     NoStaticPublicKey,
+    /// The active-remote validated-LeaseSet2 cache is full (Plan
+    /// 127 §10).
+    ActiveRemoteCapacity {
+        /// Configured maximum.
+        maximum: u16,
+    },
 }
 
 impl core::fmt::Display for LookupIngestError {
@@ -636,6 +743,9 @@ impl core::fmt::Display for LookupIngestError {
             Self::Engine(error) => write!(formatter, "lookup engine: {error}"),
             Self::WrongResult(_) => formatter.write_str("unexpected lookup result variant"),
             Self::NoStaticPublicKey => formatter.write_str("LeaseSet2 has no static public key"),
+            Self::ActiveRemoteCapacity { maximum } => {
+                write!(formatter, "active-remote capacity {maximum} exhausted")
+            }
         }
     }
 }
@@ -721,10 +831,19 @@ impl OutboundRequest {
 /// 1. Selects a lease through the routing state machine.
 /// 2. Standard-encodes the inner I2NP `Data` envelope the local
 ///    creator emits.
-/// 3. Builds the Garlic payload sequence (Data clove plus optional
-///    bundled LeaseSet2 DatabaseStore clove).
+/// 3. Queries [`EciesSessionManager::planned_outbound_form`] and
+///    builds the matching Garlic payload sequence:
+///    - a fresh bound New Session carries the DateTime block, the
+///      application Data clove, **and** a DatabaseStore clove with
+///      the local destination's current signed Standard LeaseSet2
+///      (Plan 127 §2: the receiver binds the sender only after
+///      validating that bundled record against its own contained
+///      Destination hash and the authenticated static key);
+///    - a New Session Reply or Existing Session carries the
+///      DateTime block plus the application Data clove only.
 /// 4. Hands the payload bytes to the [`EciesSessionManager`], which
-///    returns the ECIES-protected envelope (New Session or Existing).
+///    seals the planned form (bound New Session, New Session Reply,
+///    or Existing Session) through one unambiguous precedence.
 /// 5. Wraps the encrypted envelope in an [`I2npBody::Garlic`]
 ///    message and standard-encodes the carrier. The carrier is the
 ///    only byte stream the outbound tunnel data plane is allowed to
@@ -755,16 +874,28 @@ pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
         delivery: GarlicDelivery::Destination(*remote_hash.as_bytes()),
         message: inner_envelope_bytes.clone(),
     };
-    let payload_bytes = if let Some(ls2) = request.bundled_lease_set2() {
-        let database_store_bytes = encode_database_store_clove(ls2)?;
-        let database_store_clove = GarlicCloveBlock {
-            delivery: GarlicDelivery::Destination(*remote_hash.as_bytes()),
-            message: database_store_bytes,
-        };
-        encode_two_clove_new_session(now_seconds, &data_clove, &database_store_clove)
-            .map_err(SendError::Payload)?
-    } else {
-        encode_new_session_payload(now_seconds, &data_clove).map_err(SendError::Payload)?
+    // Plan 127 §5: choose the destination ECIES form from
+    // destination-scoped session state before building the payload
+    // so a fresh bound New Session always bundles the local
+    // destination's current Standard LeaseSet2 while replies and
+    // Existing Session traffic stay lean.
+    let form = session.planned_outbound_form(&remote_static, now_seconds);
+    let payload_bytes = match form {
+        PlannedOutboundForm::BoundNewSession => {
+            let Some(ls2) = request.bundled_lease_set2() else {
+                return Err(SendError::MissingBundledLeaseSet2);
+            };
+            let database_store_bytes = encode_database_store_clove(ls2)?;
+            let database_store_clove = GarlicCloveBlock {
+                delivery: GarlicDelivery::Destination(*remote_hash.as_bytes()),
+                message: database_store_bytes,
+            };
+            encode_two_clove_new_session(now_seconds, &data_clove, &database_store_clove)
+                .map_err(SendError::Payload)?
+        }
+        PlannedOutboundForm::NewSessionReply | PlannedOutboundForm::ExistingSession => {
+            encode_new_session_payload(now_seconds, &data_clove).map_err(SendError::Payload)?
+        }
     };
     let mut outbound_message = session
         .encrypt_to_remote(
@@ -777,6 +908,11 @@ pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
             rng,
         )
         .map_err(map_session_error)?;
+    debug_assert_eq!(
+        outbound_message.form_name(),
+        form_name_of_planned(form),
+        "session manager must seal the pre-queried destination ECIES form"
+    );
     let encrypted = encode_encrypted_outbound(&mut outbound_message);
     // Plan 124 owns the following invariant: the bytes the tunnel
     // data plane carries are the standard-encoded I2NP `Garlic`
@@ -880,12 +1016,27 @@ fn encode_encrypted_outbound(message: &mut EciesOutboundMessage) -> EncryptedOut
                 message: bytes.unwrap_or_default(),
             }
         }
+        EciesOutboundMessage::NewSessionReply(message) => {
+            let bytes = message.encode_to_vec(MAX_I2NP_PAYLOAD_SIZE).ok();
+            EncryptedOutbound::NewSessionReply {
+                message: bytes.unwrap_or_default(),
+            }
+        }
         EciesOutboundMessage::Existing(message) => {
             let bytes = message.encode_to_vec(MAX_I2NP_PAYLOAD_SIZE).ok();
             EncryptedOutbound::Existing {
                 message: bytes.unwrap_or_default(),
             }
         }
+    }
+}
+
+/// Diagnostic mapping from a planned form to its canonical name.
+const fn form_name_of_planned(form: crate::session::PlannedOutboundForm) -> &'static str {
+    match form {
+        crate::session::PlannedOutboundForm::BoundNewSession => "new-session",
+        crate::session::PlannedOutboundForm::NewSessionReply => "new-session-reply",
+        crate::session::PlannedOutboundForm::ExistingSession => "existing-session",
     }
 }
 
@@ -987,16 +1138,24 @@ mod tests {
     #[test]
     fn routing_config_enforces_ceilings() {
         assert!(matches!(
-            DestinationRoutingConfig::try_new(257, 32, 60),
+            DestinationRoutingConfig::try_new(257, 32, 60, 64),
             Err(DestinationRoutingError::RemoteLookupBudgetExceeded)
         ));
         assert!(matches!(
-            DestinationRoutingConfig::try_new(64, 65, 60),
+            DestinationRoutingConfig::try_new(64, 65, 60, 64),
             Err(DestinationRoutingError::PendingOutboundBudgetExceeded)
         ));
         assert!(matches!(
-            DestinationRoutingConfig::try_new(64, 32, 601),
+            DestinationRoutingConfig::try_new(64, 32, 601, 64),
             Err(DestinationRoutingError::InvalidLeaseSafetyMargin)
+        ));
+        assert!(matches!(
+            DestinationRoutingConfig::try_new(64, 32, 60, 0),
+            Err(DestinationRoutingError::ZeroActiveRemotes)
+        ));
+        assert!(matches!(
+            DestinationRoutingConfig::try_new(64, 32, 60, 257),
+            Err(DestinationRoutingError::ActiveRemoteBudgetExceeded)
         ));
     }
 

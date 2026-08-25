@@ -112,8 +112,10 @@ representable check are rejected typed (`EciesError::ElligatorEncode` /
 ## Manager contract (i2pr-client)
 
 - One paired session per remote X25519 static public key per local
-  destination; the pairing is Provisional until Plan 127 binds it to a
-  resolved Destination context.
+  destination; Plan 127 bound the pairing to resolved Destination
+  contexts (bundled sender LeaseSet2 validated under its own
+  contained Destination hash with a type-4 key equal to the
+  authenticated NS static key — see `plans/127-status.md`).
 - Inbound ES traffic is admitted through a bounded remove-on-hit tag
   window (look-ahead ceiling 32): replayed tags classify but decrypt
   paths return `EciesSessionError::UnknownSessionTag`.

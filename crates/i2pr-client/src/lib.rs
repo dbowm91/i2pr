@@ -78,16 +78,16 @@ pub use registry::{
 };
 pub use routing::{
     DestinationOutboundRole, DestinationRouting, DestinationRoutingConfig, DestinationRoutingError,
-    EncryptedOutbound, LookupIngestError, LookupIngestOutcome, MAX_CONCURRENT_REMOTE_LOOKUPS,
-    MAX_PENDING_OUTBOUND_PER_REMOTE, OutboundDeliveryPlan, OutboundRequest, SendError,
-    compose_outbound_delivery,
+    EncryptedOutbound, LookupIngestError, LookupIngestOutcome, MAX_ACTIVE_REMOTES,
+    MAX_CONCURRENT_REMOTE_LOOKUPS, MAX_PENDING_OUTBOUND_PER_REMOTE, OutboundDeliveryPlan,
+    OutboundRequest, SendError, compose_outbound_delivery,
 };
 pub use session::{
     AcceptedExistingSession, AcceptedNewSession, AcceptedNewSessionReply, ClassifiedInbound,
     ClassifiedUnknown, DEFAULT_SESSION_IDLE_SECONDS, EciesAdvanceReport, EciesOutboundMessage,
     EciesPayloadError, EciesSessionConfig, EciesSessionConfigError, EciesSessionError,
     EciesSessionManager, MAX_PEERS_PER_LOCAL_DESTINATION, MAX_SESSION_IDLE_SECONDS,
-    MAX_TAG_LOOK_AHEAD, NewSessionReplyOutbound, decode_decrypted_payload,
+    MAX_TAG_LOOK_AHEAD, NewSessionReplyOutbound, PlannedOutboundForm, decode_decrypted_payload,
     encode_garlic_clove_payload, encode_new_session_payload, local_clove,
 };
 pub use streaming_adapter::{

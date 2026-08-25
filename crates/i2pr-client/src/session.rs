@@ -318,12 +318,65 @@ impl EciesSessionManager {
         self.provisional_responders.len()
     }
 
+    /// Reports the destination-scoped outbound form the manager
+    /// will emit for the next send to `remote_static_public`.
+    ///
+    /// Plan 127 owns the unambiguous precedence:
+    ///
+    /// 1. a retained New Session Reply context (the first reply to
+    ///    an accepted inbound bound New Session must ride the Plan
+    ///    126 reply window, never an unrelated fresh handshake),
+    /// 2. a live paired Existing Session outbound tag set,
+    /// 3. otherwise a fresh bound New Session handshake.
+    pub fn planned_outbound_form(
+        &self,
+        remote_static_public: &[u8; X25519_KEY_LENGTH],
+        now_seconds: u32,
+    ) -> PlannedOutboundForm {
+        let remote_key = RemoteStaticKey::from_public(remote_static_public);
+        if self.provisional_responders.contains_key(&remote_key) {
+            return PlannedOutboundForm::NewSessionReply;
+        }
+        if let Some(session) = self.sessions.get(&remote_key)
+            && now_seconds.saturating_sub(session.last_used_seconds) <= self.config.idle_seconds
+        {
+            return PlannedOutboundForm::ExistingSession;
+        }
+        PlannedOutboundForm::BoundNewSession
+    }
+
+    /// Drops the retained New Session Reply context for
+    /// `alice_static_public` without sealing a reply.
+    ///
+    /// The dispatcher must invoke this whenever post-authentication
+    /// binding of an accepted inbound bound New Session fails (for
+    /// example the bundled sender LeaseSet2 is invalid or its
+    /// type-4 key does not match the authenticated static key):
+    /// Plan 127 §2 forbids emitting a New Session Reply for a
+    /// session whose remote identity could not be bound.
+    pub fn drop_provisional_responder(
+        &mut self,
+        alice_static_public: &[u8; X25519_KEY_LENGTH],
+    ) -> bool {
+        self.provisional_responders
+            .remove(&RemoteStaticKey::from_public(alice_static_public))
+            .is_some()
+    }
+
+    /// Returns the retained New Session Reply context for
+    /// `alice_static_public`, when one exists.
+    pub fn has_provisional_responder(&self, alice_static_public: &[u8; X25519_KEY_LENGTH]) -> bool {
+        self.provisional_responders
+            .contains_key(&RemoteStaticKey::from_public(alice_static_public))
+    }
+
     /// Encrypts a Garlic Clove payload destined for the remote
     /// endpoint identified by `remote_hash` whose X25519 static
-    /// public key is `remote_static_public`. Reuses the paired
-    /// outbound session when one exists; otherwise allocates a
-    /// fresh bound New Session handshake rooted at the local
-    /// destination's own static key.
+    /// public key is `remote_static_public`, choosing the outbound
+    /// form through [`Self::planned_outbound_form`]'s precedence:
+    /// retained New Session Reply context, then live paired
+    /// Existing Session, then a fresh bound New Session handshake
+    /// rooted at the local destination's own static key.
     #[allow(clippy::too_many_arguments)]
     pub fn encrypt_to_remote<R: rand_core::TryCryptoRng + ?Sized>(
         &mut self,
@@ -337,6 +390,23 @@ impl EciesSessionManager {
     ) -> Result<EciesOutboundMessage, EciesSessionError> {
         let _ = local_id;
         let _ = remote_hash;
+        // Precedence 1: the first reply to a bound New Session uses
+        // the retained Plan 126 reply context, never a fresh New
+        // Session merely because no Established Session slot exists.
+        if self
+            .provisional_responders
+            .contains_key(&RemoteStaticKey::from_public(remote_static_public))
+        {
+            let reply = self.seal_new_session_reply_for(
+                local_id,
+                local_static_secret,
+                remote_static_public,
+                payload,
+                now_seconds,
+                rng,
+            )?;
+            return Ok(EciesOutboundMessage::NewSessionReply(reply.message));
+        }
         let remote_key = RemoteStaticKey::from_public(remote_static_public);
         if let Some(session) = self.sessions.get_mut(&remote_key) {
             if now_seconds.saturating_sub(session.last_used_seconds) <= self.config.idle_seconds {
@@ -643,9 +713,39 @@ pub enum EciesOutboundMessage {
         /// The wire-encoded bound New Session message.
         message: BoundNewSessionMessage,
     },
+    /// A New Session Reply sealed from the retained responder
+    /// context of a previously accepted inbound bound New Session.
+    /// The paired session is promoted on both sides on delivery.
+    NewSessionReply(NewSessionReplyMessage),
     /// An Existing Session message riding the paired outbound tag
     /// set.
     Existing(ExistingSessionMessage),
+}
+
+impl EciesOutboundMessage {
+    /// Diagnostic name for the emitted destination ECIES form. The
+    /// value is derived from the typed variant, never from wire
+    /// bytes or magic markers.
+    pub const fn form_name(&self) -> &'static str {
+        match self {
+            Self::NewSession { .. } => "new-session",
+            Self::NewSessionReply(_) => "new-session-reply",
+            Self::Existing(_) => "existing-session",
+        }
+    }
+}
+
+/// Destination-scoped outbound form the manager selects for the
+/// next send to one remote static key. See
+/// [`EciesSessionManager::planned_outbound_form`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlannedOutboundForm {
+    /// A fresh bound New Session handshake will be allocated.
+    BoundNewSession,
+    /// The retained New Session Reply context will be sealed.
+    NewSessionReply,
+    /// The paired Existing Session outbound tag set will be used.
+    ExistingSession,
 }
 
 /// Decrypted inbound bound New Session result.

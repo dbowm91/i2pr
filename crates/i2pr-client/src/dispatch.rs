@@ -1,29 +1,48 @@
-//! Plan 122 §H-§I: destination-owned inbound dispatch and
-//! authenticated Garlic processing.
+//! Plan 122 §H-§I / Plan 127 §2-§8: destination-owned inbound
+//! dispatch and authenticated Garlic processing.
 //!
 //! The dispatcher receives a recovered I2NP envelope from the local
-//! inbound endpoint, decrypts the Garlic message through the local
-//! destination's [`EciesSessionManager`], and routes the resulting
-//! cloves to the owning destination. Plan 122 §I forbids delivering
-//! application bytes before AEAD/session authentication completes.
+//! inbound endpoint, classifies the raw ECIES encrypted data through
+//! the local destination's [`EciesSessionManager`], and routes the
+//! resulting cloves to the owning destination only after session
+//! authentication succeeds. There is no legacy message-type byte:
+//! classification is structure- and tag-driven, never inferred from
+//! a magic first byte (Plan 127 §8).
 //!
-//! Plan 122 §E mirrors the sender's bundling policy: the dispatcher
-//! extracts any DatabaseStore LS2 clove from the New Session
-//! payload and validates it through the router-side LeaseSet2 store
-//! before treating the sender's Destination identity as bound.
+//! Plan 127 owns the bound New Session processing order:
+//!
+//! ```text
+//! authenticate/decrypt NS
+//!  -> obtain authenticated A static X25519 key
+//!  -> decode all payload blocks
+//!  -> find bundled DatabaseStore(Standard LeaseSet2)
+//!  -> validate LS2 signature/time/structure/leases under its own
+//!     contained Destination hash
+//!  -> verify LS2 usable type-4 X25519 key == authenticated static key
+//!  -> only then bind provisional state to A DestinationHash
+//!  -> make validated A LS2 available to reverse routing
+//! ```
+//!
+//! The remote identity is derived exclusively from the validated
+//! bundled LeaseSet2's contained Destination. It is never taken from
+//! NS static-key bytes, an NSR tag, or an ES tag. When the binding
+//! fails the retained New Session Reply context is dropped so no
+//! reply can be emitted for an unbindable session.
 
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
 
 use i2pr_netdb::{DestinationHash, LeaseSet2Store, LeaseSet2ValidationContext, ValidatedLeaseSet2};
-use i2pr_proto::{CodecError, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE};
+use i2pr_proto::{
+    CodecError, EciesPayloadBlock, EciesPayloadSequence, GarlicCloveBlock, GarlicDelivery, Hash,
+    I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE,
+};
 
 use crate::identity::DestinationId;
 use crate::message::{DestinationPayload, PayloadError};
 use crate::session::{
-    ClassifiedInbound, ClassifiedUnknown, EciesPayloadError, EciesSessionError,
-    EciesSessionManager, decode_decrypted_payload,
+    ClassifiedInbound, ClassifiedUnknown, EciesPayloadError, EciesSessionError, EciesSessionManager,
 };
 
 /// Hard ceiling on the number of inbound destinations the dispatcher
@@ -43,40 +62,69 @@ pub const MAX_INBOUND_PENDING_MESSAGES: usize = 256;
 /// Outcome of an inbound dispatch attempt.
 #[derive(Debug)]
 pub enum InboundDispatchOutcome {
-    /// A New Session message was successfully authenticated and the
-    /// local session manager installed the matching session.
+    /// A bound New Session was authenticated and the sender's
+    /// bundled LeaseSet2 was validated under its own contained
+    /// Destination hash with a matching type-4 static key (Plan
+    /// 127 §2). The session is bound to the remote DestinationHash
+    /// and the validated record is handed back for reverse-routing
+    /// installation without any raw reparse.
     NewSessionProcessed {
-        /// Destination hash that sent the message.
-        sender_destination: DestinationHash,
+        /// The owning local destination context that decrypted the
+        /// message (selected before ECIES processing through the
+        /// inbound tunnel ownership).
+        local_destination: DestinationId,
+        /// Remote peer identity after binding: the NetDB key derived
+        /// from the Destination contained in the sender's validated
+        /// LeaseSet2. Never derived from NS static-key bytes.
+        remote_destination_hash: DestinationHash,
+        /// The validated sender Standard LeaseSet2 ready to install
+        /// into the local [`crate::routing::DestinationRouting`] for
+        /// reverse routing (Plan 127 §3/§4).
+        validated_remote_lease_set2: Box<ValidatedLeaseSet2>,
         /// Number of cloves the dispatcher surfaced.
         clove_count: usize,
     },
     /// An Existing Session message was successfully decrypted and
     /// the cloves were surfaced.
     ExistingSessionProcessed {
-        /// Destination hash that sent the message.
-        sender_destination: DestinationHash,
+        /// The sender's X25519 static public key (the paired session
+        /// identity).
+        remote_static_public: [u8; i2pr_crypto::X25519_KEY_LENGTH],
+        /// The sender's DestinationHash when the dispatcher can bind
+        /// it against previously validated knowledge; `None` when no
+        /// validated record carries that static key yet.
+        sender_destination: Option<DestinationHash>,
         /// Number of cloves the dispatcher surfaced.
         clove_count: usize,
     },
     /// A New Session Reply was authenticated and the local pending
-    /// handshake was matched.
+    /// handshake was matched through its retained reply tag/context.
     NewSessionReplyProcessed {
-        /// Destination hash that initiated the handshake.
-        destination_hash: DestinationHash,
+        /// The remote X25519 static public key the pending handshake
+        /// was bound to at initiation time.
+        remote_static_public: [u8; i2pr_crypto::X25519_KEY_LENGTH],
+        /// The sender's DestinationHash when the dispatcher can bind
+        /// it against previously validated knowledge; `None` when no
+        /// validated record carries that static key yet.
+        sender_destination: Option<DestinationHash>,
         /// Number of cloves the dispatcher surfaced.
         clove_count: usize,
     },
-    /// The inbound message could not be authenticated.
+    /// The inbound message could not be authenticated or processed.
     Rejected(InboundDispatchError),
 }
 
 impl core::fmt::Display for InboundDispatchOutcome {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::NewSessionProcessed { clove_count, .. } => {
-                write!(formatter, "new session processed ({clove_count} cloves)")
-            }
+            Self::NewSessionProcessed {
+                remote_destination_hash,
+                clove_count,
+                ..
+            } => write!(
+                formatter,
+                "new session processed ({clove_count} cloves, remote {remote_destination_hash:?})"
+            ),
             Self::ExistingSessionProcessed { clove_count, .. } => write!(
                 formatter,
                 "existing session processed ({clove_count} cloves)"
@@ -112,8 +160,18 @@ pub enum InboundDispatchError {
     /// The ECIES payload block codec rejected the decrypted
     /// plaintext.
     Payload(EciesPayloadError),
-    /// A bundled LS2 clove failed validation.
+    /// A bound New Session carried no bundled sender LeaseSet2 or
+    /// more than one ambiguous candidate; the repliable M6 path
+    /// requires exactly one (Plan 127 §2).
+    MissingSenderLeaseSet2,
+    /// A bundled sender LeaseSet2 failed validation under its own
+    /// contained Destination hash.
     LeaseSet2Validation(String),
+    /// The bundled sender LeaseSet2 is valid but its usable type-4
+    /// X25519 key does not match the authenticated NS static key;
+    /// the binding is rejected and no reply may be sent (Plan 127
+    /// §2).
+    SenderKeyMismatch,
     /// The destination hash in the clove delivery instructions does
     /// not match any registered local destination.
     UnknownDestination(DestinationHash),
@@ -138,9 +196,16 @@ impl core::fmt::Display for InboundDispatchError {
             }
             Self::Session(error) => write!(formatter, "ECIES session: {error}"),
             Self::Payload(error) => write!(formatter, "ECIES payload: {error}"),
+            Self::MissingSenderLeaseSet2 => {
+                formatter.write_str("bound New Session carried no unambiguous bundled LeaseSet2")
+            }
             Self::LeaseSet2Validation(message) => {
                 write!(formatter, "bundled LeaseSet2 validation: {message}")
             }
+            Self::SenderKeyMismatch => write!(
+                formatter,
+                "bundled LeaseSet2 type-4 key does not match the authenticated NS static key"
+            ),
             Self::UnknownDestination(hash) => {
                 write!(formatter, "unknown local destination {hash:?}")
             }
@@ -226,7 +291,10 @@ struct InboundDestinationState {
     #[allow(dead_code)]
     destination_id: DestinationId,
     queue: InboundApplicationQueue,
-    /// LeaseSet2 records we accepted from the sender.
+    /// Validated sender-side LeaseSet2 records this destination
+    /// accepted from bound New Sessions, keyed by the remote
+    /// DestinationHash derived from each record's own contained
+    /// Destination (Plan 127 §3).
     accepted_lease_set2: BTreeMap<DestinationHash, ValidatedLeaseSet2>,
 }
 
@@ -256,6 +324,15 @@ pub struct DestinationDispatcher {
     /// [`DestinationId`]. The dispatcher uses the binding to look up
     /// the owning destination for every accepted Garlic clove.
     destination_hashes: BTreeMap<DestinationHash, DestinationId>,
+}
+
+/// Decrypted clove set extracted from one authenticated payload.
+struct DecryptedCloves {
+    application_clove: GarlicCloveBlock,
+    clove_count: usize,
+    /// Bundled DatabaseStore LeaseSet2 candidates found in the
+    /// payload sequence.
+    sender_lease_set2s: Vec<i2pr_proto::LeaseSet2>,
 }
 
 impl DestinationDispatcher {
@@ -340,10 +417,10 @@ impl DestinationDispatcher {
 
     /// Processes one inbound `I2npMessage` carrying a `Garlic`
     /// body. The dispatcher fails closed on every malformed input,
-    /// classifies the encrypted envelope through the session
-    /// manager, and routes authenticated cloves to the owning
-    /// destination only after AEAD authentication succeeds.
-    #[allow(clippy::too_many_arguments, clippy::let_and_return)]
+    /// passes the raw ECIES encrypted data to the session manager's
+    /// structure-driven classifier, and processes payload blocks
+    /// only after session authentication succeeds (Plan 127 §8).
+    #[allow(clippy::too_many_arguments)]
     pub fn dispatch_garlic_envelope(
         &mut self,
         session: &mut EciesSessionManager,
@@ -364,7 +441,7 @@ impl DestinationDispatcher {
             ));
         }
         let classified = session.classify(&bytes);
-        let outcome = match classified {
+        match classified {
             ClassifiedInbound::NewSessionReply => {
                 let reply_parsed = match i2pr_crypto::NewSessionReplyMessage::decode(
                     &bytes,
@@ -388,22 +465,17 @@ impl DestinationDispatcher {
                     Ok(accepted) => accepted,
                     Err(error) => {
                         return InboundDispatchOutcome::Rejected(InboundDispatchError::Session(
-                            map_session_error(error),
+                            error,
                         ));
                     }
                 };
-                let sender_hash = DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(
-                    accepted.remote_static_public,
-                ));
-                match self.process_decrypted_payload(
-                    &accepted.payload,
-                    sender_hash,
-                    now_seconds,
-                    lease_set2_store,
-                ) {
-                    Ok(count) => InboundDispatchOutcome::NewSessionReplyProcessed {
-                        destination_hash: sender_hash,
-                        clove_count: count,
+                let sender_destination = self
+                    .resolve_remote_destination(&accepted.remote_static_public, lease_set2_store);
+                match self.process_existing_payload(local_id, &accepted.payload) {
+                    Ok(clove_count) => InboundDispatchOutcome::NewSessionReplyProcessed {
+                        remote_static_public: accepted.remote_static_public,
+                        sender_destination,
+                        clove_count,
                     },
                     Err(error) => InboundDispatchOutcome::Rejected(error),
                 }
@@ -424,22 +496,17 @@ impl DestinationDispatcher {
                     Ok(accepted) => accepted,
                     Err(error) => {
                         return InboundDispatchOutcome::Rejected(InboundDispatchError::Session(
-                            map_session_error(error),
+                            error,
                         ));
                     }
                 };
-                let sender_hash = DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(
-                    accepted.remote_static_public,
-                ));
-                match self.process_decrypted_payload(
-                    &accepted.payload,
-                    sender_hash,
-                    now_seconds,
-                    lease_set2_store,
-                ) {
-                    Ok(count) => InboundDispatchOutcome::ExistingSessionProcessed {
-                        sender_destination: sender_hash,
-                        clove_count: count,
+                let sender_destination = self
+                    .resolve_remote_destination(&accepted.remote_static_public, lease_set2_store);
+                match self.process_existing_payload(local_id, &accepted.payload) {
+                    Ok(clove_count) => InboundDispatchOutcome::ExistingSessionProcessed {
+                        remote_static_public: accepted.remote_static_public,
+                        sender_destination,
+                        clove_count,
                     },
                     Err(error) => InboundDispatchOutcome::Rejected(error),
                 }
@@ -472,137 +539,170 @@ impl DestinationDispatcher {
                     Ok(accepted) => accepted,
                     Err(error) => {
                         return InboundDispatchOutcome::Rejected(InboundDispatchError::Session(
-                            map_session_error(error),
+                            error,
                         ));
                     }
                 };
-                // The sender's static public key is the canonical
-                // session identity; the provisional responder is
-                // installed under it until the reply is sealed.
-                let sender_hash = DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(
-                    accepted.alice_static_public,
-                ));
-                match self.process_decrypted_payload(
-                    &accepted.payload,
-                    sender_hash,
+                match self.process_bound_new_session_payload(
+                    local_id,
+                    &accepted,
                     now_seconds,
                     lease_set2_store,
                 ) {
-                    Ok(count) => InboundDispatchOutcome::NewSessionProcessed {
-                        sender_destination: sender_hash,
-                        clove_count: count,
-                    },
-                    Err(error) => InboundDispatchOutcome::Rejected(error),
-                }
-            }
-        };
-        outcome
-    }
-
-    fn process_decrypted_payload(
-        &mut self,
-        plaintext: &[u8],
-        sender_hash: DestinationHash,
-        now_seconds: u32,
-        lease_set2_store: &mut LeaseSet2Store,
-    ) -> Result<usize, InboundDispatchError> {
-        // The New Session payload sequence carries the DateTime
-        // block first; decode the cloves without the DateTime-first
-        // requirement so Existing Session payloads also work.
-        let clove = match decode_decrypted_payload(plaintext) {
-            Ok(clove) => clove,
-            Err(error) => return Err(InboundDispatchError::Payload(error)),
-        };
-        // The recipient must own the destination named by the clove
-        // delivery instruction; we route the application bytes to
-        // that destination.
-        let delivery = clove.delivery;
-        let destination_hash = match delivery {
-            i2pr_proto::GarlicDelivery::Local => {
-                // Local delivery: the recipient is the local owner
-                // of the destination; we route to the sender's
-                // identity since the destination hash was not yet
-                // carried in the delivery.
-                sender_hash
-            }
-            i2pr_proto::GarlicDelivery::Destination(hash) => {
-                DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(hash))
-            }
-        };
-        // Validate any bundled DatabaseStore LS2 clove present in
-        // the payload sequence. The Garlic block codec surfaced the
-        // first clove above; we walk the entire sequence looking
-        // for DatabaseStore bodies.
-        let mut count = 1;
-        let sequence =
-            match i2pr_proto::EciesPayloadSequence::decode(plaintext, plaintext.len(), false) {
-                Ok(seq) => seq,
-                Err(error) => {
-                    return Err(InboundDispatchError::Payload(EciesPayloadError::Codec(
-                        error,
-                    )));
-                }
-            };
-        for block in sequence.blocks() {
-            if let i2pr_proto::EciesPayloadBlock::GarlicClove(inner) = block {
-                count += 1;
-                if let Some(ls2) = extract_lease_set2_from_clove(inner) {
-                    let context = LeaseSet2ValidationContext::new(now_seconds);
-                    let validated = match ValidatedLeaseSet2::from_lease_set2(
-                        ls2,
-                        Some(destination_hash),
-                        context,
-                    ) {
-                        Ok(validated) => validated,
-                        Err(error) => {
-                            return Err(InboundDispatchError::LeaseSet2Validation(format!(
-                                "{error:?}"
-                            )));
-                        }
-                    };
-                    let _ = lease_set2_store.insert(validated.clone());
-                    self.record_accepted_lease_set2(destination_hash, validated);
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        // Plan 127 §2: a failed binding must never leave a
+                        // sealable reply context behind — no NSR may be
+                        // sent for an unbindable session.
+                        session.drop_provisional_responder(&accepted.alice_static_public);
+                        InboundDispatchOutcome::Rejected(error)
+                    }
                 }
             }
         }
-        let local = self.lookup_local_destination(destination_hash)?;
+    }
+
+    /// Plan 127 §2 processing order for an authenticated inbound
+    /// bound New Session: decode every payload block, require the
+    /// bundled sender LeaseSet2, validate it under **its own**
+    /// contained Destination hash, verify its usable type-4 X25519
+    /// key equals the authenticated NS static key, and only then
+    /// bind the session to the derived remote DestinationHash and
+    /// hand the validated record back for reverse routing.
+    fn process_bound_new_session_payload(
+        &mut self,
+        local_id: DestinationId,
+        accepted: &crate::session::AcceptedNewSession,
+        now_seconds: u32,
+        lease_set2_store: &mut LeaseSet2Store,
+    ) -> Result<InboundDispatchOutcome, InboundDispatchError> {
+        let cloves = decode_cloves(&accepted.payload)?;
+        // Exactly one bundled sender LeaseSet2 is required on the
+        // repliable M6 path.
+        let [sender_ls2] = cloves.sender_lease_set2s.as_slice() else {
+            return Err(InboundDispatchError::MissingSenderLeaseSet2);
+        };
+        // Validate under the record's OWN contained Destination hash:
+        // `expected_key = None` derives the NetDB key from the
+        // embedded Destination instead of assuming the local
+        // recipient's hash (Plan 127 §3).
+        let context = LeaseSet2ValidationContext::new(now_seconds);
+        let validated = ValidatedLeaseSet2::from_lease_set2(sender_ls2.clone(), None, context)
+            .map_err(|error| InboundDispatchError::LeaseSet2Validation(format!("{error:?}")))?;
+        let remote_destination_hash = validated.key();
+        // The LS2 usable type-4 X25519 key must equal the
+        // authenticated NS static key before the binding completes.
+        let ls2_key = validated
+            .lease_set2()
+            .usable_x25519_key()
+            .map_err(|_| InboundDispatchError::SenderKeyMismatch)?;
+        if ls2_key.as_bytes() != accepted.alice_static_public {
+            return Err(InboundDispatchError::SenderKeyMismatch);
+        }
+        // Binding succeeds: record the validated sender LS2 under the
+        // derived remote DestinationHash (Plan 127 §3) and make the
+        // record available to router-side routing through the typed
+        // handoff store (Plan 127 §4). No raw reparse happens later.
+        self.record_accepted_lease_set2(local_id, remote_destination_hash, validated.clone());
+        let _ = lease_set2_store.insert(validated.clone());
+        // Local target ownership is selected before/independently of
+        // the remote identity: the delivery instruction names the
+        // local owner, and the sender identity stays separate
+        // (Plan 127 §6).
+        let clove_count = cloves.clove_count;
+        self.route_application_clove(local_id, &cloves.application_clove)?;
+        Ok(InboundDispatchOutcome::NewSessionProcessed {
+            local_destination: local_id,
+            remote_destination_hash,
+            validated_remote_lease_set2: Box::new(validated),
+            clove_count,
+        })
+    }
+
+    /// Processing for already-bound traffic (NSR and ES): the
+    /// session identity was established during the handshake, so the
+    /// payload needs no re-binding; cloves are routed to the owning
+    /// local destination after authentication.
+    fn process_existing_payload(
+        &mut self,
+        local_id: DestinationId,
+        plaintext: &[u8],
+    ) -> Result<usize, InboundDispatchError> {
+        let cloves = decode_cloves(plaintext)?;
+        let clove_count = cloves.clove_count;
+        self.route_application_clove(local_id, &cloves.application_clove)?;
+        Ok(clove_count)
+    }
+
+    /// Routes the application clove to the local owner named by the
+    /// delivery instruction. `Local` delivery resolves to the
+    /// tunnel-owned local destination context; a `Destination`
+    /// instruction must name that same local destination. The sender
+    /// identity is never consulted for local routing (Plan 127 §6),
+    /// and no trial decryption across local keys ever occurs because
+    /// exactly one destination-scoped session manager decrypts.
+    fn route_application_clove(
+        &mut self,
+        local_id: DestinationId,
+        clove: &GarlicCloveBlock,
+    ) -> Result<(), InboundDispatchError> {
+        let target_hash = match clove.delivery {
+            GarlicDelivery::Local => *local_id.as_hash(),
+            GarlicDelivery::Destination(bytes) => Hash::from_bytes(bytes),
+        };
+        if target_hash != *local_id.as_hash() {
+            return Err(InboundDispatchError::UnknownDestination(
+                DestinationHash::from_hash(target_hash),
+            ));
+        }
+        let local = self.destinations.get_mut(&local_id).ok_or_else(|| {
+            InboundDispatchError::UnknownDestination(DestinationHash::from_hash(target_hash))
+        })?;
         let payload = DestinationPayload::new(0, clove.message.clone())
             .map_err(InboundDispatchError::QueueFull)?;
         local
             .queue
             .push(payload)
-            .map_err(InboundDispatchError::QueueFull)?;
-        Ok(count)
+            .map_err(InboundDispatchError::QueueFull)
     }
 
-    fn lookup_local_destination(
-        &mut self,
-        hash: DestinationHash,
-    ) -> Result<&mut InboundDestinationState, InboundDispatchError> {
-        // The dispatcher is local-destination-scoped: every accepted
-        // clove must match one of the registered local destinations.
-        // The hash -> DestinationId mapping is supplied by the runtime
-        // adapter through `bind_destination_hash`. Without an active
-        // binding the dispatcher fails closed with a typed
-        // `UnknownDestination` rejection; the dispatcher never
-        // attempts to trial-decrypt across every registered local
-        // destination.
-        let id = self
-            .destination_hashes
-            .get(&hash)
-            .copied()
-            .ok_or(InboundDispatchError::UnknownDestination(hash))?;
-        self.destinations
-            .get_mut(&id)
-            .ok_or(InboundDispatchError::UnknownDestination(hash))
-    }
-
+    /// Records a validated sender LeaseSet2 under the remote
+    /// DestinationHash derived from the record's own contained
+    /// Destination (Plan 127 §3 — replaces the former no-op).
     fn record_accepted_lease_set2(
         &mut self,
-        destination: DestinationHash,
+        local_id: DestinationId,
+        remote: DestinationHash,
         validated: ValidatedLeaseSet2,
     ) {
-        let _ = (destination, validated);
+        if let Some(state) = self.destinations.get_mut(&local_id) {
+            state.accepted_lease_set2.insert(remote, validated);
+        }
+    }
+
+    /// Resolves a paired-session static key to a remote
+    /// DestinationHash using previously validated knowledge only:
+    /// first the accepted sender LeaseSet2 records, then the
+    /// router-side LeaseSet2 cache. The static key bytes themselves
+    /// are never hashed into a destination identity (Plan 127 §2).
+    fn resolve_remote_destination(
+        &self,
+        remote_static_public: &[u8; i2pr_crypto::X25519_KEY_LENGTH],
+        lease_set2_store: &LeaseSet2Store,
+    ) -> Option<DestinationHash> {
+        for state in self.destinations.values() {
+            for (hash, validated) in &state.accepted_lease_set2 {
+                if let Ok(key) = validated.lease_set2().usable_x25519_key()
+                    && key.as_bytes() == remote_static_public
+                {
+                    return Some(*hash);
+                }
+            }
+        }
+        lease_set2_store.iter().find_map(|(hash, validated)| {
+            let key = validated.lease_set2().usable_x25519_key().ok()?;
+            (key.as_bytes() == remote_static_public).then_some(*hash)
+        })
     }
 
     /// Returns the count of accepted sender-side LeaseSet2 records
@@ -613,6 +713,20 @@ impl DestinationDispatcher {
             .map(|state| state.accepted_lease_set2.len())
             .sum()
     }
+
+    /// Returns the validated sender LeaseSet2 recorded for the
+    /// supplied remote DestinationHash, if any (Plan 127 §3 read
+    /// side for composition callers).
+    pub fn accepted_lease_set2_for(
+        &self,
+        local_id: DestinationId,
+        remote: DestinationHash,
+    ) -> Option<&ValidatedLeaseSet2> {
+        self.destinations
+            .get(&local_id)?
+            .accepted_lease_set2
+            .get(&remote)
+    }
 }
 
 impl Default for DestinationDispatcher {
@@ -621,8 +735,38 @@ impl Default for DestinationDispatcher {
     }
 }
 
-fn map_session_error(error: EciesSessionError) -> EciesSessionError {
-    error
+/// Decodes the full ECIES payload sequence into its clove set: the
+/// first Garlic Clove is the application carrier, later cloves are
+/// counted and inspected for bundled DatabaseStore LeaseSet2
+/// records.
+fn decode_cloves(plaintext: &[u8]) -> Result<DecryptedCloves, InboundDispatchError> {
+    // The sequence decoder runs without the leading-DateTime
+    // requirement so New Session, New Session Reply, and Existing
+    // Session payloads share one path.
+    let sequence = EciesPayloadSequence::decode(plaintext, plaintext.len(), false)
+        .map_err(EciesPayloadError::Codec)
+        .map_err(InboundDispatchError::Payload)?;
+    let mut application_clove: Option<GarlicCloveBlock> = None;
+    let mut clove_count = 0_usize;
+    let mut sender_lease_set2s = Vec::new();
+    for block in sequence.blocks() {
+        if let EciesPayloadBlock::GarlicClove(clove) = block {
+            clove_count += 1;
+            if application_clove.is_none() {
+                application_clove = Some(clove.clone());
+            }
+            if let Some(ls2) = extract_lease_set2_from_clove(clove) {
+                sender_lease_set2s.push(ls2);
+            }
+        }
+    }
+    let application_clove =
+        application_clove.ok_or(InboundDispatchError::Payload(EciesPayloadError::NoClove))?;
+    Ok(DecryptedCloves {
+        application_clove,
+        clove_count,
+        sender_lease_set2s,
+    })
 }
 
 /// Extract a LeaseSet2 out of a Garlic clove body when the inner I2NP

@@ -127,7 +127,10 @@ impl StreamingDestinationAdapter {
     /// carry the protocol-6 gzip-framed streaming packet produced by
     /// the streaming manager. The adapter builds an `OutboundRequest`
     /// that wraps the bytes in a standard-encoded I2NP `Data`
-    /// envelope and hands the request to `compose_outbound_delivery`.
+    /// envelope, bundles the local destination's current signed
+    /// Standard LeaseSet2 (Plan 127 §2: a fresh bound New Session
+    /// must carry it so the receiver can bind and route back), and
+    /// hands the request to `compose_outbound_delivery`.
     /// The resulting `OutboundDeliveryPlan` carries the standard
     /// ECIES-encrypted Garlic envelope plus the tunnel cells the
     /// runtime must dispatch.
@@ -139,6 +142,7 @@ impl StreamingDestinationAdapter {
         outbound: &DestinationOutboundRole,
         local_id: DestinationId,
         local_static_secret: &[u8; i2pr_crypto::X25519_KEY_LENGTH],
+        local_lease_set2: &i2pr_proto::LeaseSet2,
         now_seconds: u32,
         now_ms: u64,
         rng: &mut R,
@@ -159,7 +163,7 @@ impl StreamingDestinationAdapter {
             i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
             &request.application_payload,
             now_ms,
-            None,
+            Some(local_lease_set2.clone()),
         )
         .map_err(StreamingAdapterError::Send)?;
         let _ = inner_envelope;

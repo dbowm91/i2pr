@@ -86,7 +86,8 @@ fn encoded_new_session(outbound: &i2pr_client::EciesOutboundMessage) -> Vec<u8> 
         i2pr_client::EciesOutboundMessage::NewSession { message } => message
             .encode_to_vec(MAX_I2NP_PAYLOAD_SIZE)
             .expect("encode ns"),
-        i2pr_client::EciesOutboundMessage::Existing(_) => {
+        i2pr_client::EciesOutboundMessage::Existing(_)
+        | i2pr_client::EciesOutboundMessage::NewSessionReply(_) => {
             panic!("expected a fresh bound New Session")
         }
     }
@@ -97,7 +98,8 @@ fn encoded_existing(outbound: &i2pr_client::EciesOutboundMessage) -> Vec<u8> {
         i2pr_client::EciesOutboundMessage::Existing(message) => message
             .encode_to_vec(MAX_I2NP_PAYLOAD_SIZE)
             .expect("encode es"),
-        i2pr_client::EciesOutboundMessage::NewSession { .. } => {
+        i2pr_client::EciesOutboundMessage::NewSession { .. }
+        | i2pr_client::EciesOutboundMessage::NewSessionReply(_) => {
             panic!("expected an Existing Session message")
         }
     }

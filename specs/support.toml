@@ -120,6 +120,12 @@ plan_124_status = "passed-plan122-corrective-closure"
 plan_125_plan_of_record = "plans/125-m6-streaming-corrective-and-local-closure.md"
 plan_125_closure = "plans/125-status.md"
 plan_125_status = "passed-milestone6-local-corrective-closure"
+plan_126_plan_of_record = "plans/126-m6-ecies-destination-ratchet-corrective-foundation.md"
+plan_126_closure = "plans/126-status.md"
+plan_126_status = "passed-ecies-destination-ratchet-corrective-foundation"
+plan_127_plan_of_record = "plans/127-m6-destination-session-routing-final-closure.md"
+plan_127_closure = "plans/127-status.md"
+plan_127_status = "passed-destination-session-routing-final-closure"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -219,14 +225,15 @@ protocol = "destination-garlic"
 structure = "ecies-x25519-aead-ratchet-destination-session-layer"
 scope = "required"
 status = "experimental"
-notes = "Plan 121 closed as `passed-ecies-destination-session-layer`. The destination session layer wraps an audited `curve25519-elligator2 = 0.1.0-alpha.2` representative codec and a single-tag-key ChaCha20-Poly1305 ratchet. `i2pr-crypto::ecies` exposes the typed NS / NSR / ES primitives; `i2pr-proto::ecies_payload` enforces the bounded structural Garlic payload block codec (DateTime-first, Garlic Clove, last-only Padding); `i2pr-client::session` exposes the bounded `EciesSessionManager` (per-remote session caps, pending-handshake cap, tag look-ahead cap, replay cache cap, idle eviction). The integration test `plan121_trajectory` drives the two-destination NS -> NSR -> Existing Session path with exact-once payload delivery, tag ratchet advancement, and replay rejection. Plan 122 adds local destination routing / LeaseSet2 NetDB composition; Plan 123 lands the minimal streaming core."
+notes = "Plan 126 closed as `passed-ecies-destination-ratchet-corrective-foundation` and replaced the superseded Plan 121 i2pr-internal ECIES dialect with the normative I2P ECIES-X25519-AEAD-Ratchet contract (`Noise_IKelg2+hs2_25519_ChaChaPoly_SHA256`; bound NS wire format with Alice's derived public key inside the encrypted static-key section; one-shot SessionReplyTags NSR window; Noise Split directional tag sets; canonical 1-based-wire/0-based-key index alignment; ES AEAD over the tag as associated data). 31 frozen conformance vectors from an independent Python reference implementation are asserted byte-for-byte. Plan 127 closed as `passed-destination-session-routing-final-closure`: `i2pr-client::session` owns the unambiguous `PlannedOutboundForm` state machine (retained NSR context -> live Existing Session -> fresh bound New Session), a fresh bound New Session always bundles the local current signed Standard LeaseSet2, and the dispatcher binds an accepted NS only after validating exactly one bundled sender LS2 under its own contained Destination hash with a type-4 key equal to the authenticated static key. The master trajectory `plan_127_master_trajectory_ns_nsr_es_bidirectional_exact_once` drives two destinations through real tunnel roles and the explicit post-OBEP local seam. Strictly local evidence: no external interoperability claim."
 evidence = [
     "crates/i2pr-crypto/src/ecies.rs",
     "crates/i2pr-proto/src/ecies_payload.rs",
     "crates/i2pr-client/src/session.rs",
-    "crates/i2pr-client/tests/plan121_trajectory.rs",
-    "plans/121-m6-ecies-garlic-session-layer.md",
-    "plans/121-status.md",
+    "crates/i2pr-client/tests/plan126_trajectory.rs",
+    "crates/i2pr-client/tests/plan127_trajectory.rs",
+    "plans/126-status.md",
+    "plans/127-status.md",
 ]
 advertised = false
 
@@ -236,7 +243,7 @@ protocol = "destination-routing"
 structure = "local-destination-routing-and-leaseset2-netdb-composition"
 scope = "required"
 status = "experimental"
-notes = "Plan 122 closed as `passed-corrected-local-destination-routing` per Plan 124 corrective closure. `i2pr-netdb::lookup_id::LookupEngine` accepts the Plan 119 typed LS2 ingest path and emits `LookupResult::LeaseSet2Success`; the daemon `NetDbSeam` exposes `begin_lease_set2_lookup`, `ingest_lease_set2_response`, and `cancel_lease_set2_lookup`; `i2pr-client::lease_selection` owns the bounded `LeaseSelector` and `LeaseSelectionPolicy`; `i2pr-client::routing` owns `OutboundRequest`, `compose_outbound_delivery`, `OutboundDeliveryPlan`, and the `DestinationRouting` cache; `i2pr-client::dispatch::DestinationDispatcher` performs inbound Garlic decryption, bundled LeaseSet2 validation, and per-destination application queues. Plan 124 corrected the Plan 122 composition defect: `compose_outbound_delivery` now wraps the ECIES-encrypted envelope in an `I2npBody::Garlic` carrier and feeds the standard-encoded I2NP Garlic message bytes into the outbound tunnel data plane; `OutboundDeliveryPlan::garlic_i2np_bytes` is the canonical carrier the tunnel observes. The eleven Plan 124 deterministic tests in `crates/i2pr-client/tests/plan124_trajectory.rs` cover Phases A–G, including the canonical `authenticated-router-link-bypassed-local-seam` boundary, byte-identity regression at the OBEP, and the successful A → B → A New Session trajectory through real destination-owned outbound and inbound tunnel roles."
+notes = "Plan 122 closed as `passed-corrected-local-destination-routing` per Plan 124 corrective closure; Plan 127 closed as `passed-destination-session-routing-final-closure` and completed the local routing closure. `i2pr-netdb::lookup_id::LookupEngine` accepts the Plan 119 typed LS2 ingest path and emits `LookupResult::LeaseSet2Success`; the daemon `NetDbSeam` exposes `begin_lease_set2_lookup`, `ingest_lease_set2_response`, and `cancel_lease_set2_lookup`; `i2pr-client::lease_selection` owns the bounded `LeaseSelector` and `LeaseSelectionPolicy`; `i2pr-client::routing` owns `OutboundRequest`, `compose_outbound_delivery`, `OutboundDeliveryPlan`, the `DestinationRouting` cache with the `MAX_ACTIVE_REMOTES` ceiling, and the Plan 127 `install_remote_lease_set2` typed handoff between the router-side LS2 store and the active-remote cache (production reverse routing); `compose_outbound_delivery` builds payload per planned ECIES form so a fresh bound New Session always bundles the local current signed Standard LeaseSet2 (`SendError::MissingBundledLeaseSet2` otherwise). `i2pr-client::dispatch::DestinationDispatcher` performs inbound Garlic decryption, bundled sender LeaseSet2 validation under its own contained Destination hash, type-4-key/static-key equality binding, per-destination application queues, and real `record_accepted_lease_set2` state. Plan 124's invariant is retained: the tunnel data plane carries only the standard-encoded `I2npBody::Garlic` carrier. The master trajectory `plan_127_master_trajectory_ns_nsr_es_bidirectional_exact_once` proves NS -> NSR -> ES x4 through real destination-owned tunnel roles in both directions."
 evidence = [
     "crates/i2pr-netdb/src/lookup_id.rs",
     "crates/i2pr-netdb/src/lookup_engine.rs",
@@ -246,6 +253,7 @@ evidence = [
     "crates/i2pr-client/src/dispatch.rs",
     "crates/i2pr-client/tests/plan122_trajectory.rs",
     "crates/i2pr-client/tests/plan124_trajectory.rs",
+    "crates/i2pr-client/tests/plan127_trajectory.rs",
     "plans/122-m6-destination-routing-and-netdb-composition.md",
     "plans/122-status.md",
     "plans/124-m6-plan122-destination-routing-corrective-closure.md",

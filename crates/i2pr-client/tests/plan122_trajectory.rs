@@ -213,19 +213,13 @@ fn plan_122_phase_f_outbound_composition_produces_delivery_plan() {
     let remote_hash = identity_b.id().as_netdb_key();
 
     let mut session = EciesSessionManager::new(EciesSessionConfig::balanced());
-    let request = OutboundRequest::new(
-        6,
-        b"hello",
-        now_ms,
-        Some(
-            i2pr_proto::LeaseSet2::decode(
-                &validated_b.encoded(MAX_I2NP_PAYLOAD_SIZE).expect("encode"),
-                MAX_I2NP_PAYLOAD_SIZE,
-            )
-            .expect("decode"),
-        ),
-    )
-    .expect("request");
+    // Plan 127 §2: a fresh bound New Session bundles the LOCAL
+    // destination's current signed LeaseSet2 so the receiver can bind
+    // and route back; bundling the remote record would be rejected at
+    // the receiver's type-4 key check.
+    let leases_a = pool_a.inbound_lease_sources(now);
+    let ls2_a = build_signed_lease_set2(&identity_a, &leases_a, published).expect("ls2 a");
+    let request = OutboundRequest::new(6, b"hello", now_ms, Some(ls2_a)).expect("request");
 
     // Plan 124: drive the full composition path and verify the
     // outbound delivery plan emits the encoded Garlic carrier through

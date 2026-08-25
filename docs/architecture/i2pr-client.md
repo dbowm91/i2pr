@@ -17,6 +17,34 @@ pre-derived pending reply windows, and provisional responder state.
 The superseded Plan 121 dialect (flag-byte framing, per-session random
 "static" keys, single shared tag chain) is removed.
 
+[Plan 127](../plans/127-m6-destination-session-routing-final-closure.md)
+closed the remaining Plan 121/122/124 local destination-layer gaps by
+composing the corrected ratchet with Standard LeaseSet2 binding,
+destination-owned tunnel pools, reverse routing, and application
+delivery:
+
+- the session manager owns an unambiguous outbound form state machine
+  (`PlannedOutboundForm`: retained New Session Reply context → live
+  Existing Session → fresh bound New Session). The first reply to a
+  bound NS always rides the retained reply context;
+  `drop_provisional_responder()` guarantees no NSR can be emitted for
+  a session whose remote identity could not be bound;
+- a fresh bound New Session always bundles the local destination's
+  current signed Standard LeaseSet2 (`SendError::MissingBundledLeaseSet2`
+  otherwise), so the receiver can discover the sender;
+- the dispatcher binds an accepted inbound bound NS only after
+  validating exactly one bundled sender LeaseSet2 under its **own
+  contained Destination hash** and verifying that its usable type-4
+  X25519 key equals the authenticated NS static key. The remote
+  identity derives exclusively from the validated record — never from
+  static-key bytes, an NSR tag, or an ES tag;
+- reverse routing is production composition: the validated sender LS2
+  flows through the explicit
+  `DestinationRouting::install_remote_lease_set2` typed handoff into
+  both the router-side store and the bounded active-remote cache
+  (`MAX_ACTIVE_REMOTES` ceiling), after which lease selection and
+  static-key resolution work without any raw reparse.
+
 Plan 122 composes the Plan 119 LS2 lookup surface, the Plan 120 destination
 runtime, the Plan 121 ECIES session layer, and the Plan 116 tunnel data
 plane into the first complete local destination routing pipeline
@@ -63,8 +91,11 @@ through the runtime-neutral
 DNS. Plan 125 closed as `passed-milestone6-local-corrective-closure`
 and is the Milestone 6 local-product gate.
 
-authenticated-router link between an outbound endpoint and the remote
-inbound gateway remains the only transport omission.
+The authenticated-router link between an outbound endpoint and the
+remote inbound gateway remains the only transport omission: tests
+cross the explicit `authenticated-router-link-bypassed-local-seam`,
+which passes the exact OBEP action unchanged and never decrypts,
+re-encrypts, or rewrites targets.
 
 NTCP2 / SSU2 / public-network transport is out of scope here; the
 SAM / I2CP adapters live in the Milestone 7 follow-on planning.
@@ -122,10 +153,10 @@ crates/i2pr-client/
 │   ├── leaseset.rs       LeaseSet2 builder, LeaseSetLifecycle, LocalLeaseSet
 │   ├── message.rs        BoundedPayloadQueue, DestinationPayload, RoutingUnavailable
 │   ├── registry.rs       DestinationRuntime, DestinationHandle, DestinationRegistry
-│   ├── session.rs        Plan 126 EciesSessionManager, EciesSessionConfig, classify + bound NS/NSR/ES producers
+│   ├── session.rs        Plan 126/127 EciesSessionManager, EciesSessionConfig, PlannedOutboundForm, classify + bound NS/NSR/ES producers
 │   ├── lease_selection.rs Plan 122 LeaseSelector / LeaseSelectionPolicy / SelectedLease
-│   ├── routing.rs        Plan 122 DestinationRouting, OutboundRequest, compose_outbound_delivery, OutboundDeliveryPlan
-│   ├── dispatch.rs       Plan 122 DestinationDispatcher, InboundDispatchOutcome / InboundDispatchError
+│   ├── routing.rs        Plan 122/127 DestinationRouting, OutboundRequest, compose_outbound_delivery, OutboundDeliveryPlan, install_remote_lease_set2
+│   ├── dispatch.rs       Plan 122/127 DestinationDispatcher, bound-NS LS2 sender binding, InboundDispatchOutcome / InboundDispatchError
 │   ├── streaming.rs      Plan 125 StreamingManager, StreamingConnection, signed SYN / CLOSE / RESET, RFC 1952 gzip envelope
 │   ├── streaming_adapter.rs Plan 125 StreamingDestinationAdapter (TransportSendRequest -> compose_outbound_delivery)
 │   └── testing.rs        deterministic inbound/outbound EstablishedMaterial fixtures
@@ -136,7 +167,8 @@ crates/i2pr-client/
     ├── plan123_trajectory.rs   Plan 125 retained VirtualWire Streaming-only fault tests
     ├── plan124_trajectory.rs   Plan 124 Phases A–G corrected destination-routing trajectory
     ├── plan125_trajectory.rs   Plan 125 real SYN / SYN-response lifecycle and gzip wire-format trajectory
-    └── plan126_trajectory.rs   Plan 126 manager-level lifecycle + negative/ceiling controls
+    ├── plan126_trajectory.rs   Plan 126 manager-level lifecycle + negative/ceiling controls
+    └── plan127_trajectory.rs   Plan 127 master NS -> NSR -> ES x4 destination-routing closure + §9 negative controls
 ```
 
 ## Identity ownership
@@ -240,7 +272,7 @@ Plan 120 §10 defines only the local contracts Plan 122 will consume:
 No payload is ever injected directly into tunnel delivery as a shortcut
 around the Garlic session layer.
 
-## ECIES destination session layer (Plans 121 → 126)
+## ECIES destination session layer (Plans 121 → 126 → 127)
 
 `session.rs` exposes the corrected Plan 126 ECIES-X25519-AEAD-Ratchet
 destination session layer. The manager is **destination-scoped** (one
@@ -250,6 +282,19 @@ inbound tag window remote→local), the pending outbound handshake map
 whose reply-window tags are pre-derived at seal time, and the
 provisional responder state installed by accepted inbound bound New
 Sessions. All state is swept by `advance_time`.
+
+Plan 127 completes the destination-scoped lifecycle with an unambiguous
+outbound form state machine:
+
+```text
+PlannedOutboundForm::NewSessionReply   retained responder context wins
+PlannedOutboundForm::ExistingSession   live paired session
+PlannedOutboundForm::BoundNewSession   otherwise
+```
+
+`encrypt_to_remote()` seals exactly that precedence, so the first reply
+to a bound NS rides the retained Plan 126 reply context instead of
+degenerating into a fresh handshake.
 
 Configuration (in `EciesSessionConfig`) is bounded by:
 
@@ -264,7 +309,9 @@ MAX_SESSION_IDLE_SECONDS        = 1800
 The manager never sees the `curve25519-elligator2` third-party type —
 `i2pr-crypto::ecies` is the only API surface. Typed outcomes:
 
-- `EciesOutboundMessage::{NewSession { message }, Existing(message)}`
+- `EciesOutboundMessage::{NewSession { message }, NewSessionReply(message), Existing(message)}`
+  with `form_name()` diagnostics derived from the variant
+- `PlannedOutboundForm`
 - `AcceptedNewSession`, `AcceptedNewSessionReply`,
   `AcceptedExistingSession`, `NewSessionReplyOutbound`
 - `ClassifiedInbound::{NewSessionReply, ExistingSession,
@@ -277,8 +324,11 @@ replayed message classifies but decrypts to
 (same ephemeral representative) are rejected before any handshake
 work. NSR acceptance is tag-driven — no caller-supplied remote
 identity is consulted; the paired session installs under the static
-public key Alice bound into the original handshake. The pairing stays
-Provisional until Plan 127 binds it to a resolved Destination.
+public key Alice bound into the original handshake. Plan 127 binds
+that pairing to a resolved Destination at the dispatcher: a failed
+binding drops the provisional responder through
+`drop_provisional_responder()`, so no NSR can ever be emitted for an
+unbindable session.
 
 ## Health projection
 
@@ -320,27 +370,34 @@ too-short classification. The manager is exercised against real
 `i2pr-crypto` primitives only; no test reaches private state or the
 third-party `curve25519-elligator2` type directly.
 
-## Destination routing composition (Plan 122)
+## Destination routing composition (Plans 122 → 127)
 
 `routing.rs` composes the Plan 119 LS2 lookup surface, the Plan 120
-destination runtime, the Plan 121 ECIES session layer, and the Plan 116
+destination runtime, the ECIES session layer, and the Plan 116
 tunnel data plane into a single outbound pipeline:
 
 1. The `DestinationRouting` cache holds the validated LeaseSet2
    records the local destination has resolved through the router's
    NetDB lookup state machine and the active remote destination
-   map keyed by `DestinationHash`.
+   map keyed by `DestinationHash`, both bounded by the
+   `MAX_ACTIVE_REMOTES` ceiling. `install_remote_lease_set2` is the
+   explicit typed handoff that installs one already-validated record
+   into both (Plan 127 §4 production reverse routing).
 2. `LeaseSelector` (in `lease_selection.rs`) picks one lease from
    the resolved LeaseSet2 with caller-supplied CSPRNG, enforcing
    expiry filtering, near-expiry margin, and non-zero receive
    tunnel id.
 3. `OutboundRequest::new` wraps the application bytes in an I2NP
-   `Data` envelope and optionally bundles the sender's signed
-   `LeaseSet2` DatabaseStore clove the New Session will carry.
-4. `compose_outbound_delivery` constructs the Garlic payload
-   sequence (DateTime + Garlic Clove(s)), seals it through
+   `Data` envelope and bundles the sender's current signed
+   `LeaseSet2`.
+4. `compose_outbound_delivery` queries
+   `EciesSessionManager::planned_outbound_form`, builds the payload
+   per form — a fresh bound New Session carries DateTime + Data clove
+   + bundled LeaseSet2 DatabaseStore clove; NSR/ES carry DateTime +
+   Data clove — seals it through
    `EciesSessionManager::encrypt_to_remote`, then forwards the
-   encrypted envelope through `OutboundGatewayRole::forward_cells`
+   encrypted envelope wrapped in an `I2npBody::Garlic` carrier
+   through `OutboundGatewayRole::forward_cells`
    with `DeliveryInstruction::Tunnel { tunnel_id, gateway }`
    targeting the selected lease.
 5. The router-delivery boundary emits `OBGWRouterDelivery` cells
@@ -349,7 +406,8 @@ tunnel data plane into a single outbound pipeline:
    explicit `authenticated-router-link-bypassed-local-seam` label
    Plan 122 calls for.
 
-`dispatch.rs` owns the recipient-side path:
+`dispatch.rs` owns the recipient-side path with the Plan 127 §2/§3
+binding order:
 
 1. `DestinationDispatcher::dispatch_garlic_envelope` decodes the
    I2NP `Garlic` body and classifies it through
@@ -358,14 +416,27 @@ tunnel data plane into a single outbound pipeline:
    `accept_existing_session`, everything else attempts
    `accept_new_session` on the bound New Session decode path.
    The dispatcher owns no pending-handshake map of its own.
-2. The dispatcher walks the decrypted ECIES payload sequence,
-   validates any bundled `DatabaseStore(LeaseSet2)` clove through
-   `i2pr_netdb::ValidatedLeaseSet2`, and routes the recovered
-   application `Data` body into the matching destination's inbound
-   queue only after AEAD authentication succeeds.
-3. Every malformed input fails closed; the dispatcher never
+2. For an accepted bound New Session the dispatcher decodes every
+   payload block, requires exactly one bundled
+   `DatabaseStore(Standard LeaseSet2)`, validates it under its **own
+   contained Destination hash** (`expected_key = None`), verifies its
+   usable type-4 X25519 key equals the authenticated NS static key,
+   and only then records the validated sender LS2 under the derived
+   remote DestinationHash (`record_accepted_lease_set2`,
+   surfaced through `accepted_lease_set2_for`). Any binding failure
+   drops the retained reply context: no NSR for an unbindable
+   session. Typed rejections: `MissingSenderLeaseSet2`,
+   `SenderKeyMismatch`, `LeaseSet2Validation(_)`.
+3. Local target ownership resolves strictly through the clove
+   delivery instruction against the tunnel-owned local destination;
+   the sender identity never selects the local target and no trial
+   decryption across destinations occurs (Plan 127 §6).
+4. Every malformed input fails closed; the dispatcher never
    surfaces plaintext before session authentication.
 
 The `plan122_trajectory` integration test drives the full
 deterministic local surface end-to-end across Phases A/B/C/F/H
-without touching sockets, DNS, or any external I2P reference.
+without touching sockets, DNS, or any external I2P reference. The
+`plan127_trajectory` master test drives two destinations through real
+tunnel roles in both directions with exact-once Existing Session
+delivery plus fifteen §9 negative controls.
