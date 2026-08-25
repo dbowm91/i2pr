@@ -54,8 +54,8 @@ use crate::lease_selection::{
     LeaseSelectionError, LeaseSelectionPolicy, LeaseSelector, SelectedLease,
 };
 use crate::session::{
-    EciesOutboundMessage, EciesPayloadError, EciesSessionManager, PendingHandshakeRecord,
-    decode_decrypted_payload, encode_new_session_payload,
+    EciesOutboundMessage, EciesPayloadError, EciesSessionManager, decode_decrypted_payload,
+    encode_new_session_payload,
 };
 
 /// Hard ceiling on the number of distinct remote destinations the
@@ -166,15 +166,11 @@ pub struct OutboundDeliveryPlan {
 /// matching decryption path against its own EciesSessionManager.
 #[derive(Debug)]
 pub enum EncryptedOutbound {
-    /// A New Session handshake is in flight; the caller must hand
-    /// the pending handshake back to the session manager when the
-    /// reply lands.
+    /// A bound New Session handshake message; the session manager
+    /// retains the reply window internally.
     NewSession {
-        /// Encoded New Session message bytes.
+        /// Encoded bound New Session message bytes.
         message: Vec<u8>,
-        /// Pending handshake the session manager keeps until the
-        /// reply arrives.
-        pending: PendingHandshakeRecord,
     },
     /// An Existing Session message; no pending state.
     Existing {
@@ -742,7 +738,7 @@ pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
     session: &mut EciesSessionManager,
     outbound: &DestinationOutboundRole,
     local_id: DestinationId,
-    _local_static_secret: &[u8; i2pr_crypto::X25519_KEY_LENGTH],
+    local_static_secret: &[u8; i2pr_crypto::X25519_KEY_LENGTH],
     remote_hash: DestinationHash,
     request: &OutboundRequest,
     now_seconds: u32,
@@ -773,6 +769,7 @@ pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
     let mut outbound_message = session
         .encrypt_to_remote(
             local_id,
+            local_static_secret,
             remote_hash.as_bytes(),
             &remote_static,
             &payload_bytes,
@@ -856,6 +853,15 @@ fn map_session_error(error: crate::session::EciesSessionError) -> SendError {
         crate::session::EciesSessionError::NoSession => {
             SendError::Session(EciesSessionError::NoSession)
         }
+        crate::session::EciesSessionError::PeerCapacity { maximum } => {
+            SendError::Session(EciesSessionError::PendingHandshakeCapacity { maximum })
+        }
+        crate::session::EciesSessionError::NoPendingHandshake
+        | crate::session::EciesSessionError::NoProvisionalResponder
+        | crate::session::EciesSessionError::UnknownSessionTag
+        | crate::session::EciesSessionError::DuplicateNewSession => {
+            SendError::Session(EciesSessionError::Protocol("ECIES session state violation"))
+        }
         crate::session::EciesSessionError::Protocol(message) => {
             SendError::Session(EciesSessionError::Protocol(message))
         }
@@ -868,15 +874,10 @@ fn map_role_error(error: i2pr_tunnel::TunnelRoleError) -> SendError {
 
 fn encode_encrypted_outbound(message: &mut EciesOutboundMessage) -> EncryptedOutbound {
     match message {
-        EciesOutboundMessage::NewSession { message, pending } => {
+        EciesOutboundMessage::NewSession { message } => {
             let bytes = message.encode_to_vec(MAX_I2NP_PAYLOAD_SIZE).ok();
-            let pending = std::mem::replace(
-                pending.as_mut(),
-                crate::session::PendingHandshakeRecord::dummy_for_swap(),
-            );
             EncryptedOutbound::NewSession {
                 message: bytes.unwrap_or_default(),
-                pending,
             }
         }
         EciesOutboundMessage::Existing(message) => {

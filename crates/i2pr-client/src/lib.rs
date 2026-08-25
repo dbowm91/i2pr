@@ -83,10 +83,12 @@ pub use routing::{
     compose_outbound_delivery,
 };
 pub use session::{
-    DEFAULT_SESSION_IDLE_SECONDS, EciesAdvanceReport, EciesOutboundMessage, EciesPayloadError,
-    EciesSessionConfig, EciesSessionConfigError, EciesSessionError, EciesSessionManager,
-    MAX_REPLAY_CACHE_ENTRIES, MAX_SESSION_IDLE_SECONDS, MAX_TAG_LOOK_AHEAD, PendingHandshakeRecord,
-    decode_decrypted_payload, encode_garlic_clove_payload, encode_new_session_payload, local_clove,
+    AcceptedExistingSession, AcceptedNewSession, AcceptedNewSessionReply, ClassifiedInbound,
+    ClassifiedUnknown, DEFAULT_SESSION_IDLE_SECONDS, EciesAdvanceReport, EciesOutboundMessage,
+    EciesPayloadError, EciesSessionConfig, EciesSessionConfigError, EciesSessionError,
+    EciesSessionManager, MAX_PEERS_PER_LOCAL_DESTINATION, MAX_SESSION_IDLE_SECONDS,
+    MAX_TAG_LOOK_AHEAD, NewSessionReplyOutbound, decode_decrypted_payload,
+    encode_garlic_clove_payload, encode_new_session_payload, local_clove,
 };
 pub use streaming_adapter::{
     MAX_STREAMING_ADAPTER_PAYLOAD_BYTES, StreamingAdapterError, StreamingDestinationAdapter,

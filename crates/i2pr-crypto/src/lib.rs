@@ -35,12 +35,14 @@ pub mod ecies;
 pub mod hkdf;
 
 pub use ecies::{
-    ECIES_EXISTING_SESSION_FLAG, ECIES_NEW_SESSION_FLAG, ECIES_SESSION_TAG_LEN,
-    EciesEphemeralKeypair, EciesEphemeralRepresentative, EciesEphemeralSecret, EciesError,
-    EciesSessionState, ExistingSessionMessage, MAX_NEW_SESSION_CIPHERTEXT, NewSessionMessage,
-    NewSessionReplyMessage, REPRESENTATIVE_LENGTH, decode_representative, open_existing_session,
-    open_new_session, open_new_session_reply, seal_existing_session, seal_new_session,
-    seal_new_session_reply,
+    BOUND_NEW_SESSION_MIN_LENGTH, BoundNewSessionMessage, BoundNewSessionSender,
+    ECIES_NOISE_PROTOCOL_NAME, EXISTING_SESSION_MIN_LENGTH, EciesEphemeralKeypair,
+    EciesEphemeralRepresentative, EciesEphemeralSecret, EciesError, EciesTagSet, EciesTagSetEntry,
+    ExistingSessionMessage, MAX_NEW_SESSION_CIPHERTEXT, NEW_SESSION_REPLY_MIN_LENGTH,
+    NewSessionReplyMessage, NewSessionResponder, OpenedBoundNewSession, OpenedNewSessionReply,
+    REPRESENTATIVE_LENGTH, SESSION_TAG_LENGTH, STATIC_PUBLIC_LENGTH, SealedNewSessionReply,
+    decode_representative, open_bound_new_session, open_existing_session, open_new_session_reply,
+    seal_bound_new_session, seal_existing_session, seal_new_session_reply,
 };
 pub use hkdf::{HkdfError, MAX_HKDF_OUTPUT_LEN, hkdf_sha256_32, hkdf_sha256_extract_and_expand};
 

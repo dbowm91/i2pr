@@ -1,93 +1,79 @@
 //! Bounded ECIES-X25519-AEAD-Ratchet destination session manager.
 //!
-//! Plan 121 §10 owns the destination-context session manager. The
-//! manager owns one outbound ECIES session and one inbound ECIES
-//! session per local destination per remote destination; it
-//! enforces the bounded replay cache, session-tag look-ahead, and
-//! session-lifetime ceilings, and is the single producer of
-//! bound ECIES New Session / Existing Session messages.
+//! Plan 126 replaces the Plan 121 i2pr-internal ECIES dialect with
+//! the normative I2P ECIES-X25519-AEAD-Ratchet contract. The manager
+//! owns one paired ECIES session per remote static key per local
+//! destination:
+//!
+//! - the outbound tag set (local -> remote),
+//! - the inbound tag window (remote -> local, bounded look-ahead,
+//!   remove-on-hit replay rejection),
+//! - the pending New Session Reply window while an outbound
+//!   handshake is in flight, and
+//! - the provisional responder state while an inbound bound New
+//!   Session awaits its reply.
+//!
+//! The manager is the single producer of bound New Session /
+//! New Session Reply / Existing Session messages. Unbound New
+//! Sessions are structurally rejected by the primitive.
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use i2pr_crypto::{
-    EciesError, EciesSessionState, ExistingSessionMessage, NewSessionMessage,
-    NewSessionReplyMessage, REPRESENTATIVE_LENGTH, X25519_KEY_LENGTH, decode_representative,
-    open_existing_session, open_new_session, open_new_session_reply, seal_existing_session,
-    seal_new_session,
+    BoundNewSessionMessage, BoundNewSessionSender, EciesError, EciesTagSet, EciesTagSetEntry,
+    ExistingSessionMessage, NewSessionReplyMessage, NewSessionResponder, REPRESENTATIVE_LENGTH,
+    SESSION_TAG_LENGTH, X25519_KEY_LENGTH, open_bound_new_session, open_existing_session,
+    open_new_session_reply, seal_bound_new_session, seal_existing_session, seal_new_session_reply,
 };
 use i2pr_proto::{EciesPayloadBlock, EciesPayloadSequence, GarlicCloveBlock, GarlicDelivery};
 
 use crate::identity::DestinationId;
 
-/// Hard ceiling on the outbound session count per remote
+/// Hard ceiling on the number of paired sessions per local
 /// destination.
-pub const MAX_OUTBOUND_SESSIONS_PER_REMOTE: usize = 16;
-/// Hard ceiling on the inbound session count per remote
-/// destination.
-pub const MAX_INBOUND_SESSIONS_PER_REMOTE: usize = 16;
-/// Hard ceiling on the number of pending new-session handshakes
-/// per local destination.
+pub const MAX_PEERS_PER_LOCAL_DESTINATION: usize = 64;
+/// Hard ceiling on the number of pending New Session handshakes per
+/// local destination.
 pub const MAX_PENDING_NEW_SESSIONS: usize = 64;
-/// Hard ceiling on the number of retained session-tag
-/// look-ahead entries per inbound session.
+/// Hard ceiling on the number of retained session-tag look-ahead
+/// entries per inbound session window.
 pub const MAX_TAG_LOOK_AHEAD: usize = 32;
-/// Hard ceiling on the number of distinct remote destinations
-/// tracked per local destination.
-pub const MAX_REPLAY_CACHE_ENTRIES: usize = 64;
-/// Hard ceiling on the maximum retained session lifetime in
-/// seconds (Plan 121 §10 manager-level bound).
-pub const DEFAULT_SESSION_IDLE_SECONDS: u32 = 600;
-/// Hard ceiling on the maximum retained session lifetime in
-/// seconds (Plan 121 §10 manager-level bound).
+/// Hard ceiling on the maximum retained session lifetime in seconds.
 pub const MAX_SESSION_IDLE_SECONDS: u32 = 1800;
+/// Default retained-session lifetime in seconds.
+pub const DEFAULT_SESSION_IDLE_SECONDS: u32 = 600;
 
 /// Configuration for [`EciesSessionManager`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EciesSessionConfig {
-    /// Maximum outbound sessions per remote destination.
-    outbound_per_remote: u16,
-    /// Maximum inbound sessions per remote destination.
-    inbound_per_remote: u16,
-    /// Maximum pending new-session handshakes per local destination.
+    /// Maximum paired sessions tracked per local destination.
+    max_peers: u16,
+    /// Maximum pending outbound New Session handshakes per local
+    /// destination.
     max_pending_handshakes: u16,
-    /// Maximum retained session-tag look-ahead entries per inbound
-    /// session.
+    /// Maximum inbound tag look-ahead entries per session window.
     max_tag_look_ahead: u16,
-    /// Maximum replay-cache entries per local destination.
-    max_replay_cache_entries: u16,
     /// Idle/lifetime session cap in seconds.
     idle_seconds: u32,
 }
 
 impl EciesSessionConfig {
     /// Builds a configuration after applying every ceiling.
-    #[allow(clippy::too_many_arguments)]
     pub const fn try_new(
-        outbound_per_remote: u16,
-        inbound_per_remote: u16,
+        max_peers: u16,
         max_pending_handshakes: u16,
         max_tag_look_ahead: u16,
-        max_replay_cache_entries: u16,
         idle_seconds: u32,
     ) -> Result<Self, EciesSessionConfigError> {
-        if outbound_per_remote == 0 {
-            return Err(EciesSessionConfigError::ZeroOutboundPerRemote);
+        if max_peers == 0 {
+            return Err(EciesSessionConfigError::ZeroPeers);
         }
-        if (outbound_per_remote as usize) > MAX_OUTBOUND_SESSIONS_PER_REMOTE {
-            return Err(EciesSessionConfigError::OutboundExceedsMaximum {
-                actual: outbound_per_remote,
-                maximum: MAX_OUTBOUND_SESSIONS_PER_REMOTE as u16,
-            });
-        }
-        if inbound_per_remote == 0 {
-            return Err(EciesSessionConfigError::ZeroInboundPerRemote);
-        }
-        if (inbound_per_remote as usize) > MAX_INBOUND_SESSIONS_PER_REMOTE {
-            return Err(EciesSessionConfigError::InboundExceedsMaximum {
-                actual: inbound_per_remote,
-                maximum: MAX_INBOUND_SESSIONS_PER_REMOTE as u16,
+        if (max_peers as usize) > MAX_PEERS_PER_LOCAL_DESTINATION {
+            return Err(EciesSessionConfigError::PeersExceedsMaximum {
+                actual: max_peers,
+                maximum: MAX_PEERS_PER_LOCAL_DESTINATION as u16,
             });
         }
         if max_pending_handshakes == 0 {
@@ -108,15 +94,6 @@ impl EciesSessionConfig {
                 maximum: MAX_TAG_LOOK_AHEAD as u16,
             });
         }
-        if max_replay_cache_entries == 0 {
-            return Err(EciesSessionConfigError::ZeroReplayCacheEntries);
-        }
-        if (max_replay_cache_entries as usize) > MAX_REPLAY_CACHE_ENTRIES {
-            return Err(EciesSessionConfigError::ReplayCacheExceedsMaximum {
-                actual: max_replay_cache_entries,
-                maximum: MAX_REPLAY_CACHE_ENTRIES as u16,
-            });
-        }
         if idle_seconds == 0 {
             return Err(EciesSessionConfigError::ZeroIdleSeconds);
         }
@@ -127,19 +104,32 @@ impl EciesSessionConfig {
             });
         }
         Ok(Self {
-            outbound_per_remote,
-            inbound_per_remote,
+            max_peers,
             max_pending_handshakes,
             max_tag_look_ahead,
-            max_replay_cache_entries,
             idle_seconds,
         })
     }
 
     /// Returns a balanced experimental default.
     pub fn balanced() -> Self {
-        Self::try_new(2, 2, 16, 8, 32, DEFAULT_SESSION_IDLE_SECONDS)
+        Self::try_new(8, 8, 8, DEFAULT_SESSION_IDLE_SECONDS)
             .expect("balanced ECIES session config is within every ceiling")
+    }
+
+    /// Returns the maximum pending-handshake ceiling.
+    pub const fn max_pending_handshakes(&self) -> usize {
+        self.max_pending_handshakes as usize
+    }
+
+    /// Returns the inbound tag look-ahead ceiling.
+    pub const fn max_tag_look_ahead(&self) -> usize {
+        self.max_tag_look_ahead as usize
+    }
+
+    /// Returns the idle lifetime ceiling.
+    pub const fn idle_seconds(&self) -> u32 {
+        self.idle_seconds
     }
 }
 
@@ -153,23 +143,12 @@ impl Default for EciesSessionConfig {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum EciesSessionConfigError {
-    /// The outbound-per-remote ceiling was zero.
-    #[error("ECIES outbound sessions per remote must be nonzero")]
-    ZeroOutboundPerRemote,
-    /// The outbound-per-remote ceiling exceeded the local bound.
-    #[error("ECIES outbound sessions per remote {actual} exceeds maximum {maximum}")]
-    OutboundExceedsMaximum {
-        /// Actual value.
-        actual: u16,
-        /// Accepted ceiling.
-        maximum: u16,
-    },
-    /// The inbound-per-remote ceiling was zero.
-    #[error("ECIES inbound sessions per remote must be nonzero")]
-    ZeroInboundPerRemote,
-    /// The inbound-per-remote ceiling exceeded the local bound.
-    #[error("ECIES inbound sessions per remote {actual} exceeds maximum {maximum}")]
-    InboundExceedsMaximum {
+    /// The peer ceiling was zero.
+    #[error("ECIES peers per local destination must be nonzero")]
+    ZeroPeers,
+    /// The peer ceiling exceeded the local bound.
+    #[error("ECIES peers {actual} exceeds maximum {maximum}")]
+    PeersExceedsMaximum {
         /// Actual value.
         actual: u16,
         /// Accepted ceiling.
@@ -197,17 +176,6 @@ pub enum EciesSessionConfigError {
         /// Accepted ceiling.
         maximum: u16,
     },
-    /// The replay-cache-entry ceiling was zero.
-    #[error("ECIES replay cache entries must be nonzero")]
-    ZeroReplayCacheEntries,
-    /// The replay-cache-entry ceiling exceeded the local bound.
-    #[error("ECIES replay cache entries {actual} exceeds maximum {maximum}")]
-    ReplayCacheExceedsMaximum {
-        /// Actual value.
-        actual: u16,
-        /// Accepted ceiling.
-        maximum: u16,
-    },
     /// The idle-seconds lifetime was zero.
     #[error("ECIES session idle seconds must be nonzero")]
     ZeroIdleSeconds,
@@ -221,55 +189,99 @@ pub enum EciesSessionConfigError {
     },
 }
 
+/// The canonical 64-hex SHA-256 router-hash key type for session
+/// ownership: the remote endpoint's X25519 static public key bytes.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct RemoteStaticKey([u8; X25519_KEY_LENGTH]);
+
+impl RemoteStaticKey {
+    fn from_public(public: &[u8; X25519_KEY_LENGTH]) -> Self {
+        Self(*public)
+    }
+
+    fn public(&self) -> &[u8; X25519_KEY_LENGTH] {
+        &self.0
+    }
+}
+
+/// Bounded inbound tag window over one tag set: a fixed look-ahead
+/// of pre-derived tags with remove-on-hit replay rejection.
+#[derive(Debug)]
+struct InboundTagWindow {
+    tag_set: EciesTagSet,
+    entries: BTreeMap<[u8; SESSION_TAG_LENGTH], u32>,
+    capacity: usize,
+}
+
+impl InboundTagWindow {
+    fn new(tag_set: EciesTagSet, capacity: usize) -> Result<Self, EciesError> {
+        let mut window = Self {
+            tag_set,
+            entries: BTreeMap::new(),
+            capacity,
+        };
+        window.refill()?;
+        Ok(window)
+    }
+
+    fn refill(&mut self) -> Result<(), EciesError> {
+        while self.entries.len() < self.capacity {
+            let EciesTagSetEntry { index, tag } = self.tag_set.next_entry()?;
+            self.entries.insert(tag, index);
+        }
+        Ok(())
+    }
+
+    fn contains(&self, tag: &[u8; SESSION_TAG_LENGTH]) -> bool {
+        self.entries.contains_key(tag)
+    }
+
+    fn consume(&mut self, tag: &[u8; SESSION_TAG_LENGTH]) -> Option<u32> {
+        let index = self.entries.remove(tag)?;
+        if self.refill().is_err() {
+            // A exhausted tag set leaves the window short but never
+            // panics; subsequent traffic fails authentication typed.
+        }
+        Some(index)
+    }
+}
+
+/// One paired ECIES session keyed by the remote static public key.
+#[derive(Debug)]
+struct PairedSession {
+    /// Outbound tag set (local destination -> remote).
+    outbound: EciesTagSet,
+    /// Inbound tag window (remote -> local destination).
+    inbound: InboundTagWindow,
+    last_used_seconds: u32,
+}
+
+/// An outbound bound New Session awaiting its reply.
+#[derive(Debug)]
+struct PendingInitiated {
+    sender: BoundNewSessionSender,
+    created_seconds: u32,
+}
+
+/// An accepted inbound bound New Session awaiting reply sealing.
+#[derive(Debug)]
+struct ProvisionalResponder {
+    responder: NewSessionResponder,
+    last_used_seconds: u32,
+}
+
 /// The local-destination scoped session manager.
 #[derive(Debug)]
 pub struct EciesSessionManager {
     config: EciesSessionConfig,
-    outbound: BTreeMap<RemoteDestinationKey, Vec<OutboundSessionSlot>>,
-    inbound: BTreeMap<RemoteDestinationKey, Vec<InboundSessionSlot>>,
-    replay_cache: Vec<ReplayEntry>,
-    pending_handshakes: u16,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-struct RemoteDestinationKey([u8; 32]);
-
-impl RemoteDestinationKey {
-    fn from_hash(hash: &[u8; 32]) -> Self {
-        Self(*hash)
-    }
-}
-
-/// One outbound ECIES session slot keyed by remote destination.
-#[derive(Debug)]
-struct OutboundSessionSlot {
-    state: EciesSessionState,
-    last_used_seconds: u32,
-}
-
-/// One inbound ECIES session slot keyed by remote destination.
-#[derive(Debug)]
-struct InboundSessionSlot {
-    state: EciesSessionState,
-    last_used_seconds: u32,
-}
-
-/// A bounded New-Session handshake the manager is waiting to
-/// complete.
-#[derive(Debug)]
-pub struct PendingHandshake {
-    /// The ephemeral keypair the manager installed for this
-    /// handshake. The secret is zeroized on drop.
-    ephemeral_secret: [u8; REPRESENTATIVE_LENGTH],
-    /// The per-session static private key Alice sent on the wire.
-    static_secret: [u8; X25519_KEY_LENGTH],
-}
-
-/// A bounded replay-cache entry the manager keeps to reject
-/// duplicate inbound messages.
-#[derive(Debug)]
-struct ReplayEntry {
-    last_seen_seconds: u32,
+    sessions: BTreeMap<RemoteStaticKey, PairedSession>,
+    /// Pending outbound handshakes; tombstoned slots are reusable.
+    pending_initiated: Vec<Option<PendingInitiated>>,
+    /// Reply-window tags -> pending slot index, pre-derived at
+    /// handshake creation so inbound replies classify in O(log n).
+    pending_reply_tags: BTreeMap<[u8; SESSION_TAG_LENGTH], usize>,
+    provisional_responders: BTreeMap<RemoteStaticKey, ProvisionalResponder>,
+    seen_new_session_ephemerals: VecDeque<[u8; REPRESENTATIVE_LENGTH]>,
 }
 
 impl EciesSessionManager {
@@ -277,10 +289,11 @@ impl EciesSessionManager {
     pub fn new(config: EciesSessionConfig) -> Self {
         Self {
             config,
-            outbound: BTreeMap::new(),
-            inbound: BTreeMap::new(),
-            replay_cache: Vec::new(),
-            pending_handshakes: 0,
+            sessions: BTreeMap::new(),
+            pending_initiated: Vec::new(),
+            pending_reply_tags: BTreeMap::new(),
+            provisional_responders: BTreeMap::new(),
+            seen_new_session_ephemerals: VecDeque::new(),
         }
     }
 
@@ -289,22 +302,33 @@ impl EciesSessionManager {
         self.config
     }
 
-    /// Returns the number of outbound sessions currently held.
-    pub fn outbound_sessions(&self) -> usize {
-        self.outbound.values().map(Vec::len).sum()
+    /// Returns the number of established paired sessions.
+    pub fn established_sessions(&self) -> usize {
+        self.sessions.len()
     }
 
-    /// Returns the number of inbound sessions currently held.
-    pub fn inbound_sessions(&self) -> usize {
-        self.inbound.values().map(Vec::len).sum()
+    /// Returns the number of pending outbound New Session
+    /// handshakes.
+    pub fn pending_handshake_count(&self) -> usize {
+        self.pending_initiated.iter().flatten().count()
     }
 
-    /// Encrypts a Garlic Clove payload destined for `remote_hash`,
-    /// allocating a fresh New Session handshake when the manager
-    /// has no usable outbound session for that destination.
+    /// Returns the number of provisional inbound responders.
+    pub fn provisional_responder_count(&self) -> usize {
+        self.provisional_responders.len()
+    }
+
+    /// Encrypts a Garlic Clove payload destined for the remote
+    /// endpoint identified by `remote_hash` whose X25519 static
+    /// public key is `remote_static_public`. Reuses the paired
+    /// outbound session when one exists; otherwise allocates a
+    /// fresh bound New Session handshake rooted at the local
+    /// destination's own static key.
+    #[allow(clippy::too_many_arguments)]
     pub fn encrypt_to_remote<R: rand_core::TryCryptoRng + ?Sized>(
         &mut self,
         local_id: DestinationId,
+        local_static_secret: &[u8; X25519_KEY_LENGTH],
         remote_hash: &[u8; 32],
         remote_static_public: &[u8; X25519_KEY_LENGTH],
         payload: &[u8],
@@ -312,277 +336,398 @@ impl EciesSessionManager {
         rng: &mut R,
     ) -> Result<EciesOutboundMessage, EciesSessionError> {
         let _ = local_id;
-        let remote_key = RemoteDestinationKey::from_hash(remote_hash);
-        // First try to reuse an existing outbound session.
-        if let Some(session) = self.find_outbound_session(&remote_key, now_seconds) {
-            let existing_session =
-                seal_existing_session_with_session(&mut session.clone(), payload)?;
-            self.advance_outbound(&remote_key, &existing_session, now_seconds);
-            return Ok(EciesOutboundMessage::Existing(existing_session));
+        let _ = remote_hash;
+        let remote_key = RemoteStaticKey::from_public(remote_static_public);
+        if let Some(session) = self.sessions.get_mut(&remote_key) {
+            if now_seconds.saturating_sub(session.last_used_seconds) <= self.config.idle_seconds {
+                session.last_used_seconds = now_seconds;
+                let message = seal_existing_session(&mut session.outbound, payload)?;
+                return Ok(EciesOutboundMessage::Existing(message));
+            }
+            // The paired session expired; drop it and re-initiate.
+            self.sessions.remove(&remote_key);
         }
 
-        if self.pending_handshakes >= self.config.max_pending_handshakes {
+        if self.pending_handshake_count() >= self.config.max_pending_handshakes as usize {
             return Err(EciesSessionError::PendingHandshakeCapacity {
                 maximum: self.config.max_pending_handshakes,
             });
         }
+        if self.sessions.len().saturating_add(1) > self.config.max_peers as usize {
+            return Err(EciesSessionError::PeerCapacity {
+                maximum: self.config.max_peers,
+            });
+        }
 
         let ephemeral_keypair = i2pr_crypto::EciesEphemeralKeypair::generate(rng)?;
-        let (message, static_secret, alice_session) =
-            seal_new_session(&ephemeral_keypair, remote_static_public, payload, rng)?;
-        let handshake = PendingHandshake {
-            ephemeral_secret: *ephemeral_keypair.secret().as_bytes(),
-            static_secret: *static_secret,
-        };
-        self.pending_handshakes = self.pending_handshakes.saturating_add(1);
-        let pending = PendingHandshakeRecord::new(remote_key, handshake, alice_session);
-        Ok(EciesOutboundMessage::NewSession {
-            message,
-            pending: Box::new(pending),
-        })
-    }
-
-    fn find_outbound_session(
-        &self,
-        remote: &RemoteDestinationKey,
-        now_seconds: u32,
-    ) -> Option<EciesSessionState> {
-        let slots = self.outbound.get(remote)?;
-        slots
-            .iter()
-            .find(|slot| {
-                now_seconds.saturating_sub(slot.last_used_seconds) <= self.config.idle_seconds
-            })
-            .map(|slot| slot.state.clone())
-    }
-
-    fn advance_outbound(
-        &mut self,
-        remote: &RemoteDestinationKey,
-        message: &ExistingSessionMessage,
-        now_seconds: u32,
-    ) {
-        if let Some(slots) = self.outbound.get_mut(remote)
-            && let Some(slot) = slots.first_mut()
-        {
-            slot.last_used_seconds = now_seconds;
-            // The sealing function has already consumed the
-            // session-state tag. Nothing more to do here.
-            let _ = message;
-        }
-    }
-
-    /// Accepts a New Session Reply from a remote destination,
-    /// installs the paired inbound session, and returns the
-    /// decrypted Garlic Clove payload.
-    pub fn accept_new_session_reply(
-        &mut self,
-        local_id: DestinationId,
-        local_static_secret: &[u8; X25519_KEY_LENGTH],
-        remote_hash: &[u8; 32],
-        pending: PendingHandshakeRecord,
-        reply: &NewSessionReplyMessage,
-        now_seconds: u32,
-    ) -> Result<Vec<u8>, EciesSessionError> {
-        let _ = local_id;
-        if reply.flag != i2pr_crypto::ECIES_EXISTING_SESSION_FLAG {
-            return Err(EciesSessionError::Protocol(
-                "New Session Reply flag must be the existing-session flag",
-            ));
-        }
-        let ephemeral_keypair =
-            i2pr_crypto::EciesEphemeralKeypair::from_seed_bytes(pending.handshake.ephemeral_secret)
-                .ok_or(EciesSessionError::Protocol("ephemeral handshake lost"))?;
-        let remote_static_pub = pending.remote_static_public;
-        let (plaintext, session_state) = open_new_session_reply(
+        let (message, sender) = seal_bound_new_session(
+            local_static_secret,
             &ephemeral_keypair,
-            &pending.handshake.static_secret,
-            &remote_static_pub,
-            reply,
+            remote_static_public,
+            payload,
         )?;
-        let remote_key = RemoteDestinationKey::from_hash(remote_hash);
-        self.install_inbound_session(&remote_key, session_state, now_seconds);
-        self.pending_handshakes = self.pending_handshakes.saturating_sub(1);
-        let _ = local_static_secret;
-        Ok(plaintext)
+        self.install_pending(sender, now_seconds)?;
+        Ok(EciesOutboundMessage::NewSession { message })
     }
 
-    fn install_inbound_session(
+    /// Pre-derives the reply-window tags for a freshly created
+    /// outbound handshake and installs it in the first free slot.
+    fn install_pending(
         &mut self,
-        remote: &RemoteDestinationKey,
-        state: EciesSessionState,
-        now_seconds: u32,
-    ) {
-        let slots = self.inbound.entry(*remote).or_default();
-        if slots.len() >= self.config.inbound_per_remote as usize {
-            // The Plan 121 §10 eviction policy expires the oldest
-            // session first.
-            slots.remove(0);
+        sender: BoundNewSessionSender,
+        created_seconds: u32,
+    ) -> Result<(), EciesSessionError> {
+        let slot = match self.pending_initiated.iter().position(Option::is_none) {
+            Some(free) => free,
+            None => {
+                self.pending_initiated.push(None);
+                self.pending_initiated.len() - 1
+            }
+        };
+        // `reply_tag_set()` returns an already-ratcheted window;
+        // calling `begin_tag_ratchet` again would re-initialize it.
+        let mut window = sender.reply_tag_set()?;
+        for _ in 0..self.config.max_tag_look_ahead {
+            let entry = window.next_entry()?;
+            if self.pending_reply_tags.insert(entry.tag, slot).is_some() {
+                return Err(EciesSessionError::Protocol(
+                    "reply-window tag collision across pending handshakes",
+                ));
+            }
         }
-        slots.push(InboundSessionSlot {
-            state,
-            last_used_seconds: now_seconds,
+        self.pending_initiated[slot] = Some(PendingInitiated {
+            sender,
+            created_seconds,
         });
+        Ok(())
     }
 
-    /// Decrypts an incoming New Session message, installs the
-    /// paired outbound session, and returns the plaintext payload.
+    /// Classifies one inbound encrypted envelope by structure and
+    /// tag membership without consuming any state. The caller feeds
+    /// the classified variant to the matching `accept_*` method,
+    /// which performs the stateful decryption.
+    pub fn classify(&self, envelope_bytes: &[u8]) -> ClassifiedInbound {
+        let len = envelope_bytes.len();
+        if len < 8 + 16 {
+            return ClassifiedInbound::Unknown(ClassifiedUnknown::TooShort {
+                actual: len,
+                minimum: 8 + 16,
+            });
+        }
+        let mut tag = [0_u8; SESSION_TAG_LENGTH];
+        tag.copy_from_slice(&envelope_bytes[..SESSION_TAG_LENGTH]);
+        if len >= 72 && self.pending_reply_tags.contains_key(&tag) {
+            return ClassifiedInbound::NewSessionReply;
+        }
+        if self
+            .sessions
+            .values()
+            .any(|session| session.inbound.contains(&tag))
+        {
+            return ClassifiedInbound::ExistingSession;
+        }
+        if len >= 96 + 16 {
+            return ClassifiedInbound::CandidateNewSession;
+        }
+        ClassifiedInbound::Unknown(ClassifiedUnknown::UnmatchedTag)
+    }
+
+    /// Decrypts an inbound bound New Session message, installs the
+    /// provisional responder state, and returns the decrypted
+    /// Garlic Clove payload together with the sender's static
+    /// public key (the session identity).
     pub fn accept_new_session(
         &mut self,
         local_id: DestinationId,
         local_static_secret: &[u8; X25519_KEY_LENGTH],
         local_static_public: &[u8; X25519_KEY_LENGTH],
-        message: &NewSessionMessage,
+        message: &BoundNewSessionMessage,
         now_seconds: u32,
-    ) -> Result<Vec<u8>, EciesSessionError> {
+    ) -> Result<AcceptedNewSession, EciesSessionError> {
         let _ = local_id;
-        let (plaintext, bob_session) = open_new_session(
-            local_static_secret,
-            local_static_public,
-            message,
-            now_seconds,
-            60,
-            &[],
-        )?;
-        // We do not have the inbound remote key here; the manager
-        // installs the session keyed by the ephemeral representative
-        // so future existing-session traffic can be classified.
-        let ephemeral_pub = decode_representative(&message.representative)?;
-        let remote_key = RemoteDestinationKey::from_hash(&ephemeral_pub);
-        self.install_inbound_session(&remote_key, bob_session, now_seconds);
-        Ok(plaintext)
+        if self
+            .seen_new_session_ephemerals
+            .iter()
+            .any(|seen| *seen == *message.representative.as_bytes())
+        {
+            return Err(EciesSessionError::DuplicateNewSession);
+        }
+        let opened = open_bound_new_session(local_static_secret, local_static_public, message)?;
+        self.remember_new_session_ephemeral(message.representative.as_bytes());
+        let alice_static_public = opened.responder.alice_static_public;
+        if !self
+            .provisional_responders
+            .contains_key(&RemoteStaticKey::from_public(&alice_static_public))
+            && self.provisional_responders.len() >= self.config.max_pending_handshakes as usize
+        {
+            return Err(EciesSessionError::PendingHandshakeCapacity {
+                maximum: self.config.max_pending_handshakes,
+            });
+        }
+        self.provisional_responders.insert(
+            RemoteStaticKey::from_public(&alice_static_public),
+            ProvisionalResponder {
+                responder: opened.responder,
+                last_used_seconds: now_seconds,
+            },
+        );
+        Ok(AcceptedNewSession {
+            payload: opened.payload,
+            alice_static_public,
+        })
     }
 
-    /// Decrypts an incoming Existing Session message against the
-    /// appropriate inbound session for `remote_hash`.
+    /// Seals the New Session Reply for the provisional responder
+    /// installed under `alice_static_public`, promotes the paired
+    /// session, and returns the wire message to transmit.
+    pub fn seal_new_session_reply_for<R: rand_core::TryCryptoRng + ?Sized>(
+        &mut self,
+        local_id: DestinationId,
+        local_static_secret: &[u8; X25519_KEY_LENGTH],
+        alice_static_public: &[u8; X25519_KEY_LENGTH],
+        payload: &[u8],
+        now_seconds: u32,
+        rng: &mut R,
+    ) -> Result<NewSessionReplyOutbound, EciesSessionError> {
+        let _ = local_id;
+        let remote_key = RemoteStaticKey::from_public(alice_static_public);
+        if self.sessions.contains_key(&remote_key)
+            && self.sessions.len() >= self.config.max_peers as usize
+        {
+            return Err(EciesSessionError::PeerCapacity {
+                maximum: self.config.max_peers,
+            });
+        }
+        let provisional = self
+            .provisional_responders
+            .remove(&remote_key)
+            .ok_or(EciesSessionError::NoProvisionalResponder)?;
+        let sealed =
+            seal_new_session_reply(&provisional.responder, local_static_secret, payload, rng)?;
+        let inbound = InboundTagWindow::new(
+            sealed.inbound_tag_set,
+            self.config.max_tag_look_ahead as usize,
+        )?;
+        self.sessions.insert(
+            remote_key,
+            PairedSession {
+                outbound: sealed.outbound_tag_set,
+                inbound,
+                last_used_seconds: now_seconds,
+            },
+        );
+        Ok(NewSessionReplyOutbound {
+            message: sealed.message,
+        })
+    }
+
+    /// Accepts a New Session Reply for one of this manager's
+    /// pending outbound handshakes. The reply tag selects the
+    /// pending handshake; no caller-supplied remote identity is
+    /// consulted. On success the paired session is installed under
+    /// the remote static public key Alice bound into the handshake.
+    pub fn accept_new_session_reply(
+        &mut self,
+        local_id: DestinationId,
+        local_static_secret: &[u8; X25519_KEY_LENGTH],
+        reply: &NewSessionReplyMessage,
+        now_seconds: u32,
+    ) -> Result<AcceptedNewSessionReply, EciesSessionError> {
+        let _ = local_id;
+        let slot = *self
+            .pending_reply_tags
+            .get(&reply.tag)
+            .ok_or(EciesSessionError::NoPendingHandshake)?;
+        let pending = self.pending_initiated[slot]
+            .take()
+            .ok_or(EciesSessionError::NoPendingHandshake)?;
+        self.pending_reply_tags.retain(|_, index| *index != slot);
+        let remote_static_public = *pending.sender.bob_static_public();
+        let opened = open_new_session_reply(&pending.sender, local_static_secret, reply)?;
+        if self.sessions.len() >= self.config.max_peers as usize
+            && !self
+                .sessions
+                .contains_key(&RemoteStaticKey::from_public(&remote_static_public))
+        {
+            return Err(EciesSessionError::PeerCapacity {
+                maximum: self.config.max_peers,
+            });
+        }
+        let inbound = InboundTagWindow::new(
+            opened.inbound_tag_set,
+            self.config.max_tag_look_ahead as usize,
+        )?;
+        self.sessions.insert(
+            RemoteStaticKey::from_public(&remote_static_public),
+            PairedSession {
+                outbound: opened.outbound_tag_set,
+                inbound,
+                last_used_seconds: now_seconds,
+            },
+        );
+        Ok(AcceptedNewSessionReply {
+            payload: opened.payload,
+            remote_static_public,
+        })
+    }
+
+    /// Decrypts an inbound Existing Session message against the
+    /// paired session selected by its tag.
     pub fn accept_existing_session(
         &mut self,
         message: &ExistingSessionMessage,
-        remote_hash: &[u8; 32],
-    ) -> Result<Vec<u8>, EciesSessionError> {
-        let remote_key = RemoteDestinationKey::from_hash(remote_hash);
-        let slots = self
-            .inbound
-            .get_mut(&remote_key)
-            .ok_or(EciesSessionError::NoSession)?;
-        let slot = slots.first_mut().ok_or(EciesSessionError::NoSession)?;
-        let plaintext = open_existing_session(&mut slot.state, message)?;
-        Ok(plaintext)
+    ) -> Result<AcceptedExistingSession, EciesSessionError> {
+        for (remote_key, session) in self.sessions.iter_mut() {
+            if let Some(index) = session.inbound.consume(&message.tag) {
+                let payload = open_existing_session(&mut session.inbound.tag_set, index, message)?;
+                return Ok(AcceptedExistingSession {
+                    payload,
+                    remote_static_public: *remote_key.public(),
+                });
+            }
+        }
+        Err(EciesSessionError::UnknownSessionTag)
     }
 
-    /// Advances the deterministic clock: expires stale sessions
-    /// and trims the replay cache.
+    /// Advances the deterministic clock: expires stale sessions,
+    /// pending handshakes, and provisional responders.
     pub fn advance_time(&mut self, now_seconds: u32) -> EciesAdvanceReport {
         let idle = self.config.idle_seconds;
         let mut expired = 0_usize;
-        self.outbound.retain(|_, slots| {
-            slots.retain(|slot| {
-                let alive = now_seconds.saturating_sub(slot.last_used_seconds) <= idle;
-                if !alive {
-                    expired = expired.saturating_add(1);
-                }
-                alive
-            });
-            !slots.is_empty()
-        });
-        self.inbound.retain(|_, slots| {
-            slots.retain(|slot| {
-                let alive = now_seconds.saturating_sub(slot.last_used_seconds) <= idle;
-                if !alive {
-                    expired = expired.saturating_add(1);
-                }
-                alive
-            });
-            !slots.is_empty()
-        });
-        let mut dropped = 0_usize;
-        self.replay_cache.retain(|entry| {
-            let alive = now_seconds.saturating_sub(entry.last_seen_seconds) <= idle;
+        self.sessions.retain(|_, session| {
+            let alive = now_seconds.saturating_sub(session.last_used_seconds) <= idle;
             if !alive {
-                dropped = dropped.saturating_add(1);
+                expired = expired.saturating_add(1);
             }
             alive
         });
+        let before_pending = self.pending_initiated.iter().flatten().count();
+        for slot in self.pending_initiated.iter_mut() {
+            let expired_pending = match slot {
+                Some(pending) => now_seconds.saturating_sub(pending.created_seconds) > idle,
+                None => false,
+            };
+            if expired_pending {
+                *slot = None;
+            }
+        }
+        let live: Vec<bool> = self.pending_initiated.iter().map(Option::is_some).collect();
+        self.pending_reply_tags.retain(|_, index| live[*index]);
+        let dropped_pending = before_pending - self.pending_initiated.iter().flatten().count();
+        let before_provisional = self.provisional_responders.len();
+        self.provisional_responders.retain(|_, provisional| {
+            now_seconds.saturating_sub(provisional.last_used_seconds) <= idle
+        });
+        let dropped_provisional = before_provisional - self.provisional_responders.len();
         EciesAdvanceReport {
             expired_sessions: expired,
-            dropped_replay_entries: dropped,
-            pending_handshakes: self.pending_handshakes,
+            dropped_replay_entries: dropped_pending + dropped_provisional,
+            pending_handshakes: self.pending_initiated.iter().flatten().count() as u16,
         }
+    }
+
+    fn remember_new_session_ephemeral(&mut self, representative: &[u8; REPRESENTATIVE_LENGTH]) {
+        if self.seen_new_session_ephemerals.len() >= self.config.max_pending_handshakes as usize {
+            self.seen_new_session_ephemerals.pop_front();
+        }
+        self.seen_new_session_ephemerals.push_back(*representative);
     }
 }
 
 /// Encrypted ECIES outbound message produced by the manager.
 #[derive(Debug)]
 pub enum EciesOutboundMessage {
-    /// A new-session handshake message plus the pending handshake
-    /// record the caller must hand back when the reply arrives.
+    /// A bound New Session handshake message. The manager retains
+    /// the pending reply window internally.
     NewSession {
-        /// The wire-encoded new-session message.
-        message: NewSessionMessage,
-        /// The pending handshake record the manager keeps until the
-        /// reply lands.
-        pending: Box<PendingHandshakeRecord>,
+        /// The wire-encoded bound New Session message.
+        message: BoundNewSessionMessage,
     },
-    /// An existing-session message riding an already-installed
-    /// outbound session.
+    /// An Existing Session message riding the paired outbound tag
+    /// set.
     Existing(ExistingSessionMessage),
 }
 
-/// Pending handshake record the manager keeps while waiting for
-/// the New Session Reply.
+/// Decrypted inbound bound New Session result.
 #[derive(Debug)]
-pub struct PendingHandshakeRecord {
-    remote_static_public: [u8; X25519_KEY_LENGTH],
-    handshake: PendingHandshake,
+pub struct AcceptedNewSession {
+    /// The decrypted Garlic Clove payload.
+    pub payload: Vec<u8>,
+    /// The sender's X25519 static public key (session identity).
+    pub alice_static_public: [u8; X25519_KEY_LENGTH],
 }
 
-impl PendingHandshakeRecord {
-    fn new(
-        _remote_key: RemoteDestinationKey,
-        handshake: PendingHandshake,
-        _installed_session: EciesSessionState,
-    ) -> Self {
-        let remote_static_public = [0u8; X25519_KEY_LENGTH];
-        Self {
-            remote_static_public,
-            handshake,
-        }
-    }
+/// Wire-bound New Session Reply ready for transmission.
+#[derive(Debug)]
+pub struct NewSessionReplyOutbound {
+    /// The wire-encoded New Session Reply message.
+    pub message: NewSessionReplyMessage,
+}
 
-    /// Records the remote destination's static public key so the
-    /// reply can be verified without a separate LS2 round-trip.
-    pub fn set_remote_static_public(&mut self, public_key: &[u8; X25519_KEY_LENGTH]) {
-        self.remote_static_public.copy_from_slice(public_key);
-    }
+/// Decrypted inbound New Session Reply result.
+#[derive(Debug)]
+pub struct AcceptedNewSessionReply {
+    /// The decrypted Garlic Clove payload.
+    pub payload: Vec<u8>,
+    /// The remote static public key the session is paired under.
+    pub remote_static_public: [u8; X25519_KEY_LENGTH],
+}
 
-    /// Constructs a placeholder record used by callers that need to
-    /// move an existing record out of a `Box` through a `mem::replace`.
-    /// The placeholder is never exposed to production callers.
-    #[doc(hidden)]
-    pub fn dummy_for_swap() -> Self {
-        Self {
-            remote_static_public: [0u8; X25519_KEY_LENGTH],
-            handshake: PendingHandshake {
-                ephemeral_secret: [0u8; REPRESENTATIVE_LENGTH],
-                static_secret: [0u8; X25519_KEY_LENGTH],
-            },
-        }
-    }
+/// Decrypted inbound Existing Session result.
+#[derive(Debug)]
+pub struct AcceptedExistingSession {
+    /// The decrypted Garlic Clove payload.
+    pub payload: Vec<u8>,
+    /// The remote static public key the session is paired under.
+    pub remote_static_public: [u8; X25519_KEY_LENGTH],
+}
+
+/// Classification outcome for [`EciesSessionManager::classify`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClassifiedInbound {
+    /// The leading tag matches a pending outbound handshake's
+    /// reply window.
+    NewSessionReply,
+    /// The leading tag matches an established session's inbound
+    /// window.
+    ExistingSession,
+    /// No tag matched; the length is consistent with a bound New
+    /// Session message.
+    CandidateNewSession,
+    /// The envelope matches no known classification.
+    Unknown(ClassifiedUnknown),
+}
+
+/// Typed unknown-classification reasons.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClassifiedUnknown {
+    /// The envelope is shorter than the smallest valid ECIES
+    /// message.
+    TooShort {
+        /// Observed byte count.
+        actual: usize,
+        /// Smallest acceptable byte count.
+        minimum: usize,
+    },
+    /// The leading 8 bytes match no window and the envelope is too
+    /// short to be a New Session.
+    UnmatchedTag,
 }
 
 /// Aggregated report from [`EciesSessionManager::advance_time`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EciesAdvanceReport {
-    /// Number of expired sessions dropped by the advance.
+    /// Number of expired paired sessions dropped by the advance.
     pub expired_sessions: usize,
-    /// Number of replay-cache entries dropped by the advance.
+    /// Number of stale pending handshakes plus provisional
+    /// responders dropped by the advance.
     pub dropped_replay_entries: usize,
-    /// Pending new-session handshakes still held.
+    /// Pending outbound handshakes still held.
     pub pending_handshakes: u16,
 }
 
 /// Typed session-manager failures.
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum EciesSessionError {
     /// The wrapped ECIES primitive returned a typed error.
@@ -594,23 +739,32 @@ pub enum EciesSessionError {
         /// Accepted ceiling.
         maximum: u16,
     },
-    /// The caller addressed an unknown remote destination.
+    /// The paired-session peer capacity was exhausted.
+    #[error("ECIES paired-session capacity {maximum} exhausted")]
+    PeerCapacity {
+        /// Accepted ceiling.
+        maximum: u16,
+    },
+    /// The caller addressed a session that does not exist.
     #[error("ECIES session not found for remote destination")]
     NoSession,
+    /// No pending outbound handshake matched the reply tag.
+    #[error("ECIES New Session Reply matched no pending handshake")]
+    NoPendingHandshake,
+    /// No provisional responder exists for the supplied remote
+    /// static key.
+    #[error("ECIES no provisional responder for remote static key")]
+    NoProvisionalResponder,
+    /// The inbound tag matched no established session window.
+    #[error("ECIES Existing Session tag matched no session window")]
+    UnknownSessionTag,
+    /// A replayed bound New Session (duplicate ephemeral) was
+    /// rejected.
+    #[error("ECIES duplicate bound New Session rejected")]
+    DuplicateNewSession,
     /// The session manager detected a protocol-level violation.
     #[error("ECIES session manager protocol violation: {0}")]
     Protocol(&'static str),
-}
-
-/// Helper that seals an Existing Session message using the
-/// caller-supplied session clone. The plan intentionally routes
-/// the session manager through the same primitive the
-/// [`seal_existing_session`] helper exposes.
-fn seal_existing_session_with_session(
-    session: &mut EciesSessionState,
-    payload: &[u8],
-) -> Result<ExistingSessionMessage, EciesSessionError> {
-    Ok(seal_existing_session(session, payload)?)
 }
 
 /// Decode a payload from the ECIES decoded bytes into a typed

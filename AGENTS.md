@@ -19,7 +19,7 @@ Eleven-crate workspace under `crates/`:
 - `i2pr-transport-ntcp2` — runtime-neutral NTCP2 handshake + data frames
 - `i2pr-runtime` — **only** production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation
 - `i2pr-daemon` — composition root + CLI
-- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`); Plan 122 local destination routing / LeaseSet2 NetDB composition; Plan 125 protocol-correct I2P Streaming core (`StreamingManager` with real SYN/SYN-response lifecycle, stream-id ownership, RFC 1952 gzip client payload wire format, MTU negotiation, signed SYN/CLOSE/RESET, sequence/ACK/NACK, retransmit, congestion, send/receive windows, listener backlogs) and the runtime-neutral `StreamingDestinationAdapter` that bridges streaming packets into the Plan 122 destination-routing pipeline.
+- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`); Plan 126 normative ECIES-X25519-AEAD-Ratchet destination session layer (bound NS/NSR/ES, paired sessions keyed by remote static key, classify-driven dispatch); Plan 122 local destination routing / LeaseSet2 NetDB composition; Plan 125 protocol-correct I2P Streaming core (`StreamingManager` with real SYN/SYN-response lifecycle, stream-id ownership, RFC 1952 gzip client payload wire format, MTU negotiation, signed SYN/CLOSE/RESET, sequence/ACK/NACK, retransmit, congestion, send/receive windows, listener backlogs) and the runtime-neutral `StreamingDestinationAdapter` that bridges streaming packets into the Plan 122 destination-routing pipeline.
 - `i2pr-testkit` — deterministic simulation; production crates must not depend on it
 
 Fixtures: `tests/fixtures/i2np/` (manifest at `tests/fixtures/i2np/manifest.tsv`),
@@ -2080,16 +2080,16 @@ inventory defects `F1`–`F5`) closed Plan 116 as
    rotation/withdrawal, bounded local payload contracts, and a
    router-local destination registry.
 Plan 121 closed as `passed-ecies-destination-session-layer`
-    per [`plans/121-status.md`](plans/121-status.md): the
-    `curve25519-elligator2 = 0.1.0-alpha.2` primitive audit
-    (Plan 121 §2 / §12), the wrapped ECIES primitives in
-    `i2pr-crypto`, the bounded Garlic payload block codec in
-    `i2pr-proto`, and the bounded destination-context
-    `EciesSessionManager` in `i2pr-client`. The
-    `plan_121_deterministic_local_trajectory` integration test
-    drives the two-destination NS → NSR → Existing Session
-    trajectory with exact-once payload delivery, tag ratchet
-    advancement, and replay rejection. Plan 122 closed as
+    per [`plans/121-status.md`](plans/121-status.md) (the audited
+    `curve25519-elligator2 = 0.1.0-alpha.2` primitive, the wrapped
+    ECIES primitives in `i2pr-crypto`, the bounded Garlic payload
+    block codec in `i2pr-proto`, and the bounded destination-context
+    `EciesSessionManager` in `i2pr-client`). Plan 126 supersedes the
+    Plan 121 i2pr-internal ECIES dialect with the normative I2P
+    ECIES-X25519-AEAD-Ratchet contract and replaces
+    `plan_121_deterministic_local_trajectory` with
+    `plan_126_corrected_deterministic_local_trajectory` (see the
+    Plan 126 section below). Plan 122 closed as
     `passed-corrected-local-destination-routing` per
     [`plans/122-status.md`](plans/122-status.md) and
     [`plans/124-status.md`](plans/124-status.md): it composes the
@@ -2130,10 +2130,9 @@ Plan 121 closed as `passed-ecies-destination-session-layer`
     drives two destination identities through every tunnel role,
     the canonical `authenticated-router-link-bypassed-local-seam`,
     and the dispatcher to surface the exact application payload.
-    The next executable plan is **Plan 125** (Streaming protocol-6
-    framing correction + reply round-trip) under the Milestone
-    6 router-construction roadmap in
-    [`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
+    The next executable plan was **Plan 125** (closed); the active
+    Milestone 6 corrective roadmap now lives in
+    [`plans/126-129-milestone6-final-corrective-roadmap.md`](plans/126-129-milestone6-final-corrective-roadmap.md).
 
 Plan 116 lands:
 
@@ -2305,12 +2304,14 @@ plan_117_external_transport          = deferred-host-lane-unavailable
 plan_117                             = closed-for-progression-with-evidence-gap
 plan_119                             = passed-leaseset2-protocol-foundation
 plan_120                             = passed-destination-lifecycle-and-pools
-plan_121                             = passed-ecies-destination-session-layer
+plan_121                             = corrected-ecies-ratchet-foundation-awaiting-plan127-binding
 plan_122                             = passed-corrected-local-destination-routing
 plan_123                             = passed-corrected-minimal-streaming-local
 plan_124                             = passed-plan122-corrective-closure
+plan_125                             = passed-milestone6-local-corrective-closure
+plan_126                             = passed-ecies-destination-ratchet-corrective-foundation
 router_construction                  = may-continue
-next_router_construction_plan        = Plan 125 (Streaming protocol-6 framing correction + reply round-trip)
+next_router_construction_plan        = Plan 127 (destination-session routing final closure)
 ```
 
 Plan 119 closed as `passed-leaseset2-protocol-foundation` per
@@ -2383,11 +2384,73 @@ to `passed-minimal-streaming-core` was reopened; Plan 125 corrects the
 prefix, no custom compressed-length prefix) and the
 connection-establishment state machine (no optimistic local
 Established before peer SYN response) and now closes as
-`passed-milestone6-local-corrective-closure`. The next executable
-product work is the SAM baseline planning (Milestone 7) per the
-Milestone 6 router-construction
-roadmap in
-[`plans/118-123-milestone6-router-construction-roadmap.md`](plans/118-123-milestone6-router-construction-roadmap.md).
+`passed-milestone6-local-corrective-closure`.
+
+## Plan 126 ECIES destination ratchet corrective foundation
+
+Plan 126 closed as `passed-ecies-destination-ratchet-corrective-foundation`
+per [`plans/126-status.md`](plans/126-status.md). It replaces the
+superseded Plan 121 i2pr-internal destination ECIES dialect with the
+normative I2P ECIES-X25519-AEAD-Ratchet contract:
+
+- `crates/i2pr-crypto/src/ecies.rs` is rewritten: protocol name
+  `Noise_IKelg2+hs2_25519_ChaChaPoly_SHA256`, bound New Session wire
+  format `elg2_aepk(32) || static_section_ct(48) || payload_ct(len+16)`
+  with Alice's **derived public key** in the static-key section, NSR
+  `tag(8) || elg2_bepk(32) || zero-len key-section MAC(16) ||
+  payload_ct(len+16)` over the one-shot SessionReplyTags window, Noise
+  Split into directional `k_ab`/`k_ba` tag sets plus
+  `AttachPayloadKDF` for the NSR payload, canonical tag/key index
+  alignment (tags 1-based on wire; keys/nonces 0-based), ES AEAD with
+  tag associated data and `0x00000000 || LE64(index)` nonces, and
+  typed rejection of unbound New Sessions and duplicate ephemerals.
+  The old symbols (`EciesSessionState`, `NewSessionMessage`,
+  `seal_new_session`, `open_new_session`, flag constants) are removed
+  and cannot be constructed through any public API.
+- 31 frozen conformance vectors were produced once by an independent
+  Python reference implementation and are asserted byte-for-byte by the
+  production primitive; provenance lives in
+  [`specs/references/ecies-destination-ratchet.md`](specs/references/ecies-destination-ratchet.md).
+- `crates/i2pr-client/src/session.rs` is rewritten: paired sessions
+  keyed by remote X25519 static public key, bounded remove-on-hit
+  inbound tag windows (replay returns `UnknownSessionTag`),
+  pre-derived pending reply windows (NSR acceptance is tag-driven,
+  no caller-supplied remote identity), provisional responder state
+  keyed by the authenticated Alice static public key, duplicate bound
+  New Session rejection, and idle-bounded lifecycle sweeps. The
+  pairing is Provisional until Plan 127 binds it to a resolved
+  Destination context.
+- `crates/i2pr-client/src/dispatch.rs` classifies inbound envelopes
+  through `EciesSessionManager::classify` instead of a Garlic flag
+  switch; the dispatcher's parallel pending-handshake map is gone.
+- `crates/i2pr-client/src/routing.rs` threads the local destination
+  static secret into `encrypt_to_remote` and drops the
+  `EncryptedOutbound::NewSession::pending` field.
+- Trajectories: the corrected primitive-level
+  `plan_126_corrected_deterministic_local_trajectory` replaces
+  `plan_121_deterministic_local_trajectory`; the manager-level
+  `plan_126_full_manager_lifecycle_bidirectional_exact_once` plus eight
+  negative/ceiling controls live in
+  [`crates/i2pr-client/tests/plan126_trajectory.rs`](crates/i2pr-client/tests/plan126_trajectory.rs).
+
+Per the plan handoff:
+
+```text
+plan_121 = corrected-ecies-ratchet-foundation-awaiting-plan127-binding
+plan_126 = passed-ecies-destination-ratchet-corrective-foundation
+milestone6_local_product = not-closed
+next = plans/127-m6-destination-session-routing-final-closure.md
+```
+
+Do not restore the Plan 121/122/124 final-closure claims until
+Plan 127 proves destination binding and routing through tunnels.
+NTCP2 stays experimental and non-advertised; no tunnel, NetDB
+composition, transport, SAM, I2CP, or public-network work was
+introduced.
+
+The next executable product work is Plan 127 per the Milestone 6
+final corrective roadmap in
+[`plans/126-129-milestone6-final-corrective-roadmap.md`](plans/126-129-milestone6-final-corrective-roadmap.md).
 external acceptance debt ledger in the same roadmap. Router
 construction is not blocked on the unavailable authenticated
 external transport lane; the current `closed-for-progression` state

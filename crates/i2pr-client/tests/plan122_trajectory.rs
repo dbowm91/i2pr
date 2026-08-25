@@ -235,7 +235,7 @@ fn plan_122_phase_f_outbound_composition_produces_delivery_plan() {
         &mut session,
         &outbound_role,
         identity_a.id(),
-        &identity_a.static_public_bytes(),
+        identity_a.static_secret_bytes(),
         remote_hash,
         &request,
         now_u32,
@@ -281,7 +281,7 @@ fn plan_122_phase_h_dispatcher_rejects_garlic_without_session() {
     let outcome = dispatcher.dispatch_garlic_envelope(
         &mut session,
         identity_b.id(),
-        &identity_b.static_public_bytes(),
+        identity_b.static_secret_bytes(),
         &identity_b.static_public_bytes(),
         1_000_u32,
         &dummy_garlic,

@@ -22,7 +22,8 @@ use i2pr_proto::{CodecError, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE};
 use crate::identity::DestinationId;
 use crate::message::{DestinationPayload, PayloadError};
 use crate::session::{
-    EciesPayloadError, EciesSessionError, EciesSessionManager, decode_decrypted_payload,
+    ClassifiedInbound, ClassifiedUnknown, EciesPayloadError, EciesSessionError,
+    EciesSessionManager, decode_decrypted_payload,
 };
 
 /// Hard ceiling on the number of inbound destinations the dispatcher
@@ -96,6 +97,14 @@ pub enum InboundDispatchError {
     NotGarlic,
     /// The I2NP codec rejected the envelope bytes.
     Codec(String),
+    /// The encrypted envelope is shorter than the smallest valid
+    /// ECIES message.
+    EnvelopeTooShort {
+        /// Observed byte count.
+        actual: usize,
+        /// Smallest acceptable byte count.
+        minimum: usize,
+    },
     /// The Garlic flag byte is unsupported.
     UnsupportedGarlicFlag(u8),
     /// The ECIES session manager rejected the message.
@@ -120,6 +129,10 @@ impl core::fmt::Display for InboundDispatchError {
         match self {
             Self::NotGarlic => formatter.write_str("envelope is not an I2NP Garlic body"),
             Self::Codec(message) => write!(formatter, "I2NP codec: {message}"),
+            Self::EnvelopeTooShort { actual, minimum } => write!(
+                formatter,
+                "encrypted envelope too short: {actual} bytes, minimum {minimum}"
+            ),
             Self::UnsupportedGarlicFlag(flag) => {
                 write!(formatter, "unsupported Garlic flag {flag}")
             }
@@ -243,10 +256,6 @@ pub struct DestinationDispatcher {
     /// [`DestinationId`]. The dispatcher uses the binding to look up
     /// the owning destination for every accepted Garlic clove.
     destination_hashes: BTreeMap<DestinationHash, DestinationId>,
-    /// Pending New Session handshake records keyed by sender
-    /// destination hash. The dispatcher matches a later
-    /// `NewSessionReply` against this map.
-    pending_handshakes: BTreeMap<DestinationHash, crate::session::PendingHandshakeRecord>,
 }
 
 impl DestinationDispatcher {
@@ -255,18 +264,12 @@ impl DestinationDispatcher {
         Self {
             destinations: BTreeMap::new(),
             destination_hashes: BTreeMap::new(),
-            pending_handshakes: BTreeMap::new(),
         }
     }
 
     /// Returns the number of registered inbound destinations.
     pub fn destination_count(&self) -> usize {
         self.destinations.len()
-    }
-
-    /// Returns the number of pending New Session handshakes.
-    pub fn pending_handshake_count(&self) -> usize {
-        self.pending_handshakes.len()
     }
 
     /// Returns the queued payload count for a single destination.
@@ -335,28 +338,11 @@ impl DestinationDispatcher {
             .unwrap_or(0)
     }
 
-    /// Records a sender-side pending handshake the local session
-    /// manager already issued. The dispatcher uses the record to
-    /// validate later New Session Reply messages.
-    pub fn record_pending_handshake(
-        &mut self,
-        remote: DestinationHash,
-        handshake: crate::session::PendingHandshakeRecord,
-    ) {
-        self.pending_handshakes.insert(remote, handshake);
-    }
-
-    /// Removes a sender-side pending handshake, typically after a
-    /// New Session Reply succeeds or the local destination gives up
-    /// waiting.
-    pub fn forget_pending_handshake(&mut self, remote: &DestinationHash) -> bool {
-        self.pending_handshakes.remove(remote).is_some()
-    }
-
     /// Processes one inbound `I2npMessage` carrying a `Garlic`
-    /// body. The dispatcher fails closed on every malformed input
-    /// and routes authenticated cloves to the owning destination
-    /// only after AEAD authentication succeeds.
+    /// body. The dispatcher fails closed on every malformed input,
+    /// classifies the encrypted envelope through the session
+    /// manager, and routes authenticated cloves to the owning
+    /// destination only after AEAD authentication succeeds.
     #[allow(clippy::too_many_arguments, clippy::let_and_return)]
     pub fn dispatch_garlic_envelope(
         &mut self,
@@ -377,56 +363,9 @@ impl DestinationDispatcher {
                 "empty Garlic payload".to_owned(),
             ));
         }
-        let flag = bytes[0];
-        let outcome = match flag {
-            // ECIES New Session flag is 0xE0.
-            0xE0 => {
-                let parsed =
-                    match i2pr_crypto::NewSessionMessage::decode(&bytes, MAX_I2NP_PAYLOAD_SIZE) {
-                        Ok(m) => m,
-                        Err(error) => {
-                            return InboundDispatchOutcome::Rejected(InboundDispatchError::Codec(
-                                format!("{error:?}"),
-                            ));
-                        }
-                    };
-                let plaintext = match session.accept_new_session(
-                    local_id,
-                    local_static_secret,
-                    local_static_public,
-                    &parsed,
-                    now_seconds,
-                ) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        return InboundDispatchOutcome::Rejected(InboundDispatchError::Session(
-                            map_session_error(error),
-                        ));
-                    }
-                };
-                // The sender's static public key is the canonical
-                // destination identity the recipient must use to
-                // bind the session. The Plan 122 dispatcher keys
-                // its pending-handshake map on the static key bytes
-                // because the spec binds the session to the static
-                // key, not to a separate destination hash.
-                let sender_hash =
-                    DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(parsed.static_key));
-                match self.process_decrypted_payload(
-                    &plaintext,
-                    sender_hash,
-                    now_seconds,
-                    lease_set2_store,
-                ) {
-                    Ok(count) => InboundDispatchOutcome::NewSessionProcessed {
-                        sender_destination: sender_hash,
-                        clove_count: count,
-                    },
-                    Err(error) => InboundDispatchOutcome::Rejected(error),
-                }
-            }
-            // ECIES New Session Reply / Existing Session flag is 0xE2.
-            0xE2 => {
+        let classified = session.classify(&bytes);
+        let outcome = match classified {
+            ClassifiedInbound::NewSessionReply => {
                 let reply_parsed = match i2pr_crypto::NewSessionReplyMessage::decode(
                     &bytes,
                     MAX_I2NP_PAYLOAD_SIZE,
@@ -438,56 +377,123 @@ impl DestinationDispatcher {
                         ));
                     }
                 };
-                // Plan 122 §E: the reply tag is the 8-byte session
-                // tag the local session manager already installed
-                // when sealing the New Session. The dispatcher keys
-                // its pending-handshake map on the tag's first 8
-                // bytes padded into a 32-byte destination hash.
-                let mut tag_hash = [0u8; 32];
-                let copy_len = reply_parsed.tag.len().min(8);
-                tag_hash[..copy_len].copy_from_slice(&reply_parsed.tag[..copy_len]);
-                let ephemeral_pub =
-                    DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(tag_hash));
-                let pending = match self.pending_handshakes.remove(&ephemeral_pub) {
-                    Some(record) => record,
-                    None => {
-                        return InboundDispatchOutcome::Rejected(
-                            InboundDispatchError::DuplicateReplay,
-                        );
-                    }
-                };
-                let plaintext = match session.accept_new_session_reply(
+                // The reply tag selects the pending handshake; no
+                // caller-supplied remote identity is consulted.
+                let accepted = match session.accept_new_session_reply(
                     local_id,
                     local_static_secret,
-                    ephemeral_pub.as_bytes(),
-                    pending,
                     &reply_parsed,
                     now_seconds,
                 ) {
-                    Ok(bytes) => bytes,
+                    Ok(accepted) => accepted,
                     Err(error) => {
                         return InboundDispatchOutcome::Rejected(InboundDispatchError::Session(
                             map_session_error(error),
                         ));
                     }
                 };
+                let sender_hash = DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(
+                    accepted.remote_static_public,
+                ));
                 match self.process_decrypted_payload(
-                    &plaintext,
-                    ephemeral_pub,
+                    &accepted.payload,
+                    sender_hash,
                     now_seconds,
                     lease_set2_store,
                 ) {
                     Ok(count) => InboundDispatchOutcome::NewSessionReplyProcessed {
-                        destination_hash: ephemeral_pub,
+                        destination_hash: sender_hash,
                         clove_count: count,
                     },
                     Err(error) => InboundDispatchOutcome::Rejected(error),
                 }
             }
-            value => {
-                return InboundDispatchOutcome::Rejected(
-                    InboundDispatchError::UnsupportedGarlicFlag(value),
-                );
+            ClassifiedInbound::ExistingSession => {
+                let parsed = match i2pr_crypto::ExistingSessionMessage::decode(
+                    &bytes,
+                    MAX_I2NP_PAYLOAD_SIZE,
+                ) {
+                    Ok(m) => m,
+                    Err(error) => {
+                        return InboundDispatchOutcome::Rejected(InboundDispatchError::Codec(
+                            format!("{error:?}"),
+                        ));
+                    }
+                };
+                let accepted = match session.accept_existing_session(&parsed) {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        return InboundDispatchOutcome::Rejected(InboundDispatchError::Session(
+                            map_session_error(error),
+                        ));
+                    }
+                };
+                let sender_hash = DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(
+                    accepted.remote_static_public,
+                ));
+                match self.process_decrypted_payload(
+                    &accepted.payload,
+                    sender_hash,
+                    now_seconds,
+                    lease_set2_store,
+                ) {
+                    Ok(count) => InboundDispatchOutcome::ExistingSessionProcessed {
+                        sender_destination: sender_hash,
+                        clove_count: count,
+                    },
+                    Err(error) => InboundDispatchOutcome::Rejected(error),
+                }
+            }
+            ClassifiedInbound::CandidateNewSession | ClassifiedInbound::Unknown(_) => {
+                let parsed = match i2pr_crypto::BoundNewSessionMessage::decode(
+                    &bytes,
+                    MAX_I2NP_PAYLOAD_SIZE,
+                ) {
+                    Ok(m) => m,
+                    Err(_) => {
+                        return InboundDispatchOutcome::Rejected(match classified {
+                            ClassifiedInbound::Unknown(ClassifiedUnknown::TooShort {
+                                actual,
+                                minimum,
+                            }) => InboundDispatchError::EnvelopeTooShort { actual, minimum },
+                            _ => InboundDispatchError::Codec(
+                                "unclassified garlic envelope rejected".to_owned(),
+                            ),
+                        });
+                    }
+                };
+                let accepted = match session.accept_new_session(
+                    local_id,
+                    local_static_secret,
+                    local_static_public,
+                    &parsed,
+                    now_seconds,
+                ) {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        return InboundDispatchOutcome::Rejected(InboundDispatchError::Session(
+                            map_session_error(error),
+                        ));
+                    }
+                };
+                // The sender's static public key is the canonical
+                // session identity; the provisional responder is
+                // installed under it until the reply is sealed.
+                let sender_hash = DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(
+                    accepted.alice_static_public,
+                ));
+                match self.process_decrypted_payload(
+                    &accepted.payload,
+                    sender_hash,
+                    now_seconds,
+                    lease_set2_store,
+                ) {
+                    Ok(count) => InboundDispatchOutcome::NewSessionProcessed {
+                        sender_destination: sender_hash,
+                        clove_count: count,
+                    },
+                    Err(error) => InboundDispatchOutcome::Rejected(error),
+                }
             }
         };
         outcome
@@ -644,7 +650,6 @@ mod tests {
     fn dispatcher_initially_empty() {
         let dispatcher = DestinationDispatcher::new();
         assert_eq!(dispatcher.destination_count(), 0);
-        assert_eq!(dispatcher.pending_handshake_count(), 0);
         assert_eq!(dispatcher.accepted_lease_set2_count(), 0);
     }
 

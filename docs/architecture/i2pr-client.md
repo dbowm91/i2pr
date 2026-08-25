@@ -8,13 +8,14 @@ destination identity ownership, destination-specific tunnel pools, local
 Standard LeaseSet2 generation and signing, LeaseSet2 lifecycle, bounded local
 payload contracts, and the destination registry that holds them.
 
-Plan 121 extends `i2pr-client` with the first real ECIES-X25519-AEAD-Ratchet
-destination session layer
-([Plan 121](../plans/121-m6-ecies-garlic-session-layer.md)):
-`EciesSessionManager` with bounded outbound/inbound session counts, the
-bounded structural Garlic payload block codec integration, and the
-typed New Session / New Session Reply / Existing Session trajectory
-producers.
+Plan 121 introduced the first ECIES destination session layer;
+[Plan 126](../plans/126-m6-ecies-destination-ratchet-corrective-foundation.md)
+rewrote it to the normative I2P ECIES-X25519-AEAD-Ratchet contract:
+`EciesSessionManager` now owns paired sessions keyed by remote X25519
+static public key, bounded remove-on-hit inbound tag windows,
+pre-derived pending reply windows, and provisional responder state.
+The superseded Plan 121 dialect (flag-byte framing, per-session random
+"static" keys, single shared tag chain) is removed.
 
 Plan 122 composes the Plan 119 LS2 lookup surface, the Plan 120 destination
 runtime, the Plan 121 ECIES session layer, and the Plan 116 tunnel data
@@ -121,7 +122,7 @@ crates/i2pr-client/
 │   ├── leaseset.rs       LeaseSet2 builder, LeaseSetLifecycle, LocalLeaseSet
 │   ├── message.rs        BoundedPayloadQueue, DestinationPayload, RoutingUnavailable
 │   ├── registry.rs       DestinationRuntime, DestinationHandle, DestinationRegistry
-│   ├── session.rs        Plan 121 EciesSessionManager, EciesSessionConfig, New Session / Existing Session producers
+│   ├── session.rs        Plan 126 EciesSessionManager, EciesSessionConfig, classify + bound NS/NSR/ES producers
 │   ├── lease_selection.rs Plan 122 LeaseSelector / LeaseSelectionPolicy / SelectedLease
 │   ├── routing.rs        Plan 122 DestinationRouting, OutboundRequest, compose_outbound_delivery, OutboundDeliveryPlan
 │   ├── dispatch.rs       Plan 122 DestinationDispatcher, InboundDispatchOutcome / InboundDispatchError
@@ -130,11 +131,12 @@ crates/i2pr-client/
 │   └── testing.rs        deterministic inbound/outbound EstablishedMaterial fixtures
 └── tests/
     ├── plan120_trajectory.rs   Plan 120 §12 deterministic local trajectory
-    ├── plan121_trajectory.rs   Plan 121 §16 deterministic local NS -> NSR -> ES trajectory
+    ├── plan121_trajectory.rs   Plan 126 corrected primitive-level NS -> NSR -> ES trajectory
     ├── plan122_trajectory.rs   Plan 122 §13 deterministic local two-destination composition
     ├── plan123_trajectory.rs   Plan 125 retained VirtualWire Streaming-only fault tests
     ├── plan124_trajectory.rs   Plan 124 Phases A–G corrected destination-routing trajectory
-    └── plan125_trajectory.rs   Plan 125 real SYN / SYN-response lifecycle and gzip wire-format trajectory
+    ├── plan125_trajectory.rs   Plan 125 real SYN / SYN-response lifecycle and gzip wire-format trajectory
+    └── plan126_trajectory.rs   Plan 126 manager-level lifecycle + negative/ceiling controls
 ```
 
 ## Identity ownership
@@ -238,44 +240,45 @@ Plan 120 §10 defines only the local contracts Plan 122 will consume:
 No payload is ever injected directly into tunnel delivery as a shortcut
 around the Garlic session layer.
 
-## ECIES destination session layer (Plan 121)
+## ECIES destination session layer (Plans 121 → 126)
 
-`session.rs` exposes the Plan 121 ECIES-X25519-AEAD-Ratchet destination
-session layer. The manager is **destination-scoped** (one manager per
-`DestinationIdentity`); it owns outbound session vectors keyed by remote
-destination, inbound session vectors keyed by remote destination, a
-bounded pending-handshake queue, a bounded replay-cache slot, and the
-deterministic `advance_time` eviction policy.
+`session.rs` exposes the corrected Plan 126 ECIES-X25519-AEAD-Ratchet
+destination session layer. The manager is **destination-scoped** (one
+manager per `DestinationIdentity`); it owns one paired session per
+remote static key (`outbound` tag set local→remote plus a bounded
+inbound tag window remote→local), the pending outbound handshake map
+whose reply-window tags are pre-derived at seal time, and the
+provisional responder state installed by accepted inbound bound New
+Sessions. All state is swept by `advance_time`.
 
 Configuration (in `EciesSessionConfig`) is bounded by:
 
 ```text
-MAX_OUTBOUND_SESSIONS_PER_REMOTE = 16
-MAX_INBOUND_SESSIONS_PER_REMOTE   = 16
-MAX_PENDING_NEW_SESSIONS         = 64
-MAX_TAG_LOOK_AHEAD               = 32
-MAX_REPLAY_CACHE_ENTRIES         = 64
-DEFAULT_SESSION_IDLE_SECONDS     = 600
-MAX_SESSION_IDLE_SECONDS         = 1800
+MAX_PEERS_PER_LOCAL_DESTINATION = 64
+MAX_PENDING_NEW_SESSIONS        = 8 default / 64 ceiling
+MAX_TAG_LOOK_AHEAD              = 8 default / 32 ceiling
+DEFAULT_SESSION_IDLE_SECONDS    = 600
+MAX_SESSION_IDLE_SECONDS        = 1800
 ```
 
 The manager never sees the `curve25519-elligator2` third-party type —
-`i2pr-crypto::ecies` is the only API surface. The manager returns typed
-errors (`EciesSessionError`) for: bound exceeded, replay rejected,
-destination mismatch, truncated message, missing DateTime block,
-non-DateTime first block, oversized payload, oversized clove, unknown
-delivery flag, padding-then-non-padding, AEAD authentication failure,
-and unknown message type. `RngCore` is injected via the
-`SessionRng: RngCore + CryptoRng` trait bound; production surfaces must
-inject the system RNG, and tests inject a deterministic ChaCha
-generator. The manager produces typed primitives only:
+`i2pr-crypto::ecies` is the only API surface. Typed outcomes:
 
-- `EciesOutboundMessage::{NewSession(NewSessionMessage),
-  Existing(ExistingSessionMessage)}`
-- `PendingHandshakeRecord`
+- `EciesOutboundMessage::{NewSession { message }, Existing(message)}`
+- `AcceptedNewSession`, `AcceptedNewSessionReply`,
+  `AcceptedExistingSession`, `NewSessionReplyOutbound`
+- `ClassifiedInbound::{NewSessionReply, ExistingSession,
+  CandidateNewSession, Unknown(_)}` from `classify`
 - `EciesAdvanceReport`
-- payload encode/decode helpers (`encode_new_session_payload`,
-  `encode_existing_session_payload`, `decode_decrypted_payload`)
+
+Replay rejection: consumed ES tags leave the inbound window, so a
+replayed message classifies but decrypts to
+`EciesSessionError::UnknownSessionTag`. Duplicate bound New Sessions
+(same ephemeral representative) are rejected before any handshake
+work. NSR acceptance is tag-driven — no caller-supplied remote
+identity is consulted; the paired session installs under the static
+public key Alice bound into the original handshake. The pairing stays
+Provisional until Plan 127 binds it to a resolved Destination.
 
 ## Health projection
 
@@ -305,17 +308,17 @@ trajectory (create destination → reach `Established` → admit real
 `EstablishedMaterial` → derive Lease2 entries → build and sign
 LeaseSet2 → self-validate → advance time → evict → replace → shut down).
 
-Plan 121 adds `plan121_trajectory.rs` — the deterministic two-destination
-local ECIES session trajectory: Alice encrypts a bound New Session
-Garlic Clove to Bob, Bob decrypts/authenticates the New Session, Bob
-emits a New Session Reply, Alice authenticates and installs the paired
-session state, the two destinations exchange Existing Session Garlic
-messages in both directions with exact-once payload delivery, and the
-manager rejects replay / wrong-destination / tag-reuse without
-advancing state. The `EciesSessionManager` is exercised against
-real `i2pr-crypto` ECIES primitives; the test never reaches into
-private state or reaches the third-party `curve25519-elligator2`
-type directly.
+Plan 126 replaces `plan_121_deterministic_local_trajectory` with
+`plan_126_corrected_deterministic_local_trajectory` in
+`plan121_trajectory.rs` (primitive-level NS → NSR → bidirectional ES)
+and adds `plan126_trajectory.rs` — the manager-level lifecycle
+(`plan_126_full_manager_lifecycle_bidirectional_exact_once`) plus eight
+negative controls: ES replay rejection, unknown-tag rejection,
+NSR-after-acceptance rejection, duplicate bound New Session rejection,
+cross-destination isolation, pending capacity, idle expiry, and
+too-short classification. The manager is exercised against real
+`i2pr-crypto` primitives only; no test reaches private state or the
+third-party `curve25519-elligator2` type directly.
 
 ## Destination routing composition (Plan 122)
 
@@ -349,9 +352,12 @@ tunnel data plane into a single outbound pipeline:
 `dispatch.rs` owns the recipient-side path:
 
 1. `DestinationDispatcher::dispatch_garlic_envelope` decodes the
-   I2NP `Garlic` body, routes the 0xE0 flag to
-   `EciesSessionManager::accept_new_session`, and routes the 0xE2
-   flag to `accept_new_session_reply`.
+   I2NP `Garlic` body and classifies it through
+   `EciesSessionManager::classify`: reply-window tags route to
+   `accept_new_session_reply`, inbound-window tags route to
+   `accept_existing_session`, everything else attempts
+   `accept_new_session` on the bound New Session decode path.
+   The dispatcher owns no pending-handshake map of its own.
 2. The dispatcher walks the decrypted ECIES payload sequence,
    validates any bundled `DatabaseStore(LeaseSet2)` clove through
    `i2pr_netdb::ValidatedLeaseSet2`, and routes the recovered

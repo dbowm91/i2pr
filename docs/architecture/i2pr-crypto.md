@@ -25,19 +25,28 @@ Scope is intentionally narrow:
   the Plan 108 derivation labels are superseded — see
   [`plans/108-conformance-amendment.md`](../../plans/108-conformance-amendment.md)).
 - ECIES-X25519-AEAD-Ratchet destination session primitives
-  (Plan 121, `src/ecies.rs`): ephemeral key generation,
-  RFC 9380 representative <-> Montgomery u-coordinate codec,
-  `EciesNoiseState` (HKDF-SHA256 `mix_hash` / `mix_key`
-  transcript), `EciesSessionState` (per-direction tag ratchet
-  with a single tag key), and the
-  `seal_new_session` / `open_new_session` /
-  `seal_new_session_reply` / `open_new_session_reply` /
-  `seal_existing_session` / `open_existing_session` codec
-  surface. The wrapper hides `curve25519-elligator2` so
-  `i2pr-client` never sees the third-party type. The Elligator2
-  inverse rejects the all-zero value, rejects low-order points,
-  and refuses to validate any 32-byte string whose
-  representative does not encode a valid Curve25519 point.
+  (Plan 126 rewrite of the Plan 121 surface, `src/ecies.rs`):
+  ephemeral key generation, RFC 9380 representative <->
+  Montgomery u-coordinate codec, `EciesNoiseState` (HKDF-SHA256
+  `mix_hash` / `mix_key` transcript), directional
+  `EciesTagSet` ratchets (`dh_initialize`, one-shot
+  `new_session_reply_tag_set`, pre-increment `next_entry`,
+  on-demand `symm_key`), and the corrected bound-session codec
+  surface: `seal_bound_new_session` / `open_bound_new_session`
+  (Alice's derived public key in the static-key section, no flag
+  bytes), `seal_new_session_reply` /
+  `open_new_session_reply` (one-shot SessionReplyTags window,
+  Noise Split into `k_ab`/`k_ba`, `AttachPayloadKDF`),
+  `seal_existing_session` / `open_existing_session` (tag AD,
+  `0x00000000 || LE64(index)` nonces). Unbound New Sessions and
+  duplicate ephemerals are rejected typed. The wrapper hides
+  `curve25519-elligator2` so `i2pr-client` never sees the
+  third-party type. The Elligator2 inverse rejects the all-zero
+  value, rejects low-order points, and refuses to validate any
+  32-byte string whose representative does not encode a valid
+  Curve25519 point. See
+  [`specs/references/ecies-destination-ratchet.md`](../../specs/references/ecies-destination-ratchet.md)
+  for the wire contract and vector provenance.
 
 The crate does **not** include:
 
@@ -69,7 +78,7 @@ The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, and `src/ecies.rs`:
 | Signature verification | `lib.rs` | Ed25519 + RouterInfo verification | `verify_signature`, `verify_router_info` |
 | Hash helpers | `lib.rs` | SHA-256, identity hash | `sha256`, `router_identity_hash` |
 | Constant-time compare | `lib.rs` | `subtle`-backed | `constant_time_eq` |
-| ECIES primitives | `ecies.rs` | Ephemeral keypair, representative codec, HKDF transcript, session ratchet, NS/NSR/ES message codecs | `EciesEphemeralKeypair`, `EciesEphemeralRepresentative`, `EciesEphemeralSecret`, `EciesNoiseState`, `EciesSessionState`, `NewSessionMessage`, `NewSessionReplyMessage`, `ExistingSessionMessage`, `seal_new_session`, `open_new_session`, `seal_new_session_reply`, `open_new_session_reply`, `seal_existing_session`, `open_existing_session`, `decode_representative` |
+| ECIES primitives | `ecies.rs` | Ephemeral keypair, representative codec, HKDF transcript, directional tag-set ratchets, bound NS/NSR/ES message codecs | `EciesEphemeralKeypair`, `EciesEphemeralRepresentative`, `EciesEphemeralSecret`, `EciesNoiseState`, `EciesTagSet`, `BoundNewSessionMessage`, `NewSessionReplyMessage`, `ExistingSessionMessage`, `BoundNewSessionSender`, `NewSessionResponder`, `SealedNewSessionReply`, `OpenedNewSessionReply`, `seal_bound_new_session`, `open_bound_new_session`, `seal_new_session_reply`, `open_new_session_reply`, `seal_existing_session`, `open_existing_session`, `decode_representative` |
 | Tests | all files | Deterministic primitives tests | _(private)_ |
 
 ## Public surface (`src/lib.rs`, `src/hkdf.rs`, `src/ecies.rs`)
@@ -104,9 +113,10 @@ The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, and `src/ecies.rs`:
 | `EciesEphemeralRepresentative` | type alias for `[u8; 32]` | `ecies.rs` |
 | `EciesEphemeralSecret` | zeroizing wrapper | `ecies.rs` |
 | `EciesNoiseState` | struct (HKDF transcript) | `ecies.rs` |
-| `EciesSessionState` | struct (tag ratchet) | `ecies.rs` |
+| `EciesTagSet` / `EciesTagSetEntry` | struct (directional tag/key ratchet) | `ecies.rs` |
+| `BoundNewSessionMessage`, `BoundNewSessionSender`, `NewSessionResponder`, `SealedNewSessionReply`, `OpenedNewSessionReply` | structs | `ecies.rs` |
 | `NewSessionMessage`, `NewSessionReplyMessage`, `ExistingSessionMessage` | structs | `ecies.rs` |
-| `seal_new_session`, `open_new_session`, `seal_new_session_reply`, `open_new_session_reply`, `seal_existing_session`, `open_existing_session` | fns | `ecies.rs` |
+| `seal_bound_new_session`, `open_bound_new_session`, `seal_new_session_reply`, `open_new_session_reply`, `seal_existing_session`, `open_existing_session` | fns | `ecies.rs` |
 | `decode_representative` | fn | `ecies.rs` |
 
 ## Key data structures
@@ -156,35 +166,33 @@ The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, and `src/ecies.rs`:
 - 32-byte chaining key + 32-byte AEAD key, HKDF-SHA256 transcript
   (`mix_hash`, `mix_key`). The `mix1` operation combines the chained
   key with an ECDH shared secret to derive `(next_ck, aead_key)`.
-  Used as the per-handshake transcript; `EciesSessionState` carries
-  the chaining key after the New Session Reply completes.
+  Used as the per-handshake transcript; the final chaining key roots
+  both the one-shot SessionReplyTags window and, through the Noise
+  Split, the two directional ES tag sets.
 
-### `EciesSessionState`
-- 8-byte tag ratchet: `tag_key = HKDF(chaining_key, b"TagKey", b"", 32)`,
-  `tag = HKDF(tag_key, b"", b"SessionTag", 8)` per consumed message.
-  Inbound look-ahead accepts any tag within `MAX_TAG_LOOK_AHEAD`
-  (= 32) of the next-expected tag and ratchets the next-expected
-  forward through the consumed tag. Single tag key per side (no
-  separate Send/Recv labels) so both sides derive the same tag
-  sequence.
-- `install(chaining_key)` and `install_with_kind(...)` are called
-  once the New Session Reply has authenticated. `seal_existing_session`
-  and `open_existing_session` advance the ratchet exactly once per
-  call. The session state does not implement `Debug` /
-  `Display` and the chaining key bytes never leave the API.
-- Tag-chain reuse (replay of a previously consumed Existing Session)
-  fails closed without advancing the ratchet.
+### `EciesTagSet`
+- Directional tag/key ratchet per Plan 126: `DH_INITIALIZE(rootKey, k)`
+  derives the tag and symmetric chaining keys; `begin_tag_ratchet`
+  applies `NextSessionTagRatchet`; each `next_entry()` runs one
+  `HKDF(chainKey, SESSTAG_CONSTANT, "SessionTagKeyGen", 64)` round and
+  returns `(index, tag)` with the pre-increment index. Symmetric keys
+  derive on demand via
+  `HKDF(symmKey_chainKey, ZEROLEN, "SymmetricRatchet", 64)`; tags are
+  1-based on the wire while keys/nonces are 0-based, so entry N pairs
+  with key N-1. `trim_keys_below(index)` drops consumed keys while
+  preserving absolute indices. The one-shot reply window comes from
+  `new_session_reply_tag_set(ns_chaining_key)`. Tag sets are not
+  `Clone` and never expose chain-key bytes.
 
-### `NewSessionMessage` / `NewSessionReplyMessage` / `ExistingSessionMessage`
-- Bounded typed carriers: `flag` (single byte; `0xE0` for New Session,
-  `0xE2` for New Session Reply and Existing Session), fixed
-  payload lengths (ephemeral pub 32, static pub 32, ciphertext with
-  explicit `+ AEAD_TAG_LEN`), and the `decode(input, maximum)` entry
-  point enforces the minimum length and maximum length and rejects
-  wrong-flag inputs with `EciesError::AuthenticationFailed`.
-- The decode functions refuse inputs shorter than
-  `1 + ECIES_SESSION_TAG_LEN + AEAD_TAG_LEN` so that zero-ciphertext
-  or stub messages cannot pass the size gate.
+### `BoundNewSessionMessage` / `NewSessionReplyMessage` / `ExistingSessionMessage`
+- Bounded typed carriers over the canonical wire layouts: NS
+  `elg2_aepk(32) || static_section_ct(48) || payload_ct(len+16)`,
+  NSR `tag(8) || elg2_bepk(32) || zero-len key-section MAC(16) ||
+  payload_ct(len+16)`, ES `tag(8) || payload_ct(len+16)`. There are
+  no flag bytes. `decode(input, maximum)` enforces the structural
+  minima (96/72/24), the maximum length, and rejects trailing
+  garbage. Unbound New Sessions (all-zero static-key section) are
+  rejected typed with `UnboundNewSessionNotSupported`.
 
 ## Secret ownership rules
 
@@ -244,19 +252,19 @@ There is no per-crate `tests/` directory or fixture directory owned by
 `tests/fixtures/ntcp2/crypto/storage-static-key.hex` (consumed by
 `i2pr-storage` round-trip tests).
 
-The Plan 121 ECIES primitives add inline deterministic tests at
-`src/ecies.rs` covering: ephemeral keypair round-trip (recovered
-representative u-coordinate equals `X25519(clamp(seed), G)`),
-`seal_new_session` ↔ `open_new_session` round-trip with payload
-authentication, `seal_new_session_reply` ↔ `open_new_session_reply`
-follow-on installation of the bounded session state,
-`seal_existing_session` ↔ `open_existing_session` ratchet advance,
-wrong-flag / wrong-tag / wrong-recipient rejection,
-truncated-payload rejection, and a random-representative sweep
-that proves the inverse never panics on adversarial 32-byte
-inputs. The `i2pr-client` Plan 121 trajectory test
-(`crates/i2pr-client/tests/plan121_trajectory.rs`) drives the
-full NS → NSR → bidirectional ES path.
+The Plan 126 ECIES primitives carry inline deterministic tests in
+`src/ecies.rs`: a 31-constant frozen vector suite produced once by an
+independent Python reference implementation (transcript steps,
+handshake split, NSR derivation, directional tag sets, ES AEAD
+bodies), plus full production-function handshakes, wire-layout
+offset assertions, unbound/tamper/wrong-key/wrong-tag negative
+controls, Elligator2 representative sweeps, and redacted-Debug
+checks. Provenance lives in
+[`specs/references/ecies-destination-ratchet.md`](../../specs/references/ecies-destination-ratchet.md).
+The `i2pr-client` corrected trajectory test
+(`crates/i2pr-client/tests/plan121_trajectory.rs`
+`plan_126_corrected_deterministic_local_trajectory`) drives the full
+NS → NSR → bidirectional ES path.
 
 ## Distinctive design choices
 
@@ -301,9 +309,8 @@ full NS → NSR → bidirectional ES path.
   implementation-landed, protocol-conformance reopened by
   [`plans/108-conformance-amendment.md`](../../plans/108-conformance-amendment.md))
 - [i2pr-client](i2pr-client.md) — consumes `EciesEphemeralKeypair`,
-  `EciesSessionState`, `EciesNoiseState`, and the
-  `seal_new_session` / `seal_existing_session` family in the Plan 121
-  ECIES destination session manager
+  `EciesTagSet`, `EciesNoiseState`, and the bound-session function
+  family in the Plan 126 ECIES destination session manager
   (`crates/i2pr-client/src/session.rs`).
 - Plan-of-record: `plans/013-m1-identity-crypto-storage.md` and
   [`plans/121-m6-ecies-garlic-session-layer.md`](../../plans/121-m6-ecies-garlic-session-layer.md)
