@@ -62,10 +62,14 @@
 # router-local destination registry. Plan 121 closed as
 # `passed-ecies-destination-session-layer` and lands the first
 # real ECIES-X25519-AEAD-Ratchet destination Garlic/session layer
-# with the audited `curve25519-elligator2 = 0.1.0-alpha.2`
-# primitive, the wrapped ECIES primitives in `i2pr-crypto`, the
-# bounded structural Garlic payload block codec in `i2pr-proto`,
-# and the bounded destination-context `EciesSessionManager` in
+# with the audited `elligator2 = 0.1.0` reviewed primitive
+# (Plan 131 swap; `curve25519-elligator2 = 0.1.0-alpha.2` retired
+# because its `RFC9380::to_representative` branch choice was
+# deterministic rather than caller-randomizable and its
+# `Randomized` mode rotated the derived X25519 public key),
+# the wrapped ECIES primitives in `i2pr-crypto`, the bounded
+# structural Garlic payload block codec in `i2pr-proto`, and the
+# bounded destination-context `EciesSessionManager` in
 # `i2pr-client`. Remote destination routing and the streaming
 # protocol remain Plan 122/123 scope. Router construction is not
 # blocked on the unavailable authenticated external transport
@@ -134,7 +138,10 @@ plan_129_closure = "plans/129-status.md"
 plan_129_status = "superseded-by-plan130-final-gate"
 plan_130_plan_of_record = "plans/130-m6-final-wire-runtime-corrective-closure.md"
 plan_130_closure = "plans/130-status.md"
-plan_130_status = "passed-milestone6-final-wire-runtime-corrective-closure"
+plan_130_status = "superseded-by-plan131-final-local-correctness-gate"
+plan_131_plan_of_record = "plans/131-m6-final-local-correctness-closure.md"
+plan_131_closure = "plans/131-status.md"
+plan_131_status = "passed-milestone6-final-local-correctness-closure"
 milestone6_local_product = "passed"
 milestone6_interoperable = "not-yet-claimed"
 

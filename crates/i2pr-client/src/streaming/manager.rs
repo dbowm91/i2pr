@@ -61,6 +61,7 @@ use crate::streaming::connection::{
 };
 use crate::streaming::errors::StreamingError;
 use crate::streaming::events::WirePacketObservation;
+use crate::streaming::send_window::SendWindowDecision;
 use crate::streaming::transport::TransportSendRequest;
 
 /// Hard ceiling on the number of streams per local destination.
@@ -674,6 +675,29 @@ impl StreamingManager {
             && peek.send_stream_id != 0
             && peek.receive_stream_id != 0
         {
+            // Plan 131 §7 D2: validate the decoded ClientPayload
+            // source/destination ports against the outbound
+            // connection established by `connect()`. The wire
+            // response must arrive on the exact port tuple our SYN
+            // requested, otherwise the connection stays in
+            // `OutboundSynSent` and the wrong-port response is
+            // discarded.
+            let outbound_id = self.outbound_by_stream.get(&peek.send_stream_id).copied();
+            let tuple_ok = outbound_id
+                .and_then(|cid| self.connections.get(&cid))
+                .is_some_and(|conn| conn.ports_match(source_port, destination_port));
+            if !tuple_ok {
+                let (expected_source, expected_destination) = outbound_id
+                    .and_then(|cid| self.connections.get(&cid))
+                    .map(|conn| (conn.remote_port(), conn.local_port()))
+                    .unwrap_or((0, 0));
+                return Err(StreamingManagerError::PortTupleMismatch {
+                    expected_destination,
+                    expected_source,
+                    actual_source: source_port,
+                    actual_destination: destination_port,
+                });
+            }
             let limit = StreamingReceiveLimit::default();
             let (packet, signature_location) = decode_streaming_packet(
                 wire_bytes,
@@ -1259,6 +1283,20 @@ impl StreamingManager {
     /// Sends application data over an established connection. Returns
     /// the [`TransportSendRequest`] carrying the serialized data packet
     /// ready for the runtime to dispatch.
+    ///
+    /// Plan 131 §7 D1: the connection owns its I2P port tuple after
+    /// the handshake completes. The `local_port` / `remote_port`
+    /// parameters are therefore treated only as **assertions** — if
+    /// they do not match the connection-stored tuple, the call fails
+    /// closed with [`StreamingManagerError::PortTupleMismatch`] before
+    /// any sequence is allocated, send-window state is touched, or
+    /// outbound queue state mutates. The wire ClientPayload ports
+    /// always come from the stored connection.
+    ///
+    /// Plan 131 §8 E1: oversized writes are rejected **before**
+    /// sequence allocation, send-window mutation, retransmit
+    /// tracking, or outbound queue mutation. A rejected write
+    /// therefore consumes no sequence and creates no state.
     #[allow(clippy::too_many_arguments, unused_variables)]
     pub fn send_data(
         &mut self,
@@ -1270,29 +1308,73 @@ impl StreamingManager {
         payload: &[u8],
         now_ms: u64,
     ) -> Result<TransportSendRequest, StreamingManagerError> {
+        // 1. Look up the connection (no state mutation yet).
+        let conn = self
+            .connections
+            .get(&connection_id)
+            .ok_or(StreamingManagerError::UnknownConnection)?;
+
+        // 2. Validate state.
+        if conn.state() != ConnectionState::Established {
+            return Err(StreamingManagerError::InvalidConnectionState);
+        }
+
+        // 3. Validate caller port assertion against the
+        //    connection-stored tuple. A mismatch is a typed error
+        //    and never reaches state mutation.
+        if conn.local_port() != local_port || conn.remote_port() != remote_port {
+            return Err(StreamingManagerError::PortTupleMismatch {
+                expected_destination: conn.local_port(),
+                expected_source: conn.remote_port(),
+                actual_source: remote_port,
+                actual_destination: local_port,
+            });
+        }
+
+        // 4. Validate payload size against the negotiated maximum
+        //    **before** sequence allocation. Plan 131 §8 E1.
+        let max_payload = conn.max_payload_size() as usize;
+        if payload.len() > max_payload {
+            return Err(StreamingManagerError::Streaming(
+                StreamingError::PayloadTooLarge {
+                    actual: payload.len(),
+                    maximum: max_payload,
+                },
+            ));
+        }
+
+        // 5. Validate send-window capacity (Plan 131 §8 E1). The
+        //    window state is still untouched here; only the next
+        //    `enqueue_send` will mutate it on success.
+        if conn.send_window().evaluate(payload.len()) == SendWindowDecision::Backpressure {
+            return Err(StreamingManagerError::Streaming(
+                StreamingError::SendWindowFull,
+            ));
+        }
+        let _ = local_dest;
+        let _ = remote;
+
+        // 6. Allocate the sequence and mutate the send window. Now
+        //    we have committed to emitting a packet; every step
+        //    below is non-fallible except for encode failure, which
+        //    surfaces as a typed error but does not roll back the
+        //    sequence (a wire packet still goes out).
         let conn = self
             .connections
             .get_mut(&connection_id)
             .ok_or(StreamingManagerError::UnknownConnection)?;
-        if conn.state() != ConnectionState::Established {
-            return Err(StreamingManagerError::InvalidConnectionState);
-        }
         let sequence = conn
             .enqueue_send(payload.len(), now_ms)
             .map_err(StreamingManagerError::Streaming)?;
-        let max_payload = conn.max_payload_size();
         let local_receive_stream_id = conn.local_stream_id();
         let peer_receive_stream_id = conn.remote_stream_id();
-        let _ = conn;
+        let (ack_through, ack_nacks) = conn.recv_window().ack_view();
 
-        if payload.len() > max_payload as usize {
-            return Err(StreamingManagerError::Streaming(
-                StreamingError::PayloadTooLarge {
-                    actual: payload.len(),
-                    maximum: max_payload as usize,
-                },
-            ));
-        }
+        // Plan 131 §7 D1: ClientPayload ports come from the stored
+        // connection (caller-supplied ports were validated above).
+        let wire_local_port = conn.local_port();
+        let wire_remote_port = conn.remote_port();
+        let _ = conn;
 
         // The data packet uses our peer receive stream id as
         // `sendStreamId` and our local receive stream id as
@@ -1301,7 +1383,6 @@ impl StreamingManager {
         // (`ackThrough` = highest received sequence, plus any bounded
         // missing-sequence NACKs) and cancels a pending standalone
         // ACK for the connection.
-        let (ack_through, ack_nacks) = conn.recv_window().ack_view();
         let option_bytes = Vec::new();
         let flags = StreamingFlags::new(0).expect("empty flags");
         let builder = StreamingPacketBuilder {
@@ -1321,8 +1402,8 @@ impl StreamingManager {
 
         let envelope = ClientPayload {
             protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
-            source_port: local_port,
-            destination_port: remote_port,
+            source_port: wire_local_port,
+            destination_port: wire_remote_port,
             payload: wire_bytes.clone(),
         };
         let application_bytes =
@@ -1330,8 +1411,8 @@ impl StreamingManager {
 
         let request = TransportSendRequest {
             destination_hash: remote.destination_hash,
-            source_port: local_port,
-            destination_port: remote_port,
+            source_port: wire_local_port,
+            destination_port: wire_remote_port,
             application_payload: application_bytes,
             sequence,
             send_stream_id: peer_receive_stream_id,
@@ -1370,6 +1451,13 @@ impl StreamingManager {
     /// `ClosingRemote` (a close already received from the peer)
     /// emits the required CLOSE response and completes the local
     /// half of the shutdown.
+    ///
+    /// Plan 131 §7 D1: the connection owns its I2P port tuple. The
+    /// `local_port` / `remote_port` parameters are asserted against
+    /// the stored tuple; mismatches fail closed before any state
+    /// transition. Plan 131 §8 E3 extends the same guard to CLOSE
+    /// and RESET so neither can be redirected by caller-supplied
+    /// ports.
     pub fn send_close(
         &mut self,
         connection_id: ConnectionId,
@@ -1379,24 +1467,42 @@ impl StreamingManager {
         remote_port: u16,
         now_ms: u64,
     ) -> Result<TransportSendRequest, StreamingManagerError> {
+        // Plan 131 §8 E3: validate the port assertion and the
+        // pre-state-transition state before any mutation. A
+        // mismatched port tuple, or an invalid starting state,
+        // returns a typed error without touching the connection.
+        {
+            let conn = self
+                .connections
+                .get(&connection_id)
+                .ok_or(StreamingManagerError::UnknownConnection)?;
+            if conn.local_port() != local_port || conn.remote_port() != remote_port {
+                return Err(StreamingManagerError::PortTupleMismatch {
+                    expected_destination: conn.local_port(),
+                    expected_source: conn.remote_port(),
+                    actual_source: remote_port,
+                    actual_destination: local_port,
+                });
+            }
+            match conn.state() {
+                ConnectionState::Established | ConnectionState::ClosingRemote => {}
+                other => {
+                    return Err(StreamingManagerError::Streaming(
+                        StreamingError::InvalidStateTransition {
+                            from: other.label(),
+                            to: "ClosingLocal",
+                        },
+                    ));
+                }
+            }
+        }
         let conn = self
             .connections
             .get_mut(&connection_id)
             .ok_or(StreamingManagerError::UnknownConnection)?;
-        match conn.state() {
-            ConnectionState::Established => {
-                conn.begin_close(now_ms)
-                    .map_err(StreamingManagerError::Streaming)?;
-            }
-            ConnectionState::ClosingRemote => {}
-            other => {
-                return Err(StreamingManagerError::Streaming(
-                    StreamingError::InvalidStateTransition {
-                        from: other.label(),
-                        to: "ClosingLocal",
-                    },
-                ));
-            }
+        if conn.state() == ConnectionState::Established {
+            conn.begin_close(now_ms)
+                .map_err(StreamingManagerError::Streaming)?;
         }
         let local_receive_stream_id = conn.local_stream_id();
         let peer_receive_stream_id = conn.remote_stream_id();
@@ -1405,6 +1511,9 @@ impl StreamingManager {
         // exempt), so it allocates the next sequence number.
         let sequence_num = conn.send_window().next_sequence();
         let (ack_through, ack_nacks) = conn.recv_window().ack_view();
+        let wire_local_port = conn.local_port();
+        let wire_remote_port = conn.remote_port();
+        let was_closing_remote = conn.state() == ConnectionState::ClosingRemote;
         let _ = conn;
 
         let options = StreamingOptions {
@@ -1423,19 +1532,14 @@ impl StreamingManager {
             CLOSE_FLAGS,
             &options,
             ack_nacks,
-            local_port,
-            remote_port,
+            wire_local_port,
+            wire_remote_port,
         )?;
 
         // A CLOSE emitted from `ClosingRemote` answers the peer's
         // CLOSE; once our own CLOSE is on the wire this side's half
         // of the shutdown is complete.
-        if self
-            .connections
-            .get(&connection_id)
-            .is_some_and(|conn| conn.state() == ConnectionState::ClosingRemote)
-            && let Some(conn) = self.connections.get_mut(&connection_id)
-        {
+        if was_closing_remote && let Some(conn) = self.connections.get_mut(&connection_id) {
             let _ = conn.close(now_ms);
         }
 
@@ -1461,6 +1565,10 @@ impl StreamingManager {
     /// carries `RESET_FLAGS` (`0x000C`, RESET | SIGNATURE_INCLUDED)
     /// with the raw signature as the final option field; FROM is not
     /// required since 0.9.20.
+    ///
+    /// Plan 131 §8 E3: the caller-supplied ports are asserted
+    /// against the stored tuple before the state transition. A
+    /// mismatch fails closed without touching the connection.
     pub fn send_reset(
         &mut self,
         connection_id: ConnectionId,
@@ -1470,6 +1578,20 @@ impl StreamingManager {
         remote_port: u16,
         now_ms: u64,
     ) -> Result<TransportSendRequest, StreamingManagerError> {
+        {
+            let conn = self
+                .connections
+                .get(&connection_id)
+                .ok_or(StreamingManagerError::UnknownConnection)?;
+            if conn.local_port() != local_port || conn.remote_port() != remote_port {
+                return Err(StreamingManagerError::PortTupleMismatch {
+                    expected_destination: conn.local_port(),
+                    expected_source: conn.remote_port(),
+                    actual_source: remote_port,
+                    actual_destination: local_port,
+                });
+            }
+        }
         let conn = self
             .connections
             .get_mut(&connection_id)
@@ -1483,6 +1605,8 @@ impl StreamingManager {
         // acknowledgement state.
         self.pending_acks.remove(&connection_id);
         let (ack_through, ack_nacks) = conn.recv_window().ack_view();
+        let wire_local_port = conn.local_port();
+        let wire_remote_port = conn.remote_port();
         let _ = conn;
 
         let options = StreamingOptions {
@@ -1501,8 +1625,8 @@ impl StreamingManager {
             RESET_FLAGS,
             &options,
             ack_nacks,
-            local_port,
-            remote_port,
+            wire_local_port,
+            wire_remote_port,
         )?;
         self.outbound_queue.push_back(request.clone());
 

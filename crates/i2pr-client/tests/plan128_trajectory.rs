@@ -218,15 +218,19 @@ fn plan128_manager_handshake_and_bidirectional_data_stream_ids() {
         alice_conn.local_stream_id()
     );
 
-    // Bob replies with one ordinary data packet.
+    // Bob replies with one ordinary data packet. Plan 131: the
+    // connection owns its I2P port tuple after the handshake, so
+    // Bob's `send_data` arguments are asserted against the stored
+    // ports (Bob's local_port on this inbound connection equals
+    // REMOTE_PORT; his remote_port equals LOCAL_PORT).
     let _ = alice_conn;
     bob_mgr
         .send_data(
             bob_conn_id,
             &bob_dest,
             &alice_remote,
-            LOCAL_PORT,
             REMOTE_PORT,
+            LOCAL_PORT,
             b"pong",
             30,
         )

@@ -443,15 +443,21 @@ fn plan123_full_two_destination_trajectory() {
     assert_eq!(recv_window.next_expected(), 2);
     let _ = recv_window;
 
-    // Bob replies.
+    // Bob replies. Plan 131: the connection owns its I2P port tuple
+    // after the handshake, so Bob's `send_data` arguments are
+    // asserted against the stored ports and the wire ClientPayload
+    // ports come from the connection. Bob's local_port on this
+    // inbound connection is REMOTE_PORT (the destination port from
+    // Alice's SYN); his remote_port is LOCAL_PORT (Alice's source
+    // port).
     clock_ms = clock_ms.wrapping_add(5);
     let reply_request = bob
         .send_data(
             inbound_connection_id,
             &bob_dest,
             &alice_remote,
-            LOCAL_PORT,
             REMOTE_PORT,
+            LOCAL_PORT,
             b"HTTP/1.0 200 OK\r\n\r\nhello",
             clock_ms,
         )

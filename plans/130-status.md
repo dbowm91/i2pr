@@ -1,8 +1,7 @@
 # Plan 130 status — Milestone 6 final wire/runtime corrective closure
 
-Status: **`passed-milestone6-final-wire-runtime-corrective-closure`**
-(local product closure only; no network-facing or external
-interoperability claim).
+Status: **`superseded-by-plan131-final-local-correctness-gate`** (local
+Milestone 6 closure evidence; superseded as the current authority).
 
 - Registered: **2026-08-25**; executed from source floor
   `29fb88d36f9794202e88d4b947faed30569c1991`.
@@ -10,11 +9,13 @@ interoperability claim).
   [`plans/130-m6-final-wire-runtime-corrective-closure.md`](130-m6-final-wire-runtime-corrective-closure.md).
 - Roadmap authority:
   [`plans/126-130-milestone6-final-corrective-roadmap.md`](126-130-milestone6-final-corrective-roadmap.md).
-- This closure record supersedes every earlier current-authority
-  statement that carried `milestone6_local_product = passed` until the
-  Plan 130 acceptance criteria below were satisfied and verified.
-  Earlier Plan 126–129 status files remain historical
-  implementation/evidence records.
+- **Superseded by Plan 131** as the current Milestone 6 authority;
+  see [`plans/131-status.md`](131-status.md). The four Plan 131
+  acceptance items this plan left open — production Elligator
+  branch randomization, independently-proven consumed ECIES tag
+  replay, connection-owned I2P ports on every established send API
+  including `send_close`/`send_reset`, and side-effect-free oversized
+  `send_data()` rollback — are all corrected and proven by Plan 131.
 
 ## Why the Plan 129 closure was reopened
 
@@ -55,17 +56,36 @@ plan_122 = passed-corrected-local-destination-routing
 plan_123 = passed-corrected-streaming-wire-local
 plan_124 = passed-corrected-destination-routing-local-closure
 plan_125 = superseded-by-final-corrective-line
-plan_126 = passed-ecies-destination-ratchet-corrective-foundation (production Elligator representation corrected by Plan 130)
+plan_126 = passed-ecies-destination-ratchet-corrective-foundation
 plan_127 = passed-destination-session-routing-final-closure
-plan_128 = passed-streaming-wire-protocol-corrective-closure (sequence/ACK semantics corrected by Plan 130)
+plan_128 = passed-streaming-wire-protocol-corrective-closure
 plan_129 = superseded-by-plan130-final-gate
-plan_130 = passed-milestone6-final-wire-runtime-corrective-closure
+plan_130 = superseded-by-plan131-final-local-correctness-gate
+plan_131 = passed-milestone6-final-local-correctness-closure
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 external_acceptance_debt = retained-separately
 router_construction = may-continue
 next_product_layer = SAM baseline planning (Milestone 7)
 ```
+
+The post-Plan-130 audit retained the integrated architecture but found
+four narrow correctness defects that were still unproven or only
+partially proven:
+
+1. Production Elligator2 still fixed the deployed-reference alternative
+   inverse-map branch (the two high bits were randomized; the branch
+   bit was not).
+2. The integrated ECIES consumed-tag replay was not independently
+   proven as a third distinct rejection point.
+3. Established outbound `send_close` / `send_reset` / `send_data` still
+   treated caller-supplied ports as authoritative wire fields rather
+   than as assertions against the connection-stored tuple.
+4. `send_data()` allocated the send-window sequence number before
+   checking the negotiated payload ceiling, so a rejected oversized
+   write could leave state behind.
+
+These four are corrected and proven by Plan 131.
 
 ## What was corrected
 

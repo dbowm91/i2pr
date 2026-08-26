@@ -1,13 +1,14 @@
-# Plan 130 Elligator2 production representation evidence
+# Plan 131 Elligator2 production representation evidence
 
-Status: recorded 2026-08-25 (Plan 130 Phase A1 / Phase B).
+Status: recorded 2026-08-26 (Plan 131 Phase A1 / Phase B).
 
 This addendum pins the reference behavior behind
 `EciesEphemeralKeypair::generate` in `crates/i2pr-crypto/src/ecies.rs`:
-production ephemeral representatives carry **CSPRNG-randomized high
-bits** exactly as the current I2P ECIES specification requires, while
-`from_seed_bytes` remains the deterministic (fixed-tweak-0) test/vector
-constructor.
+production ephemeral representatives carry **CSPRNG-randomized inverse-map
+branch bits** (matching deployed Java I2P / i2pd encoders) and
+**CSPRNG-randomized high bits** (matching the normative I2P ECIES
+`ENCODE_ELG2` post-processing), while `from_seed_bytes` remains the
+deterministic (fixed-tweak-0) test/vector constructor.
 
 ## Normative contract
 
@@ -26,13 +27,11 @@ DECODE_ELG2():
   pubkey = decode(encodedKey)            // Elligator2 direct map
 ```
 
-Consequences pinned by this text:
-
-- The two most significant bits of byte 31 are **free randomization
-  bits**: every conforming decoder masks them off before mapping, so
-  they change no protocol value.
-- The Noise transcript and all Diffie-Hellman operations consume the
-  **decoded X25519 public key**, never the raw representative bytes.
+The official specification therefore requires only the two randomized
+high bits over the standard X25519 public point. Current deployed
+encoders additionally use one CSPRNG bit to choose between the two
+valid recoverable pre-image branches produced by the canonical
+least-square-root representative.
 
 ## Reference implementations
 
@@ -57,51 +56,74 @@ Consequences pinned by this text:
   requires the canonical representative (`r <= (p-1)/2`).
 
 Both references therefore emit **canonical representatives with
-randomized high bits**; both reject non-canonical values after masking.
-The Java/i2pd "alternative" is a choice between the two pre-image
-branches `-x/(u(x+A))` and `-(x+A)/(ux)` whose squares differ but which
+randomized high bits** AND **one bit of randomized pre-image branch**;
+both reject non-canonical values after masking. The Java/i2pd
+"alternative" is a choice between the two pre-image branches
+`-x/(u(x+A))` and `-(x+A)/(ux)` whose squares differ but which
 decode to the same Montgomery u-coordinate through the standard map;
 it is not the non-canonical `p - r`.
 
 ## Selected library mode
 
-`curve25519-elligator2` 0.1.0-alpha.2, variant `RFC9380`
-(feature-gated `MapToPointVariant` API):
+The previous Plan 130 implementation routed through
+`curve25519-elligator2` 0.1.0-alpha.2's `RFC9380::to_representative`.
+That library derives the inverse-map branch from a deterministic
+`v_in_sqrt` value computed from the public key, so the two pre-image
+branches are *not* caller-randomizable. Its `Randomized` mode
+randomizes the branch but also changes the derived DH public point
+via `mul_base_clamped_dirty`, breaking the canonical X25519
+Diffie-Hellman key the receiver would recover. Plan 131 therefore
+swaps the dependency to `elligator2 = "0.1.0"` (default features
+disabled; reviewed pure-Rust Elligator2 built on `fiat-crypto`'s
+formally verified machine-generated field arithmetic; MIT OR
+Apache-2.0; no `unsafe`; MSRV 1.85).
 
-- `to_representative(point, tweak)` produces the canonical
-  least-square-root representative (conditional negation against
-  `(p-1)/2`) and applies exactly the normative post-processing step
-  (`a[31] |= MASK_SET_BYTE & tweak`).
-- `from_representative(bytes)` masks the top two bits
-  (`r[31] &= MASK_UNSET_BYTE`, i.e. `&= 0x3f`) before mapping —
-  identical to `DECODE_ELG2` and to both reference decoders.
-- No hand-written Elligator arithmetic exists anywhere in i2pr; the
-  mapping is exclusively this reviewed dependency API.
+`elligator2::to_representative(point, tweak)` is the exact primitive
+the plan-of-record asked for:
 
-The `Randomized` variant was evaluated and deliberately **not** used:
-its `mul_base_clamped_dirty` integrates a low-order point into the
-derived public key, which would change the Diffie-Hellman public key
-away from what a standard X25519 decoder recovers from the
-representative. That breaks cross-implementation compatibility even
-though the name suggests a better anonymity property. The normative
-I2P requirement is only the two randomized high bits over a standard
-X25519 public key, which the `RFC9380` mode satisfies exactly.
+- `tweak & 0x01` selects between `u` and `u + A` as the inverse-map
+  base (the deployed-reference branch bit);
+- `tweak & 0xc0` populates the two free representation bits
+  (the normative `ENCODE_ELG2` post-processing step);
+- the result decodes to the **same** Montgomery u-coordinate the
+  caller passed in (verified byte-for-byte by the crate's own
+  differential tier-4 test against `curve25519-elligator2`'s
+  `Randomized::to_representative` when both encoders are given the
+  same point).
+
+The new implementation therefore exposes the deployed I2P ECIES
+branch behavior without writing any cryptographic arithmetic and
+without changing the canonical X25519 Diffie-Hellman public key.
+
+The `Randomized` mode of the old library was deliberately **not**
+adopted: its `mul_base_clamped_dirty` integrates a low-order point
+into the derived public key, which would change the
+Diffie-Hellman public key away from what a standard X25519 decoder
+recovers from the representative. That breaks cross-implementation
+compatibility even though the name suggests a better anonymity
+property. The normative I2P requirement is the two randomized high
+bits plus one branch bit over a standard X25519 public key, which
+the new primitive satisfies exactly.
 
 ## What i2pr randomizes
 
 Production generation (`EciesEphemeralKeypair::generate`) draws a fresh
-32-byte seed plus one tweak byte per attempt from the caller's CSPRNG
-and applies `tweak & 0xc0`. Over a deterministic seeded sample the four
-on-wire high-bit values all occur
+32-byte seed plus one tweak byte per attempt from the caller's
+CSPRNG and feeds both into `elligator2::to_representative`. Over a
+deterministic seeded sample the inverse-map branch bit is randomized
+(`production_generator_randomizes_the_inverse_map_branch_bit`) and the
+two most significant on-wire bits span all four values
 (`production_generator_randomizes_the_two_high_representation_bits`).
-The alternative pre-image branch is not selectable through the
-dependency API; i2pr always emits the canonical representative of the
-standard branch, which every reference implementation decodes. Both
-reference branches are proven decodable by i2pr through frozen
-independent fixtures (below), so inbound traffic using either branch is
-accepted.
+Both randomized degrees of freedom are fingerprint-regression tests
+with a fixed seed; they are not randomness certifications.
 
-## Independent frozen fixtures (Plan 130 Phase A1)
+The deterministic `from_seed_bytes(seed)` constructor pins the tweak
+to `0` (branch bit 0, high bits `00`). Frozen Plan 126 KDF/Noise
+vectors are computed through this constructor so every legacy
+vector remains reproducible; production callers must not use it
+directly.
+
+## Independent frozen fixtures (Plan 131 Phase A1)
 
 Generated once on 2026-08-25 by a pure-Python implementation of
 `DECODE_ELG2`/`ENCODE_ELG2` written directly from the specification
@@ -109,8 +131,8 @@ text above, including a pure-Python RFC 7748 X25519 ladder that was
 cross-checked against the Python `cryptography` library
 (`X25519PrivateKey.from_private_bytes`; scalar
 `a546e36b…ba449ac4` → public `1c9fd88f…4fae7019`). Nothing in the
-generator shares code with i2pr or with `curve25519-elligator2`. The
-frozen constants live in the `reference_fixtures` module of the
+generator shares code with i2pr or with `elligator2`. The frozen
+constants live in the `reference_fixtures` module of the
 `ecies.rs` test suite and assert:
 
 - all four high-bit variants decode to the same `X_COORDINATE`;
@@ -119,8 +141,8 @@ frozen constants live in the `reference_fixtures` module of the
 - production-generated representatives decode to exactly the X25519
   public key their secret derives (`PublicKey(clamp(secret))`).
 
-These fixtures pin decoder compatibility with Java I2P / i2pd produced
-traffic; they are never recomputed at test time.
+These fixtures pin decoder compatibility with Java I2P / i2pd
+produced traffic; they are never recomputed at test time.
 
 ## Scope note
 

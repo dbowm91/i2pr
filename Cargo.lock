@@ -372,7 +372,7 @@ dependencies = [
  "cpufeatures 0.2.17",
  "curve25519-dalek-derive",
  "digest 0.10.7",
- "fiat-crypto",
+ "fiat-crypto 0.2.9",
  "rustc_version",
  "subtle",
  "zeroize",
@@ -387,21 +387,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "curve25519-elligator2"
-version = "0.1.0-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4df656f503077758f9f06de6e111e921ec8f08f6ce203bd880bc058a47d9d3db"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "curve25519-dalek-derive",
- "fiat-crypto",
- "rustc_version",
- "subtle",
- "zeroize",
 ]
 
 [[package]]
@@ -524,6 +509,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "elligator2"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bda9a01fd3e5f7867279ca9b5104507cb2421e7987cb96af6397d84676de4af5"
+dependencies = [
+ "fiat-crypto 0.3.0",
+ "subtle",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -550,6 +545,12 @@ name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
+
+[[package]]
+name = "fiat-crypto"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
 name = "find-msvc-tools"
@@ -717,8 +718,8 @@ name = "i2pr-crypto"
 version = "0.1.0"
 dependencies = [
  "chacha20poly1305",
- "curve25519-elligator2",
  "ed25519-dalek",
+ "elligator2",
  "hmac 0.12.1",
  "i2pr-proto",
  "rand_chacha 0.9.0",

@@ -259,13 +259,21 @@ handshake split, NSR derivation, directional tag sets, ES AEAD
 bodies), plus full production-function handshakes, wire-layout
 offset assertions, unbound/tamper/wrong-key/wrong-tag negative
 controls, Elligator2 representative sweeps, and redacted-Debug
-checks. Plan 130 added the production-representation suite:
-`generate` draws the two normative CSPRNG high bits into the on-wire
-representative while `from_seed_bytes` stays the deterministic vector
-constructor (fixed tweak 0) that reproduces every frozen constant;
-independent pure-Python fixtures pin all four high-bit variants and
-both Java/i2pd encode branches decoding to one X25519 public key.
-Provenance lives in
+checks. Plan 130 added the high-bit randomization fingerprint
+suite; Plan 131 added the inverse-map branch randomization suite:
+`EciesEphemeralKeypair::generate` now drives the reviewed
+`elligator2 = 0.1.0` primitive's `to_representative(point, tweak)`,
+where `tweak & 0x01` selects between `u` and `u + A` as the
+inverse-map base (the deployed-reference branch bit) and
+`tweak & 0xc0` populates the two free representation bits per
+`ENCODE_ELG2`. `curve25519-elligator2 = 0.1.0-alpha.2` was
+retired: its `RFC9380::to_representative` branch choice was
+deterministic and its `Randomized` mode rotated the derived
+X25519 public key. `from_seed_bytes` remains the deterministic
+test/vector constructor (fixed tweak 0) that reproduces every
+frozen Plan 126 constant; independent pure-Python fixtures pin all
+four high-bit variants and both Java/i2pd encode branches
+decoding to one X25519 public key. Provenance lives in
 [`specs/references/ecies-destination-ratchet.md`](../../specs/references/ecies-destination-ratchet.md)
 and
 [`specs/references/elligator2-production-representation.md`](../../specs/references/elligator2-production-representation.md).
@@ -297,16 +305,18 @@ NS → NSR → bidirectional ES path.
    consumers; not tied to any specific protocol context label.
 6. **Zeroize discipline is rigorous** — every secret wrapper, plus
    `Zeroizing` intermediates in `generate`.
-7. **ECIES Elligator2 wrapper hides the third-party type** —
+7. **ECIES Elligator2 wrapper hides the third-party primitive** —
    `i2pr-crypto` exposes only the typed ECIES API; the
-   `curve25519-elligator2` primitive is an internal implementation
-   detail and is never reachable from `i2pr-client` or `i2pr-proto`.
-   This keeps the Plan 121 dependency audit (`Cargo.toml` lock) and
-   the wrapper's invariants in a single bounded module. Since Plan
-   130 the wrapper also separates deterministic vector construction
+   `elligator2` and `x25519-dalek` primitives are internal
+   implementation details and are never reachable from
+   `i2pr-client` or `i2pr-proto`. This keeps the Plan 121 / Plan
+   131 dependency audit (`Cargo.toml` lock) and the wrapper's
+   invariants in a single bounded module. Since Plan 131 the
+   wrapper separates deterministic vector construction
    (`from_seed_bytes`, fixed tweak 0) from randomized production
-   generation (`generate`, CSPRNG high bits per normative
-   `ENCODE_ELG2`).
+   generation (`generate`, CSPRNG high bits per `ENCODE_ELG2` and
+   CSPRNG inverse-map branch bit per the deployed Java I2P /
+   i2pd encoders).
 7. **No `unsafe`** — `#![forbid(unsafe_code)]`.
 
 ## Cross-references

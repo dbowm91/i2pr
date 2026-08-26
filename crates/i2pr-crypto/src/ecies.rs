@@ -43,7 +43,6 @@
 
 use core::fmt;
 
-use curve25519_elligator2::{EdwardsPoint, MapToPointVariant, RFC9380};
 use rand_core::TryCryptoRng;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -202,22 +201,23 @@ pub struct EciesEphemeralKeypair {
 impl EciesEphemeralKeypair {
     /// Generates a new ephemeral keypair for production wire use.
     ///
-    /// Plan 130: the on-wire Elligator2 representation is randomized
-    /// exactly as the current I2P ECIES specification requires — two
-    /// CSPRNG bits are ORed into the most significant byte of the
-    /// encoded representative (`ENCODE_ELG2`: `encodedKey[31] |=
-    /// randomByte & 0xc0`) so ephemeral representatives look
-    /// uniformly random instead of carrying an
-    /// implementation-fixed bit pattern. The canonical decoded
-    /// X25519 public key (and therefore every transcript hash and
-    /// Diffie-Hellman operation) is unaffected by the randomized
-    /// bits because every conforming decoder masks them off before
-    /// mapping (`DECODE_ELG2`).
+    /// Plan 131: the on-wire Elligator2 representation is randomized
+    /// exactly as current deployed Java I2P / i2pd encoders randomize
+    /// it — the tweak's low bit selects the inverse-map pre-image
+    /// branch (between `u` and `u+A`) and the tweak's top two bits
+    /// populate the encoded representative's free bits
+    /// (`ENCODE_ELG2`: `encodedKey[31] |= randomByte & 0xc0`). The
+    /// canonical decoded X25519 public key (and therefore every
+    /// transcript hash and Diffie-Hellman operation) is unaffected
+    /// by the randomized branch or the randomized high bits because
+    /// every conforming decoder masks the high bits off before
+    /// mapping (`DECODE_ELG2`) and the inverse-map branch
+    /// represents the same Montgomery `u`-coordinate.
     ///
     /// The Elligator2 mapping succeeds for roughly half of the
-    /// 32-byte inputs from a CSPRNG; this constructor retries on the
-    /// rare non-representable failure rather than corrupting the
-    /// handshake. Attempts are hard-bounded and entropy failures
+    /// 32-byte public points from a CSPRNG; this constructor retries
+    /// on the rare non-representable failure rather than corrupting
+    /// the handshake. Attempts are hard-bounded and entropy failures
     /// surface as [`EciesError::RandomnessUnavailable`].
     pub fn generate<R: TryCryptoRng + ?Sized>(rng: &mut R) -> Result<Self, EciesError> {
         const MAX_ATTEMPTS: usize = 64;
@@ -236,33 +236,74 @@ impl EciesEphemeralKeypair {
     }
 
     /// Builds a keypair from an explicit seed with a **fixed**
-    /// representation choice (tweak `0`). This is the deterministic
-    /// test/vector constructor only: its representatives carry the
-    /// implementation-fixed high-bit pattern `00`, which is suitable
-    /// for frozen KDF/Noise vectors but must never be used for
-    /// production on-wire anonymity. Production callers must use
-    /// [`Self::generate`]. Returns `None` when the seed does not map
-    /// to a decodable representative; callers must retry with a
-    /// fresh seed.
+    /// representation choice (tweak `0`: branch bit 0, high bits
+    /// `00`). This is the deterministic test/vector constructor
+    /// only: its representatives carry the implementation-fixed
+    /// high-bit pattern `00` and the implementation-fixed branch
+    /// bit, which is suitable for frozen KDF/Noise vectors but
+    /// must never be used for production on-wire anonymity.
+    /// Production callers must use [`Self::generate`]. Returns
+    /// `None` when the seed does not map to a decodable
+    /// representative; callers must retry with a fresh seed.
     pub fn from_seed_bytes(seed: [u8; REPRESENTATIVE_LENGTH]) -> Option<Self> {
         Self::build(seed, 0)
     }
 
-    /// Shared construction seam. Canonicalizes the seed, computes the
-    /// canonical (least-square-root) RFC 9380 representative, and ORs
-    /// the supplied tweak's two high-order bits into the final byte —
-    /// the normative I2P `ENCODE_ELG2` post-processing step. Decoders
-    /// mask those bits back off before mapping, so the tweak changes
-    /// no protocol value.
+    /// Builds a keypair from an explicit seed and an explicit
+    /// 8-bit tweak. The deterministic-vector constructor accepts
+    /// the tweak so frozen Plan 126 fixtures may continue to use
+    /// `from_seed_bytes(seed)` (= `build(seed, 0)`) while a future
+    /// branch-aware test may exercise other high-bit / branch
+    /// combinations through this entry point. Production callers
+    /// must not invoke this directly; they must use
+    /// [`Self::generate`] which draws a fresh CSPRNG seed and
+    /// tweak for every attempt.
+    pub fn from_seed_bytes_with_tweak(
+        seed: [u8; REPRESENTATIVE_LENGTH],
+        tweak: u8,
+    ) -> Option<Self> {
+        Self::build(seed, tweak)
+    }
+
+    /// Shared construction seam. Derives the canonical (RFC 7748-
+    /// clamped) X25519 public point, then delegates to the
+    /// reviewed [`elligator2::to_representative`] primitive for the
+    /// Elligator2 inverse map. The primitive takes the Montgomery
+    /// `u`-coordinate as input and a full 8-bit tweak:
+    ///
+    /// - `tweak & 0x01` selects between the two deployed-reference
+    ///   inverse-map branches `sqrt(-u/(2*(u+A)))` and
+    ///   `sqrt(-(u+A)/(2*u))`;
+    /// - `tweak & 0xc0` populates the two free representation bits
+    ///   per `ENCODE_ELG2`.
+    ///
+    /// Decoders mask the high bits off before mapping and the two
+    /// branches decode to the same Montgomery `u`-coordinate, so
+    /// the secret → representative mapping changes no protocol
+    /// value. The encoded representative is the on-wire ephemeral
+    /// public key.
     fn build(seed: [u8; REPRESENTATIVE_LENGTH], tweak: u8) -> Option<Self> {
-        let mut canonical_seed = seed;
-        canonical_seed[REPRESENTATIVE_LENGTH - 1] &= 0x3f;
-        let representative_opt: Option<[u8; REPRESENTATIVE_LENGTH]> =
-            RFC9380::to_representative(&canonical_seed, tweak & 0xc0).into();
+        // The seed is the X25519 scalar after RFC 7748 clamping.
+        // The public point is `X25519(clamp(seed), basepoint)`;
+        // we pass that Montgomery `u`-coordinate to the reviewed
+        // Elligator2 inverse-map primitive.
+        let clamped = clamp_x25519_seed(&seed);
+        let public_point = X25519PublicKey::from(&StaticSecret::from(clamped)).to_bytes();
+        if public_point.iter().all(|byte| *byte == 0) {
+            return None;
+        }
+        let representative_opt = elligator2::to_representative(&public_point, tweak);
         let representative = representative_opt?;
         if representative.iter().all(|byte| *byte == 0) {
             return None;
         }
+        // The deterministic test/vector constructor pins the
+        // canonicalized secret to the clamped form so every frozen
+        // Plan 126 KDF/Noise vector remains byte-for-byte stable.
+        // Production generation does not consult this field, only
+        // the representative.
+        let mut canonical_seed = seed;
+        canonical_seed[REPRESENTATIVE_LENGTH - 1] &= 0x3f;
         Some(Self {
             secret_seed: EciesEphemeralSecret(canonical_seed),
             representative: EciesEphemeralRepresentative(representative),
@@ -317,7 +358,11 @@ impl fmt::Debug for EciesEphemeralSecret {
 }
 
 /// Decodes a 32-byte Elligator2 representative into the matching
-/// Montgomery public-key bytes.
+/// Montgomery public-key bytes. The reverse map is total (every
+/// 32-byte string decodes to some point) and the reviewed
+/// `elligator2::from_representative` primitive masks off the two
+/// free high bits before mapping, so the result is invariant to
+/// the random bits ORed in at encode time.
 pub fn decode_representative(
     representative: &EciesEphemeralRepresentative,
 ) -> Result<[u8; REPRESENTATIVE_LENGTH], EciesError> {
@@ -325,13 +370,11 @@ pub fn decode_representative(
     if bytes.iter().all(|byte| *byte == 0) {
         return Err(EciesError::ElligatorDecode);
     }
-    let recovered: Option<EdwardsPoint> = RFC9380::from_representative(bytes).into();
-    let recovered = recovered.ok_or(EciesError::ElligatorDecode)?;
-    let recovered_bytes = recovered.to_montgomery().to_bytes();
-    if recovered_bytes.iter().all(|byte| *byte == 0) {
+    let recovered = elligator2::from_representative(bytes);
+    if recovered.iter().all(|byte| *byte == 0) {
         return Err(EciesError::ElligatorDecode);
     }
-    Ok(recovered_bytes)
+    Ok(recovered)
 }
 
 /// Computes the Montgomery public key for a scalar seed using the
@@ -368,8 +411,8 @@ fn diffie_hellman_checked(
 /// the low three bits, clear the high bit of byte 31, and set the
 /// second-highest bit of byte 31. Production DH paths rely on the
 /// RFC 7748 clamping performed inside `x25519-dalek`; this explicit
-/// form backs the deterministic public-key assertions in tests.
-#[cfg(test)]
+/// form backs the deterministic public-key assertions and the
+/// representative builder.
 fn clamp_x25519_seed(seed: &[u8; REPRESENTATIVE_LENGTH]) -> [u8; REPRESENTATIVE_LENGTH] {
     let mut out = *seed;
     out[0] &= 248;
@@ -2226,33 +2269,45 @@ mod tests {
         assert_eq!(recovered, expected);
     }
 
-    // ---- Plan 130: production Elligator2 representation randomization ----
+    // ---- Plan 131: production Elligator2 representation randomization ----
 
-    /// Independent pure-Python reference fixtures (Plan 130 Phase A1).
+    /// Independent pure-Python reference fixtures (Plan 131 Phase A1).
     ///
     /// Generated once by `DECODE_ELG2`/`ENCODE_ELG2` implemented
     /// directly from the current I2P ECIES specification plus the
     /// Java I2P `Elligator2.java` branch structure — entirely
-    /// independent of i2pr and of `curve25519-elligator2`. The full
-    /// generator (including a pure-Python RFC 7748 X25519 ladder
-    /// cross-checked against the Python `cryptography` library) is
-    /// recorded in `specs/references/ecies-destination-ratchet.md`.
+    /// independent of i2pr and of `elligator2`. The full generator
+    /// (including a pure-Python RFC 7748 X25519 ladder cross-checked
+    /// against the Python `cryptography` library) is recorded in
+    /// `specs/references/ecies-destination-ratchet.md`.
     mod reference_fixtures {
         pub const X_COORDINATE: [u8; 32] = [
             0xf1, 0xbc, 0x54, 0x94, 0x20, 0x1d, 0xec, 0xa9, 0x39, 0x31, 0xa9, 0x42, 0x38, 0xfb,
             0xcd, 0x65, 0x7b, 0x06, 0x60, 0x15, 0xb9, 0x3c, 0x0a, 0x40, 0xbd, 0xa2, 0xf7, 0x57,
             0xff, 0xfb, 0xae, 0x42,
         ];
+        /// Java I2P/i2pd alternative-branch encoding with `tweak & 1 == 0`
+        /// and `tweak & 0xc0 == 0`. Computed by the independent
+        /// Python reference against the same X25519 public point as
+        /// `REPRESENTATIVE_TRUE_BRANCH`.
         pub const REPRESENTATIVE_FALSE_BRANCH: [u8; 32] = [
             0x41, 0x78, 0x20, 0xeb, 0x10, 0x86, 0x41, 0xea, 0xac, 0xa4, 0x9c, 0x4a, 0xd8, 0x82,
             0x99, 0x7e, 0xeb, 0x7d, 0xfa, 0x85, 0x13, 0x00, 0x5e, 0x08, 0x6d, 0x1c, 0x6c, 0x09,
             0xbd, 0x90, 0x2e, 0x0e,
         ];
+        /// Java I2P/i2pd alternative-branch encoding with `tweak & 1 == 1`
+        /// and `tweak & 0xc0 == 0`. Computed by the independent
+        /// Python reference against the same X25519 public point as
+        /// `REPRESENTATIVE_FALSE_BRANCH`.
         pub const REPRESENTATIVE_TRUE_BRANCH: [u8; 32] = [
             0xfb, 0xce, 0x79, 0xc9, 0x96, 0xc0, 0x77, 0xa9, 0xee, 0xc2, 0xff, 0xed, 0x41, 0x4b,
             0x75, 0x27, 0x11, 0x28, 0x8a, 0x10, 0x14, 0xd5, 0xb0, 0x78, 0xd0, 0xf8, 0x2e, 0x31,
             0x66, 0x25, 0xe3, 0x27,
         ];
+        /// All four high-bit variants for the false-branch encoding,
+        /// computed by the independent Python reference against the
+        /// same X25519 public point. All four decode to
+        /// `X_COORDINATE`.
         pub const REPRESENTATIVE_HIGH_00: [u8; 32] = [
             0x41, 0x78, 0x20, 0xeb, 0x10, 0x86, 0x41, 0xea, 0xac, 0xa4, 0x9c, 0x4a, 0xd8, 0x82,
             0x99, 0x7e, 0xeb, 0x7d, 0xfa, 0x85, 0x13, 0x00, 0x5e, 0x08, 0x6d, 0x1c, 0x6c, 0x09,
@@ -2277,9 +2332,9 @@ mod tests {
 
     #[test]
     fn production_generator_decodes_to_the_exact_intended_public_key() {
-        // Plan 130 B3.2/B3.6: every production representative must
+        // Plan 131 B3.2/B3.6: every production representative must
         // decode to the canonical X25519 public key the secret will
-        // actually use for DH; randomized representation bytes never
+        // actually use for DH; randomized branch or high bits never
         // change the transcript's decoded point.
         let mut rng = ChaCha8Rng::seed_from_u64(0x130A);
         for _ in 0..64 {
@@ -2292,10 +2347,10 @@ mod tests {
 
     #[test]
     fn production_generator_randomizes_the_two_high_representation_bits() {
-        // Plan 130 B3.4: over a deterministic seeded-CSPRNG sample the
-        // two most significant on-wire bits are not fixed and all four
-        // values occur. This is a regression/fingerprint test with a
-        // fixed seed, not a randomness certification.
+        // Plan 131 B3.4: over a deterministic seeded-CSPRNG sample
+        // the two most significant on-wire bits are not fixed and
+        // all four values occur. This is a regression/fingerprint
+        // test with a fixed seed, not a randomness certification.
         let mut rng = ChaCha8Rng::seed_from_u64(0x130B);
         let mut observed = [false; 4];
         for _ in 0..256 {
@@ -2310,11 +2365,38 @@ mod tests {
     }
 
     #[test]
+    fn production_generator_randomizes_the_inverse_map_branch_bit() {
+        // Plan 131 B3.5: production generation draws both branch and
+        // high-bit randomization from the CSPRNG. Over a deterministic
+        // sample every branch observation occurs. This is a
+        // fingerprint-regression test, not a randomness certification.
+        let mut rng = ChaCha8Rng::seed_from_u64(0x131A);
+        let mut branch_observed = [false; 2];
+        let mut high_observed = [false; 4];
+        for _ in 0..256 {
+            let keypair = EciesEphemeralKeypair::generate(&mut rng).expect("keypair");
+            let rep = keypair.representative();
+            let bytes = rep.as_bytes();
+            branch_observed[usize::from(bytes[0] & 0x01)] = true;
+            high_observed[usize::from(bytes[31] >> 6)] = true;
+        }
+        assert!(
+            branch_observed.iter().all(|seen| *seen),
+            "both inverse-map branches must occur across the sample, got {branch_observed:?}"
+        );
+        assert!(
+            high_observed.iter().all(|seen| *seen),
+            "all four high-bit values must occur across the sample, got {high_observed:?}"
+        );
+    }
+
+    #[test]
     fn deterministic_constructor_keeps_the_fixed_vector_representation() {
-        // Plan 130 B3.1: the deterministic constructor still produces
-        // the implementation-fixed high-bit pattern (`00`) so every
-        // frozen Plan 126 KDF/Noise vector remains reproducible. It is
-        // documented as non-production precisely because of this.
+        // Plan 131 B3.1: the deterministic constructor still produces
+        // the implementation-fixed high-bit pattern (`00`) and the
+        // implementation-fixed branch bit so every frozen Plan 126
+        // KDF/Noise vector remains reproducible. It is documented as
+        // non-production precisely because of this.
         let keypair = EciesEphemeralKeypair::from_seed_bytes(fv::ALICE_EPHEMERAL_SEED)
             .expect("deterministic keypair");
         assert_eq!(keypair.representative().as_bytes()[31] & 0xc0, 0);
@@ -2325,7 +2407,7 @@ mod tests {
 
     #[test]
     fn reference_high_bit_variants_all_decode_to_the_same_public_key() {
-        // Plan 130 B3.3/A1: representatives produced by the normative
+        // Plan 131 B3.3/A1: representatives produced by the normative
         // ENCODE_ELG2 randomization (all four high-bit values) decode
         // through i2pr's decoder to exactly the intended public key.
         for representative in [
@@ -2342,13 +2424,13 @@ mod tests {
 
     #[test]
     fn both_reference_encode_branches_decode_to_the_same_public_key() {
-        // Plan 130 B3.5: Java I2P and i2pd additionally randomize the
+        // Plan 131 B3.5: Java I2P and i2pd additionally randomize the
         // Elligator2 pre-image branch on encode. Both branches are
         // canonical least-square-root representatives after their
-        // normalization step, and both decode through i2pr to the same
-        // Montgomery u-coordinate. The frozen fixtures were produced
-        // by the independent Python reference, not by i2pr or by the
-        // Rust dependency.
+        // normalization step, and both decode through i2pr to the
+        // same Montgomery u-coordinate. The frozen fixtures were
+        // produced by the independent Python reference, not by i2pr
+        // or by the Rust dependency.
         let false_branch = decode_representative(&EciesEphemeralRepresentative(
             reference_fixtures::REPRESENTATIVE_FALSE_BRANCH,
         ))
@@ -2363,6 +2445,51 @@ mod tests {
             reference_fixtures::REPRESENTATIVE_FALSE_BRANCH,
             reference_fixtures::REPRESENTATIVE_TRUE_BRANCH,
             "the two branches are distinct encodings of one point"
+        );
+    }
+
+    #[test]
+    fn from_seed_bytes_with_tweak_produces_distinct_but_decoding_invariant_branches() {
+        // Plan 131 B3.5: the explicit-tweak constructor exercises the
+        // same API surface as production. The two branch values must
+        // produce distinct on-wire bytes and decode to the same
+        // Montgomery u-coordinate. Roughly half of all X25519 public
+        // points are encodable in any given branch, so the test only
+        // requires that encodable seeds prove the branch invariance
+        // and distinctness.
+        let mut rng = ChaCha8Rng::seed_from_u64(0x131B);
+        let mut compared = 0_usize;
+        let mut attempted = 0_usize;
+        while compared < 8 && attempted < 256 {
+            attempted += 1;
+            let mut seed = [0_u8; REPRESENTATIVE_LENGTH];
+            rng.fill_bytes(&mut seed);
+            let low_branch = EciesEphemeralKeypair::from_seed_bytes_with_tweak(seed, 0);
+            let high_branch = EciesEphemeralKeypair::from_seed_bytes_with_tweak(seed, 1);
+            match (low_branch, high_branch) {
+                (Some(low), Some(high)) => {
+                    let low_decoded =
+                        decode_representative(&low.representative()).expect("low-branch decodes");
+                    let high_decoded =
+                        decode_representative(&high.representative()).expect("high-branch decodes");
+                    assert_eq!(low_decoded, high_decoded);
+                    assert_ne!(
+                        low.representative().as_bytes(),
+                        high.representative().as_bytes(),
+                        "the two branch encodings must produce different on-wire bytes"
+                    );
+                    compared += 1;
+                }
+                (None, None) => continue,
+                (a, b) => panic!(
+                    "branch encodability must be point-dependent, not tweak-dependent; \
+                     got {a:?} / {b:?}"
+                ),
+            }
+        }
+        assert!(
+            compared >= 4,
+            "expected at least 4 encodable seed samples after {attempted} attempts, got {compared}"
         );
     }
 

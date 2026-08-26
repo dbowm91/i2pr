@@ -333,15 +333,30 @@ bridge (`ShortBuildI2npBridge` in
           and the successful A → B → A trajectory. Plan 126 drops the
           dispatcher's parallel pending-handshake map; inbound
           envelopes classify through `EciesSessionManager::classify`.
-          Plan 129 closed the integrated M6 destination+Streaming gate
-          and is now `superseded-by-plan130-final-gate`. Plan 130
-          closed Milestone 6 with the final wire/runtime corrective
-          closure as
-          `passed-milestone6-final-wire-runtime-corrective-closure`
-          ([`plans/130-status.md`](../../plans/130-status.md)):
-          `milestone6_local_product = passed`,
-          `milestone6_interoperable = not-yet-claimed`; corrective
-          Milestone 6 planning stops and the next product layer is SAM
+Plan 129 closed the integrated M6 destination+Streaming gate
+           and is now `superseded-by-plan130-final-gate`. Plan 130
+           closed Milestone 6 with the wire/runtime corrective
+           closure as
+           `superseded-by-plan131-final-local-correctness-gate`
+           ([`plans/130-status.md`](../../plans/130-status.md)).
+           Plan 131 is the current Milestone 6 closure authority as
+           `passed-milestone6-final-local-correctness-closure`
+           ([`plans/131-status.md`](../../plans/131-status.md)):
+           production Elligator branch randomization via the
+           reviewed `elligator2 = 0.1.0` primitive (Plan 131
+           retired `curve25519-elligator2 = 0.1.0-alpha.2` because
+           its `RFC9380` branch choice was deterministic and its
+           `Randomized` mode rotated the derived DH public key),
+           three-layer replay separation (tunnel duplicate window,
+           consumed ECIES session tag, fresh-ECIES-reseal
+           Streaming sequence), connection-owned I2P port tuple
+           asserted on every established `send_data` / `send_close`
+           / `send_reset`, source-port `0` as valid I2P
+           "unspecified", and side-effect-free oversized
+           `send_data` rollback. `milestone6_local_product =
+           passed`, `milestone6_interoperable = not-yet-claimed`;
+           corrective Milestone 6 planning stops and the next product
+           layer is SAM
           baseline planning (Milestone 7).
 6. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
    before startup, then spawns one supervisor manager per service via a

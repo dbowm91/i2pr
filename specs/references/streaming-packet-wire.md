@@ -185,8 +185,50 @@ I2P ports:
   its SYN and echoes it on every subsequent packet (Java replies set
   `localPort`/`remotePort` from the incoming packet).
 
-Plan 130 implements exactly these rules in
-`crates/i2pr-client/src/streaming/` (sequence space, NACK-aware
-cumulative acknowledgement, `poll_acks` delayed-ACK scheduling,
-piggyback suppression) and in the inbound adapter boundary (wire
-destination-port authority).
+Plan 130 implements the sequence-space, NACK-aware cumulative
+acknowledgement, `poll_acks` delayed-ACK scheduling, piggyback
+suppression, and inbound adapter destination-port authority in
+`crates/i2pr-client/src/streaming/`.
+
+## Plan 131 connector ownership and oversized-write rollback
+
+Plan 131 adds three additional correctness checks on top of the
+Plan 130 surface (recorded 2026-08-26):
+
+Connection-owned I2P port tuple:
+
+- The `StreamingConnection` established by the SYN handshake owns
+  its `local_port` / `remote_port` pair. The wire ClientPayload
+  `source_port` / `destination_port` of every subsequent outbound
+  `send_data` / `send_close` / `send_reset` is taken from the
+  connection's stored tuple; the runtime caller's port arguments
+  are assertions and fail closed with typed `PortTupleMismatch`
+  **before** any state mutation.
+- The inbound `process_inbound_packet` SYN-response branch
+  validates the decoded wire `source_port` against the outbound
+  connection's `remote_port` and the decoded wire `destination_port`
+  against `local_port`. A wrong-port response leaves the connection
+  in `OutboundSynSent` and never transitions to `Established`.
+- `source_port == 0` is the I2P "unspecified" value and remains
+  legal end-to-end; the wildcard listener on port `0` catches the
+  delivery for any destination port when no exact listener is bound.
+
+Side-effect-free oversized `send_data` rollback:
+
+- `send_data` validates the negotiated maximum payload size and
+  the current send-window backpressure **before** sequence
+  allocation, send-window mutation, retransmit tracking, or
+  outbound queue mutation. A rejected oversized write consumes
+  no sequence number; the next valid packet receives the exact
+  contiguous sequence number that would have been assigned before
+  the rejected call.
+
+Plan 131 evidence: `crates/i2pr-client/tests/plan131_trajectory.rs`
+(7 deterministic trajectories: exact cell replay hits the tunnel
+duplicate window; consumed ECIES session-tag replay leaves the
+receiver state untouched; fresh ECIES reseal deduplicates at the
+Streaming sequence level; established data uses the connection
+ports in the wire envelope; source-port-zero works end-to-end;
+oversized `send_data` produces no state change and the next valid
+packet gets the contiguous sequence; the Plan 130 fixture surface
+still composes after every Phase D / E refactor).

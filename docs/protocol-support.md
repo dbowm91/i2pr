@@ -153,11 +153,14 @@ independent-router evidence exists.
 
 Plan 129 is now `superseded-by-plan130-final-gate`; its integrated
 topology remains the closure path. Plan 130 closed as
-`passed-milestone6-final-wire-runtime-corrective-closure` and corrected
-the four post-closure-audit defects while retaining the Plans 126-128
-surfaces: production Elligator2 representatives carry the normative
-randomized high bits (deterministic vector constructor unchanged;
-independent frozen fixtures in
+`superseded-by-plan131-final-local-correctness-gate` (historical
+evidence retained in `plans/130-status.md`). Plan 131 is the current
+Milestone 6 authority (`passed-milestone6-final-local-correctness-closure`,
+`plans/131-status.md`) and adds the Plan 131 corrections on top of
+the Plan 130 surface: production Elligator2 representatives now
+randomize the inverse-map branch as well as the high bits via the
+reviewed `elligator2 = 0.1.0` primitive (`curve25519-elligator2
+= 0.1.0-alpha.2` retired; independent frozen fixtures in
 `specs/references/elligator2-production-representation.md`), ordinary
 Streaming application data starts at sequence 1 with seq 0 owned by
 SYN/SYN-response/plain-ACK, `ackThrough == 0` is a flag-driven valid
@@ -171,8 +174,13 @@ owns listener dispatch (exact match, wildcard port-0 fallback, typed
 `NoMatchingListener`) with enforced established port tuples
 (`PortTupleMismatch`), tunnel duplicate windows persist across fixture
 deliveries with exact replays failing as typed `DuplicateCell`, and
-eleven full-stack trajectories in `plan130_trajectory.rs` close the
-gate. Historically:
+seven Plan 131 trajectories in `plan131_trajectory.rs` plus eleven
+Plan 130 trajectories in `plan130_trajectory.rs` close the gate.
+Plan 131 additionally requires connection-owned I2P ports asserted
+(not authoritative) on every established `send_data`/`send_close`/
+`send_reset` and side-effect-free oversized `send_data` rollback
+(no sequence allocation, no window mutation, contiguous sequence
+recovery for the next valid packet). Historically:
 
 Plan 129 closed as `passed-milestone6-integrated-local-product-gate`
 per [`plans/129-status.md`](../plans/129-status.md) and is the final
@@ -209,26 +217,43 @@ streams, non-protocol-6 dispatch, ceiling bounds, 0-RTT scope). The
 experimental and non-advertised until independent-router evidence
 exists. The next product layer is SAM baseline planning (Milestone 7).
 
-Plan 130 (`passed-milestone6-final-wire-runtime-corrective-closure`,
-evidence in [`plans/130-status.md`](../plans/130-status.md),
+Plan 130 (`superseded-by-plan131-final-local-correctness-gate`,
+historical evidence in [`plans/130-status.md`](../plans/130-status.md),
 [`crates/i2pr-client/tests/plan130_trajectory.rs`](../crates/i2pr-client/tests/plan130_trajectory.rs),
 and the reference addenda in
 [`specs/references/streaming-packet-wire.md`](../specs/references/streaming-packet-wire.md)
 plus
 [`specs/references/elligator2-production-representation.md`](../specs/references/elligator2-production-representation.md))
-supersedes the Plan 129 gate and closes Milestone 6 locally: production
-Elligator2 randomization with independent frozen fixtures; sequence
-space SYN=0/response=0/first-app=1; semantic ACK presence where
-`ackThrough == 0` acknowledges the handshake slot; NACK-aware cumulative
-ACKs retaining explicitly NACKed packets; bounded receiver ACK/NACK
-views per `MessageInputStream.updateAcks`; synchronous coalescing
+landed the wire/runtime corrective closure but left four Plan 131
+acceptance items open.
+
+Plan 131 (`passed-milestone6-final-local-correctness-closure`,
+[`plans/131-status.md`](../plans/131-status.md),
+[`crates/i2pr-client/tests/plan131_trajectory.rs`](../crates/i2pr-client/tests/plan131_trajectory.rs))
+is the current Milestone 6 closure authority. On top of the Plan 130
+surface it adds: production Elligator2 branch randomization via the
+reviewed `elligator2 = 0.1.0` primitive (`curve25519-elligator2
+= 0.1.0-alpha.2` retired; provenance in
+[`specs/references/elligator2-production-representation.md`](../specs/references/elligator2-production-representation.md));
+independent three-layer replay separation (tunnel duplicate window,
+consumed ECIES session tag, fresh-ECIES-reseal Streaming sequence);
+connection-owned I2P port tuple asserted (not authoritative) on
+every established `send_data` / `send_close` / `send_reset`; and
+side-effect-free oversized `send_data` rollback (no sequence
+allocation, no window mutation, contiguous sequence recovery for
+the next valid packet). Plan 130 sequence / ACK / NACK / port / ECIES
+surface (sequence space SYN=0/response=0/first-app=1; semantic ACK
+presence where `ackThrough == 0` acknowledges the handshake slot;
+NACK-aware cumulative ACKs retaining explicitly NACKed packets;
+bounded receiver ACK/NACK views per `MessageInputStream.updateAcks`;
+synchronous coalescing
 delayed standalone ACKs (750 ms default) via `poll_acks(now_ms)` with
 piggyback suppression and no ACK-of-ACK loop; wire destination-port
 listener authority (exact match → wildcard port-0 → typed
 `NoMatchingListener`) with enforced established tuples; persistent
-tunnel duplicate windows with typed `DuplicateCell` replay rejection;
-and eleven full-stack corrective trajectories. Plan 129's historical
-gate remains the topology of record.
+tunnel duplicate windows with typed `DuplicateCell` replay rejection)
+remains intact and is the retained Plan 130 evidence. Plan 129's
+historical gate remains the topology of record.
 
 This matrix is intentionally explicit: every row describes the exact evidence
 available, not just code presence. “Experimental structural subset” means
@@ -937,7 +962,8 @@ Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
         -> Plan 127  destination-session routing final closure                 [passed-destination-session-routing-final-closure]
         -> Plan 128  Streaming wire-protocol corrective closure                 [passed-streaming-wire-protocol-corrective-closure]
         -> Plan 129  integrated destination+Streaming final gate                [superseded-by-plan130-final-gate]
-        -> Plan 130  final wire/runtime corrective closure                       [passed-milestone6-final-wire-runtime-corrective-closure] (milestone6_local_product = passed; interoperability not claimed)
+        -> Plan 130  final wire/runtime corrective closure                       [superseded-by-plan131-final-local-correctness-gate]
+        -> Plan 131  final local correctness closure                             [passed-milestone6-final-local-correctness-closure] (milestone6_local_product = passed; interoperability not claimed)
 ```
 
 Plan 106 closed the local/bootstrap implementation phase; Plan 107
