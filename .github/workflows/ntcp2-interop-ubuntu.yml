@@ -32,7 +32,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
       - name: Install repository Rust toolchain
         run: rustup toolchain install 1.95.0 --profile minimal --no-self-update --component rustfmt --component clippy
       - name: Record toolchain metadata
@@ -64,7 +64,7 @@ jobs:
       PROFILE: ${{ inputs.profile }}
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
       - name: Install repository Rust toolchain
         run: rustup toolchain install 1.95.0 --profile minimal --no-self-update --component rustfmt --component clippy
       - name: Pre-install host contract
@@ -107,7 +107,7 @@ jobs:
           sudo -E bash scripts/interop/verify-clean-host.sh --verify
       - name: Upload sanitized Plan 043 evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: ntcp2-interop-ubuntu-${{ github.run_id }}
           if-no-files-found: ignore

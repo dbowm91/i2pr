@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
       - name: rust-toolchain
         uses: dtolnay/rust-toolchain@1.100.0
       - name: cargo-fmt
@@ -79,7 +79,7 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
       - name: rust-toolchain
         uses: dtolnay/rust-toolchain@1.100.0
       - name: rootless-dependency-contract
@@ -102,7 +102,7 @@ jobs:
         run: python3 scripts/interop/validate-evidence.py
       - name: upload-sanitized-evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: ntcp2-rootless-evidence
           path: |

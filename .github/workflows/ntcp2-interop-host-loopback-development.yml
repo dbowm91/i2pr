@@ -54,7 +54,7 @@ jobs:
       PLAN099_NETWORK_ID: "99"
     steps:
       - name: checkout
-        uses: actions/checkout@v4.1.7
+        uses: actions/checkout@v7.0.1
 
       - name: rust-toolchain
         uses: dtolnay/rust-toolchain@1.95.0
@@ -371,7 +371,7 @@ jobs:
 
       - name: upload-summary
         if: always()
-        uses: actions/upload-artifact@v4.4.0
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: plan099-summary
           path: ${{ github.workspace }}/target/interop/plan099-evidence/plan099-summary.json
