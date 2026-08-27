@@ -425,11 +425,18 @@ fn is_canonical_elligator_representative(masked: &[u8; REPRESENTATIVE_LENGTH]) -
 ///    `DECODE_ELG2` rule;
 /// 3. rejects representatives whose masked value is greater than or
 ///    equal to the canonical lower-half threshold
-///    `(p - 1) / 2 = 2^254 - 10`. This is the exact boundary check
-///    used by current pinned Java I2P (`Elligator2.java` masks byte
-///    31 with `0x3f` and rejects `r >= (p - 1) / 2`) and i2pd
-///    (`libi2pd/Elligator.cpp` masks the two free high bits and
-///    enforces the same lower-half domain);
+///    `(p - 1) / 2 = 2^254 - 10`. **Boundary reference authority:**
+///    Java I2P `Elligator2.decode()` masks byte 31 with `0x3f` and
+///    rejects `r >= (p - 1) / 2` (strict `<`); the i2pd
+///    `Elligator.cpp` source comment reads `r < (p - 1) / 2`, but
+///    the executable check enters the decode branch on
+///    `BN_cmp(r, p12) <= 0`, so its executable acceptance domain is
+///    `r <= (p - 1) / 2`. i2pr enforces the stricter Java-style
+///    boundary (`masked < (p - 1) / 2`) as a deliberate, safer
+///    subset; the i2pd encoder's `SquareRoot()` normalization
+///    produces the exact equality value only through a single
+///    pre-image point per generator, and that case is not reached
+///    on the OR'd high-bit variants or the alternative branch;
 /// 4. delegates to the reviewed inverse-map primitive (which masks
 ///    the high bits internally, so the input here is the masked
 ///    form);
@@ -439,8 +446,9 @@ fn is_canonical_elligator_representative(masked: &[u8; REPRESENTATIVE_LENGTH]) -
 /// The two free high bits are masked before canonical-domain
 /// evaluation; changing only the high bits cannot turn an invalid
 /// canonical `r` into a valid one. The result is invariant to the
-/// random bits ORed in at encode time and matches every deployed
-/// reference implementation's acceptance rule.
+/// random bits ORed in at encode time and is accepted by both
+/// deployed reference implementations (the strict `<` boundary is
+/// a strict subset of the i2pd executable `<=`).
 pub fn decode_representative(
     representative: &EciesEphemeralRepresentative,
 ) -> Result<[u8; REPRESENTATIVE_LENGTH], EciesError> {
@@ -2659,8 +2667,14 @@ mod tests {
     #[test]
     fn masked_representative_equal_to_threshold_is_rejected() {
         // The masked value is exactly `(p - 1) / 2 = 2^254 - 10`. A
-        // pinned-deployed decoder rejects `r >= (p - 1) / 2`, so
-        // i2pr must reject the boundary value before mapping.
+        // pinned Java I2P `decode()` rejects `r >= (p - 1) / 2`; i2pd
+        // accepts equality at the executable boundary despite the
+        // source comment reading `r < (p - 1) / 2`. i2pr's strict
+        // `<` boundary is the safer subset and rejects the equality
+        // value before mapping. A pinned i2pd sender never produces
+        // this value through its `SquareRoot()` normalization for any
+        // X25519 public point that survives the inverse map, so the
+        // rejection is structurally inert for compliant i2pd traffic.
         let outcome =
             decode_representative(&EciesEphemeralRepresentative(CANONICAL_THRESHOLD_BYTES));
         assert_eq!(outcome.err(), Some(EciesError::ElligatorDecode));
@@ -2687,7 +2701,8 @@ mod tests {
     #[test]
     fn masked_representative_just_above_threshold_is_rejected() {
         // `r = 2^254 - 9` (one above threshold) is in the upper half
-        // and must be rejected by every deployed decoder.
+        // and is rejected by both deployed decoders (Java strict `<`,
+        // i2pd executable `<=`).
         let mut above_threshold = CANONICAL_THRESHOLD_BYTES;
         above_threshold[0] = 0xf7;
         assert_eq!(
@@ -2714,7 +2729,8 @@ mod tests {
     #[test]
     fn maximum_masked_representative_is_rejected() {
         // `r = 2^254 - 1` is the largest masked value and is in the
-        // upper half. It must be rejected by every deployed decoder.
+        // upper half. It is rejected by both deployed decoders (Java
+        // strict `<`, i2pd executable `<=`).
         let mut max_masked = [0xff_u8; REPRESENTATIVE_LENGTH];
         max_masked[31] = 0x3f;
         assert_eq!(

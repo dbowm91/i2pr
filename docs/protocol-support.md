@@ -154,12 +154,17 @@ independent-router evidence exists.
 Plan 129 is now `superseded-by-plan130-final-gate`; its integrated
 topology remains the closure path. Plan 130 closed as
 `superseded-by-plan131-final-local-correctness-gate` (historical
-evidence retained in `plans/130-status.md`). Plan 131 is the current
-Milestone 6 authority (`passed-milestone6-final-local-correctness-closure`,
-`plans/131-status.md`) and adds the Plan 131 corrections on top of
-the Plan 130 surface: production Elligator2 representatives now
-randomize the inverse-map branch as well as the high bits via the
-reviewed `elligator2 = 0.1.0` primitive (`curve25519-elligator2
+evidence retained in `plans/130-status.md`). Plan 131 closed
+Milestone 6 with the local-correctness closure
+(`passed-milestone6-final-local-correctness-closure`,
+`plans/131-status.md`) and is itself superseded by Plan 132
+(implementation corrections) and Plan 133 (final evidence and
+authority closure). The current Milestone 6 local closure
+authority is Plan 133 (`passed-milestone6-final-evidence-authority-closure`,
+`plans/133-status.md`). Plan 131 added the Plan 131 corrections on
+top of the Plan 130 surface: production Elligator2 representatives
+now randomize the inverse-map branch as well as the high bits via
+the reviewed `elligator2 = 0.1.0` primitive (`curve25519-elligator2
 = 0.1.0-alpha.2` retired; independent frozen fixtures in
 `specs/references/elligator2-production-representation.md`), ordinary
 Streaming application data starts at sequence 1 with seq 0 owned by
@@ -230,9 +235,12 @@ acceptance items open.
 Plan 131 (`passed-milestone6-final-local-correctness-closure`,
 [`plans/131-status.md`](../plans/131-status.md),
 [`crates/i2pr-client/tests/plan131_trajectory.rs`](../crates/i2pr-client/tests/plan131_trajectory.rs))
-is the current Milestone 6 closure authority. On top of the Plan 130
-surface it adds: production Elligator2 branch randomization via the
-reviewed `elligator2 = 0.1.0` primitive (`curve25519-elligator2
+closed the local-correctness corrections but is itself superseded by
+Plan 132 and Plan 133. The current Milestone 6 local closure authority
+is Plan 133 (`passed-milestone6-final-evidence-authority-closure`,
+[`plans/133-status.md`](../plans/133-status.md)). On top of the Plan
+130 surface Plan 131 added: production Elligator2 branch randomization
+via the reviewed `elligator2 = 0.1.0` primitive (`curve25519-elligator2
 = 0.1.0-alpha.2` retired; provenance in
 [`specs/references/elligator2-production-representation.md`](../specs/references/elligator2-production-representation.md));
 independent three-layer replay separation (tunnel duplicate window,
@@ -254,12 +262,15 @@ listener authority (exact match → wildcard port-0 → typed
 tunnel duplicate windows with typed `DuplicateCell` replay rejection)
 remains intact and is the retained Plan 130 evidence. Plan 129's
 historical gate remains the topology of record. Plan 132
-(`passed-milestone6-final-evidence-and-transactional-closure`,
-[`plans/132-status.md`](../plans/132-status.md)) is the current
-Milestone 6 closure authority. On top of the Plan 131 surface
-it adds: strict Elligator2 receive-domain validation masking the
-two free high bits and rejecting `r >= 2^254 - 10` via the
-`is_canonical_elligator_representative` helper before delegating
+(`implementation-landed-evidence-superseded-by-plan133`,
+[`plans/132-status.md`](../plans/132-status.md)) closed the
+implementation corrections but is itself superseded by Plan 133. The
+current Milestone 6 local closure authority is Plan 133
+(`passed-milestone6-final-evidence-authority-closure`,
+[`plans/133-status.md`](../plans/133-status.md)). Plan 132 added on
+top of the Plan 131 surface: strict Elligator2 receive-domain validation
+masking the two free high bits and rejecting `r >= 2^254 - 10` via
+the `is_canonical_elligator_representative` helper before delegating
 to `elligator2::from_representative` in
 [`crates/i2pr-crypto/src/ecies.rs`](../crates/i2pr-crypto/src/ecies.rs);
 three independent layer-isolated replay trajectories
@@ -980,7 +991,9 @@ Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
         -> Plan 128  Streaming wire-protocol corrective closure                 [passed-streaming-wire-protocol-corrective-closure]
         -> Plan 129  integrated destination+Streaming final gate                [superseded-by-plan130-final-gate]
         -> Plan 130  final wire/runtime corrective closure                       [superseded-by-plan131-final-local-correctness-gate]
-        -> Plan 131  final local correctness closure                             [passed-milestone6-final-local-correctness-closure] (milestone6_local_product = passed; interoperability not claimed)
+        -> Plan 131  final local correctness closure                             [superseded-by-plan132-and-plan133-final-gates]
+        -> Plan 132  final evidence and transactional closure                    [implementation-landed-evidence-superseded-by-plan133]
+        -> Plan 133  final evidence and authority closure                        [passed-milestone6-final-evidence-authority-closure] (milestone6_local_product = passed; interoperability not claimed)
 ```
 
 Plan 106 closed the local/bootstrap implementation phase; Plan 107

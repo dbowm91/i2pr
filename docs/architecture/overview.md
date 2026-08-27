@@ -339,9 +339,14 @@ Plan 129 closed the integrated M6 destination+Streaming gate
            closure as
            `superseded-by-plan131-final-local-correctness-gate`
            ([`plans/130-status.md`](../../plans/130-status.md)).
-           Plan 131 is the current Milestone 6 closure authority as
+           Plan 131 closed Milestone 6 with the local-correctness
+           corrective closure as
            `passed-milestone6-final-local-correctness-closure`
-           ([`plans/131-status.md`](../../plans/131-status.md)):
+           ([`plans/131-status.md`](../../plans/131-status.md))
+           and is itself superseded by Plan 132 and Plan 133. The
+           current Milestone 6 local closure authority is Plan 133
+           as `passed-milestone6-final-evidence-authority-closure`
+           ([`plans/133-status.md`](../../plans/133-status.md)):
            production Elligator branch randomization via the
            reviewed `elligator2 = 0.1.0` primitive (Plan 131
            retired `curve25519-elligator2 = 0.1.0-alpha.2` because
@@ -355,8 +360,8 @@ Plan 129 closed the integrated M6 destination+Streaming gate
 "unspecified", and side-effect-free oversized
             `send_data` rollback. `milestone6_local_product =
             passed`, `milestone6_interoperable = not-yet-claimed`.
-            Plan 132 is the current Milestone 6 closure authority
-            as `passed-milestone6-final-evidence-and-transactional-closure`
+            Plan 132 closed the implementation corrections as
+            `implementation-landed-evidence-superseded-by-plan133`
             ([`plans/132-status.md`](../../plans/132-status.md)):
             strict Elligator2 receive-domain validation masking the
             two free high bits and rejecting `r >= 2^254 - 10`

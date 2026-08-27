@@ -131,9 +131,14 @@ Plan 130 closed Milestone 6 with the wire/runtime corrective
 closure ([Plan 130](../plans/130-m6-final-wire-runtime-corrective-closure.md),
 [`plans/130-status.md`](../plans/130-status.md)) and is now
 `superseded-by-plan131-final-local-correctness-gate` per
-[`plans/131-status.md`](../plans/131-status.md). Plan 131 is the
-current Milestone 6 authority. Its four corrections build on the
-Plan 130 surface above:
+[`plans/131-status.md`](../plans/131-status.md). Plan 131 closed
+Milestone 6 with the four local-correctness corrections below and
+is itself superseded by Plan 132 (implementation corrections) and
+Plan 133 (final evidence and authority closure). The current
+Milestone 6 local closure authority is Plan 133 as
+`passed-milestone6-final-evidence-authority-closure` per
+[`plans/133-status.md`](../plans/133-status.md). The four Plan 131
+corrections build on the Plan 130 surface above:
 
 - **Production Elligator2 branch randomization** (with `i2pr-crypto`):
   `EciesEphemeralKeypair::generate` now drives the reviewed
@@ -181,14 +186,14 @@ Eleven full-stack Plan 130 trajectories remain in
  replay-layer separation, production-Elligator establishment); seven
  Plan 131 trajectories in
  [`crates/i2pr-client/tests/plan131_trajectory.rs`](../../crates/i2pr-client/tests/plan131_trajectory.rs)
- cover the four Plan 131 corrections; and ten Plan 132
- trajectories in
+ cover the four Plan 131 corrections; ten Plan 132 trajectories in
  [`crates/i2pr-client/tests/plan132_trajectory.rs`](../../crates/i2pr-client/tests/plan132_trajectory.rs)
- (artifact-preserving test seam + three independent layer-isolated
- replay trajectories + transactional `send_data` / `send_close` /
- `send_reset` ordering) drive the Plan 132 corrections: strict
- Elligator2 receive-domain validation, three-layer replay separation,
- and `&mut self` transactional send ordering. `milestone6_local_product
+ drive the Plan 132 corrections (artifact-preserving test seam +
+ three independent layer-isolated replay trajectories + transactional
+ `send_data` / `send_close` / `send_reset` ordering); and the Plan 133
+ closure rewrote B2/B3 to retain the actual first delivered ES envelope
+ and corrected the Elligator reference note for the i2pd
+ equality-boundary executable distinction. `milestone6_local_product
  = passed`; `milestone6_interoperable` remains not claimed.
 
 

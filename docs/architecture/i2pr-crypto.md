@@ -282,7 +282,12 @@ and
  `is_canonical_elligator_representative` and refuses `r >= 2^254 - 10`
  (the `ELLIGATOR_CANONICAL_THRESHOLD_LE = [0xf6, 0xff × 30, 0x3f]`
  half-order constant) before delegating to the reviewed
- `elligator2::from_representative` primitive.
+ `elligator2::from_representative` primitive. Plan 133 added the
+ reference-note correction that distinguishes Java's strict `<`
+ executable boundary from i2pd's executable `<=`
+ (`BN_cmp(r, p12) <= 0` enters decode despite the source comment
+ reading `<`) and documents i2pr's stricter `<` as a deliberate
+ safer subset.
 The `i2pr-client` corrected trajectory test
 (`crates/i2pr-client/tests/plan121_trajectory.rs`
 `plan_126_corrected_deterministic_local_trajectory`) drives the full

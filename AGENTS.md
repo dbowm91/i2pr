@@ -2694,10 +2694,12 @@ per [`plans/130-status.md`](plans/130-status.md). It is the historical
 Milestone 6 implementation pass that landed the corrected
 Streaming sequence / ACK / NACK semantics, the wire-derived listener
 routing, and the persistent inbound tunnel duplicate windows. It is
-superseded by Plan 131 as the current Milestone 6 authority; the
-post-Plan-130 audit retained the integrated architecture but found
-four narrow correctness defects that were still unproven or only
-partially proven, all corrected by Plan 131:
+superseded by Plan 131 (now itself superseded by Plan 132 and
+Plan 133 — Plan 133 is the current Milestone 6 local closure
+authority per `plans/133-status.md`); the post-Plan-130 audit
+retained the integrated architecture but found four narrow
+correctness defects that were still unproven or only partially
+proven, all corrected by Plan 131:
 
 1. Production Elligator2 still fixed the deployed-reference alternative
    inverse-map branch (two high bits randomized; branch bit fixed).
@@ -2757,14 +2759,18 @@ The corrected Plan 130 surface (retained unchanged by Plan 131):
 plan_130 = superseded-by-plan131-final-local-correctness-gate
 ```
 
-## Plan 131 Milestone 6 final local correctness closure (current authority)
+## Plan 131 Milestone 6 final local correctness closure (historical)
 
-Plan 131 closes as `passed-milestone6-final-local-correctness-closure`
-per [`plans/131-status.md`](plans/131-status.md). It is the current
-Milestone 6 closure authority and supersedes the Plan 130 status
-token above until its own acceptance criteria — all satisfied —
-restored `milestone6_local_product = passed` under the corrected
-local-correctness semantics.
+Plan 131 closed as `passed-milestone6-final-local-correctness-closure`
+per [`plans/131-status.md`](plans/131-status.md), then was
+superseded by Plan 132 (implementation corrections) and Plan 133
+(final evidence and authority closure) — see
+[`plans/133-status.md`](plans/133-status.md) for the current
+Milestone 6 local closure authority. The Plan 131 implementation
+surface (production Elligator branch randomization, three-layer
+replay separation, connection-owned I2P ports, transactional
+oversized writes) is retained unchanged and remains a historical
+record of the Plan 130 → Plan 131 transition.
 
 The corrected Plan 131 surface:
 
@@ -2831,8 +2837,9 @@ plan_126 = passed-ecies-destination-ratchet-corrective-foundation
 plan_128 = passed-streaming-wire-protocol-corrective-closure
 plan_129 = superseded-by-plan130-final-gate
 plan_130 = superseded-by-plan131-final-local-correctness-gate
-plan_131 = passed-milestone6-final-local-correctness-closure
-plan_132 = passed-milestone6-final-evidence-and-transactional-closure
+plan_131 = superseded-by-plan132-and-plan133-final-gates
+plan_132 = implementation-landed-evidence-superseded-by-plan133
+plan_133 = passed-milestone6-final-evidence-authority-closure (current authority)
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 router_construction = may-continue
@@ -2858,18 +2865,18 @@ bash scripts/check-ntcp2-vectors.sh
 bash scripts/check-ntcp2-interoperability.sh
 ```
 
-## Plan 132 Milestone 6 final evidence and transactional closure (current authority)
+## Plan 132 Milestone 6 final evidence and transactional closure (historical)
 
-Plan 132 closes as `passed-milestone6-final-evidence-and-transactional-closure`
-per [`plans/132-status.md`](plans/132-status.md). It reopens the
+Plan 132 closed as `implementation-landed-evidence-superseded-by-plan133`
+per [`plans/132-status.md`](plans/132-status.md). It reopened the
 Plan 131 closure with three narrow closure areas that the prior
-pass did not independently prove and supersedes nothing else.
-Plan 132 is the current Milestone 6 local-authority; Plan 131
-remains an immutable historical record of the moment when the
-`/dev/null`-E2E + unbounded-stream-id-ownership + ACK-via-MIS
-implementation opened. After Plan 132 closes, Milestone 6
-corrective work stops and SAM baseline planning (Milestone 7)
-is the next product layer.
+pass did not independently prove, then Plan 133 closed the
+remaining B2/B3 evidence gaps and the Elligator reference-note
+correction. Plan 132's substantive implementation is retained
+unchanged; Plan 133 (`plans/133-status.md`) is the current
+Milestone 6 local closure authority. After Plan 133 closes,
+Milestone 6 corrective work stops and SAM baseline planning
+(Milestone 7) is the next product layer.
 
 The corrected Plan 132 surface:
 
@@ -2911,8 +2918,9 @@ The corrected Plan 132 surface:
   Plan 132 receive-domain section.
 
 ```text
-plan_131 = passed-milestone6-final-local-correctness-closure
-plan_132 = passed-milestone6-final-evidence-and-transactional-closure
+plan_131 = superseded-by-plan132-and-plan133-final-gates
+plan_132 = implementation-landed-evidence-superseded-by-plan133
+plan_133 = passed-milestone6-final-evidence-authority-closure (current authority)
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 external_acceptance_debt = retained-separately
@@ -2924,7 +2932,7 @@ Do not claim destination ECIES, Streaming, or full destination
 routing interoperability against another router without external
 evidence. NTCP2 stays experimental and non-advertised; no tunnel,
 NetDB composition, transport, SAM, I2CP, or public-network work
-was introduced by Plan 132.
+was introduced by Plan 132 or Plan 133.
 
 Required focused checks for Plan 132:
 

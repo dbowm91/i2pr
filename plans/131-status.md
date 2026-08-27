@@ -1,21 +1,36 @@
 # Plan 131 status — Milestone 6 final local correctness closure
 
-Status: **`passed-milestone6-final-local-correctness-closure`** (local
-product closure only; no network-facing or external interoperability
-claim).
+Status: **`superseded-by-plan132-and-plan133-final-gates`** (historical
+implementation/evidence record; not the current Milestone 6 closure
+authority).
 
 - Registered: **2026-08-26**; executed from source floor
   `8f2b3dfe44b480beb7f411613b8d7089aaeb7a19`.
 - Plan of record:
   [`plans/131-m6-final-local-correctness-closure.md`](131-m6-final-local-correctness-closure.md).
-- This closure record is the **current Milestone 6 authority**.
-  `plans/130-status.md` is retained as historical evidence for the
-  corrective surface it shipped and is marked
-  `superseded-by-plan131-final-local-correctness-gate`. Earlier Plan
-  126–129 status files remain historical implementation/evidence
-  records.
+- Plan 131's substantive implementation is retained unchanged. This
+  file is retained as the historical record of the
+  `passed-milestone6-final-local-correctness-closure` surface Plan
+  131 closed at the Plan 130 → Plan 131 transition. Plan 132 then
+  reopened the Plan 131 closure with three narrow evidence/transactional
+  corrections (strict Elligator receive validation, real three-layer
+  replay separation, transactional established sends) and closed as
+  `implementation-landed-evidence-superseded-by-plan133`. Plan 133
+  then closed the remaining B2/B3 evidence gaps and the Elligator
+  reference-note correction, and is the **current Milestone 6
+  local closure authority**. See `plans/133-status.md`.
+- The current authoritative token for the Milestone 6 local closure
+  is therefore `plan_133 = passed-milestone6-final-evidence-authority-closure`,
+  not the Plan 131 token recorded below.
 
 ## Final classification
+
+The classification below reflects Plan 131's local closure
+transition (Plan 130 → Plan 131). The current Milestone 6 local
+closure authority is the Plan 133 token
+`passed-milestone6-final-evidence-authority-closure` recorded in
+`plans/133-status.md`. Plans 131 and 132 are historical
+implementation/evidence records for that authority.
 
 ```text
 plan_119 = passed-leaseset2-protocol-foundation
@@ -30,7 +45,9 @@ plan_127 = passed-destination-session-routing-final-closure
 plan_128 = passed-streaming-wire-protocol-corrective-closure
 plan_129 = superseded-by-plan130-final-gate
 plan_130 = superseded-by-plan131-final-local-correctness-gate
-plan_131 = passed-milestone6-final-local-correctness-closure
+plan_131 = superseded-by-plan132-and-plan133-final-gates (this file)
+plan_132 = implementation-landed-evidence-superseded-by-plan133
+plan_133 = passed-milestone6-final-evidence-authority-closure (current authority)
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 external_acceptance_debt = retained-separately

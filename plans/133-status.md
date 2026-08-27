@@ -1,88 +1,32 @@
 # Plan 133 status — Milestone 6 final evidence and authority closure
 
-Status: **`ready-for-execution`**.
+Status: **`passed-milestone6-final-evidence-authority-closure`**.
 
-- Registered: **2026-08-27**.
-- Source floor: `af0f07a0037a639afc2c03af31a1266b99273564`.
-- Plan of record: [`plans/133-m6-final-evidence-authority-closure.md`](133-m6-final-evidence-authority-closure.md).
-- This file is the **current Milestone 6 local closure authority** until Plan 133 executes.
-- Plan 132's substantive implementation corrections are retained, but its closure evidence/authority is incomplete: B2 does not directly assert the integrated ECIES/session rejection variant; B3 compares later fresh seals rather than retaining the actual first delivered ES envelope; the Elligator reference note incorrectly states that Java I2P and i2pd agree on the equality boundary; and Plan 131/132/current-facing status documents disagree about which plan closes Milestone 6.
-- Do not reopen transport or host-validation work. This is one narrow evidence/documentation/status closure pass.
+- Registered: **2026-08-27**; executed from source floor
+  `af0f07a0037a639afc2c03af31a1266b99273564`.
+- Plan of record:
+  [`plans/133-m6-final-evidence-authority-closure.md`](133-m6-final-evidence-authority-closure.md).
+- This file is the **current Milestone 6 local closure authority**.
+  `plans/131-status.md` and `plans/132-status.md` are retained as
+  historical implementation/evidence records and are marked
+  `superseded-by-plan133-final-evidence-authority-gate` for the
+  authoritative closure interpretation.
+- Plan 132's substantive implementation corrections are retained
+  unchanged: strict Elligator receive validation in
+  `crates/i2pr-crypto/src/ecies.rs`; Plan 131 production Elligator
+  branch/high-bit randomization; transactional `send_data()` wire
+  construction before send-window commit; transactional
+  CLOSE/RESET build/sign before state mutation; exact tunnel-cell
+  replay B1 evidence; connection-owned I2P ports and source-port
+  zero behavior; corrected Streaming sequence/ACK/NACK behavior;
+  Plan 124 encrypted Garlic/tunnel composition invariant.
 
-## Current classification
-
-```text
-plan_130 = superseded-by-plan131
-plan_131 = corrective-history-under-plan133
-plan_132 = implementation-landed-evidence-authority-incomplete
-plan_133 = ready-for-execution
-
-milestone6_local_product = not-closed
-milestone6_interoperable = not-yet-claimed
-external_acceptance_debt = retained-separately
-router_construction = hold-for-plan133-final-evidence-authority-closure
-next = Plan 133
-```
-
-## Retained Plan 132 implementation
-
-The following are **not** reopened absent a concrete failing regression:
-
-- strict Elligator receive validation in `crates/i2pr-crypto/src/ecies.rs`;
-- Plan 131 production Elligator branch/high-bit randomization;
-- transactional `send_data()` wire construction before send-window commit;
-- transactional CLOSE/RESET build/sign before state mutation;
-- exact tunnel-cell replay B1 evidence;
-- connection-owned I2P ports and source-port-zero behavior;
-- corrected Streaming sequence/ACK/NACK behavior;
-- Plan 124 encrypted Garlic/tunnel composition invariant.
-
-## Plan 133 closure surface
-
-Plan 133 contains exactly four tasks:
-
-1. **B2 evidence correction**
-   - retain exact first Existing Session ciphertext/tag;
-   - rewrap it only below ECIES in fresh tunnel cells;
-   - prove tunnel acceptance;
-   - assert typed integrated `InboundDispatchOutcome::Rejected(InboundDispatchError::Session(...))` or the exact stable ECIES/session rejection variant reached by the production dispatcher;
-   - retain direct `UnknownSessionTag` proof and no-plaintext negative controls.
-
-2. **B3 evidence correction**
-   - create one Streaming `TransportSendRequest` sequence `N`;
-   - retain the actual first ES plan and deliver it;
-   - freshly reseal that exact request once;
-   - prove first/second ES tags differ while encoded Streaming bytes/sequence remain identical;
-   - prove second tunnel + dispatcher/ECIES succeed;
-   - prove only Streaming suppresses the duplicate sequence;
-   - remove the hard-coded one-cell comparison helper.
-
-3. **Elligator reference-note correction**
-   - Java executable check: rejects equality (`r >= threshold` rejected);
-   - pinned i2pd executable check: accepts equality (`BN_cmp(r, p12) <= 0` enters decode), despite its source comment saying `<`;
-   - retain i2pr's stricter Java-compatible `r < threshold` rule and document it as a deliberate strict subset, not unanimous reference behavior.
-
-4. **Final authority synchronization after green validation**
-   - make Plans 131/132 historical/superseded records;
-   - make Plan 133 the sole final local Milestone 6 closure authority;
-   - synchronize README/AGENTS/architecture/protocol-support/support-table/skill current-facing status;
-   - authorize Milestone 7 / SAM baseline planning.
-
-## Explicitly unchanged / out of scope
-
-- No mixed-router interoperability is claimed.
-- External transport acceptance debt remains separate.
-- NTCP2 remains experimental/non-advertised.
-- No Plan 116/117, Emissary, rootless, Docker, VM, Multipass, QEMU, public-network, Python interop-harness, SAM implementation, I2CP, proxy, service-tunnel, new LeaseSet, PQ, or legacy ElGamal work belongs in Plan 133.
-
-## Required closure state
-
-Only after Plan 133's executable evidence and full local regression gate pass should repository authority become:
+## Final classification
 
 ```text
 plan_130 = superseded-by-plan131
 plan_131 = superseded-by-plan132-and-plan133-final-gates
-plan_132 = passed-implementation-corrections-superseded-by-plan133-evidence-authority-gate
+plan_132 = implementation-landed-evidence-superseded-by-plan133
 plan_133 = passed-milestone6-final-evidence-authority-closure
 
 milestone6_local_product = passed
@@ -92,4 +36,196 @@ router_construction = may-continue
 next_product_layer = SAM baseline planning (Milestone 7)
 ```
 
-At that point Milestone 6 corrective planning stops. Do not create another Milestone 6 plan unless a new concrete protocol defect is discovered.
+## What Plan 133 corrected
+
+### Phase A — B2 evidence correction
+(`crates/i2pr-client/tests/plan132_trajectory.rs`)
+
+`plan132_consumed_es_ciphertext_rewrapped_in_fresh_tunnel_is_rejected_by_ecies`
+now directly proves the integrated ECIES/session rejection reaches
+the production dispatcher:
+
+- A1 captures the first delivered Existing Session ciphertext and
+  tag from the real first plan, decodes it as
+  `ExistingSessionMessage`, and decodes the Garlic carrier payload
+  that the OBEP produces. The tunnel-decrypted bytes equal the
+  Garlic carrier `garlic_i2np_bytes` (tunnel framing wraps the
+  carrier) and the Garlic carrier payload equals the ECIES ES
+  ciphertext.
+- A2 rewraps the same `retained_es_bytes` and `retained_es_tag`
+  under a fresh IBGW RNG; the new cells survive the tunnel
+  duplicate window because the inbound IBGW cell bytes are
+  freshly sampled, and the inner Garlic carrier payload is
+  byte-for-byte equal to the first envelope.
+- A3 asserts the integrated rejection variant the production
+  dispatcher currently emits. The narrowest stable variant is
+  `Rejected(Session(Ecies(AuthenticationFailed)))` because the
+  dispatcher's `classify()` removes the consumed tag from the
+  inbound window before the replay arrives; the dispatcher routes
+  the replay through the New Session path and the ECIES AEAD
+  inside fails authentication. The earlier
+  `Rejected(Session(UnknownSessionTag))` variant is preserved as
+  the direct `accept_existing_session` proof
+  (`plan132_ecies_session_layer_rejects_consumed_tag_directly`),
+  which exercises the session-layer rejection explicitly without
+  the dispatcher's New Session pre-classification.
+- A5 holds the dispatcher queued-payloads, established-sessions,
+  pending-handshake, provisional-responder, and Streaming
+  delivered-byte counters constant across the replay.
+
+### Phase B — B3 evidence correction
+(`crates/i2pr-client/tests/plan132_trajectory.rs`)
+
+`plan132_fresh_es_seal_of_same_streaming_sequence_reaches_streaming_and_deduplicates`
+now retains the actual first delivered ES envelope rather than
+re-synthesizing a comparison artifact:
+
+- B1 calls `send_data()` exactly once and captures sequence `N`
+  and `application_payload` bytes verbatim.
+- B2 seals the request through the adapter, decodes the real
+  first ES envelope as `ExistingSessionMessage`, and drives that
+  exact first plan through the receiver via the new
+  `pipe_through_first_plan` helper (which surfaces both the
+  dispatcher outcome and the inbound Streaming outcome from a
+  single delivery). The dispatcher emits
+  `ExistingSessionProcessed` and the adapter surfaces the
+  original application bytes exactly once.
+- B3 freshly reseals the exact same `first_request` under a
+  different RNG, asserts the second ES tag/ciphertext differ
+  from the first, asserts the second plan's cell count equals
+  the first plan's cell count, and asserts the second plan's
+  `OutboundDeliveryPlan.cells` produce a distinct inner I2NP
+  Garlic payload. The hard-coded `plan132_plan_cell_count`
+  helper is removed.
+- B4 drives the second plan through the receiver; the lower
+  tunnel accepts the fresh wrapping, the dispatcher reaches
+  ECIES authentication, and the dispatcher emits exactly one
+  `ExistingSessionProcessed` outcome.
+- B5 proves Streaming is the only layer that suppresses the
+  duplicate sequence: `drain_delivered` yields no second copy
+  and `pop_payload` returns `None`.
+
+### Phase C — Elligator reference-note correction
+(`specs/references/elligator2-production-representation.md`,
+`crates/i2pr-crypto/src/ecies.rs`)
+
+The reference note now distinguishes **executable acceptance
+domains** from **source comments** explicitly:
+
+- Java I2P `Elligator2.decode()`: masks byte 31 with `0x3f` and
+  rejects `r >= (p - 1) / 2` (strict `<`). **Equality rejected.**
+- Pinned i2pd `Elligator.cpp`: source comment reads `r < (p - 1) /
+  2`, but the executable check enters the decode branch on
+  `BN_cmp(r, p12) <= 0` (i.e., `r <= (p - 1) / 2`).
+  **Equality accepted.** The encoder's `SquareRoot()` produces
+  the equality value only through a single pre-image point per
+  generator and that case is not reached on the OR'd high-bit
+  variants or the alternative branch in normal production
+  traffic.
+- i2pr enforces the stricter Java-style boundary as a deliberate
+  safer subset; the rejection is structurally inert for
+  compliant i2pd traffic.
+- `decode_representative` doc comment and three Plan 132 boundary
+  tests (`masked_representative_equal_to_threshold_is_rejected`,
+  `masked_representative_just_above_threshold_is_rejected`,
+  `maximum_masked_representative_is_rejected`) are updated to
+  reflect the Java/i2pd executable distinction.
+
+### Phase D — Targeted regression
+(`cargo +1.95.0 test --locked -p i2pr-crypto`, `-p i2pr-client`)
+
+All Plan 132 trajectories pass after the Phase A/B rewrites:
+
+- `i2pr-crypto`: 51 unit tests pass (including the Elligator
+  boundary tests, the production generator randomness tests, and
+  the frozen Plan 126 ECIES vector reproductions).
+- `i2pr-client`: every integration test binary passes, including
+  the 10-test `plan132_trajectory` suite and the 7-test
+  `plan131_trajectory` suite.
+
+### Phase E — Full local validation gate
+
+```text
+cargo +1.95.0 fmt --all --check                                                pass
+cargo +1.95.0 check --locked --workspace --all-targets                         pass
+cargo +1.95.0 test --locked --workspace                                        all green
+cargo +1.95.0 clippy --locked --workspace --all-targets
+       --all-features -- -D warnings                                            pass (0 warnings)
+RUSTDOCFLAGS="-D warnings" cargo +1.95.0 doc --locked
+       --workspace --no-deps                                                    pass
+bash scripts/check-dependency-direction.sh                                     ok
+bash scripts/check-runtime-boundaries.sh                                       passed
+```
+
+### Phase F — Status and documentation synchronization
+
+- `plans/131-status.md`: marked historical; final classification
+  reclassified to `superseded-by-plan132-and-plan133-final-gates`.
+- `plans/132-status.md`: implementation retained unchanged;
+  closure status reclassified to
+  `implementation-landed-evidence-superseded-by-plan133`.
+- `plans/133-status.md`: this file is the current Milestone 6
+  local closure authority; final state is
+  `passed-milestone6-final-evidence-authority-closure`.
+- `README.md`, `AGENTS.md`, `architecture/` (`overview.md`,
+  `i2pr-crypto.md`, `i2pr-client.md`, `i2pr-proto.md`,
+  `i2pr-tunnel.md`, `i2pr-daemon.md`, `i2pr-netdb.md`),
+  `docs/protocol-support.md`, `specs/support.toml`, and the
+  `i2pr-ntcp2-interop` skill are synchronized to point at Plan 133
+  as the current Milestone 6 closure authority and to prune stale
+  Plan 131/132 active-authority language.
+
+## Validation record
+
+Exact commands (pinned toolchain 1.95.0, `--locked`):
+
+```text
+cargo +1.95.0 fmt --all --check                                                pass
+cargo +1.95.0 check --locked --workspace --all-targets                         pass
+cargo +1.95.0 test --locked -p i2pr-crypto --all-targets                       51 tests pass
+cargo +1.95.0 test --locked -p i2pr-proto --all-targets                        pass
+cargo +1.95.0 test --locked -p i2pr-client --all-targets                       pass
+cargo +1.95.0 test --locked -p i2pr-tunnel --all-targets                       pass
+cargo +1.95.0 test --locked --workspace                                        all green
+cargo +1.95.0 clippy --locked --workspace --all-targets
+       --all-features -- -D warnings                                            pass
+RUSTDOCFLAGS="-D warnings" cargo +1.95.0 doc --locked
+       --workspace --no-deps                                                    pass
+bash scripts/check-dependency-direction.sh                                     ok
+bash scripts/check-runtime-boundaries.sh                                       passed
+```
+
+New focused evidence (Plan 133 closure surface):
+
+- `crates/i2pr-client/tests/plan132_trajectory.rs` — 10 tests
+  pass: B1 (`plan132_exact_same_tunnel_cell_is_rejected_by_live_duplicate_window`),
+  B2 (`plan132_consumed_es_ciphertext_rewrapped_in_fresh_tunnel_is_rejected_by_ecies`
+  rewritten to retain the real first ES envelope and assert the
+  dispatcher-stable rejection variant), B3
+  (`plan132_fresh_es_seal_of_same_streaming_sequence_reaches_streaming_and_deduplicates`
+  rewritten to retain the actual first plan), the 4 Plan 132
+  transactional precommit tests, the direct session-layer
+  consumed-tag rejection test
+  (`plan132_ecies_session_layer_rejects_consumed_tag_directly`),
+  and the sender port-tuple assert tests for `send_data`,
+  `send_close`, and `send_reset`.
+- `crates/i2pr-crypto/src/ecies.rs` — 51 unit tests pass,
+  including the Elligator boundary tests, the Plan 131
+  production-generator randomness tests, and the frozen Plan 126
+  KDF/Noise vector reproductions.
+
+## Explicitly not claimed
+
+Mixed-router interoperability, destination ECIES/Streaming/tunnel
+interoperability against an independent router, NTCP2 activation,
+and any public-network behavior remain outside this closure. NTCP2
+stays experimental and non-advertised. External acceptance debt is
+retained separately.
+
+## Handoff
+
+Per the plan-of-record §13: stop corrective Milestone 6 planning.
+The next product work is **Milestone 7 / SAM baseline planning**.
+Do not reopen external transport validation as a prerequisite for
+SAM. Do not create another Milestone 6 plan unless a new concrete
+protocol defect is discovered.

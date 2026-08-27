@@ -45,6 +45,7 @@ least-square-root representative.
   (`result > (p-1)/2 ⇒ result = p - result`) **before** the high bits
   are ORed. `decode(representative)` masks byte 31 with `0x3f` and
   rejects non-canonical representatives (`r >= (p-1)/2`).
+  **Executable acceptance: `r < (p - 1) / 2`. Equality is rejected.**
 - i2pd `libi2pd/Elligator.cpp` (branch `openssl`, inspected
   2026-08-25): `Encode(key, encoded, highY, random)` computes r via
   `SquareRoot()` with the same least-square-root normalization, then —
@@ -53,7 +54,15 @@ least-square-root representative.
   the two highest bits into the encoded buffer
   (`encoded |= randByte & 0xC0` before the little-endian swap).
   `Decode()` masks the two highest bits (`encoded1 &= 0x3F`) and
-  requires the canonical representative (`r <= (p-1)/2`).
+  requires the canonical representative. **The source comment on
+  `Decode()` reads `r < (p - 1) / 2`, but the executable check
+  enters the decode branch on `BN_cmp(r, p12) <= 0`**, so the
+  executable acceptance domain is `r <= (p - 1) / 2`. **Equality
+  is accepted.** The encoder's `SquareRoot()` calls
+  `BN_mod_sqrt(...)` and returns the canonical least root, so the
+  value exactly equal to `(p - 1) / 2` is representable on the
+  encoder side and reaches the decoder in practice only when the
+  inverse-map input produces that exact normalized value.
 
 ## Plan 132 receive-domain correction
 
@@ -83,8 +92,15 @@ inverse map:
    = `0xff`, byte 31 = `0x3f`); the comparison walks bytes 31 → 0 and
    returns `false` at the first non-equal byte whose masked value is
    greater than the threshold byte. The value exactly equal to the
-   threshold is rejected because both pinned references reject
-   `r >= (p - 1) / 2`;
+   threshold is rejected because the deployed Java I2P `decode()`
+   rejects `r >= (p - 1) / 2`; i2pr's strict `<` choice is a
+   deliberate, safer subset of the i2pd executable `<=`. A pinned
+   i2pd sender therefore produces representatives i2pr accepts in
+   practice (the i2pd encoder's `SquareRoot()` normalization never
+   emits the exact equality value through `BN_mod_sqrt` unless the
+   pre-image resolves to that single point, and that case still
+   arrives via the OR'd high bits as a non-equal value or via the
+   inverse-map's other branch);
 4. delegate to the reviewed inverse-map primitive (which masks the
    high bits internally; passing the masked form makes the canonical
    byte sequence visible to any audit);
@@ -104,13 +120,21 @@ canonical representatives because the primitive's
 before ORing the high bits back in; receivers therefore still accept
 every produced wire byte.
 
-Both references therefore emit **canonical representatives with
-randomized high bits** AND **one bit of randomized pre-image branch**;
-both reject non-canonical values after masking. The Java/i2pd
-"alternative" is a choice between the two pre-image branches
-`-x/(u(x+A))` and `-(x+A)/(ux)` whose squares differ but which
-decode to the same Montgomery u-coordinate through the standard map;
-it is not the non-canonical `p - r`.
+Both references emit **canonical representatives with
+randomized high bits** AND **one bit of randomized pre-image
+branch**. Java I2P rejects non-canonical values strictly
+(`r >= (p - 1) / 2` is rejected); i2pd's executable `Decode()`
+boundary is `r <= (p - 1) / 2` (a `BN_cmp(r, p12) <= 0` branch
+despite a source comment reading `r < (p - 1) / 2`). i2pr's
+strict `<` acceptance is the safer subset of the deployed
+acceptance domains; the equality value is structurally rare
+because the Elligator2 inverse map produces it only for one of
+the two pre-image branches at a single X25519 point per
+generator. The Java/i2pd "alternative" is a choice between the
+two pre-image branches `-x/(u(x+A))` and `-(x+A)/(ux)` whose
+squares differ but which decode to the same Montgomery
+u-coordinate through the standard map; it is not the
+non-canonical `p - r`.
 
 ## Selected library mode
 
