@@ -286,8 +286,10 @@ in `cloud-init.yaml`, the absence of `eval` in lifecycle scripts, and the
 absence of any global `multipass purge` form in normal paths. Run it after
 **any** edit to anything under `scripts/interop/multipass/`,
 `tests/integration/ntcp2/harness/{rootless_topology,interop_topology,
-rootless_supervisor,rootless_inner_runner}.py`, or
-`.github/workflows/ntcp2-interop-rootless.yml`.
+rootless_supervisor,rootless_inner_runner}.py` (note: `rootless_supervisor.py`
+and `rootless_inner_runner.py` were pruned by the Plan 099 harness reduction
+on 2026-08-13; the script list above is retained for historical reference),
+or `.github/workflows/ntcp2-interop-rootless.yml`.
 
 ## Test surface
 

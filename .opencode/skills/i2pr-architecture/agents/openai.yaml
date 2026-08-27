@@ -1,0 +1,4 @@
+interface:
+  display_name: "I2PR Architecture"
+  short_description: "Navigate i2pr docs, ADRs, plans, and deep-dives"
+  default_prompt: "Use $i2pr-architecture to navigate the i2pr architecture documentation, ADRs, plans, and per-crate deep-dives, and to audit doc-vs-source drift."

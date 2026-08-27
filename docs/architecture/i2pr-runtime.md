@@ -42,9 +42,11 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
 | `channel` | `src/channel.rs` | 1908 | Typed bounded service channels with resource charging, overflow policies, privacy-safe counters | `ChannelSpec`, `ChannelName`, `CommunicationClass`, `OverflowPolicy`, `QueueCharge`, `*Sender*`/`*Receiver*`, `Received`, `ReceivedRequest`, `ChannelSnapshot`, all error types |
 | `context` | `src/context.rs` | 585 | Per-service context bundle, readiness signals, health publication, child-task scope with bounded join and forced abort | `ServiceContext`, `Readiness`, `HealthReporter`, `HealthReceiver`, `ChildScope`, `ChildFailurePolicy`, `ChildTaskFailure`, `ChildScopeError`, `ChildShutdownReport` |
 | `graph` | `src/graph.rs` | 648 | Service registration, deterministic topological ordering, full graph validation before startup | `ServiceGraph`, `ServiceGraphBuilder`, `ServiceSpec`, `ServiceFuture`, `RestartPolicy`, `RestartExhaustion`, `RestartPolicyError`, `GraphError` |
-| `ntcp2_runtime` | `src/ntcp2_runtime.rs` | — | Bounded NTCP2 socket/link lifecycle, TCP listener ownership, admission control, replay cache, dial backoff, link reader/writer children, exact I/O helpers | `Ntcp2RuntimeService`, `BoundNtcp2Listener`, `ListenerHandle`, `LinkHandle`, `InboundAdmission`, `ReplayCache`, `DialAdmission`, etc.; fns `read_exact`, `write_all_exact` |
+| `ntcp2_data_oracle` | `src/ntcp2_data_oracle.rs` | 13.9 K | Local data-phase oracle used by the testkit to drive authenticated frame streams deterministically without owning a real socket | `Ntcp2DataOracle`, `Ntcp2DataOracleConfig`, oracle-side frame/error enums |
 | `ntcp2_driver` | `src/ntcp2_driver.rs` | Plan 042 | Runtime-owned handshake action executor with bounded deadlines, cancellation, replay, clock, padding, and RouterInfo provision | `HandshakeDriverConfig`, `HandshakeRun`, `drive_initiator_handshake`, `drive_responder_handshake` |
+| `ntcp2_handshake_observer` | `src/ntcp2_handshake_observer.rs` | 5.3 K | Compile-time-gated handshake observer used by the interop harness to record NTCP2 handshake state-machine transitions for diagnostics; never linked into the production daemon | `HandshakeObserver`, `HandshakeObserverEvent`, `ObserverSink` |
 | `ntcp2_link` | `src/ntcp2_link.rs` | Plan 042 | Authenticated frame reader/writer children and item/byte accounting leases | `AuthenticatedLink`, `ReceivedFrameLease`, `AuthenticatedLinkSnapshot` |
+| `ntcp2_runtime` | `src/ntcp2_runtime.rs` | — | Bounded NTCP2 socket/link lifecycle, TCP listener ownership, admission control, replay cache, dial backoff, link reader/writer children, exact I/O helpers | `Ntcp2RuntimeService`, `BoundNtcp2Listener`, `ListenerHandle`, `LinkHandle`, `InboundAdmission`, `ReplayCache`, `DialAdmission`, etc.; fns `read_exact`, `write_all_exact` |
 | `observability` | `src/observability.rs` | 360 | Privacy-aware runtime events (tracing), bounded aggregate snapshots, shared task counters | `RouterLifecycle`, `SupervisorSnapshot`, `ServiceSnapshot`, `RuntimeSnapshot`, `SimulationSnapshot`, `event::*` |
 | `supervisor` | `src/supervisor.rs` | 1703 | Service startup sequencing, health tracking, restart with bounded exponential backoff, graceful/forced shutdown | `Supervisor`, `SupervisorHandle`, `SupervisorError`, `SupervisorConfigError`, `ShutdownReport`, `ShutdownOutcome` |
 
@@ -97,6 +99,13 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
   `AuthenticatedLinkSnapshot`, `AuthenticatedLinkStartError`, and
   `ReceivedFrameLease`; helpers `run_blocking` and `bounded_timeout` keep
   Tokio ownership inside this crate.
+- `ntcp2_data_oracle` (interop harness + testkit): `Ntcp2DataOracle`,
+  `Ntcp2DataOracleConfig`, oracle-side frame/error enums. Never linked
+  into the production service graph; compile-time gated for the
+  testkit and the harness only.
+- `ntcp2_handshake_observer` (interop harness diagnostics): `HandshakeObserver`,
+  `HandshakeObserverEvent`, `ObserverSink`. Compile-time gated; never
+  compiled into the production daemon binary.
 - Re-exports from `i2pr-core`: `CancellationReason`, `DegradationCode`,
   `FailureCategory`, `HealthDetail`, `HealthSnapshot`, `HealthState`,
   `InvalidLifecycleTransition`, `LifecycleState`,

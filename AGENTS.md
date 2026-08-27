@@ -10,29 +10,49 @@ non-advertised; the production daemon does **not** activate NTCP2.
 Always read these before changing code or answering questions about state:
 
 1. `README.md` — current status (Milestone 6 local product gate
-   closed; SAM baseline planning next), build/test/lint commands,
-   high-level architecture.
+   closed via Plan 134; SAM baseline planning next), build/test/lint
+   commands, high-level architecture.
 2. `GUARDRAILS.md` — non-negotiable engineering, security,
    interoperability, and collaboration constraints.
 3. `CONTRIBUTING.md` — local quality checks, the runtime/testkit
    conventions, the rootless and Multipass evidence-lane contracts.
-4. The active plan under `plans/` (latest closure: `plans/134-…`) and
-   the relevant `docs/adr/` record.
+4. The active plan under `plans/` (latest closure: `plans/134-…`)
+   and the relevant `docs/adr/` record. The
+   [`docs/architecture/audit/`](docs/architecture/audit/) directory
+   tracks doc-vs-source drift findings from the most recent
+   audits.
 5. `specs/support.toml` (mirrored to `docs/protocol-support.md`) for
    the live protocol support state. `specs/CONFORMANCE.md` defines
    what counts as evidence.
 
 Do **not** trust prose that disagrees with a checked-in script or
 executable test. Static boundary scripts (`scripts/check-*.sh`) are
-the source of truth for non-negotiable invariants.
+the source of truth for non-negotiable invariants. The
+[`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md)
+skill is the index for navigating the rest of the documentation.
 
 ## Workspace layout
 
 13-crate Rust workspace under `crates/` plus one test-only binary
 under `tools/`. Production crates depend upward through the runtime;
-test crates and helpers stay on the side. The full ownership map lives
-in `docs/architecture/overview.md` and the per-crate deep dives in
-`docs/architecture/i2pr-*.md`. Quick reference:
+test crates and helpers stay on the side.
+
+**Architecture index.** The full ownership map lives in
+[`docs/architecture/overview.md`](docs/architecture/overview.md) and
+the per-crate deep dives in
+[`docs/architecture/i2pr-*.md`](docs/architecture/). The dependency
+graph and allowlist live in
+[`docs/architecture/dependency-graph.md`](docs/architecture/dependency-graph.md).
+The cross-cutting surface (scripts, fixtures, integration lanes, CI,
+fuzz) lives in
+[`docs/architecture/tooling.md`](docs/architecture/tooling.md). The
+NTCP2 interop apparatus lives in
+[`docs/architecture/interop-apparatus.md`](docs/architecture/interop-apparatus.md).
+Use the
+[`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md)
+skill to navigate this surface and to audit doc-vs-source drift.
+
+Quick reference (deep-dive per crate):
 
 - `i2pr-proto` — bounded wire codecs, typed errors, no I/O.
 - `i2pr-crypto` — Ed25519/X25519/AES/ChaCha20-Poly1305/HMAC/SipHash/HKDF
@@ -272,22 +292,28 @@ under `.github/workflows/`. The active lanes are:
   policy is never changed; the disposable guest is permissive by
   design.
 
-OpenCode skills in `.opencode/skills/` are the source of truth for
-the harness details:
+Mixed-router results require sanitized typed JSON plus digests under
+`target/interop/evidence/`; secret-bearing run roots are deleted. A
+typed blocker, reference-only result, parser-only result, or testkit
+result is **not** mixed-router evidence. Load the matching skill from
+the table below before touching a lane.
 
-- `i2pr-ntcp2-interop` — general harness and run identification
-  (`i2pr-ntcp2-interop` skill).
-- `i2pr-rootless-sandbox` — Plan 046 rootless probe and topology
-  (`i2pr-rootless-sandbox` skill).
-- `i2pr-multipass-recovery` — Plan 048/049/050/051 guest
-  lifecycle and cloud-init taxonomy (`i2pr-multipass-recovery`
-  skill).
+## OpenCode skills
 
-Load the matching skill before touching a lane. Mixed-router
-results require sanitized typed JSON plus digests under
-`target/interop/evidence/`; secret-bearing run roots are deleted.
-A typed blocker, reference-only result, parser-only result, or
-testkit result is **not** mixed-router evidence.
+The repository ships loadable skill bundles under
+[`.opencode/skills/`](.opencode/skills/). Load the matching skill
+before touching the surface it covers.
+
+| Skill | Covers |
+| --- | --- |
+| [`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md) | Local Milestone 6 product path (destinations, garlic, LS2, Streaming); SAM baseline planning (Milestone 7) stub. The routine development seam. |
+| [`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md) | Navigate `docs/architecture/`, `docs/adr/`, `plans/`, and `specs/`; audit doc-vs-source drift. |
+| [`i2pr-ntcp2-interop`](.opencode/skills/i2pr-ntcp2-interop/SKILL.md) | Host-side Plan 038 NTCP2 reference-router harness. The active development interop lane is **closed**; NTCP2 remains experimental and non-advertised. |
+| [`i2pr-rootless-sandbox`](.opencode/skills/i2pr-rootless-sandbox/SKILL.md) | Plan 046 rootless sealed-namespace lane (host-side fallback). On this host returns the typed blocker `blocked_unprivileged_user_namespace`. |
+| [`i2pr-multipass-recovery`](.opencode/skills/i2pr-multipass-recovery/SKILL.md) | Plan 048/049/050/051 Multipass recovery guest (canonical external lane). The host policy is never changed. |
+
+The NTCP2 interop lane is closed; load `i2pr-local-dev` for routine
+work and `i2pr-architecture` to navigate the documentation.
 
 ## Commits and pull requests
 

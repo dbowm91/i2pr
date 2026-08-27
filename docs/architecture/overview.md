@@ -173,11 +173,11 @@ tests, and any distinctive design choices.
 
 ## How data flows at runtime
 
-A live `i2pr run` today (Plan 106) follows this sequence:
+A live `i2pr run` (Plan 106) follows this sequence:
 
 1. **`i2pr-daemon`** parses CLI flags, loads and validates the TOML
-   config under `deny_unknown_fields` (including the new `[netdb]`
-   and `[reseed]` sections), maps errors to stable exit codes, then
+   config under `deny_unknown_fields` (including the `[netdb]` and
+   `[reseed]` sections), maps errors to stable exit codes, then
    runs `bootstrap_daemon` before starting the supervisor.
 2. **`i2pr-storage`** loads the router identity from
    `<data_dir>/router.identity` and (separately) the NTCP2 static key
@@ -190,234 +190,132 @@ A live `i2pr run` today (Plan 106) follows this sequence:
 4. **`i2pr-netdb-persist`** loads and revalidates the persistent
    RouterInfo cache through the Plan 104 `CacheLoader`, then runs
    the optional bounded offline SU3 reseed through `ReseedIngestor`.
- 5. **`i2pr-netdb`** keeps the populated `RouterInfoStore`,
-     `CoalescedRouterInfoLookup`, `PublicationCoordinator`, and the
-     transport-neutral state machines ready for the Milestone 5
-     runtime adapter. `i2pr-daemon`'s `NetDbSeam` exposes them
-      through a stable surface; under Plan 107 the seam consults an
-      injected [``i2pr_netdb::ReplyPathProvider`] implementation
-      backed by `i2pr-tunnel`'s exploratory pool, so a registered
-      inbound tunnel flips the seam's status to `Available` and a
-      `NeedExploratoryReplyPath` lookup action is converted into a
-       real path on the state machine. Under Plan 109 the same crate
-       holds the locally-conformant ECIES-X25519 Noise-N
-       short-build cryptography primitive, the
-       `ReferenceFixture` independent conformance fixture, and the
-       runtime-neutral `ShortBuildStateMachine` that drives one
-       short tunnel-build attempt through the canonical state
-       machine; admission into the exploratory pool flows only through
-       the success-only `ShortBuildRegistrar`. **The single-record
-       request/reply wire format and Noise-N transcript are locally
-       conformant against the current official I2P Tunnel Creation
-       Specification; see
-       [`plans/109-short-build-record-and-noise-conformance-correction.md`](../../plans/109-short-build-record-and-noise-conformance-correction.md)
-and the closure record
-        [`plans/110-status.md`](../../plans/110-status.md). Plan 110
-        closed the multi-record slot allocation, fake records, raw
-        ChaCha20 preprocessing, and one-byte-count STBM/OTBRM payload
-        framing as `passed-multirecord-local-conformance`. Plan 113
-        enables the inbound path under the explicitly named
-        `reference-compatible-spec-text-discrepancy` policy: the real
-        request keeps its fixed fields + Mapping/padding and exactly
-        one originator fake carries the creator key. This does not
-        claim strict final-spec text conformance for that semantic;
-        see `specs/references/short-build-inbound-creator-key.md`.
-        Plan 114 closes the post-Plan-113 high-level routing/composition
-        defects: explicit outbound `outbound_reply_router` and inbound
-        `originator_hash` terminal-routing fields, intermediate
-        `hops[i].next_tunnel == hops[i+1].receive_tunnel` chain
-        continuity enforced at both the high-level
-        `ShortBuildPath::validate()` boundary and the public lower-level
-        `prepare_short_build_message()` entry point, and strict
-        outbound/inbound E2E trajectories that deterministically reach
-        `Established`. Plan 115 adds the canonical production I2NP
-bridge (`ShortBuildI2npBridge` in
-         `crates/i2pr-tunnel/src/bridge.rs`) so a
-         `ShortBuildAction::Deliver` payload is wrapped in a single
-         complete I2NP type-25 message without double-prefixing the STBM
-         record count byte and with a round-trip body equality assertion.
-         Plan 115 Q0 construction + native OBEP reply has passed
-         locally against pinned Emissary — see
-         [`plans/115-status.md`](../../plans/115-status.md). Q1/Q2
-         and qualified external delivery remain pending.**
-         Plan 116 closed the local tunnel data plane
-         (`passed-final-local-closure` via the
-         completion/correction/terminal-cleanup sequence). Plan 117
-         closed as `closed-for-progression-with-evidence-gap` per
-         Plan 118: the local production exploratory NetDB composition
-         (Phase G) is passed, but the corrected in-tree native Emissary
-         reference test rejects the pinned reference's request-prefixed
-         reply plaintext during strict i2pr Mapping decoding. Plan 117
-         adds the typed `DatabaseLookupMessage`/`DatabaseStoreMessage`
-         carriers on `LookupAction`/`PublicationAttemptRecord`, the
-         metadata-retaining one-shot `ExploratoryPool::activate`, the
-         bounded `DataPlaneRegistry` for activated local roles
-         (`crates/i2pr-tunnel/src/data_plane_registry.rs`), the daemon
-         `NetDbSeam` composition state machine
-         (`crates/i2pr-daemon/src/netdb_seam.rs`), the outbound
-         `OutboundGatewayRole::forward_cells` exploratory
-         `DatabaseLookup`/`DatabaseStore` composition
-         (`crates/i2pr-daemon/src/outbound_lookup.rs`), and the inbound
-         `LocalInboundEndpointRole` `TunnelData` dispatch through
-         `dispatch_inbound_tunnel_data`/`route_databasestore`/
-         `route_database_search_reply`
-         (`crates/i2pr-daemon/src/inbound_dispatch.rs`). The Plan 117
-         composition is local-only; the network transport adapter
-         still owns the NTCP2/SSU2 handshake surface, and authenticated
-         external transport remains `deferred-host-lane-unavailable`.
-          Plan 119 closed as `passed-leaseset2-protocol-foundation` per
-          [`plans/119-status.md`](../../plans/119-status.md); the ordinary
-          online-signed published Standard LeaseSet2 carrier is wired
-          into `i2pr-proto` and `i2pr-netdb` (LS2 validation, bounded
-          store, `LookupKind::LeaseSet2`, typed `DatabaseStoreData::LeaseSet2`).
-          Plan 120 closed as `passed-destination-lifecycle-and-pools` and
-          lands the first `i2pr-client` destination runtime: local
-          destination identity (independent Ed25519 signing + X25519
-          static keys, non-`Clone`, non-`Debug` secrets), destination-
-          specific tunnel pools that consume real one-shot
-          `EstablishedMaterial` through a thin `BoundedTunnelPool`
-          alias in `i2pr-tunnel`, local Standard LeaseSet2
-          construction and signing with self-validation through
-          `i2pr-netdb`, LeaseSet2 lifecycle with bounded
-          rotation/withdrawal, bounded local payload contracts that
-          never inject plaintext into tunnel delivery, and a
-          router-local destination registry with explicit capacity
-          and duplicate-rejection guards. The
-          `plan_120_deterministic_local_trajectory` integration test
-          drives the real short-build state machine to `Established`
-          through the production seams and walks one full
-          start → tunnel → LeaseSet2 → rotation → shutdown trajectory.
-          Plan 121 closed as `passed-ecies-destination-session-layer`
-          and landed the first ECIES destination Garlic/session layer.
-          Plan 126 closed as
-          `passed-ecies-destination-ratchet-corrective-foundation`
-          and rewrote that layer to the normative I2P
-          ECIES-X25519-AEAD-Ratchet contract: bound New Session with
-          Alice's derived public key and no flag bytes, one-shot
-          SessionReplyTags NSR window, Noise Split into directional
-          k_ab/k_ba tag sets with AttachPayloadKDF, canonical
-          tag/key index alignment, ES AEAD with tag associated data,
-          and typed rejection of unbound New Sessions and duplicate
-          ephemerals (`crates/i2pr-crypto/src/ecies.rs`, corrected
-          manager in `crates/i2pr-client/src/session.rs`,
-          provenance in
-          [`specs/references/ecies-destination-ratchet.md`](../../specs/references/ecies-destination-ratchet.md)).
-          The pairing stays Provisional until Plan 127 binds it to a
-          resolved Destination context. Plan 127 closed as
-          **`passed-destination-session-routing-final-closure`**
-          ([`plans/127-status.md`](../../plans/127-status.md)) and
-          bound it: a fresh bound New Session always bundles the
-          local current signed Standard LeaseSet2, the dispatcher
-          validates exactly one bundled sender LS2 under its own
-          contained Destination hash with a type-4 key equal to the
-          authenticated static key before binding, the retained NSR
-          reply context is the only first-reply form
-          (`PlannedOutboundForm`), reverse routing installs the
-          validated record through `install_remote_lease_set2`, and
-          the master trajectory drives NS → NSR → ES ×4 through real
-          tunnel roles in both directions. Plan 122 closed as
-          `passed-corrected-local-destination-routing` per
-          [`plans/122-status.md`](../../plans/122-status.md) and
-          [`plans/124-status.md`](../../plans/124-status.md) and
-          composes the Plan 119 LeaseSet2 lookup surface, the Plan
-          120 destination runtime, the Plan 121 ECIES session layer,
-          and the Plan 116 tunnel data plane into the first complete
-          local destination routing pipeline: the `LeaseSelector`
-          bounded selector, the typed `OutboundRequest` builder,
-          the `compose_outbound_delivery` planner, the
-          `DestinationRouting` cache, and the `DestinationDispatcher`
-          inbound surface. Plan 124 closes
-          `passed-plan122-corrective-closure` and corrects the
-          Plan 122 composition defect where
-          `compose_outbound_delivery` retained an ECIES Garlic
-          envelope but fed the plaintext inner I2NP `Data` envelope
-          into the outbound tunnel role; the corrected composition
-          wraps the encrypted envelope in an `I2npBody::Garlic`
-          carrier and feeds the standard-encoded I2NP Garlic message
-          bytes into the outbound tunnel data plane. The eleven
-          Plan 124 deterministic tests in
-          `crates/i2pr-client/tests/plan124_trajectory.rs` cover
-          Phases A–G, including the canonical
-          `authenticated-router-link-bypassed-local-seam` boundary
-          and the successful A → B → A trajectory. Plan 126 drops the
-          dispatcher's parallel pending-handshake map; inbound
-          envelopes classify through `EciesSessionManager::classify`.
-Plan 129 closed the integrated M6 destination+Streaming gate
-           and is now `superseded-by-plan130-final-gate`. Plan 130
-           closed Milestone 6 with the wire/runtime corrective
-           closure as
-           `superseded-by-plan131-final-local-correctness-gate`
-           ([`plans/130-status.md`](../../plans/130-status.md)).
-           Plan 131 closed Milestone 6 with the local-correctness
-           corrective closure as
-           `passed-milestone6-final-local-correctness-closure`
-           ([`plans/131-status.md`](../../plans/131-status.md))
-           and is itself superseded by Plan 132 and Plan 133. The
-           Plan 133 is historical successful evidence, superseded as
-           authority by Plan 134. The current Milestone 6 local closure
-           authority is Plan 134 as
-           `passed-milestone6-recv-window-ack-ceiling-closure`
-           ([`plans/134-status.md`](../../plans/134-status.md)):
-           production Elligator branch randomization via the
-           reviewed `elligator2 = 0.1.0` primitive (Plan 131
-           retired `curve25519-elligator2 = 0.1.0-alpha.2` because
-           its `RFC9380` branch choice was deterministic and its
-           `Randomized` mode rotated the derived DH public key),
-           three-layer replay separation (tunnel duplicate window,
-           consumed ECIES session tag, fresh-ECIES-reseal
-           Streaming sequence), connection-owned I2P port tuple
-           asserted on every established `send_data` / `send_close`
-           / `send_reset`, source-port `0` as valid I2P
-"unspecified", and side-effect-free oversized
-            `send_data` rollback. `milestone6_local_product =
-            passed`, `milestone6_interoperable = not-yet-claimed`.
-            Plan 132 closed the implementation corrections as
-            `implementation-landed-evidence-superseded-by-plan133`
-            ([`plans/132-status.md`](../../plans/132-status.md)):
-            strict Elligator2 receive-domain validation masking the
-            two free high bits and rejecting `r >= 2^254 - 10`
-            via the `is_canonical_elligator_representative` helper
-            before delegating to `elligator2::from_representative`,
-            three independent layer-isolated replay trajectories
-            (tunnel duplicate window, consumed ECIES session tag,
-            fresh-ECIES-reseal Streaming sequence) with an
-            artifact-preserving test seam in
-            [`plan132_trajectory.rs`](../../crates/i2pr-client/tests/plan132_trajectory.rs),
-            and `&mut self` transactional send ordering on
-            `send_data` / `send_close` / `send_reset` (Phase 1
-            immutable validation → Phase 2 fallible wire
-            construction → Phase 3 single commit point with
-            `assert_eq!(sequence, planned_sequence)` guarantee).
-            Corrective Milestone 6 planning stops and the next
-            product layer is SAM baseline planning (Milestone 7).
-6. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
-   before startup, then spawns one supervisor manager per service via a
-   `JoinSet`. Each service receives a narrowed `ServiceContext` (name,
-   cancellation, readiness, health, child scope) — never a direct handle
-   to the supervisor. The graph contains only `lifecycle` and
-   `netdb-bootstrap` services under Plan 101/106 authority.
-7. **`i2pr-transport-ntcp2`** is declared but **not yet used** in the
-   production daemon. It implements the protocol: Noise XK handshake,
-   AES-CBC ephemeral obfuscation, ChaCha20-Poly1305 data phase,
-   directional SipHash frame-length masking, deterministic handshake
-   state machines. It returns `HandshakeAction` / `FrameAction`
-   requests; `i2pr-runtime` would fulfill them with real sockets and
-   cancellation. The Plan 101 NTCP2 activation guard keeps the daemon
-   from registering `ntcp2-transport`.
-8. **`i2pr-transport`** sits underneath as the runtime-neutral link
-   manager: `LinkState` FSM, `TransportManager` admission with RAII
-   leases, duplicate-resolution policy, privacy-safe `TransportSnapshot`.
-9. **`i2pr-core`** provides lifecycle, health snapshots, cancellation
-   tokens, and the shared `ResourceBudget` governor that all subsystems
-   draw from via typed lease owners.
-10. **`i2pr-proto`** and **`i2pr-crypto`** stay at the bottom — no one
-    depends on anything above them except the test and integration
-    layers.
-11. **`i2pr-testkit`** is used only by tests. It exercises the same
-    crates through a `NetworkScheduler`, `ManualClock`,
-    `Ntcp2DataPhaseDriver`, and a 128-bit `ReproducibilitySeed`. Tests
-    use `#[tokio::test(start_paused = true)]`; no wall-clock sleeps, no
-    real sockets, no DNS, no public-network traffic.
+5. **`i2pr-netdb`** keeps the populated `RouterInfoStore`,
+   `CoalescedRouterInfoLookup`, `PublicationCoordinator`, the
+   transport-neutral state machines, and the Standard LeaseSet2
+   store (`ValidatedLeaseSet2`, `LeaseSet2Store`,
+   `LookupKind::LeaseSet2`, Plan 119) ready for the Milestone 5
+   runtime adapter. `i2pr-daemon`'s `NetDbSeam` exposes them
+   through a stable surface; under Plan 107 the seam consults an
+   injected `i2pr_netdb::ReplyPathProvider` implementation backed
+   by `i2pr-tunnel`'s exploratory pool, so a registered inbound
+   tunnel flips the seam's status to `Available` and a
+   `NeedExploratoryReplyPath` lookup action is converted into a real
+   path on the state machine. Plan 117 added the typed
+   `DatabaseLookupMessage`/`DatabaseStoreMessage` carriers, the
+   bounded `DataPlaneRegistry` for activated local roles, and the
+   outbound `OutboundGatewayRole` exploratory `DatabaseLookup` /
+   `DatabaseStore` composition plus inbound `LocalInboundEndpointRole`
+   `TunnelData` dispatch in `i2pr-daemon`. The Plan 117 composition
+   is local-only; the network transport adapter still owns the
+   NTCP2/SSU2 handshake surface, and authenticated external
+   transport remains `deferred-host-lane-unavailable`.
+6. **`i2pr-tunnel`** holds the runtime-neutral exploratory pool
+   (Plans 107–117), the locally-conformant ECIES-X25519 Noise-N
+   short-build cryptography (Plans 108–114), the canonical
+   production I2NP bridge (`ShortBuildI2npBridge` in
+   `crates/i2pr-tunnel/src/bridge.rs`, Plan 115), the local tunnel
+   data plane (Plan 116), and the outbound/inbound exploratory
+   NetDB composition (Plan 117). The single-record request/reply
+   wire format and Noise-N transcript are locally conformant against
+   the current official I2P Tunnel Creation Specification;
+   Plan 115 Q0 construction + native OBEP reply has passed locally
+   against pinned Emissary `9b43484a21d5a1291c4881cdae62a36c527f8c0f`
+   (emissary-core 0.4.0). Q1 (authenticated transport delivery) and
+   Q2 (reply round-trip to `Established`) and qualified external
+   delivery remain pending.
+7. **`i2pr-client`** (Milestone 6 local product, Plan 120+) owns the
+   local destination runtime:
+   - Plan 120: local destination identity (independent Ed25519
+     signing + X25519 static keys, non-`Clone`, non-`Debug`
+     secrets), destination-specific tunnel pools that consume real
+     one-shot `EstablishedMaterial` through a thin `BoundedTunnelPool`
+     alias in `i2pr-tunnel`, local Standard LeaseSet2 construction
+     and signing with self-validation through `i2pr-netdb`,
+     LeaseSet2 lifecycle with bounded rotation/withdrawal, bounded
+     local payload contracts, and a router-local destination
+     registry with explicit capacity and duplicate-rejection
+     guards.
+   - Plan 122/124: destination routing and NetDB composition —
+     `LeaseSelector` / `LeaseSelectionPolicy`, typed
+     `OutboundRequest` builder, `compose_outbound_delivery` planner,
+     `DestinationRouting` cache, `DestinationDispatcher` inbound
+     surface. Plan 124 corrected the composition defect where
+     `compose_outbound_delivery` retained an ECIES Garlic envelope
+     but fed the plaintext inner I2NP `Data` envelope into the
+     outbound tunnel role; the corrected composition wraps the
+     encrypted envelope in an `I2npBody::Garlic` carrier and feeds
+     the standard-encoded I2NP Garlic message bytes into the
+     outbound tunnel data plane. `OutboundDeliveryPlan::
+     garlic_i2np_bytes` is the canonical carrier; `inner_envelope_bytes`
+     is retained for diagnostic comparison only.
+   - Plan 126: normative ECIES-X25519-AEAD-Ratchet destination
+     session layer — paired sessions keyed by remote X25519 static
+     public key, bounded remove-on-hit tag windows, pre-derived
+     pending reply windows, provisional responder state, classify-
+     driven dispatch. The Plan 121 dialect was superseded.
+   - Plan 127: destination-session routing final closure —
+     bundled-LS2 sender binding under the sender's own Destination
+     hash (`MissingBundledLeaseSet2` / `SenderKeyMismatch`),
+     `PlannedOutboundForm` outbound form state machine with
+     retained NSR context, production reverse routing through
+     `install_remote_lease_set2`, active-remote ceiling, master
+     NS → NSR → ES ×4 trajectory through real tunnel roles.
+   - Plan 128: Streaming packet wire corrective closure —
+     normative flag map, no option TLVs, payload-only
+     `MAX_PACKET_SIZE`, raw final signatures from signing context,
+     Proposal 164 replay NACKs on the initial SYN only, retained
+     peer signing key for CLOSE/RESET verification, min-of-
+     advertisements negotiation. Plan 123 is restored as
+     `passed-corrected-streaming-wire-local`.
+   - Plan 129: integrated two-direction destination+Streaming
+     gate with one combined runtime-neutral outbound/inbound
+     `StreamingDestinationAdapter`. Superseded by Plan 130.
+   - Plans 130–133: wire/runtime corrective closures and
+     transactionality. **The current Milestone 6 local closure
+     authority is Plan 134** as
+     `passed-milestone6-recv-window-ack-ceiling-closure`
+     ([`plans/134-status.md`](../../plans/134-status.md)):
+     production Elligator branch randomization via the reviewed
+     `elligator2 = 0.1.0` primitive (Plan 131 retired
+     `curve25519-elligator2 = 0.1.0-alpha.2`), three-layer replay
+     separation, connection-owned I2P port tuple, and side-effect-
+     free oversized `send_data` rollback.
+     `milestone6_local_product = passed`,
+     `milestone6_interoperable = not-yet-claimed`. Corrective
+     Milestone 6 planning stops; the next product layer is SAM
+     baseline planning (Milestone 7).
+8. **`i2pr-runtime`** builds a `ServiceGraph`, topologically
+   validates it before startup, then spawns one supervisor manager
+   per service via a `JoinSet`. Each service receives a narrowed
+   `ServiceContext` (name, cancellation, readiness, health, child
+   scope) — never a direct handle to the supervisor. The graph
+   contains only `lifecycle` and `netdb-bootstrap` services under
+   Plan 101/106 authority.
+9. **`i2pr-transport-ntcp2`** is declared but **not yet used** in
+   the production daemon. It implements the protocol: Noise XK
+   handshake, AES-CBC ephemeral obfuscation, ChaCha20-Poly1305
+   data phase, directional SipHash frame-length masking,
+   deterministic handshake state machines. It returns
+   `HandshakeAction` / `FrameAction` requests; `i2pr-runtime`
+   would fulfill them with real sockets and cancellation. The
+   Plan 101 NTCP2 activation guard keeps the daemon from
+   registering `ntcp2-transport`.
+10. **`i2pr-transport`** sits underneath as the runtime-neutral
+    link manager: `LinkState` FSM, `TransportManager` admission
+    with RAII leases, duplicate-resolution policy, privacy-safe
+    `TransportSnapshot`.
+11. **`i2pr-core`** provides lifecycle, health snapshots,
+    cancellation tokens, and the shared `ResourceBudget` governor.
+12. **`i2pr-proto`** and **`i2pr-crypto`** stay at the bottom —
+    no one depends on anything above them except the test and
+    integration layers.
+13. **`i2pr-testkit`** is used only by tests. It exercises the
+    same crates through a `NetworkScheduler`, `ManualClock`,
+    `Ntcp2DataPhaseDriver`, and a 128-bit `ReproducibilitySeed`.
+    Tests use `#[tokio::test(start_paused = true)]`; no
+    wall-clock sleeps, no real sockets, no DNS, no public-network
+    traffic.
 
 The boundary contract is enforced by scripts under `scripts/`:
 
@@ -480,11 +378,14 @@ must be read before changing protocol, harness, or evidence decisions:
   "why" for current behavior; the deep-dives in this directory are
   the "what" and "how".
 - **`.opencode/skills/`** — loadable skill bundles for OpenCode
-  sessions operating on the harness lanes. Three skills ship with
-  the repo: `i2pr-ntcp2-interop` (Plan 038–100 harness surface),
-  `i2pr-rootless-sandbox` (Plan 046 rootless sealed-namespace lane),
-  `i2pr-multipass-recovery` (Plan 048–051/053 Multipass guest lane).
-  Load the matching skill before touching a lane.
+   sessions. Five skills ship with the repo: `i2pr-local-dev`
+   (local Milestone 6 product path + SAM baseline planning),
+   `i2pr-architecture` (navigating `docs/architecture/`, ADRs,
+   plans, and specs), `i2pr-ntcp2-interop` (Plan 038–100 harness
+   surface; active lane is closed), `i2pr-rootless-sandbox` (Plan
+   046 rootless sealed-namespace lane), and `i2pr-multipass-recovery`
+   (Plan 048–051/053 Multipass guest lane). Load the matching skill
+   before touching a lane.
 
 ## Plan 077 constrained-host execution lane
 

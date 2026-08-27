@@ -1,0 +1,4 @@
+interface:
+  display_name: "I2PR Local Dev"
+  short_description: "Milestone 6 + SAM planning local product path"
+  default_prompt: "Use $i2pr-local-dev to work on the local Milestone 6 product path (destinations, garlic, LS2, Streaming) and the SAM baseline planning (Milestone 7)."
