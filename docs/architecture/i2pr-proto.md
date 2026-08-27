@@ -54,8 +54,9 @@ ephemeral key handling stay out of `i2pr-proto` and live in
 
 ## Module layout
 
-The crate is single-directory with two top-level submodules under
-`src/`:
+The crate is single-directory with **three** top-level submodules under
+`src/` (`common/`, `i2np/`, `streaming/`) plus two flat files
+(`codec.rs`, `ecies_payload.rs`):
 
 | File | Responsibility | Main public items |
 | --- | --- | --- |
@@ -72,7 +73,7 @@ The crate is single-directory with two top-level submodules under
 | `src/common/router_info.rs` | Signed descriptor with retained `signed_bytes` | `RouterInfo`, `ProtocolVersion`, `Capabilities` |
 | `src/common/lease.rs` | Classic `Lease`/`LeaseSet` with deferred variants explicitly rejected | `Lease`, `LeaseSet`, `DeferredLeaseSetVariant`, `decode_lease_set_variant`, `decode_lease_set2_variant` |
 | `src/common/lease2.rs` | Standard LeaseSet2 carrier (Plan 119 ordinary online-signed published subset) | `Lease2`, `LeaseSet2Flags`, `LeaseSet2Header`, `LeaseSet2EncryptionKey`, `LeaseSet2`, `LeaseSet2BuildError`, `LeaseSet2HeaderError`, `LeaseSet2KeySelectionError`, `LEASE_SET2_SIGNATURE_DOMAIN_BYTE`, `LEASE_SET2_DATABASE_STORE_TYPE`, `MAX_LEASE_SET2_*` |
-| `src/i2np/mod.rs` | I2NP wire constants and glob re-exports | `MAX_I2NP_PAYLOAD_SIZE`, `STANDARD_HEADER_SIZE`, `SHORT_SSU_HEADER_SIZE`, `SHORT_TRANSPORT_HEADER_SIZE`, `MAX_DATABASE_LOOKUP_EXCLUDED_PEERS`, `MAX_DATABASE_SEARCH_REPLY_PEERS`, `MAX_BUILD_RECORDS`, `VARIABLE_BUILD_RECORD_SIZE`, `SHORT_BUILD_RECORD_SIZE`, `TUNNEL_DATA_PAYLOAD_SIZE` |
+| `src/i2np/mod.rs` | I2NP wire constants and glob re-exports | `MAX_I2NP_PAYLOAD_SIZE`, `STANDARD_HEADER_SIZE`, `SHORT_SSU_HEADER_SIZE`, `SHORT_TRANSPORT_HEADER_SIZE`, `MAX_DATABASE_LOOKUP_EXCLUDED_PEERS`, `MAX_DATABASE_SEARCH_REPLY_PEERS`, `MAX_BUILD_RECORDS`, `VARIABLE_BUILD_RECORD_SIZE`, `SHORT_BUILD_RECORD_SIZE`, `TUNNEL_DATA_PAYLOAD_SIZE`, `SHORT_REQUEST_PLAINTEXT_SIZE`, `SHORT_REPLY_PLAINTEXT_SIZE`, `SHORT_BUILD_EPHEMERAL_KEY_LEN`, `SHORT_BUILD_NONCE_LEN`, `SHORT_BUILD_TAG_LEN` |
 | `src/i2np/header.rs` | Three-variant header enum, `MessageType` registry | `MessageType`, `I2npHeader` |
 | `src/i2np/message.rs` | Top-level dispatch + 14-variant `I2npBody` | `I2npBody`, `I2npMessage` |
 | `src/i2np/delivery.rs` | `DeliveryStatusMessage` body | `DeliveryStatusMessage` |
@@ -80,8 +81,9 @@ The crate is single-directory with two top-level submodules under
 | `src/i2np/netdb.rs` | `DatabaseStore`, `Lookup`, `SearchReply`, `ReplyEncryption`, zeroizing `ReplySecret<N>` | `DatabaseStoreType`, `DatabaseStoreData` (`RouterInfoCompressed`/`LeaseSet`/`LeaseSet2`/`Deferred`), `DatabaseStoreMessage`, `DatabaseLookupMessage`, `DatabaseSearchReplyMessage`, `ReplyEncryption`, `ReplySecret<N>` |
 | `src/i2np/deferred.rs` | Bounded opaque payloads | `DeferredPayload`, `OpaqueMessageBody` |
 | `src/ecies_payload.rs` | Bounded structural ECIES Garlic payload block codec (Plan 121) | `EciesPayloadSequence`, `EciesPayloadBlock`, `GarlicCloveBlock`, `GarlicDelivery`, `EciesPayloadError` |
-| `src/streaming/packet.rs` | Streaming packet wire codec (Plan 128 normative form) | flag constants, `INITIAL_SYN_FLAGS`/`SYN_RESPONSE_FLAGS`/`CLOSE_FLAGS`/`RESET_FLAGS`, `StreamingFlags`, `StreamingOptions`, `StreamingOptionDecodeContext`, `SignatureLocation`, `StreamingHeaderPeek`, `StreamingPacket`, `StreamingPacketBuilder`, `peek_streaming_header`, `decode_streaming_packet`, `encode_streaming_packet`, `encode_with_placeholder`, `install_packet_signature`, `build_signature_preimage`, replay-binding encode/verify, `validate_initial_syn`/`validate_syn_response` |
-| `src/streaming/payload.rs` | Protocol-6 RFC 1952 gzip client payload envelope (Plan 125) | `ClientPayload`, `encode_client_payload`, `decode_client_payload`, `STREAMING_PROTOCOL_NUMBER` |
+| `src/streaming/mod.rs` | Streaming packet + payload module wiring; re-exports the `streaming::Clock` trait and `SystemClock` / `ManualClock` | `Clock`, `SystemClock`, `ManualClock`, payload limits |
+| `src/streaming/packet.rs` | Streaming packet wire codec (Plan 128 normative form) | flag constants, `INITIAL_SYN_FLAGS`/`SYN_RESPONSE_FLAGS`/`CLOSE_FLAGS`/`RESET_FLAGS`, `StreamingFlags`, `StreamingOptions`, `StreamingOptionDecodeContext`, `SignatureLocation`, `StreamingHeaderPeek`, `StreamingPacket`, `StreamingPacketBuilder`, `peek_streaming_header`, `decode_streaming_packet`, `encode_streaming_packet`, `encode_with_placeholder`, `install_packet_signature`, `build_signature_preimage`, replay-binding encode/verify, `validate_initial_syn`/`validate_syn_response`, `validate_signature_policy`, `encode_syn_replay_binding`, `verify_syn_replay_binding`, `StreamingPacketError`, `StreamingReceiveLimit`, `StreamingSendLimit` |
+| `src/streaming/payload.rs` | Protocol-6 RFC 1952 gzip client payload envelope (Plan 125) | `ClientPayload`, `encode_client_payload`, `decode_client_payload`, `ClientPayloadDecodeError`, `ClientPayloadEncodeError`, `STREAMING_PROTOCOL_NUMBER`, `MAX_APPLICATION_PAYLOAD_BYTES`, `MAX_CLIENT_PAYLOAD_BYTES` |
 
 Integration tests live in `tests/i2np_fixtures.rs` (existing I2NP
 coverage), `tests/lease_set2_fixture.rs` (Plan 119 frozen LS2 +

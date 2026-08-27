@@ -32,8 +32,11 @@ live at the crate root. There are no submodules.
 
 ### Constants
 
-- `MAX_SERVICE_NAME_BYTES` (17), `MAX_HEALTH_DETAIL_BYTES` (19),
-  `MAX_RESOURCE_CLASSES` (542).
+- `MAX_SERVICE_NAME_BYTES = 64` (lib.rs:17),
+  `MAX_HEALTH_DETAIL_BYTES = 160` (lib.rs:19),
+  `MAX_RESOURCE_CLASSES = 32` (lib.rs:542).
+  All three are bounded ceilings enforced at the constructor /
+  admission layer.
 
 ### Service naming and lifecycle
 
@@ -143,8 +146,9 @@ preventing diagnostic strings from leaking into logs.
 
 Confirmed: no `tokio`, no `std::net`/`std::fs`, no dependency on any
 other workspace crate. It is the leaf of the production dependency
-graph and is depended on by `i2pr-transport`, `i2pr-runtime`,
-`i2pr-daemon`, and `i2pr-testkit`.
+graph and is depended on by `i2pr-transport`, `i2pr-transport-ntcp2`,
+`i2pr-runtime`, `i2pr-daemon`, `i2pr-tunnel`, `i2pr-client`, and
+`i2pr-testkit`.
 
 ## Tests
 

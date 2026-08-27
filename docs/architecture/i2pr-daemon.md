@@ -54,7 +54,10 @@ What it **does not** do yet:
 
 ## Module layout
 
-Flat — six files at the crate root:
+Flat — nine files at the crate root (the row count in the table below
+matches the filesystem; previous revisions of this doc listed six,
+which undercounted `netdb_seam`, `outbound_lookup`, and
+`inbound_dispatch`):
 
 | File | Responsibility | Main items |
 | --- | --- | --- |
@@ -367,7 +370,8 @@ seam exposes `begin_lease_set2_lookup`, `advance_lease_set2_after_path`,
 `ingest_lease_set2_response`, `ingest_lease_set2_store`,
 `lease_set2_delivery_outcome`, `cancel_lease_set2_lookup`, and
 `active_lease_set2_lookup`. The typed errors live in `NetDbSeamError`
-and the typed ingestion results in `LeaseSet2ResponseOutcome`. The
+and the typed ingestion results in `LeaseSet2ResponseOutcome`. Both
+are re-exported from the daemon crate root (`lib.rs:18–20`). The
 local Plan 122 deterministic composition reaches a `Complete` outcome
 immediately when no floodfill candidate exists, surfacing the
 typed terminal result rather than a stuck pending state.
@@ -416,9 +420,11 @@ layer is SAM baseline planning (Milestone 7).
 | Storage (`IdentityStore`, `ByteCache`) | `i2pr-storage` |
 | NetDB (`RouterInfoStore`, `ValidatedRouterInfo`, `LocalRouterInfoBuilder`, lookup state machines, `ReplyPathProvider`) | `i2pr-netdb` |
 | NetDB composition (`CacheLoader`, `ReseedIngestor`) | `i2pr-netdb-persist` |
-| Tunnel substrate (`ExploratoryPool`, `BuildRecordLayout`, `BuildCryptography` seam, `ExploratoryPoolReplyPathProvider`) | `i2pr-tunnel` |
+| Tunnel substrate (`ExploratoryPool`, `BuildRecordLayout`, `BuildCryptography` seam, `ExploratoryPoolReplyPathProvider`, `ShortBuildI2npBridge`, `DataPlaneRegistry`, `OutboundGatewayRole`, `LocalInboundEndpointRole`) | `i2pr-tunnel` |
 | Runtime (supervisor, service graph, lifecycle) | `i2pr-runtime` |
-| Transport / NTCP2 / Proto / Core | declared, **not yet used in production daemon** |
+| Wire codecs (I2NP envelopes, LeaseSet2 carriers, database-lookup/store messages) | `i2pr-proto` (used by `outbound_lookup.rs`, `inbound_dispatch.rs`, `netdb_seam.rs`, `bootstrap.rs`) |
+| Transport contracts (`Deadline`, `DeliveryRequest`, `EncodedI2npMessage`, `PeerId`) | `i2pr-transport` (used by `outbound_lookup.rs`) |
+| `i2pr-core` | declared (`Cargo.toml:13`); not referenced by daemon source today |
 
 ## Dependencies
 
@@ -426,21 +432,26 @@ layer is SAM baseline planning (Milestone 7).
 | --- | --- | --- |
 | `clap` | workspace | Yes (CLI parsing) |
 | `i2pr-crypto` | path | Yes (RNG + identity) |
-| `i2pr-core` | path | Yes (service classification) |
-| `i2pr-proto` | path | **No** (declared for future integration) |
-| `i2pr-runtime` | path | Yes (supervisor, service graph) |
+| `i2pr-core` | path | Declared but not yet referenced by daemon source |
+| `i2pr-proto` | path | Yes (I2NP envelopes in `outbound_lookup`, `inbound_dispatch`, `netdb_seam`, `bootstrap`) |
+| `i2pr-runtime` | path | Yes (supervisor, service graph, `tokio::spawn`) |
 | `i2pr-storage` | path | Yes (identity store) |
-| `i2pr-transport` | path | **No** (declared for future integration) |
+| `i2pr-transport` | path | Yes (delivery contracts in `outbound_lookup`) |
+| `i2pr-netdb` | path | Yes (RouterInfo store + validation + lookup state machines) |
+| `i2pr-netdb-persist` | path | Yes (`CacheLoader`, `ReseedIngestor`) |
+| `i2pr-tunnel` | path | Yes (`ExploratoryPool`, bridge, data-plane registry, roles) |
+| `rand_core` | 0.9 | Yes (RNG injection in `outbound_lookup`) |
 | `serde` | workspace | Yes (config deserialization) |
 | `thiserror` | workspace | Yes (error derives) |
+| `tokio` | workspace | Yes (`tokio::signal::ctrl_c`, `tokio::spawn`, `tokio::main`-equivalent `run_blocking` in `main.rs`) |
 | `toml` | workspace | Yes (TOML parsing) |
 | `tracing` | workspace | Yes (transitive via logging) |
 | `tracing-subscriber` | workspace | Yes (`EnvFilter`, `try_init()`) |
-| `tempfile` (dev) | — | For filesystem tests |
+| `tempfile` (dev) | workspace | For filesystem tests |
 
 `i2pr-transport-ntcp2` is intentionally **not** a direct
 dependency — it would flow through `i2pr-runtime` once the runtime
-integration lands.
+integration lands and NTCP2 is enabled in the service graph.
 
 ## Tests
 

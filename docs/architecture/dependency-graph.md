@@ -12,18 +12,20 @@ from this production graph; they are allowed to support crate-local tests.
 
 | Crate | May depend on |
 | --- | --- |
-| `i2pr-proto` | (no production crate) + `sha2`, `zeroize` |
-| `i2pr-crypto` | `i2pr-proto` + `ed25519-dalek`, `x25519-dalek`, `sha2`, `subtle`, `zeroize`, `rand_core`, `thiserror`, `chacha20poly1305`, `curve25519-elligator2` (Plan 121) |
+| `i2pr-proto` | (no production crate) + `sha2`, `zeroize`, `flate2` |
+| `i2pr-crypto` | `i2pr-proto` + `ed25519-dalek`, `x25519-dalek`, `sha2`, `subtle`, `zeroize`, `rand_core`, `thiserror`, `chacha20poly1305`, `hmac`, `elligator2` (replaces the retired `curve25519-elligator2 0.1.0-alpha.2`; Plan 131) |
 | `i2pr-storage` | `i2pr-crypto` + `rand_core`, `thiserror`, `zeroize` |
 | `i2pr-core` | (zero deps) |
-| `i2pr-netdb` | `i2pr-crypto`, `i2pr-proto` + `thiserror`, `base64ct`, `sha2`, `x509-parser`, `zip`, `rsa` |
+| `i2pr-netdb` | `i2pr-crypto`, `i2pr-proto` + `thiserror`, `base64ct`, `flate2`, `sha2`, `x509-parser`, `zip`, `sad-rsa` (renamed from `rsa`) |
 | `i2pr-netdb-persist` | `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, `i2pr-storage` + `thiserror` |
 | `i2pr-transport` | `i2pr-core`, `i2pr-proto` |
 | `i2pr-transport-ntcp2` | `i2pr-proto`, `i2pr-crypto`, `i2pr-transport` + `aes`, `chacha20poly1305`, `hmac`, `sha2`, `siphasher`, `thiserror`, `zeroize` |
+| `i2pr-tunnel` | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto` + `aes`, `cbc`, `chacha20`, `chacha20poly1305`, `rand_core`, `sha2`, `thiserror`, `x25519-dalek`, `zeroize` |
 | `i2pr-runtime` | `i2pr-core`, `i2pr-transport`, `i2pr-transport-ntcp2` + `tokio`, `tokio-util`, `futures-util`, `tracing` |
-| `i2pr-daemon` | `i2pr-crypto`, `i2pr-core`, `i2pr-proto`, `i2pr-runtime`, `i2pr-storage`, `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-transport` + `clap`, `serde`, `toml`, `thiserror`, `tracing`, `tracing-subscriber` |
+| `i2pr-daemon` | `i2pr-crypto`, `i2pr-core`, `i2pr-proto`, `i2pr-runtime`, `i2pr-storage`, `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-transport`, `i2pr-tunnel` + `clap`, `serde`, `toml`, `thiserror`, `tracing`, `tracing-subscriber`, `rand_core`, `tokio` |
 | `i2pr-testkit` (test-only) | every transport-and-runtime crate + `rand_chacha`, `rand_core`, `sha2`, `tokio` |
 | `i2pr-client` (Plan 120 / Plan 121) | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, `i2pr-tunnel` + `rand_chacha`, `rand_core`, `thiserror`, `zeroize` |
+| `tools/i2pr-interop` (non-production) | `i2pr-crypto`, `i2pr-proto`, `i2pr-runtime`, `i2pr-storage`, `i2pr-transport`, `i2pr-transport-ntcp2` |
 
 Reverse edges (i.e. "may NOT depend on"):
 
@@ -58,20 +60,40 @@ Reverse edges (i.e. "may NOT depend on"):
 ## ASCII graph
 
 ```text
-i2pr-daemon -> i2pr-runtime -> i2pr-transport-ntcp2
-         |                 |
-         v                 v
- i2pr-transport -------> i2pr-crypto -> i2pr-proto
-         |                  ^              ^
-         v                  |              |
-     i2pr-core              +--> i2pr-netdb (SU3/reseed validation)
-                               |
-              i2pr-storage --->+---- i2pr-netdb-persist (cache + reseed composition)
-                                (Plan 104)
+                              +--> i2pr-proto
+                              |
+                       i2pr-crypto
+                              |
+            +-----------------+------------------+
+            |                 |                  |
+        i2pr-storage     i2pr-netdb          i2pr-core
+            |                 |
+            v                 v
+   i2pr-netdb-persist  (SU3/reseed validation)
+        (cache + reseed
+         composition;               +--> i2pr-tunnel (Milestone 5 substrate)
+         Plan 104)                  |
+                                    v
+                              i2pr-transport
+                                    |
+                              i2pr-transport-ntcp2
+                                    |
+                              i2pr-runtime
+                                    |
+                              i2pr-daemon (composition root)
+                                    ^
+                                    |
+                              i2pr-client (Plan 120)
 
 i2pr-testkit (test/simulation only; may depend on transport crates;
               no production crate may depend on it)
 ```
+
+Reading from the arrows: each upper layer is built on top of the lower
+ones. `i2pr-netdb-persist` consumes `i2pr-storage` and `i2pr-netdb`; the
+direction was previously drawn backwards in this document and was
+corrected against `crates/i2pr-netdb-persist/Cargo.toml` during the
+2026-08-27 architecture audit.
 
 ## Runtime boundaries (orthogonal enforcement)
 

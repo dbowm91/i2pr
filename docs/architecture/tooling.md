@@ -6,7 +6,7 @@ rejects, fix the boundary, do not suppress the script.
 
 Paths are relative to the workspace root.
 
-## `scripts/` — Six guardrail shells
+## `scripts/` — Eight guardrail shells
 
 | Script | What it catches |
 | --- | --- |
@@ -15,6 +15,10 @@ Paths are relative to the workspace root.
 | `scripts/check-fixture-manifest.sh` | Drift in the I2NP fixture corpus under `tests/fixtures/i2np/`. Validates manifest IDs, classification (`positive`/`negative`), provenance (`locally-authored`/`independently-produced`), all metadata fields, on-disk file existence, and SHA-256 hash matches. Rejects orphan `.hex` files (i.e. unlisted fixtures). |
 | `scripts/check-ntcp2-vectors.sh` | Drift in the NTCP2 crypto vector corpus under `tests/fixtures/ntcp2/crypto/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, and SHA-256 match. Additionally verifies `vectors.tsv` contains all 13 required NTCP2 crypto vector IDs. |
 | `scripts/check-ntcp2-interoperability.sh` | Forbidden artifacts in the synthetic private NTCP2 interoperability lane. Checks for required disclaimer lines (`network_id`, `public_network = false`, `reseed = false`, etc.), exactly 8 `[[scenario]]` entries, and scans the committed `evidence/` directory for forbidden artifacts (`.pcap`, `.pcapng`, `router.identity`, `ntcp2.static.key`, private key headers). |
+| `scripts/check-rootless-interop-boundary.sh` | Plan 046 rootless sealed-namespace lane boundary. Forbids `sudo`/`ip netns`/`nft`/`setcap`/`--privileged`/`--network host` and silent fallback to the privileged backend. |
+| `scripts/check-multipass-interop-boundary.sh` | Plan 048/049/050/051 Multipass recovery lane boundary. Forbids host-policy mutations and global `multipass purge` outside an atomic reservation. |
+| `scripts/check-constrained-host-lane-boundary.sh` | Plan 077 constrained-host selection-order boundary (rootful Docker `--network none` → QEMU TCG `-nic none` → reduced inherited descriptors + seccomp → manual remote Linux → typed `no-full-runtime-lane` result). |
+| `scripts/check-plan095-workflow.sh` | Plan 095 manual live-wire workflow artifact-path drift and cleanup-guard violations. |
 | `scripts/fuzz-smoke.sh` | Opt-in smoke run of all 22 fuzz targets for 32 iterations each at seed=1 (`-runs=32 -seed=1`). Requires `cargo-fuzz` + nightly. Disables LeakSanitizer (`LSAN_OPTIONS=detect_leaks=0`) for managed environments. |
 
 **How they work**: `check-dependency-direction.sh` uses
@@ -277,36 +281,58 @@ Triggers: `on: push`, `on: pull_request` (all branches).
 - Cargo ecosystem: weekly, max 5 open PRs.
 - GitHub Actions: weekly, max 5 open PRs.
 
-## `.codex/` and `.agents/`
+## `.opencode/` and `.agents/`
 
-- `.codex/` — empty directory (placeholder).
-- `.agents/` — does not exist at the workspace root.
+- `.opencode/skills/` — loadable skill bundles for OpenCode sessions
+  operating on the harness lanes. Three skills ship with the repo:
+  `i2pr-ntcp2-interop`, `i2pr-rootless-sandbox`,
+  `i2pr-multipass-recovery`. These are the source of truth for
+  harness details; load the matching skill before touching a lane.
+- `.agents/` — symlink to `../.opencode/skills` (consumed by agents
+  that resolve the conventional `.agents/` location).
+
+The historical references to `.codex/` and a separate `.agents/`
+directory are stale.
 
 ## Top-level `Cargo.toml` — workspace configuration
 
-### Members (9 crates)
+### Members (13 crates + 1 non-production binary)
 
 ```
-i2pr-crypto, i2pr-proto, i2pr-core, i2pr-daemon, i2pr-runtime,
-i2pr-storage, i2pr-testkit, i2pr-transport, i2pr-transport-ntcp2
+crates/i2pr-crypto, crates/i2pr-proto, crates/i2pr-core,
+crates/i2pr-daemon, crates/i2pr-runtime, crates/i2pr-storage,
+crates/i2pr-testkit, crates/i2pr-transport,
+crates/i2pr-transport-ntcp2, crates/i2pr-netdb,
+crates/i2pr-netdb-persist, crates/i2pr-tunnel, crates/i2pr-client,
+tools/i2pr-interop
 ```
 
 Resolver v2, edition 2024, MSRV 1.88, workspace version 0.1.0.
+`crates/i2pr-testkit` and `tools/i2pr-interop` are non-production
+crates (`publish = false`).
 
-### Workspace dependencies (14, all default-features = false unless needed)
+### Workspace dependencies (32, all default-features = false unless noted)
 
-- **Crypto**: `aes 0.8.4`, `chacha20poly1305 0.10.1` (+alloc),
-  `ed25519-dalek 2.2` (+std+zeroize), `hmac 0.12.1`,
+- **Crypto**: `aes 0.8.4`, `chacha20 0.9.1`, `chacha20poly1305 0.10.1`
+  (+alloc), `crypto-common = 0.1.7` (pinned),
+  `curve25519-elligator2 0.1.0-alpha.2` (deprecated, retained for
+  transitional use; Plan 131 retired it for the production Elligator
+  branch and `elligator2 = 0.1.0` is the active primitive),
+  `elligator2 = 0.1.0`,
+  `ed25519-dalek 2.2` (+std+zeroize), `hmac 0.12.1`, `rand_chacha 0.9`,
+  `rand_core 0.9` (+os_rng where noted), `sad-rsa 0.2` (+std+encoding+sha2),
   `sha2 0.10`, `siphasher 1.0.3`, `subtle 2.6`,
   `x25519-dalek 2.0.1` (+static_secrets+zeroize),
+  `x509-cert 0.2` (+builder+pem), `x509-parser 0.18` (+verify),
   `zeroize 1.8` (+derive).
-- **Runtime**: `tokio 1.48` (+io-util+macros+net+rt+sync+time+test-util),
+- **Compression / packaging**: `flate2 1.1` (+rust_backend), `zip 2.2`
+  (+deflate), `base64ct 1.8` (+alloc), `cbc 0.1` (+block-padding).
+- **Runtime**: `tokio 1.48` (+io-util+macros+net+rt+signal+sync+time+test-util),
   `tokio-util 0.7` (+rt), `futures-util 0.3` (+std).
 - **General**: `clap 4.5` (+derive+help+std+usage),
   `thiserror 2.0`, `tracing 0.1`,
   `tracing-subscriber 0.3` (+env-filter+fmt),
-  `serde 1.0` (+derive), `toml 0.8`, `rand_chacha 0.9`,
-  `rand_core 0.9`.
+  `serde 1.0` (+derive), `toml 0.8`, `tempfile 3.14`.
 
 ### Workspace lints
 

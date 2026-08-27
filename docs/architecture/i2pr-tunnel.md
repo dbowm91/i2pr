@@ -282,11 +282,16 @@ on `i2pr-proto`, `i2pr-crypto`, `i2pr-core`, and `i2pr-netdb`.
 
 ## Module layout
 
+The crate ships **21 modules** at the crate root. Previous revisions
+of this doc listed 12; the 9 added through the Plan 112–117 sequence
+are noted in the table.
+
 | Module | Purpose |
 | --- | --- |
+| `lib` | Crate root, module wiring, re-exports, `BoundedTunnelPool` / `BoundedTunnelPoolConfig` type aliases (Plan 120) |
 | `identity` | `TunnelId`, `TunnelDirection`, `TunnelRole`, `TunnelLifetime`, `TunnelState`, `TunnelPeer` |
 | `config` | Bounded `ExploratoryPoolConfig` with hard ceilings |
-| `pool` | Deterministic `ExploratoryPool` with bounded replacement, expiry, and failure accounting |
+| `pool` | Deterministic `ExploratoryPool` with bounded replacement, expiry, and failure accounting; `PublicTunnelRouting`, `MaterialState`, `TunnelEntry`, `ActivationError`, `RegistrationError` |
 | `build` | `BuildRecordLayout` (Short/Variable) over `DeferredBuildRecords`; `BuildRequestKind` / `BuildReplyKind` wire-type markers |
 | `build_crypto` | `BuildCryptography` trait + `LayerKeys` zeroizing wrapper + `ValidatedRecordSlot` typed nonce + `NoBuildCryptography` default + the Plan 109 ECIES-X25519 Noise-N implementation |
 | `short_record` | Typed 154-byte request and 202-byte reply record encoders (`encode_with_rng` + `encode_deterministic_zero_padded`); `HopRole`, `LayerEncryptionType`, `ShortResponseCode`, `BuildOptions`, `ShortBuildError::RandomnessUnavailable` |
@@ -296,15 +301,29 @@ on `i2pr-proto`, `i2pr-crypto`, `i2pr-core`, and `i2pr-netdb`.
 | `conformance_fixtures` | Plan 109 single-record conformance fixtures with independent reference Noise-N and SMTunnel KDF derivation |
 | `provider` | `ExploratoryPoolReplyPathProvider` that turns the pool into a `ReplyPathProvider` |
 | `bridge` | Plan 115 `ShortBuildI2npBridge` — the canonical production seam from `ShortBuildAction::Deliver` to a complete I2NP type-25 message; no double-prefix, round-trip body equality |
+| `multirecord` | `ShortBuildRecordSet`, `OriginatorFake`, `MessageHopProcessor`, `CreatorReplyPostprocessor`, `assign_record_slots`, `chacha20_transform`, `validate_routing_chain`, `prepare_short_build_message`, and the Plan 112 count-prefixed STBM/OTBRM contract helpers |
+| `fixed_vectors` | Frozen Noise-N conformance constants |
+| `established` | `EstablishedTunnel`, `EstablishedHop`, `EstablishedMaterial` (secret-bearing companion; one-shot `into_established_tunnel`), `EstablishedRole`, `EstablishedNextHop` |
+| `data_plane_registry` | `DataPlaneRegistry`, `DataPlaneCapacity`, `RegistryRemoval`, `RegistryError` — Plan 117 bounded activation state for local roles |
+| `data` | `TunnelMessageBuilder`, `TunnelMessageParser`, `DeliveryInstruction`, `FragmentDelivery`, `TunnelPayloadHeader`, overhead constants |
+| `fragment` | `BoundedReassembler`, `TunnelFragment`, `ReassemblyKey`, `ReassembledFragment`, `insert_with_delivery`, `expire_due`, `purge` |
+| `layer` | `TunnelLayerTransform` (AES-256 ECB/CBC), `DuplicateWindow`, `DuplicateToken` |
+| `roles` | `OutboundGatewayRole`, `InboundGatewayRole`, `OutboundParticipantRole`, `InboundParticipantRole`, `OutboundEndpointRole`, `LocalInboundEndpointRole`, `RouterDeliveryAction`, `RouterDeliveryKind`, `OBGWRouterDelivery`, `OutboundCell` |
 
 ## Dependency boundary
 
 ```text
-i2pr-tunnel -> i2pr-proto, i2pr-crypto, i2pr-core, i2pr-netdb + thiserror, sha2, zeroize, chacha20poly1305, x25519-dalek, rand_core
+i2pr-tunnel -> i2pr-proto, i2pr-crypto, i2pr-core, i2pr-netdb
+              + aes, cbc, chacha20, chacha20poly1305, rand_core,
+                sha2, thiserror, x25519-dalek, zeroize
 ```
 
 Runtime-neutral: no `tokio`, no `std::net`, no `std::fs`, no sockets,
 no DNS. The plans-of-record forbid adding any of these dependencies.
+Note that `i2pr-tunnel` is the only crate in the workspace that
+depends on `aes` / `cbc` (used by `layer.rs` for per-hop AES-256
+tunnel-layer transforms); all other symmetric primitives flow through
+`i2pr-transport-ntcp2` or `i2pr-crypto`.
 
 ## Plan 107 + Plan 108 + Plan 109 surfaces
 

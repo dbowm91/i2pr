@@ -71,8 +71,10 @@ i2pr-netdb -> i2pr-crypto, i2pr-proto + thiserror, base64ct, sha2, x509-parser, 
 ```
 
 Runtime-neutral: no `tokio`, no `std::net`, no `std::fs`, no sockets,
-no DNS. Filesystem I/O belongs to `i2pr-storage` (raw-byte seam) and
-`i2pr-netdb-persist` (composition owner).
+no DNS. Filesystem I/O belongs to `i2pr-storage` (raw-byte seam via
+the `cache_seam::ByteCache` module) and `i2pr-netdb-persist`
+(composition owner — see [i2pr-netdb-persist.md](i2pr-netdb-persist.md)
+for the cache loader and reseed ingestor entry points).
 
 ## Plan 104 surfaces
 

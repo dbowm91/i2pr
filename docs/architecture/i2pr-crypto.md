@@ -92,7 +92,8 @@ The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, and `src/ecies.rs`:
 | `SIGNATURE_LENGTH` | const `usize` (= 64) | `lib.rs` |
 | `IDENTITY_PADDING_LENGTH` | const `usize` (= 320) | `lib.rs` |
 | `X25519_KEY_LENGTH` | const `usize` (= 32) | `lib.rs` |
-| `CryptoError` | enum (6 variants) | `lib.rs` |
+| `CryptoError` | enum | `lib.rs` |
+| `EciesError` | enum (13 variants — `ElligatorDecode`, `AllZeroKey`, `InvalidSharedSecret`, `AuthenticationFailed`, `EncryptionFailed`, `CiphertextTooLarge`, `CiphertextTooShort`, `UnboundNewSessionNotSupported`, `TagSetExhausted`, `TagSetIndexBeyondCeiling`, `Hkdf`, `RandomnessUnavailable`, plus the parent `Crypto(#[from] CryptoError)` forwarding variant) | `ecies.rs` |
 | `X25519PrivateKey` | struct | `lib.rs` |
 | `X25519SharedSecret` | struct | `lib.rs` |
 | `TransportStaticKey` | type alias for `X25519PrivateKey` | `lib.rs` |
@@ -110,12 +111,12 @@ The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, and `src/ecies.rs`:
 | `hkdf_sha256_32` | fn | `hkdf.rs` |
 | `EciesError` | enum | `ecies.rs` |
 | `EciesEphemeralKeypair` | struct | `ecies.rs` |
-| `EciesEphemeralRepresentative` | type alias for `[u8; 32]` | `ecies.rs` |
+| `EciesEphemeralRepresentative` | newtype struct wrapping `[u8; 32]` (not a type alias) | `ecies.rs` |
 | `EciesEphemeralSecret` | zeroizing wrapper | `ecies.rs` |
-| `EciesNoiseState` | struct (HKDF transcript) | `ecies.rs` |
+| `EciesNoiseState` | `pub(crate)` struct (HKDF transcript — not re-exported from `lib.rs`; the public surface uses the seal/open helpers, not the raw state) | `ecies.rs` |
 | `EciesTagSet` / `EciesTagSetEntry` | struct (directional tag/key ratchet) | `ecies.rs` |
 | `BoundNewSessionMessage`, `BoundNewSessionSender`, `NewSessionResponder`, `SealedNewSessionReply`, `OpenedNewSessionReply` | structs | `ecies.rs` |
-| `NewSessionMessage`, `NewSessionReplyMessage`, `ExistingSessionMessage` | structs | `ecies.rs` |
+| `NewSessionMessage`, `NewSessionReplyMessage`, `ExistingSessionMessage` | structs — `NewSessionMessage` is **not** a top-level public type in the current source; the bound-session codec exposes only `BoundNewSessionMessage` (Alice's derived public key in the static-key section) per Plan 126. `NewSessionReplyMessage` and `ExistingSessionMessage` are public wire-layout carriers. | `ecies.rs` |
 | `seal_bound_new_session`, `open_bound_new_session`, `seal_new_session_reply`, `open_new_session_reply`, `seal_existing_session`, `open_existing_session` | fns | `ecies.rs` |
 | `decode_representative` | fn | `ecies.rs` |
 
@@ -221,7 +222,8 @@ The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, and `src/ecies.rs`:
 | `x25519-dalek` | X25519 DH |
 | `zeroize` | Memory wiping |
 | `chacha20poly1305` | ECIES session AEAD seam (Plan 121) |
-| `curve25519-elligator2` (= 0.1.0-alpha.2) | RFC 9380 even-half representative codec (Plan 121 §2/§12 audited dependency) |
+| `curve25519-elligator2` (= 0.1.0-alpha.2) | **Deprecated**; workspace-dep retained for transitional use only. Plan 131 retired this dependency for the production Elligator branch because its `RFC9380::to_representative` branch choice was deterministic and its `Randomized` mode rotated the derived X25519 public key. |
+| `elligator2` (= 0.1.0) | **Active** RFC 9380 even-half representative codec. Plan 131 production switch; `EciesEphemeralKeypair::generate` drives `elligator2::to_representative(point, tweak)` with a CSPRNG tweak. |
 | `rand_chacha` (dev) | Deterministic test RNGs |
 
 Dependency chain is satisfied: `i2pr-proto ← i2pr-crypto ← i2pr-storage`.

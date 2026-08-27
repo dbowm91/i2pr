@@ -33,7 +33,14 @@ filesystem code gated behind `#![forbid(unsafe_code)]`.
 
 ## Module layout
 
-Single file crate — `src/lib.rs`.
+`src/lib.rs` carries the identity and NTCP2 static-key stores plus a
+substantial `cache_seam` module that exposes a permission-hardened,
+byte-level, on-disk cache for the Plan 104 NetDB composition owner
+(`i2pr-netdb-persist`). The cache seam is deliberately byte-level:
+it does not know about RouterInfo, ZIP, SU3, or the NetDB store. The
+composition owner decodes bytes, validates them through `i2pr-netdb`,
+and then asks this seam to atomically write or remove the canonical
+bytes.
 
 ## Public surface
 
@@ -41,46 +48,70 @@ Single file crate — `src/lib.rs`.
 
 | Item | Line | Value |
 | --- | --- | --- |
-| `IDENTITY_FILE_NAME` | 25 | `"router.identity"` |
-| `MAX_IDENTITY_FILE_SIZE` | 27 | `4096` |
-| `IDENTITY_FORMAT_VERSION` | 29 | `1` |
-| `NTCP2_TRANSPORT_KEY_FILE_NAME` | 32 | `"ntcp2.static.key"` |
-| `MAX_NTCP2_TRANSPORT_KEY_FILE_SIZE` | 34 | `4096` |
-| `NTCP2_TRANSPORT_KEY_FORMAT_VERSION` | 36 | `1` |
+| `IDENTITY_FILE_NAME` | 32 | `"router.identity"` |
+| `MAX_IDENTITY_FILE_SIZE` | 34 | `4096` |
+| `IDENTITY_FORMAT_VERSION` | 36 | `2` (current format; not `1`) |
+| `NTCP2_TRANSPORT_KEY_FILE_NAME` | 39 | `"ntcp2.static.key"` |
+| `MAX_NTCP2_TRANSPORT_KEY_FILE_SIZE` | 41 | `4096` |
+| `NTCP2_TRANSPORT_KEY_FORMAT_VERSION` | 43 | `1` |
 
 ### Errors
 
-- `enum StorageError` (line 60). Variants: `Io`, `UnsafePath`,
-  `AlreadyExists`, `InsecurePermissions`, `TooLarge`, `Truncated`,
-  `TrailingBytes`, `Malformed`, `UnsupportedVersion`,
+- `enum StorageError` (lib.rs:69). Variants: `Io { operation, source }`,
+  `UnsafePath`, `AlreadyExists`, `InsecurePermissions`, `TooLarge`,
+  `Truncated`, `TrailingBytes`, `Malformed`, `UnsupportedVersion`,
   `UnsupportedAlgorithm`, `Integrity`, `Crypto` (transparent from
-  `CryptoError`).
+  `CryptoError`), plus `Cache` (transparent from `CacheError`).
 
 ### Types
 
-- `struct IdentityStore` (line 124) with:
+- `struct IdentityStore` (lib.rs:132) with:
   - `new`, `in_data_dir`, `path`, `prepare_directory`, `save_new`,
-    `save`, `load`.
-- `struct TransportStaticKeyMaterial` (line 228) with:
-  - `generate`, `from_parts`, `key`, `iv`. **Not `Clone`**, no
-    `Debug`.
-- `struct TransportStaticKeyStore` (line 261) with:
+    `save`, `load`. `IdentityStore` derives `Clone, Debug`.
+- `struct TransportStaticKeyMaterial` (lib.rs:237) with:
+  - `generate`, `from_parts`, `into_parts`, `key`, `iv`. **Not
+    `Clone`**, no `Debug`.
+- `struct TransportStaticKeyStore` (lib.rs:278) with:
   - `new`, `in_data_dir`, `path`, `generate_new`, `save_new`, `load`.
-- `fn decode_transport_static_key` (line 360) — bounded entry point
+  Derives `Clone, Debug`.
+- `fn decode_transport_static_key` (lib.rs:378) — bounded entry point
   used by the isolated fuzz harness.
 
 ### Derived file-length constants
-- `IDENTITY_FILE_LENGTH` = 184
-- `NTCP2_FILE_LENGTH` = 132
+- `IDENTITY_FILE_LENGTH` = **504** bytes
+  = `HEADER_LENGTH(24) + PAYLOAD_LENGTH(128) + IDENTITY_PADDING_LENGTH(320) + CHECKSUM_LENGTH(32)`
+  where `IDENTITY_PADDING_LENGTH = 384 − 2·PRIVATE_KEY_LENGTH` (lib.rs:50–52).
+- `NTCP2_FILE_LENGTH` = 132 bytes
+  = `NTCP2_HEADER_LENGTH(20) + PRIVATE_KEY_LENGTH(32) + NTCP2_PUBLIC_KEY_LENGTH(32) + NTCP2_IV_LENGTH(16) + NTCP2_CHECKSUM_LENGTH(32)`.
+
+### Cache seam (`cache_seam` module, lib.rs:406–739)
+
+Exposes a permission-hardened, byte-level cache used by the Plan 104
+NetDB composition owner. The cache is file-name-safe, scan-bounded, and
+strictly sized; the composition owner (`i2pr-netdb-persist`) decodes
+bytes and validates them through `i2pr-netdb`, then delegates atomic
+write/remove/read/scan to this seam.
+
+- `struct ByteCache` — public:
+  - `in_data_dir`, `root`, `pending_dir`, `exists`,
+    `prepare`, `validate_name`, `path_for`, `write`, `remove`,
+    `read`, `scan`.
+- `enum CacheError` — `Io`, `UnsafePath`, `InvalidFilename`,
+  `FileTooLarge`, `ScanBudgetExceeded`, `ScanEntriesExceeded`,
+  `EmptyPayload`. `From<CacheError> for StorageError` conversion.
+- Constants: `ROUTERS_SUBDIR`, `PENDING_SUBDIR`,
+  `MAX_CACHE_FILE_BYTES = 64 KiB`,
+  `MAX_CACHE_SCAN_BYTES = 32 MiB`,
+  `MAX_CACHE_SCAN_ENTRIES = 16384`.
 
 ## Record layouts
 
-### `router.identity` (184 bytes)
+### `router.identity` (504 bytes — format version 2)
 
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 8 | Magic `b"I2PRID\0\0"` |
-| 8 | 2 | Format version (`1`) |
+| 8 | 2 | Format version (`2`) |
 | 10 | 2 | Reserved (`0`) |
 | 12 | 2 | Signing algorithm (must equal `ROUTER_SIGNING_KEY_TYPE.code()`) |
 | 14 | 2 | Encryption algorithm (must equal `ROUTER_CRYPTO_KEY_TYPE.code()`) |
@@ -92,7 +123,12 @@ Single file crate — `src/lib.rs`.
 | 56 | 32 | Encryption private key (X25519 seed) |
 | 88 | 32 | Signing public key (derived) |
 | 120 | 32 | Encryption public key (derived) |
-| 152 | 32 | `SHA256(header ++ payload)` checksum |
+| 152 | 320 | Identity padding (`IDENTITY_PADDING_LENGTH`) |
+| 472 | 32 | `SHA256(header ++ payload)` checksum |
+
+Version 2 added the 320-byte identity padding field that pushes the
+file length from 184 to 504. The padding is opaque to the consumer but
+fixed-length so the record layout stays deterministic.
 
 ### `ntcp2.static.key` (132 bytes)
 

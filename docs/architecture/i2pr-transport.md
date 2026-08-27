@@ -71,7 +71,11 @@ pub use i2pr_core::{
   Authenticated → Draining → Closing → Closed; `Failed` sink),
   `InvalidLinkTransition`.
 - `delivery.rs`: `DeliveryRequest`, `QueuedDelivery`,
-  `DeliveryOutcome` (10 variants).
+  `DeliveryOutcome` (12 variants — `Accepted`, `NoActiveLink`,
+  `QueueFull`, `LinkClosedBeforeWrite`, `LinkReplaced`,
+  `ResourceDenied`, `DeadlineElapsed`, `Cancelled`,
+  `ProtocolTerminated`, `PeerIdentityMismatch`, `DialScheduled`,
+  `DialAlreadyPending`).
 - `payload.rs`: `EncodedI2npMessage` (bounded, `Debug` shows length
   only), `PayloadError`.
 - `resource.rs`: `TransportLimits`, `TransportResources`,
@@ -105,7 +109,7 @@ pub use i2pr_core::{
   `CancellationToken`. No channel, no future, no async trait.
 - `QueuedDelivery` (`delivery.rs:110`) — request retained by a link
   queue with exact resource grants. RAII: drops release accounting.
-- `DeliveryOutcome` (`delivery.rs:179`) — 10-variant typed outcome.
+- `DeliveryOutcome` (`delivery.rs:179`) — 12-variant typed outcome.
   Notably **not** `impl Error` — callers match on variants rather
   than reading error strings.
 
@@ -135,8 +139,8 @@ pub use i2pr_core::{
   address observation with no raw endpoint. Bounded ring buffer of
   `MAX_REACHABILITY_OBSERVATIONS = 64`.
 - `TransportSnapshot` (`snapshot.rs:70`) — deterministic aggregate:
-  links sorted by `LinkId`, observations in insertion order,
-  resource usage in class order.
+  `links` sorted by `LinkId`, `observations` in insertion order,
+  `resources` in class order, plus `dial_backoff_entries: usize`.
 - `TransportManager::snapshot()` (`manager.rs:831`) — privacy-safe:
   capped at `MAX_LINK_SNAPSHOT_ENTRIES = 256`; no raw hash bytes,
   no endpoints.

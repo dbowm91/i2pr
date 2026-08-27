@@ -124,13 +124,20 @@ i2pr-core <- i2pr-transport <- i2pr-runtime <- i2pr-daemon (composition root)
                           ^                     (cache + reseed)
                           |                          |
                 i2pr-proto + i2pr-crypto     i2pr-netdb (SU3/reseed)
-                                                  ^
-                                                  |
-                                            i2pr-tunnel
-                                       (Milestone 5 substrate)
+                                                   ^
+                                                   |
+                                             i2pr-tunnel
+                                        (Milestone 5 substrate)
+                                    ^
+                                    |
+                              i2pr-client
+                              (Plan 120+)
 
 i2pr-testkit (test-only; may depend on transport crates;
               no production crate may depend on it)
+
+tools/i2pr-interop (non-production launcher; depends on transport +
+                    runtime + storage; never activates i2pr-daemon)
 ```
 
 Reading from the arrows: lower crates stay pure, runtime-neutral, and
@@ -154,7 +161,7 @@ tests, and any distinctive design choices.
 | `i2pr-storage` | Persistence | Versioned, atomic, permission-hardened storage for router identity and NTCP2 static key. | [i2pr-storage.md](i2pr-storage.md) |
 | `i2pr-core` | Service contracts | Runtime-neutral lifecycle, health, cancellation, and resource budgets. Zero dependencies. | [i2pr-core.md](i2pr-core.md) |
 | `i2pr-netdb` | Local NetDB | Runtime-neutral RouterInfo validation, bounded in-memory NetDB store, SU3/reseed verification, peer-selection primitives, transport-neutral lookup/publication state machines, and local signed RouterInfo construction. Plan 103/104/105/119. | [i2pr-netdb.md](i2pr-netdb.md) |
-| `i2pr-netdb-persist` | Cache composition | Composition owner for Plan 104 persistent RouterInfo cache and SU3 reseed ingestion. Bridges `i2pr-storage` (raw bytes) and `i2pr-netdb` (validation). | — |
+| `i2pr-netdb-persist` | Cache composition | Composition owner for Plan 104 persistent RouterInfo cache and SU3 reseed ingestion. Bridges `i2pr-storage` (raw bytes) and `i2pr-netdb` (validation). | [i2pr-netdb-persist.md](i2pr-netdb-persist.md) |
 | `i2pr-tunnel` | Milestone 5 substrate | Runtime-neutral tunnel identity, exploratory pool, build-record layout surface, build-cryptography seam, ECIES-X25519 short tunnel-build construction primitive (Plan 111 final local short-build conformance + Plan 112 outbound pre-delivery closure + Plan 113 inbound reference reconciliation + Plan 114 terminal routing and tunnel-chain correction + Plan 115 canonical production I2NP bridge with no-double-prefix STBM record count byte invariant + Plan 116 local tunnel data plane + Plan 117 outbound/inbound exploratory NetDB composition), runtime-neutral build state machine, success-only registrar, deterministic responder peer simulator, and reply-path provider. Plans 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117. | [i2pr-tunnel.md](i2pr-tunnel.md) |
 | `i2pr-transport` | Transport contracts | Runtime-neutral link/delivery contracts. No Tokio, no I/O, no async. | [i2pr-transport.md](i2pr-transport.md) |
 | `i2pr-transport-ntcp2` | NTCP2 protocol | Runtime-neutral Noise handshake, AEAD frames, data-phase blocks. | [i2pr-transport-ntcp2.md](i2pr-transport-ntcp2.md) |
@@ -421,6 +428,10 @@ The boundary contract is enforced by scripts under `scripts/`:
 | `check-fixture-manifest.sh` | Drift in the I2NP fixture corpus under `tests/fixtures/i2np/`. |
 | `check-ntcp2-vectors.sh` | Drift in the NTCP2 crypto vector corpus under `tests/fixtures/ntcp2/crypto/`. |
 | `check-ntcp2-interoperability.sh` | Forbidden artifacts in the synthetic private NTCP2 interoperability lane; manifest pinned to exactly eight scenarios with required disclaimer lines. |
+| `check-rootless-interop-boundary.sh` | Forbidden artifacts in the Plan 046 rootless sealed-namespace lane (no `sudo`/`ip netns`/`nft`/`setcap`/`--privileged`/`--network host`; no silent fallback to the privileged backend). |
+| `check-multipass-interop-boundary.sh` | Forbidden host-policy mutations in the Plan 048/049/050/051 Multipass recovery lane (no global `multipass purge`; no host lifecycle mutation outside an atomic reservation). |
+| `check-constrained-host-lane-boundary.sh` | Bypasses of the Plan 077 constrained-host selection order (rootful Docker `--network none` → QEMU TCG `-nic none` → reduced inherited descriptors + seccomp → manual remote Linux → typed `no-full-runtime-lane` result). |
+| `check-plan095-workflow.sh` | Artifact-path drift and cleanup-guard violations on the manual Plan 095 live-wire workflow. |
 | `fuzz-smoke.sh` | Opt-in smoke run of all 22 fuzz targets (requires nightly + `cargo-fuzz`). |
 
 ## Conventions
@@ -454,6 +465,26 @@ script gates, and review.
 - Conformance: [`specs/CONFORMANCE.md`](../../specs/CONFORMANCE.md)
 - Plan-of-record: latest active `plans/NNN-*.md`
 - Workspace guidelines: [`AGENTS.md`](../../AGENTS.md)
+
+## Authoritative reference lanes
+
+Two additional on-disk surfaces sit alongside `docs/architecture/` and
+must be read before changing protocol, harness, or evidence decisions:
+
+- **`specs/references/`** — provenance and reference documents for
+  protocol decisions taken in-plan. Examples:
+  `ecies-destination-ratchet.md` (Plan 126),
+  `streaming-packet-wire.md` (Plan 128),
+  `elligator2-production-representation.md` (Plan 131/134),
+  `short-build-inbound-creator-key.md` (Plan 113). These are the
+  "why" for current behavior; the deep-dives in this directory are
+  the "what" and "how".
+- **`.opencode/skills/`** — loadable skill bundles for OpenCode
+  sessions operating on the harness lanes. Three skills ship with
+  the repo: `i2pr-ntcp2-interop` (Plan 038–100 harness surface),
+  `i2pr-rootless-sandbox` (Plan 046 rootless sealed-namespace lane),
+  `i2pr-multipass-recovery` (Plan 048–051/053 Multipass guest lane).
+  Load the matching skill before touching a lane.
 
 ## Plan 077 constrained-host execution lane
 
