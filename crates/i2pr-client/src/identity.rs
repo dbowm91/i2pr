@@ -151,6 +151,20 @@ impl DestinationIdentity {
         self.static_key.secret_bytes()
     }
 
+    /// Borrows the raw 32-byte Ed25519 signing seed.
+    ///
+    /// This accessor is reserved for the SAM private-destination
+    /// codec in `i2pr-api` and the bounded SAM-style import/export
+    /// seam. It is the documented narrow path that lets the SAM
+    /// codec extract the seed required by the standard
+    /// `PrivateKeyFile` concatenation. The accessor is **not** a
+    /// generic getter for arbitrary call sites; do not add more
+    /// consumers without updating the comment and recording the new
+    /// consumer in this crate's API review.
+    pub const fn signing_seed_bytes(&self) -> &[u8; PRIVATE_KEY_LENGTH] {
+        self.signing_key.secret_bytes()
+    }
+
     /// Signs the supplied message with the destination signing private key.
     ///
     /// This is the only secret-consuming operation the identity owner exposes.

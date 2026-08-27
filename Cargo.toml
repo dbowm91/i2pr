@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/i2pr-api",
     "crates/i2pr-crypto",
     "crates/i2pr-proto",
     "crates/i2pr-client",

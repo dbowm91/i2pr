@@ -77,7 +77,7 @@
 # Structural evidence may be recorded before interoperability;
 # all entries remain non-advertised.
 schema = 1
-milestone = 6
+milestone = 7
 plan_103_implementation_floor = "plans/103-status.md"
 plan_104_implementation_floor = "plans/104-status.md"
 plan_105_implementation_floor = "plans/105-status.md"
@@ -153,6 +153,13 @@ plan_134_closure = "plans/134-status.md"
 plan_134_status = "passed-milestone6-recv-window-ack-ceiling-closure"
 milestone6_local_product = "passed"
 milestone6_interoperable = "not-yet-claimed"
+plan_135_plan_of_record = "plans/135-m7-sam31-implementation-roadmap.md"
+plan_135_status = "active-milestone7-sam31-planning-authority"
+plan_136_plan_of_record = "plans/136-m7-sam31-protocol-private-destination-foundation.md"
+plan_136_closure = "plans/136-status.md"
+plan_136_status = "passed-m7-sam31-protocol-private-destination-foundation"
+milestone7_sam_protocol = "passed"
+milestone7_loopback_server = "blocked-on-plan137"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -749,5 +756,27 @@ evidence = [
     "plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md",
     "plans/111-short-build-final-local-conformance-correction.md",
     "plans/111-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "sam.v31-protocol-foundation"
+protocol = "sam"
+structure = "sam-3.1-bounded-line-parser-version-negotiation-private-destination-codec"
+scope = "required"
+status = "experimental"
+notes = "Plan 136 closed as `passed-m7-sam31-protocol-private-destination-foundation` per plans/136-status.md. `i2pr-api` owns the bounded line/command/reply parser, typed HELLO VERSION / DEST GENERATE / SESSION CREATE / STREAM CONNECT / STREAM ACCEPT / STREAM FORWARD / NAMING LOOKUP / PING / PONG / QUIT vocabulary, strict SAM 3.1-only version negotiation with typed NOVERSION failure path, strict RFC 4648 SAM Base64 codec, SamPrivateDestination wrapper (non-Clone, non-Debug, zeroize-on-drop) carrying the standard Java PrivateKeyFile concatenation, and the runtime-neutral DEST GENERATE / SESSION CREATE private-destination import/export surface. No sockets, no timers, no Tokio; Plan 137 will wire the SAM bridge service into the supervised daemon."
+evidence = [
+    "crates/i2pr-api/src/sam/version.rs",
+    "crates/i2pr-api/src/sam/parser.rs",
+    "crates/i2pr-api/src/sam/command.rs",
+    "crates/i2pr-api/src/sam/reply.rs",
+    "crates/i2pr-api/src/sam/base64.rs",
+    "crates/i2pr-api/src/sam/private_destination.rs",
+    "crates/i2pr-api/src/sam/dest_generate.rs",
+    "crates/i2pr-api/src/sam/session_create.rs",
+    "specs/references/sam31-private-destination.md",
+    "plans/136-m7-sam31-protocol-private-destination-foundation.md",
+    "plans/136-status.md",
 ]
 advertised = false

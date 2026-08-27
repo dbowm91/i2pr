@@ -34,7 +34,7 @@ skill is the index for navigating the rest of the documentation.
 
 ## Workspace layout
 
-13-crate Rust workspace under `crates/` plus one test-only binary
+14-crate Rust workspace under `crates/` plus one test-only binary
 under `tools/`. Production crates depend upward through the runtime;
 test crates and helpers stay on the side.
 
@@ -77,6 +77,12 @@ Quick reference (deep-dive per crate):
   tunnel pools, signed Standard LeaseSet2 generation/lifecycle,
   ECIES-X25519-AEAD-Ratchet session layer, destination routing,
   I2P Streaming core (`StreamingManager` + `StreamingDestinationAdapter`).
+- `i2pr-api` — application-protocol adapter (Plan 136): SAM 3.1
+  bounded line/command/reply parser, typed command surface, version
+  negotiation, SAM Base64 codec, SamPrivateDestination codec, and
+  the DEST GENERATE / SESSION CREATE private-destination
+  import/export surface. Depends only on `i2pr-client`,
+  `i2pr-crypto`, and `i2pr-proto`.
 - `i2pr-testkit` — deterministic simulation; **no production crate
   may depend on it.**
 - `tools/i2pr-interop` — non-production test launcher. Must never
@@ -95,7 +101,9 @@ do not weaken the script.
   `i2pr-transport`; `i2pr-netdb` consumes `i2pr-crypto`/
   `i2pr-proto`; `i2pr-netdb-persist` adds `i2pr-storage`;
   `i2pr-client` consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/
-  `i2pr-proto`/`i2pr-tunnel`. **No production crate depends on
+  `i2pr-proto`/`i2pr-tunnel`; **`i2pr-api` consumes `i2pr-client`/
+  `i2pr-crypto`/`i2pr-proto`**; `i2pr-daemon` will consume `i2pr-api`
+  in Plan 137. **No production crate depends on
   `i2pr-testkit`.**
 - **Runtime boundaries** (`scripts/check-runtime-boundaries.sh`):
   no `unbounded_channel`, no `tokio::*`/`std::net`/`std::fs` in
@@ -172,6 +180,7 @@ locally; `Cargo.lock` is authoritative.
   The forced-cleanup 100-iteration test must run serially:
   `cargo test -p i2pr-runtime forced_child_cleanup_is_repeatably_joined -- --test-threads=1`.
 - Deterministic testkit: `cargo test -p i2pr-testkit --all-targets`.
+- SAM 3.1 protocol foundation: `cargo test -p i2pr-api --all-targets`.
 - Constrained-host lane:
   `python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'`.
 
@@ -307,7 +316,7 @@ before touching the surface it covers.
 
 | Skill | Covers |
 | --- | --- |
-| [`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md) | Local Milestone 6 product path (destinations, garlic, LS2, Streaming); SAM baseline planning (Milestone 7) stub. The routine development seam. |
+| [`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md) | Work on the local product path of the i2pr Rust I2P router — Milestone 6 (destinations, garlic, LS2, Streaming) and the next product layer (SAM 3.1 baseline, Milestone 7). The i2pr-api SAM foundation has landed under Plan 136. |
 | [`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md) | Navigate `docs/architecture/`, `docs/adr/`, `plans/`, and `specs/`; audit doc-vs-source drift. |
 | [`i2pr-ntcp2-interop`](.opencode/skills/i2pr-ntcp2-interop/SKILL.md) | Host-side Plan 038 NTCP2 reference-router harness. The active development interop lane is **closed**; NTCP2 remains experimental and non-advertised. |
 | [`i2pr-rootless-sandbox`](.opencode/skills/i2pr-rootless-sandbox/SKILL.md) | Plan 046 rootless sealed-namespace lane (host-side fallback). On this host returns the typed blocker `blocked_unprivileged_user_namespace`. |

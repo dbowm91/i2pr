@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 (destinations, garlic, LeaseSet2, Streaming) and the next product layer (SAM baseline planning, Milestone 7). Use when an agent is asked to modify, test, or extend i2pr-client, i2pr-netdb, i2pr-tunnel, i2pr-proto, i2pr-crypto, or i2pr-daemon destination/streaming/LS2 code paths, write or run the deterministic trajectory tests under crates/i2pr-client/tests/, exercise the testkit, debug local Milestone 6 trajectories, or plan the next SAM baseline milestone. Also use when asked to find the canonical closure record for a Milestone 6 plan, the active I2P protocol-support state for destinations/garlic/LS2/Streaming, or the next executable plan-of-record after Plan 134.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 (destinations, garlic, LeaseSet2, Streaming) and the SAM 3.1 application-protocol adapter (Plan 136) for Milestone 7. Use when an agent is asked to modify, test, or extend i2pr-client, i2pr-netdb, i2pr-tunnel, i2pr-proto, i2pr-crypto, i2pr-daemon destination/streaming/LS2 code paths, or i2pr-api SAM 3.1 protocol/private-destination code paths; write or run the deterministic trajectory tests under crates/i2pr-client/tests/ or the SAM tests under crates/i2pr-api/; exercise the testkit; debug local Milestone 6 trajectories; or plan the next SAM milestone (Plan 137 loopback server). Also use when asked to find the canonical closure record for a Milestone 6 plan, the active I2P protocol-support state for destinations/garlic/LS2/Streaming/SAM, or the next executable plan-of-record after Plan 136.
 ---
 
 # I2PR Local Development
@@ -12,24 +12,31 @@ Streaming) is closed under corrected local-correctness semantics via
 **Plan 134** (`plans/134-m6-recv-window-ack-ceiling-closure.md`,
 `plans/134-status.md`); independent-router interoperability is not claimed
 and is tracked as external acceptance debt. The next product layer is
-**SAM baseline planning (Milestone 7)**.
+**SAM 3.1 baseline implementation**, of which Plan 136 is the protocol
+and private-destination foundation.
 
 Load this skill whenever the work touches `i2pr-client`,
-`i2pr-netdb`, `i2pr-tunnel` (destination-side), `i2pr-proto`, or
-`i2pr-crypto` (ECIES), or when an agent needs to navigate the local
-Milestone 6 closure history to find the canonical authority for a
-behavioral claim.
+`i2pr-netdb`, `i2pr-tunnel` (destination-side), `i2pr-proto`,
+`i2pr-crypto` (ECIES), `i2pr-api` (SAM), or when an agent needs to
+navigate the local Milestone 6 closure history to find the canonical
+authority for a behavioral claim.
 
 ## Active authority
 
 The current Milestone 6 closure authority is **Plan 134**
-(`passed-milestone6-recv-window-ack-ceiling-closure`). The full plan
+(`passed-milestone6-recv-window-ack-ceiling-closure`). The current
+Milestone 7 SAM 3.1 foundation authority is **Plan 136**
+(`passed-m7-sam31-protocol-private-destination-foundation`,
+[`plans/136-m7-sam31-protocol-private-destination-foundation.md`](../../plans/136-m7-sam31-protocol-private-destination-foundation.md),
+[`plans/136-status.md`](../../plans/136-status.md)). The full plan
 hierarchy lives under [`plans/README.md`](../../plans/README.md); the
 quick-reference trajectory table below records each plan's authority
 for local-product behavioral claims:
 
 | Plan | Status | Authority for |
 | --- | --- | --- |
+| 136 | `passed-m7-sam31-protocol-private-destination-foundation` | Current Milestone 7 SAM 3.1 protocol and private-destination foundation. `i2pr-api` crate at the application-adapter layer. |
+| 135 | `active-milestone7-sam31-planning-authority` | Milestone 7 SAM 3.1 roadmap; the broader Phase 7 sequence (Plan 136 → 140). |
 | 134 | `passed-milestone6-recv-window-ack-ceiling-closure` | Current Milestone 6 local closure. ACK ceiling defect fix in receive-window tracking. |
 | 133 | `passed-evidence-authority-superseded-by-plan134` | Historical evidence; produces eleven Plan 130 + seven Plan 131 trajectories and is retained. |
 | 132 | `implementation-landed-evidence-superseded-by-plan133` | Strict Elligator2 receive-domain validation, three layer-isolated replay trajectories, transactional `&mut self` send ordering. |
@@ -54,6 +61,8 @@ live contracts.
 crates/i2pr-client/
   src/
     identity.rs                # Ed25519 signing + X25519 static keys, non-Clone, non-Debug
+                               #   Plan 136 added the narrow `signing_seed_bytes()` accessor
+                               #   reserved for the SAM private-destination codec
     registry.rs                # Destination registry with capacity + duplicate rejection
     lifecycle.rs               # LeaseSet2 rotation/withdrawal
     session.rs                 # EciesSessionManager (Plan 126 dialect), classify, outbound form
@@ -76,6 +85,19 @@ crates/i2pr-proto/
   src/streaming/               # StreamingPacket, StreamingPacketBuilder, options, flags
 crates/i2pr-crypto/src/ecies.rs # ECIES primitives + elligator2 = 0.1.0
 crates/i2pr-daemon/src/netdb_seam.rs # NetDbSeam LS2 lookup surface (Plan 122)
+crates/i2pr-api/               # Plan 136 SAM 3.1 protocol and private-destination foundation
+  src/
+    lib.rs                     # facade and re-exports
+    sam/
+      mod.rs                   # module facade and named byte ceilings
+      version.rs               # SamVersion, parse_version, negotiate, is_advertised
+      base64.rs                # RFC 4648 SAM Base64 codec (encode/decode, strict)
+      command.rs               # Command, CommandKind, OptionPair, CommandOutcome
+      parser.rs                # parse_line, tokenise, recognise_* per command family
+      reply.rs                 # ReplyLine, Reply, HelloReply, DestReply, SessionStatus, StreamStatus, NamingReply, PongReply
+      private_destination.rs   # SamPrivateDestination wrapper, from_identity/from_base64/from_bytes, into_identity
+      dest_generate.rs         # DestGenerateRequest, dest_generate runtime-neutral core op
+      session_create.rs        # SessionCreateRequest, parse_session_create
 crates/i2pr-testkit/          # deterministic simulation; no production crate may depend on it
 ```
 
@@ -103,6 +125,7 @@ cargo test -p i2pr-testkit --all-targets                            # determinis
 cargo test -p i2pr-netdb --all-targets                              # LS2 + RouterInfo
 cargo test -p i2pr-crypto --all-targets                             # ECIES primitives + elligator2
 cargo test -p i2pr-proto --all-targets                              # wire codecs
+cargo test -p i2pr-api --all-targets                               # SAM 3.1 protocol foundation (Plan 136)
 ```
 
 The forced-cleanup 100-iteration test runs serially:
@@ -111,48 +134,58 @@ The forced-cleanup 100-iteration test runs serially:
 cargo test -p i2pr-runtime forced_child_cleanup_is_repeatably_joined -- --test-threads=1
 ```
 
-## SAM baseline planning (Milestone 7) — the next product layer
+## SAM baseline implementation (Milestone 7) — the next product layer
 
-The next product layer is **SAM baseline planning (Milestone 7)**.
-The local destination + Streaming product gate is closed (Plan 134);
-independent-router interoperability is tracked separately as external
-acceptance debt. A SAM plan-of-record does not exist yet — Plan 134
-is the active authority until a SAM plan-of-record lands.
+The next product layer is **SAM 3.1 baseline implementation**. The
+local destination + Streaming product gate is closed (Plan 134); the
+SAM 3.1 protocol and private-destination foundation is closed (Plan
+136); independent-router interoperability is tracked separately as
+external acceptance debt. The next plan-of-record is **Plan 137**
+(`plans/137-m7-sam31-loopback-server-session-lifecycle.md`), which
+owns the supervised loopback TCP listener, session lifecycle,
+destination/session admission, and bounded resource ceilings.
 
-When asked to start SAM planning, draft a plan-of-record that:
+Plan 137 must:
 
-- Bounds SAM v3.x over loopback (Unix socket or TCP loopback) — the
-  production daemon must continue to refuse NTCP2 activation, and the
-  SAM bridge must not require NTCP2 or any external-router connection;
-- Reuses the `StreamingManager` + `StreamingDestinationAdapter` already
-  in `i2pr-client` for the streaming side;
-- Defines a typed `DatagramSender`/`DatagramReceiver` set on top of the
-  existing Garlic session layer (ECIES-X25519-AEAD-Ratchet, Plan 126)
-  with its own datagram-traffic class;
-- Reuses the LS2-bound destination identity from `i2pr-client::identity`
-  and the registry/lifecycle from Plan 120;
-- Reuses the daemon composition root in `i2pr-daemon` but adds a
-  bounded SAM bridge service to the `ServiceGraph` (the daemon does
-  not yet own a SAM service);
-- Specifies sanitized typed acceptance tests for SAMv3 streams,
-  datagrams, raw destinations, and the dest/reply/lookup commands —
-  all running against the local testkit (no public network);
-- Includes a static-boundary check addition to
-  `scripts/check-runtime-boundaries.sh` to enforce that the SAM
-  service owns its own Tokio child (the existing rule that every
-  `tokio::spawn` keeps an explicit owner still applies).
+- Add the supervised loopback SAM service to the `ServiceGraph` in
+  `i2pr-daemon` (does not yet own a SAM service).
+- Wire `i2pr-api`'s parser/reply/private-destination model to the
+  runtime. **Never** bypass `StreamingDestinationAdapter` /
+  destination routing merely to make tests pass.
+- Implement HELLO, DEST GENERATE, SESSION CREATE with session-ID
+  uniqueness, destination uniqueness, control-socket ownership, and
+  bounded client/session admission.
+- Reject DATAGRAM/RAW/PRIMARY and 3.2/3.3 protocol surfaces via the
+  `CommandOutcome::Unsupported` path the Plan 136 parser already
+  produces. Do not silently accept semantics the implementation does
+  not support.
 
-Before drafting, read:
+When asked to start Plan 137 work:
 
-- `plans/134-m6-recv-window-ack-ceiling-closure.md` and `plans/134-status.md`
+- Read `plans/136-m7-sam31-protocol-private-destination-foundation.md`
+  and `plans/136-status.md`.
+- Read `crates/i2pr-api/src/sam/{version,parser,command,reply,private_destination,dest_generate,session_create}.rs`.
+- Read `specs/references/sam31-private-destination.md` for the
+  standard Java `PrivateKeyFile` concatenation provenance.
+- Do **not** introduce an i2pr-only `PRIV` format or loosen the
+  Plan 136 secret-ownership invariants.
+
+Before drafting Plan 137 (or any later SAM plan), read:
+
+- `plans/135-m7-sam31-implementation-roadmap.md` (the broader
+  Milestone 7 sequence)
+- `plans/136-m7-sam31-protocol-private-destination-foundation.md`
+  and `plans/136-status.md`
 - `crates/i2pr-client/src/streaming/` (the corrected wire format and
   receiver ack views per Java `MessageInputStream.updateAcks`)
 - `crates/i2pr-client/src/session.rs` (Plan 126 ECIES-X25519-AEAD-Ratchet)
 - `crates/i2pr-client/src/routing.rs` (Plan 122/124/127 outbound/inbound)
 - `crates/i2pr-daemon/src/netdb_seam.rs` (the bounded NetDB seam)
-- `specs/protocols/` for SAM dossier
-- `specs/references/ecies-destination-ratchet.md` and
-  `specs/references/streaming-packet-wire.md` for protocol provenance
+- `specs/protocols/08-sam.md` (SAM dossier)
+- `specs/references/ecies-destination-ratchet.md`,
+  `specs/references/streaming-packet-wire.md`, and
+  `specs/references/sam31-private-destination.md` for protocol
+  provenance
 - `docs/adr/` for ADR style and existing decisions (0001..0025)
 
 ## Coding conventions that apply to local product work
@@ -180,6 +213,9 @@ agent on the local product path:
 - **No `unbounded_channel`** anywhere. No `tokio::*`, `std::net`,
   `std::fs` in transport crates. The runtime boundary check
   (`scripts/check-runtime-boundaries.sh`) is the source of truth.
+- **Secret-bearing types are non-`Clone`, non-`Debug` for secrets,**
+  zeroize on drop, and compare only on public bytes when they need
+  `PartialEq`. `SamPrivateDestination` is the canonical pattern.
 
 ## Testing conventions
 
@@ -195,6 +231,14 @@ agent on the local product path:
 - Streaming test fixtures live in `crates/i2pr-client/tests/` and
   reference the canonical RFC 1952 gzip wire format and the
   Plan 128 wire-format corrections.
+- SAM test fixtures live in `crates/i2pr-api/src/sam/` and reference
+  the standard Java `PrivateKeyFile` concatenation documented in
+  `specs/references/sam31-private-destination.md`. The SAM tests must
+  cover canonical HELLO 3.1, the full line-length / token-count /
+  option-count ceilings, duplicate critical options, unsupported
+  styles/options, version negotiation overlaps and disjoints, malformed
+  SAM Base64 (alphabet, length, padding, ceiling), frozen round-trip
+  of the standard private-destination format, and Debug redaction.
 - Commit a regression test that exactly reproduces a defect alongside
   the fix; never close a status document without a tested negative
   path.
@@ -218,6 +262,8 @@ agent on the local product path:
   (`scripts/check-runtime-boundaries.sh`).
 - Never bump a support-row `advertised` flag without sanitized
   interoperability evidence satisfying `specs/CONFORMANCE.md`. The
-  default remains `experimental` and `advertised = false`.
+  default remains `experimental` and `advertised = false`. The Plan 136
+  SAM 3.1 protocol foundation surface is `experimental` and
+  `advertised = false`.
 - Before handoff, run the focused local seam in addition to the
   pre-handoff sequence in `AGENTS.md`.

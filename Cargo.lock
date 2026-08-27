@@ -694,6 +694,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "i2pr-api"
+version = "0.1.0"
+dependencies = [
+ "i2pr-client",
+ "i2pr-crypto",
+ "i2pr-proto",
+ "rand_chacha 0.9.0",
+ "rand_core 0.9.5",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "i2pr-client"
 version = "0.1.0"
 dependencies = [

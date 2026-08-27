@@ -4,7 +4,7 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 
 ## Status
 
-The local Milestone 6 product (destinations, garlic, LeaseSet2, Streaming) is closed under corrected local-correctness semantics via [**Plan 134**](plans/134-status.md). Independent-router interoperability is tracked as external acceptance debt. The next product layer is **SAM baseline planning (Milestone 7)**.
+The local Milestone 6 product (destinations, garlic, LeaseSet2, Streaming) is closed under corrected local-correctness semantics via [**Plan 134**](plans/134-status.md). Independent-router interoperability is tracked as external acceptance debt. **Plan 136 (SAM 3.1 protocol and private-destination foundation)** lands the application-protocol adapter layer in `i2pr-api`: bounded line parser, typed commands/replies, version negotiation, SAM Base64, SamPrivateDestination codec, and the DEST GENERATE / SESSION CREATE private-destination import/export surface. The next plan-of-record is Plan 137 (loopback server and session lifecycle).
 
 For the full plan hierarchy, MVP roadmap, and what's implemented vs. not, see [**`plans/README.md`**](plans/README.md).
 
@@ -23,6 +23,7 @@ crates/
   i2pr-netdb-persist/       Persistent cache + bounded SU3 reseed ingestion
   i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build, runtime-neutral data plane
   i2pr-client/              Local destinations, ECIES-X25519-AEAD-Ratchet session layer, I2P Streaming
+  i2pr-api/                 Application-protocol adapter (SAM 3.1): bounded parser, typed commands, private-destination codec
   i2pr-daemon/              CLI, configuration, composition, supervision
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
 tools/
