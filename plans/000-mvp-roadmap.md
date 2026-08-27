@@ -294,6 +294,13 @@ Create the first usable end-to-end I2P client destination.
 - A basic byte stream survives ordinary packet loss and reordering.
 - Destination shutdown cancels streams, LeaseSet work, and dedicated tunnel pools cleanly.
 
+Current development progression policy:
+
+- Milestone 6 local product correctness is gated by the current local closure authority, Plan 134.
+- Independent-router destination, Streaming, and tunnel interoperability remains explicit external acceptance debt.
+- That debt must be closed before final MVP interoperability claims, but it is not a prerequisite for beginning Milestone 7 / SAM in the constrained development environment.
+- Do not reopen the retired rootless, VM, Emissary, or live-wire harness lanes merely to satisfy the historical sequencing of this roadmap.
+
 ### Interoperable-router checkpoint
 
 Completion of Milestones 0 through 6 constitutes the first minimal interoperable router checkpoint. At this point, pause feature expansion for a corrective interoperability and architecture review.

@@ -6,7 +6,10 @@ Status: **`passed-milestone6-final-evidence-authority-closure`**.
   `af0f07a0037a639afc2c03af31a1266b99273564`.
 - Plan of record:
   [`plans/133-m6-final-evidence-authority-closure.md`](133-m6-final-evidence-authority-closure.md).
-- This file is the **current Milestone 6 local closure authority**.
+- This file records successful historical evidence for the replay,
+  Elligator, transactional-send, and authority corrections it targeted.
+  A later concrete receive-window defect was corrected by Plan 134,
+  which is now the current Milestone 6 local closure authority.
   `plans/131-status.md` and `plans/132-status.md` are retained as
   historical implementation/evidence records and are marked
   `superseded-by-plan133-final-evidence-authority-gate` for the
@@ -27,7 +30,7 @@ Status: **`passed-milestone6-final-evidence-authority-closure`**.
 plan_130 = superseded-by-plan131
 plan_131 = superseded-by-plan132-and-plan133-final-gates
 plan_132 = implementation-landed-evidence-superseded-by-plan133
-plan_133 = passed-milestone6-final-evidence-authority-closure
+plan_133 = passed-evidence-authority-superseded-by-plan134-streaming-ack-closure
 
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
@@ -164,16 +167,15 @@ bash scripts/check-runtime-boundaries.sh                                       p
 - `plans/132-status.md`: implementation retained unchanged;
   closure status reclassified to
   `implementation-landed-evidence-superseded-by-plan133`.
-- `plans/133-status.md`: this file is the current Milestone 6
-  local closure authority; final state is
-  `passed-milestone6-final-evidence-authority-closure`.
+- `plans/133-status.md`: retained as successful historical evidence;
+  its authority is superseded by Plan 134's receive-window closure.
 - `README.md`, `AGENTS.md`, `architecture/` (`overview.md`,
   `i2pr-crypto.md`, `i2pr-client.md`, `i2pr-proto.md`,
   `i2pr-tunnel.md`, `i2pr-daemon.md`, `i2pr-netdb.md`),
   `docs/protocol-support.md`, `specs/support.toml`, and the
-  `i2pr-ntcp2-interop` skill are synchronized to point at Plan 133
-  as the current Milestone 6 closure authority and to prune stale
-  Plan 131/132 active-authority language.
+  `i2pr-ntcp2-interop` skill were synchronized to point at Plan 133
+  as the then-current Milestone 6 closure authority; Plan 134 now
+  supersedes that authority for the receive-window correction.
 
 ## Validation record
 
@@ -214,6 +216,16 @@ New focused evidence (Plan 133 closure surface):
   production-generator randomness tests, and the frozen Plan 126
   KDF/Noise vector reproductions.
 
+## Subsequent Plan 134 correction
+
+Plan 134 corrected a concrete receive-window defect discovered after
+this closure: `TooFarAhead` packets previously advanced
+`highest_received` before rejection. The corrected policy performs
+admission before ACK-state mutation, and focused policy plus manager
+regressions prove rejected sequences remain absent from later ACK/NACK
+views and production piggyback ACKs. Plan 134 is the final local
+Milestone 6 authority.
+
 ## Explicitly not claimed
 
 Mixed-router interoperability, destination ECIES/Streaming/tunnel
@@ -224,8 +236,9 @@ retained separately.
 
 ## Handoff
 
-Per the plan-of-record §13: stop corrective Milestone 6 planning.
-The next product work is **Milestone 7 / SAM baseline planning**.
+Plan 133's handoff is superseded by the narrow Plan 134 correction.
+After Plan 134 passed, corrective Milestone 6 planning stops and the
+next product work is **Milestone 7 / SAM baseline planning**.
 Do not reopen external transport validation as a prerequisite for
 SAM. Do not create another Milestone 6 plan unless a new concrete
 protocol defect is discovered.

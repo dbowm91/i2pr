@@ -1890,3 +1890,151 @@ impl<T: rand_core::CryptoRng + ?Sized> CryptoRngStub for T {}
 // when we add per-connection ID sets to the pre-SYN buffer eviction policy).
 #[allow(dead_code)]
 type _Unused = BTreeSet<u32>;
+
+#[cfg(test)]
+mod tests {
+    use super::{ConnectOutcome, RemoteDestination, StreamingManager};
+    use crate::DestinationIdentity;
+    use crate::streaming::StreamingConfig;
+    use i2pr_proto::streaming::{
+        StreamingFlags, StreamingPacketBuilder, StreamingSendLimit, decode_client_payload,
+        decode_streaming_packet, encode_streaming_packet,
+    };
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+
+    const LOCAL_PORT: u16 = 10_134;
+    const REMOTE_PORT: u16 = 20_134;
+    const REMOTE_STREAM_ID: u32 = 0x1340_0001;
+    const NOW_MS: u64 = 134_000;
+
+    fn destination(seed: u64) -> DestinationIdentity {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        DestinationIdentity::generate(&mut rng).expect("destination identity")
+    }
+
+    fn raw_data_packet(send_stream_id: u32, receive_stream_id: u32, sequence: u32) -> Vec<u8> {
+        encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id,
+                receive_stream_id,
+                sequence_num: sequence,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::empty(),
+                option_bytes: Vec::new(),
+                payload: vec![sequence as u8],
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("data packet encoding")
+    }
+
+    #[test]
+    fn rejected_far_ahead_packet_cannot_poison_later_production_ack() {
+        let local = destination(0x1340_0001);
+        let remote_identity = destination(0x1340_0002);
+        let remote = RemoteDestination {
+            destination_hash: *remote_identity.id().as_hash().as_bytes(),
+            signing_public_key: remote_identity.destination().signing_key().clone(),
+            static_public_key: remote_identity.static_public_bytes(),
+        };
+        let mut manager = StreamingManager::new(StreamingConfig::balanced());
+        let ConnectOutcome::SynSent {
+            connection_id,
+            receive_stream_id,
+            ..
+        } = manager
+            .connect(
+                &local,
+                &remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                super::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(0x1340_0003),
+            )
+            .expect("connect")
+        else {
+            panic!("expected outbound SYN");
+        };
+        manager.drain_outbound();
+
+        let connection = manager
+            .get_connection_mut(connection_id)
+            .expect("connection");
+        connection.set_remote_stream_id(REMOTE_STREAM_ID);
+        connection
+            .transition_established(super::DEFAULT_ADVERTISED_MAX_PAYLOAD.into(), NOW_MS)
+            .expect("established connection");
+
+        let packet = raw_data_packet(receive_stream_id, REMOTE_STREAM_ID, 1);
+        manager
+            .process_inbound_packet(
+                &packet,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS,
+            )
+            .expect("accepted application packet");
+        let connection = manager.get_connection(connection_id).expect("connection");
+        assert_eq!(connection.recv_window().ack_view(), (1, Vec::new()));
+        assert_eq!(manager.pending_ack_count(), 1);
+
+        let far_ahead = {
+            let connection = manager.get_connection(connection_id).expect("connection");
+            connection
+                .recv_window()
+                .next_expected()
+                .saturating_add(u32::from(manager.config().max_recv_window_packets))
+        };
+        let packet = raw_data_packet(receive_stream_id, REMOTE_STREAM_ID, far_ahead);
+        let observation = manager
+            .process_inbound_packet(
+                &packet,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS + 100,
+            )
+            .expect("far-ahead packet is a typed non-delivery observation");
+        assert_eq!(observation.sequence, far_ahead);
+        let connection = manager.get_connection(connection_id).expect("connection");
+        assert_eq!(connection.recv_window().ack_view(), (1, Vec::new()));
+        assert_eq!(manager.pending_ack_count(), 1);
+        assert!(manager.poll_acks(NOW_MS + 749).is_empty());
+
+        let outbound = manager
+            .send_data(
+                connection_id,
+                &local,
+                &remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                b"reply",
+                NOW_MS + 100,
+            )
+            .expect("production data packet");
+        let envelope = decode_client_payload(
+            &outbound.application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("client payload");
+        let (packet, _) = decode_streaming_packet(
+            &envelope.payload,
+            i2pr_proto::streaming::StreamingReceiveLimit::default(),
+            i2pr_proto::streaming::StreamingOptionDecodeContext::anonymous(),
+        )
+        .expect("streaming packet");
+        assert_eq!(packet.ack_through, 1);
+        assert!(packet.nacks.is_empty());
+        assert_eq!(packet.sequence_num, 1);
+        let delivered = manager.drain_delivered();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].bytes, vec![1]);
+    }
+}

@@ -24,6 +24,8 @@ Four conceptual planes run through every crate:
 | Client | Destinations, LeaseSets, streaming, SAM, I2CP adapters | Plan 120 lands the first local-destination runtime (`i2pr-client`): identity, dedicated tunnel pools, signed Standard LeaseSet2, lifecycle, bounded local payloads, registry. Plan 121 added the first ECIES destination session layer; Plan 126 rewrites it to the normative I2P ECIES-X25519-AEAD-Ratchet contract (`crates/i2pr-crypto/src/ecies.rs`, corrected `EciesSessionManager`); Plan 127 binds accepted sessions to resolved Destinations through bundled-LS2 validation under the sender's own Destination hash with a planned outbound form state machine and production reverse routing. Plan 122 composes the Plan 119 LeaseSet2 lookup surface, the Plan 120 destination runtime, the Plan 121 ECIES session layer, and the Plan 116 tunnel data plane into the first complete local destination routing pipeline: `LeaseSelector`, `OutboundRequest`, `compose_outbound_delivery`, `DestinationRouting`, and `DestinationDispatcher`. Plan 125 lands the minimal Streaming core (`i2pr-client::streaming`) and Plan 128 corrects its packet wire format to the current I2P Streaming specification (normative flag map, no option TLVs, payload-only MAX_PACKET_SIZE, raw final signatures, Proposal 164 replay NACKs on the initial SYN only). Plan 129 closes the Milestone 6 integrated gate: one combined runtime-neutral outbound/inbound `StreamingDestinationAdapter` (client-payload-bound outbound sizing with a single canonical Data-envelope owner; inbound I2NP Data -> gzip -> protocol-6 -> ports -> Streaming dispatch), integrated retransmission/ACK/reorder over the destination stack, and CLOSE/RESET completion policy. Plan 130 closes Milestone 6 with the final wire/runtime corrective closure: production Elligator2 randomized representatives with independent frozen fixtures, application sequences starting at 1 post-SYN, flag-driven ACK presence where `ackThrough == 0` is valid, NACK-aware cumulative ACKs, receiver ack views per Java `MessageInputStream.updateAcks`, coalescing delayed standalone ACKs via `poll_acks(now_ms)` on the 750 ms reference default, authoritative wire destination-port listener dispatch with enforced established tuples, and persistent tunnel duplicate windows with typed replay rejection. SAM/I2CP adapters remain Milestone 7 scope. |
 | Service | HTTP, SOCKS5, IRC, generic TCP, local service tunnels | Not implemented. |
 
+Plan 134 is the current local Milestone 6 closure authority. It corrects the receive-window ACK ceiling so a rejected `TooFarAhead` packet is state-inert and cannot advance `highest_received`, create NACK holes, schedule an ACK, or appear in a later piggyback ACK. Independent-router interoperability remains external acceptance debt and is not claimed.
+
 Network tunnels (router-to-router) and application service tunnels
 (local app to destination) are deliberately kept apart. Service tunnels
 must not import transport internals or peer-profile storage.
@@ -344,9 +346,11 @@ Plan 129 closed the integrated M6 destination+Streaming gate
            `passed-milestone6-final-local-correctness-closure`
            ([`plans/131-status.md`](../../plans/131-status.md))
            and is itself superseded by Plan 132 and Plan 133. The
-           current Milestone 6 local closure authority is Plan 133
-           as `passed-milestone6-final-evidence-authority-closure`
-           ([`plans/133-status.md`](../../plans/133-status.md)):
+           Plan 133 is historical successful evidence, superseded as
+           authority by Plan 134. The current Milestone 6 local closure
+           authority is Plan 134 as
+           `passed-milestone6-recv-window-ack-ceiling-closure`
+           ([`plans/134-status.md`](../../plans/134-status.md)):
            production Elligator branch randomization via the
            reviewed `elligator2 = 0.1.0` primitive (Plan 131
            retired `curve25519-elligator2 = 0.1.0-alpha.2` because

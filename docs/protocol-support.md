@@ -237,8 +237,9 @@ Plan 131 (`passed-milestone6-final-local-correctness-closure`,
 [`crates/i2pr-client/tests/plan131_trajectory.rs`](../crates/i2pr-client/tests/plan131_trajectory.rs))
 closed the local-correctness corrections but is itself superseded by
 Plan 132 and Plan 133. The current Milestone 6 local closure authority
-is Plan 133 (`passed-milestone6-final-evidence-authority-closure`,
-[`plans/133-status.md`](../plans/133-status.md)). On top of the Plan
+is Plan 134 (`passed-milestone6-recv-window-ack-ceiling-closure`,
+[`plans/134-status.md`](../plans/134-status.md)). Plan 133 remains
+successful historical evidence. On top of the Plan
 130 surface Plan 131 added: production Elligator2 branch randomization
 via the reviewed `elligator2 = 0.1.0` primitive (`curve25519-elligator2
 = 0.1.0-alpha.2` retired; provenance in
@@ -265,9 +266,9 @@ historical gate remains the topology of record. Plan 132
 (`implementation-landed-evidence-superseded-by-plan133`,
 [`plans/132-status.md`](../plans/132-status.md)) closed the
 implementation corrections but is itself superseded by Plan 133. The
-current Milestone 6 local closure authority is Plan 133
-(`passed-milestone6-final-evidence-authority-closure`,
-[`plans/133-status.md`](../plans/133-status.md)). Plan 132 added on
+current Milestone 6 local closure authority is Plan 134
+(`passed-milestone6-recv-window-ack-ceiling-closure`,
+[`plans/134-status.md`](../plans/134-status.md)). Plan 132 added on
 top of the Plan 131 surface: strict Elligator2 receive-domain validation
 masking the two free high bits and rejecting `r >= 2^254 - 10` via
 the `is_canonical_elligator_representative` helper before delegating
@@ -993,7 +994,8 @@ Plan 103  RouterInfo validation + bounded local NetDB                 [closed]
         -> Plan 130  final wire/runtime corrective closure                       [superseded-by-plan131-final-local-correctness-gate]
         -> Plan 131  final local correctness closure                             [superseded-by-plan132-and-plan133-final-gates]
         -> Plan 132  final evidence and transactional closure                    [implementation-landed-evidence-superseded-by-plan133]
-        -> Plan 133  final evidence and authority closure                        [passed-milestone6-final-evidence-authority-closure] (milestone6_local_product = passed; interoperability not claimed)
+        -> Plan 133  final evidence and authority closure                        [historical successful evidence; superseded by Plan 134]
+        -> Plan 134  receive-window ACK ceiling closure                          [passed-milestone6-recv-window-ack-ceiling-closure] (milestone6_local_product = passed; interoperability not claimed)
 ```
 
 Plan 106 closed the local/bootstrap implementation phase; Plan 107

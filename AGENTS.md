@@ -2695,8 +2695,9 @@ Milestone 6 implementation pass that landed the corrected
 Streaming sequence / ACK / NACK semantics, the wire-derived listener
 routing, and the persistent inbound tunnel duplicate windows. It is
 superseded by Plan 131 (now itself superseded by Plan 132 and
-Plan 133 — Plan 133 is the current Milestone 6 local closure
-authority per `plans/133-status.md`); the post-Plan-130 audit
+Plan 133 — Plan 133 was the Milestone 6 local closure authority
+before the narrow Plan 134 receive-window correction
+(`plans/134-status.md`); the post-Plan-130 audit
 retained the integrated architecture but found four narrow
 correctness defects that were still unproven or only partially
 proven, all corrected by Plan 131:
@@ -2839,7 +2840,8 @@ plan_129 = superseded-by-plan130-final-gate
 plan_130 = superseded-by-plan131-final-local-correctness-gate
 plan_131 = superseded-by-plan132-and-plan133-final-gates
 plan_132 = implementation-landed-evidence-superseded-by-plan133
-plan_133 = passed-milestone6-final-evidence-authority-closure (current authority)
+plan_133 = passed-evidence-authority-superseded-by-plan134-streaming-ack-closure
+plan_134 = passed-milestone6-recv-window-ack-ceiling-closure (current authority)
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 router_construction = may-continue
@@ -2873,10 +2875,11 @@ Plan 131 closure with three narrow closure areas that the prior
 pass did not independently prove, then Plan 133 closed the
 remaining B2/B3 evidence gaps and the Elligator reference-note
 correction. Plan 132's substantive implementation is retained
-unchanged; Plan 133 (`plans/133-status.md`) is the current
-Milestone 6 local closure authority. After Plan 133 closes,
-Milestone 6 corrective work stops and SAM baseline planning
-(Milestone 7) is the next product layer.
+unchanged; Plan 133 (`plans/133-status.md`) is retained as successful
+historical evidence and is superseded as authority by Plan 134
+(`plans/134-status.md`). After Plan 134 closes, Milestone 6 corrective
+work stops and SAM baseline planning (Milestone 7) is the next product
+layer.
 
 The corrected Plan 132 surface:
 
@@ -2920,7 +2923,8 @@ The corrected Plan 132 surface:
 ```text
 plan_131 = superseded-by-plan132-and-plan133-final-gates
 plan_132 = implementation-landed-evidence-superseded-by-plan133
-plan_133 = passed-milestone6-final-evidence-authority-closure (current authority)
+plan_133 = passed-evidence-authority-superseded-by-plan134-streaming-ack-closure
+plan_134 = passed-milestone6-recv-window-ack-ceiling-closure (current authority)
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 external_acceptance_debt = retained-separately
@@ -2951,6 +2955,39 @@ bash scripts/check-runtime-boundaries.sh
 bash scripts/check-fixture-manifest.sh
 bash scripts/check-ntcp2-vectors.sh
 bash scripts/check-ntcp2-interoperability.sh
+```
+
+## Plan 134 Milestone 6 receive-window ACK ceiling closure
+
+Plan 134 is the current and final local Milestone 6 closure authority,
+`passed-milestone6-recv-window-ack-ceiling-closure`. It corrects
+`i2pr-client` receive-window admission so a `TooFarAhead` packet is
+state-inert: it cannot advance `highest_received`, change `ackThrough`
+or NACKs, enter reorder state, deliver application bytes, schedule a
+delayed ACK, or contaminate a later piggyback ACK. The existing
+`next_expected + max_window_packets` boundary is unchanged.
+
+Focused policy tests cover fresh, established, reorder/NACK, exact
+boundary, and extreme-sequence rejection. A manager-level regression
+processes a valid packet, rejects the exact live far-ahead boundary,
+verifies delayed-ACK state is unchanged, and decodes a later production
+data packet with the original ACK view. Plan 133 remains successful
+historical evidence, but is superseded as authority by Plan 134.
+
+Milestone 6 local product correctness is passed; independent-router
+interoperability remains explicit external acceptance debt and is not
+claimed. Router construction may continue with Milestone 7 / SAM
+baseline planning. Do not reopen retired rootless, VM, Emissary, or
+live-wire lanes merely to satisfy historical roadmap sequencing.
+
+```text
+plan_133 = passed-evidence-authority-superseded-by-plan134-streaming-ack-closure
+plan_134 = passed-milestone6-recv-window-ack-ceiling-closure
+milestone6_local_product = passed
+milestone6_interoperable = not-yet-claimed
+external_acceptance_debt = retained-separately
+router_construction = may-continue
+next_product_layer = SAM baseline planning (Milestone 7)
 ```
 
 ## Plan 096 Plan 095 CI workflow correctness and pre-dispatch closure

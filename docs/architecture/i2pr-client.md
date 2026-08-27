@@ -134,10 +134,11 @@ closure ([Plan 130](../plans/130-m6-final-wire-runtime-corrective-closure.md),
 [`plans/131-status.md`](../plans/131-status.md). Plan 131 closed
 Milestone 6 with the four local-correctness corrections below and
 is itself superseded by Plan 132 (implementation corrections) and
-Plan 133 (final evidence and authority closure). The current
-Milestone 6 local closure authority is Plan 133 as
-`passed-milestone6-final-evidence-authority-closure` per
-[`plans/133-status.md`](../plans/133-status.md). The four Plan 131
+Plan 133 (final evidence and authority closure). Plan 133 remains
+successful historical evidence, superseded as authority by Plan 134.
+The current Milestone 6 local closure authority is Plan 134 as
+`passed-milestone6-recv-window-ack-ceiling-closure` per
+[`plans/134-status.md`](../plans/134-status.md). The four Plan 131
 corrections build on the Plan 130 surface above:
 
 - **Production Elligator2 branch randomization** (with `i2pr-crypto`):
@@ -193,7 +194,13 @@ Eleven full-stack Plan 130 trajectories remain in
  `send_data` / `send_close` / `send_reset` ordering); and the Plan 133
  closure rewrote B2/B3 to retain the actual first delivered ES envelope
  and corrected the Elligator reference note for the i2pd
- equality-boundary executable distinction. `milestone6_local_product
+ equality-boundary executable distinction. Plan 134 then corrected the
+ receive-window ordering so `TooFarAhead` packets cannot advance
+ `highest_received` or contaminate later ACK/NACK and piggyback state;
+ five policy tests and a manager-level production ACK regression cover
+ the fresh, established, reorder, boundary, and extreme-sequence cases.
+ Plan 134 is the current local Milestone 6 closure authority:
+ `passed-milestone6-recv-window-ack-ceiling-closure`. `milestone6_local_product
  = passed`; `milestone6_interoperable` remains not claimed.
 
 

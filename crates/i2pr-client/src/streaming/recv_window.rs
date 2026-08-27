@@ -123,14 +123,10 @@ impl RecvWindowPolicy {
             return RecvWindowDecision::Duplicate { sequence };
         }
 
-        self.highest_received = Some(match self.highest_received {
-            Some(highest) => highest.max(sequence),
-            None => sequence,
-        });
-
         // Exactly the expected sequence: deliver and drain any
         // contiguous packets from the reorder buffer.
         if sequence == self.next_expected {
+            self.note_accepted_sequence(sequence);
             let mut delivered = vec![ReorderEntry { sequence, payload }];
             self.next_expected = self.next_expected.wrapping_add(1);
             self.delivered_count = self.delivered_count.saturating_add(1);
@@ -154,9 +150,20 @@ impl RecvWindowPolicy {
         }
 
         // Within the reorder window: buffer.
+        self.note_accepted_sequence(sequence);
         self.reorder
             .insert(sequence, ReorderEntry { sequence, payload });
         RecvWindowDecision::Buffered { sequence }
+    }
+
+    /// Advances acknowledgement state only after a packet has passed
+    /// receive-window admission. A rejected packet must not become an
+    /// ACK ceiling or create NACK holes.
+    fn note_accepted_sequence(&mut self, sequence: u32) {
+        self.highest_received = Some(match self.highest_received {
+            Some(highest) => highest.max(sequence),
+            None => sequence,
+        });
     }
 
     /// Returns the next expected sequence number.
@@ -234,5 +241,131 @@ impl RecvWindowPolicy {
     /// bounded by the wire NACK-count ceiling.
     pub fn missing_sequences(&self, ack_through: u32) -> Vec<u32> {
         self.missing_sequences_bounded(ack_through, MAX_NACK_COUNT)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RecvWindowConfig, RecvWindowDecision, RecvWindowPolicy};
+
+    fn window(max_window_packets: u16) -> RecvWindowPolicy {
+        RecvWindowPolicy::new(RecvWindowConfig { max_window_packets })
+    }
+
+    #[test]
+    fn fresh_far_ahead_packet_is_ack_state_inert() {
+        let mut window = window(4);
+
+        assert_eq!(
+            window.receive(5, vec![5]),
+            RecvWindowDecision::TooFarAhead { sequence: 5 }
+        );
+        assert_eq!(window.highest_received(), None);
+        assert_eq!(window.ack_view(), (0, Vec::new()));
+        assert_eq!(window.next_expected(), 1);
+        assert_eq!(window.reorder_count(), 0);
+        assert_eq!(window.delivered_count(), 0);
+    }
+
+    #[test]
+    fn far_ahead_packet_cannot_inflate_an_accepted_ack_ceiling() {
+        let mut window = window(4);
+        assert!(matches!(
+            window.receive(1, vec![1]),
+            RecvWindowDecision::Delivered { .. }
+        ));
+        let snapshot = (
+            window.highest_received(),
+            window.ack_view(),
+            window.next_expected(),
+            window.reorder_count(),
+            window.delivered_count(),
+        );
+
+        assert_eq!(
+            window.receive(6, vec![6]),
+            RecvWindowDecision::TooFarAhead { sequence: 6 }
+        );
+        assert_eq!(
+            (
+                window.highest_received(),
+                window.ack_view(),
+                window.next_expected(),
+                window.reorder_count(),
+                window.delivered_count(),
+            ),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn far_ahead_packet_preserves_an_existing_reorder_nack_view() {
+        let mut window = window(4);
+        assert!(matches!(
+            window.receive(1, vec![1]),
+            RecvWindowDecision::Delivered { .. }
+        ));
+        assert_eq!(
+            window.receive(3, vec![3]),
+            RecvWindowDecision::Buffered { sequence: 3 }
+        );
+        let snapshot = (
+            window.highest_received(),
+            window.ack_view(),
+            window.next_expected(),
+            window.reorder_count(),
+            window.delivered_count(),
+        );
+
+        assert_eq!(
+            window.receive(6, vec![6]),
+            RecvWindowDecision::TooFarAhead { sequence: 6 }
+        );
+        assert_eq!(
+            (
+                window.highest_received(),
+                window.ack_view(),
+                window.next_expected(),
+                window.reorder_count(),
+                window.delivered_count(),
+            ),
+            snapshot
+        );
+        assert_eq!(window.ack_view(), (3, vec![2]));
+    }
+
+    #[test]
+    fn receive_window_boundary_remains_max_minus_one_inclusive() {
+        let mut window = window(4);
+
+        assert_eq!(
+            window.receive(4, vec![4]),
+            RecvWindowDecision::Buffered { sequence: 4 }
+        );
+        assert_eq!(window.highest_received(), Some(4));
+        assert_eq!(window.reorder_count(), 1);
+
+        assert_eq!(
+            window.receive(5, vec![5]),
+            RecvWindowDecision::TooFarAhead { sequence: 5 }
+        );
+        assert_eq!(window.highest_received(), Some(4));
+        assert_eq!(window.reorder_count(), 1);
+        assert_eq!(window.ack_view(), (4, vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn extreme_far_ahead_packet_is_bounded_and_state_inert() {
+        let mut window = window(4);
+
+        assert_eq!(
+            window.receive(u32::MAX, vec![u8::MAX]),
+            RecvWindowDecision::TooFarAhead { sequence: u32::MAX }
+        );
+        assert_eq!(window.highest_received(), None);
+        assert_eq!(window.ack_view(), (0, Vec::new()));
+        assert_eq!(window.next_expected(), 1);
+        assert_eq!(window.reorder_count(), 0);
+        assert_eq!(window.delivered_count(), 0);
     }
 }
