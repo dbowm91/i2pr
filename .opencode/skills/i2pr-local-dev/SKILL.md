@@ -23,8 +23,10 @@ behavioral claim.
 ## Active authority
 
 The current Milestone 6 closure authority is **Plan 134**
-(`passed-milestone6-recv-window-ack-ceiling-closure`). The trajectory
-hierarchy:
+(`passed-milestone6-recv-window-ack-ceiling-closure`). The full plan
+hierarchy lives under [`plans/README.md`](../../plans/README.md); the
+quick-reference trajectory table below records each plan's authority
+for local-product behavioral claims:
 
 | Plan | Status | Authority for |
 | --- | --- | --- |

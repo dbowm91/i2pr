@@ -16,8 +16,9 @@ Always read these before changing code or answering questions about state:
    interoperability, and collaboration constraints.
 3. `CONTRIBUTING.md` — local quality checks, the runtime/testkit
    conventions, the rootless and Multipass evidence-lane contracts.
-4. The active plan under `plans/` (latest closure: `plans/134-…`)
-   and the relevant `docs/adr/` record. The
+4. The active plan under `plans/` (entry point:
+   [`plans/README.md`](plans/README.md); latest closure:
+   `plans/134-…`) and the relevant `docs/adr/` record. The
    [`docs/architecture/audit/`](docs/architecture/audit/) directory
    tracks doc-vs-source drift findings from the most recent
    audits.
