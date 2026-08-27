@@ -173,16 +173,24 @@ Plan 130 surface above:
   full-stack level by the Plan 131 trajectories.
 
 Eleven full-stack Plan 130 trajectories remain in
-[`crates/i2pr-client/tests/plan130_trajectory.rs`](../../crates/i2pr-client/tests/plan130_trajectory.rs)
-as the closure evidence for the wire/runtime surface (frozen
-simple-ACK byte fixture, reference ACK/NACK expectation table,
-sequence transition, one-way delayed ACK, piggyback suppression,
-reorder+NACK convergence, port authority + wildcard fallback,
-replay-layer separation, production-Elligator establishment); seven
-Plan 131 trajectories in
-[`crates/i2pr-client/tests/plan131_trajectory.rs`](../../crates/i2pr-client/tests/plan131_trajectory.rs)
-cover the four Plan 131 corrections. `milestone6_local_product =
-passed`; `milestone6_interoperable` remains not claimed.
+ [`crates/i2pr-client/tests/plan130_trajectory.rs`](../../crates/i2pr-client/tests/plan130_trajectory.rs)
+ as the closure evidence for the wire/runtime surface (frozen
+ simple-ACK byte fixture, reference ACK/NACK expectation table,
+ sequence transition, one-way delayed ACK, piggyback suppression,
+ reorder+NACK convergence, port authority + wildcard fallback,
+ replay-layer separation, production-Elligator establishment); seven
+ Plan 131 trajectories in
+ [`crates/i2pr-client/tests/plan131_trajectory.rs`](../../crates/i2pr-client/tests/plan131_trajectory.rs)
+ cover the four Plan 131 corrections; and ten Plan 132
+ trajectories in
+ [`crates/i2pr-client/tests/plan132_trajectory.rs`](../../crates/i2pr-client/tests/plan132_trajectory.rs)
+ (artifact-preserving test seam + three independent layer-isolated
+ replay trajectories + transactional `send_data` / `send_close` /
+ `send_reset` ordering) drive the Plan 132 corrections: strict
+ Elligator2 receive-domain validation, three-layer replay separation,
+ and `&mut self` transactional send ordering. `milestone6_local_product
+ = passed`; `milestone6_interoperable` remains not claimed.
+
 
 The authenticated-router link between an outbound endpoint and the
 remote inbound gateway remains the only transport omission: tests

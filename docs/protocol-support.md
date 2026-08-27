@@ -253,7 +253,24 @@ listener authority (exact match → wildcard port-0 → typed
 `NoMatchingListener`) with enforced established tuples; persistent
 tunnel duplicate windows with typed `DuplicateCell` replay rejection)
 remains intact and is the retained Plan 130 evidence. Plan 129's
-historical gate remains the topology of record.
+historical gate remains the topology of record. Plan 132
+(`passed-milestone6-final-evidence-and-transactional-closure`,
+[`plans/132-status.md`](../plans/132-status.md)) is the current
+Milestone 6 closure authority. On top of the Plan 131 surface
+it adds: strict Elligator2 receive-domain validation masking the
+two free high bits and rejecting `r >= 2^254 - 10` via the
+`is_canonical_elligator_representative` helper before delegating
+to `elligator2::from_representative` in
+[`crates/i2pr-crypto/src/ecies.rs`](../crates/i2pr-crypto/src/ecies.rs);
+three independent layer-isolated replay trajectories
+(`DuplicateToken`, `UnknownSessionTag`, sequence-dedup) with an
+artifact-preserving test seam in
+[`crates/i2pr-client/tests/plan132_trajectory.rs`](../crates/i2pr-client/tests/plan132_trajectory.rs);
+and `&mut self` transactional send ordering on
+`send_data`/`send_close`/`send_reset` (Phase 1 immutable
+validation → Phase 2 fallible wire construction → Phase 3
+single commit point with `assert_eq!(sequence, planned_sequence)`
+guarantee).
 
 This matrix is intentionally explicit: every row describes the exact evidence
 available, not just code presence. “Experimental structural subset” means

@@ -1351,60 +1351,47 @@ impl StreamingManager {
                 StreamingError::SendWindowFull,
             ));
         }
-        let _ = local_dest;
-        let _ = remote;
 
-        // 6. Allocate the sequence and mutate the send window. Now
-        //    we have committed to emitting a packet; every step
-        //    below is non-fallible except for encode failure, which
-        //    surfaces as a typed error but does not roll back the
-        //    sequence (a wire packet still goes out).
-        let conn = self
-            .connections
-            .get_mut(&connection_id)
-            .ok_or(StreamingManagerError::UnknownConnection)?;
-        let sequence = conn
-            .enqueue_send(payload.len(), now_ms)
-            .map_err(StreamingManagerError::Streaming)?;
+        // Snapshot every piece of connection-owned state the
+        // encoding step will need. The connection's outbound
+        // identifiers and ports are owned by the connection
+        // record; the caller-supplied ports were validated above
+        // and are no longer consulted.
+        let planned_sequence = conn.send_window().next_sequence();
         let local_receive_stream_id = conn.local_stream_id();
         let peer_receive_stream_id = conn.remote_stream_id();
         let (ack_through, ack_nacks) = conn.recv_window().ack_view();
-
-        // Plan 131 §7 D1: ClientPayload ports come from the stored
-        // connection (caller-supplied ports were validated above).
         let wire_local_port = conn.local_port();
         let wire_remote_port = conn.remote_port();
         let _ = conn;
 
+        // ---- Phase 2: build every fallible wire artifact ----------------------
         // The data packet uses our peer receive stream id as
         // `sendStreamId` and our local receive stream id as
-        // `receiveStreamId`. Plan 130 §7 D3/D5: every data packet
-        // piggybacks this side's current acknowledgement state
-        // (`ackThrough` = highest received sequence, plus any bounded
-        // missing-sequence NACKs) and cancels a pending standalone
-        // ACK for the connection.
-        let option_bytes = Vec::new();
+        // `receiveStreamId`. Every data packet piggybacks this
+        // side's current acknowledgement state (`ackThrough` =
+        // highest received sequence, plus any bounded
+        // missing-sequence NACKs).
         let flags = StreamingFlags::new(0).expect("empty flags");
         let builder = StreamingPacketBuilder {
             send_stream_id: peer_receive_stream_id,
             receive_stream_id: local_receive_stream_id,
-            sequence_num: sequence,
+            sequence_num: planned_sequence,
             ack_through,
             nacks: ack_nacks,
             resend_delay: 0,
             flags,
-            option_bytes,
+            option_bytes: Vec::new(),
             payload: payload.to_vec(),
         };
-        let limit = StreamingSendLimit::default();
-        let wire_bytes =
-            encode_streaming_packet(&builder, limit).map_err(StreamingManagerError::Codec)?;
+        let wire_bytes = encode_streaming_packet(&builder, StreamingSendLimit::default())
+            .map_err(StreamingManagerError::Codec)?;
 
         let envelope = ClientPayload {
             protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
             source_port: wire_local_port,
             destination_port: wire_remote_port,
-            payload: wire_bytes.clone(),
+            payload: wire_bytes,
         };
         let application_bytes =
             encode_client_payload(&envelope).map_err(StreamingManagerError::OutboundEnvelope)?;
@@ -1414,10 +1401,28 @@ impl StreamingManager {
             source_port: wire_local_port,
             destination_port: wire_remote_port,
             application_payload: application_bytes,
-            sequence,
+            sequence: planned_sequence,
             send_stream_id: peer_receive_stream_id,
             receive_stream_id: local_receive_stream_id,
         };
+
+        // ---- Phase 3: protocol-state commit (single fallible mutation) --------
+        // Every commit point below must be infallible or have an
+        // explicit rollback. The first commit is `enqueue_send`;
+        // every subsequent step is therefore infallible. The
+        // sequence the window assigns must equal `planned_sequence`;
+        // any divergence is a programming error.
+        let conn = self
+            .connections
+            .get_mut(&connection_id)
+            .ok_or(StreamingManagerError::UnknownConnection)?;
+        let sequence = conn
+            .enqueue_send(payload.len(), now_ms)
+            .map_err(StreamingManagerError::Streaming)?;
+        assert_eq!(
+            sequence, planned_sequence,
+            "send_window must assign the planned sequence on commit"
+        );
 
         let outbound = OutboundPacket {
             sequence,
@@ -1432,10 +1437,12 @@ impl StreamingManager {
             .or_default()
             .insert(sequence, outbound);
         self.outbound_queue.push_back(request.clone());
-        // Plan 130 §7 D3: the piggybacked acknowledgement state
-        // satisfies any pending standalone ACK.
+        // The piggybacked acknowledgement state satisfies any
+        // pending standalone ACK.
         self.pending_acks.remove(&connection_id);
 
+        let _ = local_dest;
+        let _ = remote;
         Ok(request)
     }
 
@@ -1467,11 +1474,12 @@ impl StreamingManager {
         remote_port: u16,
         now_ms: u64,
     ) -> Result<TransportSendRequest, StreamingManagerError> {
-        // Plan 131 §8 E3: validate the port assertion and the
-        // pre-state-transition state before any mutation. A
-        // mismatched port tuple, or an invalid starting state,
-        // returns a typed error without touching the connection.
-        {
+        // ---- Phase 1: immutable validation ------------------------------------
+        // Validate the port assertion and the pre-state-transition state
+        // before any mutation. A mismatched port tuple, or an invalid
+        // starting state, returns a typed error without touching the
+        // connection.
+        let (local_receive_stream_id, peer_receive_stream_id, was_closing_remote) = {
             let conn = self
                 .connections
                 .get(&connection_id)
@@ -1495,27 +1503,28 @@ impl StreamingManager {
                     ));
                 }
             }
-        }
-        let conn = self
+            (
+                conn.local_stream_id(),
+                conn.remote_stream_id(),
+                conn.state() == ConnectionState::ClosingRemote,
+            )
+        };
+
+        // Snapshot everything needed to build the CLOSE request.
+        let conn_snapshot = self
             .connections
-            .get_mut(&connection_id)
+            .get(&connection_id)
             .ok_or(StreamingManagerError::UnknownConnection)?;
-        if conn.state() == ConnectionState::Established {
-            conn.begin_close(now_ms)
-                .map_err(StreamingManagerError::Streaming)?;
-        }
-        let local_receive_stream_id = conn.local_stream_id();
-        let peer_receive_stream_id = conn.remote_stream_id();
         // Plan 130 §6 C1: CLOSE is an ordinary message in the stream
         // sequence space (only plain ACKs and retransmissions are
         // exempt), so it allocates the next sequence number.
-        let sequence_num = conn.send_window().next_sequence();
-        let (ack_through, ack_nacks) = conn.recv_window().ack_view();
-        let wire_local_port = conn.local_port();
-        let wire_remote_port = conn.remote_port();
-        let was_closing_remote = conn.state() == ConnectionState::ClosingRemote;
-        let _ = conn;
+        let sequence_num = conn_snapshot.send_window().next_sequence();
+        let (ack_through, ack_nacks) = conn_snapshot.recv_window().ack_view();
+        let wire_local_port = conn_snapshot.local_port();
+        let wire_remote_port = conn_snapshot.remote_port();
+        let _ = conn_snapshot;
 
+        // ---- Phase 2: build the signed CLOSE request (fallible) ---------------
         let options = StreamingOptions {
             delay_requested: None,
             from_destination: None,
@@ -1536,10 +1545,23 @@ impl StreamingManager {
             wire_remote_port,
         )?;
 
+        // ---- Phase 3: protocol-state commit (infallible after build) -----------
+        // Begin the close transition only after the wire request has
+        // been built and signed. A failure to build leaves the
+        // connection in its prior state.
+        let conn = self
+            .connections
+            .get_mut(&connection_id)
+            .ok_or(StreamingManagerError::UnknownConnection)?;
+        if conn.state() == ConnectionState::Established {
+            conn.begin_close(now_ms)
+                .map_err(StreamingManagerError::Streaming)?;
+        }
+
         // A CLOSE emitted from `ClosingRemote` answers the peer's
         // CLOSE; once our own CLOSE is on the wire this side's half
         // of the shutdown is complete.
-        if was_closing_remote && let Some(conn) = self.connections.get_mut(&connection_id) {
+        if was_closing_remote {
             let _ = conn.close(now_ms);
         }
 
@@ -1578,7 +1600,11 @@ impl StreamingManager {
         remote_port: u16,
         now_ms: u64,
     ) -> Result<TransportSendRequest, StreamingManagerError> {
-        {
+        // ---- Phase 1: immutable validation ------------------------------------
+        // Validate the port assertion before any state mutation. A
+        // mismatched port tuple returns a typed error without
+        // touching the connection.
+        let (local_receive_stream_id, peer_receive_stream_id, ack_through, ack_nacks) = {
             let conn = self
                 .connections
                 .get(&connection_id)
@@ -1591,24 +1617,16 @@ impl StreamingManager {
                     actual_destination: local_port,
                 });
             }
-        }
-        let conn = self
-            .connections
-            .get_mut(&connection_id)
-            .ok_or(StreamingManagerError::UnknownConnection)?;
-        conn.reset(now_ms)
-            .map_err(StreamingManagerError::Streaming)?;
-        let local_receive_stream_id = conn.local_stream_id();
-        let peer_receive_stream_id = conn.remote_stream_id();
-        // Plan 130 §7 D3: a reset connection never retains a pending
-        // standalone ACK, and the RESET carries the final cumulative
-        // acknowledgement state.
-        self.pending_acks.remove(&connection_id);
-        let (ack_through, ack_nacks) = conn.recv_window().ack_view();
-        let wire_local_port = conn.local_port();
-        let wire_remote_port = conn.remote_port();
-        let _ = conn;
+            let (ack_through, ack_nacks) = conn.recv_window().ack_view();
+            (
+                conn.local_stream_id(),
+                conn.remote_stream_id(),
+                ack_through,
+                ack_nacks,
+            )
+        };
 
+        // ---- Phase 2: build the signed RESET request (fallible) ---------------
         let options = StreamingOptions {
             delay_requested: None,
             from_destination: None,
@@ -1625,9 +1643,26 @@ impl StreamingManager {
             RESET_FLAGS,
             &options,
             ack_nacks,
-            wire_local_port,
-            wire_remote_port,
+            local_port,
+            remote_port,
         )?;
+
+        // ---- Phase 3: protocol-state commit (infallible after build) -----------
+        // Reset the connection only after the wire request has been
+        // built and signed. A failure to build leaves the connection
+        // in its prior state.
+        let conn = self
+            .connections
+            .get_mut(&connection_id)
+            .ok_or(StreamingManagerError::UnknownConnection)?;
+        conn.reset(now_ms)
+            .map_err(StreamingManagerError::Streaming)?;
+
+        // Plan 130 §7 D3: a reset connection never retains a pending
+        // standalone ACK, and the RESET carries the final cumulative
+        // acknowledgement state.
+        self.pending_acks.remove(&connection_id);
+
         self.outbound_queue.push_back(request.clone());
 
         Ok(request)

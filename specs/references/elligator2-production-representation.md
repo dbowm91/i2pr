@@ -55,6 +55,55 @@ least-square-root representative.
   `Decode()` masks the two highest bits (`encoded1 &= 0x3F`) and
   requires the canonical representative (`r <= (p-1)/2`).
 
+## Plan 132 receive-domain correction
+
+Status: recorded 2026-08-27 (Plan 132 Phase A).
+
+Plan 131 left a fingerprinting oracle at the receive boundary:
+`EciesEphemeralRepresentative` decoding delegated straight to
+`elligator2::from_representative`, whose API is total for every
+32-byte string after masking. i2pr rejected only the all-zero input
+and the all-zero recovered Montgomery point. The reviewed primitive
+correctly masks the two high bits, but it never enforces the
+canonical lower-half domain the deployed Java I2P / i2pd decoders
+require.
+
+Plan 132 narrows `decode_representative` so the receive path matches
+the deployed-reference acceptance rule before it trusts the Elligator2
+inverse map:
+
+1. reject the forbidden all-zero input representation (unchanged);
+2. mask off the two free high bits per `DECODE_ELG2`
+   (`copy[31] &= 0x3f`);
+3. reject masked values whose little-endian integer is greater than or
+   equal to the canonical lower-half threshold
+   `(p - 1) / 2 = 2^254 - 10` (i.e., strict `masked < 2^254 - 10`).
+   The threshold in little-endian bytes is
+   `[0xf6, 0xff, 0xff, ..., 0xff, 0x3f]` (byte 0 = `0xf6`, bytes 1..30
+   = `0xff`, byte 31 = `0x3f`); the comparison walks bytes 31 → 0 and
+   returns `false` at the first non-equal byte whose masked value is
+   greater than the threshold byte. The value exactly equal to the
+   threshold is rejected because both pinned references reject
+   `r >= (p - 1) / 2`;
+4. delegate to the reviewed inverse-map primitive (which masks the
+   high bits internally; passing the masked form makes the canonical
+   byte sequence visible to any audit);
+5. reject the forbidden all-zero recovered Montgomery point
+   (unchanged).
+
+The high-bit randomization that `ENCODE_ELG2` adds in step 4 of the
+normative contract is irrelevant after masking: the two high bits
+are forced off before the canonical-domain comparison runs, and the
+recovered Montgomery point is invariant to them. Plan 131's
+production encoder is unchanged — `EciesEphemeralKeypair::generate`
+still draws both the inverse-map branch bit and the high-bit
+randomization from the caller's CSPRNG and feeds them through
+`elligator2::to_representative`. The encoder naturally produces
+canonical representatives because the primitive's
+`to_representative` normalizes the `r` it computes to the lower half
+before ORing the high bits back in; receivers therefore still accept
+every produced wire byte.
+
 Both references therefore emit **canonical representatives with
 randomized high bits** AND **one bit of randomized pre-image branch**;
 both reject non-canonical values after masking. The Java/i2pd
@@ -139,7 +188,18 @@ constants live in the `reference_fixtures` module of the
 - both reference encode branches (distinct canonical representatives)
   decode to the same `X_COORDINATE`;
 - production-generated representatives decode to exactly the X25519
-  public key their secret derives (`PublicKey(clamp(secret))`).
+  public key their secret derives (`PublicKey(clamp(secret))`);
+- Plan 132 Phase A boundary tests pin the canonical-domain
+  acceptance: the threshold `2^254 - 10` is rejected, one below it
+  decodes, the maximum masked value is rejected, any of the four
+  legal high-bit combinations on a non-canonical masked `r` remains
+  rejected, the four legal high-bit combinations on a canonical
+  masked `r` all decode to the same X25519 point, a structurally
+  valid Bound New Session carrying the threshold representative
+  fails with `EciesError::ElligatorDecode` before DH/AEAD, and a
+  structurally valid New Session Reply carrying the threshold
+  representative fails with `EciesError::ElligatorDecode` before
+  `ee`/`se` AEAD.
 
 These fixtures pin decoder compatibility with Java I2P / i2pd
 produced traffic; they are never recomputed at test time.

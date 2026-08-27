@@ -352,12 +352,28 @@ Plan 129 closed the integrated M6 destination+Streaming gate
            Streaming sequence), connection-owned I2P port tuple
            asserted on every established `send_data` / `send_close`
            / `send_reset`, source-port `0` as valid I2P
-           "unspecified", and side-effect-free oversized
-           `send_data` rollback. `milestone6_local_product =
-           passed`, `milestone6_interoperable = not-yet-claimed`;
-           corrective Milestone 6 planning stops and the next product
-           layer is SAM
-          baseline planning (Milestone 7).
+"unspecified", and side-effect-free oversized
+            `send_data` rollback. `milestone6_local_product =
+            passed`, `milestone6_interoperable = not-yet-claimed`.
+            Plan 132 is the current Milestone 6 closure authority
+            as `passed-milestone6-final-evidence-and-transactional-closure`
+            ([`plans/132-status.md`](../../plans/132-status.md)):
+            strict Elligator2 receive-domain validation masking the
+            two free high bits and rejecting `r >= 2^254 - 10`
+            via the `is_canonical_elligator_representative` helper
+            before delegating to `elligator2::from_representative`,
+            three independent layer-isolated replay trajectories
+            (tunnel duplicate window, consumed ECIES session tag,
+            fresh-ECIES-reseal Streaming sequence) with an
+            artifact-preserving test seam in
+            [`plan132_trajectory.rs`](../../crates/i2pr-client/tests/plan132_trajectory.rs),
+            and `&mut self` transactional send ordering on
+            `send_data` / `send_close` / `send_reset` (Phase 1
+            immutable validation → Phase 2 fallible wire
+            construction → Phase 3 single commit point with
+            `assert_eq!(sequence, planned_sequence)` guarantee).
+            Corrective Milestone 6 planning stops and the next
+            product layer is SAM baseline planning (Milestone 7).
 6. **`i2pr-runtime`** builds a `ServiceGraph`, topologically validates it
    before startup, then spawns one supervisor manager per service via a
    `JoinSet`. Each service receives a narrowed `ServiceContext` (name,

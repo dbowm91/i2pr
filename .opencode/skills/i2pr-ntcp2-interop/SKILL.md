@@ -71,8 +71,9 @@ plan_117                             = closed-for-progression-with-evidence-gap
 plan_119                             = passed-leaseset2-protocol-foundation
 plan_130                             = superseded-by-plan131-final-local-correctness-gate
 plan_131                             = passed-milestone6-final-local-correctness-closure
+plan_132                             = passed-milestone6-final-evidence-and-transactional-closure
 router_construction                  = may-continue
-next_router_construction_plan        = SAM baseline planning (Milestone 7; Milestone 6 closed by Plan 131)
+next_router_construction_plan        = SAM baseline planning (Milestone 7; Milestone 6 closed by Plan 132)
 ```
 
 Do not relax the parser or promote parser-only evidence to native

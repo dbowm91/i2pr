@@ -276,7 +276,13 @@ four high-bit variants and both Java/i2pd encode branches
 decoding to one X25519 public key. Provenance lives in
 [`specs/references/ecies-destination-ratchet.md`](../../specs/references/ecies-destination-ratchet.md)
 and
-[`specs/references/elligator2-production-representation.md`](../../specs/references/elligator2-production-representation.md).
+ [`specs/references/elligator2-production-representation.md`](../../specs/references/elligator2-production-representation.md).
+ Plan 132 added strict Elligator2 receive-domain validation:
+ `decode_representative` masks the two free high bits via
+ `is_canonical_elligator_representative` and refuses `r >= 2^254 - 10`
+ (the `ELLIGATOR_CANONICAL_THRESHOLD_LE = [0xf6, 0xff × 30, 0x3f]`
+ half-order constant) before delegating to the reviewed
+ `elligator2::from_representative` primitive.
 The `i2pr-client` corrected trajectory test
 (`crates/i2pr-client/tests/plan121_trajectory.rs`
 `plan_126_corrected_deterministic_local_trajectory`) drives the full

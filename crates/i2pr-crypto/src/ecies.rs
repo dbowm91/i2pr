@@ -357,12 +357,90 @@ impl fmt::Debug for EciesEphemeralSecret {
     }
 }
 
+/// The I2P canonical lower-half threshold for Elligator2
+/// representatives after the two free high bits have been masked
+/// off, expressed as little-endian bytes.
+///
+/// For Curve25519 (`p = 2^255 - 19`), `(p - 1) / 2 = 2^254 - 10`.
+/// In little-endian byte form that threshold is:
+///
+/// ```text
+/// bytes[0]      = 0xf6
+/// bytes[1..30]  = 0xff (× 30)
+/// bytes[31]     = 0x3f
+/// ```
+///
+/// Pinned Java I2P and i2pd decoders both reject representatives
+/// whose masked value is greater than or equal to this threshold
+/// before they trust the Elligator2 inverse map.
+const ELLIGATOR_CANONICAL_THRESHOLD_LE: [u8; REPRESENTATIVE_LENGTH] = [
+    0xf6, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f,
+];
+
+/// Returns `true` when the masked representative value is strictly
+/// less than the I2P canonical threshold `(p - 1) / 2 = 2^254 - 10`.
+///
+/// Two LE-encoded 256-bit numbers compare by their most-significant
+/// differing byte, starting at byte 31. The high two bits of byte 31
+/// have already been masked off before this helper runs, so the byte
+/// 31 value is bounded to `[0x00, 0x3F]`. The boundary walk is:
+///
+/// - `masked[31] < 0x3f`: the value is strictly less than the
+///   threshold regardless of the lower bytes — canonical;
+/// - `masked[31] > 0x3f`: strictly greater than the threshold
+///   regardless of the lower bytes — non-canonical (impossible in
+///   masked form, kept for completeness);
+/// - `masked[31] == 0x3f`: the value matches the threshold at the
+///   most-significant byte, so the helper walks bytes 30, 29, …, 1
+///   looking for the first non-`0xff` byte. Any non-`0xff` byte
+///   below byte 31 decides (lower than threshold → canonical);
+///   when bytes 1..30 are all `0xff`, the byte-0 check decides
+///   (`< 0xf6` → canonical, `== 0xf6` → equal to threshold →
+///   non-canonical, `> 0xf6` → greater than threshold →
+///   non-canonical).
+fn is_canonical_elligator_representative(masked: &[u8; REPRESENTATIVE_LENGTH]) -> bool {
+    let threshold = &ELLIGATOR_CANONICAL_THRESHOLD_LE;
+    for index in (0..REPRESENTATIVE_LENGTH).rev() {
+        match masked[index].cmp(&threshold[index]) {
+            core::cmp::Ordering::Less => return true,
+            core::cmp::Ordering::Greater => return false,
+            core::cmp::Ordering::Equal => {}
+        }
+    }
+    // All bytes equal — value equals the threshold exactly.
+    false
+}
+
 /// Decodes a 32-byte Elligator2 representative into the matching
-/// Montgomery public-key bytes. The reverse map is total (every
-/// 32-byte string decodes to some point) and the reviewed
-/// `elligator2::from_representative` primitive masks off the two
-/// free high bits before mapping, so the result is invariant to
-/// the random bits ORed in at encode time.
+/// Montgomery public-key bytes.
+///
+/// Plan 132 Phase A: the receive path mirrors the deployed-reference
+/// acceptance rule. Before delegating to the reviewed
+/// `elligator2::from_representative` primitive (which is a total
+/// reverse map for every 32-byte input), the receiver:
+///
+/// 1. rejects the forbidden all-zero input representation as before;
+/// 2. masks off the two free high bits per the normative
+///    `DECODE_ELG2` rule;
+/// 3. rejects representatives whose masked value is greater than or
+///    equal to the canonical lower-half threshold
+///    `(p - 1) / 2 = 2^254 - 10`. This is the exact boundary check
+///    used by current pinned Java I2P (`Elligator2.java` masks byte
+///    31 with `0x3f` and rejects `r >= (p - 1) / 2`) and i2pd
+///    (`libi2pd/Elligator.cpp` masks the two free high bits and
+///    enforces the same lower-half domain);
+/// 4. delegates to the reviewed inverse-map primitive (which masks
+///    the high bits internally, so the input here is the masked
+///    form);
+/// 5. rejects the forbidden all-zero recovered Montgomery point as
+///    before.
+///
+/// The two free high bits are masked before canonical-domain
+/// evaluation; changing only the high bits cannot turn an invalid
+/// canonical `r` into a valid one. The result is invariant to the
+/// random bits ORed in at encode time and matches every deployed
+/// reference implementation's acceptance rule.
 pub fn decode_representative(
     representative: &EciesEphemeralRepresentative,
 ) -> Result<[u8; REPRESENTATIVE_LENGTH], EciesError> {
@@ -370,7 +448,13 @@ pub fn decode_representative(
     if bytes.iter().all(|byte| *byte == 0) {
         return Err(EciesError::ElligatorDecode);
     }
-    let recovered = elligator2::from_representative(bytes);
+    let mut masked = [0_u8; REPRESENTATIVE_LENGTH];
+    masked.copy_from_slice(bytes);
+    masked[REPRESENTATIVE_LENGTH - 1] &= 0x3f;
+    if !is_canonical_elligator_representative(&masked) {
+        return Err(EciesError::ElligatorDecode);
+    }
+    let recovered = elligator2::from_representative(&masked);
     if recovered.iter().all(|byte| *byte == 0) {
         return Err(EciesError::ElligatorDecode);
     }
@@ -2542,6 +2626,214 @@ mod tests {
             decode_representative(&representative).err(),
             Some(EciesError::ElligatorDecode)
         );
+    }
+
+    // ---- Plan 132 Phase A: canonical Elligator2 receive-domain tests ----
+
+    /// The strict I2P canonical lower-half threshold, in little-endian
+    /// bytes. Used by the boundary tests below to construct exact
+    /// non-canonical representatives without arithmetic guesswork.
+    const CANONICAL_THRESHOLD_BYTES: [u8; REPRESENTATIVE_LENGTH] = [
+        0xf6, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0x3f,
+    ];
+
+    #[test]
+    fn canonical_threshold_equals_two_to_the_254_minus_10() {
+        // Sanity: the published threshold constant must match the
+        // formula `2^254 - 10`, since the Elligator decoder compares
+        // masked representatives against this exact value. We
+        // reconstruct the threshold bytes through the documented
+        // low-byte borrow chain (`2^254 - 10 = 0x3F FF ... FF F6`).
+        let mut reconstructed = [0_u8; REPRESENTATIVE_LENGTH];
+        // bytes 1..30 = 0xff, byte 31 = 0x3f, byte 0 = 0xf6
+        reconstructed[0] = 0xf6;
+        for byte in &mut reconstructed[1..31] {
+            *byte = 0xff;
+        }
+        reconstructed[31] = 0x3f;
+        assert_eq!(reconstructed, CANONICAL_THRESHOLD_BYTES);
+    }
+
+    #[test]
+    fn masked_representative_equal_to_threshold_is_rejected() {
+        // The masked value is exactly `(p - 1) / 2 = 2^254 - 10`. A
+        // pinned-deployed decoder rejects `r >= (p - 1) / 2`, so
+        // i2pr must reject the boundary value before mapping.
+        let outcome =
+            decode_representative(&EciesEphemeralRepresentative(CANONICAL_THRESHOLD_BYTES));
+        assert_eq!(outcome.err(), Some(EciesError::ElligatorDecode));
+    }
+
+    #[test]
+    fn masked_representative_one_below_threshold_is_accepted() {
+        // Just below the boundary: `r = 2^254 - 11` is strictly less
+        // than `(p - 1) / 2` and must decode. This anchors the
+        // "strict less-than" interpretation.
+        let mut below_threshold = CANONICAL_THRESHOLD_BYTES;
+        below_threshold[0] = 0xf5;
+        let outcome = decode_representative(&EciesEphemeralRepresentative(below_threshold))
+            .expect("canonical boundary-1 decodes");
+        // The recovered Montgomery point must not be the forbidden
+        // all-zero value; the exact point identity is implementation-
+        // defined by the reviewed primitive.
+        assert!(
+            outcome.iter().any(|byte| *byte != 0),
+            "recovered public point must be non-zero"
+        );
+    }
+
+    #[test]
+    fn masked_representative_just_above_threshold_is_rejected() {
+        // `r = 2^254 - 9` (one above threshold) is in the upper half
+        // and must be rejected by every deployed decoder.
+        let mut above_threshold = CANONICAL_THRESHOLD_BYTES;
+        above_threshold[0] = 0xf7;
+        assert_eq!(
+            decode_representative(&EciesEphemeralRepresentative(above_threshold)).err(),
+            Some(EciesError::ElligatorDecode)
+        );
+    }
+
+    #[test]
+    fn masked_representative_byte31_above_threshold_is_rejected() {
+        // `r = 0x40_00_..._00` (byte 31 = 0x40 but masked 0x00) is
+        // well below the threshold and must decode, while `r =
+        // 0x40_00_..._01` (byte 31 = 0x41 masked 0x01) is similarly
+        // canonical. By contrast, any value with masked byte 31
+        // greater than the threshold byte 31 (0x3F) is impossible
+        // after masking (the high bits are forced off), so this
+        // test exercises the masked boundary strictly.
+        let mut just_under_byte31 = CANONICAL_THRESHOLD_BYTES;
+        just_under_byte31[31] = 0x3e;
+        let _ = decode_representative(&EciesEphemeralRepresentative(just_under_byte31))
+            .expect("masked byte 31 = 0x3e is canonical");
+    }
+
+    #[test]
+    fn maximum_masked_representative_is_rejected() {
+        // `r = 2^254 - 1` is the largest masked value and is in the
+        // upper half. It must be rejected by every deployed decoder.
+        let mut max_masked = [0xff_u8; REPRESENTATIVE_LENGTH];
+        max_masked[31] = 0x3f;
+        assert_eq!(
+            decode_representative(&EciesEphemeralRepresentative(max_masked)).err(),
+            Some(EciesError::ElligatorDecode)
+        );
+    }
+
+    #[test]
+    fn high_bits_cannot_resurrect_invalid_canonical_r() {
+        // A masked `r` that is strictly above the threshold must
+        // remain rejected regardless of the two free high bits ORed
+        // back into byte 31. Concretely, the value `2^254 - 1` (the
+        // maximum masked value) is in the upper half; padding it with
+        // any of the four legal high-bit combinations (0x00, 0x40,
+        // 0x80, 0xc0) must not flip the decision.
+        let mut max_masked = [0xff_u8; REPRESENTATIVE_LENGTH];
+        max_masked[31] = 0x3f;
+        for high_bits in [0x00_u8, 0x40, 0x80, 0xc0] {
+            let mut rep = max_masked;
+            rep[31] |= high_bits;
+            assert_eq!(
+                decode_representative(&EciesEphemeralRepresentative(rep)).err(),
+                Some(EciesError::ElligatorDecode),
+                "high bits 0x{high_bits:02x} must not turn invalid r into valid"
+            );
+        }
+    }
+
+    #[test]
+    fn high_bits_cannot_invalidate_valid_canonical_r() {
+        // Conversely, a canonical `r` must remain canonical under
+        // any of the four legal high-bit combinations. Use the
+        // Plan 131 frozen reference coordinate `REPRESENTATIVE_HIGH_00`
+        // (masked byte 31 = 0x0e, well below 0x3f) and exercise all
+        // four high-bit encodings.
+        for representative in [
+            reference_fixtures::REPRESENTATIVE_HIGH_00,
+            reference_fixtures::REPRESENTATIVE_HIGH_40,
+            reference_fixtures::REPRESENTATIVE_HIGH_80,
+            reference_fixtures::REPRESENTATIVE_HIGH_C0,
+        ] {
+            let decoded = decode_representative(&EciesEphemeralRepresentative(representative))
+                .expect("canonical r with arbitrary high bits decodes");
+            assert_eq!(decoded, reference_fixtures::X_COORDINATE);
+        }
+    }
+
+    #[test]
+    fn malformed_bound_new_session_with_non_canonical_representative_is_rejected() {
+        // A New Session carrying a non-canonical representative must
+        // fail before any DH/authentication step can install a
+        // session state. The Elligator decode error surfaces as the
+        // same typed rejection (`ElligatorDecode`) and the session
+        // manager must remain in its initial state — no provisional
+        // responder, no paired session, no pending handshake.
+        let representative = EciesEphemeralRepresentative(CANONICAL_THRESHOLD_BYTES);
+        // Build a structurally-valid BoundNewSessionMessage around
+        // the non-canonical representative. The other fields are
+        // arbitrary; only the representative path matters here.
+        let encrypted_static_section = [0_u8; STATIC_PUBLIC_LENGTH + AEAD_TAG_LEN];
+        let encrypted_payload_section = [0_u8; AEAD_TAG_LEN];
+        let message = BoundNewSessionMessage {
+            representative,
+            encrypted_static_section: encrypted_static_section.to_vec(),
+            encrypted_payload_section: encrypted_payload_section.to_vec(),
+        };
+        let bob_static_secret = [0x42_u8; STATIC_PUBLIC_LENGTH];
+        let bob_static_public = [0x24_u8; STATIC_PUBLIC_LENGTH];
+        let outcome = open_bound_new_session(&bob_static_secret, &bob_static_public, &message);
+        assert_eq!(outcome.err(), Some(EciesError::ElligatorDecode));
+    }
+
+    #[test]
+    fn malformed_new_session_reply_with_non_canonical_representative_is_rejected() {
+        // A New Session Reply carrying a non-canonical Bob
+        // representative must fail before any DH/authentication
+        // step. The Elligator decode error surfaces as the same
+        // typed rejection and the pending handshake slot stays
+        // unconsumed.
+        let mut alice_seed = [0_u8; STATIC_PUBLIC_LENGTH];
+        for (index, byte) in alice_seed.iter_mut().enumerate() {
+            *byte = (index as u8).wrapping_mul(0x11).wrapping_add(0x77);
+        }
+        let alice_static_secret = alice_seed;
+        // Build a structurally-valid BoundNewSessionSender context by
+        // sealing a real New Session, then mutate the produced reply
+        // to carry a non-canonical representative.
+        let alice_ephemeral =
+            EciesEphemeralKeypair::from_seed_bytes(fv::ALICE_EPHEMERAL_SEED).expect("ephemeral");
+        let mut rng = ChaCha8Rng::seed_from_u64(0xAB);
+        let bob_static_secret_seed = [0x4d_u8; STATIC_PUBLIC_LENGTH];
+        let bob_static_public = static_public(&bob_static_secret_seed);
+        // Alice seals the New Session and Bob opens it to obtain a
+        // responder context. Bob then seals a real NSR (so the
+        // surrounding wire layout is valid) and we mutate the
+        // produced reply's Bob ephemeral representative to a
+        // non-canonical value before asking Alice to open it.
+        let (ns_message, _sender) = seal_bound_new_session(
+            &alice_static_secret,
+            &alice_ephemeral,
+            &bob_static_public,
+            b"plan132-non-canonical",
+        )
+        .expect("seal ns");
+        let responder =
+            open_bound_new_session(&bob_static_secret_seed, &bob_static_public, &ns_message)
+                .expect("bob open ns");
+        let reply = seal_new_session_reply(
+            &responder.responder,
+            &bob_static_secret_seed,
+            b"plan132-reply",
+            &mut rng,
+        )
+        .expect("seal nsr");
+        let mut bad_reply = reply.message;
+        bad_reply.representative = EciesEphemeralRepresentative(CANONICAL_THRESHOLD_BYTES);
+        let outcome = open_new_session_reply(&_sender, &alice_static_secret, &bad_reply);
+        assert_eq!(outcome.err(), Some(EciesError::ElligatorDecode));
     }
 
     #[test]

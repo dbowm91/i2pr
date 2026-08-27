@@ -19,7 +19,7 @@ Eleven-crate workspace under `crates/`:
 - `i2pr-transport-ntcp2` — runtime-neutral NTCP2 handshake + data frames
 - `i2pr-runtime` — **only** production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation
 - `i2pr-daemon` — composition root + CLI
-- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`); Plan 126 normative ECIES-X25519-AEAD-Ratchet destination session layer (bound NS/NSR/ES, paired sessions keyed by remote static key, classify-driven dispatch); Plan 127 destination-session routing final closure (bundled-LS2 sender binding under the sender's own Destination hash, planned outbound form state machine with retained NSR context, production reverse routing through `install_remote_lease_set2`, active-remote ceiling); Plan 122 local destination routing / LeaseSet2 NetDB composition; Plan 125 protocol-correct I2P Streaming core (`StreamingManager` with real SYN/SYN-response lifecycle, stream-id ownership, RFC 1952 gzip client payload wire format, MTU negotiation, signed SYN/CLOSE/RESET, sequence/ACK/NACK, retransmit, congestion, send/receive windows, listener backlogs) and the runtime-neutral `StreamingDestinationAdapter` that bridges streaming packets into the Plan 122 destination-routing pipeline; Plan 128 normative Streaming wire correction (normative flag map with policy sets `0x04A9`/`0x00A9`/`0x000A`/`0x000C`, no option-data TLVs, flag-driven option order, 2-byte big-endian payload-only MAX_PACKET_SIZE defaulting to 1730, raw final signatures from signing-key context, canonical zeroed-placeholder preimage, Proposal 164 replay NACKs on the initial SYN only, retained peer signing key for CLOSE/RESET verification without FROM; provenance in `specs/references/streaming-packet-wire.md`); Plan 129 integrated Milestone 6 destination+Streaming gate (`superseded-by-plan130-final-gate`; combined outbound/inbound `StreamingDestinationAdapter`, evidence in `crates/i2pr-client/tests/plan129_trajectory.rs`); Plan 130 Milestone 6 final wire/runtime corrective closure (`superseded-by-plan131-final-local-correctness-gate`; historical evidence retained in `plans/130-status.md`); and Plan 131 Milestone 6 final local correctness closure (`passed-milestone6-final-local-correctness-closure`: production Elligator2 randomized representatives driven by the reviewed `elligator2 = 0.1.0` primitive — `curve25519-elligator2 = 0.1.0-alpha.2` retired because its `RFC9380` branch choice was deterministic rather than caller-randomizable and its `Randomized` mode rotated the DH public key — application sequences starting at 1 post-SYN with seq 0 owned by SYN/plain-ACK forms, semantic flag-driven ACK presence where `ackThrough == 0` is valid, NACK-aware cumulative ACKs retaining explicitly NACKed packets, receiver ACK/NACK views per `MessageInputStream.updateAcks`, synchronous coalescing `poll_acks(now_ms)` delayed standalone ACKs on the 750 ms reference default with piggyback suppression, wire destination_port listener authority with exact/wildcard-port-0 matching and typed `NoMatchingListener`/`PortTupleMismatch`, persistent tunnel duplicate windows with typed `DuplicateCell` replay rejection, three-layer replay separation (tunnel duplicate window, consumed ECIES session tag, fresh-ECIES-reseal Streaming sequence), connection-owned I2P port tuple asserted (not authoritative) on every established `send_data`/`send_close`/`send_reset`, source-port-0 as valid I2P "unspecified", and side-effect-free oversized `send_data` rollback; evidence in `crates/i2pr-client/tests/plan131_trajectory.rs`, reference addenda in `specs/references/elligator2-production-representation.md` and `specs/references/streaming-packet-wire.md`, closure in `plans/131-status.md`).
+- `i2pr-client` — Plan 120 local destination runtime: identity, dedicated tunnel pools, signed Standard LeaseSet2 generation and lifecycle, bounded local payload contracts, destination registry (consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/`i2pr-proto`/`i2pr-tunnel`; never composes back into `i2pr-tunnel` or `i2pr-netdb`; never depends on `i2pr-daemon`); Plan 126 normative ECIES-X25519-AEAD-Ratchet destination session layer (bound NS/NSR/ES, paired sessions keyed by remote static key, classify-driven dispatch); Plan 127 destination-session routing final closure (bundled-LS2 sender binding under the sender's own Destination hash, planned outbound form state machine with retained NSR context, production reverse routing through `install_remote_lease_set2`, active-remote ceiling); Plan 122 local destination routing / LeaseSet2 NetDB composition; Plan 125 protocol-correct I2P Streaming core (`StreamingManager` with real SYN/SYN-response lifecycle, stream-id ownership, RFC 1952 gzip client payload wire format, MTU negotiation, signed SYN/CLOSE/RESET, sequence/ACK/NACK, retransmit, congestion, send/receive windows, listener backlogs) and the runtime-neutral `StreamingDestinationAdapter` that bridges streaming packets into the Plan 122 destination-routing pipeline; Plan 128 normative Streaming wire correction (normative flag map with policy sets `0x04A9`/`0x00A9`/`0x000A`/`0x000C`, no option-data TLVs, flag-driven option order, 2-byte big-endian payload-only MAX_PACKET_SIZE defaulting to 1730, raw final signatures from signing-key context, canonical zeroed-placeholder preimage, Proposal 164 replay NACKs on the initial SYN only, retained peer signing key for CLOSE/RESET verification without FROM; provenance in `specs/references/streaming-packet-wire.md`); Plan 129 integrated Milestone 6 destination+Streaming gate (`superseded-by-plan130-final-gate`; combined outbound/inbound `StreamingDestinationAdapter`, evidence in `crates/i2pr-client/tests/plan129_trajectory.rs`); Plan 130 Milestone 6 final wire/runtime corrective closure (`superseded-by-plan131-final-local-correctness-gate`; historical evidence retained in `plans/130-status.md`); and Plan 131 Milestone 6 final local correctness closure (`passed-milestone6-final-local-correctness-closure`: production Elligator2 randomized representatives driven by the reviewed `elligator2 = 0.1.0` primitive — `curve25519-elligator2 = 0.1.0-alpha.2` retired because its `RFC9380` branch choice was deterministic rather than caller-randomizable and its `Randomized` mode rotated the DH public key — application sequences starting at 1 post-SYN with seq 0 owned by SYN/plain-ACK forms, semantic flag-driven ACK presence where `ackThrough == 0` is valid, NACK-aware cumulative ACKs retaining explicitly NACKed packets, receiver ACK/NACK views per `MessageInputStream.updateAcks`, synchronous coalescing `poll_acks(now_ms)` delayed standalone ACKs on the 750 ms reference default with piggyback suppression, wire destination_port listener authority with exact/wildcard-port-0 matching and typed `NoMatchingListener`/`PortTupleMismatch`, persistent tunnel duplicate windows with typed `DuplicateCell` replay rejection, three-layer replay separation (tunnel duplicate window, consumed ECIES session tag, fresh-ECIES-reseal Streaming sequence), connection-owned I2P port tuple asserted (not authoritative) on every established `send_data`/`send_close`/`send_reset`, source-port-0 as valid I2P "unspecified", and side-effect-free oversized `send_data` rollback; evidence in `crates/i2pr-client/tests/plan131_trajectory.rs`, reference addenda in `specs/references/elligator2-production-representation.md` and `specs/references/streaming-packet-wire.md`, closure in `plans/131-status.md`); and Plan 132 Milestone 6 final evidence and transactional closure (`passed-milestone6-final-evidence-and-transactional-closure`: strict Elligator2 receive-domain validation masking high bits and rejecting non-canonical `r >= 2^254 - 10` before delegating to `elligator2::from_representative` in `crates/i2pr-crypto/src/ecies.rs` (`ELLIGATOR_CANONICAL_THRESHOLD_LE` constant + `is_canonical_elligator_representative` helper); three independent layer-isolated replay trajectories (persistent tunnel `DuplicateToken`, consumed ECIES session tag, fresh-ECIES-reseal Streaming sequence) with an artifact-preserving test seam in `crates/i2pr-client/tests/plan132_trajectory.rs`; and `&mut self` transactional send ordering on `send_data`/`send_close`/`send_reset` (Phase 1 immutable validation → Phase 2 fallible wire construction → Phase 3 single commit point with `assert_eq!(sequence, planned_sequence)` guarantee, no half-written connection state on codec or signature failure); reference addendum in `specs/references/elligator2-production-representation.md`; closure in `plans/132-status.md`).
 - `i2pr-testkit` — deterministic simulation; production crates must not depend on it
 
 Fixtures: `tests/fixtures/i2np/` (manifest at `tests/fixtures/i2np/manifest.tsv`),
@@ -2832,6 +2832,7 @@ plan_128 = passed-streaming-wire-protocol-corrective-closure
 plan_129 = superseded-by-plan130-final-gate
 plan_130 = superseded-by-plan131-final-local-correctness-gate
 plan_131 = passed-milestone6-final-local-correctness-closure
+plan_132 = passed-milestone6-final-evidence-and-transactional-closure
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 router_construction = may-continue
@@ -2839,6 +2840,93 @@ next_product_layer = SAM baseline planning (Milestone 7)
 ```
 
 Required focused checks for Plan 131:
+
+```text
+cargo +1.95.0 fmt --all --check
+cargo +1.95.0 check --locked --workspace --all-targets
+cargo +1.95.0 test --locked -p i2pr-crypto
+cargo +1.95.0 test --locked -p i2pr-proto
+cargo +1.95.0 test --locked -p i2pr-client
+cargo +1.95.0 test --locked -p i2pr-tunnel
+cargo +1.95.0 test --locked --workspace
+cargo +1.95.0 clippy --locked --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo +1.95.0 doc --locked --workspace --no-deps
+bash scripts/check-dependency-direction.sh
+bash scripts/check-runtime-boundaries.sh
+bash scripts/check-fixture-manifest.sh
+bash scripts/check-ntcp2-vectors.sh
+bash scripts/check-ntcp2-interoperability.sh
+```
+
+## Plan 132 Milestone 6 final evidence and transactional closure (current authority)
+
+Plan 132 closes as `passed-milestone6-final-evidence-and-transactional-closure`
+per [`plans/132-status.md`](plans/132-status.md). It reopens the
+Plan 131 closure with three narrow closure areas that the prior
+pass did not independently prove and supersedes nothing else.
+Plan 132 is the current Milestone 6 local-authority; Plan 131
+remains an immutable historical record of the moment when the
+`/dev/null`-E2E + unbounded-stream-id-ownership + ACK-via-MIS
+implementation opened. After Plan 132 closes, Milestone 6
+corrective work stops and SAM baseline planning (Milestone 7)
+is the next product layer.
+
+The corrected Plan 132 surface:
+
+- `crates/i2pr-crypto/src/ecies.rs` — `decode_representative`
+  now masks the two free high bits before the canonical-domain
+  check, refuses `r >= 2^254 - 10` (the
+  `(p - 1) / 2 = (2^255 - 19 - 1) / 2` half-order constant
+  `ELLIGATOR_CANONICAL_THRESHOLD_LE = [0xf6, 0xff × 30, 0x3f]`)
+  via the byte-by-byte `is_canonical_elligator_representative`
+  helper, and only then delegates to the reviewed
+  `elligator2 = 0.1.0` primitive's `from_representative`. The
+  generator stays caller-randomized (Plan 131 baseline) and the
+  `from_seed_bytes` deterministic vector constructor with
+  `tweak = 0` is preserved.
+- `crates/i2pr-client/tests/plan132_trajectory.rs` (new) — the
+  artifact-preserving test seam (`obep_actions`, `make_inbound_cells`,
+  `run_inbound_cells`, `pipe_through_stack`, `feed_action`,
+  `establish_stream`) driving three independent layer-isolated
+  replay trajectories: persistent-tunnel `DuplicateToken` (the
+  persistent OBEP `ReceiveTunnel` window), consumed ECIES
+  inbound-tag (`EciesSessionError::UnknownSessionTag` from
+  `accept_existing_session`), and fresh-ECIES-reseal Streaming
+  `SequenceWindow::accept` rejection of a duplicate sequence.
+  Plan 131's tests remain unchanged as audit evidence.
+- `crates/i2pr-client/src/streaming/manager.rs` — `send_data`,
+  `send_close`, and `send_reset` each acquire a snapshot
+  sequence (`planned_sequence` + `local_receive_stream_id` +
+  `peer_receive_stream_id` + connection-owned ack view +
+  connection-owned I2P ports + starting state) **before** any
+  state mutation, build the wire bytes fallibly through
+  `build_signed_packet` / `encode_streaming_packet` /
+  `encode_client_payload`, then commit in a single point with
+  `assert_eq!(sequence, planned_sequence)` between the freshly
+  built request and the recorded sequence. A failed encoding or
+  signature now leaves the connection in its prior state with
+  no half-written send window, no outbound packet, and no
+  committed state transition.
+- `specs/references/elligator2-production-representation.md`
+  Plan 132 receive-domain section.
+
+```text
+plan_131 = passed-milestone6-final-local-correctness-closure
+plan_132 = passed-milestone6-final-evidence-and-transactional-closure
+milestone6_local_product = passed
+milestone6_interoperable = not-yet-claimed
+external_acceptance_debt = retained-separately
+router_construction = may-continue
+next_product_layer = SAM baseline planning (Milestone 7)
+```
+
+Do not claim destination ECIES, Streaming, or full destination
+routing interoperability against another router without external
+evidence. NTCP2 stays experimental and non-advertised; no tunnel,
+NetDB composition, transport, SAM, I2CP, or public-network work
+was introduced by Plan 132.
+
+Required focused checks for Plan 132:
 
 ```text
 cargo +1.95.0 fmt --all --check
