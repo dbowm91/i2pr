@@ -71,8 +71,8 @@ Focused Plan 139 coverage is in `crates/i2pr-api/tests/sam_plan139.rs` and
 `crates/i2pr-daemon/tests/sam_forward_naming.rs`.
 
 Remote CI verification passed for the final implementation commit
-[`f7081ce`](https://github.com/dbowm91/i2pr/commit/f7081ce):
-[CI run #546](https://github.com/dbowm91/i2pr/actions/runs/33203335409)
+[`b1057ee`](https://github.com/dbowm91/i2pr/commit/b1057ee):
+[CI run #550](https://github.com/dbowm91/i2pr/actions/runs/33204451195)
 completed successfully across the quality matrix, MSRV, and dependency-policy
 jobs. The macOS quality runner executes the complete test-binary set serially;
 this avoids the runner-specific loopback contention observed during the first
