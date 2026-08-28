@@ -31,6 +31,12 @@ jobs:
         run: cargo check --locked --workspace
       - name: Check all workspace targets
         run: cargo check --locked --workspace --all-targets
+      - name: Isolate Plan 139 API tests (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --locked -p i2pr-api --test sam_plan139 -- --test-threads=1
+      - name: Isolate Plan 139 daemon tests (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --locked -p i2pr-daemon --test sam_forward_naming -- --test-threads=1
       - name: Run tests (macOS)
         # The workspace includes several real loopback listener suites.
         # macOS runners become flaky when those suites fan out across the
