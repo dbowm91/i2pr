@@ -44,21 +44,6 @@ jobs:
             > "$executable_list"
           while IFS= read -r executable; do
             [ -n "$executable" ] || continue
-            if [[ "$executable" == */sam_loopback-* || "$executable" == */sam_forward_naming-* ]]; then
-              test_names=$("$executable" --list | awk '$2 == "test" {sub(/:$/, "", $1); print $1}')
-              for test_name in $test_names; do
-                set +e
-                test_output=$("$executable" "$test_name" --exact --test-threads=1 2>&1)
-                status=$?
-                set -e
-                printf '%s\n' "$test_output"
-                if [ "$status" -ne 0 ]; then
-                  detail=$(printf '%s\n' "$test_output" | awk '/panicked at|assertion/ {print; exit}')
-                  echo "::error title=macOS test failed::$executable::$test_name ${detail:-exited with status $status}"
-                  exit "$status"
-                fi
-              done
-            fi
             "$executable" --test-threads=1
           done < "$executable_list"
           cargo test --locked --workspace --doc

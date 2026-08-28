@@ -478,6 +478,7 @@ async fn quit_after_hello_closes_without_session() {
     let mut client = TcpStream::connect(address).await.expect("connect");
     hello_3_1(&mut client).await;
     write_all(&mut client, b"QUIT\n").await;
+    wait_for_quiescence().await;
     let mut buf = [0_u8; 32];
     // The peer close is driven by a supervised task and can take longer on
     // kqueue-backed runners; retain a bounded timeout without making the
