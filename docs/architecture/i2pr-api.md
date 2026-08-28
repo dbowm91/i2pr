@@ -2,7 +2,9 @@
 
 `i2pr-api` is the application-protocol adapter layer for the `i2pr`
 router. Plan 136 lands it as the smallest trustworthy SAM 3.1
-foundation on which the SAM server can be built:
+foundation on which the SAM server can be built; Plan 137 adds the
+loopback-server / session-lifecycle surface; Plan 138 adds the
+STREAM CONNECT / ACCEPT transport-bridge surface.
 
 > [Plan 136](../plans/136-m7-sam31-protocol-private-destination-foundation.md):
 > create the `i2pr-api` crate at the intended application-adapter
@@ -12,9 +14,21 @@ foundation on which the SAM server can be built:
 > required by `DEST GENERATE` and `SESSION CREATE`; expose a narrow
 > destination construction/import/export seam without weakening
 > Milestone 6 secret ownership.
+>
+> [Plan 137](../plans/137-m7-sam31-loopback-server-session-lifecycle.md):
+> add the bounded session registry, line reader, server state
+> machine, and per-session resource counters that the daemon's
+> loopback listener composes.
+>
+> [Plan 138](../plans/138-m7-sam31-stream-connect-accept-bridge.md):
+> add the bounded per-session STREAM socket registry, the typed
+> `STREAM CONNECT` / `STREAM ACCEPT` request parsers, the new
+> `RequireStreamConnect` / `RequireStreamAccept` dispatch outcomes,
+> and the `apply_stream_connect_outcome` / `apply_stream_accept_outcome`
+> appliers.
 
 The crate owns **no** sockets, timers, channels, or Tokio tasks. It
-is a pure runtime-neutral surface that Plan 137 wires into the
+is a pure runtime-neutral surface that Plan 137–138 wires into the
 supervised loopback listener through `i2pr-daemon`.
 
 ## What this crate owns
@@ -33,6 +47,11 @@ supervised loopback listener through `i2pr-daemon`.
 - The `parse_session_create` typed request parser that accepts
   `STYLE=STREAM` with either `DESTINATION=TRANSIENT` or a verified
   imported `PRIV`.
+- The `parse_stream_connect` / `parse_stream_accept` typed request
+  parsers and their mapped failure enums (Plan 138).
+- The bounded per-session `SamStreamRegistry` (FIFO pending-accept
+  queue, per-session stream-socket ceiling, per-session pending-accept
+  ceiling) and `SamStreamRegistryError` (Plan 138).
 - Exact SAM version negotiation (server advertises only `3.1`).
 
 ## What this crate does not own
@@ -41,8 +60,9 @@ supervised loopback listener through `i2pr-daemon`.
 - No Tokio runtime, no channels, no timers (Plan 137).
 - No session lifetime or SAM control-socket ownership (Plan 137).
 - No `STREAM CONNECT` / `STREAM ACCEPT` byte movement over the
-  Milestone 6 `StreamingDestinationAdapter` (Plan 138).
-- No `NAMING LOOKUP` over an address book or DNS (Plan 139).
+  Milestone 6 `StreamingDestinationAdapter` (Plan 138 runtime path;
+  the runtime-neutral `SamStreamRegistry` lives here).
+- No `STREAM FORWARD` or `NAMING LOOKUP` byte movement (Plan 139).
 - No `i2pd` / Java I2P interop harness (Plan 140).
 
 ## Layering
@@ -67,15 +87,27 @@ crates/i2pr-api/
 └── src/
     ├── lib.rs            facade and re-exports
     └── sam/
-        ├── mod.rs        module facade and named byte ceilings
-        ├── version.rs    SamVersion, parse_version, negotiate, is_advertised
-        ├── base64.rs     RFC 4648 SAM Base64 codec (encode/decode, strict)
-        ├── command.rs    Command, CommandKind, OptionPair, CommandOutcome, malformed/unknown enums
-        ├── parser.rs     parse_line, tokenise, recognise_* per command family
-        ├── reply.rs      ReplyLine, Reply, HelloReply, DestReply, SessionStatus, StreamStatus, NamingReply, PongReply
+        ├── mod.rs            module facade and named byte ceilings
+        ├── version.rs        SamVersion, parse_version, negotiate, is_advertised
+        ├── base64.rs         RFC 4648 SAM Base64 codec (encode/decode, strict)
+        ├── command.rs        Command, CommandKind, OptionPair, CommandOutcome,
+        │                      malformed/unknown enums,
+        │                      parse_stream_connect / parse_stream_accept (Plan 138)
+        ├── parser.rs         parse_line, tokenise, recognise_* per command family
+        ├── reply.rs          ReplyLine, Reply, HelloReply, DestReply, SessionStatus,
+        │                      StreamStatus (with `result()` accessor), NamingReply, PongReply
         ├── private_destination.rs  SamPrivateDestination wrapper, from_identity/from_base64/from_bytes, into_identity
         ├── dest_generate.rs        DestGenerateRequest, DestGenerateSignatureType, dest_generate core op
-        └── session_create.rs       SessionCreateRequest, SessionCreateStyle, DestinationSource, parse_session_create
+        ├── session_create.rs       SessionCreateRequest, parse_session_create
+        ├── limits.rs               SamLimits + loopback_test_profile (Plan 137)
+        ├── session.rs              SamSessionId, SamSessionCounters (Plan 137)
+        ├── registry.rs             SamSessionRegistry, reserve/commit/rollback (Plan 137)
+        ├── line_reader.rs          LineReader, LineEvent (Plan 137)
+        ├── server_state.rs         ServerConnectionState, dispatch, apply_session_outcome,
+        │                           RequireStreamConnect / RequireStreamAccept dispatch outcomes
+        │                           (Plan 138)
+        └── streams.rs              SamStreamRegistry, SamStreamAttachment,
+                                    SamStreamRegistryError, SamStreamRegistryHandle (Plan 138)
 ```
 
 ## Public surface

@@ -78,17 +78,18 @@ Quick reference (deep-dive per crate):
   tunnel pools, signed Standard LeaseSet2 generation/lifecycle,
   ECIES-X25519-AEAD-Ratchet session layer, destination routing,
   I2P Streaming core (`StreamingManager` + `StreamingDestinationAdapter`).
-- `i2pr-api` — application-protocol adapter (Plan 136 + Plan 137):
-  SAM 3.1 bounded line/command/reply parser, typed command surface,
-  version negotiation, SAM Base64 codec, SamPrivateDestination codec,
-  `SamLimits`, `SamSessionRegistry`, `LineReader`,
-  `ServerConnectionState`, and the runtime-neutral session dispatch
-  state machine. The daemon-only SAM service (supervised Tokio
-  listener, per-destination `StreamingManager` pool, transactional
-  `SESSION CREATE`) lives in `i2pr-daemon` per Plan 137.
-  the DEST GENERATE / SESSION CREATE private-destination
-  import/export surface. Depends only on `i2pr-client`,
-  `i2pr-crypto`, and `i2pr-proto`.
+- `i2pr-api` — application-protocol adapter (Plan 136 + Plan 137
+  + Plan 138): SAM 3.1 bounded line/command/reply parser, typed
+  command surface, version negotiation, SAM Base64 codec,
+  SamPrivateDestination codec, `SamLimits`, `SamSessionRegistry`,
+  `LineReader`, `ServerConnectionState`, the runtime-neutral
+  session dispatch state machine, and the bounded per-session
+  `SamStreamRegistry`. The daemon-only SAM service (supervised
+  Tokio listener, per-destination `StreamingManager` pool,
+  transactional `SESSION CREATE`, and the STREAM CONNECT / ACCEPT
+  transport bridge over the Plan 138 `SamDestinationBridge`) lives
+  in `i2pr-daemon` per Plan 137–138. Depends only on
+  `i2pr-client`, `i2pr-crypto`, and `i2pr-proto`.
 - `i2pr-testkit` — deterministic simulation; **no production crate
   may depend on it.**
 - `tools/i2pr-interop` — non-production test launcher. Must never
@@ -108,8 +109,9 @@ do not weaken the script.
   `i2pr-proto`; `i2pr-netdb-persist` adds `i2pr-storage`;
   `i2pr-client` consumes `i2pr-core`/`i2pr-crypto`/`i2pr-netdb`/
   `i2pr-proto`/`i2pr-tunnel`; **`i2pr-api` consumes `i2pr-client`/
-  `i2pr-crypto`/`i2pr-proto`**; `i2pr-daemon` will consume `i2pr-api`
-  in Plan 137. **No production crate depends on
+  `i2pr-crypto`/`i2pr-proto`**; `i2pr-daemon` consumes
+  `i2pr-api`/`i2pr-client`/`i2pr-crypto`/`i2pr-proto`/...
+  (Plan 137). **No production crate depends on
   `i2pr-testkit`.**
 - **Runtime boundaries** (`scripts/check-runtime-boundaries.sh`):
   no `unbounded_channel`, no `tokio::*`/`std::net`/`std::fs` in

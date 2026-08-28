@@ -17,6 +17,7 @@ pub mod reply;
 pub mod server_state;
 pub mod session;
 pub mod session_create;
+pub mod streams;
 pub mod version;
 
 /// Maximum byte length of a single SAM command line, before the

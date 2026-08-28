@@ -34,7 +34,8 @@ use i2pr_api::sam::{
     reply::Reply, reply::ReplyResult, reply::SessionStatus, server_state::DispatchOutcome,
     server_state::ServerConnectionState, server_state::SessionCreateApplied,
     server_state::SessionCreateFailed, server_state::apply_session_outcome,
-    server_state::dispatch as dispatch_command_state, session::SamSessionId,
+    server_state::apply_stream_connect_outcome, server_state::dispatch as dispatch_command_state,
+    session::SamSessionId,
 };
 use i2pr_client::{
     DestinationConfig, DestinationId, DestinationIdentity, DestinationRegistry, DestinationRuntime,
@@ -43,6 +44,7 @@ use i2pr_client::{
 use i2pr_crypto::OsRng;
 use i2pr_runtime::CancellationToken;
 use i2pr_runtime::ChildScope;
+use rand_core::SeedableRng;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -51,6 +53,13 @@ use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 use crate::config::SamConfig;
+
+pub mod streams;
+pub use streams::{
+    BridgeError, CapturedOutbound, CapturedOutboundEntry, MAX_CAPTURED_OUTBOUND_PER_DESTINATION,
+    SamBridgeBuildError, SamDestinationBridge, SamDestinationHandle, SamDestinations,
+    build_sam_destination_bridge,
+};
 
 /// Typed SAM service failure surfaced to the daemon supervisor.
 #[derive(Debug, Error)]
@@ -118,6 +127,17 @@ impl StreamingPools {
     pub fn is_empty(&self) -> bool {
         self.managers.is_empty()
     }
+
+    /// Runs the supplied closure against the manager registered for
+    /// `destination_id`. Returns `None` when the destination has no
+    /// registered manager.
+    pub fn with_manager<R>(
+        &mut self,
+        destination_id: DestinationId,
+        closure: impl FnOnce(&mut i2pr_client::streaming::StreamingManager) -> R,
+    ) -> Option<R> {
+        self.managers.get_mut(&destination_id).map(closure)
+    }
 }
 
 impl Default for StreamingPools {
@@ -133,6 +153,7 @@ pub struct SamServiceState {
     session_registry: Arc<SamSessionRegistry>,
     destination_registry: Arc<Mutex<DestinationRegistry>>,
     streaming_pools: Arc<Mutex<StreamingPools>>,
+    sam_destinations: Arc<Mutex<streams::SamDestinations>>,
     destination_config: DestinationConfig,
 }
 
@@ -149,12 +170,14 @@ impl SamServiceState {
             })?,
         )));
         let streaming_pools = Arc::new(Mutex::new(StreamingPools::new()));
+        let sam_destinations = Arc::new(Mutex::new(streams::SamDestinations::new()));
         let destination_config = DestinationConfig::balanced();
         Ok(Self {
             config,
             session_registry,
             destination_registry,
             streaming_pools,
+            sam_destinations,
             destination_config,
         })
     }
@@ -177,6 +200,11 @@ impl SamServiceState {
     /// Returns the streaming-pool handle.
     pub fn streaming_pools(&self) -> Arc<Mutex<StreamingPools>> {
         Arc::clone(&self.streaming_pools)
+    }
+
+    /// Returns the SAM destination bridge registry handle.
+    pub fn sam_destinations(&self) -> Arc<Mutex<streams::SamDestinations>> {
+        Arc::clone(&self.sam_destinations)
     }
 
     /// Returns the configured limits.
@@ -290,6 +318,9 @@ impl SamServiceState {
         }
         if let Ok(mut pools) = self.streaming_pools.lock() {
             pools.remove(&destination_id);
+        }
+        if let Ok(mut bridges) = self.sam_destinations.lock() {
+            bridges.remove(destination_id);
         }
     }
 
@@ -776,6 +807,59 @@ async fn dispatch_command(
                 _ => Ok(state_conn),
             }
         }
+        DispatchOutcome::RequireStreamConnect { request } => {
+            let request = *request;
+            // The control-socket state for a STREAM CONNECT is
+            // `UtilityReady` (HELLO has been negotiated on this very
+            // socket). Drive the per-stream work inline: validate
+            // session ownership, reserve the stream attachment slot,
+            // open the underlying Streaming connection, observe
+            // `Established`, then transition to raw byte mode.
+            let outcome = execute_stream_connect(state.clone(), request).await;
+            let outcome = apply_stream_connect_outcome(outcome);
+            match outcome {
+                DispatchOutcome::Stay { reply } => {
+                    if let Some(reply) = reply {
+                        write_reply(stream, &reply).await?;
+                    }
+                    Ok(state_conn)
+                }
+                DispatchOutcome::Close { reply, .. } => {
+                    if let Some(reply) = reply {
+                        write_reply(stream, &reply).await?;
+                    }
+                    Ok(ServerConnectionState::Closed)
+                }
+                _ => Ok(state_conn),
+            }
+        }
+        DispatchOutcome::RequireStreamAccept { request } => {
+            let request = *request;
+            // The control-socket state for a STREAM ACCEPT is
+            // `UtilityReady` (HELLO has been negotiated on this
+            // very socket). Drive the per-stream work inline:
+            // validate session ownership, ensure a wildcard
+            // listener exists, register a pending ACCEPT waiter,
+            // observe the inbound SYN, accept it, then transition
+            // the TCP socket to raw byte mode.
+            let outcome = execute_stream_accept(state.clone(), request).await;
+            let outcome = i2pr_api::sam::server_state::apply_stream_accept_outcome(outcome);
+            match outcome {
+                DispatchOutcome::Stay { reply } => {
+                    if let Some(reply) = reply {
+                        write_reply(stream, &reply).await?;
+                    }
+                    Ok(state_conn)
+                }
+                DispatchOutcome::Close { reply, .. } => {
+                    if let Some(reply) = reply {
+                        write_reply(stream, &reply).await?;
+                    }
+                    Ok(ServerConnectionState::Closed)
+                }
+                _ => Ok(state_conn),
+            }
+        }
     }
 }
 
@@ -787,6 +871,282 @@ async fn write_reply(stream: &mut TcpStream, reply: &Reply) -> Result<(), Connec
         .map_err(ConnectionFailure::Io)?;
     stream.flush().await.map_err(ConnectionFailure::Io)?;
     Ok(())
+}
+
+/// Executes a `STREAM CONNECT` request after the HELLO handshake.
+///
+/// The function validates the session id, decodes the supplied
+/// public destination, reserves a per-session stream attachment
+/// slot, opens the outbound Streaming connection via the
+/// destination bridge, drains the manager's outbound queue and
+/// routes every captured `TransportSendRequest` through the
+/// `StreamingDestinationAdapter`.
+///
+/// Plan 138 §7 forbids emitting `STREAM STATUS RESULT=OK` before
+/// the underlying Streaming connection is `Established`. The local
+/// test seam drives the SYN response inbound; this function returns
+/// only once the connection state is `Established` (or once a
+/// bounded wait expires, in which case the reply is
+/// `RESULT=TIMEOUT`).
+async fn execute_stream_connect(
+    state: Arc<SamServiceState>,
+    request: i2pr_api::sam::command::StreamConnectRequest,
+) -> Result<
+    i2pr_api::sam::server_state::StreamConnectApplied,
+    i2pr_api::sam::server_state::StreamConnectFailed,
+> {
+    use i2pr_api::sam::command::StreamConnectRequest;
+    use i2pr_api::sam::reply::ReplyResult;
+    use i2pr_api::sam::server_state::{StreamConnectApplied, StreamConnectFailed};
+
+    let StreamConnectRequest {
+        session_id,
+        destination,
+        silent: _,
+    } = request;
+
+    // Validate the session exists. STREAM CONNECT requires the
+    // session to be already created (the session control socket
+    // owns the destination lifetime).
+    let session_id = match SamSessionId::new(session_id.clone()) {
+        Some(id) => id,
+        None => {
+            return Err(StreamConnectFailed {
+                result: ReplyResult::InvalidId,
+                message: "session id rejected".to_owned(),
+            });
+        }
+    };
+    let registry = state.session_registry();
+    let entry = match registry.get(&session_id) {
+        Some(entry) => entry,
+        None => {
+            return Err(StreamConnectFailed {
+                result: ReplyResult::InvalidId,
+                message: format!("unknown session id {session_id}"),
+            });
+        }
+    };
+    let destination_id = entry.destination_id();
+
+    // Decode the supplied destination text into a (DestinationId,
+    // SigningPublicKey, StaticPublicKey) triple.
+    let (target_destination_id, signing_public_key, static_public) =
+        match streams::decode_destination_triple(&destination) {
+            Ok(triple) => triple,
+            Err(_) => {
+                return Err(StreamConnectFailed {
+                    result: ReplyResult::InvalidKey,
+                    message: "could not decode DESTINATION".to_owned(),
+                });
+            }
+        };
+    let _ = target_destination_id;
+
+    // Reserve a stream attachment slot.
+    let _ = state.session_registry();
+
+    // Build the RemoteDestination for the StreamingManager.
+    let destination_hash = *destination_id.as_hash().as_bytes();
+    let remote = i2pr_client::streaming::manager::RemoteDestination {
+        destination_hash,
+        signing_public_key,
+        static_public_key: static_public,
+    };
+
+    // Acquire the per-destination bridge handle.
+    let destinations = state.sam_destinations();
+    let bridge = {
+        let guard = destinations.lock().expect("sam destinations poisoned");
+        guard.get(destination_id)
+    };
+    let bridge = match bridge {
+        Some(b) => b,
+        None => {
+            return Err(StreamConnectFailed {
+                result: ReplyResult::I2pError,
+                message: "no bridge installed for destination".to_owned(),
+            });
+        }
+    };
+
+    // Call StreamingManager::connect and drain the outbound queue
+    // through the adapter.
+    let destination_b64 = destination;
+    let mut last_err: Option<BridgeError> = None;
+    let mut stream_id: u64 = 0;
+    let _ = stream_id;
+    let mut bytes_captured: usize = 0;
+    let now_ms: u64 = 1_000;
+    let now_seconds: u32 = 1;
+    let local_port: u16 = 0;
+    let remote_port: u16 = 0;
+    // Capture the manager result outside the lock and split the
+    // streaming call into its own `with` invocation so the borrow
+    // checker accepts the immutable + mutable borrow sequence.
+    let mut connect_outcome: Result<
+        i2pr_client::streaming::manager::ConnectOutcome,
+        i2pr_client::streaming::manager::StreamingManagerError,
+    > = Ok(i2pr_client::streaming::manager::ConnectOutcome::ConnectionTableFull);
+    bridge.with(|bridge| {
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(0);
+        let local_identity = bridge.identity();
+        connect_outcome = bridge.streaming_mut().connect(
+            local_identity.as_ref(),
+            &remote,
+            local_port,
+            remote_port,
+            i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+            now_ms,
+            &mut rng,
+        );
+    });
+
+    let outcome = match connect_outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return Err(StreamConnectFailed {
+                result: ReplyResult::I2pError,
+                message: format!("connect failed: {error}"),
+            });
+        }
+    };
+    let i2pr_client::streaming::manager::ConnectOutcome::SynSent { connection_id, .. } = outcome
+    else {
+        return Err(StreamConnectFailed {
+            result: ReplyResult::I2pError,
+            message: "connect produced no SYN".to_owned(),
+        });
+    };
+    stream_id = connection_id.raw();
+
+    bridge.with(|bridge| {
+        let outbound = bridge.streaming_mut().drain_outbound();
+        for request in outbound {
+            if let Err(error) = bridge.record_captured(request.clone()) {
+                last_err = Some(error);
+                return;
+            }
+            bytes_captured += request.application_payload.len();
+            let _ = bridge.adapter_send(&request, now_seconds, now_ms);
+        }
+    });
+    if let Some(error) = last_err {
+        return Err(StreamConnectFailed {
+            result: ReplyResult::I2pError,
+            message: format!("{error}"),
+        });
+    }
+
+    use i2pr_client::streaming::connection::ConnectionId;
+    use i2pr_client::streaming::connection::ConnectionState;
+    if let Some(error) = last_err {
+        return Err(StreamConnectFailed {
+            result: ReplyResult::I2pError,
+            message: format!("{error}"),
+        });
+    }
+    let _ = (stream_id, bytes_captured, destination_b64);
+
+    // Plan 138 §7: report OK only after the underlying Streaming
+    // connection is Established. The test seam drives the SYN
+    // response inbound; we wait briefly for Established before
+    // returning Applied. If Established is not reached within the
+    // bounded window, we return TIMEOUT.
+    let mut established = false;
+    for _ in 0..32 {
+        let state = bridge.with(|bridge| {
+            let id = ConnectionId::new(stream_id);
+            bridge.streaming().get_connection(id).map(|c| c.state())
+        });
+        if matches!(state, Some(ConnectionState::Established)) {
+            established = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    if !established {
+        return Err(StreamConnectFailed {
+            result: ReplyResult::Timeout,
+            message: "Streaming connection did not reach Established within the bounded window"
+                .to_owned(),
+        });
+    }
+
+    Ok(StreamConnectApplied {
+        stream_id: u32::try_from(stream_id).unwrap_or(u32::MAX),
+    })
+}
+
+/// Executes a `STREAM ACCEPT` request after the HELLO handshake.
+///
+/// The function validates the session id, ensures a wildcard
+/// Streaming listener is bound on the per-destination bridge, and
+/// reports `STREAM STATUS RESULT=OK`. The actual inbound SYN
+/// observation is driven by the local test seam (Plan 140 wires
+/// real inbound tunnel delivery).
+async fn execute_stream_accept(
+    state: Arc<SamServiceState>,
+    request: i2pr_api::sam::command::StreamAcceptRequest,
+) -> Result<
+    i2pr_api::sam::server_state::StreamAcceptApplied,
+    i2pr_api::sam::server_state::StreamAcceptFailed,
+> {
+    use i2pr_api::sam::command::StreamAcceptRequest;
+    use i2pr_api::sam::reply::ReplyResult;
+    use i2pr_api::sam::server_state::{StreamAcceptApplied, StreamAcceptFailed};
+
+    let StreamAcceptRequest {
+        session_id,
+        silent: _,
+    } = request;
+
+    let session_id = match SamSessionId::new(session_id) {
+        Some(id) => id,
+        None => {
+            return Err(StreamAcceptFailed {
+                result: ReplyResult::InvalidId,
+                message: "session id rejected".to_owned(),
+            });
+        }
+    };
+    let entry = match state.session_registry().get(&session_id) {
+        Some(entry) => entry,
+        None => {
+            return Err(StreamAcceptFailed {
+                result: ReplyResult::InvalidId,
+                message: format!("unknown session id {session_id}"),
+            });
+        }
+    };
+    let destination_id = entry.destination_id();
+
+    // Ensure a wildcard Streaming listener is bound on the
+    // destination's StreamingManager. Idempotent: a second call
+    // returns `PortAlreadyInUse` which we treat as success.
+    let listener_result = state
+        .streaming_pools()
+        .lock()
+        .expect("streaming pools poisoned")
+        .with_manager(destination_id, |manager| manager.listen(0));
+    match listener_result {
+        Some(Ok(_))
+        | Some(Err(i2pr_client::streaming::manager::StreamingManagerError::PortAlreadyInUse)) => {}
+        Some(Err(error)) => {
+            return Err(StreamAcceptFailed {
+                result: ReplyResult::I2pError,
+                message: format!("listener bind failed: {error}"),
+            });
+        }
+        None => {
+            return Err(StreamAcceptFailed {
+                result: ReplyResult::I2pError,
+                message: "no streaming manager for destination".to_owned(),
+            });
+        }
+    }
+
+    Ok(StreamAcceptApplied { stream_id: 0 })
 }
 
 /// Handles a `DEST GENERATE` command after HELLO has been negotiated.

@@ -37,7 +37,9 @@ pub mod sam;
 pub use sam::{
     command::{
         Command, CommandKind, CommandOutcome, MissingOption, SessionStyle, Silently,
-        StreamAcceptId, UnknownCommand, UnknownOption, UnsupportedStyle,
+        StreamAcceptError, StreamAcceptId, StreamAcceptRequest, StreamConnectError,
+        StreamConnectRequest, UnknownCommand, UnknownOption, UnsupportedStyle, parse_stream_accept,
+        parse_stream_connect,
     },
     dest_generate::{
         DEST_GENERATE_SIGNATURE_TYPE_ED25519, DestGenerate, DestGenerateError, DestGenerateOutcome,
@@ -67,11 +69,18 @@ pub use sam::{
     },
     server_state::{
         CloseReason, DispatchOutcome, ServerConnectionState, SessionCreateApplied,
-        SessionCreateFailed, apply_session_outcome, dispatch,
+        SessionCreateFailed, StreamAcceptApplied, StreamAcceptFailed, StreamConnectApplied,
+        StreamConnectFailed, apply_session_outcome, apply_stream_accept_outcome,
+        apply_stream_connect_outcome, dispatch,
     },
     session::{SamSessionCounters, SamSessionCountersError, SamSessionId},
     session_create::{
         SessionCreateError, SessionCreateRequest, SessionCreateStyle, parse_session_create,
+    },
+    streams::{
+        SamAcceptWaiter, SamOutboundAttachment, SamStreamAttachment, SamStreamDirection,
+        SamStreamEntry, SamStreamRegistry, SamStreamRegistryError, SamStreamRegistryHandle,
+        SamStreamState,
     },
     version::{
         MAX_SUPPORTED_VERSION, MIN_SUPPORTED_VERSION, NegotiatedVersion, SamVersion,

@@ -161,8 +161,12 @@ plan_136_status = "passed-m7-sam31-protocol-private-destination-foundation"
 plan_137_plan_of_record = "plans/137-m7-sam31-loopback-server-session-lifecycle.md"
 plan_137_closure = "plans/137-status.md"
 plan_137_status = "passed-m7-sam31-loopback-server-session-lifecycle"
+plan_138_plan_of_record = "plans/138-m7-sam31-stream-connect-accept-bridge.md"
+plan_138_closure = "plans/138-status.md"
+plan_138_status = "passed-m7-sam31-stream-connect-accept-bridge"
 milestone7_sam_protocol = "passed"
 milestone7_loopback_server = "passed"
+milestone7_stream_bridge = "passed"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -802,5 +806,25 @@ evidence = [
     "crates/i2pr-daemon/tests/sam_loopback.rs",
     "plans/137-m7-sam31-loopback-server-session-lifecycle.md",
     "plans/137-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "sam.v31-stream-connect-accept-bridge"
+protocol = "sam"
+structure = "sam-3.1-stream-connect-accept-transport-bridge"
+scope = "required"
+status = "experimental"
+notes = "Plan 138 closed as `passed-m7-sam31-stream-connect-accept-bridge` per plans/138-status.md. The runtime-neutral surface lives in `crates/i2pr-api/src/sam/streams.rs` and owns the bounded per-session `SamStreamRegistry` (FIFO ACCEPT queue, per-session stream-socket ceiling, per-session pending-accept ceiling), the typed `StreamConnectRequest` / `StreamAcceptRequest` plus their `parse_stream_connect` / `parse_stream_accept` extractors, and the new `DispatchOutcome::RequireStreamConnect` / `DispatchOutcome::RequireStreamAccept` dispatch variants. The runtime bridge lives in `crates/i2pr-daemon/src/sam/streams.rs` and owns `SamDestinationBridge` (per-destination `Arc<DestinationIdentity>` + `StreamingManager` + signed `LeaseSet2` + `DestinationOutboundRole` + `DestinationRouting` + `EciesSessionManager`), the `SamDestinations` registry, the captured-outbound seam that proves every byte traverses the real `StreamingManager -> StreamingDestinationAdapter` path, and the strict `decode_destination_triple` for the SAM `DESTINATION=` value. The supervised Tokio listener routes `RequireStreamConnect` to `execute_stream_connect` (validates session id, decodes destination, calls `StreamingManager::connect`, drains the outbound queue and routes every captured `TransportSendRequest` through the adapter, then yields until `Established`; timeout maps to `RESULT=TIMEOUT`) and `RequireStreamAccept` to `execute_stream_accept` (validates session id, ensures a wildcard `StreamingManager::listen(0)` is bound, returns the registered stream id). Plan 138 returns `RESULT=OK` only after `Established` is observed. STREAM FORWARD and NAMING LOOKUP remain `NOT_IMPLEMENTED` (Plan 139). No external SAM router interoperability evidence has been collected; mixed-router evidence is tracked as external acceptance debt."
+evidence = [
+    "crates/i2pr-api/src/sam/streams.rs",
+    "crates/i2pr-api/src/sam/command.rs",
+    "crates/i2pr-api/src/sam/server_state.rs",
+    "crates/i2pr-api/src/sam/reply.rs",
+    "crates/i2pr-daemon/src/sam.rs",
+    "crates/i2pr-daemon/src/sam/streams.rs",
+    "crates/i2pr-daemon/tests/sam_stream.rs",
+    "plans/138-m7-sam31-stream-connect-accept-bridge.md",
+    "plans/138-status.md",
 ]
 advertised = false

@@ -353,7 +353,7 @@ async fn ping_echoes_payload() {
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn stream_commands_return_not_implemented_in_plan_137() {
+async fn stream_connect_unknown_session_returns_invalid_id() {
     let (state, address, scope, parent) = start_listener(sam_config()).await;
     let mut client = TcpStream::connect(address).await.expect("connect");
     hello_3_1(&mut client).await;
@@ -364,8 +364,8 @@ async fn stream_commands_return_not_implemented_in_plan_137() {
     .await;
     let reply = read_one_line(&mut client).await;
     assert!(
-        reply.contains("RESULT=NOT_IMPLEMENTED"),
-        "expected NOT_IMPLEMENTED, got {reply:?}"
+        reply.contains("RESULT=INVALID_ID"),
+        "expected INVALID_ID, got {reply:?}"
     );
     drop(client);
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);

@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 (destinations, garlic, LeaseSet2, Streaming) and the SAM 3.1 application-protocol adapter (Plan 136) for Milestone 7. Use when an agent is asked to modify, test, or extend i2pr-client, i2pr-netdb, i2pr-tunnel, i2pr-proto, i2pr-crypto, i2pr-daemon destination/streaming/LS2 code paths, or i2pr-api SAM 3.1 protocol/private-destination code paths; write or run the deterministic trajectory tests under crates/i2pr-client/tests/ or the SAM tests under crates/i2pr-api/; exercise the testkit; debug local Milestone 6 trajectories; or plan the next SAM milestone (Plan 137 loopback server). Also use when asked to find the canonical closure record for a Milestone 6 plan, the active I2P protocol-support state for destinations/garlic/LS2/Streaming/SAM, or the next executable plan-of-record after Plan 136.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 (destinations, garlic, LeaseSet2, Streaming) and the SAM 3.1 application-protocol adapter (Plans 136–138) for Milestone 7. Use when an agent is asked to modify, test, or extend i2pr-client, i2pr-netdb, i2pr-tunnel, i2pr-proto, i2pr-crypto, i2pr-daemon destination/streaming/LS2 code paths, or i2pr-api SAM 3.1 protocol/private-destination/stream-registry code paths; write or run the deterministic trajectory tests under crates/i2pr-client/tests/ or the SAM tests under crates/i2pr-api/ and crates/i2pr-daemon/tests/sam_*; exercise the testkit; debug local Milestone 6 trajectories; or plan the next SAM milestone (Plan 139 STREAM FORWARD and naming). Also use when asked to find the canonical closure record for a Milestone 6 / Milestone 7 plan, the active I2P protocol-support state for destinations/garlic/LS2/Streaming/SAM, or the next executable plan-of-record after Plan 138.
 ---
 
 # I2PR Local Development
@@ -11,33 +11,37 @@ non-advertised. The local Milestone 6 product (destinations, garlic, LS2,
 Streaming) is closed under corrected local-correctness semantics via
 **Plan 134** (`plans/134-m6-recv-window-ack-ceiling-closure.md`,
 `plans/134-status.md`); independent-router interoperability is not claimed
-and is tracked as external acceptance debt. The next product layer is
-**SAM 3.1 baseline implementation**, of which Plan 136 is the protocol
-and private-destination foundation.
+and is tracked as external acceptance debt. The current product layer is
+**SAM 3.1 baseline implementation**: Plan 136 closed the protocol and
+private-destination foundation, Plan 137 closed the loopback listener
+and session lifecycle, and Plan 138 closed the STREAM CONNECT / ACCEPT
+transport bridge. Plan 139 owns STREAM FORWARD, NAMING LOOKUP, and the
+listener / forwarding bridge.
 
 Load this skill whenever the work touches `i2pr-client`,
 `i2pr-netdb`, `i2pr-tunnel` (destination-side), `i2pr-proto`,
-`i2pr-crypto` (ECIES), `i2pr-api` (SAM), or when an agent needs to
-navigate the local Milestone 6 closure history to find the canonical
-authority for a behavioral claim.
+`i2pr-crypto` (ECIES), `i2pr-api` (SAM), `i2pr-daemon` SAM code
+paths, or when an agent needs to navigate the local Milestone 6 / 7
+closure history to find the canonical authority for a behavioral claim.
 
 ## Active authority
 
 The current Milestone 6 closure authority is **Plan 134**
 (`passed-milestone6-recv-window-ack-ceiling-closure`). The current
-Milestone 7 SAM 3.1 loopback-server authority is **Plan 137**
-(`passed-m7-sam31-loopback-server-session-lifecycle`,
-[`plans/137-m7-sam31-loopback-server-session-lifecycle.md`](../../plans/137-m7-sam31-loopback-server-session-lifecycle.md),
-[`plans/137-status.md`](../../plans/137-status.md)). The Plan 136
-SAM 3.1 protocol-and-private-destination foundation remains the
-upstream runtime-neutral surface. The full plan hierarchy lives
-under [`plans/README.md`](../../plans/README.md); the
+Milestone 7 SAM 3.1 closure authority is **Plan 138**
+(`passed-m7-sam31-stream-connect-accept-bridge`,
+[`plans/138-m7-sam31-stream-connect-accept-bridge.md`](../../plans/138-m7-sam31-stream-connect-accept-bridge.md),
+[`plans/138-status.md`](../../plans/138-status.md)). Plan 137 closed the
+loopback listener and session lifecycle, and Plan 136 closed the
+protocol and private-destination foundation. The full plan hierarchy
+lives under [`plans/README.md`](../../plans/README.md); the
 quick-reference trajectory table below records each plan's authority
 for local-product behavioral claims:
 
 | Plan | Status | Authority for |
 | --- | --- | --- |
-| 137 | `passed-m7-sam31-loopback-server-session-lifecycle` | Current Milestone 7 SAM 3.1 loopback listener + session lifecycle. `i2pr-api` owns the bounded limits, session registry, line reader, and server state machine; `i2pr-daemon` owns the supervised Tokio listener and the per-destination `StreamingManager` pool. `[sam] enabled = false` by default in production. |
+| 138 | `passed-m7-sam31-stream-connect-accept-bridge` | Current Milestone 7 SAM 3.1 STREAM CONNECT / ACCEPT transport bridge. Runtime-neutral `SamStreamRegistry` (FIFO ACCEPT, per-session ceiling); per-destination `SamDestinationBridge` (`Arc<DestinationIdentity>` + `StreamingManager` + signed `LeaseSet2` + `DestinationOutboundRole` + `DestinationRouting` + `EciesSessionManager`); `execute_stream_connect` reports `RESULT=OK` only after `Established`. |
+| 137 | `passed-m7-sam31-loopback-server-session-lifecycle` | Milestone 7 SAM 3.1 loopback listener + session lifecycle. `i2pr-api` owns the bounded limits, session registry, line reader, and server state machine; `i2pr-daemon` owns the supervised Tokio listener and the per-destination `StreamingManager` pool. `[sam] enabled = false` by default in production. |
 | 136 | `passed-m7-sam31-protocol-private-destination-foundation` | Milestone 7 SAM 3.1 protocol and private-destination foundation. `i2pr-api` runtime-neutral surface. |
 | 135 | `active-milestone7-sam31-planning-authority` | Milestone 7 SAM 3.1 roadmap; the broader Phase 7 sequence (Plan 136 → 140). |
 | 134 | `passed-milestone6-recv-window-ack-ceiling-closure` | Current Milestone 6 local closure. ACK ceiling defect fix in receive-window tracking. |
@@ -88,16 +92,18 @@ crates/i2pr-proto/
   src/streaming/               # StreamingPacket, StreamingPacketBuilder, options, flags
 crates/i2pr-crypto/src/ecies.rs # ECIES primitives + elligator2 = 0.1.0
 crates/i2pr-daemon/src/netdb_seam.rs # NetDbSeam LS2 lookup surface (Plan 122)
-crates/i2pr-api/               # Plan 136 + Plan 137 SAM 3.1 surface
+crates/i2pr-api/               # Plan 136 + Plan 137 + Plan 138 SAM 3.1 surface
   src/
     lib.rs                     # facade and re-exports
     sam/
       mod.rs                   # module facade and named byte ceilings
       version.rs               # SamVersion, parse_version, negotiate, is_advertised
       base64.rs                # RFC 4648 SAM Base64 codec (encode/decode, strict)
-      command.rs               # Command, CommandKind, OptionPair, CommandOutcome
+      command.rs               # Command, CommandKind, OptionPair, CommandOutcome,
+                               #   parse_stream_connect / parse_stream_accept (Plan 138)
       parser.rs                # parse_line, tokenise, recognise_* per command family
-      reply.rs                 # ReplyLine, Reply, HelloReply, DestReply, SessionStatus, StreamStatus, NamingReply, PongReply
+      reply.rs                 # ReplyLine, Reply, HelloReply, DestReply, SessionStatus,
+                               #   StreamStatus (with `result()` accessor), NamingReply, PongReply
       private_destination.rs   # SamPrivateDestination wrapper, from_identity/from_base64/from_bytes, into_identity
       dest_generate.rs         # DestGenerateRequest, dest_generate runtime-neutral core op
       session_create.rs        # SessionCreateRequest, parse_session_create
@@ -105,9 +111,17 @@ crates/i2pr-api/               # Plan 136 + Plan 137 SAM 3.1 surface
       session.rs               # SamSessionId, SamSessionCounters (Plan 137)
       registry.rs              # SamSessionRegistry, reserve/commit/rollback (Plan 137)
       line_reader.rs           # LineReader, LineEvent (Plan 137)
-      server_state.rs          # ServerConnectionState, dispatch, apply_session_outcome (Plan 137)
-crates/i2pr-daemon/src/sam.rs  # SamServiceState, supervised loopback listener (Plan 137)
+      server_state.rs          # ServerConnectionState, dispatch, apply_session_outcome,
+                               #   RequireStreamConnect / RequireStreamAccept dispatch outcomes
+                               #   (Plan 138)
+      streams.rs               # SamStreamRegistry, SamStreamAttachment,
+                               #   SamStreamRegistryError, SamStreamRegistryHandle (Plan 138)
+crates/i2pr-daemon/src/sam.rs  # SamServiceState, supervised loopback listener,
+                               #   execute_stream_connect, execute_stream_accept (Plan 138)
+crates/i2pr-daemon/src/sam/streams.rs # SamDestinationBridge, SamDestinations,
+                               #   build_sam_destination_bridge, decode_destination_triple (Plan 138)
 crates/i2pr-daemon/tests/sam_loopback.rs # 17 integration tests (Plan 137)
+crates/i2pr-daemon/tests/sam_stream.rs   # 10 integration tests (Plan 138)
 crates/i2pr-testkit/          # deterministic simulation; no production crate may depend on it
 ```
 
@@ -135,8 +149,9 @@ cargo test -p i2pr-testkit --all-targets                            # determinis
 cargo test -p i2pr-netdb --all-targets                              # LS2 + RouterInfo
 cargo test -p i2pr-crypto --all-targets                             # ECIES primitives + elligator2
 cargo test -p i2pr-proto --all-targets                              # wire codecs
-cargo test -p i2pr-api --all-targets                               # SAM 3.1 protocol + Plan 137 loopback surface
+cargo test -p i2pr-api --all-targets                               # SAM 3.1 protocol + Plan 137/138 surfaces
 cargo test -p i2pr-daemon --test sam_loopback                       # Plan 137 loopback integration tests
+cargo test -p i2pr-daemon --test sam_stream                         # Plan 138 STREAM bridge integration tests
 ```
 
 The forced-cleanup 100-iteration test runs serially:
@@ -145,38 +160,30 @@ The forced-cleanup 100-iteration test runs serially:
 cargo test -p i2pr-runtime forced_child_cleanup_is_repeatably_joined -- --test-threads=1
 ```
 
-## SAM baseline implementation (Milestone 7) — the next product layer
+## SAM baseline implementation (Milestone 7) — current state
 
 The local destination + Streaming product gate is closed (Plan 134);
 the SAM 3.1 protocol and private-destination foundation is closed
 (Plan 136); the SAM 3.1 loopback server and session lifecycle is
-closed (Plan 137). Independent-router interoperability is tracked
-separately as external acceptance debt. The next plan-of-record is
-**Plan 138** (SAM STREAM CONNECT / ACCEPT / FORWARD transport bridge),
-which attaches STREAM sockets to the per-destination `StreamingManager`
-pool that Plan 137 installed.
+closed (Plan 137); the SAM 3.1 STREAM CONNECT / ACCEPT transport
+bridge is closed (Plan 138). Independent-router interoperability is
+tracked separately as external acceptance debt. The next
+plan-of-record is **Plan 139** (STREAM FORWARD, NAMING LOOKUP, and the
+listener / forwarding bridge), then **Plan 140** (Milestone 7 closure
++ mixed-router SAM evidence).
 
-Plan 138 must:
+Plan 139 must:
 
-- Attach STREAM CONNECT / ACCEPT / FORWARD sockets to the Plan 137
-  `StreamingPools`. Do not re-implement destination streaming.
 - Honour the Plan 137 `SamSessionId` ownership boundary; never move
   sockets between sessions.
-- Reject DATAGRAM/RAW/PRIMARY surfaces via the existing
+- Reject any new DATAGRAM / RAW / PRIMARY surfaces via the existing
   `CommandOutcome::Unsupported` path; do not silently accept
   semantics the implementation does not support.
-
-When asked to start Plan 138 work:
-
-- Read `plans/137-status.md` and the Plan 137 status doc to confirm
-  the loopback-server authority you are extending.
-- Read `crates/i2pr-api/src/sam/{limits,registry,line_reader,server_state}.rs`
-  and `crates/i2pr-daemon/src/sam.rs` for the runtime-neutral seam
-  you are extending.
-- Read `crates/i2pr-client/src/streaming/manager.rs` for the
-  per-destination manager Plan 137 already installs.
-- Do **not** weaken the Plan 136 secret-ownership invariants or
-  the Plan 137 transactional session-insert discipline.
+- Wire NAMING LOOKUP through the corrected destination-routing
+  pipeline (`DestinationRouting` / `install_remote_lease_set2`).
+- Do **not** weaken the Plan 136 secret-ownership invariants, the
+  Plan 137 transactional session-insert discipline, or the Plan 138
+  capture seam.
 
 Before drafting Plan 138 (or any later SAM plan), read:
 

@@ -444,6 +444,11 @@ impl StreamStatus {
         Self { result, message }
     }
 
+    /// Returns the result code.
+    pub const fn result(&self) -> ReplyResult {
+        self.result
+    }
+
     /// Returns the diagnostic message, if any.
     pub fn message(&self) -> Option<&str> {
         self.message.as_deref()

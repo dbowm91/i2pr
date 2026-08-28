@@ -1,4 +1,4 @@
-//! SAM v3.1 connection state machine (Plan 137 §5).
+//! SAM v3.1 connection state machine (Plan 137 §5, Plan 138 §3/§7/§8).
 //!
 //! Each accepted TCP socket progresses through a deterministic
 //! state machine:
@@ -11,7 +11,9 @@
 //!   -- SESSION CREATE --> SessionControl { session_id, destination_id }
 //!   -- PING --> UtilityReady (echo reply)
 //!   -- QUIT | STOP | EXIT --> Closed
-//!   -- STREAM CONNECT | ACCEPT | FORWARD --> UtilityReady (NOT_IMPLEMENTED)
+//!   -- STREAM CONNECT --> RequireStreamConnect (Plan 138)
+//!   -- STREAM ACCEPT --> RequireStreamAccept (Plan 138)
+//!   -- STREAM FORWARD --> UtilityReady (NOT_IMPLEMENTED, Plan 139)
 //!   -- NAMING LOOKUP --> UtilityReady (NOT_IMPLEMENTED)
 //! SessionControl
 //!   -- QUIT | STOP | EXIT --> Closed (caller must tear session down)
@@ -19,18 +21,23 @@
 //!   -- DEST GENERATE --> SessionControl (reply only)
 //!   -- second SESSION CREATE --> SessionControl (DUPLICATED_ID /
 //!     DUPLICATED_DESTINATION / I2P_ERROR)
-//!   -- STREAM CONNECT | ACCEPT | FORWARD --> SessionControl (NOT_IMPLEMENTED)
+//!   -- STREAM CONNECT --> RequireStreamConnect (Plan 138)
+//!   -- STREAM ACCEPT --> RequireStreamAccept (Plan 138)
+//!   -- STREAM FORWARD --> SessionControl (NOT_IMPLEMENTED, Plan 139)
 //!   -- NAMING LOOKUP --> SessionControl (NOT_IMPLEMENTED)
 //! ```
 //!
 //! The state machine itself is runtime-neutral. The TCP reader, the
 //! per-connection cancellation, the destination/runtime insertion,
-//! and the actual session-create transaction live in `i2pr-daemon`.
+//! and the actual session-create / stream-connect / stream-accept
+//! transactions live in `i2pr-daemon`.
 
 use i2pr_client::DestinationId;
 
 use crate::sam::command::{
-    Command, CommandKind, CommandOutcome, MalformedReason, UnsupportedReason, extract_versions,
+    Command, CommandKind, CommandOutcome, MalformedReason, StreamAcceptError, StreamAcceptRequest,
+    StreamConnectError, StreamConnectRequest, UnsupportedReason, extract_versions,
+    parse_stream_accept, parse_stream_connect,
 };
 use crate::sam::reply::{Reply, SessionStatus, StreamStatus};
 use crate::sam::session::SamSessionId;
@@ -69,6 +76,23 @@ pub enum DispatchOutcome {
         /// Validated `SESSION CREATE` request.
         request: Box<SessionCreateRequest>,
     },
+    /// The command required driving a `STREAM CONNECT` transaction.
+    /// The runtime executes the underlying `StreamingManager::connect`
+    /// call, drives the per-stream SAM raw-mode transition, and then
+    /// calls [`apply_stream_connect_outcome`] to finalise the reply.
+    RequireStreamConnect {
+        /// Validated `STREAM CONNECT` request.
+        request: Box<StreamConnectRequest>,
+    },
+    /// The command required driving a `STREAM ACCEPT` transaction.
+    /// The runtime registers one pending-accept waiter, drives the
+    /// inbound SYN observation, captures the peer destination, and
+    /// then calls [`apply_stream_accept_outcome`] to finalise the
+    /// reply.
+    RequireStreamAccept {
+        /// Validated `STREAM ACCEPT` request.
+        request: Box<StreamAcceptRequest>,
+    },
     /// The command was rejected as a malformed line. Send `reply`
     /// and close.
     Malformed {
@@ -97,6 +121,8 @@ impl DispatchOutcome {
             Self::Malformed { reply, .. } => Some(reply),
             Self::Unsupported { reply, .. } => Some(reply),
             Self::RequireSessionCreate { .. } => None,
+            Self::RequireStreamConnect { .. } => None,
+            Self::RequireStreamAccept { .. } => None,
         }
     }
 }
@@ -209,9 +235,9 @@ fn handle_recognised(state: ServerConnectionState, command: &Command) -> Dispatc
         CommandKind::HelloVersion => handle_hello(state, command),
         CommandKind::DestGenerate => handle_dest_generate(state),
         CommandKind::SessionCreate => handle_session_create(state, command),
-        CommandKind::StreamConnect | CommandKind::StreamAccept | CommandKind::StreamForward => {
-            handle_stream_unsupported(state)
-        }
+        CommandKind::StreamConnect => handle_stream_connect(command),
+        CommandKind::StreamAccept => handle_stream_accept(command),
+        CommandKind::StreamForward => handle_stream_unsupported(state),
         CommandKind::NamingLookup => handle_naming_unsupported(state),
         CommandKind::Ping => handle_ping(state, command),
         CommandKind::Pong => handle_pong(state),
@@ -362,8 +388,156 @@ fn handle_stream_unsupported(_state: ServerConnectionState) -> DispatchOutcome {
         reason: UnsupportedReason::StreamConnectPortOptionUnsupported,
         reply: Reply::Stream(StreamStatus::error(
             crate::sam::reply::ReplyResult::NotImplemented,
-            Some("STREAM commands land in Plan 138".to_owned()),
+            Some("STREAM FORWARD lands in Plan 139".to_owned()),
         )),
+    }
+}
+
+fn handle_stream_connect(command: &Command) -> DispatchOutcome {
+    match parse_stream_connect(command) {
+        Ok(request) => DispatchOutcome::RequireStreamConnect {
+            request: Box::new(request),
+        },
+        Err(error) => DispatchOutcome::Malformed {
+            reason: stream_connect_error_to_malformed(&error),
+            reply: Reply::Stream(StreamStatus::error(
+                stream_connect_error_to_result(&error),
+                Some(format!("{error}")),
+            )),
+        },
+    }
+}
+
+fn handle_stream_accept(command: &Command) -> DispatchOutcome {
+    match parse_stream_accept(command) {
+        Ok(request) => DispatchOutcome::RequireStreamAccept {
+            request: Box::new(request),
+        },
+        Err(error) => DispatchOutcome::Malformed {
+            reason: stream_accept_error_to_malformed(&error),
+            reply: Reply::Stream(StreamStatus::error(
+                stream_accept_error_to_result(&error),
+                Some(format!("{error}")),
+            )),
+        },
+    }
+}
+
+fn stream_connect_error_to_malformed(error: &StreamConnectError) -> MalformedReason {
+    match error {
+        StreamConnectError::MissingId => {
+            MalformedReason::MissingRequiredOption(crate::sam::command::MissingOption::SessionId)
+        }
+        StreamConnectError::MissingDestination => MalformedReason::MissingRequiredOption(
+            crate::sam::command::MissingOption::SessionDestination,
+        ),
+        StreamConnectError::InvalidSilent(_) | StreamConnectError::InvalidId => {
+            MalformedReason::InvalidQuoting
+        }
+    }
+}
+
+fn stream_connect_error_to_result(error: &StreamConnectError) -> crate::sam::reply::ReplyResult {
+    match error {
+        StreamConnectError::MissingId
+        | StreamConnectError::MissingDestination
+        | StreamConnectError::InvalidSilent(_) => crate::sam::reply::ReplyResult::I2pError,
+        StreamConnectError::InvalidId => crate::sam::reply::ReplyResult::InvalidId,
+    }
+}
+
+fn stream_accept_error_to_malformed(error: &StreamAcceptError) -> MalformedReason {
+    match error {
+        StreamAcceptError::MissingId => {
+            MalformedReason::MissingRequiredOption(crate::sam::command::MissingOption::SessionId)
+        }
+        StreamAcceptError::InvalidSilent(_) | StreamAcceptError::InvalidId => {
+            MalformedReason::InvalidQuoting
+        }
+    }
+}
+
+fn stream_accept_error_to_result(error: &StreamAcceptError) -> crate::sam::reply::ReplyResult {
+    match error {
+        StreamAcceptError::MissingId | StreamAcceptError::InvalidSilent(_) => {
+            crate::sam::reply::ReplyResult::I2pError
+        }
+        StreamAcceptError::InvalidId => crate::sam::reply::ReplyResult::InvalidId,
+    }
+}
+
+/// Successful outcome of a `STREAM CONNECT` follow-up executed by the
+/// daemon. The runtime already advanced the per-stream state machine
+/// to `Established`; this payload carries the data the per-stream
+/// socket task uses to drive the raw-mode transition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamConnectApplied {
+    /// Stream id assigned by the registry.
+    pub stream_id: u32,
+}
+
+/// Failed outcome of a `STREAM CONNECT` follow-up.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamConnectFailed {
+    /// Protocol-level result vocabulary.
+    pub result: crate::sam::reply::ReplyResult,
+    /// Human-readable diagnostic message.
+    pub message: String,
+}
+
+/// Successful outcome of a `STREAM ACCEPT` follow-up.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamAcceptApplied {
+    /// Stream id assigned by the registry.
+    pub stream_id: u32,
+}
+
+/// Failed outcome of a `STREAM ACCEPT` follow-up.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamAcceptFailed {
+    /// Protocol-level result vocabulary.
+    pub result: crate::sam::reply::ReplyResult,
+    /// Human-readable diagnostic message.
+    pub message: String,
+}
+
+/// Convert the daemon's `STREAM CONNECT` follow-up outcome into the
+/// per-connection dispatch outcome. A successful connect emits the
+/// pre-raw `STREAM STATUS RESULT=OK` line; a failure emits the
+/// matching typed failure and closes the per-stream socket.
+pub fn apply_stream_connect_outcome(
+    outcome: Result<StreamConnectApplied, StreamConnectFailed>,
+) -> DispatchOutcome {
+    match outcome {
+        Ok(_applied) => DispatchOutcome::Stay {
+            reply: Some(Reply::Stream(StreamStatus::ok())),
+        },
+        Err(failed) => DispatchOutcome::Close {
+            close_reason: CloseReason::MalformedLine,
+            reply: Some(Reply::Stream(StreamStatus::error(
+                failed.result,
+                Some(failed.message),
+            ))),
+        },
+    }
+}
+
+/// Convert the daemon's `STREAM ACCEPT` follow-up outcome into the
+/// per-connection dispatch outcome.
+pub fn apply_stream_accept_outcome(
+    outcome: Result<StreamAcceptApplied, StreamAcceptFailed>,
+) -> DispatchOutcome {
+    match outcome {
+        Ok(_applied) => DispatchOutcome::Stay {
+            reply: Some(Reply::Stream(StreamStatus::ok())),
+        },
+        Err(failed) => DispatchOutcome::Close {
+            close_reason: CloseReason::MalformedLine,
+            reply: Some(Reply::Stream(StreamStatus::error(
+                failed.result,
+                Some(failed.message),
+            ))),
+        },
     }
 }
 
@@ -611,12 +785,51 @@ mod tests {
     }
 
     #[test]
-    fn stream_connect_returns_not_implemented() {
+    fn stream_connect_returns_require_runtime_handshake() {
         let outcome = dispatch(
             ServerConnectionState::UtilityReady,
             &parse_line("STREAM CONNECT ID=alpha DESTINATION=foo").expect("parse"),
         );
+        assert!(matches!(
+            outcome,
+            DispatchOutcome::RequireStreamConnect { .. }
+        ));
+    }
+
+    #[test]
+    fn stream_accept_returns_require_runtime_handshake() {
+        let outcome = dispatch(
+            ServerConnectionState::UtilityReady,
+            &parse_line("STREAM ACCEPT ID=alpha").expect("parse"),
+        );
+        assert!(matches!(
+            outcome,
+            DispatchOutcome::RequireStreamAccept { .. }
+        ));
+    }
+
+    #[test]
+    fn stream_forward_returns_not_implemented() {
+        let outcome = dispatch(
+            ServerConnectionState::UtilityReady,
+            &parse_line("STREAM FORWARD ID=alpha DESTINATION=foo").expect("parse"),
+        );
         assert!(matches!(outcome, DispatchOutcome::Unsupported { .. }));
+    }
+
+    #[test]
+    fn stream_connect_missing_destination_is_malformed() {
+        let outcome = dispatch(
+            ServerConnectionState::UtilityReady,
+            &parse_line("STREAM CONNECT ID=alpha").expect("parse"),
+        );
+        match outcome {
+            DispatchOutcome::Malformed {
+                reply: Reply::Stream(_),
+                ..
+            } => {}
+            other => panic!("expected malformed stream reply, got {other:?}"),
+        }
     }
 
     #[test]

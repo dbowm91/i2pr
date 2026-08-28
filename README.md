@@ -4,7 +4,7 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 
 ## Status
 
-The local Milestone 6 product (destinations, garlic, LeaseSet2, Streaming) is closed under corrected local-correctness semantics via [**Plan 134**](plans/134-status.md). Independent-router interoperability is tracked as external acceptance debt. **Plan 137 (SAM 3.1 loopback server and session lifecycle)** lands the supervised loopback listener in `i2pr-daemon` on top of the Plan 136 `i2pr-api` foundation: bounded session registry, line reader, server state machine, transactional `SESSION CREATE`, and the per-destination `StreamingManager` pool that Plan 138 will attach STREAM sockets to. The `[sam]` config section defaults to `enabled = false` so the production daemon never binds. The next plan-of-record is Plan 138 (STREAM CONNECT / ACCEPT transport bridge).
+The local Milestone 6 product (destinations, garlic, LeaseSet2, Streaming) is closed under corrected local-correctness semantics via [**Plan 134**](plans/134-status.md). Independent-router interoperability is tracked as external acceptance debt. **Plan 138 (SAM 3.1 STREAM CONNECT / ACCEPT transport bridge)** attaches the loopback listener (Plan 137) to the per-destination `StreamingManager` pool so real `STREAM CONNECT` and `STREAM ACCEPT` sockets drive the production M6 `StreamingManager -> StreamingDestinationAdapter -> destination routing` path over `127.0.0.1`. The `[sam]` config section defaults to `enabled = false` so the production daemon never binds. The next plan-of-record is Plan 139 (STREAM FORWARD and naming).
 
 For the full plan hierarchy, MVP roadmap, and what's implemented vs. not, see [**`plans/README.md`**](plans/README.md).
 

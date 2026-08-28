@@ -344,6 +344,132 @@ pub fn extract_versions(
 /// 32-bit integer but typically fits in a `u16`.
 pub type StreamAcceptId = u32;
 
+/// Typed failure of parsing a `STREAM CONNECT` request from a
+/// `Command`. The failure reason is mapped to a SAM reply by the
+/// daemon.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StreamConnectError {
+    /// `ID=` was missing from the command.
+    MissingId,
+    /// `DESTINATION=` was missing from the command.
+    MissingDestination,
+    /// `SILENT=` was present but did not parse to `true` or `false`.
+    InvalidSilent(String),
+    /// `ID=` was empty or longer than the SAM session-id byte ceiling.
+    InvalidId,
+}
+
+impl core::fmt::Display for StreamConnectError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::MissingId => formatter.write_str("STREAM CONNECT missing ID"),
+            Self::MissingDestination => formatter.write_str("STREAM CONNECT missing DESTINATION"),
+            Self::InvalidSilent(value) => {
+                write!(formatter, "STREAM CONNECT invalid SILENT={value}")
+            }
+            Self::InvalidId => formatter.write_str("STREAM CONNECT invalid ID"),
+        }
+    }
+}
+
+/// Parsed `STREAM CONNECT` request. The daemon drives the actual
+/// `StreamingManager::connect(...)` call; this struct carries only the
+/// validated wire fields.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamConnectRequest {
+    /// `ID=` value identifying the target session.
+    pub session_id: String,
+    /// `DESTINATION=` value, byte-equal to the wire text. The daemon
+    /// decodes it through the existing destination codec.
+    pub destination: String,
+    /// `SILENT=` value (`true` / `false`). `None` when the option was
+    /// absent (the SAM default is non-silent).
+    pub silent: Option<bool>,
+}
+
+/// Typed failure of parsing a `STREAM ACCEPT` request from a `Command`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StreamAcceptError {
+    /// `ID=` was missing from the command.
+    MissingId,
+    /// `SILENT=` was present but did not parse to `true` or `false`.
+    InvalidSilent(String),
+    /// `ID=` was empty or longer than the SAM session-id byte ceiling.
+    InvalidId,
+}
+
+impl core::fmt::Display for StreamAcceptError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::MissingId => formatter.write_str("STREAM ACCEPT missing ID"),
+            Self::InvalidSilent(value) => {
+                write!(formatter, "STREAM ACCEPT invalid SILENT={value}")
+            }
+            Self::InvalidId => formatter.write_str("STREAM ACCEPT invalid ID"),
+        }
+    }
+}
+
+/// Parsed `STREAM ACCEPT` request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamAcceptRequest {
+    /// `ID=` value identifying the target session.
+    pub session_id: String,
+    /// `SILENT=` value (`true` / `false`). `None` when the option was
+    /// absent.
+    pub silent: Option<bool>,
+}
+
+/// Extracts a `StreamConnectRequest` from a `STREAM CONNECT` command.
+/// Returns a typed error on any malformed field; the daemon maps the
+/// error to the SAM `ReplyResult` vocabulary.
+pub fn parse_stream_connect(command: &Command) -> Result<StreamConnectRequest, StreamConnectError> {
+    let session_id = command
+        .value("ID")
+        .ok_or(StreamConnectError::MissingId)?
+        .to_owned();
+    if session_id.is_empty() || session_id.len() > MAX_SAM_SESSION_ID_BYTES {
+        return Err(StreamConnectError::InvalidId);
+    }
+    let destination = command
+        .value("DESTINATION")
+        .ok_or(StreamConnectError::MissingDestination)?
+        .to_owned();
+    let silent = match command.value("SILENT") {
+        None => None,
+        Some(value) => match Silently::parse(value) {
+            Some(Silently::Yes) => Some(true),
+            Some(Silently::No) => Some(false),
+            None => return Err(StreamConnectError::InvalidSilent(value.to_owned())),
+        },
+    };
+    Ok(StreamConnectRequest {
+        session_id,
+        destination,
+        silent,
+    })
+}
+
+/// Extracts a `StreamAcceptRequest` from a `STREAM ACCEPT` command.
+pub fn parse_stream_accept(command: &Command) -> Result<StreamAcceptRequest, StreamAcceptError> {
+    let session_id = command
+        .value("ID")
+        .ok_or(StreamAcceptError::MissingId)?
+        .to_owned();
+    if session_id.is_empty() || session_id.len() > MAX_SAM_SESSION_ID_BYTES {
+        return Err(StreamAcceptError::InvalidId);
+    }
+    let silent = match command.value("SILENT") {
+        None => None,
+        Some(value) => match Silently::parse(value) {
+            Some(Silently::Yes) => Some(true),
+            Some(Silently::No) => Some(false),
+            None => return Err(StreamAcceptError::InvalidSilent(value.to_owned())),
+        },
+    };
+    Ok(StreamAcceptRequest { session_id, silent })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
