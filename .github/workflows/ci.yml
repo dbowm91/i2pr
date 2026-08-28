@@ -45,6 +45,22 @@ jobs:
           set +e
           while IFS= read -r executable; do
             [ -n "$executable" ] || continue
+            if [[ "$executable" == */sam_loopback-* ]]; then
+              test_names=$("$executable" --list | awk '$2 == "test" {print $1}')
+              status=$?
+              if [ "$status" -ne 0 ]; then
+                echo "::error title=macOS test listing failed::$executable --list exited with $status"
+                exit "$status"
+              fi
+              for test_name in $test_names; do
+                "$executable" "$test_name" --exact --test-threads=1
+                status=$?
+                if [ "$status" -ne 0 ]; then
+                  echo "::error title=macOS test failed::$executable::$test_name exited with $status"
+                  exit "$status"
+                fi
+              done
+            fi
             "$executable" --test-threads=1
             status=$?
             if [ "$status" -ne 0 ]; then
