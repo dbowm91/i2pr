@@ -162,6 +162,9 @@ async fn forward_registers_real_loopback_target_and_owner_close_removes_it() {
     target_task.await.unwrap();
     bridge.await.unwrap().unwrap();
 
+    // Explicitly half-close the owner socket so kqueue-based runners
+    // observe EOF deterministically before the bounded cleanup check.
+    forward.shutdown().await.unwrap();
     drop(forward);
     // The listener and connection cleanup run in supervised child tasks.
     // Give slower CI schedulers a bounded but ample opportunity to observe
