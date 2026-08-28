@@ -38,12 +38,21 @@ jobs:
         # then run every test executable serially with one libtest worker.
         if: runner.os == 'macOS'
         run: |
-          set -o pipefail
-          cargo test --locked --workspace --no-run --message-format=json-render-diagnostics \
-            | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' \
-            | while IFS= read -r executable; do
-                "$executable" --test-threads=1
-              done
+          set +e
+          mapfile -t executables < <(cargo test --locked --workspace --no-run --message-format=json-render-diagnostics | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable')
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=macOS test executable discovery failed::cargo test --no-run exited with $status"
+            exit "$status"
+          fi
+          for executable in "${executables[@]}"; do
+            "$executable" --test-threads=1
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "::error title=macOS test executable failed::$executable exited with $status"
+              exit "$status"
+            fi
+          done
           cargo test --locked --workspace --doc
       - name: Run tests
         if: runner.os != 'macOS'
