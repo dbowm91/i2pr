@@ -38,21 +38,14 @@ jobs:
         # then run every test executable serially with one libtest worker.
         if: runner.os == 'macOS'
         run: |
-          set +e
-          mapfile -t executables < <(cargo test --locked --workspace --no-run --message-format=json-render-diagnostics | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable')
-          status=$?
-          if [ "$status" -ne 0 ]; then
-            echo "::error title=macOS test executable discovery failed::cargo test --no-run exited with $status"
-            exit "$status"
-          fi
-          for executable in "${executables[@]}"; do
+          executable_list="$RUNNER_TEMP/i2pr-test-executables.txt"
+          cargo test --locked --workspace --no-run --message-format=json-render-diagnostics \
+            | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' \
+            > "$executable_list"
+          while IFS= read -r executable; do
+            [ -n "$executable" ] || continue
             "$executable" --test-threads=1
-            status=$?
-            if [ "$status" -ne 0 ]; then
-              echo "::error title=macOS test executable failed::$executable exited with $status"
-              exit "$status"
-            fi
-          done
+          done < "$executable_list"
           cargo test --locked --workspace --doc
       - name: Run tests
         if: runner.os != 'macOS'
