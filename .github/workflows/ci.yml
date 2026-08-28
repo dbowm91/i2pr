@@ -33,11 +33,18 @@ jobs:
         run: cargo check --locked --workspace --all-targets
       - name: Run tests (macOS)
         # The workspace includes several real loopback listener suites.
-        # macOS runners become flaky when those suites fan out across the
-        # default libtest worker pool; retain the complete suite while
-        # serializing test cases on that runner.
+        # macOS runners become flaky when Cargo launches the workspace's
+        # loopback test binaries together. Build the complete test set once,
+        # then run every test executable serially with one libtest worker.
         if: runner.os == 'macOS'
-        run: cargo test --locked --workspace --jobs 1 -- --test-threads=1
+        run: |
+          set -o pipefail
+          cargo test --locked --workspace --no-run --message-format=json-render-diagnostics \
+            | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' \
+            | while IFS= read -r executable; do
+                "$executable" --test-threads=1
+              done
+          cargo test --locked --workspace --doc
       - name: Run tests
         if: runner.os != 'macOS'
         run: cargo test --locked --workspace
