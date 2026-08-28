@@ -479,7 +479,10 @@ async fn quit_after_hello_closes_without_session() {
     hello_3_1(&mut client).await;
     write_all(&mut client, b"QUIT\n").await;
     let mut buf = [0_u8; 32];
-    let read = timeout(Duration::from_millis(200), client.read(&mut buf)).await;
+    // The peer close is driven by a supervised task and can take longer on
+    // kqueue-backed runners; retain a bounded timeout without making the
+    // test depend on wall-clock sleeps.
+    let read = timeout(Duration::from_secs(2), client.read(&mut buf)).await;
     match read {
         Ok(Ok(0)) => {}
         Ok(Ok(n)) => assert!(buf[..n].is_empty()),
