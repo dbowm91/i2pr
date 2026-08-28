@@ -34,9 +34,15 @@ jobs:
       - name: Isolate Plan 139 API tests (macOS)
         if: runner.os == 'macOS'
         run: cargo test --locked -p i2pr-api --test sam_plan139 -- --test-threads=1
-      - name: Isolate Plan 139 daemon tests (macOS)
+      - name: Plan 139 forward ownership test (macOS)
         if: runner.os == 'macOS'
-        run: cargo test --locked -p i2pr-daemon --test sam_forward_naming -- --test-threads=1
+        run: cargo test --locked -p i2pr-daemon --test sam_forward_naming forward_registers_real_loopback_target_and_owner_close_removes_it -- --test-threads=1
+      - name: Plan 139 silent forward test (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --locked -p i2pr-daemon --test sam_forward_naming silent_forward_passes_application_bytes_without_metadata -- --test-threads=1
+      - name: Plan 139 naming test (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --locked -p i2pr-daemon --test sam_forward_naming naming_me_is_session_scoped_and_unknown_i2p_is_not_found -- --test-threads=1
       - name: Run tests (macOS)
         # The workspace includes several real loopback listener suites.
         # macOS runners become flaky when those suites fan out across the
