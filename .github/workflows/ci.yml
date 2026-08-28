@@ -31,25 +31,13 @@ jobs:
         run: cargo check --locked --workspace
       - name: Check all workspace targets
         run: cargo check --locked --workspace --all-targets
-      - name: Diagnose Plan 139 forward test (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          set +e
-          log_file="$RUNNER_TEMP/plan139-forward.log"
-          cargo test --locked -p i2pr-daemon --test sam_forward_naming forward_registers_real_loopback_target_and_owner_close_removes_it -- --test-threads=1 2>&1 | tee "$log_file"
-          status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            detail=$(grep -E 'panicked at|assertion|----|test result' "$log_file" | tail -n 8 | tr '\n' ' ')
-            echo "::error title=Plan 139 macOS failure::$detail"
-          fi
-          exit "$status"
       - name: Run tests (macOS)
         # The workspace includes several real loopback listener suites.
         # macOS runners become flaky when those suites fan out across the
         # default libtest worker pool; retain the complete suite while
         # serializing test cases on that runner.
         if: runner.os == 'macOS'
-        run: cargo test --locked --workspace -- --test-threads=1
+        run: cargo test --locked --workspace --jobs 1 -- --test-threads=1
       - name: Run tests
         if: runner.os != 'macOS'
         run: cargo test --locked --workspace
