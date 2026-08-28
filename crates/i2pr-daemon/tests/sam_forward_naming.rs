@@ -163,7 +163,10 @@ async fn forward_registers_real_loopback_target_and_owner_close_removes_it() {
     bridge.await.unwrap().unwrap();
 
     drop(forward);
-    for _ in 0..32 {
+    // The listener and connection cleanup run in supervised child tasks.
+    // Give slower CI schedulers a bounded but ample opportunity to observe
+    // the owner-close lifecycle event.
+    for _ in 0..256 {
         tokio::task::yield_now().await;
     }
     assert!(state.forward_registration(&session).is_none());
@@ -284,7 +287,10 @@ async fn naming_me_is_session_scoped_and_unknown_i2p_is_not_found() {
 
     drop(session);
     drop(utility);
-    for _ in 0..64 {
+    // Session teardown is performed by the per-connection child task; keep
+    // this deterministic and bounded while allowing slower CI schedulers to
+    // run that task after both control sockets close.
+    for _ in 0..256 {
         tokio::task::yield_now().await;
     }
     assert_eq!(state.session_registry().session_count(), 0);
