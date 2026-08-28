@@ -162,16 +162,12 @@ async fn forward_registers_real_loopback_target_and_owner_close_removes_it() {
     target_task.await.unwrap();
     bridge.await.unwrap().unwrap();
 
-    // Explicitly half-close the owner socket so kqueue-based runners
-    // observe EOF deterministically before the bounded cleanup check.
-    forward.shutdown().await.unwrap();
-    drop(forward);
-    // The listener and connection cleanup run in supervised child tasks.
-    // Give slower CI schedulers a bounded but ample opportunity to observe
-    // the owner-close lifecycle event.
-    for _ in 0..256 {
-        tokio::task::yield_now().await;
-    }
+    // QUIT closes this owner connection through the normal SAM lifecycle.
+    // Waiting for the peer EOF synchronizes with the server task's teardown
+    // instead of relying on a scheduler-dependent number of yields.
+    forward.write_all(b"QUIT\n").await.unwrap();
+    let mut eof = [0_u8; 1];
+    assert_eq!(forward.read(&mut eof).await.unwrap(), 0);
     assert!(state.forward_registration(&session).is_none());
     assert_eq!(
         state.stream_registry().inbound_mode(&session).unwrap(),

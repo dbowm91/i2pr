@@ -42,40 +42,10 @@ jobs:
           cargo test --locked --workspace --no-run --message-format=json-render-diagnostics \
             | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' \
             > "$executable_list"
-          set +e
           while IFS= read -r executable; do
             [ -n "$executable" ] || continue
-            if [[ "$executable" == */sam_loopback-* || "$executable" == */sam_forward_naming-* ]]; then
-              test_names=$("$executable" --list | awk '$2 == "test" {sub(/:$/, "", $1); print $1}')
-              status=$?
-              if [ "$status" -ne 0 ]; then
-                echo "::error title=macOS test listing failed::$executable --list exited with $status"
-                exit "$status"
-              fi
-              for test_name in $test_names; do
-                "$executable" "$test_name" --exact --test-threads=1
-                status=$?
-                if [ "$status" -ne 0 ]; then
-                  echo "::error title=macOS test failed::$executable::$test_name exited with $status"
-                  exit "$status"
-                fi
-              done
-            fi
-            if [[ "$executable" == */sam_loopback-* || "$executable" == */sam_forward_naming-* ]]; then
-              test_output=$("$executable" --test-threads=1 2>&1)
-              status=$?
-              printf '%s\n' "$test_output"
-            else
-              "$executable" --test-threads=1
-              status=$?
-            fi
-            if [ "$status" -ne 0 ]; then
-              failed_tests=$(printf '%s\n' "$test_output" | awk '$1 == "test" && $NF == "FAILED" {print $2}')
-              echo "::error title=macOS test executable failed::$executable ${failed_tests:-unknown-test} exited with $status"
-              exit "$status"
-            fi
+            "$executable" --test-threads=1
           done < "$executable_list"
-          set -e
           cargo test --locked --workspace --doc
       - name: Run tests
         if: runner.os != 'macOS'
