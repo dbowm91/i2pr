@@ -61,10 +61,17 @@ jobs:
                 fi
               done
             fi
-            "$executable" --test-threads=1
-            status=$?
+            if [[ "$executable" == */sam_loopback-* || "$executable" == */sam_forward_naming-* ]]; then
+              test_output=$("$executable" --test-threads=1 2>&1)
+              status=$?
+              printf '%s\n' "$test_output"
+            else
+              "$executable" --test-threads=1
+              status=$?
+            fi
             if [ "$status" -ne 0 ]; then
-              echo "::error title=macOS test executable failed::$executable exited with $status"
+              failed_tests=$(printf '%s\n' "$test_output" | awk '$1 == "test" && $NF == "FAILED" {print $2}')
+              echo "::error title=macOS test executable failed::$executable ${failed_tests:-unknown-test} exited with $status"
               exit "$status"
             fi
           done < "$executable_list"
