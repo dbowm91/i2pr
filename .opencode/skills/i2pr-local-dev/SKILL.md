@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 (destinations, garlic, LeaseSet2, Streaming) and the SAM 3.1 application-protocol adapter (Plans 136–139) for Milestone 7. Use when an agent is asked to modify, test, or extend i2pr-client, i2pr-netdb, i2pr-tunnel, i2pr-proto, i2pr-crypto, i2pr-daemon destination/streaming/LS2 code paths, or i2pr-api SAM 3.1 protocol/private-destination/stream-registry/forward/naming code paths; write or run the deterministic trajectory tests under crates/i2pr-client/tests/ or the SAM tests under crates/i2pr-api/ and crates/i2pr-daemon/tests/sam_*; exercise the testkit; debug local Milestone 6 trajectories; or plan the next SAM milestone (Plan 140 interoperability and closure). Also use when asked to find the canonical closure record for a Milestone 6 / Milestone 7 plan, the active I2P protocol-support state for destinations/garlic/LS2/Streaming/SAM, or the next executable plan-of-record after Plan 139.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 (destinations, garlic, LeaseSet2, Streaming) and the SAM 3.1 application-protocol adapter (Plans 136–140) for Milestone 7. Use when an agent is asked to modify, test, or extend i2pr-client, i2pr-netdb, i2pr-tunnel, i2pr-proto, i2pr-crypto, i2pr-daemon destination/streaming/LS2 code paths, or i2pr-api SAM 3.1 protocol/private-destination/stream-registry/forward/naming code paths; write or run the deterministic trajectory tests under crates/i2pr-client/tests/ or the SAM tests under crates/i2pr-api/ and crates/i2pr-daemon/tests/sam_*; exercise the testkit; debug local Milestone 6 trajectories; or execute the Plan 140 interoperability audit and closure lane. Also use when asked to find the canonical closure record for a Milestone 6 / Milestone 7 plan, the active I2P protocol-support state for destinations/garlic/LS2/Streaming/SAM, or the next executable plan-of-record after the blocked Plan 140 audit.
 ---
 
 # I2PR Local Development
@@ -17,8 +17,9 @@ private-destination foundation, Plan 137 closed the loopback listener
 and session lifecycle, and Plan 138 closed the STREAM CONNECT / ACCEPT
 transport bridge. Plan 139 closed loopback-only STREAM FORWARD, local
 NAMING LOOKUP, and the bounded ownership/lifecycle hardening around the
-listener and forwarding bridge. Plan 140 owns independent-client
-interoperability and the remaining Milestone 7 closure evidence.
+listener and forwarding bridge. Plan 140 audited independent-client
+interoperability and remains blocked because the live STREAM raw handoff
+and external private-destination compatibility are not ready.
 
 Load this skill whenever the work touches `i2pr-client`,
 `i2pr-netdb`, `i2pr-tunnel` (destination-side), `i2pr-proto`,
@@ -176,9 +177,9 @@ the SAM 3.1 protocol and private-destination foundation is closed
 closed (Plan 137); the SAM 3.1 STREAM CONNECT / ACCEPT transport
 bridge is closed (Plan 138), and Plan 139 closes the loopback-only
 STREAM FORWARD and local NAMING LOOKUP hardening. Independent-router
-interoperability is tracked separately as external acceptance debt. The
-next plan-of-record is **Plan 140** (independent-client interoperability
-and Milestone 7 closure + mixed-router SAM evidence).
+interoperability is tracked separately as external acceptance debt. Plan
+140 is the current blocked closure attempt; see `plans/140-status.md` and
+`tests/integration/sam/README.md` for reproducible evidence and handoff.
 
 Plan 139 delivered:
 

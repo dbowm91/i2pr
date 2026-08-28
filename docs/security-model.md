@@ -47,6 +47,10 @@ session-scoped, complete public Destinations are canonicalized, and unknown
 `.i2p`/b32 names do not trigger clearnet DNS or create a second address book.
 Normal diagnostics may identify bounded protocol results and session lifecycle
 categories, but must not contain private destinations, keys, or raw payloads.
+Plan 140's interoperability audit found that this boundary is only a local
+SAM hardening claim today: STREAM CONNECT/ACCEPT still lack the permanent raw
+socket handoff needed for independent-client byte evidence, and the external
+private-destination encoding compatibility check remains unresolved.
 
 ## Objectives and required properties
 

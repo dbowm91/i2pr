@@ -850,3 +850,18 @@ evidence = [
     "plans/138-status.md",
 ]
 advertised = false
+
+[[surface]]
+id = "sam.v31-independent-client-closure"
+protocol = "sam"
+structure = "sam-3.1-independent-client-stream-interoperability"
+scope = "required"
+status = "experimental"
+notes = "Plan 140 audit recorded in plans/140-status.md remains blocked. The local parser/session/forward/naming seams are covered by deterministic and real-loopback Rust tests, but no independent SAM client has been counted as passed: i2plib's pinned imported-private path uses the I2P -~ Base64 spelling while the current server accepts strict RFC 4648 text, txi2p cannot load locally without its legacy ometa dependency, and STREAM CONNECT/ACCEPT still lack a permanent raw-socket handoff into live destination delivery. No SAM feature is advertised."
+evidence = [
+    "plans/140-m7-sam31-interoperability-closure.md",
+    "plans/140-status.md",
+    "tests/integration/sam/README.md",
+    "docs/architecture/audit/2026-08-28-plan140-audit.md",
+]
+advertised = false

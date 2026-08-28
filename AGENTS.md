@@ -10,8 +10,8 @@ non-advertised; the production daemon does **not** activate NTCP2.
 Always read these before changing code or answering questions about state:
 
 1. `README.md` — current status (Milestone 6 local product gate
-   closed via Plan 134; SAM 3.1 STREAM FORWARD and naming hardening
-   closed via Plan 139), build/test/lint
+   closed via Plan 134; SAM 3.1 Plan 140 audit currently blocked on
+   independent-client STREAM closure), build/test/lint
    commands, high-level architecture.
 2. `GUARDRAILS.md` — non-negotiable engineering, security,
    interoperability, and collaboration constraints.
@@ -19,7 +19,7 @@ Always read these before changing code or answering questions about state:
    conventions, the rootless and Multipass evidence-lane contracts.
 4. The active plan under `plans/` (entry point:
    [`plans/README.md`](plans/README.md); latest closure:
-   `plans/139-status.md`) and the relevant `docs/adr/` record. The
+   `plans/140-status.md`) and the relevant `docs/adr/` record. The
    [`docs/architecture/audit/`](docs/architecture/audit/) directory
    tracks doc-vs-source drift findings from the most recent
    audits.
@@ -142,9 +142,6 @@ do not weaken the script.
 - **Constrained-host lane**
   (`scripts/check-constrained-host-lane-boundary.sh` + focused
   `tests/integration/ntcp2/harness/test_execution_lane.py`).
-- **Plan 095 CI workflow**
-  (`scripts/check-plan095-workflow.sh`): artifact paths and cleanup
-  guards on the manual live-wire workflow.
 
 Non-production crates (`i2pr-testkit`, `tests/integration/ntcp2/`,
 `tools/i2pr-interop`, `fuzz/`) live outside the production
@@ -173,7 +170,6 @@ bash scripts/check-ntcp2-vectors.sh      # when NTCP2 vector bytes change
 bash scripts/check-ntcp2-interoperability.sh   # when ntcp2 evidence/manifest change
 bash scripts/check-rootless-interop-boundary.sh   # when rootless files change
 bash scripts/check-multipass-interop-boundary.sh  # when Multipass lifecycle files change
-bash scripts/check-plan095-workflow.sh            # when the Plan 095 workflow changes
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
 bash scripts/fuzz-smoke.sh               # opt-in; requires cargo-fuzz + nightly
 ```
@@ -283,9 +279,9 @@ current public state:
   `passed-m7-sam31-loopback-server-session-lifecycle`; Plan 138
   closed the STREAM CONNECT / ACCEPT bridge; Plan 139 closes the
   loopback-only STREAM FORWARD and local naming hardening as
-  `passed-m7-sam31-forward-naming-hardening`. Plan 140 is the next
-  executable plan for independent-client interoperability and the
-  remaining Milestone 7 closure evidence.
+  `passed-m7-sam31-forward-naming-hardening`. Plan 140 is the current
+  blocked closure attempt: independent-client STREAM interoperability
+  and the live raw-socket handoff remain unclaimed.
 
 When you read a `plan_NNN`-style token in code or docs, treat the
 closure record as authoritative and the per-plan narrative as
@@ -362,6 +358,8 @@ work and `i2pr-architecture` to navigate the documentation.
   scripts.
 - `tests/integration/ntcp2/` — interop harnesses, scenarios,
   qualification, reference drivers, evidence bundles.
+- `tests/integration/sam/` — lightweight Plan 140 client provenance and
+  localhost evidence notes.
 - `fuzz/` — opt-in nightly fuzz workspace; not part of the
   production workspace.
 - `docs/adr/` — architecture decision records.
@@ -375,8 +373,8 @@ work and `i2pr-architecture` to navigate the documentation.
 - `plans/` — plan-of-record and closure records (read the
   relevant status file before changing code).
 - `scripts/` — static boundary and interop scripts.
-- `.github/workflows/` — CI and the optional Plan 095 manual
-  live-wire workflow (manual `workflow_dispatch` only; never on
-  pull requests).
+- `.github/workflows/` — CI and the optional historical Plan 095 manual
+  live-wire workflow (manual `workflow_dispatch` only; never on pull
+  requests). Its retired checker is not part of the current local gate.
 - `.opencode/skills/` — loadable skill definitions for OpenCode
   sessions.

@@ -40,7 +40,10 @@ work is scoped to:
   STREAM CONNECT/ACCEPT dispatch, loopback-only STREAM FORWARD
   registrations, bounded/cancellable raw forwarding, and local naming
   outcomes. SAM remains disabled by default and is never a public
-  network listener.
+  network listener. Plan 140's closure audit found that STREAM
+  CONNECT/ACCEPT still need a permanent raw-socket handoff to live
+  destination delivery; independent-client interoperability is therefore
+  not claimed.
 
 What it **does not** do yet:
 
@@ -76,8 +79,8 @@ which undercounted `netdb_seam`, `outbound_lookup`, and
 | `src/netdb_seam.rs` | Plan 106/117 runtime-facing seam for Plan 105 actions | `NetDbSeam`, `CompositionOutcome`, `ExploratoryPathStatus` |
 | `src/outbound_lookup.rs` | Plan 117 §8/§10 outbound exploratory data-plane composition | `compose_outbound_lookup`, `compose_outbound_publication`, `OutboundLookupDispatch`, `MAX_OUTBOUND_LOOKUP_CELLS`, `MAX_OUTBOUND_PUBLICATION_CELLS` |
 | `src/inbound_dispatch.rs` | Plan 117 §9 inbound exploratory `TunnelData` dispatch | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE` |
-| `src/sam.rs` | Plans 137–139 supervised SAM 3.1 listener and composition root | `SamServiceState`, `execute_session_create`, `execute_stream_connect`, `execute_stream_accept`, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP` |
-| `src/sam/streams.rs` | Plan 138 per-destination SAM Streaming bridge | `SamDestinationBridge`, `SamDestinations`, captured outbound seam, strict destination decoding |
+| `src/sam.rs` | Plans 137–140 supervised SAM 3.1 listener and composition root | `SamServiceState`, `execute_session_create`, `execute_stream_connect`, `execute_stream_accept`, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP`; Plan 140 audit and blocked handoff |
+| `src/sam/streams.rs` | Plan 138 per-destination SAM Streaming bridge; Plan 140 audit | `SamDestinationBridge`, `SamDestinations`, bounded captured outbound seam, strict destination decoding |
 
 There are no subdirectories.
 

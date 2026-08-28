@@ -169,9 +169,11 @@ A live `i2pr run` (Plan 106) follows this sequence:
 
 The Milestone 6 local product (destinations, garlic, LS2,
 Streaming) is closed locally via Plan 134; independent-router
-interoperability is tracked separately as external acceptance
-debt. The next product layer is SAM baseline planning (Milestone
-7).
+interoperability is tracked separately as external acceptance debt.
+The SAM 3.1 local protocol, session, forwarding, and naming seams are
+implemented through Plan 139. Plan 140's independent-client and live
+STREAM closure is blocked; see [`plans/140-status.md`](../plans/140-status.md)
+and the architecture audit.
 
 ## Conventions
 

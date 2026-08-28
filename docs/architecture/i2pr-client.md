@@ -212,10 +212,12 @@ re-encrypts, or rewrites targets.
 
 NTCP2 / SSU2 / public-network transport is out of scope here; the
 SAM / I2CP adapters live in the Milestone 7 follow-on planning.
-Plan 137 consumes `DestinationRegistry`, `DestinationRuntime`, and
+Plans 137–139 consume `DestinationRegistry`, `DestinationRuntime`, and
 the per-destination `StreamingManager` to build the SAM 3.1
 loopback server; the actual SAM adapter wiring is owned by
-`i2pr-daemon` (`crates/i2pr-daemon/src/sam.rs`).
+`i2pr-daemon` (`crates/i2pr-daemon/src/sam.rs`). Plan 140 records that
+the daemon still needs to connect SAM raw sockets to live destination
+delivery before external-client STREAM interoperability can be claimed.
 
 ## Layering
 

@@ -8,10 +8,10 @@ The current **Milestone 6 local closure authority** is
 [**Plan 134**](134-status.md) (`passed-milestone6-recv-window-ack-ceiling-closure`).
 Independent-router interoperability is not claimed and is tracked as
 external acceptance debt. The current **Milestone 7 SAM 3.1 closure
-authority** is [**Plan 139**](139-status.md)
-(`passed-m7-sam31-forward-naming-hardening`); Plan 140 is the next
-executable plan for independent-client interoperability and remaining
-closure evidence.
+authority** is the blocked [**Plan 140**](140-status.md)
+(`blocked-independent-client-stream-path-not-ready`). Plan 139 remains
+the last passed local SAM hardening closure; Plan 140's live STREAM and
+independent-client evidence is not claimed.
 
 ## MVP roadmap
 

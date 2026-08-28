@@ -65,7 +65,6 @@ pub enum SamPrivateDestinationError {
 /// secret || signing seed`) in a zeroising buffer. It exposes the
 /// encoded `PRIV` value, the `PUB` value, and a consuming
 /// reconstruction into a [`DestinationIdentity`].
-#[derive(Clone)]
 pub struct SamPrivateDestination {
     bytes: Zeroizing<[u8; PRIV_LENGTH]>,
 }
@@ -188,8 +187,7 @@ impl SamPrivateDestination {
     /// Consumes the wrapper and returns a reconstructed
     /// [`DestinationIdentity`].
     pub fn into_identity(self) -> Result<DestinationIdentity, SamPrivateDestinationError> {
-        let bytes = Zeroizing::new(self.bytes.clone());
-        Self::identity_from_bytes(&bytes)
+        Self::identity_from_bytes(&self.bytes)
     }
 
     fn identity_from_bytes(

@@ -1,6 +1,6 @@
 # Plan 140 — SAM 3.1 independent-client interoperability and Milestone 7 closure
 
-Status: **blocked on successful Plan 139 closure**.
+Status: **closure attempt blocked; Plan 139 is closed**.
 
 Depends on: Plans 135–139.
 

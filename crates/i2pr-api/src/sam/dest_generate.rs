@@ -76,7 +76,7 @@ impl DestGenerateRequest {
 
 /// The outcome of a `DEST GENERATE` operation.
 #[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum DestGenerateOutcome {
     /// `DEST REPLY RESULT=OK PUB=... PRIV=...`.
     Ok(DestReply),
@@ -90,7 +90,7 @@ pub enum DestGenerateOutcome {
 
 /// The destination-generation reply payload.
 #[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct DestReply {
     /// The SAM public destination text.
     pub public_destination: String,

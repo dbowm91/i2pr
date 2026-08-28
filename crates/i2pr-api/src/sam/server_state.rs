@@ -48,7 +48,7 @@ use crate::sam::version::{MAX_SUPPORTED_VERSION, MIN_SUPPORTED_VERSION};
 
 /// Typed outcome of dispatching one [`CommandOutcome`] against the
 /// current [`ServerConnectionState`].
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum DispatchOutcome {
     /// Stay in the same state, send `reply` (if any) to the client.
     Stay {

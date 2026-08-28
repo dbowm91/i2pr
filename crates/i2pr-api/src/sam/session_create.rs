@@ -66,7 +66,7 @@ pub enum SessionCreateError {
 }
 
 /// Typed `SESSION CREATE` request.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct SessionCreateRequest {
     /// The session identifier (`ID=`).
     pub id: String,
@@ -78,7 +78,7 @@ pub struct SessionCreateRequest {
 
 /// The source of a SAM session's destination.
 #[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum DestinationSource {
     /// `DESTINATION=TRANSIENT` — the server generates the destination.
     Transient,

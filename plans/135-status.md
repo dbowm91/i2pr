@@ -1,6 +1,6 @@
 # Plan 135 status — Milestone 7 SAM 3.1 planning authority
 
-Status: **`active-milestone7-sam31-planning-authority`**.
+Status: **`superseded-by-plan140-audit`**.
 
 Registered: **2026-08-27**.
 
@@ -14,21 +14,21 @@ Plan of record:
 ```text
 plan_134 = passed-milestone6-recv-window-ack-ceiling-closure
 
-plan_135 = active-milestone7-sam31-planning-authority
-plan_136 = next-executable
-plan_137 = blocked-on-plan136
-plan_138 = blocked-on-plan137
-plan_139 = blocked-on-plan138
-plan_140 = blocked-on-plan139
+plan_135 = superseded-by-plan140-audit
+plan_136 = passed-sam31-protocol-private-destination-foundation
+plan_137 = passed-m7-sam31-loopback-server-session-lifecycle
+plan_138 = passed-m7-sam31-stream-connect-accept-bridge
+plan_139 = passed-m7-sam31-forward-naming-hardening
+plan_140 = blocked-independent-client-stream-path-not-ready
 
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 external_acceptance_debt = retained-separately
 
-milestone7 = planned-ready-for-implementation
+milestone7 = local-product-implemented; closure-blocked
 sam_baseline = 3.1-stream
 router_construction = may-continue
-next_executable_plan = 136
+next_executable_plan = SAM stream-bridge and Base64 compatibility correction
 ```
 
 ## Phase 7 execution sequence

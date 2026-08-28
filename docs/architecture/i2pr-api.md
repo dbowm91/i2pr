@@ -5,7 +5,9 @@ router. Plan 136 lands it as the smallest trustworthy SAM 3.1
 foundation on which the SAM server can be built; Plan 137 adds the
 loopback-server / session-lifecycle surface; Plan 138 adds the
 STREAM CONNECT / ACCEPT transport-bridge surface; Plan 139 adds
-loopback-only STREAM FORWARD and local NAMING LOOKUP policy.
+loopback-only STREAM FORWARD and local NAMING LOOKUP policy. Plan 140
+audits independent-client compatibility but remains blocked on the live
+STREAM raw handoff and private-destination encoding compatibility.
 
 > [Plan 136](../plans/136-m7-sam31-protocol-private-destination-foundation.md):
 > create the `i2pr-api` crate at the intended application-adapter
@@ -72,7 +74,10 @@ supervised loopback listener through `i2pr-daemon`.
 - No socket ownership or raw byte movement: Plan 139 supplies the
   runtime-neutral FORWARD/naming seam, while `i2pr-daemon` owns local
   sockets and the bounded bridge.
-- No `i2pd` / Java I2P interop harness (Plan 140).
+- No independent-client interoperability claim. The lightweight Plan 140
+  provenance/evidence lane is in `tests/integration/sam/`; it does not
+  import this crate's internals or promote the local capture seam to live
+  STREAM evidence.
 
 ## Layering
 

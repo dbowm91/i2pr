@@ -314,13 +314,14 @@ impl SamServiceState {
     /// Executes one full session-creation transaction. The supplied
     /// destination source is either a freshly-generated TRANSIENT
     /// identity or a strict-decoded imported `SamPrivateDestination`.
+    /// The source is consumed so secret material is never cloned.
     /// On success both the SAM session entry and the destination
     /// runtime are installed and the caller receives the canonical
     /// [`SessionCreateApplied`] payload.
     pub fn execute_session_create(
         &self,
         session_id: SamSessionId,
-        destination_source: &i2pr_api::sam::session_create::DestinationSource,
+        destination_source: i2pr_api::sam::session_create::DestinationSource,
     ) -> Result<SessionCreateApplied, SessionCreateError> {
         use i2pr_api::sam::session_create::DestinationSource;
 
@@ -337,7 +338,6 @@ impl SamServiceState {
             }
             DestinationSource::Imported(wrapper) => {
                 let identity = wrapper
-                    .clone()
                     .into_identity()
                     .map_err(|_| SessionCreateError::InvalidPrivateDestination)?;
                 let public_b64 = encode_public_for(&identity);
@@ -1071,7 +1071,7 @@ async fn dispatch_command(
                 write_reply(stream, &reply).await?;
                 return Ok(state_conn);
             }
-            let apply_result = match state.execute_session_create(id, &request.destination) {
+            let apply_result = match state.execute_session_create(id, request.destination) {
                 Ok(applied) => Ok(applied),
                 Err(error) => Err(SessionCreateFailed {
                     result: error.reply_result(),
