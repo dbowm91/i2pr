@@ -286,6 +286,33 @@ impl DestReply {
         }
     }
 
+    /// Constructs a public-only DEST REPLY carrying only the SAM
+    /// public destination text. Used by the daemon's `DEST GENERATE`
+    /// handler so the secret-bearing [`SamPrivateDestination`] can
+    /// be zeroized before the reply line is sent.
+    pub fn ok_public(public_destination: String) -> Self {
+        Self {
+            result: ReplyResult::Ok,
+            public_destination: Some(public_destination),
+            private_destination: None,
+            message: None,
+        }
+    }
+
+    /// Constructs a successful DEST REPLY carrying both the SAM
+    /// public and private destination Base64 texts. Used by the
+    /// daemon's `DEST GENERATE` handler after extracting the texts
+    /// from the secret-bearing [`SamPrivateDestination`] and
+    /// zeroizing the wrapper.
+    pub fn ok_pub_priv(public_destination: String, private_destination: String) -> Self {
+        Self {
+            result: ReplyResult::Ok,
+            public_destination: Some(public_destination),
+            private_destination: Some(private_destination),
+            message: None,
+        }
+    }
+
     /// Constructs an error DEST REPLY carrying an optional message.
     pub fn error(result: ReplyResult, message: Option<String>) -> Self {
         Self {
@@ -366,6 +393,11 @@ impl SessionStatus {
             destination: None,
             message,
         }
+    }
+
+    /// Returns the result code.
+    pub const fn result(&self) -> ReplyResult {
+        self.result
     }
 
     /// Returns the public destination text, if any.

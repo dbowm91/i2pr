@@ -750,6 +750,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "flate2",
+ "i2pr-api",
+ "i2pr-client",
  "i2pr-core",
  "i2pr-crypto",
  "i2pr-netdb",

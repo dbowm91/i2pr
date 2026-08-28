@@ -260,7 +260,17 @@ The crate has unit tests inside each module:
 - Plan 135 (Milestone 7 SAM 3.1 implementation roadmap): defines the
   broader Phase 7 sequence; Plan 136 implements the foundation.
 - Plan 136 (SAM 3.1 protocol and private-destination foundation):
-  the plan-of-record for this crate.
+  the plan-of-record for this crate; closed as
+  `passed-m7-sam31-protocol-private-destination-foundation`.
+- Plan 137 (SAM 3.1 loopback server and session lifecycle): the
+  loopback listener, session registry, line reader, and
+  per-destination `StreamingManager` pool live in `i2pr-daemon`;
+  closed as `passed-m7-sam31-loopback-server-session-lifecycle`.
+  The Plan 137 runtime-neutral surface (`SamLimits`,
+  `SamSessionId`, `SamSessionRegistry`, `LineReader`,
+  `ServerConnectionState`, and `dispatch`) is owned by this
+  crate; the daemon only owns the Tokio listener and the
+  supervised per-socket loop.
 - `specs/references/sam31-private-destination.md`: provenance for the
   private-destination format and the standard Java `PrivateKeyFile`
   concatenation.

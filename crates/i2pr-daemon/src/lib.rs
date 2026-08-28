@@ -13,11 +13,13 @@ pub mod error;
 pub mod inbound_dispatch;
 pub mod netdb_seam;
 pub mod outbound_lookup;
+pub mod sam;
 
 pub use error::DaemonError;
 pub use netdb_seam::{
     CompositionOutcome, ExploratoryPathStatus, LeaseSet2ResponseOutcome, NetDbSeam, NetDbSeamError,
 };
+pub use sam::{SamServiceError, SamServiceState, StreamingPools};
 
 use cli::{CheckConfigArgs, Cli, Command, IdentityCommand, RunArgs};
 use config::Config;
@@ -171,9 +173,76 @@ pub fn build_daemon_graph(config: &Config) -> Result<i2pr_runtime::ServiceGraph,
             DaemonError::RuntimeSupervisorFailed(format!("failed to register service: {e}"))
         })?;
 
+    if config.sam.enabled {
+        register_sam_service(&mut builder, config)?;
+    }
+
     builder
         .build()
         .map_err(|e| DaemonError::RuntimeSupervisorFailed(format!("invalid service graph: {e}")))
+}
+
+/// Registers the supervised loopback SAM service in the supplied
+/// builder. The factory captures the [`SamServiceState`] so the
+/// per-connection tokio tasks own Arc clones that share the same
+/// session/destination/streaming registries.
+fn register_sam_service(
+    builder: &mut i2pr_runtime::ServiceGraphBuilder,
+    config: &Config,
+) -> Result<(), DaemonError> {
+    let sam_config = config.sam.clone();
+    let address = sam_config.bind_socket();
+    let sam_name = ServiceName::new("sam-bridge").expect("valid service name");
+    builder
+        .register(ServiceSpec::new(
+            sam_name,
+            ServiceClassification::Optional,
+            move |ctx| {
+                let sam_config = sam_config.clone();
+                let cancellation = ctx.cancellation().clone();
+                let children = ctx.children();
+                Box::pin(async move {
+                    let state = match SamServiceState::new(sam_config) {
+                        Ok(state) => Arc::new(state),
+                        Err(error) => {
+                            let detail = i2pr_core::HealthDetail::new(format!(
+                                "SAM service construction failed: {error}"
+                            ))
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        }
+                    };
+                    let token = cancellation.clone();
+                    let join_result =
+                        i2pr_runtime::bounded_timeout(Duration::from_secs(1), async {
+                            state.run(address, children, token).await
+                        })
+                        .await;
+                    if join_result.is_err() {
+                        let detail = i2pr_core::HealthDetail::new(
+                            "SAM listener failed to start within the bounded timeout",
+                        )
+                        .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::Internal,
+                                detail,
+                            ),
+                        );
+                    }
+                    i2pr_runtime::ServiceResult::RequestedShutdown
+                })
+            },
+        ))
+        .map_err(|e| {
+            DaemonError::RuntimeSupervisorFailed(format!("failed to register SAM service: {e}"))
+        })?;
+    Ok(())
 }
 
 /// Runs the Plan 106 bounded bootstrap pipeline synchronously and

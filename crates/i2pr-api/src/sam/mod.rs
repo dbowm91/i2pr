@@ -1,15 +1,21 @@
 //! SAM v3.1 protocol surface.
 //!
 //! Strict bounded command/reply model, version negotiation, Base64
-//! codec, and private-destination format. Plan 136 only — no socket
-//! or session lifecycle ownership.
+//! codec, private-destination format, and (Plan 137) the runtime-neutral
+//! session/registry/line-reader/server-state surface that the
+//! `i2pr-daemon` loopback listener composes.
 
 pub mod base64;
 pub mod command;
 pub mod dest_generate;
+pub mod limits;
+pub mod line_reader;
 pub mod parser;
 pub mod private_destination;
+pub mod registry;
 pub mod reply;
+pub mod server_state;
+pub mod session;
 pub mod session_create;
 pub mod version;
 

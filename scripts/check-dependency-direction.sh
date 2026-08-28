@@ -28,6 +28,8 @@ expected = {
         "i2pr-crypto", "i2pr-netdb", "i2pr-proto", "i2pr-storage"
     },
     "i2pr-daemon": {
+        "i2pr-api",
+        "i2pr-client",
         "i2pr-core",
         "i2pr-proto",
         "i2pr-crypto",

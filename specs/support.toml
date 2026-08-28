@@ -158,8 +158,11 @@ plan_135_status = "active-milestone7-sam31-planning-authority"
 plan_136_plan_of_record = "plans/136-m7-sam31-protocol-private-destination-foundation.md"
 plan_136_closure = "plans/136-status.md"
 plan_136_status = "passed-m7-sam31-protocol-private-destination-foundation"
+plan_137_plan_of_record = "plans/137-m7-sam31-loopback-server-session-lifecycle.md"
+plan_137_closure = "plans/137-status.md"
+plan_137_status = "passed-m7-sam31-loopback-server-session-lifecycle"
 milestone7_sam_protocol = "passed"
-milestone7_loopback_server = "blocked-on-plan137"
+milestone7_loopback_server = "passed"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -765,7 +768,7 @@ protocol = "sam"
 structure = "sam-3.1-bounded-line-parser-version-negotiation-private-destination-codec"
 scope = "required"
 status = "experimental"
-notes = "Plan 136 closed as `passed-m7-sam31-protocol-private-destination-foundation` per plans/136-status.md. `i2pr-api` owns the bounded line/command/reply parser, typed HELLO VERSION / DEST GENERATE / SESSION CREATE / STREAM CONNECT / STREAM ACCEPT / STREAM FORWARD / NAMING LOOKUP / PING / PONG / QUIT vocabulary, strict SAM 3.1-only version negotiation with typed NOVERSION failure path, strict RFC 4648 SAM Base64 codec, SamPrivateDestination wrapper (non-Clone, non-Debug, zeroize-on-drop) carrying the standard Java PrivateKeyFile concatenation, and the runtime-neutral DEST GENERATE / SESSION CREATE private-destination import/export surface. No sockets, no timers, no Tokio; Plan 137 will wire the SAM bridge service into the supervised daemon."
+notes = "Plan 136 closed as `passed-m7-sam31-protocol-private-destination-foundation` per plans/136-status.md. `i2pr-api` owns the bounded line/command/reply parser, typed HELLO VERSION / DEST GENERATE / SESSION CREATE / STREAM CONNECT / STREAM ACCEPT / STREAM FORWARD / NAMING LOOKUP / PING / PONG / QUIT vocabulary, strict SAM 3.1-only version negotiation with typed NOVERSION failure path, strict RFC 4648 SAM Base64 codec, SamPrivateDestination wrapper (non-Clone, non-Debug, zeroize-on-drop) carrying the standard Java PrivateKeyFile concatenation, and the runtime-neutral DEST GENERATE / SESSION CREATE private-destination import/export surface. No sockets, no timers, no Tokio; Plan 137 wires the SAM bridge service into the supervised daemon."
 evidence = [
     "crates/i2pr-api/src/sam/version.rs",
     "crates/i2pr-api/src/sam/parser.rs",
@@ -778,5 +781,26 @@ evidence = [
     "specs/references/sam31-private-destination.md",
     "plans/136-m7-sam31-protocol-private-destination-foundation.md",
     "plans/136-status.md",
+]
+
+[[surface]]
+id = "sam.v31-loopback-server-session-lifecycle"
+protocol = "sam"
+structure = "sam-3.1-loopback-listener-session-registry-line-reader-streaming-pool"
+scope = "required"
+status = "experimental"
+notes = "Plan 137 closed as `passed-m7-sam31-loopback-server-session-lifecycle` per plans/137-status.md. The runtime-neutral surface lives in `crates/i2pr-api/src/sam/` and owns `SamLimits` (bounded capacity + finite timeout ceilings), `SamSessionId` / `SamSessionCounters`, `SamSessionRegistry` with the two-step `reserve_session` / `commit_reservation` / `rollback_reservation` triplet that makes the SAM-and-destination insert transactional, the bounded `LineReader` that rejects control bytes and oversized lines, and the `ServerConnectionState` / `dispatch` / `apply_session_outcome` state machine. The supervised Tokio listener lives in `crates/i2pr-daemon/src/sam.rs` and owns the loopback `TcpListener`, the per-client semaphore, the transactional `execute_session_create` (TRANSIENT and imported `SamPrivateDestination`), the per-destination `i2pr_client::streaming::StreamingManager` pool that Plan 138 attaches STREAM sockets to, and the cleanup path. The `[sam]` config section defaults to `enabled = false` so the production daemon never binds; integration tests bind on an ephemeral loopback port via `SamLimits::loopback_test_profile`. STREAM CONNECT / ACCEPT / FORWARD and NAMING LOOKUP reply `NOT_IMPLEMENTED` per Plan 137 §6 / §7. No external SAM router interoperability evidence has been collected; mixed-router evidence is tracked as external acceptance debt."
+evidence = [
+    "crates/i2pr-api/src/sam/limits.rs",
+    "crates/i2pr-api/src/sam/session.rs",
+    "crates/i2pr-api/src/sam/registry.rs",
+    "crates/i2pr-api/src/sam/line_reader.rs",
+    "crates/i2pr-api/src/sam/server_state.rs",
+    "crates/i2pr-daemon/src/sam.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-daemon/tests/sam_loopback.rs",
+    "plans/137-m7-sam31-loopback-server-session-lifecycle.md",
+    "plans/137-status.md",
 ]
 advertised = false

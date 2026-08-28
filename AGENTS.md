@@ -10,7 +10,8 @@ non-advertised; the production daemon does **not** activate NTCP2.
 Always read these before changing code or answering questions about state:
 
 1. `README.md` — current status (Milestone 6 local product gate
-   closed via Plan 134; SAM baseline planning next), build/test/lint
+   closed via Plan 134; SAM STREAM CONNECT / ACCEPT bridge
+   planning next via Plan 138), build/test/lint
    commands, high-level architecture.
 2. `GUARDRAILS.md` — non-negotiable engineering, security,
    interoperability, and collaboration constraints.
@@ -77,9 +78,14 @@ Quick reference (deep-dive per crate):
   tunnel pools, signed Standard LeaseSet2 generation/lifecycle,
   ECIES-X25519-AEAD-Ratchet session layer, destination routing,
   I2P Streaming core (`StreamingManager` + `StreamingDestinationAdapter`).
-- `i2pr-api` — application-protocol adapter (Plan 136): SAM 3.1
-  bounded line/command/reply parser, typed command surface, version
-  negotiation, SAM Base64 codec, SamPrivateDestination codec, and
+- `i2pr-api` — application-protocol adapter (Plan 136 + Plan 137):
+  SAM 3.1 bounded line/command/reply parser, typed command surface,
+  version negotiation, SAM Base64 codec, SamPrivateDestination codec,
+  `SamLimits`, `SamSessionRegistry`, `LineReader`,
+  `ServerConnectionState`, and the runtime-neutral session dispatch
+  state machine. The daemon-only SAM service (supervised Tokio
+  listener, per-destination `StreamingManager` pool, transactional
+  `SESSION CREATE`) lives in `i2pr-daemon` per Plan 137.
   the DEST GENERATE / SESSION CREATE private-destination
   import/export surface. Depends only on `i2pr-client`,
   `i2pr-crypto`, and `i2pr-proto`.
@@ -268,7 +274,12 @@ current public state:
   streaming) closed locally via Plan 134; independent-router
   interoperability is **not** claimed and is tracked as external
   acceptance debt.
-- The next product layer is SAM baseline planning (Milestone 7).
+- The next product layer is SAM STREAM CONNECT / ACCEPT
+  transport bridge (Milestone 7). Plan 137 closed the loopback
+  server and session lifecycle as
+  `passed-m7-sam31-loopback-server-session-lifecycle`; Plan 138
+  attaches STREAM sockets to the per-destination `StreamingManager`
+  pool that Plan 137 installed.
 
 When you read a `plan_NNN`-style token in code or docs, treat the
 closure record as authoritative and the per-plan narrative as
@@ -316,7 +327,7 @@ before touching the surface it covers.
 
 | Skill | Covers |
 | --- | --- |
-| [`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md) | Work on the local product path of the i2pr Rust I2P router — Milestone 6 (destinations, garlic, LS2, Streaming) and the next product layer (SAM 3.1 baseline, Milestone 7). The i2pr-api SAM foundation has landed under Plan 136. |
+| [`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md) | Work on the local product path of the i2pr Rust I2P router — Milestone 6 (destinations, garlic, LS2, Streaming) and the next product layer (SAM 3.1 baseline, Milestone 7). The i2pr-api SAM foundation has landed under Plan 136; the loopback server and session lifecycle landed under Plan 137. |
 | [`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md) | Navigate `docs/architecture/`, `docs/adr/`, `plans/`, and `specs/`; audit doc-vs-source drift. |
 | [`i2pr-ntcp2-interop`](.opencode/skills/i2pr-ntcp2-interop/SKILL.md) | Host-side Plan 038 NTCP2 reference-router harness. The active development interop lane is **closed**; NTCP2 remains experimental and non-advertised. |
 | [`i2pr-rootless-sandbox`](.opencode/skills/i2pr-rootless-sandbox/SKILL.md) | Plan 046 rootless sealed-namespace lane (host-side fallback). On this host returns the typed blocker `blocked_unprivileged_user_namespace`. |

@@ -410,7 +410,13 @@ Plan 129's integrated gate is `superseded-by-plan130-final-gate` and
 Plan 130 closed as
 `passed-milestone6-final-wire-runtime-corrective-closure`
 ([`plans/130-status.md`](../../plans/130-status.md)); the next product
-layer is SAM baseline planning (Milestone 7).
+layer is SAM baseline planning (Milestone 7). Plan 137 closed
+the SAM 3.1 loopback server and session lifecycle as
+`passed-m7-sam31-loopback-server-session-lifecycle`
+([`plans/137-status.md`](../../plans/137-status.md)); the next
+product layer is SAM STREAM CONNECT / ACCEPT / FORWARD
+(Plan 138), then forward naming (Plan 139), then Milestone 7
+closure (Plan 140).
 
 ### Which crates are wired in today
 
@@ -440,6 +446,8 @@ layer is SAM baseline planning (Milestone 7).
 | `i2pr-netdb` | path | Yes (RouterInfo store + validation + lookup state machines) |
 | `i2pr-netdb-persist` | path | Yes (`CacheLoader`, `ReseedIngestor`) |
 | `i2pr-tunnel` | path | Yes (`ExploratoryPool`, bridge, data-plane registry, roles) |
+| `i2pr-api` | path | Yes (SAM 3.1 loopback listener, session registry, line reader, server state machine — Plan 137) |
+| `i2pr-client` | path | Yes (`DestinationRegistry`, `DestinationRuntime`, per-destination `StreamingManager` pool — Plan 137) |
 | `rand_core` | 0.9 | Yes (RNG injection in `outbound_lookup`) |
 | `serde` | workspace | Yes (config deserialization) |
 | `thiserror` | workspace | Yes (error derives) |

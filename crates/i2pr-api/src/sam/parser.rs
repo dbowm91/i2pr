@@ -184,7 +184,7 @@ fn recognise(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
         "PING" => Ok(CommandOutcome::Recognised(Command::new(
             CommandKind::Ping,
             Vec::new(),
-            None,
+            ping_payload(tokens),
         ))),
         "PONG" => Ok(CommandOutcome::Recognised(Command::new(
             CommandKind::Pong,
@@ -199,6 +199,28 @@ fn recognise(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
         _ => Ok(CommandOutcome::UnknownCommand(UnknownCommand {
             observed: upper,
         })),
+    }
+}
+
+fn ping_payload(tokens: &[Token]) -> Option<String> {
+    // The SAM 3.1 wire allows multi-token PING payloads. Join every
+    // token after `PING` with single spaces, matching the Java
+    // SAMBridge reference behaviour.
+    if tokens.len() < 2 {
+        return None;
+    }
+    let mut joined = String::new();
+    for (index, token) in tokens[1..].iter().enumerate() {
+        if index > 0 {
+            joined.push(' ');
+        }
+        joined.push_str(token.text.as_str());
+    }
+    let joined = joined.trim().to_owned();
+    if joined.is_empty() {
+        None
+    } else {
+        Some(joined)
     }
 }
 

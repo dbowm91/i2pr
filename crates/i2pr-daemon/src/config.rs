@@ -43,6 +43,8 @@ struct RawConfig {
     netdb: RawNetDbConfig,
     #[serde(default)]
     reseed: RawReseedConfig,
+    #[serde(default)]
+    sam: RawSamConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -222,6 +224,52 @@ struct RawReseedSource {
     certificate_path: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSamConfig {
+    #[serde(default = "default_sam_enabled")]
+    enabled: bool,
+    #[serde(default = "default_sam_bind_address")]
+    bind_address: String,
+    #[serde(default = "default_sam_port")]
+    port: u16,
+    #[serde(default = "default_sam_max_clients")]
+    max_clients: u16,
+    #[serde(default = "default_sam_max_sessions")]
+    max_sessions: u16,
+    #[serde(default = "default_sam_stream_sockets_per_session")]
+    max_stream_sockets_per_session: u16,
+    #[serde(default = "default_sam_pending_accepts_per_session")]
+    max_pending_accepts_per_session: u16,
+    #[serde(default = "default_sam_buffered_bytes_per_stream_direction")]
+    max_buffered_bytes_per_stream_direction: usize,
+    #[serde(default = "default_sam_hello_timeout_ms")]
+    hello_timeout_ms: u64,
+    #[serde(default = "default_sam_command_timeout_ms")]
+    command_timeout_ms: u64,
+    #[serde(default = "default_sam_shutdown_timeout_ms")]
+    shutdown_timeout_ms: u64,
+}
+
+impl Default for RawSamConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_sam_enabled(),
+            bind_address: default_sam_bind_address(),
+            port: default_sam_port(),
+            max_clients: default_sam_max_clients(),
+            max_sessions: default_sam_max_sessions(),
+            max_stream_sockets_per_session: default_sam_stream_sockets_per_session(),
+            max_pending_accepts_per_session: default_sam_pending_accepts_per_session(),
+            max_buffered_bytes_per_stream_direction:
+                default_sam_buffered_bytes_per_stream_direction(),
+            hello_timeout_ms: default_sam_hello_timeout_ms(),
+            command_timeout_ms: default_sam_command_timeout_ms(),
+            shutdown_timeout_ms: default_sam_shutdown_timeout_ms(),
+        }
+    }
+}
+
 fn default_profile() -> String {
     String::from("balanced")
 }
@@ -328,6 +376,50 @@ const fn default_reseed_max_sources() -> usize {
 
 const fn default_reseed_max_su3_bytes() -> u64 {
     8 * 1024 * 1024
+}
+
+const fn default_sam_enabled() -> bool {
+    false
+}
+
+fn default_sam_bind_address() -> String {
+    String::from("127.0.0.1")
+}
+
+const fn default_sam_port() -> u16 {
+    7656
+}
+
+const fn default_sam_max_clients() -> u16 {
+    16
+}
+
+const fn default_sam_max_sessions() -> u16 {
+    16
+}
+
+const fn default_sam_stream_sockets_per_session() -> u16 {
+    16
+}
+
+const fn default_sam_pending_accepts_per_session() -> u16 {
+    16
+}
+
+const fn default_sam_buffered_bytes_per_stream_direction() -> usize {
+    64 * 1024
+}
+
+const fn default_sam_hello_timeout_ms() -> u64 {
+    10_000
+}
+
+const fn default_sam_command_timeout_ms() -> u64 {
+    60_000
+}
+
+const fn default_sam_shutdown_timeout_ms() -> u64 {
+    5_000
 }
 
 /// Normalized router policy placeholder.
@@ -461,6 +553,29 @@ pub struct ReseedSourceConfig {
     pub certificate_path: PathBuf,
 }
 
+/// Normalized SAM v3.1 service configuration (Plan 137).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SamConfig {
+    /// Whether the loopback SAM listener is enabled.
+    pub enabled: bool,
+    /// Loopback bind IP. Non-loopback values are rejected.
+    pub bind_address: IpAddr,
+    /// Bind port. `0` selects an ephemeral port (used by integration tests).
+    pub port: u16,
+    /// Validated service limits.
+    pub limits: SamLimits,
+}
+
+impl SamConfig {
+    /// Returns the loopback bind address.
+    pub const fn bind_socket(&self) -> SocketAddr {
+        SocketAddr::new(self.bind_address, self.port)
+    }
+}
+
+/// Re-export of the Plan 137 service-limits type.
+pub use i2pr_api::sam::limits::SamLimits;
+
 /// Immutable normalized configuration snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
@@ -480,6 +595,8 @@ pub struct Config {
     pub netdb: NetDbConfig,
     /// Reseed settings.
     pub reseed: ReseedConfig,
+    /// SAM v3.1 service settings.
+    pub sam: SamConfig,
 }
 
 impl Config {
@@ -492,6 +609,22 @@ impl Config {
             }
         })?;
         Self::parse(&contents).map_err(super::error::DaemonError::from)
+    }
+
+    /// Minimal text-only config used by tests that exercise
+    /// semantic-validation paths without needing a real data
+    /// directory on disk. The supplied `data_dir` is recorded as-is
+    /// (the parser never creates it).
+    #[cfg(test)]
+    pub fn default_for_test_with_data_dir(data_dir: &str) -> String {
+        format!("schema_version = 1\n[router]\ndata_dir = {data_dir:?}\n")
+    }
+
+    /// Minimal text-only config used by tests that do not need a
+    /// specific data directory.
+    #[cfg(test)]
+    pub fn default_for_test() -> String {
+        Self::default_for_test_with_data_dir("./state")
     }
 
     /// Parses, validates, and normalizes TOML configuration text.
@@ -565,6 +698,7 @@ impl Config {
         let ntcp2 = normalize_ntcp2(&raw.transport.ntcp2)?;
         let netdb = normalize_netdb(&raw.netdb)?;
         let reseed = normalize_reseed(&raw.reseed, &netdb)?;
+        let sam = normalize_sam(&raw.sam)?;
 
         Ok(Self {
             schema_version: raw.schema_version,
@@ -585,6 +719,7 @@ impl Config {
             transport: TransportConfig { ntcp2 },
             netdb,
             reseed,
+            sam,
         })
     }
 }
@@ -609,6 +744,46 @@ fn normalize_data_dir(value: &str) -> Result<PathBuf, ConfigError> {
             reason: "existing path cannot be inspected",
         }),
     }
+}
+
+fn normalize_sam(raw: &RawSamConfig) -> Result<SamConfig, ConfigError> {
+    let bind_address: IpAddr = raw
+        .bind_address
+        .parse()
+        .map_err(|_| ConfigError::Semantic {
+            field: "sam.bind_address",
+            reason: "must be a valid IP address",
+        })?;
+    // Plan 137 §3: a non-loopback bind address must be rejected
+    // outright. Remote exposure requires a future authenticated
+    // security design.
+    if !bind_address.is_loopback() {
+        return Err(ConfigError::Semantic {
+            field: "sam.bind_address",
+            reason: "must be a loopback address while remote SAM exposure is unsupported",
+        });
+    }
+    let limits = i2pr_api::sam::limits::SamLimits::validate(i2pr_api::sam::limits::SamLimits {
+        enabled: raw.enabled,
+        max_clients: raw.max_clients,
+        max_sessions: raw.max_sessions,
+        max_stream_sockets_per_session: raw.max_stream_sockets_per_session,
+        max_pending_accepts_per_session: raw.max_pending_accepts_per_session,
+        max_buffered_bytes_per_stream_direction: raw.max_buffered_bytes_per_stream_direction,
+        hello_timeout: Duration::from_millis(raw.hello_timeout_ms),
+        command_timeout: Duration::from_millis(raw.command_timeout_ms),
+        shutdown_timeout: Duration::from_millis(raw.shutdown_timeout_ms),
+    })
+    .map_err(|_| ConfigError::Semantic {
+        field: "sam.limits",
+        reason: "configuration failed SAM limits validation",
+    })?;
+    Ok(SamConfig {
+        enabled: raw.enabled,
+        bind_address,
+        port: raw.port,
+        limits,
+    })
 }
 
 fn validate_limit(field: &'static str, value: u64, maximum: u64) -> Result<(), ConfigError> {

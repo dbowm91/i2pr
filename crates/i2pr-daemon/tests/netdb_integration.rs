@@ -95,6 +95,12 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             max_su3_bytes: 1024 * 1024,
             sources: Vec::new(),
         },
+        sam: i2pr_daemon::config::SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 7656,
+            limits: i2pr_api::sam::limits::SamLimits::defaults(),
+        },
     }
 }
 

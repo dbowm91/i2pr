@@ -410,6 +410,16 @@ impl ChildScope {
         }
     }
 
+    /// Constructs a child scope around the supplied parent
+    /// cancellation token. Used by integration tests that own a
+    /// listener/service lifecycle without a full supervisor. The
+    /// internal counters are unique per call so the scope is
+    /// completely independent from any supervisor-internal
+    /// accounting.
+    pub fn for_test(parent: &CancellationToken, policy: ChildFailurePolicy) -> Self {
+        Self::new(parent, policy, crate::observability::TaskCounters::new())
+    }
+
     /// Spawns a checked child future under this service's cancellation scope.
     pub fn spawn<F, Fut>(&self, factory: F) -> Result<(), ChildScopeError>
     where
