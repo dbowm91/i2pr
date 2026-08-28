@@ -9,8 +9,7 @@
 //! - one router-local [`DestinationRegistry`] for the underlying
 //!   `DestinationRuntime` instances (Plan 120);
 //! - the per-destination [`i2pr_client::streaming::StreamingManager`]
-//!   pool that Plan 138 will attach sockets to (Plan 137 creates the
-//!   manager but does not yet move bytes);
+//!   pool used by the Plan 138 stream path and Plan 139 forward bridge;
 //! - the supervised child scope that owns per-connection tasks;
 //! - the shutdown deadline.
 //!
@@ -23,19 +22,37 @@
 use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use i2pr_api::sam::{
-    command::CommandKind, command::CommandOutcome, dest_generate::DestGenerateRequest,
-    dest_generate::DestGenerateSignatureType, dest_generate::dest_generate, limits::SamLimits,
-    line_reader::LineEvent, line_reader::LineReader, parser::parse_line,
-    registry::SamSessionRegistry, registry::SamSessionRegistryError, reply::DestReply,
-    reply::Reply, reply::ReplyResult, reply::SessionStatus, server_state::DispatchOutcome,
-    server_state::ServerConnectionState, server_state::SessionCreateApplied,
-    server_state::SessionCreateFailed, server_state::apply_session_outcome,
-    server_state::apply_stream_connect_outcome, server_state::dispatch as dispatch_command_state,
+    command::CommandKind,
+    command::CommandOutcome,
+    dest_generate::DestGenerateRequest,
+    dest_generate::DestGenerateSignatureType,
+    dest_generate::dest_generate,
+    limits::SamLimits,
+    line_reader::LineEvent,
+    line_reader::LineReader,
+    parser::parse_line,
+    registry::SamSessionRegistry,
+    registry::SamSessionRegistryError,
+    reply::DestReply,
+    reply::Reply,
+    reply::ReplyResult,
+    reply::SessionStatus,
+    server_state::DispatchOutcome,
+    server_state::ServerConnectionState,
+    server_state::SessionCreateApplied,
+    server_state::SessionCreateFailed,
+    server_state::apply_naming_lookup_outcome,
+    server_state::apply_session_outcome,
+    server_state::apply_stream_connect_outcome,
+    server_state::apply_stream_forward_outcome,
+    server_state::dispatch as dispatch_command_state,
     session::SamSessionId,
+    streams::{SamStreamRegistry, SamStreamRegistryError, SamStreamState},
 };
 use i2pr_client::{
     DestinationConfig, DestinationId, DestinationIdentity, DestinationRegistry, DestinationRuntime,
@@ -61,6 +78,19 @@ pub use streams::{
     build_sam_destination_bridge,
 };
 
+/// A live FORWARD registration owned by one SAM control socket.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ForwardRegistration {
+    /// Session whose inbound streams are forwarded.
+    pub session_id: SamSessionId,
+    /// Loopback-only local target.
+    pub target: SocketAddr,
+    /// Whether the peer Destination line is suppressed.
+    pub silent: bool,
+    /// Opaque control-socket owner token.
+    pub owner: u64,
+}
+
 /// Typed SAM service failure surfaced to the daemon supervisor.
 #[derive(Debug, Error)]
 pub enum SamServiceError {
@@ -78,10 +108,50 @@ pub enum SamServiceError {
     InvalidConfig(String),
 }
 
+/// Failure while attaching an accepted Streaming socket to a local forward
+/// target.
+#[derive(Debug, Error)]
+pub enum ForwardBridgeError {
+    /// No active FORWARD registration exists for the session.
+    #[error("no active forward registration")]
+    NotRegistered,
+    /// The local target did not accept within the bounded deadline.
+    #[error("forward target connection timed out")]
+    Timeout,
+    /// The local target or bridge returned an I/O error.
+    #[error("forward bridge I/O: {0}")]
+    Io(#[from] io::Error),
+    /// The owning SAM task was cancelled.
+    #[error("forward bridge cancelled")]
+    Cancelled,
+}
+
+struct StreamAttachmentLease {
+    registry: Arc<SamStreamRegistry>,
+    session_id: SamSessionId,
+    stream_id: u32,
+    release_on_drop: bool,
+}
+
+impl StreamAttachmentLease {
+    fn retain(mut self) {
+        self.release_on_drop = false;
+    }
+}
+
+impl Drop for StreamAttachmentLease {
+    fn drop(&mut self) {
+        if self.release_on_drop {
+            let _ = self
+                .registry
+                .release_attachment(&self.session_id, self.stream_id);
+        }
+    }
+}
+
 /// One per-destination [`i2pr_client::streaming::StreamingManager`].
-/// Plan 137 creates the manager but does not yet attach STREAM
-/// sockets; Plan 138 attaches `STREAM CONNECT`/`STREAM ACCEPT` sockets
-/// to this pool.
+/// Plan 137 creates the manager; Plans 138–139 attach stream and
+/// forwarding lifecycle state to this pool.
 pub struct StreamingPools {
     managers: HashMap<DestinationId, i2pr_client::streaming::StreamingManager>,
 }
@@ -154,6 +224,9 @@ pub struct SamServiceState {
     destination_registry: Arc<Mutex<DestinationRegistry>>,
     streaming_pools: Arc<Mutex<StreamingPools>>,
     sam_destinations: Arc<Mutex<streams::SamDestinations>>,
+    stream_registry: Arc<SamStreamRegistry>,
+    forwardings: Arc<Mutex<HashMap<SamSessionId, ForwardRegistration>>>,
+    next_forward_owner: AtomicU64,
     destination_config: DestinationConfig,
 }
 
@@ -171,6 +244,8 @@ impl SamServiceState {
         )));
         let streaming_pools = Arc::new(Mutex::new(StreamingPools::new()));
         let sam_destinations = Arc::new(Mutex::new(streams::SamDestinations::new()));
+        let stream_registry = Arc::new(SamStreamRegistry::new(config.limits));
+        let forwardings = Arc::new(Mutex::new(HashMap::new()));
         let destination_config = DestinationConfig::balanced();
         Ok(Self {
             config,
@@ -178,6 +253,9 @@ impl SamServiceState {
             destination_registry,
             streaming_pools,
             sam_destinations,
+            stream_registry,
+            forwardings,
+            next_forward_owner: AtomicU64::new(1),
             destination_config,
         })
     }
@@ -205,6 +283,21 @@ impl SamServiceState {
     /// Returns the SAM destination bridge registry handle.
     pub fn sam_destinations(&self) -> Arc<Mutex<streams::SamDestinations>> {
         Arc::clone(&self.sam_destinations)
+    }
+
+    /// Returns the runtime-neutral stream ownership registry.
+    pub fn stream_registry(&self) -> Arc<SamStreamRegistry> {
+        Arc::clone(&self.stream_registry)
+    }
+
+    /// Returns a non-secret snapshot of one forward registration.
+    pub fn forward_registration(&self, session_id: &SamSessionId) -> Option<ForwardRegistration> {
+        self.forwardings.lock().ok()?.get(session_id).cloned()
+    }
+
+    /// Returns the next unique owner token for a long-lived control socket.
+    fn next_forward_owner(&self) -> u64 {
+        self.next_forward_owner.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Returns the configured limits.
@@ -293,6 +386,12 @@ impl SamServiceState {
         }
         drop(pools);
 
+        if let Err(error) = self.stream_registry.register_session(session_id.clone()) {
+            self.teardown_session(&session_id, destination_id);
+            let _ = error;
+            return Err(SessionCreateError::I2pError);
+        }
+
         // Step 5: commit the SAM reservation with the cached public
         // destination Base64 text so subsequent lookups can answer
         // without going back to the destination runtime.
@@ -312,6 +411,7 @@ impl SamServiceState {
     /// control-socket teardown path and from the supervisor shutdown
     /// path. Idempotent.
     pub fn teardown_session(&self, session_id: &SamSessionId, destination_id: DestinationId) {
+        self.teardown_forwards_for_session(session_id);
         let _ = self.session_registry.remove_by_session(session_id);
         if let Ok(mut destinations) = self.destination_registry.lock() {
             destinations.remove(&destination_id);
@@ -321,6 +421,144 @@ impl SamServiceState {
         }
         if let Ok(mut bridges) = self.sam_destinations.lock() {
             bridges.remove(destination_id);
+        }
+        let _ = self.stream_registry.unregister_session(session_id);
+    }
+
+    /// Removes one forward registration when its owning control socket ends.
+    pub fn teardown_forward_owner(&self, owner: u64) {
+        let session_id = self.forwardings.lock().ok().and_then(|mut forwards| {
+            let session_id = forwards
+                .iter()
+                .find_map(|(id, registration)| (registration.owner == owner).then(|| id.clone()));
+            if let Some(id) = &session_id {
+                forwards.remove(id);
+            }
+            session_id
+        });
+        if let Some(session_id) = session_id {
+            let _ = self.stream_registry.release_forward(&session_id, owner);
+        }
+    }
+
+    fn teardown_forwards_for_session(&self, session_id: &SamSessionId) {
+        let owner = self.forwardings.lock().ok().and_then(|mut forwards| {
+            forwards
+                .remove(session_id)
+                .map(|registration| registration.owner)
+        });
+        if let Some(owner) = owner {
+            let _ = self.stream_registry.release_forward(session_id, owner);
+        }
+    }
+
+    /// Atomically registers a loopback-only forward owned by a SAM socket.
+    fn register_forward(
+        &self,
+        request: &i2pr_api::sam::forward::StreamForwardRequest,
+        peer_ip: IpAddr,
+        owner: u64,
+    ) -> Result<ForwardRegistration, i2pr_api::sam::forward::StreamForwardError> {
+        let session_id = SamSessionId::new(request.session_id.clone())
+            .ok_or(i2pr_api::sam::forward::StreamForwardError::InvalidId)?;
+        if self.session_registry.get(&session_id).is_none() {
+            return Err(i2pr_api::sam::forward::StreamForwardError::InvalidId);
+        }
+        let host =
+            i2pr_api::sam::forward::normalize_forward_host(request.host.as_deref(), peer_ip)?;
+        self.stream_registry
+            .register_forward(&session_id, owner)
+            .map_err(|error| match error {
+                SamStreamRegistryError::AcceptAlreadyPending
+                | SamStreamRegistryError::ForwardAlreadyActive => {
+                    i2pr_api::sam::forward::StreamForwardError::InboundModeConflict
+                }
+                _ => i2pr_api::sam::forward::StreamForwardError::InvalidId,
+            })?;
+        let registration = ForwardRegistration {
+            session_id: session_id.clone(),
+            target: SocketAddr::new(host.ip(), request.port),
+            silent: request.silent,
+            owner,
+        };
+        if self
+            .forwardings
+            .lock()
+            .map(|mut forwards| forwards.insert(session_id, registration.clone()))
+            .is_err()
+        {
+            let _ = self
+                .stream_registry
+                .release_forward(&registration.session_id, owner);
+            return Err(i2pr_api::sam::forward::StreamForwardError::RegistryUnavailable);
+        }
+        Ok(registration)
+    }
+
+    /// Opens the currently registered local target with the M7 three-second
+    /// acceptance deadline. No resolver is involved.
+    pub async fn connect_forward_target(
+        &self,
+        session_id: &SamSessionId,
+    ) -> Result<TcpStream, ForwardBridgeError> {
+        let registration = self
+            .forward_registration(session_id)
+            .ok_or(ForwardBridgeError::NotRegistered)?;
+        timeout(
+            Duration::from_secs(3),
+            TcpStream::connect(registration.target),
+        )
+        .await
+        .map_err(|_| ForwardBridgeError::Timeout)?
+        .map_err(ForwardBridgeError::Io)
+    }
+
+    /// Bridges one already-accepted Streaming byte socket to the registered
+    /// loopback target. Reading is strictly read-then-write with one bounded
+    /// chunk per direction, so a slow peer cannot create an unbounded queue.
+    pub async fn bridge_forwarded_stream(
+        &self,
+        session_id: &SamSessionId,
+        inbound: TcpStream,
+        peer_destination: Option<&str>,
+        cancellation: CancellationToken,
+    ) -> Result<(), ForwardBridgeError> {
+        let registration = self
+            .forward_registration(session_id)
+            .ok_or(ForwardBridgeError::NotRegistered)?;
+        let mut target = tokio::select! {
+            _ = cancellation.cancelled() => return Err(ForwardBridgeError::Cancelled),
+            result = timeout(
+                Duration::from_secs(3),
+                TcpStream::connect(registration.target),
+            ) => result
+                .map_err(|_| ForwardBridgeError::Timeout)?
+                .map_err(ForwardBridgeError::Io)?,
+        };
+        if !registration.silent
+            && let Some(destination) = peer_destination
+        {
+            let metadata = format!("DESTINATION={destination}\n");
+            tokio::select! {
+                _ = cancellation.cancelled() => return Err(ForwardBridgeError::Cancelled),
+                result = target.write_all(metadata.as_bytes()) => {
+                    result.map_err(ForwardBridgeError::Io)?;
+                }
+            }
+        }
+        let (mut inbound_read, mut inbound_write) = inbound.into_split();
+        let (mut target_read, mut target_write) = target.into_split();
+        let budget = self.config.limits.max_buffered_bytes_per_stream_direction;
+        let left = forward_copy(
+            &mut inbound_read,
+            &mut target_write,
+            budget,
+            cancellation.clone(),
+        );
+        let right = forward_copy(&mut target_read, &mut inbound_write, budget, cancellation);
+        tokio::select! {
+            result = left => result,
+            result = right => result,
         }
     }
 
@@ -587,6 +825,11 @@ async fn handle_connection(
     cancellation: CancellationToken,
     service_cancellation: CancellationToken,
 ) {
+    let peer_ip = stream
+        .peer_addr()
+        .map(|address| address.ip())
+        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    let connection_owner = state.next_forward_owner();
     let hello_timeout = state.config.limits.hello_timeout;
     let command_timeout = state.config.limits.command_timeout;
 
@@ -613,6 +856,8 @@ async fn handle_connection(
                     &outcome,
                     &mut stream,
                     true,
+                    peer_ip,
+                    connection_owner,
                 )
                 .await?;
             }
@@ -638,6 +883,8 @@ async fn handle_connection(
                         &outcome,
                         &mut stream,
                         false,
+                        peer_ip,
+                        connection_owner,
                     )
                     .await?;
                 }
@@ -650,6 +897,8 @@ async fn handle_connection(
     if let Err(ref error) = result {
         debug!(error = %error, "sam connection ended with error");
     }
+
+    state.teardown_forward_owner(connection_owner);
 
     if let ServerConnectionState::SessionControl {
         session_id,
@@ -722,12 +971,43 @@ async fn receive_command(
     }
 }
 
+const FORWARD_COPY_CHUNK: usize = 16 * 1024;
+
+async fn forward_copy<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    budget: usize,
+    cancellation: CancellationToken,
+) -> Result<(), ForwardBridgeError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let chunk_size = budget.clamp(1, FORWARD_COPY_CHUNK);
+    let mut buffer = vec![0_u8; chunk_size];
+    loop {
+        let read = tokio::select! {
+            _ = cancellation.cancelled() => return Err(ForwardBridgeError::Cancelled),
+            result = reader.read(&mut buffer) => result.map_err(ForwardBridgeError::Io)?,
+        };
+        if read == 0 {
+            return Ok(());
+        }
+        tokio::select! {
+            _ = cancellation.cancelled() => return Err(ForwardBridgeError::Cancelled),
+            result = writer.write_all(&buffer[..read]) => result.map_err(ForwardBridgeError::Io)?,
+        }
+    }
+}
+
 async fn dispatch_command(
     state: Arc<SamServiceState>,
     state_conn: ServerConnectionState,
     outcome: &CommandOutcome,
     stream: &mut TcpStream,
     _is_first: bool,
+    peer_ip: IpAddr,
+    connection_owner: u64,
 ) -> Result<ServerConnectionState, ConnectionFailure> {
     // DEST GENERATE is a utility command that the daemon must
     // actually execute. Detect it here and run the runtime-neutral
@@ -860,6 +1140,24 @@ async fn dispatch_command(
                 _ => Ok(state_conn),
             }
         }
+        DispatchOutcome::RequireStreamForward { request } => {
+            let request = *request;
+            let outcome = execute_stream_forward(&state, request, peer_ip, connection_owner);
+            let outcome = apply_stream_forward_outcome(outcome);
+            if let Some(reply) = outcome.reply() {
+                write_reply(stream, reply).await?;
+            }
+            Ok(state_conn)
+        }
+        DispatchOutcome::RequireNamingLookup { request } => {
+            let request = *request;
+            let outcome = execute_naming_lookup(&state, state_conn.clone(), request);
+            let outcome = apply_naming_lookup_outcome(outcome);
+            if let Some(reply) = outcome.reply() {
+                write_reply(stream, reply).await?;
+            }
+            Ok(state_conn)
+        }
     }
 }
 
@@ -871,6 +1169,117 @@ async fn write_reply(stream: &mut TcpStream, reply: &Reply) -> Result<(), Connec
         .map_err(ConnectionFailure::Io)?;
     stream.flush().await.map_err(ConnectionFailure::Io)?;
     Ok(())
+}
+
+fn execute_stream_forward(
+    state: &SamServiceState,
+    request: i2pr_api::sam::forward::StreamForwardRequest,
+    peer_ip: IpAddr,
+    owner: u64,
+) -> Result<
+    i2pr_api::sam::server_state::StreamForwardApplied,
+    i2pr_api::sam::server_state::StreamForwardFailed,
+> {
+    use i2pr_api::sam::reply::ReplyResult;
+    use i2pr_api::sam::server_state::{StreamForwardApplied, StreamForwardFailed};
+
+    match state.register_forward(&request, peer_ip, owner) {
+        Ok(_) => Ok(StreamForwardApplied { owner }),
+        Err(error) => {
+            let result = match error {
+                i2pr_api::sam::forward::StreamForwardError::InvalidId => ReplyResult::InvalidId,
+                i2pr_api::sam::forward::StreamForwardError::UnsupportedSsl => {
+                    ReplyResult::NotImplemented
+                }
+                i2pr_api::sam::forward::StreamForwardError::InvalidHost(_)
+                | i2pr_api::sam::forward::StreamForwardError::InvalidPort(_) => {
+                    ReplyResult::InvalidKey
+                }
+                i2pr_api::sam::forward::StreamForwardError::InboundModeConflict
+                | i2pr_api::sam::forward::StreamForwardError::RegistryUnavailable => {
+                    ReplyResult::I2pError
+                }
+                _ => ReplyResult::I2pError,
+            };
+            Err(StreamForwardFailed {
+                result,
+                message: error.to_string(),
+            })
+        }
+    }
+}
+
+fn execute_naming_lookup(
+    state: &SamServiceState,
+    connection: ServerConnectionState,
+    request: i2pr_api::sam::naming::NamingLookupRequest,
+) -> Result<
+    i2pr_api::sam::server_state::NamingLookupApplied,
+    i2pr_api::sam::server_state::NamingLookupFailed,
+> {
+    use i2pr_api::sam::naming::{decode_b32_destination_hash, resolve_public_destination};
+    use i2pr_api::sam::reply::ReplyResult;
+    use i2pr_api::sam::server_state::{NamingLookupApplied, NamingLookupFailed};
+
+    let name = request.name;
+    if name.eq_ignore_ascii_case("ME") {
+        let session_id = match connection {
+            ServerConnectionState::SessionControl { session_id, .. } => session_id,
+            _ => {
+                return Err(NamingLookupFailed {
+                    result: ReplyResult::InvalidName,
+                    message: "NAME=ME requires a session context".to_owned(),
+                });
+            }
+        };
+        let value = state
+            .session_registry()
+            .get(&session_id)
+            .map(|entry| entry.public_destination_b64().to_owned())
+            .ok_or_else(|| NamingLookupFailed {
+                result: ReplyResult::InvalidId,
+                message: "session context no longer exists".to_owned(),
+            })?;
+        return Ok(NamingLookupApplied { value });
+    }
+
+    if let Ok(value) = resolve_public_destination(&name) {
+        return Ok(NamingLookupApplied { value });
+    }
+
+    if name.to_ascii_lowercase().ends_with(".b32.i2p") {
+        match decode_b32_destination_hash(&name) {
+            Ok(hash) => {
+                let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes(hash));
+                if let Some(value) = state
+                    .session_registry()
+                    .public_destination_for_destination(&destination_id)
+                {
+                    return Ok(NamingLookupApplied { value });
+                }
+                return Err(NamingLookupFailed {
+                    result: ReplyResult::KeyNotFound,
+                    message: "destination is not present in the local naming surface".to_owned(),
+                });
+            }
+            Err(_) => {
+                return Err(NamingLookupFailed {
+                    result: ReplyResult::InvalidKey,
+                    message: "invalid Base32 destination name".to_owned(),
+                });
+            }
+        }
+    }
+
+    let result = if name.to_ascii_lowercase().ends_with(".i2p") {
+        ReplyResult::KeyNotFound
+    } else {
+        ReplyResult::InvalidKey
+    };
+    Err(NamingLookupFailed {
+        result,
+        message: "name is unavailable in the local naming surface".to_owned(),
+    })
 }
 
 /// Executes a `STREAM CONNECT` request after the HELLO handshake.
@@ -941,13 +1350,8 @@ async fn execute_stream_connect(
                 });
             }
         };
-    let _ = target_destination_id;
-
-    // Reserve a stream attachment slot.
-    let _ = state.session_registry();
-
     // Build the RemoteDestination for the StreamingManager.
-    let destination_hash = *destination_id.as_hash().as_bytes();
+    let destination_hash = *target_destination_id.as_hash().as_bytes();
     let remote = i2pr_client::streaming::manager::RemoteDestination {
         destination_hash,
         signing_public_key,
@@ -970,13 +1374,31 @@ async fn execute_stream_connect(
         }
     };
 
+    let attachment = match state.stream_registry.register_outbound(
+        &session_id,
+        destination_id,
+        Some(destination.clone()),
+    ) {
+        Ok(attachment) => StreamAttachmentLease {
+            registry: Arc::clone(&state.stream_registry),
+            session_id: session_id.clone(),
+            stream_id: attachment.stream_id,
+            release_on_drop: true,
+        },
+        Err(error) => {
+            return Err(StreamConnectFailed {
+                result: match error {
+                    SamStreamRegistryError::UnknownSession { .. } => ReplyResult::InvalidId,
+                    _ => ReplyResult::I2pError,
+                },
+                message: error.to_string(),
+            });
+        }
+    };
+
     // Call StreamingManager::connect and drain the outbound queue
     // through the adapter.
-    let destination_b64 = destination;
     let mut last_err: Option<BridgeError> = None;
-    let mut stream_id: u64 = 0;
-    let _ = stream_id;
-    let mut bytes_captured: usize = 0;
     let now_ms: u64 = 1_000;
     let now_seconds: u32 = 1;
     let local_port: u16 = 0;
@@ -1018,7 +1440,7 @@ async fn execute_stream_connect(
             message: "connect produced no SYN".to_owned(),
         });
     };
-    stream_id = connection_id.raw();
+    let stream_id = connection_id.raw();
 
     bridge.with(|bridge| {
         let outbound = bridge.streaming_mut().drain_outbound();
@@ -1027,7 +1449,6 @@ async fn execute_stream_connect(
                 last_err = Some(error);
                 return;
             }
-            bytes_captured += request.application_payload.len();
             let _ = bridge.adapter_send(&request, now_seconds, now_ms);
         }
     });
@@ -1040,14 +1461,6 @@ async fn execute_stream_connect(
 
     use i2pr_client::streaming::connection::ConnectionId;
     use i2pr_client::streaming::connection::ConnectionState;
-    if let Some(error) = last_err {
-        return Err(StreamConnectFailed {
-            result: ReplyResult::I2pError,
-            message: format!("{error}"),
-        });
-    }
-    let _ = (stream_id, bytes_captured, destination_b64);
-
     // Plan 138 §7: report OK only after the underlying Streaming
     // connection is Established. The test seam drives the SYN
     // response inbound; we wait briefly for Established before
@@ -1073,6 +1486,12 @@ async fn execute_stream_connect(
         });
     }
 
+    let _ = state.stream_registry.update_state(
+        &session_id,
+        attachment.stream_id,
+        SamStreamState::Established,
+    );
+    attachment.retain();
     Ok(StreamConnectApplied {
         stream_id: u32::try_from(stream_id).unwrap_or(u32::MAX),
     })
@@ -1124,6 +1543,24 @@ async fn execute_stream_accept(
     // Ensure a wildcard Streaming listener is bound on the
     // destination's StreamingManager. Idempotent: a second call
     // returns `PortAlreadyInUse` which we treat as success.
+    let waiter = match state
+        .stream_registry
+        .register_inbound_waiter(&session_id, destination_id)
+    {
+        Ok(waiter) => waiter,
+        Err(error) => {
+            return Err(StreamAcceptFailed {
+                result: match error {
+                    SamStreamRegistryError::ForwardAlreadyActive => ReplyResult::I2pError,
+                    SamStreamRegistryError::PendingAcceptsFull { .. }
+                    | SamStreamRegistryError::StreamAttachmentsFull { .. } => ReplyResult::I2pError,
+                    _ => ReplyResult::InvalidId,
+                },
+                message: error.to_string(),
+            });
+        }
+    };
+
     let listener_result = state
         .streaming_pools()
         .lock()
@@ -1133,12 +1570,18 @@ async fn execute_stream_accept(
         Some(Ok(_))
         | Some(Err(i2pr_client::streaming::manager::StreamingManagerError::PortAlreadyInUse)) => {}
         Some(Err(error)) => {
+            let _ = state
+                .stream_registry
+                .release_attachment(&session_id, waiter.stream_id);
             return Err(StreamAcceptFailed {
                 result: ReplyResult::I2pError,
                 message: format!("listener bind failed: {error}"),
             });
         }
         None => {
+            let _ = state
+                .stream_registry
+                .release_attachment(&session_id, waiter.stream_id);
             return Err(StreamAcceptFailed {
                 result: ReplyResult::I2pError,
                 message: "no streaming manager for destination".to_owned(),
@@ -1146,7 +1589,9 @@ async fn execute_stream_accept(
         }
     }
 
-    Ok(StreamAcceptApplied { stream_id: 0 })
+    Ok(StreamAcceptApplied {
+        stream_id: waiter.stream_id,
+    })
 }
 
 /// Handles a `DEST GENERATE` command after HELLO has been negotiated.

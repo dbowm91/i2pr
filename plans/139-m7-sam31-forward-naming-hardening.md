@@ -1,6 +1,6 @@
 # Plan 139 — SAM 3.1 STREAM FORWARD, naming, and hardening
 
-Status: **blocked on successful Plan 138 closure**.
+Status: **implemented; closure recorded in [`plans/139-status.md`](139-status.md)**.
 
 Depends on: Plans 135–138.
 

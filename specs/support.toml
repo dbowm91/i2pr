@@ -810,6 +810,28 @@ evidence = [
 advertised = false
 
 [[surface]]
+id = "sam.v31-stream-forward-naming-hardening"
+protocol = "sam"
+structure = "sam-3.1-stream-forward-local-naming-resource-hardening"
+scope = "required"
+status = "experimental"
+notes = "Plan 139 closed as `passed-m7-sam31-forward-naming-hardening` per plans/139-status.md. `i2pr-api` owns bounded STREAM FORWARD and NAMING LOOKUP request validation, atomic ACCEPT/FORWARD `InboundMode`, strict public-Destination canonicalization, and b32 decoding. `i2pr-daemon` owns loopback-only target registration, control-socket teardown, the three-second cancellation-aware bounded raw bridge, session-scoped NAME=ME, locally-known b32 resolution through the existing session registry, and explicit unsupported replies for SSL, OPTIONS, AUTH, DATAGRAM, RAW, unsupported styles, SESSION ADD/REMOVE, and STREAM port options. No system DNS, address book, Unix socket, non-loopback target, or advertised SAM feature is introduced. Independent-client interoperability remains Plan 140 acceptance work."
+evidence = [
+    "crates/i2pr-api/src/sam/forward.rs",
+    "crates/i2pr-api/src/sam/naming.rs",
+    "crates/i2pr-api/src/sam/parser.rs",
+    "crates/i2pr-api/src/sam/server_state.rs",
+    "crates/i2pr-api/src/sam/streams.rs",
+    "crates/i2pr-api/tests/sam_plan139.rs",
+    "crates/i2pr-daemon/src/sam.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/tests/sam_forward_naming.rs",
+    "plans/139-m7-sam31-forward-naming-hardening.md",
+    "plans/139-status.md",
+]
+advertised = false
+
+[[surface]]
 id = "sam.v31-stream-connect-accept-bridge"
 protocol = "sam"
 structure = "sam-3.1-stream-connect-accept-transport-bridge"

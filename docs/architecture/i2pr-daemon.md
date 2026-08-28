@@ -35,6 +35,12 @@ work is scoped to:
   with a bounded `BootstrapSnapshot` and `ReseedAttemptSummary`.
 - **Stable process exit codes** that operators and automation can
   rely on.
+- **SAM 3.1 loopback service** (Plans 137–139): owns the supervised
+  listener, transactional sessions, per-destination Streaming pools,
+  STREAM CONNECT/ACCEPT dispatch, loopback-only STREAM FORWARD
+  registrations, bounded/cancellable raw forwarding, and local naming
+  outcomes. SAM remains disabled by default and is never a public
+  network listener.
 
 What it **does not** do yet:
 
@@ -70,6 +76,8 @@ which undercounted `netdb_seam`, `outbound_lookup`, and
 | `src/netdb_seam.rs` | Plan 106/117 runtime-facing seam for Plan 105 actions | `NetDbSeam`, `CompositionOutcome`, `ExploratoryPathStatus` |
 | `src/outbound_lookup.rs` | Plan 117 §8/§10 outbound exploratory data-plane composition | `compose_outbound_lookup`, `compose_outbound_publication`, `OutboundLookupDispatch`, `MAX_OUTBOUND_LOOKUP_CELLS`, `MAX_OUTBOUND_PUBLICATION_CELLS` |
 | `src/inbound_dispatch.rs` | Plan 117 §9 inbound exploratory `TunnelData` dispatch | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE` |
+| `src/sam.rs` | Plans 137–139 supervised SAM 3.1 listener and composition root | `SamServiceState`, `execute_session_create`, `execute_stream_connect`, `execute_stream_accept`, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP` |
+| `src/sam/streams.rs` | Plan 138 per-destination SAM Streaming bridge | `SamDestinationBridge`, `SamDestinations`, captured outbound seam, strict destination decoding |
 
 There are no subdirectories.
 
@@ -416,9 +424,12 @@ the SAM 3.1 loopback server and session lifecycle as
 ([`plans/137-status.md`](../../plans/137-status.md)); Plan 138 closed
 the SAM 3.1 STREAM CONNECT / ACCEPT transport bridge as
 `passed-m7-sam31-stream-connect-accept-bridge`
-([`plans/138-status.md`](../../plans/138-status.md)); the next
-product layer is STREAM FORWARD and NAMING LOOKUP (Plan 139), then
-Milestone 7 closure (Plan 140).
+([`plans/138-status.md`](../../plans/138-status.md)); Plan 139 closes
+the loopback-only STREAM FORWARD and local NAMING LOOKUP hardening as
+`passed-m7-sam31-forward-naming-hardening`
+([`plans/139-status.md`](../../plans/139-status.md)); the next product
+step is independent-client interoperability and Milestone 7 closure
+(Plan 140).
 
 ### Which crates are wired in today
 
@@ -448,7 +459,7 @@ Milestone 7 closure (Plan 140).
 | `i2pr-netdb` | path | Yes (RouterInfo store + validation + lookup state machines) |
 | `i2pr-netdb-persist` | path | Yes (`CacheLoader`, `ReseedIngestor`) |
 | `i2pr-tunnel` | path | Yes (`ExploratoryPool`, bridge, data-plane registry, roles) |
-| `i2pr-api` | path | Yes (SAM 3.1 loopback listener, session registry, line reader, server state machine — Plan 137; STREAM CONNECT / ACCEPT dispatch outcomes and appliers — Plan 138) |
+| `i2pr-api` | path | Yes (SAM 3.1 parser, session registry, line reader, server state machine — Plans 136–137; STREAM CONNECT/ACCEPT plus FORWARD/naming outcomes and atomic inbound mode — Plans 138–139) |
 | `i2pr-client` | path | Yes (`DestinationRegistry`, `DestinationRuntime`, per-destination `StreamingManager` pool — Plan 137; `StreamingDestinationAdapter`, `DestinationRouting`, `EciesSessionManager`, `DestinationOutboundRole` — Plan 138) |
 | `rand_chacha` | 0.9 | Yes (deterministic RNG for the Plan 138 STREAM adapter seam) |
 | `rand_core` | 0.9 | Yes (RNG injection in `outbound_lookup`) |

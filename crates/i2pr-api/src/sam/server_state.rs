@@ -13,8 +13,8 @@
 //!   -- QUIT | STOP | EXIT --> Closed
 //!   -- STREAM CONNECT --> RequireStreamConnect (Plan 138)
 //!   -- STREAM ACCEPT --> RequireStreamAccept (Plan 138)
-//!   -- STREAM FORWARD --> UtilityReady (NOT_IMPLEMENTED, Plan 139)
-//!   -- NAMING LOOKUP --> UtilityReady (NOT_IMPLEMENTED)
+//!   -- STREAM FORWARD --> UtilityReady (daemon-owned registration)
+//!   -- NAMING LOOKUP --> UtilityReady (daemon-owned local lookup)
 //! SessionControl
 //!   -- QUIT | STOP | EXIT --> Closed (caller must tear session down)
 //!   -- PING --> SessionControl (echo reply)
@@ -23,8 +23,8 @@
 //!     DUPLICATED_DESTINATION / I2P_ERROR)
 //!   -- STREAM CONNECT --> RequireStreamConnect (Plan 138)
 //!   -- STREAM ACCEPT --> RequireStreamAccept (Plan 138)
-//!   -- STREAM FORWARD --> SessionControl (NOT_IMPLEMENTED, Plan 139)
-//!   -- NAMING LOOKUP --> SessionControl (NOT_IMPLEMENTED)
+//!   -- STREAM FORWARD --> SessionControl (daemon-owned registration)
+//!   -- NAMING LOOKUP --> SessionControl (daemon-owned local lookup)
 //! ```
 //!
 //! The state machine itself is runtime-neutral. The TCP reader, the
@@ -39,6 +39,8 @@ use crate::sam::command::{
     StreamConnectError, StreamConnectRequest, UnsupportedReason, extract_versions,
     parse_stream_accept, parse_stream_connect,
 };
+use crate::sam::forward::{StreamForwardRequest, parse_stream_forward};
+use crate::sam::naming::{NamingLookupRequest, parse_naming_lookup};
 use crate::sam::reply::{Reply, SessionStatus, StreamStatus};
 use crate::sam::session::SamSessionId;
 use crate::sam::session_create::SessionCreateRequest;
@@ -93,6 +95,16 @@ pub enum DispatchOutcome {
         /// Validated `STREAM ACCEPT` request.
         request: Box<StreamAcceptRequest>,
     },
+    /// The command requires a daemon-owned forward registration.
+    RequireStreamForward {
+        /// Validated STREAM FORWARD request.
+        request: Box<StreamForwardRequest>,
+    },
+    /// The command requires a local naming lookup.
+    RequireNamingLookup {
+        /// Validated NAMING LOOKUP request.
+        request: Box<NamingLookupRequest>,
+    },
     /// The command was rejected as a malformed line. Send `reply`
     /// and close.
     Malformed {
@@ -123,6 +135,8 @@ impl DispatchOutcome {
             Self::RequireSessionCreate { .. } => None,
             Self::RequireStreamConnect { .. } => None,
             Self::RequireStreamAccept { .. } => None,
+            Self::RequireStreamForward { .. } => None,
+            Self::RequireNamingLookup { .. } => None,
         }
     }
 }
@@ -237,14 +251,33 @@ fn handle_recognised(state: ServerConnectionState, command: &Command) -> Dispatc
         CommandKind::SessionCreate => handle_session_create(state, command),
         CommandKind::StreamConnect => handle_stream_connect(command),
         CommandKind::StreamAccept => handle_stream_accept(command),
-        CommandKind::StreamForward => handle_stream_unsupported(state),
-        CommandKind::NamingLookup => handle_naming_unsupported(state),
+        CommandKind::StreamForward => handle_stream_forward(state, command),
+        CommandKind::NamingLookup => handle_naming_lookup(state, command),
         CommandKind::Ping => handle_ping(state, command),
         CommandKind::Pong => handle_pong(state),
         CommandKind::Quit => DispatchOutcome::Close {
             close_reason: CloseReason::ClientQuit,
             reply: None,
         },
+        CommandKind::SessionAdd
+        | CommandKind::SessionRemove
+        | CommandKind::Auth
+        | CommandKind::Datagram
+        | CommandKind::Raw => handle_recognized_unsupported(state, command.kind()),
+    }
+}
+
+fn handle_recognized_unsupported(
+    state: ServerConnectionState,
+    kind: CommandKind,
+) -> DispatchOutcome {
+    let _ = state;
+    DispatchOutcome::Unsupported {
+        reason: UnsupportedReason::UnsupportedCommandFamily(kind.as_str().to_owned()),
+        reply: Reply::Session(SessionStatus::error(
+            crate::sam::reply::ReplyResult::NotImplemented,
+            Some("SAM 3.1 command is not supported".to_owned()),
+        )),
     }
 }
 
@@ -383,13 +416,39 @@ fn map_session_create_error_to_result(
     }
 }
 
-fn handle_stream_unsupported(_state: ServerConnectionState) -> DispatchOutcome {
-    DispatchOutcome::Unsupported {
-        reason: UnsupportedReason::StreamConnectPortOptionUnsupported,
-        reply: Reply::Stream(StreamStatus::error(
-            crate::sam::reply::ReplyResult::NotImplemented,
-            Some("STREAM FORWARD lands in Plan 139".to_owned()),
-        )),
+fn handle_stream_forward(state: ServerConnectionState, command: &Command) -> DispatchOutcome {
+    if matches!(state, ServerConnectionState::AwaitHello) {
+        return DispatchOutcome::Close {
+            close_reason: CloseReason::MalformedLine,
+            reply: Some(Reply::Stream(StreamStatus::error(
+                crate::sam::reply::ReplyResult::I2pError,
+                Some("STREAM FORWARD before HELLO".to_owned()),
+            ))),
+        };
+    }
+    match parse_stream_forward(command) {
+        Ok(request) => DispatchOutcome::RequireStreamForward {
+            request: Box::new(request),
+        },
+        Err(error) => DispatchOutcome::Malformed {
+            reason: MalformedReason::InvalidQuoting,
+            reply: Reply::Stream(StreamStatus::error(
+                match error {
+                    crate::sam::forward::StreamForwardError::UnsupportedSsl => {
+                        crate::sam::reply::ReplyResult::NotImplemented
+                    }
+                    crate::sam::forward::StreamForwardError::InvalidId => {
+                        crate::sam::reply::ReplyResult::InvalidId
+                    }
+                    crate::sam::forward::StreamForwardError::InvalidHost(_)
+                    | crate::sam::forward::StreamForwardError::InvalidPort(_) => {
+                        crate::sam::reply::ReplyResult::InvalidKey
+                    }
+                    _ => crate::sam::reply::ReplyResult::I2pError,
+                },
+                Some(error.to_string()),
+            )),
+        },
     }
 }
 
@@ -501,6 +560,38 @@ pub struct StreamAcceptFailed {
     pub message: String,
 }
 
+/// Successful outcome of a STREAM FORWARD registration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamForwardApplied {
+    /// Opaque owner token held by the forwarding control socket.
+    pub owner: u64,
+}
+
+/// Failed outcome of a STREAM FORWARD registration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamForwardFailed {
+    /// Protocol-level result vocabulary.
+    pub result: crate::sam::reply::ReplyResult,
+    /// Human-readable diagnostic message.
+    pub message: String,
+}
+
+/// Successful outcome of a local naming lookup.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NamingLookupApplied {
+    /// Canonical public Destination text.
+    pub value: String,
+}
+
+/// Failed outcome of a local naming lookup.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NamingLookupFailed {
+    /// Protocol-level result vocabulary.
+    pub result: crate::sam::reply::ReplyResult,
+    /// Human-readable diagnostic message.
+    pub message: String,
+}
+
 /// Convert the daemon's `STREAM CONNECT` follow-up outcome into the
 /// per-connection dispatch outcome. A successful connect emits the
 /// pre-raw `STREAM STATUS RESULT=OK` line; a failure emits the
@@ -541,13 +632,75 @@ pub fn apply_stream_accept_outcome(
     }
 }
 
-fn handle_naming_unsupported(_state: ServerConnectionState) -> DispatchOutcome {
-    DispatchOutcome::Unsupported {
-        reason: UnsupportedReason::NamingLookupOptions,
-        reply: Reply::Naming(crate::sam::reply::NamingReply::error(
-            crate::sam::reply::ReplyResult::NotImplemented,
-            Some("NAMING LOOKUP lands in Plan 139".to_owned()),
-        )),
+/// Converts a daemon forward-registration result to a STREAM STATUS reply.
+pub fn apply_stream_forward_outcome(
+    outcome: Result<StreamForwardApplied, StreamForwardFailed>,
+) -> DispatchOutcome {
+    match outcome {
+        Ok(_) => DispatchOutcome::Stay {
+            reply: Some(Reply::Stream(StreamStatus::ok())),
+        },
+        Err(failed) => DispatchOutcome::Stay {
+            reply: Some(Reply::Stream(StreamStatus::error(
+                failed.result,
+                Some(failed.message),
+            ))),
+        },
+    }
+}
+
+/// Converts a local naming result to a NAMING REPLY.
+pub fn apply_naming_lookup_outcome(
+    outcome: Result<NamingLookupApplied, NamingLookupFailed>,
+) -> DispatchOutcome {
+    match outcome {
+        Ok(applied) => DispatchOutcome::Stay {
+            reply: Some(Reply::Naming(crate::sam::reply::NamingReply::ok(
+                applied.value,
+            ))),
+        },
+        Err(failed) => DispatchOutcome::Stay {
+            reply: Some(Reply::Naming(crate::sam::reply::NamingReply::error(
+                failed.result,
+                Some(failed.message),
+            ))),
+        },
+    }
+}
+
+fn handle_naming_lookup(state: ServerConnectionState, command: &Command) -> DispatchOutcome {
+    if matches!(state, ServerConnectionState::AwaitHello) {
+        return DispatchOutcome::Close {
+            close_reason: CloseReason::MalformedLine,
+            reply: Some(Reply::Naming(crate::sam::reply::NamingReply::error(
+                crate::sam::reply::ReplyResult::I2pError,
+                Some("NAMING LOOKUP before HELLO".to_owned()),
+            ))),
+        };
+    }
+    match parse_naming_lookup(command) {
+        Ok(request) => DispatchOutcome::RequireNamingLookup {
+            request: Box::new(request),
+        },
+        Err(error) => DispatchOutcome::Stay {
+            reply: Some(Reply::Naming(crate::sam::reply::NamingReply::error(
+                match error {
+                    crate::sam::naming::NamingLookupError::UnsupportedOptions => {
+                        crate::sam::reply::ReplyResult::NotImplemented
+                    }
+                    crate::sam::naming::NamingLookupError::InvalidName => {
+                        crate::sam::reply::ReplyResult::InvalidName
+                    }
+                    crate::sam::naming::NamingLookupError::InvalidKey => {
+                        crate::sam::reply::ReplyResult::InvalidKey
+                    }
+                    crate::sam::naming::NamingLookupError::KeyNotFound => {
+                        crate::sam::reply::ReplyResult::KeyNotFound
+                    }
+                },
+                Some(error.to_string()),
+            ))),
+        },
     }
 }
 
@@ -809,12 +962,15 @@ mod tests {
     }
 
     #[test]
-    fn stream_forward_returns_not_implemented() {
+    fn stream_forward_requires_daemon_registration() {
         let outcome = dispatch(
             ServerConnectionState::UtilityReady,
-            &parse_line("STREAM FORWARD ID=alpha DESTINATION=foo").expect("parse"),
+            &parse_line("STREAM FORWARD ID=alpha PORT=1234 HOST=127.0.0.1").expect("parse"),
         );
-        assert!(matches!(outcome, DispatchOutcome::Unsupported { .. }));
+        assert!(matches!(
+            outcome,
+            DispatchOutcome::RequireStreamForward { .. }
+        ));
     }
 
     #[test]

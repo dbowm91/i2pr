@@ -411,6 +411,17 @@ impl SamSessionRegistry {
         Ok(by_dest.get(destination_id).cloned())
     }
 
+    /// Returns the cached public Destination text for a locally-owned
+    /// destination, if one exists.
+    pub fn public_destination_for_destination(
+        &self,
+        destination_id: &DestinationId,
+    ) -> Option<String> {
+        let session_id = self.session_for_destination(destination_id).ok()??;
+        self.get(&session_id)
+            .map(|entry| entry.public_destination_b64().to_owned())
+    }
+
     /// Returns whether a session with the supplied identifier exists.
     pub fn contains(&self, session_id: &SamSessionId) -> bool {
         self.by_session

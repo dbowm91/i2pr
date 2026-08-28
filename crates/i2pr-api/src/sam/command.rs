@@ -128,6 +128,16 @@ pub enum CommandKind {
     Pong,
     /// `QUIT` / `STOP` / `EXIT`.
     Quit,
+    /// Recognized but unsupported `SESSION ADD`.
+    SessionAdd,
+    /// Recognized but unsupported `SESSION REMOVE`.
+    SessionRemove,
+    /// Recognized but unsupported `AUTH`.
+    Auth,
+    /// Recognized but unsupported `DATAGRAM`.
+    Datagram,
+    /// Recognized but unsupported `RAW`.
+    Raw,
 }
 
 impl CommandKind {
@@ -144,6 +154,11 @@ impl CommandKind {
             Self::Ping => "PING",
             Self::Pong => "PONG",
             Self::Quit => "QUIT",
+            Self::SessionAdd => "SESSION ADD",
+            Self::SessionRemove => "SESSION REMOVE",
+            Self::Auth => "AUTH",
+            Self::Datagram => "DATAGRAM",
+            Self::Raw => "RAW",
         }
     }
 }
@@ -240,8 +255,12 @@ pub enum UnsupportedReason {
     UnsupportedSignatureType(String),
     /// `NAMING LOOKUP OPTIONS=true` is outside the M7 3.1 baseline.
     NamingLookupOptions,
+    /// `STREAM FORWARD SSL=true` belongs to SAM 3.2+.
+    StreamForwardSsl,
     /// A `STREAM CONNECT` carried a 3.2-only port option.
     StreamConnectPortOptionUnsupported,
+    /// A recognized command family is outside the M7 baseline.
+    UnsupportedCommandFamily(String),
 }
 
 /// Style values for `SESSION CREATE` (Plan 136 baseline supports

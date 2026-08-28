@@ -270,19 +270,19 @@ async fn stream_accept_unknown_session_returns_invalid_id() {
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn stream_forward_returns_not_implemented() {
+async fn stream_forward_unknown_session_returns_invalid_id() {
     let (state, address, scope, parent) = start_listener(sam_config()).await;
     let mut client = TcpStream::connect(address).await.expect("connect");
     hello_3_1(&mut client).await;
     write_all(
         &mut client,
-        b"STREAM FORWARD ID=alpha DESTINATION=anything\n",
+        b"STREAM FORWARD ID=alpha PORT=1234 HOST=127.0.0.1\n",
     )
     .await;
     let reply = read_one_line(&mut client).await;
     assert!(
-        reply.contains("RESULT=NOT_IMPLEMENTED"),
-        "expected NOT_IMPLEMENTED, got {reply:?}"
+        reply.contains("RESULT=INVALID_ID"),
+        "expected INVALID_ID, got {reply:?}"
     );
     drop(client);
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);

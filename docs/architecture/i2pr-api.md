@@ -4,7 +4,8 @@
 router. Plan 136 lands it as the smallest trustworthy SAM 3.1
 foundation on which the SAM server can be built; Plan 137 adds the
 loopback-server / session-lifecycle surface; Plan 138 adds the
-STREAM CONNECT / ACCEPT transport-bridge surface.
+STREAM CONNECT / ACCEPT transport-bridge surface; Plan 139 adds
+loopback-only STREAM FORWARD and local NAMING LOOKUP policy.
 
 > [Plan 136](../plans/136-m7-sam31-protocol-private-destination-foundation.md):
 > create the `i2pr-api` crate at the intended application-adapter
@@ -27,8 +28,13 @@ STREAM CONNECT / ACCEPT transport-bridge surface.
 > and the `apply_stream_connect_outcome` / `apply_stream_accept_outcome`
 > appliers.
 
+> [Plan 139](../plans/139-m7-sam31-forward-naming-hardening.md):
+> adds bounded FORWARD and naming request models, atomic ACCEPT/FORWARD
+> inbound-mode ownership, canonical local naming outcomes, and explicit
+> unsupported-feature paths.
+
 The crate owns **no** sockets, timers, channels, or Tokio tasks. It
-is a pure runtime-neutral surface that Plan 137–138 wires into the
+is a pure runtime-neutral surface that Plans 137–139 wire into the
 supervised loopback listener through `i2pr-daemon`.
 
 ## What this crate owns
@@ -49,9 +55,13 @@ supervised loopback listener through `i2pr-daemon`.
   imported `PRIV`.
 - The `parse_stream_connect` / `parse_stream_accept` typed request
   parsers and their mapped failure enums (Plan 138).
+- The loopback-only `parse_stream_forward` request/host policy and the
+  local `parse_naming_lookup`, canonical public-Destination, and b32
+  validation helpers (Plan 139).
 - The bounded per-session `SamStreamRegistry` (FIFO pending-accept
   queue, per-session stream-socket ceiling, per-session pending-accept
-  ceiling) and `SamStreamRegistryError` (Plan 138).
+  ceiling), its atomic `InboundMode`, and `SamStreamRegistryError`
+  (Plans 138–139).
 - Exact SAM version negotiation (server advertises only `3.1`).
 
 ## What this crate does not own
@@ -59,10 +69,9 @@ supervised loopback listener through `i2pr-daemon`.
 - No sockets, listeners, or accept loops (Plan 137).
 - No Tokio runtime, no channels, no timers (Plan 137).
 - No session lifetime or SAM control-socket ownership (Plan 137).
-- No `STREAM CONNECT` / `STREAM ACCEPT` byte movement over the
-  Milestone 6 `StreamingDestinationAdapter` (Plan 138 runtime path;
-  the runtime-neutral `SamStreamRegistry` lives here).
-- No `STREAM FORWARD` or `NAMING LOOKUP` byte movement (Plan 139).
+- No socket ownership or raw byte movement: Plan 139 supplies the
+  runtime-neutral FORWARD/naming seam, while `i2pr-daemon` owns local
+  sockets and the bounded bridge.
 - No `i2pd` / Java I2P interop harness (Plan 140).
 
 ## Layering
@@ -91,8 +100,8 @@ crates/i2pr-api/
         ├── version.rs        SamVersion, parse_version, negotiate, is_advertised
         ├── base64.rs         RFC 4648 SAM Base64 codec (encode/decode, strict)
         ├── command.rs        Command, CommandKind, OptionPair, CommandOutcome,
-        │                      malformed/unknown enums,
-        │                      parse_stream_connect / parse_stream_accept (Plan 138)
+        │                      malformed/unknown/unsupported enums,
+        │                      stream request parsers (Plans 138–139)
         ├── parser.rs         parse_line, tokenise, recognise_* per command family
         ├── reply.rs          ReplyLine, Reply, HelloReply, DestReply, SessionStatus,
         │                      StreamStatus (with `result()` accessor), NamingReply, PongReply
@@ -103,11 +112,13 @@ crates/i2pr-api/
         ├── session.rs              SamSessionId, SamSessionCounters (Plan 137)
         ├── registry.rs             SamSessionRegistry, reserve/commit/rollback (Plan 137)
         ├── line_reader.rs          LineReader, LineEvent (Plan 137)
-        ├── server_state.rs         ServerConnectionState, dispatch, apply_session_outcome,
-        │                           RequireStreamConnect / RequireStreamAccept dispatch outcomes
-        │                           (Plan 138)
-        └── streams.rs              SamStreamRegistry, SamStreamAttachment,
-                                    SamStreamRegistryError, SamStreamRegistryHandle (Plan 138)
+        ├── server_state.rs         ServerConnectionState, dispatch, stream/naming appliers,
+        │                           and Require* dispatch outcomes (Plans 137–139)
+        ├── streams.rs              SamStreamRegistry, SamStreamAttachment,
+                                    InboundMode, SamStreamRegistryError,
+                                    SamStreamRegistryHandle (Plans 138–139)
+        ├── forward.rs              loopback-only STREAM FORWARD request/host policy (Plan 139)
+        └── naming.rs               local NAME=ME/public-Destination/.b32 validation (Plan 139)
 ```
 
 ## Public surface
@@ -125,7 +136,11 @@ pub use sam::{
         DEST_GENERATE_SIGNATURE_TYPE_ED25519, DestGenerate, DestGenerateError,
         DestGenerateOutcome, DestGenerateRequest, DestGenerateSignatureType, dest_generate,
     },
+    forward::{ForwardHost, StreamForwardError, StreamForwardRequest,
+        normalize_forward_host, parse_stream_forward},
     parser::{ParseError, parse_line},
+    naming::{NamingLookupError, NamingLookupRequest, decode_b32_destination_hash,
+        parse_naming_lookup, resolve_public_destination},
     private_destination::{
         PUB_LENGTH, PRIV_LENGTH, SamPrivateDestination, SamPrivateDestinationError,
     },
@@ -202,6 +217,22 @@ accessor added to the identity model. It is reserved for the SAM
 codec; the comment in `crates/i2pr-client/src/identity.rs` records
 this as the narrow exception. No generic public accessor for raw
 destination private keys was added.
+
+## Plan 139 policy
+
+`STREAM FORWARD` is an experimental loopback-only surface. `PORT` is
+mandatory; an omitted `HOST` uses the forwarding socket's loopback peer;
+explicit hosts are numeric loopback literals or `localhost`; no resolver,
+Unix socket, TLS, or clearnet pivot is available. The forward control socket
+owns the registration, and `InboundMode` makes it mutually exclusive with
+pending `STREAM ACCEPT` waiters.
+
+`NAMING LOOKUP` is deliberately local. `ME` is available only on a session
+control connection, complete public Destinations are strictly decoded and
+canonicalized, and a valid locally-owned `.b32.i2p` hash is looked up through
+the existing session registry. Other b32 and human-readable `.i2p` names
+return `KEY_NOT_FOUND`; malformed values return `INVALID_KEY`. No system DNS
+or second address book is introduced.
 
 ## Errors
 

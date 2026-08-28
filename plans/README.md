@@ -7,8 +7,11 @@ Plan-of-record and closure records for `i2pr`. Closure records
 The current **Milestone 6 local closure authority** is
 [**Plan 134**](134-status.md) (`passed-milestone6-recv-window-ack-ceiling-closure`).
 Independent-router interoperability is not claimed and is tracked as
-external acceptance debt. The next product layer is **SAM baseline
-planning (Milestone 7)**; a plan-of-record for it does not exist yet.
+external acceptance debt. The current **Milestone 7 SAM 3.1 closure
+authority** is [**Plan 139**](139-status.md)
+(`passed-m7-sam31-forward-naming-hardening`); Plan 140 is the next
+executable plan for independent-client interoperability and remaining
+closure evidence.
 
 ## MVP roadmap
 
@@ -108,8 +111,8 @@ and the dedicated interop skills.
   network transport adapter still owns the NTCP2/SSU2 handshake
   surface).
 - I2NP message handling and router dispatch.
-- SAM, I2CP — the next product layer (Milestone 7); a plan-of-record
-  does not exist yet.
+- SAM 3.1 local product path is implemented through Plan 139; independent
+  client interoperability and final Milestone 7 evidence remain in Plan 140.
 - Client proxies (HTTP, SOCKS5) and service tunnels.
 - Any network-facing behavior.
 

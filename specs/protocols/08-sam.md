@@ -38,14 +38,17 @@ The official document identifies SAM 3 and 3.1 as stable and notes that later 3.
 
 - `STREAM CONNECT`;
 - `STREAM ACCEPT`;
-- `STREAM FORWARD` if included by the milestone plan;
+- `STREAM FORWARD` as a loopback-only, experimental local bridge under
+  Plan 139; it does not expose a general TCP pivot;
 - status replies before transition to raw stream data;
 - destination, port and protocol fields supported by the negotiated version;
 - clean close/reset propagation between SAM socket and internal streaming connection.
 
 ### Naming
 
-- `NAMING LOOKUP` for `ME`, Base64 destinations, Base32 forms and configured local naming sources.
+- `NAMING LOOKUP` for session-scoped `ME`, canonical full Base64
+  Destinations, and locally-known Base32/hash forms. Unknown names return
+  bounded failure without system DNS or a second address book.
 - Strict distinction between syntactically valid cryptographic addresses and human-readable names.
 - No implicit clearnet DNS resolution through the SAM endpoint.
 
@@ -115,5 +118,7 @@ Use independent SAM client libraries as client-side test drivers, but treat thei
 3. Destination key import/export representation and filesystem permissions.
 4. Naming backend and address-book scope for the MVP.
 5. Allowlisted session/tunnel/streaming options and stable error mapping.
-6. Whether STREAM FORWARD is necessary for the first SAM checkpoint.
+6. Plan 139's STREAM FORWARD policy is intentionally loopback-only and
+   control-socket-owned; independent-client interoperability is deferred to
+   Plan 140.
 7. Authentication/TLS design for any future non-loopback listener without inventing incompatible SAM extensions.

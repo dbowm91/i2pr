@@ -77,6 +77,17 @@ pub enum SamStreamDirection {
     Inbound,
 }
 
+/// Atomic ownership mode for one session's inbound listener surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InboundMode {
+    /// No ACCEPT waiter or FORWARD owner is present.
+    Idle,
+    /// One or more pending ACCEPT waiters own the inbound surface.
+    Accepting { count: u16 },
+    /// Exactly one forward control socket owns the inbound surface.
+    Forwarding { owner: u64 },
+}
+
 /// One STREAM socket attachment, owned by [`SamStreamEntry`].
 ///
 /// The attachment stores only the metadata needed for telemetry,
@@ -141,6 +152,7 @@ pub struct SamStreamEntry {
     attachments: HashMap<StreamAcceptId, SamStreamAttachment>,
     /// FIFO queue of `STREAM ACCEPT` waiters, ordered by registration.
     pending_accepts: VecDeque<StreamAcceptId>,
+    inbound_mode: InboundMode,
 }
 
 impl SamStreamEntry {
@@ -152,6 +164,7 @@ impl SamStreamEntry {
             next_stream_id: AtomicU32::new(1),
             attachments: HashMap::new(),
             pending_accepts: VecDeque::new(),
+            inbound_mode: InboundMode::Idle,
         }
     }
 
@@ -211,6 +224,12 @@ pub enum SamStreamRegistryError {
         /// Accepted ceiling.
         maximum: u16,
     },
+    /// A forward registration already owns the inbound surface.
+    ForwardAlreadyActive,
+    /// A pending ACCEPT owns the inbound surface.
+    AcceptAlreadyPending,
+    /// The forward owner token did not match.
+    ForwardOwnerMismatch,
     /// The supplied stream id already exists (id reuse after free is
     /// intentionally forbidden).
     DuplicateStreamId {
@@ -237,6 +256,9 @@ impl core::fmt::Display for SamStreamRegistryError {
                 formatter,
                 "per-session pending accept ceiling {maximum} reached"
             ),
+            Self::ForwardAlreadyActive => formatter.write_str("stream forward already active"),
+            Self::AcceptAlreadyPending => formatter.write_str("stream accept is already pending"),
+            Self::ForwardOwnerMismatch => formatter.write_str("stream forward owner mismatch"),
             Self::DuplicateStreamId { stream_id } => {
                 write!(formatter, "duplicate sam stream id {stream_id}")
             }
@@ -362,7 +384,10 @@ impl SamStreamRegistry {
         entry.attachments.insert(stream_id, attachment);
         Ok(SamOutboundAttachment {
             stream_id,
-            peer_destination_b64: None,
+            peer_destination_b64: entry
+                .attachments
+                .get(&stream_id)
+                .and_then(|attachment| attachment.peer_destination_b64.clone()),
         })
     }
 
@@ -380,6 +405,9 @@ impl SamStreamRegistry {
                 .ok_or_else(|| SamStreamRegistryError::UnknownSession {
                     session_id: session_id.clone(),
                 })?;
+        if matches!(entry.inbound_mode, InboundMode::Forwarding { .. }) {
+            return Err(SamStreamRegistryError::ForwardAlreadyActive);
+        }
         if entry.pending_accepts.len() >= usize::from(self.limits.max_pending_accepts_per_session) {
             return Err(SamStreamRegistryError::PendingAcceptsFull {
                 maximum: self.limits.max_pending_accepts_per_session,
@@ -400,7 +428,76 @@ impl SamStreamRegistry {
         };
         entry.attachments.insert(stream_id, attachment);
         entry.pending_accepts.push_back(stream_id);
+        entry.inbound_mode = match entry.inbound_mode {
+            InboundMode::Idle => InboundMode::Accepting { count: 1 },
+            InboundMode::Accepting { count } => InboundMode::Accepting {
+                count: count.saturating_add(1),
+            },
+            InboundMode::Forwarding { .. } => unreachable!("forwarding checked above"),
+        };
         Ok(SamAcceptWaiter { stream_id })
+    }
+
+    /// Atomically claims the session's inbound surface for one forward
+    /// control socket. A pending ACCEPT is not displaced.
+    pub fn register_forward(
+        &self,
+        session_id: &SamSessionId,
+        owner: u64,
+    ) -> Result<(), SamStreamRegistryError> {
+        let mut sessions = self.sessions.lock()?;
+        let entry =
+            sessions
+                .get_mut(session_id)
+                .ok_or_else(|| SamStreamRegistryError::UnknownSession {
+                    session_id: session_id.clone(),
+                })?;
+        match entry.inbound_mode {
+            InboundMode::Idle => {
+                entry.inbound_mode = InboundMode::Forwarding { owner };
+                Ok(())
+            }
+            InboundMode::Accepting { .. } => Err(SamStreamRegistryError::AcceptAlreadyPending),
+            InboundMode::Forwarding { .. } => Err(SamStreamRegistryError::ForwardAlreadyActive),
+        }
+    }
+
+    /// Releases a forward registration only when its owner matches.
+    pub fn release_forward(
+        &self,
+        session_id: &SamSessionId,
+        owner: u64,
+    ) -> Result<bool, SamStreamRegistryError> {
+        let mut sessions = self.sessions.lock()?;
+        let entry =
+            sessions
+                .get_mut(session_id)
+                .ok_or_else(|| SamStreamRegistryError::UnknownSession {
+                    session_id: session_id.clone(),
+                })?;
+        match entry.inbound_mode {
+            InboundMode::Forwarding { owner: actual } if actual == owner => {
+                entry.inbound_mode = InboundMode::Idle;
+                Ok(true)
+            }
+            InboundMode::Forwarding { .. } => Err(SamStreamRegistryError::ForwardOwnerMismatch),
+            _ => Ok(false),
+        }
+    }
+
+    /// Returns the current atomic inbound-listener mode.
+    pub fn inbound_mode(
+        &self,
+        session_id: &SamSessionId,
+    ) -> Result<InboundMode, SamStreamRegistryError> {
+        let sessions = self.sessions.lock()?;
+        let entry =
+            sessions
+                .get(session_id)
+                .ok_or_else(|| SamStreamRegistryError::UnknownSession {
+                    session_id: session_id.clone(),
+                })?;
+        Ok(entry.inbound_mode)
     }
 
     /// Updates the state of a registered attachment. Used by the
@@ -464,7 +561,17 @@ impl SamStreamRegistry {
                 .ok_or_else(|| SamStreamRegistryError::UnknownSession {
                     session_id: session_id.clone(),
                 })?;
-        Ok(entry.pending_accepts.pop_front())
+        let stream_id = entry.pending_accepts.pop_front();
+        if stream_id.is_some()
+            && let InboundMode::Accepting { count } = entry.inbound_mode
+        {
+            entry.inbound_mode = if count <= 1 {
+                InboundMode::Idle
+            } else {
+                InboundMode::Accepting { count: count - 1 }
+            };
+        }
+        Ok(stream_id)
     }
 
     /// Returns a snapshot clone of the attachment metadata for the
@@ -503,6 +610,13 @@ impl SamStreamRegistry {
             // The id may have been queued as a pending accept; remove it
             // idempotently from the FIFO queue as well.
             entry.pending_accepts.retain(|id| *id != stream_id);
+            if let InboundMode::Accepting { count } = entry.inbound_mode {
+                entry.inbound_mode = if count <= 1 {
+                    InboundMode::Idle
+                } else {
+                    InboundMode::Accepting { count: count - 1 }
+                };
+            }
         }
         Ok(removed)
     }

@@ -8,8 +8,10 @@
 pub mod base64;
 pub mod command;
 pub mod dest_generate;
+pub mod forward;
 pub mod limits;
 pub mod line_reader;
+pub mod naming;
 pub mod parser;
 pub mod private_destination;
 pub mod registry;

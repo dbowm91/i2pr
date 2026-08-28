@@ -698,7 +698,7 @@ impl Config {
         let ntcp2 = normalize_ntcp2(&raw.transport.ntcp2)?;
         let netdb = normalize_netdb(&raw.netdb)?;
         let reseed = normalize_reseed(&raw.reseed, &netdb)?;
-        let sam = normalize_sam(&raw.sam)?;
+        let sam = normalize_sam(&raw.sam, &raw.limits)?;
 
         Ok(Self {
             schema_version: raw.schema_version,
@@ -746,7 +746,7 @@ fn normalize_data_dir(value: &str) -> Result<PathBuf, ConfigError> {
     }
 }
 
-fn normalize_sam(raw: &RawSamConfig) -> Result<SamConfig, ConfigError> {
+fn normalize_sam(raw: &RawSamConfig, global: &RawLimitsConfig) -> Result<SamConfig, ConfigError> {
     let bind_address: IpAddr = raw
         .bind_address
         .parse()
@@ -778,6 +778,17 @@ fn normalize_sam(raw: &RawSamConfig) -> Result<SamConfig, ConfigError> {
         field: "sam.limits",
         reason: "configuration failed SAM limits validation",
     })?;
+    let stream_budget = u64::from(limits.max_sessions)
+        .saturating_mul(u64::from(limits.max_stream_sockets_per_session))
+        .saturating_mul(limits.max_buffered_bytes_per_stream_direction as u64)
+        .saturating_mul(2);
+    if u64::from(limits.max_clients) > global.max_tasks || stream_budget > global.max_buffered_bytes
+    {
+        return Err(ConfigError::Semantic {
+            field: "sam.aggregate",
+            reason: "SAM client and stream-buffer ceilings exceed router-wide budgets",
+        });
+    }
     Ok(SamConfig {
         enabled: raw.enabled,
         bind_address,
@@ -1053,7 +1064,7 @@ format = "text"
 
 [limits]
 max_tasks = 16
-max_buffered_bytes = 1024
+max_buffered_bytes = 67108864
 
 [network]
 bind_address = "127.0.0.1"
@@ -1117,6 +1128,28 @@ data_dir = "./state"
         assert!(matches!(
             Config::parse(&unsupported),
             Err(ConfigError::UnsupportedSchemaVersion { actual: 2 })
+        ));
+    }
+
+    #[test]
+    fn sam_aggregate_limits_cannot_exceed_router_budgets() {
+        let too_few_tasks = VALID.replace("max_tasks = 16", "max_tasks = 15");
+        assert!(matches!(
+            Config::parse(&too_few_tasks),
+            Err(ConfigError::Semantic {
+                field: "sam.aggregate",
+                ..
+            })
+        ));
+
+        let too_few_bytes =
+            VALID.replace("max_buffered_bytes = 67108864", "max_buffered_bytes = 1024");
+        assert!(matches!(
+            Config::parse(&too_few_bytes),
+            Err(ConfigError::Semantic {
+                field: "sam.aggregate",
+                ..
+            })
         ));
     }
 

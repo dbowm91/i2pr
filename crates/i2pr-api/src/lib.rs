@@ -3,7 +3,8 @@
 //! Plan 136 lands the SAM 3.1 protocol and private-destination foundation.
 //! Plan 137 extends `i2pr-api` with the runtime-neutral loopback-server
 //! surface (server state machine, session registry, line reader, and
-//! service limits). This crate owns the strict bounded line/command/
+//! service limits); Plans 138–139 add the bounded stream and
+//! forward/naming surfaces. This crate owns the strict bounded line/command/
 //! reply parser, the typed version-negotiation model, the SAM Base64
 //! codec, the `DEST GENERATE` / `SESSION CREATE` private-destination
 //! import/export surface, and the bounded session/registry surface
@@ -45,6 +46,10 @@ pub use sam::{
         DEST_GENERATE_SIGNATURE_TYPE_ED25519, DestGenerate, DestGenerateError, DestGenerateOutcome,
         DestGenerateRequest, DestGenerateSignatureType, dest_generate,
     },
+    forward::{
+        ForwardHost, StreamForwardError, StreamForwardRequest, normalize_forward_host,
+        parse_stream_forward,
+    },
     limits::{
         DEFAULT_SAM_BIND_ADDRESS, DEFAULT_SAM_COMMAND_TIMEOUT_MS, DEFAULT_SAM_ENABLED,
         DEFAULT_SAM_HELLO_TIMEOUT_MS, DEFAULT_SAM_MAX_CLIENTS, DEFAULT_SAM_MAX_SESSIONS,
@@ -55,6 +60,10 @@ pub use sam::{
         MAX_SAM_STREAM_SOCKETS_PER_SESSION, SamLimits, SamLimitsError,
     },
     line_reader::{LineEvent, LineReader, LineReaderError},
+    naming::{
+        NamingLookupError, NamingLookupRequest, decode_b32_destination_hash, parse_naming_lookup,
+        resolve_public_destination,
+    },
     parser::{ParseError, parse_line},
     private_destination::{
         PRIV_LENGTH, PUB_LENGTH, SamPrivateDestination, SamPrivateDestinationError,
@@ -68,19 +77,21 @@ pub use sam::{
         StreamStatus,
     },
     server_state::{
-        CloseReason, DispatchOutcome, ServerConnectionState, SessionCreateApplied,
-        SessionCreateFailed, StreamAcceptApplied, StreamAcceptFailed, StreamConnectApplied,
-        StreamConnectFailed, apply_session_outcome, apply_stream_accept_outcome,
-        apply_stream_connect_outcome, dispatch,
+        CloseReason, DispatchOutcome, NamingLookupApplied, NamingLookupFailed,
+        ServerConnectionState, SessionCreateApplied, SessionCreateFailed, StreamAcceptApplied,
+        StreamAcceptFailed, StreamConnectApplied, StreamConnectFailed, StreamForwardApplied,
+        StreamForwardFailed, apply_naming_lookup_outcome, apply_session_outcome,
+        apply_stream_accept_outcome, apply_stream_connect_outcome, apply_stream_forward_outcome,
+        dispatch,
     },
     session::{SamSessionCounters, SamSessionCountersError, SamSessionId},
     session_create::{
         SessionCreateError, SessionCreateRequest, SessionCreateStyle, parse_session_create,
     },
     streams::{
-        SamAcceptWaiter, SamOutboundAttachment, SamStreamAttachment, SamStreamDirection,
-        SamStreamEntry, SamStreamRegistry, SamStreamRegistryError, SamStreamRegistryHandle,
-        SamStreamState,
+        InboundMode, SamAcceptWaiter, SamOutboundAttachment, SamStreamAttachment,
+        SamStreamDirection, SamStreamEntry, SamStreamRegistry, SamStreamRegistryError,
+        SamStreamRegistryHandle, SamStreamState,
     },
     version::{
         MAX_SUPPORTED_VERSION, MIN_SUPPORTED_VERSION, NegotiatedVersion, SamVersion,

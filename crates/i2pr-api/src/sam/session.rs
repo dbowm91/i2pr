@@ -4,8 +4,8 @@
 //! separate from `DestinationRegistry`. This module owns the
 //! runtime-neutral session identifier, the per-session resource
 //! counters, and the typed lookup surface that downstream plans
-//! (138 `STREAM CONNECT/ACCEPT`; 139 `STREAM FORWARD`/naming) will
-//! extend without changing the registry boundary.
+//! (138 `STREAM CONNECT/ACCEPT`; 139 `STREAM FORWARD`/naming) extend
+//! without changing the registry boundary.
 
 use core::fmt;
 

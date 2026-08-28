@@ -29,6 +29,25 @@ loader, client adapters, local service boundary, and daemon composition root.
 Each future boundary must validate input before handing a narrower capability to
 the next subsystem.
 
+## SAM 3.1 local adapter boundary
+
+The SAM listener is experimental and loopback-only. Plan 139's `STREAM
+FORWARD` target is restricted to numeric loopback addresses or the literal
+`localhost`; omitted hosts use the loopback peer address of the SAM socket.
+The adapter performs no system DNS lookup, does not expose Unix sockets or TLS
+forwarding, and does not provide a general TCP pivot. A forward registration is
+owned by its control socket and is removed on EOF, session teardown, or
+shutdown.
+
+Forwarded streams use a bounded read-then-write bridge and a three-second local
+connect deadline. SAM client, session, attachment, pending-ACCEPT, line, and
+buffer ceilings are checked independently and against router-wide task and
+buffer budgets. Invalid naming input fails before any lookup; `NAME=ME` is
+session-scoped, complete public Destinations are canonicalized, and unknown
+`.i2p`/b32 names do not trigger clearnet DNS or create a second address book.
+Normal diagnostics may identify bounded protocol results and session lifecycle
+categories, but must not contain private destinations, keys, or raw payloads.
+
 ## Objectives and required properties
 
 Future implementations must use explicit size/count/time/nesting limits,

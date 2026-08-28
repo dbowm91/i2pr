@@ -10,8 +10,8 @@ non-advertised; the production daemon does **not** activate NTCP2.
 Always read these before changing code or answering questions about state:
 
 1. `README.md` — current status (Milestone 6 local product gate
-   closed via Plan 134; SAM STREAM CONNECT / ACCEPT bridge
-   planning next via Plan 138), build/test/lint
+   closed via Plan 134; SAM 3.1 STREAM FORWARD and naming hardening
+   closed via Plan 139), build/test/lint
    commands, high-level architecture.
 2. `GUARDRAILS.md` — non-negotiable engineering, security,
    interoperability, and collaboration constraints.
@@ -19,7 +19,7 @@ Always read these before changing code or answering questions about state:
    conventions, the rootless and Multipass evidence-lane contracts.
 4. The active plan under `plans/` (entry point:
    [`plans/README.md`](plans/README.md); latest closure:
-   `plans/134-…`) and the relevant `docs/adr/` record. The
+   `plans/139-status.md`) and the relevant `docs/adr/` record. The
    [`docs/architecture/audit/`](docs/architecture/audit/) directory
    tracks doc-vs-source drift findings from the most recent
    audits.
@@ -79,16 +79,18 @@ Quick reference (deep-dive per crate):
   ECIES-X25519-AEAD-Ratchet session layer, destination routing,
   I2P Streaming core (`StreamingManager` + `StreamingDestinationAdapter`).
 - `i2pr-api` — application-protocol adapter (Plan 136 + Plan 137
-  + Plan 138): SAM 3.1 bounded line/command/reply parser, typed
+  + Plan 138 + Plan 139): SAM 3.1 bounded line/command/reply parser, typed
   command surface, version negotiation, SAM Base64 codec,
   SamPrivateDestination codec, `SamLimits`, `SamSessionRegistry`,
   `LineReader`, `ServerConnectionState`, the runtime-neutral
-  session dispatch state machine, and the bounded per-session
-  `SamStreamRegistry`. The daemon-only SAM service (supervised
-  Tokio listener, per-destination `StreamingManager` pool,
-  transactional `SESSION CREATE`, and the STREAM CONNECT / ACCEPT
-  transport bridge over the Plan 138 `SamDestinationBridge`) lives
-  in `i2pr-daemon` per Plan 137–138. Depends only on
+  session dispatch state machine, the bounded per-session
+  `SamStreamRegistry`, loopback-only `STREAM FORWARD` validation,
+  and local `NAMING LOOKUP` resolution. The daemon-only SAM service
+  (supervised Tokio listener, per-destination `StreamingManager` pool,
+  transactional `SESSION CREATE`, STREAM CONNECT / ACCEPT transport
+  bridge, ownership-bound forward registrations, and bounded raw
+  forwarding bridge) lives in `i2pr-daemon` per Plan 137–139. Depends
+  only on
   `i2pr-client`, `i2pr-crypto`, and `i2pr-proto`.
 - `i2pr-testkit` — deterministic simulation; **no production crate
   may depend on it.**
@@ -276,12 +278,14 @@ current public state:
   streaming) closed locally via Plan 134; independent-router
   interoperability is **not** claimed and is tracked as external
   acceptance debt.
-- The next product layer is SAM STREAM CONNECT / ACCEPT
-  transport bridge (Milestone 7). Plan 137 closed the loopback
+- The current product layer is SAM 3.1. Plan 137 closed the loopback
   server and session lifecycle as
   `passed-m7-sam31-loopback-server-session-lifecycle`; Plan 138
-  attaches STREAM sockets to the per-destination `StreamingManager`
-  pool that Plan 137 installed.
+  closed the STREAM CONNECT / ACCEPT bridge; Plan 139 closes the
+  loopback-only STREAM FORWARD and local naming hardening as
+  `passed-m7-sam31-forward-naming-hardening`. Plan 140 is the next
+  executable plan for independent-client interoperability and the
+  remaining Milestone 7 closure evidence.
 
 When you read a `plan_NNN`-style token in code or docs, treat the
 closure record as authoritative and the per-plan narrative as

@@ -181,6 +181,18 @@ fn recognise(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
         "SESSION" => recognise_session(tokens),
         "STREAM" => recognise_stream(tokens),
         "NAMING" => recognise_naming(tokens),
+        "AUTH" => Ok(CommandOutcome::Unsupported(Unsupported {
+            kind: CommandKind::Auth,
+            reason: UnsupportedReason::UnsupportedCommandFamily("AUTH".to_owned()),
+        })),
+        "DATAGRAM" => Ok(CommandOutcome::Unsupported(Unsupported {
+            kind: CommandKind::Datagram,
+            reason: UnsupportedReason::UnsupportedCommandFamily("DATAGRAM".to_owned()),
+        })),
+        "RAW" => Ok(CommandOutcome::Unsupported(Unsupported {
+            kind: CommandKind::Raw,
+            reason: UnsupportedReason::UnsupportedCommandFamily("RAW".to_owned()),
+        })),
         "PING" => Ok(CommandOutcome::Recognised(Command::new(
             CommandKind::Ping,
             Vec::new(),
@@ -234,7 +246,13 @@ const CRITICAL_NAMING: &[&str] = &["NAME", "OPTIONS"];
 fn recognise_hello(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
     if tokens.len() < 2 || !tokens[1].text.eq_ignore_ascii_case("VERSION") {
         return Ok(CommandOutcome::UnknownAction(UnknownCommand {
-            observed: format!("HELLO {}", tokens[1].text.to_ascii_uppercase()),
+            observed: format!(
+                "HELLO {}",
+                tokens
+                    .get(1)
+                    .map_or("", |token| token.text.as_str())
+                    .to_ascii_uppercase()
+            ),
         }));
     }
     let (options, errors) = collect_options(&tokens[2..], CRITICAL_HELLO)?;
@@ -251,7 +269,13 @@ fn recognise_hello(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
 fn recognise_dest(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
     if tokens.len() < 2 || !tokens[1].text.eq_ignore_ascii_case("GENERATE") {
         return Ok(CommandOutcome::UnknownAction(UnknownCommand {
-            observed: format!("DEST {}", tokens[1].text.to_ascii_uppercase()),
+            observed: format!(
+                "DEST {}",
+                tokens
+                    .get(1)
+                    .map_or("", |token| token.text.as_str())
+                    .to_ascii_uppercase()
+            ),
         }));
     }
     let (options, errors) = collect_options(&tokens[2..], CRITICAL_DEST)?;
@@ -267,8 +291,22 @@ fn recognise_dest(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
 
 fn recognise_session(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
     if tokens.len() < 2 || !tokens[1].text.eq_ignore_ascii_case("CREATE") {
+        let action = tokens.get(1).map_or("", |token| token.text.as_str());
+        let kind = if action.eq_ignore_ascii_case("ADD") {
+            Some(CommandKind::SessionAdd)
+        } else if action.eq_ignore_ascii_case("REMOVE") {
+            Some(CommandKind::SessionRemove)
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            return Ok(CommandOutcome::Unsupported(Unsupported {
+                kind,
+                reason: UnsupportedReason::UnsupportedCommandFamily(kind.as_str().to_owned()),
+            }));
+        }
         return Ok(CommandOutcome::UnknownAction(UnknownCommand {
-            observed: format!("SESSION {}", tokens[1].text.to_ascii_uppercase()),
+            observed: format!("SESSION {}", action.to_ascii_uppercase()),
         }));
     }
     let (options, errors) = collect_options(&tokens[2..], CRITICAL_SESSION)?;
@@ -322,15 +360,19 @@ fn recognise_stream(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
             )))
         }
         "FORWARD" => {
-            let (options, errors) = collect_options(&tokens[2..], CRITICAL_STREAM)?;
+            let (options, errors) =
+                collect_options(&tokens[2..], &["ID", "PORT", "HOST", "SILENT", "SSL"])?;
             if let Some(reason) = errors.into_iter().next() {
                 return Ok(CommandOutcome::Malformed(MalformedCommand { reason }));
             }
-            Ok(CommandOutcome::Recognised(Command::new(
-                CommandKind::StreamForward,
-                options,
-                None,
-            )))
+            let command = Command::new(CommandKind::StreamForward, options, None);
+            if command.value("SSL").is_some() {
+                return Ok(CommandOutcome::Unsupported(Unsupported {
+                    kind: CommandKind::StreamForward,
+                    reason: UnsupportedReason::StreamForwardSsl,
+                }));
+            }
+            Ok(CommandOutcome::Recognised(command))
         }
         _ => Ok(CommandOutcome::UnknownAction(UnknownCommand {
             observed: format!("STREAM {action}"),
@@ -341,7 +383,13 @@ fn recognise_stream(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
 fn recognise_naming(tokens: &[Token]) -> Result<CommandOutcome, ParseError> {
     if tokens.len() < 2 || !tokens[1].text.eq_ignore_ascii_case("LOOKUP") {
         return Ok(CommandOutcome::UnknownAction(UnknownCommand {
-            observed: format!("NAMING {}", tokens[1].text.to_ascii_uppercase()),
+            observed: format!(
+                "NAMING {}",
+                tokens
+                    .get(1)
+                    .map_or("", |token| token.text.as_str())
+                    .to_ascii_uppercase()
+            ),
         }));
     }
     let (options, errors) = collect_options(&tokens[2..], CRITICAL_NAMING)?;
@@ -411,13 +459,8 @@ fn collect_options(
             errors.push(MalformedReason::DuplicateOption(duplicate));
             continue;
         }
-        if upper == "ID" {
-            if let Err(reason) = validate_session_id(&value) {
-                errors.push(reason);
-                continue;
-            }
-        } else if upper == "NAME"
-            && let Err(reason) = validate_name(&value)
+        if upper == "ID"
+            && let Err(reason) = validate_session_id(&value)
         {
             errors.push(reason);
             continue;
@@ -451,7 +494,7 @@ fn unquote_value(input: &str) -> Result<String, ()> {
     Ok(out)
 }
 
-use crate::sam::command::{validate_name, validate_option_value, validate_session_id};
+use crate::sam::command::{validate_option_value, validate_session_id};
 
 #[cfg(test)]
 mod tests {
