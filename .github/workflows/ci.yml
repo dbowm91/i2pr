@@ -31,7 +31,15 @@ jobs:
         run: cargo check --locked --workspace
       - name: Check all workspace targets
         run: cargo check --locked --workspace --all-targets
+      - name: Run tests (macOS)
+        # The workspace includes several real loopback listener suites.
+        # macOS runners become flaky when those suites fan out across the
+        # default libtest worker pool; retain the complete suite while
+        # serializing test cases on that runner.
+        if: runner.os == 'macOS'
+        run: cargo test --locked --workspace -- --test-threads=1
       - name: Run tests
+        if: runner.os != 'macOS'
         run: cargo test --locked --workspace
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
