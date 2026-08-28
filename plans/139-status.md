@@ -70,6 +70,14 @@ The local CI-equivalent gate passed on 2026-08-28:
 Focused Plan 139 coverage is in `crates/i2pr-api/tests/sam_plan139.rs` and
 `crates/i2pr-daemon/tests/sam_forward_naming.rs`.
 
+Remote CI verification also passed for the final pushed commit
+[`c749988`](https://github.com/dbowm91/i2pr/commit/c749988):
+[CI run #539](https://github.com/dbowm91/i2pr/actions/runs/33201595341)
+completed successfully across the quality matrix, MSRV, and dependency-policy
+jobs. The macOS quality runner executes the complete test-binary set serially;
+this avoids the runner-specific loopback contention observed during the first
+Plan 139 runs.
+
 The implementation deliberately does not claim a complete same-socket raw
 SAM CONNECT/ACCEPT handoff or independent-router SAM interoperability; those
 remain explicit Plan 140 work and acceptance debt.
