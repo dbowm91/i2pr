@@ -1,6 +1,8 @@
 # Plan 140 status — SAM 3.1 interoperability and Milestone 7 closure
 
-Status: **`blocked-independent-client-stream-path-not-ready`**.
+Status: **`blocked-audit-superseded-by-plan141-corrective-roadmap`**.
+
+> **Current authority:** Plan 140 remains the audit record that discovered the blocked Milestone 7 closure. Its next-action guidance is superseded by [`plans/141-status.md`](141-status.md) and the Plan 142 → 143 → 144 corrective sequence. Historical findings below remain evidence.
 
 Recorded: **2026-08-28**.
 
@@ -22,7 +24,9 @@ live STREAM acceptance criteria are not satisfied.
    live destination delivery task.
 5. **Private round trip:** yes for the repository's standard RFC 4648
    representation. `SamPrivateDestination` now consumes its zeroizing buffer
-   without cloning it.
+   without cloning it. **Plan 141/142 supersede this as an interoperability
+   claim because the SAM wire alphabet itself was implemented incorrectly and
+   the private-destination format lacks independent proof.**
 6. **M6 product path:** no for a claimed live SAM trajectory. The daemon's
    current success path uses a test-only established-material bridge and
    captures adapter output; it does not deliver that output through the live
@@ -47,6 +51,11 @@ uses `-~` and cannot complete the current server's imported-private
 RFC-4648-only path. `txi2p` is not runnable in this environment because its
 legacy `ometa` dependency is unavailable. No external client was counted as
 passed, and no independent client was counted as having moved STREAM bytes.
+
+Plan 141 reclassifies the `i2plib` Base64 finding as a concrete server
+protocol defect: current SAM documentation requires the I2P Base64 alphabet,
+so Plan 142 must correct the server rather than treating this merely as an
+external-client compatibility discrepancy.
 
 ## Local results
 
@@ -89,9 +98,9 @@ drift from the historical harness-pruning commit; no rootless policy was
 changed. The retired Plan 095 checker remains absent and is no longer listed
 as a current local gate.
 
-## Disposition and next action
+## Superseded disposition
 
-The following claims remain unchanged:
+The historical classification at the time of this audit was:
 
 ```text
 plan_134 = passed-milestone6-recv-window-ack-ceiling-closure
@@ -111,6 +120,9 @@ router_construction = may-continue
 next_product_layer = blocked-until-stream-bridge-and-client-compatibility-correction
 ```
 
-The next executable work is a narrowly scoped SAM stream-bridge and Base64
-compatibility correction. Milestone 8 / SSU2 planning is not claimed as the
-next frontier until Plan 140's required closure evidence exists.
+The current corrective classification is in `plans/141-status.md`.
+
+The next executable work is **Plan 142**, followed by Plans 143 and 144.
+Milestone 8 / SSU2 planning is not the next frontier until the corrective
+sequence closes Milestone 7 or records a new concrete environment-independent
+blocker.
