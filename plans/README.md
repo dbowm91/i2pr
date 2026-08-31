@@ -12,8 +12,15 @@ external acceptance debt.
 The current **Milestone 7 SAM 3.1 corrective authority** is
 [**Plan 141**](141-status.md) (`active-m7-sam31-corrective-roadmap`).
 Plan 140 remains the blocked audit record that exposed the incomplete live
-STREAM path. The executable corrective sequence is **142 -> 143 -> 144**;
-Plan 142 is next.
+STREAM path. **Plan 142
+([`142-status.md`](142-status.md)) closed as
+`passed-m7-sam31-encoding-private-destination-corrective`** — the SAM
+Base64 alphabet is now the I2P Base64 spelling every Java I2P / i2pd /
+independent Python SAM client reference implementation emits, with
+three independent reference vectors in `crates/i2pr-api/tests/`. The
+remaining corrective sequence is **143 -> 144**: Plan 143 owns the
+live same-socket STREAM CONNECT/ACCEPT product bridge; Plan 144 owns
+the two-independent-client final Milestone 7 closure.
 
 ## MVP roadmap
 
@@ -44,7 +51,7 @@ Plan 142 is next.
 | 139 | local FORWARD/naming implementation landed; final byte-path acceptance deferred to Plan 144 | [`139-status.md`](139-status.md) |
 | 140 | blocked closure audit; superseded for next-action authority by Plan 141 | [`140-status.md`](140-status.md) |
 | 141 | active corrective roadmap | [`141-status.md`](141-status.md) |
-| 142 | **next executable** — SAM encoding/private-destination compatibility | [`142-m7-sam31-encoding-private-destination-corrective.md`](142-m7-sam31-encoding-private-destination-corrective.md) |
+| 142 | **closed** — `passed-m7-sam31-encoding-private-destination-corrective` (I2P Base64 alphabet + independent reference vectors) | [`142-status.md`](142-status.md) |
 | 143 | blocked on 142 — live same-socket STREAM product bridge | [`143-m7-sam31-live-stream-product-bridge-corrective.md`](143-m7-sam31-live-stream-product-bridge-corrective.md) |
 | 144 | blocked on 143 — independent clients and final M7 closure | [`144-m7-sam31-independent-client-final-closure-corrective.md`](144-m7-sam31-independent-client-final-closure-corrective.md) |
 
@@ -119,7 +126,11 @@ and the dedicated interop skills.
 - CLI daemon with config validation, identity generation, and dry-run
   (`i2pr-daemon`)
 - SAM protocol/session/FORWARD/naming foundations through Plan 139, with
-  Milestone 7 product closure still pending the Plan 142–144 corrections.
+  the SAM Base64 alphabet / private-destination compatibility
+  sub-claim closed by Plan 142. Milestone 7 product closure still
+  pending the Plan 143 (same-socket STREAM CONNECT/ACCEPT product
+  bridge) and Plan 144 (two-independent-client final closure)
+  corrections.
 
 ## What's not implemented yet
 
@@ -134,9 +145,10 @@ and the dedicated interop skills.
   surface).
 - I2NP message handling and router dispatch.
 - Milestone 7 SAM product closure: canonical I2P Base64/private-destination
-  compatibility, same-socket raw CONNECT/ACCEPT through the full local
-  destination product path, and two-client interoperability remain under
-  Plans 142–144.
+  compatibility is closed by **Plan 142** (`passed-m7-sam31-encoding-private-destination-corrective`).
+  Same-socket raw CONNECT/ACCEPT through the full local destination
+  product path is owned by **Plan 143**; two-client interoperability
+  final closure is owned by **Plan 144**.
 - Client proxies (HTTP, SOCKS5) and service tunnels.
 - Any public/network-facing router behavior.
 

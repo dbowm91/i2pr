@@ -4,11 +4,14 @@
 //! Plan 137 extends `i2pr-api` with the runtime-neutral loopback-server
 //! surface (server state machine, session registry, line reader, and
 //! service limits); Plans 138–139 add the bounded stream and
-//! forward/naming surfaces. This crate owns the strict bounded line/command/
-//! reply parser, the typed version-negotiation model, the SAM Base64
-//! codec, the `DEST GENERATE` / `SESSION CREATE` private-destination
-//! import/export surface, and the bounded session/registry surface
-//! that `i2pr-daemon` composes into a supervised TCP service.
+//! forward/naming surfaces; **Plan 142 corrects the SAM Base64
+//! alphabet** so the `PUB`/`PRIV` codec uses the I2P Base64 spelling
+//! every other SAM 3.1 reference implementation emits. This crate owns
+//! the strict bounded line/command/reply parser, the typed
+//! version-negotiation model, the I2P Base64 codec, the `DEST GENERATE`
+//! / `SESSION CREATE` private-destination import/export surface, and
+//! the bounded session/registry surface that `i2pr-daemon` composes
+//! into a supervised TCP service.
 //!
 //! The crate owns no sockets, timers, channels, or task runtimes. It
 //! stays runtime-neutral; `i2pr-daemon` wires it into the

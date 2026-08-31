@@ -52,12 +52,16 @@ The `i2pr-api` workspace crate at `crates/i2pr-api/` now owns:
   whitespace-contaminated inputs. `negotiate` returns the
   intersection or a typed `NoOverlap`.
 
-- **Strict RFC 4648 SAM Base64 codec**
-  (`crates/i2pr-api/src/sam/base64.rs`). Decoupled from the I2P
-  Base64 variant used for router hashes; reuses none of its code
-  because the alphabets and padding differ. Rejects invalid
-  characters, padding positions, lengths, and decoded-length
-  ceilings.
+- **Strict SAM Base64 codec** (`crates/i2pr-api/src/sam/base64.rs`).
+  Decoupled from the I2P Base64 variant used for router hashes;
+  reuses none of its code because the alphabets differ. Rejects
+  invalid characters, padding positions, lengths, and decoded-length
+  ceilings. The codec originally emitted the RFC 4648 alphabet
+  (`+/`); **Plan 142 corrected the alphabet to I2P Base64
+  (`-`/`~`) with `=` padding** — the spelling every Java I2P /
+  i2pd / independent Python client reference implementation emits.
+  See [`plans/142-status.md`](142-status.md) for the closure
+  record.
 
 - **`SamPrivateDestination` wrapper**
   (`crates/i2pr-api/src/sam/private_destination.rs`).
@@ -84,9 +88,13 @@ The `i2pr-api` workspace crate at `crates/i2pr-api/` now owns:
 - **Provenance document**
   ([`specs/references/sam31-private-destination.md`](../../specs/references/sam31-private-destination.md))
   recording the standard Java `PrivateKeyFile` concatenation,
-  RFC 4648 Base64, X25519/Ed25519 key-type semantics, the
-  offline-signature rejection, the round-trip invariant, and the
-  test-fixture requirements.
+  I2P Base64 (`-`/`~` alphabet, `=` padding), X25519/Ed25519
+  key-type semantics, the offline-signature rejection, the
+  round-trip invariant, and the test-fixture requirements. Plan
+  142 corrected the alphabet from RFC 4648 to I2P Base64 and
+  replaced the original circular-evidence model with three
+  independent reference vectors (i2pd `libi2pd/Base.{h,cpp}`,
+  Java I2P `PrivateKeyFile.java`, i2plib `I2P_B64_CHARS`).
 
 ## Files changed
 
@@ -96,7 +104,7 @@ crates/i2pr-api/Cargo.toml                                       # new crate man
 crates/i2pr-api/src/lib.rs                                       # new facade
 crates/i2pr-api/src/sam/mod.rs                                   # new module facade
 crates/i2pr-api/src/sam/version.rs                              # new: SamVersion + negotiation
-crates/i2pr-api/src/sam/base64.rs                               # new: SAM RFC 4648 codec
+crates/i2pr-api/src/sam/base64.rs                               # new: SAM I2P Base64 codec (Plan 142 corrective: was RFC 4648)
 crates/i2pr-api/src/sam/command.rs                              # new: typed command surface
 crates/i2pr-api/src/sam/parser.rs                               # new: bounded line parser
 crates/i2pr-api/src/sam/reply.rs                                # new: typed reply encoder
@@ -182,12 +190,16 @@ The Plan 136 acceptance criteria from
    asserts `restored.id() == original_id` after encoding to Base64,
    decoding, and reconstructing.
 8. At least one independently derived/frozen private-destination fixture
-   validates provenance and format — **satisfied**. The provenance
-   document records the standard Java `PrivateKeyFile` concatenation
-   and the frozen deterministic byte inputs (signing seed `0x07×32`,
-   X25519 secret `0x09×32`, padding `0x5a×320`). The
-   `pub_and_priv_lengths_match_specification` test asserts the exact
-   391-byte `PUB` and 608-character Base64 lengths.
+   validates provenance and format — **originally satisfied by the
+   deterministic `from_identity` round-trip plus the
+   `pub_and_priv_lengths_match_specification` test**. Plan 142
+   strengthened this sub-claim: the round-trip evidence was
+   circular (the i2pr codec was its own oracle), so Plan 142 added
+   reference vectors derived from three independent sources (i2pd
+   `libi2pd/Base.{h,cpp}`, Java I2P `PrivateKeyFile.java`, i2plib
+   `I2P_B64_CHARS = "-~"`) and froze them in
+   `crates/i2pr-api/tests/`. See [`plans/142-status.md`](142-status.md)
+   for the closure record.
 9. Malformed/truncated/unsupported private destinations fail closed
    with no panic — **satisfied**. `truncated_priv_is_rejected`,
    `mutated_private_key_is_rejected`, `wrong_length_priv_is_rejected`

@@ -13,9 +13,13 @@
 //! Destination (391 bytes) || X25519_static_secret (32) || Ed25519_seed (32)
 //! ```
 //!
-//! encoded as standard RFC 4648 Base64. See
+//! encoded as **I2P Base64** (`A-Z a-z 0-9 - ~`, with standard `=`
+//! padding). Plan 142 corrects the RFC 4648 alphabet defect in
+//! `crate::sam::base64`; see
 //! `specs/references/sam31-private-destination.md` for the normative
-//! provenance.
+//! provenance and the independent corroborating references
+//! (i2pd `libi2pd/Base.cpp`, Java I2P `PrivateKeyFile.java`,
+//! `i2plib/sam.py`).
 
 use core::fmt;
 

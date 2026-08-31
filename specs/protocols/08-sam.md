@@ -33,6 +33,12 @@ The official document identifies SAM 3 and 3.1 as stable and notes that later 3.
 - Persistent/private destination material handling through explicit safe configuration or returned keys.
 - Session options translated through a reviewed allowlist into destination/tunnel/streaming configuration.
 - Session destruction on control-connection loss where required, with bounded cleanup.
+- `PUB` and `PRIV` text uses the I2P Base64 alphabet
+  (`A-Z a-z 0-9 - ~`, `=` padding) — not RFC 4648. This is the
+  spelling every Java I2P / i2pd / independent Python SAM client
+  reference implementation emits; see
+  `specs/references/sam31-private-destination.md` for the
+  corroborating evidence.
 
 ### Streaming
 

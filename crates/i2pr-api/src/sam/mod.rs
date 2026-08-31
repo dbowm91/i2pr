@@ -42,7 +42,7 @@ pub const MAX_SAM_SESSION_ID_BYTES: usize = 256;
 pub const MAX_SAM_NAME_BYTES: usize = 256;
 
 /// Maximum byte length of a SAM Base64-encoded `PRIV` value (608 +
-/// margin for the standard `=` padding).
+/// margin for I2P Base64 `=` padding).
 pub const MAX_SAM_PRIV_TEXT_BYTES: usize = 1024;
 
 /// Maximum byte length of a SAM Base64-encoded `PUB` value (524 +

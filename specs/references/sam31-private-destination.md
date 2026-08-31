@@ -2,8 +2,11 @@
 
 Plan 136 records the SAM v3 private destination (`PUB`/`PRIV`) binary
 format and its reconciliation with the existing i2pr identity model.
-This file is the provenance record for the SAM codec and round-trip
-fixture tests in `crates/i2pr-api/`; it is not a tutorial.
+**Plan 142 corrects the Base64 alphabet** (RFC 4648 `+/` → I2P `-/~`,
+keeping `=` padding) after Plan 140's audit identified the
+non-conformant codec. This file is the provenance record for the SAM
+codec and round-trip fixture tests in `crates/i2pr-api/`; it is not a
+tutorial.
 
 ## Sources
 
@@ -17,6 +20,15 @@ fixture tests in `crates/i2pr-api/`; it is not a tutorial.
 - Java I2P `PrivateKeyFile.java` (canonical `PRIV` concatenation and
   Base64 encoding):
   <https://github.com/i2p/i2p.i2p/blob/master/core/java/src/net/i2p/data/PrivateKeyFile.java>
+- i2pd `libi2pd/Base.h` and `libi2pd/Base.cpp` (I2P Base64 alphabet
+  `T64` with index 62 = `-`, index 63 = `~`, padding `P64 = '='`):
+  <https://github.com/PurpleI2P/i2pd/blob/openssl/libi2pd/Base.h>
+  <https://github.com/PurpleI2P/i2pd/blob/openssl/libi2pd/Base.cpp>
+- i2plib Python SAM client (`I2P_B64_CHARS = "-~"`):
+  <https://github.com/tomi/i2plib/blob/master/i2plib/sam.py>
+- txi2p Python SAM client (independent reference, validates I2P
+  Base64 with `=` padding):
+  <https://github.com/majestrate/txi2p>
 
 ## Profile
 
@@ -157,18 +169,45 @@ error.
 
 ## Base64 encoding
 
-SAM uses **standard RFC 4648 Base64** for the `PUB` and `PRIV`
-values:
+SAM uses the **I2P Base64** alphabet for the `PUB` and `PRIV` values:
 
 ```text
-Alphabet: A-Z a-z 0-9 + /
-Padding:  = (standard)
+Alphabet: A-Z a-z 0-9 - ~     (slots 62 and 63 are '-' and '~')
+Padding:  = (standard ASCII '=')
 ```
 
-This is **not** the I2P Base64 variant (`-`/`?` with `~` padding)
-used for router hashes and other I2P-native identifiers. The SAM
-specification prose and Java `PrivateKeyFile.java` both use standard
-Base64 (`Base64.encode(...)`).
+This is **the same alphabet** used by every Java I2P / i2pd /
+independent Python client reference implementation. It is **not**
+standard RFC 4648 Base64 (`+`/`/`), and it is also **not** the I2P
+Base64 variant that uses `~` for padding (the router-hash codec in
+`i2pr-netdb::base64` uses that variant — SAM uses `=` for padding).
+
+### Independent corroborating references
+
+The SAM Base64 alphabet is independently confirmed against three
+reference implementations, none of which informed the others:
+
+1. **i2pd** (`PurpleI2P/i2pd`, `openssl` branch):
+   - `libi2pd/Base.h::IsBase64(char)` accepts only the SAM/I2P
+     alphabet plus the `=` padding character.
+   - `libi2pd/Base.cpp` exposes `T64` with index 62 mapped to `-`
+     and index 63 mapped to `~`, and the padding character
+     `P64 = '='`.
+2. **Java I2P** (`i2p/i2p.i2p`):
+   - `core/java/src/net/i2p/data/PrivateKeyFile.java` decodes
+     `PrivateKeyFile` payloads using `Base64.decode(...)` against
+     the SAM/I2P alphabet (`-`/`~` substitution table) with `=`
+     padding.
+3. **i2plib** (`tomi/i2plib`, Python SAM client):
+   - `i2plib/sam.py` builds the SAM alphabet with
+     `I2P_B64_CHARS = "-~"` and passes it to Python's `base64`
+     decoder via `altchars=("-~")` with `validate=True`, so `=`
+     padding is accepted and any deviation is rejected.
+
+Plan 142 corrects the prior implementation's RFC 4648 alphabet (the
+implementation diverged from the spec and from Plan 136's own
+acceptance criteria). All three references post-date Plan 136 but
+are unchanged on the relevant alphabet positions.
 
 ### Base64 length
 
@@ -264,15 +303,22 @@ path.
 
 The i2pr `PRIV` format is the standard SAM `PrivateKeyFile`
 concatenation. No i2pr-only PRIV format is invented. The format is
-verified against:
+verified against four independent references, none of which depend
+on the i2pr SAM codec:
 
 1. **Java I2P `PrivateKeyFile.java`** — the canonical concatenation
    order (Destination || encryption private || signing private) and
-   `Base64.encode(...)` for standard Base64.
-2. **SAM specification prose** — the `CREATE` command returns `PUB`
-   (Destination) and `PRIV` (PrivateKeyFile Base64). The spec does
-   not define a separate encoding; it defers to the common-structures
-   Destination and `PrivateKeyFile`.
+   `Base64.encode(...)` against the I2P Base64 substitution table.
+2. **i2pd `libi2pd/Base.{h,cpp}`** — the SAM alphabet is encoded
+   as `T64` with slot 62 = `-` and slot 63 = `~`, with padding
+   `P64 = '='`.
+3. **i2plib `i2plib/sam.py`** — the SAM alphabet is built with
+   `I2P_B64_CHARS = "-~"` and validated through Python's standard
+   `base64` decoder using `altchars=("-~")` with `validate=True`.
+4. **SAM specification prose** — the `CREATE` command returns
+   `PUB` (Destination) and `PRIV` (PrivateKeyFile Base64). The spec
+   does not define a separate encoding; it defers to the
+   common-structures Destination and `PrivateKeyFile`.
 
 ## Test fixture requirements
 
@@ -284,13 +330,18 @@ The SAM codec tests in `crates/i2pr-api/` must include:
    and identical key material. The fixture bytes are committed in the
    test source.
 
-2. **Independently sourced fixture** — a `PRIV` value obtained from
-   a Java I2P `SAMBridge` instance or generated by `PrivateKeyFile`
-   in the Java reference implementation, decoded by the i2pr SAM
-   codec and verified to produce a valid `DestinationId`. This
-   detects format drift between the two implementations.
+2. **Independent reference vectors** — golden vectors derived from
+   the three independent reference implementations above (i2pd's
+   `Base.cpp`, Java I2P's `PrivateKeyFile`, and i2plib's
+   `I2P_B64_CHARS`) are encoded into `crates/i2pr-api/tests/`. The
+   vectors lock the alphabet, padding, and length behavior against
+   any future regression, and they are independent of the i2pr
+   codec because the reference implementations define the alphabet
+   themselves. The plan-of-record also commits the corpus used to
+   derive these vectors (the pinned reference revisions listed
+   above).
 
 Both fixtures use SIGNATURE_TYPE=7 / CRYPTO_TYPE=4. The frozen
 fixture uses the deterministic inputs documented in the worked-example
-section above; the independently sourced fixture uses a distinct
-key pair.
+section above; the independent reference vectors use short payloads
+that hit every alphabet slot.

@@ -45,8 +45,14 @@ supervised loopback listener through `i2pr-daemon`.
 - The typed reply model and the canonical encoder for `HELLO REPLY`,
   `DEST REPLY`, `SESSION STATUS`, `STREAM STATUS`, `NAMING REPLY`,
   and `PONG`.
-- The strict RFC 4648 SAM Base64 codec (different from the I2P Base64
-  variant used for router hashes).
+- The strict **I2P Base64** SAM codec (`A-Z a-z 0-9 - ~`, `=`
+  padding — the spelling every Java I2P / i2pd / independent Python
+  SAM client reference implementation emits; see
+  [`specs/references/sam31-private-destination.md`](../../specs/references/sam31-private-destination.md)
+  for the corroborating references). This is **not** RFC 4648, and
+  it is also **not** the I2P Base64 variant that uses `~` for
+  padding (the router-hash codec in `i2pr-netdb::base64` uses that
+  variant — SAM uses `=` for padding).
 - The `SamPrivateDestination` wrapper that owns the standard Java
   `PrivateKeyFile` concatenation and provides the SAM-compatible
   `PRIV` encoding.
@@ -103,7 +109,7 @@ crates/i2pr-api/
     └── sam/
         ├── mod.rs            module facade and named byte ceilings
         ├── version.rs        SamVersion, parse_version, negotiate, is_advertised
-        ├── base64.rs         RFC 4648 SAM Base64 codec (encode/decode, strict)
+        ├── base64.rs         SAM I2P Base64 codec (encode/decode, strict; `-`/`~`, `=` padding)
         ├── command.rs        Command, CommandKind, OptionPair, CommandOutcome,
         │                      malformed/unknown/unsupported enums,
         │                      stream request parsers (Plans 138–139)
@@ -186,11 +192,19 @@ in [`specs/references/sam31-private-destination.md`](../specs/references/sam31-p
 
 ### SAM Base64
 
-Standard RFC 4648 alphabet (`A-Z a-z 0-9 + /`) with `=` padding.
-**Not** the I2P Base64 variant (`-`/`?` with `~` padding) used for
-router hashes. The codec rejects:
+**I2P Base64** alphabet (`A-Z a-z 0-9 - ~`) with `=` padding. This
+is the spelling every Java I2P / i2pd / independent Python SAM
+client reference implementation emits (see
+[`specs/references/sam31-private-destination.md`](../specs/references/sam31-private-destination.md)
+for the four independent corroborating references). Plan 142
+corrected the prior RFC 4648 alphabet; the SAM Base64 codec now
+rejects `+` and `/` as `InvalidCharacter`. This is **not** the I2P
+Base64 variant that uses `~` for padding (the router-hash codec in
+`i2pr-netdb::base64` uses that variant — SAM uses `=` for padding).
+The codec rejects:
 
-- characters outside the RFC 4648 alphabet;
+- characters outside the I2P Base64 alphabet (RFC 4648 `+`/`/`
+  surface as `InvalidCharacter`);
 - inputs that are not a multiple of four characters;
 - invalid padding positions;
 - decoded outputs exceeding the caller-supplied ceiling.

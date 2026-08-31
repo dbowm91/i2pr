@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 (destinations, garlic, LeaseSet2, Streaming) and the SAM 3.1 application-protocol adapter (Plans 136–140) for Milestone 7. Use when an agent is asked to modify, test, or extend i2pr-client, i2pr-netdb, i2pr-tunnel, i2pr-proto, i2pr-crypto, i2pr-daemon destination/streaming/LS2 code paths, or i2pr-api SAM 3.1 protocol/private-destination/stream-registry/forward/naming code paths; write or run the deterministic trajectory tests under crates/i2pr-client/tests/ or the SAM tests under crates/i2pr-api/ and crates/i2pr-daemon/tests/sam_*; exercise the testkit; debug local Milestone 6 trajectories; or execute the Plan 140 interoperability audit and closure lane. Also use when asked to find the canonical closure record for a Milestone 6 / Milestone 7 plan, the active I2P protocol-support state for destinations/garlic/LS2/Streaming/SAM, or the next executable plan-of-record after the blocked Plan 140 audit.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 (destinations, garlic, LeaseSet2, Streaming) and the SAM 3.1 application-protocol adapter (Plans 136–144) for Milestone 7. Use when an agent is asked to modify, test, or extend i2pr-client, i2pr-netdb, i2pr-tunnel, i2pr-proto, i2pr-crypto, i2pr-daemon destination/streaming/LS2 code paths, or i2pr-api SAM 3.1 protocol/private-destination/stream-registry/forward/naming code paths; write or run the deterministic trajectory tests under crates/i2pr-client/tests/ or the SAM tests under crates/i2pr-api/ and crates/i2pr-daemon/tests/sam_*; exercise the testkit; debug local Milestone 6 trajectories; or execute the Plan 143 live STREAM CONNECT/ACCEPT bridge and Plan 144 two-independent-client final closure lanes. Also use when asked to find the canonical closure record for a Milestone 6 / Milestone 7 plan, the active I2P protocol-support state for destinations/garlic/LS2/Streaming/SAM, or the next executable plan-of-record after Plan 142 (`passed-m7-sam31-encoding-private-destination-corrective`).
 ---
 
 # I2PR Local Development
@@ -31,10 +31,21 @@ closure history to find the canonical authority for a behavioral claim.
 
 The current Milestone 6 closure authority is **Plan 134**
 (`passed-milestone6-recv-window-ack-ceiling-closure`). The current
-Milestone 7 SAM 3.1 closure authority is **Plan 139**
+Milestone 7 SAM 3.1 corrective authority is **Plan 141**
+([`plans/141-status.md`](../../plans/141-status.md)) which names
+**Plan 142**
+([`plans/142-status.md`](../../plans/142-status.md),
+`passed-m7-sam31-encoding-private-destination-corrective`) as the
+most recently closed SAM sub-claim. Plan 142 corrected the SAM Base64
+alphabet (RFC 4648 `+/` → I2P Base64 `-/~`, `=` padding) and replaced
+the prior circular private-destination evidence with three
+independent reference vectors (i2pd `libi2pd/Base.{h,cpp}`, Java I2P
+`PrivateKeyFile.java`, i2plib `I2P_B64_CHARS = "-~"`). Plan 139
 (`passed-m7-sam31-forward-naming-hardening`,
 [`plans/139-m7-sam31-forward-naming-hardening.md`](../../plans/139-m7-sam31-forward-naming-hardening.md),
-[`plans/139-status.md`](../../plans/139-status.md)). Plan 138 closed the
+[`plans/139-status.md`](../../plans/139-status.md)) remains the last
+passed STREAM FORWARD / NAMING LOOKUP closure. Plan 138 closed the
+STREAM CONNECT / ACCEPT transport bridge, Plan 137 closed the
 loopback listener and session lifecycle, and Plan 136 closed the
 protocol and private-destination foundation. The full plan hierarchy
 lives under [`plans/README.md`](../../plans/README.md); the
@@ -43,10 +54,12 @@ for local-product behavioral claims:
 
 | Plan | Status | Authority for |
 | --- | --- | --- |
-| 138 | `passed-m7-sam31-stream-connect-accept-bridge` | Current Milestone 7 SAM 3.1 STREAM CONNECT / ACCEPT transport bridge. Runtime-neutral `SamStreamRegistry` (FIFO ACCEPT, per-session ceiling); per-destination `SamDestinationBridge` (`Arc<DestinationIdentity>` + `StreamingManager` + signed `LeaseSet2` + `DestinationOutboundRole` + `DestinationRouting` + `EciesSessionManager`); `execute_stream_connect` reports `RESULT=OK` only after `Established`. |
-| 139 | `passed-m7-sam31-forward-naming-hardening` | Loopback-only `STREAM FORWARD`, atomic ACCEPT/FORWARD mode ownership, bounded/cancellable raw bridge, session-scoped `NAME=ME`, canonical public-Destination lookup, locally-known `.b32.i2p` lookup, and explicit unsupported SAM 3.1 feature replies. |
+| 142 | `passed-m7-sam31-encoding-private-destination-corrective` | **Most recent closed SAM sub-claim.** SAM Base64 alphabet is I2P Base64 (`-`/`~`, `=` padding), independently corroborated against i2pd / Java I2P / i2plib. Three independent reference vectors live in `crates/i2pr-api/src/sam/base64.rs::tests`. |
+| 141 | `active-m7-sam31-corrective-roadmap` | Current Milestone 7 SAM 3.1 corrective authority. Names the executable sequence `142 → 143 → 144`. |
+| 138 | `passed-m7-sam31-stream-connect-accept-bridge` | Milestone 7 SAM 3.1 STREAM CONNECT / ACCEPT transport bridge. Runtime-neutral `SamStreamRegistry` (FIFO ACCEPT, per-session ceiling); per-destination `SamDestinationBridge` (`Arc<DestinationIdentity>` + `StreamingManager` + signed `LeaseSet2` + `DestinationOutboundRole` + `DestinationRouting` + `EciesSessionManager`); `execute_stream_connect` reports `RESULT=OK` only after `Established`. The same-socket live raw handoff is still Plan 143 work. |
+| 139 | `passed-m7-sam31-forward-naming-hardening` | Loopback-only `STREAM FORWARD`, atomic ACCEPT/FORWARD mode ownership, bounded/cancellable raw bridge, session-scoped `NAME=ME`, canonical public-Destination lookup, locally-known `.b32.i2p` lookup, and explicit unsupported SAM 3.1 feature replies. The byte-path acceptance is conditional on Plan 143 and is re-run in Plan 144. |
 | 137 | `passed-m7-sam31-loopback-server-session-lifecycle` | Milestone 7 SAM 3.1 loopback listener + session lifecycle. `i2pr-api` owns the bounded limits, session registry, line reader, and server state machine; `i2pr-daemon` owns the supervised Tokio listener and the per-destination `StreamingManager` pool. `[sam] enabled = false` by default in production. |
-| 136 | `passed-m7-sam31-protocol-private-destination-foundation` | Milestone 7 SAM 3.1 protocol and private-destination foundation. `i2pr-api` runtime-neutral surface. |
+| 136 | `passed-m7-sam31-protocol-private-destination-foundation` | Milestone 7 SAM 3.1 protocol and private-destination foundation. `i2pr-api` runtime-neutral surface. **Plan 142 superseded the Base64 sub-claim.** |
 | 135 | `active-milestone7-sam31-planning-authority` | Milestone 7 SAM 3.1 roadmap; the broader Phase 7 sequence (Plan 136 → 140). |
 | 134 | `passed-milestone6-recv-window-ack-ceiling-closure` | Current Milestone 6 local closure. ACK ceiling defect fix in receive-window tracking. |
 | 133 | `passed-evidence-authority-superseded-by-plan134` | Historical evidence; produces eleven Plan 130 + seven Plan 131 trajectories and is retained. |
@@ -102,7 +115,7 @@ crates/i2pr-api/               # Plan 136 + Plan 137 + Plan 138 + Plan 139 SAM 3
     sam/
       mod.rs                   # module facade and named byte ceilings
       version.rs               # SamVersion, parse_version, negotiate, is_advertised
-      base64.rs                # RFC 4648 SAM Base64 codec (encode/decode, strict)
+      base64.rs                # I2P Base64 SAM codec (encode/decode, strict; `-`/`~`, `=` padding — Plan 142 corrective)
       command.rs               # Command, CommandKind, OptionPair, CommandOutcome,
                                #   parse_stream_connect / parse_stream_accept / parse_stream_forward (Plans 138–139)
       parser.rs                # parse_line, tokenise, recognise_* per command family
