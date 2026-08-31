@@ -7,11 +7,13 @@ Plan-of-record and closure records for `i2pr`. Closure records
 The current **Milestone 6 local closure authority** is
 [**Plan 134**](134-status.md) (`passed-milestone6-recv-window-ack-ceiling-closure`).
 Independent-router interoperability is not claimed and is tracked as
-external acceptance debt. The current **Milestone 7 SAM 3.1 closure
-authority** is the blocked [**Plan 140**](140-status.md)
-(`blocked-independent-client-stream-path-not-ready`). Plan 139 remains
-the last passed local SAM hardening closure; Plan 140's live STREAM and
-independent-client evidence is not claimed.
+external acceptance debt.
+
+The current **Milestone 7 SAM 3.1 corrective authority** is
+[**Plan 141**](141-status.md) (`active-m7-sam31-corrective-roadmap`).
+Plan 140 remains the blocked audit record that exposed the incomplete live
+STREAM path. The executable corrective sequence is **142 -> 143 -> 144**;
+Plan 142 is next.
 
 ## MVP roadmap
 
@@ -20,8 +22,9 @@ independent-client evidence is not claimed.
   NTCP2/SSU2, NetDB + floodfill, tunnel participation, destinations,
   streaming, SAM/I2CP, HTTP/SOCKS5 proxies, service tunnels).
   **Independent-router interoperability is MVP acceptance debt, not a
-  prerequisite for beginning Milestone 7 in the constrained development
-  environment.**
+  prerequisite for the localhost SAM product work in Milestone 7.**
+- [`141-m7-sam31-corrective-roadmap.md`](141-m7-sam31-corrective-roadmap.md) —
+  current Milestone 7 corrective sequence after the blocked Plan 140 audit.
 - [`118-123-milestone6-router-construction-roadmap.md`](118-123-milestone6-router-construction-roadmap.md) —
   destination / garlic / LeaseSet2 / Streaming router construction.
 - [`126-129-milestone6-final-corrective-roadmap.md`](126-129-milestone6-final-corrective-roadmap.md)
@@ -29,6 +32,23 @@ independent-client evidence is not claimed.
   [`126-130-milestone6-final-corrective-roadmap.md`](126-130-milestone6-final-corrective-roadmap.md) —
   Milestone 6 final corrective roadmaps (each plan superseded by a
   later closure record).
+
+## Milestone 7 plan hierarchy
+
+| Plan | Current authority status | Record |
+| --- | --- | --- |
+| 135 | superseded by Plan 140 audit / Plan 141 corrective roadmap | [`135-status.md`](135-status.md) |
+| 136 | foundation landed; SAM encoding/private-destination evidence superseded by Plan 142 | [`136-status.md`](136-status.md) |
+| 137 | passed loopback server/session lifecycle | [`137-status.md`](137-status.md) |
+| 138 | implementation landed; product acceptance superseded by Plan 143 | [`138-status.md`](138-status.md) |
+| 139 | local FORWARD/naming implementation landed; final byte-path acceptance deferred to Plan 144 | [`139-status.md`](139-status.md) |
+| 140 | blocked closure audit; superseded for next-action authority by Plan 141 | [`140-status.md`](140-status.md) |
+| 141 | active corrective roadmap | [`141-status.md`](141-status.md) |
+| 142 | **next executable** — SAM encoding/private-destination compatibility | [`142-m7-sam31-encoding-private-destination-corrective.md`](142-m7-sam31-encoding-private-destination-corrective.md) |
+| 143 | blocked on 142 — live same-socket STREAM product bridge | [`143-m7-sam31-live-stream-product-bridge-corrective.md`](143-m7-sam31-live-stream-product-bridge-corrective.md) |
+| 144 | blocked on 143 — independent clients and final M7 closure | [`144-m7-sam31-independent-client-final-closure-corrective.md`](144-m7-sam31-independent-client-final-closure-corrective.md) |
+
+Do not restore the historical Plan 136/138 `passed` labels as final M7 authority without satisfying the superseding corrective acceptance criteria.
 
 ## Milestone 6 plan hierarchy
 
@@ -98,6 +118,8 @@ and the dedicated interop skills.
   `StreamingManager` + `StreamingDestinationAdapter` (`i2pr-client`)
 - CLI daemon with config validation, identity generation, and dry-run
   (`i2pr-daemon`)
+- SAM protocol/session/FORWARD/naming foundations through Plan 139, with
+  Milestone 7 product closure still pending the Plan 142–144 corrections.
 
 ## What's not implemented yet
 
@@ -111,10 +133,12 @@ and the dedicated interop skills.
   network transport adapter still owns the NTCP2/SSU2 handshake
   surface).
 - I2NP message handling and router dispatch.
-- SAM 3.1 local product path is implemented through Plan 139; independent
-  client interoperability and final Milestone 7 evidence remain in Plan 140.
+- Milestone 7 SAM product closure: canonical I2P Base64/private-destination
+  compatibility, same-socket raw CONNECT/ACCEPT through the full local
+  destination product path, and two-client interoperability remain under
+  Plans 142–144.
 - Client proxies (HTTP, SOCKS5) and service tunnels.
-- Any network-facing behavior.
+- Any public/network-facing router behavior.
 
 The NTCP2 development interoperability result is
 `protocol-defect-localized` at `noise_authenticated`. No passed
@@ -128,6 +152,6 @@ for the routine development seam and SAM baseline planning stub, or
 [`.opencode/skills/i2pr-architecture/SKILL.md`](../.opencode/skills/i2pr-architecture/SKILL.md)
 to navigate the architecture documentation, ADRs, and this directory.
 
-When a closure record and a per-plan narrative disagree, the closure
-record wins. Plans retain their narrative as audit history, not as
-live contracts.
+When a closure record and a per-plan narrative disagree, the newest explicit
+superseding status record wins. Plans retain their narrative as audit history,
+not as live contracts.
