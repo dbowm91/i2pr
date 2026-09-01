@@ -10,17 +10,21 @@ Independent-router interoperability is not claimed and is tracked as
 external acceptance debt.
 
 The current **Milestone 7 SAM 3.1 corrective authority** is
-[**Plan 141**](141-status.md) (`active-m7-sam31-corrective-roadmap`).
-Plan 140 remains the blocked audit record that exposed the incomplete live
-STREAM path. **Plan 142
-([`142-status.md`](142-status.md)) closed as
-`passed-m7-sam31-encoding-private-destination-corrective`** — the SAM
-Base64 alphabet is now the I2P Base64 spelling every Java I2P / i2pd /
-independent Python SAM client reference implementation emits, with
-three independent reference vectors in `crates/i2pr-api/tests/`. The
-remaining corrective sequence is **143 -> 144**: Plan 143 owns the
-live same-socket STREAM CONNECT/ACCEPT product bridge; Plan 144 owns
-the two-independent-client final Milestone 7 closure.
+[**Plan 145**](145-status.md) (`active-m7-sam31-remaining-gap-corrective-roadmap`).
+The post-Plan-144 audit retains the correct Plan 142 I2P Base64 change and
+the useful Plan 143/144 local-delivery plus in-process handshake work, but
+reclassifies the unsupported closure claims. The executable sequence is now
+**146 → 147 → 148**:
+
+- Plan 146 proves the canonical SAM private-destination / PrivateKeyFile
+  representation with real bidirectional reference evidence;
+- Plan 147 implements the missing dedicated TCP↔Streaming raw socket driver,
+  ACK/retransmit runtime ownership, backpressure, SILENT, and lifecycle/fault
+  acceptance;
+- Plan 148 drives two independent SAM clients through the real listener and
+  performs final FORWARD/naming/resource/privacy/M6 regression closure.
+
+Milestone 8 is not the next product layer until Plan 148 passes.
 
 ## MVP roadmap
 
@@ -30,8 +34,12 @@ the two-independent-client final Milestone 7 closure.
   streaming, SAM/I2CP, HTTP/SOCKS5 proxies, service tunnels).
   **Independent-router interoperability is MVP acceptance debt, not a
   prerequisite for the localhost SAM product work in Milestone 7.**
+- [`145-m7-sam31-remaining-gap-corrective-roadmap.md`](145-m7-sam31-remaining-gap-corrective-roadmap.md) —
+  current Milestone 7 remaining-gap sequence after the Plan 142–144
+  acceptance audit.
 - [`141-m7-sam31-corrective-roadmap.md`](141-m7-sam31-corrective-roadmap.md) —
-  current Milestone 7 corrective sequence after the blocked Plan 140 audit.
+  previous Milestone 7 corrective sequence after the blocked Plan 140 audit;
+  superseded for next-action authority by Plan 145.
 - [`118-123-milestone6-router-construction-roadmap.md`](118-123-milestone6-router-construction-roadmap.md) —
   destination / garlic / LeaseSet2 / Streaming router construction.
 - [`126-129-milestone6-final-corrective-roadmap.md`](126-129-milestone6-final-corrective-roadmap.md)
@@ -44,18 +52,24 @@ the two-independent-client final Milestone 7 closure.
 
 | Plan | Current authority status | Record |
 | --- | --- | --- |
-| 135 | superseded by Plan 140 audit / Plan 141 corrective roadmap | [`135-status.md`](135-status.md) |
-| 136 | foundation landed; SAM encoding/private-destination evidence superseded by Plan 142 | [`136-status.md`](136-status.md) |
+| 135 | superseded by Plan 140 audit / later corrective roadmaps | [`135-status.md`](135-status.md) |
+| 136 | foundation landed; SAM encoding/private-destination evidence superseded by later corrective work | [`136-status.md`](136-status.md) |
 | 137 | passed loopback server/session lifecycle | [`137-status.md`](137-status.md) |
-| 138 | implementation landed; product acceptance superseded by Plan 143 | [`138-status.md`](138-status.md) |
-| 139 | local FORWARD/naming implementation landed; final byte-path acceptance deferred to Plan 144 | [`139-status.md`](139-status.md) |
-| 140 | blocked closure audit; superseded for next-action authority by Plan 141 | [`140-status.md`](140-status.md) |
-| 141 | active corrective roadmap | [`141-status.md`](141-status.md) |
-| 142 | **closed** — `passed-m7-sam31-encoding-private-destination-corrective` (I2P Base64 alphabet + independent reference vectors) | [`142-status.md`](142-status.md) |
-| 143 | **closed** — `passed-m7-sam31-live-stream-product-bridge-corrective` (captured-outbound seam removed; full Plan 129 destination stack drives the live bridge through `i2pr_client::deliver`) | [`143-status.md`](143-status.md) |
-| 144 | **partial — `passed-m7-sam31-independent-client-handshake-corrective`** (in-process bidirectional handshake + Plan 129 destination stack round-trip + canonical-streaming routing fix); per-stream TCP↔Streaming raw byte bridge and two-independent-client evidence lane deferred to follow-up (Plan 145 candidate) | [`144-m7-sam31-independent-client-final-closure-corrective.md`](144-m7-sam31-independent-client-final-closure-corrective.md), [`144-status.md`](144-status.md) |
+| 138 | implementation landed; product acceptance superseded by later raw-stream corrective work | [`138-status.md`](138-status.md) |
+| 139 | local FORWARD/naming implementation landed; final byte-path acceptance deferred to Plan 148 | [`139-status.md`](139-status.md) |
+| 140 | blocked closure audit; historical authority | [`140-status.md`](140-status.md) |
+| 141 | previous corrective roadmap; superseded for next-action authority by Plan 145 | [`141-status.md`](141-status.md) |
+| 142 | **Base64 correction retained as passed**; private-destination external compatibility requalified by Plan 146 | [`142-status.md`](142-status.md) |
+| 143 | local delivery seam / Plan 129 bridge work retained; **full raw STREAM acceptance superseded by Plan 147** | [`143-status.md`](143-status.md) |
+| 144 | **partial local evidence** — in-process bidirectional Streaming handshake; independent-client/raw-socket final closure not passed | [`144-status.md`](144-status.md) |
+| 145 | **active corrective roadmap** — current Milestone 7 authority | [`145-status.md`](145-status.md) |
+| 146 | **next executable** — private-destination reference compatibility requalification | [`146-m7-sam31-private-destination-reference-requalification.md`](146-m7-sam31-private-destination-reference-requalification.md) |
+| 147 | blocked on Plan 146 — dedicated raw STREAM socket driver corrective | [`147-m7-sam31-dedicated-raw-stream-driver-corrective.md`](147-m7-sam31-dedicated-raw-stream-driver-corrective.md) |
+| 148 | blocked on Plan 147 — two-independent-client final Milestone 7 closure | [`148-m7-sam31-independent-client-final-closure.md`](148-m7-sam31-independent-client-final-closure.md) |
 
-Do not restore the historical Plan 136/138 `passed` labels as final M7 authority without satisfying the superseding corrective acceptance criteria.
+Do not restore the historical Plan 136/138/142/143 broad `passed` labels as
+final M7 authority without satisfying the superseding Plan 146–148 acceptance
+criteria.
 
 ## Milestone 6 plan hierarchy
 
@@ -125,15 +139,10 @@ and the dedicated interop skills.
   `StreamingManager` + `StreamingDestinationAdapter` (`i2pr-client`)
 - CLI daemon with config validation, identity generation, and dry-run
   (`i2pr-daemon`)
-- SAM protocol/session/FORWARD/naming foundations through Plan 139, with
-  the SAM Base64 alphabet / private-destination compatibility
-  sub-claim closed by Plan 142 and the same-socket STREAM
-  CONNECT/ACCEPT product bridge closed by Plan 143 (Plan 129
-  destination stack drives the live bridge through
-  `i2pr_client::deliver`; captured-outbound seam removed).
-  Milestone 7 product closure still pending Plan 144
-  (two-independent-client final closure + per-stream raw byte
-  bridge and retransmit/ACK driver task).
+- SAM protocol/session/FORWARD/naming foundations through Plan 139.
+- Plan 142's canonical SAM I2P Base64 correction (`-`/`~`, `=` padding).
+- Plan 143/144's reusable Plan 129 local-delivery seam and in-process
+  bidirectional Streaming SYN/SYN-response handshake regression.
 
 ## What's not implemented yet
 
@@ -147,11 +156,15 @@ and the dedicated interop skills.
   network transport adapter still owns the NTCP2/SSU2 handshake
   surface).
 - I2NP message handling and router dispatch.
-- Milestone 7 SAM product closure: canonical I2P Base64/private-destination
-  compatibility is closed by **Plan 142** (`passed-m7-sam31-encoding-private-destination-corrective`).
-  Same-socket raw CONNECT/ACCEPT through the full local destination
-  product path is closed by **Plan 143** (`passed-m7-sam31-live-stream-product-bridge-corrective`).
-  Two-client interoperability final closure is owned by **Plan 144**.
+- Milestone 7 SAM closure:
+  - canonical private-destination / PrivateKeyFile compatibility still needs
+    bidirectional executable reference evidence (Plan 146);
+  - dedicated same-socket TCP↔Streaming raw CONNECT/ACCEPT, bounded
+    retransmit/ACK runtime ownership, SILENT/backpressure/fault/lifecycle
+    acceptance remain open (Plan 147);
+  - two independent SAM clients have not yet moved application bytes through
+    the real listener; FORWARD/naming final byte-path/resource/privacy closure
+    remains open (Plan 148).
 - Client proxies (HTTP, SOCKS5) and service tunnels.
 - Any public/network-facing router behavior.
 
