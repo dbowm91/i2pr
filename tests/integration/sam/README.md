@@ -5,8 +5,9 @@ This directory is the lightweight external/reference evidence surface for the Pl
 Current authority:
 
 - `plans/145-status.md` — active corrective roadmap;
-- Plan 146 — private-destination reference requalification (**next executable**);
-- Plan 147 — dedicated raw TCP↔Streaming product driver;
+- `plans/146-status.md` — closed as
+  `passed-m7-sam31-private-destination-reference-requalification`;
+- Plan 147 — dedicated raw TCP↔Streaming product driver (**next executable**);
 - Plan 148 — two-independent-client final closure.
 
 This lane is localhost-only. It must not require root, namespaces, Docker, a VM, systemd, public I2P participation, or live NTCP2/SSU2.
@@ -32,6 +33,29 @@ Reference source inspection currently recorded:
 
 These references are sufficient to retain the Base64 fix. They are **not** sufficient to close the private-destination binary representation.
 
+### Private destination (Plan 146 closed)
+
+`crates/i2pr-daemon/tests/sam_plan146_reference.rs` and the throwaway
+Java helper `reference/Plan146ReferenceHelper.java` now satisfy the
+bidirectional reference contract (see "Plan 146 evidence contract"
+below). The pinned revisions are:
+
+- Java I2P `2800040deee9bb376567b671ef2e9c34cf3e30b6` (release 2.12.0)
+- i2pd `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e` (release 2.60.0)
+
+Both follow the same `target/interop/cache/current-cache.json` pins
+recorded for the closed development interop lane; the SAM lane
+reuses the same pinned artifacts and never commits raw `PRIV`
+material.
+
+Plan 146 also relaxed the reconstruction invariant — the new
+`DestinationIdentity::from_imported` constructor preserves the
+destination's embedded encryption public field verbatim and only
+checks `signing_public == EdDSA(signing_seed)`. The standard Java
+I2P `PrivateKeyFile` and i2pd `IdentityEx` layouts populate the
+destination encryption public field with random bytes for
+destinations; Plan 146 records that tolerance.
+
 ### Local product regressions
 
 The current Rust tests retain useful lower-level evidence:
@@ -42,16 +66,6 @@ The current Rust tests retain useful lower-level evidence:
 They do not move application bytes through independent SAM clients and do not replace the Plan 147 raw-socket lane.
 
 ## What remains unproven
-
-### Private destination
-
-The current i2pr SAM private-destination implementation has used a compact 455-byte / 608-character representation for its declared type-4/type-7 profile.
-
-Current official SAM documentation describes `PRIV` as Destination + Private Key + Signing Private Key and documents 663+ binary / 884+ Base64 with a 256-byte unused encryption-private-key field. Current common-structures documentation also permits type-specific private-key sizes when context supplies the key type.
-
-Plan 146 must resolve the actual interoperable SAM/PrivateKeyFile form with executable reference evidence in both directions.
-
-Do not call the compact form reference-compatible until Plan 146 proves it.
 
 ### Raw STREAM product
 
@@ -91,9 +105,10 @@ If a selected client becomes unusable for reasons unrelated to i2pr, Plan 148 ma
 
 ## Plan 146 evidence contract
 
-Plan 146 must produce real bidirectional PrivateKeyFile evidence without committing secret material.
+Plan 146 has produced real bidirectional PrivateKeyFile evidence without committing secret material.
 
-Required directions:
+Required directions (all proven by
+`crates/i2pr-daemon/tests/sam_plan146_reference.rs`):
 
 ```text
 reference-generated PRIV
@@ -105,20 +120,39 @@ i2pr real DEST GENERATE SIGNATURE_TYPE=7
   -> exact public Destination equality
 ```
 
-Record:
+The Plan 146 reference helper (`reference/Plan146ReferenceHelper.java`)
+subcommands:
 
-- reference implementation/version/commit;
-- command/API;
-- signature/crypto types;
-- binary/Base64 lengths;
-- public Destination hash;
-- SHA-256 digest of ephemeral private bytes;
-- representation classification;
+- `version` — emits the pinned reference/revision identifiers and
+  the keygen parameters used to construct / consume the destination;
+- `generate` — emits a fresh `PRIV` plus its derived lengths,
+  certificate fields, and SHA-256 of the ephemeral bytes, then reads
+  the bytes back through `PrivateKeyFile` to confirm the helper
+  self-round-trips;
+- `parse` — accepts an externally-supplied `PRIV` and re-emits the
+  derived public-destination length, certificate type, and Base64
+  so the test can byte-compare against the i2pr `PUB` reply.
+
+Record (recorded by the bidirectional test):
+
+- reference implementation/version/commit (Java I2P
+  `2800040deee9bb376567b671ef2e9c34cf3e30b6`, i2pd
+  `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`);
+- command/API (`generate` / `parse`);
+- signature/crypto types (`ED_DSA_SHA512_ED25519` / `ECIES_X25519`);
+- binary/Base64 lengths (`PRIV 455/608`, `PUB 391/524`);
+- private-key-field width (`private_key_field_is_256 = false`, the
+  Plan 142 compact form is reference-compatible);
+- public Destination hash (compared byte-equal between helper output
+  and i2pr `DestinationId` after import);
+- SHA-256 digest of ephemeral private bytes (recorded by the helper
+  for record-keeping; never persisted);
+- representation classification (`canonical_compact_455_byte`);
 - pass/fail.
 
-Never commit the raw `PRIV` value. Ephemeral secret-bearing run roots should live under `target/` or another temporary directory and be deleted after validation.
-
-A source-code inspection or an i2pr self-round-trip is not Plan 146 closure evidence.
+Never commit the raw `PRIV` value. The helper prints the Base64 PRIV
+to its own stdout, captured only inside a single Rust test run;
+ephemeral secret material is never written to a checked-in file.
 
 ## Plan 147 product contract
 
@@ -190,7 +224,7 @@ The external lane supplements, not replaces, the Rust product gates:
 ```text
 cargo test --locked -p i2pr-api --all-targets
 cargo test --locked -p i2pr-daemon --test sam_loopback
-cargo test --locked -p i2pr-daemon --test sam_stream
+cargo test --locked -p i2pr-daemon --test sam_plan146_reference -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test sam_stream_product
 cargo test --locked -p i2pr-daemon --test sam_stream_independent
 cargo test --locked -p i2pr-daemon --test sam_forward_naming
@@ -202,7 +236,7 @@ Plan 147 should add a dedicated raw-socket product test and make it the canonica
 
 Do not promote this lane to `passed` until:
 
-1. Plan 146 reference private-destination evidence passes;
+1. Plan 146 reference private-destination evidence passes (closed);
 2. Plan 147 real raw-socket product acceptance passes;
 3. two independent clients move exact application bytes through the real listener;
 4. Plan 148 final evidence/status closes Milestone 7.

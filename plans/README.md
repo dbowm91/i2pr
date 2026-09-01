@@ -13,11 +13,19 @@ The current **Milestone 7 SAM 3.1 corrective authority** is
 [**Plan 145**](145-status.md) (`active-m7-sam31-remaining-gap-corrective-roadmap`).
 The post-Plan-144 audit retains the correct Plan 142 I2P Base64 change and
 the useful Plan 143/144 local-delivery plus in-process handshake work, but
-reclassifies the unsupported closure claims. The executable sequence is now
-**146 → 147 → 148**:
+reclassifies the unsupported closure claims. The executable sequence is
+**Plan 146 (closed) → Plan 147 (next) → Plan 148**:
 
-- Plan 146 proves the canonical SAM private-destination / PrivateKeyFile
-  representation with real bidirectional reference evidence;
+- Plan 146 has closed as
+  [`passed-m7-sam31-private-destination-reference-requalification`](146-status.md) —
+  bidirectional reference evidence against the pinned Java I2P 2.12.0
+  (`2800040deee9bb376567b671ef2e9c34cf3e30b6`) and i2pd 2.60.0
+  (`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`) references proves the
+  canonical SAM private-destination / PrivateKeyFile representation;
+  Plan 146 also relaxed the reconstruction invariant (`from_imported`
+  preserves the destination's embedded encryption public field verbatim)
+  to match the standard Java I2P `PrivateKeyFile` and i2pd
+  `IdentityEx` layouts;
 - Plan 147 implements the missing dedicated TCP↔Streaming raw socket driver,
   ACK/retransmit runtime ownership, backpressure, SILENT, and lifecycle/fault
   acceptance;
@@ -63,8 +71,8 @@ Milestone 8 is not the next product layer until Plan 148 passes.
 | 143 | local delivery seam / Plan 129 bridge work retained; **full raw STREAM acceptance superseded by Plan 147** | [`143-status.md`](143-status.md) |
 | 144 | **partial local evidence** — in-process bidirectional Streaming handshake; independent-client/raw-socket final closure not passed | [`144-status.md`](144-status.md) |
 | 145 | **active corrective roadmap** — current Milestone 7 authority | [`145-status.md`](145-status.md) |
-| 146 | **next executable** — private-destination reference compatibility requalification | [`146-m7-sam31-private-destination-reference-requalification.md`](146-m7-sam31-private-destination-reference-requalification.md) |
-| 147 | blocked on Plan 146 — dedicated raw STREAM socket driver corrective | [`147-m7-sam31-dedicated-raw-stream-driver-corrective.md`](147-m7-sam31-dedicated-raw-stream-driver-corrective.md) |
+| 146 | **passed** bidirectional private-destination reference requalification; relaxed `from_imported` invariant | [`146-status.md`](146-status.md) |
+| 147 | next executable — dedicated raw STREAM socket driver corrective | [`147-m7-sam31-dedicated-raw-stream-driver-corrective.md`](147-m7-sam31-dedicated-raw-stream-driver-corrective.md) |
 | 148 | blocked on Plan 147 — two-independent-client final Milestone 7 closure | [`148-m7-sam31-independent-client-final-closure.md`](148-m7-sam31-independent-client-final-closure.md) |
 
 Do not restore the historical Plan 136/138/142/143 broad `passed` labels as

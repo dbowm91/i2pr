@@ -772,7 +772,7 @@ protocol = "sam"
 structure = "sam-3.1-bounded-line-parser-version-negotiation-private-destination-codec"
 scope = "required"
 status = "experimental"
-notes = "Plan 136 closed as `passed-m7-sam31-protocol-private-destination-foundation` per plans/136-status.md; **Plan 142 reopens and supersedes the Base64 sub-claim** to `passed-m7-sam31-encoding-private-destination-corrective` per plans/142-status.md. The i2pr SAM codec now uses the I2P Base64 alphabet (`A-Z a-z 0-9 - ~`, `=` padding) — the spelling every Java I2P / i2pd / independent Python SAM client reference implementation emits — rather than RFC 4648. See `specs/references/sam31-private-destination.md` for the independent corroborating references (i2pd `libi2pd/Base.{h,cpp}`, Java I2P `PrivateKeyFile.java`, i2plib `I2P_B64_CHARS = \"-~\"`). `i2pr-api` owns the bounded line/command/reply parser, typed HELLO VERSION / DEST GENERATE / SESSION CREATE / STREAM CONNECT / STREAM ACCEPT / STREAM FORWARD / NAMING LOOKUP / PING / PONG / QUIT vocabulary, strict SAM 3.1-only version negotiation with typed NOVERSION failure path, the corrected I2P Base64 codec with `+`/`/` rejection and frozen alphabet/padding/length vectors, the SamPrivateDestination wrapper (non-Clone, non-Debug, zeroize-on-drop) carrying the standard Java PrivateKeyFile concatenation, and the runtime-neutral DEST GENERATE / SESSION CREATE private-destination import/export surface. No sockets, no timers, no Tokio; Plan 137 wires the SAM bridge service into the supervised daemon."
+notes = "Plan 136 closed as `passed-m7-sam31-protocol-private-destination-foundation` per plans/136-status.md; **Plan 142 reopens and supersedes the Base64 sub-claim** to `passed-m7-sam31-encoding-private-destination-corrective` per plans/142-status.md; **Plan 146 requalifies the private-destination interoperability claim** to `passed-m7-sam31-private-destination-reference-requalification` per plans/146-status.md. The i2pr SAM codec uses the I2P Base64 alphabet (`A-Z a-z 0-9 - ~`, `=` padding) — the spelling every Java I2P / i2pd / independent Python SAM client reference implementation emits — rather than RFC 4648. The private-destination import path now uses the relaxed `DestinationIdentity::from_imported` constructor (Plan 146) that preserves the destination's embedded encryption public field verbatim; only the `signing_public == EdDSA(signing_seed)` structural invariant is enforced. Both i2pd `IdentityEx` and Java I2P `PrivateKeyFile` populate the destination encryption field with random bytes for destinations and treat the `PRIV[391..423]` slot as opaque random material; Plan 146 documents and pins that tolerance. See `specs/references/sam31-private-destination.md` for the four-reference corroboration (i2pd `libi2pd/Base.{h,cpp}`, Java I2P `PrivateKeyFile.java`, i2pd `libi2pd/Identity.cpp`, i2plib `I2P_B64_CHARS = \"-~\"`) and the bidirectional reference evidence at `crates/i2pr-daemon/tests/sam_plan146_reference.rs`. `i2pr-api` owns the bounded line/command/reply parser, typed HELLO VERSION / DEST GENERATE / SESSION CREATE / STREAM CONNECT / STREAM ACCEPT / STREAM FORWARD / NAMING LOOKUP / PING / PONG / QUIT vocabulary, strict SAM 3.1-only version negotiation with typed NOVERSION failure path, the corrected I2P Base64 codec with `+`/`/` rejection and frozen alphabet/padding/length vectors, the SamPrivateDestination wrapper (non-Clone, non-Debug, zeroize-on-drop) carrying the standard Java PrivateKeyFile concatenation, and the runtime-neutral DEST GENERATE / SESSION CREATE private-destination import/export surface. No sockets, no timers, no Tokio; Plan 137 wires the SAM bridge service into the supervised daemon."
 evidence = [
     "crates/i2pr-api/src/sam/version.rs",
     "crates/i2pr-api/src/sam/parser.rs",
@@ -782,9 +782,14 @@ evidence = [
     "crates/i2pr-api/src/sam/private_destination.rs",
     "crates/i2pr-api/src/sam/dest_generate.rs",
     "crates/i2pr-api/src/sam/session_create.rs",
+    "crates/i2pr-client/src/identity.rs",
+    "crates/i2pr-daemon/tests/sam_plan146_reference.rs",
+    "tests/integration/sam/reference/Plan146ReferenceHelper.java",
     "specs/references/sam31-private-destination.md",
     "plans/136-m7-sam31-protocol-private-destination-foundation.md",
     "plans/136-status.md",
+    "plans/146-m7-sam31-private-destination-reference-requalification.md",
+    "plans/146-status.md",
 ]
 
 [[surface]]
@@ -857,13 +862,17 @@ protocol = "sam"
 structure = "sam-3.1-independent-client-stream-interoperability"
 scope = "required"
 status = "experimental"
-notes = "Plan 142 closed as `passed-m7-sam31-encoding-private-destination-corrective` per plans/142-status.md, correcting the SAM Base64 alphabet to I2P Base64 (`-`/`~`, `=` padding) and replacing the prior circular-private-destination evidence with three independent reference vectors (i2pd `Base.{h,cpp}`, Java I2P `PrivateKeyFile.java`, i2plib `I2P_B64_CHARS`). The remaining Plan 140 closure items (Plan 143 same-socket CONNECT/ACCEPT raw product bridge; Plan 144 two-independent-client final closure) are still open. No SAM feature is advertised."
+notes = "Plan 142 closed as `passed-m7-sam31-encoding-private-destination-corrective` per plans/142-status.md, correcting the SAM Base64 alphabet to I2P Base64 (`-`/`~`, `=` padding) and replacing the prior circular-private-destination evidence with three independent reference vectors (i2pd `Base.{h,cpp}`, Java I2P `PrivateKeyFile.java`, i2plib `I2P_B64_CHARS`). **Plan 146 closed as `passed-m7-sam31-private-destination-reference-requalification` per plans/146-status.md**, requalifying private-destination interoperability against the pinned Java I2P 2.12.0 reference and relaxing the `encryption_public == X25519(static_secret)` reconstruction invariant that the Java I2P `PrivateKeyFile` and i2pd `IdentityEx` layouts omit for destinations; the bidirectional reference evidence at `crates/i2pr-daemon/tests/sam_plan146_reference.rs` proves both directions (reference generates → i2pr imports → byte-equal DestinationId; i2pr generates → Java I2P parser consumes → byte-equal PUB). The remaining Plan 140 closure items (Plan 147 dedicated same-socket raw TCP↔Streaming product bridge; Plan 148 two-independent-client final closure plus FORWARD/naming byte-path revalidation) are still open. No SAM feature is advertised."
 evidence = [
     "plans/140-m7-sam31-interoperability-closure.md",
     "plans/140-status.md",
     "plans/142-m7-sam31-encoding-private-destination-corrective.md",
     "plans/142-status.md",
+    "plans/146-m7-sam31-private-destination-reference-requalification.md",
+    "plans/146-status.md",
     "tests/integration/sam/README.md",
+    "tests/integration/sam/reference/Plan146ReferenceHelper.java",
+    "crates/i2pr-daemon/tests/sam_plan146_reference.rs",
     "docs/architecture/audit/2026-08-28-plan140-audit.md",
 ]
 advertised = false

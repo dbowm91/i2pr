@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Use for i2pr-client, i2pr-api, destination-side i2pr-tunnel/i2pr-netdb/i2pr-proto/i2pr-crypto, i2pr-daemon SAM code, local trajectory tests, or Milestone 7 corrective execution. Plan 145 is the current SAM corrective authority; execute Plan 146 next, followed by Plan 147 and Plan 148 only after their dependencies close.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Use for i2pr-client, i2pr-api, destination-side i2pr-tunnel/i2pr-netdb/i2pr-proto/i2pr-crypto, i2pr-daemon SAM code, local trajectory tests, or Milestone 7 corrective execution. Plan 145 is the current SAM corrective authority; Plan 146 has closed as `passed-m7-sam31-private-destination-reference-requalification` and Plan 147 is the next executable. Plan 148 remains blocked on Plan 147.
 ---
 
 # I2PR Local Development
@@ -22,12 +22,13 @@ Milestone 7 SAM is **not closed**. The current authority is:
 
 - [`plans/145-status.md`](../../../plans/145-status.md)
 - [`plans/145-m7-sam31-remaining-gap-corrective-roadmap.md`](../../../plans/145-m7-sam31-remaining-gap-corrective-roadmap.md)
+- [`plans/146-status.md`](../../../plans/146-status.md) — closed
+  as `passed-m7-sam31-private-destination-reference-requalification`.
 
 Current execution sequence:
 
-1. [`plans/146-m7-sam31-private-destination-reference-requalification.md`](../../../plans/146-m7-sam31-private-destination-reference-requalification.md) — **next executable**.
-2. [`plans/147-m7-sam31-dedicated-raw-stream-driver-corrective.md`](../../../plans/147-m7-sam31-dedicated-raw-stream-driver-corrective.md) — blocked on Plan 146.
-3. [`plans/148-m7-sam31-independent-client-final-closure.md`](../../../plans/148-m7-sam31-independent-client-final-closure.md) — blocked on Plan 147.
+1. [`plans/147-m7-sam31-dedicated-raw-stream-driver-corrective.md`](../../../plans/147-m7-sam31-dedicated-raw-stream-driver-corrective.md) — **next executable**, blocked on Plan 146 (now closed).
+2. [`plans/148-m7-sam31-independent-client-final-closure.md`](../../../plans/148-m7-sam31-independent-client-final-closure.md) — blocked on Plan 147.
 
 Do not move to Milestone 8 until Plan 148 passes.
 
@@ -39,7 +40,8 @@ Treat the landed work as follows:
 plan_137_loopback_session_lifecycle = passed
 
 plan_142_base64 = passed
-plan_142_private_destination_external_compatibility = not-yet-proven
+plan_146_private_destination_reference_requalification = passed
+plan_146_relaxed_from_imported_invariant = passed
 
 plan_143_local_delivery_seam = landed-and-retained
 plan_143_full_raw_stream_acceptance = not-passed
@@ -59,6 +61,12 @@ Retain unless a concrete defect requires change:
 
 - Plan 137 bounded SAM listener/session lifecycle and loopback-only policy;
 - Plan 142 I2P Base64 alphabet (`A-Z a-z 0-9 - ~`) and `=` padding behavior;
+- Plan 146 bidirectional reference evidence against the pinned Java I2P
+  2.12.0 (`2800040deee9bb376567b671ef2e9c34cf3e30b6`) and i2pd 2.60.0
+  (`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`) references;
+- `DestinationIdentity::from_imported` (Plan 146) — preserves the
+  destination's embedded encryption public field verbatim; only checks
+  `signing_public == EdDSA(signing_seed)`;
 - strict SAM parser/line/resource ceilings;
 - non-Clone/zeroizing/redacted secret-bearing SAM private-destination ownership;
 - Plan 139 loopback-only FORWARD, ACCEPT/FORWARD exclusion, local naming policy;
@@ -72,21 +80,25 @@ Do not rebuild these layers merely to satisfy the SAM corrective sequence.
 
 ## Known gaps that Plan 145 tracks
 
-### Private destination — Plan 146
+### Private destination — Plan 146 (closed)
 
-Plan 142 fixed Base64 correctly but did not prove its declared `PRIV` binary layout with actual bidirectional reference execution.
+Plan 142 fixed Base64 correctly but did not prove the `PRIV` binary
+layout with actual bidirectional reference execution. Plan 146 closed
+the gap: pinned Java I2P 2.12.0 (`2800040deee9bb376567b671ef2e9c34cf3e30b6`)
+and i2pd 2.60.0 (`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`) reference
+implementations produce the same canonical 455-byte / 608-char form
+i2pr emits; both reference directions are exercised in
+`crates/i2pr-daemon/tests/sam_plan146_reference.rs`.
 
-Current official SAM documentation describes `DEST GENERATE PRIV` as Destination + Private Key + Signing Private Key and documents 663+ binary / 884+ Base64 with an unused 256-byte encryption-private-key field. Current common-structures documentation also supports type-specific private-key lengths where context identifies the key type.
+Plan 146 also relaxed the reconstruction invariant: standard Java I2P
+`PrivateKeyFile` and i2pd `IdentityEx` populate the destination
+encryption public field with random bytes for destinations. The
+`DestinationIdentity::from_imported` constructor preserves the
+destination bytes verbatim and only enforces
+`signing_public == EdDSA(signing_seed)`; a mismatch reports
+`DestinationIdentityError::ImportSigningKeyMismatch`.
 
-Plan 146 must resolve this using real reference behavior:
 
-```text
-reference-generated PRIV -> i2pr import -> exact public Destination
-
-i2pr-generated PRIV -> reference parser/session -> exact public Destination
-```
-
-Do not treat source inspection or i2pr self-round-trip as sufficient evidence.
 
 ### Dedicated raw STREAM driver — Plan 147
 
@@ -224,7 +236,7 @@ Useful focused seams:
 cargo test --locked -p i2pr-api --all-targets
 cargo test --locked -p i2pr-client --all-targets
 cargo test --locked -p i2pr-daemon --test sam_loopback
-cargo test --locked -p i2pr-daemon --test sam_stream
+cargo test --locked -p i2pr-daemon --test sam_plan146_reference  -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test sam_stream_product
 cargo test --locked -p i2pr-daemon --test sam_stream_independent
 cargo test --locked -p i2pr-daemon --test sam_forward_naming
@@ -248,19 +260,24 @@ Plan 148 must explicitly re-run focused Plan 127–134 regressions; aggregate wo
 
 ## Plan-specific handoff
 
-### Executing Plan 146
+### Executing Plan 146 (closed)
 
-Read:
+Read the closure record and the bidirectional test before changing
+the private-destination seam:
 
-- `plans/145-status.md`
+- `plans/146-status.md`
 - `plans/146-m7-sam31-private-destination-reference-requalification.md`
-- `specs/references/sam31-private-destination.md`
+- `crates/i2pr-daemon/tests/sam_plan146_reference.rs`
+- `tests/integration/sam/reference/Plan146ReferenceHelper.java`
 - `crates/i2pr-api/src/sam/private_destination.rs`
-- `crates/i2pr-api/src/sam/dest_generate.rs`
 - `crates/i2pr-client/src/identity.rs`
-- `tests/integration/sam/README.md`
 
-Do not begin Plan 147 unless `plans/146-status.md` records both reference directions as passed.
+Plan 146 closed both reference directions. The
+`DestinationIdentity::from_imported` constructor is the canonical
+SAM import path; do not re-introduce
+`encryption_public == X25519(static_secret)` enforcement (the
+standard Java I2P `PrivateKeyFile` and i2pd `IdentityEx` layouts do
+not enforce it for destinations).
 
 ### Executing Plan 147
 

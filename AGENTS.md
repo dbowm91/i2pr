@@ -10,15 +10,19 @@ non-advertised; the production daemon does **not** activate NTCP2.
 Always read these before changing code or answering questions about state:
 
 1. `README.md` — current status (Milestone 6 local product gate
-   closed via Plan 134; Milestone 7 SAM corrective authority is Plan 145,
-   with Plan 146 next), build/test/lint commands, high-level architecture.
+   closed via Plan 134; Milestone 7 SAM corrective authority is Plan 145;
+   Plan 146 closed as
+   `passed-m7-sam31-private-destination-reference-requalification`; next
+   executable is Plan 147), build/test/lint commands, high-level
+   architecture.
 2. `GUARDRAILS.md` — non-negotiable engineering, security,
    interoperability, and collaboration constraints.
 3. `CONTRIBUTING.md` — local quality checks, the runtime/testkit
    conventions, the rootless and Multipass evidence-lane contracts.
 4. The active plan under `plans/` (entry point:
    [`plans/README.md`](plans/README.md); current corrective status:
-   `plans/145-status.md`; next executable: Plan 146) and the relevant
+   `plans/145-status.md` and `plans/146-status.md`; next executable:
+   Plan 147) and the relevant
    `docs/adr/` record. The [`docs/architecture/audit/`](docs/architecture/audit/)
    directory tracks doc-vs-source drift findings from the most recent audits.
 5. `specs/support.toml` (mirrored to `docs/protocol-support.md`) for
@@ -83,7 +87,12 @@ Quick reference (deep-dive per crate):
   the runtime-neutral session dispatch state machine, bounded per-session
   `SamStreamRegistry`, loopback-only `STREAM FORWARD` validation, and local
   `NAMING LOOKUP` resolution. **Plan 142's I2P Base64 correction is retained;
-  private-destination external compatibility is requalified by Plan 146.**
+  private-destination external compatibility is closed by Plan 146**
+  (`passed-m7-sam31-private-destination-reference-requalification` —
+  bidirectional reference evidence against pinned Java I2P 2.12.0 and
+  i2pd 2.60.0; the SAM import path uses the new
+  `DestinationIdentity::from_imported` constructor that preserves the
+  destination's embedded encryption public field verbatim).
   The daemon-only SAM service (supervised Tokio listener, per-destination
   `StreamingManager` pool, transactional `SESSION CREATE`, partial STREAM
   CONNECT / ACCEPT bridge, ownership-bound forward registrations, and bounded
@@ -280,13 +289,14 @@ current public state:
   acceptance debt.
 - The current product layer is SAM 3.1 under the **Plan 145** corrective
   roadmap. Plan 137 loopback server/session lifecycle remains passed.
-  Plan 142's Base64 correction is retained, while its private-destination
-  interoperability claim is requalified by Plan 146. Plan 143/144 local
-  delivery and in-process handshake work remains regression evidence, while
-  the dedicated raw TCP↔Streaming product path is owned by Plan 147. Plan 148
-  owns two-independent-client final closure plus FORWARD/naming byte-path
-  revalidation. Plan 140/141 are historical audit/corrective records, not the
-  next executable authority.
+  Plan 142's Base64 correction is retained; Plan 146 closed the
+  private-destination interoperability sub-claim as
+  `passed-m7-sam31-private-destination-reference-requalification`. Plan
+  143/144 local delivery and in-process handshake work remains regression
+  evidence, while the dedicated raw TCP↔Streaming product path is owned
+  by **Plan 147** (the next executable). Plan 148 owns two-independent-client
+  final closure plus FORWARD/naming byte-path revalidation. Plan 140/141
+  are historical audit/corrective records, not the next executable authority.
 
 When you read a `plan_NNN`-style token in code or docs, treat the
 newest explicit superseding status record as authoritative and the per-plan

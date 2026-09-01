@@ -24,8 +24,8 @@ plan_144_in-process-streaming-handshake = passed-local-evidence
 plan_144_independent-client-final-closure = not-passed
 
 plan_145 = active-m7-sam31-remaining-gap-corrective-roadmap
-plan_146 = next-executable
-plan_147 = blocked-on-plan146
+plan_146 = passed-m7-sam31-private-destination-reference-requalification
+plan_147 = blocked-on-plan146  (Plan 146 now closed; Plan 147 is the next executable)
 plan_148 = blocked-on-plan147
 
 milestone6_local_product = passed
@@ -34,11 +34,11 @@ external_acceptance_debt = retained-separately
 
 milestone7_local_product = not-closed
 sam31_base64 = corrected
-sam31_private_destination = external-reference-proof-required
+sam31_private_destination = reference-requalification-passed-via-plan146
 sam31_raw_stream = not-yet-product-closed
 sam_independent_clients = 0-passed
 router_construction = may-continue-within-m7
-next_executable_plan = 146
+next_executable_plan = 147
 next_product_layer = remain-on-milestone7
 ```
 
@@ -111,11 +111,15 @@ The Plan 129 authenticated-router-link-bypassed local seam remains the allowed l
 
 ## Handoff instruction
 
-The next implementation model should read Plan 145 and execute **Plan 146 only**.
+The next implementation model should read Plan 145 and the closed Plan
+146 closure record (`plans/146-status.md`) and execute **Plan 147 only**.
 
-A Plan 146 closure record must either:
-
-- pass the bidirectional private-destination reference evidence and make Plan 147 executable; or
-- record a concrete format/identity blocker and stop.
+Plan 146 closed the bidirectional private-destination reference
+evidence against pinned Java I2P 2.12.0 and i2pd 2.60.0 and relaxed
+the `encryption_public == X25519(static_secret)` reconstruction
+invariant that the standard Java I2P `PrivateKeyFile` and i2pd
+`IdentityEx` layouts omit for destinations. Plan 147 owns the
+missing dedicated TCP↔Streaming raw socket driver and bounded
+ACK/retransmit runtime ownership.
 
 Do not move to Milestone 8 until Plan 148 closes Milestone 7.

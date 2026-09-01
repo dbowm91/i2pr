@@ -116,6 +116,40 @@ impl DestinationIdentity {
         })
     }
 
+    /// Reconstructs a destination identity from an already-decoded public
+    /// destination together with the matching signing seed and static
+    /// X25519 secret.
+    ///
+    /// This is the SAM private-destination import path. The destination
+    /// bytes are taken verbatim; the public encryption key bytes are
+    /// **not** required to equal `X25519(static_secret)` because the
+    /// standard Java I2P `PrivateKeyFile` format (and i2pd's
+    /// `IdentityEx`/`PrivateKeys`) populate the encryption public field
+    /// with random bytes for destinations (the encryption field is
+    /// unused for end-to-end traffic). Plan 146 documents and pins this
+    /// tolerance. Only the structural parse and the
+    /// `signing_public == EdDSA(signing_seed)` invariant are enforced.
+    pub fn from_imported(
+        destination: Destination,
+        signing: [u8; PRIVATE_KEY_LENGTH],
+        static_secret: [u8; X25519_KEY_LENGTH],
+    ) -> Result<Self, DestinationIdentityError> {
+        let signing_key = SigningPrivateKey::from_bytes(signing);
+        let static_key = X25519PrivateKey::from_bytes(static_secret);
+        let derived_signing_public = signing_key.public_key()?;
+        let embedded_signing_public = destination.signing_key();
+        if embedded_signing_public.as_bytes() != derived_signing_public.as_bytes() {
+            return Err(DestinationIdentityError::ImportSigningKeyMismatch);
+        }
+        let id = DestinationId::from_hash(destination.hash()?);
+        Ok(Self {
+            id,
+            destination,
+            signing_key,
+            static_key,
+        })
+    }
+
     /// Returns the non-secret destination identifier.
     pub const fn id(&self) -> DestinationId {
         self.id
@@ -216,6 +250,11 @@ pub enum DestinationIdentityError {
     /// A common-structure codec rejected the constructed identity.
     #[error("destination identity codec rejected: {0}")]
     Codec(#[from] CodecError),
+    /// The supplied signing seed did not derive a public key equal to the
+    /// embedded destination signing public key. Plan 146 describes this
+    /// as the only structural invariant the SAM import path enforces.
+    #[error("destination signing seed inconsistent with embedded signing public key")]
+    ImportSigningKeyMismatch,
 }
 
 #[cfg(test)]

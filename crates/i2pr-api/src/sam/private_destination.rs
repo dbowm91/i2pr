@@ -20,11 +20,26 @@
 //! provenance and the independent corroborating references
 //! (i2pd `libi2pd/Base.cpp`, Java I2P `PrivateKeyFile.java`,
 //! `i2plib/sam.py`).
+//!
+//! ## Reference-compatibility invariant (Plan 146)
+//!
+//! i2pr's SAM `PRIV` is the **standard Java I2P `PrivateKeyFile`
+//! concatenation**: the destination's encryption public field (the
+//! first 32 bytes of the 384-byte key area) is treated as opaque. The
+//! standard Java I2P `PrivateKeyFile` and i2pd `IdentityEx`
+//! destination layouts populate that field with random bytes and
+//! record an unrelated random 32-byte `PrivateKey` slot in the PRIV
+//! suffix; they do **not** require `encryption_public ==
+//! X25519(static_secret)`. The SAM import path therefore preserves
+//! the destination bytes verbatim and accepts the `static_secret`
+//! suffix unchanged. The only structural invariant the import path
+//! enforces is `signing_public == EdDSA(signing_seed)`; a mismatch
+//! returns `DestinationIdentityError::ImportSigningKeyMismatch`.
 
 use core::fmt;
 
 use i2pr_client::{DestinationId, DestinationIdentity, DestinationIdentityError};
-use i2pr_proto::{CodecError, RouterIdentity};
+use i2pr_proto::{CodecError, Destination, RouterIdentity};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::sam::base64;
@@ -135,9 +150,14 @@ impl SamPrivateDestination {
     }
 
     fn from_bytes_array(bytes: [u8; PRIV_LENGTH]) -> Result<Self, SamPrivateDestinationError> {
-        let decoded =
-            RouterIdentity::decode(&bytes[..PUB_LENGTH], i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)?;
-        let encoded = decoded.encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)?;
+        let destination =
+            Destination::decode(&bytes[..PUB_LENGTH], i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)?;
+        let encoded = destination.encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)?;
+        // The destination structural parse round-trips: re-encoding the
+        // decoded destination must produce exactly the input bytes.
+        // This guards against malformed/truncated/unknown-cert
+        // destination encodings without requiring the encryption public
+        // field to match X25519(private_encryption_key).
         if encoded.as_slice() != &bytes[..PUB_LENGTH] {
             return Err(SamPrivateDestinationError::PublicPrivateMismatch);
         }
@@ -145,15 +165,14 @@ impl SamPrivateDestination {
         signing_seed.copy_from_slice(&bytes[PRIV_LENGTH - 32..]);
         let mut static_secret = [0_u8; 32];
         static_secret.copy_from_slice(&bytes[PUB_LENGTH..PUB_LENGTH + 32]);
-        let padding = Zeroizing::new(decoded.padding().to_vec());
-        let identity =
-            DestinationIdentity::from_private_bytes(signing_seed, static_secret, padding)?;
-        let recomputed = identity
-            .destination()
-            .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)?;
-        if recomputed.as_slice() != &bytes[..PUB_LENGTH] {
-            return Err(SamPrivateDestinationError::PublicPrivateMismatch);
-        }
+        // Reuse the destination verbatim; do not force the destination's
+        // encryption public field to equal X25519(static_secret).
+        // Plan 146 documents this tolerance for the standard Java I2P
+        // `PrivateKeyFile` and i2pd `IdentityEx` destination layout.
+        // The reconstructed identity is not stored alongside the raw
+        // bytes; callers that need the [`DestinationIdentity`] obtain
+        // it through [`SamPrivateDestination::into_identity`].
+        let _ = DestinationIdentity::from_imported(destination, signing_seed, static_secret)?;
         Ok(Self {
             bytes: Zeroizing::new(bytes),
         })
@@ -198,16 +217,21 @@ impl SamPrivateDestination {
         bytes: &[u8; PRIV_LENGTH],
     ) -> Result<DestinationIdentity, SamPrivateDestinationError> {
         let destination =
-            RouterIdentity::decode(&bytes[..PUB_LENGTH], i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)?;
+            Destination::decode(&bytes[..PUB_LENGTH], i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)?;
         let mut signing_seed = [0_u8; 32];
         signing_seed.copy_from_slice(&bytes[PRIV_LENGTH - 32..]);
         let mut static_secret = [0_u8; 32];
         static_secret.copy_from_slice(&bytes[PUB_LENGTH..PUB_LENGTH + 32]);
-        let padding = Zeroizing::new(destination.padding().to_vec());
-        Ok(DestinationIdentity::from_private_bytes(
+        // Use the relaxed import path: preserve the destination's
+        // embedded encryption public key bytes verbatim instead of
+        // re-deriving them from `static_secret`. Plan 146 documents
+        // this tolerance for Java I2P `PrivateKeyFile` and i2pd
+        // `IdentityEx` destinations, where the encryption public
+        // field is independent of the encryption private key.
+        Ok(DestinationIdentity::from_imported(
+            destination,
             signing_seed,
             static_secret,
-            padding,
         )?)
     }
 

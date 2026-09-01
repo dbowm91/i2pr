@@ -89,9 +89,9 @@ supervised loopback listener through `i2pr-daemon`.
 
 ```text
 i2pr-api
-  -> i2pr-client     (DestinationIdentity, from_private_bytes, signing_seed_bytes)
+  -> i2pr-client     (DestinationIdentity, from_private_bytes (generator), from_imported (SAM import), signing_seed_bytes)
   -> i2pr-crypto     (used only via i2pr-client; no direct crypto access)
-  -> i2pr-proto      (RouterIdentity::decode for padding extraction, MAX_COMMON_STRUCTURE_SIZE)
+  -> i2pr-proto      (Destination::decode for padding extraction, MAX_COMMON_STRUCTURE_SIZE)
 ```
 
 `i2pr-api` does **not** depend on `i2pr-daemon` and does **not**
@@ -184,12 +184,25 @@ Length  = 455 bytes binary, 608 characters Base64 (with `=` padding)
 
 The i2pr codec uses the existing
 `DestinationIdentity::from_private_bytes(signing_seed, static_secret,
-padding)` reconstruction path. It does not introduce a new identity
-type or alter the secret-ownership model. The narrow SAM-specific
-accessor added to `DestinationIdentity` is `signing_seed_bytes()`,
-which is documented in `crates/i2pr-client/src/identity.rs` as the
-sole documented narrow path for the SAM codec. Provenance is recorded
-in [`specs/references/sam31-private-destination.md`](../specs/references/sam31-private-destination.md).
+padding)` reconstruction path for the `DEST GENERATE` generator and
+uses the new `DestinationIdentity::from_imported(destination,
+signing_seed, static_secret)` constructor (Plan 146) for the
+`SESSION CREATE` import path. `from_imported` preserves the
+destination's embedded encryption public field verbatim and only
+checks `signing_public == EdDSA(signing_seed)`; a mismatch reports
+`DestinationIdentityError::ImportSigningKeyMismatch`. The standard
+Java I2P `PrivateKeyFile` (pinned at
+`2800040deee9bb376567b671ef2e9c34cf3e30b6`) and i2pd `IdentityEx`
+(pinned at `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`) populate the
+destination encryption field with random bytes for destinations, so
+the new constructor's tolerance matches the reference behavior. The
+narrow SAM-specific accessor on `DestinationIdentity` is
+`signing_seed_bytes()`, which is documented in
+`crates/i2pr-client/src/identity.rs` as the sole documented narrow
+path for the SAM codec. Provenance is recorded in
+[`specs/references/sam31-private-destination.md`](../specs/references/sam31-private-destination.md);
+bidirectional evidence lives at
+`crates/i2pr-daemon/tests/sam_plan146_reference.rs`.
 
 ### SAM Base64
 
