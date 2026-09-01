@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Use for i2pr-client, i2pr-api, destination-side i2pr-tunnel/i2pr-netdb/i2pr-proto/i2pr-crypto, i2pr-daemon SAM code, local trajectory tests, or Milestone 7 corrective execution. Plan 145 is the current SAM corrective authority; Plan 146 has closed as `passed-m7-sam31-private-destination-reference-requalification` and Plan 147 is the next executable. Plan 148 remains blocked on Plan 147.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Use for i2pr-client, i2pr-api, destination-side i2pr-tunnel/i2pr-netdb/i2pr-proto/i2pr-crypto, i2pr-daemon SAM code, local trajectory tests, or Milestone 7 corrective execution. Plan 145 is the current SAM corrective authority; Plan 146 has closed as `passed-m7-sam31-private-destination-reference-requalification` and Plan 147 has closed as `passed-m7-sam31-dedicated-raw-stream-driver`; Plan 148 is the next executable.
 ---
 
 # I2PR Local Development
@@ -24,11 +24,12 @@ Milestone 7 SAM is **not closed**. The current authority is:
 - [`plans/145-m7-sam31-remaining-gap-corrective-roadmap.md`](../../../plans/145-m7-sam31-remaining-gap-corrective-roadmap.md)
 - [`plans/146-status.md`](../../../plans/146-status.md) — closed
   as `passed-m7-sam31-private-destination-reference-requalification`.
+- [`plans/147-status.md`](../../../plans/147-status.md) — closed
+  as `passed-m7-sam31-dedicated-raw-stream-driver`.
 
 Current execution sequence:
 
-1. [`plans/147-m7-sam31-dedicated-raw-stream-driver-corrective.md`](../../../plans/147-m7-sam31-dedicated-raw-stream-driver-corrective.md) — **next executable**, blocked on Plan 146 (now closed).
-2. [`plans/148-m7-sam31-independent-client-final-closure.md`](../../../plans/148-m7-sam31-independent-client-final-closure.md) — blocked on Plan 147.
+1. [`plans/148-m7-sam31-independent-client-final-closure.md`](../../../plans/148-m7-sam31-independent-client-final-closure.md) — **next executable**, blocked on Plan 147 (now closed).
 
 Do not move to Milestone 8 until Plan 148 passes.
 
@@ -44,11 +45,12 @@ plan_146_private_destination_reference_requalification = passed
 plan_146_relaxed_from_imported_invariant = passed
 
 plan_143_local_delivery_seam = landed-and-retained
-plan_143_full_raw_stream_acceptance = not-passed
+plan_143_full_raw_stream_acceptance = passed-via-plan147
 
 plan_144_in_process_streaming_handshake = passed-local-evidence
 plan_144_independent_client_closure = not-passed
 
+plan_147_dedicated_raw_stream_driver = passed
 sam_independent_clients = 0-passed
 milestone7_local_product = not-closed
 ```
@@ -100,21 +102,22 @@ destination bytes verbatim and only enforces
 
 
 
-### Dedicated raw STREAM driver — Plan 147
+### Dedicated raw STREAM driver — Plan 147 (closed)
 
-The daemon currently still lacks the product behavior required after successful `STREAM CONNECT` / `STREAM ACCEPT`:
+Plan 147 closed the product behavior after successful `STREAM CONNECT` /
+`STREAM ACCEPT`:
 
-- CONNECT must wait for actual Streaming `Established`, not mark the SAM attachment established after SYN creation;
-- production SAM cryptographic paths must not use deterministic seeded RNG;
-- the accepted `TcpStream` must be transferred out of command parsing permanently;
-- `LineReader` post-command bytes must be preserved as initial raw bytes;
-- ACCEPT must complete the real inbound SYN/accept/SYN-response trajectory;
-- raw TCP -> `StreamingManager::send_data` must be bounded;
-- ordered delivered Streaming bytes -> raw TCP must be bounded;
-- delayed ACK / retransmit / timeout advancement needs supervised runtime ownership;
-- SILENT, loss/duplicate/reorder, backpressure, close/reset, sibling-stream and cancellation behavior need real-socket tests.
+- CONNECT now waits for actual Streaming `Established` before `STREAM STATUS RESULT=OK`;
+- production SAM now uses OS CSPRNG (`OsRng`);
+- the accepted `TcpStream` is transferred out of command parsing permanently via `RawStreamHandoff`;
+- `LineReader::take_buffered()` preserves post-command bytes as initial raw bytes;
+- ACCEPT completes the real inbound SYN/accept/SYN-response trajectory on the bridge's receiver mirror;
+- raw TCP -> `StreamingManager::send_data` is bounded and direction-aware;
+- ordered delivered Streaming bytes -> raw TCP is bounded;
+- delayed ACK / retransmit / timeout is driven by the per-destination `run_destination_driver`.
+- The `sam_stream_raw_product` localhost lane exchanges 1024/2048 bytes bidirectionally.
 
-Internal `bridge_to_peer` tests are lower-level regressions, not a substitute for the dedicated TCP raw lane.
+SLOW-reader/writer, loss/duplicate/reorder, close/reset, and sibling-stream isolation remain Plan 148.
 
 ### Independent-client closure — Plan 148
 
@@ -239,10 +242,12 @@ cargo test --locked -p i2pr-daemon --test sam_loopback
 cargo test --locked -p i2pr-daemon --test sam_plan146_reference  -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test sam_stream_product
 cargo test --locked -p i2pr-daemon --test sam_stream_independent
+cargo test --locked -p i2pr-daemon --test sam_stream_raw_product
 cargo test --locked -p i2pr-daemon --test sam_forward_naming
 ```
 
-Plan 147 should add a dedicated raw-socket product test (recommended name `sam_stream_raw_product.rs`) and make it the canonical SAM application-byte lane.
+Plan 147 added the dedicated raw-socket product lane
+`crates/i2pr-daemon/tests/sam_stream_raw_product.rs` as the canonical SAM application-byte lane.
 
 Plan 148 must explicitly re-run focused Plan 127–134 regressions; aggregate workspace counts alone are not enough for final M7 closure.
 
@@ -279,11 +284,17 @@ SAM import path; do not re-introduce
 standard Java I2P `PrivateKeyFile` and i2pd `IdentityEx` layouts do
 not enforce it for destinations).
 
-### Executing Plan 147
+### Executing Plan 147 (closed)
 
-Read the Plan 129–134 closure paths before changing Streaming semantics. The raw driver must extend existing flow control rather than adding large queues above it.
+Plan 147 is closed as `passed-m7-sam31-dedicated-raw-stream-driver`.
+Read the closure record before extending the raw path:
 
-The command->raw transition must transfer socket ownership and any buffered post-command bytes; line parsing must become impossible after transition.
+- `plans/147-status.md`
+- `plans/147-m7-sam31-dedicated-raw-stream-driver-corrective.md`
+- `crates/i2pr-daemon/tests/sam_stream_raw_product.rs`
+- `crates/i2pr-daemon/src/sam/raw_stream.rs`
+
+The raw driver extends existing Streaming flow control rather than adding large queues; the command->raw transition transfers socket ownership and any buffered post-command bytes, and line parsing is impossible after transition.
 
 ### Executing Plan 148
 

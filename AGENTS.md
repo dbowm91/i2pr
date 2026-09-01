@@ -12,8 +12,9 @@ Always read these before changing code or answering questions about state:
 1. `README.md` — current status (Milestone 6 local product gate
    closed via Plan 134; Milestone 7 SAM corrective authority is Plan 145;
    Plan 146 closed as
-   `passed-m7-sam31-private-destination-reference-requalification`; next
-   executable is Plan 147), build/test/lint commands, high-level
+   `passed-m7-sam31-private-destination-reference-requalification`; Plan
+   147 closed as `passed-m7-sam31-dedicated-raw-stream-driver`; next
+   executable is Plan 148), build/test/lint commands, high-level
    architecture.
 2. `GUARDRAILS.md` — non-negotiable engineering, security,
    interoperability, and collaboration constraints.
@@ -21,8 +22,8 @@ Always read these before changing code or answering questions about state:
    conventions, the rootless and Multipass evidence-lane contracts.
 4. The active plan under `plans/` (entry point:
    [`plans/README.md`](plans/README.md); current corrective status:
-   `plans/145-status.md` and `plans/146-status.md`; next executable:
-   Plan 147) and the relevant
+   `plans/145-status.md`, `plans/146-status.md`, and
+   `plans/147-status.md`; next executable: Plan 148) and the relevant
    `docs/adr/` record. The [`docs/architecture/audit/`](docs/architecture/audit/)
    directory tracks doc-vs-source drift findings from the most recent audits.
 5. `specs/support.toml` (mirrored to `docs/protocol-support.md`) for
@@ -81,26 +82,29 @@ Quick reference (deep-dive per crate):
   ECIES-X25519-AEAD-Ratchet session layer, destination routing,
   I2P Streaming core (`StreamingManager` + `StreamingDestinationAdapter`).
 - `i2pr-api` — application-protocol adapter (Plans 136–139 landed
-  foundations): SAM 3.1 bounded line/command/reply parser, typed command
-  surface, version negotiation, SAM Base64/private-destination codec,
-  `SamLimits`, `SamSessionRegistry`, `LineReader`, `ServerConnectionState`,
-  the runtime-neutral session dispatch state machine, bounded per-session
-  `SamStreamRegistry`, loopback-only `STREAM FORWARD` validation, and local
-  `NAMING LOOKUP` resolution. **Plan 142's I2P Base64 correction is retained;
-  private-destination external compatibility is closed by Plan 146**
-  (`passed-m7-sam31-private-destination-reference-requalification` —
-  bidirectional reference evidence against pinned Java I2P 2.12.0 and
-  i2pd 2.60.0; the SAM import path uses the new
-  `DestinationIdentity::from_imported` constructor that preserves the
-  destination's embedded encryption public field verbatim).
-  The daemon-only SAM service (supervised Tokio listener, per-destination
-  `StreamingManager` pool, transactional `SESSION CREATE`, partial STREAM
-  CONNECT / ACCEPT bridge, ownership-bound forward registrations, and bounded
-  raw forwarding bridge) lives in `i2pr-daemon`. Plan 143/144 landed the
-  reusable Plan 129 local-delivery seam and an in-process bidirectional
-  Streaming handshake, but **the dedicated same-socket TCP↔Streaming raw
-  product path is not closed and is owned by Plan 147**. `i2pr-api` depends
-  only on `i2pr-client`, `i2pr-crypto`, and `i2pr-proto`.
+   foundations): SAM 3.1 bounded line/command/reply parser, typed command
+   surface, version negotiation, SAM Base64/private-destination codec,
+   `SamLimits`, `SamSessionRegistry`, `LineReader`, `ServerConnectionState`,
+   the runtime-neutral session dispatch state machine, bounded per-session
+   `SamStreamRegistry`, loopback-only `STREAM FORWARD` validation, and local
+   `NAMING LOOKUP` resolution. **Plan 142's I2P Base64 correction is retained;
+   private-destination external compatibility is closed by Plan 146**
+   (`passed-m7-sam31-private-destination-reference-requalification` —
+   bidirectional reference evidence against pinned Java I2P 2.12.0 and
+   i2pd 2.60.0; the SAM import path uses the new
+   `DestinationIdentity::from_imported` constructor that preserves the
+   destination's embedded encryption public field verbatim).
+   The daemon-only SAM service (supervised Tokio listener, per-destination
+   `StreamingManager` pool, transactional `SESSION CREATE`, dedicated raw
+   `STREAM CONNECT` / `STREAM ACCEPT` bridge with same-socket TCP↔Streaming
+   byte pump, bounded ACK/retransmit runtime driver, ownership-bound forward
+   registrations, and bounded raw forwarding bridge) lives in `i2pr-daemon`.
+   Plan 143/144 landed the reusable Plan 129 local-delivery seam and an
+   in-process bidirectional Streaming handshake; **the dedicated same-socket
+   TCP↔Streaming raw product path closed via Plan 147**
+   (`passed-m7-sam31-dedicated-raw-stream-driver` — localhost byte-product
+   evidence). `i2pr-api` depends only on `i2pr-client`, `i2pr-crypto`, and
+   `i2pr-proto`.
 - `i2pr-testkit` — deterministic simulation; **no production crate
   may depend on it.**
 - `tools/i2pr-interop` — non-production test launcher. Must never
@@ -198,8 +202,11 @@ locally; `Cargo.lock` is authoritative.
 - SAM 3.1 protocol foundation/corrections: `cargo test -p i2pr-api --all-targets`.
 - SAM local delivery regressions: `cargo test -p i2pr-daemon --test sam_stream_product`
   and `cargo test -p i2pr-daemon --test sam_stream_independent` retain the
-  Plan 143/144 internal product/handshake evidence. They do **not** replace
-  the Plan 147 dedicated raw-socket acceptance lane.
+  Plan 143/144 internal product/handshake evidence. They complement the
+  Plan 147 dedicated raw-socket product lane
+  (`cargo test -p i2pr-daemon --test sam_stream_raw_product`).
+- SAM raw product: `cargo test -p i2pr-daemon --test sam_stream_raw_product`
+  is the Plan 147 localhost byte-product acceptance lane.
 - Constrained-host lane:
   `python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'`.
 
@@ -291,12 +298,13 @@ current public state:
   roadmap. Plan 137 loopback server/session lifecycle remains passed.
   Plan 142's Base64 correction is retained; Plan 146 closed the
   private-destination interoperability sub-claim as
-  `passed-m7-sam31-private-destination-reference-requalification`. Plan
-  143/144 local delivery and in-process handshake work remains regression
-  evidence, while the dedicated raw TCP↔Streaming product path is owned
-  by **Plan 147** (the next executable). Plan 148 owns two-independent-client
-  final closure plus FORWARD/naming byte-path revalidation. Plan 140/141
-  are historical audit/corrective records, not the next executable authority.
+  `passed-m7-sam31-private-destination-reference-requalification`; Plan
+  147 closed the dedicated raw STREAM product path as
+  `passed-m7-sam31-dedicated-raw-stream-driver`. Plan 143/144 local
+  delivery and in-process handshake work is retained as regression
+  evidence. Plan 148 owns two-independent-client final closure plus
+  FORWARD/naming byte-path revalidation. Plan 140/141 are historical
+  audit/corrective records, not the next executable authority.
 
 When you read a `plan_NNN`-style token in code or docs, treat the
 newest explicit superseding status record as authoritative and the per-plan

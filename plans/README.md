@@ -14,7 +14,7 @@ The current **Milestone 7 SAM 3.1 corrective authority** is
 The post-Plan-144 audit retains the correct Plan 142 I2P Base64 change and
 the useful Plan 143/144 local-delivery plus in-process handshake work, but
 reclassifies the unsupported closure claims. The executable sequence is
-**Plan 146 (closed) → Plan 147 (next) → Plan 148**:
+**Plan 146 (closed) → Plan 147 (closed) → Plan 148 (next)**:
 
 - Plan 146 has closed as
   [`passed-m7-sam31-private-destination-reference-requalification`](146-status.md) —
@@ -72,8 +72,8 @@ Milestone 8 is not the next product layer until Plan 148 passes.
 | 144 | **partial local evidence** — in-process bidirectional Streaming handshake; independent-client/raw-socket final closure not passed | [`144-status.md`](144-status.md) |
 | 145 | **active corrective roadmap** — current Milestone 7 authority | [`145-status.md`](145-status.md) |
 | 146 | **passed** bidirectional private-destination reference requalification; relaxed `from_imported` invariant | [`146-status.md`](146-status.md) |
-| 147 | next executable — dedicated raw STREAM socket driver corrective | [`147-m7-sam31-dedicated-raw-stream-driver-corrective.md`](147-m7-sam31-dedicated-raw-stream-driver-corrective.md) |
-| 148 | blocked on Plan 147 — two-independent-client final Milestone 7 closure | [`148-m7-sam31-independent-client-final-closure.md`](148-m7-sam31-independent-client-final-closure.md) |
+| 147 | **passed** dedicated raw STREAM socket driver | [`147-status.md`](147-status.md) |
+| 148 | next executable — two-independent-client final Milestone 7 closure | [`148-m7-sam31-independent-client-final-closure.md`](148-m7-sam31-independent-client-final-closure.md) |
 
 Do not restore the historical Plan 136/138/142/143 broad `passed` labels as
 final M7 authority without satisfying the superseding Plan 146–148 acceptance
@@ -151,6 +151,9 @@ and the dedicated interop skills.
 - Plan 142's canonical SAM I2P Base64 correction (`-`/`~`, `=` padding).
 - Plan 143/144's reusable Plan 129 local-delivery seam and in-process
   bidirectional Streaming SYN/SYN-response handshake regression.
+- Plan 147's dedicated raw STREAM socket driver (same-socket
+  TCP↔Streaming byte pump, bounded ACK/retransmit runtime driver,
+  and localhost byte-product evidence).
 
 ## What's not implemented yet
 
@@ -165,11 +168,6 @@ and the dedicated interop skills.
   surface).
 - I2NP message handling and router dispatch.
 - Milestone 7 SAM closure:
-  - canonical private-destination / PrivateKeyFile compatibility still needs
-    bidirectional executable reference evidence (Plan 146);
-  - dedicated same-socket TCP↔Streaming raw CONNECT/ACCEPT, bounded
-    retransmit/ACK runtime ownership, SILENT/backpressure/fault/lifecycle
-    acceptance remain open (Plan 147);
   - two independent SAM clients have not yet moved application bytes through
     the real listener; FORWARD/naming final byte-path/resource/privacy closure
     remains open (Plan 148).

@@ -382,6 +382,17 @@ pub fn deliver<R: CryptoRng + RngCore>(
                 && peek.receive_stream_id != 0;
             if is_syn_response {
                 canonical
+            } else if flags_bits & i2pr_proto::streaming::FLAG_SYNCHRONIZE != 0 {
+                // Initial SYN (send_stream_id == 0) always lands on
+                // the receiver mirror where listeners are bound.
+                receiver.streaming
+            } else if canonical.lookup_outbound(peek.receive_stream_id).is_some()
+                || canonical.lookup_outbound(peek.send_stream_id).is_some()
+            {
+                // Established data from the peer that originated the
+                // connection: the receiver mirror does not own this
+                // stream id, the canonical outbound manager does.
+                canonical
             } else {
                 receiver.streaming
             }

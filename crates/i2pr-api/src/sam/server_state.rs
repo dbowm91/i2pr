@@ -48,7 +48,7 @@ use crate::sam::version::{MAX_SUPPORTED_VERSION, MIN_SUPPORTED_VERSION};
 
 /// Typed outcome of dispatching one [`CommandOutcome`] against the
 /// current [`ServerConnectionState`].
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum DispatchOutcome {
     /// Stay in the same state, send `reply` (if any) to the client.
     Stay {
@@ -95,15 +95,19 @@ pub enum DispatchOutcome {
         /// Validated `STREAM ACCEPT` request.
         request: Box<StreamAcceptRequest>,
     },
-    /// Plan 143: the runtime has finished the pre-raw STREAM STATUS
+    /// Plan 147: the runtime has finished the pre-raw STREAM STATUS
     /// exchange and is now handing the underlying TCP socket to the
     /// per-stream raw-mode driver. The connection state machine
     /// stops tracking line mode after this outcome; the TCP reader
     /// returns the socket to the caller and the per-stream driver
-    /// owns the remaining lifetime.
+    /// owns the remaining lifetime. The [`StreamRawTransition`]
+    /// payload carries the data the daemon needs to construct the
+    /// [`crate::sam::RawStreamHandoff`].
     StreamRawMode {
         /// Stream id assigned by the registry.
         stream_id: u32,
+        /// Raw-mode transition payload.
+        transition: StreamRawTransition,
     },
     /// The command requires a daemon-owned forward registration.
     RequireStreamForward {
@@ -540,10 +544,20 @@ fn stream_accept_error_to_result(error: &StreamAcceptError) -> crate::sam::reply
 /// daemon. The runtime already advanced the per-stream state machine
 /// to `Established`; this payload carries the data the per-stream
 /// socket task uses to drive the raw-mode transition.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct StreamConnectApplied {
     /// Stream id assigned by the registry.
     pub stream_id: u32,
+    /// Destination identifier (forwarded to the raw-mode handoff).
+    pub destination_id: DestinationId,
+    /// Owning SAM session identifier.
+    pub session_id: SamSessionId,
+    /// Streaming connection id on the local `StreamingManager`.
+    pub connection_id: i2pr_client::streaming::connection::ConnectionId,
+    /// Peer destination supplied to STREAM CONNECT.
+    pub peer_destination: i2pr_client::streaming::manager::RemoteDestination,
+    /// `true` when `SILENT=true` was supplied on STREAM CONNECT.
+    pub silent: bool,
 }
 
 /// Failed outcome of a `STREAM CONNECT` follow-up.
@@ -556,10 +570,21 @@ pub struct StreamConnectFailed {
 }
 
 /// Successful outcome of a `STREAM ACCEPT` follow-up.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct StreamAcceptApplied {
     /// Stream id assigned by the registry.
     pub stream_id: u32,
+    /// Destination identifier (forwarded to the raw-mode handoff).
+    pub destination_id: DestinationId,
+    /// Owning SAM session identifier.
+    pub session_id: SamSessionId,
+    /// Streaming connection id on the receiver-mirror
+    /// `StreamingManager`.
+    pub connection_id: i2pr_client::streaming::connection::ConnectionId,
+    /// Authenticated peer destination extracted from the inbound SYN.
+    pub peer_destination: i2pr_client::streaming::manager::RemoteDestination,
+    /// `true` when `SILENT=true` was supplied on STREAM ACCEPT.
+    pub silent: bool,
 }
 
 /// Failed outcome of a `STREAM ACCEPT` follow-up.
@@ -603,8 +628,48 @@ pub struct NamingLookupFailed {
     pub message: String,
 }
 
+/// Plan 147: encode the per-connection raw-mode handoff into the
+/// dispatch outcome.
+#[derive(Debug)]
+pub enum StreamRawTransition {
+    /// STREAM CONNECT succeeded; the runtime is `Established` and the
+    /// socket should be handed to the raw driver.
+    Connect {
+        /// Stream id assigned by the registry.
+        stream_id: u32,
+        /// Destination identifier.
+        destination_id: DestinationId,
+        /// Owning SAM session identifier.
+        session_id: SamSessionId,
+        /// Streaming connection id on the local `StreamingManager`.
+        connection_id: i2pr_client::streaming::connection::ConnectionId,
+        /// Peer destination supplied to STREAM CONNECT.
+        peer_destination: i2pr_client::streaming::manager::RemoteDestination,
+        /// `true` when `SILENT=true` was supplied on STREAM CONNECT.
+        silent: bool,
+    },
+    /// STREAM ACCEPT observed an inbound SYN, accepted it, and the
+    /// receiver-mirror connection is `Established`; the socket should
+    /// be handed to the raw driver.
+    Accept {
+        /// Stream id assigned by the registry.
+        stream_id: u32,
+        /// Destination identifier.
+        destination_id: DestinationId,
+        /// Owning SAM session identifier.
+        session_id: SamSessionId,
+        /// Streaming connection id on the receiver-mirror
+        /// `StreamingManager`.
+        connection_id: i2pr_client::streaming::connection::ConnectionId,
+        /// Authenticated peer destination extracted from the inbound SYN.
+        peer_destination: i2pr_client::streaming::manager::RemoteDestination,
+        /// `true` when `SILENT=true` was supplied on STREAM ACCEPT.
+        silent: bool,
+    },
+}
+
 /// Convert the daemon's `STREAM CONNECT` follow-up outcome into the
-/// per-connection dispatch outcome. Plan 143 returns
+/// per-connection dispatch outcome. Plan 147 returns
 /// [`DispatchOutcome::StreamRawMode`] on success so the daemon
 /// transitions to raw byte mode after writing the `STREAM STATUS
 /// RESULT=OK` reply; the previous Stay-only behaviour is retained
@@ -615,6 +680,14 @@ pub fn apply_stream_connect_outcome(
     match outcome {
         Ok(applied) => DispatchOutcome::StreamRawMode {
             stream_id: applied.stream_id,
+            transition: StreamRawTransition::Connect {
+                stream_id: applied.stream_id,
+                destination_id: applied.destination_id,
+                session_id: applied.session_id,
+                connection_id: applied.connection_id,
+                peer_destination: applied.peer_destination,
+                silent: applied.silent,
+            },
         },
         Err(failed) => DispatchOutcome::Close {
             close_reason: CloseReason::MalformedLine,
@@ -632,8 +705,16 @@ pub fn apply_stream_accept_outcome(
     outcome: Result<StreamAcceptApplied, StreamAcceptFailed>,
 ) -> DispatchOutcome {
     match outcome {
-        Ok(_applied) => DispatchOutcome::Stay {
-            reply: Some(Reply::Stream(StreamStatus::ok())),
+        Ok(applied) => DispatchOutcome::StreamRawMode {
+            stream_id: applied.stream_id,
+            transition: StreamRawTransition::Accept {
+                stream_id: applied.stream_id,
+                destination_id: applied.destination_id,
+                session_id: applied.session_id,
+                connection_id: applied.connection_id,
+                peer_destination: applied.peer_destination,
+                silent: applied.silent,
+            },
         },
         Err(failed) => DispatchOutcome::Close {
             close_reason: CloseReason::MalformedLine,

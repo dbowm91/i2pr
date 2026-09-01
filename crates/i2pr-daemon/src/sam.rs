@@ -61,7 +61,6 @@ use i2pr_client::{
 use i2pr_crypto::OsRng;
 use i2pr_runtime::CancellationToken;
 use i2pr_runtime::ChildScope;
-use rand_core::SeedableRng;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -71,10 +70,16 @@ use tracing::{debug, info, warn};
 
 use crate::config::SamConfig;
 
+pub mod raw_stream;
 pub mod streams;
+pub use raw_stream::{
+    RawDirection, RawStreamError, RawStreamHandoff, RawStreamHandoffResolved, RawStreamOutcome,
+    run_raw_stream,
+};
 pub use streams::{
-    BridgeDeliveryError, BridgeDiagnostics, SamBridgeBuildError, SamDestinationBridge,
-    SamDestinationHandle, SamDestinations, bridge_to_peer, build_sam_destination_bridge,
+    BridgeDeliveryError, BridgeDiagnostics, InboundTunnelBuildError, InboundTunnelFactory,
+    SamBridgeBuildError, SamDestinationBridge, SamDestinationHandle, SamDestinations,
+    bridge_to_peer, build_sam_destination_bridge,
 };
 
 /// A live FORWARD registration owned by one SAM control socket.
@@ -227,6 +232,16 @@ pub struct SamServiceState {
     forwardings: Arc<Mutex<HashMap<SamSessionId, ForwardRegistration>>>,
     next_forward_owner: AtomicU64,
     destination_config: DestinationConfig,
+    /// Plan 147 §8 step 5: per-destination outbound-signal notifications.
+    /// `send_data_segment` and `deliver_outbound` notify the entry;
+    /// the corresponding per-destination driver task wakes and drains
+    /// the outbound queue, polls retransmits, and polls acks.
+    outbound_notify: Arc<Mutex<HashMap<DestinationId, Arc<tokio::sync::Notify>>>>,
+    /// Plan 147 §8 step 4: per-destination established-signal
+    /// notifications. `execute_stream_connect` and
+    /// `execute_stream_accept` `await` on the entry; the per-destination
+    /// driver task notifies when it observes `ConnectionState::Established`.
+    established_notify: Arc<Mutex<HashMap<DestinationId, Arc<tokio::sync::Notify>>>>,
 }
 
 impl SamServiceState {
@@ -246,6 +261,8 @@ impl SamServiceState {
         let stream_registry = Arc::new(SamStreamRegistry::new(config.limits));
         let forwardings = Arc::new(Mutex::new(HashMap::new()));
         let destination_config = DestinationConfig::balanced();
+        let outbound_notify = Arc::new(Mutex::new(HashMap::new()));
+        let established_notify = Arc::new(Mutex::new(HashMap::new()));
         Ok(Self {
             config,
             session_registry,
@@ -256,6 +273,8 @@ impl SamServiceState {
             forwardings,
             next_forward_owner: AtomicU64::new(1),
             destination_config,
+            outbound_notify,
+            established_notify,
         })
     }
 
@@ -287,6 +306,63 @@ impl SamServiceState {
     /// Returns the runtime-neutral stream ownership registry.
     pub fn stream_registry(&self) -> Arc<SamStreamRegistry> {
         Arc::clone(&self.stream_registry)
+    }
+
+    /// Returns (or lazily creates) the outbound-signal
+    /// [`tokio::sync::Notify`] associated with the supplied
+    /// destination. The Plan 147 per-destination driver task
+    /// `await`s on this handle; `send_data_segment` and
+    /// `deliver_outbound` call [`Self::notify_outbound_signal`].
+    pub fn outbound_signal(&self, destination_id: DestinationId) -> Arc<tokio::sync::Notify> {
+        let mut map = self
+            .outbound_notify
+            .lock()
+            .expect("outbound notify map poisoned");
+        map.entry(destination_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Notify::new()))
+            .clone()
+    }
+
+    /// Wakes any `await`er on the supplied destination's outbound
+    /// signal. Idempotent; safe to call when no driver is registered.
+    pub fn notify_outbound_signal(&self, destination_id: DestinationId) {
+        let notify = self.outbound_signal(destination_id);
+        notify.notify_one();
+    }
+
+    /// Returns (or lazily creates) the established-signal
+    /// [`tokio::sync::Notify`] associated with the supplied
+    /// destination. `execute_stream_connect` and
+    /// `execute_stream_accept` `await` on this handle while polling
+    /// for `ConnectionState::Established`; the per-destination driver
+    /// task calls [`Self::notify_established_signal`] after observing
+    /// the transition.
+    pub fn established_signal(&self, destination_id: DestinationId) -> Arc<tokio::sync::Notify> {
+        let mut map = self
+            .established_notify
+            .lock()
+            .expect("established notify map poisoned");
+        map.entry(destination_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Notify::new()))
+            .clone()
+    }
+
+    /// Wakes any `await`er on the supplied destination's established
+    /// signal. Idempotent.
+    pub fn notify_established_signal(&self, destination_id: DestinationId) {
+        let notify = self.established_signal(destination_id);
+        notify.notify_one();
+    }
+
+    /// Removes the per-destination outbound / established signal
+    /// entries. Called from [`Self::teardown_session`].
+    fn drop_destination_signals(&self, destination_id: DestinationId) {
+        if let Ok(mut map) = self.outbound_notify.lock() {
+            map.remove(&destination_id);
+        }
+        if let Ok(mut map) = self.established_notify.lock() {
+            map.remove(&destination_id);
+        }
     }
 
     /// Returns a non-secret snapshot of one forward registration.
@@ -421,6 +497,7 @@ impl SamServiceState {
         if let Ok(mut bridges) = self.sam_destinations.lock() {
             bridges.remove(destination_id);
         }
+        self.drop_destination_signals(destination_id);
         let _ = self.stream_registry.unregister_session(session_id);
     }
 
@@ -607,6 +684,38 @@ impl SamServiceState {
         Ok((listener, bound_address))
     }
 
+    /// Spawns the Plan 147 per-destination runtime driver task for
+    /// `destination_id`. The driver wakes on the destination's
+    /// outbound-signal [`tokio::sync::Notify`] and drains queued
+    /// `TransportSendRequest`s through the Plan 129 local seam into
+    /// the registered peer bridge (looked up by destination hash via
+    /// [`streams::SamDestinations::lookup_by_peer_hash`]). It also
+    /// polls the canonical + receiver-mirror `StreamingManager`s for
+    /// retransmits and acks on a fixed cadence, and notifies the
+    /// destination's established-signal whenever it observes a
+    /// connection that has transitioned to
+    /// [`i2pr_client::streaming::connection::ConnectionState::Established`].
+    ///
+    /// The driver is owned by `children` and terminates when the
+    /// cancellation token fires.
+    pub fn spawn_destination_driver(
+        self: &Arc<Self>,
+        destination_id: DestinationId,
+        children: &ChildScope,
+        cancellation: CancellationToken,
+    ) -> Result<(), i2pr_runtime::ChildScopeError> {
+        let state = Arc::clone(self);
+        let destination_for_task = destination_id;
+        children.spawn(move |task_cancellation| {
+            let _ = task_cancellation;
+            let cancellation = cancellation.clone();
+            async move {
+                run_destination_driver(state, destination_for_task, cancellation).await;
+                Ok(())
+            }
+        })
+    }
+
     /// Accepts connections from the supplied pre-bound listener
     /// until the supplied cancellation token fires.
     pub async fn serve(
@@ -656,14 +765,16 @@ impl SamServiceState {
                     let child_token_for_task = child_token.clone();
                     let permit_for_task: OwnedSemaphorePermit = permit;
                     let children_for_task = children.clone();
-                    if let Err(error) = children_for_task.spawn(move |task_cancellation| {
+                    if let Err(error) = children_for_task.clone().spawn(move |task_cancellation| {
                         let _permit = permit_for_task;
+                        let raw_scope = children_for_task.clone();
                         async move {
                             handle_connection(
                                 state,
                                 stream,
                                 task_cancellation,
                                 child_token_for_task,
+                                raw_scope,
                             )
                             .await;
                             Ok(())
@@ -809,6 +920,52 @@ impl SessionCreateError {
     }
 }
 
+/// Plan 147 §8: the per-connection transition state produced by
+/// `dispatch_command`. The connection loop reads this and either
+/// continues parsing commands, closes the socket, or hands the socket
+/// off to the raw-mode driver task.
+pub enum ConnectionDisposition {
+    /// Continue parsing SAM command lines on this connection. The
+    /// optional reply (when `Some`) has already been written to the
+    /// socket by `dispatch_command`.
+    Continue {
+        /// Next state to feed back into the dispatch loop.
+        next_state: ServerConnectionState,
+    },
+    /// Close the connection without transitioning to raw mode. Any
+    /// reply has already been written.
+    Close,
+    /// Plan 147 §8: the runtime reports a successful STREAM CONNECT or
+    /// STREAM ACCEPT that must transition to raw byte mode. The
+    /// connection loop constructs the [`RawStreamHandoff`] from this
+    /// payload plus the line reader's buffered bytes, transfers the
+    /// `TcpStream` ownership to the raw driver, and exits.
+    RawTransition(RawTransitionPayload),
+}
+
+/// Plan 147 §8: data the connection loop needs to construct the
+/// [`RawStreamHandoff`] when `dispatch_command` reports
+/// `ConnectionDisposition::RawTransition`. The `TcpStream` is not
+/// inside this struct because `dispatch_command` still owns the
+/// socket at the moment it returns.
+#[derive(Debug)]
+pub struct RawTransitionPayload {
+    /// Direction (CONNECT vs ACCEPT).
+    pub direction: RawDirection,
+    /// SAM stream attachment id.
+    pub attachment_id: u32,
+    /// Owning session id.
+    pub session_id: SamSessionId,
+    /// Owning destination id.
+    pub destination_id: DestinationId,
+    /// Streaming connection id on the destination's `StreamingManager`.
+    pub connection_id: i2pr_client::streaming::connection::ConnectionId,
+    /// Peer destination.
+    pub peer_destination: i2pr_client::streaming::manager::RemoteDestination,
+    /// `true` when the SAM `SILENT=true` option was supplied.
+    pub silent: bool,
+}
+
 /// Per-connection failure categories surfaced to the structured log.
 #[derive(Debug, Error)]
 enum ConnectionFailure {
@@ -823,6 +980,7 @@ async fn handle_connection(
     mut stream: TcpStream,
     cancellation: CancellationToken,
     service_cancellation: CancellationToken,
+    raw_children: ChildScope,
 ) {
     let peer_ip = stream
         .peer_addr()
@@ -834,6 +992,13 @@ async fn handle_connection(
 
     let mut reader = LineReader::new();
     let mut connection_state = ServerConnectionState::AwaitHello;
+    // Plan 147 §8: when `dispatch_command` reports a raw-mode
+    // transition the connection loop hands the `TcpStream` over to
+    // `run_raw_stream` and exits. The `Vec<u8>` here captures any
+    // bytes the `LineReader` buffered past the final command
+    // newline; the raw driver emits them as the first TCP->Streaming
+    // payload.
+    let mut pending_raw: Option<RawTransitionPayload> = None;
 
     let result: Result<(), ConnectionFailure> = async {
         tokio::select! {
@@ -849,7 +1014,7 @@ async fn handle_connection(
                 let outcome = parse_line(&first_command).map_err(|error| {
                     ConnectionFailure::Protocol(format!("parse error: {error}"))
                 })?;
-                connection_state = dispatch_command(
+                let disposition = dispatch_command(
                     state.clone(),
                     connection_state.clone(),
                     &outcome,
@@ -859,10 +1024,20 @@ async fn handle_connection(
                     connection_owner,
                 )
                 .await?;
+                apply_disposition(
+                    disposition,
+                    &mut connection_state,
+                    &mut pending_raw,
+                    &mut reader,
+                )?;
             }
         }
 
-        while !connection_state.is_closed() {
+        while connection_state == ServerConnectionState::AwaitHello || !connection_state.is_closed()
+        {
+            if pending_raw.is_some() {
+                break;
+            }
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => {
@@ -876,7 +1051,7 @@ async fn handle_connection(
                     let outcome = parse_line(&line).map_err(|error| {
                         ConnectionFailure::Protocol(format!("parse error: {error}"))
                     })?;
-                    connection_state = dispatch_command(
+                    let disposition = dispatch_command(
                         state.clone(),
                         connection_state.clone(),
                         &outcome,
@@ -886,6 +1061,12 @@ async fn handle_connection(
                         connection_owner,
                     )
                     .await?;
+                    apply_disposition(
+                        disposition,
+                        &mut connection_state,
+                        &mut pending_raw,
+                        &mut reader,
+                    )?;
                 }
             }
         }
@@ -899,15 +1080,88 @@ async fn handle_connection(
 
     state.teardown_forward_owner(connection_owner);
 
+    // Plan 147 §8: when this handle_connection loop exits because
+    // the connection transitioned to raw mode, the bridge must
+    // stay installed — the dedicated raw-stream driver
+    // (`run_raw_stream`) takes ownership of the socket and keeps
+    // routing bytes through the same `bridge_to_peer` seam.
+    // Calling `teardown_session` here would `bridges.remove(...)`
+    // and orphan the runtime driver, dropping every queued SYN
+    // response before it ever reaches the peer.
     if let ServerConnectionState::SessionControl {
         session_id,
         destination_id,
     } = &connection_state
+        && pending_raw.is_none()
     {
         state.teardown_session(session_id, *destination_id);
     }
 
+    // Plan 147 §8: on `ConnectionDisposition::RawTransition` the
+    // connection task transfers the `TcpStream` ownership to
+    // `run_raw_stream`. We drain the line reader's buffered bytes
+    // (Plan 147 §6) before the handoff so no byte can ever be
+    // mis-parsed as a SAM command after the socket enters raw mode.
+    if let Some(payload) = pending_raw.take() {
+        let initial_raw_bytes = reader.take_buffered();
+        let handoff = RawStreamHandoff {
+            stream,
+            session_id: payload.session_id,
+            destination_id: payload.destination_id,
+            attachment_id: payload.attachment_id,
+            connection_id: payload.connection_id,
+            peer_destination: payload.peer_destination,
+            initial_raw_bytes,
+            silent: payload.silent,
+            direction: payload.direction,
+        };
+        let raw_cancellation = cancellation.child_token();
+        if let Err(error) = raw_children.spawn(move |_task_cancellation| {
+            let _ = _task_cancellation;
+            let raw_cancellation = raw_cancellation;
+            let state = Arc::clone(&state);
+            async move {
+                if let Err(error) = run_raw_stream(state, handoff, raw_cancellation).await {
+                    warn!(?error, "raw stream driver ended with error");
+                }
+                Ok(())
+            }
+        }) {
+            warn!(?error, "failed to spawn raw stream driver task");
+        }
+        return;
+    }
+
     let _ = stream.shutdown().await;
+}
+
+/// Plan 147 §8: applies one `ConnectionDisposition` produced by
+/// `dispatch_command` to the per-connection loop state.
+fn apply_disposition(
+    disposition: ConnectionDisposition,
+    connection_state: &mut ServerConnectionState,
+    pending_raw: &mut Option<RawTransitionPayload>,
+    reader: &mut LineReader,
+) -> Result<(), ConnectionFailure> {
+    match disposition {
+        ConnectionDisposition::Continue { next_state } => {
+            *connection_state = next_state;
+            Ok(())
+        }
+        ConnectionDisposition::Close => {
+            *connection_state = ServerConnectionState::Closed;
+            Ok(())
+        }
+        ConnectionDisposition::RawTransition(payload) => {
+            // Plan 147 §6: drop the line reader's buffer before the
+            // raw handoff so no subsequent byte can ever be parsed
+            // as a SAM command. The driver receives the bytes via
+            // `RawStreamHandoff.initial_raw_bytes`.
+            let _ = reader.take_buffered();
+            *pending_raw = Some(payload);
+            Ok(())
+        }
+    }
 }
 
 async fn receive_command(
@@ -1007,7 +1261,7 @@ async fn dispatch_command(
     _is_first: bool,
     peer_ip: IpAddr,
     connection_owner: u64,
-) -> Result<ServerConnectionState, ConnectionFailure> {
+) -> Result<ConnectionDisposition, ConnectionFailure> {
     // DEST GENERATE is a utility command that the daemon must
     // actually execute. Detect it here and run the runtime-neutral
     // `dest_generate` operation so the reply line carries the real
@@ -1018,7 +1272,7 @@ async fn dispatch_command(
             if matches!(command.kind(), CommandKind::DestGenerate)
     ) {
         let next = handle_dest_generate(state_conn, stream).await?;
-        return Ok(next);
+        return Ok(ConnectionDisposition::Continue { next_state: next });
     }
 
     let dispatch = dispatch_command_state(state_conn.clone(), outcome);
@@ -1027,27 +1281,31 @@ async fn dispatch_command(
             if let Some(reply) = reply {
                 write_reply(stream, &reply).await?;
             }
-            Ok(state_conn)
+            Ok(ConnectionDisposition::Continue {
+                next_state: state_conn,
+            })
         }
         DispatchOutcome::Advance { state, reply } => {
             if let Some(reply) = reply {
                 write_reply(stream, &reply).await?;
             }
-            Ok(state)
+            Ok(ConnectionDisposition::Continue { next_state: state })
         }
         DispatchOutcome::Close { reply, .. } => {
             if let Some(reply) = reply {
                 write_reply(stream, &reply).await?;
             }
-            Ok(ServerConnectionState::Closed)
+            Ok(ConnectionDisposition::Close)
         }
         DispatchOutcome::Malformed { reply, .. } => {
             write_reply(stream, &reply).await?;
-            Ok(ServerConnectionState::Closed)
+            Ok(ConnectionDisposition::Close)
         }
         DispatchOutcome::Unsupported { reply, .. } => {
             write_reply(stream, &reply).await?;
-            Ok(state_conn)
+            Ok(ConnectionDisposition::Continue {
+                next_state: state_conn,
+            })
         }
         DispatchOutcome::RequireSessionCreate { request } => {
             let request = *request;
@@ -1059,7 +1317,9 @@ async fn dispatch_command(
                         Some("session id rejected by registry validator".to_owned()),
                     ));
                     write_reply(stream, &reply).await?;
-                    return Ok(state_conn);
+                    return Ok(ConnectionDisposition::Continue {
+                        next_state: state_conn,
+                    });
                 }
             };
             if !matches!(state_conn, ServerConnectionState::UtilityReady) {
@@ -1068,7 +1328,9 @@ async fn dispatch_command(
                     Some("SESSION CREATE before HELLO".to_owned()),
                 ));
                 write_reply(stream, &reply).await?;
-                return Ok(state_conn);
+                return Ok(ConnectionDisposition::Continue {
+                    next_state: state_conn,
+                });
             }
             let apply_result = match state.execute_session_create(id, request.destination) {
                 Ok(applied) => Ok(applied),
@@ -1082,75 +1344,25 @@ async fn dispatch_command(
                 write_reply(stream, reply).await?;
             }
             match outcome {
-                DispatchOutcome::Advance { state, .. } => Ok(state),
-                _ => Ok(state_conn),
+                DispatchOutcome::Advance { state, .. } => {
+                    Ok(ConnectionDisposition::Continue { next_state: state })
+                }
+                _ => Ok(ConnectionDisposition::Continue {
+                    next_state: state_conn,
+                }),
             }
         }
         DispatchOutcome::RequireStreamConnect { request } => {
             let request = *request;
-            // The control-socket state for a STREAM CONNECT is
-            // `UtilityReady` (HELLO has been negotiated on this very
-            // socket). Drive the per-stream work inline: validate
-            // session ownership, reserve the stream attachment slot,
-            // open the underlying Streaming connection, observe
-            // `Established`, then transition to raw byte mode.
             let outcome = execute_stream_connect(state.clone(), request).await;
             let outcome = apply_stream_connect_outcome(outcome);
-            match outcome {
-                DispatchOutcome::Stay { reply } => {
-                    if let Some(reply) = reply {
-                        write_reply(stream, &reply).await?;
-                    }
-                    Ok(state_conn)
-                }
-                DispatchOutcome::StreamRawMode { stream_id } => {
-                    write_reply(
-                        stream,
-                        &Reply::Stream(i2pr_api::sam::reply::StreamStatus::ok()),
-                    )
-                    .await?;
-                    // Plan 143: detach the TCP socket and hand it to
-                    // the per-stream raw-mode driver task. The
-                    // current control task is done with line mode
-                    // for this socket.
-                    let _ = stream_id;
-                    Ok(ServerConnectionState::Closed)
-                }
-                DispatchOutcome::Close { reply, .. } => {
-                    if let Some(reply) = reply {
-                        write_reply(stream, &reply).await?;
-                    }
-                    Ok(ServerConnectionState::Closed)
-                }
-                _ => Ok(state_conn),
-            }
+            handle_stream_connect_outcome(outcome, stream, state_conn).await
         }
         DispatchOutcome::RequireStreamAccept { request } => {
             let request = *request;
-            // The control-socket state for a STREAM ACCEPT is
-            // `UtilityReady` (HELLO has been negotiated on this
-            // very socket). Drive the per-stream work inline:
-            // validate session ownership, ensure a wildcard
-            // listener exists, register a pending ACCEPT waiter,
-            // observe the inbound SYN, accept it, then transition
-            // the TCP socket to raw byte mode.
             let outcome = execute_stream_accept(state.clone(), request).await;
             let outcome = i2pr_api::sam::server_state::apply_stream_accept_outcome(outcome);
-            match outcome {
-                DispatchOutcome::Stay { reply } => {
-                    if let Some(reply) = reply {
-                        write_reply(stream, &reply).await?;
-                    }
-                    Ok(state_conn)
-                }
-                DispatchOutcome::Close { reply, .. } => {
-                    if let Some(reply) = reply {
-                        write_reply(stream, &reply).await?;
-                    }
-                    Ok(ServerConnectionState::Closed)
-                }
-                _ => Ok(state_conn),
-            }
+            handle_stream_connect_outcome(outcome, stream, state_conn).await
         }
         DispatchOutcome::RequireStreamForward { request } => {
             let request = *request;
@@ -1159,7 +1371,9 @@ async fn dispatch_command(
             if let Some(reply) = outcome.reply() {
                 write_reply(stream, reply).await?;
             }
-            Ok(state_conn)
+            Ok(ConnectionDisposition::Continue {
+                next_state: state_conn,
+            })
         }
         DispatchOutcome::RequireNamingLookup { request } => {
             let request = *request;
@@ -1168,18 +1382,93 @@ async fn dispatch_command(
             if let Some(reply) = outcome.reply() {
                 write_reply(stream, reply).await?;
             }
-            Ok(state_conn)
+            Ok(ConnectionDisposition::Continue {
+                next_state: state_conn,
+            })
         }
-        DispatchOutcome::StreamRawMode { stream_id } => {
-            // Plan 143: a fresh STREAM CONNECT succeeded and the
-            // per-stream socket task wants raw byte mode. The control
-            // socket stays in UtilityReady so the client can issue
-            // further line-mode commands on this same socket — the
-            // raw-mode transition lives entirely inside the per-stream
-            // task that owns the underlying TCP stream.
+        DispatchOutcome::StreamRawMode { stream_id, .. } => {
             let _ = stream_id;
-            Ok(state_conn)
+            Ok(ConnectionDisposition::Continue {
+                next_state: state_conn,
+            })
         }
+    }
+}
+
+/// Plan 147 §8 step 1: convert the STREAM CONNECT/ACCEPT
+/// `DispatchOutcome` into a `ConnectionDisposition`. On `StreamRawMode`
+/// the dispatcher writes the SAM `STREAM STATUS RESULT=OK` reply, then
+/// signals the connection loop to construct a `RawStreamHandoff` and
+/// hand the socket over to the dedicated raw-mode driver. The
+/// connection loop MUST NOT touch the socket after it observes
+/// `ConnectionDisposition::RawTransition`.
+async fn handle_stream_connect_outcome(
+    outcome: DispatchOutcome,
+    stream: &mut TcpStream,
+    state_conn: ServerConnectionState,
+) -> Result<ConnectionDisposition, ConnectionFailure> {
+    use i2pr_api::sam::reply::StreamStatus;
+    use i2pr_api::sam::server_state::StreamRawTransition;
+    match outcome {
+        DispatchOutcome::StreamRawMode {
+            stream_id,
+            transition,
+        } => {
+            let _ = stream_id;
+            let (direction, destination_id, session_id, connection_id, peer_destination, silent) =
+                match transition {
+                    StreamRawTransition::Connect {
+                        destination_id,
+                        session_id,
+                        connection_id,
+                        peer_destination,
+                        silent,
+                        ..
+                    } => (
+                        RawDirection::Outbound,
+                        destination_id,
+                        session_id,
+                        connection_id,
+                        peer_destination,
+                        silent,
+                    ),
+                    StreamRawTransition::Accept {
+                        destination_id,
+                        session_id,
+                        connection_id,
+                        peer_destination,
+                        silent,
+                        ..
+                    } => (
+                        RawDirection::Inbound,
+                        destination_id,
+                        session_id,
+                        connection_id,
+                        peer_destination,
+                        silent,
+                    ),
+                };
+            write_reply(stream, &Reply::Stream(StreamStatus::ok())).await?;
+            let attachment_id = u32::try_from(connection_id.raw()).unwrap_or(u32::MAX);
+            Ok(ConnectionDisposition::RawTransition(RawTransitionPayload {
+                direction,
+                attachment_id,
+                session_id,
+                destination_id,
+                connection_id,
+                peer_destination,
+                silent,
+            }))
+        }
+        DispatchOutcome::Close { reply, .. } => {
+            if let Some(reply) = reply {
+                write_reply(stream, &reply).await?;
+            }
+            Ok(ConnectionDisposition::Close)
+        }
+        _ => Ok(ConnectionDisposition::Continue {
+            next_state: state_conn,
+        }),
     }
 }
 
@@ -1423,6 +1712,11 @@ async fn execute_stream_connect(
     // per-destination driver task drains the outbound queue into
     // the peer's bridge through `bridge_to_peer` once the SYN
     // response arrives.
+    //
+    // Plan 147 §11: production SAM CONNECT uses the OS CSPRNG, never
+    // a deterministic seed. The streaming manager's `connect` accepts
+    // any `CryptoRng + RngCore`; we use the same `UnwrapMut(OsRng)`
+    // wrap the runtime delivery path uses.
     let now_ms: u64 = 1_000;
     let now_seconds: u32 = 1;
     let local_port: u16 = 0;
@@ -1432,8 +1726,8 @@ async fn execute_stream_connect(
         i2pr_client::streaming::manager::StreamingManagerError,
     > = Ok(i2pr_client::streaming::manager::ConnectOutcome::ConnectionTableFull);
     bridge.with(|bridge| {
-        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(0);
         let local_identity = bridge.identity();
+        let mut rng = rand_core::UnwrapMut(&mut OsRng);
         connect_outcome = bridge.streaming_mut().connect(
             local_identity.as_ref(),
             &remote,
@@ -1461,26 +1755,120 @@ async fn execute_stream_connect(
             message: "connect produced no SYN".to_owned(),
         });
     };
+    // Plan 147 §7: kick the per-destination driver so it drains
+    // the newly queued SYN immediately instead of waiting for the
+    // 100 ms ticker. The driver will notify the established signal
+    // once the SYN response arrives back on the same manager.
+    state.notify_outbound_signal(destination_id);
     let stream_id = connection_id.raw();
 
-    // The SYN was queued on the local outbound queue. The
-    // per-destination driver task (driven by the SAM service main
-    // loop) will pick the request up and deliver it through the
-    // Plan 143 bridge_to_peer seam. Here we move the attachment to
-    // Established state synchronously to satisfy Plan 138 §7's
-    // protocol contract: the SAM STREAM CONNECT result line
-    // returns only after the manager has produced a SYN; the
-    // full Established handshake is observed by the driver task.
+    // Plan 147 §7: STREAM CONNECT must observe the real
+    // `ConnectionState::Established` transition before it returns
+    // OK. The SYN was queued on the local outbound queue and the
+    // per-destination driver task will pick it up and deliver it
+    // through the Plan 143 `bridge_to_peer` seam. We park here on
+    // the destination's established-signal until the manager
+    // transitions to Established or the deadline expires.
+    //
+    // The deadline defaults to a bounded 30 seconds; production
+    // callers that want a tighter limit must extend the limit
+    // surface explicitly.
+    let deadline = Duration::from_secs(20);
+    let established_notify = state.established_signal(destination_id);
+    let established = wait_for_established(
+        state.clone(),
+        destination_id,
+        connection_id,
+        established_notify,
+        deadline,
+    )
+    .await;
+    if !established {
+        attachment.retain();
+        return Err(StreamConnectFailed {
+            result: ReplyResult::Timeout,
+            message: format!("STREAM CONNECT did not reach Established within {deadline:?}"),
+        });
+    }
+
     let _ = now_seconds;
+    let stream_id_value = attachment.stream_id;
     let _ = state.stream_registry.update_state(
         &session_id,
-        attachment.stream_id,
+        stream_id_value,
         SamStreamState::Established,
     );
     attachment.retain();
     Ok(StreamConnectApplied {
         stream_id: u32::try_from(stream_id).unwrap_or(u32::MAX),
+        destination_id,
+        session_id: session_id.clone(),
+        connection_id,
+        peer_destination: remote,
+        silent: request.silent.unwrap_or(false),
     })
+}
+
+/// Plan 147 §7: parks the caller until `manager.get_connection(id)`
+/// reports `ConnectionState::Established`, or returns `false` once
+/// `deadline` expires. The destination's runtime driver notifies
+/// this wait whenever a connection in the destination transitions to
+/// Established; the loop also polls every `tick` so the wait does
+/// not depend on a missed notify.
+async fn wait_for_established(
+    state: Arc<SamServiceState>,
+    destination_id: DestinationId,
+    connection_id: i2pr_client::streaming::connection::ConnectionId,
+    notify: Arc<tokio::sync::Notify>,
+    deadline: Duration,
+) -> bool {
+    let started = std::time::Instant::now();
+    loop {
+        let state_now = {
+            let destinations_arc = state.sam_destinations();
+            if let Ok(destinations) = destinations_arc.lock() {
+                let canonical = destinations.get(destination_id).and_then(|handle| {
+                    handle.with(|bridge| {
+                        bridge
+                            .streaming()
+                            .get_connection(connection_id)
+                            .map(|conn| conn.state())
+                    })
+                });
+                let receiver = if canonical.is_none() {
+                    destinations.get(destination_id).and_then(|handle| {
+                        handle.with(|bridge| {
+                            bridge
+                                .receiver_streaming()
+                                .get_connection(connection_id)
+                                .map(|conn| conn.state())
+                        })
+                    })
+                } else {
+                    None
+                };
+                canonical.or(receiver)
+            } else {
+                None
+            }
+        };
+        if matches!(
+            state_now,
+            Some(i2pr_client::streaming::connection::ConnectionState::Established)
+        ) {
+            return true;
+        }
+        let remaining = deadline.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return false;
+        }
+        let tick = remaining.min(Duration::from_millis(20));
+        tokio::select! {
+            biased;
+            _ = notify.notified() => {}
+            _ = tokio::time::sleep(tick) => {}
+        }
+    }
 }
 
 /// Executes a `STREAM ACCEPT` request after the HELLO handshake.
@@ -1547,11 +1935,20 @@ async fn execute_stream_accept(
         }
     };
 
-    let listener_result = state
-        .streaming_pools()
-        .lock()
-        .expect("streaming pools poisoned")
-        .with_manager(destination_id, |manager| manager.listen(0));
+    // Plan 147 §7: bind the listener on the BRIDGE's receiver-mirror
+    // `StreamingManager` (the manager that actually receives the
+    // inbound SYN through the local seam), not on the SESSION CREATE
+    // `streaming_pools` manager — those are two separate instances.
+    let listener_result = {
+        let destinations_arc = state.sam_destinations();
+        let destinations = destinations_arc.lock().expect("sam destinations poisoned");
+        destinations.get(destination_id).map(|handle| {
+            handle.with(|bridge| {
+                let manager = bridge.receiver_streaming_mut();
+                manager.listen(0)
+            })
+        })
+    };
     match listener_result {
         Some(Ok(_))
         | Some(Err(i2pr_client::streaming::manager::StreamingManagerError::PortAlreadyInUse)) => {}
@@ -1575,9 +1972,311 @@ async fn execute_stream_accept(
         }
     }
 
+    // Plan 147 §7: STREAM ACCEPT must observe an inbound SYN, drive
+    // the SYN response through `accept_inbound_syn`, and observe the
+    // local connection transition to `Established` before returning
+    // OK. Park here on the destination's established-signal until the
+    // receiver mirror reaches Established or the deadline expires.
+    let deadline = Duration::from_secs(20);
+    let established_notify = state.established_signal(destination_id);
+    state.notify_outbound_signal(destination_id);
+    let (inbound_connection_id, peer_destination) = match wait_for_accept_established(
+        state.clone(),
+        destination_id,
+        established_notify,
+        deadline,
+    )
+    .await
+    {
+        Some(value) => value,
+        None => {
+            return Err(StreamAcceptFailed {
+                result: ReplyResult::Timeout,
+                message: format!(
+                    "STREAM ACCEPT did not observe an inbound SYN within {deadline:?}"
+                ),
+            });
+        }
+    };
+
+    let _ = state.stream_registry.update_state(
+        &session_id,
+        waiter.stream_id,
+        SamStreamState::Established,
+    );
     Ok(StreamAcceptApplied {
         stream_id: waiter.stream_id,
+        destination_id,
+        session_id: session_id.clone(),
+        connection_id: inbound_connection_id,
+        peer_destination,
+        silent: request.silent.unwrap_or(false),
     })
+}
+
+/// Plan 147 §7: parks the caller until the receiver mirror's
+/// listener backlog on port 0 produces an inbound connection that
+/// transitions to `ConnectionState::Established`. Returns the
+/// connection id and the authenticated peer destination (extracted
+/// from the inbound SYN) on success, `None` on timeout.
+async fn wait_for_accept_established(
+    state: Arc<SamServiceState>,
+    destination_id: DestinationId,
+    notify: Arc<tokio::sync::Notify>,
+    deadline: Duration,
+) -> Option<(
+    i2pr_client::streaming::connection::ConnectionId,
+    i2pr_client::streaming::manager::RemoteDestination,
+)> {
+    let started = std::time::Instant::now();
+    let mut accepted: Option<(
+        i2pr_client::streaming::connection::ConnectionId,
+        i2pr_client::streaming::manager::RemoteDestination,
+    )> = None;
+    loop {
+        let now_established: Option<(
+            i2pr_client::streaming::connection::ConnectionId,
+            i2pr_client::streaming::manager::RemoteDestination,
+        )> = {
+            // Plan 147: poll the BRIDGE's receiver-mirror
+            // StreamingManager (installed in `sam_destinations`),
+            // not the `streaming_pools` manager — those are two
+            // separate instances.
+            let destinations_arc = state.sam_destinations();
+            let destinations = destinations_arc.lock().expect("sam destinations poisoned");
+            let handle_opt = destinations.get(destination_id);
+            let handle = match handle_opt {
+                Some(h) => h,
+                None => return None,
+            };
+            handle.with(|bridge| {
+                let local_identity = bridge.identity().clone();
+                let mut rng = rand_core::UnwrapMut(&mut OsRng);
+                let manager = bridge.receiver_streaming_mut();
+                if let Some((cid, _)) = accepted.as_ref() {
+                    let state = manager.get_connection(*cid).map(|c| c.state());
+                    if matches!(
+                        state,
+                        Some(i2pr_client::streaming::connection::ConnectionState::Established)
+                    ) {
+                        return accepted.clone();
+                    }
+                    return None;
+                }
+                if manager.listener_backlog(0) == 0 {
+                    return None;
+                }
+                let cid = match manager.accept(0) {
+                    Some(cid) => cid,
+                    None => return None,
+                };
+                let conn = match manager.get_connection(cid) {
+                    Some(conn) => conn,
+                    None => return None,
+                };
+                let remote_port = conn.remote_port();
+                let local_port = conn.local_port();
+                let peer_signing = conn.peer_signing_key().clone();
+                let peer_hash = *conn.peer_destination_hash();
+                let advertised = i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PAYLOAD;
+                let request = match manager.accept_inbound_syn(
+                    local_identity.as_ref(),
+                    &i2pr_client::streaming::manager::RemoteDestination {
+                        destination_hash: peer_hash,
+                        signing_public_key: peer_signing.clone(),
+                        static_public_key: [0_u8; 32],
+                    },
+                    cid,
+                    local_port,
+                    remote_port,
+                    advertised,
+                    0,
+                    &mut rng,
+                ) {
+                    Ok(request) => request,
+                    Err(_) => return None,
+                };
+                manager.queue_outbound_packet(request);
+                let peer = i2pr_client::streaming::manager::RemoteDestination {
+                    destination_hash: peer_hash,
+                    signing_public_key: peer_signing,
+                    static_public_key: [0_u8; 32],
+                };
+                accepted = Some((cid, peer.clone()));
+                // Plan 147 §7: wake the per-destination driver so it
+                // routes the just-queued SYN response back to the
+                // peer through the local seam. Without this, the
+                // 100 ms ticker is the only wake source.
+                state.notify_outbound_signal(destination_id);
+                Some((cid, peer))
+            })
+        };
+        if let Some((cid, peer)) = now_established {
+            // Re-check Established on a clean lock to avoid races.
+            let destinations_arc = state.sam_destinations();
+            let destinations = destinations_arc.lock().expect("sam destinations poisoned");
+            let final_state = destinations.get(destination_id).and_then(|handle| {
+                handle.with(|bridge| {
+                    bridge
+                        .receiver_streaming()
+                        .get_connection(cid)
+                        .map(|c| c.state())
+                })
+            });
+            if matches!(
+                final_state,
+                Some(i2pr_client::streaming::connection::ConnectionState::Established)
+            ) {
+                return Some((cid, peer));
+            }
+        }
+        let remaining = deadline.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return None;
+        }
+        let tick = remaining.min(Duration::from_millis(20));
+        tokio::select! {
+            biased;
+            _ = notify.notified() => {}
+            _ = tokio::time::sleep(tick) => {}
+        }
+    }
+}
+
+/// Plan 147 §8 step 5/6: per-destination runtime driver loop.
+///
+/// Wakes on the destination's outbound-signal `Notify`. Drains
+/// `TransportSendRequest`s from both the canonical and
+/// receiver-mirror `StreamingManager`s and routes each through the
+/// Plan 129 local seam (`bridge_to_peer`) into the registered peer
+/// bridge. Polls retransmits and acks on a fixed cadence. Wakes any
+/// `await`er on the established-signal whenever a connection in this
+/// destination has transitioned to
+/// `ConnectionState::Established`.
+async fn run_destination_driver(
+    state: Arc<SamServiceState>,
+    destination_id: DestinationId,
+    cancellation: CancellationToken,
+) {
+    debug!(destination = ?destination_id, "destination driver starting");
+    let outbound_notify = state.outbound_signal(destination_id);
+    let established_notify = state.established_signal(destination_id);
+    // Initial wake so the driver immediately drains anything that
+    // was queued before the task was spawned.
+    outbound_notify.notify_one();
+    let mut ticker = tokio::time::interval(Duration::from_millis(250));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                debug!(destination = ?destination_id, "destination driver cancelled");
+                return;
+            }
+            _ = outbound_notify.notified() => {}
+            _ = ticker.tick() => {}
+        }
+        let _ = state.deliver_outbound(destination_id, 0, 0).unwrap_or(0);
+        // Step 1: poll retransmits and acks, routing any produced
+        // `TransportSendRequest`s through the same `bridge_to_peer`
+        // seam. We let `deliver_outbound` pull them off the
+        // outbound queues; the side effect is the bridge now
+        // observes them as drained.
+        let _ = state
+            .streaming_pools()
+            .lock()
+            .expect("streaming pools poisoned")
+            .with_manager(destination_id, |manager| {
+                let retransmits = manager.poll_retransmits(0);
+                for request in retransmits {
+                    manager.queue_outbound_packet(request);
+                }
+                let acks = manager.poll_acks(0);
+                for request in acks {
+                    manager.queue_outbound_packet(request);
+                }
+            });
+        let _ = state.deliver_outbound(destination_id, 0, 0);
+        // Step 2: notify any awaiter on the established signal if a
+        // connection has reached Established. We poll both managers.
+        let mut established_now = false;
+        {
+            let pools_arc = state.streaming_pools();
+            if let Ok(mut pools) = pools_arc.lock() {
+                let _ = pools.with_manager(destination_id, |manager| {
+                    let count = manager.connection_count();
+                    for id_raw in 0_u64..(count as u64 + 16) {
+                        let Some(conn) = manager.get_connection(
+                            i2pr_client::streaming::connection::ConnectionId::new(id_raw),
+                        ) else {
+                            continue;
+                        };
+                        if matches!(
+                            conn.state(),
+                            i2pr_client::streaming::connection::ConnectionState::Established
+                        ) {
+                            established_now = true;
+                            break;
+                        }
+                    }
+                });
+            }
+        }
+        if established_now {
+            established_notify.notify_one();
+        }
+        // Plan 147: also poll the BRIDGE's canonical + receiver
+        // StreamingManagers (installed in `sam_destinations`). The
+        // SYN response lands on the canonical manager because the
+        // outbound SYN was queued there by `execute_stream_connect`;
+        // checking only `streaming_pools` (the SESSION CREATE
+        // manager) misses the established transition.
+        let mut bridge_established_now = false;
+        {
+            let destinations_arc = state.sam_destinations();
+            if let Ok(destinations) = destinations_arc.lock() {
+                let _ = destinations.get(destination_id).map(|handle| {
+                    handle.with(|bridge| {
+                        let count = bridge.streaming().connection_count();
+                        for id_raw in 0_u64..(count as u64 + 16) {
+                            let Some(conn) = bridge.streaming().get_connection(
+                                i2pr_client::streaming::connection::ConnectionId::new(id_raw),
+                            ) else {
+                                continue;
+                            };
+                            if matches!(
+                                conn.state(),
+                                i2pr_client::streaming::connection::ConnectionState::Established
+                            ) {
+                                bridge_established_now = true;
+                                break;
+                            }
+                        }
+                        if !bridge_established_now {
+                            let count = bridge.receiver_streaming().connection_count();
+                            for id_raw in 0_u64..(count as u64 + 16) {
+                                let Some(conn) = bridge.receiver_streaming().get_connection(
+                                    i2pr_client::streaming::connection::ConnectionId::new(id_raw),
+                                ) else {
+                                    continue;
+                                };
+                                if matches!(
+                                    conn.state(),
+                                    i2pr_client::streaming::connection::ConnectionState::Established
+                                ) {
+                                    bridge_established_now = true;
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                });
+            }
+        }
+        if bridge_established_now {
+            established_notify.notify_one();
+        }
+    }
 }
 
 /// Handles a `DEST GENERATE` command after HELLO has been negotiated.

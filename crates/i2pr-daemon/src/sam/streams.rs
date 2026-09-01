@@ -118,6 +118,11 @@ pub struct SamDestinationBridge {
     receiver_lease_set2_store: LeaseSet2Store,
     receiver_now_seconds: u32,
     diagnostics: BridgeDiagnostics,
+    /// Plan 147 §10: test-only inbound-tunnel factory used by the
+    /// per-destination runtime driver to construct a fresh
+    /// `EstablishedTunnel` per delivery. Production deployments
+    /// install a real inbound-tunnel pool here.
+    inbound_tunnel_factory: Option<Arc<dyn InboundTunnelFactory>>,
 }
 
 impl std::fmt::Debug for SamDestinationBridge {
@@ -166,6 +171,7 @@ impl SamDestinationBridge {
             receiver_lease_set2_store: LeaseSet2Store::default(),
             receiver_now_seconds: now_seconds,
             diagnostics: BridgeDiagnostics::new(),
+            inbound_tunnel_factory: None,
         }
     }
 
@@ -249,6 +255,27 @@ impl SamDestinationBridge {
         self.diagnostics.record_inbound_observation();
     }
 
+    /// Installs the per-destination inbound-tunnel factory used by
+    /// the Plan 147 runtime driver. The factory is called once per
+    /// outbound `TransportSendRequest`; each call returns a fresh
+    /// `EstablishedTunnel` because the Plan 129 local seam
+    /// consumes its argument. Returns the previous factory, if any.
+    pub fn install_inbound_tunnel_factory(
+        &mut self,
+        factory: Arc<dyn InboundTunnelFactory>,
+    ) -> Option<Arc<dyn InboundTunnelFactory>> {
+        let prior = self.inbound_tunnel_factory.take();
+        self.inbound_tunnel_factory = Some(factory);
+        prior
+    }
+
+    /// Returns a clone of the installed inbound-tunnel factory, if
+    /// any. Used by the runtime driver to construct a fresh
+    /// `EstablishedTunnel` per delivery.
+    pub fn inbound_tunnel_factory(&self) -> Option<Arc<dyn InboundTunnelFactory>> {
+        self.inbound_tunnel_factory.clone()
+    }
+
     pub fn identity_netdb_key(&self) -> i2pr_netdb::DestinationHash {
         self.identity.id().as_netdb_key()
     }
@@ -286,6 +313,21 @@ impl SamDestinationHandle {
 
     pub fn inner(&self) -> &Arc<Mutex<SamDestinationBridge>> {
         &self.inner
+    }
+
+    /// Installs the per-destination inbound-tunnel factory used by
+    /// the Plan 147 runtime driver.
+    pub fn install_inbound_tunnel_factory(
+        &self,
+        factory: Arc<dyn InboundTunnelFactory>,
+    ) -> Option<Arc<dyn InboundTunnelFactory>> {
+        self.with(|bridge| bridge.install_inbound_tunnel_factory(factory))
+    }
+
+    /// Returns a clone of the installed inbound-tunnel factory, if
+    /// any.
+    pub fn inbound_tunnel_factory(&self) -> Option<Arc<dyn InboundTunnelFactory>> {
+        self.with(|bridge| bridge.inbound_tunnel_factory())
     }
 }
 
@@ -345,6 +387,10 @@ impl SamDestinations {
 
     pub fn get(&self, destination_id: DestinationId) -> Option<SamDestinationHandle> {
         self.by_id.get(&destination_id).cloned()
+    }
+
+    pub fn debug_ids(&self) -> Vec<DestinationId> {
+        self.by_id.keys().copied().collect()
     }
 
     pub fn remove(&mut self, destination_id: DestinationId) -> Option<SamDestinationHandle> {
@@ -657,6 +703,30 @@ fn dummy_outbound_tunnel() -> EstablishedTunnel {
         None,
     )
     .expect("dummy outbound tunnel")
+}
+
+/// Factory trait that constructs a fresh inbound `EstablishedTunnel`
+/// for the bridge's destination. The runtime driver calls this
+/// once per outbound `TransportSendRequest`; each call returns a
+/// new tunnel because the Plan 129 local seam consumes its
+/// argument. Production deployments bind a real inbound-tunnel
+/// pool here; tests bind the deterministic fixture
+/// `established_inbound(seed)` builder.
+pub trait InboundTunnelFactory: Send + Sync {
+    /// Builds a fresh inbound `EstablishedTunnel` for the
+    /// destination this factory is registered against.
+    fn build_inbound_tunnel(&self) -> Result<EstablishedTunnel, InboundTunnelBuildError>;
+}
+
+/// Typed failure of [`InboundTunnelFactory::build_inbound_tunnel`].
+#[derive(Debug, thiserror::Error)]
+pub enum InboundTunnelBuildError {
+    /// The factory could not produce a tunnel (e.g., pool empty).
+    #[error("inbound tunnel pool exhausted")]
+    PoolExhausted,
+    /// Underlying tunnel material was malformed.
+    #[error("inbound tunnel material invalid: {0}")]
+    InvalidMaterial(String),
 }
 
 /// Decodes a SAM public destination Base64 text into a

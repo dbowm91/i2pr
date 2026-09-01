@@ -104,6 +104,23 @@ impl LineReader {
         self.buf.clear();
     }
 
+    /// Consumes any bytes that arrived after the last complete
+    /// newline and returns them verbatim. Used by the SAM daemon at
+    /// the `STREAM CONNECT` / `STREAM ACCEPT` -> raw-mode
+    /// transition so post-command application bytes that the
+    /// reader had already buffered are preserved as the first raw
+    /// bytes flowing into the new raw driver.
+    ///
+    /// Plan 147 §4: the leftover bytes are bounded by the
+    /// per-line ceiling at command time, the buffer is empty
+    /// after the call, and the call never re-validates or
+    /// re-parses the bytes — the raw driver owns the post-command
+    /// byte stream from this point onward.
+    pub fn take_buffered(&mut self) -> Vec<u8> {
+        let drained: Vec<u8> = self.buf.drain(..).collect();
+        drained
+    }
+
     /// Feeds the supplied bytes to the reader.
     ///
     /// The reader scans the supplied bytes plus any previously
@@ -382,5 +399,35 @@ mod tests {
         let mut reader = LineReader::with_ceiling(4);
         let error = reader.push_one(b"ABCDE\n").unwrap_err();
         assert!(matches!(error, LineReaderError::Overflow { .. }));
+    }
+
+    #[test]
+    fn take_buffered_returns_post_newline_bytes_verbatim() {
+        let mut reader = LineReader::new();
+        let _ = reader.push(b"STREAM CONNECT ID=A DESTINATION=B\nraw-bytes");
+        assert!(reader.buffered_len() > 0);
+        let leftover = reader.take_buffered();
+        assert_eq!(leftover, b"raw-bytes");
+        assert_eq!(reader.buffered_len(), 0);
+    }
+
+    #[test]
+    fn take_buffered_is_empty_when_no_post_newline_bytes() {
+        let mut reader = LineReader::new();
+        let _ = reader.push(b"STREAM CONNECT ID=A DESTINATION=B\n");
+        let leftover = reader.take_buffered();
+        assert!(leftover.is_empty());
+        assert_eq!(reader.buffered_len(), 0);
+    }
+
+    #[test]
+    fn take_buffered_preserves_binary_bytes() {
+        let mut reader = LineReader::new();
+        let binary = [0_u8, 0x7F, 0xFF, 0x80, b'\n', b'\r', 0x00];
+        let mut combined = b"STREAM CONNECT ID=A DESTINATION=B\n".to_vec();
+        combined.extend_from_slice(&binary);
+        let _ = reader.push(&combined);
+        let leftover = reader.take_buffered();
+        assert_eq!(leftover, binary.to_vec());
     }
 }
