@@ -10,15 +10,15 @@ non-advertised; the production daemon does **not** activate NTCP2.
 Always read these before changing code or answering questions about state:
 
 1. `README.md` — current status (Milestone 6 local product gate
-   closed via Plan 134; Milestone 7 SAM corrective authority is Plan 141,
-   with Plan 142 next), build/test/lint commands, high-level architecture.
+   closed via Plan 134; Milestone 7 SAM corrective authority is Plan 145,
+   with Plan 146 next), build/test/lint commands, high-level architecture.
 2. `GUARDRAILS.md` — non-negotiable engineering, security,
    interoperability, and collaboration constraints.
 3. `CONTRIBUTING.md` — local quality checks, the runtime/testkit
    conventions, the rootless and Multipass evidence-lane contracts.
 4. The active plan under `plans/` (entry point:
    [`plans/README.md`](plans/README.md); current corrective status:
-   `plans/141-status.md`; next executable: Plan 142) and the relevant
+   `plans/145-status.md`; next executable: Plan 146) and the relevant
    `docs/adr/` record. The [`docs/architecture/audit/`](docs/architecture/audit/)
    directory tracks doc-vs-source drift findings from the most recent audits.
 5. `specs/support.toml` (mirrored to `docs/protocol-support.md`) for
@@ -82,18 +82,16 @@ Quick reference (deep-dive per crate):
   `SamLimits`, `SamSessionRegistry`, `LineReader`, `ServerConnectionState`,
   the runtime-neutral session dispatch state machine, bounded per-session
   `SamStreamRegistry`, loopback-only `STREAM FORWARD` validation, and local
-  `NAMING LOOKUP` resolution. **Plan 142 supersedes the current SAM Base64
-  and private-destination compatibility evidence; do not treat the existing
-  RFC-4648 implementation as final.** The daemon-only SAM service
-  (supervised Tokio listener, per-destination `StreamingManager` pool,
-  transactional `SESSION CREATE`, partial STREAM CONNECT / ACCEPT bridge,
-  ownership-bound forward registrations, and bounded raw forwarding bridge)
-  lives in `i2pr-daemon`. **The live same-socket CONNECT/ACCEPT product bridge
-  is closed via Plan 143** (`crates/i2pr-daemon/tests/sam_stream_product.rs`
-  is the canonical product evidence); the captured-outbound test seam
-  has been removed and the bridge now drives the full Plan 129 destination
-  stack through the runtime-neutral `i2pr_client::deliver` seam. `i2pr-api`
-  depends only on `i2pr-client`, `i2pr-crypto`, and `i2pr-proto`.
+  `NAMING LOOKUP` resolution. **Plan 142's I2P Base64 correction is retained;
+  private-destination external compatibility is requalified by Plan 146.**
+  The daemon-only SAM service (supervised Tokio listener, per-destination
+  `StreamingManager` pool, transactional `SESSION CREATE`, partial STREAM
+  CONNECT / ACCEPT bridge, ownership-bound forward registrations, and bounded
+  raw forwarding bridge) lives in `i2pr-daemon`. Plan 143/144 landed the
+  reusable Plan 129 local-delivery seam and an in-process bidirectional
+  Streaming handshake, but **the dedicated same-socket TCP↔Streaming raw
+  product path is not closed and is owned by Plan 147**. `i2pr-api` depends
+  only on `i2pr-client`, `i2pr-crypto`, and `i2pr-proto`.
 - `i2pr-testkit` — deterministic simulation; **no production crate
   may depend on it.**
 - `tools/i2pr-interop` — non-production test launcher. Must never
@@ -189,10 +187,10 @@ locally; `Cargo.lock` is authoritative.
   `cargo test -p i2pr-runtime forced_child_cleanup_is_repeatably_joined -- --test-threads=1`.
 - Deterministic testkit: `cargo test -p i2pr-testkit --all-targets`.
 - SAM 3.1 protocol foundation/corrections: `cargo test -p i2pr-api --all-targets`.
-- SAM loopback product lane: `cargo test -p i2pr-daemon --test sam_stream_product`
-  is the canonical Plan 143 evidence. The companion tests under
-  `cargo test -p i2pr-daemon --test sam_stream --test sam_forward_naming`
-  retain the prior loopback lanes.
+- SAM local delivery regressions: `cargo test -p i2pr-daemon --test sam_stream_product`
+  and `cargo test -p i2pr-daemon --test sam_stream_independent` retain the
+  Plan 143/144 internal product/handshake evidence. They do **not** replace
+  the Plan 147 dedicated raw-socket acceptance lane.
 - Constrained-host lane:
   `python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'`.
 
@@ -280,14 +278,15 @@ current public state:
   streaming) closed locally via Plan 134; independent-router
   interoperability is **not** claimed and is tracked as external
   acceptance debt.
-- The current product layer is SAM 3.1 under the Plan 141 corrective
+- The current product layer is SAM 3.1 under the **Plan 145** corrective
   roadmap. Plan 137 loopback server/session lifecycle remains passed.
-  Plan 136's SAM encoding/private-destination evidence is superseded by
-  Plan 142; Plan 138's product STREAM acceptance is closed via Plan 143
-  with the `sam_stream_product` test as canonical evidence;
-  Plan 139 FORWARD/naming implementation remains landed but its real-byte
-  acceptance is re-run in Plan 144. Plan 140 is the blocked audit record,
-  not the next executable plan.
+  Plan 142's Base64 correction is retained, while its private-destination
+  interoperability claim is requalified by Plan 146. Plan 143/144 local
+  delivery and in-process handshake work remains regression evidence, while
+  the dedicated raw TCP↔Streaming product path is owned by Plan 147. Plan 148
+  owns two-independent-client final closure plus FORWARD/naming byte-path
+  revalidation. Plan 140/141 are historical audit/corrective records, not the
+  next executable authority.
 
 When you read a `plan_NNN`-style token in code or docs, treat the
 newest explicit superseding status record as authoritative and the per-plan
@@ -335,7 +334,7 @@ before touching the surface it covers.
 
 | Skill | Covers |
 | --- | --- |
-| [`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md) | Work on the local product path of the i2pr Rust I2P router — Milestone 6 (destinations, garlic, LS2, Streaming) and Milestone 7 SAM. Plan 141 is the current corrective authority; execute Plan 142 next. |
+| [`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md) | Work on the local product path of the i2pr Rust I2P router — Milestone 6 (destinations, garlic, LS2, Streaming) and Milestone 7 SAM. Plan 145 is the current corrective authority; execute Plan 146 next. |
 | [`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md) | Navigate `docs/architecture/`, `docs/adr/`, `plans/`, and `specs/`; audit doc-vs-source drift. |
 | [`i2pr-ntcp2-interop`](.opencode/skills/i2pr-ntcp2-interop/SKILL.md) | Host-side Plan 038 NTCP2 reference-router harness. The active development interop lane is **closed**; NTCP2 remains experimental and non-advertised. |
 | [`i2pr-rootless-sandbox`](.opencode/skills/i2pr-rootless-sandbox/SKILL.md) | Plan 046 rootless sealed-namespace lane (host-side fallback). On this host returns the typed blocker `blocked_unprivileged_user_namespace`. |
@@ -364,9 +363,9 @@ work and `i2pr-architecture` to navigate the documentation.
   scripts.
 - `tests/integration/ntcp2/` — interop harnesses, scenarios,
   qualification, reference drivers, evidence bundles.
-- `tests/integration/sam/` — lightweight Plan 142/144 independent-client
-  provenance and localhost evidence; it does not replace the canonical Rust
-  Plan 143 product lane.
+- `tests/integration/sam/` — lightweight Plan 146/148 reference-client
+  provenance and localhost evidence; it complements but does not replace the
+  canonical Plan 147 raw-socket Rust product lane.
 - `fuzz/` — opt-in nightly fuzz workspace; not part of the
   production workspace.
 - `docs/adr/` — architecture decision records.
