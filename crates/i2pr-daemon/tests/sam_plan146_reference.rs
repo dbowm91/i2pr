@@ -61,10 +61,12 @@ const JAVA_PINNED_RELEASE: &str = "2.12.0";
 /// Absolute paths to the reference helper. `cargo test` runs each test
 /// binary from the package directory, so all child-process invocations
 /// must use absolute paths derived from `CARGO_MANIFEST_DIR` (the
-/// `i2pr-daemon` crate root) and the workspace root.
+/// `i2pr-daemon` crate root) and the workspace root. The macro form is
+/// used so the path is captured at compile time and the test binary
+/// remains correct when CI invokes the executable directly (the
+/// serialized macOS lane in `.github/workflows/ci.yml`).
 fn workspace_root() -> std::path::PathBuf {
-    let manifest_dir =
-        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo");
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let crate_root = std::path::PathBuf::from(manifest_dir);
     // i2pr-daemon lives at crates/i2pr-daemon/; the workspace root is
     // its grandparent.
