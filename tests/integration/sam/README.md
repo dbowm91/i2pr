@@ -1,127 +1,208 @@
-# SAM 3.1 independent-client interoperability lane
+# SAM 3.1 localhost reference / independent-client evidence lane
 
-This directory records the lightweight independent-client checks for
-the Plan 143 / Plan 144 closure lane. It is localhost-only and does
-not download, start, or configure an I2P router. The Rust loopback
-tests remain the CI-capable product lane:
+This directory is the lightweight external/reference evidence surface for the Plan 145 Milestone 7 corrective sequence.
+
+Current authority:
+
+- `plans/145-status.md` — active corrective roadmap;
+- Plan 146 — private-destination reference requalification (**next executable**);
+- Plan 147 — dedicated raw TCP↔Streaming product driver;
+- Plan 148 — two-independent-client final closure.
+
+This lane is localhost-only. It must not require root, namespaces, Docker, a VM, systemd, public I2P participation, or live NTCP2/SSU2.
+
+## What is already proven
+
+### SAM Base64
+
+Plan 142's Base64 correction is retained:
+
+```text
+alphabet = A-Z a-z 0-9 - ~
+padding  = =
+```
+
+The i2pr codec rejects RFC 4648 `+` / `/` as SAM input and emits the I2P spelling.
+
+Reference source inspection currently recorded:
+
+- i2pd `libi2pd/Base.{h,cpp}` — `-` / `~`, `=` padding;
+- Java I2P `PrivateKeyFile` / Base64 implementation;
+- i2plib `I2P_B64_CHARS = "-~"`.
+
+These references are sufficient to retain the Base64 fix. They are **not** sufficient to close the private-destination binary representation.
+
+### Local product regressions
+
+The current Rust tests retain useful lower-level evidence:
+
+- `crates/i2pr-daemon/tests/sam_stream_product.rs` — Plan 143 local Plan-129 delivery seam;
+- `crates/i2pr-daemon/tests/sam_stream_independent.rs` — Plan 144 in-process SYN/SYN-response handshake / canonical-streaming routing.
+
+They do not move application bytes through independent SAM clients and do not replace the Plan 147 raw-socket lane.
+
+## What remains unproven
+
+### Private destination
+
+The current i2pr SAM private-destination implementation has used a compact 455-byte / 608-character representation for its declared type-4/type-7 profile.
+
+Current official SAM documentation describes `PRIV` as Destination + Private Key + Signing Private Key and documents 663+ binary / 884+ Base64 with a 256-byte unused encryption-private-key field. Current common-structures documentation also permits type-specific private-key sizes when context supplies the key type.
+
+Plan 146 must resolve the actual interoperable SAM/PrivateKeyFile form with executable reference evidence in both directions.
+
+Do not call the compact form reference-compatible until Plan 146 proves it.
+
+### Raw STREAM product
+
+The daemon does not yet have the dedicated post-command `TcpStream` owner that:
+
+- permanently detaches line parsing;
+- preserves already-buffered post-command bytes;
+- feeds raw TCP into `StreamingManager::send_data()`;
+- writes ordered delivered Streaming bytes back to TCP;
+- drives delayed ACK/retransmit/timeouts under bounded supervision.
+
+Plan 147 owns that work and the real-socket binary/backpressure/fault/SILENT/lifecycle acceptance matrix.
+
+### Independent clients
+
+No independent SAM implementation has yet moved application bytes through the real i2pr listener.
+
+Current count:
+
+```text
+sam_independent_clients = 0-passed
+```
+
+Plan 148 owns the final external lane.
+
+## Selected independent clients
+
+The preferred candidates are:
+
+| Client | Revision/version | Language | License | Current local result |
+| --- | --- | --- | --- | --- |
+| `i2plib` | `6edf51cd5d21cc745aa7e23cb98c582144884fa8` (`v0.0.14`) | Python | MIT | imports; SAM 3.1 helpers inspected; selected as Client A, no application-byte pass yet |
+| `libsam3` | `e0da4f4d8d3ca670fef86fd1046dab7c14afc5b7` (`v1.0.0`) | C | mixed public-domain/MIT components | builds via `make build`; STREAM example inspected; selected as Client B, no application-byte pass yet |
+| `txi2p` | `0611b9a86172cb70d2f5e415a88eee9f230590b3` | Python/Twisted | ISC | optional historical candidate; import blocked by legacy `ometa`; not a hard prerequisite |
+
+If a selected client becomes unusable for reasons unrelated to i2pr, Plan 148 may replace it with another maintained SAM client after pinning provenance. Do not modify i2pr to emulate a demonstrable client bug.
+
+## Plan 146 evidence contract
+
+Plan 146 must produce real bidirectional PrivateKeyFile evidence without committing secret material.
+
+Required directions:
+
+```text
+reference-generated PRIV
+  -> i2pr import / real SESSION CREATE
+  -> exact public Destination equality
+
+i2pr real DEST GENERATE SIGNATURE_TYPE=7
+  -> reference parser/session consumer
+  -> exact public Destination equality
+```
+
+Record:
+
+- reference implementation/version/commit;
+- command/API;
+- signature/crypto types;
+- binary/Base64 lengths;
+- public Destination hash;
+- SHA-256 digest of ephemeral private bytes;
+- representation classification;
+- pass/fail.
+
+Never commit the raw `PRIV` value. Ephemeral secret-bearing run roots should live under `target/` or another temporary directory and be deleted after validation.
+
+A source-code inspection or an i2pr self-round-trip is not Plan 146 closure evidence.
+
+## Plan 147 product contract
+
+The canonical Rust localhost lane must behave only through SAM TCP for application bytes:
+
+```text
+control A -> HELLO + SESSION CREATE
+control B -> HELLO + SESSION CREATE
+stream B  -> HELLO + STREAM ACCEPT
+stream A  -> HELLO + STREAM CONNECT B.PUB
+raw A <-> raw B
+```
+
+Every raw application byte must pass through:
+
+```text
+StreamingManager
+ -> Streaming packet
+ -> gzip ClientPayload
+ -> I2NP Data
+ -> ECIES Garlic
+ -> destination tunnel product path
+ -> inverse path
+ -> peer StreamingManager
+```
+
+The Plan 129 authenticated-router-link-bypassed local seam is allowed below the destination/tunnel stack. Direct application-byte transfer between managers is not.
+
+Plan 147 must test:
+
+- command->raw ownership transfer;
+- same-read post-command bytes;
+- binary payloads including NUL/non-UTF8/SAM-looking text;
+- multi-packet and multi-megabyte logical transfers;
+- simultaneous bidirectional traffic;
+- SILENT true/false;
+- loss/duplicate/reorder/ACK drop;
+- slow-reader/slow-writer bounds;
+- close/reset/control-session cancellation;
+- sibling streams;
+- production CSPRNG policy.
+
+## Plan 148 independent-client contract
+
+After Plan 147 passes, run at least:
+
+```text
+i2plib CONNECT  -> libsam3 ACCEPT
+libsam3 CONNECT -> i2plib ACCEPT
+```
+
+where APIs permit.
+
+Verify exact bidirectional binary bytes through the real listener and Plan 147 product path.
+
+Plan 148 also re-runs:
+
+- STREAM FORWARD real-byte trajectory against a loopback target;
+- NAMING supported surface;
+- negative version/style/option matrix;
+- resource and lifecycle ceilings;
+- privacy/log capture;
+- focused Plan 127–134 M6 regressions.
+
+## Routine local commands
+
+The external lane supplements, not replaces, the Rust product gates:
 
 ```text
 cargo test --locked -p i2pr-api --all-targets
-cargo test --locked -p i2pr-daemon --test sam_loopback --test sam_stream --test sam_forward_naming
+cargo test --locked -p i2pr-daemon --test sam_loopback
+cargo test --locked -p i2pr-daemon --test sam_stream
+cargo test --locked -p i2pr-daemon --test sam_stream_product
+cargo test --locked -p i2pr-daemon --test sam_stream_independent
+cargo test --locked -p i2pr-daemon --test sam_forward_naming
 ```
 
-Plan 142 closed the SAM Base64 / private-destination compatibility
-sub-claim. See [`plans/142-status.md`](../../plans/142-status.md) for
-the closure record; the `i2pr-api` SAM codec now uses the I2P Base64
-alphabet (`A-Z a-z 0-9 - ~`, `=` padding) — the spelling every Java
-I2P / i2pd / independent Python client reference implementation
-emits. The Plan 142 reference-vector set in
-`crates/i2pr-api/src/sam/base64.rs::tests` locks the alphabet,
-padding, and length behavior; that is the routine development
-evidence lane. Plan 143 (live same-socket STREAM CONNECT/ACCEPT
-product bridge) and Plan 144 (two-independent-client final
-Milestone 7 closure) remain open.
+Plan 147 should add a dedicated raw-socket product test and make it the canonical application-byte lane.
 
-## External client provenance
+## Closure rule
 
-The discovery source is the official I2P SAM API documentation:
-<https://geti2p.net/en/docs/api/samv3>.
+Do not promote this lane to `passed` until:
 
-The two selected SAM 3.1 STREAM candidates are inspected from their
-pinned upstream revisions, without copying source into this
-repository:
-
-| Client | Revision/version | Language | License | Local result |
-| --- | --- | --- | --- | --- |
-| `i2plib` | `6edf51cd5d21cc745aa7e23cb98c582144884fa8` (`v0.0.14`) | Python | MIT | imports; SAM wire helpers in `i2plib/sam.py` confirmed correct (HELLO/SESSION CREATE/STREAM CONNECT/STREAM ACCEPT/NAMING LOOKUP/DEST GENERATE/STREAM FORWARD). Used as one of three independent references for the SAM Base64 alphabet (`I2P_B64_CHARS = "-~"` in `i2plib/sam.py`). Used as Client A in the Plan 144 STREAM CONNECT/ACCEPT product probe. |
-| `libsam3` | `e0da4f4d8d3ca670fef86fd1046dab7c14afc5b7` (`v1.0.0`) | C | Mixed (public-domain + MIT components) | builds cleanly via `make build`; STREAM CONNECT+ACCEPT example `sam3/streamcs.c` available. Selected as Client B in the Plan 144 STREAM CONNECT/ACCEPT product probe. |
-| `txi2p` | `0611b9a86172cb70d2f5e415a88eee9f230590b3` | Python/Twisted | ISC (`COPYING`) | import blocked locally by missing legacy `ometa` dependency; full STREAM CONNECT/ACCEPT product probe deferred to a successor plan |
-
-The exact read-only inspection commands are:
-
-```text
-git clone https://github.com/l-n-s/i2plib /tmp/i2pr-sam-i2plib
-git clone https://github.com/str4d/txi2p /tmp/i2pr-sam-txi2p
-git -C /tmp/i2pr-sam-i2plib checkout 6edf51cd5d21cc745aa7e23cb98c582144884fa8
-git -C /tmp/i2pr-sam-txi2p checkout 0611b9a86172cb70d2f5e415a88eee9f230590b3
-PYTHONPATH=/tmp/i2pr-sam-i2plib python3 -c 'import i2plib'
-PYTHONPATH=/tmp/i2pr-sam-txi2p python3 -c 'import txi2p'
-```
-
-## Plan 142 evidence lane (closed)
-
-Plan 142 closes the SAM Base64 / private-destination compatibility
-sub-claim using three independent reference implementations, none of
-which informed the others:
-
-1. **i2pd** (`PurpleI2P/i2pd`, `openssl` branch) —
-   `libi2pd/Base.h::IsBase64` accepts only `A-Z a-z 0-9 - ~ =`;
-   `libi2pd/Base.cpp::T64` maps slot 62 to `-` and slot 63 to `~`;
-   padding character `P64 = '='`.
-2. **Java I2P** (`i2p/i2p.i2p`) —
-   `core/java/src/net/i2p/data/PrivateKeyFile.java` decodes
-   `PrivateKeyFile` payloads with the I2P Base64 substitution table
-   and `=` padding.
-3. **i2plib** (`tomi/i2plib`, Python SAM client) —
-   `i2plib/sam.py` builds the SAM alphabet with
-   `I2P_B64_CHARS = "-~"` and validates through Python's standard
-   `base64` decoder via `altchars=("-~")` with `validate=True`.
-
-The frozen vectors in `crates/i2pr-api/src/sam/base64.rs::tests` lock
-the alphabet, padding, and length behavior against any future
-regression:
-
-- `rfc4648_plus_slash_characters_are_rejected` — `+AAA` and `/AAA`
-  surface as `InvalidCharacter`.
-- `i2p_alphabet_characters_are_accepted` — `----`, `~~8=`, and
-  `~~~8` round-trip to their expected byte payloads.
-- `i2pd_corpus_round_trip` — short-vector cross-check against i2pd
-  `Base.cpp` semantics for every tail length.
-- `pub_priv_lengths_remain_unchanged` — `encode(391 bytes) ==
-  524 chars`; `encode(455 bytes) == 608 chars`.
-
-## Plan 143 / Plan 144 evidence lane (open)
-
-A future closure attempt must use two clients that actually reach
-the real listener and must prove cross-client binary STREAM
-CONNECT/ACCEPT bytes. In particular, the current `i2pr-daemon`
-session-created destination must be consumable by the client's I2P
-Base64 representation, and `STREAM CONNECT` / `STREAM ACCEPT` must
-hand the socket to a bounded raw bridge backed by the M6
-destination / Streaming path.
-
-Plan 144 closed the **in-process Plan 129 handshake** path. The new
-test `crates/i2pr-daemon/tests/sam_stream_independent.rs` builds two
-cooperating SAM destinations through the same `SamDestinations`
-registry, drives a real `StreamingManager::connect` on bridge A,
-drains the resulting SYN into a `TransportSendRequest`, and routes
-the SYN through `bridge_to_peer` into bridge B. Bridge B accepts the
-inbound SYN through the full destination stack and queues a SYN
-response into its outbound queue. The SYN response is then drained
-and routed back through `bridge_to_peer` into bridge A. The new
-delivery path routes the recovered streaming packet onto bridge A's
-**canonical** outbound `StreamingManager` (where the outbound
-connection state lives) rather than the receiver-side mirror — this
-fixes the Plan 143 routing asymmetry that prevented full
-bidirectional handshake verification. Both sides reach
-`ConnectionState::Established`. The Product evidence is
-`crates/i2pr-daemon/tests/sam_stream_product.rs` (Plan 143); the
-independent-bridge canonical-streaming-routing evidence is
-`sam_stream_independent.rs` (Plan 144).
-
-The **per-stream TCP<->Streaming raw byte bridge** that drives a
-real `tokio::net::TcpStream` post-`STREAM STATUS RESULT=OK` through
-the canonical streaming path remains deferred. The
-`DispatchOutcome::StreamRawMode` arm in the daemon's
-`RequireStreamConnect` dispatch replies OK and returns the
-control-socket state to `UtilityReady`; the underlying TCP stream
-is left at the command-mode egress. A follow-up plan (Plan 145
-candidate) owns the per-destination driver task that owns the raw
-TCP stream, feeds incoming bytes into
-`StreamingConnection::send_data`, drains outbound queue through
-`bridge_to_peer` (or the production Runtime equivalent), and pumps
-delivered application bytes back into the TCP socket under bounded
-resource ceilings.
-
-Do not promote this lane to `passed` until the Plan 143 and
-Plan 144 closure records are committed.
+1. Plan 146 reference private-destination evidence passes;
+2. Plan 147 real raw-socket product acceptance passes;
+3. two independent clients move exact application bytes through the real listener;
+4. Plan 148 final evidence/status closes Milestone 7.
