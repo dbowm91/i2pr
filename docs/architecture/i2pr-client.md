@@ -72,6 +72,26 @@ plan, including the canonical
 regression at the OBEP, and successful A → B → A New Session trajectory
 through real destination-owned outbound and inbound tunnel roles.
 
+Plan 143 adds the runtime-neutral local delivery pump
+([`plans/143-status.md`](../plans/143-status.md)) as the canonical seam
+the SAM STREAM product bridge drives through. The new
+`streaming::local_delivery` module exports `LocalDeliverySender`,
+`LocalDeliveryReceiver`, `LocalDeliveryOutcome`, `LocalDeliveryError`,
+and the `deliver()` function. Each call crosses the full Plan 129
+destination stack in-process: `compose_outbound_delivery` → synthetic
+OBEP (`OutboundParticipantRole` + `OutboundEndpointRole`) → synthetic
+IBGW (`InboundGatewayRole`) → `InboundParticipantRole` →
+`LocalInboundEndpointRole` →
+`DestinationDispatcher::dispatch_garlic_envelope` →
+`StreamingDestinationAdapter::receive`. The seam consumes an
+`EstablishedTunnel` (no `Clone`) and one `TransportSendRequest` from
+the outbound queue, and re-exports `deliver`, `LocalDeliverySender`,
+`LocalDeliveryReceiver`, `LocalDeliveryOutcome`, and
+`LocalDeliveryError` from the `i2pr-client` crate root. The SAM
+bridge in `i2pr-daemon` consumes this seam through the new
+`bridge_to_peer` function and never retains the Plan 138
+`CapturedOutbound` test queue.
+
 Plan 125 layers the corrected I2P Streaming core on top of Plan 122
 ([Plan 125](../plans/125-m6-streaming-corrective-and-local-closure.md)).
 The new `streaming` module owns `StreamingManager`, the per-destination

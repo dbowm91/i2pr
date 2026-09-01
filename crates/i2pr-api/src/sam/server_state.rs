@@ -95,6 +95,16 @@ pub enum DispatchOutcome {
         /// Validated `STREAM ACCEPT` request.
         request: Box<StreamAcceptRequest>,
     },
+    /// Plan 143: the runtime has finished the pre-raw STREAM STATUS
+    /// exchange and is now handing the underlying TCP socket to the
+    /// per-stream raw-mode driver. The connection state machine
+    /// stops tracking line mode after this outcome; the TCP reader
+    /// returns the socket to the caller and the per-stream driver
+    /// owns the remaining lifetime.
+    StreamRawMode {
+        /// Stream id assigned by the registry.
+        stream_id: u32,
+    },
     /// The command requires a daemon-owned forward registration.
     RequireStreamForward {
         /// Validated STREAM FORWARD request.
@@ -135,6 +145,7 @@ impl DispatchOutcome {
             Self::RequireSessionCreate { .. } => None,
             Self::RequireStreamConnect { .. } => None,
             Self::RequireStreamAccept { .. } => None,
+            Self::StreamRawMode { .. } => None,
             Self::RequireStreamForward { .. } => None,
             Self::RequireNamingLookup { .. } => None,
         }
@@ -593,15 +604,17 @@ pub struct NamingLookupFailed {
 }
 
 /// Convert the daemon's `STREAM CONNECT` follow-up outcome into the
-/// per-connection dispatch outcome. A successful connect emits the
-/// pre-raw `STREAM STATUS RESULT=OK` line; a failure emits the
-/// matching typed failure and closes the per-stream socket.
+/// per-connection dispatch outcome. Plan 143 returns
+/// [`DispatchOutcome::StreamRawMode`] on success so the daemon
+/// transitions to raw byte mode after writing the `STREAM STATUS
+/// RESULT=OK` reply; the previous Stay-only behaviour is retained
+/// for callers that explicitly want to stay in line mode.
 pub fn apply_stream_connect_outcome(
     outcome: Result<StreamConnectApplied, StreamConnectFailed>,
 ) -> DispatchOutcome {
     match outcome {
-        Ok(_applied) => DispatchOutcome::Stay {
-            reply: Some(Reply::Stream(StreamStatus::ok())),
+        Ok(applied) => DispatchOutcome::StreamRawMode {
+            stream_id: applied.stream_id,
         },
         Err(failed) => DispatchOutcome::Close {
             close_reason: CloseReason::MalformedLine,

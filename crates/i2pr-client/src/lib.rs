@@ -90,6 +90,9 @@ pub use session::{
     MAX_TAG_LOOK_AHEAD, NewSessionReplyOutbound, PlannedOutboundForm, decode_decrypted_payload,
     encode_garlic_clove_payload, encode_new_session_payload, local_clove,
 };
+pub use streaming::local_delivery::{
+    LocalDeliveryError, LocalDeliveryOutcome, LocalDeliveryReceiver, LocalDeliverySender, deliver,
+};
 pub use streaming_adapter::{
     InboundStreamingOutcome, MAX_STREAMING_ADAPTER_PAYLOAD_BYTES, StreamingAdapterError,
     StreamingDestinationAdapter,

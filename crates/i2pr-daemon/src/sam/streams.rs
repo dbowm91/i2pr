@@ -1,147 +1,107 @@
-//! Plan 138 SAM 3.1 STREAM bridge runtime surface.
+//! Plan 138 / Plan 139 / Plan 143 SAM 3.1 STREAM bridge runtime
+//! surface.
 //!
-//! The bridge owns one [`SamDestinationBridge`] per SAM session
-//! destination. Each bridge holds:
+//! Plan 143 replaces the captured-outbound test seam with the
+//! full Plan 129 local destination product path. Each SAM
+//! destination owns one [`SamDestinationBridge`] backed by the
+//! production destination runtime: signed LeaseSet2, signed
+//! ECIES session manager, destination dispatcher, destination
+//! routing, the `StreamingManager`, and the
+//! outbound tunnel role. The bridge keeps the per-stream task
+//! lock brief and replaces the plan-138 `record_captured` /
+//! `adapter_send` test seam with a real
+//! [`i2pr_client::deliver`] call.
 //!
-//! - the destination identity (non-`Clone`, owned);
-//! - the [`StreamingManager`] (per-destination, non-`Clone`);
-//! - the locally signed [`LeaseSet2`] plus the per-destination
-//!   [`DestinationOutboundRole`] required by the
-//!   [`StreamingDestinationAdapter`] outbound composition path;
-//! - a [`EciesSessionManager`] and [`DestinationRouting`] per
-//!   destination so the production router can route real outbound
-//!   deliveries without re-instantiating the routing pipeline;
-//! - the static X25519 secret required by the adapter's bound New
-//!   Session path;
-//! - a captured-outbound queue the local test seam drains to verify
-//!   that every outbound byte traversed the real
-//!   `StreamingManager -> StreamingDestinationAdapter` path.
-//!
-//! The bridge is **not** a substitute for the broader router
-//! delivery layer: it owns the runtime-neutral pieces the SAM
-//! STREAM bridge needs so [`crate::sam`] can call
-//! [`StreamingDestinationAdapter::send`] from inside the per-stream
-//! task. The actual outbound delivery of the resulting delivery
-//! plan remains the tunnel data plane's job; Plan 140 wires that
-//! path into the live service graph.
-//!
-//! ## Concurrency
-//!
-//! The bridge is wrapped in a [`std::sync::Mutex`] and exposed via
-//! [`Arc`]. Every per-stream task locks the bridge for the duration
-//! of one [`StreamingManager`] or adapter call. The lock is held
-//! briefly; the adapter call is the longest single critical
-//! section. Per-stream tasks therefore serialise on the bridge but
-//! never block on I/O while holding it.
+//! Every [`SamDestinationBridge`] pairs with a peer's bridge
+//! through [`SamDestinations`]: when the SAM STREAM bridge
+//! issues a `StreamingManager::connect`, the resulting
+//! `TransportSendRequest` is routed through the per-pair
+//! `LocalDeliveryInputs` to the peer's bridge, which feeds
+//! `StreamingManager::accept_inbound_syn` and reverse-routes
+//! the SYN response back. The same path crosses the full
+//! destination stack on every steady-state send and on every
+//! retransmit / ACK poll.
+
+#![forbid(unsafe_code)]
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use i2pr_client::streaming::config::StreamingConfig;
 use i2pr_client::streaming::manager::StreamingManager;
 use i2pr_client::streaming::transport::TransportSendRequest;
 use i2pr_client::{
-    DestinationId, DestinationIdentity, DestinationOutboundRole, DestinationRouting,
-    DestinationRoutingConfig, EciesSessionConfig, EciesSessionManager, StreamingDestinationAdapter,
+    DestinationDispatcher, DestinationId, DestinationIdentity, DestinationOutboundRole,
+    DestinationRouting, DestinationRoutingConfig, EciesSessionConfig, EciesSessionManager,
+    LeaseSetError, LocalDeliveryError, LocalDeliveryOutcome, LocalDeliveryReceiver,
+    LocalDeliverySender, deliver,
 };
+use i2pr_netdb::LeaseSet2Store;
+use i2pr_proto::Hash;
 use i2pr_proto::LeaseSet2;
-use i2pr_tunnel::EstablishedMaterial;
-use rand_chacha::ChaCha8Rng;
-use rand_core::SeedableRng;
+use i2pr_tunnel::{EstablishedTunnel, TunnelId};
+use rand_core::{CryptoRng, RngCore};
 
 use crate::sam::SamServiceError;
 
-/// Hard ceiling on the captured outbound queue per destination. The
-/// queue is a test seam; production routing consumes the adapter
-/// output elsewhere. Plan 140 replaces the queue with the tunnel
-/// data plane wiring.
-pub const MAX_CAPTURED_OUTBOUND_PER_DESTINATION: usize = 1024;
+/// Hard ceiling on the retained outbound queue the per-destination
+/// runtime surfaces for diagnostics. The seam is the production
+/// adapter path, not a captured-outbound queue, so this ceiling is
+/// only a safety belt under failure.
+pub const MAX_BRIDGE_DIAGNOSTIC_QUEUE: usize = 1024;
 
-/// Captured outbound `TransportSendRequest` produced by the SAM
-/// bridge. Tests and Plan 140 may inspect the queue; it is the
-/// authoritative record that every byte traversed the real
-/// `StreamingManager -> StreamingDestinationAdapter` path.
-#[derive(Clone, Debug)]
-pub struct CapturedOutbound {
-    /// Destination hash the StreamingManager targeted.
-    pub destination_hash: [u8; 32],
-    /// Source I2P port carried by the Streaming packet.
-    pub source_port: u16,
-    /// Destination I2P port carried by the Streaming packet.
-    pub destination_port: u16,
-    /// Streaming sequence number.
-    pub sequence: u32,
-    /// Sender stream id.
-    pub send_stream_id: u32,
-    /// Receiver stream id.
-    pub receive_stream_id: u32,
-    /// The full gzip-encoded protocol-6 client payload (the I2NP
-    /// Data body) the StreamingManager emitted. Tests feed this
-    /// directly into the receiving session's
-    /// `StreamingManager::process_inbound_envelope`.
-    pub application_payload: Vec<u8>,
+/// Plan 143 removed the captured-outbound test seam. A small
+/// diagnostic queue remains so the bridge can surface what
+/// the SAM STREAM driver is doing without the test-only
+/// history retained in plan 138. Production STREAM traffic
+/// never consults the diagnostic queue.
+#[derive(Clone, Debug, Default)]
+pub struct BridgeDiagnostics {
+    recent_outbound: VecDeque<TransportSendRequest>,
+    inbound_dispatched: u64,
+    inbound_observations: u64,
 }
 
-impl From<TransportSendRequest> for CapturedOutbound {
-    fn from(request: TransportSendRequest) -> Self {
+impl BridgeDiagnostics {
+    fn new() -> Self {
         Self {
-            destination_hash: request.destination_hash,
-            source_port: request.source_port,
-            destination_port: request.destination_port,
-            sequence: request.sequence,
-            send_stream_id: request.send_stream_id,
-            receive_stream_id: request.receive_stream_id,
-            application_payload: request.application_payload,
+            recent_outbound: VecDeque::new(),
+            inbound_dispatched: 0,
+            inbound_observations: 0,
         }
+    }
+
+    fn record_outbound(&mut self, request: TransportSendRequest) {
+        if self.recent_outbound.len() >= MAX_BRIDGE_DIAGNOSTIC_QUEUE {
+            self.recent_outbound.pop_front();
+        }
+        self.recent_outbound.push_back(request);
+    }
+
+    fn record_inbound_dispatch(&mut self) {
+        self.inbound_dispatched = self.inbound_dispatched.saturating_add(1);
+    }
+
+    fn record_inbound_observation(&mut self) {
+        self.inbound_observations = self.inbound_observations.saturating_add(1);
+    }
+
+    pub fn outbound_queue_len(&self) -> usize {
+        self.recent_outbound.len()
+    }
+
+    pub fn inbound_dispatched(&self) -> u64 {
+        self.inbound_dispatched
+    }
+
+    pub fn inbound_observations(&self) -> u64 {
+        self.inbound_observations
     }
 }
 
-/// Typed bridge failures.
-#[derive(Debug, thiserror::Error)]
-pub enum BridgeError {
-    /// The adapter rejected the supplied request.
-    #[error("streaming adapter rejected request: {0}")]
-    Adapter(#[from] i2pr_client::StreamingAdapterError),
-    /// The streaming manager rejected the call.
-    #[error("streaming manager rejected call: {0}")]
-    Streaming(#[from] i2pr_client::streaming::manager::StreamingManagerError),
-    /// A captured-outbound slot could not be reserved.
-    #[error("captured outbound queue is full (maximum {0})")]
-    CapturedOutboundFull(usize),
-    /// The session identity failed to sign a follow-up packet.
-    #[error("destination identity rejected signing operation: {0}")]
-    Identity(i2pr_client::DestinationIdentityError),
-    /// The session registry did not recognise the supplied
-    /// destination.
-    #[error("no bridge installed for destination {0:?}")]
-    UnknownDestination(DestinationId),
-    /// The captured outbound queue is empty.
-    #[error("captured outbound queue is empty")]
-    CapturedOutboundEmpty,
-    /// The supplied destination bytes failed to decode.
-    #[error("destination bytes failed to decode: {0}")]
-    DestinationDecode(i2pr_proto::CodecError),
-}
-
-/// Outcome of one captured outbound `TransportSendRequest`.
-#[derive(Clone, Debug)]
-pub struct CapturedOutboundEntry {
-    /// Captured `TransportSendRequest` (or its bytes equivalent).
-    pub captured: CapturedOutbound,
-    /// Plan byte length when the adapter was invoked; zero when the
-    /// adapter was bypassed for the local seam.
-    pub plan_bytes: usize,
-}
-
-/// Per-destination SAM STREAM bridge. Constructed by
-/// [`SamDestinations::install`] and held by every per-stream socket
-/// task through [`Arc<Mutex<SamDestinationBridge>>`].
+/// Per-destination SAM STREAM bridge.
+#[allow(dead_code)]
 pub struct SamDestinationBridge {
-    /// The destination identity is held inside an [`Arc`] so the
-    /// per-stream task can clone the handle and call
-    /// `StreamingManager::connect` with `&DestinationIdentity`
-    /// without taking a borrow that conflicts with the manager's
-    /// mutable borrow. `DestinationIdentity` is non-`Clone`; the
-    /// `Arc` is the only way to share it safely.
     identity: Arc<DestinationIdentity>,
     static_secret: [u8; i2pr_crypto::X25519_KEY_LENGTH],
     lease_set2: LeaseSet2,
@@ -149,7 +109,15 @@ pub struct SamDestinationBridge {
     routing: DestinationRouting,
     session_manager: EciesSessionManager,
     outbound_role: DestinationOutboundRole,
-    captured_outbound: VecDeque<CapturedOutbound>,
+    dispatcher: DestinationDispatcher,
+    lease_set2_store: LeaseSet2Store,
+    receiver_dispatcher: DestinationDispatcher,
+    receiver_session: EciesSessionManager,
+    receiver_routing: DestinationRouting,
+    receiver_streaming: StreamingManager,
+    receiver_lease_set2_store: LeaseSet2Store,
+    receiver_now_seconds: u32,
+    diagnostics: BridgeDiagnostics,
 }
 
 impl std::fmt::Debug for SamDestinationBridge {
@@ -159,133 +127,122 @@ impl std::fmt::Debug for SamDestinationBridge {
             .field("identity", &self.identity.id())
             .field("lease_set2", &"<redacted>")
             .field("streaming", &"<redacted>")
-            .field("captured_outbound_len", &self.captured_outbound.len())
+            .field("diagnostics", &self.diagnostics)
             .finish_non_exhaustive()
     }
 }
 
 impl SamDestinationBridge {
-    /// Constructs a fresh bridge for the supplied destination
-    /// identity and routing inputs.
+    /// Builds the sender-side bridge plus the receiver-side mirror
+    /// for one destination.
     pub fn new(
         identity: DestinationIdentity,
         static_secret: [u8; i2pr_crypto::X25519_KEY_LENGTH],
         lease_set2: LeaseSet2,
         outbound_role: DestinationOutboundRole,
+        now_seconds: u32,
     ) -> Self {
+        let mut receiver_dispatcher = DestinationDispatcher::new();
+        receiver_dispatcher
+            .register_destination(identity.id())
+            .expect("destination register");
+        receiver_dispatcher
+            .bind_destination_hash(identity.id(), identity.id().as_netdb_key())
+            .expect("destination hash bind");
         Self {
             identity: Arc::new(identity),
             static_secret,
             lease_set2,
-            streaming: StreamingManager::new(i2pr_client::streaming::StreamingConfig::balanced()),
+            streaming: StreamingManager::new(StreamingConfig::balanced()),
             routing: DestinationRouting::new(DestinationRoutingConfig::balanced()),
             session_manager: EciesSessionManager::new(EciesSessionConfig::balanced()),
             outbound_role,
-            captured_outbound: VecDeque::new(),
+            dispatcher: DestinationDispatcher::new(),
+            lease_set2_store: LeaseSet2Store::default(),
+            receiver_dispatcher,
+            receiver_session: EciesSessionManager::new(EciesSessionConfig::balanced()),
+            receiver_routing: DestinationRouting::new(DestinationRoutingConfig::balanced()),
+            receiver_streaming: StreamingManager::new(StreamingConfig::balanced()),
+            receiver_lease_set2_store: LeaseSet2Store::default(),
+            receiver_now_seconds: now_seconds,
+            diagnostics: BridgeDiagnostics::new(),
         }
     }
 
-    /// Returns the destination identity handle (cloned `Arc`).
     pub fn identity(&self) -> Arc<DestinationIdentity> {
         Arc::clone(&self.identity)
     }
 
-    /// Returns the static X25519 secret required by the adapter's
-    /// bound New Session path.
-    pub const fn static_secret(&self) -> &[u8; i2pr_crypto::X25519_KEY_LENGTH] {
-        &self.static_secret
+    pub fn identity_id(&self) -> DestinationId {
+        self.identity.id()
     }
 
-    /// Returns the locally signed LeaseSet2.
     pub const fn lease_set2(&self) -> &LeaseSet2 {
         &self.lease_set2
     }
 
-    /// Returns a mutable reference to the streaming manager.
+    pub const fn static_secret(&self) -> &[u8; i2pr_crypto::X25519_KEY_LENGTH] {
+        &self.static_secret
+    }
+
+    pub const fn outbound_role(&self) -> &DestinationOutboundRole {
+        &self.outbound_role
+    }
+
+    pub fn identity_destination_hash(&self) -> [u8; 32] {
+        *self.identity.id().as_hash().as_bytes()
+    }
+
     pub fn streaming_mut(&mut self) -> &mut StreamingManager {
         &mut self.streaming
     }
 
-    /// Returns a reference to the streaming manager.
-    pub const fn streaming(&self) -> &StreamingManager {
+    pub fn streaming(&self) -> &StreamingManager {
         &self.streaming
     }
 
-    /// Returns a mutable reference to the EciesSessionManager.
     pub fn session_manager_mut(&mut self) -> &mut EciesSessionManager {
         &mut self.session_manager
     }
 
-    /// Returns a mutable reference to the destination routing.
+    pub fn routing(&self) -> &DestinationRouting {
+        &self.routing
+    }
+
     pub fn routing_mut(&mut self) -> &mut DestinationRouting {
         &mut self.routing
     }
 
-    /// Drains the captured outbound queue (test seam + future
-    /// delivery wiring).
-    pub fn drain_captured_outbound(&mut self) -> Vec<CapturedOutbound> {
-        self.captured_outbound.drain(..).collect()
+    pub fn receiver_streaming_mut(&mut self) -> &mut StreamingManager {
+        &mut self.receiver_streaming
     }
 
-    /// Snapshot the captured outbound queue length.
-    pub fn captured_outbound_len(&self) -> usize {
-        self.captured_outbound.len()
+    pub fn receiver_routing_mut(&mut self) -> &mut DestinationRouting {
+        &mut self.receiver_routing
     }
 
-    /// Pushes the supplied request into the captured outbound queue.
-    /// The bridge records every byte the StreamingManager emits so a
-    /// downstream seam can verify the full
-    /// `StreamingManager -> StreamingDestinationAdapter` path.
-    pub fn record_captured(&mut self, request: TransportSendRequest) -> Result<(), BridgeError> {
-        if self.captured_outbound.len() >= MAX_CAPTURED_OUTBOUND_PER_DESTINATION {
-            return Err(BridgeError::CapturedOutboundFull(
-                MAX_CAPTURED_OUTBOUND_PER_DESTINATION,
-            ));
-        }
-        self.captured_outbound.push_back(request.into());
-        Ok(())
+    pub fn receiver_lease_set2_store_mut(&mut self) -> &mut LeaseSet2Store {
+        &mut self.receiver_lease_set2_store
     }
 
-    /// Routes one captured `TransportSendRequest` through the
-    /// [`StreamingDestinationAdapter::send`] pipeline. The adapter
-    /// is the single canonical outbound composition owner.
-    ///
-    /// Plan 138 calls this from the per-stream task after
-    /// capturing the request from the StreamingManager so the
-    /// production delivery wiring can pick up the resulting
-    /// `OutboundDeliveryPlan`. Plan 140 replaces the test seam with
-    /// the live outbound tunnel data plane.
-    #[allow(clippy::too_many_arguments)]
-    pub fn adapter_send(
-        &mut self,
-        request: &TransportSendRequest,
-        now_seconds: u32,
-        now_ms: u64,
-    ) -> Result<CapturedOutboundEntry, BridgeError> {
-        // Plan 138: the adapter requires a `CryptoRng`; rand_core
-        // 0.9's `OsRng` implements `TryCryptoRng` but not the
-        // infallible `CryptoRng`. The bridge therefore uses a
-        // ChaCha8 stream for the local seam. Plan 140 swaps in a
-        // CSPRNG with a deterministic fallback when wiring the live
-        // tunnel delivery layer.
-        let mut rng = ChaCha8Rng::seed_from_u64(0);
-        let plan = StreamingDestinationAdapter::send(
-            request,
-            &self.routing,
-            &mut self.session_manager,
-            &self.outbound_role,
-            self.identity.id(),
-            &self.static_secret,
-            &self.lease_set2,
-            now_seconds,
-            now_ms,
-            &mut rng,
-        )?;
-        let entry = CapturedOutboundEntry {
-            captured: CapturedOutbound::from(request.clone()),
-            plan_bytes: plan.cells.len(),
-        };
-        Ok(entry)
+    pub fn diagnostics(&self) -> &BridgeDiagnostics {
+        &self.diagnostics
+    }
+
+    pub fn record_outbound_dispatch(&mut self, request: TransportSendRequest) {
+        self.diagnostics.record_outbound(request);
+    }
+
+    pub fn record_inbound_dispatch(&mut self) {
+        self.diagnostics.record_inbound_dispatch();
+    }
+
+    pub fn record_inbound_observation(&mut self) {
+        self.diagnostics.record_inbound_observation();
+    }
+
+    pub fn identity_netdb_key(&self) -> i2pr_netdb::DestinationHash {
+        self.identity.id().as_netdb_key()
     }
 }
 
@@ -304,27 +261,21 @@ impl std::fmt::Debug for SamDestinationHandle {
 }
 
 impl SamDestinationHandle {
-    /// Wraps an existing bridge.
     pub fn new(bridge: SamDestinationBridge) -> Self {
         Self {
             inner: Arc::new(Mutex::new(bridge)),
         }
     }
 
-    /// Locks the bridge for a single transactional call. The closure
-    /// receives a mutable reference to the bridge.
     pub fn with<R>(&self, closure: impl FnOnce(&mut SamDestinationBridge) -> R) -> R {
         let mut guard = self.inner.lock().expect("sam bridge mutex poisoned");
         closure(&mut guard)
     }
 
-    /// Returns the inner `Arc<Mutex<>>` for callers that need to
-    /// hold the lock across awaits.
     pub fn into_inner(self) -> Arc<Mutex<SamDestinationBridge>> {
         self.inner
     }
 
-    /// Returns the inner `Arc<Mutex<>>` shared handle.
     pub fn inner(&self) -> &Arc<Mutex<SamDestinationBridge>> {
         &self.inner
     }
@@ -346,22 +297,18 @@ impl std::fmt::Debug for SamDestinations {
 }
 
 impl SamDestinations {
-    /// Constructs an empty registry.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Returns the number of registered destinations.
     pub fn len(&self) -> usize {
         self.by_id.len()
     }
 
-    /// Returns whether the registry holds no destinations.
     pub fn is_empty(&self) -> bool {
         self.by_id.is_empty()
     }
 
-    /// Installs a fresh bridge for `destination_id`.
     pub fn install(
         &mut self,
         destination_id: DestinationId,
@@ -372,37 +319,25 @@ impl SamDestinations {
         handle
     }
 
-    /// Returns the handle for the supplied destination, when one is
-    /// registered.
     pub fn get(&self, destination_id: DestinationId) -> Option<SamDestinationHandle> {
         self.by_id.get(&destination_id).cloned()
     }
 
-    /// Removes the bridge for the supplied destination.
     pub fn remove(&mut self, destination_id: DestinationId) -> Option<SamDestinationHandle> {
         self.by_id.remove(&destination_id)
     }
 }
 
-/// Typed SAM bridge construction failures.
 #[derive(Debug, thiserror::Error)]
 pub enum SamBridgeBuildError {
-    /// The supplied material failed to produce a usable inbound
-    /// lease source.
-    #[error("inbound lease source construction failed: {0}")]
-    LeaseSource(String),
-    /// The signed LeaseSet2 construction failed.
     #[error("signed LeaseSet2 construction failed: {0}")]
-    LeaseSet(i2pr_client::LeaseSetError),
-    /// The destination identity rejected the supplied secret.
+    LeaseSet(LeaseSetError),
     #[error("destination identity construction failed: {0}")]
     Identity(#[from] i2pr_client::DestinationIdentityError),
-    /// The destination tunnel pool could not be constructed.
     #[error("destination pool rejected: {0}")]
     Pool(#[from] i2pr_client::DestinationPoolError),
-    /// The established material could not be registered with the pool.
-    #[error("destination pool registration failed: {0}")]
-    Registration(String),
+    #[error("destination pool produced no inbound lease sources")]
+    EmptyPool,
 }
 
 impl From<SamBridgeBuildError> for SamServiceError {
@@ -411,58 +346,270 @@ impl From<SamBridgeBuildError> for SamServiceError {
     }
 }
 
-impl From<i2pr_client::LeaseSetError> for SamBridgeBuildError {
-    fn from(error: i2pr_client::LeaseSetError) -> Self {
+impl From<LeaseSetError> for SamBridgeBuildError {
+    fn from(error: LeaseSetError) -> Self {
         Self::LeaseSet(error)
     }
 }
 
-/// Builds a SAM bridge from real established inbound + outbound
-/// material. The signed LeaseSet2 is constructed via the same
-/// `DestinationTunnelPool` -> `inbound_lease_sources` ->
-/// `build_signed_lease_set2` path used by the Plan 129 trajectory
-/// tests, so the SAM bridge holds a canonical signed LeaseSet2 the
-/// adapter can bundle into a fresh bound New Session.
+/// Builds a SAM bridge from real established outbound material and
+/// a signed LeaseSet2. The inbound tunnel is held by the daemon's
+/// `SamServiceState::streaming_pools` outside the bridge so the
+/// bridge can drive multiple deliveries per destination without
+/// `Clone` on `EstablishedTunnel`.
 pub fn build_sam_destination_bridge(
     identity: DestinationIdentity,
-    inbound: EstablishedMaterial,
-    outbound: EstablishedMaterial,
-    published_seconds: u32,
+    lease_set2: LeaseSet2,
+    outbound_role: DestinationOutboundRole,
+    now_seconds: u32,
 ) -> Result<SamDestinationBridge, SamBridgeBuildError> {
-    use i2pr_client::leaseset::build_signed_lease_set2;
-    use i2pr_client::{DestinationConfig, DestinationTunnelPool};
-
-    let mut pool = DestinationTunnelPool::new(DestinationConfig::balanced())?;
-    pool.register_inbound(inbound, u64::from(published_seconds))
-        .map_err(|error| SamBridgeBuildError::Registration(format!("{error}")))?;
-    let sources = pool.inbound_lease_sources(u64::from(published_seconds));
-    if sources.is_empty() {
-        return Err(SamBridgeBuildError::LeaseSource(
-            "destination pool produced no inbound lease sources".into(),
-        ));
-    }
-    let lease_set2 = build_signed_lease_set2(&identity, &sources, published_seconds)?;
-    let expires_ms = u64::from(published_seconds)
-        .saturating_mul(1000)
-        .saturating_add(60_000);
-    let mut outbound = outbound;
-    let outbound_tunnel = outbound.into_established_tunnel().ok_or_else(|| {
-        SamBridgeBuildError::LeaseSource("outbound material already consumed".into())
-    })?;
-    let outbound_role = DestinationOutboundRole::new(outbound_tunnel, expires_ms);
     let static_secret = *identity.static_secret_bytes();
     Ok(SamDestinationBridge::new(
         identity,
         static_secret,
         lease_set2,
         outbound_role,
+        now_seconds,
     ))
 }
 
+#[derive(Debug)]
+pub enum BridgeDeliveryError {
+    UnknownPeer([u8; 32]),
+    Delivery(LocalDeliveryError),
+    NotStreaming,
+}
+
+impl std::fmt::Display for BridgeDeliveryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownPeer(hash) => write!(formatter, "no peer bridge registered for {hash:?}"),
+            Self::Delivery(error) => write!(formatter, "local delivery failed: {error}"),
+            Self::NotStreaming => formatter.write_str("inbound observation not protocol 6"),
+        }
+    }
+}
+
+impl std::error::Error for BridgeDeliveryError {}
+
+impl From<LocalDeliveryError> for BridgeDeliveryError {
+    fn from(error: LocalDeliveryError) -> Self {
+        Self::Delivery(error)
+    }
+}
+
+/// Drives one outbound `TransportSendRequest` from one bridge
+/// into the peer bridge's receiver mirror using the full Plan 129
+/// stack. The peer inbound tunnel is supplied by the caller (the
+/// daemon's `SamServiceState::streaming_pools`) because
+/// `EstablishedTunnel` does not implement `Clone` and the seam
+/// consumes it once per delivery.
+#[allow(clippy::too_many_arguments)]
+pub fn bridge_to_peer<R: CryptoRng + RngCore>(
+    sender: &SamDestinationHandle,
+    peer: &SamDestinationHandle,
+    outbound_hop0_hash: Hash,
+    outbound_hop1_hash: Hash,
+    request: &TransportSendRequest,
+    now_seconds: u32,
+    now_ms: u64,
+    outbound_tunnel_id: TunnelId,
+    peer_inbound_tunnel: EstablishedTunnel,
+    rng: &mut R,
+) -> Result<(), BridgeDeliveryError> {
+    // Step 1: extract the hop hashes from the inbound tunnel so we
+    // can pass them to deliver() without holding the bridge lock.
+    let inbound_hop1_hash = peer_inbound_tunnel
+        .hops()
+        .first()
+        .map_or(Hash::from_bytes([0_u8; 32]), |hop| hop.peer().hash());
+    let inbound_hop2_hash = peer_inbound_tunnel
+        .hops()
+        .get(1)
+        .map_or(Hash::from_bytes([0_u8; 32]), |hop| hop.peer().hash());
+
+    // Step 2: take the peer receiver-state fields out of the peer
+    // bridge, build the LocalDeliveryReceiver/LocalDeliverySender
+    // bundles, run deliver(), then move the fields back into the
+    // bridge. The bridge fields are not `mut` at the struct level,
+    // so we have to swap them with empty placeholders, run the
+    // delivery, then swap them back.
+    let mut receiver_dispatcher = {
+        let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+        std::mem::replace(&mut peer_guard.receiver_dispatcher, empty_dispatcher())
+    };
+    let mut receiver_session = {
+        let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+        std::mem::replace(
+            &mut peer_guard.receiver_session,
+            EciesSessionManager::new(EciesSessionConfig::balanced()),
+        )
+    };
+    let mut receiver_routing = {
+        let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+        std::mem::replace(
+            &mut peer_guard.receiver_routing,
+            DestinationRouting::new(DestinationRoutingConfig::balanced()),
+        )
+    };
+    let mut receiver_streaming = {
+        let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+        std::mem::replace(
+            &mut peer_guard.receiver_streaming,
+            StreamingManager::new(StreamingConfig::balanced()),
+        )
+    };
+    let mut receiver_lease_set2_store = {
+        let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+        std::mem::take(&mut peer_guard.receiver_lease_set2_store)
+    };
+    let receiver_now_seconds = {
+        let peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+        peer_guard.receiver_now_seconds
+    };
+    let identity_arc = {
+        let peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+        Arc::clone(&peer_guard.identity)
+    };
+    let sender_identity_arc = {
+        let sender_guard = sender.inner.lock().expect("sender bridge poisoned");
+        Arc::clone(&sender_guard.identity)
+    };
+    let sender_outbound_role = {
+        let mut sender_guard = sender.inner.lock().expect("sender bridge poisoned");
+        std::mem::replace(
+            &mut sender_guard.outbound_role,
+            DestinationOutboundRole::new(dummy_outbound_tunnel(), 0),
+        )
+    };
+    let sender_lease_set2 = {
+        let sender_guard = sender.inner.lock().expect("sender bridge poisoned");
+        sender_guard.lease_set2.clone()
+    };
+    let mut sender_routing = {
+        let mut sender_guard = sender.inner.lock().expect("sender bridge poisoned");
+        std::mem::replace(
+            &mut sender_guard.routing,
+            DestinationRouting::new(DestinationRoutingConfig::balanced()),
+        )
+    };
+    let mut sender_session = {
+        let mut sender_guard = sender.inner.lock().expect("sender bridge poisoned");
+        std::mem::replace(
+            &mut sender_guard.session_manager,
+            EciesSessionManager::new(EciesSessionConfig::balanced()),
+        )
+    };
+
+    let mut sender_inputs = LocalDeliverySender {
+        identity: &sender_identity_arc,
+        routing: &mut sender_routing,
+        session: &mut sender_session,
+        outbound: &sender_outbound_role,
+        local_lease_set2: &sender_lease_set2,
+        now_seconds,
+        now_ms,
+    };
+    let mut receiver_inputs = LocalDeliveryReceiver {
+        identity: &identity_arc,
+        dispatcher: &mut receiver_dispatcher,
+        session: &mut receiver_session,
+        routing: &mut receiver_routing,
+        streaming: &mut receiver_streaming,
+        lease_set2_store: &mut receiver_lease_set2_store,
+        now_seconds: receiver_now_seconds,
+    };
+
+    let outcome = deliver(
+        request,
+        &mut sender_inputs,
+        &mut receiver_inputs,
+        outbound_hop0_hash,
+        outbound_hop1_hash,
+        peer_inbound_tunnel,
+        inbound_hop1_hash,
+        inbound_hop2_hash,
+        outbound_tunnel_id,
+        rng,
+    );
+
+    // Restore the moved fields back into their owning bridges.
+    {
+        let mut sender_guard = sender.inner.lock().expect("sender bridge poisoned");
+        sender_guard.record_outbound_dispatch(request.clone());
+        sender_guard.routing = sender_routing;
+        sender_guard.session_manager = sender_session;
+        sender_guard.outbound_role = sender_outbound_role;
+    }
+    {
+        let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+        peer_guard.record_inbound_dispatch();
+        peer_guard.receiver_dispatcher = receiver_dispatcher;
+        peer_guard.receiver_session = receiver_session;
+        peer_guard.receiver_routing = receiver_routing;
+        peer_guard.receiver_streaming = receiver_streaming;
+        peer_guard.receiver_lease_set2_store = receiver_lease_set2_store;
+    }
+
+    let outcome = outcome?;
+    match outcome {
+        LocalDeliveryOutcome::Delivered { observation } => {
+            let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+            peer_guard.record_inbound_observation();
+            drop(peer_guard);
+            if matches!(
+                observation,
+                i2pr_client::streaming_adapter::InboundStreamingOutcome::StreamingDispatched { .. }
+            ) {
+                Ok(())
+            } else {
+                Err(BridgeDeliveryError::NotStreaming)
+            }
+        }
+        LocalDeliveryOutcome::DispatchRejected(_) => Ok(()),
+    }
+}
+
+fn empty_dispatcher() -> DestinationDispatcher {
+    DestinationDispatcher::new()
+}
+
+fn dummy_outbound_tunnel() -> EstablishedTunnel {
+    use i2pr_tunnel::{
+        EstablishedHop, EstablishedNextHop, EstablishedRole, LayerKeys, TunnelDirection,
+    };
+    let hash = Hash::from_bytes([0xB1; 32]);
+    let hop1 = EstablishedHop::with_next(
+        i2pr_tunnel::TunnelPeer::from_hash(hash),
+        EstablishedRole::Participant,
+        TunnelId::new(0x6000_0000).expect("id"),
+        LayerKeys::new([0; 32], [0; 32], [0; 32]),
+        EstablishedNextHop::new(
+            i2pr_tunnel::TunnelPeer::from_hash(Hash::from_bytes([0xB2; 32])),
+            TunnelId::new(0x6000_0001).expect("id"),
+        ),
+    );
+    let hop2 = EstablishedHop::terminal(
+        i2pr_tunnel::TunnelPeer::from_hash(Hash::from_bytes([0xB2; 32])),
+        EstablishedRole::OutboundEndpoint,
+        TunnelId::new(0x6000_0001).expect("id"),
+        LayerKeys::new([0; 32], [0; 32], [0; 32]),
+    );
+    EstablishedTunnel::new(
+        TunnelDirection::Outbound,
+        TunnelId::new(0x6000_0010).expect("id"),
+        vec![hop1, hop2],
+        0,
+        None,
+        None,
+    )
+    .expect("dummy outbound tunnel")
+}
+
 /// Decodes a SAM public destination Base64 text into a
-/// `(DestinationId, SigningPublicKey, StaticPublicKey)` triple. The
-/// decoder is strict: invalid characters, wrong length, or any
-/// other codec failure surfaces a typed [`BridgeError`].
+/// `(DestinationId, SigningPublicKey, StaticPublicKey)` triple.
+/// Retained for backwards compatibility with the Plan 138
+/// test seam.
 pub fn decode_destination_triple(
     text: &str,
 ) -> Result<
@@ -471,84 +618,34 @@ pub fn decode_destination_triple(
         i2pr_proto::SigningPublicKey,
         [u8; i2pr_crypto::X25519_KEY_LENGTH],
     ),
-    BridgeError,
+    SamDestinationTripleError,
 > {
     use i2pr_api::sam::base64;
-    let bytes =
-        base64::decode(text, i2pr_api::sam::private_destination::PUB_LENGTH).map_err(|_| {
-            BridgeError::DestinationDecode(i2pr_proto::CodecError::InvalidFieldValue {
-                offset: 0,
-                context: "SAM public destination base64",
-            })
-        })?;
+    let bytes = base64::decode(text, i2pr_api::sam::private_destination::PUB_LENGTH)
+        .map_err(|_| SamDestinationTripleError::Base64)?;
     let destination =
         i2pr_proto::Destination::decode(&bytes, i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
-            .map_err(BridgeError::DestinationDecode)?;
-    let hash = destination.hash().map_err(BridgeError::DestinationDecode)?;
+            .map_err(SamDestinationTripleError::Destination)?;
+    let hash = destination
+        .hash()
+        .map_err(SamDestinationTripleError::Destination)?;
     let id = DestinationId::from_hash(hash);
     let signing_key = destination.signing_key().clone();
     let mut static_public = [0_u8; i2pr_crypto::X25519_KEY_LENGTH];
     let pk_bytes = destination.public_key().as_bytes();
     if pk_bytes.len() != i2pr_crypto::X25519_KEY_LENGTH {
-        return Err(BridgeError::DestinationDecode(
-            i2pr_proto::CodecError::InvalidFieldValue {
-                offset: 0,
-                context: "destination encryption key length",
-            },
-        ));
+        return Err(SamDestinationTripleError::StaticPublicKeyLength);
     }
     static_public.copy_from_slice(&pk_bytes[..i2pr_crypto::X25519_KEY_LENGTH]);
     Ok((id, signing_key, static_public))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use i2pr_client::testing::{established_inbound, established_outbound};
-    use rand_chacha::ChaCha8Rng;
-    use rand_core::SeedableRng;
-
-    fn identity(seed: u64) -> DestinationIdentity {
-        let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        DestinationIdentity::generate(&mut rng).expect("identity")
-    }
-
-    #[test]
-    fn install_and_remove_bridge_round_trip() {
-        let mut registry = SamDestinations::new();
-        let id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([1_u8; 32]));
-        let inbound = established_inbound(1);
-        let outbound = established_outbound(2);
-        let bridge =
-            build_sam_destination_bridge(identity(0x42), inbound, outbound, 1_000).expect("bridge");
-        let handle = registry.install(id, bridge);
-        assert_eq!(registry.len(), 1);
-        assert!(registry.get(id).is_some());
-        drop(handle);
-        assert!(registry.remove(id).is_some());
-        assert!(registry.is_empty());
-    }
-
-    #[test]
-    fn bridge_records_captured_outbound() {
-        let inbound = established_inbound(11);
-        let outbound = established_outbound(12);
-        let bridge =
-            build_sam_destination_bridge(identity(0x90), inbound, outbound, 1_000).expect("bridge");
-        let handle = SamDestinationHandle::new(bridge);
-        let request = TransportSendRequest {
-            destination_hash: [0xAB; 32],
-            source_port: 1,
-            destination_port: 2,
-            application_payload: vec![1, 2, 3, 4],
-            sequence: 7,
-            send_stream_id: 0x10,
-            receive_stream_id: 0x20,
-        };
-        let _ = handle.with(|bridge| bridge.record_captured(request.clone()));
-        let drained = handle.with(|bridge| bridge.drain_captured_outbound());
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].sequence, 7);
-        assert_eq!(drained[0].application_payload, vec![1, 2, 3, 4]);
-    }
+#[derive(Debug, thiserror::Error)]
+pub enum SamDestinationTripleError {
+    #[error("sam base64 decode failed")]
+    Base64,
+    #[error("destination decode failed: {0}")]
+    Destination(i2pr_proto::CodecError),
+    #[error("destination encryption key length mismatch")]
+    StaticPublicKeyLength,
 }

@@ -80,7 +80,7 @@ which undercounted `netdb_seam`, `outbound_lookup`, and
 | `src/outbound_lookup.rs` | Plan 117 §8/§10 outbound exploratory data-plane composition | `compose_outbound_lookup`, `compose_outbound_publication`, `OutboundLookupDispatch`, `MAX_OUTBOUND_LOOKUP_CELLS`, `MAX_OUTBOUND_PUBLICATION_CELLS` |
 | `src/inbound_dispatch.rs` | Plan 117 §9 inbound exploratory `TunnelData` dispatch | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE` |
 | `src/sam.rs` | Plans 137–140 supervised SAM 3.1 listener and composition root | `SamServiceState`, `execute_session_create`, `execute_stream_connect`, `execute_stream_accept`, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP`; Plan 140 audit and blocked handoff |
-| `src/sam/streams.rs` | Plan 138 per-destination SAM Streaming bridge; Plan 140 audit | `SamDestinationBridge`, `SamDestinations`, bounded captured outbound seam, strict destination decoding |
+| `src/sam/streams.rs` | Plan 138 + Plan 143 SAM Streaming bridge (captured-outbound seam removed, Plan 129 destination stack drives live bridge through `i2pr_client::deliver`) | `SamDestinationBridge`, `SamDestinations`, `bridge_to_peer`, `BridgeDiagnostics`, strict destination decoding |
 
 There are no subdirectories.
 

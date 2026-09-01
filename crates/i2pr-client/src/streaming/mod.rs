@@ -29,6 +29,7 @@ mod congestion;
 pub mod connection;
 mod errors;
 pub mod events;
+pub mod local_delivery;
 pub mod manager;
 mod recv_window;
 mod retransmit;

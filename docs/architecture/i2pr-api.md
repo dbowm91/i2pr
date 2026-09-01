@@ -124,7 +124,8 @@ crates/i2pr-api/
         ├── registry.rs             SamSessionRegistry, reserve/commit/rollback (Plan 137)
         ├── line_reader.rs          LineReader, LineEvent (Plan 137)
         ├── server_state.rs         ServerConnectionState, dispatch, stream/naming appliers,
-        │                           and Require* dispatch outcomes (Plans 137–139)
+        │                           Require* dispatch outcomes (Plans 137–139),
+        │                           and StreamRawMode (Plan 143)
         ├── streams.rs              SamStreamRegistry, SamStreamAttachment,
                                     InboundMode, SamStreamRegistryError,
                                     SamStreamRegistryHandle (Plans 138–139)

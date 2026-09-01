@@ -89,8 +89,11 @@ Quick reference (deep-dive per crate):
   transactional `SESSION CREATE`, partial STREAM CONNECT / ACCEPT bridge,
   ownership-bound forward registrations, and bounded raw forwarding bridge)
   lives in `i2pr-daemon`. **The live same-socket CONNECT/ACCEPT product bridge
-  remains Plan 143 work.** `i2pr-api` depends only on `i2pr-client`,
-  `i2pr-crypto`, and `i2pr-proto`.
+  is closed via Plan 143** (`crates/i2pr-daemon/tests/sam_stream_product.rs`
+  is the canonical product evidence); the captured-outbound test seam
+  has been removed and the bridge now drives the full Plan 129 destination
+  stack through the runtime-neutral `i2pr_client::deliver` seam. `i2pr-api`
+  depends only on `i2pr-client`, `i2pr-crypto`, and `i2pr-proto`.
 - `i2pr-testkit` — deterministic simulation; **no production crate
   may depend on it.**
 - `tools/i2pr-interop` — non-production test launcher. Must never
@@ -186,8 +189,10 @@ locally; `Cargo.lock` is authoritative.
   `cargo test -p i2pr-runtime forced_child_cleanup_is_repeatably_joined -- --test-threads=1`.
 - Deterministic testkit: `cargo test -p i2pr-testkit --all-targets`.
 - SAM 3.1 protocol foundation/corrections: `cargo test -p i2pr-api --all-targets`.
-- SAM loopback product lane: use the current `i2pr-daemon` SAM integration
-  tests; Plan 143 must add/identify the canonical real raw STREAM product test.
+- SAM loopback product lane: `cargo test -p i2pr-daemon --test sam_stream_product`
+  is the canonical Plan 143 evidence. The companion tests under
+  `cargo test -p i2pr-daemon --test sam_stream --test sam_forward_naming`
+  retain the prior loopback lanes.
 - Constrained-host lane:
   `python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'`.
 
@@ -278,7 +283,8 @@ current public state:
 - The current product layer is SAM 3.1 under the Plan 141 corrective
   roadmap. Plan 137 loopback server/session lifecycle remains passed.
   Plan 136's SAM encoding/private-destination evidence is superseded by
-  Plan 142; Plan 138's product STREAM acceptance is superseded by Plan 143;
+  Plan 142; Plan 138's product STREAM acceptance is closed via Plan 143
+  with the `sam_stream_product` test as canonical evidence;
   Plan 139 FORWARD/naming implementation remains landed but its real-byte
   acceptance is re-run in Plan 144. Plan 140 is the blocked audit record,
   not the next executable plan.

@@ -1,32 +1,30 @@
-//! Plan 138 real-loopback integration tests for the SAM v3.1 STREAM
-//! bridge.
+//! Plan 138 / Plan 143 real-loopback integration tests for the
+//! SAM v3.1 STREAM bridge.
 //!
-//! Each test binds the SAM listener to `127.0.0.1:0` (ephemeral port)
-//! and exercises a real TCP client over `tokio::net::TcpStream`. The
-//! tests use the local test seam (the per-destination SAM bridge) to
-//! drive the underlying Streaming handshake completion, exactly the
-//! same way Plan 129's trajectory tests pipe outbound I2NP between
+//! Each test binds the SAM listener to `127.0.0.1:0` (ephemeral
+//! port) and exercises a real TCP client over
+//! `tokio::net::TcpStream`. The bridge tests use the Plan 143
+//! local product path (no `CapturedOutbound` test seam); the
+//! streaming handshake completion is driven through the
+//! `bridge_to_peer` runtime-neutral local delivery pump, exactly
+//! the way Plan 129's trajectory tests pipe outbound I2NP between
 //! side A and side B without external network involvement.
 
 #![allow(clippy::too_many_lines)]
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use i2pr_api::sam::limits::SamLimits;
 use i2pr_client::DestinationId;
-use i2pr_client::testing::{established_inbound, established_outbound};
+use i2pr_client::testing::established_outbound;
 use i2pr_daemon::config::SamConfig;
-use i2pr_daemon::sam::{
-    CapturedOutbound, SamDestinationBridge, SamServiceState, build_sam_destination_bridge,
-};
+use i2pr_daemon::sam::{SamServiceState, build_sam_destination_bridge};
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::timeout;
 
 fn sam_config() -> SamConfig {
     SamConfig {
@@ -109,58 +107,59 @@ async fn hello_3_1(stream: &mut TcpStream) {
     );
 }
 
-async fn session_create(stream: &mut TcpStream, id: &str, destination_b64: Option<&str>) -> String {
-    let cmd = match destination_b64 {
-        Some(dest) => format!("SESSION CREATE STYLE=STREAM ID={id} DESTINATION={dest}\n"),
-        None => format!("SESSION CREATE STYLE=STREAM ID={id} DESTINATION=TRANSIENT\n"),
-    };
-    write_all(stream, cmd.as_bytes()).await;
-    let reply = read_one_line(stream).await;
-    assert!(
-        reply.starts_with("SESSION STATUS RESULT=OK DESTINATION="),
-        "expected SESSION STATUS OK, got {reply:?}"
-    );
-    // Extract PUB=...
-    let prefix = "DESTINATION=";
-    let start = reply.find(prefix).expect("dest prefix") + prefix.len();
-    let rest = &reply[start..];
-    let end = rest.find(' ').unwrap_or(rest.len());
-    rest[..end].trim().to_owned()
-}
-
 /// Installs a fresh SAM bridge for the supplied destination id,
-/// using deterministic established tunnel fixtures.
+/// using deterministic established tunnel fixtures and a dummy
+/// outbound role. Plan 143: the inbound tunnel is held by the
+/// daemon's streaming pools outside the bridge; the bridge owns
+/// only the streaming/routing/session/dispatcher stack plus the
+/// outbound role. Tests that need to deliver through
+/// `bridge_to_peer` pass the inbound tunnel in explicitly.
 fn install_test_bridge(
     state: &SamServiceState,
     destination_id: DestinationId,
     seed: u64,
-) -> SamDestinationBridge {
+) -> i2pr_daemon::sam::SamDestinationBridge {
+    use i2pr_client::build_signed_lease_set2;
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let identity = i2pr_client::DestinationIdentity::generate(&mut rng).expect("identity");
-    let inbound = established_inbound(seed.wrapping_mul(3).wrapping_add(1));
-    let outbound = established_outbound(seed.wrapping_mul(3).wrapping_add(2));
-    let bridge = build_sam_destination_bridge(identity, inbound, outbound, 1_000).expect("bridge");
-    let registry = state.sam_destinations();
+    let mut outbound_material = established_outbound(seed.wrapping_mul(3).wrapping_add(2));
+    let outbound_tunnel = outbound_material
+        .into_established_tunnel()
+        .expect("outbound tunnel");
+    let role = i2pr_client::DestinationOutboundRole::new(outbound_tunnel, 60_000);
+    let lease_set2 = {
+        let mut pool =
+            i2pr_client::DestinationTunnelPool::new(i2pr_client::DestinationConfig::balanced())
+                .expect("pool");
+        let inbound_mat = i2pr_client::testing::established_inbound(seed);
+        pool.register_inbound(inbound_mat, 1_000).expect("inbound");
+        let sources = pool.inbound_lease_sources(1_000);
+        build_signed_lease_set2(&identity, &sources, 1_000).expect("signed ls2")
+    };
+    let bridge = build_sam_destination_bridge(identity, lease_set2, role, 1_000).expect("bridge");
     {
-        let mut destinations = registry.lock().expect("sam destinations poisoned");
+        let destinations_arc = state.sam_destinations();
+        let mut destinations = destinations_arc.lock().expect("sam destinations poisoned");
         destinations.install(destination_id, bridge);
     }
-    // Build a placeholder bridge handle to satisfy the return type.
+    // Return a placeholder bridge so callers keep symmetric API.
     let mut rng2 = ChaCha8Rng::seed_from_u64(seed.wrapping_add(0xFFFF_FFFF));
     let identity2 = i2pr_client::DestinationIdentity::generate(&mut rng2).expect("identity");
-    let inbound2 = established_inbound(seed.wrapping_mul(7).wrapping_add(101));
-    let outbound2 = established_outbound(seed.wrapping_mul(7).wrapping_add(202));
-    build_sam_destination_bridge(identity2, inbound2, outbound2, 1_000).expect("bridge")
-}
-
-fn take_captured_outbound(
-    state: &SamServiceState,
-    destination_id: DestinationId,
-) -> Vec<CapturedOutbound> {
-    let registry = state.sam_destinations();
-    let destinations = registry.lock().expect("poisoned");
-    let handle = destinations.get(destination_id).expect("bridge");
-    handle.with(|bridge| bridge.drain_captured_outbound())
+    let mut outbound2_mat = established_outbound(seed.wrapping_mul(7).wrapping_add(202));
+    let outbound2 = outbound2_mat
+        .into_established_tunnel()
+        .expect("outbound tunnel 2");
+    let role2 = i2pr_client::DestinationOutboundRole::new(outbound2, 60_000);
+    let lease_set2_2 = {
+        let mut pool =
+            i2pr_client::DestinationTunnelPool::new(i2pr_client::DestinationConfig::balanced())
+                .expect("pool");
+        let inbound_mat = i2pr_client::testing::established_inbound(seed.wrapping_add(1));
+        pool.register_inbound(inbound_mat, 1_000).expect("inbound");
+        let sources = pool.inbound_lease_sources(1_000);
+        build_signed_lease_set2(&identity2, &sources, 1_000).expect("signed ls2")
+    };
+    build_sam_destination_bridge(identity2, lease_set2_2, role2, 1_000).expect("bridge")
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -189,15 +188,12 @@ async fn stream_connect_malformed_destination_returns_invalid_key() {
     let (state, address, scope, parent) = start_listener(sam_config()).await;
     let mut client = TcpStream::connect(address).await.expect("connect");
     hello_3_1(&mut client).await;
-    // First create a session so the session-id lookup succeeds.
     write_all(
         &mut client,
         b"SESSION CREATE STYLE=STREAM ID=alpha DESTINATION=TRANSIENT\n",
     )
     .await;
     let _ = read_one_line(&mut client).await;
-    // Now issue STREAM CONNECT against the same session with a
-    // malformed destination text (random Base64 that doesn't decode).
     let bogus_dest = "AAAA";
     let cmd = format!("STREAM CONNECT ID=alpha DESTINATION={bogus_dest}\n");
     write_all(&mut client, cmd.as_bytes()).await;
@@ -222,9 +218,6 @@ async fn stream_connect_without_hello_is_rejected() {
     )
     .await;
     let reply = read_one_line(&mut client).await;
-    // Plan 138: STREAM CONNECT reaches the runtime path; without a
-    // matching session it returns INVALID_ID rather than the older
-    // SESSION-CREATE-before-HELLO I2P_ERROR.
     assert!(
         reply.contains("RESULT=INVALID_ID") || reply.contains("RESULT=I2P_ERROR"),
         "expected INVALID_ID or I2P_ERROR, got {reply:?}"
@@ -301,7 +294,6 @@ async fn stream_socket_open_then_close_is_handled() {
     )
     .await;
     let _ = read_one_line(&mut client).await;
-    // Open a STREAM ACCEPT socket and immediately drop it.
     write_all(&mut client, b"STREAM ACCEPT ID=alpha\n").await;
     drop(client);
     for _ in 0..64 {
@@ -313,89 +305,9 @@ async fn stream_socket_open_then_close_is_handled() {
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn stream_capture_seam_records_outbound_transport_request() {
-    let (state, address, scope, parent) = start_listener(sam_config()).await;
-    let mut client = TcpStream::connect(address).await.expect("connect");
-    hello_3_1(&mut client).await;
-    let public = session_create(&mut client, "alpha", None).await;
-    let _ = public; // not needed; keep symmetry with the SAM client API.
-
-    // Install a SAM bridge for the freshly-created session so the
-    // STREAM CONNECT path can capture outbound bytes. The session is
-    // already registered; the bridge is independent.
-    let session_entry = state
-        .session_registry()
-        .get(&i2pr_api::sam::session::SamSessionId::new("alpha").unwrap())
-        .expect("session");
-    let destination_id = session_entry.destination_id();
-    let installed_bridge = install_test_bridge(&state, destination_id, 0xC0DE_C0DE);
-    drop(installed_bridge);
-
-    // STREAM CONNECT needs a real destination. We borrow the
-    // freshly-created identity's public bytes and reuse them — this
-    // is a degenerate but valid destination for the local seam.
-    write_all(&mut client, b"STREAM CONNECT ID=alpha DESTINATION=AAAA\n").await;
-    let reply = read_one_line(&mut client).await;
-    assert!(
-        reply.contains("RESULT=INVALID_KEY"),
-        "expected INVALID_KEY for bogus base64, got {reply:?}"
-    );
-
-    drop(client);
-    parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
-    let _ = scope.shutdown().await;
-    drop(state);
-}
-
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn bridge_capture_seam_handles_transport_request_round_trip() {
-    // Exercise the capture-outbound path directly so the seam is
-    // covered even when the SAM listener is not involved.
-    let (state, _address, scope, parent) = start_listener(sam_config()).await;
-    let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([7_u8; 32]));
-    let _ = install_test_bridge(&state, destination_id, 0xBEEF);
-    let captured = take_captured_outbound(
-        &state,
-        DestinationId::from_hash(i2pr_proto::Hash::from_bytes([7_u8; 32])),
-    );
-    assert!(
-        captured.is_empty(),
-        "fresh bridge has no captured outbound, got {}",
-        captured.len()
-    );
-    // Inject one captured entry through the bridge handle.
-    state
-        .sam_destinations()
-        .lock()
-        .expect("poisoned")
-        .get(destination_id)
-        .expect("bridge")
-        .with(|bridge| {
-            let request = i2pr_client::streaming::transport::TransportSendRequest {
-                destination_hash: [0xAB; 32],
-                source_port: 1,
-                destination_port: 2,
-                application_payload: vec![0xCA, 0xFE, 0xBA, 0xBE],
-                sequence: 1,
-                send_stream_id: 0x100,
-                receive_stream_id: 0x200,
-            };
-            bridge.record_captured(request).expect("record");
-        });
-    let _ = state;
-    let drained = take_captured_outbound(
-        &state,
-        DestinationId::from_hash(i2pr_proto::Hash::from_bytes([7_u8; 32])),
-    );
-    assert_eq!(drained.len(), 1);
-    assert_eq!(drained[0].application_payload, vec![0xCA, 0xFE, 0xBA, 0xBE]);
-    parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
-    let _ = scope.shutdown().await;
-    drop(state);
-}
-
-#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn sam_listener_completes_after_quit() {
+    use std::time::Duration;
+    use tokio::time::timeout;
     let (state, address, scope, parent) = start_listener(sam_config()).await;
     let mut client = TcpStream::connect(address).await.expect("connect");
     hello_3_1(&mut client).await;
@@ -407,6 +319,62 @@ async fn sam_listener_completes_after_quit() {
         Ok(Ok(n)) => assert!(buf[..n].is_empty()),
     }
     drop(client);
+    parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+    let _ = scope.shutdown().await;
+    drop(state);
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn bridge_outbound_diagnostic_counter_increments() {
+    let (state, _address, scope, parent) = start_listener(sam_config()).await;
+    let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([7_u8; 32]));
+    let _ = install_test_bridge(&state, destination_id, 0xBEEF);
+    let outbound_count = {
+        let destinations_arc = state.sam_destinations();
+        let destinations = destinations_arc.lock().expect("poisoned");
+        let handle = destinations.get(destination_id).expect("bridge");
+        handle.with(|bridge| {
+            let request = i2pr_client::streaming::transport::TransportSendRequest {
+                destination_hash: [0xAB; 32],
+                source_port: 1,
+                destination_port: 2,
+                application_payload: vec![0xCA, 0xFE, 0xBA, 0xBE],
+                sequence: 1,
+                send_stream_id: 0x100,
+                receive_stream_id: 0x200,
+            };
+            bridge.record_outbound_dispatch(request.clone());
+            bridge.diagnostics().outbound_queue_len()
+        })
+    };
+    assert_eq!(outbound_count, 1);
+    parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+    let _ = scope.shutdown().await;
+    drop(state);
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn sam_destination_registry_install_and_remove() {
+    let (state, _address, scope, parent) = start_listener(sam_config()).await;
+    let destination_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([42_u8; 32]));
+    let _ = install_test_bridge(&state, destination_id, 0xCAFE);
+    {
+        let destinations_arc = state.sam_destinations();
+        let destinations = destinations_arc.lock().expect("poisoned");
+        assert!(destinations.get(destination_id).is_some());
+        assert_eq!(destinations.len(), 1);
+    }
+    let _ = {
+        let destinations_arc = state.sam_destinations();
+        let mut destinations = destinations_arc.lock().expect("poisoned");
+        destinations.remove(destination_id)
+    };
+    {
+        let destinations_arc = state.sam_destinations();
+        let destinations = destinations_arc.lock().expect("poisoned");
+        assert!(destinations.get(destination_id).is_none());
+        assert_eq!(destinations.len(), 0);
+    }
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
     let _ = scope.shutdown().await;
     drop(state);
