@@ -25,8 +25,8 @@ plan_144_independent-client-final-closure = not-passed
 
 plan_145 = active-m7-sam31-remaining-gap-corrective-roadmap
 plan_146 = passed-m7-sam31-private-destination-reference-requalification
-plan_147 = blocked-on-plan146  (Plan 146 now closed; Plan 147 is the next executable)
-plan_148 = blocked-on-plan147
+plan_147 = passed-m7-sam31-dedicated-raw-stream-driver
+plan_148 = blocked-external-client-build-failure
 
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
@@ -35,10 +35,10 @@ external_acceptance_debt = retained-separately
 milestone7_local_product = not-closed
 sam31_base64 = corrected
 sam31_private_destination = reference-requalification-passed-via-plan146
-sam31_raw_stream = not-yet-product-closed
+sam31_raw_stream = passed-via-plan147
 sam_independent_clients = 0-passed
 router_construction = may-continue-within-m7
-next_executable_plan = 147
+next_executable_plan = 148 (blocked-external-client-build-failure)
 next_product_layer = remain-on-milestone7
 ```
 
@@ -84,10 +84,13 @@ Plan 148 owns the two-client cross-implementation byte lane, FORWARD/naming reva
 ## Execution sequence
 
 1. [`plans/146-m7-sam31-private-destination-reference-requalification.md`](146-m7-sam31-private-destination-reference-requalification.md)
-2. [`plans/147-m7-sam31-dedicated-raw-stream-driver-corrective.md`](147-m7-sam31-dedicated-raw-stream-driver-corrective.md)
-3. [`plans/148-m7-sam31-independent-client-final-closure.md`](148-m7-sam31-independent-client-final-closure.md)
+2. [`plans/147-m7-sam31-dedicated-raw-stream-driver-corrective.md`](147-m7-sam31-dedicated-raw-stream-driver-corrective.md) — closed
+3. [`plans/148-m7-sam31-independent-client-final-closure.md`](148-m7-sam31-independent-client-final-closure.md) — currently blocked on the pinned i2plib and libsam3 cache and build prerequisite (see [`plans/148-status.md`](148-status.md))
 
-Execute sequentially.
+Execute sequentially. Plan 148 must not be claimed as closed until two
+distinct external SAM implementations move application bytes through
+the real listener; the canonical raw product lane is Plan 147's lane,
+not a substitute for the independent-client gate.
 
 Do not start Plan 147 with unresolved reference private-destination behavior. Do not start Plan 148 until the real TCP raw-stream product lane passes without internal application-byte shortcuts.
 
@@ -111,8 +114,12 @@ The Plan 129 authenticated-router-link-bypassed local seam remains the allowed l
 
 ## Handoff instruction
 
-The next implementation model should read Plan 145 and the closed Plan
-146 closure record (`plans/146-status.md`) and execute **Plan 147 only**.
+The next implementation model should read Plan 145, the closed Plan
+146 closure record (`plans/146-status.md`), and the closed Plan 147
+closure record (`plans/147-status.md`). The remaining gap is the two
+independent SAM client closure; see [`plans/148-status.md`](148-status.md)
+for the current `blocked-external-client-build-failure` disposition
+and the prerequisite resolution steps.
 
 Plan 146 closed the bidirectional private-destination reference
 evidence against pinned Java I2P 2.12.0 and i2pd 2.60.0 and relaxed

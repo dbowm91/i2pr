@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Use for i2pr-client, i2pr-api, destination-side i2pr-tunnel/i2pr-netdb/i2pr-proto/i2pr-crypto, i2pr-daemon SAM code, local trajectory tests, or Milestone 7 corrective execution. Plan 145 is the current SAM corrective authority; Plan 146 has closed as `passed-m7-sam31-private-destination-reference-requalification` and Plan 147 has closed as `passed-m7-sam31-dedicated-raw-stream-driver`; Plan 148 is the next executable.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Use for i2pr-client, i2pr-api, destination-side i2pr-tunnel/i2pr-netdb/i2pr-proto/i2pr-crypto, i2pr-daemon SAM code, local trajectory tests, or Milestone 7 corrective execution. Plan 145 is the current SAM corrective authority; Plan 146 has closed as `passed-m7-sam31-private-destination-reference-requalification` and Plan 147 has closed as `passed-m7-sam31-dedicated-raw-stream-driver`; Plan 148 is `blocked-external-client-build-failure` pending the pinned i2plib/libsam3 cache and build prerequisites.
 ---
 
 # I2PR Local Development
@@ -29,7 +29,7 @@ Milestone 7 SAM is **not closed**. The current authority is:
 
 Current execution sequence:
 
-1. [`plans/148-m7-sam31-independent-client-final-closure.md`](../../../plans/148-m7-sam31-independent-client-final-closure.md) — **next executable**, blocked on Plan 147 (now closed).
+1. [`plans/148-m7-sam31-independent-client-final-closure.md`](../../../plans/148-m7-sam31-independent-client-final-closure.md) — currently `blocked-external-client-build-failure` per [`plans/148-status.md`](../../../plans/148-status.md); resolve the pinned i2plib/libsam3 cache and build prerequisites before reattempting.
 
 Do not move to Milestone 8 until Plan 148 passes.
 
@@ -51,6 +51,7 @@ plan_144_in_process_streaming_handshake = passed-local-evidence
 plan_144_independent_client_closure = not-passed
 
 plan_147_dedicated_raw_stream_driver = passed
+plan_148 = blocked-external-client-build-failure
 sam_independent_clients = 0-passed
 milestone7_local_product = not-closed
 ```
@@ -119,11 +120,22 @@ Plan 147 closed the product behavior after successful `STREAM CONNECT` /
 
 SLOW-reader/writer, loss/duplicate/reorder, close/reset, and sibling-stream isolation remain Plan 148.
 
-### Independent-client closure — Plan 148
+### Independent-client closure — Plan 148 (blocked)
 
-Current selected candidates are `i2plib` and `libsam3`. Neither has yet moved application bytes through the real i2pr listener, so `sam_independent_clients = 0-passed`.
+Current selected candidates are `i2plib` (Python, MIT,
+`6edf51cd5d21cc745aa7e23cb98c582144884fa8` / `v0.0.14`) and `libsam3`
+(C, mixed public-domain/MIT,
+`e0da4f4d8d3ca670fef86fd1046dab7c14afc5b7` / `v1.0.0`). The pinned
+sources are recorded in `tests/integration/sam/README.md` but neither
+is present in the local cache, and no build/install lane exists for
+them on this host. Plan 148 therefore records
+`blocked-external-client-build-failure`; `sam_independent_clients =
+0-passed` is unchanged.
 
-Plan 148 must prove cross-client raw bytes, re-run FORWARD/naming over the corrected path, and close resource/privacy/M6 regressions.
+A passing Plan 148 must prove cross-client raw bytes, re-run
+FORWARD/naming over the corrected path, and close resource/privacy/M6
+regressions — using two actually independent SAM implementations, not
+two instances of the same Rust test helper.
 
 `txi2p` is optional; do not make its legacy `ometa` dependency a hard prerequisite.
 
@@ -296,9 +308,18 @@ Read the closure record before extending the raw path:
 
 The raw driver extends existing Streaming flow control rather than adding large queues; the command->raw transition transfers socket ownership and any buffered post-command bytes, and line parsing is impossible after transition.
 
-### Executing Plan 148
+### Executing Plan 148 (blocked)
 
-Use the real loopback listener and independent client APIs. External clients must not import i2pr internals. Commit evidence without private keys or raw secret material.
+Plan 148 is blocked at this disposition. Use the real loopback listener
+and independent client APIs once external clients are available.
+External clients must not import i2pr internals. Commit evidence
+without private keys or raw secret material.
+
+A prior attempt at this plan reused one Rust test helper twice and
+treated the two instances as independent clients; that evidence is
+invalid and must not be retained as closure evidence. Real
+independent-client evidence requires two distinct SAM implementations
+(different language, different codebase, different author).
 
 ## When to load other skills
 

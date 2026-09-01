@@ -862,7 +862,7 @@ protocol = "sam"
 structure = "sam-3.1-independent-client-stream-interoperability"
 scope = "required"
 status = "experimental"
-notes = "Plan 142 closed as `passed-m7-sam31-encoding-private-destination-corrective` per plans/142-status.md, correcting the SAM Base64 alphabet to I2P Base64 (`-`/`~`, `=` padding) and replacing the prior circular-private-destination evidence with three independent reference vectors (i2pd `Base.{h,cpp}`, Java I2P `PrivateKeyFile.java`, i2plib `I2P_B64_CHARS`). **Plan 146 closed as `passed-m7-sam31-private-destination-reference-requalification` per plans/146-status.md**, requalifying private-destination interoperability against the pinned Java I2P 2.12.0 reference and relaxing the `encryption_public == X25519(static_secret)` reconstruction invariant that the Java I2P `PrivateKeyFile` and i2pd `IdentityEx` layouts omit for destinations; the bidirectional reference evidence at `crates/i2pr-daemon/tests/sam_plan146_reference.rs` proves both directions (reference generates → i2pr imports → byte-equal DestinationId; i2pr generates → Java I2P parser consumes → byte-equal PUB). The remaining Plan 140 closure items (Plan 147 dedicated same-socket raw TCP↔Streaming product bridge; Plan 148 two-independent-client final closure plus FORWARD/naming byte-path revalidation) are still open. No SAM feature is advertised."
+notes = "Plan 142 closed as `passed-m7-sam31-encoding-private-destination-corrective` per plans/142-status.md, correcting the SAM Base64 alphabet to I2P Base64 (`-`/`~`, `=` padding) and replacing the prior circular-private-destination evidence with three independent reference vectors (i2pd `Base.{h,cpp}`, Java I2P `PrivateKeyFile.java`, i2plib `I2P_B64_CHARS`). **Plan 146 closed as `passed-m7-sam31-private-destination-reference-requalification` per plans/146-status.md**, requalifying private-destination interoperability against the pinned Java I2P 2.12.0 reference and relaxing the `encryption_public == X25519(static_secret)` reconstruction invariant that the Java I2P `PrivateKeyFile` and i2pd `IdentityEx` layouts omit for destinations; the bidirectional reference evidence at `crates/i2pr-daemon/tests/sam_plan146_reference.rs` proves both directions (reference generates → i2pr imports → byte-equal DestinationId; i2pr generates → Java I2P parser consumes → byte-equal PUB). **Plan 147 closed as `passed-m7-sam31-dedicated-raw-stream-driver` per plans/147-status.md**, adding the dedicated same-socket raw TCP↔Streaming product bridge; `crates/i2pr-daemon/tests/sam_stream_raw_product.rs` is the canonical localhost byte-product lane. **Plan 148 is `blocked-external-client-build-failure` per plans/148-status.md**: the pinned i2plib (`6edf51cd5d21cc745aa7e23cb98c582144884fa8`) and libsam3 (`e0da4f4d8d3ca670fef86fd1046dab7c14afc5b7`) sources are not present in the local cache and no build/install lane exists for them; two-independent-client final closure plus FORWARD/naming byte-path revalidation remain blocked. No SAM feature is advertised."
 evidence = [
     "plans/140-m7-sam31-interoperability-closure.md",
     "plans/140-status.md",
@@ -870,9 +870,14 @@ evidence = [
     "plans/142-status.md",
     "plans/146-m7-sam31-private-destination-reference-requalification.md",
     "plans/146-status.md",
+    "plans/147-m7-sam31-dedicated-raw-stream-driver-corrective.md",
+    "plans/147-status.md",
+    "plans/148-m7-sam31-independent-client-final-closure.md",
+    "plans/148-status.md",
     "tests/integration/sam/README.md",
     "tests/integration/sam/reference/Plan146ReferenceHelper.java",
     "crates/i2pr-daemon/tests/sam_plan146_reference.rs",
+    "crates/i2pr-daemon/tests/sam_stream_raw_product.rs",
     "docs/architecture/audit/2026-08-28-plan140-audit.md",
 ]
 advertised = false

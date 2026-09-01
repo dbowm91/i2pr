@@ -13,8 +13,8 @@ The current **Milestone 7 SAM 3.1 corrective authority** is
 [**Plan 145**](145-status.md) (`active-m7-sam31-remaining-gap-corrective-roadmap`).
 The post-Plan-144 audit retains the correct Plan 142 I2P Base64 change and
 the useful Plan 143/144 local-delivery plus in-process handshake work, but
-reclassifies the unsupported closure claims. The executable sequence is
-**Plan 146 (closed) → Plan 147 (closed) → Plan 148 (next)**:
+reclassifies the unsupported closure claims. The sequence is
+**Plan 146 (closed) → Plan 147 (closed) → Plan 148 (blocked)**:
 
 - Plan 146 has closed as
   [`passed-m7-sam31-private-destination-reference-requalification`](146-status.md) —
@@ -29,8 +29,14 @@ reclassifies the unsupported closure claims. The executable sequence is
 - Plan 147 implements the missing dedicated TCP↔Streaming raw socket driver,
   ACK/retransmit runtime ownership, backpressure, SILENT, and lifecycle/fault
   acceptance;
-- Plan 148 drives two independent SAM clients through the real listener and
-  performs final FORWARD/naming/resource/privacy/M6 regression closure.
+ - Plan 148 drives two independent SAM clients through the real listener and
+   performs final FORWARD/naming/resource/privacy/M6 regression closure; it
+   is blocked because the pinned i2plib/libsam3 sources and build cache are not
+   available in this checkout (`plans/148-status.md`).
+
+Milestone 7 remains open until Plan 148 passes. The Plan 147 raw product lane
+is valid local product evidence, but does not substitute for the required
+independent-client gate.
 
 Milestone 8 is not the next product layer until Plan 148 passes.
 

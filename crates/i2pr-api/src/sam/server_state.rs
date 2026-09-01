@@ -102,7 +102,8 @@ pub enum DispatchOutcome {
     /// returns the socket to the caller and the per-stream driver
     /// owns the remaining lifetime. The [`StreamRawTransition`]
     /// payload carries the data the daemon needs to construct the
-    /// [`crate::sam::RawStreamHandoff`].
+    /// raw driver handoff (the daemon owns the handoff type, which is
+    /// why it is not re-exported from `i2pr-api`).
     StreamRawMode {
         /// Stream id assigned by the registry.
         stream_id: u32,

@@ -157,13 +157,16 @@ record is not `superseded-by-*`. Currently:
 
 - **Milestone 6 authority**: Plan 134
   (`passed-milestone6-recv-window-ack-ceiling-closure`).
-- **Milestone 7 SAM 3.1 corrective authority**: Plan 141
-  (`active-m7-sam31-corrective-roadmap`). The most recent closed
-  SAM sub-claim is Plan 142
-  (`passed-m7-sam31-encoding-private-destination-corrective` —
-  SAM Base64 alphabet + private-destination compatibility). Plan 143
-  (live STREAM CONNECT/ACCEPT product bridge) and Plan 144
-  (two-independent-client final closure) remain open.
+- **Milestone 7 SAM 3.1 corrective authority**: Plan 145
+  (`active-m7-sam31-remaining-gap-corrective-roadmap`). Plan 146
+  closed the private-destination sub-claim
+  (`passed-m7-sam31-private-destination-reference-requalification`).
+  Plan 147 closed the dedicated raw STREAM product path
+  (`passed-m7-sam31-dedicated-raw-stream-driver`). Plan 148 is
+  currently `blocked-external-client-build-failure` per
+  [`plans/148-status.md`](../../plans/148-status.md) and remains the
+  two-independent-client final closure authority once external clients
+  become available.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).

@@ -13,17 +13,19 @@ Always read these before changing code or answering questions about state:
    closed via Plan 134; Milestone 7 SAM corrective authority is Plan 145;
    Plan 146 closed as
    `passed-m7-sam31-private-destination-reference-requalification`; Plan
-   147 closed as `passed-m7-sam31-dedicated-raw-stream-driver`; next
-   executable is Plan 148), build/test/lint commands, high-level
-   architecture.
+   147 closed as `passed-m7-sam31-dedicated-raw-stream-driver`; Plan
+   148 is blocked on external client build availability), build/test/lint
+   commands, high-level architecture.
 2. `GUARDRAILS.md` — non-negotiable engineering, security,
    interoperability, and collaboration constraints.
 3. `CONTRIBUTING.md` — local quality checks, the runtime/testkit
    conventions, the rootless and Multipass evidence-lane contracts.
 4. The active plan under `plans/` (entry point:
    [`plans/README.md`](plans/README.md); current corrective status:
-   `plans/145-status.md`, `plans/146-status.md`, and
-   `plans/147-status.md`; next executable: Plan 148) and the relevant
+   `plans/145-status.md`, `plans/146-status.md`,
+   `plans/147-status.md`, and
+   [`plans/148-status.md`](plans/148-status.md) recording the
+   `blocked-external-client-build-failure` disposition) and the relevant
    `docs/adr/` record. The [`docs/architecture/audit/`](docs/architecture/audit/)
    directory tracks doc-vs-source drift findings from the most recent audits.
 5. `specs/support.toml` (mirrored to `docs/protocol-support.md`) for
@@ -302,9 +304,11 @@ current public state:
   147 closed the dedicated raw STREAM product path as
   `passed-m7-sam31-dedicated-raw-stream-driver`. Plan 143/144 local
   delivery and in-process handshake work is retained as regression
-  evidence. Plan 148 owns two-independent-client final closure plus
-  FORWARD/naming byte-path revalidation. Plan 140/141 are historical
-  audit/corrective records, not the next executable authority.
+  evidence. Plan 148 is `blocked-external-client-build-failure`
+  ([`plans/148-status.md`](plans/148-status.md)) and remains the
+  two-independent-client final closure authority once external clients
+  become available. Plan 140/141 are historical audit/corrective
+  records, not the next executable authority.
 
 When you read a `plan_NNN`-style token in code or docs, treat the
 newest explicit superseding status record as authoritative and the per-plan

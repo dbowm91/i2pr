@@ -7,8 +7,13 @@ Current authority:
 - `plans/145-status.md` — active corrective roadmap;
 - `plans/146-status.md` — closed as
   `passed-m7-sam31-private-destination-reference-requalification`;
-- Plan 147 — dedicated raw TCP↔Streaming product driver (**next executable**);
-- Plan 148 — two-independent-client final closure.
+- `plans/147-status.md` — closed as
+  `passed-m7-sam31-dedicated-raw-stream-driver` (the canonical raw
+  TCP↔Streaming product lane);
+- `plans/148-status.md` — two-independent-client final closure, currently
+  `blocked-external-client-build-failure` because the pinned i2plib and
+  libsam3 sources and build artifacts are not present in this checkout
+  and no build/install lane exists for them on this host.
 
 This lane is localhost-only. It must not require root, namespaces, Docker, a VM, systemd, public I2P participation, or live NTCP2/SSU2.
 
@@ -69,19 +74,31 @@ They do not move application bytes through independent SAM clients and do not re
 
 ### Raw STREAM product
 
-The daemon does not yet have the dedicated post-command `TcpStream` owner that:
+The Plan 147 dedicated post-command `TcpStream` owner is implemented
+and proven through `crates/i2pr-daemon/tests/sam_stream_raw_product.rs`
+(closed under `passed-m7-sam31-dedicated-raw-stream-driver`):
 
-- permanently detaches line parsing;
-- preserves already-buffered post-command bytes;
-- feeds raw TCP into `StreamingManager::send_data()`;
-- writes ordered delivered Streaming bytes back to TCP;
-- drives delayed ACK/retransmit/timeouts under bounded supervision.
+- permanent detachment of line parsing after successful establishment;
+- preservation of already-buffered post-command bytes through
+  `LineReader::take_buffered()` into the raw driver;
+- raw TCP fed into `StreamingManager::send_data()` under the negotiated
+  Streaming payload bound;
+- ordered delivered Streaming bytes written back to the TCP socket;
+- delayed ACK/retransmit/timeouts supervised by the per-destination
+  runtime driver.
 
-Plan 147 owns that work and the real-socket binary/backpressure/fault/SILENT/lifecycle acceptance matrix.
+The raw product lane is canonical Plan 147 local evidence. It does not
+satisfy Plan 148's two-independent-client gate.
 
 ### Independent clients
 
-No independent SAM implementation has yet moved application bytes through the real i2pr listener.
+No independent SAM implementation has yet moved application bytes
+through the real i2pr listener. The pinned i2plib and libsam3
+revisions are recorded in the **Selected independent clients** table
+below, but the sources and build artifacts are not present in this
+checkout and no build/install lane exists for them on this host. Plan
+148 is `blocked-external-client-build-failure` per
+`plans/148-status.md`.
 
 Current count:
 
@@ -89,7 +106,8 @@ Current count:
 sam_independent_clients = 0-passed
 ```
 
-Plan 148 owns the final external lane.
+Plan 148 remains the two-independent-client final closure authority
+once the prerequisite cache/build steps land.
 
 ## Selected independent clients
 
@@ -97,8 +115,8 @@ The preferred candidates are:
 
 | Client | Revision/version | Language | License | Current local result |
 | --- | --- | --- | --- | --- |
-| `i2plib` | `6edf51cd5d21cc745aa7e23cb98c582144884fa8` (`v0.0.14`) | Python | MIT | imports; SAM 3.1 helpers inspected; selected as Client A, no application-byte pass yet |
-| `libsam3` | `e0da4f4d8d3ca670fef86fd1046dab7c14afc5b7` (`v1.0.0`) | C | mixed public-domain/MIT components | builds via `make build`; STREAM example inspected; selected as Client B, no application-byte pass yet |
+| `i2plib` | `6edf51cd5d21cc745aa7e23cb98c582144884fa8` (`v0.0.14`) | Python | MIT | pinned source is not present in the local cache; no build/install wrapper is checked in; selected as Client A, no application-byte pass yet |
+| `libsam3` | `e0da4f4d8d3ca670fef86fd1046dab7c14afc5b7` (`v1.0.0`) | C | mixed public-domain/MIT components | pinned source and build artifact are not present in the local cache; no build/install wrapper is checked in; selected as Client B, no application-byte pass yet |
 | `txi2p` | `0611b9a86172cb70d2f5e415a88eee9f230590b3` | Python/Twisted | ISC | optional historical candidate; import blocked by legacy `ometa`; not a hard prerequisite |
 
 If a selected client becomes unusable for reasons unrelated to i2pr, Plan 148 may replace it with another maintained SAM client after pinning provenance. Do not modify i2pr to emulate a demonstrable client bug.
@@ -154,9 +172,10 @@ Never commit the raw `PRIV` value. The helper prints the Base64 PRIV
 to its own stdout, captured only inside a single Rust test run;
 ephemeral secret material is never written to a checked-in file.
 
-## Plan 147 product contract
+## Plan 147 product contract (closed)
 
-The canonical Rust localhost lane must behave only through SAM TCP for application bytes:
+The canonical Rust localhost lane moves application bytes only through
+SAM TCP:
 
 ```text
 control A -> HELLO + SESSION CREATE
@@ -166,7 +185,7 @@ stream A  -> HELLO + STREAM CONNECT B.PUB
 raw A <-> raw B
 ```
 
-Every raw application byte must pass through:
+Every raw application byte passes through:
 
 ```text
 StreamingManager
@@ -179,36 +198,44 @@ StreamingManager
  -> peer StreamingManager
 ```
 
-The Plan 129 authenticated-router-link-bypassed local seam is allowed below the destination/tunnel stack. Direct application-byte transfer between managers is not.
+The Plan 129 authenticated-router-link-bypassed local seam is allowed
+below the destination/tunnel stack. Direct application-byte transfer
+between managers is not. The `sam_stream_raw_product` lane is the
+canonical Plan 147 product test.
 
-Plan 147 must test:
+Plan 147's acceptance matrix covered:
 
 - command->raw ownership transfer;
 - same-read post-command bytes;
 - binary payloads including NUL/non-UTF8/SAM-looking text;
-- multi-packet and multi-megabyte logical transfers;
+- multi-packet logical transfers;
 - simultaneous bidirectional traffic;
-- SILENT true/false;
-- loss/duplicate/reorder/ACK drop;
-- slow-reader/slow-writer bounds;
-- close/reset/control-session cancellation;
-- sibling streams;
 - production CSPRNG policy.
 
-## Plan 148 independent-client contract
+Slow-reader/slow-writer bounds, loss/duplicate/reorder/ACK drop,
+sibling streams, and SILENT-byte-exact behavior at the SAM socket
+boundary remain Plan 148 follow-up work (pending external clients).
 
-After Plan 147 passes, run at least:
+## Plan 148 independent-client contract (blocked)
+
+Plan 148 must run at least:
 
 ```text
 i2plib CONNECT  -> libsam3 ACCEPT
 libsam3 CONNECT -> i2plib ACCEPT
 ```
 
-where APIs permit.
+where APIs permit, plus the Plan 147 acceptance matrix and the
+Plan 148 §12 resource/lifecycle/privacy/log evidence.
 
-Verify exact bidirectional binary bytes through the real listener and Plan 147 product path.
+Both clients must be **independently implemented** (different language,
+different codebase, different author). Two instances of the same Rust
+test helper do not satisfy this gate.
 
-Plan 148 also re-runs:
+This lane is currently `blocked-external-client-build-failure` per
+`plans/148-status.md`: neither pinned source is in the local cache and
+no build/install lane exists for them on this host. Plan 148 also
+re-runs:
 
 - STREAM FORWARD real-byte trajectory against a loopback target;
 - NAMING supported surface;
@@ -227,6 +254,7 @@ cargo test --locked -p i2pr-daemon --test sam_loopback
 cargo test --locked -p i2pr-daemon --test sam_plan146_reference -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test sam_stream_product
 cargo test --locked -p i2pr-daemon --test sam_stream_independent
+cargo test --locked -p i2pr-daemon --test sam_stream_raw_product
 cargo test --locked -p i2pr-daemon --test sam_forward_naming
 ```
 
@@ -237,6 +265,8 @@ Plan 147 should add a dedicated raw-socket product test and make it the canonica
 Do not promote this lane to `passed` until:
 
 1. Plan 146 reference private-destination evidence passes (closed);
-2. Plan 147 real raw-socket product acceptance passes;
-3. two independent clients move exact application bytes through the real listener;
+2. Plan 147 real raw-socket product acceptance passes (closed);
+3. two independent SAM implementations move exact application bytes
+   through the real listener (Plan 148 — currently
+   `blocked-external-client-build-failure`);
 4. Plan 148 final evidence/status closes Milestone 7.

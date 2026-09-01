@@ -35,15 +35,17 @@ work is scoped to:
   with a bounded `BootstrapSnapshot` and `ReseedAttemptSummary`.
 - **Stable process exit codes** that operators and automation can
   rely on.
-- **SAM 3.1 loopback service** (Plans 137–139): owns the supervised
+- **SAM 3.1 loopback service** (Plans 137–147): owns the supervised
   listener, transactional sessions, per-destination Streaming pools,
   STREAM CONNECT/ACCEPT dispatch, loopback-only STREAM FORWARD
   registrations, bounded/cancellable raw forwarding, and local naming
   outcomes. SAM remains disabled by default and is never a public
-  network listener. Plan 140's closure audit found that STREAM
-  CONNECT/ACCEPT still need a permanent raw-socket handoff to live
-  destination delivery; independent-client interoperability is therefore
-  not claimed.
+  network listener. Plan 147 closed the dedicated same-socket
+  raw-socket handoff to live destination delivery (see
+  [`plans/147-status.md`](../../plans/147-status.md)). Plan 148 is the
+  two-independent-client final closure authority and remains
+  `blocked-external-client-build-failure` per
+  [`plans/148-status.md`](../../plans/148-status.md).
 
 What it **does not** do yet:
 
@@ -427,12 +429,15 @@ the SAM 3.1 loopback server and session lifecycle as
 ([`plans/137-status.md`](../../plans/137-status.md)); Plan 138 closed
 the SAM 3.1 STREAM CONNECT / ACCEPT transport bridge as
 `passed-m7-sam31-stream-connect-accept-bridge`
-([`plans/138-status.md`](../../plans/138-status.md)); Plan 139 closes
+ ([`plans/138-status.md`](../../plans/138-status.md)); Plan 139 closes
 the loopback-only STREAM FORWARD and local NAMING LOOKUP hardening as
 `passed-m7-sam31-forward-naming-hardening`
 ([`plans/139-status.md`](../../plans/139-status.md)); the next product
 step is independent-client interoperability and Milestone 7 closure
-(Plan 140).
+(Plan 148, currently `blocked-external-client-build-failure` per
+[`plans/148-status.md`](../../plans/148-status.md) — the pinned i2plib
+and libsam3 sources are not present in the local cache and no
+build/install lane exists for them).
 
 ### Which crates are wired in today
 
