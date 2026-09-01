@@ -217,6 +217,14 @@ impl SamDestinationBridge {
         &mut self.receiver_streaming
     }
 
+    /// Returns the bridge's receiver-mirror `StreamingManager`. The
+    /// receiver mirror processes inbound SYN/SYN-ACK/DATA packets
+    /// delivered through [`bridge_to_peer`]; the canonical outbound
+    /// path uses [`Self::streaming_mut`].
+    pub fn receiver_streaming(&self) -> &StreamingManager {
+        &self.receiver_streaming
+    }
+
     pub fn receiver_routing_mut(&mut self) -> &mut DestinationRouting {
         &mut self.receiver_routing
     }
@@ -285,6 +293,11 @@ impl SamDestinationHandle {
 #[derive(Default)]
 pub struct SamDestinations {
     by_id: HashMap<DestinationId, SamDestinationHandle>,
+    /// Plan 144: peer-destination-hash -> local-destination-id reverse
+    /// index. Lets the per-stream raw byte bridge look up the peer
+    /// bridge from a SAM `TransportSendRequest.destination_hash`
+    /// without scanning every bridge.
+    by_peer: HashMap<[u8; 32], DestinationId>,
 }
 
 impl std::fmt::Debug for SamDestinations {
@@ -314,8 +327,19 @@ impl SamDestinations {
         destination_id: DestinationId,
         bridge: SamDestinationBridge,
     ) -> SamDestinationHandle {
+        let peer_hash = bridge.identity_destination_hash();
         let handle = SamDestinationHandle::new(bridge);
-        self.by_id.insert(destination_id, handle.clone());
+        // Plan 144: the per-stream raw byte bridge uses the
+        // `destination_hash` carried on every `TransportSendRequest`
+        // to route outbound traffic to the correct peer. Map both keys
+        // so a single `install` call wires the reverse index.
+        if let Some(prior) = self.by_id.insert(destination_id, handle.clone()) {
+            // Drop the prior reverse-index entry (different local
+            // destination, same peer hash) so the index never
+            // references a removed bridge.
+            let _ = self.by_peer.remove(&prior.peer_destination_hash());
+        }
+        self.by_peer.insert(peer_hash, destination_id);
         handle
     }
 
@@ -324,7 +348,27 @@ impl SamDestinations {
     }
 
     pub fn remove(&mut self, destination_id: DestinationId) -> Option<SamDestinationHandle> {
-        self.by_id.remove(&destination_id)
+        let removed = self.by_id.remove(&destination_id);
+        if let Some(handle) = &removed {
+            self.by_peer.remove(&handle.peer_destination_hash());
+        }
+        removed
+    }
+
+    /// Returns the bridge registered for the supplied peer
+    /// destination hash (the SAM `PUB` value the destination owns).
+    pub fn lookup_by_peer_hash(&self, peer_hash: &[u8; 32]) -> Option<SamDestinationHandle> {
+        let local_id = self.by_peer.get(peer_hash).copied()?;
+        self.by_id.get(&local_id).cloned()
+    }
+}
+
+impl SamDestinationHandle {
+    /// Returns the peer destination hash that the handle's bridge
+    /// advertises in its LeaseSet2 (used by the per-stream raw byte
+    /// bridge to clean up the peer reverse-index on `SamDestinations::remove`).
+    pub fn peer_destination_hash(&self) -> [u8; 32] {
+        self.with(|bridge| bridge.identity_destination_hash())
     }
 }
 
@@ -459,6 +503,13 @@ pub fn bridge_to_peer<R: CryptoRng + RngCore>(
             StreamingManager::new(StreamingConfig::balanced()),
         )
     };
+    let mut peer_canonical_streaming = {
+        let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+        std::mem::replace(
+            &mut peer_guard.streaming,
+            StreamingManager::new(StreamingConfig::balanced()),
+        )
+    };
     let mut receiver_lease_set2_store = {
         let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
         std::mem::take(&mut peer_guard.receiver_lease_set2_store)
@@ -516,6 +567,7 @@ pub fn bridge_to_peer<R: CryptoRng + RngCore>(
         session: &mut receiver_session,
         routing: &mut receiver_routing,
         streaming: &mut receiver_streaming,
+        canonical_streaming: Some(&mut peer_canonical_streaming),
         lease_set2_store: &mut receiver_lease_set2_store,
         now_seconds: receiver_now_seconds,
     };
@@ -548,6 +600,7 @@ pub fn bridge_to_peer<R: CryptoRng + RngCore>(
         peer_guard.receiver_session = receiver_session;
         peer_guard.receiver_routing = receiver_routing;
         peer_guard.receiver_streaming = receiver_streaming;
+        peer_guard.streaming = peer_canonical_streaming;
         peer_guard.receiver_lease_set2_store = receiver_lease_set2_store;
     }
 

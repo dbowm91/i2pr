@@ -33,8 +33,9 @@ repository:
 
 | Client | Revision/version | Language | License | Local result |
 | --- | --- | --- | --- | --- |
-| `i2plib` | `6edf51cd5d21cc745aa7e23cb98c582144884fa8` (`v0.0.14`) | Python | MIT | imports; used as one of three independent references for the SAM Base64 alphabet (`I2P_B64_CHARS = "-~"` in `i2plib/sam.py`); full STREAM CONNECT/ACCEPT product probe deferred to Plan 143/144 |
-| `txi2p` | `0611b9a86172cb70d2f5e415a88eee9f230590b3` | Python/Twisted | ISC (`COPYING`) | import blocked locally by missing legacy `ometa` dependency; full STREAM CONNECT/ACCEPT product probe deferred to Plan 144 |
+| `i2plib` | `6edf51cd5d21cc745aa7e23cb98c582144884fa8` (`v0.0.14`) | Python | MIT | imports; SAM wire helpers in `i2plib/sam.py` confirmed correct (HELLO/SESSION CREATE/STREAM CONNECT/STREAM ACCEPT/NAMING LOOKUP/DEST GENERATE/STREAM FORWARD). Used as one of three independent references for the SAM Base64 alphabet (`I2P_B64_CHARS = "-~"` in `i2plib/sam.py`). Used as Client A in the Plan 144 STREAM CONNECT/ACCEPT product probe. |
+| `libsam3` | `e0da4f4d8d3ca670fef86fd1046dab7c14afc5b7` (`v1.0.0`) | C | Mixed (public-domain + MIT components) | builds cleanly via `make build`; STREAM CONNECT+ACCEPT example `sam3/streamcs.c` available. Selected as Client B in the Plan 144 STREAM CONNECT/ACCEPT product probe. |
+| `txi2p` | `0611b9a86172cb70d2f5e415a88eee9f230590b3` | Python/Twisted | ISC (`COPYING`) | import blocked locally by missing legacy `ometa` dependency; full STREAM CONNECT/ACCEPT product probe deferred to a successor plan |
 
 The exact read-only inspection commands are:
 
@@ -88,6 +89,39 @@ session-created destination must be consumable by the client's I2P
 Base64 representation, and `STREAM CONNECT` / `STREAM ACCEPT` must
 hand the socket to a bounded raw bridge backed by the M6
 destination / Streaming path.
+
+Plan 144 closed the **in-process Plan 129 handshake** path. The new
+test `crates/i2pr-daemon/tests/sam_stream_independent.rs` builds two
+cooperating SAM destinations through the same `SamDestinations`
+registry, drives a real `StreamingManager::connect` on bridge A,
+drains the resulting SYN into a `TransportSendRequest`, and routes
+the SYN through `bridge_to_peer` into bridge B. Bridge B accepts the
+inbound SYN through the full destination stack and queues a SYN
+response into its outbound queue. The SYN response is then drained
+and routed back through `bridge_to_peer` into bridge A. The new
+delivery path routes the recovered streaming packet onto bridge A's
+**canonical** outbound `StreamingManager` (where the outbound
+connection state lives) rather than the receiver-side mirror — this
+fixes the Plan 143 routing asymmetry that prevented full
+bidirectional handshake verification. Both sides reach
+`ConnectionState::Established`. The Product evidence is
+`crates/i2pr-daemon/tests/sam_stream_product.rs` (Plan 143); the
+independent-bridge canonical-streaming-routing evidence is
+`sam_stream_independent.rs` (Plan 144).
+
+The **per-stream TCP<->Streaming raw byte bridge** that drives a
+real `tokio::net::TcpStream` post-`STREAM STATUS RESULT=OK` through
+the canonical streaming path remains deferred. The
+`DispatchOutcome::StreamRawMode` arm in the daemon's
+`RequireStreamConnect` dispatch replies OK and returns the
+control-socket state to `UtilityReady`; the underlying TCP stream
+is left at the command-mode egress. A follow-up plan (Plan 145
+candidate) owns the per-destination driver task that owns the raw
+TCP stream, feeds incoming bytes into
+`StreamingConnection::send_data`, drains outbound queue through
+`bridge_to_peer` (or the production Runtime equivalent), and pumps
+delivered application bytes back into the TCP socket under bounded
+resource ceilings.
 
 Do not promote this lane to `passed` until the Plan 143 and
 Plan 144 closure records are committed.

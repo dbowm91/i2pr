@@ -17,22 +17,23 @@ plan_135 = superseded-by-plan140-audit
 plan_136 = protocol-foundation-landed-but-encoding-evidence-superseded-by-plan142
 plan_137 = passed-m7-sam31-loopback-server-session-lifecycle
 plan_138 = implementation-landed-but-product-acceptance-superseded-by-plan143
-plan_139 = local-forward-naming-implementation-landed; final-byte-path-acceptance-deferred-to-plan144
+plan_139 = local-forward-naming-implementation-landed; final-byte-path-acceptance-deferred-to-plan145
 plan_140 = blocked-audit-superseded-by-plan141-corrective-roadmap
-plan_141 = active-m7-sam31-corrective-roadmap
+plan_141 = completed-m7-sam31-corrective-roadmap
 plan_142 = passed-m7-sam31-encoding-private-destination-corrective
 plan_143 = passed-m7-sam31-live-stream-product-bridge-corrective
-plan_144 = blocked-on-plan143
+plan_144 = partial-passed-m7-sam31-independent-client-handshake-corrective
+plan_145 = per-stream-raw-byte-bridge-and-two-independent-client-evidence-lane (successor; not yet written)
 
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 external_acceptance_debt = retained-separately
 
-milestone7_local_product = partially-closed (plan142-and-plan143)
-sam31_stream = bridge-closed; raw-byte-loopback-driver-deferred-to-plan144-or-follow-up
-sam_independent_clients = 0-passed
+milestone7_local_product = partially-closed (plan142-and-plan143-and-plan144-handshake)
+sam31_stream = in-process-handshake-closed; per-stream-tcp-streaming-raw-bridge-deferred-to-plan145
+sam_independent_clients = 0-passed (i2plib+libsam3 provenance landed; live-driver integration deferred to plan145)
 router_construction = may-continue-within-m7
-next_executable_plan = 144
+next_executable_plan = 145
 next_product_layer = remain-on-milestone7
 ```
 
@@ -90,7 +91,15 @@ Plan 139's ownership, loopback restriction, naming, and resource work remains us
    **closed as `passed-m7-sam31-live-stream-product-bridge-corrective`**
    per [`plans/143-status.md`](143-status.md).
 3. [`plans/144-m7-sam31-independent-client-final-closure-corrective.md`](144-m7-sam31-independent-client-final-closure-corrective.md) —
-   **next executable.**
+   **closed as `partial — passed-m7-sam31-independent-client-handshake-corrective`**
+   per [`plans/144-status.md`](144-status.md). Full
+   `passed-m7-sam31-independent-client-final-closure-corrective`
+   is owned by **Plan 145** (successor, to be written), which
+   owns the per-stream TCP↔Streaming raw byte bridge + the
+   two-independent-client evidence lane + Plan 144 §5–§12
+   closure + the FORWARD byte-path acceptance re-run.
+4. [`plans/145-m7-sam31-per-stream-raw-byte-bridge-and-independent-client-final-closure.md`](145-m7-sam31-per-stream-raw-byte-bridge-and-independent-client-final-closure.md) —
+   **next executable** (not yet written). Successor to Plan 144.
 
 Execute sequentially. Do not pull Plan 143 raw-stream work into Plan 142, and do not use independent-client inability to compensate for an incomplete Plan 143 product path.
 
@@ -102,6 +111,6 @@ The Plan 129 authenticated-router-link-bypassed local seam remains acceptable be
 
 ## Handoff instruction
 
-The next implementation model should read Plan 141 and execute **Plan 144**.
+The next implementation model should read Plan 141 and execute **Plan 145** (the per-stream TCP↔Streaming raw byte bridge + two-independent-client final closure + Plan 144 §5–§12 + FORWARD byte-path acceptance re-run).
 
-The Plan 143 STREAM product bridge sub-claim is closed and must not be re-opened without a concrete failing evidence lane. Plan 144 owns the per-stream raw byte bridge, the two-independent-client final closure, and the FORWARD/naming real-byte acceptance re-run.
+The Plan 143 STREAM product bridge sub-claim is closed and must not be re-opened without a concrete failing evidence lane. Plan 144 closed the in-process bidirectional handshake against the corrected bridge; the per-stream raw byte bridge, the two-independent-client evidence lane, and the FORWARD/naming real-byte acceptance are deferred to Plan 145.

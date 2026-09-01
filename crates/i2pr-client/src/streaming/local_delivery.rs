@@ -57,7 +57,8 @@ use crate::session::EciesSessionManager;
 use crate::streaming::manager::StreamingManager;
 use crate::streaming::transport::TransportSendRequest;
 use crate::streaming_adapter::{
-    InboundStreamingOutcome, StreamingAdapterError, StreamingDestinationAdapter,
+    InboundStreamingOutcome, MAX_STREAMING_ADAPTER_PAYLOAD_BYTES, StreamingAdapterError,
+    StreamingDestinationAdapter,
 };
 
 /// Plan 116 sets the canonical OBEP reassembly/duplicate-window sizes.
@@ -212,8 +213,19 @@ pub struct LocalDeliveryReceiver<'a> {
     /// The receiver's routing pipeline (mutable so install of
     /// the validated remote LeaseSet2 is recorded).
     pub routing: &'a mut DestinationRouting,
-    /// The receiver's StreamingManager.
+    /// The receiver's StreamingManager. The Plan 129 mirror
+    /// manager that handles inbound SYN observations and data
+    /// traffic for established receiver-side streams.
     pub streaming: &'a mut StreamingManager,
+    /// Optional receiver-side canonical outbound StreamingManager
+    /// that owns the outbound SYN trackers (Plan 129 §3, Plan 144
+    /// §3: the SYN response must reach the *same* StreamingManager
+    /// that issued the SYN, since the outbound connection state
+    /// — including `outbound_by_stream` — lives there). When `Some`
+    /// the delivery path peeks the streaming packet header; a SYN
+    /// response is dispatched here, all other streaming traffic
+    /// dispatches to `streaming`.
+    pub canonical_streaming: Option<&'a mut StreamingManager>,
     /// Receiver-side lease set cache (mutable so validated
     /// senders can be inserted).
     pub lease_set2_store: &'a mut LeaseSet2Store,
@@ -335,13 +347,55 @@ pub fn deliver<R: CryptoRng + RngCore>(
         .dispatcher
         .pop_payload(receiver.identity.id())
         .ok_or(LocalDeliveryError::NoPayload)?;
+    let payload_bytes = payload.bytes().to_vec();
+    // Peek the streaming packet header to route the packet to the
+    // correct StreamingManager. Plan 144 §3: the streaming manager
+    // that issued the outbound SYN owns the outbound connection
+    // state (including `outbound_by_stream`). A SYN response must
+    // therefore land on the *canonical* outbound manager, not on
+    // the receiver-side mirror. Other traffic (inbound SYN, data
+    // on the receiver, etc.) stays on the mirror.
+    //
+    // The dispatcher payload is an I2NP envelope carrying a
+    // gzip-encoded protocol-6 client payload; unwrap both layers
+    // before peeking the *streaming* header.
+    let peek_for_routing = (|| -> Option<i2pr_proto::streaming::StreamingHeaderPeek> {
+        let msg =
+            i2pr_proto::I2npMessage::decode_standard(&payload_bytes, MAX_I2NP_PAYLOAD_SIZE).ok()?;
+        let body = match msg.body() {
+            i2pr_proto::I2npBody::Data(body) => body.payload.as_bytes(),
+            _ => return None,
+        };
+        let envelope =
+            i2pr_proto::streaming::decode_client_payload(body, MAX_STREAMING_ADAPTER_PAYLOAD_BYTES)
+                .ok()?;
+        i2pr_proto::streaming::peek_streaming_header(&envelope.payload).ok()
+    })();
+    let target_streaming: &mut StreamingManager = match (
+        receiver.canonical_streaming.as_deref_mut(),
+        &peek_for_routing,
+    ) {
+        (Some(canonical), Some(peek)) => {
+            let flags_bits = peek.flags_bits & !i2pr_proto::streaming::FLAG_RESERVED_MASK;
+            let is_syn_response = flags_bits & i2pr_proto::streaming::FLAG_SYNCHRONIZE != 0
+                && peek.send_stream_id != 0
+                && peek.receive_stream_id != 0;
+            if is_syn_response {
+                canonical
+            } else {
+                receiver.streaming
+            }
+        }
+        _ => receiver.streaming,
+    };
     let observation = StreamingDestinationAdapter::receive(
-        payload.bytes(),
+        &payload_bytes,
         receiver.identity,
-        receiver.streaming,
+        target_streaming,
         &local_destination_hash_bytes,
         sender.now_ms,
     )?;
+    let _ = outcome;
     Ok(LocalDeliveryOutcome::Delivered { observation })
 }
 

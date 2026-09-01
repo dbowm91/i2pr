@@ -53,7 +53,7 @@ the two-independent-client final Milestone 7 closure.
 | 141 | active corrective roadmap | [`141-status.md`](141-status.md) |
 | 142 | **closed** — `passed-m7-sam31-encoding-private-destination-corrective` (I2P Base64 alphabet + independent reference vectors) | [`142-status.md`](142-status.md) |
 | 143 | **closed** — `passed-m7-sam31-live-stream-product-bridge-corrective` (captured-outbound seam removed; full Plan 129 destination stack drives the live bridge through `i2pr_client::deliver`) | [`143-status.md`](143-status.md) |
-| 144 | blocked on 143 — independent clients and final M7 closure | [`144-m7-sam31-independent-client-final-closure-corrective.md`](144-m7-sam31-independent-client-final-closure-corrective.md) |
+| 144 | **partial — `passed-m7-sam31-independent-client-handshake-corrective`** (in-process bidirectional handshake + Plan 129 destination stack round-trip + canonical-streaming routing fix); per-stream TCP↔Streaming raw byte bridge and two-independent-client evidence lane deferred to follow-up (Plan 145 candidate) | [`144-m7-sam31-independent-client-final-closure-corrective.md`](144-m7-sam31-independent-client-final-closure-corrective.md), [`144-status.md`](144-status.md) |
 
 Do not restore the historical Plan 136/138 `passed` labels as final M7 authority without satisfying the superseding corrective acceptance criteria.
 

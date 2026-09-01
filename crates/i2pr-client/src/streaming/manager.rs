@@ -575,6 +575,15 @@ impl StreamingManager {
         self.outbound_queue.drain(..).collect()
     }
 
+    /// Queues a single transport send request into the outbound
+    /// queue. Used by callers that produce requests from
+    /// `accept_inbound_syn` / direct session sealing paths where the
+    /// manager does not own the corresponding state transition. The
+    /// request is appended at the queue tail.
+    pub fn queue_outbound_packet(&mut self, request: TransportSendRequest) {
+        self.outbound_queue.push_back(request);
+    }
+
     /// Returns the number of pending outbound transport requests.
     pub fn outbound_queue_len(&self) -> usize {
         self.outbound_queue.len()

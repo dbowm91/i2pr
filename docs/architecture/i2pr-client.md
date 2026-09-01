@@ -92,6 +92,29 @@ bridge in `i2pr-daemon` consumes this seam through the new
 `bridge_to_peer` function and never retains the Plan 138
 `CapturedOutbound` test queue.
 
+Plan 144 extends the local delivery seam with a dual-streaming-manager
+routing rule. `LocalDeliveryReceiver` gains a `canonical_streaming:
+Option<&mut StreamingManager>` field and the `deliver()` body peeks
+the recovered streaming packet header to route inbound traffic: a
+SYN response (`FLAG_SYNCHRONIZE` set, `send_stream_id != 0`,
+`receive_stream_id != 0`) lands on the **canonical outbound**
+`StreamingManager` (where the outbound connection's
+`outbound_by_stream` and retransmit bookkeeping live), while every
+other streaming packet (inbound SYN, data, CLOSE, RESET) lands on
+the receiver-side mirror. The plan129 mirror/canonical asymmetry
+made a full bidirectional handshake impossible without the fix —
+the Plan 143 product evidence (`crates/i2pr-daemon/tests/sam_stream_product.rs`)
+verifies only the A→B SYN direction because the SYN response
+must be observed by the **same** `StreamingManager` that issued the
+SYN, and Plan 143 routed every inbound streaming packet onto the
+mirror. The Plan 144 fix lands a new test
+`crates/i2pr-daemon/tests/sam_stream_independent.rs` that drives a
+full A→B and B→A handshake round-trip through the local seam and
+asserts `ConnectionState::Established` on both bridges'
+canonical streaming managers. The streaming-protocol-6 envelope
+gzip decode + 16-byte fixed header peek is the routing signal; the
+recovered streaming packet bytes are then passed unchanged to
+`StreamingDestinationAdapter::receive`.
 Plan 125 layers the corrected I2P Streaming core on top of Plan 122
 ([Plan 125](../plans/125-m6-streaming-corrective-and-local-closure.md)).
 The new `streaming` module owns `StreamingManager`, the per-destination
