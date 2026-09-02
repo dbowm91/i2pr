@@ -4,7 +4,18 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 
 ## Status
 
-The local Milestone 6 product (destinations, garlic, LeaseSet2, Streaming) remains closed under corrected local-correctness semantics via [**Plan 134**](plans/134-status.md). Independent-router interoperability is tracked as external acceptance debt. Milestone 7 / SAM closed the SAM 3.1 private-destination interoperability sub-claim via [**Plan 146**](plans/146-status.md) (`passed-m7-sam31-private-destination-reference-requalification`) and the dedicated raw STREAM socket driver via [**Plan 147**](plans/147-status.md) (`passed-m7-sam31-dedicated-raw-stream-driver`) — real localhost SAM TCP sockets now move bidirectional binary application bytes through the full local destination/Streaming product path under bounded backpressure and the Plan 129 delivery seam. The I2P Base64 correction from Plan 142 is retained, and the Plan 143/144 local delivery plus in-process handshake work is retained as regression coverage. The Milestone 7 external acceptance debt (two independent clients) remains **Plan 148**, currently blocked on the missing pinned i2plib/libsam3 build/cache prerequisite. Plan 148 is not passed; `sam_independent_clients = 0-passed`. [**Plan 145**](plans/145-status.md) remains the corrective authority, with execution sequence **Plan 146 (closed) → Plan 147 (closed) → Plan 148 (blocked)**. The `[sam]` config section remains disabled by default and loopback-only when enabled.
+The local Milestone 6 product (destinations, garlic, LeaseSet2, Streaming) remains closed under corrected local-correctness semantics via [**Plan 134**](plans/134-status.md). Independent-router interoperability is tracked as external acceptance debt.
+
+Milestone 7 / SAM has two strong retained sub-results:
+
+- [**Plan 146**](plans/146-status.md) passed bidirectional SAM 3.1 private-destination reference requalification against pinned Java I2P/i2pd behavior.
+- [**Plan 147**](plans/147-status.md) landed the dedicated same-socket raw STREAM owner, TCP↔Streaming byte pump, actual Streaming `Established` wait, OS-CSPRNG runtime path, and supervised ACK/retransmit driver.
+
+A post-Plan-148 audit found that Milestone 7 still cannot close: the canonical Plan 147 byte-product test manually installs SAM destination bridges, local peer LeaseSet2 routing, inbound-tunnel factories, and destination drivers after `SESSION CREATE`, while the production `SESSION CREATE` path does not self-compose those prerequisites. Plan 147 also deferred mandatory SILENT/backpressure/fault/lifecycle acceptance, and current `SILENT=true` success handling is not byte-correct. Plan 148 is therefore retained as a blocked audit rather than the executable closure plan.
+
+The current corrective authority is [**Plan 145**](plans/145-status.md), with [**Plan 149**](plans/149-status.md) as the **next executable plan**. Plan 149 makes the SAM localhost product self-compose from protocol commands alone and closes the deferred raw-path acceptance matrix. [**Plan 150**](plans/150-m7-sam31-external-client-reproducible-final-closure.md) is blocked on Plan 149 and will run correctly pinned external clients plus final FORWARD/NAMING closure. `sam_independent_clients = 0-passed`; Milestone 7 remains open and Milestone 8 is not yet the next product layer.
+
+The `[sam]` config section remains disabled by default and loopback-only when enabled.
 
 For the full plan hierarchy, MVP roadmap, and what's implemented vs. not, see [**`plans/README.md`**](plans/README.md).
 
