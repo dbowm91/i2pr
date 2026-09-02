@@ -1,19 +1,15 @@
 # SAM 3.1 localhost reference / independent-client evidence lane
 
-This directory is the lightweight external/reference evidence surface for the Plan 145 Milestone 7 corrective sequence.
+This directory is the lightweight external/reference evidence surface for Milestone 7.
 
 Current authority:
 
-- `plans/145-status.md` — active corrective roadmap;
-- `plans/146-status.md` — closed as
-  `passed-m7-sam31-private-destination-reference-requalification`;
-- `plans/147-status.md` — closed as
-  `passed-m7-sam31-dedicated-raw-stream-driver` (the canonical raw
-  TCP↔Streaming product lane);
-- `plans/148-status.md` — two-independent-client final closure, currently
-  `blocked-external-client-build-failure` because the pinned i2plib and
-  libsam3 sources and build artifacts are not present in this checkout
-  and no build/install lane exists for them on this host.
+- `plans/145-status.md` — Milestone 7 corrective umbrella;
+- `plans/146-status.md` — closed private-destination reference compatibility;
+- `plans/147-status.md` — retained raw-socket owner/byte-pump implementation evidence;
+- `plans/148-status.md` — blocked audit, superseded for execution;
+- `plans/149-status.md` — **next executable**, self-composing local SAM product corrective;
+- `plans/150-m7-sam31-external-client-reproducible-final-closure.md` — final independent-client closure, blocked on Plan 149.
 
 This lane is localhost-only. It must not require root, namespaces, Docker, a VM, systemd, public I2P participation, or live NTCP2/SSU2.
 
@@ -30,223 +26,158 @@ padding  = =
 
 The i2pr codec rejects RFC 4648 `+` / `/` as SAM input and emits the I2P spelling.
 
-Reference source inspection currently recorded:
+### Private destination — Plan 146 closed
 
-- i2pd `libi2pd/Base.{h,cpp}` — `-` / `~`, `=` padding;
-- Java I2P `PrivateKeyFile` / Base64 implementation;
-- i2plib `I2P_B64_CHARS = "-~"`.
+`crates/i2pr-daemon/tests/sam_plan146_reference.rs` plus `reference/Plan146ReferenceHelper.java` provide bidirectional reference evidence.
 
-These references are sufficient to retain the Base64 fix. They are **not** sufficient to close the private-destination binary representation.
+Pinned references:
 
-### Private destination (Plan 146 closed)
+- Java I2P `2800040deee9bb376567b671ef2e9c34cf3e30b6` (2.12.0);
+- i2pd `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e` (2.60.0).
 
-`crates/i2pr-daemon/tests/sam_plan146_reference.rs` and the throwaway
-Java helper `reference/Plan146ReferenceHelper.java` now satisfy the
-bidirectional reference contract (see "Plan 146 evidence contract"
-below). The pinned revisions are:
-
-- Java I2P `2800040deee9bb376567b671ef2e9c34cf3e30b6` (release 2.12.0)
-- i2pd `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e` (release 2.60.0)
-
-Both follow the same `target/interop/cache/current-cache.json` pins
-recorded for the closed development interop lane; the SAM lane
-reuses the same pinned artifacts and never commits raw `PRIV`
-material.
-
-Plan 146 also relaxed the reconstruction invariant — the new
-`DestinationIdentity::from_imported` constructor preserves the
-destination's embedded encryption public field verbatim and only
-checks `signing_public == EdDSA(signing_seed)`. The standard Java
-I2P `PrivateKeyFile` and i2pd `IdentityEx` layouts populate the
-destination encryption public field with random bytes for
-destinations; Plan 146 records that tolerance.
-
-### Local product regressions
-
-The current Rust tests retain useful lower-level evidence:
-
-- `crates/i2pr-daemon/tests/sam_stream_product.rs` — Plan 143 local Plan-129 delivery seam;
-- `crates/i2pr-daemon/tests/sam_stream_independent.rs` — Plan 144 in-process SYN/SYN-response handshake / canonical-streaming routing.
-
-They do not move application bytes through independent SAM clients and do not replace the Plan 147 raw-socket lane.
-
-## What remains unproven
-
-### Raw STREAM product
-
-The Plan 147 dedicated post-command `TcpStream` owner is implemented
-and proven through `crates/i2pr-daemon/tests/sam_stream_raw_product.rs`
-(closed under `passed-m7-sam31-dedicated-raw-stream-driver`):
-
-- permanent detachment of line parsing after successful establishment;
-- preservation of already-buffered post-command bytes through
-  `LineReader::take_buffered()` into the raw driver;
-- raw TCP fed into `StreamingManager::send_data()` under the negotiated
-  Streaming payload bound;
-- ordered delivered Streaming bytes written back to the TCP socket;
-- delayed ACK/retransmit/timeouts supervised by the per-destination
-  runtime driver.
-
-The raw product lane is canonical Plan 147 local evidence. It does not
-satisfy Plan 148's two-independent-client gate.
-
-### Independent clients
-
-No independent SAM implementation has yet moved application bytes
-through the real i2pr listener. The pinned i2plib and libsam3
-revisions are recorded in the **Selected independent clients** table
-below, but the sources and build artifacts are not present in this
-checkout and no build/install lane exists for them on this host. Plan
-148 is `blocked-external-client-build-failure` per
-`plans/148-status.md`.
-
-Current count:
+The reference lane proves the compact Ed25519/ECIES-X25519 representation used by i2pr:
 
 ```text
-sam_independent_clients = 0-passed
+PRIV binary = 455 bytes
+PRIV Base64 = 608 chars
+PUB binary  = 391 bytes
+PUB Base64  = 524 chars
 ```
 
-Plan 148 remains the two-independent-client final closure authority
-once the prerequisite cache/build steps land.
+The import path preserves the embedded destination encryption public field and validates the signing seed/public relationship. Do not reopen this sub-claim without a concrete new reference mismatch.
 
-## Selected independent clients
+### Raw socket implementation — Plan 147 retained
 
-The preferred candidates are:
+Plan 147 landed:
 
-| Client | Revision/version | Language | License | Current local result |
-| --- | --- | --- | --- | --- |
-| `i2plib` | `6edf51cd5d21cc745aa7e23cb98c582144884fa8` (`v0.0.14`) | Python | MIT | pinned source is not present in the local cache; no build/install wrapper is checked in; selected as Client A, no application-byte pass yet |
-| `libsam3` | `e0da4f4d8d3ca670fef86fd1046dab7c14afc5b7` (`v1.0.0`) | C | mixed public-domain/MIT components | pinned source and build artifact are not present in the local cache; no build/install wrapper is checked in; selected as Client B, no application-byte pass yet |
-| `txi2p` | `0611b9a86172cb70d2f5e415a88eee9f230590b3` | Python/Twisted | ISC | optional historical candidate; import blocked by legacy `ometa`; not a hard prerequisite |
+- permanent line-parser -> raw `TcpStream` ownership transfer;
+- preservation of bytes already buffered after the STREAM command newline;
+- actual Streaming `Established` wait;
+- production OS CSPRNG in CONNECT/delivery;
+- TCP -> `StreamingManager::send_data()`;
+- `drain_delivered()` -> TCP;
+- supervised ACK/retransmit polling;
+- a localhost binary byte-pump test when bridge/routing/tunnel prerequisites are installed.
 
-If a selected client becomes unusable for reasons unrelated to i2pr, Plan 148 may replace it with another maintained SAM client after pinning provenance. Do not modify i2pr to emulate a demonstrable client bug.
+The canonical Plan 147 test is useful lower-level implementation evidence, but it is **not** final black-box product-composition evidence.
+
+## Current product-composition gap — Plan 149
+
+The Plan 147 canonical test manually performs private setup after SAM `SESSION CREATE`:
+
+```text
+build/install SamDestinationBridge
+install peer LeaseSet2 routing
+install deterministic inbound-tunnel factory
+spawn per-destination runtime driver
+```
+
+A real external SAM client cannot do those things.
+
+The production `execute_session_create()` currently installs the destination runtime, Streaming pool, SAM/stream registries, and session entry, but does not self-compose the bridge/local-delivery/driver prerequisites required by `STREAM CONNECT`.
+
+Plan 149 therefore requires a new black-box product test where the test starts the listener and then drives **only SAM TCP commands/raw bytes**. After listener startup it may not call private bridge, LeaseSet2, tunnel-factory, driver, delivery, or byte-moving APIs.
+
+Plan 149 also closes the mandatory Plan 147 criteria that were deferred:
+
+- byte-exact `SILENT=true/false`;
+- authenticated non-silent ACCEPT peer Destination metadata;
+- multi-megabyte bounded transfer;
+- slow-reader/slow-writer bounds;
+- loss/duplicate/reorder/ACK-drop/corruption/retransmit-ceiling behavior;
+- CLOSE/RESET/control-session lifecycle;
+- sibling-stream isolation.
+
+Until Plan 149 passes, do not attempt external-client closure.
+
+## External clients — Plan 150 guidance
+
+Plan 148's old libsam3 pin was invalid for the official repository and must not be used.
+
+### Mandatory preferred client A — libsam3
+
+```text
+repository = https://github.com/i2p/libsam3
+preferred exact snapshot = 7d6e658798baec31394c5685f9583343cc00900b
+language = C
+```
+
+Known official release reference:
+
+```text
+v0.31.2 = ea52a3251d60906d67f9a1031a6ed7642753f94f
+```
+
+The preferred current snapshot includes a post-release destination-key newline validation fix. Pin exactly; do not silently advance.
+
+### Mandatory preferred client B — i2psam
+
+```text
+repository = https://github.com/i2p/i2psam
+exact snapshot = b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac
+language = C++
+SAM requirement = v3.1
+```
+
+The repository documents the normal `make` library build and `eepget` example.
+
+### Supplementary client — i2plib
+
+```text
+repository = https://github.com/l-n-s/i2plib
+exact final commit = 6edf51cd5d21cc745aa7e23cb98c582144884fa8
+version = 0.0.14
+language = Python
+```
+
+Its low-level `i2plib.sam` encoding/parsing surface remains useful. Its 2019 high-level async API passes the removed `loop=` argument to `asyncio.open_connection()`, so it is not one of the mandatory Plan 150 clients unless a compatible Python runtime is deliberately qualified. Do not patch it for i2pr.
+
+## Reproducible acquisition policy
+
+Plan 150 should support two equivalent lanes:
+
+1. preferred manual GitHub-hosted Ubuntu workflow (`workflow_dispatch`) that checks out exact external revisions into ephemeral workspace paths, builds them, runs localhost SAM, and uploads sanitized evidence;
+2. local/pre-cached execution using explicit source paths whose Git revisions are verified before build.
+
+Do not vendor third-party source into i2pr. Do not require privileged runners.
+
+## Plan 150 independent-client contract
+
+After Plan 149 closes, run at least:
+
+```text
+libsam3 CONNECT -> i2psam ACCEPT
+i2psam CONNECT  -> libsam3 ACCEPT
+```
+
+where their public APIs permit.
+
+Required final evidence also includes:
+
+- private destination compatibility through client APIs;
+- exact bidirectional binary bytes;
+- multi-packet and multi-megabyte traffic;
+- SILENT compatibility;
+- multiple streams/lifecycle;
+- STREAM FORWARD to loopback target with real peer metadata;
+- NAMING supported surface;
+- negative version/style/option matrix;
+- Plan 149 resource/fault/privacy regressions;
+- Plan 127–134 M6 regressions.
+
+Two instances of one in-repo helper do not count as independent clients. A tiny transcript helper may supplement missing optional API coverage but does not count toward `sam_independent_clients`.
 
 ## Plan 146 evidence contract
 
-Plan 146 has produced real bidirectional PrivateKeyFile evidence without committing secret material.
+The reference helper subcommands are:
 
-Required directions (all proven by
-`crates/i2pr-daemon/tests/sam_plan146_reference.rs`):
+- `version` — pinned reference/revision identifiers and keygen profile;
+- `generate` — fresh ephemeral reference `PRIV` plus derived non-secret metadata;
+- `parse` — parse externally supplied ephemeral `PRIV` and re-emit public Destination metadata for equality checks.
 
-```text
-reference-generated PRIV
-  -> i2pr import / real SESSION CREATE
-  -> exact public Destination equality
-
-i2pr real DEST GENERATE SIGNATURE_TYPE=7
-  -> reference parser/session consumer
-  -> exact public Destination equality
-```
-
-The Plan 146 reference helper (`reference/Plan146ReferenceHelper.java`)
-subcommands:
-
-- `version` — emits the pinned reference/revision identifiers and
-  the keygen parameters used to construct / consume the destination;
-- `generate` — emits a fresh `PRIV` plus its derived lengths,
-  certificate fields, and SHA-256 of the ephemeral bytes, then reads
-  the bytes back through `PrivateKeyFile` to confirm the helper
-  self-round-trips;
-- `parse` — accepts an externally-supplied `PRIV` and re-emits the
-  derived public-destination length, certificate type, and Base64
-  so the test can byte-compare against the i2pr `PUB` reply.
-
-Record (recorded by the bidirectional test):
-
-- reference implementation/version/commit (Java I2P
-  `2800040deee9bb376567b671ef2e9c34cf3e30b6`, i2pd
-  `f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`);
-- command/API (`generate` / `parse`);
-- signature/crypto types (`ED_DSA_SHA512_ED25519` / `ECIES_X25519`);
-- binary/Base64 lengths (`PRIV 455/608`, `PUB 391/524`);
-- private-key-field width (`private_key_field_is_256 = false`, the
-  Plan 142 compact form is reference-compatible);
-- public Destination hash (compared byte-equal between helper output
-  and i2pr `DestinationId` after import);
-- SHA-256 digest of ephemeral private bytes (recorded by the helper
-  for record-keeping; never persisted);
-- representation classification (`canonical_compact_455_byte`);
-- pass/fail.
-
-Never commit the raw `PRIV` value. The helper prints the Base64 PRIV
-to its own stdout, captured only inside a single Rust test run;
-ephemeral secret material is never written to a checked-in file.
-
-## Plan 147 product contract (closed)
-
-The canonical Rust localhost lane moves application bytes only through
-SAM TCP:
-
-```text
-control A -> HELLO + SESSION CREATE
-control B -> HELLO + SESSION CREATE
-stream B  -> HELLO + STREAM ACCEPT
-stream A  -> HELLO + STREAM CONNECT B.PUB
-raw A <-> raw B
-```
-
-Every raw application byte passes through:
-
-```text
-StreamingManager
- -> Streaming packet
- -> gzip ClientPayload
- -> I2NP Data
- -> ECIES Garlic
- -> destination tunnel product path
- -> inverse path
- -> peer StreamingManager
-```
-
-The Plan 129 authenticated-router-link-bypassed local seam is allowed
-below the destination/tunnel stack. Direct application-byte transfer
-between managers is not. The `sam_stream_raw_product` lane is the
-canonical Plan 147 product test.
-
-Plan 147's acceptance matrix covered:
-
-- command->raw ownership transfer;
-- same-read post-command bytes;
-- binary payloads including NUL/non-UTF8/SAM-looking text;
-- multi-packet logical transfers;
-- simultaneous bidirectional traffic;
-- production CSPRNG policy.
-
-Slow-reader/slow-writer bounds, loss/duplicate/reorder/ACK drop,
-sibling streams, and SILENT-byte-exact behavior at the SAM socket
-boundary remain Plan 148 follow-up work (pending external clients).
-
-## Plan 148 independent-client contract (blocked)
-
-Plan 148 must run at least:
-
-```text
-i2plib CONNECT  -> libsam3 ACCEPT
-libsam3 CONNECT -> i2plib ACCEPT
-```
-
-where APIs permit, plus the Plan 147 acceptance matrix and the
-Plan 148 §12 resource/lifecycle/privacy/log evidence.
-
-Both clients must be **independently implemented** (different language,
-different codebase, different author). Two instances of the same Rust
-test helper do not satisfy this gate.
-
-This lane is currently `blocked-external-client-build-failure` per
-`plans/148-status.md`: neither pinned source is in the local cache and
-no build/install lane exists for them on this host. Plan 148 also
-re-runs:
-
-- STREAM FORWARD real-byte trajectory against a loopback target;
-- NAMING supported surface;
-- negative version/style/option matrix;
-- resource and lifecycle ceilings;
-- privacy/log capture;
-- focused Plan 127–134 M6 regressions.
+Never commit the raw `PRIV` value. Ephemeral secret material must remain process-local to the test run.
 
 ## Routine local commands
-
-The external lane supplements, not replaces, the Rust product gates:
 
 ```text
 cargo test --locked -p i2pr-api --all-targets
@@ -258,15 +189,16 @@ cargo test --locked -p i2pr-daemon --test sam_stream_raw_product
 cargo test --locked -p i2pr-daemon --test sam_forward_naming
 ```
 
-Plan 147 should add a dedicated raw-socket product test and make it the canonical application-byte lane.
+Plan 149 should add the canonical self-composed black-box raw product lane. That new lane, not the manually composed Plan 147 test, becomes the local product acceptance authority.
 
 ## Closure rule
 
-Do not promote this lane to `passed` until:
+Do not promote Milestone 7 until:
 
-1. Plan 146 reference private-destination evidence passes (closed);
-2. Plan 147 real raw-socket product acceptance passes (closed);
-3. two independent SAM implementations move exact application bytes
-   through the real listener (Plan 148 — currently
-   `blocked-external-client-build-failure`);
-4. Plan 148 final evidence/status closes Milestone 7.
+1. Plan 146 remains green;
+2. Plan 149 proves self-composing black-box SAM STREAM plus complete raw-path acceptance;
+3. Plan 150 records at least two independent external SAM implementations moving application bytes through the real listener;
+4. FORWARD/NAMING/resource/privacy/M6 final gates pass;
+5. the newest status record explicitly closes Milestone 7.
+
+Current handoff: **execute Plan 149 only**.
