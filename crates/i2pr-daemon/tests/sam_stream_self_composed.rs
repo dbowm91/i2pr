@@ -97,6 +97,7 @@ async fn read_one_line(stream: &mut TcpStream) -> String {
         }
     }
     String::from_utf8_lossy(&buf)
+        .into_owned()
         .trim_end_matches(['\r', '\n'])
         .to_owned()
 }
@@ -258,6 +259,11 @@ async fn plan149_self_composed_black_box_connects_and_transfers_bytes() {
 
     drop(client_a);
     drop(client_b);
+    // Brief sleep lets the per-destination runtime drivers observe
+    // socket EOF and exit before the scope shutdown join forces a
+    // hard cancellation. Plan 150 may shorten this once the
+    // runtime driver observes socket EOF via the listener path.
+    tokio::time::sleep(Duration::from_millis(50)).await;
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
     let _ = scope.shutdown().await;
 }
@@ -306,7 +312,11 @@ async fn plan149_silent_connect_writes_no_status_line() {
 
     drop(client_b);
     drop(client_a);
+    // Cancel the parent BEFORE shutdown so the runtime drivers
+    // observe cancellation on their next loop iteration; a brief
+    // sleep after the cancel lets any in-flight select! arm commit.
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+    tokio::time::sleep(Duration::from_millis(50)).await;
     let _ = scope.shutdown().await;
 }
 
@@ -350,6 +360,10 @@ async fn plan149_same_read_buffered_raw_bytes_after_command() {
 
     drop(client_a);
     drop(client_b);
+    // Brief sleep lets the per-destination runtime drivers observe
+    // socket EOF and exit before the scope shutdown join forces a
+    // hard cancellation.
+    tokio::time::sleep(Duration::from_millis(50)).await;
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
     let _ = scope.shutdown().await;
 }

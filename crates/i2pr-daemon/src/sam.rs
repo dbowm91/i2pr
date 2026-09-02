@@ -2358,7 +2358,6 @@ async fn run_destination_driver(
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
-                debug!(destination = ?destination_id, "destination driver cancelled");
                 return;
             }
             _ = outbound_notify.notified() => {}
@@ -2464,6 +2463,10 @@ async fn run_destination_driver(
         if bridge_established_now {
             established_notify.notify_one();
         }
+        // Yield to the runtime so other tasks (raw stream drivers,
+        // outbound notifications, established waits) get a fair
+        // share of the single-threaded scheduler.
+        tokio::task::yield_now().await;
     }
 }
 
