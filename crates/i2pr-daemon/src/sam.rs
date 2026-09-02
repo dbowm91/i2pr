@@ -2355,6 +2355,13 @@ async fn run_destination_driver(
     let mut ticker = tokio::time::interval(Duration::from_millis(250));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
+        // Yield first so a freshly-notified outbound signal isn't
+        // immediately re-queued behind a single-threaded scheduler's
+        // tick. The raw stream driver writes to the outbound queue
+        // and then notifies; without the yield the runtime driver
+        // may have already drained before the queue had the new
+        // packet.
+        tokio::task::yield_now().await;
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
