@@ -2,7 +2,7 @@
 
 Status: **`passed-m7-sam31-self-composing-local-product-corrective`**.
 
-Registered: **2026-09-02**. Closed: **2026-09-02**.
+Registered: **2026-09-02**. Closed: **2026-09-02** (UTC).
 
 Plan of record:
 [`plans/149-m7-sam31-self-composing-local-product-corrective.md`](149-m7-sam31-self-composing-local-product-corrective.md).
