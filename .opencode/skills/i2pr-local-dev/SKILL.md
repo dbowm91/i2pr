@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Use for i2pr-client, i2pr-api, destination-side i2pr-tunnel/i2pr-netdb/i2pr-proto/i2pr-crypto, i2pr-daemon SAM code, local trajectory tests, or Milestone 7 corrective execution. Plan 145 is the corrective umbrella; Plan 149 is the next executable plan; Plan 150 is blocked on Plan 149.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Use for i2pr-client, i2pr-api, destination-side i2pr-tunnel/i2pr-netdb/i2pr-proto/i2pr-crypto, i2pr-daemon SAM code, local trajectory tests, or Milestone 7 corrective execution. Plan 145 is the corrective umbrella; Plan 149 closed the self-composed local STREAM product; Plan 150 is the next executable plan.
 ---
 
 # I2PR Local Development
@@ -17,15 +17,15 @@ milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 ```
 
-Milestone 7 is **not closed**. Read, in order:
+Milestone 7 **local product is closed** by Plan 149. Read, in order:
 
 1. `plans/145-status.md` — corrective umbrella;
-2. `plans/149-status.md` — current executable classification;
-3. `plans/149-m7-sam31-self-composing-local-product-corrective.md` — **execute this plan only**;
+2. `plans/149-status.md` — closed self-composed STREAM product;
+3. `plans/149-m7-sam31-self-composing-local-product-corrective.md` — closed;
 4. `plans/146-status.md` — closed private-destination reference result;
 5. `plans/147-status.md` — retained raw-driver implementation evidence;
 6. `plans/148-status.md` — blocked historical audit;
-7. `plans/150-m7-sam31-external-client-reproducible-final-closure.md` — blocked until Plan 149 passes.
+7. `plans/150-m7-sam31-external-client-reproducible-final-closure.md` — **next executable plan**.
 
 Current classification:
 
@@ -34,10 +34,10 @@ plan_146_private_destination_reference = passed
 plan_147_raw_driver_implementation = retained
 plan_147_full_original_acceptance = superseded-by-plan149
 plan_148 = blocked-audit-superseded-by-plan149-150
-plan_149 = active-next-executable
-plan_150 = blocked-on-plan149
+plan_149 = passed-self-composing-local-product
+plan_150 = next-executable-on-plan149-pass
 sam_independent_clients = 0-passed
-milestone7_local_product = not-closed
+milestone7_local_product = closed-via-plan149
 ```
 
 Do not move to Milestone 8 until Plan 150 explicitly closes Milestone 7.
@@ -58,91 +58,19 @@ Do not rebuild them without a concrete defect:
 - Plan 143 local-delivery seam;
 - Plan 144 canonical-vs-receiver StreamingManager routing fix;
 - Plan 147 owned raw `TcpStream` handoff, same-read raw-byte preservation, actual `Established` wait, OS CSPRNG, TCP↔Streaming pump, and supervised ACK/retransmit driver.
+- Plan 149 closed the self-composed `SESSION CREATE` path (one `Arc<DestinationIdentity>` allocation, OS-CSPRNG `SamLocalProductFabric`, automatic per-destination driver spawn, local peer LeaseSet2 directory, byte-exact raw transition, typed `DeliverySweepCounters`).
 
-## Why Plan 149 exists
+## Plan 149 closed product surface
 
-The Plan 147 canonical raw STREAM test is not black-box product composition. After SAM `SESSION CREATE`, it manually:
+`crates/i2pr-daemon/src/sam/fabric.rs` defines the OS-CSPRNG-driven `SamLocalProductFabric` plus the `LocalhostInboundTunnelFactory` and the typed `DeliverySweepCounters` / `LocalDeliveryDegradation` surface. `SamServiceState::execute_session_create` is now a transactional self-composition path that builds one `Arc<DestinationIdentity>` allocation, calls the fabric, builds the destination runtime via `DestinationRuntime::with_shared_identity`, installs the bridge plus inbound-tunnel factory, spawns the per-destination runtime driver, and commits the session reservation. Any failure rolls registries, product material, and per-destination state back to the pre-create baseline.
 
-```text
-builds/installs SamDestinationBridge
-installs peer LeaseSet2 routing
-installs deterministic inbound-tunnel factory
-spawns the per-destination runtime driver
-```
+`SamDestinations::resolve_local_peer_hash` (Plan 149 §7) resolves the peer's validated LeaseSet2 through the SAM service directory; `bridge_to_peer` restores the receiver's modified routing into the peer's canonical `routing` field (not `receiver_routing`) so the install of the sender's LeaseSet2 persists across deliveries. `handle_stream_connect_outcome` enforces byte-exact `STREAM STATUS RESULT=OK` + `DESTINATION=<peer-pub-b64>` raw-transition semantics and suppresses both on `silent == true`.
 
-The production `execute_session_create()` path does not currently self-compose those prerequisites. A real external SAM client cannot call those private Rust APIs.
-
-Plan 149 must make successful `SESSION CREATE` mean that the supported localhost STREAM product is ready before `SESSION STATUS RESULT=OK` is sent.
-
-Plan 149 also owns the Plan 147 acceptance items that were incorrectly deferred:
-
-- byte-exact CONNECT/ACCEPT `SILENT=true/false`;
-- authenticated non-silent ACCEPT peer Destination metadata;
-- multi-megabyte bounded transfer;
-- slow-reader/slow-writer bounds;
-- loss/duplicate/reorder/ACK-drop/corruption/retransmit-ceiling tests;
-- CLOSE/RESET/control-session teardown;
-- sibling-stream isolation.
-
-The current raw-transition code writes success even for `SILENT=true`; treat that as a concrete Plan 149 defect.
-
-## Plan 149 ownership rule
-
-Do not solve SAM self-composition by making `DestinationIdentity: Clone` or reconstructing a second private identity.
-
-Maintain:
-
-```text
-one logical destination
- -> one private identity allocation / ownership graph
-```
-
-If the destination runtime and SAM bridge both need long-lived access, share one allocation through a narrow capability/`Arc` or move the bridge operations under the canonical runtime. Do not expose raw private bytes through public handles.
-
-## Local product seam
-
-Milestone 7 is localhost product evidence, not live tunnel/router interoperability.
-
-The authenticated-router-link-bypassed Plan 129 seam remains allowed, but Plan 149 must install its local delivery capability automatically under daemon ownership. Runtime-created ephemeral material uses OS CSPRNG; deterministic tunnel factories remain test-only.
-
-Missing peer/LeaseSet/tunnel capability must surface a typed bounded failure, not silently drop queued Streaming requests.
-
-## Canonical Plan 149 test
-
-Plan 149 should add a self-composed black-box SAM test, e.g.:
-
-```text
-crates/i2pr-daemon/tests/sam_stream_self_composed.rs
-```
-
-Allowed after service startup:
-
-```text
-TCP HELLO
-TCP SESSION CREATE
-TCP STREAM ACCEPT/CONNECT
-raw bytes
-non-secret final counters after shutdown
-```
-
-Forbidden after service startup:
-
-```text
-build_sam_destination_bridge
-SamDestinations::install
-install_remote_lease_set2
-install_inbound_tunnel_factory
-spawn_destination_driver
-bridge_to_peer
-send_data_segment
-deliver_outbound
-```
-
-The old `sam_stream_raw_product` test stays as a lower-level implementation regression, not final composition evidence.
+The canonical Plan 149 evidence lives at `crates/i2pr-daemon/tests/sam_stream_self_composed.rs`. Plan 150 closes independent-client / FORWARD / NAMING / final M7 evidence on top of it.
 
 ## Plan 150 external-client guidance
 
-Do not execute until Plan 149 passes.
+Plan 149 is now closed. Plan 150 runs correctly pinned external clients through the self-composed listener.
 
 Preferred mandatory clients:
 
@@ -240,10 +168,11 @@ cargo test --locked -p i2pr-daemon --test sam_plan146_reference -- --test-thread
 cargo test --locked -p i2pr-daemon --test sam_stream_product
 cargo test --locked -p i2pr-daemon --test sam_stream_independent
 cargo test --locked -p i2pr-daemon --test sam_stream_raw_product
+cargo test --locked -p i2pr-daemon --test sam_stream_self_composed -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test sam_forward_naming
 ```
 
-Plan 149 adds the self-composed black-box lane and explicit fault/backpressure/lifecycle coverage. Plan 150 must rerun focused Plan 127–134 M6 regressions; aggregate workspace counts alone are insufficient.
+Plan 149 closed the self-composed black-box lane (`sam_stream_self_composed`) and the deferred Plan 147 SILENT / backpressure / fault / lifecycle coverage. Plan 150 must rerun focused Plan 127–134 M6 regressions and run correctly pinned external clients through the self-composed listener; aggregate workspace counts alone are insufficient.
 
 ## Coding rules
 
@@ -272,4 +201,4 @@ Plan 149 adds the self-composed black-box lane and explicit fault/backpressure/l
 - Do not bump `advertised = true` without `specs/CONFORMANCE.md` evidence.
 - Do not move to Milestone 8 until Plan 150 status explicitly closes Milestone 7.
 
-Current handoff: **execute Plan 149 only**.
+Current handoff: **execute Plan 150** (Plan 149 closed the self-composed local STREAM product).

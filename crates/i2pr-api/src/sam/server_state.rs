@@ -584,6 +584,13 @@ pub struct StreamAcceptApplied {
     pub connection_id: i2pr_client::streaming::connection::ConnectionId,
     /// Authenticated peer destination extracted from the inbound SYN.
     pub peer_destination: i2pr_client::streaming::manager::RemoteDestination,
+    /// Optional public Destination Base64 text from the locally-owned
+    /// peer bridge, when the inbound SYN came from another destination
+    /// the SAM service already manages. Plan 149 §9 requires the
+    /// non-silent ACCEPT path to write this line before raw bytes;
+    /// the SAM service produces it from the peer's `Arc<DestinationIdentity>`,
+    /// never from the inbound request or any test fixture.
+    pub peer_destination_b64: Option<String>,
     /// `true` when `SILENT=true` was supplied on STREAM ACCEPT.
     pub silent: bool,
 }
@@ -664,6 +671,10 @@ pub enum StreamRawTransition {
         connection_id: i2pr_client::streaming::connection::ConnectionId,
         /// Authenticated peer destination extracted from the inbound SYN.
         peer_destination: i2pr_client::streaming::manager::RemoteDestination,
+        /// Optional public Destination Base64 text from the locally-owned
+        /// peer bridge. Plan 149 §9 writes this line before raw bytes
+        /// when `silent == false`.
+        peer_destination_b64: Option<String>,
         /// `true` when `SILENT=true` was supplied on STREAM ACCEPT.
         silent: bool,
     },
@@ -714,6 +725,7 @@ pub fn apply_stream_accept_outcome(
                 session_id: applied.session_id,
                 connection_id: applied.connection_id,
                 peer_destination: applied.peer_destination,
+                peer_destination_b64: applied.peer_destination_b64,
                 silent: applied.silent,
             },
         },

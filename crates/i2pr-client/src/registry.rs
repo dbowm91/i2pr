@@ -7,6 +7,7 @@
 //! keys exist.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use i2pr_core::{DegradationCode, HealthState};
 use i2pr_netdb::DestinationHash;
@@ -126,7 +127,7 @@ pub enum DestinationEvent {
 /// One local destination runtime.
 #[derive(Debug)]
 pub struct DestinationRuntime {
-    identity: DestinationIdentity,
+    identity: Arc<DestinationIdentity>,
     config: DestinationConfig,
     pool: DestinationTunnelPool,
     lease_sets: LeaseSetLifecycle,
@@ -137,8 +138,25 @@ pub struct DestinationRuntime {
 
 impl DestinationRuntime {
     /// Constructs a destination runtime around an owned identity.
+    ///
+    /// The identity is moved into a single `Arc<DestinationIdentity>` allocation.
+    /// Callers that already hold a shared `Arc<DestinationIdentity>` (e.g. a
+    /// SAM product bridge that must share one secret allocation with the
+    /// runtime) should use [`Self::with_shared_identity`] instead.
     pub fn new(
         identity: DestinationIdentity,
+        config: DestinationConfig,
+    ) -> Result<Self, DestinationPoolError> {
+        Self::with_shared_identity(Arc::new(identity), config)
+    }
+
+    /// Constructs a destination runtime that shares an existing
+    /// `Arc<DestinationIdentity>` allocation with another owner (e.g. the SAM
+    /// product bridge). Plan 149 §3 Option A preserves the
+    /// "one logical destination -> one private identity allocation" invariant
+    /// by routing both owners through the same `Arc`.
+    pub fn with_shared_identity(
+        identity: Arc<DestinationIdentity>,
         config: DestinationConfig,
     ) -> Result<Self, DestinationPoolError> {
         Ok(Self {
@@ -159,23 +177,32 @@ impl DestinationRuntime {
     }
 
     /// Returns the non-secret destination identifier.
-    pub const fn id(&self) -> DestinationId {
+    pub fn id(&self) -> DestinationId {
         self.identity.id()
     }
 
     /// Borrows the destination identity owner. Only the runtime itself uses
     /// this; the public [`DestinationHandle`] deliberately does not expose it.
-    pub const fn identity(&self) -> &DestinationIdentity {
+    pub fn identity(&self) -> &DestinationIdentity {
         &self.identity
     }
 
+    /// Returns a clone of the shared `Arc<DestinationIdentity>` capability.
+    /// Plan 149 §3 Option A lets the SAM product bridge and the runtime share
+    /// one secret allocation: callers that need long-lived identity access
+    /// (e.g. the SAM STREAM bridge) clone this `Arc`, never the underlying
+    /// `DestinationIdentity`.
+    pub fn identity_arc(&self) -> Arc<DestinationIdentity> {
+        Arc::clone(&self.identity)
+    }
+
     /// Returns the NetDB destination key.
-    pub const fn netdb_key(&self) -> DestinationHash {
+    pub fn netdb_key(&self) -> DestinationHash {
         self.identity.id().as_netdb_key()
     }
 
     /// Returns the destination hash by value.
-    pub const fn destination_hash(&self) -> Hash {
+    pub fn destination_hash(&self) -> Hash {
         self.identity.id().as_hash().copy()
     }
 
@@ -427,12 +454,12 @@ pub struct DestinationHandle<'a> {
 
 impl DestinationHandle<'_> {
     /// Returns the destination identifier.
-    pub const fn id(&self) -> DestinationId {
+    pub fn id(&self) -> DestinationId {
         self.runtime.id()
     }
 
     /// Returns the destination hash by value.
-    pub const fn destination_hash(&self) -> Hash {
+    pub fn destination_hash(&self) -> Hash {
         self.runtime.destination_hash()
     }
 

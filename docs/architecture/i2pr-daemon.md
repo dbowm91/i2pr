@@ -35,17 +35,26 @@ work is scoped to:
   with a bounded `BootstrapSnapshot` and `ReseedAttemptSummary`.
 - **Stable process exit codes** that operators and automation can
   rely on.
-- **SAM 3.1 loopback service** (Plans 137–147): owns the supervised
+- **SAM 3.1 loopback service** (Plans 137–149): owns the supervised
   listener, transactional sessions, per-destination Streaming pools,
   STREAM CONNECT/ACCEPT dispatch, loopback-only STREAM FORWARD
   registrations, bounded/cancellable raw forwarding, and local naming
   outcomes. SAM remains disabled by default and is never a public
   network listener. Plan 147 closed the dedicated same-socket
   raw-socket handoff to live destination delivery (see
-  [`plans/147-status.md`](../../plans/147-status.md)). Plan 148 is the
-  two-independent-client final closure authority and remains
-  `blocked-external-client-build-failure` per
-  [`plans/148-status.md`](../../plans/148-status.md).
+  [`plans/147-status.md`](../../plans/147-status.md)). Plan 149 closed
+  the self-composed local STREAM product (see
+  [`plans/149-status.md`](../../plans/149-status.md)): `SESSION CREATE`
+  now self-composes the entire localhost product from SAM protocol
+  commands alone via one `Arc<DestinationIdentity>` allocation, the
+  OS-CSPRNG-driven `SamLocalProductFabric`, automatic per-destination
+  driver spawn, local peer LeaseSet2 directory, byte-exact
+  `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw
+  transition, and typed `DeliverySweepCounters`. The canonical
+  evidence lives in
+  [`crates/i2pr-daemon/tests/sam_stream_self_composed.rs`](../../crates/i2pr-daemon/tests/sam_stream_self_composed.rs).
+  Plan 148 is historical blocked-audit evidence and is superseded for
+  execution by Plans 149–150.
 
 What it **does not** do yet:
 
@@ -81,7 +90,8 @@ which undercounted `netdb_seam`, `outbound_lookup`, and
 | `src/netdb_seam.rs` | Plan 106/117 runtime-facing seam for Plan 105 actions | `NetDbSeam`, `CompositionOutcome`, `ExploratoryPathStatus` |
 | `src/outbound_lookup.rs` | Plan 117 §8/§10 outbound exploratory data-plane composition | `compose_outbound_lookup`, `compose_outbound_publication`, `OutboundLookupDispatch`, `MAX_OUTBOUND_LOOKUP_CELLS`, `MAX_OUTBOUND_PUBLICATION_CELLS` |
 | `src/inbound_dispatch.rs` | Plan 117 §9 inbound exploratory `TunnelData` dispatch | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE` |
-| `src/sam.rs` | Plans 137–140 supervised SAM 3.1 listener and composition root | `SamServiceState`, `execute_session_create`, `execute_stream_connect`, `execute_stream_accept`, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP`; Plan 140 audit and blocked handoff |
+| `src/sam.rs` | Plans 137–149 supervised SAM 3.1 listener and composition root | `SamServiceState`, `execute_session_create` (self-composes bridge + driver), `execute_stream_connect`, `execute_stream_accept`, byte-exact `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw transition, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP` |
+| `src/sam/fabric.rs` | Plan 149 localhost product fabric (OS-CSPRNG tunnel material, signed LeaseSet2, per-destination runtime-driver factory, typed `DeliverySweepCounters`) | `SamLocalProductFabric`, `LocalDestinationProduct`, `LocalhostInboundTunnelFactory`, `DeliverySweepCounters`, `LocalDeliveryDegradation` |
 | `src/sam/streams.rs` | Plan 138 + Plan 143 + Plan 144 SAM Streaming bridge (captured-outbound seam removed, Plan 129 destination stack drives live bridge through `i2pr_client::deliver`, canonical-streaming routing for SYN responses) | `SamDestinationBridge`, `SamDestinations`, `bridge_to_peer`, `BridgeDiagnostics`, `SamDestinationHandle::lookup_by_peer_hash`, `receiver_streaming`, `peer_destination_hash`, strict destination decoding |
 
 There are no subdirectories.

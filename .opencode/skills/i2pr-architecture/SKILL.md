@@ -162,11 +162,19 @@ record is not `superseded-by-*`. Currently:
   closed the private-destination sub-claim
   (`passed-m7-sam31-private-destination-reference-requalification`).
   Plan 147 closed the dedicated raw STREAM product path
-  (`passed-m7-sam31-dedicated-raw-stream-driver`). Plan 148 is
-  currently `blocked-external-client-build-failure` per
-  [`plans/148-status.md`](../../plans/148-status.md) and remains the
-  two-independent-client final closure authority once external clients
-  become available.
+  (`passed-m7-sam31-dedicated-raw-stream-driver`). Plan 149 closed the
+  self-composed local STREAM product
+  (`passed-m7-sam31-self-composing-local-product-corrective`); the
+  canonical evidence lives at
+  `crates/i2pr-daemon/tests/sam_stream_self_composed.rs`. Plan 148
+  remains `blocked-audit-superseded-for-next-action-by-plan149-150`
+  per [`plans/148-status.md`](../../plans/148-status.md). Plan 150
+  (`next-executable-on-plan149-pass`) is the next executable plan
+  and will run correctly pinned external clients
+  (`libsam3` snapshot `7d6e658798baec31394c5685f9583343cc00900b`,
+  `i2psam` snapshot `b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac`)
+  through the Plan 149 self-composed listener to close independent-
+  client FORWARD / NAMING / final M7 evidence.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).

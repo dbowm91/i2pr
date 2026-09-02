@@ -139,9 +139,31 @@ impl std::fmt::Debug for SamDestinationBridge {
 
 impl SamDestinationBridge {
     /// Builds the sender-side bridge plus the receiver-side mirror
-    /// for one destination.
+    /// for one destination. The identity is moved into the bridge.
     pub fn new(
         identity: DestinationIdentity,
+        static_secret: [u8; i2pr_crypto::X25519_KEY_LENGTH],
+        lease_set2: LeaseSet2,
+        outbound_role: DestinationOutboundRole,
+        now_seconds: u32,
+    ) -> Self {
+        Self::with_shared_identity(
+            Arc::new(identity),
+            static_secret,
+            lease_set2,
+            outbound_role,
+            now_seconds,
+        )
+    }
+
+    /// Builds the sender-side bridge plus the receiver-side mirror for one
+    /// destination using an existing `Arc<DestinationIdentity>` allocation.
+    ///
+    /// Plan 149 §3 Option A: the SAM service builds one secret allocation
+    /// per logical destination and shares the `Arc` with the destination
+    /// runtime. The bridge never reconstructs a second private identity.
+    pub fn with_shared_identity(
+        identity: Arc<DestinationIdentity>,
         static_secret: [u8; i2pr_crypto::X25519_KEY_LENGTH],
         lease_set2: LeaseSet2,
         outbound_role: DestinationOutboundRole,
@@ -155,7 +177,7 @@ impl SamDestinationBridge {
             .bind_destination_hash(identity.id(), identity.id().as_netdb_key())
             .expect("destination hash bind");
         Self {
-            identity: Arc::new(identity),
+            identity,
             static_secret,
             lease_set2,
             streaming: StreamingManager::new(StreamingConfig::balanced()),
@@ -407,6 +429,37 @@ impl SamDestinations {
         let local_id = self.by_peer.get(peer_hash).copied()?;
         self.by_id.get(&local_id).cloned()
     }
+
+    /// Resolves a peer destination hash to the locally-owned bridge's
+    /// signed LeaseSet2 and NetDB key, validating the record through
+    /// the canonical [`i2pr_netdb::ValidatedLeaseSet2`] gate before
+    /// returning it. Plan 149 §7 forbids a real external client from
+    /// installing peer LeaseSet2 routing manually; the SAM service
+    /// owns the local directory and only hands out records it has
+    /// validated itself.
+    pub fn resolve_local_lease_set2(
+        &self,
+        peer_hash: &[u8; 32],
+        now_seconds: u32,
+    ) -> Result<
+        Option<(i2pr_netdb::ValidatedLeaseSet2, DestinationId)>,
+        i2pr_netdb::LeaseSet2ValidationError,
+    > {
+        let Some(local_id) = self.by_peer.get(peer_hash).copied() else {
+            return Ok(None);
+        };
+        let Some(handle) = self.by_id.get(&local_id).cloned() else {
+            return Ok(None);
+        };
+        let (lease_set2, identity_key) =
+            handle.with(|bridge| (bridge.lease_set2().clone(), bridge.identity_netdb_key()));
+        let validated = i2pr_netdb::ValidatedLeaseSet2::from_lease_set2(
+            lease_set2,
+            Some(identity_key),
+            i2pr_netdb::LeaseSet2ValidationContext::new(now_seconds),
+        )?;
+        Ok(Some((validated, local_id)))
+    }
 }
 
 impl SamDestinationHandle {
@@ -632,6 +685,12 @@ pub fn bridge_to_peer<R: CryptoRng + RngCore>(
     );
 
     // Restore the moved fields back into their owning bridges.
+    //
+    // Plan 149 §7: the receiver routing was extracted from the peer's
+    // CANONICAL `routing` field, so the modified routing (with the
+    // freshly installed remote LeaseSet2) must land back in the
+    // canonical field. The original `receiver_routing` mirror field
+    // is untouched by this call and stays where it was.
     {
         let mut sender_guard = sender.inner.lock().expect("sender bridge poisoned");
         sender_guard.record_outbound_dispatch(request.clone());
@@ -644,7 +703,7 @@ pub fn bridge_to_peer<R: CryptoRng + RngCore>(
         peer_guard.record_inbound_dispatch();
         peer_guard.receiver_dispatcher = receiver_dispatcher;
         peer_guard.receiver_session = receiver_session;
-        peer_guard.receiver_routing = receiver_routing;
+        peer_guard.routing = receiver_routing;
         peer_guard.receiver_streaming = receiver_streaming;
         peer_guard.streaming = peer_canonical_streaming;
         peer_guard.receiver_lease_set2_store = receiver_lease_set2_store;

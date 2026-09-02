@@ -314,6 +314,10 @@ pub async fn run_raw_stream(
                         warn!(
                             session_id = %session_id,
                             destination = ?destination_id,
+                            connection_id = connection_id.raw(),
+                            direction = ?direction,
+                            initial_bytes = carry.len(),
+                            segment_len = segment.len(),
                             error = %error,
                             "raw driver send_data failed"
                         );
@@ -462,8 +466,10 @@ impl SamServiceState {
     /// canonical and the receiver-mirror `StreamingManager`s,
     /// delivers each through the Plan 129 local seam to the
     /// registered peer bridge (looked up by destination hash), and
-    /// returns the count of delivered requests. The per-destination
-    /// runtime driver calls this once per outbound signal.
+    /// returns typed per-sweep counters. Plan 149 §8 requires
+    /// bounded typed accounting: the caller (the per-destination
+    /// runtime driver) records every typed failure rather than
+    /// silently dropping queued requests.
     ///
     /// Tests supply a deterministic inbound-tunnel factory on each
     /// bridge through
@@ -474,13 +480,14 @@ impl SamServiceState {
         destination_id: DestinationId,
         now_seconds: u32,
         now_ms: u64,
-    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<crate::sam::fabric::DeliverySweepCounters, Box<dyn std::error::Error + Send + Sync>>
+    {
         let destinations_arc = self.sam_destinations();
         let sender = {
             let destinations = destinations_arc.lock().expect("sam destinations poisoned");
             match destinations.get(destination_id) {
                 Some(bridge) => bridge,
-                None => return Ok(0),
+                None => return Ok(Default::default()),
             }
         };
         // Step 1: drain canonical + receiver outbound queues.
@@ -491,9 +498,19 @@ impl SamServiceState {
                 all
             });
         if requests.is_empty() {
-            return Ok(0);
+            return Ok(Default::default());
         }
-        let count = requests.len();
+        debug!(
+            destination = ?destination_id,
+            request_count = requests.len(),
+            "deliver_outbound drained queue"
+        );
+        let mut counters = crate::sam::fabric::DeliverySweepCounters {
+            delivered: 0,
+            missing_factory: 0,
+            factory_exhausted: 0,
+            unknown_peer: 0,
+        };
         // Step 2: deliver each request.
         let outbound_hop0_hash = i2pr_proto::Hash::from_bytes([0xA1; 32]);
         let outbound_hop1_hash = i2pr_proto::Hash::from_bytes([0xA2; 32]);
@@ -516,9 +533,12 @@ impl SamServiceState {
             let peer = match peer {
                 Some(peer) => peer,
                 None => {
-                    // No peer bridge registered for this destination
-                    // hash. Drop the request; the runtime driver
-                    // will continue processing.
+                    debug!(
+                        destination = ?destination_id,
+                        peer_hash = ?peer_destination_hash,
+                        "deliver_outbound: no peer bridge registered"
+                    );
+                    counters.unknown_peer = counters.unknown_peer.saturating_add(1);
                     continue;
                 }
             };
@@ -527,6 +547,8 @@ impl SamServiceState {
                 .expect("sam destinations poisoned")
                 .get(destination_id)
                 .expect("sender still registered");
+            let inbound_factory_present =
+                peer.with(|bridge| bridge.inbound_tunnel_factory().is_some());
             let inbound_tunnel = peer.with(|bridge| {
                 let factory = bridge.inbound_tunnel_factory();
                 match factory {
@@ -537,11 +559,19 @@ impl SamServiceState {
             let inbound_tunnel = match inbound_tunnel {
                 Some(t) => t,
                 None => {
-                    // No tunnel available; drop the request.
+                    debug!(
+                        destination = ?destination_id,
+                        "deliver_outbound: no inbound tunnel factory or build failed"
+                    );
+                    if inbound_factory_present {
+                        counters.factory_exhausted = counters.factory_exhausted.saturating_add(1);
+                    } else {
+                        counters.missing_factory = counters.missing_factory.saturating_add(1);
+                    }
                     continue;
                 }
             };
-            let _ = crate::sam::bridge_to_peer(
+            let delivery = crate::sam::bridge_to_peer(
                 &sender_clone,
                 &peer,
                 outbound_hop0_hash,
@@ -553,8 +583,22 @@ impl SamServiceState {
                 inbound_tunnel,
                 &mut rng,
             );
+            debug!(
+                destination = ?destination_id,
+                peer_hash = ?request.destination_hash,
+                result = ?delivery,
+                "deliver_outbound: bridge_to_peer result"
+            );
+            if delivery.is_ok() {
+                counters.delivered = counters.delivered.saturating_add(1);
+            } else {
+                // Plan 149 §8: surface bridge_to_peer failures via
+                // the same sweep counters so the driver can wake
+                // waiters and avoid silent drops.
+                counters.factory_exhausted = counters.factory_exhausted.saturating_add(1);
+            }
         }
-        Ok(count)
+        Ok(counters)
     }
 }
 

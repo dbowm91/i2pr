@@ -167,6 +167,24 @@ plan_138_status = "passed-m7-sam31-stream-connect-accept-bridge"
 milestone7_sam_protocol = "passed"
 milestone7_loopback_server = "passed"
 milestone7_stream_bridge = "passed"
+milestone7_self_composing_product = "passed-via-plan149"
+milestone7_independent_clients = "0-passed"
+plan_145_plan_of_record = "plans/145-m7-sam31-remaining-gap-corrective-roadmap.md"
+plan_145_status = "active-m7-sam31-remaining-gap-corrective-roadmap"
+plan_146_plan_of_record = "plans/146-m7-sam31-private-destination-reference-requalification.md"
+plan_146_closure = "plans/146-status.md"
+plan_146_status = "passed-m7-sam31-private-destination-reference-requalification"
+plan_147_plan_of_record = "plans/147-m7-sam31-dedicated-raw-stream-driver.md"
+plan_147_closure = "plans/147-status.md"
+plan_147_raw_driver_implementation = "landed-and-retained"
+plan_147_local_binary_smoke = "passed"
+plan_147_full_original_acceptance = "superseded-by-plan149"
+plan_148_status = "blocked-audit-superseded-for-next-action-by-plan149-150"
+plan_149_plan_of_record = "plans/149-m7-sam31-self-composing-local-product-corrective.md"
+plan_149_closure = "plans/149-status.md"
+plan_149_status = "passed-m7-sam31-self-composing-local-product-corrective"
+plan_150_plan_of_record = "plans/150-m7-sam31-external-client-reproducible-final-closure.md"
+plan_150_status = "next-executable-on-plan149-pass"
 
 [[surface]]
 id = "common.codec-foundation"
@@ -862,7 +880,7 @@ protocol = "sam"
 structure = "sam-3.1-independent-client-stream-interoperability"
 scope = "required"
 status = "experimental"
-notes = "Plan 142 closed as `passed-m7-sam31-encoding-private-destination-corrective` per plans/142-status.md, correcting the SAM Base64 alphabet to I2P Base64 (`-`/`~`, `=` padding) and replacing the prior circular-private-destination evidence with three independent reference vectors (i2pd `Base.{h,cpp}`, Java I2P `PrivateKeyFile.java`, i2plib `I2P_B64_CHARS`). **Plan 146 closed as `passed-m7-sam31-private-destination-reference-requalification` per plans/146-status.md**, requalifying private-destination interoperability against the pinned Java I2P 2.12.0 reference and relaxing the `encryption_public == X25519(static_secret)` reconstruction invariant that the Java I2P `PrivateKeyFile` and i2pd `IdentityEx` layouts omit for destinations; the bidirectional reference evidence at `crates/i2pr-daemon/tests/sam_plan146_reference.rs` proves both directions (reference generates → i2pr imports → byte-equal DestinationId; i2pr generates → Java I2P parser consumes → byte-equal PUB). **Plan 147 closed as `passed-m7-sam31-dedicated-raw-stream-driver` per plans/147-status.md**, adding the dedicated same-socket raw TCP↔Streaming product bridge; `crates/i2pr-daemon/tests/sam_stream_raw_product.rs` is the canonical localhost byte-product lane. **Plan 148 is `blocked-external-client-build-failure` per plans/148-status.md**: the pinned i2plib (`6edf51cd5d21cc745aa7e23cb98c582144884fa8`) and libsam3 (`e0da4f4d8d3ca670fef86fd1046dab7c14afc5b7`) sources are not present in the local cache and no build/install lane exists for them; two-independent-client final closure plus FORWARD/naming byte-path revalidation remain blocked. No SAM feature is advertised."
+notes = "Plan 142 closed as `passed-m7-sam31-encoding-private-destination-corrective` per plans/142-status.md, correcting the SAM Base64 alphabet to I2P Base64 (`-`/`~`, `=` padding) and replacing the prior circular-private-destination evidence with three independent reference vectors (i2pd `Base.{h,cpp}`, Java I2P `PrivateKeyFile.java`, i2plib `I2P_B64_CHARS`). **Plan 146 closed as `passed-m7-sam31-private-destination-reference-requalification` per plans/146-status.md**, requalifying private-destination interoperability against the pinned Java I2P 2.12.0 reference and relaxing the `encryption_public == X25519(static_secret)` reconstruction invariant that the Java I2P `PrivateKeyFile` and i2pd `IdentityEx` layouts omit for destinations; the bidirectional reference evidence at `crates/i2pr-daemon/tests/sam_plan146_reference.rs` proves both directions (reference generates → i2pr imports → byte-equal DestinationId; i2pr generates → Java I2P parser consumes → byte-equal PUB). **Plan 147 closed as `passed-m7-sam31-dedicated-raw-stream-driver` per plans/147-status.md**, adding the dedicated same-socket raw TCP↔Streaming product bridge; `crates/i2pr-daemon/tests/sam_stream_raw_product.rs` is the focused lower-level implementation regression. **Plan 149 closed as `passed-m7-sam31-self-composing-local-product-corrective` per plans/149-status.md**: `SESSION CREATE` now self-composes the entire localhost STREAM product from SAM protocol commands alone. The destination identity is shared via one `Arc<DestinationIdentity>` allocation between the destination runtime and the SAM bridge; the OS-CSPRNG-driven `SamLocalProductFabric` provides a signed LeaseSet2, outbound role, and inbound-tunnel factory; the per-destination runtime driver is spawned automatically; local peer LeaseSet2 routing is resolved through the SAM service directory (no test injection); byte-exact `STREAM STATUS RESULT=OK` and `DESTINATION=<peer-pub-b64>` raw-transition semantics are enforced; typed failure counters (`DeliverySweepCounters`) replace silent packet drops. The canonical black-box evidence lives at `crates/i2pr-daemon/tests/sam_stream_self_composed.rs`. **Plan 148 remains `blocked-audit-superseded-for-next-action-by-plan149-150` per plans/148-status.md**: it correctly rejected one Rust helper used twice as independent clients, but its `blocked-external-client-build-failure` diagnosis was incomplete because the product-composition blocker is now resolved by Plan 149. **Plan 150 is `next-executable-on-plan149-pass` per plans/150-status.md**: it will run correctly pinned external clients (`libsam3` snapshot `7d6e658798baec31394c5685f9583343cc00900b`, `i2psam` snapshot `b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac`) through the Plan 149 self-composed listener to close independent-client FORWARD / NAMING / final M7 evidence. No SAM feature is advertised."
 evidence = [
     "plans/140-m7-sam31-interoperability-closure.md",
     "plans/140-status.md",
@@ -874,10 +892,13 @@ evidence = [
     "plans/147-status.md",
     "plans/148-m7-sam31-independent-client-final-closure.md",
     "plans/148-status.md",
+    "plans/149-m7-sam31-self-composing-local-product-corrective.md",
+    "plans/149-status.md",
     "tests/integration/sam/README.md",
     "tests/integration/sam/reference/Plan146ReferenceHelper.java",
     "crates/i2pr-daemon/tests/sam_plan146_reference.rs",
     "crates/i2pr-daemon/tests/sam_stream_raw_product.rs",
+    "crates/i2pr-daemon/tests/sam_stream_self_composed.rs",
     "docs/architecture/audit/2026-08-28-plan140-audit.md",
 ]
 advertised = false

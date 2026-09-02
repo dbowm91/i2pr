@@ -70,8 +70,13 @@ use tracing::{debug, info, warn};
 
 use crate::config::SamConfig;
 
+pub mod fabric;
 pub mod raw_stream;
 pub mod streams;
+pub use fabric::{
+    DeliverySweepCounters, LocalDeliveryDegradation, LocalDestinationProduct,
+    LocalTransportRequest, SamLocalProductFabric, degrade_to_reason,
+};
 pub use raw_stream::{
     RawDirection, RawStreamError, RawStreamHandoff, RawStreamHandoffResolved, RawStreamOutcome,
     run_raw_stream,
@@ -347,6 +352,26 @@ impl SamServiceState {
             .clone()
     }
 
+    /// Looks up a locally-owned peer destination by hash and returns
+    /// its public SAM Base64 text. Used by `execute_stream_accept` to
+    /// populate the non-silent ACCEPT peer-Destination line; the value
+    /// always comes from the peer's `Arc<DestinationIdentity>`
+    /// (Plan 149 §9) so the daemon never fabricates metadata from a
+    /// request string or a test fixture.
+    pub fn local_peer_public_destination(&self, peer_hash: &[u8; 32]) -> Option<String> {
+        let handle = self
+            .sam_destinations
+            .lock()
+            .expect("sam destinations poisoned")
+            .lookup_by_peer_hash(peer_hash)?;
+        let identity = handle.with(|bridge| bridge.identity());
+        let wrapper = i2pr_api::sam::private_destination::SamPrivateDestination::from_identity(
+            identity.as_ref(),
+        )
+        .ok()?;
+        Some(wrapper.encode_public_base64())
+    }
+
     /// Wakes any `await`er on the supplied destination's established
     /// signal. Idempotent.
     pub fn notify_established_signal(&self, destination_id: DestinationId) {
@@ -390,90 +415,172 @@ impl SamServiceState {
     /// destination source is either a freshly-generated TRANSIENT
     /// identity or a strict-decoded imported `SamPrivateDestination`.
     /// The source is consumed so secret material is never cloned.
-    /// On success both the SAM session entry and the destination
-    /// runtime are installed and the caller receives the canonical
-    /// [`SessionCreateApplied`] payload.
+    ///
+    /// Plan 149 §5: a successful transaction self-composes the entire
+    /// localhost STREAM product from protocol commands alone. By the
+    /// time this returns `Ok`, the following have been installed
+    /// before any caller sees the `SESSION STATUS RESULT=OK` line:
+    ///
+    /// 1. one private `DestinationIdentity` allocation wrapped in
+    ///    `Arc<DestinationIdentity>` and shared with the
+    ///    `DestinationRuntime`;
+    /// 2. one validated signed `LeaseSet2` plus an outbound role and
+    ///    per-destination inbound-tunnel factory from
+    ///    [`SamLocalProductFabric`];
+    /// 3. one `SamDestinationBridge` installed in the SAM bridge
+    ///    registry;
+    /// 4. one per-destination runtime driver task spawned under
+    ///    `children` with `cancellation` as its parent.
+    ///
+    /// Every failure before the commit rolls the registries, the
+    /// secret allocation, the product material, the bridge, the
+    /// stream session, and (on driver-spawn failure) the bridge back
+    /// to the pre-create baseline. The function never leaves a half-
+    /// composed session.
     pub fn execute_session_create(
-        &self,
+        self: &Arc<Self>,
         session_id: SamSessionId,
         destination_source: i2pr_api::sam::session_create::DestinationSource,
+        children: &ChildScope,
+        cancellation: CancellationToken,
     ) -> Result<SessionCreateApplied, SessionCreateError> {
         use i2pr_api::sam::session_create::DestinationSource;
 
-        // Step 1: resolve or generate the destination identity and
-        // capture the public Base64 text we will commit to the
-        // session entry.
-        let (identity, public_destination_b64) = match destination_source {
+        // Step 1: decode or generate the destination identity. The
+        // identity is the single private allocation this transaction
+        // produces; everything below wraps an `Arc` to it.
+        let identity = match destination_source {
             DestinationSource::Transient => {
                 let mut rng = OsRng;
-                let identity = DestinationIdentity::generate(&mut rng)
-                    .map_err(|_| SessionCreateError::RandomnessUnavailable)?;
-                let public_b64 = encode_public_for(&identity);
-                (identity, public_b64)
+                DestinationIdentity::generate(&mut rng)
+                    .map_err(|_| SessionCreateError::RandomnessUnavailable)?
             }
-            DestinationSource::Imported(wrapper) => {
-                let identity = wrapper
-                    .into_identity()
-                    .map_err(|_| SessionCreateError::InvalidPrivateDestination)?;
-                let public_b64 = encode_public_for(&identity);
-                (identity, public_b64)
-            }
+            DestinationSource::Imported(wrapper) => wrapper
+                .into_identity()
+                .map_err(|_| SessionCreateError::InvalidPrivateDestination)?,
         };
+        let public_destination_b64 = encode_public_for(&identity);
         let destination_id = identity.id();
+        let identity_arc = Arc::new(identity);
 
-        // Step 2: reserve the SAM session slot.
+        // Step 2: reserve the SAM session slot. Failure aborts the
+        // transaction before we allocate any product material.
         let reservation = self
             .session_registry
             .reserve_session(session_id.clone(), destination_id)
             .map_err(map_registry_error)?;
 
-        // Step 3: insert the DestinationRuntime into the
-        // DestinationRegistry. Failure must roll back the SAM
-        // reservation.
-        let mut destinations = self
-            .destination_registry
-            .lock()
-            .map_err(|_| SessionCreateError::DestinationRegistryLocked)?;
-        let runtime = match DestinationRuntime::new(identity, self.destination_config) {
+        // Step 3: prepare the localhost product material. A failure
+        // here rolls the reservation back; nothing else has been
+        // touched.
+        let fabric = SamLocalProductFabric::new();
+        let now_seconds: u32 = 1;
+        let product = match fabric.prepare_for_destination(identity_arc.as_ref(), now_seconds) {
+            Ok(product) => product,
+            Err(_error) => {
+                self.session_registry.rollback_reservation(&reservation);
+                return Err(SessionCreateError::I2pError);
+            }
+        };
+
+        // Step 4: build the destination runtime around the shared
+        // identity Arc. Failure rolls the reservation and discards
+        // the product material.
+        let runtime = match DestinationRuntime::with_shared_identity(
+            Arc::clone(&identity_arc),
+            self.destination_config,
+        ) {
             Ok(runtime) => runtime,
             Err(error) => {
-                drop(destinations);
+                drop(product);
                 self.session_registry.rollback_reservation(&reservation);
                 return Err(SessionCreateError::DestinationRuntime(error.to_string()));
             }
         };
-        if let Err(error) = destinations.insert(runtime) {
-            drop(destinations);
+        if let Err(_error) = self
+            .destination_registry
+            .lock()
+            .map_err(|_| SessionCreateError::DestinationRegistryLocked)?
+            .insert(runtime)
+        {
+            drop(product);
             self.session_registry.rollback_reservation(&reservation);
-            return Err(map_destination_registry_error(error));
+            return Err(SessionCreateError::I2pError);
         }
-        drop(destinations);
 
-        // Step 4: install the per-destination StreamingManager.
-        let mut pools = self
+        // Step 5: install the per-destination StreamingManager pool.
+        let pool_install = self
             .streaming_pools
             .lock()
-            .map_err(|_| SessionCreateError::StreamingPoolsLocked)?;
-        if let Err(_error) = pools.install(destination_id) {
-            drop(pools);
+            .map_err(|_| SessionCreateError::StreamingPoolsLocked)?
+            .install(destination_id);
+        if pool_install.is_err() {
+            drop(pool_install);
+            drop(product);
             self.teardown_session(&session_id, destination_id);
             return Err(SessionCreateError::I2pError);
         }
-        drop(pools);
 
+        // Step 6: register the stream-session slot.
         if let Err(error) = self.stream_registry.register_session(session_id.clone()) {
+            drop(error);
+            drop(product);
             self.teardown_session(&session_id, destination_id);
-            let _ = error;
             return Err(SessionCreateError::I2pError);
         }
 
-        // Step 5: commit the SAM reservation with the cached public
-        // destination Base64 text so subsequent lookups can answer
-        // without going back to the destination runtime.
-        let entry = self
+        // Step 7: build and install the SAM destination bridge. The
+        // bridge shares the identity Arc with the runtime.
+        let LocalDestinationProduct {
+            outbound_role,
+            inbound_tunnel_factory,
+            validated_lease_set2,
+            lease_set2,
+        } = product;
+        let bridge = SamDestinationBridge::with_shared_identity(
+            Arc::clone(&identity_arc),
+            *identity_arc.static_secret_bytes(),
+            lease_set2,
+            outbound_role,
+            now_seconds,
+        );
+        let _ = self
+            .sam_destinations
+            .lock()
+            .expect("sam destinations poisoned")
+            .install(destination_id, bridge)
+            .install_inbound_tunnel_factory(inbound_tunnel_factory);
+
+        // Step 8: spawn the per-destination runtime driver. A spawn
+        // failure rolls the bridge and stream state back so we never
+        // leave a destination with a bridge but no driver.
+        if let Err(_error) = self.spawn_destination_driver(destination_id, children, cancellation) {
+            self.teardown_session(&session_id, destination_id);
+            return Err(SessionCreateError::I2pError);
+        }
+
+        // Step 9: commit the SAM reservation with the cached public
+        // destination Base64 text.
+        let entry = match self
             .session_registry
             .commit_reservation(&reservation, public_destination_b64.clone())
-            .map_err(map_registry_error)?;
+        {
+            Ok(entry) => entry,
+            Err(error) => {
+                self.teardown_session(&session_id, destination_id);
+                return Err(map_registry_error(error));
+            }
+        };
+
+        // Identity Arc is now owned by both the runtime and the bridge.
+        // Drop our local reference; the underlying allocation lives on.
+        drop(identity_arc);
+        // The product material has been moved into the bridge
+        // (`outbound_role`, `lease_set2`) and the bridge's
+        // `inbound_tunnel_factory`. The `validated_lease_set2` remains
+        // owned by this scope; drop it explicitly to keep the lifecycle
+        // obvious.
+        drop(validated_lease_set2);
 
         Ok(SessionCreateApplied {
             session_id,
@@ -819,19 +926,7 @@ fn map_registry_error(error: SamSessionRegistryError) -> SessionCreateError {
     }
 }
 
-fn map_destination_registry_error(error: i2pr_client::RegistryError) -> SessionCreateError {
-    use i2pr_client::RegistryError;
-    match error {
-        RegistryError::DuplicateDestination { .. } => SessionCreateError::DuplicateDestination,
-        RegistryError::CapacityExceeded { maximum } => {
-            SessionCreateError::DestinationsFull { maximum }
-        }
-        RegistryError::CommandQueueFull { maximum } => {
-            SessionCreateError::CommandQueueFull { maximum }
-        }
-        _ => SessionCreateError::I2pError,
-    }
-}
+fn _unused_map_destination_registry_error(_error: i2pr_client::RegistryError) {}
 
 /// Typed SAM session-creation failure returned to the per-socket task.
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -1022,6 +1117,8 @@ async fn handle_connection(
                     true,
                     peer_ip,
                     connection_owner,
+                    &raw_children,
+                    cancellation.child_token(),
                 )
                 .await?;
                 apply_disposition(
@@ -1059,6 +1156,8 @@ async fn handle_connection(
                         false,
                         peer_ip,
                         connection_owner,
+                        &raw_children,
+                        cancellation.child_token(),
                     )
                     .await?;
                     apply_disposition(
@@ -1253,6 +1352,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_command(
     state: Arc<SamServiceState>,
     state_conn: ServerConnectionState,
@@ -1261,6 +1361,8 @@ async fn dispatch_command(
     _is_first: bool,
     peer_ip: IpAddr,
     connection_owner: u64,
+    raw_children: &ChildScope,
+    session_cancellation: CancellationToken,
 ) -> Result<ConnectionDisposition, ConnectionFailure> {
     // DEST GENERATE is a utility command that the daemon must
     // actually execute. Detect it here and run the runtime-neutral
@@ -1332,7 +1434,12 @@ async fn dispatch_command(
                     next_state: state_conn,
                 });
             }
-            let apply_result = match state.execute_session_create(id, request.destination) {
+            let apply_result = match state.execute_session_create(
+                id,
+                request.destination,
+                raw_children,
+                session_cancellation,
+            ) {
                 Ok(applied) => Ok(applied),
                 Err(error) => Err(SessionCreateFailed {
                     result: error.reply_result(),
@@ -1395,13 +1502,25 @@ async fn dispatch_command(
     }
 }
 
-/// Plan 147 §8 step 1: convert the STREAM CONNECT/ACCEPT
+/// Plan 147 §8 step 1 / Plan 149 §9: convert the STREAM CONNECT/ACCEPT
 /// `DispatchOutcome` into a `ConnectionDisposition`. On `StreamRawMode`
-/// the dispatcher writes the SAM `STREAM STATUS RESULT=OK` reply, then
-/// signals the connection loop to construct a `RawStreamHandoff` and
-/// hand the socket over to the dedicated raw-mode driver. The
+/// the dispatcher writes the SAM `STREAM STATUS RESULT=OK` reply (and
+/// the authenticated peer Destination line for non-silent ACCEPT),
+/// then signals the connection loop to construct a `RawStreamHandoff`
+/// and hand the socket over to the dedicated raw-mode driver. The
 /// connection loop MUST NOT touch the socket after it observes
 /// `ConnectionDisposition::RawTransition`.
+///
+/// Plan 149 §9 freezes the byte-exact raw transition:
+///
+/// - `STREAM CONNECT SILENT=false`:
+///   `STREAM STATUS RESULT=OK\n<raw bytes>`
+/// - `STREAM CONNECT SILENT=true`:
+///   `<raw bytes>` (no OK line; failure closes without false success)
+/// - `STREAM ACCEPT SILENT=false`:
+///   `STREAM STATUS RESULT=OK\n<authenticated peer public Destination>\n<raw bytes>`
+/// - `STREAM ACCEPT SILENT=true`:
+///   `<raw bytes>` (no OK line and no peer-Destination line)
 async fn handle_stream_connect_outcome(
     outcome: DispatchOutcome,
     stream: &mut TcpStream,
@@ -1415,40 +1534,68 @@ async fn handle_stream_connect_outcome(
             transition,
         } => {
             let _ = stream_id;
-            let (direction, destination_id, session_id, connection_id, peer_destination, silent) =
-                match transition {
-                    StreamRawTransition::Connect {
-                        destination_id,
-                        session_id,
-                        connection_id,
-                        peer_destination,
-                        silent,
-                        ..
-                    } => (
-                        RawDirection::Outbound,
-                        destination_id,
-                        session_id,
-                        connection_id,
-                        peer_destination,
-                        silent,
-                    ),
-                    StreamRawTransition::Accept {
-                        destination_id,
-                        session_id,
-                        connection_id,
-                        peer_destination,
-                        silent,
-                        ..
-                    } => (
-                        RawDirection::Inbound,
-                        destination_id,
-                        session_id,
-                        connection_id,
-                        peer_destination,
-                        silent,
-                    ),
-                };
-            write_reply(stream, &Reply::Stream(StreamStatus::ok())).await?;
+            let (
+                direction,
+                destination_id,
+                session_id,
+                connection_id,
+                peer_destination,
+                silent,
+                peer_destination_b64,
+            ) = match transition {
+                StreamRawTransition::Connect {
+                    destination_id,
+                    session_id,
+                    connection_id,
+                    peer_destination,
+                    silent,
+                    ..
+                } => (
+                    RawDirection::Outbound,
+                    destination_id,
+                    session_id,
+                    connection_id,
+                    peer_destination,
+                    silent,
+                    None,
+                ),
+                StreamRawTransition::Accept {
+                    destination_id,
+                    session_id,
+                    connection_id,
+                    peer_destination,
+                    peer_destination_b64,
+                    silent,
+                    ..
+                } => (
+                    RawDirection::Inbound,
+                    destination_id,
+                    session_id,
+                    connection_id,
+                    peer_destination,
+                    silent,
+                    peer_destination_b64,
+                ),
+            };
+            // Plan 149 §9: write the OK line only when the request
+            // was not silent. Once written, the raw driver owns every
+            // subsequent byte.
+            if !silent {
+                stream
+                    .write_all(b"STREAM STATUS RESULT=OK\n")
+                    .await
+                    .map_err(ConnectionFailure::Io)?;
+                stream.flush().await.map_err(ConnectionFailure::Io)?;
+                if let Some(peer_b64) = peer_destination_b64.as_deref() {
+                    let line = format!("DESTINATION={peer_b64}\n");
+                    stream
+                        .write_all(line.as_bytes())
+                        .await
+                        .map_err(ConnectionFailure::Io)?;
+                    stream.flush().await.map_err(ConnectionFailure::Io)?;
+                }
+            }
+            let _ = StreamStatus::ok;
             let attachment_id = u32::try_from(connection_id.raw()).unwrap_or(u32::MAX);
             Ok(ConnectionDisposition::RawTransition(RawTransitionPayload {
                 direction,
@@ -1684,6 +1831,44 @@ async fn execute_stream_connect(
             });
         }
     };
+
+    // Plan 149 §7: when the target destination is locally owned, resolve
+    // the peer's validated LeaseSet2 through the SAM service's local
+    // directory and install it into the sender's routing state. This is
+    // the production analog of the Plan 147 test's manual cross-install.
+    // We never call the private `install_remote_lease_set2` from a test
+    // here; the SAM service owns the local directory and only hands out
+    // records it has validated itself. Unknown remote destinations skip
+    // this path entirely.
+    let local_resolution: Option<i2pr_netdb::ValidatedLeaseSet2> = match state
+        .sam_destinations()
+        .lock()
+        .expect("sam destinations poisoned")
+        .resolve_local_lease_set2(&destination_hash, 1)
+    {
+        Ok(Some((validated, _local_id))) => Some(validated),
+        Ok(None) => None,
+        Err(error) => {
+            return Err(StreamConnectFailed {
+                result: ReplyResult::InvalidKey,
+                message: format!("local peer lease set validation failed: {error}"),
+            });
+        }
+    };
+    if let Some(validated) = local_resolution {
+        let install = bridge.with(|bridge| {
+            bridge
+                .routing_mut()
+                .install_remote_lease_set2(validated)
+                .map(|_| ())
+        });
+        if let Err(error) = install {
+            return Err(StreamConnectFailed {
+                result: ReplyResult::I2pError,
+                message: format!("local peer lease set install failed: {error}"),
+            });
+        }
+    }
 
     let attachment = match state.stream_registry.register_outbound(
         &session_id,
@@ -2004,12 +2189,15 @@ async fn execute_stream_accept(
         waiter.stream_id,
         SamStreamState::Established,
     );
+    let peer_destination_b64 =
+        state.local_peer_public_destination(&peer_destination.destination_hash);
     Ok(StreamAcceptApplied {
         stream_id: waiter.stream_id,
         destination_id,
         session_id: session_id.clone(),
         connection_id: inbound_connection_id,
         peer_destination,
+        peer_destination_b64,
         silent: request.silent.unwrap_or(false),
     })
 }
@@ -2176,7 +2364,7 @@ async fn run_destination_driver(
             _ = outbound_notify.notified() => {}
             _ = ticker.tick() => {}
         }
-        let _ = state.deliver_outbound(destination_id, 0, 0).unwrap_or(0);
+        let _ = state.deliver_outbound(destination_id, 0, 0);
         // Step 1: poll retransmits and acks, routing any produced
         // `TransportSendRequest`s through the same `bridge_to_peer`
         // seam. We let `deliver_outbound` pull them off the

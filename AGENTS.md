@@ -9,10 +9,10 @@ non-advertised; the production daemon does **not** activate NTCP2.
 
 Always read these before changing code or answering questions about state:
 
-1. `README.md` — current status (Milestone 6 local product gate closed via Plan 134; Milestone 7 corrective umbrella is Plan 145; Plan 146 private-destination reference compatibility is closed; Plan 147 raw-driver implementation is retained; Plan 148 is a blocked audit superseded for execution; **Plan 149 is next executable; Plan 150 is blocked on Plan 149**), build/test/lint commands, high-level architecture.
+1. `README.md` — current status (Milestone 6 local product gate closed via Plan 134; Milestone 7 corrective umbrella is Plan 145; Plan 146 private-destination reference compatibility is closed; Plan 147 raw-driver implementation is retained; **Plan 149 self-composed local STREAM product is closed**; **Plan 150 is next executable**), build/test/lint commands, high-level architecture.
 2. `GUARDRAILS.md` — non-negotiable engineering, security, interoperability, and collaboration constraints.
 3. `CONTRIBUTING.md` — local quality checks, runtime/testkit conventions, rootless and Multipass evidence-lane contracts.
-4. The active plan under `plans/` (entry point: [`plans/README.md`](plans/README.md); current authority: `plans/145-status.md` plus [`plans/149-status.md`](plans/149-status.md)). Read `plans/146-status.md`, `plans/147-status.md`, and `plans/148-status.md` as required audit context. Execute **Plan 149 only** until its status closes.
+4. The active plan under `plans/` (entry point: [`plans/README.md`](plans/README.md); current authority: `plans/145-status.md` plus [`plans/149-status.md`](plans/149-status.md)). Read `plans/146-status.md`, `plans/147-status.md`, and `plans/148-status.md` as required audit context. The next executable plan is **Plan 150**.
 5. `specs/support.toml` (mirrored to `docs/protocol-support.md`) for live protocol support state. `specs/CONFORMANCE.md` defines what counts as evidence.
 
 Do **not** trust prose that disagrees with a checked-in script or executable test. Static boundary scripts (`scripts/check-*.sh`) are the source of truth for non-negotiable invariants. The [`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md) skill is the index for the rest of the documentation.
@@ -36,7 +36,7 @@ Quick reference:
 - `i2pr-tunnel` — runtime-neutral exploratory pool, short tunnel-build crypto, data plane.
 - `i2pr-client` — local destination identity/pools/LeaseSet2/session/routing/Streaming core.
 - `i2pr-api` — runtime-neutral SAM 3.1 bounded parser/commands/replies/private-destination/session/stream registry/FORWARD/NAMING. Plan 142 I2P Base64 correction is retained; Plan 146 closed private-destination reference compatibility.
-- `i2pr-daemon` SAM service — supervised loopback listener, session transaction, STREAM raw socket owner/byte pump, local delivery bridge, forwarding. Plan 147 implementation is retained, but **Plan 149 now owns product self-composition and the deferred SILENT/backpressure/fault/lifecycle acceptance**. The canonical Plan 147 test currently performs private bridge/LeaseSet/tunnel-factory/driver setup after `SESSION CREATE`; Plan 149 must eliminate that requirement from final product evidence.
+- `i2pr-daemon` SAM service — supervised loopback listener, session transaction, STREAM raw socket owner/byte pump, local delivery bridge, forwarding. Plan 147 implementation is retained; **Plan 149 now owns the self-composed `SESSION CREATE` path (one `Arc<DestinationIdentity>` allocation, OS-CSPRNG `SamLocalProductFabric`, automatic per-destination driver spawn, local peer LeaseSet2 directory, byte-exact `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw transition, typed `DeliverySweepCounters`)**. The canonical product evidence lives in `crates/i2pr-daemon/tests/sam_stream_self_composed.rs`.
 - `i2pr-testkit` — deterministic simulation; no production crate may depend on it.
 - `tools/i2pr-interop` — non-production test launcher. Must never activate `i2pr-daemon`.
 
@@ -82,8 +82,8 @@ CI also runs `cargo deny check advisories bans sources`. `Cargo.lock` is authori
 - Deterministic testkit: `cargo test -p i2pr-testkit --all-targets`.
 - SAM protocol/private destination: `cargo test -p i2pr-api --all-targets` and `cargo test -p i2pr-daemon --test sam_plan146_reference -- --test-threads=1`.
 - SAM local delivery regressions: `sam_stream_product`, `sam_stream_independent`.
-- Plan 147 raw implementation regression: `cargo test -p i2pr-daemon --test sam_stream_raw_product`. This is no longer sufficient final product-composition evidence because it manually installs hidden prerequisites.
-- **Plan 149 must add a canonical self-composed black-box SAM STREAM lane** where the test drives behavior only through listener TCP after startup. It may not call private bridge, peer-LeaseSet2, inbound-tunnel-factory, destination-driver, delivery, or byte-moving setup APIs.
+- Plan 147 raw implementation regression: `cargo test -p i2pr-daemon --test sam_stream_raw_product`. This is a focused lower-level bridge regression; the canonical product evidence is now `cargo test -p i2pr-daemon --test sam_stream_self_composed`.
+- Plan 149 self-composed black-box SAM STREAM lane: `cargo test -p i2pr-daemon --test sam_stream_self_composed -- --test-threads=1`. The suite drives behavior only through listener TCP after startup and may not call private bridge, peer-LeaseSet2, inbound-tunnel-factory, destination-driver, delivery, or byte-moving setup APIs.
 - Constrained-host lane: `python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'`.
 
 ### Testing conventions
@@ -105,7 +105,7 @@ CI also runs `cargo deny check advisories bans sources`. `Cargo.lock` is authori
 - Library crates avoid `anyhow` as public error models.
 - Centralize dependency versions; review new dependencies for transitive/security/license/unsafe impact.
 - Avoid global mutable state/unrestricted service locators; use narrow handles/capabilities.
-- For Plan 149 specifically: do **not** make `DestinationIdentity: Clone` or reconstruct a second private identity merely to satisfy `SamDestinationBridge`. Preserve one secret ownership graph.
+- For Plan 149 specifically: do **not** make `DestinationIdentity: Clone` or reconstruct a second private identity merely to satisfy `SamDestinationBridge`. Preserve one secret ownership graph via `Arc<DestinationIdentity>` (see `DestinationRuntime::with_shared_identity`).
 
 ## Architecture decisions
 
@@ -117,13 +117,13 @@ Every protocol surface is tracked in `specs/support.toml` and mirrored to `docs/
 
 - NTCP2 remains experimental/non-advertised; no passed mixed-router result exists.
 - Milestone 6 local destination/Streaming product is closed via Plan 134; independent-router interoperability is not claimed.
-- SAM 3.1 is the current product layer under Plan 145/149 authority.
+- SAM 3.1 is the current product layer under Plan 145/Plan 149 authority.
 - Plan 146 private-destination reference compatibility is closed.
-- Plan 147 raw socket ownership/byte-pump implementation is retained, but its full original acceptance is superseded by Plan 149.
+- Plan 147 raw socket ownership/byte-pump implementation is retained; its full original acceptance is superseded by Plan 149.
 - Plan 148 is a blocked historical audit, not the next executable plan.
-- **Plan 149 is next executable.** It must make `SESSION CREATE` self-compose every localhost STREAM prerequisite and close SILENT/backpressure/fault/lifecycle acceptance.
-- **Plan 150 is blocked on Plan 149.** It will use correctly pinned external clients for final localhost SAM-client/FORWARD/NAMING closure.
-- `sam_independent_clients = 0-passed`; Milestone 7 remains open; do not begin Milestone 8.
+- **Plan 149 closed the self-composed local STREAM product** (one `Arc<DestinationIdentity>`, OS-CSPRNG `SamLocalProductFabric`, automatic per-destination driver spawn, local peer LeaseSet2 directory, byte-exact raw transition, typed `DeliverySweepCounters`).
+- **Plan 150 is the next executable plan.** It will use correctly pinned external clients for final localhost SAM-client/FORWARD/NAMING closure on top of the Plan 149 self-composed listener.
+- `sam_independent_clients = 0-passed`; Milestone 7 local product is closed; do not begin Milestone 8.
 
 Treat the newest explicit superseding status as authoritative.
 
@@ -147,7 +147,7 @@ Load the matching skill before touching its surface.
 
 | Skill | Covers |
 | --- | --- |
-| [`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md) | Routine Milestone 6/7 local product work. **Plan 149 is the next executable SAM plan.** |
+| [`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md) | Routine Milestone 6/7 local product work. Plan 149 closed the self-composed local STREAM product; **Plan 150 is the next executable SAM plan.** |
 | [`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md) | Navigate architecture/ADR/plans/specs and audit drift. |
 | [`i2pr-ntcp2-interop`](.opencode/skills/i2pr-ntcp2-interop/SKILL.md) | Historical/closed NTCP2 reference-router harness. |
 | [`i2pr-rootless-sandbox`](.opencode/skills/i2pr-rootless-sandbox/SKILL.md) | Plan 046 rootless sealed-namespace lane. |
@@ -174,4 +174,4 @@ Load the matching skill before touching its surface.
 - `.github/workflows/` — routine CI plus optional manual interop workflows; Plan 150 may add a manual SAM external-client workflow.
 - `.opencode/skills/` — loadable OpenCode skill definitions.
 
-Current handoff: **execute Plan 149 only**.
+Current handoff: **execute Plan 150** (Plan 149 already closed).
