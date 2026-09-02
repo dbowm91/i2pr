@@ -49,7 +49,7 @@ jobs:
           cargo test --locked --workspace --doc
       - name: Run tests
         if: runner.os != 'macOS'
-        run: cargo test --locked --workspace
+        run: cargo test --locked --workspace -- --test-threads=1
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Build documentation
