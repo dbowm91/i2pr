@@ -30,7 +30,7 @@ use i2pr_api::sam::limits::SamLimits;
 use i2pr_daemon::config::SamConfig;
 use i2pr_daemon::sam::SamServiceState;
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 fn sam_config() -> SamConfig {
@@ -80,7 +80,7 @@ async fn start_listener(
     (state, bound_address, scope, parent)
 }
 
-async fn read_one_line(stream: &mut TcpStream) -> String {
+async fn read_one_line<R: AsyncRead + Unpin>(stream: &mut R) -> String {
     let mut buf = Vec::new();
     loop {
         let mut byte = [0_u8; 1];
@@ -101,12 +101,12 @@ async fn read_one_line(stream: &mut TcpStream) -> String {
         .to_owned()
 }
 
-async fn write_all(stream: &mut TcpStream, bytes: &[u8]) {
+async fn write_all<W: AsyncWrite + Unpin>(stream: &mut W, bytes: &[u8]) {
     stream.write_all(bytes).await.expect("write_all");
     stream.flush().await.expect("flush");
 }
 
-async fn read_n(stream: &mut TcpStream, expected: usize) -> Vec<u8> {
+async fn read_n<R: AsyncRead + Unpin>(stream: &mut R, expected: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(expected);
     while out.len() < expected {
         let remaining = expected - out.len();
@@ -234,8 +234,8 @@ async fn plan149_self_composed_black_box_connects_and_transfers_bytes() {
         (client_a, line)
     });
     let (accept_result, connect_result) = tokio::join!(accept_task, connect_task);
-    let (mut client_b, accept_line, accept_peer_line) = accept_result.expect("accept task");
-    let (mut client_a, connect_line) = connect_result.expect("connect task");
+    let (client_b, accept_line, accept_peer_line) = accept_result.expect("accept task");
+    let (client_a, connect_line) = connect_result.expect("connect task");
     assert!(
         accept_line.starts_with("STREAM STATUS RESULT=OK"),
         "ACCEPT reply not OK: {accept_line:?}"
@@ -255,22 +255,39 @@ async fn plan149_self_composed_black_box_connects_and_transfers_bytes() {
     );
 
     // Bidirectional byte exchange: the same shape as Plan 147 §10
-    // but driven through the self-composed listener.
+    // but driven through the self-composed listener. Split each
+    // application socket so its writer can keep draining the peer's
+    // response; writing both multi-megabyte payloads to completion
+    // before reading can deadlock on platforms with smaller TCP
+    // socket buffers.
     let payload_a: Vec<u8> = (0..(2 * 1024 * 1024_u32))
         .map(|i| ((i.wrapping_mul(17) ^ i.rotate_left(7)) & 0xFF) as u8)
         .collect();
     let payload_b: Vec<u8> = (0..(2 * 1024 * 1024_u32))
         .map(|i| ((i.wrapping_mul(13) ^ i.rotate_left(11)) & 0xFF) as u8)
         .collect();
-    let write_a = async {
-        write_all(&mut client_a, &payload_a).await;
-        read_n(&mut client_a, payload_b.len()).await
+    let (mut client_a_read, mut client_a_write) = client_a.into_split();
+    let (mut client_b_read, mut client_b_write) = client_b.into_split();
+    let exchange_a = async {
+        let (_, received) = tokio::join!(
+            write_all(&mut client_a_write, &payload_a),
+            read_n(&mut client_a_read, payload_b.len()),
+        );
+        received
     };
-    let write_b = async {
-        write_all(&mut client_b, &payload_b).await;
-        read_n(&mut client_b, payload_a.len()).await
+    let exchange_b = async {
+        let (_, received) = tokio::join!(
+            write_all(&mut client_b_write, &payload_b),
+            read_n(&mut client_b_read, payload_a.len()),
+        );
+        received
     };
-    let (received_a, received_b) = tokio::join!(write_a, write_b);
+    let (received_a, received_b) =
+        tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            tokio::join!(exchange_a, exchange_b)
+        })
+        .await
+        .expect("bidirectional 2 MiB exchange");
     assert_eq!(
         received_a.len(),
         payload_b.len(),
@@ -288,8 +305,6 @@ async fn plan149_self_composed_black_box_connects_and_transfers_bytes() {
     assert_eq!(received_a, payload_b, "client_a payload mismatch");
     assert_eq!(received_b, payload_a, "client_b payload mismatch");
 
-    drop(client_a);
-    drop(client_b);
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
     let _ = scope.shutdown().await;
     assert_eq!(state.session_registry().session_count(), 0);
