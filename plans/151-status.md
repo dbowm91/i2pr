@@ -237,3 +237,15 @@ disabled by default, and non-advertised.
   retained; Plan 150 core evidence stays valid history.
 - Criterion 26 satisfied: `milestone7_sam_localhost = passed`,
   `next_product_layer = milestone8-planning`.
+
+## Post-closure note (2026-09-03)
+
+- The docs-only closure commit `a698c2b` re-ran routine CI
+  (`33793242683`): ubuntu/MSRV/deny green at once; macos hit one
+  pre-existing cross-platform flake,
+  `ntcp2_runtime::tests::link_reader_and_writer_are_joined_after_close`
+  (`ExactIoError { kind: Deadline }` after 0.10 s) in
+  `crates/i2pr-runtime/src/ntcp2_runtime.rs`, a file this effort
+  did not touch. Identical code passed macos on `33788586572`;
+  rerunning the failed job per Plan 151 §14 went green with no
+  code change. No NTCP2/SSU2 production code was altered for this.
