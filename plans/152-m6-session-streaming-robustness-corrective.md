@@ -1,7 +1,8 @@
 # Plan 152 — narrow Milestone 6 session/streaming robustness corrective
 
-Status: **fixes landed, acceptance evidence recorded below; full
-workspace floor still pending before return to Plan 151**.
+Status: **passed-m6-session-streaming-robustness-corrective (closed
+2026-09-03 with Plan 151; full workspace floor and hosted lanes green
+on the closing head)**.
 
 Registered: **2026-09-03**.
 
@@ -156,13 +157,11 @@ retransmit remains RTO-driven (no aggressive churn).
    beyond the old 4096-seal ceiling). Covered by rows 1–2, whose
    drain helper asserts zero cumulative typed sweep failures on
    both destinations. **PASS** 2026-09-03.
-6. Full workspace floor green (Plan 151 §16). **PENDING** — focused
-   SAM seams green 2026-09-03 (`i2pr-api`, `i2pr-client`,
-   `sam_loopback`, `sam_plan146_reference`, `sam_stream_product`,
-   `sam_stream_independent`, `sam_stream_raw_product`,
-   `sam_stream_self_composed`, `sam_forward_naming`); full
-   `cargo test --workspace --all-targets` plus static gates still
-   to run.
+6. Full workspace floor green (Plan 151 §16). **PASS** — full floor
+   green on the closing head (fmt, check, workspace tests, clippy
+   `-D warnings`, doc, doctests, boundary scripts, evidence
+   checker, ntcp2 harness, deny) plus routine CI success on ubuntu
+   and macos.
 
 ## Stop conditions
 

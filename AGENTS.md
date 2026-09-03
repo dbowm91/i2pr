@@ -23,10 +23,10 @@ Plan 147 = raw-driver implementation retained
 Plan 149 = passed self-composing localhost SAM product
 Plan 150 = external-client core evidence retained-passed
 Plan 150 final acceptance = superseded-by-plan151
-Plan 151 = active final acceptance evidence correction
-Plan 152 = narrow M6 streaming corrective, fixes landed, floor pending
-next executable = Plan 151 only
-Milestone 8 implementation = blocked until Plan 151 passes
+Plan 151 = passed final acceptance evidence correction
+Plan 152 = passed narrow M6 streaming corrective
+Milestone 7 SAM localhost = closed (experimental, loopback-only)
+next product layer = Milestone 8 planning (needs a plan-of-record)
 ```
 
 Read in this order for SAM work:
@@ -219,5 +219,6 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **execute Plan 151 only; do not begin Milestone 8
-implementation until `plans/151-status.md` explicitly passes.**
+Current handoff: **Plan 151 passed; Milestone 8 needs a plan-of-record
+before any implementation begins. SAM stays experimental, loopback-only,
+disabled by default, and non-advertised.**

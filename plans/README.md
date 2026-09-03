@@ -11,11 +11,11 @@ external acceptance debt.
 
 The current **Milestone 7 SAM 3.1 final-acceptance authority** is
 [**Plan 151**](151-status.md)
-(`active-m7-sam31-final-acceptance-evidence-correction`).
+(`passed-m7-sam31-final-acceptance-evidence-correction`).
 
 Current sequence:
 
-**Plan 146 closed → Plan 147 implementation retained → Plan 148 blocked audit → Plan 149 closed product composition → Plan 150 external core evidence retained → Plan 151 active final acceptance correction.**
+**Plan 146 closed → Plan 147 implementation retained → Plan 148 blocked audit → Plan 149 closed product composition → Plan 150 external core evidence retained → Plan 151 passed final acceptance correction (+ Plan 152 passed narrow M6 corrective).**
 
 - Plan 146 closed private-destination compatibility with bidirectional Java I2P/i2pd reference evidence.
 - Plan 147 landed the owned same-socket raw TCP↔Streaming path and supervised ACK/retransmit driver. Its broad original acceptance label was superseded because several criteria were deferred.
@@ -34,18 +34,19 @@ plan_147_raw_driver = retained
 plan_149 = passed-self-composing-local-product
 plan_150_external_core_evidence = retained-passed
 plan_150_final_acceptance = superseded-by-plan151
-plan_151 = active
-plan_152 = narrow-m6-corrective-fixes-landed
+plan_151 = passed
+plan_152 = passed-narrow-m6-corrective
 
 milestone7_local_product = passed-via-plan149
-milestone7_sam_localhost_final_acceptance = not-yet-closed
+milestone7_sam_localhost = passed-via-plan151
+milestone7_sam_localhost_final_acceptance = closed
 sam_independent_clients = at-least-two-passed-via-plan150
-next_executable_plan = 151
-next_product_layer = remain-on-milestone7
+next_executable_plan = none-milestone7-closed
+next_product_layer = milestone8-planning
 ```
 
-Milestone 8 implementation is **not** executable until Plan 151 explicitly
-passes.
+Milestone 7 SAM localhost acceptance is closed via Plan 151. Milestone 8
+needs a plan-of-record before any implementation begins.
 
 ## MVP roadmap
 
@@ -137,4 +138,4 @@ for the routine local product/SAM seam or the architecture skill for broader
 navigation.
 
 When records disagree, the newest explicit superseding status wins. Current
-handoff: **execute Plan 151 only**.
+handoff: **Plan 151 passed; Milestone 8 needs a plan-of-record**.

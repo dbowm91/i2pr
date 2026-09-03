@@ -1,8 +1,8 @@
 # Plan 151 status — Milestone 7 SAM 3.1 final acceptance evidence correction
 
-Status: **`active-m7-sam31-final-acceptance-evidence-correction`**.
+Status: **`passed-m7-sam31-final-acceptance-evidence-correction`**.
 
-Registered: **2026-09-03**.
+Registered: **2026-09-03**. Closed: **2026-09-03**.
 
 Plan of record:
 [`plans/151-m7-sam31-final-acceptance-evidence-correction.md`](151-m7-sam31-final-acceptance-evidence-correction.md).
@@ -23,19 +23,20 @@ plan_149 = passed-m7-sam31-self-composing-local-product-corrective
 
 plan_150_external_core_evidence = retained-passed
 plan_150_final_acceptance = superseded-by-plan151
-plan_151 = active-m7-sam31-final-acceptance-evidence-correction
+plan_151 = passed-m7-sam31-final-acceptance-evidence-correction
+plan_152 = passed-m6-session-streaming-robustness-corrective
 
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 milestone7_local_product = passed-via-plan149
-milestone7_sam_localhost_final_acceptance = not-yet-closed
+milestone7_sam_localhost = passed-via-plan151
+milestone7_sam_localhost_final_acceptance = closed
 sam_independent_clients = at-least-two-passed-via-plan150
 router_to_router_interoperability = not-claimed
 
-next_executable_plan = 151
-next_product_layer = remain-on-milestone7
+next_executable_plan = none-milestone7-closed
+next_product_layer = milestone8-planning
 ```
-
 ## Retained Plan 150 evidence
 
 Do not discard these successful results while executing Plan 151:
@@ -170,8 +171,69 @@ Only executed commands count; nothing here is marked passed from prose.
 
 ## Handoff
 
-Execute `plans/151-m7-sam31-final-acceptance-evidence-correction.md`.
+~~Execute `plans/151-m7-sam31-final-acceptance-evidence-correction.md`.~~
+Done — closure recorded below. Do not begin Milestone 8
+implementation until a Milestone 8 plan-of-record exists; the
+Milestone 7 SAM localhost product stays experimental, loopback-only,
+disabled by default, and non-advertised.
 
-Do not begin Milestone 8 implementation until this status is replaced by an
-explicit passing Plan 151 closure record backed by executable evidence for
-every required final acceptance row.
+## Closure record (Plan 151 §18)
+
+- Closing commit: `02e47aa69a2574165aadd4c28df1128845eb94ab`
+  (`plan151: establish sibling pairs sequentially for deterministic
+  pairing`).
+- Routine CI on the closing head: run `33788586572`, conclusion
+  `success` — Quality ubuntu, Quality macos, MSRV, dependency-policy
+  all green.
+- SAM external workflow on the closing head: run `33790521635`
+  (`workflow_dispatch` of `.github/workflows/sam-external.yml` at
+  `main`), conclusion `success`; artifact
+  `sam-external-evidence-33790521635` uploaded.
+- External clients (exact, unmodified, localhost-only):
+  counted `i2psam` at `b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac`;
+  counted `i2plib.sam` substitute at
+  `6edf51cd5d21cc745aa7e23cb98c582144884fa8`; built/probed but not
+  counted `libsam3` at `7d6e658798baec31394c5685f9583343cc00900b`
+  (public API rejects the compact Ed25519 PRIV shape).
+- Hosted evidence (`evidence.json`, lane `github-33790521635`,
+  `rustc 1.95.0`): **26/26 rows passed**, zero non-passed rows;
+  local rerun on the same head agreed 26/26.
+- Acceptance rows and their proving commands (all executed on the
+  closing head, locally and hosted):
+  sibling-stream-isolation + multiple-stream-lifecycle —
+  `cargo test --locked -p i2pr-daemon --test
+  sam_stream_final_acceptance plan151_sibling_streams_isolate_close_one`;
+  slow-reader / slow-writer —
+  `... plan151_slow_reader_stays_bounded_and_recovers` /
+  `... plan151_slow_writer_reverse_pressure_recovers` (6 × 2 MiB,
+  gauges ≤ ceilings, exact recovery, zero typed sweep failures);
+  fault-data-drop / fault-ack-drop / fault-duplicate /
+  fault-reorder / fault-corruption / fault-retransmit-ceiling —
+  the six `plan151_fault_*` tests in the same suite;
+  close-reset-lifecycle — `... plan151_close_reset_lifecycle`;
+  forward-lifecycle — `cargo test --locked -p i2pr-daemon --test
+  sam_forward_naming` (8/8: register/bridge/second-stream/refusal/
+  timeout/non-loopback/exclusion/owner-close + naming);
+  plan127-134-regressions — `plan127_trajectory` (16),
+  `plan128_wire` (11), `plan128_trajectory` (7),
+  `plan129_trajectory` (12), `plan130_trajectory` (11),
+  `plan131_trajectory` (7), `plan132_trajectory` (10),
+  `i2pr-crypto --all-targets` (52), all green;
+  external-client-a-to-b / b-to-a / private-destination /
+  binary-matrix / silent / naming / negative-matrix /
+  forward-positive — the reworked `run-independent.sh` external
+  matrix with pinned clients; workspace-gates — fmt + workspace
+  check + static boundary scripts in-lane, full floor in routine CI.
+- Full §16 floor on the closing head: fmt, check, workspace tests,
+  clippy `-D warnings`, doc, doctests, six boundary scripts,
+  evidence checker, ntcp2 python harness, cargo deny — all green
+  locally; routine CI repeats fmt/check/tests/clippy/doc/boundaries
+  on ubuntu + macos.
+- Sanitization: evidence carries commands, exit statuses, commit,
+  lane, client revisions, byte counts, and counter snapshots only;
+  no PRIV, seeds, secrets, payloads, or environment dumps. The
+  `privacy-log` acceptance test pins the failure-path log silence.
+- Superseding: `plan_150_final_acceptance = superseded-by-plan151`
+  retained; Plan 150 core evidence stays valid history.
+- Criterion 26 satisfied: `milestone7_sam_localhost = passed`,
+  `next_product_layer = milestone8-planning`.

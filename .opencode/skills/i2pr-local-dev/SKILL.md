@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Plan 149 closed the self-composed localhost product; Plan 150 retains external-client core evidence; Plan 151 is the active final acceptance/evidence corrective and the only next executable Milestone 7 plan.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Plan 149 closed the self-composed localhost product; Plan 150 retains external-client core evidence; Plan 151 passed the final acceptance/evidence correction (with narrow Plan 152 M6 corrective); Milestone 8 needs a plan-of-record.
 ---
 
 # I2PR Local Development
@@ -26,11 +26,13 @@ plan_147_raw_driver_implementation = retained
 plan_149 = passed-self-composing-local-product
 plan_150_external_core_evidence = retained-passed
 plan_150_final_acceptance = superseded-by-plan151
-plan_151 = active-final-acceptance-evidence-correction
+plan_151 = passed-final-acceptance-evidence-correction
+plan_152 = passed-narrow-m6-corrective
 sam_independent_clients = at-least-two-passed-via-plan150
 milestone7_local_product = passed-via-plan149
-milestone7_final_acceptance = not-yet-closed
-next_executable_plan = 151
+milestone7_sam_localhost = passed-via-plan151
+milestone7_final_acceptance = closed
+next_product_layer = milestone8-planning
 ```
 
 Read in order:
@@ -41,7 +43,9 @@ Read in order:
 4. `plans/149-status.md`
 5. Plans 146–148 for retained/historical context.
 
-Do not begin Milestone 8 implementation until Plan 151 explicitly passes.
+Do not begin Milestone 8 implementation until a Milestone 8 plan-of-record
+exists. SAM stays experimental, loopback-only, disabled by default, and
+non-advertised.
 
 ## Retain these working pieces
 

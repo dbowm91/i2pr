@@ -13,7 +13,7 @@ Milestone 7 / SAM has several strong retained results:
 - [**Plan 149**](plans/149-status.md) passed the self-composing localhost STREAM product. `SESSION CREATE` now builds the destination/LeaseSet2/bridge/local-delivery/runtime-driver composition before returning success, and the canonical black-box test drives the resulting path only through SAM TCP after listener startup.
 - [**Plan 150**](plans/150-status.md) retains successful external-client core evidence with exact pinned `i2psam` and qualified pinned `i2plib.sam` client surfaces: both cross-client 2 MiB directions, private destinations, SILENT, NAMING, negative inputs, and a positive loopback FORWARD trajectory passed. Its original broad final-closure interpretation was superseded after audit found required sibling-stream, slow-peer, fault, full FORWARD lifecycle, and focused M6 regression rows were not all executed by the closing harness.
 
-[**Plan 151**](plans/151-m7-sam31-final-acceptance-evidence-correction.md) is the current and only next executable Milestone 7 plan. It preserves the working Plan 149 architecture and valid Plan 150 external evidence, removes synthetic `passed` bookkeeping, adds executable sibling-stream/backpressure/fault/CLOSE-RESET/FORWARD lifecycle acceptance, explicitly reruns the Plan 127–134 regression floor, and requires the hosted external lane to pass on the exact final head.
+[**Plan 151**](plans/151-m7-sam31-final-acceptance-evidence-correction.md) closed the Milestone 7 final acceptance: synthetic `passed` bookkeeping removed, executable sibling-stream/backpressure/fault/CLOSE-RESET/FORWARD lifecycle acceptance green, Plan 127–134 regression floor rerun, and the hosted external lane passed on the closing head (see [`plans/151-status.md`](plans/151-status.md) for the closure record).
 
 [**Plan 152**](plans/152-m6-session-streaming-robustness-corrective.md) is the narrow Milestone 6 corrective Plan 151 §17 required (receiver retention cap with ACK gating, coalesced duplicate ACKs, sender ECIES ratchet-key trimming; no wire change). Fixes landed with unit tests; the full workspace floor is still pending.
 
@@ -22,12 +22,11 @@ Current classification:
 ```text
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
-milestone7_sam_localhost_final_acceptance = not-yet-closed
-next_executable_plan = 151
-next_product_layer = remain-on-milestone7
+milestone7_sam_localhost = passed-via-plan151
+next_product_layer = milestone8-planning
 ```
 
-Milestone 8 implementation must not begin until Plan 151 explicitly closes.
+Milestone 8 needs a plan-of-record before any implementation begins.
 
 The `[sam]` config section remains disabled by default and loopback-only when enabled. No localhost SAM result is router-to-router interoperability evidence.
 
