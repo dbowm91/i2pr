@@ -188,6 +188,15 @@ Existing NTCP2 transport-manager tests pass unmodified
 (`i2pr-transport`: 17 passed), satisfying the plan §4
 acceptance that NTCP2 semantics did not change.
 
+Hosted lanes on the exact closing commit `479ef98`:
+
+- Routine CI run `33818955817` (push, `main`,
+  `479ef98d7b8f5bfa3d7c90aa37646821e3829286`): conclusion
+  `success`. The Linux quality job executed the newly wired
+  `Check SSU2 vectors` step green alongside the other boundary
+  checks; Quality ubuntu, Quality macos, MSRV, and
+  dependency-policy all green.
+
 ## Acceptance criteria (all true, plan §12)
 
 1. Refreshed SSU2 source authority is recorded (`SOURCES.md`
@@ -224,7 +233,10 @@ acceptance that NTCP2 semantics did not change.
     (`support.toml` surface stays experimental,
     `advertised = false`; dossier states the deferrals).
 16. Full workspace quality floor passes (see validation record).
-17. This record carries exact tests/results and sets
+17. Routine CI passes on the exact Plan 155 closing commit
+    (`33818955817`, success, including the new `Check SSU2
+    vectors` step).
+18. This record carries exact tests/results and sets
     `next_executable_plan = 156`.
 
 ## Handoff
