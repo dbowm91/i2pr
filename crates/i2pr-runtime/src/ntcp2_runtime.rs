@@ -2270,11 +2270,18 @@ mod tests {
         assert_eq!(&bytes, b"ok");
 
         client.write_all(b"peer").await.expect("peer write");
-        for _ in 0..3 {
-            tokio::task::yield_now().await;
-        }
-        assert!(link.snapshot().read_bytes >= 4);
-        assert!(link.snapshot().written_bytes >= 2);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let snapshot = link.snapshot();
+                if snapshot.read_bytes >= 4 && snapshot.written_bytes >= 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("reader and writer counters");
 
         link.close();
         let report = children.shutdown().await;
