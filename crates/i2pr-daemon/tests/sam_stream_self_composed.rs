@@ -406,6 +406,10 @@ async fn plan149_same_read_buffered_raw_bytes_after_command() {
         let bytes = read_n(&mut client_b, 6).await;
         (client_b, status, peer, response, bytes)
     });
+    // Let the ACCEPT task submit its command before the CONNECT command
+    // and its coalesced raw bytes are submitted. This keeps the test's
+    // scheduler ordering deterministic on single-threaded kqueue runners.
+    tokio::task::yield_now().await;
     let sentinel = [0x91_u8, 0x00, 0xFF, b'\n', b'P', b'I'];
     let mut same_read = format!("STREAM CONNECT ID=alpha DESTINATION={pub_b}\n").into_bytes();
     same_read.extend_from_slice(&sentinel);
