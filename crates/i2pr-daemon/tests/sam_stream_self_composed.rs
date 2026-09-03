@@ -282,8 +282,13 @@ async fn plan149_self_composed_black_box_connects_and_transfers_bytes() {
         );
         received
     };
+    // The balanced Streaming profile deliberately uses the reference
+    // 750 ms delayed-ACK interval. A 2 MiB exchange therefore needs
+    // more than one hosted-runner minute while it exercises ordinary
+    // send-window backpressure; keep the assertion bounded without
+    // changing the M6 wire/timing semantics just for this test.
     let (received_a, received_b) =
-        tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        tokio::time::timeout(std::time::Duration::from_secs(120), async {
             tokio::join!(exchange_a, exchange_b)
         })
         .await

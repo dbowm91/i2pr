@@ -240,6 +240,18 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py' #
 cargo deny check advisories bans sources                       # advisories/bans/sources ok
 ```
 
+## Post-closure hosted-runner stabilization
+
+On 2026-09-03, the first remote CI run after the scheduler-ordering
+correction passed macOS, MSRV, and dependency-policy jobs, but the Linux
+job reached the canonical 2 MiB transfer's pre-existing 60-second test
+bound. The transfer is intentionally paced by the balanced profile's
+reference 750 ms delayed-ACK behavior, so the bound was widened to 120
+seconds while preserving the wire/timing semantics and the bounded
+backpressure assertion. The serialized local workspace suite and all
+static policy gates pass with that correction; the follow-up CI run is the
+remote authority for the final result.
+
 ## Handoff instruction
 
 Read this status, Plan 149, Plan 146 status, and Plan 147 status.
