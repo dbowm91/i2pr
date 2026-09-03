@@ -348,6 +348,9 @@ pub async fn run_raw_stream(
         }
 
         // ----- Streaming -> TCP: drain delivered bytes, write TCP -----
+        // Plan 151 sibling isolation: drain only this stream's bytes.
+        // A shared whole-queue drain would discard bytes owned by a
+        // sibling stream whose ACKs the sender already received.
         let drained = {
             let destinations = state.sam_destinations();
             let destinations = destinations.lock().expect("sam destinations poisoned");
@@ -356,14 +359,13 @@ pub async fn run_raw_stream(
                 None => return Ok(()),
             };
             bridge.with(|b| match direction {
-                RawDirection::Outbound => b.streaming_mut().drain_delivered(),
-                RawDirection::Inbound => b.receiver_streaming_mut().drain_delivered(),
+                RawDirection::Outbound => b.streaming_mut().drain_delivered_for(connection_id),
+                RawDirection::Inbound => b
+                    .receiver_streaming_mut()
+                    .drain_delivered_for(connection_id),
             })
         };
         for delivered in drained {
-            if delivered.connection_id != connection_id {
-                continue;
-            }
             if delivered.bytes.is_empty() {
                 continue;
             }
@@ -642,6 +644,21 @@ impl SamServiceState {
         }
     }
 
+    /// Applies the Plan 151 §8 pre-start fault profile to one drained
+    /// sweep. The default profile is inert and returns the input
+    /// unchanged. Fault drops remove requests without touching
+    /// production delivery counters or connection state.
+    fn apply_test_fault_profile(
+        &self,
+        requests: Vec<i2pr_client::streaming::transport::TransportSendRequest>,
+    ) -> Vec<i2pr_client::streaming::transport::TransportSendRequest> {
+        let handle = self.fault_profile_handle();
+        let Ok(mut profile) = handle.lock() else {
+            return requests;
+        };
+        profile.apply_to_sweep(requests)
+    }
+
     /// Drains every queued `TransportSendRequest` from both the
     /// canonical and the receiver-mirror `StreamingManager`s,
     /// delivers each through the Plan 129 local seam to the
@@ -677,6 +694,12 @@ impl SamServiceState {
                 all.extend(bridge.receiver_streaming_mut().drain_outbound());
                 all
             });
+        // Plan 151 §8: apply the deterministic pre-start fault
+        // profile (inert by default) before normal delivery. Fault
+        // drops hold no production counters and never terminate the
+        // connection; the sender's Streaming retransmit state owns
+        // recovery. Handshake and CLOSE/RESET control always pass.
+        let requests = self.apply_test_fault_profile(requests);
         if requests.is_empty() {
             return Ok(Default::default());
         }

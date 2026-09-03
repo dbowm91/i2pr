@@ -72,12 +72,14 @@ use tracing::{debug, info, warn};
 use crate::config::SamConfig;
 
 pub mod fabric;
+pub mod faults;
 pub mod raw_stream;
 pub mod streams;
 pub use fabric::{
     DeliverySweepCounters, LocalDeliveryDegradation, LocalDestinationProduct,
     LocalTransportRequest, SamLocalProductFabric, degrade_to_reason,
 };
+pub use faults::{FaultPacketClass, SamDeliveryFaultCounters, SamDeliveryFaultProfile};
 pub(crate) use raw_stream::RawStreamCleanup;
 pub use raw_stream::{
     RawDirection, RawStreamError, RawStreamHandoff, RawStreamHandoffResolved, RawStreamOutcome,
@@ -293,6 +295,11 @@ pub struct SamServiceState {
     destination_drivers: Arc<Mutex<HashMap<DestinationId, CancellationToken>>>,
     /// Latest bounded delivery accounting for each live destination.
     delivery_counters: Arc<Mutex<HashMap<DestinationId, DeliverySweepCounters>>>,
+    /// Plan 151 §8 deterministic pre-start delivery fault profile.
+    /// Inert by default; tests install an armed profile before the
+    /// listener starts serving. Consulted once per drained delivery
+    /// sweep. Never retains payloads, identities, or keys.
+    fault_profile: Arc<Mutex<SamDeliveryFaultProfile>>,
 }
 
 impl SamServiceState {
@@ -316,6 +323,7 @@ impl SamServiceState {
         let established_notify = Arc::new(Mutex::new(HashMap::new()));
         let destination_drivers = Arc::new(Mutex::new(HashMap::new()));
         let delivery_counters = Arc::new(Mutex::new(HashMap::new()));
+        let fault_profile = Arc::new(Mutex::new(SamDeliveryFaultProfile::disabled()));
         Ok(Self {
             config,
             session_registry,
@@ -330,6 +338,7 @@ impl SamServiceState {
             established_notify,
             destination_drivers,
             delivery_counters,
+            fault_profile,
         })
     }
 
@@ -455,8 +464,11 @@ impl SamServiceState {
         self.config.limits
     }
 
-    /// Returns the latest typed delivery-sweep counters for a
-    /// destination. Payloads and peer identities are never retained.
+    /// Returns the cumulative typed delivery-sweep counters for a
+    /// destination. Sweeps accumulate with saturating arithmetic so
+    /// one typed failure remains observable after later clean
+    /// sweeps; the entry is removed on session teardown. Payloads
+    /// and peer identities are never retained.
     pub fn delivery_counters(&self, destination_id: DestinationId) -> DeliverySweepCounters {
         self.delivery_counters
             .lock()
@@ -471,8 +483,46 @@ impl SamServiceState {
         counters: DeliverySweepCounters,
     ) {
         if let Ok(mut entries) = self.delivery_counters.lock() {
-            entries.insert(destination_id, counters);
+            entries
+                .entry(destination_id)
+                .or_default()
+                .saturating_add_assign(counters);
         }
+    }
+
+    /// Installs the Plan 151 §8 deterministic delivery fault profile.
+    /// Test-only: call before the listener starts serving. After
+    /// startup, behavior-driving interactions must remain SAM TCP
+    /// only; tests read back [`Self::fault_counters`] to prove each
+    /// armed fault actually fired.
+    pub fn install_test_fault_profile(&self, profile: SamDeliveryFaultProfile) {
+        if let Ok(mut current) = self.fault_profile.lock() {
+            *current = profile;
+        }
+    }
+
+    /// Returns the non-secret observed fault counters. Payloads and
+    /// peer identities are never retained.
+    pub fn fault_counters(&self) -> SamDeliveryFaultCounters {
+        self.fault_profile
+            .lock()
+            .ok()
+            .map(|profile| profile.counters())
+            .unwrap_or_default()
+    }
+
+    /// Disarms the ceiling drop arm of the installed fault profile.
+    /// Test-only: used by the retransmission-ceiling test before
+    /// closing the stream so termination control flows normally.
+    pub fn disarm_test_fault_ceiling(&self) {
+        if let Ok(mut profile) = self.fault_profile.lock() {
+            profile.disarm_drop_all_data_ack();
+        }
+    }
+
+    /// Returns the fault-profile handle for the delivery path.
+    pub(crate) fn fault_profile_handle(&self) -> Arc<Mutex<SamDeliveryFaultProfile>> {
+        Arc::clone(&self.fault_profile)
     }
 
     /// Returns the loopback bind address.
@@ -1359,6 +1409,13 @@ async fn handle_connection(
             peer_destination: handoff.peer_destination.clone(),
             direction: handoff.direction,
         };
+        // Plan 151: when the scope rejects the raw driver (live task
+        // ceiling), unwind the just-allocated attachment through the
+        // normal finish path instead of leaking it. The peer observes
+        // a prompt CLOSE/EOF rather than a hung stream, and the last
+        // release still tears the session down.
+        let cleanup_on_spawn_failure = cleanup.clone();
+        let state_for_spawn_failure = Arc::clone(&state);
         if let Err(error) = raw_children.spawn(move |_task_cancellation| {
             let task_cancellation = _task_cancellation;
             let raw_cancellation = raw_cancellation;
@@ -1381,6 +1438,7 @@ async fn handle_connection(
             }
         }) {
             warn!(?error, "failed to spawn raw stream driver task");
+            state_for_spawn_failure.finish_raw_stream(cleanup_on_spawn_failure, false);
         }
         return;
     }

@@ -839,14 +839,29 @@ impl EciesTagSet {
     /// ```text
     /// keydata = HKDF(symmKey_chainKey, ZEROLEN, "SymmetricRatchet", 64)
     /// ```
+    ///
+    /// Plan 152 D3: two separate ceilings apply. The absolute index
+    /// may run to the specification tag maximum (`MAX_TAG_SET_INDEX`)
+    /// so long sessions survive tens of thousands of messages, while
+    /// retained keys stay under `MAX_TAG_SET_RETAINED_KEYS` so a
+    /// sparse far-ahead open cannot pile up memory. Seal flows trim
+    /// after every message (see `seal_existing_session`) and open
+    /// flows trim consumed keys, so legitimate sequential use never
+    /// approaches either ceiling.
     pub fn symm_key(&mut self, index: u32) -> Result<&[u8; HKDF_OUTPUT_LEN], EciesError> {
-        if index as usize >= MAX_TAG_SET_RETAINED_KEYS {
+        if u64::from(index) >= MAX_TAG_SET_INDEX {
             return Err(EciesError::TagSetIndexBeyondCeiling {
                 index: u64::from(index),
-                maximum: MAX_TAG_SET_RETAINED_KEYS,
+                maximum: MAX_TAG_SET_INDEX as usize,
             });
         }
         while self.symm_keys_base + self.symm_keys.len() as u32 <= index {
+            if self.symm_keys.len() >= MAX_TAG_SET_RETAINED_KEYS {
+                return Err(EciesError::TagSetIndexBeyondCeiling {
+                    index: u64::from(index),
+                    maximum: MAX_TAG_SET_RETAINED_KEYS,
+                });
+            }
             let derived = crate::hkdf_sha256_extract_and_expand(
                 &self.symm_chain_key,
                 b"",
@@ -1616,6 +1631,13 @@ pub fn seal_existing_session(
     let entry = tag_set.next_entry()?;
     let key = tag_set.symm_key(entry.index)?;
     let encrypted_payload_section = aead_encrypt(key, u64::from(entry.index), payload, &entry.tag)?;
+    // Plan 152 D3: the seal-only outbound set never re-opens, so the
+    // just-used key is trimmed immediately. Without this, every
+    // sealed message retained one more key and the session died at
+    // MAX_TAG_SET_RETAINED_KEYS seals with TagSetIndexBeyondCeiling.
+    // The receiver-side set is a separate instance with its own
+    // look-ahead retention and is unaffected.
+    tag_set.trim_keys_below(entry.index);
     Ok(ExistingSessionMessage {
         tag: entry.tag,
         encrypted_payload_section,
@@ -1860,6 +1882,25 @@ mod tests {
 
     fn vector_rng() -> ChaCha8Rng {
         ChaCha8Rng::seed_from_u64(0x126)
+    }
+
+    #[test]
+    fn seal_existing_session_trims_sender_keys_past_retention_ceiling() {
+        // Plan 152 D3: the seal-only outbound set must survive far
+        // beyond MAX_TAG_SET_RETAINED_KEYS seals. Before the trim,
+        // the 4097th seal failed with TagSetIndexBeyondCeiling and
+        // killed the destination session mid-transfer.
+        let root = [0x33_u8; HKDF_OUTPUT_LEN];
+        let k = [0x44_u8; HKDF_OUTPUT_LEN];
+        let mut tag_set = EciesTagSet::dh_initialize(&root, &k).expect("tag set");
+        tag_set.begin_tag_ratchet().expect("ratchet");
+        for index in 0..6_000_u32 {
+            let payload = [((index & 0xFF) as u8); 24];
+            let message = seal_existing_session(&mut tag_set, &payload)
+                .expect("seal far beyond the old retention ceiling");
+            assert_eq!(message.tag.len(), SESSION_TAG_LENGTH);
+        }
+        assert_eq!(tag_set.issued_entries(), 6_000);
     }
 
     fn frozen_alice_ephemeral() -> EciesEphemeralKeypair {

@@ -44,11 +44,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use i2pr_crypto::verify_signature;
 use i2pr_proto::streaming::{
-    CLOSE_FLAGS, ClientPayload, INITIAL_SYN_FLAGS, MAX_STREAMING_PACKET_BYTES, RESET_FLAGS,
-    SYN_RESPONSE_FLAGS, SignatureLocation, StreamingFlags, StreamingOptionDecodeContext,
-    StreamingOptions, StreamingPacket, StreamingPacketBuilder, StreamingPacketError,
-    StreamingReceiveLimit, StreamingSendLimit, build_signature_preimage, decode_client_payload,
-    decode_streaming_packet, encode_client_payload, encode_streaming_packet,
+    CLOSE_FLAGS, ClientPayload, FLAG_NO_ACK, INITIAL_SYN_FLAGS, MAX_STREAMING_PACKET_BYTES,
+    RESET_FLAGS, SYN_RESPONSE_FLAGS, SignatureLocation, StreamingFlags,
+    StreamingOptionDecodeContext, StreamingOptions, StreamingPacket, StreamingPacketBuilder,
+    StreamingPacketError, StreamingReceiveLimit, StreamingSendLimit, build_signature_preimage,
+    decode_client_payload, decode_streaming_packet, encode_client_payload, encode_streaming_packet,
     encode_syn_replay_binding, install_packet_signature, peek_streaming_header,
     validate_initial_syn, validate_syn_response,
 };
@@ -307,6 +307,14 @@ pub struct StreamingManager {
     /// In-order application bytes delivered by processed inbound
     /// packets, awaiting the runtime drain.
     pending_delivered: VecDeque<DeliveredApplicationBytes>,
+    /// Undrained delivered bytes per connection. Plan 152 D1 owns
+    /// receive-side backpressure on this accounting: while a
+    /// connection holds more than
+    /// [`Self::delivered_cap_bytes`] undrained bytes, its
+    /// acknowledgements are gated (standalone ACKs snoozed,
+    /// piggybacked views sent with `NO_ACK`) so the peer's send
+    /// window fills and memory stays bounded at every layer.
+    pending_bytes_by_connection: BTreeMap<ConnectionId, usize>,
 }
 
 impl StreamingManager {
@@ -326,6 +334,7 @@ impl StreamingManager {
             // The non-zero range is canonical for I2P Streaming.
             next_inbound_stream_id: 0x8000_0000,
             pending_delivered: VecDeque::new(),
+            pending_bytes_by_connection: BTreeMap::new(),
         }
     }
 
@@ -587,6 +596,54 @@ impl StreamingManager {
     /// Returns the number of pending outbound transport requests.
     pub fn outbound_queue_len(&self) -> usize {
         self.outbound_queue.len()
+    }
+
+    /// Maximum undrained delivered bytes tolerated per connection
+    /// before acknowledgement gating engages (Plan 152 D1). Derived
+    /// from the configured receive window so the bound scales with
+    /// the negotiated profile; no new configuration surface and no
+    /// wire change.
+    pub fn delivered_cap_bytes(&self) -> usize {
+        self.config.max_recv_window_packets as usize
+            * crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES
+    }
+
+    /// Returns the undrained delivered bytes currently held for
+    /// `connection_id`. Read-only non-secret diagnostic.
+    pub fn pending_bytes_for(&self, connection_id: ConnectionId) -> usize {
+        self.pending_bytes_by_connection
+            .get(&connection_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Returns whether acknowledgement gating engages for
+    /// `connection_id`: its undrained delivered bytes reached the
+    /// per-connection cap.
+    pub fn delivered_over_cap(&self, connection_id: ConnectionId) -> bool {
+        self.pending_bytes_for(connection_id) >= self.delivered_cap_bytes()
+    }
+
+    fn note_delivered_bytes(&mut self, connection_id: ConnectionId, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        self.pending_bytes_by_connection
+            .entry(connection_id)
+            .and_modify(|held| *held = held.saturating_add(bytes))
+            .or_insert(bytes);
+    }
+
+    fn forget_delivered_bytes(&mut self, connection_id: ConnectionId, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        if let Some(held) = self.pending_bytes_by_connection.get_mut(&connection_id) {
+            *held = held.saturating_sub(bytes);
+            if *held == 0 {
+                self.pending_bytes_by_connection.remove(&connection_id);
+            }
+        }
     }
 
     /// Processes a streaming payload envelope received from the
@@ -1221,14 +1278,26 @@ impl StreamingManager {
         // OR accepted into the reorder buffer — schedules (or keeps)
         // one coalescing standalone ACK per connection with a bounded
         // deadline, so reorder feedback reaches the peer without
-        // waiting for reverse application traffic. Duplicates and
-        // window-overflow drops do not extend any deadline; a
-        // terminated connection never retains a pending standalone
-        // ACK.
+        // waiting for reverse application traffic. Window-overflow
+        // drops do not extend any deadline; a terminated connection
+        // never retains a pending standalone ACK.
+        //
+        // Plan 152 D2: duplicates DO schedule an immediate coalesced
+        // ACK. The previous "duplicates never re-arm" rule stranded
+        // the sender's window permanently after a single standalone-
+        // ACK loss (retransmits were deduplicated silently with no
+        // ACK ever returning). Coalescing through the single pending
+        // deadline per connection keeps this bounded, and ACK-only
+        // packets still never schedule ACKs (see `plain_ack_form`),
+        // so no ACK-of-ACK loop is possible.
         let received_new_data = matches!(
             decision_opt,
             Some(crate::streaming::recv_window::RecvWindowDecision::Delivered { .. })
                 | Some(crate::streaming::recv_window::RecvWindowDecision::Buffered { .. })
+        );
+        let received_duplicate = matches!(
+            decision_opt,
+            Some(crate::streaming::recv_window::RecvWindowDecision::Duplicate { .. })
         );
         let connection_active = !matches!(
             state,
@@ -1245,19 +1314,37 @@ impl StreamingManager {
             self.pending_acks.remove(&connection_id);
         }
 
+        if received_duplicate && connection_active && !terminated {
+            self.pending_acks
+                .entry(connection_id)
+                .and_modify(|deadline| *deadline = (*deadline).min(now_ms))
+                .or_insert(now_ms);
+        }
+
         if received_new_data && connection_active {
             // An explicit zero-delay request from the peer is honored
             // immediately (specification: delay value 0 requests an
             // immediate ack); otherwise the reference default delayed-
-            // ACK deadline applies.
-            if delay_requested_now {
+            // ACK deadline applies. Plan 152 D1: while the connection
+            // holds more undrained bytes than its cap, even an
+            // immediate request only snoozes the coalesced deadline —
+            // emitting it would slide the peer window and grow the
+            // backlog without bound.
+            if delay_requested_now && !self.delivered_over_cap(connection_id) {
                 let request = self.build_simple_ack_request(connection_id);
                 if let Some(request) = request {
                     self.outbound_queue.push_back(request);
                 }
             } else {
-                let deadline = now_ms.saturating_add(self.config.delayed_ack_ms);
-                self.pending_acks.entry(connection_id).or_insert(deadline);
+                let deadline = if delay_requested_now {
+                    now_ms
+                } else {
+                    now_ms.saturating_add(self.config.delayed_ack_ms)
+                };
+                self.pending_acks
+                    .entry(connection_id)
+                    .and_modify(|current| *current = (*current).min(deadline))
+                    .or_insert(deadline);
             }
         }
 
@@ -1273,6 +1360,7 @@ impl StreamingManager {
             for entry in delivered {
                 bytes.extend_from_slice(&entry.payload);
             }
+            self.note_delivered_bytes(connection_id, bytes.len());
             self.pending_delivered.push_back(DeliveredApplicationBytes {
                 connection_id,
                 bytes,
@@ -1385,7 +1473,20 @@ impl StreamingManager {
         // side's current acknowledgement state (`ackThrough` =
         // highest received sequence, plus any bounded
         // missing-sequence NACKs).
-        let flags = StreamingFlags::new(0).expect("empty flags");
+        //
+        // Plan 152 D1: while this connection holds more undrained
+        // bytes than its cap, the packet carries NO_ACK instead of a
+        // fresh view. A fresh piggyback would slide the peer window
+        // and grow the backlog without bound; NO_ACK is existing
+        // wire semantics the receiver already honors by skipping ACK
+        // processing. The piggybacked view also satisfies any pending
+        // standalone ACK, so a NO_ACK packet must not clear it.
+        let gated = self.delivered_over_cap(connection_id);
+        let flags = if gated {
+            StreamingFlags::new(FLAG_NO_ACK).expect("no-ack flags")
+        } else {
+            StreamingFlags::new(0).expect("empty flags")
+        };
         let builder = StreamingPacketBuilder {
             send_stream_id: peer_receive_stream_id,
             receive_stream_id: local_receive_stream_id,
@@ -1451,8 +1552,11 @@ impl StreamingManager {
             .insert(sequence, outbound);
         self.outbound_queue.push_back(request.clone());
         // The piggybacked acknowledgement state satisfies any
-        // pending standalone ACK.
-        self.pending_acks.remove(&connection_id);
+        // pending standalone ACK — unless the packet carried NO_ACK
+        // under Plan 152 gating, in which case the deadline stays.
+        if !gated {
+            self.pending_acks.remove(&connection_id);
+        }
 
         let _ = local_dest;
         let _ = remote;
@@ -1738,6 +1842,13 @@ impl StreamingManager {
     /// emits at most one coalesced plain-ACK request, so the output
     /// is bounded by the pending-ACK (connection) count. Terminated
     /// or vanished connections are pruned without emitting.
+    ///
+    /// Plan 152 D1: a connection holding more undrained bytes than
+    /// its cap is skipped and its deadline snoozed by one delayed-
+    /// ACK interval instead. Emitting would slide the peer window
+    /// and grow the backlog without bound; snoozing is timer-driven
+    /// (no busy loop), and the catch-up ACK fires within one
+    /// interval after the pump drains below cap.
     pub fn poll_acks(&mut self, now_ms: u64) -> Vec<TransportSendRequest> {
         let mut out = Vec::new();
         while let Some((&connection_id, _)) = self
@@ -1756,6 +1867,11 @@ impl StreamingManager {
                 )
             });
             if !emit {
+                continue;
+            }
+            if self.delivered_over_cap(connection_id) {
+                let snooze = now_ms.saturating_add(self.config.delayed_ack_ms);
+                self.pending_acks.insert(connection_id, snooze);
                 continue;
             }
             if let Some(request) = self.build_simple_ack_request(connection_id) {
@@ -1826,7 +1942,56 @@ impl StreamingManager {
     /// inbound packets (Plan 129 §8: after a reorder the receiver
     /// observes the original byte order through this drain).
     pub fn drain_delivered(&mut self) -> Vec<DeliveredApplicationBytes> {
-        self.pending_delivered.drain(..).collect()
+        let drained: Vec<DeliveredApplicationBytes> = self.pending_delivered.drain(..).collect();
+        for delivered in &drained {
+            self.forget_delivered_bytes(delivered.connection_id, delivered.bytes.len());
+        }
+        drained
+    }
+
+    /// Drains only the queued application bytes owned by
+    /// `connection_id`, retaining every other connection's bytes in
+    /// arrival order. Plan 151 sibling-stream isolation requires
+    /// this: each raw pump drains the manager its bridge shares with
+    /// sibling streams, and a shared whole-queue drain would
+    /// silently discard bytes owned by another live stream (the
+    /// sender already received their ACKs, so nothing would ever
+    /// retransmit them).
+    pub fn drain_delivered_for(
+        &mut self,
+        connection_id: ConnectionId,
+    ) -> Vec<DeliveredApplicationBytes> {
+        let mut owned = Vec::new();
+        let mut retained = VecDeque::with_capacity(self.pending_delivered.len());
+        for delivered in self.pending_delivered.drain(..) {
+            if delivered.connection_id == connection_id {
+                owned.push(delivered);
+            } else {
+                retained.push_back(delivered);
+            }
+        }
+        self.pending_delivered = retained;
+        for delivered in &owned {
+            self.forget_delivered_bytes(connection_id, delivered.bytes.len());
+        }
+        owned
+    }
+
+    /// Returns the number of queued delivered-application-byte units
+    /// awaiting the raw pump drain. Read-only non-secret diagnostic
+    /// for Plan 151 slow-peer boundedness evidence.
+    pub fn pending_delivered_len(&self) -> usize {
+        self.pending_delivered.len()
+    }
+
+    /// Returns the total queued delivered-application bytes awaiting
+    /// the raw pump drain. Read-only non-secret diagnostic for Plan
+    /// 151 slow-peer boundedness evidence.
+    pub fn pending_delivered_bytes(&self) -> usize {
+        self.pending_delivered
+            .iter()
+            .map(|delivered| delivered.bytes.len())
+            .sum()
     }
 
     /// Returns the number of tracked retransmission records across
@@ -1883,8 +2048,13 @@ impl StreamingManager {
         }
         self.outbound_packets.remove(&id);
         // Plan 130 §7 D3: closed/reset/removed connections never leak
-        // pending ACK state.
+        // pending ACK state. Plan 152 D1: a removed connection can
+        // never drain again, so its undrained byte accounting is
+        // purged with it rather than lingering in the map.
         self.pending_acks.remove(&id);
+        self.pending_bytes_by_connection.remove(&id);
+        self.pending_delivered
+            .retain(|delivered| delivered.connection_id != id);
         removed
     }
 
@@ -1944,6 +2114,29 @@ mod tests {
                 flags: StreamingFlags::empty(),
                 option_bytes: Vec::new(),
                 payload: vec![sequence as u8],
+            },
+            StreamingSendLimit::default(),
+        )
+        .expect("data packet encoding")
+    }
+
+    fn raw_data_packet_with_payload(
+        send_stream_id: u32,
+        receive_stream_id: u32,
+        sequence: u32,
+        payload_len: usize,
+    ) -> Vec<u8> {
+        encode_streaming_packet(
+            &StreamingPacketBuilder {
+                send_stream_id,
+                receive_stream_id,
+                sequence_num: sequence,
+                ack_through: 0,
+                nacks: Vec::new(),
+                resend_delay: 0,
+                flags: StreamingFlags::empty(),
+                option_bytes: Vec::new(),
+                payload: vec![sequence as u8; payload_len],
             },
             StreamingSendLimit::default(),
         )
@@ -2055,5 +2248,236 @@ mod tests {
         let delivered = manager.drain_delivered();
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0].bytes, vec![1]);
+    }
+
+    #[test]
+    fn drain_delivered_for_keeps_sibling_bytes_in_order() {
+        use crate::streaming::connection::ConnectionId;
+        use crate::streaming::manager::DeliveredApplicationBytes;
+
+        let mut manager = StreamingManager::new(StreamingConfig::balanced());
+        let first = ConnectionId::new(1);
+        let second = ConnectionId::new(2);
+        manager
+            .pending_delivered
+            .push_back(DeliveredApplicationBytes {
+                connection_id: first,
+                bytes: vec![0xA1],
+            });
+        manager
+            .pending_delivered
+            .push_back(DeliveredApplicationBytes {
+                connection_id: second,
+                bytes: vec![0xB1],
+            });
+        manager
+            .pending_delivered
+            .push_back(DeliveredApplicationBytes {
+                connection_id: first,
+                bytes: vec![0xA2],
+            });
+        let owned = manager.drain_delivered_for(second);
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned[0].bytes, vec![0xB1]);
+        assert_eq!(manager.pending_delivered_len(), 2);
+        let rest = manager.drain_delivered();
+        assert_eq!(rest.len(), 2);
+        assert_eq!(rest[0].bytes, vec![0xA1]);
+        assert_eq!(rest[1].bytes, vec![0xA2]);
+    }
+
+    fn established_pair() -> (
+        StreamingManager,
+        DestinationIdentity,
+        RemoteDestination,
+        crate::streaming::connection::ConnectionId,
+        u32,
+    ) {
+        let local = destination(0x1520_0001);
+        let remote_identity = destination(0x1520_0002);
+        let remote = RemoteDestination {
+            destination_hash: *remote_identity.id().as_hash().as_bytes(),
+            signing_public_key: remote_identity.destination().signing_key().clone(),
+            static_public_key: remote_identity.static_public_bytes(),
+        };
+        let mut manager = StreamingManager::new(StreamingConfig::balanced());
+        let ConnectOutcome::SynSent {
+            connection_id,
+            receive_stream_id,
+            ..
+        } = manager
+            .connect(
+                &local,
+                &remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                super::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(0x1520_0003),
+            )
+            .expect("connect")
+        else {
+            panic!("expected outbound SYN");
+        };
+        manager.drain_outbound();
+        let connection = manager
+            .get_connection_mut(connection_id)
+            .expect("connection");
+        connection.set_remote_stream_id(REMOTE_STREAM_ID);
+        connection
+            .transition_established(super::DEFAULT_ADVERTISED_MAX_PAYLOAD.into(), NOW_MS)
+            .expect("established connection");
+        (manager, local, remote, connection_id, receive_stream_id)
+    }
+
+    #[test]
+    fn duplicate_data_schedules_immediate_coalesced_ack() {
+        // Plan 152 D2: a duplicate must re-arm the standalone ACK
+        // immediately (coalesced), otherwise a single lost ACK
+        // strands the sender window forever.
+        let (mut manager, local, _remote, _connection_id, receive_stream_id) = established_pair();
+        let first = raw_data_packet(receive_stream_id, REMOTE_STREAM_ID, 1);
+        manager
+            .process_inbound_packet(&first, &[0_u8; 32], &local, REMOTE_PORT, LOCAL_PORT, NOW_MS)
+            .expect("first delivery");
+        // Delayed-ACK deadline is in the future: nothing due now.
+        assert!(manager.poll_acks(NOW_MS).is_empty());
+        assert_eq!(manager.pending_ack_count(), 1);
+        // The duplicate re-arms the deadline to now.
+        manager
+            .process_inbound_packet(
+                &first,
+                &[0_u8; 32],
+                &local,
+                REMOTE_PORT,
+                LOCAL_PORT,
+                NOW_MS + 10,
+            )
+            .expect("duplicate observation");
+        assert_eq!(manager.pending_ack_count(), 1);
+        let acks = manager.poll_acks(NOW_MS + 10);
+        assert_eq!(acks.len(), 1, "duplicate must trigger one coalesced ACK");
+        assert_eq!(manager.pending_ack_count(), 0);
+    }
+
+    #[test]
+    fn over_cap_connection_snoozes_standalone_ack_and_recovers_on_drain() {
+        // Plan 152 D1: while undrained bytes reach the cap, no
+        // standalone ACK is emitted; after the drain the snoozed
+        // deadline fires and the ACK goes out. A full receive window
+        // of maximum-size packets reaches the cap with real traffic.
+        let (mut manager, local, _remote, connection_id, receive_stream_id) = established_pair();
+        let cap = manager.delivered_cap_bytes();
+        assert!(cap > 0);
+        let per_packet = crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES;
+        let window = manager.config().max_recv_window_packets as usize;
+        assert_eq!(cap, window * per_packet);
+        for sequence in 1..=(window as u32) {
+            let packet = raw_data_packet_with_payload(
+                receive_stream_id,
+                REMOTE_STREAM_ID,
+                sequence,
+                per_packet,
+            );
+            manager
+                .process_inbound_packet(
+                    &packet,
+                    &[0_u8; 32],
+                    &local,
+                    REMOTE_PORT,
+                    LOCAL_PORT,
+                    NOW_MS,
+                )
+                .expect("in-order delivery");
+        }
+        assert_eq!(manager.pending_bytes_for(connection_id), cap);
+        assert!(manager.delivered_over_cap(connection_id));
+        // A fresh deadline is snoozed, never emitted while capped.
+        assert!(manager.poll_acks(NOW_MS + 60_000).is_empty());
+        assert_eq!(manager.pending_ack_count(), 1);
+        // Draining below cap lets the snoozed deadline fire.
+        let drained = manager.drain_delivered();
+        assert_eq!(drained.len(), window);
+        assert_eq!(manager.pending_bytes_for(connection_id), 0);
+        assert!(!manager.delivered_over_cap(connection_id));
+        let acks = manager.poll_acks(NOW_MS + 60_000 + 60_000);
+        assert_eq!(acks.len(), 1, "catch-up ACK must fire after drain");
+    }
+
+    #[test]
+    fn gated_send_data_carries_no_ack_and_keeps_deadline() {
+        // Plan 152 D1: piggybacked views from an over-cap connection
+        // use NO_ACK so the peer window cannot slide; the pending
+        // standalone deadline is preserved rather than cleared.
+        use i2pr_proto::streaming::FLAG_NO_ACK;
+
+        let (mut manager, local, remote, connection_id, receive_stream_id) = established_pair();
+        let window = manager.config().max_recv_window_packets as usize;
+        let per_packet = crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES;
+        for sequence in 1..=(window as u32) {
+            let packet = raw_data_packet_with_payload(
+                receive_stream_id,
+                REMOTE_STREAM_ID,
+                sequence,
+                per_packet,
+            );
+            manager
+                .process_inbound_packet(
+                    &packet,
+                    &[0_u8; 32],
+                    &local,
+                    REMOTE_PORT,
+                    LOCAL_PORT,
+                    NOW_MS,
+                )
+                .expect("in-order delivery");
+        }
+        assert!(manager.delivered_over_cap(connection_id));
+        let request = manager
+            .send_data(
+                connection_id,
+                &local,
+                &remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                b"reply",
+                NOW_MS + 5,
+            )
+            .expect("send while gated");
+        let envelope = decode_client_payload(
+            &request.application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("client payload");
+        let (packet, _) = decode_streaming_packet(
+            &envelope.payload,
+            i2pr_proto::streaming::StreamingReceiveLimit::default(),
+            i2pr_proto::streaming::StreamingOptionDecodeContext::anonymous(),
+        )
+        .expect("streaming packet");
+        assert_ne!(
+            packet.flags.bits() & FLAG_NO_ACK,
+            0,
+            "gated DATA must carry NO_ACK"
+        );
+        assert_eq!(
+            manager.pending_ack_count(),
+            1,
+            "NO_ACK piggyback must not clear the standalone deadline"
+        );
+    }
+
+    #[test]
+    fn remove_connection_purges_undrained_accounting() {
+        let (mut manager, local, _remote, connection_id, receive_stream_id) = established_pair();
+        let first = raw_data_packet(receive_stream_id, REMOTE_STREAM_ID, 1);
+        manager
+            .process_inbound_packet(&first, &[0_u8; 32], &local, REMOTE_PORT, LOCAL_PORT, NOW_MS)
+            .expect("delivery");
+        assert_eq!(manager.pending_bytes_for(connection_id), 1);
+        assert_eq!(manager.pending_delivered_len(), 1);
+        manager.remove_connection(connection_id);
+        assert_eq!(manager.pending_bytes_for(connection_id), 0);
+        assert_eq!(manager.pending_delivered_len(), 0);
     }
 }

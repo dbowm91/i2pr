@@ -125,6 +125,18 @@ impl SamLocalProductFabric {
     }
 }
 
+/// Usable lifetime of the localhost product's outbound role,
+/// in milliseconds. The fabric mints synthetic, localhost-only
+/// tunnel material with no live-network rotation path, so the
+/// horizon must cover minute-scale acceptance streams: at the
+/// reference delayed-ACK clock a multi-megabyte backpressure test
+/// legitimately spans several minutes, and a 60-second horizon
+/// killed every stream mid-transfer (Plan 151 slow-peer evidence).
+/// Rotation remains future Milestone 8 pool work; the horizon here
+/// only bounds how long one self-contained localhost session stays
+/// usable and changes no wire semantics.
+pub const LOCAL_PRODUCT_ROLE_LIFETIME_MS: u64 = 3_600_000;
+
 /// Default randomness source used by [`SamLocalProductFabric`].
 /// The CSPRNG produces fresh hop hashes, tunnel ids, and per-hop
 /// `LayerKeys` so the localhost fabric is deterministic-shape but
@@ -139,8 +151,10 @@ fn prepare_local_product(
     rng.try_fill_bytes(&mut leased_seed)
         .map_err(|_| SamServiceError::InvalidConfig("os rng unavailable for fabric".to_owned()))?;
     let outbound_tunnel = random_outbound_tunnel(&leased_seed, &mut rng);
-    let outbound_role =
-        DestinationOutboundRole::new(outbound_tunnel, u64::from(now_seconds) * 1000 + 60_000);
+    let outbound_role = DestinationOutboundRole::new(
+        outbound_tunnel,
+        u64::from(now_seconds) * 1000 + LOCAL_PRODUCT_ROLE_LIFETIME_MS,
+    );
 
     let inbound_seed = {
         let mut s = [0_u8; 64];

@@ -364,6 +364,14 @@ struct ChildScopeInner {
     cancellation: CancellationToken,
     tasks: AsyncMutex<Option<JoinSet<ChildTaskOutput>>>,
     counters: Arc<TaskCounters>,
+    /// Sticky failure flag for children reaped by [`ChildScope::spawn`]
+    /// before shutdown. JoinSet retains finished tasks until they are
+    /// joined; without reaping, `MAX_CHILD_TASKS` would bound lifetime
+    /// total spawns instead of live tasks and brick long-lived
+    /// services. Reaped failures are recorded here so the shutdown
+    /// report (and the supervisor failure policy) still observes
+    /// them.
+    reaped_failure: AtomicBool,
 }
 
 impl std::fmt::Debug for ChildScopeInner {
@@ -405,6 +413,7 @@ impl ChildScope {
                 cancellation: parent.child_token(),
                 tasks: AsyncMutex::new(Some(JoinSet::new())),
                 counters,
+                reaped_failure: AtomicBool::new(false),
             }),
             policy,
         }
@@ -435,6 +444,19 @@ impl ChildScope {
             .try_lock()
             .map_err(|_| ChildScopeError::Closed)?;
         let set = tasks.as_mut().ok_or(ChildScopeError::Closed)?;
+        // Reap finished children so MAX_CHILD_TASKS bounds live
+        // tasks rather than lifetime total spawns. Reaping is
+        // non-blocking (`try_join_next`); failures stay visible
+        // through the sticky flag consumed by the shutdown report.
+        while let Some(result) = set.try_join_next() {
+            self.inner.counters.child_finished();
+            match result {
+                Ok(ChildTaskOutput(Err(_))) | Err(_) => {
+                    self.inner.reaped_failure.store(true, Ordering::Release);
+                }
+                Ok(ChildTaskOutput(Ok(()))) => {}
+            }
+        }
         if set.len() >= MAX_CHILD_TASKS {
             return Err(ChildScopeError::TooManyTasks {
                 maximum: MAX_CHILD_TASKS,
@@ -471,6 +493,7 @@ impl ChildScope {
             self.record_join(&mut report, result);
         }
         *tasks = None;
+        report.failed |= self.inner.reaped_failure.load(Ordering::Acquire);
         report
     }
 
@@ -514,6 +537,7 @@ impl ChildScope {
         if report.remaining == 0 {
             *tasks = None;
         }
+        report.failed |= self.inner.reaped_failure.load(Ordering::Acquire);
         report
     }
 
@@ -533,6 +557,79 @@ impl ChildScope {
     /// Returns whether a child failure should fail the parent.
     pub const fn policy(&self) -> ChildFailurePolicy {
         self.policy
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use i2pr_core::CancellationReason;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_reaps_finished_tasks_for_live_bound() {
+        // Plan 151 exposed this: without reaping, JoinSet::len()
+        // counts finished-but-unjoined tasks, so MAX_CHILD_TASKS
+        // capped lifetime total spawns and bricked long-lived
+        // listeners after 64 tasks. The bound must cover live tasks.
+        let parent = CancellationToken::new();
+        let scope = ChildScope::for_test(&parent, ChildFailurePolicy::CollectResult);
+        for _ in 0..(MAX_CHILD_TASKS * 2 + 5) {
+            scope
+                .spawn(|_| async { Ok(()) })
+                .expect("sequential spawn stays under the live bound");
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+        }
+        let _ = parent.cancel(CancellationReason::OperatorRequest);
+        let report = scope.shutdown().await;
+        assert!(!report.failed());
+        assert_eq!(report.remaining(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_still_bounds_live_tasks() {
+        let parent = CancellationToken::new();
+        let scope = ChildScope::for_test(&parent, ChildFailurePolicy::CollectResult);
+        for _ in 0..MAX_CHILD_TASKS {
+            scope
+                .spawn(|token| async move {
+                    token.cancelled().await;
+                    Ok(())
+                })
+                .expect("live spawn under the cap");
+        }
+        let rejected = scope.spawn(|_| async { Ok(()) });
+        assert!(
+            matches!(
+                rejected,
+                Err(ChildScopeError::TooManyTasks {
+                    maximum: MAX_CHILD_TASKS
+                })
+            ),
+            "live task overflow must stay rejected: {rejected:?}"
+        );
+        let _ = parent.cancel(CancellationReason::OperatorRequest);
+        let report = scope.shutdown().await;
+        assert!(!report.failed());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reaped_child_failure_stays_visible_in_shutdown_report() {
+        let parent = CancellationToken::new();
+        let scope = ChildScope::for_test(&parent, ChildFailurePolicy::CollectResult);
+        scope
+            .spawn(|_| async { Err(ChildTaskFailure::Explicit) })
+            .expect("spawn failing child");
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        // Reap the failure through a later spawn, then shut down:
+        // the report must still observe it for supervisor policy.
+        scope
+            .spawn(|_| async { Ok(()) })
+            .expect("spawn after failure");
+        let _ = parent.cancel(CancellationReason::OperatorRequest);
+        let report = scope.shutdown().await;
+        assert!(report.failed(), "reaped failure must stay visible");
     }
 }
 
