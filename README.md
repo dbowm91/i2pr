@@ -6,15 +6,28 @@ An experimental I2P router written in Rust. **Not production-ready.** Not suitab
 
 The local Milestone 6 product (destinations, garlic, LeaseSet2, Streaming) remains closed under corrected local-correctness semantics via [**Plan 134**](plans/134-status.md). Independent-router interoperability is tracked as external acceptance debt.
 
-Milestone 7 / SAM has three strong retained sub-results:
+Milestone 7 / SAM has several strong retained results:
 
 - [**Plan 146**](plans/146-status.md) passed bidirectional SAM 3.1 private-destination reference requalification against pinned Java I2P/i2pd behavior.
 - [**Plan 147**](plans/147-status.md) landed the dedicated same-socket raw STREAM owner, TCP↔Streaming byte pump, actual Streaming `Established` wait, OS-CSPRNG runtime path, and supervised ACK/retransmit driver.
-- [**Plan 149**](plans/149-status.md) makes `SESSION CREATE` self-compose the entire localhost STREAM product from SAM protocol commands alone. The destination identity is shared via one `Arc<DestinationIdentity>` allocation between the destination runtime and the SAM bridge; the OS-CSPRNG-driven `SamLocalProductFabric` provides a signed LeaseSet2, outbound role, and inbound-tunnel factory; the per-destination runtime driver is spawned automatically; local peer LeaseSet2 routing is resolved through the SAM service directory (no test injection); spec-correct private `SESSION STATUS DESTINATION=` and public `NAMING LOOKUP NAME=ME` are implemented; byte-exact `STREAM STATUS RESULT=OK` and `DESTINATION=<peer-pub-b64>` raw-transition semantics are enforced; typed failure counters (`DeliverySweepCounters`) and terminal CLOSE/RESET cleanup replace silent packet drops. The four-test black-box evidence lives in `crates/i2pr-daemon/tests/sam_stream_self_composed.rs` and includes exact bidirectional 2 MiB transfer and same-read raw-byte checks.
+- [**Plan 149**](plans/149-status.md) passed the self-composing localhost STREAM product. `SESSION CREATE` now builds the destination/LeaseSet2/bridge/local-delivery/runtime-driver composition before returning success, and the canonical black-box test drives the resulting path only through SAM TCP after listener startup.
+- [**Plan 150**](plans/150-status.md) retains successful external-client core evidence with exact pinned `i2psam` and qualified pinned `i2plib.sam` client surfaces: both cross-client 2 MiB directions, private destinations, SILENT, NAMING, negative inputs, and a positive loopback FORWARD trajectory passed. Its original broad final-closure interpretation was superseded after audit found required sibling-stream, slow-peer, fault, full FORWARD lifecycle, and focused M6 regression rows were not all executed by the closing harness.
 
-[**Plan 150**](plans/150-m7-sam31-external-client-reproducible-final-closure.md) closes the localhost SAM-client layer. Its reproducible lane passes with independently implemented `i2psam` (`b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac`) and the qualified pinned `i2plib.sam` substitute (`6edf51cd5d21cc745aa7e23cb98c582144884fa8`), including exact binary STREAM directions, SILENT transitions, private destinations, FORWARD, NAMING, and negative cases. The official `libsam3` snapshot (`7d6e658798baec31394c5685f9583343cc00900b`) is built and recorded but cannot consume i2pr's compact 608-character `PRIV` through its public 884-character-minimum API. `sam_independent_clients = at-least-two-passed`; Milestone 7 is closed for its localhost application scope, while router-to-router interoperability remains unclaimed and Milestone 8 planning is next.
+[**Plan 151**](plans/151-m7-sam31-final-acceptance-evidence-correction.md) is the current and only next executable Milestone 7 plan. It preserves the working Plan 149 architecture and valid Plan 150 external evidence, removes synthetic `passed` bookkeeping, adds executable sibling-stream/backpressure/fault/CLOSE-RESET/FORWARD lifecycle acceptance, explicitly reruns the Plan 127–134 regression floor, and requires the hosted external lane to pass on the exact final head.
 
-The `[sam]` config section remains disabled by default and loopback-only when enabled.
+Current classification:
+
+```text
+milestone7_local_product = passed-via-plan149
+plan150_external_core_evidence = retained-passed
+milestone7_sam_localhost_final_acceptance = not-yet-closed
+next_executable_plan = 151
+next_product_layer = remain-on-milestone7
+```
+
+Milestone 8 implementation must not begin until Plan 151 explicitly closes.
+
+The `[sam]` config section remains disabled by default and loopback-only when enabled. No localhost SAM result is router-to-router interoperability evidence.
 
 For the full plan hierarchy, MVP roadmap, and what's implemented vs. not, see [**`plans/README.md`**](plans/README.md).
 
