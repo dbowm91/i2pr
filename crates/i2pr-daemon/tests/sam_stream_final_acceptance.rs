@@ -506,7 +506,13 @@ async fn plan151_sibling_streams_isolate_close_one() {
 
     // Stream one uses the session sockets themselves (the proven
     // Plan 149 same-socket path); stream two uses fresh sockets
-    // against the same live sessions.
+    // against the same live sessions. The pairs are established
+    // SEQUENTIALLY: ACCEPT/CONNECT completion order is
+    // scheduler-dependent, so racing both pairs at once could bind
+    // accept_one to connect_two's SYN on some platforms. Sequencing
+    // keeps the socket pairing deterministic; simultaneity is then
+    // proven by both streams coexisting (distinct connections,
+    // concurrent transfers, close-one/keep-one below).
     let accept_one = tokio::spawn(async move {
         write_all(&mut client_b, b"STREAM ACCEPT ID=beta\n").await;
         let line = read_one_line(&mut client_b).await;
@@ -515,30 +521,31 @@ async fn plan151_sibling_streams_isolate_close_one() {
         assert!(peer.starts_with("DESTINATION="), "{peer:?}");
         (client_b, peer)
     });
-    let pub_b_two = pub_b.clone();
+    let pub_b_one = pub_b.clone();
     let connect_one = tokio::spawn(async move {
-        let cmd = format!("STREAM CONNECT ID=alpha DESTINATION={pub_b}\n");
+        let cmd = format!("STREAM CONNECT ID=alpha DESTINATION={pub_b_one}\n");
         write_all(&mut client_a, cmd.as_bytes()).await;
         let line = read_one_line(&mut client_a).await;
         assert!(line.starts_with("STREAM STATUS RESULT=OK"), "{line:?}");
         client_a
     });
-    // The second ACCEPT waiter is queued before either CONNECT lands
-    // so both pairings can complete.
-    let accept_two = tokio::spawn(async move { accept_stream(address, "beta").await });
-    tokio::task::yield_now().await;
-    let connect_two =
-        tokio::spawn(async move { connect_stream(address, "alpha", &pub_b_two).await });
-    let (accept_one, connect_one, accept_two, connect_two) =
-        tokio::join!(accept_one, connect_one, accept_two, connect_two);
+    let (accept_one, connect_one) = tokio::join!(accept_one, connect_one);
     let (mut b_one, peer_one) = accept_one.expect("accept one");
     let mut a_one = connect_one.expect("connect one");
-    let (mut b_two, peer_two) = accept_two.expect("accept two");
-    let mut a_two = connect_two.expect("connect two");
     assert!(
         peer_one.contains(&pub_a),
         "sibling one peer was not the authenticated CONNECT destination"
     );
+    // Only now queue the second ACCEPT and CONNECT: the sole pending
+    // ACCEPT is accept_two's and the sole inbound SYN is connect_two's.
+    let accept_two = tokio::spawn(async move { accept_stream(address, "beta").await });
+    tokio::task::yield_now().await;
+    let pub_b_two = pub_b.clone();
+    let connect_two =
+        tokio::spawn(async move { connect_stream(address, "alpha", &pub_b_two).await });
+    let (accept_two, connect_two) = tokio::join!(accept_two, connect_two);
+    let (mut b_two, peer_two) = accept_two.expect("accept two");
+    let mut a_two = connect_two.expect("connect two");
     assert!(
         peer_two.contains(&pub_a),
         "sibling two peer was not the authenticated CONNECT destination"
