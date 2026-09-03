@@ -958,13 +958,15 @@ async fn plan151_slow_reader_stays_bounded_and_recovers() {
     }
 
     // Resume every reader concurrently: the full 12 MiB must arrive
-    // exactly, in order, on every stream.
+    // exactly, in order, on every stream. The budget covers slow
+    // shared CI runners (Plan 151 §7 sets no time bound; the purpose
+    // is boundedness, not throughput).
     drain_all_concurrent(
         "slow-reader",
         &state,
         b_sockets,
         payloads,
-        Duration::from_secs(180),
+        Duration::from_secs(300),
     )
     .await;
     for writer in writers {
@@ -1096,13 +1098,14 @@ async fn plan151_slow_writer_reverse_pressure_recovers() {
     }
 
     // Resume every reader concurrently: the full reverse 12 MiB
-    // must arrive exactly, in order, on every stream.
+    // must arrive exactly, in order, on every stream (generous
+    // budget for shared CI runners; see slow-reader).
     drain_all_concurrent(
         "slow-writer",
         &state,
         a_sockets,
         payloads,
-        Duration::from_secs(180),
+        Duration::from_secs(300),
     )
     .await;
     for writer in writers {
