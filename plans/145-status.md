@@ -1,128 +1,83 @@
 # Plan 145 status — Milestone 7 remaining-gap corrective roadmap
 
-Status: **`passed-m7-sam31-remaining-gap-corrective-roadmap`** (closed by Plan 150).
+Status: **`m7-corrective-umbrella-final-acceptance-open-via-plan151`**.
 
-Registered: **2026-09-01**. Updated after Plan 149 closure: **2026-09-02**.
+Registered: **2026-09-01**. Updated after Plan 151 registration: **2026-09-03**.
 
 Plan of record:
 [`plans/145-m7-sam31-remaining-gap-corrective-roadmap.md`](145-m7-sam31-remaining-gap-corrective-roadmap.md).
 
-Newest closure authority:
-[`plans/150-status.md`](150-status.md).
+Newest execution/final-acceptance authority:
+[`plans/151-status.md`](151-status.md).
 
 ## Current classification
 
 ```text
 plan_134 = passed-milestone6-recv-window-ack-ceiling-closure
-
-plan_142_base64 = passed
-plan_142_private_destination_external_compatibility = superseded-by-plan146
-
-plan_143_local_delivery_seam = landed-and-retained
-plan_143_full-raw-stream-acceptance = superseded-by-later-correctives
-
-plan_144_in-process-streaming-handshake = passed-local-evidence
-plan_144_independent-client-final-closure = not-passed
-
 plan_146 = passed-m7-sam31-private-destination-reference-requalification
-
 plan_147_raw_driver_implementation = landed-and-retained
-plan_147_local-binary-smoke = passed
-plan_147_full-original-acceptance = superseded-by-plan149
-
-plan_148 = blocked-audit-superseded-by-plan149-150-corrective-sequence
+plan_148 = blocked-audit-superseded
 plan_149 = passed-m7-sam31-self-composing-local-product-corrective
-plan_150 = passed-m7-sam31-external-client-final-closure
+plan_150_external_core_evidence = retained-passed
+plan_150_final_acceptance = superseded-by-plan151
+plan_151 = active-m7-sam31-final-acceptance-evidence-correction
 
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
-external_acceptance_debt = retained-separately
-
-milestone7_local_product = closed-via-plan149
-sam31_base64 = corrected
-sam31_private_destination = reference-compatible-via-plan146
-sam31_raw_socket_owner = implemented-via-plan147
-sam31_self_composing_product = passed-via-plan149
-sam_independent_clients = at-least-two-passed
-router_construction = may-continue-within-m7
-next_executable_plan = Milestone 8 planning
-next_product_layer = Milestone 8 planning
+milestone7_local_product = passed-via-plan149
+milestone7_sam_localhost_final_acceptance = not-yet-closed
+sam_independent_clients = at-least-two-passed-via-plan150
+next_executable_plan = 151
+next_product_layer = remain-on-milestone7
 ```
 
-## Closed sub-claims
+## Retained closed sub-claims
 
-### Plan 146 — private destination
+- Plan 146 private-destination reference compatibility is closed. Do not reopen without a concrete new incompatibility.
+- Plan 147's owned raw socket handoff/byte pump, actual Streaming `Established` wait, OS CSPRNG runtime path, same-read preservation, and supervised ACK/retransmit driver remain retained implementation evidence.
+- Plan 149's self-composing `SESSION CREATE` product path is passed and remains the local product-composition authority.
+- Plan 150's exact pinned external-client core results remain valid evidence: two cross-client exact-byte directions, private destinations, SILENT, NAMING, negative cases, and a positive loopback FORWARD trajectory.
 
-Plan 146 is closed. Java I2P 2.12.0 and i2pd 2.60.0 reference behavior confirmed the compact 455-byte Ed25519/ECIES-X25519 PrivateKeyFile representation used by i2pr. The import path preserves the embedded destination encryption public field and validates the signing seed/public relationship.
+## Why the umbrella is not finally closed
 
-Do not reopen this sub-claim without a concrete new reference incompatibility.
+The Plan 150 post-closure audit found that its final evidence ledger claimed
+several required acceptance items without an executable case on the closing
+lane. In particular, the external harness unconditionally marked a
+`multiple-stream-lifecycle` row passed by referring to a Plan 149 sibling
+suite that does not exist.
 
-### Plan 147 — raw socket owner and byte pump
+Plan 149 had explicitly deferred slow-peer, deterministic-fault, sibling and
+broader lifecycle acceptance to Plan 150. Those requirements remained in Plan
+150's acceptance criteria but were not all executed by the final harness.
 
-Retain these Plan 147 results:
-
-- dedicated ownership transfer of the SAM `TcpStream` after CONNECT/ACCEPT;
-- permanent command-parser detachment;
-- actual Streaming `Established` wait before CONNECT success;
-- OS CSPRNG in the runtime CONNECT/delivery path;
-- bounded TCP -> `StreamingManager::send_data()` segmentation;
-- Streaming -> TCP `drain_delivered()` path;
-- supervised ACK/retransmit polling;
-- same-read post-command byte preservation;
-- localhost binary byte transfer when bridge/routing/tunnel prerequisites are installed.
-
-Plan 147 remains useful implementation evidence. Its broad closure label is no longer sufficient Milestone 7 acceptance authority because several original acceptance items were deferred.
-
-## Why Plan 148 was superseded
-
-Plan 148 correctly refused to count two copies of one Rust helper as independent clients. It also correctly recorded `sam_independent_clients = 0-passed`.
-
-However the original status treated missing external-client source/build artifacts as the primary blocker. The subsequent source audit found an earlier product-composition defect:
-
-- the canonical Plan 147 test manually installs `SamDestinationBridge`s after `SESSION CREATE`;
-- it manually installs peer LeaseSet2 routing;
-- it manually installs deterministic inbound-tunnel factories;
-- it manually spawns per-destination runtime drivers;
-- the production `execute_session_create()` path does not perform those steps.
-
-A real external client cannot call those private Rust setup APIs. Therefore simply acquiring i2plib/libsam3 would not close Milestone 7.
-
-The audit also confirmed a concrete raw-protocol issue: the current raw-transition handler writes `STREAM STATUS RESULT=OK` even for `SILENT=true`, while the raw driver ignores the retained silent flag.
+Plan 151 therefore corrects final acceptance without discarding the working
+architecture or valid external evidence.
 
 ## Corrective sequence
 
-The sequence is now:
-
-1. [`plans/149-m7-sam31-self-composing-local-product-corrective.md`](149-m7-sam31-self-composing-local-product-corrective.md) — **passed**. `SESSION CREATE` self-composes the local product and closes the documented local raw-path acceptance subset.
-2. [`plans/150-m7-sam31-external-client-reproducible-final-closure.md`](150-m7-sam31-external-client-reproducible-final-closure.md) — **passed**. Exact i2psam and qualified i2plib.sam clients closed the localhost SAM-client, FORWARD, NAMING, and final M7 evidence.
-
-Plan 148 remains historical blocked-audit evidence and is superseded for execution.
-
-## External-client guidance correction
-
-The old Plan 148 `libsam3` pin (`e0da4f...`, `v1.0.0`) does not resolve in the official repository.
-
-Plan 150 records live guidance around verified official revisions:
-
 ```text
-libsam3:
-  repo = https://github.com/i2p/libsam3
-  preferred exact snapshot = 7d6e658798baec31394c5685f9583343cc00900b
-  known release tag v0.31.2 = ea52a3251d60906d67f9a1031a6ed7642753f94f
-
-i2psam:
-  repo = https://github.com/i2p/i2psam
-  exact snapshot = b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac
-
-i2plib:
-  repo = https://github.com/l-n-s/i2plib
-  exact final commit = 6edf51cd5d21cc745aa7e23cb98c582144884fa8
-  role = supplementary unless a compatible Python runtime is deliberately qualified
+146 passed
+  -> 147 implementation retained
+  -> 148 blocked historical audit
+  -> 149 passed self-composing product
+  -> 150 external core evidence retained
+  -> 151 active final acceptance correction
 ```
+
+Plan 151 owns:
+
+- evidence-ledger integrity / no synthetic pass rows;
+- sibling-stream isolation;
+- slow-reader/slow-writer boundedness;
+- DATA/ACK loss, duplicate, reorder, corruption, retransmit-ceiling cases beneath real SAM sockets;
+- CLOSE/RESET/control-session lifecycle;
+- complete FORWARD lifecycle/negative matrix;
+- explicit focused Plan 127–134 regression execution;
+- final current-head CI and hosted external-client workflow evidence.
 
 ## Environment policy
 
-Plans 149/150 remain compatible with the constrained development environment:
+The remaining work remains compatible with the constrained environment:
 
 ```text
 root/sudo              = not required
@@ -133,15 +88,11 @@ systemd                = not required
 public I2P network     = not required
 live NTCP2/SSU2        = not required
 localhost TCP          = required
-manual GitHub-hosted external-client workflow = allowed for Plan 150
+manual GitHub-hosted external-client workflow = allowed
 ```
 
-The Plan 129 authenticated-router-link-bypassed localhost seam remains the allowed lower-network shortcut. It must be named/documented as local product evidence and never promoted to router-interoperability evidence.
+## Handoff
 
-## Handoff instruction
-
-Read this file, `plans/149-status.md`, Plan 149, Plan 146 status, and Plan 147 status.
-
-Plan 150 is closed. Milestone 7 localhost application scope is complete;
-Milestone 8 planning may begin. Preserve the non-advertised and
-router-to-router interoperability boundaries.
+Execute [`Plan 151`](151-m7-sam31-final-acceptance-evidence-correction.md)
+only. Milestone 8 implementation remains blocked until `151-status.md`
+explicitly records a passing closure.
