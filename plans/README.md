@@ -23,6 +23,7 @@ Current sequence:
 - [Plan 149](149-m7-sam31-self-composing-local-product-corrective.md) closed the self-composed localhost STREAM product. `SESSION CREATE` now builds the local destination/LeaseSet2/bridge/inbound-delivery/driver product before success and the canonical black-box test drives it only through SAM TCP after startup.
 - [Plan 150](150-m7-sam31-external-client-reproducible-final-closure.md) produced valid external-client core evidence with exact pinned `i2psam` and qualified `i2plib.sam` client surfaces, plus SILENT/private-destination/NAMING/negative/basic-FORWARD results. Its broad final closure is superseded because some required lifecycle/backpressure/fault/FORWARD/M6 evidence was recorded without being executed.
 - [Plan 151](151-m7-sam31-final-acceptance-evidence-correction.md) is the only next executable plan. It makes every final evidence row executable, closes sibling-stream/slow-peer/fault/CLOSE-RESET/FORWARD lifecycle gaps, explicitly reruns the Plan 127–134 regression floor, and requires the final hosted external lane to pass on the exact closing head.
+- [Plan 152](152-m6-session-streaming-robustness-corrective.md) is the narrow Milestone 6 corrective the Plan 151 §17 stop required: per-connection delivered-bytes cap with ACK gating, coalesced duplicate ACKs, and sender ECIES ratchet-key trimming, with no wire change. Fixes landed with manager/ECIES unit tests.
 
 Current classification:
 
@@ -34,6 +35,7 @@ plan_149 = passed-self-composing-local-product
 plan_150_external_core_evidence = retained-passed
 plan_150_final_acceptance = superseded-by-plan151
 plan_151 = active
+plan_152 = narrow-m6-corrective-fixes-landed
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost_final_acceptance = not-yet-closed

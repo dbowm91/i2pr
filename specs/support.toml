@@ -77,8 +77,10 @@
 # Structural evidence may be recorded before interoperability;
 # all entries remain non-advertised.
 # Current SAM authority: Plan 149 closed the self-composed localhost STREAM
-# product and Plan 150 closed the reproducible independent-client/
-# FORWARD/NAMING localhost closure. The dedicated surfaces below are the
+# product. Plan 150 retains external-client core evidence, but its final
+# acceptance label is superseded by active Plan 151 (evidence correction);
+# Plan 152 is the narrow Milestone 6 session/streaming robustness
+# corrective. The dedicated surfaces below are the
 # current product entries;
 # earlier SAM rows retain historical milestone provenance.
 schema = 1
@@ -190,6 +192,13 @@ plan_149_closure = "plans/149-status.md"
 plan_149_status = "passed-m7-sam31-self-composing-local-product-corrective"
 plan_150_plan_of_record = "plans/150-m7-sam31-external-client-reproducible-final-closure.md"
 plan_150_status = "passed-m7-sam31-external-client-final-closure"
+plan_150_external_core_evidence = "retained-passed"
+plan_150_final_acceptance = "superseded-by-plan151"
+plan_151_plan_of_record = "plans/151-m7-sam31-final-acceptance-evidence-correction.md"
+plan_151_closure = "plans/151-status.md"
+plan_151_status = "active-m7-sam31-final-acceptance-evidence-correction"
+plan_152_plan_of_record = "plans/152-m6-session-streaming-robustness-corrective.md"
+plan_152_status = "fixes-landed-pending-workspace-floor"
 
 [[surface]]
 id = "common.codec-foundation"

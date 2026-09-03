@@ -91,6 +91,83 @@ Plan 151 must add executable evidence for:
 13. explicit focused Plan 127–134 regression execution;
 14. final external-client rerun and hosted workflow on the exact closing head.
 
+## Executed evidence (2026-09-03, current head work in progress)
+
+Only executed commands count; nothing here is marked passed from prose.
+
+- New final-acceptance suite
+  `crates/i2pr-daemon/tests/sam_stream_final_acceptance.rs`
+  (black-box TCP/SAM only after listener start; deterministic
+  fault seam via pre-start `install_test_fault_profile`):
+  **10/10 pass** via `cargo test --locked -p i2pr-daemon --test
+  sam_stream_final_acceptance -- --test-threads=1` (~328 s).
+  Covers rows 2–11 above: sibling close-one/keep-one, slow-reader
+  (6 × 2 MiB, gauges ≤ ceilings, exact recovery, zero typed sweep
+  failures), slow-writer mirror, DATA-drop, ACK-drop, duplicate,
+  reorder, corruption, retransmit-ceiling, close/reset lifecycle,
+  privacy-log.
+- Plan 151 §17 stop fired during this work: the new tests exposed
+  three genuine M6 defects (unbounded receiver retention,
+  duplicate-never-re-ACKs, sender ECIES ratchet-key retention).
+  Narrow corrective recorded in
+  [`plans/152-m6-session-streaming-robustness-corrective.md`](152-m6-session-streaming-robustness-corrective.md);
+  no wire change. Manager/ECIES unit tests + full
+  `-p i2pr-client --all-targets` green.
+- Focused regression seams green: `-p i2pr-api --all-targets`,
+  `-p i2pr-client --all-targets`, `sam_loopback`,
+  `sam_plan146_reference`, `sam_stream_product`,
+  `sam_stream_independent`, `sam_stream_raw_product`,
+  `sam_stream_self_composed`, `sam_forward_naming`.
+- Still open: row 1 (evidence-integrity checker script), row 12
+  (FORWARD lifecycle/negative matrix), row 13 (explicit 127–134
+  regression commands), row 14 (external-client rerun on the
+  closing head), full workspace floor (§16 gates), docs
+  (`support.toml`, README/AGENTS/skills/architecture), commit and
+  remote CI.
+
+## Executed evidence, continued (2026-09-03)
+
+- Evidence-integrity checker
+  `scripts/check-sam-acceptance-evidence.sh` (**new**): 22 required
+  rows must flow through `record_guarded` (exit-code gate),
+  `plan151_row` (suite rc + own ok-line), or the dual-exit
+  run_stream_pair helper; literal `record "<row>" passed` lines
+  fail the check. Verified green and verified it rejects a planted
+  synthetic row. It runs in the routine-adjacent gates slice.
+- `tests/integration/sam/run-independent.sh` reworked (§5.1, §12):
+  the two synthetic rows are gone. `binary-matrix` now aggregates
+  four executed cross-client rounds (2 MiB mixed/prefix + 4 KiB
+  crlf/all-bytes, both directions);
+  `multiple-stream-lifecycle` derives from the executed Plan 151
+  sibling test; eleven new rows (sibling/slow-reader/slow-writer/
+  six faults/close-reset/forward-lifecycle/plan127-134/
+  workspace-gates) derive from the new suites, the FORWARD suite,
+  eight regression commands, and a fmt/check/static-scripts slice.
+  Evidence JSON carries per-row status plus commit/lane/toolchain.
+- FORWARD matrix (§10, all 8 items): existing tests cover positive
+  metadata, SILENT, and owner-close; five new tests in
+  `sam_forward_naming.rs` cover second-stream reuse, refusal
+  (typed I/O, registration survives, retry succeeds), 3 s timeout
+  under a saturated backlog, non-loopback/hostname rejection, and
+  ACCEPT↔FORWARD mutual exclusion. **8/8 pass**.
+- Plan 127–134 regressions (§11): `plan127_trajectory` (16),
+  `plan128_wire` (11), `plan128_trajectory` (7),
+  `plan129_trajectory` (12), `plan130_trajectory` (11),
+  `plan131_trajectory` (7), `plan132_trajectory` (10),
+  `i2pr-crypto --all-targets` (52) — **all green**, commands
+  recorded verbatim in the lane.
+- External lane (§12): `fetch-sam-clients.sh --rebuild` +
+  `clients/build.sh` + reworked `run-independent.sh` executed on
+  the worktree; **26/26 rows passed**, evidence under
+  `target/interop/sam-evidence` (10/10 acceptance, 8/8 forward in
+  the captured logs). Must be rerun on the exact closing commit;
+  the manual `.github/workflows/sam-external.yml` lane must then
+  run that head.
+- Full workspace floor (§16): fmt, check, workspace tests
+  (~1288 passed, 0 failed), clippy `-D warnings`, doc, doctests,
+  all six static boundary scripts, evidence checker, ntcp2 python
+  harness (153), cargo deny — **all green** (this head, pre-commit).
+
 ## Handoff
 
 Execute `plans/151-m7-sam31-final-acceptance-evidence-correction.md`.

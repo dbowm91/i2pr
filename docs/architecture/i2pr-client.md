@@ -215,6 +215,14 @@ corrections build on the Plan 130 surface above:
   sequence number; the next valid packet receives the exact
   contiguous sequence number that would have been assigned before
   the rejected call.
+- **Plan 152 receiver-retention and duplicate-ACK policy** (no wire
+  change): undrained delivered bytes are capped per connection at
+  `max_recv_window_packets × MAX_PACKET_PAYLOAD_BYTES`; while over
+  cap, standalone ACKs snooze and piggybacked DATA carries
+  `FLAG_NO_ACK` so the peer window cannot slide. An observed
+  duplicate re-arms the coalesced standalone-ACK deadline to now,
+  so one lost ACK cannot strand the send window; ACK-only packets
+  still never schedule ACKs (one-way invariant kept).
 - **Independent three-layer replay separation**: exact tunnel
   replay (live duplicate window), consumed ECIES tag replay
   (session layer), and fresh-ECIES-reseal Streaming duplicate

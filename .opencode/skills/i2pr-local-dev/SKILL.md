@@ -108,6 +108,13 @@ Required executable areas:
 If one of these exposes a concrete M6 Streaming defect, stop and write a
 narrow M6 corrective plan rather than weakening the Plan 151 expectation.
 
+That stop fired once: Plan 152 (`plans/152-m6-session-streaming-robustness-corrective.md`)
+corrects three proven M6 defects with no wire change — D1 unbounded receiver
+retention (per-connection delivered-bytes cap + ACK snooze/NO_ACK gating),
+D2 duplicate-never-re-ACKs (coalesced immediate ACK), D3 sender ECIES ratchet
+retention (seal-side trim + absolute index ceiling). Fixes landed with
+manager/ECIES unit tests; do not re-weaken them to make a SAM test convenient.
+
 ## Evidence-integrity rule
 
 No required final row may be marked passed merely because another plan/status

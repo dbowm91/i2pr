@@ -181,7 +181,10 @@ The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, and `src/ecies.rs`:
   `HKDF(symmKey_chainKey, ZEROLEN, "SymmetricRatchet", 64)`; tags are
   1-based on the wire while keys/nonces are 0-based, so entry N pairs
   with key N-1. `trim_keys_below(index)` drops consumed keys while
-  preserving absolute indices. The one-shot reply window comes from
+  preserving absolute indices. Plan 152 additionally trims the
+  seal-only sender set inside `seal_existing_session` (sent keys are
+  never re-opened) with an absolute `MAX_TAG_SET_INDEX` guard, so
+  bulk senders no longer die at the retained-keys ceiling. The one-shot reply window comes from
   `new_session_reply_tag_set(ns_chaining_key)`. Tag sets are not
   `Clone` and never expose chain-key bytes.
 

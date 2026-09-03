@@ -24,6 +24,7 @@ Plan 149 = passed self-composing localhost SAM product
 Plan 150 = external-client core evidence retained-passed
 Plan 150 final acceptance = superseded-by-plan151
 Plan 151 = active final acceptance evidence correction
+Plan 152 = narrow M6 streaming corrective, fixes landed, floor pending
 next executable = Plan 151 only
 Milestone 8 implementation = blocked until Plan 151 passes
 ```

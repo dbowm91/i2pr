@@ -15,6 +15,8 @@ Milestone 7 / SAM has several strong retained results:
 
 [**Plan 151**](plans/151-m7-sam31-final-acceptance-evidence-correction.md) is the current and only next executable Milestone 7 plan. It preserves the working Plan 149 architecture and valid Plan 150 external evidence, removes synthetic `passed` bookkeeping, adds executable sibling-stream/backpressure/fault/CLOSE-RESET/FORWARD lifecycle acceptance, explicitly reruns the Plan 127–134 regression floor, and requires the hosted external lane to pass on the exact final head.
 
+[**Plan 152**](plans/152-m6-session-streaming-robustness-corrective.md) is the narrow Milestone 6 corrective Plan 151 §17 required (receiver retention cap with ACK gating, coalesced duplicate ACKs, sender ECIES ratchet-key trimming; no wire change). Fixes landed with unit tests; the full workspace floor is still pending.
+
 Current classification:
 
 ```text
