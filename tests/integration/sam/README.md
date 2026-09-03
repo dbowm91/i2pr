@@ -10,8 +10,8 @@ Current authority:
 - `plans/150-status.md` — external-client core evidence retained; broad final closure superseded;
 - `plans/151-status.md` — **passed** final Milestone 7 acceptance/evidence correction;
 - `plans/152-status.md` — **passed** narrow M6 session/streaming robustness corrective;
-- `plans/153-status.md` — **active** post-M7 authority/CI hygiene; next executable.
-- `plans/153-m7-closure-authority-and-ci-hygiene.md` — active hygiene plan (docs/CI only, no `crates/` or `Cargo.lock` changes).
+- `plans/153-status.md` — **passed** post-M7 authority/CI hygiene.
+- `plans/153-m7-closure-authority-and-ci-hygiene.md` — closed hygiene plan (docs/CI only, no `crates/` or `Cargo.lock` changes).
 
 This lane is localhost-only. It must not require root, namespaces, Docker, a VM,
 systemd, public I2P participation, or live NTCP2/SSU2.
@@ -193,7 +193,7 @@ Milestone 7 final localhost acceptance closed when:
 6. `plans/151-status.md` explicitly closed the milestone.
 
 Plan 152 is the retained narrow M6 corrective underneath that closure.
-Plan 153 is docs/CI hygiene only and must pass before Milestone 8
-implementation (Plan 155+) begins.
+Plan 153 (docs/CI hygiene) has passed; Milestone 8 implementation
+(Plan 155+) is unblocked under the Plan 154 roadmap.
 
-Current handoff: **execute Plan 153 only; then Plans 155 → 161 in order under Plan 154. SAM stays experimental, loopback-only, disabled by default, and non-advertised.**
+Current handoff: **execute Plans 155 → 161 in order under Plan 154. SAM stays experimental, loopback-only, disabled by default, and non-advertised.**

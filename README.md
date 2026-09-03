@@ -22,17 +22,17 @@ Current classification:
 ```text
 plan_151 = passed-m7-sam31-final-acceptance-evidence-correction
 plan_152 = passed-m6-session-streaming-robustness-corrective
-plan_153 = active-post-m7-authority-and-ci-hygiene
+plan_153 = passed-post-m7-authority-and-ci-hygiene
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
 milestone7_sam_localhost = passed-via-plan151
 milestone7_final_acceptance = closed
 milestone6_interoperable = not-yet-claimed
-next_executable_plan = 153
+next_executable_plan = 155
 next_product_layer = milestone8-ssu2-v2
 ```
 
-Milestone 8 roadmap is registered via [**Plan 154**](plans/154-status.md) and blocked until Plan 153 passes; Milestone 8 implementation begins at Plan 155.
+Milestone 8 roadmap is registered via [**Plan 154**](plans/154-status.md); Plan 153 has passed so Milestone 8 implementation begins at Plan 155.
 
 The `[sam]` config section remains disabled by default and loopback-only when enabled. No localhost SAM result is router-to-router interoperability evidence.
 

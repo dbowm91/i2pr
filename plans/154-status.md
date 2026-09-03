@@ -10,17 +10,23 @@ Plan of record:
 ## Current authority
 
 ```text
-plan_153 = active-post-m7-authority-and-ci-hygiene
+plan_153 = passed-post-m7-authority-and-ci-hygiene
 plan_154 = registered-m8-ssu2-v2-roadmap-blocked-by-plan153
 
 milestone8_protocol = SSU2-v2-classical
 ssu2_pq_v3_v4 = deferred-compatibility-watch
 ssu1 = not-implemented
-milestone8_implementation = blocked-by-plan153
+milestone8_implementation = unblocked-start-at-155
 
 first_m8_executable_after_plan153 = 155
 m8_sequence = 155 -> 156 -> 157 -> 158 -> 159 -> 160 -> 161
 ```
+
+## Plan 153 closure note (2026-09-03)
+
+`plans/153-status.md` is now `passed-post-m7-authority-and-ci-hygiene`;
+the registration-time `blocked-by-plan153` condition is satisfied. The
+`Status` header token above is retained as the registration identifier.
 
 ## Architecture decisions locked by this roadmap
 
@@ -36,4 +42,4 @@ m8_sequence = 155 -> 156 -> 157 -> 158 -> 159 -> 160 -> 161
 
 ## Handoff
 
-Do not execute Plan 155 until `plans/153-status.md` is explicitly passed. After Plan 153 closure, execute Plans 155–161 sequentially.
+Plan 153 has passed (`plans/153-status.md`). Execute Plans 155–161 sequentially.

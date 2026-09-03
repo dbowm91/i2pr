@@ -19,8 +19,8 @@ authoritative closure record is [`plans/152-status.md`](152-status.md),
 normalized by Plan 153.
 
 The current **next executable plan** is
-[**Plan 153**](153-status.md)
-(`active-post-m7-authority-and-ci-hygiene`).
+[**Plan 155**](155-m8-ssu2-v2-protocol-foundation-and-addresses.md)
+(first Milestone 8 implementation pass; Plan 153 has passed).
 
 The registered **Milestone 8 planning authority** is
 [**Plan 154**](154-status.md). Milestone 8 implementation is blocked until
@@ -38,7 +38,7 @@ plan_150_external_core_evidence = retained-passed
 plan_150_final_acceptance = superseded-by-plan151
 plan_151 = passed-m7-sam31-final-acceptance-evidence-correction
 plan_152 = passed-m6-session-streaming-robustness-corrective
-plan_153 = active-post-m7-authority-and-ci-hygiene
+plan_153 = passed-post-m7-authority-and-ci-hygiene
 plan_154 = registered-m8-ssu2-v2-roadmap-blocked-by-plan153
 
 milestone7_local_product = passed-via-plan149
@@ -47,16 +47,16 @@ milestone7_sam_localhost_final_acceptance = closed
 sam_independent_clients = at-least-two-passed-via-plan150
 milestone6_interoperable = not-yet-claimed
 
-next_executable_plan = 153
+next_executable_plan = 155
 milestone8_first_implementation_after_153 = 155
 next_product_layer = milestone8-ssu2-v2
 ```
 
 ## Current handoff sequence
 
-### Post-M7 hygiene
+### Post-M7 hygiene (closed)
 
-- [`153-m7-closure-authority-and-ci-hygiene.md`](153-m7-closure-authority-and-ci-hygiene.md) — **next executable**. Create the missing authoritative Plan 152 status record, remove stale Plan 151/152 prose, add the Plan 152 closure pointer to the support ledger, and make the Plan 151 SAM evidence-integrity checker a routine Linux-CI and manual-SAM-workflow invariant. No `crates/` or `Cargo.lock` changes are allowed.
+- [`153-m7-closure-authority-and-ci-hygiene.md`](153-m7-closure-authority-and-ci-hygiene.md) — **passed**. Created the authoritative Plan 152 status record, removed stale Plan 151/152 prose, added the Plan 152 closure pointer to the support ledger, and made the Plan 151 SAM evidence-integrity checker a routine Linux-CI and manual-SAM-workflow invariant. No `crates/` or `Cargo.lock` changes were made.
 
 ### Milestone 8 — SSU2 v2
 
@@ -111,7 +111,7 @@ Do not create a second SSU2-specific transport manager or a task/timer per packe
 | 150 | external-client core evidence **retained passed**; final acceptance superseded | [`150-status.md`](150-status.md) |
 | 151 | **passed** final M7 SAM localhost acceptance | [`151-status.md`](151-status.md) |
 | 152 | **passed** narrow M6 session/streaming robustness corrective | [`152-status.md`](152-status.md) |
-| 153 | **active** post-M7 authority/CI hygiene; next executable | [`153-status.md`](153-status.md) |
+| 153 | **passed** post-M7 authority/CI hygiene | [`153-status.md`](153-status.md) |
 
 ## Milestone 6 plan hierarchy
 
@@ -171,7 +171,7 @@ When records disagree, the newest explicit superseding status wins.
 Current handoff:
 
 ```text
-execute Plan 153
-then execute Plans 155 -> 161 in order
+execute Plans 155 -> 161 in order
 Plan 154 is the Milestone 8 roadmap authority
+Plan 153 has passed; Milestone 7 is closed
 ```

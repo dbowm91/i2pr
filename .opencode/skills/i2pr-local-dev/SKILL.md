@@ -28,22 +28,22 @@ plan_150_external_core_evidence = retained-passed
 plan_150_final_acceptance = superseded-by-plan151
 plan_151 = passed-final-acceptance-evidence-correction
 plan_152 = passed-narrow-m6-corrective
-plan_153 = active-post-m7-authority-and-ci-hygiene
+plan_153 = passed-post-m7-authority-and-ci-hygiene
 sam_independent_clients = at-least-two-passed-via-plan150
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
 milestone7_final_acceptance = closed
 milestone6_interoperable = not-yet-claimed
-next_executable_plan = 153
+next_executable_plan = 155
 milestone8_planning_authority = plan154
-milestone8_implementation = blocked-by-plan153
+milestone8_implementation = unblocked-start-at-155
 first_m8_implementation_after_153 = 155
 next_product_layer = milestone8-ssu2-v2
 ```
 
 Read in order:
 
-1. `plans/153-status.md` (active hygiene pass)
+1. `plans/153-status.md` (passed hygiene pass)
 2. `plans/152-status.md` (narrow M6 corrective closure)
 3. `plans/151-status.md`
 4. `plans/151-m7-sam31-final-acceptance-evidence-correction.md`
@@ -51,10 +51,9 @@ Read in order:
 6. `plans/149-status.md`
 7. Plans 146–148 for retained/historical context.
 
-Do not begin Milestone 8 implementation until Plan 153 passes. Plan 154
-is the registered Milestone 8 roadmap authority; Plans 155–161 execute
-in order after Plan 153 closure. SAM stays experimental, loopback-only,
-disabled by default, and non-advertised.
+Plan 153 has passed. Plan 154 is the registered Milestone 8 roadmap
+authority; execute Plans 155–161 in order. SAM stays experimental,
+loopback-only, disabled by default, and non-advertised.
 
 ## Retain these working pieces
 
@@ -236,7 +235,7 @@ current repository and listed them verbatim in its closure record
 - SAM stays disabled by default, loopback-only, experimental, and non-advertised.
 - Plan 150's external-client result does not imply router-to-router interoperability.
 - Milestone 7 final localhost acceptance is closed via Plan 151; Plan 152 is the retained narrow M6 corrective underneath it.
-- Plan 153 is docs/CI hygiene only with no `crates/` or `Cargo.lock` changes.
-- Do not begin Milestone 8 implementation before `plans/153-status.md` explicitly records Plan 153 passing; Plan 155 is the first implementation pass after that.
+- Plan 153 (docs/CI hygiene, no `crates/` or `Cargo.lock` changes) has passed.
+- Plan 155 is the first Milestone 8 implementation pass under the Plan 154 roadmap.
 
-Current handoff: **execute Plan 153 only; then Plans 155 → 161 in order under Plan 154**.
+Current handoff: **execute Plans 155 → 161 in order under Plan 154**.
