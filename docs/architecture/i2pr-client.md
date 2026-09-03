@@ -267,8 +267,10 @@ Plans 137–139 consume `DestinationRegistry`, `DestinationRuntime`, and
 the per-destination `StreamingManager` to build the SAM 3.1
 loopback server; the actual SAM adapter wiring is owned by
 `i2pr-daemon` (`crates/i2pr-daemon/src/sam.rs`). Plan 149 records the
-completed self-composed localhost STREAM path; Plan 150 closes the
-external-client STREAM claim for the localhost SAM application layer. The
+completed self-composed localhost STREAM path; Plan 150 retains the
+external-client core evidence for the localhost SAM application layer,
+Plan 151 passed the final acceptance, and Plan 152 is the retained
+narrow M6 corrective underneath it. The
 client crate remains runtime-neutral and this evidence does not claim
 router-to-router interoperability.
 

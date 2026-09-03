@@ -15,18 +15,24 @@ Milestone 7 / SAM has several strong retained results:
 
 [**Plan 151**](plans/151-m7-sam31-final-acceptance-evidence-correction.md) closed the Milestone 7 final acceptance: synthetic `passed` bookkeeping removed, executable sibling-stream/backpressure/fault/CLOSE-RESET/FORWARD lifecycle acceptance green, Plan 127–134 regression floor rerun, and the hosted external lane passed on the closing head (see [`plans/151-status.md`](plans/151-status.md) for the closure record).
 
-[**Plan 152**](plans/152-m6-session-streaming-robustness-corrective.md) is the narrow Milestone 6 corrective Plan 151 §17 required (receiver retention cap with ACK gating, coalesced duplicate ACKs, sender ECIES ratchet-key trimming; no wire change). Fixes landed with unit tests; the full workspace floor is still pending.
+[**Plan 152**](plans/152-m6-session-streaming-robustness-corrective.md) is the narrow Milestone 6 corrective Plan 151 §17 required (receiver retention cap with ACK gating, coalesced duplicate ACKs, sender ECIES ratchet-key trimming; no wire change). Fixes landed with unit tests; the full workspace floor was green on the Plan 151 closing head with routine CI and the hosted SAM external lane passing (see [`plans/151-status.md`](plans/151-status.md) and [`plans/152-status.md`](plans/152-status.md) for the closure records).
 
 Current classification:
 
 ```text
+plan_151 = passed-m7-sam31-final-acceptance-evidence-correction
+plan_152 = passed-m6-session-streaming-robustness-corrective
+plan_153 = active-post-m7-authority-and-ci-hygiene
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
 milestone7_sam_localhost = passed-via-plan151
-next_product_layer = milestone8-planning
+milestone7_final_acceptance = closed
+milestone6_interoperable = not-yet-claimed
+next_executable_plan = 153
+next_product_layer = milestone8-ssu2-v2
 ```
 
-Milestone 8 needs a plan-of-record before any implementation begins.
+Milestone 8 roadmap is registered via [**Plan 154**](plans/154-status.md) and blocked until Plan 153 passes; Milestone 8 implementation begins at Plan 155.
 
 The `[sam]` config section remains disabled by default and loopback-only when enabled. No localhost SAM result is router-to-router interoperability evidence.
 

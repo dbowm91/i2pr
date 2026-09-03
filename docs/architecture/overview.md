@@ -40,9 +40,18 @@ explicitly localhost-only. Raw CONNECT/ACCEPT handoff honors both
 degradation, and releases Streaming/SAM ownership on terminal socket
 cleanup. Canonical local evidence is
 [`sam_stream_self_composed.rs`](../../crates/i2pr-daemon/tests/sam_stream_self_composed.rs).
-Plan 150 closes the exact external-client and final FORWARD/NAMING localhost
-evidence, summarized in
-[`tests/integration/sam/evidence.md`](../../tests/integration/sam/evidence.md).
+Plan 150 retains the external-client core evidence; Plan 151 passed the
+final localhost SAM acceptance (sibling/backpressure/fault/lifecycle/
+FORWARD/M6 rows executable and green, routine CI plus the hosted
+external lane green on the closing head — see
+[`plans/151-status.md`](../../plans/151-status.md)). Plan 152 is the
+retained narrow M6 session/streaming robustness corrective underneath
+it (no wire change — see [`plans/152-status.md`](../../plans/152-status.md)).
+Plan 153 is the active post-M7 authority/CI hygiene pass; Milestone 8
+implementation (Plan 155+) is blocked until it passes. The SAM lane
+stays experimental, loopback-only, disabled by default, and
+non-advertised; no localhost result implies router-to-router
+interoperability.
 
 Network tunnels (router-to-router) and application service tunnels
 (local app to destination) are deliberately kept apart. Service tunnels

@@ -26,6 +26,9 @@ jobs:
       - name: Build independent-client runners
         run: bash tests/integration/sam/clients/build.sh
 
+      - name: Check SAM acceptance evidence integrity
+        run: bash scripts/check-sam-acceptance-evidence.sh
+
       - name: Run localhost SAM external-client matrix
         run: bash tests/integration/sam/run-independent.sh
         env:

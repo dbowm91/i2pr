@@ -442,11 +442,14 @@ the SAM 3.1 STREAM CONNECT / ACCEPT transport bridge as
  ([`plans/138-status.md`](../../plans/138-status.md)); Plan 139 closes
 the loopback-only STREAM FORWARD and local NAMING LOOKUP hardening as
 `passed-m7-sam31-forward-naming-hardening`
-([`plans/139-status.md`](../../plans/139-status.md)); Plan 149 then
-closed the self-composed localhost STREAM product. Plan 150 now closes
-the localhost independent-client interoperability and final Milestone 7
-SAM application evidence; the retained external-client pins and build
-lane are documented in
+ ([`plans/139-status.md`](../../plans/139-status.md)); Plan 149 then
+closed the self-composed localhost STREAM product. Plan 150 retains the
+localhost independent-client core evidence; Plan 151 passed the final
+Milestone 7 SAM acceptance and Plan 152 is the retained narrow M6
+corrective underneath it (see [`plans/151-status.md`](../../plans/151-status.md)
+and [`plans/152-status.md`](../../plans/152-status.md)). Plan 153 is the
+active post-M7 authority/CI hygiene pass. The retained external-client
+pins and build lane are documented in
 [`tests/integration/sam/README.md`](../../tests/integration/sam/README.md).
 
 ### Which crates are wired in today

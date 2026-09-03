@@ -8,8 +8,10 @@ Current authority:
 - `plans/147-status.md` — retained raw-socket owner/byte-pump implementation evidence;
 - `plans/149-status.md` — passed self-composing local SAM product;
 - `plans/150-status.md` — external-client core evidence retained; broad final closure superseded;
-- `plans/151-status.md` — **active final Milestone 7 acceptance/evidence authority**;
-- `plans/151-m7-sam31-final-acceptance-evidence-correction.md` — only next executable plan.
+- `plans/151-status.md` — **passed** final Milestone 7 acceptance/evidence correction;
+- `plans/152-status.md` — **passed** narrow M6 session/streaming robustness corrective;
+- `plans/153-status.md` — **active** post-M7 authority/CI hygiene; next executable.
+- `plans/153-m7-closure-authority-and-ci-hygiene.md` — active hygiene plan (docs/CI only, no `crates/` or `Cargo.lock` changes).
 
 This lane is localhost-only. It must not require root, namespaces, Docker, a VM,
 systemd, public I2P participation, or live NTCP2/SSU2.
@@ -98,14 +100,14 @@ The Plan 150 lane genuinely proved:
 The committed [`evidence.md`](evidence.md) is therefore retained as Plan 150
 external-core evidence, not as current final Milestone 7 authority.
 
-## Why Plan 151 is required
+## Why Plan 151 was required (retained)
 
-The current `run-independent.sh` contains acceptance bookkeeping that can mark a
+The pre-Plan-151 `run-independent.sh` contained acceptance bookkeeping that could mark a
 required row passed without executing the corresponding case. The known example
-is the `multiple-stream-lifecycle` row, which refers to a Plan 149 sibling suite
-that is not present.
+was the `multiple-stream-lifecycle` row, which referred to a Plan 149 sibling suite
+that was not present.
 
-Plan 151 must remove synthetic pass rows and add executable evidence for:
+Plan 151 removed synthetic pass rows and added executable evidence for:
 
 - two simultaneous sibling streams and close-one/keep-one isolation;
 - slow reader;
@@ -124,9 +126,14 @@ Each final result must derive from an actual command/test exit result.
 
 ## Evidence-integrity rule
 
-Plan 151 should add a narrow static checker (for example
-`scripts/check-sam-acceptance-evidence.sh`) that rejects unconditional `passed`
+Plan 151 added the narrow static checker
+`scripts/check-sam-acceptance-evidence.sh` that rejects unconditional `passed`
 bookkeeping for required final acceptance labels.
+
+The checker is CI-enforced: it runs in the routine Linux quality job
+(`.github/workflows/ci.yml`) and in the manual SAM external workflow
+(`.github/workflows/sam-external.yml`) before the external matrix. Do not
+weaken the checker or duplicate its logic inside YAML.
 
 The generated evidence must associate each result with its command/test,
 closing commit, execution lane, and external revision where applicable.
@@ -142,7 +149,9 @@ bash tests/integration/sam/run-independent.sh
 ```
 
 The manual GitHub-hosted Ubuntu `workflow_dispatch` lane remains the preferred
-remote reproduction. It must run again on the exact Plan 151 closing head.
+remote reproduction. It ran on the exact Plan 151 closing head and must run
+again on the exact Plan 153 closing head to prove the newly enforced checker
+composes with the existing lane.
 
 Do not vendor or patch third-party sources. Do not require privileged runners.
 
@@ -159,8 +168,11 @@ cargo test --locked -p i2pr-daemon --test sam_stream_self_composed -- --test-thr
 cargo test --locked -p i2pr-daemon --test sam_forward_naming -- --test-threads=1
 ```
 
-Plan 151 should add a focused final-acceptance suite if that keeps sibling,
-slow-peer, fault, and lifecycle evidence auditable.
+Plan 151 added the focused final-acceptance suite
+`crates/i2pr-daemon/tests/sam_stream_final_acceptance.rs` that keeps sibling,
+slow-peer, fault, and lifecycle evidence auditable. Plan 152 (narrow M6
+corrective, no wire change) is retained underneath it; see
+`plans/152-status.md`.
 
 ## Privacy
 
@@ -169,15 +181,19 @@ secret payloads, or unsanitized external environments. Evidence may contain
 exact revisions, hashes, byte counts, result categories, command names, and
 non-secret resource counters.
 
-## Closure rule
+## Closure rule (retained)
 
-Milestone 7 final localhost acceptance closes only when:
+Milestone 7 final localhost acceptance closed when:
 
-1. Plan 146 remains green;
-2. Plan 149 self-composed product remains green;
-3. retained Plan 150 independent-client core evidence remains green;
-4. every Plan 151 sibling/backpressure/fault/lifecycle/FORWARD/M6 row is executable and passes;
-5. routine CI and the manual external-client workflow pass on the exact closing head;
-6. `plans/151-status.md` explicitly closes the milestone.
+1. Plan 146 remained green;
+2. Plan 149 self-composed product remained green;
+3. retained Plan 150 independent-client core evidence remained green;
+4. every Plan 151 sibling/backpressure/fault/lifecycle/FORWARD/M6 row was executable and passed;
+5. routine CI and the manual external-client workflow passed on the exact closing head;
+6. `plans/151-status.md` explicitly closed the milestone.
 
-Current handoff: **execute Plan 151 only; do not begin Milestone 8 implementation yet**.
+Plan 152 is the retained narrow M6 corrective underneath that closure.
+Plan 153 is docs/CI hygiene only and must pass before Milestone 8
+implementation (Plan 155+) begins.
+
+Current handoff: **execute Plan 153 only; then Plans 155 → 161 in order under Plan 154. SAM stays experimental, loopback-only, disabled by default, and non-advertised.**

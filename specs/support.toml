@@ -198,6 +198,7 @@ plan_151_plan_of_record = "plans/151-m7-sam31-final-acceptance-evidence-correcti
 plan_151_closure = "plans/151-status.md"
 plan_151_status = "passed-m7-sam31-final-acceptance-evidence-correction"
 plan_152_plan_of_record = "plans/152-m6-session-streaming-robustness-corrective.md"
+plan_152_closure = "plans/152-status.md"
 plan_152_status = "passed-m6-session-streaming-robustness-corrective"
 
 [[surface]]

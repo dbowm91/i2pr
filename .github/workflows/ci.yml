@@ -73,6 +73,9 @@ jobs:
       - name: Check constrained-host lane boundary
         if: runner.os == 'Linux'
         run: bash scripts/check-constrained-host-lane-boundary.sh
+      - name: Check SAM acceptance evidence integrity
+        if: runner.os == 'Linux'
+        run: bash scripts/check-sam-acceptance-evidence.sh
       - name: Test constrained-host lane contracts
         if: runner.os == 'Linux'
         run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'

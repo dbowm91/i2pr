@@ -25,8 +25,11 @@ Plan 150 = external-client core evidence retained-passed
 Plan 150 final acceptance = superseded-by-plan151
 Plan 151 = passed final acceptance evidence correction
 Plan 152 = passed narrow M6 streaming corrective
+Plan 153 = active post-M7 authority/CI hygiene
 Milestone 7 SAM localhost = closed (experimental, loopback-only)
-next product layer = Milestone 8 planning (needs a plan-of-record)
+Milestone 8 roadmap = Plan 154 registered, blocked by Plan 153
+next executable plan = 153 (then 155)
+next product layer = milestone8-ssu2-v2
 ```
 
 Read in this order for SAM work:
@@ -79,9 +82,9 @@ The canonical product-composition test is
 it drives behavior only through TCP/SAM and must not invoke private bridge,
 LeaseSet2, tunnel-factory, driver, delivery, or byte-moving setup APIs.
 
-## Plan 151 scope
+## Plan 151 scope (retained)
 
-Plan 151 is an acceptance/evidence correction, not a SAM rewrite. It must add
+Plan 151 was an acceptance/evidence correction, not a SAM rewrite. It added
 executable proof for the items Plan 150 claimed but did not fully run:
 
 - no synthetic/unconditional `passed` evidence rows;
@@ -94,7 +97,16 @@ executable proof for the items Plan 150 claimed but did not fully run:
 - current-head routine CI plus manual external-client workflow.
 
 If a new test exposes an M6 Streaming protocol defect, stop Plan 151 and write a
-narrow protocol corrective plan rather than weakening the test.
+narrow protocol corrective plan rather than weakening the test. That stop
+fired once as Plan 152 (passed narrow M6 corrective, no wire change).
+
+## Plan 153 scope (active)
+
+Plan 153 is documentation and CI hygiene only: normalize the missing
+authoritative `plans/152-status.md`, remove stale Plan 151/152 prose, add
+the Plan 152 closure pointer to the support ledger, and enforce the Plan
+151 SAM evidence-integrity checker in routine Linux CI and the manual SAM
+external workflow. No `crates/` or `Cargo.lock` changes are allowed.
 
 ## Hard boundaries
 
@@ -149,8 +161,11 @@ cargo test --locked -p i2pr-daemon --test sam_stream_self_composed -- --test-thr
 cargo test --locked -p i2pr-daemon --test sam_forward_naming -- --test-threads=1
 ```
 
-Plan 151 should add a narrowly named final-acceptance suite rather than bloating
-the existing self-composed file if that makes the evidence easier to audit.
+Plan 151 added its narrowly named final-acceptance suite
+(`crates/i2pr-daemon/tests/sam_stream_final_acceptance.rs`) rather than bloating
+the existing self-composed file. The Plan 151 evidence-integrity checker
+(`scripts/check-sam-acceptance-evidence.sh`) is enforced in routine Linux CI
+and the manual SAM external workflow; do not weaken it to make CI pass.
 
 ## Testing conventions
 
@@ -184,8 +199,10 @@ libsam3 built/probed but not counted:
 ```
 
 The manual `.github/workflows/sam-external.yml` lane is unprivileged and
-localhost-only. Plan 151 must rerun it on the exact closing head after all new
-acceptance tests are integrated.
+localhost-only. Plan 151 reran it on the exact closing head after all new
+acceptance tests were integrated; Plan 153 reruns routine CI plus the manual
+SAM external workflow on its exact closing head to prove the newly enforced
+checker composes with the existing lane.
 
 ## Coding conventions
 
@@ -200,9 +217,12 @@ acceptance tests are integrated.
 ## Protocol claims
 
 - Milestone 6 local product is closed via Plan 134; router interoperability is not claimed.
-- Plan 149 closed the self-composed localhost SAM product.
+- Plan 149 closed the self-composing localhost SAM product.
 - Plan 150 retains at-least-two independent-client core evidence, but its final acceptance label is superseded.
 - Plan 151 is the current final Milestone 7 acceptance authority.
+- Plan 152 is the passed narrow M6 robustness corrective retained underneath Plan 151.
+- Plan 153 is the active docs/CI hygiene pass; Milestone 8 implementation is blocked until it passes.
+- Milestone 8 roadmap is registered via Plan 154; Plan 155 is the first implementation pass after Plan 153 closure.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - No localhost SAM evidence implies router-to-router NTCP2/SSU2 or public I2P interoperability.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
@@ -219,6 +239,6 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 151 passed; Milestone 8 needs a plan-of-record
-before any implementation begins. SAM stays experimental, loopback-only,
-disabled by default, and non-advertised.**
+Current handoff: **Plan 151 passed, Plan 152 passed, Plan 153 active;
+Milestone 8 Plan 154 registered blocked by Plan 153 (then Plan 155).
+SAM stays experimental, loopback-only, disabled by default, and non-advertised.**

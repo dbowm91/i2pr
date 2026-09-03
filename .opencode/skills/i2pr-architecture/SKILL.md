@@ -156,25 +156,30 @@ The active plan is the highest-numbered `passed-*` plan whose status
 record is not `superseded-by-*`. Currently:
 
 - **Milestone 6 authority**: Plan 134
-  (`passed-milestone6-recv-window-ack-ceiling-closure`).
-- **Milestone 7 SAM 3.1 corrective authority**: Plan 150
-  (`passed-m7-sam31-external-client-final-closure`), under the Plan 145
-  corrective roadmap. Plan 146
-  closed the private-destination sub-claim
-  (`passed-m7-sam31-private-destination-reference-requalification`).
-  Plan 147 closed the dedicated raw STREAM product path
-  (`passed-m7-sam31-dedicated-raw-stream-driver`). Plan 149 closed the
+  (`passed-milestone6-recv-window-ack-ceiling-closure`), with the
+  narrow Plan 152 M6 session/streaming robustness corrective retained
+  underneath Plan 151 (`passed-m6-session-streaming-robustness-corrective`,
+  see [`plans/152-status.md`](../../plans/152-status.md)).
+- **Milestone 7 SAM 3.1 final acceptance**: Plan 151
+  (`passed-m7-sam31-final-acceptance-evidence-correction`, see
+  [`plans/151-status.md`](../../plans/151-status.md)). Plan 150
+  retains external-client core evidence only; its broad final-closure
+  interpretation is superseded by Plan 151. Plan 149 closed the
   self-composed local STREAM product
   (`passed-m7-sam31-self-composing-local-product-corrective`); the
   canonical evidence lives at
   `crates/i2pr-daemon/tests/sam_stream_self_composed.rs`. Plan 148
   remains `blocked-audit-historical-superseded` per
-  [`plans/148-status.md`](../../plans/148-status.md). Plan 150 passed the
-  exact pinned i2psam and qualified i2plib.sam clients through the Plan 149
-  self-composed listener for independent-client CONNECT/ACCEPT, SILENT,
-  private-destination, FORWARD, NAMING, negative, and lifecycle evidence.
-  The official libsam3 snapshot was built/probed but not counted because its
+  [`plans/148-status.md`](../../plans/148-status.md). The official
+  libsam3 snapshot was built/probed but not counted because its
   public key-length API rejects i2pr's compact private destination.
+- **Post-M7 hygiene (active)**: Plan 153
+  (`active-post-m7-authority-and-ci-hygiene`, see
+  [`plans/153-status.md`](../../plans/153-status.md)). Do not begin
+  Milestone 8 implementation until it passes.
+- **Milestone 8 planning authority**: Plan 154 (registered SSU2 v2
+  roadmap, blocked by Plan 153). First implementation pass after
+  Plan 153 closure is Plan 155.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).
@@ -189,7 +194,7 @@ focused checks, and the test list.
 
 ## Static boundary scripts (source of truth)
 
-These eight scripts reject the change on CI. Fix the boundary; do
+These scripts reject the change on CI. Fix the boundary; do
 not weaken the script.
 
 | Script | Catches |
@@ -203,6 +208,7 @@ not weaken the script.
 | `scripts/check-multipass-interop-boundary.sh` | Plan 048/049/050/051 Multipass lane (no global `multipass purge`). |
 | `scripts/check-constrained-host-lane-boundary.sh` | Plan 077 constrained-host lane order. |
 | `scripts/check-plan095-workflow.sh` | Plan 095 manual live-wire workflow artifact paths. |
+| `scripts/check-sam-acceptance-evidence.sh` | Plan 151 SAM evidence integrity (no synthetic `passed` rows; CI-enforced). |
 
 ## Doc-vs-source audit pattern
 

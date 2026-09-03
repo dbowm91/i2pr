@@ -14,9 +14,9 @@ interoperability is not claimed and remains separate external acceptance debt.
 The current **Milestone 7 SAM 3.1 final-acceptance authority** is
 [**Plan 151**](151-status.md)
 (`passed-m7-sam31-final-acceptance-evidence-correction`). Plan 152 is the
-retained narrow M6 robustness corrective discovered by Plan 151; Plan 153 will
-normalize its missing status-file authority and the remaining CI/documentation
-hygiene.
+retained narrow M6 robustness corrective discovered by Plan 151; its
+authoritative closure record is [`plans/152-status.md`](152-status.md),
+normalized by Plan 153.
 
 The current **next executable plan** is
 [**Plan 153**](153-status.md)
@@ -110,7 +110,7 @@ Do not create a second SSU2-specific transport manager or a task/timer per packe
 | 149 | **passed** self-composing SAM local product | [`149-status.md`](149-status.md) |
 | 150 | external-client core evidence **retained passed**; final acceptance superseded | [`150-status.md`](150-status.md) |
 | 151 | **passed** final M7 SAM localhost acceptance | [`151-status.md`](151-status.md) |
-| 152 | **passed implementation/evidence; authoritative status file to be normalized by Plan 153** | [`152-m6-session-streaming-robustness-corrective.md`](152-m6-session-streaming-robustness-corrective.md) |
+| 152 | **passed** narrow M6 session/streaming robustness corrective | [`152-status.md`](152-status.md) |
 | 153 | **active** post-M7 authority/CI hygiene; next executable | [`153-status.md`](153-status.md) |
 
 ## Milestone 6 plan hierarchy

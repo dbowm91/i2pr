@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Plan 149 closed the self-composed localhost product; Plan 150 retains external-client core evidence; Plan 151 passed the final acceptance/evidence correction (with narrow Plan 152 M6 corrective); Milestone 8 needs a plan-of-record.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Plan 149 closed the self-composed localhost product; Plan 150 retains external-client core evidence; Plan 151 passed the final acceptance/evidence correction (with narrow Plan 152 M6 corrective); Plan 153 is the active post-M7 authority/CI hygiene pass; Milestone 8 roadmap registered via Plan 154.
 ---
 
 # I2PR Local Development
@@ -28,24 +28,33 @@ plan_150_external_core_evidence = retained-passed
 plan_150_final_acceptance = superseded-by-plan151
 plan_151 = passed-final-acceptance-evidence-correction
 plan_152 = passed-narrow-m6-corrective
+plan_153 = active-post-m7-authority-and-ci-hygiene
 sam_independent_clients = at-least-two-passed-via-plan150
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
 milestone7_final_acceptance = closed
-next_product_layer = milestone8-planning
+milestone6_interoperable = not-yet-claimed
+next_executable_plan = 153
+milestone8_planning_authority = plan154
+milestone8_implementation = blocked-by-plan153
+first_m8_implementation_after_153 = 155
+next_product_layer = milestone8-ssu2-v2
 ```
 
 Read in order:
 
-1. `plans/151-status.md`
-2. `plans/151-m7-sam31-final-acceptance-evidence-correction.md`
-3. `plans/150-status.md`
-4. `plans/149-status.md`
-5. Plans 146–148 for retained/historical context.
+1. `plans/153-status.md` (active hygiene pass)
+2. `plans/152-status.md` (narrow M6 corrective closure)
+3. `plans/151-status.md`
+4. `plans/151-m7-sam31-final-acceptance-evidence-correction.md`
+5. `plans/150-status.md`
+6. `plans/149-status.md`
+7. Plans 146–148 for retained/historical context.
 
-Do not begin Milestone 8 implementation until a Milestone 8 plan-of-record
-exists. SAM stays experimental, loopback-only, disabled by default, and
-non-advertised.
+Do not begin Milestone 8 implementation until Plan 153 passes. Plan 154
+is the registered Milestone 8 roadmap authority; Plans 155–161 execute
+in order after Plan 153 closure. SAM stays experimental, loopback-only,
+disabled by default, and non-advertised.
 
 ## Retain these working pieces
 
@@ -125,14 +134,16 @@ No required final row may be marked passed merely because another plan/status
 says it passed. `tests/integration/sam/run-independent.sh` must derive each
 required final row from an executed command/test.
 
-Plan 151 should add a small static checker such as:
+Plan 151 added the static checker:
 
 ```text
 scripts/check-sam-acceptance-evidence.sh
 ```
 
 that rejects unconditional pass bookkeeping for required acceptance labels.
-Do not build a general orchestration framework.
+The checker is enforced in routine Linux CI and the manual SAM external
+workflow; do not weaken it to make CI pass. Do not build a general
+orchestration framework.
 
 ## External-client provenance
 
@@ -206,8 +217,9 @@ cargo test --locked -p i2pr-daemon --test sam_stream_self_composed -- --test-thr
 cargo test --locked -p i2pr-daemon --test sam_forward_naming -- --test-threads=1
 ```
 
-Plan 151 must resolve and run the actual focused Plan 127–134 tests from the
-current repository and list them verbatim in its closure record.
+Plan 151 resolved and ran the actual focused Plan 127–134 tests from the
+current repository and listed them verbatim in its closure record
+(retained evidence; do not re-broaden the matrix without a new plan).
 
 ## Coding rules
 
@@ -223,7 +235,8 @@ current repository and list them verbatim in its closure record.
 
 - SAM stays disabled by default, loopback-only, experimental, and non-advertised.
 - Plan 150's external-client result does not imply router-to-router interoperability.
-- Milestone 7 is not finally closed until Plan 151 passes.
-- Do not begin Milestone 8 implementation before `plans/151-status.md` explicitly records closure.
+- Milestone 7 final localhost acceptance is closed via Plan 151; Plan 152 is the retained narrow M6 corrective underneath it.
+- Plan 153 is docs/CI hygiene only with no `crates/` or `Cargo.lock` changes.
+- Do not begin Milestone 8 implementation before `plans/153-status.md` explicitly records Plan 153 passing; Plan 155 is the first implementation pass after that.
 
-Current handoff: **execute Plan 151 only**.
+Current handoff: **execute Plan 153 only; then Plans 155 → 161 in order under Plan 154**.

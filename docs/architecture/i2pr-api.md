@@ -10,9 +10,10 @@ requalifies the private-destination wire representation against the
 reference implementations. Plan 149 composes these runtime-neutral
 surfaces in `i2pr-daemon`; `SESSION STATUS DESTINATION=` carries the
 private destination and `NAMING LOOKUP NAME=ME` returns its public
-counterpart. Plan 150 closes the localhost independent-client layer with
-exact i2psam and qualified i2plib.sam evidence; router-to-router
-interoperability remains unclaimed.
+counterpart. Plan 150 retains the localhost independent-client layer
+with exact i2psam and qualified i2plib.sam evidence; Plan 151 passed
+the final acceptance and Plan 152 is the retained narrow M6 corrective
+underneath it; router-to-router interoperability remains unclaimed.
 
 > [Plan 136](../plans/136-m7-sam31-protocol-private-destination-foundation.md):
 > create the `i2pr-api` crate at the intended application-adapter
