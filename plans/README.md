@@ -27,7 +27,7 @@ The active sequence is now:
 
 - [`000-mvp-roadmap.md`](000-mvp-roadmap.md) — milestone sequence from empty repository to the first feature-complete MVP (CLI router, NTCP2/SSU2, NetDB + floodfill, tunnel participation, destinations, streaming, SAM/I2CP, HTTP/SOCKS5 proxies, service tunnels). **Independent-router interoperability is MVP acceptance debt, not a prerequisite for the localhost SAM product work in Milestone 7.**
 - [`145-m7-sam31-remaining-gap-corrective-roadmap.md`](145-m7-sam31-remaining-gap-corrective-roadmap.md) — Milestone 7 corrective umbrella; newest execution authority is Plan 149 status.
-- [`149-m7-sam31-self-composing-local-product-corrective.md`](149-m7-sam31-self-composing-local-product-corrective.md) — active production-composition and deferred raw-path acceptance corrective.
+- [`149-m7-sam31-self-composing-local-product-corrective.md`](149-m7-sam31-self-composing-local-product-corrective.md) — completed production-composition and local raw-path acceptance corrective.
 - [`150-m7-sam31-external-client-reproducible-final-closure.md`](150-m7-sam31-external-client-reproducible-final-closure.md) — final independent-client closure after Plan 149.
 - [`141-m7-sam31-corrective-roadmap.md`](141-m7-sam31-corrective-roadmap.md) — previous Milestone 7 corrective sequence after the blocked Plan 140 audit; superseded for next-action authority.
 - [`118-123-milestone6-router-construction-roadmap.md`](118-123-milestone6-router-construction-roadmap.md) — destination / garlic / LeaseSet2 / Streaming router construction.
@@ -51,7 +51,7 @@ The active sequence is now:
 | 146 | **passed** bidirectional private-destination reference requalification | [`146-status.md`](146-status.md) |
 | 147 | raw-driver implementation and local byte-pump **retained**; full original acceptance superseded by Plan 149 | [`147-status.md`](147-status.md) |
 | 148 | **blocked audit; superseded for execution by Plans 149–150** | [`148-status.md`](148-status.md) |
-| 149 | **passed** self-composing SAM local product + deferred raw acceptance | [`149-status.md`](149-status.md) |
+| 149 | **passed** self-composing SAM local product and local raw-path acceptance | [`149-status.md`](149-status.md) |
 | 150 | **next executable** — reproducible external-client final M7 closure | [`150-m7-sam31-external-client-reproducible-final-closure.md`](150-m7-sam31-external-client-reproducible-final-closure.md) |
 
 Do not restore historical broad `passed` labels as final M7 authority without satisfying the newest superseding acceptance criteria.
@@ -115,8 +115,11 @@ The constrained-host lane, the Plan 046 rootless sealed-namespace lane, and the 
   - **Plan 149** closed the self-composed local STREAM product
     (canonical black-box test passes; `sam31_self_composing_product
     = passed`).
-  - exact SILENT plus raw-path resource/fault/lifecycle acceptance is
-    covered by `sam_stream_self_composed`.
+  - Plan 149's local product evidence covers exact SILENT handling,
+    same-read raw bytes, bounded backpressure, bidirectional 2 MiB
+    transfer, and terminal resource cleanup. Broader independent-client
+    fault/lifecycle evidence remains outside the local self-composition
+    claim and is part of the Plan 150 follow-up.
   - two correctly pinned independent SAM clients have not yet moved
     application bytes through the real self-composed listener; this
     is now Plan 150.

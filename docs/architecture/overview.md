@@ -26,6 +26,22 @@ Four conceptual planes run through every crate:
 
 Plan 134 is the current local Milestone 6 closure authority. It corrects the receive-window ACK ceiling so a rejected `TooFarAhead` packet is state-inert and cannot advance `highest_received`, create NACK holes, schedule an ACK, or appear in a later piggyback ACK. Independent-router interoperability remains external acceptance debt and is not claimed. **Plan 142 is the passed local Milestone 7 SAM 3.1 Base64/private-destination corrective closure: `i2pr-api/src/sam/base64.rs` now uses the I2P Base64 alphabet (`A-Z a-z 0-9 - ~`, `=` padding) — the spelling every Java I2P / i2pd / independent Python SAM client reference implementation emits — and the prior circular private-destination evidence is replaced with three independent reference vectors (i2pd `libi2pd/Base.{h,cpp}`, Java I2P `PrivateKeyFile.java`, i2plib `I2P_B64_CHARS = "-~"`). See [`plans/142-status.md`](../plans/142-status.md) for the closure record. Plan 143 is the passed same-socket STREAM CONNECT/ACCEPT product bridge closure: the captured-outbound test seam is removed and the live bridge drives the full Plan 129 destination stack through the runtime-neutral `i2pr_client::deliver` seam; canonical evidence is `crates/i2pr-daemon/tests/sam_stream_product.rs`. See [`plans/143-status.md`](../plans/143-status.md) for the closure record.** Plan 139 remains the last passed STREAM FORWARD / NAMING LOOKUP implementation; its real-byte acceptance is re-run in Plan 144. Plan 140 is the historical blocked closure attempt for the same-socket live STREAM product path; its evidence and handoff are in [`plans/140-status.md`](../plans/140-status.md). **Plan 146 has closed as `passed-m7-sam31-private-destination-reference-requalification` ([`plans/146-status.md`](../plans/146-status.md))**: bidirectional reference evidence against the pinned Java I2P 2.12.0 (`2800040deee9bb376567b671ef2e9c34cf3e30b6`) and i2pd 2.60.0 (`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`) references proves the canonical SAM private-destination / PrivateKeyFile representation in both directions through `crates/i2pr-daemon/tests/sam_plan146_reference.rs`; the `DestinationIdentity::from_imported` constructor preserves the destination's embedded encryption public field verbatim and only enforces `signing_public == EdDSA(signing_seed)`. **Plan 147 (dedicated raw TCP↔Streaming product bridge driver) is now the next executable plan.**
 
+### Current Milestone 7 SAM authority
+
+The historical Plan 137–147 summary above is superseded by Plan 149 for
+the local SAM product. `SESSION CREATE` now transactionally creates the
+destination identity, signed LeaseSet2, local-product delivery fabric,
+SAM bridge, stream ownership, and exactly one supervised destination
+driver. The runtime shares one `Arc<DestinationIdentity>` between the
+destination runtime and bridge. Local peer LeaseSet2 resolution remains
+inside the daemon, while the authenticated-router-link-bypassed seam is
+explicitly localhost-only. Raw CONNECT/ACCEPT handoff honors both
+`SILENT` modes, preserves same-read bytes, records typed delivery
+degradation, and releases Streaming/SAM ownership on terminal socket
+cleanup. Canonical evidence is
+[`sam_stream_self_composed.rs`](../../crates/i2pr-daemon/tests/sam_stream_self_composed.rs);
+Plan 150 owns external-client and final FORWARD/NAMING evidence.
+
 Network tunnels (router-to-router) and application service tunnels
 (local app to destination) are deliberately kept apart. Service tunnels
 must not import transport internals or peer-profile storage.

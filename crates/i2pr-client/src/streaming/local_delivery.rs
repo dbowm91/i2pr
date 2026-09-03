@@ -94,6 +94,9 @@ pub enum LocalDeliveryError {
     /// id to gate the post-OBEP action; without a first hop the
     /// inbound material is invalid.
     InvalidInboundTunnel,
+    /// The in-process New Session Reply could not complete the
+    /// sender/receiver ECIES pairing used by the loopback product.
+    Session(crate::session::EciesSessionError),
 }
 
 impl std::fmt::Display for LocalDeliveryError {
@@ -106,6 +109,7 @@ impl std::fmt::Display for LocalDeliveryError {
             Self::Reconstruct(error) => write!(formatter, "reconstruct: {error}"),
             Self::Adapter(error) => write!(formatter, "streaming adapter: {error}"),
             Self::InvalidInboundTunnel => formatter.write_str("inbound tunnel has no IBGW hop"),
+            Self::Session(error) => write!(formatter, "ECIES session pairing: {error}"),
         }
     }
 }
@@ -133,6 +137,12 @@ impl From<ReconstructError> for LocalDeliveryError {
 impl From<StreamingAdapterError> for LocalDeliveryError {
     fn from(error: StreamingAdapterError) -> Self {
         Self::Adapter(error)
+    }
+}
+
+impl From<crate::session::EciesSessionError> for LocalDeliveryError {
+    fn from(error: crate::session::EciesSessionError) -> Self {
+        Self::Session(error)
     }
 }
 
@@ -338,6 +348,31 @@ pub fn deliver<R: CryptoRng + RngCore>(
         }
         InboundDispatchOutcome::ExistingSessionProcessed { .. }
         | InboundDispatchOutcome::NewSessionReplyProcessed { .. } => {}
+    }
+
+    // A real router sends this New Session Reply back through its
+    // transport. The self-composed localhost product has no second
+    // transport hop, so complete that authenticated pairing at the
+    // local delivery boundary before the next application packet is
+    // admitted. The reply is empty because the original packet already
+    // carried the application clove; only the session transition is
+    // needed here.
+    if matches!(outcome, InboundDispatchOutcome::NewSessionProcessed { .. }) {
+        let sender_static_public = sender.identity.static_public_bytes();
+        let reply = receiver.session.seal_new_session_reply_for(
+            receiver.identity.id(),
+            receiver.identity.static_secret_bytes(),
+            &sender_static_public,
+            &[],
+            receiver.now_seconds,
+            rng,
+        )?;
+        sender.session.accept_new_session_reply(
+            sender.identity.id(),
+            sender.identity.static_secret_bytes(),
+            &reply.message,
+            sender.now_seconds,
+        )?;
     }
 
     // 5. Drain the queued application payload and feed it into the

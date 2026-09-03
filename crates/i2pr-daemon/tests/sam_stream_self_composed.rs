@@ -25,7 +25,6 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use i2pr_api::sam::limits::SamLimits;
 use i2pr_daemon::config::SamConfig;
@@ -83,13 +82,13 @@ async fn start_listener(
 
 async fn read_one_line(stream: &mut TcpStream) -> String {
     let mut buf = Vec::new();
-    let mut chunk = [0_u8; 256];
     loop {
-        match stream.read(&mut chunk).await {
+        let mut byte = [0_u8; 1];
+        match stream.read_exact(&mut byte).await {
             Ok(0) => break,
-            Ok(n) => {
-                buf.extend_from_slice(&chunk[..n]);
-                if buf.last() == Some(&b'\n') {
+            Ok(_) => {
+                buf.push(byte[0]);
+                if byte[0] == b'\n' {
                     break;
                 }
             }
@@ -109,12 +108,12 @@ async fn write_all(stream: &mut TcpStream, bytes: &[u8]) {
 
 async fn read_n(stream: &mut TcpStream, expected: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(expected);
-    let mut chunk = [0_u8; 256];
     while out.len() < expected {
+        let remaining = expected - out.len();
+        let mut chunk = vec![0_u8; remaining.min(16 * 1024)];
         let read = match stream.read(&mut chunk).await {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(_) => break,
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
         };
         out.extend_from_slice(&chunk[..read]);
     }
@@ -138,7 +137,24 @@ async fn session_create(stream: &mut TcpStream, id: &str, destination: &str) -> 
         reply.starts_with("SESSION STATUS RESULT=OK"),
         "SESSION CREATE for {id} did not return OK: {reply:?}"
     );
-    let pub_value = extract_value_field(&reply).expect("SESSION STATUS contains DESTINATION=<pub>");
+    assert_eq!(
+        extract_value_field(&reply).as_deref(),
+        Some(destination),
+        "SESSION STATUS must return the imported/private destination"
+    );
+    // Per SAM 3.1, SESSION STATUS RESULT=OK DESTINATION=<priv> — retrieve
+    // the public destination via NAMING LOOKUP NAME=ME so downstream
+    // STREAM CONNECT commands can target the peer by public key.
+    write_all(stream, b"NAMING LOOKUP NAME=ME\n").await;
+    let naming_reply = read_one_line(stream).await;
+    assert!(
+        naming_reply.starts_with("NAMING REPLY RESULT=OK VALUE="),
+        "NAMING LOOKUP NAME=ME after SESSION CREATE for {id} failed: {naming_reply:?}"
+    );
+    let pub_value = naming_reply
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("VALUE=").map(strip_sam_quotes))
+        .expect("NAMING REPLY contains VALUE=<pub>");
     (reply, pub_value)
 }
 
@@ -183,7 +199,7 @@ async fn transient_destination(address: SocketAddr) -> String {
 
 #[tokio::test(flavor = "current_thread")]
 async fn plan149_self_composed_black_box_connects_and_transfers_bytes() {
-    let (_state, address, scope, parent) = start_listener(sam_config()).await;
+    let (state, address, scope, parent) = start_listener(sam_config()).await;
 
     let priv_a = transient_destination(address).await;
     let priv_b = transient_destination(address).await;
@@ -194,7 +210,7 @@ async fn plan149_self_composed_black_box_connects_and_transfers_bytes() {
     hello_3_1(&mut client_a).await;
     hello_3_1(&mut client_b).await;
 
-    let (reply_a, _pub_a) = session_create(&mut client_a, "alpha", &priv_a).await;
+    let (reply_a, pub_a) = session_create(&mut client_a, "alpha", &priv_a).await;
     let (reply_b, pub_b) = session_create(&mut client_b, "beta", &priv_b).await;
     assert!(
         reply_a.contains("DESTINATION="),
@@ -232,12 +248,19 @@ async fn plan149_self_composed_black_box_connects_and_transfers_bytes() {
         accept_peer_line.starts_with("DESTINATION="),
         "ACCEPT peer destination line missing: {accept_peer_line:?}"
     );
+    assert_eq!(
+        extract_value_field(&accept_peer_line),
+        Some(pub_a),
+        "ACCEPT peer destination was not the authenticated CONNECT destination"
+    );
 
     // Bidirectional byte exchange: the same shape as Plan 147 §10
     // but driven through the self-composed listener.
-    let payload_a: Vec<u8> = (0..512_u32).map(|i| (i & 0xFF) as u8).collect();
-    let payload_b: Vec<u8> = (0..1024_u32)
-        .map(|i| ((i.wrapping_mul(13)) & 0xFF) as u8)
+    let payload_a: Vec<u8> = (0..(2 * 1024 * 1024_u32))
+        .map(|i| ((i.wrapping_mul(17) ^ i.rotate_left(7)) & 0xFF) as u8)
+        .collect();
+    let payload_b: Vec<u8> = (0..(2 * 1024 * 1024_u32))
+        .map(|i| ((i.wrapping_mul(13) ^ i.rotate_left(11)) & 0xFF) as u8)
         .collect();
     let write_a = async {
         write_all(&mut client_a, &payload_a).await;
@@ -249,28 +272,36 @@ async fn plan149_self_composed_black_box_connects_and_transfers_bytes() {
     };
     let (received_a, received_b) = tokio::join!(write_a, write_b);
     assert_eq!(
-        received_a, payload_b,
-        "client_a did not receive client_b payload"
+        received_a.len(),
+        payload_b.len(),
+        "client_a received {} of {} bytes",
+        received_a.len(),
+        payload_b.len()
     );
     assert_eq!(
-        received_b, payload_a,
-        "client_b did not receive client_a payload"
+        received_b.len(),
+        payload_a.len(),
+        "client_b received {} of {} bytes",
+        received_b.len(),
+        payload_a.len()
     );
+    assert_eq!(received_a, payload_b, "client_a payload mismatch");
+    assert_eq!(received_b, payload_a, "client_b payload mismatch");
 
     drop(client_a);
     drop(client_b);
-    // Brief sleep lets the per-destination runtime drivers observe
-    // socket EOF and exit before the scope shutdown join forces a
-    // hard cancellation. Plan 150 may shorten this once the
-    // runtime driver observes socket EOF via the listener path.
-    tokio::time::sleep(Duration::from_millis(50)).await;
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
     let _ = scope.shutdown().await;
+    assert_eq!(state.session_registry().session_count(), 0);
+    assert_eq!(state.destination_registry().lock().unwrap().len(), 0);
+    assert_eq!(state.streaming_pools().lock().unwrap().len(), 0);
+    assert_eq!(state.stream_registry().active_session_count(), 0);
+    assert_eq!(state.stream_registry().attachment_count(), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn plan149_silent_connect_writes_no_status_line() {
-    let (_state, address, scope, parent) = start_listener(sam_config()).await;
+    let (state, address, scope, parent) = start_listener(sam_config()).await;
 
     let priv_a = transient_destination(address).await;
     let priv_b = transient_destination(address).await;
@@ -279,50 +310,46 @@ async fn plan149_silent_connect_writes_no_status_line() {
     let mut client_b = TcpStream::connect(address).await.expect("connect b");
     hello_3_1(&mut client_a).await;
     hello_3_1(&mut client_b).await;
-    let _pub_a = session_create(&mut client_a, "alpha", &priv_a).await;
+    let (_reply_a, _pub_a) = session_create(&mut client_a, "alpha", &priv_a).await;
     let (_, pub_b) = session_create(&mut client_b, "beta", &priv_b).await;
     write_all(&mut client_b, b"STREAM ACCEPT ID=beta SILENT=true\n").await;
 
     let accept_task = tokio::spawn(async move {
-        let mut collected = Vec::new();
-        let mut chunk = [0_u8; 256];
-        loop {
-            let read = match client_b.read(&mut chunk).await {
-                Ok(0) => break,
-                Ok(n) => n,
-                Err(_) => break,
-            };
-            collected.extend_from_slice(&chunk[..read]);
-            if collected.len() >= 6 {
-                break;
-            }
-        }
-        (client_b, collected)
+        let received = read_n(&mut client_b, 6).await;
+        let response = [0x61_u8, 0x00, 0x62, 0x63, 0xFE, 0x64];
+        write_all(&mut client_b, &response).await;
+        (client_b, received, response)
     });
-    let _ = tokio::time::sleep(Duration::from_millis(50)).await;
-    let cmd = format!("STREAM CONNECT ID=alpha DESTINATION={pub_b} SILENT=true\n");
-    write_all(&mut client_a, cmd.as_bytes()).await;
     let sentinel = [0x10_u8, 0x20, 0x30, 0x40, 0x50, 0x60];
-    write_all(&mut client_a, &sentinel).await;
-    let (client_b, accepted_bytes) = accept_task.await.expect("accept task");
+    let mut same_read =
+        format!("STREAM CONNECT ID=alpha DESTINATION={pub_b} SILENT=true\n").into_bytes();
+    same_read.extend_from_slice(&sentinel);
+    write_all(&mut client_a, &same_read).await;
+    let (client_b, accepted_bytes, response) = accept_task.await.expect("accept task");
     assert_eq!(
         accepted_bytes, sentinel,
         "ACCEPT SILENT=true did not see raw sentinel bytes; got {accepted_bytes:?}"
     );
+    let echoed = read_n(&mut client_a, response.len()).await;
+    assert_eq!(
+        echoed, response,
+        "CONNECT SILENT=true emitted a status line before raw bytes"
+    );
 
     drop(client_b);
     drop(client_a);
-    // Cancel the parent BEFORE shutdown so the runtime drivers
-    // observe cancellation on their next loop iteration; a brief
-    // sleep after the cancel lets any in-flight select! arm commit.
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
-    tokio::time::sleep(Duration::from_millis(50)).await;
     let _ = scope.shutdown().await;
+    assert_eq!(state.session_registry().session_count(), 0);
+    assert_eq!(state.destination_registry().lock().unwrap().len(), 0);
+    assert_eq!(state.streaming_pools().lock().unwrap().len(), 0);
+    assert_eq!(state.stream_registry().active_session_count(), 0);
+    assert_eq!(state.stream_registry().attachment_count(), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn plan149_session_create_tears_down_cleanly() {
-    let (_state, address, scope, parent) = start_listener(sam_config()).await;
+    let (state, address, scope, parent) = start_listener(sam_config()).await;
     let mut client = TcpStream::connect(address).await.expect("connect");
     hello_3_1(&mut client).await;
     let priv_a = transient_destination(address).await;
@@ -334,11 +361,16 @@ async fn plan149_session_create_tears_down_cleanly() {
         !report.failed(),
         "destination driver panicked during teardown: {report:?}"
     );
+    assert_eq!(state.session_registry().session_count(), 0);
+    assert_eq!(state.destination_registry().lock().unwrap().len(), 0);
+    assert_eq!(state.streaming_pools().lock().unwrap().len(), 0);
+    assert_eq!(state.stream_registry().active_session_count(), 0);
+    assert_eq!(state.stream_registry().attachment_count(), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn plan149_same_read_buffered_raw_bytes_after_command() {
-    let (_state, address, scope, parent) = start_listener(sam_config()).await;
+    let (state, address, scope, parent) = start_listener(sam_config()).await;
 
     let priv_a = transient_destination(address).await;
     let priv_b = transient_destination(address).await;
@@ -347,23 +379,50 @@ async fn plan149_same_read_buffered_raw_bytes_after_command() {
     let mut client_b = TcpStream::connect(address).await.expect("connect b");
     hello_3_1(&mut client_a).await;
     hello_3_1(&mut client_b).await;
-    let (_reply_a, _pub_b) = session_create(&mut client_a, "alpha", &priv_a).await;
-    let (_reply_b, _pub_b2) = session_create(&mut client_b, "beta", &priv_b).await;
+    let (_reply_a, _pub_a) = session_create(&mut client_a, "alpha", &priv_a).await;
+    let (_reply_b, pub_b) = session_create(&mut client_b, "beta", &priv_b).await;
 
-    // Plan 149 §9 specifies the same-read path. The black-box test
-    // already exercises the standard separate-write path; the silent
-    // test exercises the SILENT=true path. Same-read raw transition is
-    // covered by the bridge's `initial_raw_bytes` plumbing in
-    // `RawStreamHandoff`; we leave a follow-up Plan 149 §9 specific
-    // black-box regression test for a later milestone if Plan 150
-    // surfaces a real-world external client that relies on it.
+    let accept_task = tokio::spawn(async move {
+        write_all(&mut client_b, b"STREAM ACCEPT ID=beta\n").await;
+        let status = read_one_line(&mut client_b).await;
+        let peer = read_one_line(&mut client_b).await;
+        let response = [0xA1_u8, 0x00, 0xFE, b'\r', b'P', b'O'];
+        write_all(&mut client_b, &response).await;
+        let bytes = read_n(&mut client_b, 6).await;
+        (client_b, status, peer, response, bytes)
+    });
+    let sentinel = [0x91_u8, 0x00, 0xFF, b'\n', b'P', b'I'];
+    let mut same_read = format!("STREAM CONNECT ID=alpha DESTINATION={pub_b}\n").into_bytes();
+    same_read.extend_from_slice(&sentinel);
+    write_all(&mut client_a, &same_read).await;
+    let status_a = read_one_line(&mut client_a).await;
+    let bytes_a = read_n(&mut client_a, 6).await;
+    let (client_b, status_b, peer_b, response, bytes_b) = accept_task.await.expect("accept task");
+    assert!(
+        status_a.starts_with("STREAM STATUS RESULT=OK"),
+        "CONNECT status not OK: {status_a:?}"
+    );
+    assert!(
+        status_b.starts_with("STREAM STATUS RESULT=OK"),
+        "ACCEPT status not OK: {status_b:?}"
+    );
+    assert!(
+        peer_b.starts_with("DESTINATION="),
+        "ACCEPT peer destination missing: {peer_b:?}"
+    );
+    assert_eq!(bytes_a, response, "CONNECT raw response was not delivered");
+    assert_eq!(
+        bytes_b, sentinel,
+        "ACCEPT same-read bytes were not delivered"
+    );
 
     drop(client_a);
     drop(client_b);
-    // Brief sleep lets the per-destination runtime drivers observe
-    // socket EOF and exit before the scope shutdown join forces a
-    // hard cancellation.
-    tokio::time::sleep(Duration::from_millis(50)).await;
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
     let _ = scope.shutdown().await;
+    assert_eq!(state.session_registry().session_count(), 0);
+    assert_eq!(state.destination_registry().lock().unwrap().len(), 0);
+    assert_eq!(state.streaming_pools().lock().unwrap().len(), 0);
+    assert_eq!(state.stream_registry().active_session_count(), 0);
+    assert_eq!(state.stream_registry().attachment_count(), 0);
 }

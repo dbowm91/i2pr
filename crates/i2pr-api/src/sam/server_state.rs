@@ -867,7 +867,7 @@ pub fn apply_session_outcome(
                 destination_id: applied.destination_id,
             },
             reply: Some(Reply::Session(SessionStatus::ok(
-                &applied.public_destination_b64,
+                &applied.private_destination_b64,
             ))),
         },
         Err(failed) => DispatchOutcome::Stay {
@@ -886,8 +886,17 @@ pub struct SessionCreateApplied {
     pub session_id: SamSessionId,
     /// Newly-created destination identifier.
     pub destination_id: DestinationId,
-    /// SAM public-destination Base64 text for the reply.
+    /// SAM public-destination Base64 text used for the session
+    /// registry's peer-routing cache.
     pub public_destination_b64: String,
+    /// SAM private-destination Base64 text used for the wire
+    /// `SESSION STATUS RESULT=OK DESTINATION=...` reply.
+    ///
+    /// Per the SAM 3.1 specification, this is the **private**
+    /// destination so the client can persist it for reconnect;
+    /// clients retrieve the matching public key with
+    /// `NAMING LOOKUP NAME=ME`.
+    pub private_destination_b64: String,
 }
 
 /// Failed session-create payload returned by the daemon.
@@ -1120,6 +1129,7 @@ mod tests {
                 session_id: session_id.clone(),
                 destination_id,
                 public_destination_b64: "PUB".to_owned(),
+                private_destination_b64: "PRIV".to_owned(),
             }),
         );
         match outcome {
@@ -1134,7 +1144,7 @@ mod tests {
                 assert_eq!(advanced_id, &session_id);
                 assert_eq!(advanced_dest, destination_id);
                 assert_eq!(reply.result(), ReplyResult::Ok);
-                assert_eq!(reply.destination(), Some("PUB"));
+                assert_eq!(reply.destination(), Some("PRIV"));
             }
             other => panic!("unexpected outcome {other:?}"),
         }

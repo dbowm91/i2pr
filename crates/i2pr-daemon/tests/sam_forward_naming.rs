@@ -242,11 +242,15 @@ async fn naming_me_is_session_scoped_and_unknown_i2p_is_not_found() {
     let (state, address, children, parent) = start().await;
     let mut session = TcpStream::connect(address).await.unwrap();
     hello(&mut session).await;
-    let public = create(&mut session).await;
+    let _private = create(&mut session).await;
     session.write_all(b"NAMING LOOKUP NAME=ME\n").await.unwrap();
     let reply = line(&mut session).await;
     assert!(reply.contains("NAMING REPLY RESULT=OK"), "{reply}");
-    assert!(reply.contains(&format!("VALUE={public}")));
+    let public = reply
+        .split_whitespace()
+        .find_map(|token| token.strip_prefix("VALUE=").map(str::to_owned))
+        .expect("NAMING LOOKUP NAME=ME returns public destination");
+    assert!(!public.is_empty());
 
     session
         .write_all(format!("NAMING LOOKUP NAME={public}\n").as_bytes())

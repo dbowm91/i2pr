@@ -258,9 +258,16 @@ SAM / I2CP adapters live in the Milestone 7 follow-on planning.
 Plans 137–139 consume `DestinationRegistry`, `DestinationRuntime`, and
 the per-destination `StreamingManager` to build the SAM 3.1
 loopback server; the actual SAM adapter wiring is owned by
-`i2pr-daemon` (`crates/i2pr-daemon/src/sam.rs`). Plan 140 records that
-the daemon still needs to connect SAM raw sockets to live destination
-delivery before external-client STREAM interoperability can be claimed.
+`i2pr-daemon` (`crates/i2pr-daemon/src/sam.rs`). Plan 149 records the
+completed self-composed localhost STREAM path; external-client STREAM
+interoperability remains a separate Plan 150 claim.
+
+For Plan 149, the daemon's `SamDestinationBridge` owns the canonical
+and receiver-mirror `StreamingManager`s while sharing the one
+`Arc<DestinationIdentity>` allocation held by `DestinationRuntime`.
+The runtime-neutral client layer supplies the Streaming, ECIES,
+LeaseSet2, and local-delivery contracts; it does not own the SAM
+listener or the raw TCP lifecycle.
 
 ## Layering
 

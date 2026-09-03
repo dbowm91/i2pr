@@ -12,7 +12,7 @@ Always read these before changing code or answering questions about state:
 1. `README.md` — current status (Milestone 6 local product gate closed via Plan 134; Milestone 7 corrective umbrella is Plan 145; Plan 146 private-destination reference compatibility is closed; Plan 147 raw-driver implementation is retained; **Plan 149 self-composed local STREAM product is closed**; **Plan 150 is next executable**), build/test/lint commands, high-level architecture.
 2. `GUARDRAILS.md` — non-negotiable engineering, security, interoperability, and collaboration constraints.
 3. `CONTRIBUTING.md` — local quality checks, runtime/testkit conventions, rootless and Multipass evidence-lane contracts.
-4. The active plan under `plans/` (entry point: [`plans/README.md`](plans/README.md); current authority: `plans/145-status.md` plus [`plans/149-status.md`](plans/149-status.md)). Read `plans/146-status.md`, `plans/147-status.md`, and `plans/148-status.md` as required audit context. The next executable plan is **Plan 150**.
+4. The active plan under `plans/` (entry point: [`plans/README.md`](plans/README.md); current authority: `plans/145-status.md`, [`plans/149-status.md`](plans/149-status.md), and [`plans/150-status.md`](plans/150-status.md)). Read `plans/146-status.md`, `plans/147-status.md`, and `plans/148-status.md` as required audit context. The next executable plan is **Plan 150**.
 5. `specs/support.toml` (mirrored to `docs/protocol-support.md`) for live protocol support state. `specs/CONFORMANCE.md` defines what counts as evidence.
 
 Do **not** trust prose that disagrees with a checked-in script or executable test. Static boundary scripts (`scripts/check-*.sh`) are the source of truth for non-negotiable invariants. The [`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md) skill is the index for the rest of the documentation.
@@ -36,7 +36,7 @@ Quick reference:
 - `i2pr-tunnel` — runtime-neutral exploratory pool, short tunnel-build crypto, data plane.
 - `i2pr-client` — local destination identity/pools/LeaseSet2/session/routing/Streaming core.
 - `i2pr-api` — runtime-neutral SAM 3.1 bounded parser/commands/replies/private-destination/session/stream registry/FORWARD/NAMING. Plan 142 I2P Base64 correction is retained; Plan 146 closed private-destination reference compatibility.
-- `i2pr-daemon` SAM service — supervised loopback listener, session transaction, STREAM raw socket owner/byte pump, local delivery bridge, forwarding. Plan 147 implementation is retained; **Plan 149 now owns the self-composed `SESSION CREATE` path (one `Arc<DestinationIdentity>` allocation, OS-CSPRNG `SamLocalProductFabric`, automatic per-destination driver spawn, local peer LeaseSet2 directory, byte-exact `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw transition, typed `DeliverySweepCounters`)**. The canonical product evidence lives in `crates/i2pr-daemon/tests/sam_stream_self_composed.rs`.
+- `i2pr-daemon` SAM service — supervised loopback listener, session transaction, STREAM raw socket owner/byte pump, local delivery bridge, forwarding. Plan 147 implementation is retained; **Plan 149 now owns the self-composed `SESSION CREATE` path (one `Arc<DestinationIdentity>` allocation, OS-CSPRNG `SamLocalProductFabric`, automatic per-destination driver spawn, local peer LeaseSet2 directory, spec-correct private `SESSION STATUS DESTINATION=` plus public `NAMING LOOKUP NAME=ME`, byte-exact `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw transition, typed `DeliverySweepCounters`, and terminal CLOSE/RESET cleanup)**. The canonical product evidence lives in `crates/i2pr-daemon/tests/sam_stream_self_composed.rs`.
 - `i2pr-testkit` — deterministic simulation; no production crate may depend on it.
 - `tools/i2pr-interop` — non-production test launcher. Must never activate `i2pr-daemon`.
 
@@ -81,9 +81,9 @@ CI also runs `cargo deny check advisories bans sources`. `Cargo.lock` is authori
 - Runtime supervision: `cargo test -p i2pr-runtime --all-targets`; run the forced-cleanup 100-iteration test serially.
 - Deterministic testkit: `cargo test -p i2pr-testkit --all-targets`.
 - SAM protocol/private destination: `cargo test -p i2pr-api --all-targets` and `cargo test -p i2pr-daemon --test sam_plan146_reference -- --test-threads=1`.
-- SAM local delivery regressions: `sam_stream_product`, `sam_stream_independent`.
+- SAM local delivery regressions: `sam_stream_product`, `sam_stream_independent`, `sam_forward_naming`.
 - Plan 147 raw implementation regression: `cargo test -p i2pr-daemon --test sam_stream_raw_product`. This is a focused lower-level bridge regression; the canonical product evidence is now `cargo test -p i2pr-daemon --test sam_stream_self_composed`.
-- Plan 149 self-composed black-box SAM STREAM lane: `cargo test -p i2pr-daemon --test sam_stream_self_composed -- --test-threads=1`. The suite drives behavior only through listener TCP after startup and may not call private bridge, peer-LeaseSet2, inbound-tunnel-factory, destination-driver, delivery, or byte-moving setup APIs.
+- Plan 149 self-composed black-box SAM STREAM lane: `cargo test -p i2pr-daemon --test sam_stream_self_composed -- --test-threads=1`. The four-test suite drives behavior only through listener TCP after startup, covers bidirectional 2 MiB transfer, both `SILENT` modes, same-read raw bytes, and post-shutdown registry baselines, and may not call private bridge, peer-LeaseSet2, inbound-tunnel-factory, destination-driver, delivery, or byte-moving setup APIs.
 - Constrained-host lane: `python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'`.
 
 ### Testing conventions

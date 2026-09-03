@@ -10,7 +10,7 @@ Milestone 7 / SAM has three strong retained sub-results:
 
 - [**Plan 146**](plans/146-status.md) passed bidirectional SAM 3.1 private-destination reference requalification against pinned Java I2P/i2pd behavior.
 - [**Plan 147**](plans/147-status.md) landed the dedicated same-socket raw STREAM owner, TCP↔Streaming byte pump, actual Streaming `Established` wait, OS-CSPRNG runtime path, and supervised ACK/retransmit driver.
-- [**Plan 149**](plans/149-status.md) makes `SESSION CREATE` self-compose the entire localhost STREAM product from SAM protocol commands alone. The destination identity is shared via one `Arc<DestinationIdentity>` allocation between the destination runtime and the SAM bridge; the OS-CSPRNG-driven `SamLocalProductFabric` provides a signed LeaseSet2, outbound role, and inbound-tunnel factory; the per-destination runtime driver is spawned automatically; local peer LeaseSet2 routing is resolved through the SAM service directory (no test injection); byte-exact `STREAM STATUS RESULT=OK` and `DESTINATION=<peer-pub-b64>` raw-transition semantics are enforced; typed failure counters (`DeliverySweepCounters`) replace silent packet drops. The new black-box evidence lives in `crates/i2pr-daemon/tests/sam_stream_self_composed.rs`.
+- [**Plan 149**](plans/149-status.md) makes `SESSION CREATE` self-compose the entire localhost STREAM product from SAM protocol commands alone. The destination identity is shared via one `Arc<DestinationIdentity>` allocation between the destination runtime and the SAM bridge; the OS-CSPRNG-driven `SamLocalProductFabric` provides a signed LeaseSet2, outbound role, and inbound-tunnel factory; the per-destination runtime driver is spawned automatically; local peer LeaseSet2 routing is resolved through the SAM service directory (no test injection); spec-correct private `SESSION STATUS DESTINATION=` and public `NAMING LOOKUP NAME=ME` are implemented; byte-exact `STREAM STATUS RESULT=OK` and `DESTINATION=<peer-pub-b64>` raw-transition semantics are enforced; typed failure counters (`DeliverySweepCounters`) and terminal CLOSE/RESET cleanup replace silent packet drops. The four-test black-box evidence lives in `crates/i2pr-daemon/tests/sam_stream_self_composed.rs` and includes exact bidirectional 2 MiB transfer and same-read raw-byte checks.
 
 The next executable plan is [**Plan 150**](plans/150-m7-sam31-external-client-reproducible-final-closure.md), which provisions correctly pinned external clients (`libsam3` snapshot `7d6e658798baec31394c5685f9583343cc00900b`, `i2psam` snapshot `b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac`) and runs them through the real self-composed listener to close independent-client FORWARD / NAMING / final M7 evidence. `sam_independent_clients = 0-passed`; Milestone 7 is locally closed and Milestone 8 is not yet the next product layer.
 
@@ -48,10 +48,10 @@ Requires Rust 1.95.0 (pinned via `rust-toolchain.toml`); MSRV is 1.88.
 
 ```text
 cargo fmt --all --check
-cargo check --workspace --all-targets
-cargo test --workspace
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+cargo check --locked --workspace --all-targets
+cargo test --locked --workspace --all-targets
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh
 ```

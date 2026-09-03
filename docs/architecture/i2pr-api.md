@@ -5,9 +5,13 @@ router. Plan 136 lands it as the smallest trustworthy SAM 3.1
 foundation on which the SAM server can be built; Plan 137 adds the
 loopback-server / session-lifecycle surface; Plan 138 adds the
 STREAM CONNECT / ACCEPT transport-bridge surface; Plan 139 adds
-loopback-only STREAM FORWARD and local NAMING LOOKUP policy. Plan 140
-audits independent-client compatibility but remains blocked on the live
-STREAM raw handoff and private-destination encoding compatibility.
+loopback-only STREAM FORWARD and local NAMING LOOKUP policy. Plan 146
+requalifies the private-destination wire representation against the
+reference implementations. Plan 149 composes these runtime-neutral
+surfaces in `i2pr-daemon`; `SESSION STATUS DESTINATION=` carries the
+private destination and `NAMING LOOKUP NAME=ME` returns its public
+counterpart. Independent-client interoperability remains Plan 150
+work.
 
 > [Plan 136](../plans/136-m7-sam31-protocol-private-destination-foundation.md):
 > create the `i2pr-api` crate at the intended application-adapter
@@ -367,6 +371,11 @@ The crate has unit tests inside each module:
   `ServerConnectionState`, and `dispatch`) is owned by this
   crate; the daemon only owns the Tokio listener and the
   supervised per-socket loop.
+- Plan 149 (SAM 3.1 self-composing local product): the daemon now
+  composes this crate's session and stream registries with one shared
+  destination identity and supervised local STREAM drivers. This
+  crate remains runtime-neutral; it does not own the local fabric,
+  sockets, or raw byte pump.
 - `specs/references/sam31-private-destination.md`: provenance for the
   private-destination format and the standard Java `PrivateKeyFile`
   concatenation.

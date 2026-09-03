@@ -41,14 +41,14 @@ use std::sync::Arc;
 
 use i2pr_api::sam::session::SamSessionId;
 use i2pr_client::DestinationId;
-use i2pr_client::streaming::connection::ConnectionId;
+use i2pr_client::streaming::connection::{ConnectionId, ConnectionState};
 use i2pr_client::streaming::manager::RemoteDestination;
 use i2pr_runtime::CancellationToken;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
-use crate::sam::SamServiceState;
+use crate::sam::{SamServiceState, sam_now_seconds, streaming_now_ms};
 
 /// Direction of the underlying Streaming connection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -163,6 +163,18 @@ impl std::fmt::Debug for RawStreamHandoffResolved {
     }
 }
 
+/// Metadata retained by the command-mode task so the raw driver can
+/// release its Streaming and SAM ownership after the TCP socket exits.
+#[derive(Clone, Debug)]
+pub(crate) struct RawStreamCleanup {
+    pub(crate) session_id: SamSessionId,
+    pub(crate) destination_id: DestinationId,
+    pub(crate) attachment_id: u32,
+    pub(crate) connection_id: ConnectionId,
+    pub(crate) peer_destination: RemoteDestination,
+    pub(crate) direction: RawDirection,
+}
+
 /// Spins one raw-mode TCP <-> StreamingManager byte pump for the
 /// supplied handoff. The driver terminates when:
 /// - the parent cancellation token fires (parent socket close,
@@ -221,6 +233,7 @@ pub async fn run_raw_stream(
     while !eof {
         // ----- TCP -> Streaming: read bounded chunk and admit -----
         let mut timed_out = false;
+        let mut backpressured = false;
         let read_size = if carry.is_empty() {
             tokio::select! {
                 biased;
@@ -293,6 +306,7 @@ pub async fn run_raw_stream(
                     &peer_destination,
                     segment,
                     direction,
+                    streaming_now_ms(),
                 );
                 match produced {
                     Ok(true) => {
@@ -308,6 +322,7 @@ pub async fn run_raw_stream(
                         // window drains. Park the remainder and try
                         // again next iteration.
                         carry = payload[offset..].to_vec();
+                        backpressured = true;
                         break;
                     }
                     Err(error) => {
@@ -365,6 +380,46 @@ pub async fn run_raw_stream(
                 return Err(RawStreamError::Io(error));
             }
         }
+        let remote_terminal = {
+            let destinations = state.sam_destinations();
+            let destinations = destinations
+                .lock()
+                .map_err(|_| RawStreamError::Streaming("sam destinations poisoned".to_owned()))?;
+            let Some(bridge) = destinations.get(destination_id) else {
+                return Ok(());
+            };
+            bridge.with(|bridge| {
+                let connection = match direction {
+                    RawDirection::Outbound => bridge.streaming().get_connection(connection_id),
+                    RawDirection::Inbound => {
+                        bridge.receiver_streaming().get_connection(connection_id)
+                    }
+                };
+                connection.is_none_or(|connection| {
+                    matches!(
+                        connection.state(),
+                        ConnectionState::ClosingRemote
+                            | ConnectionState::Closed
+                            | ConnectionState::Reset
+                    )
+                })
+            })
+        };
+        if remote_terminal {
+            eof = true;
+        }
+        if backpressured && !carry.is_empty() {
+            // A full congestion/send window is an expected flow-control
+            // result, not a terminal stream error. Avoid a ready-loop
+            // while the peer's delayed ACK timer is running; the short
+            // bounded park also gives the per-destination driver a fair
+            // opportunity to poll and dispatch that ACK.
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Ok(()),
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(5)) => {}
+            }
+        }
     }
 
     debug!(
@@ -377,6 +432,123 @@ pub async fn run_raw_stream(
 }
 
 impl SamServiceState {
+    /// Removes the local Streaming connection associated with a request
+    /// whose local delivery could not be completed. This makes a typed
+    /// delivery degradation terminal for the affected raw stream, so a
+    /// waiter or byte pump cannot remain parked on a connection whose
+    /// packet has already been rejected.
+    fn terminate_failed_delivery(
+        &self,
+        destination_id: DestinationId,
+        request: &i2pr_client::streaming::transport::TransportSendRequest,
+    ) {
+        let destinations_arc = self.sam_destinations();
+        let Ok(destinations) = destinations_arc.lock() else {
+            return;
+        };
+        let Some(handle) = destinations.get(destination_id) else {
+            return;
+        };
+        handle.with(|bridge| {
+            let stream_id = request.receive_stream_id;
+            if let Some(connection_id) = bridge
+                .streaming()
+                .lookup_outbound(stream_id)
+                .or_else(|| bridge.receiver_streaming().lookup_inbound(stream_id))
+            {
+                if bridge.streaming().get_connection(connection_id).is_some() {
+                    let _ = bridge.streaming_mut().remove_connection(connection_id);
+                } else {
+                    let _ = bridge
+                        .receiver_streaming_mut()
+                        .remove_connection(connection_id);
+                }
+            }
+        });
+    }
+
+    /// Completes ownership cleanup after the raw TCP driver exits. A
+    /// normal EOF emits the Streaming CLOSE packet; an I/O or protocol
+    /// failure emits RESET. In both cases the local connection and SAM
+    /// attachment are then released, while the peer receives the terminal
+    /// packet through the same supervised local-delivery path.
+    pub(crate) fn finish_raw_stream(&self, cleanup: RawStreamCleanup, reset: bool) {
+        let RawStreamCleanup {
+            session_id,
+            destination_id,
+            attachment_id,
+            connection_id,
+            peer_destination,
+            direction,
+        } = cleanup;
+        let now_ms = streaming_now_ms();
+        let terminal_queued = self
+            .sam_destinations()
+            .lock()
+            .ok()
+            .and_then(|destinations| {
+                let bridge = destinations.get(destination_id)?;
+                Some(bridge.with(|bridge| {
+                    let identity = bridge.identity();
+                    let manager = match direction {
+                        RawDirection::Outbound => bridge.streaming_mut(),
+                        RawDirection::Inbound => bridge.receiver_streaming_mut(),
+                    };
+                    let connection = manager.get_connection(connection_id)?;
+                    let local_port = connection.local_port();
+                    let remote_port = connection.remote_port();
+                    let request = if reset {
+                        manager.send_reset(
+                            connection_id,
+                            identity.as_ref(),
+                            &peer_destination,
+                            local_port,
+                            remote_port,
+                            now_ms,
+                        )
+                    } else {
+                        manager.send_close(
+                            connection_id,
+                            identity.as_ref(),
+                            &peer_destination,
+                            local_port,
+                            remote_port,
+                            now_ms,
+                        )
+                    };
+                    request.ok()
+                }))
+            })
+            .flatten()
+            .is_some();
+
+        if terminal_queued {
+            self.notify_outbound_signal(destination_id);
+            let _ = self.deliver_outbound(destination_id, sam_now_seconds(), now_ms);
+        }
+
+        if let Ok(destinations) = self.sam_destinations().lock()
+            && let Some(bridge) = destinations.get(destination_id)
+        {
+            bridge.with(|bridge| match direction {
+                RawDirection::Outbound => {
+                    let _ = bridge.streaming_mut().remove_connection(connection_id);
+                }
+                RawDirection::Inbound => {
+                    let _ = bridge
+                        .receiver_streaming_mut()
+                        .remove_connection(connection_id);
+                }
+            });
+        }
+        let _ = self
+            .stream_registry()
+            .release_attachment(&session_id, attachment_id);
+        if self.stream_registry().attachment_count_for(&session_id) == 0 {
+            self.teardown_session(&session_id, destination_id);
+        }
+    }
+
     /// Sends one bounded `send_data` segment into the local
     /// `StreamingManager` for the supplied connection. Returns
     /// `true` when the manager accepted the segment, `false` when
@@ -389,6 +561,7 @@ impl SamServiceState {
         peer: &RemoteDestination,
         payload: &[u8],
         direction: RawDirection,
+        now_ms: u64,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         let destinations = self.sam_destinations();
         let destinations = destinations.lock().expect("sam destinations poisoned");
@@ -435,7 +608,7 @@ impl SamServiceState {
                         local_port,
                         remote_port,
                         payload,
-                        0,
+                        now_ms,
                     )
                 } else {
                     bridge.streaming_mut().send_data(
@@ -445,7 +618,7 @@ impl SamServiceState {
                         local_port,
                         remote_port,
                         payload,
-                        0,
+                        now_ms,
                     )
                 };
                 match result {
@@ -456,7 +629,8 @@ impl SamServiceState {
         match outcome {
             Ok(()) => Ok(true),
             Err(i2pr_client::streaming::manager::StreamingManagerError::Streaming(
-                i2pr_client::streaming::StreamingError::SendWindowFull,
+                i2pr_client::streaming::StreamingError::SendWindowFull
+                | i2pr_client::streaming::StreamingError::CongestionRejected,
             )) => Ok(false),
             Err(error) => Err(Box::new(error) as Box<dyn std::error::Error + Send + Sync>),
         }
@@ -510,6 +684,7 @@ impl SamServiceState {
             missing_factory: 0,
             factory_exhausted: 0,
             unknown_peer: 0,
+            delivery_failed: 0,
         };
         // Step 2: deliver each request.
         let outbound_hop0_hash = i2pr_proto::Hash::from_bytes([0xA1; 32]);
@@ -523,7 +698,8 @@ impl SamServiceState {
         // deterministic seed. `OsRng` is a `TryCryptoRng`; wrap it in
         // `UnwrapMut` so the `bridge_to_peer` `CryptoRng + RngCore`
         // bound is satisfied.
-        let mut rng = rand_core::UnwrapMut(&mut i2pr_crypto::OsRng);
+        let mut os_rng = i2pr_crypto::OsRng;
+        let mut rng = rand_core::UnwrapMut(&mut os_rng);
         for request in requests {
             let peer_destination_hash = request.destination_hash;
             let peer = destinations_arc
@@ -539,6 +715,7 @@ impl SamServiceState {
                         "deliver_outbound: no peer bridge registered"
                     );
                     counters.unknown_peer = counters.unknown_peer.saturating_add(1);
+                    self.terminate_failed_delivery(destination_id, &request);
                     continue;
                 }
             };
@@ -547,6 +724,31 @@ impl SamServiceState {
                 .expect("sam destinations poisoned")
                 .get(destination_id)
                 .expect("sender still registered");
+            let (peer_lease_set2, peer_identity_key) =
+                peer.with(|bridge| (bridge.lease_set2().clone(), bridge.identity_netdb_key()));
+            let peer_lease_set2 = match i2pr_netdb::ValidatedLeaseSet2::from_lease_set2(
+                peer_lease_set2,
+                Some(peer_identity_key),
+                i2pr_netdb::LeaseSet2ValidationContext::new(now_seconds),
+            ) {
+                Ok(validated) => validated,
+                Err(error) => {
+                    debug!(error = %error, "local peer LeaseSet2 validation failed");
+                    counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                    self.terminate_failed_delivery(destination_id, &request);
+                    continue;
+                }
+            };
+            if let Err(error) = sender_clone.with(|bridge| {
+                bridge
+                    .routing_mut()
+                    .install_remote_lease_set2(peer_lease_set2)
+            }) {
+                debug!(error = %error, "local peer LeaseSet2 install failed");
+                counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                self.terminate_failed_delivery(destination_id, &request);
+                continue;
+            }
             let inbound_factory_present =
                 peer.with(|bridge| bridge.inbound_tunnel_factory().is_some());
             let inbound_tunnel = peer.with(|bridge| {
@@ -568,6 +770,7 @@ impl SamServiceState {
                     } else {
                         counters.missing_factory = counters.missing_factory.saturating_add(1);
                     }
+                    self.terminate_failed_delivery(destination_id, &request);
                     continue;
                 }
             };
@@ -595,7 +798,8 @@ impl SamServiceState {
                 // Plan 149 §8: surface bridge_to_peer failures via
                 // the same sweep counters so the driver can wake
                 // waiters and avoid silent drops.
-                counters.factory_exhausted = counters.factory_exhausted.saturating_add(1);
+                counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                self.terminate_failed_delivery(destination_id, &request);
             }
         }
         Ok(counters)

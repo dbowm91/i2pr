@@ -24,7 +24,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use i2pr_client::streaming::config::StreamingConfig;
@@ -50,14 +50,12 @@ use crate::sam::SamServiceError;
 /// only a safety belt under failure.
 pub const MAX_BRIDGE_DIAGNOSTIC_QUEUE: usize = 1024;
 
-/// Plan 143 removed the captured-outbound test seam. A small
-/// diagnostic queue remains so the bridge can surface what
-/// the SAM STREAM driver is doing without the test-only
-/// history retained in plan 138. Production STREAM traffic
-/// never consults the diagnostic queue.
+/// Plan 143 removed the captured-outbound test seam. The diagnostic
+/// counter below preserves bounded observability without retaining
+/// application payloads or destination-bearing transport requests.
 #[derive(Clone, Debug, Default)]
 pub struct BridgeDiagnostics {
-    recent_outbound: VecDeque<TransportSendRequest>,
+    outbound_dispatches: usize,
     inbound_dispatched: u64,
     inbound_observations: u64,
 }
@@ -65,17 +63,17 @@ pub struct BridgeDiagnostics {
 impl BridgeDiagnostics {
     fn new() -> Self {
         Self {
-            recent_outbound: VecDeque::new(),
+            outbound_dispatches: 0,
             inbound_dispatched: 0,
             inbound_observations: 0,
         }
     }
 
-    fn record_outbound(&mut self, request: TransportSendRequest) {
-        if self.recent_outbound.len() >= MAX_BRIDGE_DIAGNOSTIC_QUEUE {
-            self.recent_outbound.pop_front();
-        }
-        self.recent_outbound.push_back(request);
+    fn record_outbound(&mut self, _request: TransportSendRequest) {
+        self.outbound_dispatches = self
+            .outbound_dispatches
+            .saturating_add(1)
+            .min(MAX_BRIDGE_DIAGNOSTIC_QUEUE);
     }
 
     fn record_inbound_dispatch(&mut self) {
@@ -87,7 +85,7 @@ impl BridgeDiagnostics {
     }
 
     pub fn outbound_queue_len(&self) -> usize {
-        self.recent_outbound.len()
+        self.outbound_dispatches
     }
 
     pub fn inbound_dispatched(&self) -> u64 {
@@ -103,7 +101,6 @@ impl BridgeDiagnostics {
 #[allow(dead_code)]
 pub struct SamDestinationBridge {
     identity: Arc<DestinationIdentity>,
-    static_secret: [u8; i2pr_crypto::X25519_KEY_LENGTH],
     lease_set2: LeaseSet2,
     streaming: StreamingManager,
     routing: DestinationRouting,
@@ -142,18 +139,11 @@ impl SamDestinationBridge {
     /// for one destination. The identity is moved into the bridge.
     pub fn new(
         identity: DestinationIdentity,
-        static_secret: [u8; i2pr_crypto::X25519_KEY_LENGTH],
         lease_set2: LeaseSet2,
         outbound_role: DestinationOutboundRole,
         now_seconds: u32,
     ) -> Self {
-        Self::with_shared_identity(
-            Arc::new(identity),
-            static_secret,
-            lease_set2,
-            outbound_role,
-            now_seconds,
-        )
+        Self::with_shared_identity(Arc::new(identity), lease_set2, outbound_role, now_seconds)
     }
 
     /// Builds the sender-side bridge plus the receiver-side mirror for one
@@ -164,7 +154,6 @@ impl SamDestinationBridge {
     /// runtime. The bridge never reconstructs a second private identity.
     pub fn with_shared_identity(
         identity: Arc<DestinationIdentity>,
-        static_secret: [u8; i2pr_crypto::X25519_KEY_LENGTH],
         lease_set2: LeaseSet2,
         outbound_role: DestinationOutboundRole,
         now_seconds: u32,
@@ -178,7 +167,6 @@ impl SamDestinationBridge {
             .expect("destination hash bind");
         Self {
             identity,
-            static_secret,
             lease_set2,
             streaming: StreamingManager::new(StreamingConfig::balanced()),
             routing: DestinationRouting::new(DestinationRoutingConfig::balanced()),
@@ -207,10 +195,6 @@ impl SamDestinationBridge {
 
     pub const fn lease_set2(&self) -> &LeaseSet2 {
         &self.lease_set2
-    }
-
-    pub const fn static_secret(&self) -> &[u8; i2pr_crypto::X25519_KEY_LENGTH] {
-        &self.static_secret
     }
 
     pub const fn outbound_role(&self) -> &DestinationOutboundRole {
@@ -251,6 +235,31 @@ impl SamDestinationBridge {
     /// path uses [`Self::streaming_mut`].
     pub fn receiver_streaming(&self) -> &StreamingManager {
         &self.receiver_streaming
+    }
+
+    /// Polls retransmission and delayed-ACK state for both manager
+    /// halves. The manager methods enqueue their own transport
+    /// requests; the daemon only needs to invoke them once per
+    /// driver tick.
+    pub fn poll_streaming_timers(&mut self, now_ms: u64) {
+        let _ = self.streaming.poll_retransmits(now_ms);
+        let _ = self.streaming.poll_acks(now_ms);
+        let _ = self.receiver_streaming.poll_retransmits(now_ms);
+        let _ = self.receiver_streaming.poll_acks(now_ms);
+    }
+
+    /// Returns whether either manager currently owns an established
+    /// connection.
+    pub fn has_established_connection(&self) -> bool {
+        self.streaming
+            .iter_connections()
+            .chain(self.receiver_streaming.iter_connections())
+            .any(|connection| {
+                matches!(
+                    connection.state(),
+                    i2pr_client::streaming::connection::ConnectionState::Established
+                )
+            })
     }
 
     pub fn receiver_routing_mut(&mut self) -> &mut DestinationRouting {
@@ -506,10 +515,8 @@ pub fn build_sam_destination_bridge(
     outbound_role: DestinationOutboundRole,
     now_seconds: u32,
 ) -> Result<SamDestinationBridge, SamBridgeBuildError> {
-    let static_secret = *identity.static_secret_bytes();
     Ok(SamDestinationBridge::new(
         identity,
-        static_secret,
         lease_set2,
         outbound_role,
         now_seconds,

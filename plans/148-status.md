@@ -39,7 +39,9 @@ The production `SamServiceState::execute_session_create()` path currently instal
 
 `execute_stream_connect()` then requires a bridge to exist, and `deliver_outbound()` requires a peer inbound-tunnel factory. Therefore simply making external clients available would still not prove the black-box product.
 
-Plan 149 now owns that self-composition defect and the Plan 147 acceptance items that were incorrectly deferred.
+Plan 149 owned that self-composition defect and closed the documented local
+raw-path subset. The remaining external-client, slow-peer, fault-matrix, and
+sibling-stream evidence is now Plan 150 work.
 
 ## Plan 147 evidence retained but narrowed
 
@@ -54,15 +56,16 @@ Retain Plan 147 as evidence for:
 - same-read post-command raw-byte preservation;
 - localhost binary byte-pump smoke when the required bridge/tunnel/routing prerequisites are installed.
 
-Do **not** use the Plan 147 status as evidence that its complete original acceptance matrix passed. Plan 149 now owns:
+Do **not** use the Plan 147 status as evidence that its complete original acceptance matrix passed. Plan 149 closed:
 
 - self-composing session/product setup;
 - exact SILENT semantics;
 - authenticated non-silent ACCEPT metadata;
-- slow-reader/slow-writer bounds;
 - multi-megabyte bounded transfer;
-- loss/duplicate/reorder/ACK-drop/corruption/retransmit-ceiling tests;
-- close/reset/sibling/control-session lifecycle.
+- terminal cleanup and post-shutdown resource baselines.
+
+Plan 150 carries forward slow-reader/slow-writer bounds, the real socket
+fault matrix, and sibling-stream lifecycle evidence.
 
 ## External-client provenance correction
 
@@ -93,16 +96,19 @@ plan_146 = passed-m7-sam31-private-destination-reference-requalification
 plan_147_raw_driver_implementation = landed-and-retained
 plan_147_full_original_acceptance = superseded-by-plan149
 plan_148 = blocked-audit-superseded-by-plan149-150-corrective-sequence
-plan_149 = active-m7-sam31-self-composing-local-product-corrective
-plan_150 = blocked-on-plan149
+plan_149 = passed-m7-sam31-self-composing-local-product-corrective
+plan_150 = next-executable-on-plan149-pass
 
 sam_independent_clients = 0-passed
-milestone7_local_product = not-closed
-next_executable_plan = 149
+milestone7_local_product = closed-via-plan149
+next_executable_plan = 150
 ```
 
 ## Handoff
 
-Do not resume the Plan 148 narrative directly and do not promote Milestone 7.
+Do not resume the Plan 148 narrative directly. Plan 149 has closed the
+self-composed local product; final Milestone 7 promotion still belongs to
+Plan 150.
 
-Execute **Plan 149 only**. Once Plan 149 closes, execute Plan 150 for correctly pinned external-client/FORWARD/NAMING final closure.
+Execute **Plan 150 only** for correctly pinned external-client/FORWARD/NAMING
+final closure.

@@ -160,17 +160,18 @@ The previous source defects removed:
 
 ## What Plan 147 does **not** close
 
-- Two-independent-client final Milestone 7 closure remains Plan 148.
-- FORWARD/naming byte-path revalidation remains Plan 148.
+- Two-independent-client final Milestone 7 closure remains Plan 150.
+- FORWARD/naming byte-path revalidation remains Plan 150.
 - SAM `advertised = false` unchanged; no new protocol surface is
   advertised.
 - Slow-reader/slow-writer, loss/duplicate/reorder, close/reset,
   sibling-stream isolation, and multi-megabyte backpressure revalidation
-  at the SAM socket boundary remain Plan 148 follow-up.
+  at the SAM socket boundary were narrowed by Plan 149; the remaining
+  external-client/fault-matrix follow-up is Plan 150.
 
 ## Handoff instruction
 
 The next implementation model should read Plan 145 and execute
-**Plan 148 only**. Plan 147's byte-product lane is closed as
+**Plan 150 only**. Plan 147's byte-product lane is closed as
 `passed-m7-sam31-dedicated-raw-stream-driver` and must not be
 re-opened without a concrete defect against the recorded evidence.

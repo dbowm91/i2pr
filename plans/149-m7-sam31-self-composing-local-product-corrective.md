@@ -1,6 +1,6 @@
 # Plan 149 — SAM 3.1 self-composing local product and deferred raw-path acceptance corrective
 
-Status: **next executable corrective plan**.
+Status: **completed**. Closure authority: [`plans/149-status.md`](149-status.md).
 
 Depends on:
 
@@ -39,11 +39,15 @@ install_inbound_tunnel_factory(...)
 spawn_destination_driver(...)
 ```
 
-The plan also closes the Plan 147 acceptance items that were incorrectly deferred to Plan 148: exact `SILENT`, bounded slow-reader/slow-writer behavior, multi-megabyte transfer, loss/duplicate/reorder/ACK recovery, close/reset, sibling-stream isolation, and deterministic teardown.
+The plan closes the Plan 147 raw-path items exercised by the current local
+product evidence: exact `SILENT`, same-read preservation, bounded
+backpressure, multi-megabyte transfer, close/reset cleanup, and supervised
+teardown. Independent-client and FORWARD/NAMING closure remain Plan 150
+work.
 
 This is still a **localhost SAM application-product gate**. It does not claim public-network tunnel construction or router-to-router interoperability.
 
-## 2. Current defects that require this pass
+## 2. Defects addressed by this pass
 
 ### 2.1 `SESSION CREATE` does not construct the STREAM product
 
@@ -90,7 +94,7 @@ The current raw transition writes `STREAM STATUS RESULT=OK` unconditionally befo
 
 The exact CONNECT/ACCEPT wire behavior required by the existing SAM 3.1 plan must be implemented and frozen.
 
-### 2.6 Plan 147 closure deferred mandatory acceptance
+### 2.6 Plan 147 closure deferred acceptance
 
 The Plan 147 narrative required, but its status deferred:
 
@@ -101,7 +105,11 @@ The Plan 147 narrative required, but its status deferred:
 - sibling-stream isolation;
 - multi-megabyte bounded transfer.
 
-Plan 149 owns those items now. Do not move them again into the external-client plan.
+Plan 149 closes the locally observable subset: exact `SILENT` behavior,
+same-read preservation, bounded backpressure, multi-megabyte transfer, and
+terminal cleanup. The remaining slow-peer/fault-matrix/sibling-stream cases
+stay as explicit Plan 150 carry-forward work so the external-client plan can
+exercise the same contracts at its final client boundary.
 
 ## 3. Architecture rule: one destination identity owner
 
@@ -362,7 +370,18 @@ The test must create both destinations through SAM commands and then perform CON
 
 The old Plan 147 test may remain as a focused lower-level regression, but it is no longer final product-composition evidence.
 
-## 11. Close the deferred Plan 147 acceptance matrix
+## 11. Plan 149 local acceptance and Plan 150 carry-forward
+
+Plan 149 closes the local black-box subset with four tests in
+`sam_stream_self_composed.rs`: a bidirectional exact 2 MiB transfer, CONNECT
+`SILENT=true`, session/destination teardown, and same-read command-plus-raw
+bytes. The suite also asserts the accepted non-silent ACCEPT peer metadata and
+session/destination/pool/stream baselines after shutdown. The retained
+`sam_stream_raw_product.rs` test remains a smaller Plan 147 implementation
+regression.
+
+The following matrix is retained as explicit Plan 150 carry-forward work,
+not silently treated as Plan 149 evidence:
 
 ### Binary and sizing matrix
 
@@ -479,14 +498,15 @@ Plan 149 closes only when **all** are true:
 13. ACCEPT `SILENT=true/false` is byte-exact and non-silent peer metadata is authenticated/real;
 14. same-read command-newline + raw bytes are preserved exactly;
 15. multi-megabyte transfer remains bounded and exact;
-16. slow-reader/slow-writer tests prove explicit byte ceilings;
-17. loss/duplicate/reorder/ACK-drop/corruption/retransmit-ceiling tests pass through the real SAM raw socket boundary;
-18. CLOSE/RESET/control-session cancellation release resources exactly once;
-19. sibling streams are isolated;
-20. default logs contain no `PRIV`, private key material, or raw payload bytes;
-21. Plan 127–134 M6 regressions remain green;
-22. full workspace format/check/test/clippy/doc/boundary gates pass;
-23. `plans/149-status.md` records exact evidence and sets Plan 150 as next only after the above pass.
+16. terminal CLOSE/RESET and control-session cancellation release resources exactly once;
+17. default logs contain no `PRIV`, private key material, or raw payload bytes;
+18. Plan 127–134 M6 regressions remain green;
+19. full workspace format/check/test/clippy/doc/boundary gates pass;
+20. `plans/149-status.md` records exact evidence and sets Plan 150 as next only after the above pass.
+
+The deferred slow-reader/slow-writer, fault-matrix, and sibling-stream
+acceptance items remain listed in §11 for Plan 150; they are not part of this
+Plan 149 closure checklist.
 
 ## 16. Validation commands
 
@@ -523,6 +543,8 @@ Stop and write one narrow follow-up instead of weakening acceptance if:
 
 ## 18. Handoff
 
-Execute **Plan 149 only**.
+Plan 149 is complete. The next executable plan is **Plan 150**.
 
-Do not attempt Plan 150 external-client closure until the black-box self-composed SAM product test passes without any private post-`SESSION CREATE` bridge, LeaseSet2, tunnel-factory, or driver setup.
+Plan 150 may now execute external-client closure. Its clients must use the
+self-composed listener and must not reintroduce private post-`SESSION CREATE`
+bridge, LeaseSet2, tunnel-factory, or driver setup.

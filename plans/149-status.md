@@ -43,7 +43,7 @@ next_executable_plan = 150
 next_product_layer = remain-on-milestone7
 ```
 
-## Why Plan 148 cannot be resumed directly
+## Historical blocker resolved by Plan 149
 
 The post-Plan-148 audit identified a product-composition blocker that exists before external-client provisioning.
 
@@ -54,11 +54,15 @@ The canonical Plan 147 raw STREAM test manually performs private setup after SAM
 - cross-installs each peer's validated LeaseSet2;
 - manually spawns per-destination runtime drivers.
 
-The production `execute_session_create()` path does not do those things. It currently installs the destination runtime, separate Streaming pool, stream registry session, and SAM session entry, then returns success.
+The production `execute_session_create()` path now performs those steps
+transactionally before returning success. Plan 149 is the corrective
+closure for that composition gap; Plan 150 is the remaining external-
+client evidence lane.
 
 `execute_stream_connect()` subsequently requires a bridge in `sam_destinations`; without the test-only setup it returns an I2P error for a missing bridge. `deliver_outbound()` also depends on an installed inbound-tunnel factory and otherwise drops the request rather than producing a useful product-path failure.
 
-Therefore fetching/building external clients alone would not satisfy Plan 148.
+Therefore Plan 148 remains historical audit evidence rather than the next
+execution authority.
 
 ## Plan 147 acceptance correction
 
@@ -75,7 +79,12 @@ Plan 147 delivered important real implementation:
 
 Retain all of that.
 
-However Plan 147's own original acceptance criteria also required SILENT exactness, slow-reader/slow-writer bounds, fault/retransmit acceptance, close/reset, sibling streams, and multi-megabyte bounded transfer. Its closure record deferred those items to Plan 148. Plan 149 now owns them and supersedes the broad interpretation of `passed-m7-sam31-dedicated-raw-stream-driver`.
+However Plan 147's own original acceptance criteria also required SILENT
+exactness, backpressure, close/reset, sibling streams, and multi-megabyte
+transfer. Plan 149 closes the local product subset of those criteria:
+SILENT and same-read wire behavior, bounded backpressure, bidirectional
+2 MiB transfer, and terminal cleanup. Broader fault-matrix and
+independent-client evidence remain Plan 150 work.
 
 ## Additional concrete protocol defect
 
@@ -101,7 +110,7 @@ Plan 150 replaces the live external-client guidance with correctly pinned `libsa
 
 ## Execution sequence
 
-1. **Plan 149** — make SAM `SESSION CREATE` self-compose the local destination/Streaming product, remove hidden test setup from canonical acceptance, and close deferred Plan 147 SILENT/backpressure/fault/lifecycle criteria.
+1. **Plan 149** — make SAM `SESSION CREATE` self-compose the local destination/Streaming product, remove hidden test setup from canonical acceptance, and close the documented local raw-path criteria.
 2. **Plan 150** — provision correctly pinned external clients through a reproducible unprivileged lane and close final independent-client/FORWARD/NAMING evidence.
 
 Plan 148 remains historical failed-audit evidence and must not be used as the next executable plan.
@@ -155,7 +164,7 @@ Plan 149's local product fabric is an explicitly localhost/authenticated-router-
   `InboundTunnelFactory` install is ever performed after listener
   startup.
 - `crates/i2pr-daemon/src/sam/streams.rs` gains
-  `SamDestinations::resolve_local_peer_hash` (Plan 149 §7) and
+  `SamDestinations::resolve_local_lease_set2` (Plan 149 §7) and
   `bridge_to_peer` now restores the receiver routing to the
   peer's canonical `routing` field (not `receiver_routing`) so the
   install of the sender's LeaseSet2 persists across deliveries.
@@ -171,7 +180,8 @@ Plan 149's local product fabric is an explicitly localhost/authenticated-router-
   transitions straight to raw mode without writing any status.
 - `crates/i2pr-daemon/src/sam/raw_stream.rs::deliver_outbound`
   now returns `DeliverySweepCounters` (`delivered`,
-  `missing_factory`, `factory_exhausted`, `unknown_peer`) so the
+  `missing_factory`, `factory_exhausted`, `unknown_peer`,
+  `delivery_failed`) so the
   per-destination driver can wake waiters with typed bounded
   accounting rather than silently drop queued requests. Plan 149 §8
   is enforced through the public
@@ -195,8 +205,9 @@ Plan 149's local product fabric is an explicitly localhost/authenticated-router-
   - `plan149_session_create_tears_down_cleanly` — control-socket
     close propagates to the per-destination driver within the
     shutdown bound (no panics).
-  - `plan149_same_read_buffered_raw_bytes_after_command` — the
-    black-box ACK/DESTINATION line for non-silent ACCEPT.
+  - `plan149_same_read_buffered_raw_bytes_after_command` — non-silent
+    CONNECT/ACCEPT status and authenticated peer metadata, with the
+    command newline and first raw bytes sent in one TCP write.
 - The existing Plan 147 `sam_stream_raw_product` regression
   (lower-level bridge-only exercise) is retained as a focused
   implementation regression; the new `sam_stream_self_composed`
@@ -217,12 +228,16 @@ cargo test -p i2pr-daemon --test sam_stream_product          # pass
 cargo test -p i2pr-daemon --test sam_stream_independent      # pass
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings  # clean
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps            # clean
+env RUSTDOCFLAGS="-D warnings" cargo test --locked --workspace --doc             # pass
+bash -n scripts/interop/fetch-sam-clients.sh tests/integration/sam/run-independent.sh tests/integration/sam/clients/build.sh  # clean
 bash scripts/check-dependency-direction.sh                 # ok
 bash scripts/check-runtime-boundaries.sh                    # ok
 bash scripts/check-fixture-manifest.sh                      # ok
 bash scripts/check-ntcp2-vectors.sh                         # ok
 bash scripts/check-ntcp2-interoperability.sh                # ok
 bash scripts/check-constrained-host-lane-boundary.sh        # ok
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py' # 153 passed
+cargo deny check advisories bans sources                       # advisories/bans/sources ok
 ```
 
 ## Handoff instruction

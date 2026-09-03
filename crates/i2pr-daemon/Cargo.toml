@@ -46,5 +46,9 @@ zeroize.workspace = true
 name = "i2pr"
 path = "src/main.rs"
 
+[[example]]
+name = "sam_loopback_listener"
+path = "examples/sam_loopback_listener.rs"
+
 [lints]
 workspace = true

@@ -76,6 +76,10 @@
 # lane; external acceptance debt is tracked separately.
 # Structural evidence may be recorded before interoperability;
 # all entries remain non-advertised.
+# Current SAM authority: Plan 149 closed the self-composed localhost STREAM
+# product; Plan 150 is the next executable independent-client/FORWARD/NAMING
+# closure lane. The dedicated surface below is the current product entry;
+# earlier SAM rows retain historical milestone provenance.
 schema = 1
 milestone = 7
 plan_103_implementation_floor = "plans/103-status.md"
@@ -871,6 +875,25 @@ evidence = [
     "crates/i2pr-daemon/tests/sam_stream.rs",
     "plans/138-m7-sam31-stream-connect-accept-bridge.md",
     "plans/138-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "sam.v31-self-composed-local-product"
+protocol = "sam"
+structure = "sam-3.1-self-composed-local-stream-product"
+scope = "required"
+status = "experimental"
+notes = "Plan 149 closed the self-composed localhost SAM STREAM product. SESSION CREATE transactionally allocates one shared Arc<DestinationIdentity>, signs and publishes the local LeaseSet2, installs the local-product delivery fabric and SAM bridge, and starts exactly one supervised destination driver before returning success. Local peer LeaseSet2 resolution uses the daemon's explicit local directory; raw CONNECT/ACCEPT honors both SILENT modes, preserves same-read bytes, emits authenticated non-silent ACCEPT peer metadata, records typed delivery degradation, and releases Streaming/SAM ownership on terminal cleanup. Evidence is the black-box crates/i2pr-daemon/tests/sam_stream_self_composed.rs suite. This is a localhost application-product seam, not live router interoperability; Plan 150 owns correctly pinned independent clients and final FORWARD/NAMING evidence."
+evidence = [
+    "crates/i2pr-daemon/src/sam.rs",
+    "crates/i2pr-daemon/src/sam/fabric.rs",
+    "crates/i2pr-daemon/src/sam/raw_stream.rs",
+    "crates/i2pr-daemon/src/sam/streams.rs",
+    "crates/i2pr-client/src/registry.rs",
+    "crates/i2pr-daemon/tests/sam_stream_self_composed.rs",
+    "plans/149-m7-sam31-self-composing-local-product-corrective.md",
+    "plans/149-status.md",
 ]
 advertised = false
 

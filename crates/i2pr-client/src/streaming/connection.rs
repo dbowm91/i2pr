@@ -8,7 +8,7 @@
 
 use core::fmt;
 
-use i2pr_proto::SigningPublicKey;
+use i2pr_proto::{Destination, SigningPublicKey};
 
 use crate::streaming::config::StreamingConfig;
 use crate::streaming::congestion::{CongestionConfig, CongestionDecision, CongestionPolicy};
@@ -128,6 +128,10 @@ pub struct StreamingConnection {
     /// Peer destination hash retained for outbound addressing of
     /// unsigned control packets such as plain ACKs (Plan 130 §7 D2).
     peer_destination_hash: [u8; 32],
+    /// Full authenticated peer destination learned from an inbound
+    /// SYN. This is non-secret public metadata used by SAM ACCEPT;
+    /// the hash above remains the routing key.
+    peer_destination: Option<Destination>,
     /// Local I2P destination port of the established stream tuple
     /// (Plan 130 §8 E3). Fixed by the wire handshake and validated on
     /// every subsequent delivery.
@@ -180,6 +184,7 @@ impl StreamingConnection {
             remote_stream_id,
             peer_signing_key,
             peer_destination_hash,
+            peer_destination: None,
             local_port,
             remote_port,
             local_advertised_max_payload: crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u16,
@@ -220,6 +225,7 @@ impl StreamingConnection {
             remote_stream_id,
             peer_signing_key,
             peer_destination_hash,
+            peer_destination: None,
             local_port,
             remote_port,
             local_advertised_max_payload: crate::streaming::config::MAX_PACKET_PAYLOAD_BYTES as u16,
@@ -291,6 +297,18 @@ impl StreamingConnection {
         &self.peer_destination_hash
     }
 
+    /// Returns the full authenticated peer destination, when this
+    /// connection learned it from an inbound SYN.
+    pub fn peer_destination(&self) -> Option<&Destination> {
+        self.peer_destination.as_ref()
+    }
+
+    /// Retains the authenticated peer destination for later SAM
+    /// metadata emission.
+    pub fn set_peer_destination(&mut self, destination: Destination) {
+        self.peer_destination = Some(destination);
+    }
+
     /// Records the maximum payload bytes the peer advertised through
     /// its MAX_PACKET_SIZE option.
     pub fn set_remote_advertised_max_payload(&mut self, max: u16) {
@@ -331,6 +349,7 @@ impl StreamingConnection {
             remote_stream_id: self.remote_stream_id,
             peer_signing_key: self.peer_signing_key.clone(),
             peer_destination_hash: self.peer_destination_hash,
+            peer_destination: self.peer_destination.clone(),
             local_port: self.local_port,
             remote_port: self.remote_port,
             local_advertised_max_payload: self.local_advertised_max_payload,
@@ -492,7 +511,7 @@ impl StreamingConnection {
     pub fn receive_ack(&mut self, ack_through: u32, nacks: &[u32], now_ms: u64) -> AckObservation {
         self.last_activity_ms = now_ms;
         let outcome = self.send_window.acknowledge(ack_through, nacks);
-        if !outcome.newly_acked.is_empty() {
+        for _ in &outcome.newly_acked {
             self.congestion.record_acked();
         }
         if !outcome.retained_nacks.is_empty() {

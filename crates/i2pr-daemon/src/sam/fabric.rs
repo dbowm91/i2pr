@@ -133,7 +133,8 @@ fn prepare_local_product(
     identity: &DestinationIdentity,
     now_seconds: u32,
 ) -> Result<LocalDestinationProduct, SamServiceError> {
-    let mut rng = rand_core::UnwrapMut(&mut OsRng);
+    let mut os_rng = OsRng;
+    let mut rng = rand_core::UnwrapMut(&mut os_rng);
     let mut leased_seed = [0_u8; 64];
     rng.try_fill_bytes(&mut leased_seed)
         .map_err(|_| SamServiceError::InvalidConfig("os rng unavailable for fabric".to_owned()))?;
@@ -336,7 +337,8 @@ impl InboundTunnelFactory for LocalhostInboundTunnelFactory {
         // Re-mix the seed against the OS CSPRNG so each call returns a
         // fresh shape. We never reuse the same inbound tunnel twice
         // because the Plan 129 local seam consumes its argument once.
-        let mut rng = rand_core::UnwrapMut(&mut OsRng);
+        let mut os_rng = OsRng;
+        let mut rng = rand_core::UnwrapMut(&mut os_rng);
         Ok(random_inbound_tunnel(&self.seed, &mut rng))
     }
 }
@@ -353,6 +355,10 @@ pub enum LocalDeliveryDegradation {
     NoInboundFactory,
     /// The factory refused to build an inbound tunnel.
     FactoryExhausted,
+    /// The local destination stack rejected a transport request.
+    DeliveryFailed,
+    /// The request named no locally-owned peer destination.
+    UnknownPeer,
 }
 
 impl std::fmt::Display for LocalDeliveryDegradation {
@@ -364,6 +370,10 @@ impl std::fmt::Display for LocalDeliveryDegradation {
             Self::FactoryExhausted => {
                 formatter.write_str("local product fabric inbound tunnel factory exhausted")
             }
+            Self::DeliveryFailed => {
+                formatter.write_str("local destination delivery rejected a transport request")
+            }
+            Self::UnknownPeer => formatter.write_str("local destination peer is not registered"),
         }
     }
 }
@@ -386,20 +396,41 @@ pub struct DeliverySweepCounters {
     /// Number of requests whose peer destination hash matched no
     /// locally-owned bridge.
     pub unknown_peer: usize,
+    /// Number of requests rejected by the local destination delivery seam.
+    pub delivery_failed: usize,
 }
 
 impl DeliverySweepCounters {
+    /// Adds another bounded sweep into this snapshot without allowing
+    /// counters to wrap.
+    pub fn saturating_add_assign(&mut self, other: Self) {
+        self.delivered = self.delivered.saturating_add(other.delivered);
+        self.missing_factory = self.missing_factory.saturating_add(other.missing_factory);
+        self.factory_exhausted = self
+            .factory_exhausted
+            .saturating_add(other.factory_exhausted);
+        self.unknown_peer = self.unknown_peer.saturating_add(other.unknown_peer);
+        self.delivery_failed = self.delivery_failed.saturating_add(other.delivery_failed);
+    }
+
     /// `true` when every successful delivery happened with no
     /// typed degradation.
     pub const fn clean(&self) -> bool {
-        self.missing_factory == 0 && self.factory_exhausted == 0 && self.unknown_peer == 0
+        self.missing_factory == 0
+            && self.factory_exhausted == 0
+            && self.unknown_peer == 0
+            && self.delivery_failed == 0
     }
 }
 
 /// Typed wrapper used by the runtime driver to convert a
 /// `DeliverySweepCounters` into the right outbound-signal wakeup.
 pub fn degrade_to_reason(counters: DeliverySweepCounters) -> Option<LocalDeliveryDegradation> {
-    if counters.factory_exhausted > 0 {
+    if counters.delivery_failed > 0 {
+        Some(LocalDeliveryDegradation::DeliveryFailed)
+    } else if counters.unknown_peer > 0 {
+        Some(LocalDeliveryDegradation::UnknownPeer)
+    } else if counters.factory_exhausted > 0 {
         Some(LocalDeliveryDegradation::FactoryExhausted)
     } else if counters.missing_factory > 0 {
         Some(LocalDeliveryDegradation::NoInboundFactory)

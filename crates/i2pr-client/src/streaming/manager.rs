@@ -855,6 +855,10 @@ impl StreamingManager {
         if let Some(max) = remote_advertised_max {
             conn.set_remote_advertised_max_payload(max);
         }
+        // Retain the authenticated public Destination so a SAM ACCEPT
+        // endpoint can emit peer metadata without reconstructing it from
+        // only a hash or an untrusted command argument.
+        conn.set_peer_destination(destination.clone());
         conn.set_local_advertised_max_payload(DEFAULT_ADVERTISED_MAX_PAYLOAD);
         // The inbound connection starts in `InboundSynReceived` and
         // does NOT transition to Established yet. The application
@@ -1856,6 +1860,12 @@ impl StreamingManager {
     /// Returns a mutable reference to a connection.
     pub fn get_connection_mut(&mut self, id: ConnectionId) -> Option<&mut StreamingConnection> {
         self.connections.get_mut(&id)
+    }
+
+    /// Iterates over active connections for runtime supervision and
+    /// diagnostics without exposing the manager's backing table.
+    pub fn iter_connections(&self) -> impl Iterator<Item = &StreamingConnection> {
+        self.connections.values()
     }
 
     /// Drops a connection from the table.

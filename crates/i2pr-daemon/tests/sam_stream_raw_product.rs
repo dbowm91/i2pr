@@ -1,8 +1,8 @@
 //! Plan 147 SAM 3.1 dedicated raw STREAM driver end-to-end test.
 //!
-//! This is the canonical Plan 147 evidence for the dedicated raw
-//! TCP↔Streaming product path. Two SAM destinations wire up real
-//! bridges in the daemon's `SamDestinations` registry; the test
+//! This is the retained Plan 147 regression for the dedicated raw
+//! TCP↔Streaming product path. Two SAM destinations are created
+//! entirely through the daemon's SAM listener; the test
 //!
 //! 1. binds two TCP clients to the SAM listener,
 //! 2. issues HELLO + SESSION CREATE on both,
@@ -13,11 +13,10 @@
 //!    application bytes through the dedicated raw driver,
 //! 6. verifies byte-for-byte equality across the bridge.
 //!
-//! The test never invokes `record_captured`, `adapter_send`, or
-//! `CapturedOutbound`; the Plan 138 seams are removed from
-//! acceptance. The runtime driver is the production driver spawned
-//! via `SamServiceState::spawn_destination_driver`, not a custom
-//! in-process loop.
+//! The test never invokes product-composition helpers or custom
+//! in-process byte-moving loops. The canonical Plan 149 product
+//! evidence is in `sam_stream_self_composed.rs`; this smaller test
+//! remains as a focused raw-driver regression.
 
 #![allow(clippy::too_many_lines)]
 
@@ -25,16 +24,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use i2pr_api::sam::limits::SamLimits;
-use i2pr_client::DestinationId;
 use i2pr_daemon::config::SamConfig;
-use i2pr_daemon::sam::{
-    InboundTunnelBuildError, InboundTunnelFactory, SamServiceState, build_sam_destination_bridge,
-};
+use i2pr_daemon::sam::SamServiceState;
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
-use i2pr_tunnel::{
-    EstablishedHop, EstablishedNextHop, EstablishedRole, EstablishedTunnel, LayerKeys,
-    TunnelDirection, TunnelId, TunnelPeer,
-};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -89,13 +81,13 @@ async fn start_listener(
 
 async fn read_one_line(stream: &mut TcpStream) -> String {
     let mut buf = Vec::new();
-    let mut chunk = [0_u8; 256];
     loop {
-        match stream.read(&mut chunk).await {
+        let mut byte = [0_u8; 1];
+        match stream.read_exact(&mut byte).await {
             Ok(0) => break,
             Ok(n) => {
-                buf.extend_from_slice(&chunk[..n]);
-                if buf.last() == Some(&b'\n') {
+                buf.extend_from_slice(&byte[..n]);
+                if byte[0] == b'\n' {
                     break;
                 }
             }
@@ -121,177 +113,10 @@ async fn hello_3_1(stream: &mut TcpStream) {
     );
 }
 
-fn hop_router_hash(seed: u64, index: u8) -> i2pr_proto::Hash {
-    let mut bytes = [0_u8; 32];
-    for (offset, byte) in bytes.iter_mut().enumerate() {
-        *byte = index.wrapping_add(offset as u8).wrapping_add(seed as u8);
-    }
-    i2pr_proto::Hash::from_bytes(bytes)
-}
-
 fn destination_identity(seed: u64) -> i2pr_client::DestinationIdentity {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     i2pr_client::DestinationIdentity::generate(&mut rng).expect("identity")
 }
-
-fn outbound_tunnel_direct(seed: u64) -> EstablishedTunnel {
-    let hops = vec![
-        EstablishedHop::with_next(
-            TunnelPeer::from_hash(hop_router_hash(seed, 1)),
-            EstablishedRole::Participant,
-            TunnelId::new(0x0100_0000_u32.wrapping_add(seed as u32)).expect("id"),
-            LayerKeys::new(
-                [seed as u8; 32],
-                [seed.wrapping_add(1) as u8; 32],
-                [seed.wrapping_add(2) as u8; 32],
-            ),
-            EstablishedNextHop::new(
-                TunnelPeer::from_hash(hop_router_hash(seed, 2)),
-                TunnelId::new(0x0100_0001_u32.wrapping_add(seed as u32)).expect("id"),
-            ),
-        ),
-        EstablishedHop::terminal(
-            TunnelPeer::from_hash(hop_router_hash(seed, 2)),
-            EstablishedRole::OutboundEndpoint,
-            TunnelId::new(0x0100_0001_u32.wrapping_add(seed as u32)).expect("id"),
-            LayerKeys::new(
-                [seed.wrapping_add(1) as u8; 32],
-                [seed.wrapping_add(2) as u8; 32],
-                [seed.wrapping_add(3) as u8; 32],
-            ),
-        ),
-    ];
-    EstablishedTunnel::new(
-        TunnelDirection::Outbound,
-        TunnelId::new(0x0200_0000_u32.wrapping_add(seed as u32)).expect("id"),
-        hops,
-        0,
-        None,
-        None,
-    )
-    .expect("outbound established")
-}
-
-fn inbound_tunnel_direct(seed: u64) -> EstablishedTunnel {
-    let ibgw_tunnel = TunnelId::new(0x0400_0000_u32.wrapping_add(seed as u32)).expect("id");
-    let local_receive = TunnelId::new(0x0300_0000_u32.wrapping_add(seed as u32)).expect("id");
-    let hops = vec![
-        EstablishedHop::with_next(
-            TunnelPeer::from_hash(hop_router_hash(seed, 1)),
-            EstablishedRole::InboundGateway,
-            ibgw_tunnel,
-            LayerKeys::new(
-                [seed.wrapping_add(4) as u8; 32],
-                [seed.wrapping_add(5) as u8; 32],
-                [seed.wrapping_add(6) as u8; 32],
-            ),
-            EstablishedNextHop::new(
-                TunnelPeer::from_hash(hop_router_hash(seed, 2)),
-                TunnelId::new(0x0400_0001_u32.wrapping_add(seed as u32)).expect("id"),
-            ),
-        ),
-        EstablishedHop::with_next(
-            TunnelPeer::from_hash(hop_router_hash(seed, 2)),
-            EstablishedRole::Participant,
-            TunnelId::new(0x0400_0001_u32.wrapping_add(seed as u32)).expect("id"),
-            LayerKeys::new(
-                [seed.wrapping_add(5) as u8; 32],
-                [seed.wrapping_add(6) as u8; 32],
-                [seed.wrapping_add(7) as u8; 32],
-            ),
-            EstablishedNextHop::new(
-                TunnelPeer::from_hash(hop_router_hash(seed, 3)),
-                local_receive,
-            ),
-        ),
-    ];
-    EstablishedTunnel::new(
-        TunnelDirection::Inbound,
-        TunnelId::new(0x0500_0000_u32.wrapping_add(seed as u32)).expect("id"),
-        hops,
-        0,
-        Some((TunnelPeer::from_hash(hop_router_hash(seed, 1)), ibgw_tunnel)),
-        Some(local_receive),
-    )
-    .expect("inbound established")
-}
-
-/// Deterministic inbound-tunnel factory used by the runtime driver.
-/// Plan 129's local seam consumes the inbound tunnel once per delivery
-/// so the factory rebuilds a fresh copy on each call.
-#[derive(Clone)]
-struct DeterministicInboundFactory {
-    seed: u64,
-}
-
-impl InboundTunnelFactory for DeterministicInboundFactory {
-    fn build_inbound_tunnel(&self) -> Result<EstablishedTunnel, InboundTunnelBuildError> {
-        Ok(inbound_tunnel_direct(self.seed))
-    }
-}
-
-fn install_peer_lease_set2(state: &SamServiceState, owner: DestinationId, peer: DestinationId) {
-    let destinations_arc = state.sam_destinations();
-    let destinations = destinations_arc.lock().expect("poisoned");
-    let peer_lease_set2 = destinations
-        .get(peer)
-        .expect("peer bridge")
-        .with(|bridge| bridge.lease_set2().clone());
-    let peer_netdb_key = destinations
-        .get(peer)
-        .expect("peer bridge")
-        .with(|bridge| bridge.identity_netdb_key());
-    let validated = i2pr_netdb::ValidatedLeaseSet2::from_lease_set2(
-        peer_lease_set2,
-        Some(peer_netdb_key),
-        i2pr_netdb::LeaseSet2ValidationContext::new(NOW_SECONDS),
-    )
-    .expect("validated ls2");
-    destinations
-        .get(owner)
-        .expect("owner bridge")
-        .with(|bridge| {
-            bridge
-                .routing_mut()
-                .install_remote_lease_set2(validated)
-                .expect("install peer ls2");
-        });
-}
-
-fn install_bridge_with_factory(
-    state: &SamServiceState,
-    destination_id: DestinationId,
-    identity: i2pr_client::DestinationIdentity,
-    seed: u64,
-) {
-    use i2pr_client::build_signed_lease_set2;
-    let outbound_tunnel = outbound_tunnel_direct(seed);
-    let role = i2pr_client::DestinationOutboundRole::new(outbound_tunnel, NOW_MS + 60_000);
-    let lease_set2 = {
-        let inbound_for_pool = inbound_tunnel_direct(seed);
-        let mut pool =
-            i2pr_client::DestinationTunnelPool::new(i2pr_client::DestinationConfig::balanced())
-                .expect("pool");
-        let inbound_mat = inbound_for_pool.into_extracted();
-        pool.register_inbound(inbound_mat, NOW_SECONDS as u64)
-            .expect("inbound");
-        let sources = pool.inbound_lease_sources(NOW_SECONDS as u64);
-        build_signed_lease_set2(&identity, &sources, NOW_SECONDS).expect("signed ls2")
-    };
-    let bridge =
-        build_sam_destination_bridge(identity, lease_set2, role, NOW_SECONDS).expect("bridge");
-    let destinations_arc = state.sam_destinations();
-    let handle = {
-        let mut destinations = destinations_arc.lock().expect("sam destinations poisoned");
-        destinations.install(destination_id, bridge)
-    };
-    let _ = handle.install_inbound_tunnel_factory(Arc::new(DeterministicInboundFactory { seed }));
-}
-
-const NOW_MS: u64 = 64_000;
-const NOW_SECONDS: u32 = 64;
-
-fn _unused_marker() {}
 
 #[tokio::test(flavor = "current_thread")]
 async fn plan147_dedicated_raw_driver_exchanges_application_bytes() {
@@ -303,16 +128,12 @@ async fn plan147_dedicated_raw_driver_exchanges_application_bytes() {
     hello_3_1(&mut client_a).await;
     hello_3_1(&mut client_b).await;
 
-    // SESSION CREATE STYLE=STREAM ID=alpha DESTINATION=<priv> imports
-    // the supplied private destination. We pre-generate the
-    // identity in the test (so we know the destination_id) and
-    // import the priv via the SAM Base64 encoding. After SESSION
-    // CREATE succeeds, we install the SAM bridge for the known
-    // destination id.
+    // SESSION CREATE imports the supplied private destinations. The
+    // production handler now self-composes the bridge, local
+    // LeaseSet2 directory, inbound-tunnel factory, and runtime
+    // driver before returning the success line.
     let identity_a = destination_identity(0xA1);
     let identity_b = destination_identity(0xB2);
-    let destination_a = identity_a.id();
-    let destination_b = identity_b.id();
     let priv_a =
         i2pr_api::sam::private_destination::SamPrivateDestination::from_identity(&identity_a)
             .expect("identity a round-trips")
@@ -332,7 +153,6 @@ async fn plan147_dedicated_raw_driver_exchanges_application_bytes() {
     )
     .await;
     let reply_a = read_one_line(&mut client_a).await;
-    eprintln!("reply_a={reply_a:?}");
     assert!(
         reply_a.contains("SESSION STATUS RESULT=OK"),
         "session alpha A failed: {reply_a:?}"
@@ -343,69 +163,42 @@ async fn plan147_dedicated_raw_driver_exchanges_application_bytes() {
     )
     .await;
     let reply_b = read_one_line(&mut client_b).await;
-    eprintln!("reply_b={reply_b:?}");
     assert!(
         reply_b.contains("SESSION STATUS RESULT=OK"),
         "session beta B failed: {reply_b:?}"
     );
 
-    // Plan 147 §8: install bridges for the imported destinations.
-    install_bridge_with_factory(&state, destination_a, identity_a, 0xA1);
-    install_bridge_with_factory(&state, destination_b, identity_b, 0xB2);
-
-    // Plan 147: cross-install the validated LeaseSet2 records so
-    // `compose_outbound_delivery` finds an `active_remotes` entry
-    // for the peer; without it the outbound seam returns the
-    // typed `LeaseSet2LookupPending` and the SYN never reaches the
-    // peer's StreamingManager.
-    install_peer_lease_set2(&state, destination_a, destination_b);
-    install_peer_lease_set2(&state, destination_b, destination_a);
-
-    // Plan 147 §8: spawn the per-destination runtime driver task.
-    state
-        .spawn_destination_driver(destination_a, &scope, parent.clone())
-        .expect("spawn driver a");
-    state
-        .spawn_destination_driver(destination_b, &scope, parent.clone())
-        .expect("spawn driver b");
-
     // Issue STREAM ACCEPT on B; issue STREAM CONNECT on A.
     // Both calls happen in parallel tasks so the runtime driver
     // can drive the handshake while both clients are parked on
     // their `read_one_line` futures.
-    eprintln!("[test] sleeping 200ms before issuing commands");
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    eprintln!("[test] issuing STREAM ACCEPT on B");
-    let state_for_accept = Arc::clone(&state);
     let accept_task = tokio::spawn(async move {
         write_all(&mut client_b, b"STREAM ACCEPT ID=beta\n").await;
         let reply = read_one_line(&mut client_b).await;
-        (client_b, reply)
+        let peer = read_one_line(&mut client_b).await;
+        (client_b, reply, peer)
     });
-    eprintln!("[test] issuing STREAM CONNECT on A");
-    let state_for_connect = Arc::clone(&state);
     let connect_task = tokio::spawn(async move {
         let cmd = format!("STREAM CONNECT ID=alpha DESTINATION={pub_b}\n");
         write_all(&mut client_a, cmd.as_bytes()).await;
         let reply = read_one_line(&mut client_a).await;
         (client_a, reply)
     });
-    eprintln!("[test] joining");
     let (accept_result, connect_result) = tokio::join!(accept_task, connect_task);
-    eprintln!("[test] joined");
-    let (mut client_b, accept_reply) = accept_result.expect("accept task");
+    let (mut client_b, accept_reply, accept_peer) = accept_result.expect("accept task");
     let (mut client_a, connect_reply) = connect_result.expect("connect task");
     assert!(
         accept_reply.contains("STREAM STATUS RESULT=OK"),
         "ACCEPT did not return OK, got {accept_reply:?}"
     );
-    eprintln!("connect_reply={connect_reply:?}");
+    assert!(
+        accept_peer.starts_with("DESTINATION="),
+        "ACCEPT peer destination missing, got {accept_peer:?}"
+    );
     assert!(
         connect_reply.contains("STREAM STATUS RESULT=OK"),
         "CONNECT did not return OK, got {connect_reply:?}"
     );
-    let _ = state_for_accept;
-    let _ = state_for_connect;
 
     // ----- Drive raw byte exchange through the dedicated driver -----
     let payload_a: Vec<u8> = (0..1024_u32).map(|i| (i & 0xFF) as u8).collect();

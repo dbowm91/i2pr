@@ -1,11 +1,11 @@
 # Plan 150 — SAM 3.1 reproducible external-client interoperability and final Milestone 7 closure
 
-Status: **blocked on successful Plan 149 closure**.
+Status: **next executable after Plan 149 local-product closure**.
 
 Depends on:
 
 - Plan 146 private-destination reference compatibility;
-- Plan 149 self-composing localhost SAM product and complete raw-path acceptance;
+- Plan 149 self-composing localhost SAM product and its documented local raw-path acceptance subset;
 - Plan 139 FORWARD/naming implementation;
 - Plan 134 Milestone 6 local product closure.
 
@@ -262,7 +262,9 @@ For both cross-client directions, exchange exact payloads containing:
 
 At least one mandatory-client trajectory must transfer a multi-megabyte logical payload.
 
-Plan 149 should already have proven the bounded/fault matrix locally; Plan 150 verifies that external clients do not trigger a compatibility regression.
+Plan 149 proves the local bounded raw path and terminal cleanup. Plan 150
+owns the remaining slow-peer, fault-matrix, sibling-stream, and
+external-client compatibility evidence.
 
 ## 9. SILENT compatibility
 
@@ -362,13 +364,16 @@ No unsupported option may be silently accepted merely because an external client
 
 ## 14. Resource/privacy/fault regression floor
 
-Plan 150 does not need to reimplement the deterministic fault injector. It must rerun the Plan 149 self-composed acceptance suite and record it beside the external-client results.
+Plan 150 does not need to reimplement the deterministic fault injector. It
+must rerun the Plan 149 self-composed acceptance suite and record it beside
+the external-client results, while closing the carry-forward cases below.
 
 Required local evidence in the same closure run:
 
-- Plan 149 slow-reader/slow-writer bounds;
+- Plan 149 local bounded backpressure and terminal-cleanup evidence;
+- slow-reader/slow-writer bounds at the final client boundary;
 - loss/duplicate/reorder/ACK-drop/corruption/retransmit-ceiling tests;
-- close/reset/sibling lifecycle;
+- close/reset/sibling lifecycle at the final client boundary;
 - default-log privacy assertions;
 - parser/session/stream ceilings;
 - SAM disabled-by-default and loopback-only policy.
@@ -497,7 +502,7 @@ Do not write unqualified `milestone7_interoperable = passed`; qualify it as loca
 
 Plan 150 closes only when **all** are true:
 
-1. Plan 149 passed its black-box self-composition and complete raw-path acceptance matrix;
+1. Plan 149 passed its black-box self-composition and documented local raw-path acceptance subset;
 2. the invalid Plan 148 libsam3 pin is removed from live guidance;
 3. at least two exact external client revisions are pinned and independently resolvable;
 4. neither mandatory external client is patched for i2pr;
@@ -513,7 +518,7 @@ Plan 150 closes only when **all** are true:
 14. unsupported versions/styles/options fail explicitly;
 15. external runs use only the SAM TCP listener to drive product behavior;
 16. no private daemon bridge/LeaseSet/tunnel setup is used by the external harness;
-17. Plan 149 resource/fault/privacy gates remain green;
+17. Plan 149 local resource/privacy gates remain green and the Plan 150 carry-forward fault gates pass;
 18. Plan 127–134 regressions remain green;
 19. full workspace format/check/test/clippy/doc/boundary gates pass;
 20. sanitized evidence records exact commits, build commands, OS, and results;
@@ -540,7 +545,8 @@ Plus:
 ```text
 Plan 146 reference suite
 Plan 149 self-composed raw product suite
-Plan 149 fault/backpressure/lifecycle suites
+Plan 149 local self-composed/backpressure/lifecycle suite
+Plan 150 carry-forward fault/sibling/lifecycle suites
 libsam3 external runner
 i2psam external runner
 i2plib supplementary runner (if qualified)

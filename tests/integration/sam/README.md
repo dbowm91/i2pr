@@ -8,8 +8,9 @@ Current authority:
 - `plans/146-status.md` — closed private-destination reference compatibility;
 - `plans/147-status.md` — retained raw-socket owner/byte-pump implementation evidence;
 - `plans/148-status.md` — blocked audit, superseded for execution;
-- `plans/149-status.md` — **next executable**, self-composing local SAM product corrective;
-- `plans/150-m7-sam31-external-client-reproducible-final-closure.md` — final independent-client closure, blocked on Plan 149.
+- `plans/149-status.md` — **closed**, self-composing local SAM product corrective;
+- `plans/150-status.md` — **next executable**, external-client/final SAM closure;
+- `plans/150-m7-sam31-external-client-reproducible-final-closure.md` — next executable final independent-client closure.
 
 This lane is localhost-only. It must not require root, namespaces, Docker, a VM, systemd, public I2P participation, or live NTCP2/SSU2.
 
@@ -61,7 +62,7 @@ Plan 147 landed:
 
 The canonical Plan 147 test is useful lower-level implementation evidence, but it is **not** final black-box product-composition evidence.
 
-## Current product-composition gap — Plan 149
+## Closed product-composition result — Plan 149
 
 The Plan 147 canonical test manually performs private setup after SAM `SESSION CREATE`:
 
@@ -74,21 +75,26 @@ spawn per-destination runtime driver
 
 A real external SAM client cannot do those things.
 
-The production `execute_session_create()` currently installs the destination runtime, Streaming pool, SAM/stream registries, and session entry, but does not self-compose the bridge/local-delivery/driver prerequisites required by `STREAM CONNECT`.
+Plan 149 makes `execute_session_create()` install the destination runtime,
+local-product bridge, validated LeaseSet2, local-delivery provider,
+Streaming ownership, SAM/stream registries, and one supervised destination
+driver before returning `SESSION STATUS RESULT=OK`.
 
-Plan 149 therefore requires a new black-box product test where the test starts the listener and then drives **only SAM TCP commands/raw bytes**. After listener startup it may not call private bridge, LeaseSet2, tunnel-factory, driver, delivery, or byte-moving APIs.
+The resulting black-box product test starts the listener and then drives
+**only SAM TCP commands/raw bytes**. After listener startup it may not call
+private bridge, LeaseSet2, tunnel-factory, driver, delivery, or byte-moving
+APIs.
 
-Plan 149 also closes the mandatory Plan 147 criteria that were deferred:
+The local Plan 149 evidence covers:
 
 - byte-exact `SILENT=true/false`;
 - authenticated non-silent ACCEPT peer Destination metadata;
 - multi-megabyte bounded transfer;
-- slow-reader/slow-writer bounds;
-- loss/duplicate/reorder/ACK-drop/corruption/retransmit-ceiling behavior;
-- CLOSE/RESET/control-session lifecycle;
-- sibling-stream isolation.
+- bounded backpressure and multi-megabyte transfer;
+- terminal CLOSE/RESET cleanup and post-shutdown resource baselines.
 
-Until Plan 149 passes, do not attempt external-client closure.
+The external-client and broader fault-matrix requirements remain Plan 150
+work; they must not be inferred from this localhost seam.
 
 ## External clients — Plan 150 guidance
 
@@ -187,18 +193,22 @@ cargo test --locked -p i2pr-daemon --test sam_stream_product
 cargo test --locked -p i2pr-daemon --test sam_stream_independent
 cargo test --locked -p i2pr-daemon --test sam_stream_raw_product
 cargo test --locked -p i2pr-daemon --test sam_forward_naming
+cargo test --locked -p i2pr-daemon --test sam_stream_self_composed -- --test-threads=1
 ```
 
-Plan 149 should add the canonical self-composed black-box raw product lane. That new lane, not the manually composed Plan 147 test, becomes the local product acceptance authority.
+The self-composed black-box raw product lane is the local Plan 149
+acceptance authority; the retained Plan 147 test is a smaller raw-driver
+regression.
 
 ## Closure rule
 
 Do not promote Milestone 7 until:
 
 1. Plan 146 remains green;
-2. Plan 149 proves self-composing black-box SAM STREAM plus complete raw-path acceptance;
+2. Plan 149 proves self-composing black-box SAM STREAM plus its documented
+   local raw-path acceptance;
 3. Plan 150 records at least two independent external SAM implementations moving application bytes through the real listener;
 4. FORWARD/NAMING/resource/privacy/M6 final gates pass;
 5. the newest status record explicitly closes Milestone 7.
 
-Current handoff: **execute Plan 149 only**.
+Current handoff: **execute Plan 150 only**.

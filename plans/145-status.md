@@ -2,7 +2,7 @@
 
 Status: **`active-m7-sam31-remaining-gap-corrective-roadmap`**.
 
-Registered: **2026-09-01**. Updated after the Plan 148 audit: **2026-09-02**.
+Registered: **2026-09-01**. Updated after Plan 149 closure: **2026-09-02**.
 
 Plan of record:
 [`plans/145-m7-sam31-remaining-gap-corrective-roadmap.md`](145-m7-sam31-remaining-gap-corrective-roadmap.md).
@@ -31,21 +31,21 @@ plan_147_local-binary-smoke = passed
 plan_147_full-original-acceptance = superseded-by-plan149
 
 plan_148 = blocked-audit-superseded-by-plan149-150-corrective-sequence
-plan_149 = active-m7-sam31-self-composing-local-product-corrective
-plan_150 = blocked-on-plan149
+plan_149 = passed-m7-sam31-self-composing-local-product-corrective
+plan_150 = next-executable-on-plan149-pass
 
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 external_acceptance_debt = retained-separately
 
-milestone7_local_product = not-closed
+milestone7_local_product = closed-via-plan149
 sam31_base64 = corrected
 sam31_private_destination = reference-compatible-via-plan146
 sam31_raw_socket_owner = implemented-via-plan147
-sam31_self_composing_product = not-yet-passed
+sam31_self_composing_product = passed-via-plan149
 sam_independent_clients = 0-passed
 router_construction = may-continue-within-m7
-next_executable_plan = 149
+next_executable_plan = 150
 next_product_layer = remain-on-milestone7
 ```
 
@@ -91,10 +91,10 @@ The audit also confirmed a concrete raw-protocol issue: the current raw-transiti
 
 ## Corrective sequence
 
-The active sequence is now:
+The sequence is now:
 
-1. [`plans/149-m7-sam31-self-composing-local-product-corrective.md`](149-m7-sam31-self-composing-local-product-corrective.md) — **next executable**. Make `SESSION CREATE` self-compose the local product, eliminate private post-create setup from canonical acceptance, and close deferred Plan 147 SILENT/backpressure/fault/lifecycle criteria.
-2. [`plans/150-m7-sam31-external-client-reproducible-final-closure.md`](150-m7-sam31-external-client-reproducible-final-closure.md) — blocked on Plan 149. Run correctly pinned external clients through the real listener and close FORWARD/NAMING/final M7 evidence.
+1. [`plans/149-m7-sam31-self-composing-local-product-corrective.md`](149-m7-sam31-self-composing-local-product-corrective.md) — **passed**. `SESSION CREATE` self-composes the local product and closes the documented local raw-path acceptance subset.
+2. [`plans/150-m7-sam31-external-client-reproducible-final-closure.md`](150-m7-sam31-external-client-reproducible-final-closure.md) — **next executable**. Run correctly pinned external clients through the real listener and close FORWARD/NAMING/final M7 evidence.
 
 Plan 148 remains historical blocked-audit evidence and is superseded for execution.
 
@@ -142,6 +142,8 @@ The Plan 129 authenticated-router-link-bypassed localhost seam remains the allow
 
 Read this file, `plans/149-status.md`, Plan 149, Plan 146 status, and Plan 147 status.
 
-Execute **Plan 149 only**.
+Execute **Plan 150 only**.
 
-Do not execute Plan 150 and do not move to Milestone 8 until the black-box self-composed SAM product passes without private bridge, LeaseSet2, inbound-tunnel-factory, or driver setup by the test.
+Plan 149's self-composed product evidence is now closed. Do not move to
+Milestone 8 until Plan 150 closes its independent-client and final SAM
+acceptance criteria.

@@ -158,9 +158,18 @@ impl ReplyKind {
 }
 
 fn push_encoded_value(out: &mut String, value: &str) {
+    // Per the SAM 3.1 specification, values containing whitespace,
+    // a backslash, or a double quote must be enclosed in double
+    // quotes; everything else (including the I2P Base64 alphabet
+    // and its `=` padding) is emitted unquoted because SAM parsers
+    // split tokens on whitespace, not on `=`. The previous
+    // implementation quoted any value containing `=`, which made the
+    // `DESTINATION=<priv>` and `DESTINATION=<pub>` fields
+    // unparseable by libsam3, i2psam, and any other SAM bridge
+    // that consumes the value without stripping surrounding quotes.
     let needs_quoting = value
         .bytes()
-        .any(|byte| byte.is_ascii_whitespace() || byte == b'"' || byte == b'\\' || byte == b'=');
+        .any(|byte| byte.is_ascii_whitespace() || byte == b'"' || byte == b'\\');
     if !needs_quoting {
         out.push_str(value);
         return;
@@ -372,15 +381,29 @@ pub struct SessionStatus {
 
 impl SessionStatus {
     /// Constructs a successful SESSION STATUS reply carrying the
-    /// public destination.
-    pub fn ok(public_destination: &str) -> Self {
+    /// private destination.
+    ///
+    /// Per the SAM 3.1 specification (and what every Java I2P /
+    /// i2pd / libsam3 / i2psam SAM bridge expects), the
+    /// `DESTINATION=` field of `SESSION STATUS RESULT=OK` carries
+    /// the **private** destination so the client can persist it
+    /// for reconnect. Callers obtain the matching public key via
+    /// `NAMING LOOKUP NAME=ME` after the session is created.
+    ///
+    /// Plan 149 originally emitted the public destination here so
+    /// the black-box self-composed test could pass it straight to
+    /// `STREAM CONNECT` without an extra round-trip; that
+    /// convenience was a deviation from the spec and was rejected
+    /// by the Plan 150 external-client matrix (libsam3 and i2psam
+    /// both expect the private key in this field).
+    pub fn ok(private_destination: &str) -> Self {
         assert!(
-            public_destination.len() <= MAX_SAM_PUB_TEXT_BYTES,
-            "public destination text exceeds the SAM byte ceiling",
+            private_destination.len() <= MAX_SAM_PRIV_TEXT_BYTES,
+            "private destination text exceeds the SAM byte ceiling",
         );
         Self {
             result: ReplyResult::Ok,
-            destination: Some(public_destination.to_owned()),
+            destination: Some(private_destination.to_owned()),
             message: None,
         }
     }

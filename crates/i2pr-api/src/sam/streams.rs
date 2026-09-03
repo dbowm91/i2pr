@@ -343,6 +343,21 @@ impl SamStreamRegistry {
             .unwrap_or(0)
     }
 
+    /// Returns the number of live STREAM attachments owned by one
+    /// session. Raw-stream teardown uses this to release a destination
+    /// only after the last sibling stream has gone away.
+    pub fn attachment_count_for(&self, session_id: &SamSessionId) -> usize {
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| {
+                sessions
+                    .get(session_id)
+                    .map(|entry| entry.attachments.len())
+            })
+            .unwrap_or(0)
+    }
+
     /// Returns the number of pending ACCEPT waiters across every
     /// session.
     pub fn pending_accept_count(&self) -> usize {
@@ -574,6 +589,40 @@ impl SamStreamRegistry {
         Ok(stream_id)
     }
 
+    /// Claims a specific pending ACCEPT waiter. This is the
+    /// transaction-safe form used by the daemon when a waiter has
+    /// completed: another waiter cannot be removed accidentally if
+    /// multiple ACCEPT calls share one session.
+    pub fn claim_pending_accept(
+        &self,
+        session_id: &SamSessionId,
+        stream_id: StreamAcceptId,
+    ) -> Result<bool, SamStreamRegistryError> {
+        let mut sessions = self.sessions.lock()?;
+        let entry =
+            sessions
+                .get_mut(session_id)
+                .ok_or_else(|| SamStreamRegistryError::UnknownSession {
+                    session_id: session_id.clone(),
+                })?;
+        let Some(position) = entry
+            .pending_accepts
+            .iter()
+            .position(|candidate| *candidate == stream_id)
+        else {
+            return Ok(false);
+        };
+        entry.pending_accepts.remove(position);
+        if let InboundMode::Accepting { count } = entry.inbound_mode {
+            entry.inbound_mode = if count <= 1 {
+                InboundMode::Idle
+            } else {
+                InboundMode::Accepting { count: count - 1 }
+            };
+        }
+        Ok(true)
+    }
+
     /// Returns a snapshot clone of the attachment metadata for the
     /// supplied stream id.
     pub fn attachment(
@@ -606,11 +655,15 @@ impl SamStreamRegistry {
                     session_id: session_id.clone(),
                 })?;
         let removed = entry.attachments.remove(&stream_id);
-        if removed.is_some() {
+        if let Some(removed) = &removed {
             // The id may have been queued as a pending accept; remove it
             // idempotently from the FIFO queue as well.
+            let was_pending = entry.pending_accepts.iter().any(|id| *id == stream_id);
             entry.pending_accepts.retain(|id| *id != stream_id);
-            if let InboundMode::Accepting { count } = entry.inbound_mode {
+            if matches!(removed.direction(), SamStreamDirection::Inbound)
+                && was_pending
+                && let InboundMode::Accepting { count } = entry.inbound_mode
+            {
                 entry.inbound_mode = if count <= 1 {
                     InboundMode::Idle
                 } else {

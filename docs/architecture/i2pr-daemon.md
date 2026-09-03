@@ -442,12 +442,12 @@ the SAM 3.1 STREAM CONNECT / ACCEPT transport bridge as
  ([`plans/138-status.md`](../../plans/138-status.md)); Plan 139 closes
 the loopback-only STREAM FORWARD and local NAMING LOOKUP hardening as
 `passed-m7-sam31-forward-naming-hardening`
-([`plans/139-status.md`](../../plans/139-status.md)); the next product
-step is independent-client interoperability and Milestone 7 closure
-(Plan 148, currently `blocked-external-client-build-failure` per
-[`plans/148-status.md`](../../plans/148-status.md) — the pinned i2plib
-and libsam3 sources are not present in the local cache and no
-build/install lane exists for them).
+([`plans/139-status.md`](../../plans/139-status.md)); Plan 149 then
+closed the self-composed localhost STREAM product. The next product
+step is independent-client interoperability and final Milestone 7
+closure under Plan 150; the retained external-client pins and build
+lane are documented in
+[`tests/integration/sam/README.md`](../../tests/integration/sam/README.md).
 
 ### Which crates are wired in today
 
