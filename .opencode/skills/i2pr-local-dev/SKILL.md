@@ -1,11 +1,12 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Use for i2pr-client, i2pr-api, destination-side i2pr-tunnel/i2pr-netdb/i2pr-proto/i2pr-crypto, i2pr-daemon SAM code, local trajectory tests, or Milestone 7 corrective execution. Plan 145 is the corrective umbrella; Plan 149 closed the self-composed local STREAM product; Plan 150 closed the localhost external-client SAM layer.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Plan 149 closed the self-composed localhost product; Plan 150 retains external-client core evidence; Plan 151 is the active final acceptance/evidence corrective and the only next executable Milestone 7 plan.
 ---
 
 # I2PR Local Development
 
-Use this skill for the local product side of the router. The historical NTCP2 mixed-router development lane is separate external acceptance debt.
+Use this skill for the local product/SAM side of the router. Historical
+mixed-router NTCP2 work remains separate acceptance debt.
 
 ## Current authority
 
@@ -17,128 +18,133 @@ milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 ```
 
-Milestone 7 **local product is closed** by Plan 149. Read, in order:
-
-1. `plans/145-status.md` — corrective umbrella;
-2. `plans/149-status.md` — closed self-composed STREAM product;
-3. `plans/149-m7-sam31-self-composing-local-product-corrective.md` — closed;
-4. `plans/150-status.md` — closed external-client closure;
-5. `plans/146-status.md` — closed private-destination reference result;
-6. `plans/147-status.md` — retained raw-driver implementation evidence;
-7. `plans/148-status.md` — blocked historical audit;
-8. `plans/150-m7-sam31-external-client-reproducible-final-closure.md` — **closed plan and reproducibility record**.
-
-Current classification:
+Milestone 7 current authority:
 
 ```text
 plan_146_private_destination_reference = passed
 plan_147_raw_driver_implementation = retained
-plan_147_full_original_acceptance = superseded-by-plan149
-plan_148 = blocked-audit-superseded-by-plan149-150
 plan_149 = passed-self-composing-local-product
-plan_150 = passed-m7-sam31-external-client-final-closure
-sam_independent_clients = at-least-two-passed
-milestone7_local_product = closed-via-plan149
+plan_150_external_core_evidence = retained-passed
+plan_150_final_acceptance = superseded-by-plan151
+plan_151 = active-final-acceptance-evidence-correction
+sam_independent_clients = at-least-two-passed-via-plan150
+milestone7_local_product = passed-via-plan149
+milestone7_final_acceptance = not-yet-closed
+next_executable_plan = 151
 ```
 
-Milestone 7 localhost application scope is closed by Plan 150. Milestone 8
-planning may begin, but do not broaden the claim to router-to-router
-interoperability.
+Read in order:
 
-## Retain these closed/useful pieces
+1. `plans/151-status.md`
+2. `plans/151-m7-sam31-final-acceptance-evidence-correction.md`
+3. `plans/150-status.md`
+4. `plans/149-status.md`
+5. Plans 146–148 for retained/historical context.
+
+Do not begin Milestone 8 implementation until Plan 151 explicitly passes.
+
+## Retain these working pieces
 
 Do not rebuild them without a concrete defect:
 
-- Plan 137 bounded loopback SAM listener/session lifecycle;
-- Plan 142 I2P Base64 alphabet (`A-Z a-z 0-9 - ~`) and `=` padding;
-- Plan 146 Java I2P/i2pd bidirectional private-destination evidence;
-- `DestinationIdentity::from_imported` relaxed encryption-public reconstruction invariant;
-- strict SAM parser/resource ceilings;
-- secret redaction/zeroization/non-Clone ownership;
-- Plan 139 loopback-only FORWARD and local NAMING policy;
-- `StreamingManager` + `StreamingDestinationAdapter` as authoritative stream implementation;
-- Plan 129 destination-routing / ECIES / Garlic / tunnel product topology;
-- Plan 143 local-delivery seam;
-- Plan 144 canonical-vs-receiver StreamingManager routing fix;
-- Plan 147 owned raw `TcpStream` handoff, same-read raw-byte preservation, actual `Established` wait, OS CSPRNG, TCP↔Streaming pump, and supervised ACK/retransmit driver.
-- Plan 149 closed the self-composed `SESSION CREATE` path (one `Arc<DestinationIdentity>` allocation, OS-CSPRNG `SamLocalProductFabric`, automatic per-destination driver spawn, local peer LeaseSet2 directory, byte-exact raw transition, typed `DeliverySweepCounters`).
+- Plan 137 bounded loopback listener/session lifecycle;
+- Plan 142 I2P Base64 correction;
+- Plan 146 Java I2P/i2pd private-destination reference compatibility;
+- `DestinationIdentity::from_imported` semantics;
+- strict SAM parser/resource ceilings and secret hygiene;
+- Plan 139 loopback-only FORWARD/NAMING implementation;
+- `StreamingManager` and `StreamingDestinationAdapter` as the authoritative stream implementation;
+- Plan 129 local destination/ECIES/Garlic/Streaming product path;
+- Plan 147 owned raw `TcpStream` handoff, same-read preservation, actual `Established` wait, OS CSPRNG runtime path, byte pump, and supervised ACK/retransmit driver;
+- Plan 149 transactional self-composed `SESSION CREATE`, one shared `Arc<DestinationIdentity>`, `SamLocalProductFabric`, local peer LeaseSet2 resolution, automatic destination driver, byte-exact SILENT/peer metadata, and typed delivery counters;
+- Plan 150 external core evidence: pinned i2psam + qualified i2plib SAM surface, exact two-direction 2 MiB transfers, private destinations, SILENT, NAMING, negative matrix, and positive FORWARD.
 
-## Plan 149 closed product surface
+## Why Plan 151 exists
 
-`crates/i2pr-daemon/src/sam/fabric.rs` defines the OS-CSPRNG-driven `SamLocalProductFabric` plus the `LocalhostInboundTunnelFactory` and the typed `DeliverySweepCounters` / `LocalDeliveryDegradation` surface. `SamServiceState::execute_session_create` is now a transactional self-composition path that builds one `Arc<DestinationIdentity>` allocation, calls the fabric, builds the destination runtime via `DestinationRuntime::with_shared_identity`, installs the bridge plus inbound-tunnel factory, spawns the per-destination runtime driver, and commits the session reservation. Any failure rolls registries, product material, and per-destination state back to the pre-create baseline.
+Plan 150's implementation/external-client work is useful, but its final
+acceptance ledger overclaimed several deferred cases. The clearest example is
+an unconditional `multiple-stream-lifecycle = passed` row that refers to a
+Plan 149 sibling-stream test that is not present.
 
-`SamDestinations::resolve_local_lease_set2` (Plan 149 §7) resolves and validates the peer's LeaseSet2 through the SAM service directory; `bridge_to_peer` restores the receiver's modified routing into the peer's canonical `routing` field (not `receiver_routing`) so the install of the sender's LeaseSet2 persists across deliveries. `handle_stream_connect_outcome` enforces byte-exact `STREAM STATUS RESULT=OK` + `DESTINATION=<peer-pub-b64>` raw-transition semantics and suppresses both on `silent == true`.
+Plan 149 explicitly deferred these items:
 
-The canonical Plan 149 evidence lives at `crates/i2pr-daemon/tests/sam_stream_self_composed.rs`. Plan 150 closes independent-client / FORWARD / NAMING / final M7 evidence on top of it.
+- slow-reader / slow-writer boundedness;
+- DATA loss and retransmission;
+- ACK loss;
+- duplicate DATA;
+- reordered DATA;
+- authenticated/ciphertext corruption;
+- retransmission ceiling;
+- sibling-stream and broader CLOSE/RESET lifecycle acceptance.
 
-## Plan 150 external-client guidance
+Plan 151 makes those executable through the real listener and requires every
+final `passed` row to derive from a command/test that actually ran.
 
-Plan 149 is closed. Plan 150 runs correctly pinned external clients through
-the self-composed listener and records the closure summary in
-`tests/integration/sam/evidence.md`.
+## Plan 151 implementation shape
 
-Pinned external provenance:
+Prefer a new focused black-box acceptance suite such as:
 
 ```text
-libsam3
-  repo: https://github.com/i2p/libsam3
-  pin: 7d6e658798baec31394c5685f9583343cc00900b
-  language: C
+crates/i2pr-daemon/tests/sam_stream_final_acceptance.rs
+```
 
+Keep behavior-driving interactions TCP/SAM-only after listener startup.
+Read-only non-secret counters may be inspected for boundedness/resource release.
+
+For deterministic faults, prefer a narrow **pre-start test configuration**
+below the SAM socket boundary. Do not add production `i2pr-testkit`
+dependencies and do not mutate private product state after listener startup.
+
+Required executable areas:
+
+- sibling streams: two simultaneous streams, close one, prove the other remains usable;
+- slow reader and slow writer with explicit reservoir ceilings;
+- DATA drop, ACK drop, duplicate, reorder, corruption, retransmit ceiling;
+- graceful CLOSE, RESET/abrupt failure, control-session teardown, repeated lifecycle baselines;
+- full FORWARD lifecycle/negative matrix;
+- explicit focused Plan 127–134 regression commands;
+- final Plan 150 external-client rerun and hosted workflow.
+
+If one of these exposes a concrete M6 Streaming defect, stop and write a
+narrow M6 corrective plan rather than weakening the Plan 151 expectation.
+
+## Evidence-integrity rule
+
+No required final row may be marked passed merely because another plan/status
+says it passed. `tests/integration/sam/run-independent.sh` must derive each
+required final row from an executed command/test.
+
+Plan 151 should add a small static checker such as:
+
+```text
+scripts/check-sam-acceptance-evidence.sh
+```
+
+that rejects unconditional pass bookkeeping for required acceptance labels.
+Do not build a general orchestration framework.
+
+## External-client provenance
+
+Retain exact pins:
+
+```text
 i2psam
   repo: https://github.com/i2p/i2psam
   pin: b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac
-  language: C++
-```
+  role: counted external client
 
-The old Plan 148 libsam3 `e0da... / v1.0.0` pin is invalid and must not be restored.
-
-Supplementary:
-
-```text
 i2plib
+  repo: https://github.com/l-n-s/i2plib
   pin: 6edf51cd5d21cc745aa7e23cb98c582144884fa8
-  version: 0.0.14
+  role: counted qualified SAM-surface substitute
+
+libsam3
+  repo: https://github.com/i2p/libsam3
+  pin: 7d6e658798baec31394c5685f9583343cc00900b
+  role: built/probed, not counted because its public API rejects the compact 608-character Ed25519 PRIV
 ```
 
-Its 2019 high-level asyncio API uses the removed `loop=` argument, so do not make it mandatory on modern Python unless a compatible runtime is explicitly qualified. Do not patch external client source for i2pr.
-
-The Plan 150 counted clients are unmodified `i2psam` and the qualified
-`i2plib.sam` substitute. The pinned libsam3 snapshot is built and probed but
-its public API requires an 884-character minimum `PRIV`, while i2pr's
-canonical Ed25519 representation is 608 characters; it is therefore not
-counted as a passing client.
-
-Plan 150's manual GitHub-hosted Ubuntu `workflow_dispatch` lane fetches/builds exact external revisions and runs localhost SAM. No root/sudo/namespaces/Docker/VM/systemd/public I2P is allowed or needed.
-
-## Architecture ownership
-
-```text
-i2pr-api
-  bounded SAM parsing/version/replies/state/registries
-  runtime-neutral
-
-i2pr-client
-  canonical destination identity/runtime/routing/Streaming
-  Plan 129 local delivery seam
-
-i2pr-daemon
-  Tokio listener/socket ownership
-  session composition
-  local SAM product fabric
-  raw TCP socket owner
-  destination driver supervision
-```
-
-Forbidden shortcuts:
-
-- a second SAM-specific streaming protocol;
-- direct application-byte transfer between StreamingManagers;
-- fabricated `Established` state;
-- hidden private post-SESSION-CREATE setup in final acceptance;
-- unbounded queues/buffers;
-- deterministic runtime cryptographic randomness;
-- public-network/NTCP2/SSU2 dependency for M7.
+Do not patch or vendor external clients.
 
 ## Environment contract
 
@@ -151,8 +157,7 @@ systemd               = no
 public I2P network    = no
 live NTCP2/SSU2       = no
 localhost TCP         = yes
-reference libraries   = yes
-manual GitHub-hosted external-client lane = yes (Plan 150)
+manual GitHub-hosted external-client lane = yes
 ```
 
 ## Development commands
@@ -162,14 +167,21 @@ Routine floor:
 ```text
 cargo fmt --all --check
 cargo check --locked --workspace --all-targets
-cargo test --locked --workspace --all-targets
+cargo test --locked --workspace --all-targets -- --test-threads=1
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
+cargo test --locked --workspace --doc
 bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh
+bash scripts/check-fixture-manifest.sh
+bash scripts/check-ntcp2-vectors.sh
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-constrained-host-lane-boundary.sh
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
+cargo deny check advisories bans sources
 ```
 
-Focused SAM seams:
+Focused SAM floor:
 
 ```text
 cargo test --locked -p i2pr-api --all-targets
@@ -178,39 +190,29 @@ cargo test --locked -p i2pr-daemon --test sam_loopback
 cargo test --locked -p i2pr-daemon --test sam_plan146_reference -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test sam_stream_product
 cargo test --locked -p i2pr-daemon --test sam_stream_independent
-cargo test --locked -p i2pr-daemon --test sam_stream_raw_product
+cargo test --locked -p i2pr-daemon --test sam_stream_raw_product -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test sam_stream_self_composed -- --test-threads=1
-cargo test --locked -p i2pr-daemon --test sam_forward_naming
+cargo test --locked -p i2pr-daemon --test sam_forward_naming -- --test-threads=1
 ```
 
-Plan 149 closed the self-composed black-box lane (`sam_stream_self_composed`), including exact `SILENT` handling, same-read preservation, bounded backpressure, a bidirectional 2 MiB transfer, and terminal cleanup. Plan 150 must rerun focused Plan 127–134 M6 regressions and run correctly pinned external clients through the self-composed listener; aggregate workspace counts alone are insufficient.
+Plan 151 must resolve and run the actual focused Plan 127–134 tests from the
+current repository and list them verbatim in its closure record.
 
 ## Coding rules
 
-- No `unsafe` in protocol/client/API/service crates.
-- Treat every SAM/network byte as hostile; explicit bounds/typed errors.
-- No `unbounded_channel`.
-- Runtime/socket ownership stays in daemon/runtime composition.
-- OS CSPRNG in runtime paths; deterministic RNG test-only.
-- Secret values redacted/zeroized and not casually Clone-able.
-- Never log SAM `PRIV` or raw application payloads.
-- Do not weaken M6 ACK/send/receive-window behavior for SAM convenience.
-- Add a regression test for every concrete defect corrected.
-
-## When to load other skills
-
-- Historical NTCP2/mixed-router work: `i2pr-ntcp2-interop`.
-- Plan 046 rootless namespace: `i2pr-rootless-sandbox`.
-- Plan 048–051 Multipass recovery: `i2pr-multipass-recovery`.
-- Architecture/ADR navigation: `i2pr-architecture`.
+- No new unbounded channels/queues.
+- Runtime/socket ownership stays in daemon/runtime layers.
+- OS CSPRNG for runtime material; deterministic randomness is test-only.
+- Never log private destination material or raw payloads.
+- No second private identity copy for SAM bridge ownership.
+- Do not weaken M6 Streaming window/ACK/retransmit semantics for SAM tests.
+- Every concrete defect exposed by Plan 151 gets a regression.
 
 ## Final claim rules
 
-- SAM remains disabled by default and loopback-only during Milestone 7.
-- Do not claim router-to-router interoperability from the Plan 150 localhost
-  client result.
-- Do not claim router-to-router interoperability from localhost SAM evidence.
-- Do not bump `advertised = true` without `specs/CONFORMANCE.md` evidence.
-- Keep SAM experimental, loopback-only, and non-advertised after Plan 150.
+- SAM stays disabled by default, loopback-only, experimental, and non-advertised.
+- Plan 150's external-client result does not imply router-to-router interoperability.
+- Milestone 7 is not finally closed until Plan 151 passes.
+- Do not begin Milestone 8 implementation before `plans/151-status.md` explicitly records closure.
 
-Current handoff: **Plan 150 is closed; begin only Milestone 8 planning**.
+Current handoff: **execute Plan 151 only**.
