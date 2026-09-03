@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use i2pr_api::sam::limits::SamLimits;
 use i2pr_daemon::config::SamConfig;
-use i2pr_daemon::sam::SamServiceState;
+use i2pr_daemon::sam::{ForwardBridgeError, SamServiceState};
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -297,6 +297,307 @@ async fn naming_me_is_session_scoped_and_unknown_i2p_is_not_found() {
         tokio::task::yield_now().await;
     }
     assert_eq!(state.session_registry().session_count(), 0);
+    parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+    let _ = children.shutdown().await;
+}
+
+/// Plan 151 §10 matrix helpers: register one loopback FORWARD owned
+/// by a fresh control socket and return that socket.
+async fn register_forward(address: SocketAddr, target: SocketAddr, silent: bool) -> TcpStream {
+    let mut forward = TcpStream::connect(address).await.unwrap();
+    hello(&mut forward).await;
+    let command = format!(
+        "STREAM FORWARD ID=forward PORT={} HOST={} SILENT={}\n",
+        target.port(),
+        target.ip(),
+        if silent { "true" } else { "false" },
+    );
+    forward.write_all(command.as_bytes()).await.unwrap();
+    assert_eq!(line(&mut forward).await, "STREAM STATUS RESULT=OK\n");
+    forward
+}
+
+/// Serves `exchanges` forwarded streams on `listener` with the exact
+/// non-silent metadata + hello/world trajectory.
+async fn run_echo_target(listener: TcpListener, exchanges: usize) {
+    for _ in 0..exchanges {
+        let (target, _) = listener.accept().await.unwrap();
+        let mut reader = BufReader::new(target);
+        let mut metadata = Vec::new();
+        reader.read_until(b'\n', &mut metadata).await.unwrap();
+        assert_eq!(metadata, b"DESTINATION=peer-public\n");
+        let mut payload = [0_u8; 5];
+        reader.read_exact(&mut payload).await.unwrap();
+        assert_eq!(&payload, b"hello");
+        let mut target = reader.into_inner();
+        target.write_all(b"world").await.unwrap();
+        target.shutdown().await.unwrap();
+    }
+}
+
+/// Bridges one already-accepted Streaming byte socket through the
+/// live registration and proves exact hello/world bytes.
+async fn bridge_one_exchange(state: &Arc<SamServiceState>, session: &i2pr_api::SamSessionId) {
+    let source_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let source_address = source_listener.local_addr().unwrap();
+    let mut source_client = TcpStream::connect(source_address).await.unwrap();
+    let (source, _) = source_listener.accept().await.unwrap();
+    let bridge = tokio::spawn({
+        let state = Arc::clone(state);
+        let session = session.clone();
+        let cancellation = CancellationToken::new();
+        async move {
+            state
+                .bridge_forwarded_stream(&session, source, Some("peer-public"), cancellation)
+                .await
+        }
+    });
+    source_client.write_all(b"hello").await.unwrap();
+    let mut reply = [0_u8; 5];
+    source_client.read_exact(&mut reply).await.unwrap();
+    assert_eq!(&reply, b"world");
+    bridge.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn forward_second_stream_reuses_live_registration() {
+    // Plan 151 §10 item 3: the registration outlives one bridged
+    // stream; a second independent forwarded stream succeeds.
+    let (state, address, children, parent) = start().await;
+    let mut control = TcpStream::connect(address).await.unwrap();
+    hello(&mut control).await;
+    let _public = create(&mut control).await;
+    let session = i2pr_api::SamSessionId::new("forward").unwrap();
+
+    let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_address = target_listener.local_addr().unwrap();
+    let mut forward = register_forward(address, target_address, false).await;
+    assert!(state.forward_registration(&session).is_some());
+
+    let target_task = tokio::spawn(run_echo_target(target_listener, 2));
+    bridge_one_exchange(&state, &session).await;
+    assert!(
+        state.forward_registration(&session).is_some(),
+        "registration must survive a completed forwarded stream"
+    );
+    bridge_one_exchange(&state, &session).await;
+    target_task.await.unwrap();
+
+    forward.write_all(b"QUIT\n").await.unwrap();
+    let mut eof = [0_u8; 1];
+    assert_eq!(forward.read(&mut eof).await.unwrap(), 0);
+    assert!(state.forward_registration(&session).is_none());
+
+    drop(control);
+    parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+    let _ = children.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn forward_target_refusal_is_typed_and_registration_survives() {
+    // Plan 151 §10 item 4: a refused loopback target surfaces a typed
+    // I/O error within the test deadline, leaks no attachment, keeps
+    // the registration, and a later live target bridges fine.
+    let (state, address, children, parent) = start().await;
+    let mut control = TcpStream::connect(address).await.unwrap();
+    hello(&mut control).await;
+    let _public = create(&mut control).await;
+    let session = i2pr_api::SamSessionId::new("forward").unwrap();
+
+    // Reserve a loopback port, then release it so nothing listens.
+    let held = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let refused = held.local_addr().unwrap();
+    drop(held);
+
+    let mut forward = register_forward(address, refused, false).await;
+    let attachments_before = state.stream_registry().attachment_count();
+    let outcome = state.connect_forward_target(&session).await;
+    assert!(
+        matches!(outcome, Err(ForwardBridgeError::Io(_))),
+        "refused target must surface I/O, not timeout: {outcome:?}"
+    );
+    assert!(
+        state.forward_registration(&session).is_some(),
+        "refusal must not unregister the forward"
+    );
+    assert_eq!(
+        state.stream_registry().attachment_count(),
+        attachments_before,
+        "refusal must leak no attachment"
+    );
+
+    // Owner close, re-register against a live target, bridge exactly.
+    forward.write_all(b"QUIT\n").await.unwrap();
+    let mut eof = [0_u8; 1];
+    assert_eq!(forward.read(&mut eof).await.unwrap(), 0);
+    assert!(state.forward_registration(&session).is_none());
+
+    let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_address = target_listener.local_addr().unwrap();
+    let mut forward = register_forward(address, target_address, false).await;
+    let target_task = tokio::spawn(run_echo_target(target_listener, 1));
+    bridge_one_exchange(&state, &session).await;
+    target_task.await.unwrap();
+
+    forward.write_all(b"QUIT\n").await.unwrap();
+    assert_eq!(forward.read(&mut eof).await.unwrap(), 0);
+    assert!(state.forward_registration(&session).is_none());
+
+    drop(control);
+    parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+    let _ = children.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn forward_unresponsive_target_times_out_within_policy() {
+    // Plan 151 §10 item 5: a target that never completes the TCP
+    // handshake (full backlog, SYNs dropped) terminates with the
+    // configured 3 s policy timeout — no hang, no attachment leak.
+    // The paused clock advances deterministically past the policy.
+    let (state, address, children, parent) = start().await;
+    let mut control = TcpStream::connect(address).await.unwrap();
+    hello(&mut control).await;
+    let _public = create(&mut control).await;
+    let session = i2pr_api::SamSessionId::new("forward").unwrap();
+
+    let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_address = target_listener.local_addr().unwrap();
+    // Saturate the accept backlog and leave SYNs unanswered; the
+    // later forward connect then pends instead of refusing.
+    let mut fillers = Vec::new();
+    for _ in 0..400 {
+        let address = target_address;
+        fillers.push(tokio::spawn(async move {
+            let socket = TcpStream::connect(address).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            drop(socket);
+        }));
+    }
+    for _ in 0..1024 {
+        tokio::task::yield_now().await;
+    }
+
+    let _forward = register_forward(address, target_address, false).await;
+    let attachments_before = state.stream_registry().attachment_count();
+    let connect = tokio::spawn({
+        let state = Arc::clone(&state);
+        let session = session.clone();
+        async move { state.connect_forward_target(&session).await }
+    });
+    tokio::time::advance(std::time::Duration::from_secs(5)).await;
+    let outcome = connect.await.unwrap();
+    assert!(
+        matches!(outcome, Err(ForwardBridgeError::Timeout)),
+        "hung target must surface the policy timeout: {outcome:?}"
+    );
+    assert!(
+        state.forward_registration(&session).is_some(),
+        "timeout must not unregister the forward"
+    );
+    assert_eq!(
+        state.stream_registry().attachment_count(),
+        attachments_before,
+        "timeout must leak no attachment"
+    );
+
+    for filler in fillers {
+        filler.abort();
+    }
+    drop(control);
+    parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+    let _ = children.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn forward_rejects_non_loopback_target() {
+    // Plan 151 §10 item 8: non-loopback literals and hostnames are
+    // rejected at parse time (no resolver, no packet leaves
+    // loopback) and register nothing.
+    let (state, address, children, parent) = start().await;
+    let mut control = TcpStream::connect(address).await.unwrap();
+    hello(&mut control).await;
+    let _public = create(&mut control).await;
+    let session = i2pr_api::SamSessionId::new("forward").unwrap();
+
+    for host in ["93.184.216.34", "example.com", "0.0.0.0"] {
+        let mut forward = TcpStream::connect(address).await.unwrap();
+        hello(&mut forward).await;
+        let command = format!("STREAM FORWARD ID=forward PORT=1234 HOST={host}\n");
+        forward.write_all(command.as_bytes()).await.unwrap();
+        let reply = line(&mut forward).await;
+        assert!(
+            reply.starts_with("STREAM STATUS RESULT=INVALID_KEY"),
+            "non-loopback HOST={host} must be rejected: {reply:?}"
+        );
+        assert!(
+            state.forward_registration(&session).is_none(),
+            "rejected HOST={host} must register nothing"
+        );
+    }
+
+    drop(control);
+    parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+    let _ = children.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn forward_and_accept_stay_mutually_exclusive() {
+    // Plan 151 §10 item 7: an active FORWARD rejects ACCEPT and a
+    // pending ACCEPT rejects FORWARD, both with I2P_ERROR.
+    let (state, address, children, parent) = start().await;
+    let mut control = TcpStream::connect(address).await.unwrap();
+    hello(&mut control).await;
+    let _public = create(&mut control).await;
+    let session = i2pr_api::SamSessionId::new("forward").unwrap();
+
+    let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_address = target_listener.local_addr().unwrap();
+    let mut forward = register_forward(address, target_address, false).await;
+
+    let mut accepter = TcpStream::connect(address).await.unwrap();
+    hello(&mut accepter).await;
+    accepter
+        .write_all(b"STREAM ACCEPT ID=forward\n")
+        .await
+        .unwrap();
+    let reply = line(&mut accepter).await;
+    assert!(
+        reply.starts_with("STREAM STATUS RESULT=I2P_ERROR"),
+        "ACCEPT during active FORWARD must be rejected: {reply:?}"
+    );
+
+    // Release the forward, then park an ACCEPT and prove FORWARD is
+    // rejected while the accept is pending.
+    forward.write_all(b"QUIT\n").await.unwrap();
+    let mut eof = [0_u8; 1];
+    assert_eq!(forward.read(&mut eof).await.unwrap(), 0);
+    assert!(state.forward_registration(&session).is_none());
+
+    let mut accepter = TcpStream::connect(address).await.unwrap();
+    hello(&mut accepter).await;
+    accepter
+        .write_all(b"STREAM ACCEPT ID=forward\n")
+        .await
+        .unwrap();
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    let mut forward = TcpStream::connect(address).await.unwrap();
+    hello(&mut forward).await;
+    let command = format!(
+        "STREAM FORWARD ID=forward PORT={} HOST=127.0.0.1\n",
+        target_address.port()
+    );
+    forward.write_all(command.as_bytes()).await.unwrap();
+    let reply = line(&mut forward).await;
+    assert!(
+        reply.starts_with("STREAM STATUS RESULT=I2P_ERROR"),
+        "FORWARD during pending ACCEPT must be rejected: {reply:?}"
+    );
+
+    drop(accepter);
+    drop(forward);
+    drop(control);
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
     let _ = children.shutdown().await;
 }
