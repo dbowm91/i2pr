@@ -1,262 +1,107 @@
-# Plan 149 status — SAM 3.1 self-composing local product corrective authority
+# Plan 149 status — SAM 3.1 self-composing local product corrective
 
 Status: **`passed-m7-sam31-self-composing-local-product-corrective`**.
 
-Registered: **2026-09-02**. Closed: **2026-09-02** (UTC).
+Registered: **2026-09-02**. Closed: **2026-09-02** (UTC). Authority note updated: **2026-09-03**.
 
 Plan of record:
 [`plans/149-m7-sam31-self-composing-local-product-corrective.md`](149-m7-sam31-self-composing-local-product-corrective.md).
 
-Source audit:
-
-- Plan 145 remaining-gap corrective roadmap;
-- Plan 146 passed private-destination reference requalification;
-- Plan 147 raw-driver implementation/localhost byte-pump result;
-- Plan 148 blocked audit.
+Newest final Milestone 7 acceptance authority:
+[`plans/151-status.md`](151-status.md).
 
 ## Current classification
 
 ```text
 plan_134 = passed-milestone6-recv-window-ack-ceiling-closure
-
 plan_146 = passed-m7-sam31-private-destination-reference-requalification
-
 plan_147_raw_driver_implementation = landed-and-retained
-plan_147_local_binary_smoke = passed
-plan_147_full_original_acceptance = superseded-by-plan149
-
-plan_148 = blocked-audit-superseded-for-next-action-by-plan149-150
-
+plan_148 = blocked-audit-historical-superseded
 plan_149 = passed-m7-sam31-self-composing-local-product-corrective
-plan_150 = passed-m7-sam31-external-client-final-closure
+plan_150_external_core_evidence = retained-passed
+plan_150_final_acceptance = superseded-by-plan151
+plan_151 = active-m7-sam31-final-acceptance-evidence-correction
 
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
-external_acceptance_debt = retained-separately
-
-milestone7_local_product = closed-via-plan149
-sam31_private_destination = reference-compatible-via-plan146
-sam31_raw_socket_owner = implemented-via-plan147
-sam31_self_composing_product = passed-via-plan149
+milestone7_local_product = passed-via-plan149
+milestone7_sam_localhost_final_acceptance = not-yet-closed
 sam_independent_clients = at-least-two-passed-via-plan150
-next_executable_plan = Milestone 8 planning
-next_product_layer = Milestone 8 planning
+next_executable_plan = 151
 ```
 
-## Historical blocker resolved by Plan 149
+## What Plan 149 closed
 
-The post-Plan-148 audit identified a product-composition blocker that exists before external-client provisioning.
+Plan 149 fixed the product-composition blocker discovered after Plan 147/148.
+A successful SAM `SESSION CREATE` now composes the supported localhost STREAM
+product transactionally before returning success.
 
-The canonical Plan 147 raw STREAM test manually performs private setup after SAM `SESSION CREATE`:
+Retained implementation/result:
 
-- constructs/installs `SamDestinationBridge`s;
-- installs deterministic inbound-tunnel factories;
-- cross-installs each peer's validated LeaseSet2;
-- manually spawns per-destination runtime drivers.
+- one `Arc<DestinationIdentity>` allocation shared by the destination runtime and SAM bridge; no second private identity reconstruction;
+- `SamLocalProductFabric` creates signed LeaseSet2, outbound role, and a localhost inbound-tunnel provider with OS CSPRNG runtime material;
+- `DestinationRuntime::with_shared_identity` preserves one secret ownership graph;
+- `SamDestinationBridge` and the inbound delivery factory are installed automatically;
+- one per-destination runtime driver is spawned under explicit `ChildScope`/cancellation ownership;
+- local peer LeaseSet2 is resolved/validated through `SamDestinations::resolve_local_lease_set2`, without test-side cross-installation;
+- `bridge_to_peer` preserves canonical peer routing across deliveries;
+- missing/failing local delivery is surfaced through typed `DeliverySweepCounters` rather than silently dropped;
+- CONNECT/ACCEPT raw transition honors `SILENT`; non-silent ACCEPT emits authenticated peer public Destination metadata;
+- same-read STREAM command newline + initial raw bytes are preserved.
 
-The production `execute_session_create()` path now performs those steps
-transactionally before returning success. Plan 149 is the corrective
-closure for that composition gap; Plan 150 subsequently closed the external
-client evidence lane.
+## Canonical black-box evidence
 
-`execute_stream_connect()` subsequently requires a bridge in `sam_destinations`; without the test-only setup it returns an I2P error for a missing bridge. `deliver_outbound()` also depends on an installed inbound-tunnel factory and otherwise drops the request rather than producing a useful product-path failure.
+`crates/i2pr-daemon/tests/sam_stream_self_composed.rs` is the Plan 149 product-composition authority.
 
-Therefore Plan 148 remains historical audit evidence rather than the next
-execution authority.
+After listener startup it drives behavior through SAM TCP/raw bytes only and
+does not call private bridge/LeaseSet2/tunnel-factory/driver/delivery helpers.
 
-## Plan 147 acceptance correction
+Its four tests prove:
 
-Plan 147 delivered important real implementation:
+1. self-composed CONNECT/ACCEPT with exact bidirectional 2 MiB transfer;
+2. `SILENT=true` raw-first behavior;
+3. clean session/control teardown and registry baselines;
+4. same-read command + raw bytes, non-silent status, and authenticated ACCEPT peer metadata.
 
-- permanent line-parser -> owned raw `TcpStream` handoff;
-- actual Streaming `Established` wait;
-- OS CSPRNG in production CONNECT/delivery;
-- TCP -> `StreamingManager::send_data()`;
-- `drain_delivered()` -> TCP;
-- supervised ACK/retransmit runtime driver;
-- same-read buffered raw-byte preservation;
-- a localhost binary byte-pump test.
+The 2 MiB hosted-runner bound was widened to 120 seconds because the balanced
+Streaming profile deliberately uses its reference delayed-ACK behavior. That
+change preserved protocol timing/window semantics rather than accelerating the
+wire behavior solely for CI.
 
-Retain all of that.
+## What Plan 149 did not close
 
-However Plan 147's own original acceptance criteria also required SILENT
-exactness, backpressure, close/reset, sibling streams, and multi-megabyte
-transfer. Plan 149 closes the local product subset of those criteria:
-SILENT and same-read wire behavior, bounded backpressure, bidirectional
-2 MiB transfer, and terminal cleanup. Broader fault-matrix and
-independent-client evidence remain Plan 150 work.
+Plan 149 deliberately carried the following acceptance work forward rather
+than claiming it:
 
-## Additional concrete protocol defect
+- two simultaneous sibling-stream isolation;
+- explicit slow-reader/slow-writer pressure cases;
+- DATA-drop retransmission;
+- ACK-drop recovery;
+- duplicate DATA exact-once behavior;
+- reordered DATA recovery;
+- authenticated/ciphertext corruption rejection;
+- retransmission-ceiling terminal behavior;
+- broader CLOSE/RESET lifecycle matrix;
+- final external-client/FORWARD/NAMING acceptance.
 
-The current raw-transition handler writes `STREAM STATUS RESULT=OK` before handoff regardless of the request's `SILENT=true` flag. The raw driver retains but does not use the flag. Plan 149 must correct CONNECT/ACCEPT SILENT semantics and non-silent ACCEPT peer-Destination metadata before external closure.
+Plan 150 produced valid external-client core evidence, but its final evidence
+audit found several of the above were not actually executed despite being
+marked/treated as passed. Plan 151 now owns those remaining final-acceptance
+items.
 
-## External-client provenance correction
+## Plan 149 closing validation
 
-Plan 148's recorded libsam3 pin is invalid for the official repository:
+The Plan 149 closing pass recorded successful workspace format/check/test,
+focused SAM tests, clippy/doc, static boundary checks, NTCP2 harness regression,
+and cargo-deny policy checks. The canonical Plan 149 product suite passed four
+tests.
 
-```text
-recorded: e0da4f4d8d3ca670fef86fd1046dab7c14afc5b7 / v1.0.0
-```
+These remain historical closing evidence for product composition. Plan 151
+must rerun the appropriate current regression floor on its closing head.
 
-Verified official `i2p/libsam3` references include:
+## Handoff
 
-```text
-v0.31.2 -> ea52a3251d60906d67f9a1031a6ed7642753f94f
-current official master snapshot used by Plan 150 guidance:
-7d6e658798baec31394c5685f9583343cc00900b
-```
-
-Plan 150 replaces the live external-client guidance with correctly pinned `libsam3` + `i2psam`, keeping legacy i2plib as supplementary evidence because its 2019 high-level asyncio API is awkward on current Python runtimes.
-
-## Execution sequence
-
-1. **Plan 149** — make SAM `SESSION CREATE` self-compose the local destination/Streaming product, remove hidden test setup from canonical acceptance, and close the documented local raw-path criteria.
-2. **Plan 150** — passed the correctly pinned external-client/final independent-client/FORWARD/NAMING evidence through a reproducible unprivileged lane. See [`plans/150-status.md`](150-status.md).
-
-Plan 148 remains historical failed-audit evidence and must not be used as the next executable plan.
-
-## Environment contract
-
-Both plans remain compatible with the constrained development policy:
-
-```text
-root/sudo              = not required
-namespaces             = not required
-Docker                 = not required
-VM/Multipass           = not required
-systemd                = not required
-public I2P network     = not required
-live NTCP2/SSU2        = not required
-localhost TCP          = required
-GitHub-hosted manual interop workflow = allowed for Plan 150
-```
-
-Plan 149's local product fabric is an explicitly localhost/authenticated-router-link-bypassed seam. It must never be described as live I2P tunnel interoperability.
-
-## Plan 149 acceptance evidence (closed 2026-09-02)
-
-- `crates/i2pr-daemon/src/sam.rs::execute_session_create` is now a
-  full transactional self-composition path. It builds one
-  `Arc<DestinationIdentity>` allocation, calls
-  `SamLocalProductFabric::prepare_for_destination` to produce a
-  signed LeaseSet2, outbound role, and inbound-tunnel factory, builds
-  the destination runtime via
-  `DestinationRuntime::with_shared_identity`, installs the
-  `SamDestinationBridge` plus the inbound-tunnel factory, spawns one
-  per-destination runtime driver under the caller's `ChildScope`, and
-  commits the session reservation. Any failure rolls back registries,
-  product material, and per-destination state to the pre-create
-  baseline. No second private identity is ever constructed.
-- `crates/i2pr-client/src/registry.rs::DestinationRuntime` now stores
-  its identity behind `Arc<DestinationIdentity>`. A new
-  `with_shared_identity` constructor accepts a pre-built
-  `Arc<DestinationIdentity>`; the original `new(identity, config)`
-  constructor wraps the owned identity in an `Arc` internally so the
-  existing one-allocation invariant still holds. Identity accessors
-  return `&Arc<DestinationIdentity>` (the bridge consumes a clone of
-  the `Arc`, never the underlying secret bytes).
-- `crates/i2pr-daemon/src/sam/fabric.rs` defines the
-  `SamLocalProductFabric` and the OS-CSPRNG-driven
-  `LocalhostInboundTunnelFactory` and outbound/inbound
-  `EstablishedTunnel` builders. Runtime-created ephemeral material is
-  sourced from `i2pr_crypto::OsRng` (wrapped in
-  `rand_core::UnwrapMut`). No test fixture, deterministic seed, or
-  `InboundTunnelFactory` install is ever performed after listener
-  startup.
-- `crates/i2pr-daemon/src/sam/streams.rs` gains
-  `SamDestinations::resolve_local_lease_set2` (Plan 149 §7) and
-  `bridge_to_peer` now restores the receiver routing to the
-  peer's canonical `routing` field (not `receiver_routing`) so the
-  install of the sender's LeaseSet2 persists across deliveries.
-  Without this fix the SYN response from a peer would fail with
-  `LeaseSet2LookupPending` because the receiver's canonical
-  routing was being clobbered by `mem::replace`.
-- `crates/i2pr-daemon/src/sam.rs::handle_stream_connect_outcome`
-  implements the byte-exact SAM raw transition per Plan 149 §9:
-  `STREAM STATUS RESULT=OK` is written only when
-  `silent == false`; the non-silent ACCEPT path additionally writes
-  `DESTINATION=<peer-pub-b64>` derived from the peer's
-  `Arc<DestinationIdentity>`; on `silent == true` the dispatch
-  transitions straight to raw mode without writing any status.
-- `crates/i2pr-daemon/src/sam/raw_stream.rs::deliver_outbound`
-  now returns `DeliverySweepCounters` (`delivered`,
-  `missing_factory`, `factory_exhausted`, `unknown_peer`,
-  `delivery_failed`) so the
-  per-destination driver can wake waiters with typed bounded
-  accounting rather than silently drop queued requests. Plan 149 §8
-  is enforced through the public
-  `crate::sam::fabric::DeliverySweepCounters` surface.
-- `crates/i2pr-daemon/tests/sam_stream_self_composed.rs` is the new
-  canonical Plan 149 §10 evidence. It binds a fresh loopback
-  listener, drives every required behavior through TCP and SAM
-  protocol commands alone, and never invokes any of the private
-  product-seam APIs (`build_sam_destination_bridge`,
-  `SamDestinations::install`,
-  `SamDestinationBridge::install_inbound_tunnel_factory`,
-  `DestinationRuntime::new`, `with_shared_identity`,
-  `install_remote_lease_set2`, `install_inbound_tunnel_factory`,
-  `spawn_destination_driver`, `bridge_to_peer`,
-  `send_data_segment`, `deliver_outbound`). The suite covers:
-  - `plan149_self_composed_black_box_connects_and_transfers_bytes`
-    — full HELLO + SESSION CREATE + STREAM ACCEPT + STREAM CONNECT +
-    bidirectional application-byte exchange, byte-for-byte equality.
-  - `plan149_silent_connect_writes_no_status_line` — exact raw
-    transition for `SILENT=true` CONNECT/ACCEPT.
-  - `plan149_session_create_tears_down_cleanly` — control-socket
-    close propagates to the per-destination driver within the
-    shutdown bound (no panics).
-  - `plan149_same_read_buffered_raw_bytes_after_command` — non-silent
-    CONNECT/ACCEPT status and authenticated peer metadata, with the
-    command newline and first raw bytes sent in one TCP write.
-- The existing Plan 147 `sam_stream_raw_product` regression
-  (lower-level bridge-only exercise) is retained as a focused
-  implementation regression; the new `sam_stream_self_composed`
-  suite is the final Milestone 7 product-composition evidence.
-
-## Validation commands run on the closing pass
-
-```text
-cargo fmt --all --check                                     # clean
-cargo check --locked --workspace --all-targets              # clean
-cargo test --locked --workspace --all-targets                # all pass
-cargo test -p i2pr-daemon --test sam_stream_raw_product     # pass
-cargo test -p i2pr-daemon --test sam_stream_self_composed    # 4 pass
-cargo test -p i2pr-daemon --test sam_plan146_reference       # pass
-cargo test -p i2pr-daemon --test sam_loopback               # pass
-cargo test -p i2pr-daemon --test sam_forward_naming          # pass
-cargo test -p i2pr-daemon --test sam_stream_product          # pass
-cargo test -p i2pr-daemon --test sam_stream_independent      # pass
-cargo clippy --locked --workspace --all-targets --all-features -- -D warnings  # clean
-RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps            # clean
-env RUSTDOCFLAGS="-D warnings" cargo test --locked --workspace --doc             # pass
-bash -n scripts/interop/fetch-sam-clients.sh tests/integration/sam/run-independent.sh tests/integration/sam/clients/build.sh  # clean
-bash scripts/check-dependency-direction.sh                 # ok
-bash scripts/check-runtime-boundaries.sh                    # ok
-bash scripts/check-fixture-manifest.sh                      # ok
-bash scripts/check-ntcp2-vectors.sh                         # ok
-bash scripts/check-ntcp2-interoperability.sh                # ok
-bash scripts/check-constrained-host-lane-boundary.sh        # ok
-python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py' # 153 passed
-cargo deny check advisories bans sources                       # advisories/bans/sources ok
-```
-
-## Post-closure hosted-runner stabilization
-
-On 2026-09-03, the first remote CI run after the scheduler-ordering
-correction passed macOS, MSRV, and dependency-policy jobs, but the Linux
-job reached the canonical 2 MiB transfer's pre-existing 60-second test
-bound. The transfer is intentionally paced by the balanced profile's
-reference 750 ms delayed-ACK behavior, so the bound was widened to 120
-seconds while preserving the wire/timing semantics and the bounded
-backpressure assertion. The serialized local workspace suite and all
-static policy gates pass with that correction; the follow-up CI run is the
-remote authority for the final result.
-
-## Handoff instruction
-
-Read this status, Plan 149, Plan 146 status, and Plan 147 status.
-
-Plan 150 is now closed. Its exact pinned `i2psam` client and qualified
-`i2plib.sam` substitute passed the localhost external-client, FORWARD, NAMING,
-and final SAM evidence. Milestone 8 planning may begin, while SAM remains
-experimental, loopback-only, and non-advertised.
+Do not reopen Plan 149 architecture without a concrete defect. Execute
+[`Plan 151`](151-m7-sam31-final-acceptance-evidence-correction.md) to close the
+remaining acceptance/evidence debt. Milestone 8 implementation remains blocked
+until Plan 151 passes.
