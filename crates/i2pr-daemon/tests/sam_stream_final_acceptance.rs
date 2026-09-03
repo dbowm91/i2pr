@@ -787,10 +787,21 @@ async fn drain_all_concurrent(
         .map(|_| Arc::new(AtomicUsize::new(0)))
         .collect();
     let mut drains = Vec::new();
-    for ((index, mut socket), payload) in sockets.into_iter().enumerate().zip(payloads) {
+    // ACCEPT/CONNECT completion order is scheduler-dependent, so a
+    // reader socket is NOT necessarily the peer of the same-index
+    // writer socket. Payloads carry distinct seeds; attribution is by
+    // content below, never by index. Lengths are equal on every
+    // stream here, so each task sizes its buffer from the common
+    // length.
+    let stream_len = payloads.first().expect("at least one bulk stream").len();
+    assert!(
+        payloads.iter().all(|payload| payload.len() == stream_len),
+        "{label} bulk payloads must share one length"
+    );
+    for (index, mut socket) in sockets.into_iter().enumerate() {
         let counter = progress[index].clone();
         drains.push(tokio::spawn(async move {
-            let mut out = vec![0_u8; payload.len()];
+            let mut out = vec![0_u8; stream_len];
             let mut filled = 0_usize;
             let outcome = tokio::time::timeout(budget, async {
                 while filled < out.len() {
@@ -804,7 +815,7 @@ async fn drain_all_concurrent(
                 filled
             })
             .await;
-            (index, outcome, out, payload)
+            (index, outcome, out)
         }));
     }
     let alpha_id = destination_id_for(state, "alpha");
@@ -867,12 +878,30 @@ async fn drain_all_concurrent(
             break;
         }
     }
+    let mut drained: Vec<Vec<u8>> = Vec::new();
     for drain in drains {
-        let (index, outcome, out, payload) = drain.await.expect("drain task");
+        let (index, outcome, out) = drain.await.expect("drain task");
         let filled = outcome.expect("bounded drain");
-        assert_eq!(filled, payload.len(), "{label} stream{index} short drain");
-        assert_eq!(&out, &payload, "{label} recovered payload mismatch");
+        assert_eq!(filled, stream_len, "{label} stream{index} short drain");
+        drained.push(out);
     }
+    // Attribute every drained stream to its payload by content: each
+    // offered payload must arrive exactly once, on exactly one
+    // stream. A cross-stream byte leak would leave one payload
+    // unmatched and one stream unmatched.
+    let mut remaining = payloads;
+    for (index, out) in drained.iter().enumerate() {
+        let position = remaining
+            .iter()
+            .position(|payload| payload == out)
+            .unwrap_or_else(|| panic!("{label} stream{index} bytes match no offered payload"));
+        remaining.remove(position);
+    }
+    assert!(
+        remaining.is_empty(),
+        "{label} {} offered payload(s) never arrived",
+        remaining.len()
+    );
     // Bulk recovery must be failure-free at the typed sweep layer:
     // no missed factory, no unknown peer, no rejected delivery.
     if let Some(failures) = last_failures {
