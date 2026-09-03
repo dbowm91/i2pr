@@ -10,6 +10,47 @@ Repository: [`i2p/i2p.website`](https://github.com/i2p/i2p.website)
 
 Pinned commit: [`88596022920bdf99f27db27688faf4f204792fcd`](https://github.com/i2p/i2p.website/commit/88596022920bdf99f27db27688faf4f204792fcd)
 
+## Milestone 8 refresh (Plan 155, 2026-09-03)
+
+Plan 155 re-verified the SSU2 v2 source authority against the pinned
+commit above (live re-fetch of the SSU2 specification page on
+2026-09-03 confirms: SSU2 `Completed`, accurate for 0.9.69; protocol
+version 2; network ID 2; message types 0/1/2/6/7/9/10/11; 32-byte long
+header / 16-byte short header; Noise `XKchaobfse+hs1+hs2+hs3` with
+ChaCha20 header protection; block vocabulary 0–21 with 224–253
+experimental, 254 padding, 255 reserved-future).
+
+- Exact official SSU2 v2 spec snapshot: website commit
+  `88596022920bdf99f27db27688faf4f204792fcd`, SSU2 page `Completed`,
+  updated 2026-03, `accurateFor` 0.9.69. No newer SSU2 v2 spec
+  revision is adopted by this plan.
+- Proposal 159 (SSU2 design/threat background) and Proposal 165
+  (post-deployment SSU2 corrections) are historical/design context
+  only. Where either proposal differs from the current SSU2
+  specification page, the specification page takes precedence.
+- PQ-hybrid SSU2 v3/v4: explicit compatibility-watch debt. Classical
+  SSU2 v2 is the Milestone 8 target; SSU1 remains unsupported. No
+  ML-KEM/PQ dependency is added and no v3/v4 negotiation semantics
+  are implemented in this milestone. Parsers classify v3/v4 as
+  unsupported/deferred, never as malformed v2.
+- Java I2P 2.13.0 exact commit
+  `9134f808337b401e8e53c73734c81fab04280c9d` is the Milestone 8
+  preferred secondary reference (Plan 154/161). The dossier pin below
+  (`4e1822fcfafdf2b7de33fa14d71960a543a550e0`) is retained for all
+  pre-M8 evidence.
+- i2pd 2.61.0 exact commit
+  `635b013a612ff47278ef02acf8580a28e10e26c5` is the Milestone 8
+  mandatory independent interop reference (Plan 154/161, both direct
+  UDP directions). The dossier pin below
+  (`361bee94803f0cfd9a3837acdd06a7cc457c4c4e`) is retained for all
+  pre-M8 evidence.
+- Clean-room restriction: specifications and observed behavior may be
+  used; implementation code is reference-only and must not be copied
+  without license/provenance review.
+
+No protocol-support surface is advanced to advertised/production by
+this refresh.
+
 Primary documents:
 
 | Subject | Canonical document | Pinned source | Snapshot metadata |

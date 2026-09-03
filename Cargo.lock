@@ -907,6 +907,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "i2pr-transport-ssu2"
+version = "0.1.0"
+dependencies = [
+ "i2pr-proto",
+ "i2pr-transport",
+ "thiserror",
+]
+
+[[package]]
 name = "i2pr-tunnel"
 version = "0.1.0"
 dependencies = [

@@ -200,6 +200,39 @@ plan_151_status = "passed-m7-sam31-final-acceptance-evidence-correction"
 plan_152_plan_of_record = "plans/152-m6-session-streaming-robustness-corrective.md"
 plan_152_closure = "plans/152-status.md"
 plan_152_status = "passed-m6-session-streaming-robustness-corrective"
+plan_153_plan_of_record = "plans/153-m7-closure-authority-and-ci-hygiene.md"
+plan_153_closure = "plans/153-status.md"
+plan_153_status = "passed-post-m7-authority-and-ci-hygiene"
+plan_154_plan_of_record = "plans/154-m8-ssu2-transport-and-reachability-roadmap.md"
+plan_154_closure = "plans/154-status.md"
+plan_154_status = "registered-m8-ssu2-v2-roadmap-blocked-by-plan153"
+plan_155_plan_of_record = "plans/155-m8-ssu2-v2-protocol-foundation-and-addresses.md"
+plan_155_closure = "plans/155-status.md"
+plan_155_status = "passed-m8-ssu2-v2-protocol-foundation-and-addresses"
+milestone8_protocol = "ssu2-v2-classical"
+ssu2_pq_v3_v4 = "deferred-compatibility-watch"
+ssu1 = "not-implemented"
+milestone8_implementation = "plan155-foundation-landed"
+
+[[surface]]
+id = "ssu2.v2-protocol-foundation"
+protocol = "ssu2"
+structure = "runtime-neutral-v2-address-header-block-primitives"
+scope = "required"
+status = "experimental"
+notes = "Plan 155 closed the Milestone 8 SSU2 v2 protocol foundation. `i2pr-transport-ssu2` is runtime-neutral (no Tokio, no sockets, no async): strict v2 RouterAddress parsing/validation (style SSU2, v=2, 32-byte static/intro keys, numeric-IP host, UDP port, MTU floor 1280, bounded caps, bounded introducers; v3/v4 classified unsupported/deferred), structural long/short header codecs (message types 0/1/2/6/7/9/10/11, version 2, network ID 2), and the bounded authenticated-plaintext block vocabulary (DateTime/Options/RouterInfo/I2NP/FirstFragment/FollowOnFragment/Termination/RelayRequest/RelayResponse/RelayIntro/PeerTest/NewToken/PathChallenge/PathResponse/Address/RelayTagRequest/RelayTag/FirstPacketNumber/Congestion/Padding with unknown-block byte/count ceilings). No handshake, no header protection/AEAD, no UDP socket, no interoperability claim; those belong to Plans 156-161. PQ-hybrid v3/v4 remains deferred compatibility-watch debt; SSU1 remains unsupported."
+evidence = [
+    "crates/i2pr-transport-ssu2/src/constants.rs",
+    "crates/i2pr-transport-ssu2/src/address.rs",
+    "crates/i2pr-transport-ssu2/src/header.rs",
+    "crates/i2pr-transport-ssu2/src/block.rs",
+    "crates/i2pr-transport-ssu2/src/packet.rs",
+    "tests/fixtures/ssu2/manifest.tsv",
+    "scripts/check-ssu2-vectors.sh",
+    "plans/155-m8-ssu2-v2-protocol-foundation-and-addresses.md",
+    "plans/155-status.md",
+]
+advertised = false
 
 [[surface]]
 id = "common.codec-foundation"

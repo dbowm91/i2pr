@@ -47,11 +47,18 @@ external lane green on the closing head — see
 [`plans/151-status.md`](../../plans/151-status.md)). Plan 152 is the
 retained narrow M6 session/streaming robustness corrective underneath
 it (no wire change — see [`plans/152-status.md`](../../plans/152-status.md)).
-Plan 153 is the active post-M7 authority/CI hygiene pass; Milestone 8
-implementation (Plan 155+) is blocked until it passes. The SAM lane
-stays experimental, loopback-only, disabled by default, and
-non-advertised; no localhost result implies router-to-router
-interoperability.
+Plan 153 has passed the post-M7 authority/CI hygiene pass; Milestone 8
+implementation is unblocked under the Plan 154 roadmap. Plan 155
+landed the runtime-neutral SSU2 v2 protocol foundation
+(`i2pr-transport-ssu2`: strict v2 RouterAddress/header/block
+primitives, no handshake, no UDP sockets — see
+[`plans/155-status.md`](../../plans/155-status.md)); the next
+executable plan is 156. The SAM lane stays experimental,
+loopback-only, disabled by default, and non-advertised; no
+localhost result implies router-to-router interoperability. SSU2
+v2 claims no handshake/data-phase interoperability yet; PQ-hybrid
+v3/v4 is deferred compatibility-watch debt and SSU1 remains
+unsupported.
 
 Network tunnels (router-to-router) and application service tunnels
 (local app to destination) are deliberately kept apart. Service tunnels
@@ -151,6 +158,11 @@ i2pr-core <- i2pr-transport <- i2pr-runtime <- i2pr-daemon (composition root)
                           ^                     (SAM 3.1)
                           |                          ^
                  i2pr-proto + i2pr-crypto     i2pr-netdb-persist
+                          +
+                          |
+                 i2pr-transport-ssu2
+                 (Plan 155 foundation;
+                  no handshake/sockets yet)
                                                     ^
                                                     |
                                               i2pr-netdb (SU3/reseed)
@@ -195,6 +207,7 @@ tests, and any distinctive design choices.
 | `i2pr-tunnel` | Milestone 5 substrate | Runtime-neutral tunnel identity, exploratory pool, build-record layout surface, build-cryptography seam, ECIES-X25519 short tunnel-build construction primitive (Plan 111 final local short-build conformance + Plan 112 outbound pre-delivery closure + Plan 113 inbound reference reconciliation + Plan 114 terminal routing and tunnel-chain correction + Plan 115 canonical production I2NP bridge with no-double-prefix STBM record count byte invariant + Plan 116 local tunnel data plane + Plan 117 outbound/inbound exploratory NetDB composition), runtime-neutral build state machine, success-only registrar, deterministic responder peer simulator, and reply-path provider. Plans 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117. | [i2pr-tunnel.md](i2pr-tunnel.md) |
 | `i2pr-transport` | Transport contracts | Runtime-neutral link/delivery contracts. No Tokio, no I/O, no async. | [i2pr-transport.md](i2pr-transport.md) |
 | `i2pr-transport-ntcp2` | NTCP2 protocol | Runtime-neutral Noise handshake, AEAD frames, data-phase blocks. | [i2pr-transport-ntcp2.md](i2pr-transport-ntcp2.md) |
+| `i2pr-transport-ssu2` | SSU2 v2 foundation | Runtime-neutral SSU2 v2 address/header/block primitives (Plan 155). No handshake, no header protection, no sockets. | [i2pr-transport-ssu2.md](i2pr-transport-ssu2.md) |
 | `i2pr-runtime` | Runtime owner | The only production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation. | [i2pr-runtime.md](i2pr-runtime.md) |
 | `i2pr-daemon` | Composition root | CLI + config + identity lifecycle + Plan 106 NetDB/bootstrap pipeline + Plan 117 outbound `OutboundGatewayRole` exploratory `DatabaseLookup`/`DatabaseStore` composition and inbound `LocalInboundEndpointRole` `TunnelData` dispatch through `crates/i2pr-daemon/src/{outbound_lookup,inbound_dispatch}.rs`. Live daemon runs through the supervisor with no I2P transport. | [i2pr-daemon.md](i2pr-daemon.md) |
 | `i2pr-api` | Application protocols | SAM 3.1 protocol foundation + loopback-server surface + STREAM CONNECT / ACCEPT bridge: bounded line/command/reply parser, typed commands, version negotiation, **I2P Base64 codec** (`-`/`~`, `=` padding — Plan 142 corrective from the prior RFC 4648 alphabet), SamPrivateDestination codec for `DEST GENERATE` / `SESSION CREATE`, bounded `SamSessionRegistry` + `LineReader` + `ServerConnectionState`, and the bounded per-session `SamStreamRegistry`. Plans 136, 137, 138, 142; no sockets, no Tokio, no I/O. | [i2pr-api.md](i2pr-api.md) |
@@ -356,6 +369,7 @@ The boundary contract is enforced by scripts under `scripts/`:
 | `check-runtime-boundaries.sh` | Unbounded channels, wall-clock sleeps, raw `JoinHandle`s, `tokio::spawn` without an owner, `async fn` in transport contracts, Tokio deps in wrong crates, `std::net`/`std::fs` in transport, `i2pr-testkit` referenced by a production crate. |
 | `check-fixture-manifest.sh` | Drift in the I2NP fixture corpus under `tests/fixtures/i2np/`. |
 | `check-ntcp2-vectors.sh` | Drift in the NTCP2 crypto vector corpus under `tests/fixtures/ntcp2/crypto/`. |
+| `check-ssu2-vectors.sh` | Drift in the SSU2 v2 fixture corpus under `tests/fixtures/ssu2/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, and the 5 required Plan 155 fixture IDs. |
 | `check-ntcp2-interoperability.sh` | Forbidden artifacts in the synthetic private NTCP2 interoperability lane; manifest pinned to exactly eight scenarios with required disclaimer lines. |
 | `check-rootless-interop-boundary.sh` | Forbidden artifacts in the Plan 046 rootless sealed-namespace lane (no `sudo`/`ip netns`/`nft`/`setcap`/`--privileged`/`--network host`; no silent fallback to the privileged backend). |
 | `check-multipass-interop-boundary.sh` | Forbidden host-policy mutations in the Plan 048/049/050/051 Multipass recovery lane (no global `multipass purge`; no host lifecycle mutation outside an atomic reservation). |

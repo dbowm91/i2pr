@@ -42,19 +42,19 @@ if printf '%s\n' "$testkit_dependents" | grep -Ev 'crates/i2pr-testkit/Cargo.tom
 fi
 
 if grep -REn 'tokio::|std::net|std::fs|TcpStream|TcpListener|UdpSocket|UnixStream|OpenOptions|File::' \
-  "$root/crates/i2pr-transport/src" "$root/crates/i2pr-transport-ntcp2/src" >/dev/null; then
+  "$root/crates/i2pr-transport/src" "$root/crates/i2pr-transport-ntcp2/src" "$root/crates/i2pr-transport-ssu2/src" >/dev/null; then
   echo "transport contract crates must not own Tokio, sockets, or filesystem I/O" >&2
   exit 1
 fi
 
 if grep -REn 'async[[:space:]]+fn|async_trait|i2pr-(netdb|tunnel|client)' \
-  "$root/crates/i2pr-transport" "$root/crates/i2pr-transport-ntcp2" >/dev/null; then
+  "$root/crates/i2pr-transport" "$root/crates/i2pr-transport-ntcp2" "$root/crates/i2pr-transport-ssu2" >/dev/null; then
   echo "transport contracts must remain synchronous and independent of routing clients" >&2
   exit 1
 fi
 
 if grep -En 'i2pr-daemon|i2pr-runtime|i2pr-testkit' \
-  "$root/crates/i2pr-transport/Cargo.toml" "$root/crates/i2pr-transport-ntcp2/Cargo.toml" >/dev/null; then
+  "$root/crates/i2pr-transport/Cargo.toml" "$root/crates/i2pr-transport-ntcp2/Cargo.toml" "$root/crates/i2pr-transport-ssu2/Cargo.toml" >/dev/null; then
   echo "transport crates must not depend on runtime, daemon, or testkit" >&2
   exit 1
 fi

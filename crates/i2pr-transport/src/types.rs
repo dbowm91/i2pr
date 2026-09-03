@@ -24,6 +24,11 @@ static NEXT_DELIVERY_ID: AtomicU64 = AtomicU64::new(1);
 pub enum TransportKind {
     /// The NTCP2 stream transport; wire behavior is deferred to later plans.
     Ntcp2,
+    /// The SSU2 datagram transport; protocol foundation lives in
+    /// `i2pr-transport-ssu2`, UDP/socket ownership stays in
+    /// `i2pr-runtime`. No handshake or data-phase interoperability is
+    /// claimed yet.
+    Ssu2,
 }
 
 /// Direction of a transport link relative to this router.

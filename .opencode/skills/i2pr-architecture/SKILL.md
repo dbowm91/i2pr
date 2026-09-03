@@ -107,6 +107,7 @@ writing or updating a deep-dive.
 | `i2pr-netdb-persist` | `docs/architecture/i2pr-netdb-persist.md` | Composition owner for persistent cache + SU3 reseed ingestion. |
 | `i2pr-transport` | `docs/architecture/i2pr-transport.md` | Runtime-neutral link/delivery contracts. No Tokio, no I/O, no `async fn`. |
 | `i2pr-transport-ntcp2` | `docs/architecture/i2pr-transport-ntcp2.md` | Runtime-neutral Noise handshake, AEAD frames, data-phase blocks. |
+| `i2pr-transport-ssu2` | `docs/architecture/i2pr-transport-ssu2.md` | Runtime-neutral SSU2 v2 address/header/block foundation (Plan 155). No handshake, no sockets. |
 | `i2pr-tunnel` | `docs/architecture/i2pr-tunnel.md` | Runtime-neutral exploratory pool, ECIES-X25519 short build, data plane, Plan 117 NetDB composition. |
 | `i2pr-runtime` | `docs/architecture/i2pr-runtime.md` | The only production owner of Tokio, sockets, timers, channels, cancellation. |
 | `i2pr-daemon` | `docs/architecture/i2pr-daemon.md` | CLI, config, identity lifecycle, Plan 106 NetDB/bootstrap, Plan 117 dispatch. |
@@ -173,13 +174,18 @@ record is not `superseded-by-*`. Currently:
   [`plans/148-status.md`](../../plans/148-status.md). The official
   libsam3 snapshot was built/probed but not counted because its
   public key-length API rejects i2pr's compact private destination.
-- **Post-M7 hygiene (active)**: Plan 153
-  (`active-post-m7-authority-and-ci-hygiene`, see
-  [`plans/153-status.md`](../../plans/153-status.md)). Do not begin
-  Milestone 8 implementation until it passes.
+- **Post-M7 hygiene (closed)**: Plan 153
+  (`passed-post-m7-authority-and-ci-hygiene`, see
+  [`plans/153-status.md`](../../plans/153-status.md)).
 - **Milestone 8 planning authority**: Plan 154 (registered SSU2 v2
-  roadmap, blocked by Plan 153). First implementation pass after
-  Plan 153 closure is Plan 155.
+  roadmap, see [`plans/154-status.md`](../../plans/154-status.md)).
+- **Milestone 8 SSU2 v2 foundation (passed)**: Plan 155
+  (`passed-m8-ssu2-v2-protocol-foundation-and-addresses`, see
+  [`plans/155-status.md`](../../plans/155-status.md)):
+  runtime-neutral `i2pr-transport-ssu2` (strict v2
+  RouterAddress/header/block primitives, fixture-backed vectors;
+  no handshake, no UDP sockets, no interop claim). Next
+  executable plan is 156.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).
@@ -203,6 +209,7 @@ not weaken the script.
 | `scripts/check-runtime-boundaries.sh` | `unbounded_channel`, `tokio::*`/`std::net`/`std::fs` in transport, raw `JoinHandle`s, `tokio::spawn` without owner. |
 | `scripts/check-fixture-manifest.sh` | I2NP fixture corpus drift. |
 | `scripts/check-ntcp2-vectors.sh` | NTCP2 crypto vector corpus drift. |
+| `scripts/check-ssu2-vectors.sh` | SSU2 v2 fixture corpus drift (Plan 155; CI-enforced). |
 | `scripts/check-ntcp2-interoperability.sh` | Forbidden artifacts in the synthetic private NTCP2 lane. |
 | `scripts/check-rootless-interop-boundary.sh` | Plan 046 rootless lane (no `sudo`/`ip netns`/`nft`/`setcap`/`--privileged`/`--network host`). |
 | `scripts/check-multipass-interop-boundary.sh` | Plan 048/049/050/051 Multipass lane (no global `multipass purge`). |

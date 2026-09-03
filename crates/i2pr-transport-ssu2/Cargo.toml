@@ -1,0 +1,16 @@
+[package]
+name = "i2pr-transport-ssu2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Tokio-free SSU2 v2 protocol foundation: addresses, headers, blocks"
+publish = false
+
+[dependencies]
+i2pr-proto = { path = "../i2pr-proto" }
+i2pr-transport = { path = "../i2pr-transport" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

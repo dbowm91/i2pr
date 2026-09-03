@@ -4,6 +4,17 @@ This document identifies where the reviewed routers implement the protocol surfa
 
 All links are pinned to revisions listed in [SOURCES.md](SOURCES.md).
 
+Milestone 8 SSU2 references (Plan 154 roadmap, Plan 155 foundation):
+Java I2P 2.13.0 exact commit
+`9134f808337b401e8e53c73734c81fab04280c9d` is the preferred secondary
+SSU2 v2 reference; i2pd 2.61.0 exact commit
+`635b013a612ff47278ef02acf8580a28e10e26c5` is the mandatory
+independent SSU2 v2 interop reference (both direct UDP directions at
+Plan 161). PQ-hybrid SSU2 v3/v4 in either router is deferred
+compatibility-watch debt, not an M8 target. Specifications remain
+normative; implementation code is reference-only under the
+clean-room restriction in [SOURCES.md](SOURCES.md).
+
 ## How to use implementation evidence
 
 For each protocol implementation, compare at least the following:

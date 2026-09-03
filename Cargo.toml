@@ -13,6 +13,7 @@ members = [
     "crates/i2pr-testkit",
     "crates/i2pr-transport",
     "crates/i2pr-transport-ntcp2",
+    "crates/i2pr-transport-ssu2",
     "crates/i2pr-tunnel",
     "tools/i2pr-interop",
 ]

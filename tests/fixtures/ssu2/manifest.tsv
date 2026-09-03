@@ -1,0 +1,6 @@
+# id	path	category	provenance	sha256
+long-header	tests/fixtures/ssu2/long-header.hex	positive	spec-derived-constructed-vector	53ab3b7dcceb008fe1ada3343442dabdd05224dede55ea2995173d712e55b209
+short-header-data	tests/fixtures/ssu2/short-header-data.hex	positive	spec-derived-constructed-vector	f175c6d8a0f9b4c7639efc93b16f740760999f8ef55847b786c21201bdc57734
+short-header-confirmed	tests/fixtures/ssu2/short-header-confirmed.hex	positive	spec-derived-constructed-vector	7052ee511fcebe2e3641cb065c9b7d1511ae053a5203439e698b320e7432f9e2
+blocks-positive	tests/fixtures/ssu2/blocks-positive.hex	positive	spec-derived-constructed-vector	6da6f2f2970371899dbbae7d64a697c6929765d7002ce58ec30d55170ad6575e
+blocks-malformed	tests/fixtures/ssu2/blocks-malformed.hex	malformed	spec-derived-constructed-vector	4826773f1c3f001caa71c363d4e92bb59437fe9eb234673432a78053418d411d

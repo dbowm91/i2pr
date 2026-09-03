@@ -3,7 +3,8 @@
 `i2pr` is an experimental Rust I2P router. **Not production-ready.** Do not
 use it for anonymity, privacy, censorship resistance, or any security-sensitive
 workload. NTCP2 remains experimental and non-advertised; the production daemon
-does not activate NTCP2.
+does not activate NTCP2. SSU2 v2 is a runtime-neutral protocol foundation only
+(Plan 155); no handshake, UDP socket, or data-phase activation exists yet.
 
 ## Read first
 
@@ -28,7 +29,8 @@ Plan 152 = passed narrow M6 streaming corrective
 Plan 153 = passed post-M7 authority/CI hygiene
 Milestone 7 SAM localhost = closed (experimental, loopback-only)
 Milestone 8 roadmap = Plan 154 registered, Plan 153 passed
-next executable plan = 155
+Plan 155 = passed SSU2 v2 protocol foundation (no handshake/sockets)
+next executable plan = 156
 next product layer = milestone8-ssu2-v2
 ```
 
@@ -49,7 +51,7 @@ explicit superseding status wins when historical records conflict.
 - `i2pr-crypto` — protocol cryptographic wrappers.
 - `i2pr-storage` — identity/key persistence.
 - `i2pr-core` — shared runtime-neutral contracts.
-- `i2pr-transport`, `i2pr-transport-ntcp2` — runtime-neutral transport/link codecs.
+- `i2pr-transport`, `i2pr-transport-ntcp2`, `i2pr-transport-ssu2` — runtime-neutral transport/link codecs.
 - `i2pr-netdb`, `i2pr-netdb-persist` — RouterInfo/LeaseSet2 validation and local storage.
 - `i2pr-runtime` — production owner of Tokio, sockets, timers, channels, cancellation.
 - `i2pr-daemon` — CLI/composition root and SAM runtime/socket ownership.
@@ -142,6 +144,7 @@ bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh
 bash scripts/check-fixture-manifest.sh
 bash scripts/check-ntcp2-vectors.sh
+bash scripts/check-ssu2-vectors.sh
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-constrained-host-lane-boundary.sh
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
@@ -167,6 +170,18 @@ Plan 151 added its narrowly named final-acceptance suite
 the existing self-composed file. The Plan 151 evidence-integrity checker
 (`scripts/check-sam-acceptance-evidence.sh`) is enforced in routine Linux CI
 and the manual SAM external workflow; do not weaken it to make CI pass.
+
+Focused SSU2 seams currently include:
+
+```text
+cargo test --locked -p i2pr-transport --all-targets
+cargo test --locked -p i2pr-transport-ssu2 --all-targets
+bash scripts/check-ssu2-vectors.sh
+```
+
+Plan 155 added the SSU2 fixture corpus (`tests/fixtures/ssu2/`) and its
+checker (`scripts/check-ssu2-vectors.sh`), enforced in routine Linux CI;
+do not weaken it to make CI pass.
 
 ## Testing conventions
 
@@ -223,7 +238,8 @@ checker composes with the existing lane.
 - Plan 151 is the current final Milestone 7 acceptance authority.
 - Plan 152 is the passed narrow M6 robustness corrective retained underneath Plan 151.
 - Plan 153 is the passed docs/CI hygiene pass; Milestone 8 implementation begins at Plan 155.
-- Milestone 8 roadmap is registered via Plan 154; Plan 155 is the first implementation pass after Plan 153 closure.
+- Plan 155 is the passed SSU2 v2 protocol foundation (runtime-neutral addresses/headers/blocks; no handshake, no sockets, no interop claim).
+- Milestone 8 roadmap is registered via Plan 154; Plan 156 is the next executable plan after Plan 155 closure.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - No localhost SAM evidence implies router-to-router NTCP2/SSU2 or public I2P interoperability.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
@@ -240,6 +256,7 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 151 passed, Plan 152 passed, Plan 153 passed;
-next executable plan is 155 under the Plan 154 Milestone 8 roadmap.
-SAM stays experimental, loopback-only, disabled by default, and non-advertised.**
+Current handoff: **Plan 151 passed, Plan 152 passed, Plan 153 passed,
+Plan 155 passed; next executable plan is 156 under the Plan 154 Milestone 8 roadmap.
+SAM stays experimental, loopback-only, disabled by default, and non-advertised.
+SSU2 v2 claims no handshake/data-phase interoperability yet.**

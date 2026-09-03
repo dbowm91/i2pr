@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Plan 149 closed the self-composed localhost product; Plan 150 retains external-client core evidence; Plan 151 passed the final acceptance/evidence correction (with narrow Plan 152 M6 corrective); Plan 153 is the active post-M7 authority/CI hygiene pass; Milestone 8 roadmap registered via Plan 154.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Plan 149 closed the self-composed localhost product; Plan 150 retains external-client core evidence; Plan 151 passed the final acceptance/evidence correction (with narrow Plan 152 M6 corrective); Plan 153 passed post-M7 hygiene; Milestone 8 roadmap registered via Plan 154; Plan 155 passed the SSU2 v2 protocol foundation.
 ---
 
 # I2PR Local Development
@@ -34,26 +34,31 @@ milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
 milestone7_final_acceptance = closed
 milestone6_interoperable = not-yet-claimed
-next_executable_plan = 155
+plan_154 = registered-m8-ssu2-v2-roadmap
+plan_155 = passed-m8-ssu2-v2-protocol-foundation-and-addresses
+next_executable_plan = 156
 milestone8_planning_authority = plan154
-milestone8_implementation = unblocked-start-at-155
-first_m8_implementation_after_153 = 155
+milestone8_foundation = passed-via-plan155
 next_product_layer = milestone8-ssu2-v2
 ```
 
 Read in order:
 
-1. `plans/153-status.md` (passed hygiene pass)
-2. `plans/152-status.md` (narrow M6 corrective closure)
-3. `plans/151-status.md`
-4. `plans/151-m7-sam31-final-acceptance-evidence-correction.md`
-5. `plans/150-status.md`
-6. `plans/149-status.md`
-7. Plans 146–148 for retained/historical context.
+1. `plans/155-status.md` (SSU2 v2 foundation closure)
+2. `plans/153-status.md` (passed hygiene pass)
+3. `plans/152-status.md` (narrow M6 corrective closure)
+4. `plans/151-status.md`
+5. `plans/151-m7-sam31-final-acceptance-evidence-correction.md`
+6. `plans/150-status.md`
+7. `plans/149-status.md`
+8. Plans 146–148 for retained/historical context.
 
 Plan 153 has passed. Plan 154 is the registered Milestone 8 roadmap
-authority; execute Plans 155–161 in order. SAM stays experimental,
-loopback-only, disabled by default, and non-advertised.
+authority; Plan 155 has passed the runtime-neutral SSU2 v2 protocol
+foundation (addresses/headers/blocks, no handshake, no UDP sockets).
+Execute Plans 156–161 in order. SAM stays experimental,
+loopback-only, disabled by default, and non-advertised. SSU2 v2
+claims no handshake/data-phase interoperability yet.
 
 ## Retain these working pieces
 
@@ -196,6 +201,7 @@ bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh
 bash scripts/check-fixture-manifest.sh
 bash scripts/check-ntcp2-vectors.sh
+bash scripts/check-ssu2-vectors.sh
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-constrained-host-lane-boundary.sh
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
@@ -220,6 +226,14 @@ Plan 151 resolved and ran the actual focused Plan 127–134 tests from the
 current repository and listed them verbatim in its closure record
 (retained evidence; do not re-broaden the matrix without a new plan).
 
+Focused SSU2 floor (Plan 155 foundation):
+
+```text
+cargo test --locked -p i2pr-transport --all-targets
+cargo test --locked -p i2pr-transport-ssu2 --all-targets
+bash scripts/check-ssu2-vectors.sh
+```
+
 ## Coding rules
 
 - No new unbounded channels/queues.
@@ -236,6 +250,9 @@ current repository and listed them verbatim in its closure record
 - Plan 150's external-client result does not imply router-to-router interoperability.
 - Milestone 7 final localhost acceptance is closed via Plan 151; Plan 152 is the retained narrow M6 corrective underneath it.
 - Plan 153 (docs/CI hygiene, no `crates/` or `Cargo.lock` changes) has passed.
-- Plan 155 is the first Milestone 8 implementation pass under the Plan 154 roadmap.
+- Plan 155 passed the Milestone 8 SSU2 v2 protocol foundation
+  (runtime-neutral `i2pr-transport-ssu2`, no handshake, no UDP
+  sockets, no interop claim). PQ-hybrid v3/v4 stays deferred; SSU1
+  stays unsupported.
 
-Current handoff: **execute Plans 155 → 161 in order under Plan 154**.
+Current handoff: **execute Plans 156 → 161 in order under Plan 154**.

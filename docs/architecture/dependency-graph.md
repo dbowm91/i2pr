@@ -20,6 +20,7 @@ from this production graph; they are allowed to support crate-local tests.
 | `i2pr-netdb-persist` | `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, `i2pr-storage` + `thiserror` |
 | `i2pr-transport` | `i2pr-core`, `i2pr-proto` |
 | `i2pr-transport-ntcp2` | `i2pr-proto`, `i2pr-crypto`, `i2pr-transport` + `aes`, `chacha20poly1305`, `hmac`, `sha2`, `siphasher`, `thiserror`, `zeroize` |
+| `i2pr-transport-ssu2` (Plan 155) | `i2pr-proto`, `i2pr-transport` + `thiserror` |
 | `i2pr-tunnel` | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto` + `aes`, `cbc`, `chacha20`, `chacha20poly1305`, `rand_core`, `sha2`, `thiserror`, `x25519-dalek`, `zeroize` |
 | `i2pr-runtime` | `i2pr-core`, `i2pr-transport`, `i2pr-transport-ntcp2` + `tokio`, `tokio-util`, `futures-util`, `tracing` |
 | `i2pr-daemon` | `i2pr-crypto`, `i2pr-core`, `i2pr-proto`, `i2pr-runtime`, `i2pr-storage`, `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-transport`, `i2pr-tunnel` + `clap`, `serde`, `toml`, `thiserror`, `tracing`, `tracing-subscriber`, `rand_core`, `tokio` |
@@ -56,6 +57,10 @@ Reverse edges (i.e. "may NOT depend on"):
   `i2pr-tunnel`, `i2pr-client`.
 - `i2pr-transport-ntcp2` may not depend on `i2pr-runtime`,
   `i2pr-daemon`, `i2pr-testkit`.
+- `i2pr-transport-ssu2` may not depend on `i2pr-runtime`,
+  `i2pr-daemon`, `i2pr-testkit`, `i2pr-transport-ntcp2`,
+  `i2pr-netdb`, `i2pr-tunnel`, or `i2pr-client` (Plan 155;
+  runtime-neutral protocol foundation only).
 - `i2pr-runtime` may not depend on `i2pr-daemon`; its direct
   `i2pr-transport-ntcp2` edge is the approved Plan 042 runtime composition
   boundary.
@@ -78,11 +83,14 @@ Reverse edges (i.e. "may NOT depend on"):
          composition;               +--> i2pr-tunnel (Milestone 5 substrate)
          Plan 104)                  |
                                     v
-                              i2pr-transport
-                                    |
-                              i2pr-transport-ntcp2
-                                    |
-                              i2pr-runtime
+                               i2pr-transport
+                                     |
+                    +----------------+------------------+
+                    |                                   |
+             i2pr-transport-ntcp2               i2pr-transport-ssu2
+                                                        (Plan 155 foundation)
+                                     |
+                               i2pr-runtime
                                     |
                               i2pr-daemon (composition root)
                                     ^     |
@@ -106,9 +114,10 @@ From `scripts/check-runtime-boundaries.sh`:
 
 - No `unbounded_channel` / `UnboundedSender` / `UnboundedReceiver`
   in `i2pr-runtime`, `i2pr-testkit`, `i2pr-transport`,
-  `i2pr-transport-ntcp2`.
+  `i2pr-transport-ntcp2`, `i2pr-transport-ssu2`.
 - No `tokio::*`, `std::net`, `std::fs`, `TcpStream`, `TcpListener`,
-  etc. in `i2pr-transport` / `i2pr-transport-ntcp2`.
+  `UdpSocket`, etc. in `i2pr-transport` / `i2pr-transport-ntcp2` /
+  `i2pr-transport-ssu2`.
 - No `async fn`, `async_trait`, `i2pr-netdb`, `i2pr-tunnel`,
   `i2pr-client` in transport contracts (they stay synchronous).
 - Only `i2pr-runtime` and `i2pr-testkit` may list `tokio` /

@@ -23,16 +23,20 @@ Current classification:
 plan_151 = passed-m7-sam31-final-acceptance-evidence-correction
 plan_152 = passed-m6-session-streaming-robustness-corrective
 plan_153 = passed-post-m7-authority-and-ci-hygiene
+plan_154 = registered-m8-ssu2-v2-roadmap
+plan_155 = passed-m8-ssu2-v2-protocol-foundation-and-addresses
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
 milestone7_sam_localhost = passed-via-plan151
 milestone7_final_acceptance = closed
 milestone6_interoperable = not-yet-claimed
-next_executable_plan = 155
+next_executable_plan = 156
 next_product_layer = milestone8-ssu2-v2
 ```
 
 Milestone 8 roadmap is registered via [**Plan 154**](plans/154-status.md); Plan 153 has passed so Milestone 8 implementation begins at Plan 155.
+
+[**Plan 155**](plans/155-status.md) passed the Milestone 8 SSU2 v2 protocol foundation: runtime-neutral `i2pr-transport-ssu2` (strict v2 RouterAddress/header/block primitives with fixture-backed vectors, no handshake, no UDP sockets), `TransportKind::Ssu2` integration, and the SSU2 source-authority refresh. No handshake/data-phase interoperability is claimed; the next executable plan is 156.
 
 The `[sam]` config section remains disabled by default and loopback-only when enabled. No localhost SAM result is router-to-router interoperability evidence.
 
@@ -48,6 +52,7 @@ crates/
   i2pr-core/                Shared contracts, lifecycle, budgets, health
   i2pr-transport/           Transport-neutral link management
   i2pr-transport-ntcp2/     NTCP2 protocol implementation (no I/O)
+  i2pr-transport-ssu2/     SSU2 v2 protocol foundation (no I/O; Plan 155)
   i2pr-runtime/             Tokio-owned supervision, cancellation, I/O
   i2pr-netdb/               RouterInfo + LeaseSet2 validation, store, lookup, publication
   i2pr-netdb-persist/       Persistent cache + bounded SU3 reseed ingestion

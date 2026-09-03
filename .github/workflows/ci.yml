@@ -67,6 +67,9 @@ jobs:
       - name: Check NTCP2 vectors
         if: runner.os == 'Linux'
         run: bash scripts/check-ntcp2-vectors.sh
+      - name: Check SSU2 vectors
+        if: runner.os == 'Linux'
+        run: bash scripts/check-ssu2-vectors.sh
       - name: Check NTCP2 interoperability evidence boundary
         if: runner.os == 'Linux'
         run: bash scripts/check-ntcp2-interoperability.sh
