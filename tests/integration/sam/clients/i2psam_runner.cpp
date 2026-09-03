@@ -1,284 +1,253 @@
 // SPDX-License-Identifier: MIT
 //
-// Plan 150 §6 — i2psam runner.
-//
-// Drives the i2pr SAM 3.1 listener through i2psam (snapshot
-// b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac) without linking any
-// i2pr crate. This file is harness code; it intentionally calls
-// i2psam's normal public API only.
+// Plan 150 runner for the pinned independent i2psam implementation.
+// The runner uses StreamSession's normal public API for HELLO, SESSION
+// CREATE, STREAM CONNECT, and STREAM ACCEPT.  It detaches only the returned
+// raw socket so binary application bytes, including NUL, are not converted
+// through i2psam's string-based convenience methods.
 //
 // Usage:
-//   i2psam_runner connect <sam_host> <sam_port> <peer_pub>
-//                     <send_payload_file> <expect_payload_file> <silent:true|false>
-//   i2psam_runner accept  <sam_host> <sam_port>
-//                     <send_payload_file> <expect_payload_file> <silent:true|false>
+//   i2psam_runner connect <host> <port> <peer_pub> <send> <expect> <silent>
+//                        [<private_file>]
+//   i2psam_runner accept  <host> <port> <send> <expect> <silent>
+//                        [<private_file>]
+//   i2psam_runner import  <host> <port> <private_file> <public_file>
 
-#include <chrono>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <errno.h>
 #include <fstream>
-#include <iostream>
-#include <memory>
 #include <string>
 #include <sys/socket.h>
-#include <sys/types.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
 
 #include "i2psam.h"
+#include "i2p_base64.h"
 
 namespace {
+
+const std::vector<unsigned char> kTransferBarrier = {
+    0x00, 'P', 'L', 'A', 'N', '1', '5', '0', '-', 'T', 'R', 'A', 'N', 'S',
+    'F', 'E', 'R', '-', 'D', 'O', 'N', 'E', 0x00};
+const std::vector<unsigned char> kTransferAck = {
+    0x00, 'P', 'L', 'A', 'N', '1', '5', '0', '-', 'T', 'R', 'A', 'N', 'S',
+    'F', 'E', 'R', '-', 'A', 'C', 'K', 0x00};
 
 std::vector<unsigned char> read_file(const std::string &path) {
   std::ifstream fp(path, std::ios::binary);
   if (!fp) {
-    std::fprintf(stderr, "i2psam_runner: cannot open %s\n", path.c_str());
+    std::fprintf(stderr, "i2psam_runner: input file could not be opened\n");
     std::exit(2);
   }
   fp.seekg(0, std::ios::end);
-  std::streamsize size = fp.tellg();
+  const std::streamsize size = fp.tellg();
   fp.seekg(0, std::ios::beg);
+  if (size < 0) {
+    std::fprintf(stderr, "i2psam_runner: input file size unavailable\n");
+    std::exit(2);
+  }
   std::vector<unsigned char> buf(static_cast<size_t>(size));
   if (size > 0 && !fp.read(reinterpret_cast<char *>(buf.data()), size)) {
-    std::fprintf(stderr, "i2psam_runner: short read on %s\n", path.c_str());
+    std::fprintf(stderr, "i2psam_runner: input file read failed\n");
     std::exit(2);
   }
   return buf;
 }
 
-int compare_bytes(const std::vector<unsigned char> &got,
-                  const std::vector<unsigned char> &want) {
-  if (got.size() != want.size()) {
-    std::fprintf(stderr, "i2psam_runner: length mismatch got=%zu want=%zu\n",
-                 got.size(), want.size());
-    return -1;
+std::string read_text(const std::string &path) {
+  const auto bytes = read_file(path);
+  return std::string(bytes.begin(), bytes.end());
+}
+
+std::string public_part(const std::string &private_destination) {
+  return plan150::public_from_private(private_destination);
+}
+
+bool parse_silent(const std::string &value) {
+  return value == "true" || value == "TRUE" || value == "1";
+}
+
+bool send_bytes(SOCKET fd, const std::vector<unsigned char> &data) {
+  size_t sent = 0;
+  while (sent < data.size()) {
+    const auto *ptr = reinterpret_cast<const char *>(data.data() + sent);
+    const size_t request = std::min(data.size() - sent, size_t{4096});
+    const ssize_t n = ::send(fd, ptr, request, 0);
+    if (n <= 0) return false;
+    sent += static_cast<size_t>(n);
+    std::this_thread::yield();
   }
-  if (got != want) {
-    std::fprintf(stderr, "i2psam_runner: payload content mismatch\n");
-    return -1;
+  return true;
+}
+
+bool receive_bytes(SOCKET fd, size_t expected, std::vector<unsigned char> &out) {
+  out.clear();
+  out.reserve(expected);
+  while (out.size() < expected) {
+    unsigned char buffer[16 * 1024];
+    const size_t request = std::min(expected - out.size(), sizeof(buffer));
+    const ssize_t n = ::recv(fd, reinterpret_cast<char *>(buffer), request, 0);
+    if (n <= 0) return false;
+    out.insert(out.end(), buffer, buffer + n);
+  }
+  return true;
+}
+
+int transfer(SOCKET fd, const std::vector<unsigned char> &send_data,
+             const std::vector<unsigned char> &expected_data) {
+  bool send_ok = false;
+  std::thread writer([&] {
+    send_ok = send_bytes(fd, send_data) && send_bytes(fd, kTransferBarrier);
+  });
+  std::vector<unsigned char> received;
+  const bool receive_ok = receive_bytes(fd, expected_data.size(), received);
+  writer.join();
+  if (!send_ok) {
+    std::fprintf(stderr, "i2psam_runner: binary send failed\n");
+    return 5;
+  }
+  if (!receive_ok) {
+    std::fprintf(stderr, "i2psam_runner: binary receive failed\n");
+    return 7;
+  }
+  if (received != expected_data) {
+    std::fprintf(stderr, "i2psam_runner: binary payload mismatch\n");
+    return 8;
+  }
+  std::vector<unsigned char> barrier;
+  if (!receive_bytes(fd, kTransferBarrier.size(), barrier) ||
+      barrier != kTransferBarrier) {
+    std::fprintf(stderr, "i2psam_runner: transfer barrier mismatch\n");
+    return 8;
+  }
+  if (!send_bytes(fd, kTransferAck)) {
+    std::fprintf(stderr, "i2psam_runner: transfer acknowledgement send failed\n");
+    return 5;
+  }
+  std::vector<unsigned char> acknowledgement;
+  if (!receive_bytes(fd, kTransferAck.size(), acknowledgement) ||
+      acknowledgement != kTransferAck) {
+    std::fprintf(stderr, "i2psam_runner: transfer acknowledgement mismatch\n");
+    return 8;
   }
   return 0;
 }
 
-int run_connect(const std::string &host, int port, const std::string &peer_pub,
+int run_connect(const std::string &host, int port, const std::string &peer,
                 const std::string &send_path, const std::string &expect_path,
-                bool silent) {
-  auto send_buf = read_file(send_path);
-  auto expect_buf = read_file(expect_path);
-
-  const std::string nickname = "i2psam-runner-connect";
-  SAM::StreamSession session(nickname, host, static_cast<uint16_t>(port),
-                              /*destination=*/"TRANSIENT");
-
-  // Plan 150 §6: publish the connector's public destination on stdout
-  // line 1 for trace symmetry; only the accepter's pub is required to
-  // drive a CONNECT, but emitting ours simplifies orchestrator debug.
-  // See the accept path for the slicing rationale.
-  const std::string &raw_dest = session.getMyDestination().pub;
-  const size_t pub_chars = std::min<size_t>(raw_dest.size(), 522u);
-  std::string my_pub = raw_dest.substr(0, pub_chars);
-  my_pub.append("==");
-  std::fwrite(my_pub.data(), 1, my_pub.size(), stdout);
-  std::fputc('\n', stdout);
-  std::fflush(stdout);
-
-  auto conn_result = session.connect(peer_pub, silent);
-  if (!conn_result.isOk) {
-    std::fprintf(stderr, "i2psam_runner: STREAM CONNECT failed\n");
+                bool silent, const std::string *private_destination) {
+  const auto send_data = read_file(send_path);
+  const auto expected_data = read_file(expect_path);
+  const std::string destination =
+      private_destination == nullptr ? "TRANSIENT" : *private_destination;
+  SAM::StreamSession session("i2psam-plan150-connect", host,
+                             static_cast<uint16_t>(port), destination);
+  auto result = session.connect(peer, silent);
+  if (!result.isOk || !result.value) {
+    std::fprintf(stderr, "i2psam_runner: STREAM CONNECT rejected\n");
     return 4;
   }
-  auto conn = std::move(conn_result.value);
-
-  // i2psam's I2pSocket::read uses std::string(buffer) which truncates
-  // at the first NUL byte. We bypass it by releasing the underlying
-  // socket fd and using POSIX read() / write() / shutdown() directly.
-  // After `release()` returns, the I2pSocket keeps socket_ ==
-  // INVALID_SOCKET so its destructor is a no-op.
-  std::unique_ptr<SAM::I2pSocket> raw_socket(conn.release());
-  SOCKET raw_fd = raw_socket->release();
-  // Releasing the fd detaches it from the I2pSocket's internal state, so
-  // the wrapper can be reclaimed without double-closing the fd.
-
-  // Send the payload via POSIX write().
-  const char *send_ptr = reinterpret_cast<const char *>(send_buf.data());
-  size_t send_remaining = send_buf.size();
-  while (send_remaining > 0) {
-    ssize_t n = ::send(raw_fd, send_ptr, send_remaining, 0);
-    if (n <= 0) {
-      std::fprintf(stderr, "i2psam_runner: send failed\n");
-      ::close(raw_fd);
-      return 5;
-    }
-    send_ptr += n;
-    send_remaining -= static_cast<size_t>(n);
-  }
-  // Do NOT shutdown(SHUT_WR) here: i2pr's SAM bridge interprets
-  // shutdown as an EOF on its read side and closes the raw stream
-  // immediately, preventing the peer (which is sending a delayed
-  // echo) from getting its bytes through. The socket close at the
-  // end of this function will be the canonical EOF signal.
-
-  std::vector<unsigned char> recv_buf;
-  recv_buf.reserve(expect_buf.size());
-  // Use POSIX recv() directly to bypass i2psam's std::string(buffer)
-  // bug where leading NUL bytes truncate the returned string.
-  while (recv_buf.size() < expect_buf.size()) {
-    unsigned char tmp[4096];
-    ssize_t n = ::recv(raw_fd, tmp, sizeof(tmp), 0);
-    if (n == 0) {
-      std::fprintf(stderr, "i2psam_runner: read returned empty after %zu bytes\n",
-                   recv_buf.size());
-      ::close(raw_fd);
-      return 7;
-    }
-    if (n < 0) {
-      std::fprintf(stderr, "i2psam_runner: recv failed: %s\n", strerror(errno));
-      ::close(raw_fd);
-      return 7;
-    }
-    recv_buf.insert(recv_buf.end(), tmp, tmp + n);
-    if (recv_buf.size() >= expect_buf.size()) break;
-  }
-  ::close(raw_fd);
-  int result = compare_bytes(recv_buf, expect_buf) == 0 ? 0 : 8;
-  return result;
+  const SOCKET fd = result.value->release();
+  result.value.reset();
+  const int rc = transfer(fd, send_data, expected_data);
+  ::close(fd);
+  return rc;
 }
 
 int run_accept(const std::string &host, int port, const std::string &send_path,
-               const std::string &expect_path, bool silent) {
-  auto send_buf = read_file(send_path);
-  auto expect_buf = read_file(expect_path);
-
-  const std::string nickname = "i2psam-runner-accept";
-  SAM::StreamSession session(nickname, host, static_cast<uint16_t>(port),
-                              /*destination=*/"TRANSIENT");
-
-  // Plan 150 §6: publish the accepter's public destination on stdout
-  // line 1 so the orchestrator can drive a cross-client STREAM CONNECT
-  // against it. i2psam's getMyDestination().pub returns the full private
-  // destination string (608 chars for Ed25519) with one trailing `=`
-  // padding char. i2pr's STREAM CONNECT expects the public portion
-  // (391 bytes / 524 Base64 chars) with two trailing `=` padding chars.
-  // Slice the first 522 chars (the public portion before the trailing
-  // padding) and append `==` so the encoded form is byte-exact for
-  // STREAM CONNECT. Flush before blocking in STREAM ACCEPT so the
-  // orchestrator is not left waiting.
-  const std::string &raw_dest = session.getMyDestination().pub;
-  const size_t pub_chars = std::min<size_t>(raw_dest.size(), 522u);
-  std::string my_pub = raw_dest.substr(0, pub_chars);
-  my_pub.append("==");
-  std::fwrite(my_pub.data(), 1, my_pub.size(), stdout);
-  std::fputc('\n', stdout);
+               const std::string &expect_path, bool silent,
+               const std::string *private_destination) {
+  const auto send_data = read_file(send_path);
+  const auto expected_data = read_file(expect_path);
+  const std::string destination =
+      private_destination == nullptr ? "TRANSIENT" : *private_destination;
+  SAM::StreamSession session("i2psam-plan150-accept", host,
+                             static_cast<uint16_t>(port), destination);
+  const std::string private_reply = session.getMyDestination().pub;
+  const std::string public_reply = public_part(private_reply);
+  if (public_reply.size() != 524) return 3;
+  std::fprintf(stdout, "%s\n", public_reply.c_str());
   std::fflush(stdout);
 
-  auto conn_result = session.accept(silent);
-  if (!conn_result.isOk) {
-    std::fprintf(stderr, "i2psam_runner: STREAM ACCEPT failed\n");
+  auto result = session.accept(silent);
+  if (!result.isOk || !result.value) {
+    std::fprintf(stderr, "i2psam_runner: STREAM ACCEPT rejected\n");
     return 4;
   }
-  auto conn = std::move(conn_result.value);
+  const SOCKET fd = result.value->release();
+  result.value.reset();
 
-  // Bypass i2psam's std::string(buffer) bug (truncates at first NUL
-  // byte) by releasing the underlying socket fd and reading bytes
-  // directly with POSIX recv().
-  SOCKET raw_fd = conn->release();
-  conn.reset();
-
-  // Per the SAM 3.1 wire format, the non-silent STREAM ACCEPT reply is:
-  //   STREAM STATUS RESULT=OK\n
-  //   DESTINATION=<authenticated peer public destination>\n
-  //   <raw bytes>
-  // i2psam's accept() consumes only the STATUS line. Read the
-  // DESTINATION= line so subsequent reads see only the peer's payload.
-  std::string dest_line;
-  while (true) {
-    char c;
-    ssize_t n = ::recv(raw_fd, &c, 1, 0);
-    if (n <= 0) {
-      std::fprintf(stderr,
-                   "i2psam_runner: short read while consuming DESTINATION= line\n");
-      ::close(raw_fd);
+  // i2psam consumes only the STREAM STATUS line for a non-silent ACCEPT.
+  // i2pr's second line is the authenticated peer Destination, so consume it
+  // before handing the descriptor to the binary transfer loop.
+  if (!silent) {
+    std::string line;
+    char byte = 0;
+    while (true) {
+      const ssize_t n = ::recv(fd, &byte, 1, 0);
+      if (n <= 0) {
+        ::close(fd);
+        return 10;
+      }
+      if (byte == '\n') break;
+      line.push_back(byte);
+      if (line.size() > 600) {
+        ::close(fd);
+        return 10;
+      }
+    }
+    if (line.rfind("DESTINATION=", 0) != 0) {
+      ::close(fd);
       return 10;
     }
-    if (c == '\n') break;
-    dest_line.push_back(c);
   }
-  const std::string dest_prefix = "DESTINATION=";
-  if (dest_line.size() < dest_prefix.size() ||
-      dest_line.compare(0, dest_prefix.size(), dest_prefix) != 0) {
-    std::fprintf(stderr,
-                 "i2psam_runner: expected DESTINATION= line after ACCEPT, got %zu bytes\n",
-                 dest_line.size());
-    ::close(raw_fd);
-    return 10;
-  }
-
-  std::vector<unsigned char> recv_buf;
-  recv_buf.reserve(expect_buf.size());
-  while (recv_buf.size() < expect_buf.size()) {
-    unsigned char tmp[4096];
-    ssize_t n = ::recv(raw_fd, tmp, sizeof(tmp), 0);
-    if (n == 0) {
-      std::fprintf(stderr, "i2psam_runner: accept read returned empty after %zu bytes\n",
-                   recv_buf.size());
-      ::close(raw_fd);
-      return 7;
-    }
-    if (n < 0) {
-      std::fprintf(stderr, "i2psam_runner: recv failed: %s\n", strerror(errno));
-      ::close(raw_fd);
-      return 7;
-    }
-    recv_buf.insert(recv_buf.end(), tmp, tmp + n);
-    if (recv_buf.size() >= expect_buf.size()) break;
-  }
-  int result = 0;
-  if (compare_bytes(recv_buf, expect_buf) != 0) result = 8;
-
-  const char *send_ptr = reinterpret_cast<const char *>(send_buf.data());
-  size_t send_remaining = send_buf.size();
-  while (send_remaining > 0) {
-    ssize_t n = ::send(raw_fd, send_ptr, send_remaining, 0);
-    if (n <= 0) {
-      std::fprintf(stderr, "i2psam_runner: send failed\n");
-      ::close(raw_fd);
-      return 9;
-    }
-    send_ptr += n;
-    send_remaining -= static_cast<size_t>(n);
-  }
-  // See the connect path for why we do NOT shutdown(SHUT_WR).
-  ::close(raw_fd);
-  return result;
+  const int rc = transfer(fd, send_data, expected_data);
+  ::close(fd);
+  return rc;
 }
 
-bool parse_silent(const std::string &s) {
-  return s == "true" || s == "TRUE";
+int run_import(const std::string &host, int port, const std::string &private_path,
+               const std::string &public_path) {
+  const std::string private_destination = read_text(private_path);
+  const std::string expected_public = read_text(public_path);
+  SAM::StreamSession session("i2psam-plan150-import", host,
+                             static_cast<uint16_t>(port), private_destination);
+  if (session.isSick() || session.getMyDestination().pub.empty()) {
+    std::fprintf(stderr, "i2psam_runner: imported SESSION CREATE rejected\n");
+    return 3;
+  }
+  const std::string actual_public = public_part(session.getMyDestination().pub);
+  return actual_public == expected_public ? 0 : 8;
 }
 
 }  // namespace
 
 int main(int argc, char **argv) {
-  if (argc < 7) {
-    std::fprintf(stderr,
-                 "usage: %s connect <host> <port> <peer_pub> <send_file> <expect_file> <silent>\n"
-                 "       %s accept  <host> <port>            <send_file> <expect_file> <silent>\n",
-                 argv[0], argv[0]);
-    return 64;
-  }
+  if (argc < 2) return 64;
   const std::string role = argv[1];
-  const bool silent = parse_silent(argv[argc - 1]);
-
-  if (role == "connect") {
-    return run_connect(argv[2], std::atoi(argv[3]), argv[4], argv[5], argv[6],
-                       silent);
-  } else if (role == "accept") {
-    return run_accept(argv[2], std::atoi(argv[3]), argv[4], argv[5], silent);
-  } else {
-    std::fprintf(stderr, "i2psam_runner: role must be connect or accept\n");
-    return 64;
+  try {
+    if (role == "connect" && (argc == 8 || argc == 9)) {
+      const std::string private_destination =
+          argc == 9 ? read_text(argv[8]) : std::string();
+      return run_connect(argv[2], std::atoi(argv[3]), argv[4], argv[5], argv[6],
+                          parse_silent(argv[7]), argc == 9 ? &private_destination
+                                                           : nullptr);
+    }
+    if (role == "accept" && (argc == 7 || argc == 8)) {
+      const std::string private_destination =
+          argc == 8 ? read_text(argv[7]) : std::string();
+      return run_accept(argv[2], std::atoi(argv[3]), argv[4], argv[5],
+                         parse_silent(argv[6]), argc == 8 ? &private_destination
+                                                          : nullptr);
+    }
+    if (role == "import" && argc == 6) {
+      return run_import(argv[2], std::atoi(argv[3]), argv[4], argv[5]);
+    }
+  } catch (...) {
+    return 3;
   }
+  return 64;
 }

@@ -157,8 +157,9 @@ record is not `superseded-by-*`. Currently:
 
 - **Milestone 6 authority**: Plan 134
   (`passed-milestone6-recv-window-ack-ceiling-closure`).
-- **Milestone 7 SAM 3.1 corrective authority**: Plan 145
-  (`active-m7-sam31-remaining-gap-corrective-roadmap`). Plan 146
+- **Milestone 7 SAM 3.1 corrective authority**: Plan 150
+  (`passed-m7-sam31-external-client-final-closure`), under the Plan 145
+  corrective roadmap. Plan 146
   closed the private-destination sub-claim
   (`passed-m7-sam31-private-destination-reference-requalification`).
   Plan 147 closed the dedicated raw STREAM product path
@@ -167,14 +168,13 @@ record is not `superseded-by-*`. Currently:
   (`passed-m7-sam31-self-composing-local-product-corrective`); the
   canonical evidence lives at
   `crates/i2pr-daemon/tests/sam_stream_self_composed.rs`. Plan 148
-  remains `blocked-audit-superseded-for-next-action-by-plan149-150`
-  per [`plans/148-status.md`](../../plans/148-status.md). Plan 150
-  (`next-executable-on-plan149-pass`) is the next executable plan
-  and will run correctly pinned external clients
-  (`libsam3` snapshot `7d6e658798baec31394c5685f9583343cc00900b`,
-  `i2psam` snapshot `b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac`)
-  through the Plan 149 self-composed listener to close independent-
-  client FORWARD / NAMING / final M7 evidence.
+  remains `blocked-audit-historical-superseded` per
+  [`plans/148-status.md`](../../plans/148-status.md). Plan 150 passed the
+  exact pinned i2psam and qualified i2plib.sam clients through the Plan 149
+  self-composed listener for independent-client CONNECT/ACCEPT, SILENT,
+  private-destination, FORWARD, NAMING, negative, and lifecycle evidence.
+  The official libsam3 snapshot was built/probed but not counted because its
+  public key-length API rejects i2pr's compact private destination.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).

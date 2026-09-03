@@ -38,9 +38,11 @@ inside the daemon, while the authenticated-router-link-bypassed seam is
 explicitly localhost-only. Raw CONNECT/ACCEPT handoff honors both
 `SILENT` modes, preserves same-read bytes, records typed delivery
 degradation, and releases Streaming/SAM ownership on terminal socket
-cleanup. Canonical evidence is
-[`sam_stream_self_composed.rs`](../../crates/i2pr-daemon/tests/sam_stream_self_composed.rs);
-Plan 150 owns external-client and final FORWARD/NAMING evidence.
+cleanup. Canonical local evidence is
+[`sam_stream_self_composed.rs`](../../crates/i2pr-daemon/tests/sam_stream_self_composed.rs).
+Plan 150 closes the exact external-client and final FORWARD/NAMING localhost
+evidence, summarized in
+[`tests/integration/sam/evidence.md`](../../tests/integration/sam/evidence.md).
 
 Network tunnels (router-to-router) and application service tunnels
 (local app to destination) are deliberately kept apart. Service tunnels

@@ -544,7 +544,13 @@ impl SamServiceState {
         let _ = self
             .stream_registry()
             .release_attachment(&session_id, attachment_id);
-        if self.stream_registry().attachment_count_for(&session_id) == 0 {
+        let forward_active = self
+            .stream_registry()
+            .inbound_mode(&session_id)
+            .is_ok_and(|mode| {
+                matches!(mode, i2pr_api::sam::streams::InboundMode::Forwarding { .. })
+            });
+        if self.stream_registry().attachment_count_for(&session_id) == 0 && !forward_active {
             self.teardown_session(&session_id, destination_id);
         }
     }

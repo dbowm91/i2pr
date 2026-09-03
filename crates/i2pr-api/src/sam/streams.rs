@@ -477,6 +477,44 @@ impl SamStreamRegistry {
         }
     }
 
+    /// Registers one inbound stream attachment for an active FORWARD
+    /// owner. Unlike `register_inbound_waiter`, this does not enqueue a
+    /// SAM ACCEPT waiter because the forward worker claims the Streaming
+    /// listener directly.
+    pub fn register_forward_attachment(
+        &self,
+        session_id: &SamSessionId,
+        owning_destination: DestinationId,
+    ) -> Result<SamAcceptWaiter, SamStreamRegistryError> {
+        let mut sessions = self.sessions.lock()?;
+        let entry =
+            sessions
+                .get_mut(session_id)
+                .ok_or_else(|| SamStreamRegistryError::UnknownSession {
+                    session_id: session_id.clone(),
+                })?;
+        if !matches!(entry.inbound_mode, InboundMode::Forwarding { .. }) {
+            return Err(SamStreamRegistryError::ForwardAlreadyActive);
+        }
+        if entry.attachments.len() >= usize::from(self.limits.max_stream_sockets_per_session) {
+            return Err(SamStreamRegistryError::StreamAttachmentsFull {
+                maximum: self.limits.max_stream_sockets_per_session,
+            });
+        }
+        let stream_id = entry.allocate_stream_id();
+        entry.attachments.insert(
+            stream_id,
+            SamStreamAttachment {
+                stream_id,
+                direction: SamStreamDirection::Inbound,
+                state: SamStreamState::WaitingAccept,
+                peer_destination_b64: None,
+                owning_destination,
+            },
+        );
+        Ok(SamAcceptWaiter { stream_id })
+    }
+
     /// Releases a forward registration only when its owner matches.
     pub fn release_forward(
         &self,
@@ -837,5 +875,37 @@ mod tests {
             .unwrap()
             .expect("attachment");
         assert_eq!(snapshot.peer_destination_b64(), Some("PUB-XYZ"));
+    }
+
+    #[test]
+    fn forward_attachment_is_bounded_and_keeps_inbound_mode_separate() {
+        let registry = SamStreamRegistry::new(SamLimits::defaults());
+        let session = SamSessionId::new("alpha").unwrap();
+        registry.register_session(session.clone()).unwrap();
+        registry.register_forward(&session, 7).unwrap();
+
+        let attachment = registry
+            .register_forward_attachment(&session, destination(1))
+            .unwrap();
+        assert_eq!(
+            registry.inbound_mode(&session).unwrap(),
+            InboundMode::Forwarding { owner: 7 }
+        );
+        assert!(matches!(
+            registry.register_inbound_waiter(&session, destination(1)),
+            Err(SamStreamRegistryError::ForwardAlreadyActive)
+        ));
+        assert!(matches!(
+            registry.release_forward(&session, 8),
+            Err(SamStreamRegistryError::ForwardOwnerMismatch)
+        ));
+        assert!(registry.release_forward(&session, 7).unwrap());
+        assert_eq!(registry.inbound_mode(&session).unwrap(), InboundMode::Idle);
+        assert!(
+            registry
+                .release_attachment(&session, attachment.stream_id)
+                .unwrap()
+                .is_some()
+        );
     }
 }

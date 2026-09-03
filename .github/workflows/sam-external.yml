@@ -1,0 +1,40 @@
+name: SAM external-client interoperability
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sam-external:
+    name: SAM external clients (Ubuntu)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Install pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Fetch and build exact external revisions
+        run: bash scripts/interop/fetch-sam-clients.sh --rebuild
+
+      - name: Build independent-client runners
+        run: bash tests/integration/sam/clients/build.sh
+
+      - name: Run localhost SAM external-client matrix
+        run: bash tests/integration/sam/run-independent.sh
+        env:
+          I2PR_SAM_EXECUTION_ID: github-${{ github.run_id }}
+
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sam-external-evidence-${{ github.run_id }}
+          path: target/interop/sam-evidence
+          if-no-files-found: warn

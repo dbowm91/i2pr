@@ -1,14 +1,14 @@
 # Plan 145 status — Milestone 7 remaining-gap corrective roadmap
 
-Status: **`active-m7-sam31-remaining-gap-corrective-roadmap`**.
+Status: **`passed-m7-sam31-remaining-gap-corrective-roadmap`** (closed by Plan 150).
 
 Registered: **2026-09-01**. Updated after Plan 149 closure: **2026-09-02**.
 
 Plan of record:
 [`plans/145-m7-sam31-remaining-gap-corrective-roadmap.md`](145-m7-sam31-remaining-gap-corrective-roadmap.md).
 
-Newest executable authority:
-[`plans/149-status.md`](149-status.md).
+Newest closure authority:
+[`plans/150-status.md`](150-status.md).
 
 ## Current classification
 
@@ -32,7 +32,7 @@ plan_147_full-original-acceptance = superseded-by-plan149
 
 plan_148 = blocked-audit-superseded-by-plan149-150-corrective-sequence
 plan_149 = passed-m7-sam31-self-composing-local-product-corrective
-plan_150 = next-executable-on-plan149-pass
+plan_150 = passed-m7-sam31-external-client-final-closure
 
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
@@ -43,10 +43,10 @@ sam31_base64 = corrected
 sam31_private_destination = reference-compatible-via-plan146
 sam31_raw_socket_owner = implemented-via-plan147
 sam31_self_composing_product = passed-via-plan149
-sam_independent_clients = 0-passed
+sam_independent_clients = at-least-two-passed
 router_construction = may-continue-within-m7
-next_executable_plan = 150
-next_product_layer = remain-on-milestone7
+next_executable_plan = Milestone 8 planning
+next_product_layer = Milestone 8 planning
 ```
 
 ## Closed sub-claims
@@ -94,7 +94,7 @@ The audit also confirmed a concrete raw-protocol issue: the current raw-transiti
 The sequence is now:
 
 1. [`plans/149-m7-sam31-self-composing-local-product-corrective.md`](149-m7-sam31-self-composing-local-product-corrective.md) — **passed**. `SESSION CREATE` self-composes the local product and closes the documented local raw-path acceptance subset.
-2. [`plans/150-m7-sam31-external-client-reproducible-final-closure.md`](150-m7-sam31-external-client-reproducible-final-closure.md) — **next executable**. Run correctly pinned external clients through the real listener and close FORWARD/NAMING/final M7 evidence.
+2. [`plans/150-m7-sam31-external-client-reproducible-final-closure.md`](150-m7-sam31-external-client-reproducible-final-closure.md) — **passed**. Exact i2psam and qualified i2plib.sam clients closed the localhost SAM-client, FORWARD, NAMING, and final M7 evidence.
 
 Plan 148 remains historical blocked-audit evidence and is superseded for execution.
 
@@ -142,8 +142,6 @@ The Plan 129 authenticated-router-link-bypassed localhost seam remains the allow
 
 Read this file, `plans/149-status.md`, Plan 149, Plan 146 status, and Plan 147 status.
 
-Execute **Plan 150 only**.
-
-Plan 149's self-composed product evidence is now closed. Do not move to
-Milestone 8 until Plan 150 closes its independent-client and final SAM
-acceptance criteria.
+Plan 150 is closed. Milestone 7 localhost application scope is complete;
+Milestone 8 planning may begin. Preserve the non-advertised and
+router-to-router interoperability boundaries.

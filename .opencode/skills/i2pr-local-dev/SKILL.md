@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Use for i2pr-client, i2pr-api, destination-side i2pr-tunnel/i2pr-netdb/i2pr-proto/i2pr-crypto, i2pr-daemon SAM code, local trajectory tests, or Milestone 7 corrective execution. Plan 145 is the corrective umbrella; Plan 149 closed the self-composed local STREAM product; Plan 150 is the next executable plan.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Use for i2pr-client, i2pr-api, destination-side i2pr-tunnel/i2pr-netdb/i2pr-proto/i2pr-crypto, i2pr-daemon SAM code, local trajectory tests, or Milestone 7 corrective execution. Plan 145 is the corrective umbrella; Plan 149 closed the self-composed local STREAM product; Plan 150 closed the localhost external-client SAM layer.
 ---
 
 # I2PR Local Development
@@ -22,11 +22,11 @@ Milestone 7 **local product is closed** by Plan 149. Read, in order:
 1. `plans/145-status.md` — corrective umbrella;
 2. `plans/149-status.md` — closed self-composed STREAM product;
 3. `plans/149-m7-sam31-self-composing-local-product-corrective.md` — closed;
-4. `plans/150-status.md` — next executable external-client closure;
+4. `plans/150-status.md` — closed external-client closure;
 5. `plans/146-status.md` — closed private-destination reference result;
 6. `plans/147-status.md` — retained raw-driver implementation evidence;
 7. `plans/148-status.md` — blocked historical audit;
-8. `plans/150-m7-sam31-external-client-reproducible-final-closure.md` — **next executable plan**.
+8. `plans/150-m7-sam31-external-client-reproducible-final-closure.md` — **closed plan and reproducibility record**.
 
 Current classification:
 
@@ -36,12 +36,14 @@ plan_147_raw_driver_implementation = retained
 plan_147_full_original_acceptance = superseded-by-plan149
 plan_148 = blocked-audit-superseded-by-plan149-150
 plan_149 = passed-self-composing-local-product
-plan_150 = next-executable-on-plan149-pass
-sam_independent_clients = 0-passed
+plan_150 = passed-m7-sam31-external-client-final-closure
+sam_independent_clients = at-least-two-passed
 milestone7_local_product = closed-via-plan149
 ```
 
-Do not move to Milestone 8 until Plan 150 explicitly closes Milestone 7.
+Milestone 7 localhost application scope is closed by Plan 150. Milestone 8
+planning may begin, but do not broaden the claim to router-to-router
+interoperability.
 
 ## Retain these closed/useful pieces
 
@@ -71,9 +73,11 @@ The canonical Plan 149 evidence lives at `crates/i2pr-daemon/tests/sam_stream_se
 
 ## Plan 150 external-client guidance
 
-Plan 149 is now closed. Plan 150 runs correctly pinned external clients through the self-composed listener.
+Plan 149 is closed. Plan 150 runs correctly pinned external clients through
+the self-composed listener and records the closure summary in
+`tests/integration/sam/evidence.md`.
 
-Preferred mandatory clients:
+Pinned external provenance:
 
 ```text
 libsam3
@@ -99,7 +103,13 @@ i2plib
 
 Its 2019 high-level asyncio API uses the removed `loop=` argument, so do not make it mandatory on modern Python unless a compatible runtime is explicitly qualified. Do not patch external client source for i2pr.
 
-Plan 150 may add a manual GitHub-hosted Ubuntu `workflow_dispatch` lane to fetch/build exact external revisions and run localhost SAM. No root/sudo/namespaces/Docker/VM/systemd/public I2P is allowed or needed.
+The Plan 150 counted clients are unmodified `i2psam` and the qualified
+`i2plib.sam` substitute. The pinned libsam3 snapshot is built and probed but
+its public API requires an 884-character minimum `PRIV`, while i2pr's
+canonical Ed25519 representation is 608 characters; it is therefore not
+counted as a passing client.
+
+Plan 150's manual GitHub-hosted Ubuntu `workflow_dispatch` lane fetches/builds exact external revisions and runs localhost SAM. No root/sudo/namespaces/Docker/VM/systemd/public I2P is allowed or needed.
 
 ## Architecture ownership
 
@@ -197,9 +207,10 @@ Plan 149 closed the self-composed black-box lane (`sam_stream_self_composed`), i
 ## Final claim rules
 
 - SAM remains disabled by default and loopback-only during Milestone 7.
-- Do not claim independent-client interoperability before Plan 150.
+- Do not claim router-to-router interoperability from the Plan 150 localhost
+  client result.
 - Do not claim router-to-router interoperability from localhost SAM evidence.
 - Do not bump `advertised = true` without `specs/CONFORMANCE.md` evidence.
-- Do not move to Milestone 8 until Plan 150 status explicitly closes Milestone 7.
+- Keep SAM experimental, loopback-only, and non-advertised after Plan 150.
 
-Current handoff: **execute Plan 150** (Plan 149 closed the self-composed local STREAM product).
+Current handoff: **Plan 150 is closed; begin only Milestone 8 planning**.

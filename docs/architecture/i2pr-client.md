@@ -259,8 +259,10 @@ Plans 137–139 consume `DestinationRegistry`, `DestinationRuntime`, and
 the per-destination `StreamingManager` to build the SAM 3.1
 loopback server; the actual SAM adapter wiring is owned by
 `i2pr-daemon` (`crates/i2pr-daemon/src/sam.rs`). Plan 149 records the
-completed self-composed localhost STREAM path; external-client STREAM
-interoperability remains a separate Plan 150 claim.
+completed self-composed localhost STREAM path; Plan 150 closes the
+external-client STREAM claim for the localhost SAM application layer. The
+client crate remains runtime-neutral and this evidence does not claim
+router-to-router interoperability.
 
 For Plan 149, the daemon's `SamDestinationBridge` owns the canonical
 and receiver-mirror `StreamingManager`s while sharing the one

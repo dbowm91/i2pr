@@ -28,7 +28,7 @@ plan_147_full_original_acceptance = superseded-by-plan149
 plan_148 = blocked-audit-superseded-for-next-action-by-plan149-150
 
 plan_149 = passed-m7-sam31-self-composing-local-product-corrective
-plan_150 = next-executable-on-plan149-pass
+plan_150 = passed-m7-sam31-external-client-final-closure
 
 milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
@@ -38,9 +38,9 @@ milestone7_local_product = closed-via-plan149
 sam31_private_destination = reference-compatible-via-plan146
 sam31_raw_socket_owner = implemented-via-plan147
 sam31_self_composing_product = passed-via-plan149
-sam_independent_clients = 0-passed
-next_executable_plan = 150
-next_product_layer = remain-on-milestone7
+sam_independent_clients = at-least-two-passed-via-plan150
+next_executable_plan = Milestone 8 planning
+next_product_layer = Milestone 8 planning
 ```
 
 ## Historical blocker resolved by Plan 149
@@ -56,7 +56,7 @@ The canonical Plan 147 raw STREAM test manually performs private setup after SAM
 
 The production `execute_session_create()` path now performs those steps
 transactionally before returning success. Plan 149 is the corrective
-closure for that composition gap; Plan 150 is the remaining external-
+closure for that composition gap; Plan 150 subsequently closed the external
 client evidence lane.
 
 `execute_stream_connect()` subsequently requires a bridge in `sam_destinations`; without the test-only setup it returns an I2P error for a missing bridge. `deliver_outbound()` also depends on an installed inbound-tunnel factory and otherwise drops the request rather than producing a useful product-path failure.
@@ -111,7 +111,7 @@ Plan 150 replaces the live external-client guidance with correctly pinned `libsa
 ## Execution sequence
 
 1. **Plan 149** — make SAM `SESSION CREATE` self-compose the local destination/Streaming product, remove hidden test setup from canonical acceptance, and close the documented local raw-path criteria.
-2. **Plan 150** — provision correctly pinned external clients through a reproducible unprivileged lane and close final independent-client/FORWARD/NAMING evidence.
+2. **Plan 150** — passed the correctly pinned external-client/final independent-client/FORWARD/NAMING evidence through a reproducible unprivileged lane. See [`plans/150-status.md`](150-status.md).
 
 Plan 148 remains historical failed-audit evidence and must not be used as the next executable plan.
 
@@ -256,10 +256,7 @@ remote authority for the final result.
 
 Read this status, Plan 149, Plan 146 status, and Plan 147 status.
 
-Plan 150 is now the next executable plan. Run the focused
-Plan 127–134 Milestone 6 regressions as a precondition, then drive
-the correctly pinned `libsam3` (snapshot
-`7d6e658798baec31394c5685f9583343cc00900b`) and `i2psam` (snapshot
-`b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac`) external clients
-through the real self-composed listener and capture the independent
-FORWARD / NAMING / final M7 closure evidence.
+Plan 150 is now closed. Its exact pinned `i2psam` client and qualified
+`i2plib.sam` substitute passed the localhost external-client, FORWARD, NAMING,
+and final SAM evidence. Milestone 8 planning may begin, while SAM remains
+experimental, loopback-only, and non-advertised.

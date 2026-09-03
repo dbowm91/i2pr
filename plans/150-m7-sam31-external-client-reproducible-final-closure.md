@@ -1,6 +1,6 @@
 # Plan 150 — SAM 3.1 reproducible external-client interoperability and final Milestone 7 closure
 
-Status: **next executable after Plan 149 local-product closure**.
+Status: **completed; closure recorded in `plans/150-status.md`**.
 
 Depends on:
 
@@ -568,6 +568,9 @@ Stop and write a narrow corrective plan if:
 
 ## 23. Handoff
 
-Do **not** execute Plan 150 yet.
-
-Execute Plan 149 first. Plan 150 begins only after `plans/149-status.md` records that black-box SAM sessions self-compose the complete local STREAM product and the deferred Plan 147 acceptance matrix is closed.
+Plan 149 was completed first. Plan 150 then qualified the real listener with
+the exact pinned external clients and closed the remaining localhost SAM
+application evidence. The official libsam3 snapshot was built and probed but
+is recorded as blocked by its public private-key length requirement; the
+plan's substitute clause is satisfied by the unmodified pinned `i2plib.sam`
+protocol surface plus its thin socket harness.

@@ -25,10 +25,22 @@ if [[ ! -f "${LIBSAM3_CACHE}/libsam3.a" ]] || [[ ! -f "${LIBSAM3_CACHE}/libsam3.
   echo "run scripts/interop/fetch-sam-clients.sh first" >&2
   exit 1
 fi
+if [[ ! -f "${LIBSAM3_CACHE}/source-revision.txt" ]] ||
+   [[ "$(<"${LIBSAM3_CACHE}/source-revision.txt")" != "${LIBSAM3_PIN}" ]]; then
+  echo "libsam3 cache source revision is unverified or mismatched" >&2
+  echo "run scripts/interop/fetch-sam-clients.sh --rebuild first" >&2
+  exit 1
+fi
 
 if [[ ! -f "${I2PSAM_CACHE}/libi2psam.a" ]] || [[ ! -f "${I2PSAM_CACHE}/i2psam.h" ]]; then
   echo "missing i2psam cache: ${I2PSAM_CACHE}" >&2
   echo "run scripts/interop/fetch-sam-clients.sh first" >&2
+  exit 1
+fi
+if [[ ! -f "${I2PSAM_CACHE}/source-revision.txt" ]] ||
+   [[ "$(<"${I2PSAM_CACHE}/source-revision.txt")" != "${I2PSAM_PIN}" ]]; then
+  echo "i2psam cache source revision is unverified or mismatched" >&2
+  echo "run scripts/interop/fetch-sam-clients.sh --rebuild first" >&2
   exit 1
 fi
 

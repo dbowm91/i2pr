@@ -443,9 +443,9 @@ the SAM 3.1 STREAM CONNECT / ACCEPT transport bridge as
 the loopback-only STREAM FORWARD and local NAMING LOOKUP hardening as
 `passed-m7-sam31-forward-naming-hardening`
 ([`plans/139-status.md`](../../plans/139-status.md)); Plan 149 then
-closed the self-composed localhost STREAM product. The next product
-step is independent-client interoperability and final Milestone 7
-closure under Plan 150; the retained external-client pins and build
+closed the self-composed localhost STREAM product. Plan 150 now closes
+the localhost independent-client interoperability and final Milestone 7
+SAM application evidence; the retained external-client pins and build
 lane are documented in
 [`tests/integration/sam/README.md`](../../tests/integration/sam/README.md).
 

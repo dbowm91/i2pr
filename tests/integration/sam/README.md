@@ -9,8 +9,8 @@ Current authority:
 - `plans/147-status.md` — retained raw-socket owner/byte-pump implementation evidence;
 - `plans/148-status.md` — blocked audit, superseded for execution;
 - `plans/149-status.md` — **closed**, self-composing local SAM product corrective;
-- `plans/150-status.md` — **next executable**, external-client/final SAM closure;
-- `plans/150-m7-sam31-external-client-reproducible-final-closure.md` — next executable final independent-client closure.
+- `plans/150-status.md` — **passed**, external-client/final SAM closure;
+- `plans/150-m7-sam31-external-client-reproducible-final-closure.md` — closed final independent-client closure.
 
 This lane is localhost-only. It must not require root, namespaces, Docker, a VM, systemd, public I2P participation, or live NTCP2/SSU2.
 
@@ -93,14 +93,15 @@ The local Plan 149 evidence covers:
 - bounded backpressure and multi-megabyte transfer;
 - terminal CLOSE/RESET cleanup and post-shutdown resource baselines.
 
-The external-client and broader fault-matrix requirements remain Plan 150
-work; they must not be inferred from this localhost seam.
+Plan 150's external-client and broader SAM evidence is recorded in
+[`evidence.md`](evidence.md); it must not be inferred as router-to-router
+interoperability.
 
 ## External clients — Plan 150 guidance
 
 Plan 148's old libsam3 pin was invalid for the official repository and must not be used.
 
-### Mandatory preferred client A — libsam3
+### Pinned external provenance
 
 ```text
 repository = https://github.com/i2p/libsam3
@@ -116,7 +117,7 @@ v0.31.2 = ea52a3251d60906d67f9a1031a6ed7642753f94f
 
 The preferred current snapshot includes a post-release destination-key newline validation fix. Pin exactly; do not silently advance.
 
-### Mandatory preferred client B — i2psam
+### Counted client — i2psam
 
 ```text
 repository = https://github.com/i2p/i2psam
@@ -127,7 +128,7 @@ SAM requirement = v3.1
 
 The repository documents the normal `make` library build and `eepget` example.
 
-### Supplementary client — i2plib
+### Qualified substitute — i2plib
 
 ```text
 repository = https://github.com/l-n-s/i2plib
@@ -136,27 +137,36 @@ version = 0.0.14
 language = Python
 ```
 
-Its low-level `i2plib.sam` encoding/parsing surface remains useful. Its 2019 high-level async API passes the removed `loop=` argument to `asyncio.open_connection()`, so it is not one of the mandatory Plan 150 clients unless a compatible Python runtime is deliberately qualified. Do not patch it for i2pr.
+Its low-level `i2plib.sam` encoding/parsing surface is used by the Plan 150
+thin socket harness. Its 2019 high-level async API passes the removed `loop=`
+argument to `asyncio.open_connection()`, so the harness deliberately uses the
+unmodified message/Base64 surface rather than patching the external client.
+It is the qualified Plan 150 substitute for libsam3 because the pinned
+libsam3 public API requires an 884-character private key while i2pr's
+canonical Ed25519 SAM `PRIV` is 608 characters.
 
 ## Reproducible acquisition policy
 
-Plan 150 should support two equivalent lanes:
+Plan 150 supports two equivalent lanes:
 
 1. preferred manual GitHub-hosted Ubuntu workflow (`workflow_dispatch`) that checks out exact external revisions into ephemeral workspace paths, builds them, runs localhost SAM, and uploads sanitized evidence;
 2. local/pre-cached execution using explicit source paths whose Git revisions are verified before build.
 
 Do not vendor third-party source into i2pr. Do not require privileged runners.
 
-## Plan 150 independent-client contract
+## Plan 150 independent-client contract and result
 
-After Plan 149 closes, run at least:
+After Plan 149 closed, the following passed:
 
 ```text
-libsam3 CONNECT -> i2psam ACCEPT
-i2psam CONNECT  -> libsam3 ACCEPT
+ i2plib substitute CONNECT -> i2psam ACCEPT
+ i2psam CONNECT             -> i2plib substitute ACCEPT
 ```
 
-where their public APIs permit.
+where their public APIs permit. The exact i2psam and i2plib revisions are
+independently implemented and neither is patched for i2pr. The i2psam
+snapshot's second-seeded session-ID generator is handled by one-second launch
+slotting in `run-independent.sh`.
 
 Required final evidence also includes:
 
@@ -171,7 +181,10 @@ Required final evidence also includes:
 - Plan 149 resource/fault/privacy regressions;
 - Plan 127–134 M6 regressions.
 
-Two instances of one in-repo helper do not count as independent clients. A tiny transcript helper may supplement missing optional API coverage but does not count toward `sam_independent_clients`.
+Two instances of one in-repo helper do not count as independent clients. A
+tiny transcript helper supplements SILENT, NAMING, and negative API coverage
+but does not count toward `sam_independent_clients`. The complete successful
+result is summarized in [`evidence.md`](evidence.md).
 
 ## Plan 146 evidence contract
 
@@ -211,4 +224,4 @@ Do not promote Milestone 7 until:
 4. FORWARD/NAMING/resource/privacy/M6 final gates pass;
 5. the newest status record explicitly closes Milestone 7.
 
-Current handoff: **execute Plan 150 only**.
+Current handoff: **Plan 150 is closed; retain this as the reproducibility lane**.

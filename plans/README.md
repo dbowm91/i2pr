@@ -9,19 +9,21 @@ The current **Milestone 6 local closure authority** is
 Independent-router interoperability is not claimed and is tracked as external acceptance debt.
 
 The current **Milestone 7 SAM 3.1 corrective authority** is
-[**Plan 145**](145-status.md), with the newest closed authority
-[**Plan 149 status**](149-status.md) (`passed-m7-sam31-self-composing-local-product-corrective`).
-The active sequence is now:
+[**Plan 145**](145-status.md), closed by the newest authority
+[**Plan 150 status**](150-status.md) (`passed-m7-sam31-external-client-final-closure`).
+The completed sequence is:
 
-**Plan 146 (closed) → Plan 147 raw-driver implementation retained → Plan 148 blocked audit → Plan 149 (closed) → Plan 150 (next executable).**
+**Plan 146 (closed) → Plan 147 raw-driver implementation retained → Plan 148 blocked audit → Plan 149 (closed) → Plan 150 (closed).**
 
 - Plan 146 closed private-destination compatibility with bidirectional Java I2P/i2pd reference evidence.
 - Plan 147 landed the real same-socket raw TCP↔Streaming owner/byte pump and supervised ACK/retransmit driver. Its implementation evidence is retained, but its broad original acceptance label is superseded where mandatory SILENT/backpressure/fault/lifecycle criteria were deferred.
 - Plan 148 correctly rejected one Rust helper used twice as “independent clients,” but its original `blocked-external-client-build-failure` diagnosis was incomplete. The Plan 147 canonical test manually installs bridges, peer LeaseSet2 routing, inbound-tunnel factories, and destination drivers after `SESSION CREATE`; production `SESSION CREATE` does not currently self-compose those prerequisites. Plan 148 is therefore historical blocked-audit evidence.
 - [Plan 149](149-m7-sam31-self-composing-local-product-corrective.md) **closed the self-composed local STREAM product**. `SESSION CREATE` now self-composes the full product: one `Arc<DestinationIdentity>` allocation, OS-CSPRNG `SamLocalProductFabric` for LeaseSet2 / outbound role / inbound-tunnel factory, automatic per-destination runtime driver spawn, local peer LeaseSet2 directory, byte-exact `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw-transition semantics, typed `DeliverySweepCounters`. The canonical evidence lives in `crates/i2pr-daemon/tests/sam_stream_self_composed.rs`.
-- [Plan 150](150-m7-sam31-external-client-reproducible-final-closure.md) is **next executable**. It runs correctly pinned external clients through the Plan 149 self-composed listener to close independent-client FORWARD / NAMING / final M7 evidence.
+- [Plan 150](150-m7-sam31-external-client-reproducible-final-closure.md) **closed the localhost SAM-client layer**. Exact `i2psam` and qualified `i2plib.sam` clients passed the final CONNECT/ACCEPT, SILENT, private-destination, FORWARD, NAMING, and negative evidence through the Plan 149 self-composed listener; libsam3 was built/probed but not counted because its public key-shape API rejects i2pr's canonical compact `PRIV`.
 
-`sam_independent_clients = 0-passed` until Plan 150 succeeds. Milestone 7 local product is closed via Plan 149; Milestone 8 is not the next product layer until Plan 150 closes Milestone 7.
+`sam_independent_clients = at-least-two-passed`. Milestone 7 localhost
+application scope is closed via Plan 150; router-to-router interoperability
+remains unclaimed and Milestone 8 planning is next.
 
 ## MVP roadmap
 
@@ -41,7 +43,7 @@ The active sequence is now:
 | 136 | foundation landed; encoding/private-destination evidence superseded by later corrective work | [`136-status.md`](136-status.md) |
 | 137 | passed loopback server/session lifecycle | [`137-status.md`](137-status.md) |
 | 138 | implementation landed; product acceptance superseded by later raw-stream corrective work | [`138-status.md`](138-status.md) |
-| 139 | local FORWARD/naming implementation landed; final byte-path acceptance now belongs to Plan 150 | [`139-status.md`](139-status.md) |
+| 139 | local FORWARD/naming implementation landed; final byte-path acceptance closed by Plan 150 | [`139-status.md`](139-status.md) |
 | 140 | blocked closure audit; historical authority | [`140-status.md`](140-status.md) |
 | 141 | previous corrective roadmap; superseded for next-action authority | [`141-status.md`](141-status.md) |
 | 142 | **Base64 correction retained as passed**; private-destination external compatibility requalified by Plan 146 | [`142-status.md`](142-status.md) |
@@ -52,7 +54,7 @@ The active sequence is now:
 | 147 | raw-driver implementation and local byte-pump **retained**; full original acceptance superseded by Plan 149 | [`147-status.md`](147-status.md) |
 | 148 | **blocked audit; superseded for execution by Plans 149–150** | [`148-status.md`](148-status.md) |
 | 149 | **passed** self-composing SAM local product and local raw-path acceptance | [`149-status.md`](149-status.md) |
-| 150 | **next executable** — reproducible external-client final M7 closure | [`150-m7-sam31-external-client-reproducible-final-closure.md`](150-m7-sam31-external-client-reproducible-final-closure.md) |
+| 150 | **passed** reproducible external-client final M7 localhost closure | [`150-status.md`](150-status.md) |
 
 Do not restore historical broad `passed` labels as final M7 authority without satisfying the newest superseding acceptance criteria.
 
@@ -111,19 +113,13 @@ The constrained-host lane, the Plan 046 rootless sealed-namespace lane, and the 
 - Live mixed-router tunnel-build execution.
 - Network-transport-bound NetDB lookup/publication.
 - Full router I2NP/network dispatch.
-- Milestone 7 SAM closure:
+- Milestone 7 SAM localhost closure:
   - **Plan 149** closed the self-composed local STREAM product
     (canonical black-box test passes; `sam31_self_composing_product
     = passed`).
-  - Plan 149's local product evidence covers exact SILENT handling,
-    same-read raw bytes, bounded backpressure, bidirectional 2 MiB
-    transfer, and terminal resource cleanup. Broader independent-client
-    fault/lifecycle evidence remains outside the local self-composition
-    claim and is part of the Plan 150 follow-up.
-  - two correctly pinned independent SAM clients have not yet moved
-    application bytes through the real self-composed listener; this
-    is now Plan 150.
-  - final FORWARD/NAMING external closure is Plan 150.
+  - **Plan 150** then passed the two-client exact-byte, SILENT,
+    private-destination, FORWARD, NAMING, negative, lifecycle, and
+    reproducibility evidence through the real listener.
 - Client proxies (HTTP, SOCKS5) and service tunnels.
 - Any public/network-facing router behavior.
 
@@ -133,4 +129,4 @@ The NTCP2 development interoperability result remains `protocol-defect-localized
 
 Before editing or claiming behavioral conformance, load [`.opencode/skills/i2pr-local-dev/SKILL.md`](../.opencode/skills/i2pr-local-dev/SKILL.md) for the routine development seam, or the architecture skill for documentation/ADR navigation.
 
-When a closure/status record and a per-plan narrative disagree, the newest explicit superseding status record wins. The current handoff is **execute Plan 150** (Plan 149 already closed).
+When a closure/status record and a per-plan narrative disagree, the newest explicit superseding status record wins. Plan 150 is closed; the next product work is Milestone 8 planning, without broadening the localhost SAM claim.

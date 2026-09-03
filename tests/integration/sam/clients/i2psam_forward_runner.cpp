@@ -5,8 +5,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <unistd.h>
 
 #include "i2psam.h"
+#include "i2p_base64.h"
 
 int main(int argc, char **argv) {
   if (argc != 5) {
@@ -22,11 +24,22 @@ int main(int argc, char **argv) {
 
   SAM::StreamSession session("i2psam-forward-runner", host,
                               static_cast<uint16_t>(port), "TRANSIENT");
+  if (session.isSick()) {
+    std::fprintf(stderr, "i2psam_forward_runner: SESSION CREATE rejected\n");
+    return 3;
+  }
 
-  // The FullDestination is the local destination the SAM bridge
-  // // emitted in the SESSION STATUS reply.
+  // i2psam stores the full private destination in FullDestination::pub
+  // because that is the value returned by SESSION STATUS.  The SAM
+  // STREAM CONNECT target is the first 391 public bytes, encoded with
+  // the canonical two padding characters.
   const auto &dest = session.getMyDestination();
-  std::fprintf(stdout, "%s\n", dest.pub.c_str());
+  const std::string pub = plan150::public_from_private(dest.pub);
+  if (pub.size() != 524) {
+    std::fprintf(stderr, "i2psam_forward_runner: public destination projection failed\n");
+    return 3;
+  }
+  std::fprintf(stdout, "%s\n", pub.c_str());
   std::fflush(stdout);
 
   auto result = session.forward(fwd_host, static_cast<uint16_t>(fwd_port),

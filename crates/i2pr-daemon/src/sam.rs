@@ -1218,6 +1218,7 @@ async fn handle_connection(
     let connection_owner = state.next_forward_owner();
     let hello_timeout = state.config.limits.hello_timeout;
     let command_timeout = state.config.limits.command_timeout;
+    let connection_cancellation = cancellation.child_token();
 
     let mut reader = LineReader::new();
     let mut connection_state = ServerConnectionState::AwaitHello;
@@ -1252,7 +1253,7 @@ async fn handle_connection(
                     peer_ip,
                     connection_owner,
                     &raw_children,
-                    cancellation.child_token(),
+                    connection_cancellation.clone(),
                 )
                 .await?;
                 apply_disposition(
@@ -1290,7 +1291,7 @@ async fn handle_connection(
                         peer_ip,
                         connection_owner,
                         &raw_children,
-                        cancellation.child_token(),
+                        connection_cancellation.clone(),
                     )
                     .await?;
                     apply_disposition(
@@ -1309,6 +1310,9 @@ async fn handle_connection(
         debug!(error = %error, "sam connection ended with error");
     }
 
+    if pending_raw.is_none() {
+        let _ = connection_cancellation.cancel(i2pr_core::CancellationReason::ParentScope);
+    }
     state.teardown_forward_owner(connection_owner);
 
     // Plan 147 §8: when this handle_connection loop exits because
@@ -1617,7 +1621,24 @@ async fn dispatch_command(
         }
         DispatchOutcome::RequireStreamForward { request } => {
             let request = *request;
-            let outcome = execute_stream_forward(&state, request, peer_ip, connection_owner);
+            let session_id = SamSessionId::new(request.session_id.clone());
+            let mut outcome = execute_stream_forward(&state, request, peer_ip, connection_owner);
+            if outcome.is_ok()
+                && let Some(session_id) = session_id
+                && let Some(registration) = state.forward_registration(&session_id)
+                && let Err(error) = spawn_forward_worker(
+                    &state,
+                    registration,
+                    raw_children,
+                    session_cancellation.clone(),
+                )
+            {
+                state.teardown_forward_owner(connection_owner);
+                outcome = Err(i2pr_api::sam::server_state::StreamForwardFailed {
+                    result: ReplyResult::I2pError,
+                    message: format!("forward worker spawn failed: {error}"),
+                });
+            }
             let outcome = apply_stream_forward_outcome(outcome);
             if let Some(reply) = outcome.reply() {
                 write_reply(stream, reply).await?;
@@ -2499,6 +2520,308 @@ async fn wait_for_accept_established(
             _ = notify.notified() => {}
             _ = tokio::time::sleep(tick) => {}
         }
+    }
+}
+
+/// Binds the receiver-mirror wildcard listener used by the supervised
+/// FORWARD worker. FORWARD has no command-mode ACCEPT socket to perform this
+/// setup, so the worker owns the listener lifecycle directly.
+fn ensure_forward_listener(
+    state: &SamServiceState,
+    destination_id: DestinationId,
+) -> Result<(), String> {
+    let destinations_arc = state.sam_destinations();
+    let destinations = destinations_arc
+        .lock()
+        .map_err(|_| "sam destinations poisoned".to_owned())?;
+    match destinations.get(destination_id) {
+        Some(handle) => handle.with(|bridge| match bridge.receiver_streaming_mut().listen(0) {
+            Ok(_)
+            | Err(i2pr_client::streaming::manager::StreamingManagerError::PortAlreadyInUse) => {
+                Ok(())
+            }
+            Err(error) => Err(format!("listener bind failed: {error}")),
+        }),
+        None => Err("no streaming manager for destination".to_owned()),
+    }
+}
+
+/// Parks a FORWARD worker until one inbound SYN is accepted and the receiver
+/// mirror has completed its local half of the handshake. This is the same
+/// authenticated SYN path as STREAM ACCEPT, but the worker retains the
+/// connection rather than replying on a SAM command socket.
+async fn wait_for_forward_established(
+    state: Arc<SamServiceState>,
+    destination_id: DestinationId,
+    notify: Arc<tokio::sync::Notify>,
+    cancellation: CancellationToken,
+    deadline: Duration,
+) -> Option<(
+    i2pr_client::streaming::connection::ConnectionId,
+    i2pr_client::streaming::manager::RemoteDestination,
+    Option<String>,
+)> {
+    let started = Instant::now();
+    let mut accepted: Option<(
+        i2pr_client::streaming::connection::ConnectionId,
+        i2pr_client::streaming::manager::RemoteDestination,
+        Option<String>,
+    )> = None;
+    loop {
+        if cancellation.is_cancelled() {
+            return None;
+        }
+        let observed = {
+            let destinations_arc = state.sam_destinations();
+            let destinations = destinations_arc.lock().ok()?;
+            let handle = destinations.get(destination_id)?;
+            let mut os_rng = OsRng;
+            handle.with(|bridge| {
+                let local_identity = bridge.identity().clone();
+                let mut rng = rand_core::UnwrapMut(&mut os_rng);
+                let manager = bridge.receiver_streaming_mut();
+                if let Some((connection_id, _, _)) = accepted.as_ref() {
+                    if matches!(
+                        manager
+                            .get_connection(*connection_id)
+                            .map(|connection| connection.state()),
+                        Some(i2pr_client::streaming::connection::ConnectionState::Established)
+                    ) {
+                        return accepted.clone();
+                    }
+                    return None;
+                }
+                if manager.listener_backlog(0) == 0 {
+                    return None;
+                }
+                let connection_id = manager.accept(0)?;
+                let connection = manager.get_connection(connection_id)?;
+                let remote_port = connection.remote_port();
+                let local_port = connection.local_port();
+                let peer_signing = connection.peer_signing_key().clone();
+                let peer_hash = *connection.peer_destination_hash();
+                let full_peer_destination = connection.peer_destination().cloned();
+                let peer_static_public = full_peer_destination
+                    .as_ref()
+                    .and_then(|destination| destination.public_key().as_bytes().try_into().ok())
+                    .unwrap_or([0_u8; 32]);
+                let peer = i2pr_client::streaming::manager::RemoteDestination {
+                    destination_hash: peer_hash,
+                    signing_public_key: peer_signing,
+                    static_public_key: peer_static_public,
+                };
+                let request = manager
+                    .accept_inbound_syn(
+                        local_identity.as_ref(),
+                        &peer,
+                        connection_id,
+                        local_port,
+                        remote_port,
+                        i2pr_client::streaming::manager::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                        streaming_now_ms(),
+                        &mut rng,
+                    )
+                    .ok()?;
+                manager.queue_outbound_packet(request);
+                let peer_destination_b64 = full_peer_destination
+                    .as_ref()
+                    .and_then(encode_destination_public);
+                accepted = Some((connection_id, peer.clone(), peer_destination_b64.clone()));
+                state.notify_outbound_signal(destination_id);
+                Some((connection_id, peer, peer_destination_b64))
+            })
+        };
+        if let Some((connection_id, peer, peer_destination_b64)) = observed {
+            let destinations_arc = state.sam_destinations();
+            let destinations = destinations_arc.lock().ok()?;
+            let final_state = destinations.get(destination_id).and_then(|handle| {
+                handle.with(|bridge| {
+                    bridge
+                        .receiver_streaming()
+                        .get_connection(connection_id)
+                        .map(|connection| connection.state())
+                })
+            });
+            if matches!(
+                final_state,
+                Some(i2pr_client::streaming::connection::ConnectionState::Established)
+            ) {
+                return Some((connection_id, peer, peer_destination_b64));
+            }
+        }
+        let remaining = deadline.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return None;
+        }
+        let tick = remaining.min(Duration::from_millis(20));
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return None,
+            _ = notify.notified() => {}
+            _ = tokio::time::sleep(tick) => {}
+        }
+    }
+}
+
+/// Creates two connected loopback sockets for the internal FORWARD bridge.
+/// The sockets never leave this process: one is owned by the normal raw
+/// STREAM driver and the other by the bounded local-target bridge.
+async fn local_socket_pair() -> io::Result<(TcpStream, TcpStream)> {
+    let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await?;
+    let address = listener.local_addr()?;
+    let (connected, accepted) = tokio::join!(TcpStream::connect(address), listener.accept());
+    let connected = connected?;
+    let (accepted, _) = accepted?;
+    Ok((accepted, connected))
+}
+
+/// Owns the runtime FORWARD path for one control socket. Each accepted
+/// Streaming connection gets a bounded SAM attachment, the same raw byte
+/// driver used by STREAM ACCEPT, and a local target bridge. The loop remains
+/// alive for sequential independent streams until the FORWARD owner closes.
+fn spawn_forward_worker(
+    state: &Arc<SamServiceState>,
+    registration: ForwardRegistration,
+    children: &ChildScope,
+    session_cancellation: CancellationToken,
+) -> Result<(), i2pr_runtime::ChildScopeError> {
+    let state = Arc::clone(state);
+    children.spawn(move |task_cancellation| async move {
+        run_forward_worker(state, registration, session_cancellation, task_cancellation).await;
+        Ok(())
+    })
+}
+
+async fn run_forward_worker(
+    state: Arc<SamServiceState>,
+    registration: ForwardRegistration,
+    session_cancellation: CancellationToken,
+    task_cancellation: CancellationToken,
+) {
+    debug!(session_id = %registration.session_id, "forward worker started");
+    let Some(entry) = state.session_registry().get(&registration.session_id) else {
+        warn!(session_id = %registration.session_id, "forward worker session disappeared");
+        return;
+    };
+    let destination_id = entry.destination_id();
+    if let Err(error) = ensure_forward_listener(&state, destination_id) {
+        warn!(session_id = %registration.session_id, error, "forward listener setup failed");
+        return;
+    }
+    let established_notify = state.established_signal(destination_id);
+    loop {
+        if session_cancellation.is_cancelled()
+            || task_cancellation.is_cancelled()
+            || state
+                .forward_registration(&registration.session_id)
+                .is_none_or(|current| current.owner != registration.owner)
+        {
+            break;
+        }
+        let attachment = match state
+            .stream_registry()
+            .register_forward_attachment(&registration.session_id, destination_id)
+        {
+            Ok(attachment) => attachment,
+            Err(error) => {
+                warn!(session_id = %registration.session_id, error = %error, "forward attachment allocation failed");
+                break;
+            }
+        };
+        let accepted = wait_for_forward_established(
+            Arc::clone(&state),
+            destination_id,
+            Arc::clone(&established_notify),
+            session_cancellation.clone(),
+            Duration::from_secs(20),
+        )
+        .await;
+        let Some((connection_id, peer_destination, peer_destination_b64)) = accepted else {
+            let _ = state
+                .stream_registry()
+                .release_attachment(&registration.session_id, attachment.stream_id);
+            break;
+        };
+        debug!(session_id = %registration.session_id, connection_id = connection_id.raw(), "forward worker accepted stream");
+        let _ = state.stream_registry().update_state(
+            &registration.session_id,
+            attachment.stream_id,
+            SamStreamState::Established,
+        );
+        let (raw_stream, bridge_stream) = match local_socket_pair().await {
+            Ok(pair) => pair,
+            Err(error) => {
+                warn!(session_id = %registration.session_id, error = %error, "forward internal socket pair failed");
+                let cleanup = RawStreamCleanup {
+                    session_id: registration.session_id.clone(),
+                    destination_id,
+                    attachment_id: attachment.stream_id,
+                    connection_id,
+                    peer_destination: peer_destination.clone(),
+                    direction: RawDirection::Inbound,
+                };
+                state.finish_raw_stream(cleanup, true);
+                break;
+            }
+        };
+        let handoff = RawStreamHandoff {
+            stream: raw_stream,
+            session_id: registration.session_id.clone(),
+            destination_id,
+            attachment_id: attachment.stream_id,
+            connection_id,
+            peer_destination: peer_destination.clone(),
+            initial_raw_bytes: Vec::new(),
+            silent: registration.silent,
+            direction: RawDirection::Inbound,
+        };
+        let cleanup = RawStreamCleanup {
+            session_id: handoff.session_id.clone(),
+            destination_id: handoff.destination_id,
+            attachment_id: handoff.attachment_id,
+            connection_id: handoff.connection_id,
+            peer_destination: handoff.peer_destination.clone(),
+            direction: handoff.direction,
+        };
+        let stream_cancellation = task_cancellation.child_token();
+        let raw_future = run_raw_stream(Arc::clone(&state), handoff, stream_cancellation.clone());
+        let bridge_future = state.bridge_forwarded_stream(
+            &registration.session_id,
+            bridge_stream,
+            peer_destination_b64.as_deref(),
+            stream_cancellation.clone(),
+        );
+        tokio::pin!(raw_future);
+        tokio::pin!(bridge_future);
+        let reset = tokio::select! {
+            biased;
+            _ = session_cancellation.cancelled() => {
+                let _ = stream_cancellation.cancel(i2pr_core::CancellationReason::ParentScope);
+                let _ = raw_future.await;
+                let _ = bridge_future.await;
+                false
+            }
+            _ = task_cancellation.cancelled() => {
+                let _ = stream_cancellation.cancel(i2pr_core::CancellationReason::ParentScope);
+                let _ = raw_future.await;
+                let _ = bridge_future.await;
+                false
+            }
+            raw_result = &mut raw_future => {
+                let reset = raw_result.is_err();
+                let _ = stream_cancellation.cancel(i2pr_core::CancellationReason::ParentScope);
+                let bridge_result = bridge_future.await;
+                reset || bridge_result.is_err()
+            }
+            bridge_result = &mut bridge_future => {
+                let reset = bridge_result.is_err();
+                let _ = stream_cancellation.cancel(i2pr_core::CancellationReason::ParentScope);
+                let raw_result = raw_future.await;
+                reset || raw_result.is_err()
+            }
+        };
+        debug!(session_id = %registration.session_id, connection_id = connection_id.raw(), reset, "forward worker stream ended");
+        state.finish_raw_stream(cleanup, reset);
     }
 }
 

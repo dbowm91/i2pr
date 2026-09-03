@@ -9,10 +9,10 @@ non-advertised; the production daemon does **not** activate NTCP2.
 
 Always read these before changing code or answering questions about state:
 
-1. `README.md` — current status (Milestone 6 local product gate closed via Plan 134; Milestone 7 corrective umbrella is Plan 145; Plan 146 private-destination reference compatibility is closed; Plan 147 raw-driver implementation is retained; **Plan 149 self-composed local STREAM product is closed**; **Plan 150 is next executable**), build/test/lint commands, high-level architecture.
+1. `README.md` — current status (Milestone 6 local product gate closed via Plan 134; Milestone 7 corrective umbrella is Plan 145; Plan 146 private-destination reference compatibility is closed; Plan 147 raw-driver implementation is retained; **Plan 149 self-composed local STREAM product is closed**; **Plan 150 localhost external-client closure is passed**), build/test/lint commands, high-level architecture.
 2. `GUARDRAILS.md` — non-negotiable engineering, security, interoperability, and collaboration constraints.
 3. `CONTRIBUTING.md` — local quality checks, runtime/testkit conventions, rootless and Multipass evidence-lane contracts.
-4. The active plan under `plans/` (entry point: [`plans/README.md`](plans/README.md); current authority: `plans/145-status.md`, [`plans/149-status.md`](plans/149-status.md), and [`plans/150-status.md`](plans/150-status.md)). Read `plans/146-status.md`, `plans/147-status.md`, and `plans/148-status.md` as required audit context. The next executable plan is **Plan 150**.
+4. The active plan under `plans/` (entry point: [`plans/README.md`](plans/README.md); current authority: `plans/145-status.md`, [`plans/149-status.md`](plans/149-status.md), and [`plans/150-status.md`](plans/150-status.md)). Read `plans/146-status.md`, `plans/147-status.md`, and `plans/148-status.md` as required audit context. Plan 150 is the current closure authority; Milestone 8 planning follows.
 5. `specs/support.toml` (mirrored to `docs/protocol-support.md`) for live protocol support state. `specs/CONFORMANCE.md` defines what counts as evidence.
 
 Do **not** trust prose that disagrees with a checked-in script or executable test. Static boundary scripts (`scripts/check-*.sh`) are the source of truth for non-negotiable invariants. The [`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md) skill is the index for the rest of the documentation.
@@ -117,13 +117,13 @@ Every protocol surface is tracked in `specs/support.toml` and mirrored to `docs/
 
 - NTCP2 remains experimental/non-advertised; no passed mixed-router result exists.
 - Milestone 6 local destination/Streaming product is closed via Plan 134; independent-router interoperability is not claimed.
-- SAM 3.1 is the current product layer under Plan 145/Plan 149 authority.
+- SAM 3.1 is the current product layer under Plan 145/Plan 150 closure authority.
 - Plan 146 private-destination reference compatibility is closed.
 - Plan 147 raw socket ownership/byte-pump implementation is retained; its full original acceptance is superseded by Plan 149.
 - Plan 148 is a blocked historical audit, not the next executable plan.
 - **Plan 149 closed the self-composed local STREAM product** (one `Arc<DestinationIdentity>`, OS-CSPRNG `SamLocalProductFabric`, automatic per-destination driver spawn, local peer LeaseSet2 directory, byte-exact raw transition, typed `DeliverySweepCounters`).
-- **Plan 150 is the next executable plan.** It will use correctly pinned external clients for final localhost SAM-client/FORWARD/NAMING closure on top of the Plan 149 self-composed listener.
-- `sam_independent_clients = 0-passed`; Milestone 7 local product is closed; do not begin Milestone 8.
+- **Plan 150 is passed for the localhost SAM-client layer.** Its exact, unmodified `i2psam` client and qualified `i2plib.sam` substitute pass the final CONNECT/ACCEPT, SILENT, private-destination, FORWARD, NAMING, and negative matrix through the Plan 149 self-composed listener. The pinned `libsam3` source is built/probed but blocked by its public 884-character `PRIV` minimum versus i2pr's canonical 608-character representation.
+- `sam_independent_clients = at-least-two-passed`; Milestone 7 localhost application scope is closed. Router-to-router interoperability is still unclaimed; Milestone 8 planning may begin.
 
 Treat the newest explicit superseding status as authoritative.
 
@@ -139,7 +139,7 @@ Current relevant SAM reference/client provenance lives in `tests/integration/sam
 - i2psam Plan 150 exact snapshot `b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac`;
 - i2plib `6edf51cd5d21cc745aa7e23cb98c582144884fa8` supplementary unless a compatible Python runtime is qualified.
 
-Plan 150 may add a manual unprivileged GitHub-hosted Ubuntu `workflow_dispatch` lane to fetch/build exact external revisions and run localhost SAM. It must not add privileged runners, containers, namespaces, VMs, public I2P participation, or vendored third-party source.
+Plan 150's manual unprivileged GitHub-hosted Ubuntu `workflow_dispatch` lane fetches/builds exact external revisions and runs localhost SAM. It must not add privileged runners, containers, namespaces, VMs, public I2P participation, or vendored third-party source.
 
 ## OpenCode skills
 
@@ -147,7 +147,7 @@ Load the matching skill before touching its surface.
 
 | Skill | Covers |
 | --- | --- |
-| [`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md) | Routine Milestone 6/7 local product work. Plan 149 closed the self-composed local STREAM product; **Plan 150 is the next executable SAM plan.** |
+| [`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md) | Routine Milestone 6/7 local product work. Plan 149 closed the self-composed local STREAM product; **Plan 150 closed the localhost SAM-client layer.** |
 | [`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md) | Navigate architecture/ADR/plans/specs and audit drift. |
 | [`i2pr-ntcp2-interop`](.opencode/skills/i2pr-ntcp2-interop/SKILL.md) | Historical/closed NTCP2 reference-router harness. |
 | [`i2pr-rootless-sandbox`](.opencode/skills/i2pr-rootless-sandbox/SKILL.md) | Plan 046 rootless sealed-namespace lane. |
@@ -171,7 +171,7 @@ Load the matching skill before touching its surface.
 - `specs/` — support ledger, conformance, sources, protocol dossiers.
 - `plans/` — plan-of-record/status authority. Read the newest relevant status before changing code.
 - `scripts/` — static boundary and interop scripts.
-- `.github/workflows/` — routine CI plus optional manual interop workflows; Plan 150 may add a manual SAM external-client workflow.
+- `.github/workflows/` — routine CI plus the manual SAM external-client workflow.
 - `.opencode/skills/` — loadable OpenCode skill definitions.
 
-Current handoff: **execute Plan 150** (Plan 149 already closed).
+Current handoff: **Plan 150 is closed; begin only Milestone 8 planning** while retaining the localhost-only/non-advertised boundary.

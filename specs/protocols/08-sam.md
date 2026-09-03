@@ -8,6 +8,14 @@ Role: primary language-neutral application API for the MVP
 
 SAM is a socket-oriented client protocol exposing I2P destinations, naming, streams and optionally datagrams/raw messages to non-Java applications. It is an application-to-router protocol, not an I2P network wire protocol.
 
+The i2pr SAM 3.1 localhost application layer is closed by Plan 150. The
+real loopback listener passes exact pinned i2psam and qualified unmodified
+i2plib.sam clients for STREAM, private destinations, FORWARD, NAMING, and
+negative behavior. The official libsam3 snapshot is built/probed but is not
+counted because its public key-length contract rejects i2pr's canonical
+compact `PRIV`. This evidence does not claim router-to-router interoperability
+and SAM remains experimental and non-advertised.
+
 ## Authoritative sources
 
 - [SAM v3 specification](https://i2p.net/en/docs/api/samv3/), pinned in [SOURCES.md](../SOURCES.md), updated 2026-05 and accurate for 0.9.69.
@@ -45,7 +53,7 @@ The official document identifies SAM 3 and 3.1 as stable and notes that later 3.
 - `STREAM CONNECT`;
 - `STREAM ACCEPT`;
 - `STREAM FORWARD` as a loopback-only, experimental local bridge under
-  Plan 139; it does not expose a general TCP pivot;
+  Plans 139/150; it does not expose a general TCP pivot;
 - status replies before transition to raw stream data;
 - destination, port and protocol fields supported by the negotiated version;
 - clean close/reset propagation between SAM socket and internal streaming connection.
@@ -101,7 +109,9 @@ Use independent SAM client libraries as client-side test drivers, but treat thei
 - Command parsing with maximum lines/tokens/options, duplicates, invalid quoting and partial reads.
 - Illegal command sequences and commands after raw-data transition.
 - Session-ID collision, reuse, disconnect and cleanup.
-- STREAM connect/accept/forward interoperability using at least two independent SAM clients.
+- STREAM connect/accept/forward interoperability using the two independently
+  implemented Plan 150 clients, with the supporting transcript kept separate
+  from the independent-client count.
 - Destination generation/import/export without private-key leakage.
 - Naming success, not-found, invalid Base32/Base64 and forbidden clearnet resolution.
 - Slow control client, slow stream reader/writer, queue saturation and cancellation.
@@ -125,6 +135,6 @@ Use independent SAM client libraries as client-side test drivers, but treat thei
 4. Naming backend and address-book scope for the MVP.
 5. Allowlisted session/tunnel/streaming options and stable error mapping.
 6. Plan 139's STREAM FORWARD policy is intentionally loopback-only and
-   control-socket-owned; independent-client interoperability is deferred to
-   Plan 140.
+   control-socket-owned; Plan 150 validates its real-byte path through the
+   local listener without broadening the exposure policy.
 7. Authentication/TLS design for any future non-loopback listener without inventing incompatible SAM extensions.

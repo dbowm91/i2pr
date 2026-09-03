@@ -1,98 +1,31 @@
-"""Plan 150 — supporting Python transcript runner.
+#!/usr/bin/env python3
+"""Supporting raw SAM 3.1 transcript checks for Plan 150.
 
-This runner is a thin, raw-socket SAM 3.1 client used for the
-matrix items that the external libraries cannot express:
-
-- byte-exact `SILENT=true/false` raw-transition evidence for both
-  CONNECT and ACCEPT (Plan 150 §9);
-- `NAMING LOOKUP` round-trips for `ME`, locally-known full
-  destinations, malformed destinations, and `KEY_NOT_FOUND` paths
-  (Plan 150 §10);
-- the negative compatibility matrix (Plan 150 §13) — the runner
-  drives the malformed/unsupported commands directly so the
-  harness owns the exact wire bytes.
-
-Per Plan 150 §2.4 this transcript runner is **supporting
-evidence**, not one of the two independent-client counts. The
-mandatory clients remain libsam3 and i2psam.
+This is not counted as an independent client.  It covers the protocol
+surfaces that the two external library runners do not expose conveniently:
+destination generation for an import test, NAMING LOOKUP, and the negative
+compatibility matrix.  All secret-bearing values remain in temporary files
+or process memory and are never printed.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import os
 import socket
-import struct
 import sys
-import tempfile
+import threading
 import time
 from pathlib import Path
-from typing import Optional, Tuple
 
 
-def recv_line(sock: socket.socket, deadline: float) -> str:
-    buf = bytearray()
-    while True:
-        if time.monotonic() > deadline:
-            raise TimeoutError(
-                f"deadline exceeded while reading line, got_bytes={len(buf)}"
-            )
-        sock.settimeout(max(0.05, deadline - time.monotonic()))
-        try:
-            chunk = sock.recv(4096)
-        except socket.timeout:
-            continue
-        if not chunk:
-            break
-        buf.extend(chunk)
-        if buf.endswith(b"\n"):
-            break
-    return buf.decode("utf-8", errors="replace").rstrip("\r\n")
+class BufferedSocket:
+    """Preserve bytes read after a line terminator for raw transitions."""
 
-
-def send_line(sock: socket.socket, line: str) -> None:
-    sock.sendall(line.encode("utf-8") + b"\n")
-
-
-def recv_n(sock: socket.socket, n: int, deadline: float) -> bytes:
-    out = bytearray()
-    while len(out) < n:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError(f"short read got={len(out)} want={n}")
-        sock.settimeout(max(0.05, remaining))
-        try:
-            chunk = sock.recv(n - len(out))
-        except socket.timeout:
-            continue
-        if not chunk:
-            break
-        out.extend(chunk)
-    return bytes(out)
-
-
-def recv_until_close(sock: socket.socket, deadline: float) -> bytes:
-    out = bytearray()
-    sock.settimeout(max(0.05, deadline - time.monotonic()))
-    while True:
-        try:
-            chunk = sock.recv(4096)
-        except socket.timeout:
-            if time.monotonic() > deadline:
-                break
-            continue
-        if not chunk:
-            break
-        out.extend(chunk)
-    return bytes(out)
-
-
-class SamSession:
-    def __init__(self, host: str, port: int) -> None:
-        self.sock = socket.create_connection((host, port), timeout=5.0)
-        self.sock.settimeout(5.0)
-        self.host = host
-        self.port = port
+    def __init__(self, sock: socket.socket) -> None:
+        self.sock = sock
+        self.buffer = bytearray()
 
     def close(self) -> None:
         try:
@@ -101,266 +34,299 @@ class SamSession:
             pass
         self.sock.close()
 
-    def hello(self, min_v: str = "3.1", max_v: str = "3.1") -> str:
-        send_line(self.sock, f"HELLO VERSION MIN={min_v} MAX={max_v}")
-        return recv_line(self.sock, time.monotonic() + 5.0)
+    def send_line(self, line: str) -> None:
+        self.sock.sendall(line.encode("ascii") + b"\n")
 
-    def dest_generate(self) -> Tuple[str, str]:
-        send_line(self.sock, "DEST GENERATE SIGNATURE_TYPE=7")
-        reply = recv_line(self.sock, time.monotonic() + 5.0)
-        if not reply.startswith("DEST REPLY RESULT=OK"):
-            raise RuntimeError("DEST GENERATE failed")
-        priv = None
-        pub = None
-        for token in reply.split():
-            if token.startswith("PRIV="):
-                priv = token[len("PRIV="):].strip('"')
-            if token.startswith("PUB="):
-                pub = token[len("PUB="):].strip('"')
-        if priv is None or pub is None:
-            raise RuntimeError("DEST REPLY missing PRIV/PUB")
-        return priv, pub
-
-    def session_create(self, sid: str, destination: str) -> str:
-        send_line(
-            self.sock,
-            f"SESSION CREATE STYLE=STREAM ID={sid} DESTINATION={destination}",
-        )
-        return recv_line(self.sock, time.monotonic() + 5.0)
-
-    def naming_lookup(self, name: str) -> str:
-        send_line(self.sock, f"NAMING LOOKUP NAME={name}")
-        return recv_line(self.sock, time.monotonic() + 5.0)
+    def recv_line(self, timeout_s: float = 5.0) -> str:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            newline = self.buffer.find(b"\n")
+            if newline >= 0:
+                line = bytes(self.buffer[: newline + 1])
+                del self.buffer[: newline + 1]
+                return line.decode("utf-8", errors="replace").rstrip("\r\n")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("SAM line deadline exceeded")
+            self.sock.settimeout(max(0.05, remaining))
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise EOFError("SAM socket closed while reading a line")
+            self.buffer.extend(chunk)
 
 
-def cmd_silent_connect(args: argparse.Namespace) -> int:
-    """Drive a raw-socket CONNECT SILENT round-trip and verify the
-    byte-exact raw transition (no STREAM STATUS line, raw bytes
-    immediately follow)."""
+def open_session(host: str, port: int) -> BufferedSocket:
+    sam = BufferedSocket(socket.create_connection((host, port), timeout=10.0))
+    sam.send_line("HELLO VERSION MIN=3.1 MAX=3.1")
+    if not sam.recv_line().startswith("HELLO REPLY RESULT=OK"):
+        sam.close()
+        raise RuntimeError("HELLO VERSION 3.1 rejected")
+    return sam
 
-    sess = SamSession(args.host, args.port)
-    try:
-        sess.hello()
-        priv, _pub = sess.dest_generate()
-        reply = sess.session_create(args.session_id, priv)
-        if not reply.startswith("SESSION STATUS RESULT=OK"):
-            raise RuntimeError("session_create failed")
-    finally:
-        sess.close()
 
-    # Open a fresh control socket for the raw stream transition. The
-    # SAM listener requires a new TCP connection per STREAM CONNECT
-    # because the raw socket is detached from the line parser after
-    # the success transition.
-    stream = socket.create_connection((args.host, args.port), timeout=5.0)
-    stream.settimeout(5.0)
-    send_line(stream, f"HELLO VERSION MIN=3.1 MAX=3.1")
-    hello_line = recv_line(stream, time.monotonic() + 5.0)
-    if not hello_line.startswith("HELLO REPLY RESULT=OK"):
-        stream.close()
-        raise RuntimeError(f"stream HELLO failed: {hello_line}")
-    send_line(stream, f"SESSION CREATE STYLE=STREAM ID={args.session_id} DESTINATION={priv}")
-    sc_line = recv_line(stream, time.monotonic() + 5.0)
-    if not sc_line.startswith("SESSION STATUS RESULT=OK"):
-        stream.close()
-        raise RuntimeError("stream SESSION CREATE failed")
-    connect_line = (
-        f"STREAM CONNECT ID={args.session_id} "
-        f"DESTINATION={args.peer_pub} SILENT=true"
+def parse_field(reply: str, name: str) -> str:
+    prefix = f"{name}="
+    for token in reply.split():
+        if token.startswith(prefix):
+            return token[len(prefix) :].strip('"')
+    raise RuntimeError(f"SAM reply omitted {name}")
+
+
+def public_from_private(private_destination: str) -> str:
+    private_bytes = base64.b64decode(
+        private_destination.encode("ascii"), altchars=b"-~", validate=True
     )
-    send_line(stream, connect_line)
-    # No STREAM STATUS line is expected — write the sentinel
-    # immediately. The i2pr daemon must transition straight to
-    # raw-mode on the wire.
-    sent_payload = Path(args.payload_file).read_bytes()
-    stream.sendall(sent_payload)
-
-    # The peer (the i2pr SAM listener) will echo the same payload
-    # back to us. We must read exactly len(sent_payload) bytes back.
-    got = recv_n(stream, len(sent_payload), time.monotonic() + 10.0)
-    stream.close()
-    if got != sent_payload:
-        sys.stderr.write(
-            f"silent_connect: byte mismatch got_len={len(got)} want_len={len(sent_payload)}\n"
-        )
-        return 8
-    return 0
+    if len(private_bytes) < 391:
+        raise RuntimeError("private destination is shorter than its public part")
+    return base64.b64encode(private_bytes[:391], altchars=b"-~").decode("ascii")
 
 
-def cmd_silent_accept(args: argparse.Namespace) -> int:
-    """ACCEPT SILENT=true round-trip. The accept side must
-    transition straight to raw bytes without writing a STREAM STATUS
-    line and without writing a peer Destination line."""
+def write_secret(path: Path, value: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(path, flags, 0o600)
+    with os.fdopen(fd, "w", encoding="ascii") as output:
+        output.write(value)
 
-    sess = SamSession(args.host, args.port)
+
+def cmd_generate(args: argparse.Namespace) -> int:
+    sam = open_session(args.host, args.port)
     try:
-        sess.hello()
-        priv, _pub = sess.dest_generate()
-        reply = sess.session_create(args.session_id, priv)
-        if not reply.startswith("SESSION STATUS RESULT=OK"):
-            raise RuntimeError("session_create failed")
-        pub_local = None
-        for token in reply.split():
-            if token.startswith("DESTINATION="):
-                pub_local = token[len("DESTINATION="):].strip('"')
-        if pub_local is None:
-            raise RuntimeError(f"missing DESTINATION= in {reply}")
+        sam.send_line("DEST GENERATE SIGNATURE_TYPE=7")
+        reply = sam.recv_line()
+        if not reply.startswith("DEST REPLY RESULT=OK"):
+            return 2
+        write_secret(Path(args.private_output), parse_field(reply, "PRIV"))
+        Path(args.public_output).write_text(
+            parse_field(reply, "PUB"), encoding="ascii"
+        )
+        return 0
     finally:
-        sess.close()
-
-    stream = socket.create_connection((args.host, args.port), timeout=5.0)
-    stream.settimeout(5.0)
-    send_line(stream, "HELLO VERSION MIN=3.1 MAX=3.1")
-    hello_line = recv_line(stream, time.monotonic() + 5.0)
-    if not hello_line.startswith("HELLO REPLY RESULT=OK"):
-        stream.close()
-        raise RuntimeError(f"stream HELLO failed: {hello_line}")
-    send_line(stream, f"SESSION CREATE STYLE=STREAM ID={args.session_id} DESTINATION={priv}")
-    sc_line = recv_line(stream, time.monotonic() + 5.0)
-    if not sc_line.startswith("SESSION STATUS RESULT=OK"):
-        stream.close()
-        raise RuntimeError("stream SESSION CREATE failed")
-    send_line(stream, f"STREAM ACCEPT ID={args.session_id} SILENT=true")
-
-    # Plan 150 §9 — for ACCEPT SILENT=true the listener must write
-    # no status line and no peer Destination line; the very first
-    # byte is raw data from the peer.
-    expect_payload = Path(args.payload_file).read_bytes()
-    first = recv_n(stream, len(expect_payload), time.monotonic() + 10.0)
-    stream.close()
-    if first != expect_payload:
-        sys.stderr.write(
-            f"silent_accept: byte mismatch got_len={len(first)} want_len={len(expect_payload)}\n"
-        )
-        return 8
-    return 0
+        sam.close()
 
 
-def cmd_naming_lookup(args: argparse.Namespace) -> int:
-    """Exercise the NAMING LOOKUP supported surface through the
-    raw transcript. Validates NAME=ME, full destination
-    round-trip, malformed destination, and KEY_NOT_FOUND."""
-
-    sess = SamSession(args.host, args.port)
+def cmd_naming(args: argparse.Namespace) -> int:
+    sam = open_session(args.host, args.port)
     try:
-        sess.hello()
-        priv, pub = sess.dest_generate()
-        sess.session_create(args.session_id, priv)
-
-        # 1. NAME=ME returns the session destination.
-        me_reply = sess.naming_lookup("ME")
+        sam.send_line(
+            "SESSION CREATE STYLE=STREAM ID=plan150-naming DESTINATION=TRANSIENT"
+        )
+        session_reply = sam.recv_line()
+        if not session_reply.startswith("SESSION STATUS RESULT=OK"):
+            print("naming: session create failed", file=sys.stderr)
+            return 2
+        private = parse_field(session_reply, "DESTINATION")
+        public = public_from_private(private)
+        sam.send_line("NAMING LOOKUP NAME=ME")
+        me_reply = sam.recv_line()
         if not me_reply.startswith("NAMING REPLY RESULT=OK"):
-            sys.stderr.write(f"naming NAME=ME failed: {me_reply}\n")
-            return 8
-        if pub not in me_reply:
-            sys.stderr.write(f"naming NAME=ME did not echo destination: {me_reply}\n")
-            return 8
+            print("naming: NAME=ME failed", file=sys.stderr)
+            return 3
+        named_public = parse_field(me_reply, "VALUE")
+        if len(public) < 524 or named_public != public[:522] + "==":
+            print(
+                f"naming: public mismatch status_len={len(public)} named_len={len(named_public)}",
+                file=sys.stderr,
+            )
+            return 4
 
-        # 2. full destination round-trip — must be accepted and the
-        # public destination must be byte-identical to what we
-        # generated.
-        full_reply = sess.naming_lookup(pub)
-        if not full_reply.startswith("NAMING REPLY RESULT=OK"):
-            sys.stderr.write(f"naming full destination failed: {full_reply}\n")
-            return 8
-        if pub not in full_reply:
-            sys.stderr.write(f"naming full destination missing: {full_reply}\n")
-            return 8
-
-        # 3. malformed destination → INVALID_KEY.
-        bad_reply = sess.naming_lookup("not-a-valid-base64!!!")
-        if "RESULT=INVALID_KEY" not in bad_reply:
-            sys.stderr.write(f"naming malformed did not return INVALID_KEY: {bad_reply}\n")
-            return 8
-
-        # 4. unknown .i2p → KEY_NOT_FOUND.
-        unknown_reply = sess.naming_lookup("nonexistent.i2p")
-        if "RESULT=KEY_NOT_FOUND" not in unknown_reply:
-            sys.stderr.write(f"naming unknown .i2p did not return KEY_NOT_FOUND: {unknown_reply}\n")
-            return 8
+        sam.send_line(f"NAMING LOOKUP NAME={named_public}")
+        if not sam.recv_line().startswith("NAMING REPLY RESULT=OK"):
+            print("naming: full public lookup failed", file=sys.stderr)
+            return 5
+        sam.send_line("NAMING LOOKUP NAME=not-a-valid-base64!!!")
+        if "RESULT=INVALID_KEY" not in sam.recv_line():
+            print("naming: malformed public lookup failed", file=sys.stderr)
+            return 6
+        sam.send_line("NAMING LOOKUP NAME=unknown-plan150-name.i2p")
+        if "RESULT=KEY_NOT_FOUND" not in sam.recv_line():
+            print("naming: unknown .i2p lookup failed", file=sys.stderr)
+            return 7
+        return 0
     finally:
-        sess.close()
-    return 0
+        sam.close()
 
 
-def cmd_negative_matrix(args: argparse.Namespace) -> int:
-    """Exercise the externally observable rejection vocabulary."""
-
-    sess = SamSession(args.host, args.port)
+def expect_reply(host: str, port: int, command: str, expected: str) -> bool:
+    sam = open_session(host, port)
     try:
-        # HELLO 3.2 must fail with NOVERSION.
-        send_line(sess.sock, "HELLO VERSION MIN=3.2 MAX=3.3")
-        hello_reply = recv_line(sess.sock, time.monotonic() + 5.0)
-        if "NOVERSION" not in hello_reply:
-            sys.stderr.write(f"negative HELLO 3.2 did not return NOVERSION: {hello_reply}\n")
-            return 8
-
-        # Re-establish SAM 3.1 baseline.
-        hello_reply = sess.hello()
-        if not hello_reply.startswith("HELLO REPLY RESULT=OK"):
-            sys.stderr.write(f"negative baseline HELLO failed: {hello_reply}\n")
-            return 8
-
-        # SESSION CREATE STYLE=DATAGRAM must fail (M7 baseline is
-        # STREAM only).
-        send_line(
-            sess.sock,
-            "SESSION CREATE STYLE=DATAGRAM ID=negative",
-        )
-        sc_reply = recv_line(sess.sock, time.monotonic() + 5.0)
-        if "RESULT=OK" in sc_reply and "DESTINATION=" in sc_reply:
-            sys.stderr.write(f"negative SESSION CREATE STYLE=DATAGRAM unexpectedly OK: {sc_reply}\n")
-            return 8
-
-        # SESSION CREATE STYLE=RAW must fail.
-        send_line(sess.sock, "SESSION CREATE STYLE=RAW ID=negative")
-        sc_reply = recv_line(sess.sock, time.monotonic() + 5.0)
-        if "RESULT=OK" in sc_reply and "DESTINATION=" in sc_reply:
-            sys.stderr.write(f"negative SESSION CREATE STYLE=RAW unexpectedly OK: {sc_reply}\n")
-            return 8
-
-        # Unknown command must be rejected deterministically.
-        send_line(sess.sock, "FROBNICATE X=1")
-        unk_reply = recv_line(sess.sock, time.monotonic() + 5.0)
-        if "RESULT=OK" in unk_reply and "DESTINATION=" in unk_reply:
-            sys.stderr.write(f"negative unknown command unexpectedly OK: {unk_reply}\n")
-            return 8
+        sam.send_line(command)
+        return expected in sam.recv_line(5.0)
     finally:
-        sess.close()
+        sam.close()
+
+
+def cmd_negative(args: argparse.Namespace) -> int:
+    checks = [
+        (
+            "HELLO VERSION MIN=3.2 MAX=3.3",
+            "HELLO REPLY RESULT=NOVERSION",
+            False,
+        ),
+        ("SESSION CREATE STYLE=DATAGRAM ID=bad", "NOT_IMPLEMENTED", True),
+        ("SESSION CREATE STYLE=RAW ID=bad", "NOT_IMPLEMENTED", True),
+        (
+            "STREAM CONNECT ID=bad DESTINATION=invalid FROM_PORT=1",
+            "NOT_IMPLEMENTED",
+            True,
+        ),
+        (
+            "STREAM CONNECT ID=bad DESTINATION=invalid TO_PORT=1",
+            "NOT_IMPLEMENTED",
+            True,
+        ),
+        (
+            "STREAM FORWARD ID=bad PORT=1 HOST=127.0.0.1 SSL=true",
+            "NOT_IMPLEMENTED",
+            True,
+        ),
+        ("NAMING LOOKUP NAME=ME OPTIONS=true", "NOT_IMPLEMENTED", True),
+        ("FROBNICATE X=1", "RESULT=I2P_ERROR", True),
+        (
+            "SESSION CREATE STYLE=STREAM ID=bad DESTINATION=not-base64!!!",
+            "RESULT=INVALID_KEY",
+            True,
+        ),
+        (
+            "SESSION CREATE STYLE=STREAM ID=bad ID=duplicate DESTINATION=TRANSIENT",
+            "RESULT=I2P_ERROR",
+            True,
+        ),
+    ]
+    for command, expected, hello_first in checks:
+        if hello_first:
+            if not expect_reply(args.host, args.port, command, expected):
+                return 2
+        else:
+            sam = BufferedSocket(
+                socket.create_connection((args.host, args.port), timeout=10.0)
+            )
+            try:
+                sam.send_line(command)
+                if expected not in sam.recv_line(5.0):
+                    return 2
+            finally:
+                sam.close()
     return 0
+
+
+def raw_transfer(
+    sam: BufferedSocket, send_data: bytes, expected_data: bytes
+) -> bool:
+    send_error: list[BaseException] = []
+
+    def writer() -> None:
+        try:
+            for offset in range(0, len(send_data), 4096):
+                sam.sock.sendall(send_data[offset : offset + 4096])
+        except BaseException as error:
+            send_error.append(error)
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    try:
+        received = bytearray()
+        deadline = time.monotonic() + 30.0
+        while len(received) < len(expected_data):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            sam.sock.settimeout(remaining)
+            chunk = sam.sock.recv(len(expected_data) - len(received))
+            if not chunk:
+                return False
+            received.extend(chunk)
+    except (OSError, TimeoutError):
+        return False
+    finally:
+        thread.join(timeout=30.0)
+    return not thread.is_alive() and not send_error and bytes(received) == expected_data
+
+
+def cmd_silent(args: argparse.Namespace) -> int:
+    """Exercise both SILENT=true raw transitions in one supporting transcript."""
+
+    accept = open_session(args.host, args.port)
+    connect = open_session(args.host, args.port)
+    try:
+        accept_public_value = create_session(accept, "silent-accept")
+        create_session(connect, "silent-connect")
+        accept.send_line("STREAM ACCEPT ID=silent-accept SILENT=true")
+        connect.send_line(
+            f"STREAM CONNECT ID=silent-connect DESTINATION={accept_public_value} SILENT=true"
+        )
+        payload_a = b"\x00SILENT-A\xff\x10" * 256
+        payload_b = b"\x80SILENT-B\x00\xfe" * 256
+        # The request sockets are deliberately not read as SAM lines: raw
+        # bytes must be the first bytes after each SILENT command.
+        outcomes: list[bool] = [False, False]
+        accept_thread = threading.Thread(
+            target=lambda: outcomes.__setitem__(
+                0, raw_transfer(accept, payload_a, payload_b)
+            )
+        )
+        connect_thread = threading.Thread(
+            target=lambda: outcomes.__setitem__(
+                1, raw_transfer(connect, payload_b, payload_a)
+            )
+        )
+        accept_thread.start()
+        connect_thread.start()
+        accept_thread.join(timeout=35.0)
+        connect_thread.join(timeout=35.0)
+        accept_ok, connect_ok = outcomes
+        if not accept_ok or not connect_ok:
+            print(
+                f"silent: raw byte transition failed accept={accept_ok} "
+                f"connect={connect_ok} accept_alive={accept_thread.is_alive()} "
+                f"connect_alive={connect_thread.is_alive()}",
+                file=sys.stderr,
+            )
+            return 2
+        return 0
+    finally:
+        accept.close()
+        connect.close()
+
+
+def create_session(sam: BufferedSocket, session_id: str) -> str:
+    sam.send_line(f"SESSION CREATE STYLE=STREAM ID={session_id} DESTINATION=TRANSIENT")
+    reply = sam.recv_line()
+    if not reply.startswith("SESSION STATUS RESULT=OK"):
+        raise RuntimeError("silent: session create failed")
+    return public_from_private(parse_field(reply, "DESTINATION"))
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Plan 150 transcript runner")
-    parser.add_argument("--host", required=True)
-    parser.add_argument("--port", type=int, required=True)
+    parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    s1 = sub.add_parser("silent_connect")
-    s1.add_argument("--session-id", required=True)
-    s1.add_argument("--peer-pub", required=True)
-    s1.add_argument("--payload-file", required=True)
+    generate = sub.add_parser("generate")
+    generate.add_argument("--host", required=True)
+    generate.add_argument("--port", type=int, required=True)
+    generate.add_argument("--private-output", required=True)
+    generate.add_argument("--public-output", required=True)
 
-    s2 = sub.add_parser("silent_accept")
-    s2.add_argument("--session-id", required=True)
-    s2.add_argument("--payload-file", required=True)
+    naming = sub.add_parser("naming")
+    naming.add_argument("--host", required=True)
+    naming.add_argument("--port", type=int, required=True)
 
-    s3 = sub.add_parser("naming_lookup")
-    s3.add_argument("--session-id", required=True)
+    negative = sub.add_parser("negative")
+    negative.add_argument("--host", required=True)
+    negative.add_argument("--port", type=int, required=True)
 
-    s4 = sub.add_parser("negative_matrix")
+    silent = sub.add_parser("silent")
+    silent.add_argument("--host", required=True)
+    silent.add_argument("--port", type=int, required=True)
 
     args = parser.parse_args()
-    if args.command == "silent_connect":
-        return cmd_silent_connect(args)
-    if args.command == "silent_accept":
-        return cmd_silent_accept(args)
-    if args.command == "naming_lookup":
-        return cmd_naming_lookup(args)
-    if args.command == "negative_matrix":
-        return cmd_negative_matrix(args)
-    return 64
+    if args.command == "generate":
+        return cmd_generate(args)
+    if args.command == "naming":
+        return cmd_naming(args)
+    if args.command == "silent":
+        return cmd_silent(args)
+    return cmd_negative(args)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

@@ -6,7 +6,7 @@ Registered: **2026-09-01**. Superseded for next-action authority: **2026-09-02**
 
 Plan of record: [`plans/148-m7-sam31-independent-client-final-closure.md`](148-m7-sam31-independent-client-final-closure.md).
 
-Current corrective authority: [`plans/149-status.md`](149-status.md).
+Current corrective authority: [`plans/150-status.md`](150-status.md).
 
 ## Historical outcome
 
@@ -97,9 +97,9 @@ plan_147_raw_driver_implementation = landed-and-retained
 plan_147_full_original_acceptance = superseded-by-plan149
 plan_148 = blocked-audit-superseded-by-plan149-150-corrective-sequence
 plan_149 = passed-m7-sam31-self-composing-local-product-corrective
-plan_150 = next-executable-on-plan149-pass
+plan_150 = passed-m7-sam31-external-client-final-closure
 
-sam_independent_clients = 0-passed
+sam_independent_clients = at-least-two-passed-via-plan150
 milestone7_local_product = closed-via-plan149
 next_executable_plan = 150
 ```
@@ -110,5 +110,6 @@ Do not resume the Plan 148 narrative directly. Plan 149 has closed the
 self-composed local product; final Milestone 7 promotion still belongs to
 Plan 150.
 
-Execute **Plan 150 only** for correctly pinned external-client/FORWARD/NAMING
-final closure.
+Plan 150 subsequently closed the localhost SAM-client/FORWARD/NAMING final
+closure. Retain this file as historical evidence for the invalid helper and
+client-provisioning attempt; do not treat it as a current blocker.

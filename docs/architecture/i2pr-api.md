@@ -10,8 +10,9 @@ requalifies the private-destination wire representation against the
 reference implementations. Plan 149 composes these runtime-neutral
 surfaces in `i2pr-daemon`; `SESSION STATUS DESTINATION=` carries the
 private destination and `NAMING LOOKUP NAME=ME` returns its public
-counterpart. Independent-client interoperability remains Plan 150
-work.
+counterpart. Plan 150 closes the localhost independent-client layer with
+exact i2psam and qualified i2plib.sam evidence; router-to-router
+interoperability remains unclaimed.
 
 > [Plan 136](../plans/136-m7-sam31-protocol-private-destination-foundation.md):
 > create the `i2pr-api` crate at the intended application-adapter
@@ -376,6 +377,11 @@ The crate has unit tests inside each module:
   destination identity and supervised local STREAM drivers. This
   crate remains runtime-neutral; it does not own the local fabric,
   sockets, or raw byte pump.
+- Plan 150 (SAM 3.1 external-client closure): the real loopback listener
+  passes the exact pinned i2psam client and qualified i2plib.sam substitute
+  for CONNECT/ACCEPT, SILENT, private-destination, FORWARD, NAMING, and
+  negative behavior. The reproducible harness lives under
+  `tests/integration/sam/`; it is application-layer localhost evidence only.
 - `specs/references/sam31-private-destination.md`: provenance for the
   private-destination format and the standard Java `PrivateKeyFile`
   concatenation.

@@ -48,11 +48,11 @@ def _recv_line(sock: socket.socket, deadline_s: float) -> str:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 5:
+    if len(argv) != 4:
         raise SystemExit(
             "usage: i2plib_forward_runner.py <host> <port> <fwd_host> <fwd_port>"
         )
-    host, port_str, fwd_host, fwd_port = argv[1:]
+    host, port_str, fwd_host, fwd_port = argv
     port = int(port_str)
     session_id = "i2plib-forward-runner"
     s = socket.create_connection((host, port), timeout=10.0)
