@@ -229,7 +229,13 @@ handoff commit message and below once available.
 
 Hosted lanes:
 
-- (pending) routine CI on the closing commit.
+- Closing commit `1a5d392` — routine CI run `33850018749` (push,
+  `main`,
+  `1a5d392167eb1d0c1b685ab9a0c635b856563401`): conclusion `success`.
+  Dependency policy, MSRV, Quality ubuntu, and Quality macos all
+  green on the first attempt — no runner-specific defect (in
+  particular, the new `ssu2_local` real-UDP suite passed on both
+  operating systems).
 - The manual SAM external lane was not rerun: this plan touches no
   SAM/client/product code paths (runtime SSU2 service, SSU2 session
   additive APIs, daemon `[ssu2]` config surface only), and the Plan
