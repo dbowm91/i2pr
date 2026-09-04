@@ -224,8 +224,13 @@ handoff commit message and below once available.
 
 Hosted lanes:
 
-- Closing commit `<pending>` — routine CI run `<pending>`: conclusion
-  `<pending>`.
+- Closing commit `384f7c9` — routine CI run `33888001164` (push,
+  `main`,
+  `384f7c907f2a4de59c54040f8ed9afc8b6a24c68`): conclusion `success`.
+  Dependency policy, MSRV, Quality ubuntu, and Quality macos all
+  green on the first attempt — no runner-specific defect (in
+  particular, the new sealed-packet peer/relay and real-UDP NAT-like
+  suites passed on both operating systems).
 - The manual SAM external lane was not rerun: this plan touches no
   SAM/client/product code paths (SSU2 peer-test/relay protocol and
   policy modules, SSU2 session additive APIs, runtime peer-relay
