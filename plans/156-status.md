@@ -214,6 +214,28 @@ Hosted lanes: routine CI and the manual SAM external workflow
 must pass on the exact closing commit; the run IDs are recorded
 in the handoff commit message and below once available.
 
+Hosted lanes on the exact closing commit `5c453b5`:
+
+- Routine CI run `33836187324` (push, `main`,
+  `5c453b56b2296b9082f513baaca0cdda7f36255d`): conclusion
+  `success`. Quality ubuntu, Quality macos, MSRV, and
+  dependency-policy all green, including the SSU2 vector,
+  dependency-direction, and runtime-boundary steps.
+- First macOS attempt failed one unrelated test
+  (`i2pr-runtime ... link_reader_and_writer_are_joined_after_close`,
+  `ExactIoError { kind: Deadline }` on a paused-clock loopback
+  read). No shared code with this plan: `i2pr-runtime` does not
+  depend on `i2pr-transport-ssu2`, and `Cargo.lock` changed
+  additively only (8 insertions, 0 deletions, no version moves).
+  The test passes locally repeatedly and the `--failed` rerun of
+  the same commit went fully green with no code change, so this
+  is recorded as runner flake, not a plan defect. No test or
+  check was weakened.
+- The manual SAM external lane was not rerun: this plan touches
+  no SAM/runtime/daemon/product code (ssu2 protocol crate plus
+  docs/fixtures only), and the Plan 151 evidence-integrity
+  checker plus the full SAM suites pass locally on this tree.
+
 ## Acceptance criteria (all true, plan §14)
 
 1. v2 Noise transcript/KDF/header protection is vector-backed
