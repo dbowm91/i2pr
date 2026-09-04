@@ -212,10 +212,13 @@ plan_155_status = "passed-m8-ssu2-v2-protocol-foundation-and-addresses"
 plan_156_plan_of_record = "plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md"
 plan_156_closure = "plans/156-status.md"
 plan_156_status = "passed-m8-ssu2-v2-handshake-token-and-routerinfo"
+plan_157_plan_of_record = "plans/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md"
+plan_157_closure = "plans/157-status.md"
+plan_157_status = "passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation"
 milestone8_protocol = "ssu2-v2-classical"
 ssu2_pq_v3_v4 = "deferred-compatibility-watch"
 ssu1 = "not-implemented"
-milestone8_implementation = "plan156-handshake-landed"
+milestone8_implementation = "plan157-data-phase-landed"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
@@ -254,6 +257,25 @@ evidence = [
     "scripts/check-ssu2-vectors.sh",
     "plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md",
     "plans/156-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "ssu2.v2-data-phase"
+protocol = "ssu2"
+structure = "runtime-neutral-authenticated-data-packets-ack-loss-fragmentation-reassembly"
+scope = "required"
+status = "experimental"
+notes = "Plan 157 closed the runtime-neutral SSU2 v2 data phase in `i2pr-transport-ssu2` (no UDP socket, no runtime service): the authenticated `Ssu2Session` short-header path with the corrected two-step data KDF (`HKDFSSU2DataKeys` into `(k_data, k_header_2)` per direction, `k_header_1` as receiver intro key), full packet-number window (128-packet replay bitmap, future-jump cap, wrap/exhaustion handling), strict ACK range interpretation with loop-free delayed/immediate per-session scheduling, fresh-packet retransmission with per-fragment ceilings, RFC 6298-style RTT/RTO with a conservative byte-count congestion controller, exact MTU-aware I2NP fragmentation with strict reassembly quotas and bounded duplicate suppression, and termination/rekey/idle handling with privacy-safe counters. Seventeen deterministic fault trajectories, unit boundary tests, and two committed data-phase vectors pin the behavior. UDP runtime and interoperability belong to Plans 158-161. PQ-hybrid v3/v4 remains deferred compatibility-watch debt; SSU1 remains unsupported."
+evidence = [
+    "crates/i2pr-transport-ssu2/src/session.rs",
+    "crates/i2pr-transport-ssu2/src/crypto.rs",
+    "crates/i2pr-transport-ssu2/src/constants.rs",
+    "crates/i2pr-transport-ssu2/tests/data_phase.rs",
+    "tests/fixtures/ssu2/manifest.tsv",
+    "scripts/check-ssu2-vectors.sh",
+    "plans/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md",
+    "plans/157-status.md",
 ]
 advertised = false
 

@@ -155,13 +155,14 @@ pub const MAX_UNKNOWN_BLOCK_BYTES: usize = 1024;
 /// the per-block parser ceiling.
 pub const MAX_ROUTER_INFO_BLOCK_BYTES: usize = 4096;
 /// Maximum I2NP fragments tracked per message (spec practical limit is
-/// 63 or fewer; the wire fragment number allows 1..=127). Reassembly
-/// state machines belong to Plan 157; this bounds block metadata.
+/// 63 or fewer; the wire fragment number allows 1..=127). The session
+/// reassembly state machine (Plan 157) enforces this; this bounds block
+/// metadata.
 pub const MAX_I2NP_FRAGMENTS: usize = 64;
 /// Largest wire fragment number accepted in a follow-on fragment.
 pub const MAX_FRAGMENT_NUMBER: u8 = 127;
-/// Maximum ACK ranges retained in one ACK block. Loss interpretation
-/// belongs to Plan 157; this bounds block structure.
+/// Maximum ACK ranges retained in one ACK block. The session loss
+/// interpretation (Plan 157) consumes this; this bounds block structure.
 pub const MAX_ACK_RANGES: usize = 128;
 /// Maximum additional termination bytes accepted and then discarded.
 pub const MAX_TERMINATION_ADDITIONAL_BYTES: usize = 256;
@@ -252,6 +253,81 @@ pub const HEADER_LABEL_SESSION_CREATED: &[u8] = b"SessCreateHeader";
 pub const HEADER_LABEL_SESSION_CONFIRMED: &[u8] = b"SessionConfirmed";
 /// HKDF info label deriving data-phase keys from a directional key.
 pub const DATA_KEY_LABEL: &[u8] = b"HKDFSSU2DataKeys";
+/// Data-phase receive replay-window size in packets (Plan 157 local
+/// policy; the specification requires a bounded window with a minimum
+/// packet number below which packets are dropped, without pinning a
+/// size).
+pub const DATA_REPLAY_WINDOW_PACKETS: usize = 128;
+/// Maximum accepted forward jump beyond the highest received packet
+/// number before a data packet is rejected as an impossible future
+/// (Plan 157 local policy preventing window-wipe by a single forged
+/// packet number; the specification leaves the exact policy to the
+/// implementation).
+pub const DATA_MAX_FUTURE_JUMP: u32 = 1024;
+/// Maximum congestion-controlled sent packets retained for loss
+/// recovery (Plan 157 local policy).
+pub const DATA_MAX_SENT_PACKETS: usize = 256;
+/// Maximum semantic fragments queued for fresh retransmission
+/// (Plan 157 local policy; ciphertext is never retained).
+pub const DATA_MAX_PENDING_RETRANSMIT_FRAGMENTS: usize = 256;
+/// Maximum times one semantic fragment is retransmitted before its
+/// message fails while the session stays usable (Plan 157 local
+/// policy; the specification leaves delivery failure open).
+pub const DATA_MAX_FRAGMENT_RETRANSMISSIONS: u8 = 5;
+/// Maximum I2NP messages reassembled concurrently in one session
+/// (Plan 157 local policy).
+pub const DATA_MAX_REASSEMBLY_MESSAGES: usize = 16;
+/// Maximum aggregate reassembly bytes retained in one session
+/// (Plan 157 local policy).
+pub const DATA_MAX_REASSEMBLY_BYTES: usize = 262_144;
+/// Maximum recently-delivered I2NP message IDs retained for duplicate
+/// suppression at the delivery boundary (Plan 157 local policy; the
+/// specification suggests a Bloom filter or ID cache without pinning
+/// a size).
+pub const DATA_DUP_CACHE_ENTRIES: usize = 128;
+/// Duplicate-suppression retention in seconds after delivery
+/// (Plan 157 local policy keyed to I2NP lifetime).
+pub const DATA_DUP_RETENTION_SECONDS: u64 = 600;
+/// Initial retransmission timeout in milliseconds (RFC 6298 §2.1;
+/// the SSU2 specification defers to RFC 6298/9002 and names a 1 s
+/// minimum RTO).
+pub const DATA_INITIAL_RTO_MS: u64 = 1000;
+/// Minimum retransmission timeout in milliseconds.
+pub const DATA_MIN_RTO_MS: u64 = 1000;
+/// Maximum retransmission timeout in milliseconds.
+pub const DATA_MAX_RTO_MS: u64 = 60_000;
+/// Default delayed-ACK horizon in milliseconds when no RTT sample
+/// exists yet (bounded by the specification `RTT/6, 150 ms max`
+/// guidance once samples exist).
+pub const DATA_DEFAULT_ACK_DELAY_MS: u64 = 25;
+/// Immediate-ACK horizon in milliseconds when no RTT sample exists
+/// yet (bounded by the specification `RTT/16, 5 ms max` guidance
+/// once samples exist).
+pub const DATA_DEFAULT_IMMEDIATE_ACK_DELAY_MS: u64 = 5;
+/// Nominal per-packet payload budget used for congestion growth
+/// accounting (1220 bytes = 1280-MTU IPv4 budget per the data-phase
+/// `MTU - 60` rule).
+pub const DATA_MSS_BYTES: usize = 1220;
+/// Minimum congestion window in bytes (Plan 157 local policy).
+pub const DATA_MIN_CWND_BYTES: usize = 2 * DATA_MSS_BYTES;
+/// Default congestion window in bytes (Plan 157 local policy).
+pub const DATA_DEFAULT_CWND_BYTES: usize = 10 * DATA_MSS_BYTES;
+/// Maximum congestion window in bytes (Plan 157 local policy).
+pub const DATA_MAX_CWND_BYTES: usize = 60_000;
+/// Default data-phase idle timeout in milliseconds (Plan 157 local
+/// policy; the specification defines the idle-timeout reason without
+/// pinning a duration).
+pub const DATA_DEFAULT_IDLE_TIMEOUT_MS: u64 = 300_000;
+/// Consecutive RTO expirations without any acknowledgement before the
+/// session recommends termination (Plan 157 local policy bounding
+/// prolonged heavy loss).
+pub const DATA_MAX_CONSECUTIVE_RTO_BEFORE_TERMINATE: u32 = 5;
+/// IPv4 data-phase payload budget overhead (`MTU - 60` per the Data
+/// Message section).
+pub const DATA_IPV4_OVERHEAD_BYTES: usize = 60;
+/// IPv6 data-phase payload budget overhead (`MTU - 80` per the Data
+/// Message section).
+pub const DATA_IPV6_OVERHEAD_BYTES: usize = 80;
 
 #[cfg(test)]
 mod tests {

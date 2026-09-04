@@ -4,8 +4,9 @@ Runtime-neutral SSU2 v2 protocol implementation: strict RouterAddress
 validation, structural packet-header codecs, the bounded
 authenticated-plaintext block vocabulary, the complete Noise XK
 establishment handshake with header protection, the bounded one-use
-token lifecycle, RouterInfo establishment binding, and consuming
-initiator/responder state machines. No UDP sockets.
+token lifecycle, RouterInfo establishment binding, consuming
+initiator/responder state machines, and the authenticated data-phase
+session with reliability/fragmentation. No UDP sockets.
 
 Path: `crates/i2pr-transport-ssu2/`
 
@@ -16,8 +17,9 @@ expressed without I/O — **no Tokio, no sockets, no `async`
 functions, no timers, no tasks.** Every public API is synchronous
 and bounded. Plan 155 landed the address/header/block foundation;
 Plan 156 added the Noise XK handshake and establishment state
-machines. The data phase belongs to Plan 157 and the supervised UDP
-adapter in `i2pr-runtime` to Plan 158.
+machines; Plan 157 added the authenticated data-phase session
+(`session.rs`). The supervised UDP adapter in `i2pr-runtime` belongs
+to Plan 158.
 
 It does own:
 
@@ -39,10 +41,13 @@ It does own:
 - The bounded one-use token table (`token.rs`, Plan 156).
 - Consuming initiator/responder establishment machines with bounded
   retransmit/deadline actions (`state_machine.rs`, Plan 156).
+- The authenticated data-phase session with replay window, ACK
+  scheduling, loss/congestion control, fragmentation/reassembly,
+  duplicate suppression, and termination/idle handling
+  (`session.rs`, Plan 157).
 
-It does **not** own a replay window, ACK/loss controller, I2NP
-reassembly state machine, UDP sockets, peer-test/relay roles, or
-transport selection. Those belong to Plans 157–161.
+It does **not** own UDP sockets, peer-test/relay roles, or transport
+selection. Those belong to Plans 158–161.
 
 ## Module layout
 
@@ -61,6 +66,7 @@ trajectories live in `tests/handshake.rs`.
 | `src/handshake.rs` | Establishment codecs, prevalidation, reassembly, RouterInfo binding | `TokenRequest`, `RetryMessage`, `SessionRequestParts`, `SessionCreatedParts`, `ConfirmedReassembly`, `AuthenticatedPeer`, `ClockSkewPolicy`, `HandshakeReplayCache`, `ReplayToken`, `RouterInfoFreshness`, `HandshakeError` |
 | `src/token.rs` | Bounded one-use token table | `TokenStore`, `Ssu2Token`, `TokenError`, `retry_response_budget` |
 | `src/state_machine.rs` | Consuming initiator/responder machines | `Initiator`, `Responder`, `InitiatorConfig`, `ResponderConfig`, `HandshakeAction`, `AuthenticatedSsu2Session`, `DeadlineKind`, `TerminateReason`, `DropCategory`, `StateMachineError` |
+| `src/session.rs` | Authenticated data-phase session | `Ssu2Session`, `SessionConfig`, `SessionCounters`, `SessionEvent`, `SessionAction`, `SessionError`, `ReceiveOutcome`, `DropReason` |
 
 ## Public surface
 
@@ -74,6 +80,7 @@ pub mod crypto;
 pub mod handshake;
 pub mod header;
 pub mod packet;
+pub mod session;
 pub mod state_machine;
 pub mod token;
 
@@ -183,7 +190,11 @@ is a concrete struct/enum.
   role-gated transitions (`WrongRole`/`InvalidState`
   otherwise); the `es` cipher is retained for the static-key
   frame (`n = 1`); `split()` derives `k_ab`/`k_ba` via
-  `HKDF(ck, ZEROLEN, "", 64)`.
+  `HKDF(ck, ZEROLEN, "", 64)` and then the data-phase
+  `HKDF(key, ZEROLEN, "HKDFSSU2DataKeys", 64)` into
+  `(k_data, k_header_2)` per direction (Plan 157 correction; the
+  AEAD cipher uses `k_data`, header protection uses `k_header_2`
+  with the receiver intro key as `k_header_1`).
 - `apply_header_protection` / `remove_header_protection` — the
   Header Encryption KDF verbatim: ChaCha20 masks over the first
   16 header bytes keyed by the packet's trailing MAC bytes, plus
@@ -261,6 +272,34 @@ is a concrete struct/enum.
   only what Plan 157 needs: peer material, directional ciphers,
   connection IDs, observed endpoint, and the local MTU.
 
+### Data-phase session (`session.rs`)
+
+- `Ssu2Session::new(config, keys)` — consumes the establishment
+  splits plus explicit intro keys; owns send packet numbers (no wrap,
+  `u32::MAX` exhaustion), the 128-packet replay bitmap with
+  future-jump cap, pending ACK state with one deadline, RTT/RTO/cwnd
+  state, sent provenance (256 entries), pending retransmit fragments,
+  outbound messages, reassembly (16 messages / 256 KiB), the
+  delivered-ID duplicate cache (128 entries), and idle/termination
+  state. The full v2 packet number rides the short header, so
+  reconstruction is the documented identity plus window policy.
+- `queue_i2np_message` — splits encoded messages into fixed
+  1024-byte semantic fragments (single-fragment fast path as complete
+  blocks, 64-fragment ceiling); `poll_transmit(now)` seals at most one
+  MTU-aware datagram (ACK first, then controls, retransmits, new
+  fragments) with one AEAD seal plus header protection, honoring the
+  congestion gate for ack-eliciting packets (ACK-only always passes).
+- `receive_datagram(now_ms, now_secs, bytes)` — ordered pipeline
+  returning `ReceiveOutcome` with typed `SessionEvent`s only after
+  authentication; replays/tag failures mutate counters alone.
+- `poll(now_ms, now_secs)` — drives ACK deadlines, RTO backoff with
+  bounded `Timeout` termination, idle timeout, and reassembly expiry.
+- `SessionCounters` — privacy-safe counts only (packets, ACKs,
+  losses, retransmits, flight, cwnd, reassembly, termination).
+- Outbound controls are single-shot; per-message delivery failure
+  past the retransmission ceiling is silent by design (counters only)
+  while the session stays usable.
+
 ## Errors
 
 All error types implement `Display + Error + Eq + PartialEq`
@@ -277,6 +316,7 @@ protocol-vs-operational mixing.
 | `HandshakeError` | `handshake.rs` | Truncation/bounds, header/packet/block/crypto mapping, timestamp skew, replay, token rejection, amplification, fragment faults, RouterInfo binding failures |
 | `TokenError` | `token.rs` | Zero/unknown/expired/reused/wrong-source token, full table |
 | `StateMachineError` | `state_machine.rs` | Handshake/crypto/wrapper mapping, invalid-state driving |
+| `SessionError` | `session.rs` | Packet/header/crypto/block mapping, session mismatch, replay/old/future, ACK underflow/invalid, packet-number exhaustion, queue/history/reassembly ceilings, conflict, terminated/policy denial |
 
 ## Dependencies
 
@@ -306,8 +346,9 @@ labels stay local. No runtime, socket, or async dependencies.
 
 ## Tests
 
-76 tests: 56 synchronous unit tests (inline) plus 20 integration
-trajectories in `tests/handshake.rs`, plus 11 committed fixtures
+101 tests: 64 synchronous unit tests (inline) plus 20 integration
+trajectories in `tests/handshake.rs` plus 17 data-phase trajectories
+in `tests/data_phase.rs`, plus 14 committed fixtures
 under `tests/fixtures/ssu2/` (pinned by `manifest.tsv`,
 enforced by `scripts/check-ssu2-vectors.sh`):
 
@@ -322,6 +363,8 @@ enforced by `scripts/check-ssu2-vectors.sh`):
 | `handshake.rs` | TokenRequest round trip + skew stale/future, wrong-intro/truncation rejection, Retry round trip + amplification budget + zero-token rules + clock-skew termination, request build/parse round trip, confirmed fragmentation + duplicate/gap handling, replay cache bounds, cheap prevalidation drops |
 | `token.rs` | One-use round trip, zero rejection, expiry + release, wrong source/port/family closure, per-source + global eviction, rotation, retry budget |
 | `tests/handshake.rs` | Full tokenless Retry trajectory to matching directional keys, cached-token trajectory, token valid/expired/wrong-source/reuse/rotation/unknown matrix with pre-DH fail-closed evidence, identical-byte resends, duplicate Created/Confirmed handling, deadline exhaustion + per-phase cancellation, tag-mutation isolation, 6-case RouterInfo binding matrix, RouterInfo-not-first rejection, 200-datagram cheap flood with bounded state, amplification budget, secret redaction, 6 committed handshake vectors (one with raw-primitive independent derivation) |
+| `tests/data_phase.rs` | Bidirectional multi-message exchange, DATA-loss fresh retransmission with exact once-delivery, ACK-loss recovery without loops, duplicate/replay/corruption/reorder, first/middle/final fragment loss recovery, fragment reorder/duplicate/conflict, reassembly exact-capacity/max+1 with total cleanup, outbound-queue exact-capacity/max+1, congestion-gate boundedness, prolonged-loss bounded termination, idle timeout, termination lifecycle, two-session isolation, 2 committed data-phase vectors reproduced byte-for-byte |
+| `session.rs` (unit) | Second-HKDF key shape, ACK underflow without mutation, duplicate-ACK idempotency, sent-history exact eviction, per-fragment ceiling silence, packet-number exhaustion, wrap boundaries, NextNonce rekey boundary |
 
 ## Distinctive design choices
 
@@ -363,7 +406,8 @@ enforced by `scripts/check-ssu2-vectors.sh`):
 - [Dependency graph](dependency-graph.md) — the
   `i2pr-transport-ssu2` allowlist row.
 - Plan-of-record:
-  `plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md`.
-- Closure: `plans/156-status.md`.
+  `plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md` and
+  `plans/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md`.
+- Closure: `plans/156-status.md` and `plans/157-status.md`.
 - Dossier: `specs/protocols/09-ssu2.md`,
   `specs/SOURCES.md` (Milestone 8 refresh).

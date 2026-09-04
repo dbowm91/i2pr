@@ -10,3 +10,5 @@ token-request	tests/fixtures/ssu2/token-request.hex	positive	locally-authored-de
 token-retry	tests/fixtures/ssu2/token-retry.hex	positive	locally-authored-deterministic-vector	9a7b4184b46dea3c3a8c74e587fb1360b0ae6dfb0ac7e39debb6026aa20360a3
 session-created-full	tests/fixtures/ssu2/session-created-full.hex	positive	locally-authored-deterministic-vector	d511738376a458136574dd6e26c83f2f7f92dc846b0b26fe4e988fbb92b6b5dc
 session-confirmed-frag	tests/fixtures/ssu2/session-confirmed-frag.hex	positive	locally-authored-deterministic-vector	549994633814ce4b135b431bfcb20ebf4e04e6ddea25415eb172ca5086727f11
+data-phase-first	tests/fixtures/ssu2/data-phase-first.hex	positive	locally-authored-deterministic-vector	ebffcc2f6c725691ac967b8cb6d38b2d5f9d4a5cd903b343575025079581ca80
+data-phase-ack	tests/fixtures/ssu2/data-phase-ack.hex	positive	locally-authored-deterministic-vector	803a585834a6ff4a2a9e06e4ae0201a9f45ba1336af069911b8aea3b0b8fe81f

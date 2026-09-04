@@ -594,51 +594,105 @@ impl Ssu2Transcript {
     }
 
     /// Consumes the handshake state and derives the directional
-    /// data-phase key material: `HKDF(ck, ZEROLEN, "", 64)` splits into
-    /// `k_ab` (Alice to Bob) and `k_ba` (Bob to Alice).
+    /// data-phase key material per the specification KDF for data
+    /// phase: `HKDF(ck, ZEROLEN, "", 64)` splits into `k_ab` (Alice to
+    /// Bob) and `k_ba` (Bob to Alice); each directional key then
+    /// expands via `HKDF(key, ZEROLEN, "HKDFSSU2DataKeys", 64)` into
+    /// `(k_data, k_header_2)`. The AEAD cipher uses `k_data`; header
+    /// protection uses `k_header_2` with `k_header_1` equal to the
+    /// receiver's intro key (supplied by the Plan 157 session layer).
     pub fn split(self) -> Result<Ssu2SplitKeys, Ssu2CryptoError> {
         if self.stage != TranscriptStage::Confirmed {
             return Err(Ssu2CryptoError::InvalidState);
         }
         let keydata = hkdf_64(&self.chaining_key.0, &ZERO_IKM, &[])?;
         let (k_ab, k_ba) = split_halves(&keydata);
-        let (transmit, receive) = match self.role {
+        let (tx_key, rx_key) = match self.role {
             Role::Initiator => (k_ab, k_ba),
             Role::Responder => (k_ba, k_ab),
         };
+        let (tx_data, tx_header_2) = derive_data_keys(&tx_key)?;
+        let (rx_data, rx_header_2) = derive_data_keys(&rx_key)?;
         Ok(Ssu2SplitKeys {
-            transmit: DataCipher::new(DataAeadKey(transmit)),
-            receive: DataCipher::new(DataAeadKey(receive)),
+            transmit: DataDirectionKeys {
+                cipher: DataCipher::new(DataAeadKey(tx_data)),
+                header_key_2: tx_header_2,
+            },
+            receive: DataDirectionKeys {
+                cipher: DataCipher::new(DataAeadKey(rx_data)),
+                header_key_2: rx_header_2,
+            },
         })
     }
 }
 
-/// Directional data-phase cipher states from the Noise `split()`.
+/// One directional data-phase key pair: the AEAD cipher (`k_data`)
+/// plus the second header-protection key (`k_header_2`). The first
+/// header-protection key (`k_header_1`) is the receiver's intro key
+/// and is supplied by the session layer, not the transcript.
+pub struct DataDirectionKeys {
+    cipher: DataCipher,
+    header_key_2: [u8; constants::KEY_LENGTH],
+}
+
+impl DataDirectionKeys {
+    /// Borrows the directional AEAD cipher.
+    pub const fn cipher(&mut self) -> &mut DataCipher {
+        &mut self.cipher
+    }
+
+    /// Returns the directional second header-protection key.
+    pub const fn header_key_2(&self) -> &[u8; constants::KEY_LENGTH] {
+        &self.header_key_2
+    }
+
+    /// Consumes the directional keys into an owned cipher plus the
+    /// second header-protection key (crate-internal; the session layer
+    /// owns protocol sequencing while key bytes never enter logs).
+    pub(crate) fn into_owner(self) -> (DataCipher, [u8; constants::KEY_LENGTH]) {
+        (self.cipher, self.header_key_2)
+    }
+}
+
+/// Directional data-phase key states from the Noise `split()`, each
+/// holding the derived `(k_data, k_header_2)` pair for its direction.
 pub struct Ssu2SplitKeys {
-    transmit: DataCipher,
-    receive: DataCipher,
+    transmit: DataDirectionKeys,
+    receive: DataDirectionKeys,
 }
 
 impl Ssu2SplitKeys {
     /// Borrows the transmit cipher state for one data-phase packet.
-    pub const fn transmit(&mut self) -> &mut DataCipher {
-        &mut self.transmit
+    ///
+    /// The key is the derived `k_data` per the data-phase KDF.
+    pub fn transmit(&mut self) -> &mut DataCipher {
+        &mut self.transmit.cipher
     }
 
     /// Borrows the receive cipher state for one data-phase packet.
-    pub const fn receive(&mut self) -> &mut DataCipher {
+    pub fn receive(&mut self) -> &mut DataCipher {
+        &mut self.receive.cipher
+    }
+
+    /// Borrows the transmit directional keys (cipher plus header key).
+    pub const fn transmit_keys(&mut self) -> &mut DataDirectionKeys {
+        &mut self.transmit
+    }
+
+    /// Borrows the receive directional keys (cipher plus header key).
+    pub const fn receive_keys(&mut self) -> &mut DataDirectionKeys {
         &mut self.receive
     }
 
     /// Consumes the combined keys into independent directional parts.
-    pub fn into_parts(self) -> (DataCipher, DataCipher) {
+    pub fn into_parts(self) -> (DataDirectionKeys, DataDirectionKeys) {
         (self.transmit, self.receive)
     }
 }
 
-/// One directional data-phase AEAD cipher. Packet-number assignment and
-/// replay tracking belong to the Plan 157 data phase; this type only
-/// enforces the nonce ceiling and the header binding.
+/// One directional data-phase AEAD cipher (`k_data`). Packet-number
+/// assignment and replay tracking belong to the `session` data phase;
+/// this type only enforces the nonce ceiling and the header binding.
 pub struct DataCipher {
     key: DataAeadKey,
 }

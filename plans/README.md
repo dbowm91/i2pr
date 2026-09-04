@@ -19,13 +19,13 @@ authoritative closure record is [`plans/152-status.md`](152-status.md),
 normalized by Plan 153.
 
 The current **next executable plan** is
-[**Plan 157**](157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md)
-(SSU2 data phase; Plans 155 and 156 have passed).
+[**Plan 158**](158-m8-ssu2-udp-runtime-and-local-session-product.md)
+(SSU2 UDP runtime; Plans 155, 156, and 157 have passed).
 
 The registered **Milestone 8 planning authority** is
 [**Plan 154**](154-status.md). Plan 153 has passed, Plan 155 has
-passed, and Plan 156 has passed; execute Plans
-**157 → 158 → 159 → 160 → 161** in order.
+passed, Plan 156 has passed, and Plan 157 has passed; execute Plans
+**158 → 159 → 160 → 161** in order.
 
 Current classification:
 
@@ -42,6 +42,7 @@ plan_153 = passed-post-m7-authority-and-ci-hygiene
 plan_154 = registered-m8-ssu2-v2-roadmap-blocked-by-plan153
 plan_155 = passed-m8-ssu2-v2-protocol-foundation-and-addresses
 plan_156 = passed-m8-ssu2-v2-handshake-token-and-routerinfo
+plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
@@ -49,10 +50,11 @@ milestone7_sam_localhost_final_acceptance = closed
 sam_independent_clients = at-least-two-passed-via-plan150
 milestone6_interoperable = not-yet-claimed
 
-next_executable_plan = 157
+next_executable_plan = 158
 milestone8_first_implementation_after_153 = 155
 milestone8_foundation = passed-via-plan155
 milestone8_handshake = passed-via-plan156
+milestone8_data_phase = passed-via-plan157
 next_product_layer = milestone8-ssu2-v2
 ```
 
@@ -158,7 +160,7 @@ Plan 152 is a later M6 robustness correction discovered by the Plan 151 final SA
 ## What's not yet accepted
 
 - Live/public NTCP2 or SSU2 router transport activation and broad mixed-router interoperability.
-- SSU2 implementation: Plans 155 (runtime-neutral v2 address/header/block foundation) and 156 (Noise XK handshake, header protection, token lifecycle, RouterInfo establishment) have passed; data phase (157), UDP runtime (158), path/publication/selection (159), peer-test/relay (160), and independent interop closure (161) remain.
+- SSU2 implementation: Plans 155 (runtime-neutral v2 address/header/block foundation), 156 (Noise XK handshake, header protection, token lifecycle, RouterInfo establishment), and 157 (authenticated data phase with reliability/fragmentation) have passed; UDP runtime (158), path/publication/selection (159), peer-test/relay (160), and independent interop closure (161) remain.
 - Public I2P participation.
 - Network-transport-bound NetDB/public router behavior.
 - Milestone 6 independent-router destination/Streaming/tunnel interoperability.
@@ -175,7 +177,7 @@ When records disagree, the newest explicit superseding status wins.
 Current handoff:
 
 ```text
-execute Plans 157 -> 161 in order
+execute Plans 158 -> 161 in order
 Plan 154 is the Milestone 8 roadmap authority
-Plans 155 (foundation) and 156 (handshake) have passed; Milestone 7 is closed
+Plans 155 (foundation), 156 (handshake), and 157 (data phase) have passed; Milestone 7 is closed
 ```

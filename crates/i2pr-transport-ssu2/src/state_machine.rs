@@ -166,6 +166,7 @@ pub enum DropCategory {
 }
 
 /// An immediate runtime operation emitted by an establishment state.
+#[allow(clippy::large_enum_variant)]
 pub enum HandshakeAction {
     /// Emit one owned, bounded datagram.
     WriteDatagram(DatagramBytes),
@@ -226,6 +227,13 @@ impl AuthenticatedSsu2Session {
     /// Borrows the directional data-phase ciphers.
     pub const fn keys(&mut self) -> &mut Ssu2SplitKeys {
         &mut self.keys
+    }
+
+    /// Consumes the session into its directional data-phase keys for
+    /// the Plan 157 session layer. Connection IDs, peer material,
+    /// endpoint, and MTU remain available before this call.
+    pub fn into_keys(self) -> Ssu2SplitKeys {
+        self.keys
     }
 
     /// Returns the locally allocated connection ID.

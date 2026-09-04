@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Plan 149 closed the self-composed localhost product; Plan 150 retains external-client core evidence; Plan 151 passed the final acceptance/evidence correction (with narrow Plan 152 M6 corrective); Plan 153 passed post-M7 hygiene; Milestone 8 roadmap registered via Plan 154; Plan 155 passed the SSU2 v2 protocol foundation; Plan 156 passed the SSU2 v2 handshake/token/RouterInfo establishment.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Plan 149 closed the self-composed localhost product; Plan 150 retains external-client core evidence; Plan 151 passed the final acceptance/evidence correction (with narrow Plan 152 M6 corrective); Plan 153 passed post-M7 hygiene; Milestone 8 roadmap registered via Plan 154; Plan 155 passed the SSU2 v2 protocol foundation; Plan 156 passed the SSU2 v2 handshake/token/RouterInfo establishment; Plan 157 passed the SSU2 v2 data-phase reliability/fragmentation.
 ---
 
 # I2PR Local Development
@@ -37,32 +37,36 @@ milestone6_interoperable = not-yet-claimed
 plan_154 = registered-m8-ssu2-v2-roadmap
 plan_155 = passed-m8-ssu2-v2-protocol-foundation-and-addresses
 plan_156 = passed-m8-ssu2-v2-handshake-token-and-routerinfo
-next_executable_plan = 157
+plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
+next_executable_plan = 158
 milestone8_planning_authority = plan154
 milestone8_foundation = passed-via-plan155
 milestone8_handshake = passed-via-plan156
+milestone8_data_phase = passed-via-plan157
 next_product_layer = milestone8-ssu2-v2
 ```
 
 Read in order:
 
-1. `plans/156-status.md` (SSU2 v2 handshake/token/RouterInfo closure)
-2. `plans/155-status.md` (SSU2 v2 foundation closure)
-2. `plans/153-status.md` (passed hygiene pass)
-3. `plans/152-status.md` (narrow M6 corrective closure)
-4. `plans/151-status.md`
-5. `plans/151-m7-sam31-final-acceptance-evidence-correction.md`
-6. `plans/150-status.md`
-7. `plans/149-status.md`
-8. Plans 146–148 for retained/historical context.
+1. `plans/157-status.md` (SSU2 v2 data-phase closure)
+2. `plans/156-status.md` (SSU2 v2 handshake/token/RouterInfo closure)
+3. `plans/155-status.md` (SSU2 v2 foundation closure)
+4. `plans/153-status.md` (passed hygiene pass)
+5. `plans/152-status.md` (narrow M6 corrective closure)
+6. `plans/151-status.md`
+7. `plans/151-m7-sam31-final-acceptance-evidence-correction.md`
+8. `plans/150-status.md`
+9. `plans/149-status.md`
+10. Plans 146–148 for retained/historical context.
 
 Plan 153 has passed. Plan 154 is the registered Milestone 8 roadmap
 authority; Plan 155 has passed the runtime-neutral SSU2 v2 protocol
-foundation (addresses/headers/blocks) and Plan 156 has passed the
-runtime-neutral SSU2 v2 handshake/token/RouterInfo establishment (no
-UDP sockets, no data phase). Execute Plans 157–161 in order. SAM
-stays experimental, loopback-only, disabled by default, and
-non-advertised. SSU2 v2 claims no data-phase/socket
+foundation (addresses/headers/blocks), Plan 156 has passed the
+runtime-neutral SSU2 v2 handshake/token/RouterInfo establishment, and
+Plan 157 has passed the runtime-neutral SSU2 v2 data-phase
+reliability/fragmentation (no UDP sockets, no runtime). Execute Plans
+158–161 in order. SAM stays experimental, loopback-only, disabled by
+default, and non-advertised. SSU2 v2 claims no socket/runtime
 interoperability yet.
 
 ## Retain these working pieces
@@ -264,5 +268,12 @@ bash scripts/check-ssu2-vectors.sh
   initiator/responder machines; still no UDP sockets, no data phase,
   no interop claim). PQ-hybrid v3/v4 stays deferred; SSU1 stays
   unsupported.
+- Plan 157 passed the Milestone 8 SSU2 v2 data-phase
+  reliability/fragmentation (authenticated `Ssu2Session` short-header
+  packets with the corrected two-step data KDF, replay window, strict
+  bounded ACK scheduling, fresh retransmission with RTT/RTO/congestion
+  control, exact fragmentation/reassembly with duplicate suppression,
+  termination/rekey/idle handling; still no UDP sockets, no runtime,
+  no interop claim).
 
-Current handoff: **execute Plans 157 → 161 in order under Plan 154**.
+Current handoff: **execute Plans 158 → 161 in order under Plan 154**.
