@@ -14,7 +14,7 @@ Paths are relative to the workspace root.
 | `scripts/check-runtime-boundaries.sh` | Grep-based audit: unbounded channels, wall-clock sleeps, raw `JoinHandle`s, `tokio::spawn` without an owner, `async fn` in transport contracts, Tokio deps in wrong crates, `std::net`/`std::fs` in transport, `i2pr-testkit` referenced by a production crate. |
 | `scripts/check-fixture-manifest.sh` | Drift in the I2NP fixture corpus under `tests/fixtures/i2np/`. Validates manifest IDs, classification (`positive`/`negative`), provenance (`locally-authored`/`independently-produced`), all metadata fields, on-disk file existence, and SHA-256 hash matches. Rejects orphan `.hex` files (i.e. unlisted fixtures). |
 | `scripts/check-ntcp2-vectors.sh` | Drift in the NTCP2 crypto vector corpus under `tests/fixtures/ntcp2/crypto/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, and SHA-256 match. Additionally verifies `vectors.tsv` contains all 13 required NTCP2 crypto vector IDs. |
-| `scripts/check-ssu2-vectors.sh` | Drift in the SSU2 v2 fixture corpus under `tests/fixtures/ssu2/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, and the 5 required Plan 155 fixture IDs. |
+| `check-ssu2-vectors.sh` | Drift in the SSU2 v2 fixture corpus under `tests/fixtures/ssu2/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, and the 5 required Plan 155 fixture IDs plus the 6 Plan 156 handshake vectors. |
 | `scripts/check-ntcp2-interoperability.sh` | Forbidden artifacts in the synthetic private NTCP2 interoperability lane. Checks for required disclaimer lines (`network_id`, `public_network = false`, `reseed = false`, etc.), exactly 8 `[[scenario]]` entries, and scans the committed `evidence/` directory for forbidden artifacts (`.pcap`, `.pcapng`, `router.identity`, `ntcp2.static.key`, private key headers). |
 | `scripts/check-rootless-interop-boundary.sh` | Plan 046 rootless sealed-namespace lane boundary. Forbids `sudo`/`ip netns`/`nft`/`setcap`/`--privileged`/`--network host` and silent fallback to the privileged backend. |
 | `scripts/check-multipass-interop-boundary.sh` | Plan 048/049/050/051 Multipass recovery lane boundary. Forbids host-policy mutations and global `multipass purge` outside an atomic reservation. |
@@ -57,14 +57,19 @@ pattern scanning and `sha256sum` / `find` for manifest integrity.
   `data-phase-malformed.hex`.
 - **Verified by** `scripts/check-ntcp2-vectors.sh` on every CI run.
 
-## `tests/fixtures/ssu2/` — SSU2 v2 foundation vector corpus (Plan 155)
+## `tests/fixtures/ssu2/` — SSU2 v2 vector corpus (Plans 155–156)
 
 - `manifest.tsv` — lists SSU2 vectors with SHA-256 integrity
   (`positive`/`malformed` categories, explicit provenance).
 - Hex files: `long-header.hex`, `short-header-data.hex`,
   `short-header-confirmed.hex`, `blocks-positive.hex`,
-  `blocks-malformed.hex`. All are spec-derived constructed
-  vectors; no private keys, tokens, or operational secrets.
+  `blocks-malformed.hex` (Plan 155 spec-derived constructed
+  vectors), plus `handshake-initial.hex`,
+  `header-protection-request.hex`, `token-request.hex`,
+  `token-retry.hex`, `session-created-full.hex`,
+  `session-confirmed-frag.hex` (Plan 156 locally-authored
+  deterministic handshake vectors). No private keys, tokens, or
+  operational secrets.
 - **Verified by** `scripts/check-ssu2-vectors.sh` on every CI run.
 
 ## `tests/integration/ntcp2/` — synthetic interoperability lane (Plan 036)

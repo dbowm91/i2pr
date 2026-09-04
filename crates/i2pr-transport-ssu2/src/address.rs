@@ -1070,7 +1070,7 @@ fn decode_intro_key(value: &str) -> Result<IntroKey, Ssu2AddressError> {
     IntroKey::new(bytes).map_err(|_| Ssu2AddressError::InvalidIntroKey)
 }
 
-fn decode_i2p_base64<const N: usize>(
+pub(crate) fn decode_i2p_base64<const N: usize>(
     value: &str,
     option: &'static str,
 ) -> Result<[u8; N], Ssu2AddressError> {

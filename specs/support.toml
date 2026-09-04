@@ -209,10 +209,13 @@ plan_154_status = "registered-m8-ssu2-v2-roadmap-blocked-by-plan153"
 plan_155_plan_of_record = "plans/155-m8-ssu2-v2-protocol-foundation-and-addresses.md"
 plan_155_closure = "plans/155-status.md"
 plan_155_status = "passed-m8-ssu2-v2-protocol-foundation-and-addresses"
+plan_156_plan_of_record = "plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md"
+plan_156_closure = "plans/156-status.md"
+plan_156_status = "passed-m8-ssu2-v2-handshake-token-and-routerinfo"
 milestone8_protocol = "ssu2-v2-classical"
 ssu2_pq_v3_v4 = "deferred-compatibility-watch"
 ssu1 = "not-implemented"
-milestone8_implementation = "plan155-foundation-landed"
+milestone8_implementation = "plan156-handshake-landed"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
@@ -231,6 +234,26 @@ evidence = [
     "scripts/check-ssu2-vectors.sh",
     "plans/155-m8-ssu2-v2-protocol-foundation-and-addresses.md",
     "plans/155-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "ssu2.v2-handshake-token-routerinfo"
+protocol = "ssu2"
+structure = "runtime-neutral-noise-xk-establishment-token-lifecycle-routerinfo-binding"
+scope = "required"
+status = "experimental"
+notes = "Plan 156 closed the runtime-neutral SSU2 v2 establishment protocol in `i2pr-transport-ssu2` (no UDP socket, no runtime service): Noise XK transcript (`Noise_XKchaobfse+hs1+hs2+hs3_25519_ChaChaPoly_SHA256`) with role-gated consuming transitions and split directional keys; ChaCha20 header protection per the Header Encryption KDF pseudocode; strict TokenRequest/Retry/SessionRequest/SessionCreated codecs with symmetric-only cheap prevalidation before DH; bounded SessionConfirmed fragmentation/reassembly (15 fragments, 32 KiB aggregate, RouterInfo-first); bounded one-use token lifecycle (8-byte source-bound values, 30 s lifetime, 256-global/4-per-source quotas, rotation invalidation, 3x Retry amplification budget); deep RouterInfo establishment binding (signature, expected hash, v=2 address, static-key binding, intro-key shape, publication freshness) without NetDB mutation; consuming initiator/responder machines with spec resend schedules and a 20 s terminal deadline. Data phase, UDP runtime, and interoperability belong to Plans 157-161. PQ-hybrid v3/v4 remains deferred compatibility-watch debt; SSU1 remains unsupported."
+evidence = [
+    "crates/i2pr-transport-ssu2/src/crypto.rs",
+    "crates/i2pr-transport-ssu2/src/handshake.rs",
+    "crates/i2pr-transport-ssu2/src/token.rs",
+    "crates/i2pr-transport-ssu2/src/state_machine.rs",
+    "crates/i2pr-transport-ssu2/tests/handshake.rs",
+    "tests/fixtures/ssu2/manifest.tsv",
+    "scripts/check-ssu2-vectors.sh",
+    "plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md",
+    "plans/156-status.md",
 ]
 advertised = false
 

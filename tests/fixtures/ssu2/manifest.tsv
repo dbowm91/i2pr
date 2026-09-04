@@ -4,3 +4,9 @@ short-header-data	tests/fixtures/ssu2/short-header-data.hex	positive	spec-derive
 short-header-confirmed	tests/fixtures/ssu2/short-header-confirmed.hex	positive	spec-derived-constructed-vector	7052ee511fcebe2e3641cb065c9b7d1511ae053a5203439e698b320e7432f9e2
 blocks-positive	tests/fixtures/ssu2/blocks-positive.hex	positive	spec-derived-constructed-vector	6da6f2f2970371899dbbae7d64a697c6929765d7002ce58ec30d55170ad6575e
 blocks-malformed	tests/fixtures/ssu2/blocks-malformed.hex	malformed	spec-derived-constructed-vector	4826773f1c3f001caa71c363d4e92bb59437fe9eb234673432a78053418d411d
+handshake-initial	tests/fixtures/ssu2/handshake-initial.hex	positive	locally-authored-deterministic-vector	a5d08382df4727911008bad35715e4bc71cb93a043e3d815dc0e208ba195670f
+header-protection-request	tests/fixtures/ssu2/header-protection-request.hex	positive	locally-authored-deterministic-vector	7ef75e07b01575e7b49944e6c991170cf0d335f08668cf87360291af646d5cd6
+token-request	tests/fixtures/ssu2/token-request.hex	positive	locally-authored-deterministic-vector	102f3442ec07b6614a17d2e446883cdd392f30bbaf54fc63b6cc57c7de244f69
+token-retry	tests/fixtures/ssu2/token-retry.hex	positive	locally-authored-deterministic-vector	9a7b4184b46dea3c3a8c74e587fb1360b0ae6dfb0ac7e39debb6026aa20360a3
+session-created-full	tests/fixtures/ssu2/session-created-full.hex	positive	locally-authored-deterministic-vector	d511738376a458136574dd6e26c83f2f7f92dc846b0b26fe4e988fbb92b6b5dc
+session-confirmed-frag	tests/fixtures/ssu2/session-confirmed-frag.hex	positive	locally-authored-deterministic-vector	549994633814ce4b135b431bfcb20ebf4e04e6ddea25415eb172ca5086727f11

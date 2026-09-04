@@ -910,9 +910,17 @@ dependencies = [
 name = "i2pr-transport-ssu2"
 version = "0.1.0"
 dependencies = [
+ "chacha20",
+ "chacha20poly1305",
+ "hmac 0.12.1",
+ "i2pr-crypto",
  "i2pr-proto",
  "i2pr-transport",
+ "rand_chacha 0.9.0",
+ "rand_core 0.9.5",
+ "sha2 0.10.9",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]

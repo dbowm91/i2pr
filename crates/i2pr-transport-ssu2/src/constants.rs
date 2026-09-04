@@ -178,6 +178,80 @@ pub const MAX_CONGESTION_EXTENSION_BYTES: usize = 64;
 /// (Plan 156 owns the policy; the constant is declared here so no
 /// later plan invents a magic number).
 pub const MAX_ROUTER_INFO_FRAGMENTS: usize = 16;
+/// Maximum SessionConfirmed fragments accepted on the wire (spec frag
+/// field allows totals 1..=15).
+pub const MAX_SESSION_CONFIRMED_FRAGMENTS: usize = 15;
+/// Maximum reassembled SessionConfirmed payload bytes (jumbo). The
+/// datagram cap bounds each fragment near 1430 payload bytes; 15 such
+/// fragments stay far below this ceiling, which additionally bounds
+/// allocation before authentication.
+pub const MAX_CONFIRMED_REASSEMBLED_BYTES: usize = 32768;
+/// Maximum complete RouterInfo bytes accepted during establishment.
+/// Must stay at or below the per-block parser ceiling so a reassembled
+/// value always fits the block codec.
+pub const MAX_ESTABLISHMENT_ROUTER_INFO_BYTES: usize = MAX_ROUTER_INFO_BLOCK_BYTES;
+/// Minimum authenticated payload bytes in TokenRequest/Retry handshake
+/// datagrams (DateTime block plus at least one more byte of payload).
+pub const MIN_HANDSHAKE_PAYLOAD_BYTES: usize = 8;
+/// Maximum handshake payload bytes in one SessionRequest/SessionCreated
+/// datagram (1280-MTU IPv4 budget minus long header, ephemeral key, and
+/// MAC tail).
+pub const MAX_HANDSHAKE_PAYLOAD_BYTES: usize = 1172;
+/// Retry amplification bound: a Retry response must not exceed three
+/// times the request datagram length (spec anti-amplification rule).
+pub const RETRY_AMPLIFICATION_NUMERATOR: usize = 3;
+/// Retry amplification denominator for the 3x bound above.
+pub const RETRY_AMPLIFICATION_DENOMINATOR: usize = 1;
+/// Maximum padding bytes emitted in a Retry response (1..=64 random
+/// range alternative to the 3x rule; the bound below is enforced).
+pub const MAX_RETRY_PADDING_BYTES: usize = 64;
+/// Address-validation token lifetime in seconds (one-use tokens "expire
+/// in a few seconds"; the exact value is local policy, pinned here).
+pub const TOKEN_LIFETIME_SECONDS: u64 = 30;
+/// Maximum tokens retained globally in one bounded token table.
+pub const MAX_TOKENS_GLOBAL: usize = 256;
+/// Maximum tokens retained for one source socket address.
+pub const MAX_TOKENS_PER_SOURCE: usize = 4;
+/// Maximum handshake transcript inputs retained per datagram (bounded
+/// handshake buffer ceiling shared by message codecs).
+pub const MAX_HANDSHAKE_DATAGRAM_BYTES: usize = MAX_DATAGRAM_IPV4_LENGTH;
+/// Recommended SessionRequest resend delays in milliseconds
+/// (spec: 1.25s, 2.5s, 5s; total timeout 15s).
+pub const SESSION_REQUEST_RESEND_DELAYS_MS: [u64; 3] = [1250, 2500, 5000];
+/// Recommended SessionCreated resend delays in milliseconds
+/// (spec: 1s, 2s, 4s; total timeout 12s).
+pub const SESSION_CREATED_RESEND_DELAYS_MS: [u64; 3] = [1000, 2000, 4000];
+/// Recommended SessionConfirmed resend delays in milliseconds
+/// (spec: 1.25s, 2.5s, 5s).
+pub const SESSION_CONFIRMED_RESEND_DELAYS_MS: [u64; 3] = [1250, 2500, 5000];
+/// Recommended TokenRequest resend delays in milliseconds
+/// (spec: 3s, 6s; total timeout 15s).
+pub const TOKEN_REQUEST_RESEND_DELAYS_MS: [u64; 2] = [3000, 6000];
+/// Total handshake deadline in milliseconds (spec recommends 20s).
+pub const HANDSHAKE_DEADLINE_MS: u64 = 20_000;
+/// Maximum handshake retransmission attempts per message (schedule
+/// length plus the initial transmission).
+pub const MAX_HANDSHAKE_ATTEMPTS: u8 = 4;
+/// Maximum establishment replay-cache entries (bounded duplicate-X/Y
+/// suppression for the 2*D retention window).
+pub const MAX_HANDSHAKE_REPLAY_ENTRIES: usize = 512;
+/// DateTime skew bound in seconds for handshake payloads (spec
+/// recommends +/- 2 minutes).
+pub const HANDSHAKE_MAX_CLOCK_SKEW_SECONDS: u64 = 120;
+/// Replay retention in seconds (at least 2*D per spec).
+pub const HANDSHAKE_REPLAY_RETENTION_SECONDS: u64 = 2 * HANDSHAKE_MAX_CLOCK_SKEW_SECONDS;
+/// Default RouterInfo maximum age in seconds for establishment
+/// freshness (local policy; the wire carries only the published time).
+pub const ESTABLISHMENT_ROUTER_INFO_MAX_AGE_SECONDS: u64 = 2 * 60 * 60;
+/// Default RouterInfo future-skew tolerance in seconds for
+/// establishment freshness (local policy).
+pub const ESTABLISHMENT_ROUTER_INFO_MAX_FUTURE_SKEW_SECONDS: u64 = 10 * 60;
+/// HKDF info label deriving the SessionCreated header-protection key.
+pub const HEADER_LABEL_SESSION_CREATED: &[u8] = b"SessCreateHeader";
+/// HKDF info label deriving the SessionConfirmed header-protection key.
+pub const HEADER_LABEL_SESSION_CONFIRMED: &[u8] = b"SessionConfirmed";
+/// HKDF info label deriving data-phase keys from a directional key.
+pub const DATA_KEY_LABEL: &[u8] = b"HKDFSSU2DataKeys";
 
 #[cfg(test)]
 mod tests {

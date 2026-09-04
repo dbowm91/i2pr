@@ -1,9 +1,11 @@
 # `i2pr-transport-ssu2` — Deep Dive
 
-Runtime-neutral SSU2 v2 protocol foundation: strict RouterAddress
-validation, structural packet-header codecs, and the bounded
-authenticated-plaintext block vocabulary. No handshake, no header
-protection, no UDP sockets.
+Runtime-neutral SSU2 v2 protocol implementation: strict RouterAddress
+validation, structural packet-header codecs, the bounded
+authenticated-plaintext block vocabulary, the complete Noise XK
+establishment handshake with header protection, the bounded one-use
+token lifecycle, RouterInfo establishment binding, and consuming
+initiator/responder state machines. No UDP sockets.
 
 Path: `crates/i2pr-transport-ssu2/`
 
@@ -12,14 +14,15 @@ Path: `crates/i2pr-transport-ssu2/`
 `i2pr-transport-ssu2` owns the SSU2 v2 protocol mechanics that can be
 expressed without I/O — **no Tokio, no sockets, no `async`
 functions, no timers, no tasks.** Every public API is synchronous
-and bounded. Later plans add the Noise XK handshake and header
-protection (156), the data-phase state machines (157), and the
-supervised UDP adapter in `i2pr-runtime` (158).
+and bounded. Plan 155 landed the address/header/block foundation;
+Plan 156 added the Noise XK handshake and establishment state
+machines. The data phase belongs to Plan 157 and the supervised UDP
+adapter in `i2pr-runtime` to Plan 158.
 
 It does own:
 
 - Spec-traced constants (versions, header/message/block IDs, size
-  bounds) in `constants.rs`.
+  bounds, handshake schedules, token quotas) in `constants.rs`.
 - Strict `RouterAddress` parsing: direct, introducer-only, and
   unpublished-static forms, plus distinct listen/dial types
   (`address.rs`).
@@ -29,40 +32,59 @@ It does own:
   (`packet.rs`).
 - The bounded authenticated-plaintext block vocabulary with
   unknown-block budget and terminal-ordering rules (`block.rs`).
+- The Noise XK transcript, header protection, token-payload AEAD,
+  and data-phase key derivation (`crypto.rs`, Plan 156).
+- Establishment message codecs, cheap prevalidation, confirmed
+  reassembly, and RouterInfo binding (`handshake.rs`, Plan 156).
+- The bounded one-use token table (`token.rs`, Plan 156).
+- Consuming initiator/responder establishment machines with bounded
+  retransmit/deadline actions (`state_machine.rs`, Plan 156).
 
-It does **not** own a handshake transcript, token lifecycle,
-replay window, ACK/loss controller, reassembly state, UDP sockets,
-peer-test/relay roles, or transport selection. Those belong to
-Plans 156–161.
+It does **not** own a replay window, ACK/loss controller, I2NP
+reassembly state machine, UDP sockets, peer-test/relay roles, or
+transport selection. Those belong to Plans 157–161.
 
 ## Module layout
 
-Declared in `src/lib.rs:14-18`. No subdirectories.
+Declared in `src/lib.rs:28-36`. No subdirectories. Integration
+trajectories live in `tests/handshake.rs`.
 
 | File | Responsibility | Main public types |
 | --- | --- | --- |
 | `src/lib.rs` | Crate root, module declarations + re-exports | (re-exports) |
-| `src/constants.rs` | SSU2-dossier-derived constants with source comments | `SSU2_VERSION`, `SSU2_NETWORK_ID`, `NOISE_PROTOCOL_NAME`, message-type IDs, block-type IDs, bound ceilings |
+| `src/constants.rs` | SSU2-dossier-derived constants with source comments | `SSU2_VERSION`, `SSU2_NETWORK_ID`, `NOISE_PROTOCOL_NAME`, message-type IDs, block-type IDs, token quotas, resend schedules, bound ceilings |
 | `src/address.rs` | Strict `RouterAddress` parsing, introducers, listen/dial types, I2P-base64 decoding | `Ssu2RouterAddress`, `Ssu2AddressMaterial`, `Ssu2Endpoint`, `Ssu2Capabilities`, `Ssu2Introducer`, `Ssu2AddressClass`, `ConfiguredListenAddress`, `ResolvedDialTarget`, `Ssu2TransportStyle`, `Ssu2AddressError` |
 | `src/header.rs` | Long/short header encode/decode, message-type vocabulary | `MessageType`, `HeaderForm`, `LongHeader`, `SessionConfirmedHeader`, `DataHeader`, `HeaderError` |
 | `src/packet.rs` | Datagram length classes, header/payload split | `DatagramLengthClass`, `PacketHeader`, `SplitPacket`, `split_packet`, `PacketError` |
 | `src/block.rs` | Bounded payload block codec | `Block`, `DecodedBlock`, `ParsedBlocks`, `AckBlock`, `TerminationBlock`, `TerminationReason`, `RelayResponseCode`, `PeerTestBlock`, `ReceivedI2npBlock`, `BlockError` |
+| `src/crypto.rs` | Noise XK transcript, header protection, token AEAD, data keys | `Ssu2Transcript`, `Ssu2PublicKey`, `IntroKey`, `Role`, `Ssu2SplitKeys`, `DataCipher`, `TranscriptHash`, `Ssu2CryptoError` |
+| `src/handshake.rs` | Establishment codecs, prevalidation, reassembly, RouterInfo binding | `TokenRequest`, `RetryMessage`, `SessionRequestParts`, `SessionCreatedParts`, `ConfirmedReassembly`, `AuthenticatedPeer`, `ClockSkewPolicy`, `HandshakeReplayCache`, `ReplayToken`, `RouterInfoFreshness`, `HandshakeError` |
+| `src/token.rs` | Bounded one-use token table | `TokenStore`, `Ssu2Token`, `TokenError`, `retry_response_budget` |
+| `src/state_machine.rs` | Consuming initiator/responder machines | `Initiator`, `Responder`, `InitiatorConfig`, `ResponderConfig`, `HandshakeAction`, `AuthenticatedSsu2Session`, `DeadlineKind`, `TerminateReason`, `DropCategory`, `StateMachineError` |
 
 ## Public surface
 
-Crate-root re-exports (`lib.rs:20-37`):
+Crate-root re-exports (`lib.rs:38-72`):
 
 ```rust
 pub mod address;
 pub mod block;
 pub mod constants;
+pub mod crypto;
+pub mod handshake;
 pub mod header;
 pub mod packet;
+pub mod state_machine;
+pub mod token;
 
 pub use address::{...};
 pub use block::{...};
+pub use crypto::{...};
+pub use handshake::{...};
 pub use header::{...};
 pub use packet::{...};
+pub use state_machine::{...};
+pub use token::{...};
 ```
 
 `pub trait` count: **zero.** Like `i2pr-transport`, every contract
@@ -133,14 +155,13 @@ is a concrete struct/enum.
 - `encode_blocks` / `parse_blocks` enforce: at most 64 blocks,
   1024 aggregate unknown bytes, Padding at most once and last,
   Termination at most once and last-non-padding. All other
-  known blocks may repeat. (The SessionConfirmed
-  RouterInfo-first rule is a handshake-payload concern for
-  Plan 156.)
+  known blocks may repeat. SessionConfirmed RouterInfo-first is
+  enforced by the handshake payload check (`handshake.rs`), not
+  here.
 - Per-block strictness: DateTime exactly 4; Options 12+
   (fixed-point ratios, no ordering assumption); RouterInfo
   flags limited to bits 0–1 with frag byte exactly `0x01`
-  (never fragmented) and a 4096-byte ceiling — signature
-  verification belongs to Plan 156; I2NP/first-fragment
+  (never fragmented) and a 4096-byte ceiling; I2NP/first-fragment
   require the 9-byte header with nonempty bodies;
   follow-on fragments require number 1..=127 with nonempty
   bodies; ACK ranges reject (0,0) pairs with a 128-range cap
@@ -151,18 +172,100 @@ is a concrete struct/enum.
   relay/peer-test signatures retained as bounded (1024)
   opaque evidence with strict fixed-prefix parsing
   (verification belongs to Plan 160).
-- RelayResponse accept responses split the fresh 8-byte token
-  from the fixed body tail; Bob rejections carry no
-  endpoint/signature; Charlie rejections may carry both but
-  never a token. PeerTest messages 2/4 require the 32-byte
-  hash, messages 1–4 require a signature, 5–7 leave it
-  optional, and the tested version must be 2.
+
+### Noise transcript (`crypto.rs`)
+
+- `Ssu2Transcript` — consuming initiator/responder transcript for
+  the SSU2-specific Noise XK pattern
+  (`Noise_XKchaobfse+hs1+hs2+hs3_25519_ChaChaPoly_SHA256`):
+  initial `SHA256(protocol_name)` chaining with null-prologue and
+  responder-static mixes; `e,es` / `e,ee` / `s,se` stages with
+  role-gated transitions (`WrongRole`/`InvalidState`
+  otherwise); the `es` cipher is retained for the static-key
+  frame (`n = 1`); `split()` derives `k_ab`/`k_ba` via
+  `HKDF(ck, ZEROLEN, "", 64)`.
+- `apply_header_protection` / `remove_header_protection` — the
+  Header Encryption KDF verbatim: ChaCha20 masks over the first
+  16 header bytes keyed by the packet's trailing MAC bytes, plus
+  the 48-byte (Request/Created) or 16-byte (Retry/TokenRequest)
+  third-part stream under the zero nonce. Two recorded
+  interpretation notes (the `n: 1` annotation, inclusive index
+  notation) live in the module docs.
+- `seal_token_payload` / `open_token_payload` — Retry/TokenRequest
+  AEAD under the intro key with the header packet number as nonce
+  and the cleartext header as associated data.
+- `session_created_header_key` / `session_confirmed_header_key` /
+  `derive_data_keys` — the `SessCreateHeader`, `SessionConfirmed`,
+  and `HKDFSSU2DataKeys` labeled derivations.
+- Secrets (`ChainKey`, cipher keys) are zeroizing owners without
+  `Debug`/`Clone`; DH inputs arrive as checked
+  `X25519SharedSecret` values so private keys never enter the
+  transcript; nonces refuse the forbidden `2^64 - 1`.
+
+### Establishment codecs (`handshake.rs`)
+
+- `build/parse_token_request`, `build/parse_retry` — intro-key
+  AEAD payloads (DateTime required; Address required in Retry;
+  Termination optional in Retry, which then carries a zero
+  token); Retry enforces the 3x amplification budget and the
+  64-byte padding cap.
+- `prevalidate_long_datagram` — symmetric-only cheap gate
+  (length class, deprotection, exact header decode,
+  version/network/type, minimum tail) before any DH, payload
+  AEAD, or session allocation.
+- `build/parse_session_request`, `build/parse_session_created` —
+  header plus ephemeral plus transcript-ciphertext assembly with
+  the phase-correct protection keys.
+- `build_session_confirmed` / `ConfirmedReassembly` — bounded
+  fragmentation (≤15 fragments, 32 KiB aggregate) and exact
+  reassembly with duplicate/conflict detection; `frag0`'s header
+  is the Noise associated data.
+- `validate_router_info` — deep establishment binding without
+  touching NetDB: structural decode, signature, expected-hash
+  check, `v=2` SSU2 address presence, static-`s` binding against
+  the handshake peer (constant-time), intro-`i` shape where
+  required, and caller-supplied publication freshness. Returns
+  `AuthenticatedPeer` (hash, static key, validated bytes).
+- `ClockSkewPolicy::handshake` (±120 s) and
+  `HandshakeReplayCache` (bounded, caller-time) cover timestamp
+  and ephemeral replay handling.
+
+### Token lifecycle (`token.rs`)
+
+- `TokenStore` — bounded one-use table (256 global, 4 per
+  source, 30 s lifetime by default): tokens bind the exact
+  source socket address (IP and port; v4/v6 separation falls out
+  of the comparison), issuance evicts the oldest entry in a full
+  quota deterministically, consumption removes the entry so
+  reuse fails closed, `expire` releases accounting, and `rotate`
+  models key/generator restart. Randomness and time are
+  caller-supplied; `Ssu2Token` rejects zero and redacts `Debug`.
+
+### State machines (`state_machine.rs`)
+
+- `Initiator` — `begin` (TokenRequest without a token,
+  SessionRequest with one), `on_retry` (fresh ephemeral,
+  token-bearing request), `on_session_created` (Noise completion,
+  SessionConfirmed emission, `Established`), `on_timeout`
+  (identical-byte resend per the spec schedules, then
+  `RetriesExhausted`/`HandshakeTimeout`), `cancel`.
+- `Responder` — `on_token_request` (Retry, no DH, no state),
+  `on_session_request` (Retry for tokenless; token → replay →
+  skew gates, then the single admitted DH and SessionCreated;
+  duplicates resend the identical Created), `on_session_confirmed`
+  (bounded reassembly, static/payload open, RouterInfo binding,
+  `Established`), `on_timeout`, `cancel`.
+- Actions are `WriteDatagram` / `ArmDeadline` / `Established` /
+  `Terminate` / `DropSilently`; the crate never sleeps, opens
+  sockets, or reads clocks. `AuthenticatedSsu2Session` carries
+  only what Plan 157 needs: peer material, directional ciphers,
+  connection IDs, observed endpoint, and the local MTU.
 
 ## Errors
 
-All error types implement `Display + Error + Clone + Copy +
-Debug + Eq + PartialEq` (address errors clone a bounded
-version string instead). No protocol-vs-operational mixing.
+All error types implement `Display + Error + Eq + PartialEq`
+(`Clone + Copy` where the payload allows). No
+protocol-vs-operational mixing.
 
 | Error | Module | Semantics |
 | --- | --- | --- |
@@ -170,26 +273,41 @@ version string instead). No protocol-vs-operational mixing.
 | `HeaderError` | `header.rs` | Truncation, trailing bytes, unknown type, wrong form, version/network/flag/connection-ID/fragment failures |
 | `PacketError` | `packet.rs` | Datagram length classes, header failures, short authenticated tail |
 | `BlockError` | `block.rs` | Truncation, over-length, count/budget ceilings, ordering, per-block malformation, `UnsupportedBlock`, oversize payloads |
+| `Ssu2CryptoError` | `crypto.rs` | Invalid public key, field bounds, nonce exhaustion, authentication failure, wrong role/state, static mismatch, KDF rejection |
+| `HandshakeError` | `handshake.rs` | Truncation/bounds, header/packet/block/crypto mapping, timestamp skew, replay, token rejection, amplification, fragment faults, RouterInfo binding failures |
+| `TokenError` | `token.rs` | Zero/unknown/expired/reused/wrong-source token, full table |
+| `StateMachineError` | `state_machine.rs` | Handshake/crypto/wrapper mapping, invalid-state driving |
 
 ## Dependencies
 
-`Cargo.toml:10-13`:
+`Cargo.toml:10-20`:
 
 ```toml
 [dependencies]
-i2pr-proto     = { path = "../i2pr-proto" }
+chacha20.workspace = true
+chacha20poly1305.workspace = true
+hmac.workspace = true
+i2pr-crypto = { path = "../i2pr-crypto" }
+i2pr-proto = { path = "../i2pr-proto" }
 i2pr-transport = { path = "../i2pr-transport" }
+rand_core = { workspace = true, features = ["os_rng"] }
+sha2.workspace = true
 thiserror.workspace = true
+zeroize.workspace = true
 ```
 
-No crypto, runtime, socket, or async dependencies. `std::net`
-appears only as pure data carriers (`IpAddr`, `SocketAddr`) —
-no socket operations — matching the `i2pr-transport-ntcp2`
-precedent and the runtime-boundary script.
+`i2pr-crypto` provides the checked X25519 DH, the
+RFC 5869 HKDF helpers, and RouterInfo signature verification
+(the NTCP2 precedent); transcript `MixKey` policy and all SSU2
+labels stay local. No runtime, socket, or async dependencies.
+`std::net` appears only as pure data carriers (`IpAddr`,
+`SocketAddr`) spelled without the banned literal — matching the
+`i2pr-transport-ntcp2` precedent and the runtime-boundary script.
 
 ## Tests
 
-27 synchronous unit tests (inline), plus 5 committed fixtures
+76 tests: 56 synchronous unit tests (inline) plus 20 integration
+trajectories in `tests/handshake.rs`, plus 11 committed fixtures
 under `tests/fixtures/ssu2/` (pinned by `manifest.tsv`,
 enforced by `scripts/check-ssu2-vectors.sh`):
 
@@ -200,6 +318,10 @@ enforced by `scripts/check-ssu2-vectors.sh`):
 | `header.rs` | Type round-trip + form classification, long exactness + version/network/flag/ID negatives, confirmed zero-packet + frag shape, data flags + immediate ACK, committed long/short fixtures |
 | `packet.rs` | Length classes without touching bytes, split validation order, X + auth-tail minima, short/oversize/bad-header rejection |
 | `block.rs` | All-21-block round trip, relay accept/reject shapes, truncation at every byte boundary, count/unknown/oversize ceilings, per-block malformation, unknown/reserved skip budget, committed positive/malformed fixtures |
+| `crypto.rs` | Full initiator/responder transcript to matching split keys, role/stage gating, tag mutation + wrong-key rejection, header-protection round trip + wrong-key/short negatives, token AEAD round trip + nonce binding, labeled derivations, nonce ceiling |
+| `handshake.rs` | TokenRequest round trip + skew stale/future, wrong-intro/truncation rejection, Retry round trip + amplification budget + zero-token rules + clock-skew termination, request build/parse round trip, confirmed fragmentation + duplicate/gap handling, replay cache bounds, cheap prevalidation drops |
+| `token.rs` | One-use round trip, zero rejection, expiry + release, wrong source/port/family closure, per-source + global eviction, rotation, retry budget |
+| `tests/handshake.rs` | Full tokenless Retry trajectory to matching directional keys, cached-token trajectory, token valid/expired/wrong-source/reuse/rotation/unknown matrix with pre-DH fail-closed evidence, identical-byte resends, duplicate Created/Confirmed handling, deadline exhaustion + per-phase cancellation, tag-mutation isolation, 6-case RouterInfo binding matrix, RouterInfo-not-first rejection, 200-datagram cheap flood with bounded state, amplification budget, secret redaction, 6 committed handshake vectors (one with raw-primitive independent derivation) |
 
 ## Distinctive design choices
 
@@ -209,20 +331,25 @@ enforced by `scripts/check-ssu2-vectors.sh`):
 2. **Strict unknown options** — unlike NTCP2's `pq` carve-out,
    no deployed SSU2 extra option is currently accepted; any
    future one needs an explicit allowlist entry.
-3. **Structural RouterInfo only** — flag/frag/size checks now,
-   signature verification in Plan 156, so the foundation
-   cannot be mistaken for an establishment claim.
-4. **Opaque relay/peer-test signatures** — fixed prefixes are
-   strict, trailing signatures are bounded evidence;
-   verification lives with the Plan 160 roles.
-5. **Token-from-tail split** — RelayResponse accept tokens come
-   from the fixed 8-byte body tail, avoiding a signature-length
-   oracle the foundation cannot resolve.
-6. **Reachable unknown budget** — the 1024-byte ceiling sits
-   under the datagram-scale payload cap, so the test actually
-   exercises it.
-7. **No new crypto dependency** — I2P-base64 and key-shape
-   checks are local; PQ stays out of the tree per Plan 154.
+3. **Normative pseudocode over annotations** — where the spec's
+   Header Encryption KDF pseudocode and a raw-contents `n: 1`
+   note disagree on the ephemeral-region nonce, the pseudocode
+   governs; the choice is documented and vector-pinned.
+4. **Inclusive-index reading** — `keydata[0:31]`, packet IV
+   windows, and similar ranges are 32/12-byte inclusive spans;
+   the NTCP2 `MixKey` precedent confirms the construction.
+5. **Token before DH, always** — unknown/expired/reused/misbound
+   tokens drop before any expensive operation; the flood test
+   proves bounded state under 200 cheap invalid datagrams.
+6. **No NetDB mutation in the handshake** — RouterInfo binding
+   returns validated bytes; publication/freshness policy beyond
+   the explicit window belongs to the caller.
+7. **Caller-supplied determinism** — secrets, connection IDs,
+   packet numbers, token bytes, and both clocks arrive as
+   parameters; the machines hold no RNG and read no time.
+8. **No new crypto dependency** — X25519/HKDF/signature reuse
+   comes from `i2pr-crypto`; only transcript sequencing and
+   SSU2 labels are local, per the Plan 156 dependency review.
 
 ## Cross-references
 
@@ -232,11 +359,11 @@ enforced by `scripts/check-ssu2-vectors.sh`):
   `EncodedI2npMessage`.
 - [i2pr-transport-ntcp2](i2pr-transport-ntcp2.md) — sibling
   protocol crate; structural precedent for address/header/
-  block discipline.
+  block discipline and consuming transcripts.
 - [Dependency graph](dependency-graph.md) — the
   `i2pr-transport-ssu2` allowlist row.
 - Plan-of-record:
-  `plans/155-m8-ssu2-v2-protocol-foundation-and-addresses.md`.
-- Closure: `plans/155-status.md`.
+  `plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md`.
+- Closure: `plans/156-status.md`.
 - Dossier: `specs/protocols/09-ssu2.md`,
   `specs/SOURCES.md` (Milestone 8 refresh).

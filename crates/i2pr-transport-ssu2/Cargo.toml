@@ -4,13 +4,23 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "Tokio-free SSU2 v2 protocol foundation: addresses, headers, blocks"
+description = "Tokio-free SSU2 v2 protocol: addresses, headers, blocks, handshake"
 publish = false
 
 [dependencies]
+chacha20.workspace = true
+chacha20poly1305.workspace = true
+hmac.workspace = true
+i2pr-crypto = { path = "../i2pr-crypto" }
 i2pr-proto = { path = "../i2pr-proto" }
 i2pr-transport = { path = "../i2pr-transport" }
+rand_core = { workspace = true, features = ["os_rng"] }
+sha2.workspace = true
 thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+rand_chacha.workspace = true
 
 [lints]
 workspace = true
