@@ -661,6 +661,40 @@ impl TransportManager {
         Err(DeliveryOutcome::LinkClosedBeforeWrite)
     }
 
+    /// Returns the authenticated usable links for a peer in local-ID
+    /// order for deterministic transport selection (plan §8).
+    ///
+    /// The returned descriptors feed [`crate::select_peer_transport`]
+    /// as reuse inputs; no SSU2/NTCP2-specific manager is involved.
+    pub fn authenticated_links_for(
+        &self,
+        peer: crate::PeerId,
+    ) -> Result<Vec<crate::ExistingLink>, RegistrationError> {
+        let state = self.lock_state()?;
+        let mut links = Vec::new();
+        if let Some(link_ids) = state.peers.get(&peer) {
+            for link_id in link_ids {
+                if let Some(link) = state.links.get(link_id)
+                    && link.candidate.state() == LinkState::Authenticated
+                {
+                    links.push(crate::ExistingLink::new(
+                        link.candidate.transport(),
+                        link.candidate.link_id(),
+                    ));
+                }
+            }
+        }
+        links.sort_by_key(|link| link.link().value());
+        Ok(links)
+    }
+
+    /// Returns whether the peer already holds its active-link ceiling.
+    pub fn peer_at_link_limit(&self, peer: crate::PeerId) -> Result<bool, RegistrationError> {
+        let state = self.lock_state()?;
+        let count = state.peers.get(&peer).map_or(0, |links| links.len()) as u64;
+        Ok(count >= self.inner.limits.max_links_per_peer)
+    }
+
     /// Admits a request onto the first authenticated link for its target peer.
     pub fn enqueue_delivery(
         &self,

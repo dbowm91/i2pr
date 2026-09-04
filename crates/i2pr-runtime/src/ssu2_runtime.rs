@@ -79,16 +79,17 @@ use i2pr_crypto::X25519PrivateKey;
 use i2pr_proto::{Hash, RouterInfo};
 use i2pr_transport::{
     CandidateDecision, DeliveryRequest, Direction, EncodedI2npMessage, LinkCandidate, LinkId,
-    PeerId, PendingHandshake, ResourceClass, TerminationCategory, TransportKind, TransportLimits,
+    PeerId, PendingHandshake, ReachabilityPolicy, ReachabilitySignal, ReachabilityState,
+    ReachabilityTracker, ResourceClass, TerminationCategory, TransportKind, TransportLimits,
     TransportManager,
 };
 use i2pr_transport_ssu2::{
     AddressBlock, AuthenticatedSsu2Session, ClockSkewPolicy, ConfirmedParams, DeadlineKind,
     DropCategory, HandshakeAction, HandshakeReplayCache, Initiator, InitiatorConfig,
-    InitiatorSecrets, IntroKey, Responder, ResponderConfig, ResponderParams, RetryAnswer,
-    SessionAction, SessionConfig, SessionEvent, Ssu2Endpoint, Ssu2PublicKey, Ssu2RouterAddress,
-    TerminateReason, TokenStore, constants, parse_session_request, parse_token_request,
-    retry_response_budget,
+    InitiatorSecrets, IntroKey, PATH_CHALLENGE_LENGTH, PathError, PathEvent, PathValidator,
+    Responder, ResponderConfig, ResponderParams, RetryAnswer, SessionAction, SessionConfig,
+    SessionEvent, Ssu2Endpoint, Ssu2PublicKey, Ssu2RouterAddress, TerminateReason, TokenStore,
+    constants, parse_session_request, parse_token_request, retry_response_budget,
 };
 use rand_core::{OsRng, TryRngCore};
 use tokio::net::UdpSocket;
@@ -137,6 +138,12 @@ pub const SSU2_MANAGER_BYTES_PER_LINK: u64 = 256 * 1024;
 pub const SSU2_BACKOFF_ENTRIES: usize = 256;
 /// Maximum outbound datagrams drained per scheduler wake per session.
 pub const SSU2_MAX_DRAIN_PER_SESSION: usize = 4;
+/// Maximum outstanding path-validation candidates service-wide.
+///
+/// Per-session tables are bounded by the protocol crate; this ceiling
+/// additionally bounds the service-wide challenge surface under
+/// spoofed-source floods.
+pub const SSU2_MAX_PATH_CANDIDATES_GLOBAL: usize = 256;
 
 /// A bounded category for SSU2 runtime limit validation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -633,6 +640,20 @@ pub struct Ssu2Snapshot {
     pub staging_drops: u64,
     /// Sends that found no active link for the peer.
     pub send_without_link: u64,
+    /// PathChallenge datagrams issued to unvalidated candidates.
+    pub path_challenges: u64,
+    /// PathResponse datagrams sent answering peer challenges.
+    pub path_responses: u64,
+    /// Sessions migrated after matching PathResponse proof.
+    pub path_migrations: u64,
+    /// Wrong/stale path responses rejected without migration.
+    pub path_rejections: u64,
+    /// Path candidates expired before proof arrived.
+    pub path_expirations: u64,
+    /// Candidate admissions denied by quota/budget ceilings.
+    pub path_denied: u64,
+    /// Conservative router-level reachability state.
+    pub reachability: ReachabilityState,
     /// Current pending outbound handshakes.
     pub pending_outbound: usize,
     /// Current pending inbound handshakes.
@@ -750,6 +771,10 @@ struct ActiveSession {
     peer_addr: SocketAddr,
     subnet: SubnetKey,
     session: i2pr_transport_ssu2::Ssu2Session,
+    /// Authenticated path-validation state (Plan 159): the validated
+    /// endpoint starts as the promotion address and only migrates on
+    /// matching PathResponse proof.
+    path: PathValidator,
     confirmed_resend: Option<ConfirmedResend>,
     data_rx_observed: bool,
 }
@@ -788,6 +813,11 @@ struct ServiceState {
     staged_bytes: usize,
     fault_transmits: u64,
     fault_held: Option<StagedDatagram>,
+    /// Router-level reachability policy owner (Plan 159): accumulates
+    /// privacy-safe signals (validated paths, observed addresses) into
+    /// one conservative state for publication snapshots. Never sees
+    /// packet or session objects.
+    reachability: ReachabilityTracker,
 }
 
 impl ServiceState {
@@ -872,6 +902,12 @@ struct ServiceCounters {
     inbound_queue_drops: AtomicU64,
     staging_drops: AtomicU64,
     send_without_link: AtomicU64,
+    path_challenges: AtomicU64,
+    path_responses: AtomicU64,
+    path_migrations: AtomicU64,
+    path_rejections: AtomicU64,
+    path_expirations: AtomicU64,
+    path_denied: AtomicU64,
 }
 
 fn monotonic_ms(started: &tokio::time::Instant) -> u64 {
@@ -1069,6 +1105,8 @@ impl Ssu2RuntimeService {
             constants::HANDSHAKE_REPLAY_RETENTION_SECONDS,
         )
         .map_err(|_| Ssu2RuntimeConfigError::InconsistentLimits)?;
+        let reachability = ReachabilityTracker::new(ReachabilityPolicy::default())
+            .map_err(|_| Ssu2RuntimeConfigError::InconsistentLimits)?;
         Ok(Self {
             shared: Arc::new(Shared {
                 config,
@@ -1099,6 +1137,7 @@ impl Ssu2RuntimeService {
                     staged_bytes: 0,
                     fault_transmits: 0,
                     fault_held: None,
+                    reachability,
                 }),
                 notify: Notify::new(),
                 shutdown: CancellationToken::new(),
@@ -1258,6 +1297,12 @@ impl Ssu2RuntimeService {
                     )
                 })
                 .unwrap_or((0, 0, 0, 0, 0));
+        let reachability = self
+            .shared
+            .state
+            .lock()
+            .map(|state| state.reachability.state())
+            .unwrap_or(ReachabilityState::Unknown);
         Ssu2Snapshot {
             cheap_drops: counters.cheap_drops.load(Ordering::Relaxed),
             auth_failures: counters.auth_failures.load(Ordering::Relaxed),
@@ -1276,6 +1321,13 @@ impl Ssu2RuntimeService {
             inbound_queue_drops: counters.inbound_queue_drops.load(Ordering::Relaxed),
             staging_drops: counters.staging_drops.load(Ordering::Relaxed),
             send_without_link: counters.send_without_link.load(Ordering::Relaxed),
+            path_challenges: counters.path_challenges.load(Ordering::Relaxed),
+            path_responses: counters.path_responses.load(Ordering::Relaxed),
+            path_migrations: counters.path_migrations.load(Ordering::Relaxed),
+            path_rejections: counters.path_rejections.load(Ordering::Relaxed),
+            path_expirations: counters.path_expirations.load(Ordering::Relaxed),
+            path_denied: counters.path_denied.load(Ordering::Relaxed),
+            reachability,
             pending_outbound,
             pending_inbound,
             active_sessions,
@@ -1909,6 +1961,16 @@ impl Ssu2RuntimeService {
         Some(session)
     }
 
+    /// Builds the initial validated-path state for a promotion address.
+    ///
+    /// The validated endpoint starts as the authenticated promotion
+    /// address with the configured local MTU; migration afterwards
+    /// requires matching PathResponse proof (Plan 159 §2).
+    fn initial_path(&self, addr: SocketAddr) -> Option<PathValidator> {
+        let endpoint = Ssu2Endpoint::from_socket_addr(addr).ok()?;
+        PathValidator::new(endpoint, self.shared.local_mtu).ok()
+    }
+
     fn remove_active_locked(&self, state: &mut ServiceState, link_id: &LinkId) {
         if let Some(record) = state.active.remove(link_id) {
             release_active_locked(state, &record);
@@ -2056,6 +2118,21 @@ impl Ssu2RuntimeService {
             peer: target.peer(),
         };
         let used_cached = entry.token_used.is_some();
+        let path = match self.initial_path(target.address()) {
+            Some(path) => path,
+            None => {
+                self.shared
+                    .counters
+                    .auth_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                let _ = self
+                    .shared
+                    .manager
+                    .close_link(link_id, TerminationCategory::AuthenticationFailure);
+                fail(completion);
+                return;
+            }
+        };
         self.insert_active_locked(
             state,
             ActiveSession {
@@ -2064,6 +2141,7 @@ impl Ssu2RuntimeService {
                 peer_addr: target.address(),
                 subnet: subnet_key(self.shared.config.prefixes, target.address().ip()),
                 session,
+                path,
                 confirmed_resend,
                 data_rx_observed: false,
             },
@@ -2203,6 +2281,20 @@ impl Ssu2RuntimeService {
         // The peer-agnostic pending lease releases only after the
         // peer-bound active registration succeeds: no admission gap.
         drop(entry.lease);
+        let path = match self.initial_path(source) {
+            Some(path) => path,
+            None => {
+                self.shared
+                    .counters
+                    .auth_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                let _ = self
+                    .shared
+                    .manager
+                    .close_link(link_id, TerminationCategory::AuthenticationFailure);
+                return;
+            }
+        };
         self.insert_active_locked(
             state,
             ActiveSession {
@@ -2211,6 +2303,7 @@ impl Ssu2RuntimeService {
                 peer_addr: source,
                 subnet: subnet_key(self.shared.config.prefixes, source.ip()),
                 session,
+                path,
                 confirmed_resend: None,
                 data_rx_observed: false,
             },
@@ -3178,10 +3271,225 @@ impl Ssu2RuntimeService {
     /// Handles one datagram for a matched active session: ordered
     /// receive pipeline, event handoff, ACK/retransmit staging, and
     /// poll-driven termination.
+    /// Opens one bounded path-validation candidate for authenticated
+    /// traffic from a new endpoint and emits exactly one minimum-MTU
+    /// PathChallenge datagram toward it.
+    ///
+    /// Quota, budget, RNG, and staging failures all fail closed without
+    /// migration and without unbounded work; the validated path keeps
+    /// carrying normal traffic.
+    fn open_path_candidate_locked(
+        &self,
+        state: &mut ServiceState,
+        link_id: &LinkId,
+        source: SocketAddr,
+        endpoint: Ssu2Endpoint,
+        now_ms: u64,
+    ) {
+        let outstanding: usize = state
+            .active
+            .values()
+            .map(|record| record.path.candidate_count())
+            .sum();
+        if outstanding >= SSU2_MAX_PATH_CANDIDATES_GLOBAL {
+            self.shared
+                .counters
+                .path_denied
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let mut challenge = [0_u8; PATH_CHALLENGE_LENGTH];
+        if fill_random(&mut challenge).is_err() || challenge == [0_u8; PATH_CHALLENGE_LENGTH] {
+            self.shared
+                .counters
+                .path_denied
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let event = match state.active.get_mut(link_id) {
+            Some(record) => record
+                .path
+                .note_authenticated_packet(endpoint, challenge, now_ms),
+            None => return,
+        };
+        let challenge = match event {
+            Ok(Some(PathEvent::ChallengeToSend { challenge, .. })) => challenge,
+            Ok(_) => return,
+            Err(_) => {
+                self.shared
+                    .counters
+                    .path_denied
+                    .fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        };
+        let queued = match state.active.get_mut(link_id) {
+            Some(record) => record
+                .session
+                .queue_path_challenge(challenge.to_vec())
+                .is_ok(),
+            None => false,
+        };
+        if !queued {
+            self.shared
+                .counters
+                .path_denied
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let datagram = match state.active.get_mut(link_id) {
+            Some(record) => record.session.poll_transmit(now_ms),
+            None => None,
+        };
+        match datagram {
+            Some(bytes) if bytes.len() <= usize::from(constants::SSU2_MIN_MTU) => {
+                stage_one_locked(
+                    state,
+                    &self.shared.config.limits,
+                    &self.shared.counters,
+                    bytes,
+                    source,
+                );
+                self.shared
+                    .counters
+                    .path_challenges
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            Some(_) => {
+                self.shared
+                    .counters
+                    .staging_drops
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            None => {}
+        }
+    }
+
+    /// Answers one authenticated PathChallenge with a single
+    /// minimum-MTU PathResponse addressed to the challenger.
+    ///
+    /// The challenge arrived inside an authenticated session packet, so
+    /// the response cannot amplify to an unauthenticated victim; it is
+    /// still a single small datagram, never a retransmitted series.
+    fn answer_path_challenge_locked(
+        &self,
+        state: &mut ServiceState,
+        link_id: &LinkId,
+        source: SocketAddr,
+        data: Vec<u8>,
+        now_ms: u64,
+    ) {
+        let queued = match state.active.get_mut(link_id) {
+            Some(record) => record.session.queue_path_response(data).is_ok(),
+            None => return,
+        };
+        if !queued {
+            return;
+        }
+        let datagram = match state.active.get_mut(link_id) {
+            Some(record) => record.session.poll_transmit(now_ms),
+            None => None,
+        };
+        match datagram {
+            Some(bytes) if bytes.len() <= usize::from(constants::SSU2_MIN_MTU) => {
+                stage_one_locked(
+                    state,
+                    &self.shared.config.limits,
+                    &self.shared.counters,
+                    bytes,
+                    source,
+                );
+                self.shared
+                    .counters
+                    .path_responses
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            Some(_) => {
+                self.shared
+                    .counters
+                    .staging_drops
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            None => {}
+        }
+    }
+
+    /// Handles one authenticated PathResponse from `source`.
+    ///
+    /// Only an exact challenge match from the tracked candidate
+    /// endpoint migrates. Migration moves the endpoint plus per-IP and
+    /// per-subnet accounting, resets stale in-flight congestion state,
+    /// and records validated-path evidence; the manager link itself is
+    /// unchanged.
+    fn accept_path_response_locked(
+        &self,
+        state: &mut ServiceState,
+        link_id: &LinkId,
+        source: SocketAddr,
+        endpoint: Ssu2Endpoint,
+        data: Vec<u8>,
+        now_ms: u64,
+    ) {
+        let decision = match state.active.get_mut(link_id) {
+            Some(record) => record.path.on_path_response(endpoint, &data, now_ms),
+            None => return,
+        };
+        match decision {
+            Ok(PathEvent::Validated { .. }) => {}
+            Ok(PathEvent::ChallengeToSend { .. }) => return,
+            Err(PathError::NotACandidate) => return,
+            Err(_) => {
+                self.shared
+                    .counters
+                    .path_rejections
+                    .fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+        let moved_addrs = match state.active.get_mut(link_id) {
+            Some(record) => {
+                let old_ip = record.peer_addr.ip();
+                let old_subnet = record.subnet;
+                record.peer_addr = source;
+                record.subnet = subnet_key(self.shared.config.prefixes, source.ip());
+                record.session.note_path_migrated();
+                Some((old_ip, old_subnet, record.subnet))
+            }
+            None => None,
+        };
+        if let Some((old_ip, old_subnet, new_subnet)) = moved_addrs {
+            count_down(&mut state.active_ip, &old_ip);
+            subnet_down(&mut state.active_subnet, &old_subnet);
+            count_up(&mut state.active_ip, source.ip());
+            subnet_up(&mut state.active_subnet, new_subnet);
+        }
+        let family = match source.ip() {
+            IpAddr::V4(_) => i2pr_transport::AddressFamily::Ipv4,
+            IpAddr::V6(_) => i2pr_transport::AddressFamily::Ipv6,
+        };
+        let now = self.service_now();
+        state
+            .reachability
+            .record(ReachabilitySignal::ValidatedPath { family }, now);
+        let observation = state
+            .reachability
+            .as_transport_observation(TransportKind::Ssu2, now);
+        let _ = self.shared.manager.record_reachability(observation);
+        self.shared
+            .counters
+            .path_migrations
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Routes one authenticated datagram to its session with path
+    /// validation (Plan 159 §2: the source is classified only after
+    /// the session authenticated the bytes).
+    #[allow(clippy::too_many_arguments)]
     fn handle_active_datagram(
         &self,
         state: &mut ServiceState,
         link_id: LinkId,
+        source: SocketAddr,
         bytes: &[u8],
         now_ms: u64,
         now_secs: u64,
@@ -3225,6 +3533,29 @@ impl Ssu2RuntimeService {
             Some(record) => record.peer,
             None => return,
         };
+        // Resolve the source endpoint before any path effect. A zero
+        // port can never be a real UDP peer; fail closed without
+        // touching session or path state.
+        let source_endpoint = match Ssu2Endpoint::from_socket_addr(source) {
+            Ok(endpoint) => endpoint,
+            Err(_) => {
+                self.shared
+                    .counters
+                    .cheap_drops
+                    .fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        };
+        // Authenticated traffic from a new endpoint opens at most one
+        // bounded candidate. The session already authenticated and
+        // replay-filtered this datagram; nothing migrates here.
+        let needs_candidate = match state.active.get(&link_id) {
+            Some(record) => record.peer_addr != source && !record.path.is_known(source_endpoint),
+            None => return,
+        };
+        if needs_candidate {
+            self.open_path_candidate_locked(state, &link_id, source, source_endpoint, now_ms);
+        }
         if let Some(record) = state.active.get_mut(&link_id) {
             record.data_rx_observed = true;
             record.confirmed_resend = None;
@@ -3247,6 +3578,30 @@ impl Ssu2RuntimeService {
                 }
                 SessionEvent::Termination { .. } => {
                     remove = Some(TerminationCategory::RemoteTermination);
+                }
+                SessionEvent::PathChallenge(data) => {
+                    self.answer_path_challenge_locked(state, &link_id, source, data, now_ms);
+                }
+                SessionEvent::PathResponse(data) => {
+                    self.accept_path_response_locked(
+                        state,
+                        &link_id,
+                        source,
+                        source_endpoint,
+                        data,
+                        now_ms,
+                    );
+                }
+                SessionEvent::AddressObserved => {
+                    let family = match source.ip() {
+                        IpAddr::V4(_) => i2pr_transport::AddressFamily::Ipv4,
+                        IpAddr::V6(_) => i2pr_transport::AddressFamily::Ipv6,
+                    };
+                    let now = self.service_now();
+                    state.reachability.record(
+                        ReachabilitySignal::AuthenticatedPeerObservedExternalAddress { family },
+                        now,
+                    );
                 }
                 _ => {}
             }
@@ -3346,7 +3701,15 @@ impl Ssu2RuntimeService {
             .find(|(_, record)| record.session.matches_inbound(bytes))
             .map(|(id, _)| *id);
         if let Some(link_id) = matched {
-            self.handle_active_datagram(&mut state, link_id, bytes, now_ms, now_secs, &mut inbound);
+            self.handle_active_datagram(
+                &mut state,
+                link_id,
+                source,
+                bytes,
+                now_ms,
+                now_secs,
+                &mut inbound,
+            );
             return inbound;
         }
         // Pending outbound dials toward this source (single-flight).
@@ -3756,6 +4119,18 @@ impl Ssu2RuntimeService {
                     }
                 }
             }
+            // Expire path-validation candidates; expiry retains the old
+            // validated path, never migrates.
+            let expired = match state.active.get_mut(&link_id) {
+                Some(record) => record.path.poll_expired(now_ms),
+                None => Vec::new(),
+            };
+            if !expired.is_empty() {
+                self.shared
+                    .counters
+                    .path_expirations
+                    .fetch_add(expired.len() as u64, Ordering::Relaxed);
+            }
             if let Some(reason) = remove {
                 self.remove_active_locked(state, &link_id);
                 let _ = self.shared.manager.close_link(link_id, reason);
@@ -3793,6 +4168,9 @@ impl Ssu2RuntimeService {
             }
             for record in state.active.values() {
                 if let Some(at) = record.session.next_deadline_ms(now_ms) {
+                    earliest = earliest.min(at);
+                }
+                if let Some(at) = record.path.next_deadline_ms() {
                     earliest = earliest.min(at);
                 }
                 if !record.data_rx_observed
@@ -4161,5 +4539,560 @@ mod tests {
             Ssu2RuntimeService::new(config, identity_with_router_info(vec![0xFF_u8; 64])),
             Err(Ssu2RuntimeConfigError::InvalidIdentity)
         ));
+    }
+
+    // -- Plan 159 real-UDP path-validation acceptance -------------------
+    //
+    // Two live services drive authenticated sessions over real
+    // loopback datagrams while a raw third socket plays the
+    // changed-path peer. Sealed bytes are produced by the live
+    // sessions themselves (never forged), so every migration decision
+    // below authenticates exactly like production traffic.
+
+    use crate::ChildFailurePolicy;
+    use i2pr_crypto::RouterIdentityBundle;
+    use i2pr_proto::{Date, Mapping, RouterAddress};
+
+    const PATH_TEST_TIMEOUT: Duration = Duration::from_secs(10);
+    const PATH_TEST_POLL: Duration = Duration::from_millis(25);
+
+    struct PathKeys {
+        peer: PeerId,
+        hash: Hash,
+        static_bytes: [u8; 32],
+        static_public: Ssu2PublicKey,
+        intro: IntroKey,
+        router_info: Vec<u8>,
+    }
+
+    struct PathFixture {
+        service: Ssu2RuntimeService,
+        scope: ChildScope,
+        handle: Ssu2ServiceHandle,
+        keys: PathKeys,
+    }
+
+    impl PathFixture {
+        fn addr(&self) -> SocketAddr {
+            self.handle.local_v4().expect("bound v4")
+        }
+    }
+
+    fn i2p_b64_encode(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~";
+        let mut output = String::new();
+        for chunk in bytes.chunks(3) {
+            let mut n: u32 = 0;
+            for byte in chunk {
+                n = (n << 8) | u32::from(*byte);
+            }
+            n <<= 8 * (3 - chunk.len());
+            let digits = match chunk.len() {
+                1 => 2,
+                2 => 3,
+                _ => 4,
+            };
+            for index in 0..digits {
+                output.push(ALPHABET[((n >> (18 - 6 * index)) & 0x3f) as usize] as char);
+            }
+            for _ in digits..4 {
+                output.push('=');
+            }
+        }
+        output
+    }
+
+    fn path_wall_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_secs())
+            .unwrap_or(1_700_000_000)
+    }
+
+    fn make_path_keys() -> PathKeys {
+        let bundle = RouterIdentityBundle::generate(&mut OsRng).expect("identity");
+        let hash = bundle.identity().hash().expect("hash");
+        let static_key = X25519PrivateKey::generate(&mut OsRng).expect("static");
+        let static_bytes = *static_key.secret_bytes();
+        let static_public = Ssu2PublicKey::new(static_key.public_bytes()).expect("static public");
+        let mut intro_bytes = [0_u8; 32];
+        loop {
+            OsRng.try_fill_bytes(&mut intro_bytes).expect("rng");
+            if intro_bytes.iter().any(|byte| *byte != 0) {
+                break;
+            }
+        }
+        let intro = IntroKey::new(intro_bytes);
+        let options = Mapping::from_entries(vec![
+            ("host".to_string(), "127.0.0.1".to_string()),
+            ("port".to_string(), "43000".to_string()),
+            ("v".to_string(), "2".to_string()),
+            ("s".to_string(), i2p_b64_encode(&static_key.public_bytes())),
+            ("i".to_string(), i2p_b64_encode(&intro_bytes)),
+        ])
+        .expect("options");
+        let address = RouterAddress::new(
+            10,
+            Date::from_millis(9_999_999_999_999),
+            "SSU2".to_string(),
+            options,
+        )
+        .expect("address");
+        let info = bundle
+            .sign_router_info(
+                Date::from_millis(path_wall_secs().saturating_mul(1000)),
+                vec![address],
+                Vec::new(),
+                Mapping::empty(),
+            )
+            .expect("sign");
+        let router_info = info
+            .encode_to_vec(constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+            .expect("encode");
+        PathKeys {
+            peer: PeerId::from_hash(hash),
+            hash,
+            static_bytes,
+            static_public,
+            intro,
+            router_info,
+        }
+    }
+
+    async fn start_path_fixture(keys: PathKeys) -> PathFixture {
+        let service = Ssu2RuntimeService::new(
+            Ssu2RuntimeConfig::default(),
+            Ssu2IdentityMaterial {
+                router_hash: keys.hash,
+                static_secret_bytes: keys.static_bytes,
+                intro_key: keys.intro,
+                router_info: keys.router_info.clone(),
+            },
+        )
+        .expect("service");
+        let token = CancellationToken::new();
+        let scope = ChildScope::for_test(&token, ChildFailurePolicy::FailParent);
+        let handle = service
+            .start(
+                &scope,
+                Ssu2SocketConfig {
+                    ipv4: Some("127.0.0.1:0".parse().expect("loopback")),
+                    ipv6: None,
+                },
+            )
+            .await
+            .expect("bind");
+        PathFixture {
+            service,
+            scope,
+            handle,
+            keys,
+        }
+    }
+
+    async fn wait_for_snapshot(
+        service: &Ssu2RuntimeService,
+        mut condition: impl FnMut(&Ssu2Snapshot) -> bool,
+        what: &str,
+    ) {
+        let deadline = tokio::time::Instant::now() + PATH_TEST_TIMEOUT;
+        loop {
+            if condition(&service.snapshot()) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            tokio::time::sleep(PATH_TEST_POLL).await;
+        }
+    }
+
+    async fn path_dial(from: &PathFixture, peer: &PathKeys, addr: SocketAddr) {
+        let target =
+            Ssu2DialTarget::new(peer.peer, peer.hash, addr, peer.static_public, peer.intro)
+                .expect("dial target");
+        from.service
+            .dial_ssu2(target, PATH_TEST_TIMEOUT, &CancellationToken::new())
+            .await
+            .expect("dial");
+    }
+
+    fn path_i2np(id: u32, body_len: usize, seed: u8) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(9 + body_len);
+        bytes.push(6_u8);
+        bytes.extend_from_slice(&id.to_be_bytes());
+        let expiration = path_wall_secs()
+            .saturating_add(3600)
+            .min(u64::from(u32::MAX)) as u32;
+        bytes.extend_from_slice(&expiration.to_be_bytes());
+        for index in 0..body_len {
+            bytes.push(seed.wrapping_add((index % 251) as u8));
+        }
+        bytes
+    }
+
+    fn path_send(fixture: &PathFixture, peer: PeerId, id: u32) -> Vec<u8> {
+        let bytes = path_i2np(id, 128, (id & 0xFF) as u8);
+        let message = EncodedI2npMessage::new(bytes.clone()).expect("message");
+        assert_eq!(
+            fixture
+                .service
+                .send_i2np(peer, message, Duration::from_secs(5)),
+            Ssu2SendOutcome::Accepted
+        );
+        bytes
+    }
+
+    async fn path_recv(handle: &mut Ssu2ServiceHandle, count: usize) -> Vec<Vec<u8>> {
+        let mut messages = Vec::new();
+        let deadline = tokio::time::Instant::now() + PATH_TEST_TIMEOUT;
+        while messages.len() < count {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            assert!(!remaining.is_zero(), "timed out waiting for I2NP");
+            let next = tokio::time::timeout(remaining, handle.next_inbound())
+                .await
+                .expect("timeout")
+                .expect("channel open");
+            messages.push(next.bytes);
+        }
+        messages
+    }
+
+    /// Seals one fresh control packet through a live session without
+    /// using the staging queue: the scheduler may concurrently consume
+    /// queued controls, so retry until this call seals the bytes
+    /// itself (every seal carries a fresh packet number).
+    async fn seal_control(
+        service: &Ssu2RuntimeService,
+        control: &[u8],
+        is_challenge: bool,
+    ) -> Vec<u8> {
+        for _ in 0..20 {
+            let sealed = service.shared.state.lock().ok().and_then(|mut state| {
+                let record = state.active.values_mut().next()?;
+                let now_ms = monotonic_ms(&service.shared.started_at);
+                let queued = if is_challenge {
+                    record
+                        .session
+                        .queue_path_challenge(control.to_vec())
+                        .is_ok()
+                } else {
+                    record.session.queue_path_response(control.to_vec()).is_ok()
+                };
+                if !queued {
+                    return None;
+                }
+                record.session.poll_transmit(now_ms)
+            });
+            if let Some(bytes) = sealed {
+                return bytes;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("live session did not seal the control packet");
+    }
+
+    fn session_peer_addr(service: &Ssu2RuntimeService) -> SocketAddr {
+        service
+            .shared
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| state.active.values().next().map(|record| record.peer_addr))
+            .expect("active session")
+    }
+
+    fn session_candidate_count(service: &Ssu2RuntimeService) -> usize {
+        service
+            .shared
+            .state
+            .lock()
+            .ok()
+            .map(|state| {
+                state
+                    .active
+                    .values()
+                    .map(|record| record.path.candidate_count())
+                    .sum()
+            })
+            .unwrap_or(usize::MAX)
+    }
+
+    fn candidate_challenge(service: &Ssu2RuntimeService, addr: SocketAddr) -> [u8; 32] {
+        let endpoint = Ssu2Endpoint::from_socket_addr(addr).expect("endpoint");
+        service
+            .shared
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state
+                    .active
+                    .values()
+                    .next()
+                    .and_then(|record| record.path.challenge_for(endpoint))
+            })
+            .expect("candidate challenge")
+    }
+
+    async fn shutdown_path_fixture(fixture: PathFixture) {
+        fixture.service.shutdown();
+        let report = fixture.scope.shutdown().await;
+        assert!(report.joined() >= 1, "loop task joined");
+    }
+
+    #[tokio::test]
+    async fn legitimate_path_migration_over_real_udp() {
+        let mut a = start_path_fixture(make_path_keys()).await;
+        let mut b = start_path_fixture(make_path_keys()).await;
+        path_dial(&a, &b.keys, b.addr()).await;
+        wait_for_snapshot(
+            &a.service,
+            |snapshot| snapshot.active_sessions == 1,
+            "a active",
+        )
+        .await;
+        wait_for_snapshot(
+            &b.service,
+            |snapshot| snapshot.active_sessions == 1,
+            "b active",
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Baseline health in both directions first.
+        let first = path_send(&a, b.keys.peer, 0xE001);
+        assert_eq!(path_recv(&mut b.handle, 1).await, vec![first]);
+        let back = path_send(&b, a.keys.peer, 0xE101);
+        assert_eq!(path_recv(&mut a.handle, 1).await, vec![back]);
+
+        // A third loopback socket plays the peer's new path.
+        let raw = UdpSocket::bind("127.0.0.1:0").await.expect("raw socket");
+        let c_addr = raw.local_addr().expect("raw addr");
+        let b_addr = b.addr();
+        // Suppress A's staged originals while sealing triggers: every
+        // byte below is sealed by the live session and crosses a real
+        // socket exactly once, from the asserted source.
+        a.service.set_test_faults(Some(Ssu2TestFaults {
+            drop_transmit: (0..32).collect(),
+            ..Default::default()
+        }));
+        let trigger = seal_control(&a.service, &[0xCC_u8; 32], true).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        a.service.set_test_faults(None);
+        // Scheduler-stolen control copies (if any) were dropped by the
+        // armed fault armor; the returned bytes below are fresh.
+        // The genuine bytes arrive at B from the new source over UDP.
+        raw.send_to(&trigger, b_addr).await.expect("trigger send");
+        wait_for_snapshot(
+            &b.service,
+            |snapshot| snapshot.path_challenges >= 1,
+            "candidate challenge",
+        )
+        .await;
+        assert_eq!(session_peer_addr(&b.service), a.addr());
+        let count = session_candidate_count(&b.service);
+        assert_eq!(count, 1);
+        // B's challenge reaches the new path over real UDP (opaque
+        // sealed bytes: the value is read from B's validator, exactly
+        // what the legitimate peer learns by receiving the packet).
+        let mut buffer = vec![0_u8; 2048];
+        let (len, from) = tokio::time::timeout(PATH_TEST_TIMEOUT, raw.recv_from(&mut buffer))
+            .await
+            .expect("challenge recv")
+            .expect("datagram");
+        assert_eq!(from, b_addr);
+        assert!((40..=1280).contains(&len));
+        // Seal A's answer through A's live session, then deliver it
+        // from the new source over real UDP.
+        let challenge = candidate_challenge(&b.service, c_addr);
+        a.service.set_test_faults(Some(Ssu2TestFaults {
+            drop_transmit: (0..32).collect(),
+            ..Default::default()
+        }));
+        let answer = seal_control(&a.service, &challenge, false).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        a.service.set_test_faults(None);
+        raw.send_to(&answer, b_addr).await.expect("answer send");
+        wait_for_snapshot(
+            &b.service,
+            |snapshot| snapshot.path_migrations >= 1,
+            "path migration",
+        )
+        .await;
+        assert_eq!(session_peer_addr(&b.service), c_addr);
+        assert_eq!(session_candidate_count(&b.service), 0);
+        // Behavioral proof: B's next datagram to the peer leaves for
+        // the migrated path and arrives at the raw socket.
+        let e002 = path_send(&b, a.keys.peer, 0xE002);
+        let (len, from) = tokio::time::timeout(PATH_TEST_TIMEOUT, raw.recv_from(&mut buffer))
+            .await
+            .expect("migrated recv")
+            .expect("datagram");
+        assert_eq!(from, b_addr);
+        assert!((40..=1280).contains(&len));
+        // Old-path replay: the same genuine bytes from A's original
+        // address authenticate as a replay and migrate nothing.
+        b.service.handle_datagram(&trigger, a.addr(), true, None);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(b.service.snapshot().path_migrations, 1);
+        assert_eq!(session_candidate_count(&b.service), 0);
+        // A fresh packet from the old address opens a bounded
+        // candidate under the current rules. The live peer genuinely
+        // answers B's challenge (automatic spec-defined
+        // challenge/response in both runtimes), so the validated path
+        // legitimately migrates back with zero test intervention.
+        let old_path = path_send(&a, b.keys.peer, 0xE003);
+        assert_eq!(path_recv(&mut b.handle, 1).await, vec![old_path]);
+        wait_for_snapshot(
+            &b.service,
+            |snapshot| snapshot.path_migrations >= 2,
+            "return migration",
+        )
+        .await;
+        assert_eq!(session_peer_addr(&b.service), a.addr());
+        assert_eq!(session_candidate_count(&b.service), 0);
+        // Both directions stay usable after the double migration.
+        // The unacked pre-return message legitimately retransmits
+        // fresh to the restored path, so A receives it alongside the
+        // new traffic (order-insensitive set comparison).
+        let there = path_send(&a, b.keys.peer, 0xE004);
+        assert_eq!(path_recv(&mut b.handle, 1).await, vec![there]);
+        let back_again = path_send(&b, a.keys.peer, 0xE102);
+        let mut got = path_recv(&mut a.handle, 2).await;
+        got.sort();
+        let mut want = vec![e002, back_again];
+        want.sort();
+        assert_eq!(got, want);
+
+        shutdown_path_fixture(a).await;
+        shutdown_path_fixture(b).await;
+    }
+
+    #[tokio::test]
+    async fn spoof_burst_from_new_sources_never_migrates() {
+        let mut a = start_path_fixture(make_path_keys()).await;
+        let mut b = start_path_fixture(make_path_keys()).await;
+        path_dial(&a, &b.keys, b.addr()).await;
+        wait_for_snapshot(
+            &a.service,
+            |snapshot| snapshot.active_sessions == 1,
+            "a active",
+        )
+        .await;
+        wait_for_snapshot(
+            &b.service,
+            |snapshot| snapshot.active_sessions == 1,
+            "b active",
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let baseline = b.service.snapshot();
+
+        // Four spoof sources blast unauthenticated traffic at B: short
+        // datagrams, oversized datagrams, valid-length randomness, and
+        // handshake-shaped prefixes. None can authenticate, so none
+        // may open a candidate, let alone migrate.
+        let b_addr = b.addr();
+        let mut sources = Vec::new();
+        for _ in 0..4 {
+            sources.push(UdpSocket::bind("127.0.0.1:0").await.expect("spoof socket"));
+        }
+        let mut rng_state: u32 = 0x5A5A_5A5A;
+        for _ in 0..50 {
+            for source in &sources {
+                // Too short.
+                source.send_to(&[0x99_u8; 16], b_addr).await.expect("send");
+                // Valid-length randomness.
+                let mut random = vec![0_u8; 96];
+                for byte in random.iter_mut() {
+                    rng_state = rng_state.wrapping_mul(1664525).wrapping_add(1013904223);
+                    *byte = (rng_state >> 24) as u8;
+                }
+                source.send_to(&random, b_addr).await.expect("send");
+                // Oversized.
+                source
+                    .send_to(&vec![0x77_u8; 2000], b_addr)
+                    .await
+                    .expect("send");
+                // Handshake-shaped prefix with a bad version.
+                let mut shaped = vec![0xAA_u8; 64];
+                shaped[12] = 0x7F;
+                source.send_to(&shaped, b_addr).await.expect("send");
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let after = b.service.snapshot();
+        assert_eq!(after.active_sessions, 1);
+        assert_eq!(after.path_challenges, 0);
+        assert_eq!(after.path_migrations, 0);
+        assert_eq!(after.path_rejections, 0);
+        assert_eq!(session_candidate_count(&b.service), 0);
+        assert_eq!(session_peer_addr(&b.service), a.addr());
+        assert!(
+            after.cheap_drops + after.auth_failures > baseline.cheap_drops + baseline.auth_failures,
+            "spoof traffic was cheaply classified"
+        );
+        // The session survives the burst fully usable in both
+        // directions.
+        let first = path_send(&a, b.keys.peer, 0xF001);
+        assert_eq!(path_recv(&mut b.handle, 1).await, vec![first]);
+        let back = path_send(&b, a.keys.peer, 0xF101);
+        assert_eq!(path_recv(&mut a.handle, 1).await, vec![back]);
+
+        shutdown_path_fixture(a).await;
+        shutdown_path_fixture(b).await;
+    }
+
+    #[tokio::test]
+    async fn challenge_response_control_round_trip_over_real_udp() {
+        let a = start_path_fixture(make_path_keys()).await;
+        let b = start_path_fixture(make_path_keys()).await;
+        path_dial(&a, &b.keys, b.addr()).await;
+        wait_for_snapshot(
+            &a.service,
+            |snapshot| snapshot.active_sessions == 1,
+            "a active",
+        )
+        .await;
+        wait_for_snapshot(
+            &b.service,
+            |snapshot| snapshot.active_sessions == 1,
+            "b active",
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        // A challenges B over the validated path through the live
+        // session; B answers. Neither side migrates: the source never
+        // changed. Returned seals are staged explicitly; scheduler-
+        // stolen copies already flew on their own.
+        let sealed = seal_control(&a.service, &[0xD0_u8; 32], true).await;
+        {
+            let mut state = a.service.shared.state.lock().expect("state");
+            let limits = a.service.shared.config.limits;
+            stage_one_locked(
+                &mut state,
+                &limits,
+                &a.service.shared.counters,
+                sealed,
+                b.addr(),
+            );
+        }
+        wait_for_snapshot(
+            &b.service,
+            |snapshot| snapshot.path_responses >= 1,
+            "peer answer",
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(a.service.snapshot().path_migrations, 0);
+        assert_eq!(b.service.snapshot().path_migrations, 0);
+        assert_eq!(a.service.snapshot().path_challenges, 0);
+        assert_eq!(session_candidate_count(&a.service), 0);
+        assert_eq!(session_candidate_count(&b.service), 0);
+
+        shutdown_path_fixture(a).await;
+        shutdown_path_fixture(b).await;
     }
 }

@@ -28,12 +28,13 @@ plan_155 = passed-m8-ssu2-v2-protocol-foundation-and-addresses
 plan_156 = passed-m8-ssu2-v2-handshake-token-and-routerinfo
 plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
+plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
 milestone7_sam_localhost = passed-via-plan151
 milestone7_final_acceptance = closed
 milestone6_interoperable = not-yet-claimed
-next_executable_plan = 159
+next_executable_plan = 160
 next_product_layer = milestone8-ssu2-v2
 ```
 
@@ -45,9 +46,11 @@ Milestone 8 roadmap is registered via [**Plan 154**](plans/154-status.md); Plan 
 
 [**Plan 157**](plans/157-status.md) passed the Milestone 8 SSU2 v2 data phase, still fully runtime-neutral (no UDP sockets, no runtime service): the authenticated `Ssu2Session` short-header packet path with the corrected two-step data-phase KDF, the bounded packet-number/replay window, strict ACK range interpretation with loop-free delayed/immediate scheduling, fresh (never ciphertext-replayed) retransmission with a conservative RTT/RTO/congestion controller, exact MTU-aware I2NP fragmentation with strict reassembly quotas and duplicate suppression, and termination/rekey/idle handling with privacy-safe counters. Seventeen deterministic fault trajectories plus unit boundary tests and two committed data-phase vectors pin the behavior. No socket/runtime interoperability is claimed; the next executable plan is 158.
 
-[**Plan 158**](plans/158-status.md) passed the first Milestone 8 SSU2 UDP runtime: `i2pr-runtime::Ssu2RuntimeService` owns real UDP sockets and drives the Plan 156/157 state machines through a central bounded scheduler (one loop task per socket, no task/timer per packet), charges pending handshakes through shared transport resources with per-IP/subnet caps, promotes atomically through the generic `TransportManager` as `TransportKind::Ssu2`, admits outbound I2NP through the transport-neutral delivery contract, caches `NewToken` announcements for cached-token dials with stale-token Retry fallback, and proves the i2pr↔i2pr local session product over real localhost datagrams (tokenless/cached-token establishment, bidirectional fragmented I2NP, loss/ACK-loss/reorder/duplicate recovery, malformed-traffic boundedness, admission ceilings, graceful/abrupt/cancel baselines). The daemon `[ssu2]` surface stays disabled by default with no advertisement; publication, path validation, relays, and independent interop belong to Plans 159–161.
+[**Plan 158**](plans/158-status.md) passed the first Milestone 8 SSU2 UDP runtime: `i2pr-runtime::Ssu2RuntimeService` owns real UDP sockets and drives the Plan 156/157 state machines through a central bounded scheduler (one loop task per socket, no task/timer per packet), charges pending handshakes through shared transport resources with per-IP/subnet caps, promotes atomically through the generic `TransportManager` as `TransportKind::Ssu2`, admits outbound I2NP through the transport-neutral delivery contract, caches `NewToken` announcements for cached-token dials with stale-token Retry fallback, and proves the i2pr↔i2pr local session product over real localhost datagrams (tokenless/cached-token establishment, bidirectional fragmented I2NP, loss/ACK-loss/reorder/duplicate recovery, malformed-traffic boundedness, admission ceilings, graceful/abrupt/cancel baselines). The daemon `[ssu2]` surface stays disabled by default with no advertisement; path validation, publication, and selection belong to Plan 159.
 
 The `[sam]` config section remains disabled by default and loopback-only when enabled. No localhost SAM result is router-to-router interoperability evidence.
+
+[**Plan 159**](plans/159-status.md) passed Milestone 8 SSU2 path validation, publication policy, and transport selection without changing wire semantics or enabling production publication: the runtime-neutral `PathValidator` (bounded per-family candidates, OS-CSPRNG challenges, exact-proof promotion, minimum-MTU candidates), migration-safe congestion reset, the corroboration-gated router reachability policy (one observation can never publish `Reachable`), deterministic canonical publication snapshots (direct form needs explicit opt-in), and deterministic NTCP2/SSU2 reuse/dial/fallback selection through the generic manager — proven by sealed-packet trajectories, unit matrices, and real-UDP migration/spoof/round-trip tests. The daemon `[ssu2]` surface stays disabled by default with no advertisement; peer-test/relay roles belong to Plan 160 and independent interop to Plan 161.
 
 For the full plan hierarchy, MVP roadmap, and what's implemented vs. not, see [**`plans/README.md`**](plans/README.md).
 
@@ -61,8 +64,8 @@ crates/
   i2pr-core/                Shared contracts, lifecycle, budgets, health
   i2pr-transport/           Transport-neutral link management
    i2pr-transport-ntcp2/     NTCP2 protocol implementation (no I/O)
-    i2pr-transport-ssu2/     SSU2 v2 protocol (runtime-neutral) + one-shot NewToken queue (Plan 158)
-   i2pr-runtime/             Tokio-owned supervision, cancellation, I/O (incl. SSU2 UDP runtime, Plan 158)
+    i2pr-transport-ssu2/     SSU2 v2 protocol (runtime-neutral) + one-shot NewToken queue (Plan 158) + path validation/publication (Plan 159)
+   i2pr-runtime/             Tokio-owned supervision, cancellation, I/O (incl. SSU2 UDP runtime, Plan 158; path validation, Plan 159)
   i2pr-netdb/               RouterInfo + LeaseSet2 validation, store, lookup, publication
   i2pr-netdb-persist/       Persistent cache + bounded SU3 reseed ingestion
   i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build, runtime-neutral data plane

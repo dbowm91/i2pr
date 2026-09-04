@@ -18,7 +18,9 @@ mod identity;
 mod lifecycle;
 mod manager;
 mod payload;
+mod reachability;
 mod resource;
+mod selection;
 mod snapshot;
 mod types;
 
@@ -35,9 +37,18 @@ pub use manager::{
     RegistrationRejection, TransportManager,
 };
 pub use payload::{EncodedI2npMessage, PayloadError};
+pub use reachability::{
+    DEFAULT_OBSERVATION_TTL, MAX_TRACKED_OBSERVATIONS, MIN_CORROBORATION_FLOOR, ReachabilityPolicy,
+    ReachabilityPolicyError, ReachabilitySignal, ReachabilitySnapshot, ReachabilityState,
+    ReachabilityTracker, corroboration_confidence,
+};
 pub use resource::{
     TransportLease, TransportLimits, TransportQueueLease, TransportResourceLimitsError,
     TransportResources,
+};
+pub use selection::{
+    ExistingLink, MAX_SELECTION_CANDIDATES, SelectionOutcome, SelectionPolicy, TransportCandidate,
+    select_peer_transport,
 };
 pub use snapshot::{
     LinkResourceUsage, LinkSnapshot, ReachabilityObservation, SnapshotError, TransportSnapshot,

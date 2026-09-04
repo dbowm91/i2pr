@@ -698,6 +698,33 @@ impl Ssu2Session {
         self.counters
     }
 
+    /// Notes an authenticated path migration after the Plan 159
+    /// [`crate::path::PathValidator`] promoted a candidate on matching
+    /// proof.
+    ///
+    /// Stale in-flight accounting from the previous endpoint must not
+    /// survive migration: every unacknowledged packet is declared lost
+    /// through the same bounded requeue policy as NACK/RTO loss (fresh
+    /// generation, per-fragment ceiling, silent per-message failure
+    /// past it), then bytes-in-flight resets to zero, the congestion
+    /// window returns to its conservative minimum, and the
+    /// consecutive-RTO state clears. Semantic queues (`outbound`,
+    /// `pending_retransmit`) are path-independent and retained, so
+    /// unacknowledged messages retransmit fresh on the new path
+    /// instead of stranding while the session stays usable.
+    pub fn note_path_migrated(&mut self) {
+        let abandoned: Vec<SentPacket> = self.sent.drain(..).collect();
+        for packet in &abandoned {
+            // The timestamp is unused by the requeue policy.
+            self.declare_lost(packet, 0);
+        }
+        self.bytes_in_flight = 0;
+        self.cwnd_bytes = constants::DATA_MIN_CWND_BYTES;
+        self.counters.bytes_in_flight = 0;
+        self.counters.cwnd_bytes = self.cwnd_bytes;
+        self.consecutive_rto = 0;
+    }
+
     /// Returns whether the session has terminated.
     pub const fn is_terminated(&self) -> bool {
         self.local_terminate.is_some() || self.remote_terminate.is_some()

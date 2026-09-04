@@ -5,8 +5,10 @@ validation, structural packet-header codecs, the bounded
 authenticated-plaintext block vocabulary, the complete Noise XK
 establishment handshake with header protection, the bounded one-use
 token lifecycle, RouterInfo establishment binding, consuming
-initiator/responder state machines, and the authenticated data-phase
-session with reliability/fragmentation. No UDP sockets.
+initiator/responder state machines, the authenticated data-phase
+session with reliability/fragmentation, authenticated path validation
+with per-path MTU state, and deterministic address-publication
+snapshots. No UDP sockets.
 
 Path: `crates/i2pr-transport-ssu2/`
 
@@ -18,7 +20,9 @@ functions, no timers, no tasks.** Every public API is synchronous
 and bounded. Plan 155 landed the address/header/block foundation;
 Plan 156 added the Noise XK handshake and establishment state
 machines; Plan 157 added the authenticated data-phase session
-(`session.rs`). The supervised UDP adapter in `i2pr-runtime`
+(`session.rs`); Plan 159 added the path-validation machine
+(`path.rs`) and the publication snapshot builder (`publication.rs`).
+The supervised UDP adapter in `i2pr-runtime`
 (`Ssu2RuntimeService`) landed in Plan 158 and drives exactly these
 machines over real sockets.
 
@@ -56,11 +60,11 @@ It does own:
 
 It does **not** own UDP sockets (those live in `i2pr-runtime` since
 Plan 158), peer-test/relay roles, or transport selection. Those
-belong to Plans 159–161.
+belong to Plans 160–161.
 
 ## Module layout
 
-Declared in `src/lib.rs:28-36`. No subdirectories. Integration
+Declared in `src/lib.rs:28-38`. No subdirectories. Integration
 trajectories live in `tests/handshake.rs`.
 
 | File | Responsibility | Main public types |
@@ -75,11 +79,13 @@ trajectories live in `tests/handshake.rs`.
 | `src/handshake.rs` | Establishment codecs, prevalidation, reassembly, RouterInfo binding | `TokenRequest`, `RetryMessage`, `SessionRequestParts`, `SessionCreatedParts`, `ConfirmedReassembly`, `AuthenticatedPeer`, `ClockSkewPolicy`, `HandshakeReplayCache`, `ReplayToken`, `RouterInfoFreshness`, `HandshakeError` |
 | `src/token.rs` | Bounded one-use token table | `TokenStore`, `Ssu2Token`, `TokenError`, `retry_response_budget` |
 | `src/state_machine.rs` | Consuming initiator/responder machines | `Initiator`, `Responder`, `InitiatorConfig`, `ResponderConfig`, `HandshakeAction`, `AuthenticatedSsu2Session`, `DeadlineKind`, `TerminateReason`, `DropCategory`, `StateMachineError` |
-| `src/session.rs` | Authenticated data-phase session | `Ssu2Session`, `SessionConfig`, `SessionCounters`, `SessionEvent`, `SessionAction`, `SessionError`, `ReceiveOutcome`, `DropReason` (+ Plan 158: `queue_new_token`, `matches_inbound`, `outbound_pending`) |
+| `src/session.rs` | Authenticated data-phase session | `Ssu2Session`, `SessionConfig`, `SessionCounters`, `SessionEvent`, `SessionAction`, `SessionError`, `ReceiveOutcome`, `DropReason` (+ Plan 158: `queue_new_token`, `matches_inbound`, `outbound_pending`; + Plan 159: `note_path_migrated`) |
+| `src/path.rs` | Authenticated path validation + per-path MTU (Plan 159) | `PathValidator`, `ValidatedPath`, `PathEvent`, `PathError`, `PathCounters`, path bound constants |
+| `src/publication.rs` | Deterministic publication snapshots (Plan 159) | `PublicationRequest`, `PublicationPolicy`, `PublicationOutcome`, `Ssu2PublicationSnapshot`, `WithholdReason`, `PublicationError`, `build_publication_snapshot`, `parse_snapshot` |
 
 ## Public surface
 
-Crate-root re-exports (`lib.rs:38-72`):
+Crate-root re-exports (`lib.rs:38-79`):
 
 ```rust
 pub mod address;
@@ -89,6 +95,8 @@ pub mod crypto;
 pub mod handshake;
 pub mod header;
 pub mod packet;
+pub mod path;
+pub mod publication;
 pub mod session;
 pub mod state_machine;
 pub mod token;
@@ -99,6 +107,8 @@ pub use crypto::{...};
 pub use handshake::{...};
 pub use header::{...};
 pub use packet::{...};
+pub use path::{...};
+pub use publication::{...};
 pub use state_machine::{...};
 pub use token::{...};
 ```
@@ -308,6 +318,55 @@ is a concrete struct/enum.
 - Outbound controls are single-shot; per-message delivery failure
   past the retransmission ceiling is silent by design (counters only)
   while the session stays usable.
+- `note_path_migrated()` (Plan 159) — declares every unacked sent
+  packet lost through the bounded requeue policy (fresh generation,
+  per-fragment ceiling, silent per-message failure past it), then
+  resets bytes-in-flight to zero, the window to its minimum, and the
+  consecutive-RTO state. Called by the runtime after the validator
+  promotes; without the requeue, in-flight messages would strand
+  (caught by the Plan 159 sealed-packet suite).
+
+### Path validation (`path.rs`, Plan 159)
+
+- `PathValidator::new(endpoint, mtu)` — one validated path, no
+  candidates; MTU range-checked `1280..=9000`.
+- `note_authenticated_packet(endpoint, challenge, now_ms)` — the
+  caller guarantees the session already authenticated and
+  replay-filtered the datagram. Validated source: no effect. Known
+  candidate: no effect (one challenge each). New endpoint: bounded
+  admission (4 global, 2 per family, 8 challenges per session, nonzero
+  32-byte challenge) then exactly one `PathEvent::ChallengeToSend`.
+  Never migrates.
+- `on_path_response(endpoint, data, now_ms)` — promotes only on an
+  exact challenge match from the tracked candidate endpoint
+  (`PathEvent::Validated { previous, current }`); wrong/stale values
+  are rejected and counted while the candidate survives to its
+  deadline; expired/unknown endpoints fail typed without migration.
+  The validated MTU is path policy and survives migration.
+- `poll_expired(now_ms)` / `next_deadline_ms()` — deadline expiry
+  (retains the old path) and the central-scheduler input.
+- `effective_mtu()` / `validated_payload_bytes()` /
+  `candidate_payload_bytes()` — fragmentation budgets; candidates are
+  pinned to the 1280 minimum. There is no packet-driven MTU setter:
+  `ValidatedPath::with_mtu` is the only writer, reserved for
+  configured/validated sources.
+
+### Publication snapshots (`publication.rs`, Plan 159)
+
+- `build_publication_snapshot(PublicationRequest)` — deterministic
+  `Direct` / `Firewalled` / `Withheld` decision from public keys
+  only (zero keys rejected; private material is never an input).
+- Direct host/port requires `Reachable` *plus* explicit
+  `allow_direct`; anything weaker yields the unpublished static-only
+  firewalled form (no fabricated address). Non-empty introducers
+  without `allow_introducers` fail closed (`IntroducersUnvalidated`).
+- Output options are canonical (sorted); `Ssu2PublicationSnapshot`
+  carries `evidence_expires_secs`, and `is_expired(now)` marks
+  withdrawal. `parse_snapshot` round-trips through the strict
+  production parser.
+- `address.rs` supporting enablers: `pub(crate)
+  encode_i2p_base64` (promoted from test-only) and
+  `Ssu2Capabilities::parse` for strict caps construction.
 
 ## Errors
 
@@ -326,6 +385,8 @@ protocol-vs-operational mixing.
 | `TokenError` | `token.rs` | Zero/unknown/expired/reused/wrong-source token, full table |
 | `StateMachineError` | `state_machine.rs` | Handshake/crypto/wrapper mapping, invalid-state driving |
 | `SessionError` | `session.rs` | Packet/header/crypto/block mapping, session mismatch, replay/old/future, ACK underflow/invalid, packet-number exhaustion, queue/history/reassembly ceilings, conflict, terminated/policy denial |
+| `PathError` | `path.rs` | Candidate/family/challenge-budget ceilings, weak challenge, unknown/expired/mismatched response, invalid MTU |
+| `PublicationError` | `publication.rs` | Invalid public key, invalid MTU, unvalidated/too-many introducers |
 
 ## Dependencies
 
@@ -355,15 +416,18 @@ labels stay local. No runtime, socket, or async dependencies.
 
 ## Tests
 
-103 tests: 66 synchronous unit tests (inline) plus 20 integration
-trajectories in `tests/handshake.rs` plus 17 data-phase trajectories
-in `tests/data_phase.rs`, plus 14 committed fixtures
+132 tests: synchronous unit tests (inline) plus 20 integration
+trajectories in `tests/handshake.rs`, 17 data-phase trajectories
+in `tests/data_phase.rs`, 9 sealed-packet path-validation
+trajectories in `tests/path_validation.rs` (Plan 159), plus 14 committed fixtures
 under `tests/fixtures/ssu2/` (pinned by `manifest.tsv`,
 enforced by `scripts/check-ssu2-vectors.sh`). Plan 158 added the
 inline `queued_new_token_round_trips_as_typed_event` and
 `inbound_matching_is_side_effect_free` unit tests; the 9-test
 real-loopback product suite lives in
-`crates/i2pr-runtime/tests/ssu2_local.rs` (see
+`crates/i2pr-runtime/tests/ssu2_local.rs`, and the 3-test real-UDP
+path migration/spoof/round-trip suite lives inline in
+`crates/i2pr-runtime/src/ssu2_runtime.rs` (see
 [i2pr-runtime](i2pr-runtime.md)).
 
 | Area | Coverage |
@@ -379,6 +443,9 @@ real-loopback product suite lives in
 | `tests/handshake.rs` | Full tokenless Retry trajectory to matching directional keys, cached-token trajectory, token valid/expired/wrong-source/reuse/rotation/unknown matrix with pre-DH fail-closed evidence, identical-byte resends, duplicate Created/Confirmed handling, deadline exhaustion + per-phase cancellation, tag-mutation isolation, 6-case RouterInfo binding matrix, RouterInfo-not-first rejection, 200-datagram cheap flood with bounded state, amplification budget, secret redaction, 6 committed handshake vectors (one with raw-primitive independent derivation) |
 | `tests/data_phase.rs` | Bidirectional multi-message exchange, DATA-loss fresh retransmission with exact once-delivery, ACK-loss recovery without loops, duplicate/replay/corruption/reorder, first/middle/final fragment loss recovery, fragment reorder/duplicate/conflict, reassembly exact-capacity/max+1 with total cleanup, outbound-queue exact-capacity/max+1, congestion-gate boundedness, prolonged-loss bounded termination, idle timeout, termination lifecycle, two-session isolation, 2 committed data-phase vectors reproduced byte-for-byte |
 | `session.rs` (unit) | Second-HKDF key shape, ACK underflow without mutation, duplicate-ACK idempotency, sent-history exact eviction, per-fragment ceiling silence, packet-number exhaustion, wrap boundaries, NextNonce rekey boundary, NewToken queue round trip (Plan 158), side-effect-free inbound matching (Plan 158) |
+| `path.rs` (unit, Plan 159) | No-challenge on validated source, single bounded candidate, wrong-response rejection with candidate survival, exact-once migration with proof consumption, timeout retention, global/family quotas, v4/v6 separation, conservative candidate MTU, no packet-driven MTU, zero-challenge rejection, challenge-budget exhaustion, scheduler deadlines |
+| `publication.rs` (unit, Plan 159) | Deterministic canonical round trip, firewalled form without direct address, direct opt-out, expiry withdrawal, unvalidated-introducer rejection, zero-key/bad-MTU fail-closed, no private material |
+| `tests/path_validation.rs` (Plan 159) | Real sealed-packet trajectories: unauthenticated/replay rejection without candidates, bounded candidate creation, wrong-response rejection, exact-once migration with continued bidirectional delivery, timeout retention, v4/v6 cross-validation refusal, migration congestion reset with semantic retention and fresh retransmit, minimum-MTU control fit |
 
 ## Distinctive design choices
 
@@ -401,10 +468,13 @@ real-loopback product suite lives in
 6. **No NetDB mutation in the handshake** — RouterInfo binding
    returns validated bytes; publication/freshness policy beyond
    the explicit window belongs to the caller.
-7. **Caller-supplied determinism** — secrets, connection IDs,
-   packet numbers, token bytes, and both clocks arrive as
-   parameters; the machines hold no RNG and read no time.
-8. **No new crypto dependency** — X25519/HKDF/signature reuse
+7. **Migration never strands** — `note_path_migrated` requeues
+   unacked fragments through the bounded loss policy instead of
+   clearing provenance (Plan 159).
+8. **Caller-supplied determinism** — secrets, connection IDs,
+   packet numbers, token bytes, challenges, and both clocks arrive
+   as parameters; the machines hold no RNG and read no time.
+9. **No new crypto dependency** — X25519/HKDF/signature reuse
    comes from `i2pr-crypto`; only transcript sequencing and
    SSU2 labels are local, per the Plan 156 dependency review.
 
@@ -424,8 +494,9 @@ real-loopback product suite lives in
 - Plan-of-record:
   `plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md`,
   `plans/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md`,
-  and `plans/158-m8-ssu2-udp-runtime-and-local-session-product.md`.
-- Closure: `plans/156-status.md`, `plans/157-status.md`, and
-  `plans/158-status.md`.
+  `plans/158-m8-ssu2-udp-runtime-and-local-session-product.md`, and
+  `plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md`.
+- Closure: `plans/156-status.md`, `plans/157-status.md`,
+  `plans/158-status.md`, and `plans/159-status.md`.
 - Dossier: `specs/protocols/09-ssu2.md`,
   `specs/SOURCES.md` (Milestone 8 refresh).

@@ -31,6 +31,8 @@ pub mod crypto;
 pub mod handshake;
 pub mod header;
 pub mod packet;
+pub mod path;
+pub mod publication;
 pub mod session;
 pub mod state_machine;
 pub mod token;
@@ -65,6 +67,15 @@ pub use header::{
     DataHeader, HeaderError, HeaderForm, LongHeader, MessageType, SessionConfirmedHeader,
 };
 pub use packet::{DatagramLengthClass, PacketError};
+pub use path::{
+    MAX_CANDIDATES_PER_FAMILY, MAX_PATH_CANDIDATES, MAX_PATH_CHALLENGES_PER_SESSION,
+    PATH_CANDIDATE_MTU, PATH_CHALLENGE_LENGTH, PATH_VALIDATION_TIMEOUT_MS, PathCounters, PathError,
+    PathEvent, PathValidator, ValidatedPath,
+};
+pub use publication::{
+    PublicationError, PublicationOutcome, PublicationPolicy, PublicationRequest,
+    Ssu2PublicationSnapshot, WithholdReason, build_publication_snapshot, parse_snapshot,
+};
 pub use session::{
     DropReason, ReceiveOutcome, SessionAction, SessionConfig, SessionCounters, SessionError,
     SessionEvent, Ssu2Session,

@@ -506,8 +506,11 @@ explicit true rejected). Plan 158 adds the parallel `[ssu2]` surface
 (disabled loopback-only defaults, `enabled = true` / `advertise` /
 `introducer_service` rejected fail-closed, strict ceilings): the
 daemon parses and validates it but starts no SSU2 service —
-activation (identity/RouterInfo plumbing, publication) belongs to
-Plan 159.
+activation stays fail-closed: Plan 159 deliberately built only the
+snapshot/policy inputs (reachability, publication, selection)
+without wiring production activation or publication, per plan
+§§7/13/15.15; identity/RouterInfo plumbing and any activation
+belong to Plans 160–161.
 
 Integration tests in `tests/cli.rs` invoke the compiled binary via
 `Command::new(env!("CARGO_BIN_EXE_i2pr"))`:

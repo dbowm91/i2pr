@@ -10,9 +10,11 @@ composition surfaces, not mixed-router evidence. Plan 044 confirms that the
 runtime-owned NTCP2 wire adapter is implemented and locally validated; mixed-
 router harness composition and authorized evidence remain pending.
 Plan 158 adds the runtime-owned SSU2 UDP service with its central
-bounded scheduler and real-loopback local session product; public
-advertisement and router-to-router interoperability remain pending
-(Plans 159–161).
+bounded scheduler and real-loopback local session product; Plan 159
+adds authenticated path validation/migration, conservative
+reachability observations, and the scheduler-owned candidate expiry.
+Public advertisement and router-to-router interoperability remain
+pending (Plans 160–161).
 
 Path: `crates/i2pr-runtime/`
 
@@ -34,7 +36,8 @@ rest of the world. It is where:
   handoff.
 - SSU2 handshake/data actions are fulfilled by `ssu2_runtime` with cheap
   receive classification, OS randomness/time, admission, a central
-  scheduler, and `TransportManager` promotion.
+  scheduler, path validation/migration, reachability observations,
+  and `TransportManager` promotion.
 - `ntcp2_link` owns authenticated frame reader/writer children and queue
   leases. Listener/dial promotion keeps pending admission attached until
   active-link admission succeeds.
@@ -56,7 +59,7 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
 | `ntcp2_handshake_observer` | `src/ntcp2_handshake_observer.rs` | 5.3 K | Compile-time-gated handshake observer used by the interop harness to record NTCP2 handshake state-machine transitions for diagnostics; never linked into the production daemon | `HandshakeObserver`, `HandshakeObserverEvent`, `ObserverSink` |
 | `ntcp2_link` | `src/ntcp2_link.rs` | Plan 042 | Authenticated frame reader/writer children and item/byte accounting leases | `AuthenticatedLink`, `ReceivedFrameLease`, `AuthenticatedLinkSnapshot` |
 | `ntcp2_runtime` | `src/ntcp2_runtime.rs` | — | Bounded NTCP2 socket/link lifecycle, TCP listener ownership, admission control, replay cache, dial backoff, link reader/writer children, exact I/O helpers | `Ntcp2RuntimeService`, `BoundNtcp2Listener`, `ListenerHandle`, `LinkHandle`, `InboundAdmission`, `ReplayCache`, `DialAdmission`, etc.; fns `read_exact`, `write_all_exact` |
-| `ssu2_runtime` | `src/ssu2_runtime.rs` | 4165 | Plan 158 bounded SSU2 UDP socket/session lifecycle: `Ssu2RuntimeService` + `Ssu2ServiceHandle`, cheap receive classification, OS randomness/time fulfillment, pending/active admission, central scheduler, `TransportManager` promotion, cached-token dials, bounded I2NP handoff | `Ssu2RuntimeService`, `Ssu2ServiceHandle`, `Ssu2RuntimeConfig`, `Ssu2RuntimeLimits`, `Ssu2RuntimeDeadlines`, `Ssu2DialTarget`, `Ssu2DialOutcome`, `Ssu2SendOutcome`, `Ssu2LinkHandle`, `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2Snapshot`, `Ssu2TestFaults`, `Ssu2BindError`, `Ssu2SocketConfig` |
+| `ssu2_runtime` | `src/ssu2_runtime.rs` | 5094 | Plan 158 bounded SSU2 UDP socket/session lifecycle plus Plan 159 path validation/migration and reachability observations: `Ssu2RuntimeService` + `Ssu2ServiceHandle`, cheap receive classification, OS randomness/time fulfillment, pending/active admission, central scheduler, per-session `PathValidator`, `TransportManager` promotion, cached-token dials, bounded I2NP handoff | `Ssu2RuntimeService`, `Ssu2ServiceHandle`, `Ssu2RuntimeConfig`, `Ssu2RuntimeLimits`, `Ssu2RuntimeDeadlines`, `Ssu2DialTarget`, `Ssu2DialOutcome`, `Ssu2SendOutcome`, `Ssu2LinkHandle`, `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2Snapshot`, `Ssu2TestFaults`, `Ssu2BindError`, `SSU2_MAX_PATH_CANDIDATES_GLOBAL`, `Ssu2SocketConfig` |
 | `observability` | `src/observability.rs` | 360 | Privacy-aware runtime events (tracing), bounded aggregate snapshots, shared task counters | `RouterLifecycle`, `SupervisorSnapshot`, `ServiceSnapshot`, `RuntimeSnapshot`, `SimulationSnapshot`, `event::*` |
 | `supervisor` | `src/supervisor.rs` | 1703 | Service startup sequencing, health tracking, restart with bounded exponential backoff, graceful/forced shutdown | `Supervisor`, `SupervisorHandle`, `SupervisorError`, `SupervisorConfigError`, `ShutdownReport`, `ShutdownOutcome` |
 
@@ -102,7 +105,8 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
   `Ssu2IdentityMaterial`, `Ssu2DialTarget`, `Ssu2DialTargetError`,
   `Ssu2DialOutcome`, `Ssu2SendOutcome`, `Ssu2LinkHandle`,
   `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2Snapshot`,
-  `Ssu2TestFaults`, `Ssu2BindError`, plus `SSU2_*` bound constants
+  `Ssu2TestFaults`, `Ssu2BindError`, `SSU2_MAX_PATH_CANDIDATES_GLOBAL`
+  (Plan 159 service-wide candidate ceiling), plus `SSU2_*` bound constants
 - `observability`: `MAX_SNAPSHOT_CHANNELS`, `MAX_SNAPSHOT_RESOURCES`,
   `RouterLifecycle`, `RuntimeSnapshot`, `ServiceSnapshot`,
   `SimulationSnapshot`, `SnapshotError`, `SupervisorSnapshot`,
@@ -254,6 +258,45 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
 - Local acceptance lives in `tests/ssu2_local.rs` (9 tests, real
   loopback datagrams, serial-safe and parallel-safe).
 
+### SSU2 path validation (`ssu2_runtime.rs`, Plan 159)
+- Every active session owns a `PathValidator` starting at the
+  promotion address. `handle_active_datagram` classifies the source
+  only after the session authenticated the datagram: validated
+  sources flow normally; unknown sources open at most one bounded
+  candidate (per-session quotas plus the service-wide
+  `SSU2_MAX_PATH_CANDIDATES_GLOBAL` ceiling) with one minimum-MTU
+  `PathChallenge` carrying OS-CSPRNG bytes. Nothing migrates on
+  source change alone.
+- Inbound `PathChallenge` events are answered with one minimum-MTU
+  `PathResponse` to the challenger (authenticated packets only, so
+  no amplification to unauthenticated victims). Inbound
+  `PathResponse` events promote only on an exact tracked-challenge
+  match: migration moves the endpoint plus per-IP/subnet accounting,
+  resets stale congestion state via `note_path_migrated`, records a
+  `ValidatedPath` reachability signal (also mirrored into the manager
+  ring buffer), and counts `path_migrations`. Wrong/stale values are
+  counted as `path_rejections` without migration.
+- `AddressObserved` events record
+  `AuthenticatedPeerObservedExternalAddress` signals; the
+  `ReachabilityTracker` stays `Unknown` until corroborated (a single
+  observation can never publish reachability).
+- The central scheduler expires candidates (`path_expirations`,
+  retaining the old path) and sleeps to the earliest candidate
+  deadline via `PathValidator::next_deadline_ms`.
+- `Ssu2Snapshot` adds `path_challenges`, `path_responses`,
+  `path_migrations`, `path_rejections`, `path_expirations`,
+  `path_denied`, and the conservative `reachability` state (counts
+  only, no endpoints).
+- Real-UDP acceptance lives inline in `ssu2_runtime.rs`
+  (`legitimate_path_migration_over_real_udp`,
+  `spoof_burst_from_new_sources_never_migrates`,
+  `challenge_response_control_round_trip_over_real_udp`): sealed
+  bytes come from the live sessions, cross real loopback sockets
+  (including a raw third socket as the new path), and prove
+  exact-once migration with behavioral post-migration delivery,
+  automatic return migration on genuine re-validation, spoof
+  boundedness, and the no-migration control round trip.
+
 ### Observability / snapshots (`observability.rs`)
 - `RuntimeSnapshot::try_new()`,
   `SupervisorSnapshot` (via `SupervisorHandle::snapshot()`),
@@ -318,7 +361,7 @@ in the paused runtime.
 | `channel.rs:1575-1908` | 10 | `commands_are_ordered_and_resource_charged_until_processing_finishes`, `synthetic_overload_graph_drains_and_shuts_down_without_usage_or_tasks`, `request_*`, `latest_state_*` |
 | `graph.rs:577-648` | 3 sync | `topological_order_is_lexically_deterministic`, `invalid_graphs_are_rejected_before_startup`, `restartable_services_require_a_policy` |
 | `ntcp2_runtime.rs` | 8 | `admission_is_global_ip_and_subnet_bounded_and_releases`, `replay_cache_fails_closed_and_expires_deterministically`, `loopback_listener_and_exact_io_use_supervised_scope`, queue RAII, active-link admission, and repeated teardown tests |
-| `ssu2_runtime.rs` | 4 sync | `limits_validate_rejects_zero_ceiling_and_scope_violations`, `deadlines_validate_ordering_and_bounds`, `dial_targets_validate_before_socket_activity`, `identity_rejects_malformed_router_info` |
+| `ssu2_runtime.rs` | 7 (4 sync + 3 async real-UDP path) | `limits_validate_rejects_zero_ceiling_and_scope_violations`, `deadlines_validate_ordering_and_bounds`, `dial_targets_validate_before_socket_activity`, `identity_rejects_malformed_router_info`, `legitimate_path_migration_over_real_udp`, `spoof_burst_from_new_sources_never_migrates`, `challenge_response_control_round_trip_over_real_udp` |
 | `tests/ssu2_local.rs` | 9 async | Real-loopback product suite: `tokenless_establishment_over_real_udp`, `cached_token_establishment_with_stale_recovery`, `bidirectional_i2np_exchange_with_fragmentation`, `data_loss_recovers_with_exact_once_delivery`, `ack_loss_reorder_and_duplicate_recover_exactly_once`, `malformed_and_random_traffic_creates_no_state`, `active_session_cap_denies_with_baseline_return`, `graceful_close_abrupt_peer_and_cancel_return_to_baseline`, `inbound_handoff_shape_is_transport_neutral` |
 | `supervisor.rs:1267-1703` | 13 | **`forced_child_cleanup_is_repeatably_joined`** (100-iteration, requires `--test-threads=1`), `panic_is_classified_without_payload`, `forced_shutdown_aborts_and_joins_the_owned_child_scope`, `restartable_services_use_bounded_backoff` |
 
@@ -372,11 +415,18 @@ never paused Tokio time — and ephemeral loopback ports only.
    then does intro-key prevalidation run. Unknown traffic never
    creates persistent state.
 16. **SSU2 resend batches replace deadlines** — a new arm batch
-   supersedes the old schedule; min-merging would spin the retry
-   budget to `RetriesExhausted`.
+    supersedes the old schedule; min-merging would spin the retry
+    budget to `RetriesExhausted`.
 17. **SSU2 dials converge on duplicates** — simultaneous inbound and
-   outbound promotions resolve through the generic hash-ordered
-   duplicate policy, so both sides keep the same session.
+    outbound promotions resolve through the generic hash-ordered
+    duplicate policy, so both sides keep the same session.
+18. **SSU2 never migrates on source change alone** — only a matching
+    authenticated `PathResponse` promotes a tracked candidate; the
+    old path carries traffic until then and survives expiry (Plan
+    159).
+19. **SSU2 migration requeues, never strands** — the runtime calls
+    `note_path_migrated` so unacked fragments retransmit fresh on
+    the new path under the existing ceilings (Plan 159).
 
 ## Cross-references
 
@@ -394,7 +444,8 @@ never paused Tokio time — and ephemeral loopback ports only.
   `plans/022-m2-bounded-channels-resource-governor.md`,
   `plans/035-m3-runtime-link-manager-and-addresses.md`,
   `plans/037-m3-corrective-integration-closure.md`,
-  `plans/158-m8-ssu2-udp-runtime-and-local-session-product.md`.
+  `plans/158-m8-ssu2-udp-runtime-and-local-session-product.md`,
+  `plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md`.
 - Closures: `plans/021-closure.md`, `plans/022-closure.md`,
   `plans/035-closure.md`, `plans/037-closure.md`,
-  `plans/158-status.md`.
+  `plans/158-status.md`, `plans/159-status.md`.

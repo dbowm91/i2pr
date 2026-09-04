@@ -218,10 +218,13 @@ plan_157_status = "passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation"
 plan_158_plan_of_record = "plans/158-m8-ssu2-udp-runtime-and-local-session-product.md"
 plan_158_closure = "plans/158-status.md"
 plan_158_status = "passed-m8-ssu2-udp-runtime-and-local-session-product"
+plan_159_plan_of_record = "plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md"
+plan_159_closure = "plans/159-status.md"
+plan_159_status = "passed-m8-ssu2-path-validation-publication-and-transport-selection"
 milestone8_protocol = "ssu2-v2-classical"
 ssu2_pq_v3_v4 = "deferred-compatibility-watch"
 ssu1 = "not-implemented"
-milestone8_implementation = "plan158-udp-runtime-landed"
+milestone8_implementation = "plan159-path-publication-selection-landed"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
@@ -300,8 +303,28 @@ evidence = [
 advertised = false
 
 [[surface]]
+id = "ssu2.v2-path-validation-publication-selection"
+protocol = "ssu2"
+structure = "authenticated-path-migration-conservative-reachability-deterministic-selection"
+scope = "required"
+status = "experimental"
+notes = "Plan 159 closed authenticated path handling, conservative publication policy, and deterministic transport selection without changing wire semantics or enabling production publication. `i2pr-transport-ssu2::path` owns the runtime-neutral validation machine (bounded per-family candidates, 32-byte challenges, 10 s deadlines, minimum-MTU candidates, no packet-driven MTU); `Ssu2Session::note_path_migrated` requeues unacked fragments through the bounded loss policy with flight/cwnd reset; `i2pr-transport::reachability` owns the corroboration-floor-two router policy (one observation can never reach Reachable); `i2pr-transport-ssu2::publication` builds deterministic canonical snapshots (direct form needs Reachable plus explicit opt-in; otherwise unpublished firewalled; expiry withdraws); `i2pr-transport::selection` picks NTCP2/SSU2 deterministically (reuse first, Dial/DialFallback, address-failure isolation) through the generic manager. `i2pr-runtime` drives validators after session authentication with single-shot minimum-MTU controls, scheduler-owned expiry, and privacy-safe counters. Proven by 9 sealed-packet trajectories, inline unit matrices, and 3 real-UDP tests (bidirectional migration with delivery proof, spoof boundedness, control round trip). Daemon `[ssu2]` activation and non-loopback dials stay fail-closed; peer-test/relay roles belong to Plan 160 and independent interop to Plan 161. PQ-hybrid v3/v4 remains deferred compatibility-watch debt; SSU1 remains unsupported."
+evidence = [
+    "crates/i2pr-transport-ssu2/src/path.rs",
+    "crates/i2pr-transport-ssu2/src/publication.rs",
+    "crates/i2pr-transport-ssu2/src/session.rs",
+    "crates/i2pr-transport-ssu2/tests/path_validation.rs",
+    "crates/i2pr-transport/src/selection.rs",
+    "crates/i2pr-transport/src/reachability.rs",
+    "crates/i2pr-transport/src/manager.rs",
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md",
+    "plans/159-status.md",
+]
+advertised = false
+
+[[surface]]
 id = "common.codec-foundation"
-protocol = "common-structures"
 structure = "bounded-codec-foundation"
 scope = "required"
 status = "experimental"

@@ -63,14 +63,17 @@ fragmentation (still no UDP sockets — see
 passed the localhost-only SSU2 UDP runtime and local session product
 (`i2pr-runtime::Ssu2RuntimeService` driving the Plan 156/157 machines
 over real loopback datagrams with `TransportManager` integration —
-see [`plans/158-status.md`](../../plans/158-status.md)); the next
-executable plan is 159. The SAM lane stays experimental,
+see [`plans/158-status.md`](../../plans/158-status.md)); Plan 159
+passed authenticated path validation/migration, the conservative
+reachability/publication policy, and deterministic NTCP2/SSU2
+selection (see [`plans/159-status.md`](../../plans/159-status.md));
+the next executable plan is 160. The SAM lane stays experimental,
 loopback-only, disabled by default, and non-advertised; no
 localhost result implies router-to-router interoperability. SSU2
-v2 has a localhost-only runtime; public advertisement and
-router-to-router interoperability are not claimed yet (Plans 159–161
-own publication, peer-test/relay, and independent interop); PQ-hybrid
-v3/v4 is deferred compatibility-watch debt and SSU1 remains
+v2 has a localhost-only runtime with path validation; public
+advertisement and router-to-router interoperability are not claimed
+yet (Plans 160–161 own peer-test/relay and independent interop);
+PQ-hybrid v3/v4 is deferred compatibility-watch debt and SSU1 remains
 unsupported.
 
 Network tunnels (router-to-router) and application service tunnels
@@ -173,12 +176,14 @@ i2pr-core <- i2pr-transport <- i2pr-runtime <- i2pr-daemon (composition root)
                  i2pr-proto + i2pr-crypto     i2pr-netdb-persist
                           +
                           |
-                 i2pr-transport-ssu2
-                 (Plans 155-157: foundation +
-                  Noise XK establishment +
-                  data-phase reliability;
-                  Plan 158: runtime-support
-                  APIs for the UDP owner)
+                  i2pr-transport-ssu2
+                  (Plans 155-157: foundation +
+                   Noise XK establishment +
+                   data-phase reliability;
+                   Plan 158: runtime-support
+                   APIs for the UDP owner;
+                   Plan 159: path validation +
+                   publication snapshots)
                                                     ^
                                                     |
                                               i2pr-netdb (SU3/reseed)
@@ -221,10 +226,10 @@ tests, and any distinctive design choices.
 | `i2pr-netdb` | Local NetDB | Runtime-neutral RouterInfo validation, bounded in-memory NetDB store, SU3/reseed verification, peer-selection primitives, transport-neutral lookup/publication state machines, and local signed RouterInfo construction. Plan 103/104/105/119. | [i2pr-netdb.md](i2pr-netdb.md) |
 | `i2pr-netdb-persist` | Cache composition | Composition owner for Plan 104 persistent RouterInfo cache and SU3 reseed ingestion. Bridges `i2pr-storage` (raw bytes) and `i2pr-netdb` (validation). | [i2pr-netdb-persist.md](i2pr-netdb-persist.md) |
 | `i2pr-tunnel` | Milestone 5 substrate | Runtime-neutral tunnel identity, exploratory pool, build-record layout surface, build-cryptography seam, ECIES-X25519 short tunnel-build construction primitive (Plan 111 final local short-build conformance + Plan 112 outbound pre-delivery closure + Plan 113 inbound reference reconciliation + Plan 114 terminal routing and tunnel-chain correction + Plan 115 canonical production I2NP bridge with no-double-prefix STBM record count byte invariant + Plan 116 local tunnel data plane + Plan 117 outbound/inbound exploratory NetDB composition), runtime-neutral build state machine, success-only registrar, deterministic responder peer simulator, and reply-path provider. Plans 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117. | [i2pr-tunnel.md](i2pr-tunnel.md) |
-| `i2pr-transport` | Transport contracts | Runtime-neutral link/delivery contracts. No Tokio, no I/O, no async. | [i2pr-transport.md](i2pr-transport.md) |
+| `i2pr-transport` | Transport contracts + selection/reachability policy | Runtime-neutral link/delivery contracts plus deterministic NTCP2/SSU2 selection and the conservative reachability policy (Plan 159). No Tokio, no I/O, no async. | [i2pr-transport.md](i2pr-transport.md) |
 | `i2pr-transport-ntcp2` | NTCP2 protocol | Runtime-neutral Noise handshake, AEAD frames, data-phase blocks. | [i2pr-transport-ntcp2.md](i2pr-transport-ntcp2.md) |
-| `i2pr-transport-ssu2` | SSU2 v2 protocol + runtime support | Runtime-neutral SSU2 v2 address/header/block primitives (Plan 155) plus the Noise XK handshake, header protection, bounded one-use tokens, RouterInfo binding, and initiator/responder machines (Plan 156), plus the authenticated data-phase session with reliability/fragmentation (Plan 157) and the Plan 158 runtime-support APIs (`queue_new_token`, `matches_inbound`, `outbound_pending`). No sockets. | [i2pr-transport-ssu2.md](i2pr-transport-ssu2.md) |
-| `i2pr-runtime` | Runtime owner | The only production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation — including the Plan 158 SSU2 UDP runtime (`Ssu2RuntimeService`, real-loopback `ssu2_local` suite). | [i2pr-runtime.md](i2pr-runtime.md) |
+| `i2pr-transport-ssu2` | SSU2 v2 protocol + runtime support | Runtime-neutral SSU2 v2 address/header/block primitives (Plan 155) plus the Noise XK handshake, header protection, bounded one-use tokens, RouterInfo binding, and initiator/responder machines (Plan 156), plus the authenticated data-phase session with reliability/fragmentation (Plan 157), the Plan 158 runtime-support APIs (`queue_new_token`, `matches_inbound`, `outbound_pending`), and the Plan 159 path-validation machine plus deterministic publication snapshots. No sockets. | [i2pr-transport-ssu2.md](i2pr-transport-ssu2.md) |
+| `i2pr-runtime` | Runtime owner | The only production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation — including the Plan 158 SSU2 UDP runtime (`Ssu2RuntimeService`, real-loopback `ssu2_local` suite) with Plan 159 path validation/migration and reachability observations. | [i2pr-runtime.md](i2pr-runtime.md) |
 | `i2pr-daemon` | Composition root | CLI + config + identity lifecycle + Plan 106 NetDB/bootstrap pipeline + Plan 117 outbound `OutboundGatewayRole` exploratory `DatabaseLookup`/`DatabaseStore` composition and inbound `LocalInboundEndpointRole` `TunnelData` dispatch through `crates/i2pr-daemon/src/{outbound_lookup,inbound_dispatch}.rs`. Live daemon runs through the supervisor with no I2P transport. | [i2pr-daemon.md](i2pr-daemon.md) |
 | `i2pr-api` | Application protocols | SAM 3.1 protocol foundation + loopback-server surface + STREAM CONNECT / ACCEPT bridge: bounded line/command/reply parser, typed commands, version negotiation, **I2P Base64 codec** (`-`/`~`, `=` padding — Plan 142 corrective from the prior RFC 4648 alphabet), SamPrivateDestination codec for `DEST GENERATE` / `SESSION CREATE`, bounded `SamSessionRegistry` + `LineReader` + `ServerConnectionState`, and the bounded per-session `SamStreamRegistry`. Plans 136, 137, 138, 142; no sockets, no Tokio, no I/O. | [i2pr-api.md](i2pr-api.md) |
 | `i2pr-client` | Destination runtime | Plan 120: local destination identity, destination-specific tunnel pools that consume real one-shot `EstablishedMaterial`, local Standard LeaseSet2 construction and signing with self-validation through `i2pr-netdb`, LeaseSet2 lifecycle with bounded rotation/withdrawal, bounded local payload contracts, and a router-local destination registry. Plan 126: normative ECIES-X25519-AEAD-Ratchet destination session layer — paired sessions keyed by remote static key, bounded remove-on-hit tag windows, pre-derived pending reply windows, provisional responder state, classify-driven dispatch. Plan 127: destination-session routing final closure — bundled-LS2 sender binding under the sender's own Destination hash, `PlannedOutboundForm` outbound form state machine with retained NSR context, production reverse routing through `install_remote_lease_set2`, active-remote ceiling, master NS → NSR → ES ×4 trajectory through real tunnel roles. Plan 122: destination routing and NetDB composition — `LeaseSelector` / `LeaseSelectionPolicy`, typed `OutboundRequest` builder, `compose_outbound_delivery` planner, `DestinationRouting` cache, and `DestinationDispatcher` inbound surface that classifies envelopes through `EciesSessionManager::classify`. Plan 124: destination-routing corrective closure — `compose_outbound_delivery` wraps the encrypted envelope in an `I2npBody::Garlic` carrier and feeds the standard-encoded I2NP Garlic message bytes into the outbound tunnel data plane; `OutboundDeliveryPlan::garlic_i2np_bytes` is the canonical carrier the tunnel observes; `DestinationDispatcher::bind_destination_hash` enforces the `DestinationId` → `DestinationHash` binding so the dispatcher fails closed on `UnknownDestination` without trial-decryption. Plan 125: minimal Streaming core with the runtime-neutral `StreamingDestinationAdapter` (now `superseded-by-final-corrective-closure`). Plan 128: Streaming packet wire corrective closure - normative flag map, flag-driven option codec, raw final signatures from signing-key context, payload-only MAX_PACKET_SIZE (default 1730), Proposal 164 replay NACKs on the initial SYN only, retained peer signing key for CLOSE/RESET verification without FROM, min-of-advertisements negotiation. Plan 129: integrated destination+Streaming gate (`superseded-by-plan130-final-gate`). Plan 130: Milestone 6 final wire/runtime corrective closure (`passed-milestone6-final-wire-runtime-corrective-closure`) - production Elligator2 randomized representatives with deterministic-vector separation, corrected post-SYN sequence space (first application packet seq 1), semantic ACK presence with NACK-aware cumulative acknowledgement, bounded receiver ack views, coalescing delayed standalone ACKs via `poll_acks`, wire destination-port listener authority with typed rejections, and persistent tunnel duplicate windows with typed `DuplicateCell`. SAM/I2CP adapters remain Milestone 7 scope. | [i2pr-client.md](i2pr-client.md) |

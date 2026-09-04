@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Plan 149 closed the self-composed localhost product; Plan 150 retains external-client core evidence; Plan 151 passed the final acceptance/evidence correction (with narrow Plan 152 M6 corrective); Plan 153 passed post-M7 hygiene; Milestone 8 roadmap registered via Plan 154; Plan 155 passed the SSU2 v2 protocol foundation; Plan 156 passed the SSU2 v2 handshake/token/RouterInfo establishment; Plan 157 passed the SSU2 v2 data-phase reliability/fragmentation.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Plan 149 closed the self-composed localhost product; Plan 150 retains external-client core evidence; Plan 151 passed the final acceptance/evidence correction (with narrow Plan 152 M6 corrective); Plan 153 passed post-M7 hygiene; Milestone 8 roadmap registered via Plan 154; Plan 155 passed the SSU2 v2 protocol foundation; Plan 156 passed the SSU2 v2 handshake/token/RouterInfo establishment; Plan 157 passed the SSU2 v2 data-phase reliability/fragmentation; Plan 158 passed the SSU2 v2 UDP runtime and local session product; Plan 159 passed SSU2 path validation/publication/transport selection.
 ---
 
 # I2PR Local Development
@@ -39,18 +39,21 @@ plan_155 = passed-m8-ssu2-v2-protocol-foundation-and-addresses
 plan_156 = passed-m8-ssu2-v2-handshake-token-and-routerinfo
 plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
-next_executable_plan = 159
+plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
+next_executable_plan = 160
 milestone8_planning_authority = plan154
 milestone8_foundation = passed-via-plan155
 milestone8_handshake = passed-via-plan156
 milestone8_data_phase = passed-via-plan157
 milestone8_udp_runtime = passed-via-plan158
+milestone8_path_publication_selection = passed-via-plan159
 next_product_layer = milestone8-ssu2-v2
 ```
 
 Read in order:
 
-1. `plans/158-status.md` (SSU2 v2 UDP runtime closure)
+1. `plans/159-status.md` (SSU2 path validation/publication/selection closure)
+2. `plans/158-status.md` (SSU2 v2 UDP runtime closure)
 2. `plans/157-status.md` (SSU2 v2 data-phase closure)
 3. `plans/156-status.md` (SSU2 v2 handshake/token/RouterInfo closure)
 4. `plans/155-status.md` (SSU2 v2 foundation closure)
@@ -70,7 +73,10 @@ Plan 157 has passed the runtime-neutral SSU2 v2 data-phase
 reliability/fragmentation (no UDP sockets, no runtime), and Plan 158
 has passed the localhost-only SSU2 v2 UDP runtime and local session
 product (`i2pr-runtime::Ssu2RuntimeService` plus the real-loopback
-`ssu2_local` suite). Execute Plans 159–161 in order. SAM stays
+`ssu2_local` suite), and Plan 159 has passed authenticated SSU2 path
+validation/migration, conservative reachability/publication policy,
+deterministic NTCP2/SSU2 selection, and the real-UDP migration/spoof
+matrix. Execute Plans 160–161 in order. SAM stays
 experimental, loopback-only, disabled by default, and non-advertised.
 SSU2 v2 claims no public advertisement or router-to-router
 interoperability yet.
@@ -241,7 +247,7 @@ Plan 151 resolved and ran the actual focused Plan 127–134 tests from the
 current repository and listed them verbatim in its closure record
 (retained evidence; do not re-broaden the matrix without a new plan).
 
-Focused SSU2 floor (Plans 155–158):
+Focused SSU2 floor (Plans 155–159):
 
 ```text
 cargo test --locked -p i2pr-transport --all-targets
@@ -259,10 +265,13 @@ bash scripts/check-ssu2-vectors.sh
   with each new arm batch; never min-merge with a stale past value
   (Plan 158 burned the retry budget that way and died with
   `RetriesExhausted`).
-- The SSU2 central scheduler replaces a handshake's resend deadline
-  with each new arm batch; never min-merge with a stale past value
-  (Plan 158 burned the retry budget that way and died with
-  `RetriesExhausted`).
+- SSU2 path migration must requeue unacked fragments through the
+  bounded loss policy (`Ssu2Session::note_path_migrated` declares them
+  lost so they retransmit fresh); never just clear sent provenance,
+  which strands in-flight messages (caught by the Plan 159
+  sealed-packet suite).
+- SSU2 path challenges/responses are single-shot minimum-MTU control
+  datagrams; never migrate on source change alone.
 - OS CSPRNG for runtime material; deterministic randomness is test-only.
 - Never log private destination material or raw payloads.
 - No second private identity copy for SAM bridge ownership.
@@ -292,4 +301,14 @@ bash scripts/check-ssu2-vectors.sh
   termination/rekey/idle handling; still no UDP sockets, no runtime,
   no interop claim).
 
-Current handoff: **execute Plans 158 → 161 in order under Plan 154**.
+- Plan 159 passed SSU2 path validation/publication/selection:
+  authenticated migration only on matching PathResponse proof with
+  bounded per-family candidates and conservative candidate MTU,
+  corroboration-gated reachability (one observation can never publish
+  `Reachable`), deterministic policy-gated publication snapshots
+  (direct form needs explicit opt-in; no production advertisement),
+  and deterministic NTCP2/SSU2 selection/fallback through the generic
+  manager. Daemon `[ssu2]` activation and non-loopback dials stay
+  fail-closed for Plans 160–161.
+
+Current handoff: **execute Plans 160 → 161 in order under Plan 154**.

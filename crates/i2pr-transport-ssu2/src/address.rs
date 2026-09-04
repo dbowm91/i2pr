@@ -333,6 +333,12 @@ impl Ssu2Capabilities {
     const PEER_TEST: u8 = 0b0100;
     const RELAY: u8 = 0b1000;
 
+    /// Parses a `caps` option value with the strict production rules
+    /// (nonempty, bounded graphic string, no duplicate known flags).
+    pub fn parse(value: &str) -> Result<Self, Ssu2AddressError> {
+        parse_capabilities(value)
+    }
+
     /// Returns no advertised capabilities.
     pub fn empty() -> Self {
         Self {
@@ -1126,6 +1132,34 @@ fn i2p_base64_digit(byte: u8) -> Option<u8> {
     }
 }
 
+/// Encodes bytes with the I2P base64 alphabet (`A-Za-z0-9-~`, `=` pad).
+///
+/// Used by the Plan 159 publication snapshot builder to emit canonical
+/// `s`/`i`/`ikeyN` option values; parsing stays strict in
+/// [`decode_i2p_base64`].
+pub(crate) fn encode_i2p_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~";
+    let mut output = String::new();
+    for chunk in bytes.chunks(3) {
+        let a = chunk[0];
+        let b = *chunk.get(1).unwrap_or(&0);
+        let c = *chunk.get(2).unwrap_or(&0);
+        output.push(ALPHABET[(a >> 2) as usize] as char);
+        output.push(ALPHABET[((a & 0x03) << 4 | b >> 4) as usize] as char);
+        output.push(if chunk.len() > 1 {
+            ALPHABET[((b & 0x0f) << 2 | c >> 6) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            ALPHABET[(c & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
+}
+
 fn parse_capabilities(value: &str) -> Result<Ssu2Capabilities, Ssu2AddressError> {
     if value.is_empty() || value.len() > constants::MAX_SSU2_CAPS_BYTES {
         return Err(Ssu2AddressError::InvalidOptionValue {
@@ -1172,27 +1206,7 @@ mod tests {
     const TEST_INTRO_KEY: [u8; SSU2_INTRO_KEY_LENGTH] = [0x24; SSU2_INTRO_KEY_LENGTH];
 
     fn encode_i2p_base64(bytes: &[u8]) -> String {
-        const ALPHABET: &[u8; 64] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~";
-        let mut output = String::new();
-        for chunk in bytes.chunks(3) {
-            let a = chunk[0];
-            let b = *chunk.get(1).unwrap_or(&0);
-            let c = *chunk.get(2).unwrap_or(&0);
-            output.push(ALPHABET[(a >> 2) as usize] as char);
-            output.push(ALPHABET[((a & 0x03) << 4 | b >> 4) as usize] as char);
-            output.push(if chunk.len() > 1 {
-                ALPHABET[((b & 0x0f) << 2 | c >> 6) as usize] as char
-            } else {
-                '='
-            });
-            output.push(if chunk.len() > 2 {
-                ALPHABET[(c & 0x3f) as usize] as char
-            } else {
-                '='
-            });
-        }
-        output
+        super::encode_i2p_base64(bytes)
     }
 
     fn direct_entries() -> Vec<(&'static str, String)> {
