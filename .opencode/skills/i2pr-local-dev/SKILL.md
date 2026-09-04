@@ -38,35 +38,41 @@ plan_154 = registered-m8-ssu2-v2-roadmap
 plan_155 = passed-m8-ssu2-v2-protocol-foundation-and-addresses
 plan_156 = passed-m8-ssu2-v2-handshake-token-and-routerinfo
 plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
-next_executable_plan = 158
+plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
+next_executable_plan = 159
 milestone8_planning_authority = plan154
 milestone8_foundation = passed-via-plan155
 milestone8_handshake = passed-via-plan156
 milestone8_data_phase = passed-via-plan157
+milestone8_udp_runtime = passed-via-plan158
 next_product_layer = milestone8-ssu2-v2
 ```
 
 Read in order:
 
-1. `plans/157-status.md` (SSU2 v2 data-phase closure)
-2. `plans/156-status.md` (SSU2 v2 handshake/token/RouterInfo closure)
-3. `plans/155-status.md` (SSU2 v2 foundation closure)
-4. `plans/153-status.md` (passed hygiene pass)
-5. `plans/152-status.md` (narrow M6 corrective closure)
-6. `plans/151-status.md`
-7. `plans/151-m7-sam31-final-acceptance-evidence-correction.md`
-8. `plans/150-status.md`
-9. `plans/149-status.md`
-10. Plans 146–148 for retained/historical context.
+1. `plans/158-status.md` (SSU2 v2 UDP runtime closure)
+2. `plans/157-status.md` (SSU2 v2 data-phase closure)
+3. `plans/156-status.md` (SSU2 v2 handshake/token/RouterInfo closure)
+4. `plans/155-status.md` (SSU2 v2 foundation closure)
+5. `plans/153-status.md` (passed hygiene pass)
+6. `plans/152-status.md` (narrow M6 corrective closure)
+7. `plans/151-status.md`
+8. `plans/151-m7-sam31-final-acceptance-evidence-correction.md`
+9. `plans/150-status.md`
+10. `plans/149-status.md`
+11. Plans 146–148 for retained/historical context.
 
 Plan 153 has passed. Plan 154 is the registered Milestone 8 roadmap
 authority; Plan 155 has passed the runtime-neutral SSU2 v2 protocol
 foundation (addresses/headers/blocks), Plan 156 has passed the
 runtime-neutral SSU2 v2 handshake/token/RouterInfo establishment, and
 Plan 157 has passed the runtime-neutral SSU2 v2 data-phase
-reliability/fragmentation (no UDP sockets, no runtime). Execute Plans
-158–161 in order. SAM stays experimental, loopback-only, disabled by
-default, and non-advertised. SSU2 v2 claims no socket/runtime
+reliability/fragmentation (no UDP sockets, no runtime), and Plan 158
+has passed the localhost-only SSU2 v2 UDP runtime and local session
+product (`i2pr-runtime::Ssu2RuntimeService` plus the real-loopback
+`ssu2_local` suite). Execute Plans 159–161 in order. SAM stays
+experimental, loopback-only, disabled by default, and non-advertised.
+SSU2 v2 claims no public advertisement or router-to-router
 interoperability yet.
 
 ## Retain these working pieces
@@ -235,11 +241,13 @@ Plan 151 resolved and ran the actual focused Plan 127–134 tests from the
 current repository and listed them verbatim in its closure record
 (retained evidence; do not re-broaden the matrix without a new plan).
 
-Focused SSU2 floor (Plan 155 foundation):
+Focused SSU2 floor (Plans 155–158):
 
 ```text
 cargo test --locked -p i2pr-transport --all-targets
 cargo test --locked -p i2pr-transport-ssu2 --all-targets
+cargo test --locked -p i2pr-runtime --all-targets
+cargo test --locked -p i2pr-runtime --test ssu2_local -- --test-threads=1
 bash scripts/check-ssu2-vectors.sh
 ```
 
@@ -247,6 +255,14 @@ bash scripts/check-ssu2-vectors.sh
 
 - No new unbounded channels/queues.
 - Runtime/socket ownership stays in daemon/runtime layers.
+- The SSU2 central scheduler replaces a handshake's resend deadline
+  with each new arm batch; never min-merge with a stale past value
+  (Plan 158 burned the retry budget that way and died with
+  `RetriesExhausted`).
+- The SSU2 central scheduler replaces a handshake's resend deadline
+  with each new arm batch; never min-merge with a stale past value
+  (Plan 158 burned the retry budget that way and died with
+  `RetriesExhausted`).
 - OS CSPRNG for runtime material; deterministic randomness is test-only.
 - Never log private destination material or raw payloads.
 - No second private identity copy for SAM bridge ownership.

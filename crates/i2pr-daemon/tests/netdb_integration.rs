@@ -101,6 +101,24 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             port: 7656,
             limits: i2pr_api::sam::limits::SamLimits::defaults(),
         },
+        ssu2: i2pr_daemon::config::Ssu2Config {
+            enabled: false,
+            bind_ipv4: Some("127.0.0.1".parse().unwrap()),
+            bind_ipv6: None,
+            port: 0,
+            advertise: false,
+            introducer_service: false,
+            max_pending_handshakes: 64,
+            max_active_sessions: 64,
+            max_pending_per_ip: 4,
+            max_pending_per_subnet: 16,
+            max_datagram_queue_items: 256,
+            max_datagram_queue_bytes: 1024 * 1024,
+            max_inbound_i2np_queue: 64,
+            handshake_timeout: std::time::Duration::from_millis(20_000),
+            idle_timeout: std::time::Duration::from_millis(300_000),
+            scheduler_poll_max: std::time::Duration::from_millis(200),
+        },
     }
 }
 

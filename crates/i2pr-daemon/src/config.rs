@@ -45,6 +45,8 @@ struct RawConfig {
     reseed: RawReseedConfig,
     #[serde(default)]
     sam: RawSamConfig,
+    #[serde(default)]
+    ssu2: RawSsu2Config,
 }
 
 #[derive(Debug, Deserialize)]
@@ -270,6 +272,71 @@ impl Default for RawSamConfig {
     }
 }
 
+/// Raw Plan 158 SSU2 runtime configuration.
+///
+/// The surface is intentionally narrow: protocol-tuning constants (token
+/// quotas, reassembly quotas, resend schedules) stay pinned in
+/// `i2pr-transport-ssu2::constants` and are not exposed as knobs.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSsu2Config {
+    #[serde(default = "default_ssu2_enabled")]
+    enabled: bool,
+    #[serde(default = "default_ssu2_bind_ipv4")]
+    bind_ipv4: String,
+    #[serde(default = "default_ssu2_bind_ipv6")]
+    bind_ipv6: String,
+    #[serde(default = "default_ssu2_port")]
+    port: u16,
+    #[serde(default = "default_ssu2_advertise")]
+    advertise: bool,
+    #[serde(default = "default_ssu2_introducer_service")]
+    introducer_service: bool,
+    #[serde(default = "default_ssu2_max_pending_handshakes")]
+    max_pending_handshakes: usize,
+    #[serde(default = "default_ssu2_max_active_sessions")]
+    max_active_sessions: usize,
+    #[serde(default = "default_ssu2_max_pending_per_ip")]
+    max_pending_per_ip: usize,
+    #[serde(default = "default_ssu2_max_pending_per_subnet")]
+    max_pending_per_subnet: usize,
+    #[serde(default = "default_ssu2_max_datagram_queue_items")]
+    max_datagram_queue_items: usize,
+    #[serde(default = "default_ssu2_max_datagram_queue_bytes")]
+    max_datagram_queue_bytes: u64,
+    #[serde(default = "default_ssu2_max_inbound_i2np_queue")]
+    max_inbound_i2np_queue: usize,
+    #[serde(default = "default_ssu2_handshake_timeout_ms")]
+    handshake_timeout_ms: u64,
+    #[serde(default = "default_ssu2_idle_timeout_ms")]
+    idle_timeout_ms: u64,
+    #[serde(default = "default_ssu2_scheduler_poll_max_ms")]
+    scheduler_poll_max_ms: u64,
+}
+
+impl Default for RawSsu2Config {
+    fn default() -> Self {
+        Self {
+            enabled: default_ssu2_enabled(),
+            bind_ipv4: default_ssu2_bind_ipv4(),
+            bind_ipv6: default_ssu2_bind_ipv6(),
+            port: default_ssu2_port(),
+            advertise: default_ssu2_advertise(),
+            introducer_service: default_ssu2_introducer_service(),
+            max_pending_handshakes: default_ssu2_max_pending_handshakes(),
+            max_active_sessions: default_ssu2_max_active_sessions(),
+            max_pending_per_ip: default_ssu2_max_pending_per_ip(),
+            max_pending_per_subnet: default_ssu2_max_pending_per_subnet(),
+            max_datagram_queue_items: default_ssu2_max_datagram_queue_items(),
+            max_datagram_queue_bytes: default_ssu2_max_datagram_queue_bytes(),
+            max_inbound_i2np_queue: default_ssu2_max_inbound_i2np_queue(),
+            handshake_timeout_ms: default_ssu2_handshake_timeout_ms(),
+            idle_timeout_ms: default_ssu2_idle_timeout_ms(),
+            scheduler_poll_max_ms: default_ssu2_scheduler_poll_max_ms(),
+        }
+    }
+}
+
 fn default_profile() -> String {
     String::from("balanced")
 }
@@ -421,6 +488,85 @@ const fn default_sam_command_timeout_ms() -> u64 {
 const fn default_sam_shutdown_timeout_ms() -> u64 {
     5_000
 }
+
+// --- Plan 158 SSU2 defaults: disabled, loopback-only, non-advertised. ---
+
+fn default_ssu2_enabled() -> bool {
+    false
+}
+
+fn default_ssu2_bind_ipv4() -> String {
+    String::from("127.0.0.1")
+}
+
+fn default_ssu2_bind_ipv6() -> String {
+    String::new()
+}
+
+const fn default_ssu2_port() -> u16 {
+    0
+}
+
+const fn default_ssu2_advertise() -> bool {
+    false
+}
+
+const fn default_ssu2_introducer_service() -> bool {
+    false
+}
+
+const fn default_ssu2_max_pending_handshakes() -> usize {
+    64
+}
+
+const fn default_ssu2_max_active_sessions() -> usize {
+    64
+}
+
+const fn default_ssu2_max_pending_per_ip() -> usize {
+    4
+}
+
+const fn default_ssu2_max_pending_per_subnet() -> usize {
+    16
+}
+
+const fn default_ssu2_max_datagram_queue_items() -> usize {
+    256
+}
+
+const fn default_ssu2_max_datagram_queue_bytes() -> u64 {
+    1024 * 1024
+}
+
+const fn default_ssu2_max_inbound_i2np_queue() -> usize {
+    64
+}
+
+const fn default_ssu2_handshake_timeout_ms() -> u64 {
+    20_000
+}
+
+const fn default_ssu2_idle_timeout_ms() -> u64 {
+    300_000
+}
+
+const fn default_ssu2_scheduler_poll_max_ms() -> u64 {
+    200
+}
+
+const MAX_SSU2_PENDING_HANDSHAKES: usize = 1024;
+const MAX_SSU2_ACTIVE_SESSIONS: usize = 1024;
+const MAX_SSU2_PENDING_PER_IP: usize = 64;
+const MAX_SSU2_PENDING_PER_SUBNET: usize = 256;
+const MAX_SSU2_DATAGRAM_QUEUE_ITEMS: usize = 4096;
+const MAX_SSU2_DATAGRAM_QUEUE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SSU2_INBOUND_I2NP_QUEUE: usize = 1024;
+const MIN_SSU2_HANDSHAKE_TIMEOUT_MS: u64 = 5_000;
+const MAX_SSU2_HANDSHAKE_TIMEOUT_MS: u64 = 60_000;
+const MIN_SSU2_SCHEDULER_POLL_MAX_MS: u64 = 10;
+const MAX_SSU2_SCHEDULER_POLL_MAX_MS: u64 = 1_000;
+const MIN_SSU2_SERVICE_PORT: u16 = 1024;
 
 /// Normalized router policy placeholder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -576,6 +722,49 @@ impl SamConfig {
 /// Re-export of the Plan 137 service-limits type.
 pub use i2pr_api::sam::limits::SamLimits;
 
+/// Normalized Plan 158 SSU2 runtime configuration.
+///
+/// The daemon parses and validates this surface but does not start an
+/// SSU2 service yet: production activation (identity/RouterInfo
+/// plumbing, publication policy) belongs to Plan 159. `enabled = true`
+/// is therefore rejected fail-closed until that plan lands.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Ssu2Config {
+    /// Whether the SSU2 UDP runtime is enabled (always false in Plan 158).
+    pub enabled: bool,
+    /// IPv4 bind literal, or `None` when the IPv4 socket is disabled.
+    pub bind_ipv4: Option<IpAddr>,
+    /// IPv6 bind literal, or `None` when the IPv6 socket is disabled.
+    pub bind_ipv6: Option<IpAddr>,
+    /// Bind port. `0` selects an ephemeral port (integration tests);
+    /// a configured service port must be in the normal range.
+    pub port: u16,
+    /// Whether this router advertises an SSU2 address (always false).
+    pub advertise: bool,
+    /// Whether introducer service is offered (always false).
+    pub introducer_service: bool,
+    /// Maximum pending (unauthenticated) handshakes.
+    pub max_pending_handshakes: usize,
+    /// Maximum active (authenticated) sessions.
+    pub max_active_sessions: usize,
+    /// Maximum pending handshakes for one exact IP.
+    pub max_pending_per_ip: usize,
+    /// Maximum pending handshakes for one subnet prefix.
+    pub max_pending_per_subnet: usize,
+    /// Maximum staged outbound datagrams awaiting socket write.
+    pub max_datagram_queue_items: usize,
+    /// Maximum staged outbound datagram bytes awaiting socket write.
+    pub max_datagram_queue_bytes: usize,
+    /// Maximum inbound authenticated I2NP messages awaiting dispatch.
+    pub max_inbound_i2np_queue: usize,
+    /// Total handshake timeout.
+    pub handshake_timeout: Duration,
+    /// Data-phase idle timeout.
+    pub idle_timeout: Duration,
+    /// Upper bound for one central-scheduler sleep.
+    pub scheduler_poll_max: Duration,
+}
+
 /// Immutable normalized configuration snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
@@ -597,6 +786,8 @@ pub struct Config {
     pub reseed: ReseedConfig,
     /// SAM v3.1 service settings.
     pub sam: SamConfig,
+    /// SSU2 UDP runtime settings (Plan 158; disabled, loopback-only).
+    pub ssu2: Ssu2Config,
 }
 
 impl Config {
@@ -699,6 +890,7 @@ impl Config {
         let netdb = normalize_netdb(&raw.netdb)?;
         let reseed = normalize_reseed(&raw.reseed, &netdb)?;
         let sam = normalize_sam(&raw.sam, &raw.limits)?;
+        let ssu2 = normalize_ssu2(&raw.ssu2)?;
 
         Ok(Self {
             schema_version: raw.schema_version,
@@ -720,6 +912,7 @@ impl Config {
             netdb,
             reseed,
             sam,
+            ssu2,
         })
     }
 }
@@ -794,6 +987,156 @@ fn normalize_sam(raw: &RawSamConfig, global: &RawLimitsConfig) -> Result<SamConf
         bind_address,
         port: raw.port,
         limits,
+    })
+}
+
+/// Parses one SSU2 bind literal: empty means the family socket stays
+/// disabled, otherwise the literal must parse as the expected family
+/// and must be loopback while non-loopback exposure is unsupported.
+fn parse_ssu2_bind(
+    field: &'static str,
+    value: &str,
+    ipv6: bool,
+) -> Result<Option<IpAddr>, ConfigError> {
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    let address: IpAddr = value.parse().map_err(|_| ConfigError::Semantic {
+        field,
+        reason: "must be a valid IP address or empty to disable",
+    })?;
+    let family_ok = match address {
+        IpAddr::V4(_) => !ipv6,
+        IpAddr::V6(_) => ipv6,
+    };
+    if !family_ok {
+        return Err(ConfigError::Semantic {
+            field,
+            reason: "address family does not match its bind field",
+        });
+    }
+    if !address.is_loopback() {
+        return Err(ConfigError::Semantic {
+            field,
+            reason: "must be a loopback address while non-loopback SSU2 exposure is unsupported",
+        });
+    }
+    Ok(Some(address))
+}
+
+fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
+    // Plan 158 §13: production activation belongs to a later plan
+    // (identity/RouterInfo plumbing plus publication policy). Accepting
+    // `enabled = true` while the daemon cannot construct the service
+    // would silently misconfigure the router, so fail closed here.
+    if raw.enabled {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.enabled",
+            reason: "SSU2 runtime activation is unavailable while support is experimental",
+        });
+    }
+    if raw.advertise {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.advertise",
+            reason: "SSU2 address publication is unavailable in this milestone",
+        });
+    }
+    if raw.introducer_service {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.introducer_service",
+            reason: "SSU2 introducer service is unavailable in this milestone",
+        });
+    }
+    let bind_ipv4 = parse_ssu2_bind("ssu2.bind_ipv4", &raw.bind_ipv4, false)?;
+    let bind_ipv6 = parse_ssu2_bind("ssu2.bind_ipv6", &raw.bind_ipv6, true)?;
+    // Port 0 selects an ephemeral port for integration tests; a
+    // configured service port must be in the normal (non-privileged) range.
+    if raw.port != 0 && raw.port < MIN_SSU2_SERVICE_PORT {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.port",
+            reason: "must be 0 for an ephemeral port or at least 1024",
+        });
+    }
+    validate_limit(
+        "ssu2.max_pending_handshakes",
+        raw.max_pending_handshakes as u64,
+        MAX_SSU2_PENDING_HANDSHAKES as u64,
+    )?;
+    validate_limit(
+        "ssu2.max_active_sessions",
+        raw.max_active_sessions as u64,
+        MAX_SSU2_ACTIVE_SESSIONS as u64,
+    )?;
+    validate_limit(
+        "ssu2.max_pending_per_ip",
+        raw.max_pending_per_ip as u64,
+        MAX_SSU2_PENDING_PER_IP as u64,
+    )?;
+    validate_limit(
+        "ssu2.max_pending_per_subnet",
+        raw.max_pending_per_subnet as u64,
+        MAX_SSU2_PENDING_PER_SUBNET as u64,
+    )?;
+    validate_limit(
+        "ssu2.max_datagram_queue_items",
+        raw.max_datagram_queue_items as u64,
+        MAX_SSU2_DATAGRAM_QUEUE_ITEMS as u64,
+    )?;
+    validate_limit(
+        "ssu2.max_datagram_queue_bytes",
+        raw.max_datagram_queue_bytes,
+        MAX_SSU2_DATAGRAM_QUEUE_BYTES,
+    )?;
+    validate_limit(
+        "ssu2.max_inbound_i2np_queue",
+        raw.max_inbound_i2np_queue as u64,
+        MAX_SSU2_INBOUND_I2NP_QUEUE as u64,
+    )?;
+    if raw.max_pending_per_ip > raw.max_pending_handshakes
+        || raw.max_pending_per_subnet > raw.max_pending_handshakes
+    {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.pending_scopes",
+            reason: "per-IP and per-subnet ceilings must not exceed max_pending_handshakes",
+        });
+    }
+    if raw.handshake_timeout_ms < MIN_SSU2_HANDSHAKE_TIMEOUT_MS
+        || raw.handshake_timeout_ms > MAX_SSU2_HANDSHAKE_TIMEOUT_MS
+    {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.handshake_timeout_ms",
+            reason: "must be within 5000..=60000",
+        });
+    }
+    validate_duration(
+        "ssu2.idle_timeout_ms",
+        Duration::from_millis(raw.idle_timeout_ms),
+    )?;
+    if raw.scheduler_poll_max_ms < MIN_SSU2_SCHEDULER_POLL_MAX_MS
+        || raw.scheduler_poll_max_ms > MAX_SSU2_SCHEDULER_POLL_MAX_MS
+    {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.scheduler_poll_max_ms",
+            reason: "must be within 10..=1000",
+        });
+    }
+    Ok(Ssu2Config {
+        enabled: raw.enabled,
+        bind_ipv4,
+        bind_ipv6,
+        port: raw.port,
+        advertise: raw.advertise,
+        introducer_service: raw.introducer_service,
+        max_pending_handshakes: raw.max_pending_handshakes,
+        max_active_sessions: raw.max_active_sessions,
+        max_pending_per_ip: raw.max_pending_per_ip,
+        max_pending_per_subnet: raw.max_pending_per_subnet,
+        max_datagram_queue_items: raw.max_datagram_queue_items,
+        max_datagram_queue_bytes: raw.max_datagram_queue_bytes as usize,
+        max_inbound_i2np_queue: raw.max_inbound_i2np_queue,
+        handshake_timeout: Duration::from_millis(raw.handshake_timeout_ms),
+        idle_timeout: Duration::from_millis(raw.idle_timeout_ms),
+        scheduler_poll_max: Duration::from_millis(raw.scheduler_poll_max_ms),
     })
 }
 
@@ -1545,6 +1888,145 @@ data_dir = "./state"
     #[test]
     fn unknown_reseed_fields_are_rejected() {
         let text = format!("{}\n[reseed]\nunknown = true\n", MINIMAL);
+        assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
+    }
+
+    #[test]
+    fn ssu2_defaults_are_disabled_loopback_and_non_advertised() {
+        let config = Config::parse(MINIMAL).expect("valid defaults");
+        assert!(!config.ssu2.enabled);
+        assert_eq!(
+            config.ssu2.bind_ipv4,
+            Some("127.0.0.1".parse::<IpAddr>().expect("loopback"))
+        );
+        assert_eq!(config.ssu2.bind_ipv6, None);
+        assert_eq!(config.ssu2.port, 0);
+        assert!(!config.ssu2.advertise);
+        assert!(!config.ssu2.introducer_service);
+        assert_eq!(config.ssu2.max_pending_handshakes, 64);
+        assert_eq!(config.ssu2.max_active_sessions, 64);
+        assert_eq!(config.ssu2.max_pending_per_ip, 4);
+        assert_eq!(config.ssu2.max_pending_per_subnet, 16);
+        assert_eq!(config.ssu2.handshake_timeout, Duration::from_millis(20_000));
+        assert_eq!(config.ssu2.idle_timeout, Duration::from_millis(300_000));
+    }
+
+    #[test]
+    fn ssu2_enabled_true_is_rejected_fail_closed() {
+        let text = format!("{}\n[ssu2]\nenabled = true\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "ssu2.enabled",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn ssu2_advertise_and_introducer_are_rejected() {
+        let text = format!("{}\n[ssu2]\nadvertise = true\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "ssu2.advertise",
+                ..
+            })
+        ));
+        let text = format!("{}\n[ssu2]\nintroducer_service = true\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "ssu2.introducer_service",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn ssu2_bind_fields_reject_non_loopback_and_wrong_family() {
+        for (field, value) in [
+            ("bind_ipv4", "\"192.0.2.1\""),
+            ("bind_ipv4", "\"::1\""),
+            ("bind_ipv6", "\"2001:db8::1\""),
+            ("bind_ipv6", "\"127.0.0.1\""),
+            ("bind_ipv4", "\"not-an-ip\""),
+        ] {
+            let text = format!("{}\n[ssu2]\n{} = {}\n", MINIMAL, field, value);
+            assert!(
+                matches!(Config::parse(&text), Err(ConfigError::Semantic { .. })),
+                "field {field} value {value} must be rejected"
+            );
+        }
+        // Empty disables the family; loopback ::1 enables IPv6 tests.
+        let text = format!(
+            "{}\n[ssu2]\nbind_ipv4 = \"\"\nbind_ipv6 = \"::1\"\n",
+            MINIMAL
+        );
+        let config = Config::parse(&text).expect("family disable/enable");
+        assert_eq!(config.ssu2.bind_ipv4, None);
+        assert_eq!(
+            config.ssu2.bind_ipv6,
+            Some("::1".parse::<IpAddr>().expect("loopback"))
+        );
+    }
+
+    #[test]
+    fn ssu2_port_zero_is_ephemeral_and_low_ports_rejected() {
+        let text = format!("{}\n[ssu2]\nport = 0\n", MINIMAL);
+        assert_eq!(Config::parse(&text).expect("ephemeral").ssu2.port, 0);
+        let text = format!("{}\n[ssu2]\nport = 9150\n", MINIMAL);
+        assert_eq!(Config::parse(&text).expect("service").ssu2.port, 9150);
+        let text = format!("{}\n[ssu2]\nport = 80\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "ssu2.port",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn ssu2_limits_and_timeouts_enforce_ceilings() {
+        for (field, value) in [
+            ("max_pending_handshakes", "0"),
+            ("max_pending_handshakes", "1025"),
+            ("max_active_sessions", "0"),
+            ("max_pending_per_ip", "65"),
+            ("max_pending_per_subnet", "257"),
+            ("max_datagram_queue_items", "4097"),
+            ("max_datagram_queue_bytes", "134217729"),
+            ("max_inbound_i2np_queue", "0"),
+            ("handshake_timeout_ms", "4999"),
+            ("handshake_timeout_ms", "60001"),
+            ("idle_timeout_ms", "0"),
+            ("scheduler_poll_max_ms", "9"),
+            ("scheduler_poll_max_ms", "1001"),
+        ] {
+            let text = format!("{}\n[ssu2]\n{} = {}\n", MINIMAL, field, value);
+            assert!(
+                Config::parse(&text).is_err(),
+                "field {field} value {value} must be rejected"
+            );
+        }
+        // Per-scope ceilings must not exceed the global pending ceiling.
+        let text = format!(
+            "{}\n[ssu2]\nmax_pending_handshakes = 4\nmax_pending_per_ip = 5\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "ssu2.pending_scopes",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn unknown_ssu2_fields_are_rejected() {
+        let text = format!("{}\n[ssu2]\nunknown = true\n", MINIMAL);
         assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
     }
 }

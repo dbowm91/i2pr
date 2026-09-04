@@ -21,6 +21,7 @@ mod ntcp2_handshake_observer;
 mod ntcp2_link;
 mod ntcp2_runtime;
 mod observability;
+mod ssu2_runtime;
 mod supervisor;
 
 pub use cancel::CancellationToken;
@@ -76,6 +77,19 @@ pub use ntcp2_runtime::{
 pub use observability::{
     MAX_SNAPSHOT_CHANNELS, MAX_SNAPSHOT_RESOURCES, RouterLifecycle, RuntimeSnapshot,
     ServiceSnapshot, SimulationSnapshot, SnapshotError, SupervisorSnapshot, event,
+};
+pub use ssu2_runtime::{
+    MAX_SSU2_ACTIVE_CEILING, MAX_SSU2_INBOUND_QUEUE_CEILING, MAX_SSU2_PENDING_CEILING,
+    MAX_SSU2_RUNTIME_DURATION, MAX_SSU2_STAGED_BYTES_CEILING, MAX_SSU2_STAGED_DATAGRAMS_CEILING,
+    SSU2_BACKOFF_ENTRIES, SSU2_CACHED_TOKEN_GRACE, SSU2_CONFIRMED_MTU_PAYLOAD, SSU2_DEFAULT_MTU,
+    SSU2_LINKS_PER_PEER, SSU2_MANAGER_BYTES_PER_LINK, SSU2_MANAGER_MESSAGES_PER_LINK,
+    SSU2_MAX_DRAIN_PER_SESSION, SSU2_SEND_QUEUE_BYTES, SSU2_SEND_QUEUE_MESSAGES,
+    SSU2_TOKEN_CACHE_PEERS, SSU2_TOKEN_CACHE_PER_PEER, SSU2_TOKEN_REQUEST_SOURCES,
+    SSU2_TOKEN_REQUESTS_PER_SECOND, Ssu2BindError, Ssu2DialOutcome, Ssu2DialTarget,
+    Ssu2DialTargetError, Ssu2EstablishedLink, Ssu2IdentityMaterial, Ssu2InboundI2np, Ssu2LimitKind,
+    Ssu2LinkHandle, Ssu2RuntimeConfig, Ssu2RuntimeConfigError, Ssu2RuntimeDeadlines,
+    Ssu2RuntimeLimits, Ssu2RuntimeService, Ssu2SendOutcome, Ssu2ServiceHandle, Ssu2Snapshot,
+    Ssu2SocketConfig, Ssu2TestFaults,
 };
 pub use supervisor::{
     MAX_SHUTDOWN_DEADLINE, ShutdownOutcome, ShutdownReport, Supervisor, SupervisorConfigError,

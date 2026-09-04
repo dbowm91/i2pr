@@ -18,8 +18,9 @@ functions, no timers, no tasks.** Every public API is synchronous
 and bounded. Plan 155 landed the address/header/block foundation;
 Plan 156 added the Noise XK handshake and establishment state
 machines; Plan 157 added the authenticated data-phase session
-(`session.rs`). The supervised UDP adapter in `i2pr-runtime` belongs
-to Plan 158.
+(`session.rs`). The supervised UDP adapter in `i2pr-runtime`
+(`Ssu2RuntimeService`) landed in Plan 158 and drives exactly these
+machines over real sockets.
 
 It does own:
 
@@ -44,10 +45,18 @@ It does own:
 - The authenticated data-phase session with replay window, ACK
   scheduling, loss/congestion control, fragmentation/reassembly,
   duplicate suppression, and termination/idle handling
-  (`session.rs`, Plan 157).
+  (`session.rs`, Plan 157), plus three Plan 158 runtime-support APIs:
+  the single-shot `queue_new_token` control (in-band future-handshake
+  tokens), the side-effect-free `matches_inbound` trial match for
+  socket receive routing, and the read-only `outbound_pending`
+  depth accessor for send admission.
+- The `PeerId::hash` read-only accessor in `i2pr-transport`
+  (`identity.rs`, Plan 158) that lets the runtime bind dial backoff
+  without touching redacted diagnostics.
 
-It does **not** own UDP sockets, peer-test/relay roles, or transport
-selection. Those belong to Plans 158–161.
+It does **not** own UDP sockets (those live in `i2pr-runtime` since
+Plan 158), peer-test/relay roles, or transport selection. Those
+belong to Plans 159–161.
 
 ## Module layout
 
@@ -66,7 +75,7 @@ trajectories live in `tests/handshake.rs`.
 | `src/handshake.rs` | Establishment codecs, prevalidation, reassembly, RouterInfo binding | `TokenRequest`, `RetryMessage`, `SessionRequestParts`, `SessionCreatedParts`, `ConfirmedReassembly`, `AuthenticatedPeer`, `ClockSkewPolicy`, `HandshakeReplayCache`, `ReplayToken`, `RouterInfoFreshness`, `HandshakeError` |
 | `src/token.rs` | Bounded one-use token table | `TokenStore`, `Ssu2Token`, `TokenError`, `retry_response_budget` |
 | `src/state_machine.rs` | Consuming initiator/responder machines | `Initiator`, `Responder`, `InitiatorConfig`, `ResponderConfig`, `HandshakeAction`, `AuthenticatedSsu2Session`, `DeadlineKind`, `TerminateReason`, `DropCategory`, `StateMachineError` |
-| `src/session.rs` | Authenticated data-phase session | `Ssu2Session`, `SessionConfig`, `SessionCounters`, `SessionEvent`, `SessionAction`, `SessionError`, `ReceiveOutcome`, `DropReason` |
+| `src/session.rs` | Authenticated data-phase session | `Ssu2Session`, `SessionConfig`, `SessionCounters`, `SessionEvent`, `SessionAction`, `SessionError`, `ReceiveOutcome`, `DropReason` (+ Plan 158: `queue_new_token`, `matches_inbound`, `outbound_pending`) |
 
 ## Public surface
 
@@ -346,11 +355,16 @@ labels stay local. No runtime, socket, or async dependencies.
 
 ## Tests
 
-101 tests: 64 synchronous unit tests (inline) plus 20 integration
+103 tests: 66 synchronous unit tests (inline) plus 20 integration
 trajectories in `tests/handshake.rs` plus 17 data-phase trajectories
 in `tests/data_phase.rs`, plus 14 committed fixtures
 under `tests/fixtures/ssu2/` (pinned by `manifest.tsv`,
-enforced by `scripts/check-ssu2-vectors.sh`):
+enforced by `scripts/check-ssu2-vectors.sh`). Plan 158 added the
+inline `queued_new_token_round_trips_as_typed_event` and
+`inbound_matching_is_side_effect_free` unit tests; the 9-test
+real-loopback product suite lives in
+`crates/i2pr-runtime/tests/ssu2_local.rs` (see
+[i2pr-runtime](i2pr-runtime.md)).
 
 | Area | Coverage |
 | --- | --- |
@@ -364,7 +378,7 @@ enforced by `scripts/check-ssu2-vectors.sh`):
 | `token.rs` | One-use round trip, zero rejection, expiry + release, wrong source/port/family closure, per-source + global eviction, rotation, retry budget |
 | `tests/handshake.rs` | Full tokenless Retry trajectory to matching directional keys, cached-token trajectory, token valid/expired/wrong-source/reuse/rotation/unknown matrix with pre-DH fail-closed evidence, identical-byte resends, duplicate Created/Confirmed handling, deadline exhaustion + per-phase cancellation, tag-mutation isolation, 6-case RouterInfo binding matrix, RouterInfo-not-first rejection, 200-datagram cheap flood with bounded state, amplification budget, secret redaction, 6 committed handshake vectors (one with raw-primitive independent derivation) |
 | `tests/data_phase.rs` | Bidirectional multi-message exchange, DATA-loss fresh retransmission with exact once-delivery, ACK-loss recovery without loops, duplicate/replay/corruption/reorder, first/middle/final fragment loss recovery, fragment reorder/duplicate/conflict, reassembly exact-capacity/max+1 with total cleanup, outbound-queue exact-capacity/max+1, congestion-gate boundedness, prolonged-loss bounded termination, idle timeout, termination lifecycle, two-session isolation, 2 committed data-phase vectors reproduced byte-for-byte |
-| `session.rs` (unit) | Second-HKDF key shape, ACK underflow without mutation, duplicate-ACK idempotency, sent-history exact eviction, per-fragment ceiling silence, packet-number exhaustion, wrap boundaries, NextNonce rekey boundary |
+| `session.rs` (unit) | Second-HKDF key shape, ACK underflow without mutation, duplicate-ACK idempotency, sent-history exact eviction, per-fragment ceiling silence, packet-number exhaustion, wrap boundaries, NextNonce rekey boundary, NewToken queue round trip (Plan 158), side-effect-free inbound matching (Plan 158) |
 
 ## Distinctive design choices
 
@@ -405,9 +419,13 @@ enforced by `scripts/check-ssu2-vectors.sh`):
   block discipline and consuming transcripts.
 - [Dependency graph](dependency-graph.md) — the
   `i2pr-transport-ssu2` allowlist row.
+- [i2pr-runtime](i2pr-runtime.md) — owns the Plan 158 UDP sockets
+  and central scheduler that drive these machines.
 - Plan-of-record:
-  `plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md` and
-  `plans/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md`.
-- Closure: `plans/156-status.md` and `plans/157-status.md`.
+  `plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md`,
+  `plans/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md`,
+  and `plans/158-m8-ssu2-udp-runtime-and-local-session-product.md`.
+- Closure: `plans/156-status.md`, `plans/157-status.md`, and
+  `plans/158-status.md`.
 - Dossier: `specs/protocols/09-ssu2.md`,
   `specs/SOURCES.md` (Milestone 8 refresh).

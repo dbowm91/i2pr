@@ -463,6 +463,10 @@ struct DeliveredEntry {
 enum QueuedControl {
     PathChallenge(Vec<u8>),
     PathResponse(Vec<u8>),
+    NewToken {
+        expires: u32,
+        token: u64,
+    },
     Termination {
         valid_packets_received: u64,
         reason: u8,
@@ -611,6 +615,59 @@ impl Ssu2Session {
         })
     }
 
+    /// Returns whether an inbound datagram is addressed to this session
+    /// without mutating any session state or diagnostic counters.
+    ///
+    /// Plan 158's runtime receive loop calls this to route short-header
+    /// datagrams to the owning session before invoking the mutating
+    /// [`Ssu2Session::receive_datagram`]. Trial deprotection uses the
+    /// session's own intro/`k_header_2` pair, so an unrelated session
+    /// observes no replay marks, no rejection counters, and no effects.
+    pub fn matches_inbound(&self, datagram: &[u8]) -> bool {
+        if self.is_terminated() {
+            return false;
+        }
+        if DatagramLengthClass::classify(datagram.len()).is_err() {
+            return false;
+        }
+        if datagram.len() < constants::SHORT_HEADER_LENGTH + constants::MIN_POST_HEADER_BYTES {
+            return false;
+        }
+        let mut working = datagram.to_vec();
+        if crate::crypto::remove_header_protection(
+            &mut working,
+            constants::SHORT_HEADER_LENGTH,
+            self.local_intro.as_bytes(),
+            &self.receive_header_2,
+            false,
+        )
+        .is_err()
+        {
+            return false;
+        }
+        match DataHeader::decode(&working[..constants::SHORT_HEADER_LENGTH]) {
+            Ok(header) => header.dst_conn_id() == self.local_conn_id,
+            Err(_) => false,
+        }
+    }
+
+    /// Returns pending outbound depth for runtime queue accounting:
+    /// the number of queued I2NP messages and an estimated queued byte
+    /// count (fragment bytes plus a per-message header slop).
+    ///
+    /// The estimate is an admission input only, never a wire promise;
+    /// actual datagrams add short-header, block-framing, and MAC bytes.
+    pub fn outbound_pending(&self) -> (usize, usize) {
+        let mut bytes = 0_usize;
+        for message in &self.outbound {
+            bytes = bytes.saturating_add(64);
+            for fragment in &message.fragments {
+                bytes = bytes.saturating_add(fragment.bytes.len());
+            }
+        }
+        (self.outbound.len(), bytes)
+    }
+
     /// Returns the local connection ID.
     pub const fn local_conn_id(&self) -> u64 {
         self.local_conn_id
@@ -757,6 +814,29 @@ impl Ssu2Session {
             })
     }
 
+    /// Queues one single-shot NewToken control for transmission.
+    ///
+    /// Plan 158 uses this so a responder can hand a one-use token to an
+    /// authenticated peer for a future handshake (the token itself is
+    /// issued from the runtime's bounded [`crate::token::TokenStore`];
+    /// this queue only carries the announced value). Like path
+    /// controls, the block is emitted once on the next transmit; a lost
+    /// control packet is not automatically retried.
+    pub fn queue_new_token(&mut self, expires: u32, token: u64) -> Result<(), SessionError> {
+        if self.is_terminated() {
+            return Err(SessionError::Terminated);
+        }
+        if token == 0 {
+            return Err(SessionError::MessageTooLarge);
+        }
+        if self.queued_controls.len() >= constants::DATA_MAX_SENT_PACKETS {
+            return Err(SessionError::LocalPolicyDenied);
+        }
+        self.queued_controls
+            .push_back(QueuedControl::NewToken { expires, token });
+        Ok(())
+    }
+
     /// Queues a local termination. The block is emitted on the next
     /// transmit; the session reports terminated once queued.
     pub fn initiate_termination(&mut self, reason: u8) -> Result<(), SessionError> {
@@ -842,6 +922,10 @@ impl Ssu2Session {
             let rebuild = match &control {
                 QueuedControl::PathChallenge(data) => QueuedControl::PathChallenge(data.clone()),
                 QueuedControl::PathResponse(data) => QueuedControl::PathResponse(data.clone()),
+                QueuedControl::NewToken { expires, token } => QueuedControl::NewToken {
+                    expires: *expires,
+                    token: *token,
+                },
                 QueuedControl::Termination {
                     valid_packets_received,
                     reason,
@@ -857,6 +941,9 @@ impl Ssu2Session {
                 QueuedControl::PathResponse(data) => {
                     PathResponseBlock::new(data).ok().map(Block::PathResponse)
                 }
+                QueuedControl::NewToken { expires, token } => Some(Block::NewToken(
+                    crate::block::NewTokenBlock::new(expires, token),
+                )),
                 QueuedControl::Termination {
                     valid_packets_received,
                     reason,
@@ -2358,6 +2445,49 @@ mod tests {
         )
         .expect("session");
         (alice, bob)
+    }
+
+    #[test]
+    fn queued_new_token_round_trips_as_typed_event() {
+        let (mut alice, mut bob) = test_session_pair();
+        alice
+            .queue_new_token(1_700_000_030, 0x0102_0304_0506_0708)
+            .expect("queue");
+        // A zero token is never announced on the wire.
+        assert!(matches!(
+            alice.queue_new_token(1_700_000_030, 0),
+            Err(SessionError::MessageTooLarge)
+        ));
+        let datagram = alice.poll_transmit(2_000_000).expect("datagram");
+        let outcome = bob.receive_datagram(2_000_001, 1_700_000_000, &datagram);
+        assert!(outcome.dropped.is_none());
+        assert!(outcome.events.contains(&SessionEvent::NewToken {
+            expires: 1_700_000_030,
+            token: 0x0102_0304_0506_0708,
+        }));
+        // Single-shot: the next transmit carries no second announcement.
+        let next = alice.poll_transmit(2_000_002);
+        assert!(next.is_none());
+    }
+
+    #[test]
+    fn inbound_matching_is_side_effect_free() {
+        let (mut alice, bob) = test_session_pair();
+        alice.queue_path_challenge(vec![0xAA_u8; 8]).expect("queue");
+        let datagram = alice.poll_transmit(2_000_000).expect("datagram");
+        assert!(bob.matches_inbound(&datagram));
+        assert!(!alice.matches_inbound(&datagram));
+        assert!(bob.matches_inbound(&datagram));
+        // Trial matching mutates no counters on either session.
+        assert_eq!(bob.counters().packets_rejected, 0);
+        assert_eq!(bob.counters().packets_replayed, 0);
+        assert_eq!(alice.counters().packets_rejected, 0);
+        // Truncated and unrelated datagrams never match.
+        assert!(!bob.matches_inbound(&datagram[..16]));
+        assert!(!bob.matches_inbound(&[0x55_u8; 64]));
+        // Outbound depth reflects queued work for admission.
+        let (messages, bytes) = alice.outbound_pending();
+        assert_eq!((messages, bytes), (0, 0));
     }
 
     #[test]

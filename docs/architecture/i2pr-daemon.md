@@ -502,7 +502,12 @@ Unit tests in `src/lib.rs` and `src/config.rs` include composition
 regression tests (`daemon_graph_contains_no_ntcp2_transport_service`,
 `daemon_graph_rejects_ntcp2_enabled_config`) and NTCP2 activation
 safety tests (omitted section → disabled, explicit false accepted,
-explicit true rejected).
+explicit true rejected). Plan 158 adds the parallel `[ssu2]` surface
+(disabled loopback-only defaults, `enabled = true` / `advertise` /
+`introducer_service` rejected fail-closed, strict ceilings): the
+daemon parses and validates it but starts no SSU2 service —
+activation (identity/RouterInfo plumbing, publication) belongs to
+Plan 159.
 
 Integration tests in `tests/cli.rs` invoke the compiled binary via
 `Command::new(env!("CARGO_BIN_EXE_i2pr"))`:

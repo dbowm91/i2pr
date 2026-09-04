@@ -3,11 +3,16 @@
 The **only production owner of Tokio** in the workspace. Built on top
 of `i2pr-core` (contracts) and `i2pr-transport` (link contracts), it provides
 the bounded socket, timer, channel, and wakeable-cancellation seam that fulfills
-`i2pr-transport-ntcp2` actions. Plan 042 adds the runtime-owned handshake
+`i2pr-transport-ntcp2` actions and `i2pr-transport-ssu2` handshake/session
+actions over real UDP. Plan 042 adds the runtime-owned handshake
 executor and authenticated data-frame link; these are controlled local
 composition surfaces, not mixed-router evidence. Plan 044 confirms that the
 runtime-owned NTCP2 wire adapter is implemented and locally validated; mixed-
 router harness composition and authorized evidence remain pending.
+Plan 158 adds the runtime-owned SSU2 UDP service with its central
+bounded scheduler and real-loopback local session product; public
+advertisement and router-to-router interoperability remain pending
+(Plans 159–161).
 
 Path: `crates/i2pr-runtime/`
 
@@ -23,9 +28,13 @@ rest of the world. It is where:
 - Bounded service channels are built (command, event, request,
   latest-state) with resource charging.
 - TCP listeners and link children are owned.
+- UDP sockets and SSU2 session children are owned (Plan 158).
 - NTCP2 actions are fulfilled by `ntcp2_driver` with exact reads/writes,
   deadlines, cancellation, replay admission, clock, padding, and RouterInfo
   handoff.
+- SSU2 handshake/data actions are fulfilled by `ssu2_runtime` with cheap
+  receive classification, OS randomness/time, admission, a central
+  scheduler, and `TransportManager` promotion.
 - `ntcp2_link` owns authenticated frame reader/writer children and queue
   leases. Listener/dial promotion keeps pending admission attached until
   active-link admission succeeds.
@@ -47,6 +56,7 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
 | `ntcp2_handshake_observer` | `src/ntcp2_handshake_observer.rs` | 5.3 K | Compile-time-gated handshake observer used by the interop harness to record NTCP2 handshake state-machine transitions for diagnostics; never linked into the production daemon | `HandshakeObserver`, `HandshakeObserverEvent`, `ObserverSink` |
 | `ntcp2_link` | `src/ntcp2_link.rs` | Plan 042 | Authenticated frame reader/writer children and item/byte accounting leases | `AuthenticatedLink`, `ReceivedFrameLease`, `AuthenticatedLinkSnapshot` |
 | `ntcp2_runtime` | `src/ntcp2_runtime.rs` | — | Bounded NTCP2 socket/link lifecycle, TCP listener ownership, admission control, replay cache, dial backoff, link reader/writer children, exact I/O helpers | `Ntcp2RuntimeService`, `BoundNtcp2Listener`, `ListenerHandle`, `LinkHandle`, `InboundAdmission`, `ReplayCache`, `DialAdmission`, etc.; fns `read_exact`, `write_all_exact` |
+| `ssu2_runtime` | `src/ssu2_runtime.rs` | 4165 | Plan 158 bounded SSU2 UDP socket/session lifecycle: `Ssu2RuntimeService` + `Ssu2ServiceHandle`, cheap receive classification, OS randomness/time fulfillment, pending/active admission, central scheduler, `TransportManager` promotion, cached-token dials, bounded I2NP handoff | `Ssu2RuntimeService`, `Ssu2ServiceHandle`, `Ssu2RuntimeConfig`, `Ssu2RuntimeLimits`, `Ssu2RuntimeDeadlines`, `Ssu2DialTarget`, `Ssu2DialOutcome`, `Ssu2SendOutcome`, `Ssu2LinkHandle`, `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2Snapshot`, `Ssu2TestFaults`, `Ssu2BindError`, `Ssu2SocketConfig` |
 | `observability` | `src/observability.rs` | 360 | Privacy-aware runtime events (tracing), bounded aggregate snapshots, shared task counters | `RouterLifecycle`, `SupervisorSnapshot`, `ServiceSnapshot`, `RuntimeSnapshot`, `SimulationSnapshot`, `event::*` |
 | `supervisor` | `src/supervisor.rs` | 1703 | Service startup sequencing, health tracking, restart with bounded exponential backoff, graceful/forced shutdown | `Supervisor`, `SupervisorHandle`, `SupervisorError`, `SupervisorConfigError`, `ShutdownReport`, `ShutdownOutcome` |
 
@@ -86,6 +96,13 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
   `Ntcp2RuntimeLimits`, `Ntcp2RuntimeService`, `ReplayCache`,
   `ReplayCacheDecision`, `ReplayCacheSnapshot`, `RuntimeLimitKind`,
   `WriteOutcome`, `read_exact`, `write_all_exact`
+- `ssu2_runtime` (Plan 158): `Ssu2RuntimeService`, `Ssu2ServiceHandle`,
+  `Ssu2SocketConfig`, `Ssu2RuntimeConfig`, `Ssu2RuntimeConfigError`,
+  `Ssu2RuntimeLimits`, `Ssu2RuntimeDeadlines`, `Ssu2LimitKind`,
+  `Ssu2IdentityMaterial`, `Ssu2DialTarget`, `Ssu2DialTargetError`,
+  `Ssu2DialOutcome`, `Ssu2SendOutcome`, `Ssu2LinkHandle`,
+  `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2Snapshot`,
+  `Ssu2TestFaults`, `Ssu2BindError`, plus `SSU2_*` bound constants
 - `observability`: `MAX_SNAPSHOT_CHANNELS`, `MAX_SNAPSHOT_RESOURCES`,
   `RouterLifecycle`, `RuntimeSnapshot`, `ServiceSnapshot`,
   `SimulationSnapshot`, `SnapshotError`, `SupervisorSnapshot`,
@@ -209,6 +226,34 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
 - Bounded `BTreeMap<[u8; 32], ReplayEntry>` with time-based
   expiration. Fails closed when full.
 
+### SSU2 UDP service (`ssu2_runtime.rs`, Plan 158)
+- `Ssu2RuntimeService::new(config, identity)` validates without
+  opening a socket; `.start(scope, sockets)` binds loopback UDP
+  sockets and spawns one loop task per family under the
+  caller-owned `ChildScope`.
+- Each loop task is receive classifier plus central scheduler: cheap
+  length checks → side-effect-free `matches_inbound` trial → pending
+  handshake routing → intro-key prevalidation → admission, then one
+  Tokio sleep recomputed to the earliest handshake/ACK/RTO/idle
+  deadline. No task per dial/packet, no timer per packet.
+- TokenRequest answers and tokenless Retries are stateless (scratch
+  responder, no DH); only token-bearing SessionRequests that pass
+  admission create bounded pending entries keyed by local connection
+  ID. Retry answers respect the 3× amplification budget.
+- Outbound dials are single-flight per destination address, hold a
+  peer-bound `PendingHandshake`, and promote through the owned
+  `TransportManager` (`TransportKind::Ssu2`, duplicate resolution)
+  only at the authenticated gate. Cached `NewToken` dials fall back
+  to the tokenless path inside the same dial timeout.
+- `send_i2np` admits through `delivery_capability` +
+  `enqueue_on_link`, then queues into the bounded session outbound
+  queue; `Ssu2InboundI2np` messages leave through a bounded channel.
+- A handshake resend batch always replaces the pending deadline;
+  min-merging with a stale past value burns the retry budget
+  (`RetriesExhausted` — caught by the `ssu2_local` suite).
+- Local acceptance lives in `tests/ssu2_local.rs` (9 tests, real
+  loopback datagrams, serial-safe and parallel-safe).
+
 ### Observability / snapshots (`observability.rs`)
 - `RuntimeSnapshot::try_new()`,
   `SupervisorSnapshot` (via `SupervisorHandle::snapshot()`),
@@ -247,10 +292,15 @@ runtime-boundary check.
 | --- | --- |
 | `futures-util` | `FutureExt` for `catch_unwind` |
 | `i2pr-core` | Core types, resource budgets, health snapshots |
+| `i2pr-crypto` | Transport static secrets, OS randomness (Plan 158) |
+| `i2pr-proto` | Router hashes, RouterInfo decode (Plan 158) |
 | `i2pr-transport` | Transport contracts (no Tokio) |
+| `i2pr-transport-ssu2` | SSU2 handshake/session machines (Plan 158) |
+| `rand_core` | `OsRng` fulfillment (Plan 158) |
 | `tokio` | Runtime — one of only two crates allowed this |
 | `tokio-util` | `CancellationToken` primitive |
 | `tracing` | Structured event emission |
+| `zeroize` | Local static-secret hygiene (Plan 158) |
 
 `AGENTS.md` permits `tokio`/`tokio-util` only in `i2pr-runtime` and
 `i2pr-testkit`. ✅
@@ -268,7 +318,13 @@ in the paused runtime.
 | `channel.rs:1575-1908` | 10 | `commands_are_ordered_and_resource_charged_until_processing_finishes`, `synthetic_overload_graph_drains_and_shuts_down_without_usage_or_tasks`, `request_*`, `latest_state_*` |
 | `graph.rs:577-648` | 3 sync | `topological_order_is_lexically_deterministic`, `invalid_graphs_are_rejected_before_startup`, `restartable_services_require_a_policy` |
 | `ntcp2_runtime.rs` | 8 | `admission_is_global_ip_and_subnet_bounded_and_releases`, `replay_cache_fails_closed_and_expires_deterministically`, `loopback_listener_and_exact_io_use_supervised_scope`, queue RAII, active-link admission, and repeated teardown tests |
+| `ssu2_runtime.rs` | 4 sync | `limits_validate_rejects_zero_ceiling_and_scope_violations`, `deadlines_validate_ordering_and_bounds`, `dial_targets_validate_before_socket_activity`, `identity_rejects_malformed_router_info` |
+| `tests/ssu2_local.rs` | 9 async | Real-loopback product suite: `tokenless_establishment_over_real_udp`, `cached_token_establishment_with_stale_recovery`, `bidirectional_i2np_exchange_with_fragmentation`, `data_loss_recovers_with_exact_once_delivery`, `ack_loss_reorder_and_duplicate_recover_exactly_once`, `malformed_and_random_traffic_creates_no_state`, `active_session_cap_denies_with_baseline_return`, `graceful_close_abrupt_peer_and_cancel_return_to_baseline`, `inbound_handoff_shape_is_transport_neutral` |
 | `supervisor.rs:1267-1703` | 13 | **`forced_child_cleanup_is_repeatably_joined`** (100-iteration, requires `--test-threads=1`), `panic_is_classified_without_payload`, `forced_shutdown_aborts_and_joins_the_owned_child_scope`, `restartable_services_use_bounded_backoff` |
+
+The `ssu2_local` suite uses real time (monotonic handshake/data
+deadlines plus wall-clock skew checks) with explicit bounded waits —
+never paused Tokio time — and ephemeral loopback ports only.
 
 ## Distinctive design choices
 
@@ -310,6 +366,17 @@ in the paused runtime.
    the async bridge via `read_exact` / `write_all_exact`.
 14. **`Ntcp2RuntimeService` is `Clone`** — backed entirely by
    `Arc`-wrapped shared state.
+15. **SSU2 routes before it parses** — active sessions match through
+   the side-effect-free `matches_inbound` trial; handshake responses
+   route by source address under single-flight-per-address dials; only
+   then does intro-key prevalidation run. Unknown traffic never
+   creates persistent state.
+16. **SSU2 resend batches replace deadlines** — a new arm batch
+   supersedes the old schedule; min-merging would spin the retry
+   budget to `RetriesExhausted`.
+17. **SSU2 dials converge on duplicates** — simultaneous inbound and
+   outbound promotions resolve through the generic hash-ordered
+   duplicate policy, so both sides keep the same session.
 
 ## Cross-references
 
@@ -320,9 +387,14 @@ in the paused runtime.
   from supervised services.
 - [i2pr-transport-ntcp2](i2pr-transport-ntcp2.md) — produces
   `HandshakeAction` / `FrameAction` requests fulfilled here.
+- [i2pr-transport-ssu2](i2pr-transport-ssu2.md) — produces SSU2
+  `HandshakeAction` / `SessionAction` / `SessionEvent` values
+  fulfilled here (Plan 158).
 - Plan-of-record: `plans/021-m2-supervision-cancellation.md`,
   `plans/022-m2-bounded-channels-resource-governor.md`,
   `plans/035-m3-runtime-link-manager-and-addresses.md`,
-  `plans/037-m3-corrective-integration-closure.md`.
+  `plans/037-m3-corrective-integration-closure.md`,
+  `plans/158-m8-ssu2-udp-runtime-and-local-session-product.md`.
 - Closures: `plans/021-closure.md`, `plans/022-closure.md`,
-  `plans/035-closure.md`, `plans/037-closure.md`.
+  `plans/035-closure.md`, `plans/037-closure.md`,
+  `plans/158-status.md`.

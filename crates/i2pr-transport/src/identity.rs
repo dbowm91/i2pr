@@ -18,6 +18,15 @@ impl PeerId {
         Self(hash)
     }
 
+    /// Returns the wrapped protocol hash for typed runtime correlation.
+    ///
+    /// Diagnostics stay redacted; use the returned value only for map
+    /// identity and protocol binding (for example, SSU2 dial backoff
+    /// keys and establishment peer checks), never for log labels.
+    pub const fn hash(self) -> Hash {
+        self.0
+    }
+
     /// Creates a deterministic synthetic peer reference for local tests.
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(Hash::from_bytes(bytes))

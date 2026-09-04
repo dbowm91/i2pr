@@ -849,9 +849,12 @@ dependencies = [
  "i2pr-proto",
  "i2pr-transport",
  "i2pr-transport-ntcp2",
+ "i2pr-transport-ssu2",
+ "rand_core 0.9.5",
  "tokio",
  "tokio-util",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

@@ -215,10 +215,13 @@ plan_156_status = "passed-m8-ssu2-v2-handshake-token-and-routerinfo"
 plan_157_plan_of_record = "plans/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md"
 plan_157_closure = "plans/157-status.md"
 plan_157_status = "passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation"
+plan_158_plan_of_record = "plans/158-m8-ssu2-udp-runtime-and-local-session-product.md"
+plan_158_closure = "plans/158-status.md"
+plan_158_status = "passed-m8-ssu2-udp-runtime-and-local-session-product"
 milestone8_protocol = "ssu2-v2-classical"
 ssu2_pq_v3_v4 = "deferred-compatibility-watch"
 ssu1 = "not-implemented"
-milestone8_implementation = "plan157-data-phase-landed"
+milestone8_implementation = "plan158-udp-runtime-landed"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
@@ -276,6 +279,23 @@ evidence = [
     "scripts/check-ssu2-vectors.sh",
     "plans/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md",
     "plans/157-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "ssu2.v2-udp-runtime"
+protocol = "ssu2"
+structure = "runtime-udp-ownership-transport-manager-integration-local-session-product"
+scope = "required"
+status = "experimental"
+notes = "Plan 158 closed the first SSU2 UDP pass: `i2pr-runtime::Ssu2RuntimeService` owns real UDP sockets (IPv4 loopback tested, IPv6 structurally supported), drives the Plan 156/157 state machines through a central bounded scheduler (one loop task per socket, no task/timer per packet), charges pending handshakes through shared TransportResources with per-IP/subnet caps, promotes atomically through the generic TransportManager as TransportKind::Ssu2 with duplicate-link resolution, admits outbound I2NP through the transport-neutral delivery contract, hands inbound I2NP to a bounded caller-owned sink, caches NewToken announcements for cached-token dials with stale-token Retry fallback, and enforces loopback-only dials with no advertisement. The daemon `[ssu2]` surface is parsed/validated but stays `enabled = false` (activation belongs to Plan 159). Nine real-loopback acceptance tests (tokenless, cached-token with rotation recovery, bidirectional fragmented I2NP, loss/ACK-loss/reorder/duplicate recovery, malformed-traffic boundedness, admission ceilings, graceful/abrupt/cancel baselines) prove the i2pr↔i2pr local product. Publication, path validation/migration, introducers/relays, and independent interop belong to Plans 159-161. PQ-hybrid v3/v4 remains deferred compatibility-watch debt; SSU1 remains unsupported."
+evidence = [
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-runtime/tests/ssu2_local.rs",
+    "crates/i2pr-transport-ssu2/src/session.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "plans/158-m8-ssu2-udp-runtime-and-local-session-product.md",
+    "plans/158-status.md",
 ]
 advertised = false
 
