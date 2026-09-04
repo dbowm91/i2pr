@@ -26,13 +26,21 @@
 //! internally inconsistent:
 //!
 //! - The SessionRequest/SessionCreated raw-contents sections annotate
-//!   the 48-byte header-tail/ephemeral region with `n: 1`, while the
-//!   normative Header Encryption KDF pseudocode encrypts
-//!   `packet[16:63]` with the all-zero 12-byte IV under `k_header_2`.
-//!   This implementation follows the normative pseudocode (one
-//!   ChaCha20 keystream over the 48-byte region with the zero nonce).
-//!   The behavior is pinned by header-protection vectors; a later
-//!   interop plan can revisit the annotation with a one-line change.
+//!   the 48-byte header-tail/ephemeral region with `n: 1`. Plan 156
+//!   read that annotation as conflicting with the Header Encryption KDF
+//!   pseudocode and started the ChaCha20 stream at block counter 0.
+//!   Plan 161 independent interop proved that reading wrong: the
+//!   exact-pinned i2pd 2.61.0 reference starts the header-protection
+//!   stream at block counter 1 (its ChaCha20 primitive hard-codes
+//!   `iv[0] = 1`), and with counter 0 every protected header from i2pr
+//!   decodes as garbage on the independent side. The `n: 1` annotation
+//!   is the initial block counter for every header-protection
+//!   ChaCha20 call (both 8-byte masks and the header-tail/ephemeral
+//!   stream, handshake and data phase alike). This implementation now
+//!   seeks to keystream byte 64 (the first byte of block 1) before
+//!   applying keystream; the corrected behavior
+//!   is pinned by the regenerated header-protection vectors and the
+//!   Plan 161 loopback interop suite.
 //! - The retransmission prose mentions SessionConfirmed packet number
 //!   1, while the header-layout section mandates all-zero packet
 //!   numbers for SessionConfirmed. The header layout governs here
@@ -45,7 +53,7 @@
 //! wall-clock reads occur here.
 
 use chacha20::ChaCha20;
-use chacha20::cipher::{KeyInit, KeyIvInit, StreamCipher};
+use chacha20::cipher::{KeyInit, KeyIvInit, StreamCipher, StreamCipherSeek};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, aead::Aead};
 use hmac::{Hmac, Mac};
 use i2pr_crypto::{X25519SharedSecret, constant_time_eq, hkdf_sha256_extract_and_expand};
@@ -299,10 +307,10 @@ pub struct Ssu2Transcript {
     peer_static: Ssu2PublicKey,
     hash: TranscriptHash,
     chaining_key: ChainKey,
-    /// The `es` cipher, retained after the second `MixKey` for the
-    /// SessionConfirmed static-key frame (`k` from the request step,
-    /// used with `n = 1`).
-    es_cipher: Option<HandshakeCipher>,
+    /// The `ee` cipher, retained after SessionCreated is sealed or
+    /// accepted for the SessionConfirmed static-key frame (the
+    /// post-`ee` key at `n = 1`).
+    static_cipher: Option<HandshakeCipher>,
     cipher: Option<HandshakeCipher>,
     stage: TranscriptStage,
 }
@@ -320,7 +328,7 @@ impl Ssu2Transcript {
             peer_static: responder_static,
             hash: TranscriptHash(hash),
             chaining_key: ChainKey(protocol_hash),
-            es_cipher: None,
+            static_cipher: None,
             cipher: None,
             stage: TranscriptStage::Initial,
         }
@@ -431,13 +439,15 @@ impl Ssu2Transcript {
         Ok((self, plaintext))
     }
 
-    /// Responder: seals SessionCreated (`e, ee`). Mixes the request
-    /// ciphertext, the cleartext long header, the responder ephemeral
-    /// key, the `ee` secret, and encrypts with `n = 0`, `ad = h`. The
-    /// `es` cipher is retained for the SessionConfirmed static frame.
+    /// Responder: seals SessionCreated (`e, ee`). Mixes the cleartext
+    /// long header, the responder ephemeral key, the `ee` secret, and
+    /// encrypts with `n = 0`, `ad = h`. The request ciphertext is already
+    /// in `h` (mixed when the SessionRequest was sealed/accepted) and
+    /// must not be mixed again. The `ee` cipher is retained for the
+    /// SessionConfirmed static frame.
     pub fn seal_session_created(
         mut self,
-        request_ciphertext: &[u8],
+        _request_ciphertext: &[u8],
         header: &[u8; constants::LONG_HEADER_LENGTH],
         ephemeral_public: Ssu2PublicKey,
         ee_secret: X25519SharedSecret,
@@ -450,20 +460,21 @@ impl Ssu2Transcript {
             return Err(Ssu2CryptoError::InvalidState);
         }
         check_payload_bounds(payload)?;
-        self.mix_hash(request_ciphertext);
         self.mix_hash(header);
         self.mix_hash(ephemeral_public.as_bytes());
-        self.es_cipher = self.cipher.take();
         self.mix_key(ee_secret)?;
         let ciphertext = self.encrypt_and_hash(payload)?;
+        self.static_cipher = self.cipher.take();
         self.stage = TranscriptStage::CreatedSealed;
         Ok((self, ciphertext))
     }
 
-    /// Initiator: accepts SessionCreated (`e, ee`).
+    /// Initiator: accepts SessionCreated (`e, ee`). The request
+    /// ciphertext is already in `h` (mixed when the SessionRequest was
+    /// sealed) and must not be mixed again.
     pub fn accept_session_created(
         mut self,
-        request_ciphertext: &[u8],
+        _request_ciphertext: &[u8],
         header: &[u8; constants::LONG_HEADER_LENGTH],
         ephemeral_public: Ssu2PublicKey,
         ee_secret: X25519SharedSecret,
@@ -476,22 +487,23 @@ impl Ssu2Transcript {
             return Err(Ssu2CryptoError::InvalidState);
         }
         check_ciphertext_bounds(ciphertext)?;
-        self.mix_hash(request_ciphertext);
         self.mix_hash(header);
         self.mix_hash(ephemeral_public.as_bytes());
-        self.es_cipher = self.cipher.take();
         self.mix_key(ee_secret)?;
         let plaintext = self.decrypt_and_hash(ciphertext)?;
+        self.static_cipher = self.cipher.take();
         self.stage = TranscriptStage::CreatedAccepted;
         Ok((self, plaintext))
     }
 
     /// Initiator: seals the SessionConfirmed static-key frame (`s`
-    /// pattern). Encrypts the 32-byte static public key with the
-    /// retained `es` cipher at `n = 1` and mixes the frame into `h`.
-    /// The resulting `ad = h` authenticates the following payload.
+    /// pattern). Mixes the cleartext first-fragment short header, then
+    /// encrypts the 32-byte static public key with the retained `ee`
+    /// cipher at `n = 1` and mixes the frame into `h`. The resulting
+    /// `ad = h` authenticates the following payload.
     pub fn seal_confirmed_static(
         mut self,
+        header: &[u8; constants::SHORT_HEADER_LENGTH],
         static_public: Ssu2PublicKey,
     ) -> Result<
         (
@@ -506,8 +518,9 @@ impl Ssu2Transcript {
         if self.stage != TranscriptStage::CreatedAccepted {
             return Err(Ssu2CryptoError::InvalidState);
         }
+        self.mix_hash(header);
         let cipher = self
-            .es_cipher
+            .static_cipher
             .as_mut()
             .ok_or(Ssu2CryptoError::InvalidState)?;
         let frame = cipher.seal(static_public.as_bytes(), &self.hash.0)?;
@@ -517,17 +530,19 @@ impl Ssu2Transcript {
             return Err(Ssu2CryptoError::FieldTooLarge);
         }
         output.copy_from_slice(&frame);
-        self.es_cipher = None;
+        self.static_cipher = None;
         self.stage = TranscriptStage::StaticSealed;
         Ok((self, output))
     }
 
     /// Responder: opens the SessionConfirmed static-key frame with the
-    /// retained `es` cipher at `n = 1`. The recovered key is explicitly
+    /// retained `ee` cipher at `n = 1`, after mixing the cleartext
+    /// first-fragment short header. The recovered key is explicitly
     /// unchecked here; the caller binds it via `se` and RouterInfo
     /// validation before exposing an authenticated peer.
     pub fn accept_confirmed_static(
         mut self,
+        header: &[u8; constants::SHORT_HEADER_LENGTH],
         frame: &[u8],
     ) -> Result<(Self, Ssu2PublicKey), Ssu2CryptoError> {
         if self.role != Role::Responder {
@@ -539,8 +554,9 @@ impl Ssu2Transcript {
         if frame.len() != constants::KEY_LENGTH + constants::AUTH_TAG_LENGTH {
             return Err(Ssu2CryptoError::AuthenticationFailed);
         }
+        self.mix_hash(header);
         let cipher = self
-            .es_cipher
+            .static_cipher
             .as_mut()
             .ok_or(Ssu2CryptoError::InvalidState)?;
         let plaintext = cipher.open(frame, &self.hash.0)?;
@@ -550,7 +566,7 @@ impl Ssu2Transcript {
             .try_into()
             .map_err(|_| Ssu2CryptoError::InvalidPublicKey)?;
         let static_public = Ssu2PublicKey::new(bytes)?;
-        self.es_cipher = None;
+        self.static_cipher = None;
         self.stage = TranscriptStage::StaticAccepted;
         Ok((self, static_public))
     }
@@ -934,8 +950,13 @@ fn check_protection_shape(
     Ok(())
 }
 
+/// Computes one 8-byte header-protection mask: the ChaCha20 keystream
+/// starting at block counter 1 (spec `n: 1`; independent reference
+/// hard-codes the counter word to 1). The seek position is byte 64,
+/// i.e. the first byte of keystream block 1.
 pub(crate) fn chacha_mask(key: &[u8; constants::KEY_LENGTH], iv: &[u8; 12]) -> [u8; 8] {
     let mut cipher = ChaCha20::new(key.into(), iv.into());
+    cipher.seek(64u32);
     let mut mask = [0_u8; 8];
     cipher.apply_keystream(&mut mask);
     mask
@@ -943,6 +964,7 @@ pub(crate) fn chacha_mask(key: &[u8; constants::KEY_LENGTH], iv: &[u8; 12]) -> [
 
 fn chacha_stream(key: &[u8; constants::KEY_LENGTH], nonce: &[u8; 12], data: &mut [u8]) {
     let mut cipher = ChaCha20::new(key.into(), nonce.into());
+    cipher.seek(64u32);
     cipher.apply_keystream(data);
 }
 
@@ -1130,9 +1152,12 @@ mod tests {
             .expect("accept created");
         assert_eq!(opened_created, created_payload);
 
-        let (alice, static_frame) = alice.seal_confirmed_static(alice_public).expect("static");
+        let confirmed_header = [0x33_u8; constants::SHORT_HEADER_LENGTH];
+        let (alice, static_frame) = alice
+            .seal_confirmed_static(&confirmed_header, alice_public)
+            .expect("static");
         let (bob, recovered) = bob
-            .accept_confirmed_static(&static_frame)
+            .accept_confirmed_static(&confirmed_header, &static_frame)
             .expect("open static");
         assert_eq!(recovered, alice_public);
 

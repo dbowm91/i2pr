@@ -698,6 +698,47 @@ pub fn parse_session_created(
     })
 }
 
+/// Computes the SessionConfirmed fragment count for one jumbo
+/// ciphertext under one per-fragment payload budget, enforcing the
+/// same bounds `build_session_confirmed` enforces.
+fn confirmed_fragment_total(jumbo_len: usize, mtu_payload: usize) -> Result<u8, HandshakeError> {
+    if jumbo_len == 0 || jumbo_len > constants::MAX_CONFIRMED_REASSEMBLED_BYTES {
+        return Err(HandshakeError::AggregateTooLarge);
+    }
+    if !(constants::MIN_POST_HEADER_BYTES..=constants::MAX_HANDSHAKE_PAYLOAD_BYTES)
+        .contains(&mtu_payload)
+    {
+        return Err(HandshakeError::LocalPolicyDenied);
+    }
+    let total = jumbo_len.div_ceil(mtu_payload);
+    if !(1..=constants::MAX_SESSION_CONFIRMED_FRAGMENTS).contains(&total) {
+        return Err(HandshakeError::AggregateTooLarge);
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let total_byte = total as u8;
+    let last_length = jumbo_len - (total - 1) * mtu_payload;
+    if last_length < constants::MIN_POST_HEADER_BYTES {
+        return Err(HandshakeError::PayloadTooShort);
+    }
+    Ok(total_byte)
+}
+
+/// Encodes the first-fragment short header for one SessionConfirmed
+/// jumbo ciphertext. The initiator mixes these exact bytes into the
+/// Noise transcript before sealing the static-key frame, so the header
+/// must be derived before the frame exists; the fragment builder below
+/// reproduces the identical header from the same inputs.
+pub fn session_confirmed_first_header(
+    dst_conn_id: u64,
+    jumbo_len: usize,
+    mtu_payload: usize,
+) -> Result<[u8; constants::SHORT_HEADER_LENGTH], HandshakeError> {
+    let total = confirmed_fragment_total(jumbo_len, mtu_payload)?;
+    let header =
+        SessionConfirmedHeader::new(dst_conn_id, 0, total).map_err(HandshakeError::Header)?;
+    Ok(header.encode())
+}
+
 /// Builds outbound SessionConfirmed fragment datagrams: short headers
 /// carrying fragment `number/total` plus the jumbo ciphertext slices,
 /// each protected with that datagram's own trailing MAC bytes. The
@@ -710,26 +751,8 @@ pub fn build_session_confirmed(
     k_header_1: &[u8; constants::KEY_LENGTH],
     k_header_2: &[u8; constants::KEY_LENGTH],
 ) -> Result<Vec<Vec<u8>>, HandshakeError> {
-    if jumbo_ciphertext.is_empty()
-        || jumbo_ciphertext.len() > constants::MAX_CONFIRMED_REASSEMBLED_BYTES
-    {
-        return Err(HandshakeError::AggregateTooLarge);
-    }
-    if !(constants::MIN_POST_HEADER_BYTES..=constants::MAX_HANDSHAKE_PAYLOAD_BYTES)
-        .contains(&mtu_payload)
-    {
-        return Err(HandshakeError::LocalPolicyDenied);
-    }
-    let total = jumbo_ciphertext.len().div_ceil(mtu_payload);
-    if !(1..=constants::MAX_SESSION_CONFIRMED_FRAGMENTS).contains(&total) {
-        return Err(HandshakeError::AggregateTooLarge);
-    }
-    #[allow(clippy::cast_possible_truncation)]
-    let total_byte = total as u8;
-    let last_length = jumbo_ciphertext.len() - (total - 1) * mtu_payload;
-    if last_length < constants::MIN_POST_HEADER_BYTES {
-        return Err(HandshakeError::PayloadTooShort);
-    }
+    let total_byte = confirmed_fragment_total(jumbo_ciphertext.len(), mtu_payload)?;
+    let total = usize::from(total_byte);
     let mut datagrams = Vec::with_capacity(total);
     for (index, chunk) in jumbo_ciphertext.chunks(mtu_payload).enumerate() {
         #[allow(clippy::cast_possible_truncation)]
@@ -760,6 +783,7 @@ pub struct ConfirmedReassembly {
     fragments: Vec<Option<Vec<u8>>>,
     received: usize,
     bytes: usize,
+    first_header: Option<[u8; constants::SHORT_HEADER_LENGTH]>,
 }
 
 impl ConfirmedReassembly {
@@ -779,6 +803,7 @@ impl ConfirmedReassembly {
             fragments,
             received: 0,
             bytes: 0,
+            first_header: None,
         })
     }
 
@@ -813,12 +838,22 @@ impl ConfirmedReassembly {
         }
         *slot = Some(fragment);
         self.received += 1;
+        // Fragment 0's short header is the Noise AD for the static-key
+        // frame regardless of arrival order, so it is pinned here.
+        if header.frag_number() == 0 {
+            self.first_header = Some(header.encode());
+        }
         Ok(())
     }
 
     /// Returns whether all fragments arrived.
     pub fn is_complete(&self) -> bool {
         self.received == usize::from(self.total)
+    }
+
+    /// Returns fragment 0's short header bytes (the static-frame AD).
+    pub fn first_header(&self) -> Option<[u8; constants::SHORT_HEADER_LENGTH]> {
+        self.first_header
     }
 
     /// Concatenates the jumbo ciphertext (frag0 header is the Noise AD

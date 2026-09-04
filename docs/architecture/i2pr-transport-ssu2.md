@@ -228,13 +228,18 @@ is a concrete struct/enum.
   initial `SHA256(protocol_name)` chaining with null-prologue and
   responder-static mixes; `e,es` / `e,ee` / `s,se` stages with
   role-gated transitions (`WrongRole`/`InvalidState`
-  otherwise); the `es` cipher is retained for the static-key
-  frame (`n = 1`); `split()` derives `k_ab`/`k_ba` via
-  `HKDF(ck, ZEROLEN, "", 64)` and then the data-phase
+  otherwise); the request ciphertext is mixed exactly once (when the
+  SessionRequest is sealed/accepted, never re-mixed at
+  SessionCreated); the first-fragment SessionConfirmed short header
+  is mixed before the static-key frame; the post-`ee` cipher is
+  retained for that frame (`n = 1`); `split()` derives `k_ab`/`k_ba`
+  via `HKDF(ck, ZEROLEN, "", 64)` and then the data-phase
   `HKDF(key, ZEROLEN, "HKDFSSU2DataKeys", 64)` into
   `(k_data, k_header_2)` per direction (Plan 157 correction; the
   AEAD cipher uses `k_data`, header protection uses `k_header_2`
-  with the receiver intro key as `k_header_1`).
+  with the receiver intro key as `k_header_1`). The Created-stage
+  and Confirmed-stage corrections were verified against the pinned
+  i2pd 2.61.0 implementation during Plan 161 direction-A work.
 - `apply_header_protection` / `remove_header_protection` — the
   Header Encryption KDF verbatim: ChaCha20 masks over the first
   16 header bytes keyed by the packet's trailing MAC bytes, plus

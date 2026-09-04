@@ -25,6 +25,7 @@ zeroize.workspace = true
 workspace = true
 
 [dev-dependencies]
+flate2.workspace = true
 i2pr-crypto = { path = "../i2pr-crypto" }
 i2pr-proto = { path = "../i2pr-proto" }
 i2pr-transport = { path = "../i2pr-transport" }

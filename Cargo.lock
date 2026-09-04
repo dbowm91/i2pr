@@ -843,6 +843,7 @@ dependencies = [
 name = "i2pr-runtime"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "futures-util",
  "i2pr-core",
  "i2pr-crypto",

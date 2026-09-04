@@ -166,8 +166,13 @@ fn paired_splits(seed_base: u64) -> (Ssu2SplitKeys, Ssu2SplitKeys) {
         )
         .expect("accept created");
     let alice_public = public_of(&deterministic_secret(seed_base + 1));
-    let (alice, frame) = alice.seal_confirmed_static(alice_public).expect("static");
-    let (bob, _) = bob.accept_confirmed_static(&frame).expect("open static");
+    let confirmed_header = [0x33_u8; 16];
+    let (alice, frame) = alice
+        .seal_confirmed_static(&confirmed_header, alice_public)
+        .expect("static");
+    let (bob, _) = bob
+        .accept_confirmed_static(&confirmed_header, &frame)
+        .expect("open static");
     let se_alice = deterministic_secret(seed_base + 1)
         .diffie_hellman(bob_eph_public.as_bytes())
         .expect("se");

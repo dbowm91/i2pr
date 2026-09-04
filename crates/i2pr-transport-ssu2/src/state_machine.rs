@@ -36,7 +36,8 @@ use crate::handshake::{
     ReplayDecision, ReplayToken, RouterInfoFreshness, build_confirmed_payload, build_retry,
     build_session_confirmed, build_session_created, build_session_request, build_token_request,
     parse_retry, parse_session_created, parse_session_request, parse_token_request,
-    require_first_router_info, require_timestamp, split_confirmed_jumbo, validate_router_info,
+    require_first_router_info, require_timestamp, session_confirmed_first_header,
+    split_confirmed_jumbo, validate_router_info,
 };
 use crate::header::{LongHeader, MessageType, SessionConfirmedHeader};
 use crate::token::TokenStore;
@@ -641,10 +642,24 @@ impl Initiator {
             .take()
             .ok_or(StateMachineError::InvalidState)?;
         let alice_public = Ssu2PublicKey::new(static_secret.public_bytes())?;
-        let (transcript, static_frame) = transcript.seal_confirmed_static(alice_public)?;
+        let confirmed_payload = build_confirmed_payload(&confirmed.router_info, confirmed.padding)?;
+        // The first-fragment short header is Noise AD for the static
+        // frame, so it is derived from the sealed jumbo length before
+        // the frame exists; the fragment builder below reproduces the
+        // identical header from the same inputs.
+        let jumbo_len = constants::KEY_LENGTH
+            + constants::AUTH_TAG_LENGTH
+            + confirmed_payload.len()
+            + constants::AUTH_TAG_LENGTH;
+        let first_header = session_confirmed_first_header(
+            parts.header.src_conn_id(),
+            jumbo_len,
+            confirmed.mtu_payload,
+        )?;
+        let (transcript, static_frame) =
+            transcript.seal_confirmed_static(&first_header, alice_public)?;
         let responder_eph = self.responder_eph.ok_or(StateMachineError::InvalidState)?;
         let se = static_secret.diffie_hellman(responder_eph.as_bytes())?;
-        let confirmed_payload = build_confirmed_payload(&confirmed.router_info, confirmed.padding)?;
         let (transcript, confirmed_ct) =
             transcript.seal_confirmed_payload(se, &confirmed_payload)?;
         let mut jumbo = Vec::with_capacity(static_frame.len() + confirmed_ct.len());
@@ -1268,6 +1283,10 @@ impl Responder {
             .reassembly
             .take()
             .ok_or(StateMachineError::InvalidState)?;
+        // Fragment 0's short header is the static-frame Noise AD.
+        let first_header = reassembly
+            .first_header()
+            .ok_or(StateMachineError::InvalidState)?;
         let jumbo = match reassembly.reassemble() {
             Ok(jumbo) => jumbo,
             Err(_) => {
@@ -1294,17 +1313,18 @@ impl Responder {
             .transcript
             .take()
             .ok_or(StateMachineError::InvalidState)?;
-        let (transcript, alice_static) = match transcript.accept_confirmed_static(static_frame) {
-            Ok(value) => value,
-            Err(_) => {
-                return Ok((
-                    self,
-                    vec![HandshakeAction::Terminate(
-                        TerminateReason::AuthenticationFailed,
-                    )],
-                ));
-            }
-        };
+        let (transcript, alice_static) =
+            match transcript.accept_confirmed_static(&first_header, static_frame) {
+                Ok(value) => value,
+                Err(_) => {
+                    return Ok((
+                        self,
+                        vec![HandshakeAction::Terminate(
+                            TerminateReason::AuthenticationFailed,
+                        )],
+                    ));
+                }
+            };
         let ephemeral_secret = self
             .ephemeral_secret
             .take()

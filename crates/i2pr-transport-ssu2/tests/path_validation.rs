@@ -96,8 +96,13 @@ fn paired_splits() -> (Ssu2SplitKeys, Ssu2SplitKeys) {
             &created_ct,
         )
         .expect("accept created");
-    let (alice, frame) = alice.seal_confirmed_static(alice_public).expect("static");
-    let (bob, _) = bob.accept_confirmed_static(&frame).expect("open static");
+    let confirmed_header = [0x33_u8; 16];
+    let (alice, frame) = alice
+        .seal_confirmed_static(&confirmed_header, alice_public)
+        .expect("static");
+    let (bob, _) = bob
+        .accept_confirmed_static(&confirmed_header, &frame)
+        .expect("open static");
     let se_alice = alice_static
         .diffie_hellman(bob_eph_public.as_bytes())
         .expect("se");

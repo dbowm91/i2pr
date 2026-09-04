@@ -1126,6 +1126,7 @@ fn router_info_not_first_is_rejected() {
     let bob_eph_public = public_of(&bob_eph);
     let header_req = [0x11_u8; 32];
     let header_created = [0x22_u8; 32];
+    let header_confirmed = [0x33_u8; 16];
 
     let alice = Ssu2Transcript::new(Role::Initiator, bob_public);
     let es_alice = alice_eph.diffie_hellman(bob_public.as_bytes()).expect("es");
@@ -1164,7 +1165,9 @@ fn router_info_not_first_is_rejected() {
         )
         .expect("accept created");
     let alice_public = public_of(&alice_static);
-    let (alice, static_frame) = alice.seal_confirmed_static(alice_public).expect("static");
+    let (alice, static_frame) = alice
+        .seal_confirmed_static(&header_confirmed, alice_public)
+        .expect("static");
     let se_alice = alice_static
         .diffie_hellman(bob_eph_public.as_bytes())
         .expect("se");
@@ -1661,7 +1664,10 @@ fn session_confirmed_frag_vector_reproduces_byte_for_byte() {
         )
         .expect("accept created");
     let alice_public = Ssu2PublicKey::new(alice_static.public_bytes()).expect("apub");
-    let (alice, static_frame) = alice.seal_confirmed_static(alice_public).expect("static");
+    let header_confirmed = [0x33_u8; 16];
+    let (alice, static_frame) = alice
+        .seal_confirmed_static(&header_confirmed, alice_public)
+        .expect("static");
     let se = alice_static
         .diffie_hellman(bob_eph_public.as_bytes())
         .expect("se");
