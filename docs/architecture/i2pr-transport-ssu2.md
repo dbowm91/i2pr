@@ -7,8 +7,10 @@ establishment handshake with header protection, the bounded one-use
 token lifecycle, RouterInfo establishment binding, consuming
 initiator/responder state machines, the authenticated data-phase
 session with reliability/fragmentation, authenticated path validation
-with per-path MTU state, and deterministic address-publication
-snapshots. No UDP sockets.
+with per-path MTU state, deterministic address-publication
+snapshots, PeerTest roles with typed outcomes, relay
+requester/introducer/target machines with HolePunch, and validated
+introducer records. No UDP sockets.
 
 Path: `crates/i2pr-transport-ssu2/`
 
@@ -21,10 +23,16 @@ and bounded. Plan 155 landed the address/header/block foundation;
 Plan 156 added the Noise XK handshake and establishment state
 machines; Plan 157 added the authenticated data-phase session
 (`session.rs`); Plan 159 added the path-validation machine
-(`path.rs`) and the publication snapshot builder (`publication.rs`).
+(`path.rs`) and the publication snapshot builder (`publication.rs`);
+Plan 160 added PeerTest roles and typed outcomes (`peer_test.rs`),
+relay requester/introducer/target machines with HolePunch
+(`relay.rs`), and validated introducer records (`introducer.rs`),
+plus full relay/peer-test block carriage in the data phase
+(`session.rs` queue/event extensions).
 The supervised UDP adapter in `i2pr-runtime`
 (`Ssu2RuntimeService`) landed in Plan 158 and drives exactly these
-machines over real sockets.
+machines over real sockets; the Plan 160 peer/relay coordinator
+(`Ssu2PeerRelayService`) owns the runtime-side tables and quotas.
 
 It does own:
 
@@ -59,13 +67,17 @@ It does own:
   without touching redacted diagnostics.
 
 It does **not** own UDP sockets (those live in `i2pr-runtime` since
-Plan 158), peer-test/relay roles, or transport selection. Those
-belong to Plans 160–161.
+Plan 158) or transport selection (generic manager concern, Plan 159).
+Peer-test/relay roles, previously deferred to Plans 160–161, landed
+in Plan 160 (this crate) with runtime coordination in
+`i2pr-runtime::Ssu2PeerRelayService`; independent interop belongs to
+Plan 161.
 
 ## Module layout
 
-Declared in `src/lib.rs:28-38`. No subdirectories. Integration
-trajectories live in `tests/handshake.rs`.
+Declared in `src/lib.rs`. No subdirectories. Integration
+trajectories live in `tests/handshake.rs`, `tests/data_phase.rs`,
+`tests/path_validation.rs`, and `tests/peer_relay.rs` (Plan 160).
 
 | File | Responsibility | Main public types |
 | --- | --- | --- |
@@ -79,13 +91,16 @@ trajectories live in `tests/handshake.rs`.
 | `src/handshake.rs` | Establishment codecs, prevalidation, reassembly, RouterInfo binding | `TokenRequest`, `RetryMessage`, `SessionRequestParts`, `SessionCreatedParts`, `ConfirmedReassembly`, `AuthenticatedPeer`, `ClockSkewPolicy`, `HandshakeReplayCache`, `ReplayToken`, `RouterInfoFreshness`, `HandshakeError` |
 | `src/token.rs` | Bounded one-use token table | `TokenStore`, `Ssu2Token`, `TokenError`, `retry_response_budget` |
 | `src/state_machine.rs` | Consuming initiator/responder machines | `Initiator`, `Responder`, `InitiatorConfig`, `ResponderConfig`, `HandshakeAction`, `AuthenticatedSsu2Session`, `DeadlineKind`, `TerminateReason`, `DropCategory`, `StateMachineError` |
-| `src/session.rs` | Authenticated data-phase session | `Ssu2Session`, `SessionConfig`, `SessionCounters`, `SessionEvent`, `SessionAction`, `SessionError`, `ReceiveOutcome`, `DropReason` (+ Plan 158: `queue_new_token`, `matches_inbound`, `outbound_pending`; + Plan 159: `note_path_migrated`) |
+| `src/session.rs` | Authenticated data-phase session | `Ssu2Session`, `SessionConfig`, `SessionCounters`, `SessionEvent`, `SessionAction`, `SessionError`, `ReceiveOutcome`, `DropReason` (+ Plan 158: `queue_new_token`, `matches_inbound`, `outbound_pending`; + Plan 159: `note_path_migrated`; + Plan 160: full relay/peer-test `SessionEvent` blocks, `queue_relay_request/response/intro`, `queue_peer_test`) |
 | `src/path.rs` | Authenticated path validation + per-path MTU (Plan 159) | `PathValidator`, `ValidatedPath`, `PathEvent`, `PathError`, `PathCounters`, path bound constants |
 | `src/publication.rs` | Deterministic publication snapshots (Plan 159) | `PublicationRequest`, `PublicationPolicy`, `PublicationOutcome`, `Ssu2PublicationSnapshot`, `WithholdReason`, `PublicationError`, `build_publication_snapshot`, `parse_snapshot` |
+| `src/peer_test.rs` | PeerTest roles/correlation/typed outcomes (Plan 160) | `PeerTestTable`, `PeerTestOutcome`, `PeerTestRole`, `PeerTestState`, `PeerTestError`, `PeerTestCounters`, `peer_test_preimage`, `verify_peer_test_signature`, `peer_test_conn_ids`, `build/parse_out_of_session_peer_test` (+ bound/test constants) |
+| `src/relay.rs` | Relay requester/introducer/target + HolePunch (Plan 160) | `RelayRequester`, `RelayIntroducer`, `RelayTarget`, `RelayCounters`, `RelayError`, `HolePunchMessage`, `hole_punch_conn_ids`, `build/parse_hole_punch`, `relay_request/response_preimage`, `verify_relay_request/response`, `relay_response_budget` (+ bound/test constants) |
+| `src/introducer.rs` | Validated introducer records (Plan 160) | `IntroducerTable`, `IntroducerRecord`, `IntroducerProvenance`, `IntroducerError` (+ bound/test constants) |
 
 ## Public surface
 
-Crate-root re-exports (`lib.rs:38-79`):
+Crate-root re-exports (`lib.rs`):
 
 ```rust
 pub mod address;
@@ -94,9 +109,12 @@ pub mod constants;
 pub mod crypto;
 pub mod handshake;
 pub mod header;
+pub mod introducer;
 pub mod packet;
 pub mod path;
+pub mod peer_test;
 pub mod publication;
+pub mod relay;
 pub mod session;
 pub mod state_machine;
 pub mod token;
@@ -106,9 +124,12 @@ pub use block::{...};
 pub use crypto::{...};
 pub use handshake::{...};
 pub use header::{...};
+pub use introducer::{...};
 pub use packet::{...};
 pub use path::{...};
+pub use peer_test::{...};
 pub use publication::{...};
+pub use relay::{...};
 pub use state_machine::{...};
 pub use token::{...};
 ```
@@ -367,6 +388,65 @@ is a concrete struct/enum.
 - `address.rs` supporting enablers: `pub(crate)
   encode_i2p_base64` (promoted from test-only) and
   `Ssu2Capabilities::parse` for strict caps construction.
+- Plan 160 feeds this builder validated `Ssu2Introducer` values from
+  `introducer::IntroducerTable::validated_introducers` (live records
+  only, capped at the spec 3).
+
+### PeerTest roles (`peer_test.rs`, Plan 160)
+
+- `PeerTestTable` — bounded Alice/Bob/Charlie machine (8 global, 2
+  per peer, nonzero nonces, 10 s central-expiry deadlines, one
+  scheduler input, no task per test). Correlation is by nonce;
+  concurrent tests cannot consume each other's messages.
+- Exact spec `PeerTestValidate` preimages (`peer_test_preimage`,
+  `verify_peer_test_signature`): Msgs 1,2 Alice-signed without
+  `ahash`; Msgs 3,4 Charlie-signed with `ahash`; Msgs 5–7 optional.
+  Only Ed25519 verifies (`UnsupportedSigner` otherwise; Plan 161 owns
+  multi-algorithm interop).
+- Gates per ingest: correlation → role/state → sender → family →
+  freshness (±120 s) → signature → status code. Unknown/stale/
+  wrong-role messages never create reachability evidence.
+- Typed `PeerTestOutcome`: `DirectReachabilityConfirmed` (family,
+  observed endpoint, evidence peers), `AddressMismatch`,
+  `FirewalledLikely`, `Inconclusive`, `Rejected`. Msg 4 alone never
+  confirms; unsigned Msgs 5–7 never confirm alone; contradiction
+  yields mismatch, never last-write-wins.
+- Out-of-session type-7 codecs (`peer_test_conn_ids`,
+  `build/parse_out_of_session_peer_test`) under the receiver intro
+  key with nonce-derived connection IDs.
+- Redacted `Debug`/counters (counts only, no hashes/nonces/endpoints).
+
+### Relay roles (`relay.rs`, Plan 160)
+
+- `RelayRequester` (Alice) — bounded concurrent requests with
+  response/tag/nonce correlation, distinct-tag isolation, HolePunch
+  verification against nonce-derived connection IDs, and readiness to
+  transition into the normal handshake (never a fake session).
+- `RelayIntroducer` (Bob) — disabled unless explicitly enabled;
+  live-tag checks bound to Alice, per-peer/global quotas, 3x
+  anti-amplification budget enforced before crypto, replay
+  idempotency (no second intro emission), deterministic expiry, and
+  `shutdown` clearing all state.
+- `RelayTarget` (Charlie) — introducer-context validation of
+  `RelayIntro` (Alice's forwarded signature under the
+  `RelayRequestData` preimage), single HolePunch emission per intro
+  with bounded replay suppression.
+- Exact `RelayRequestData` / `RelayAgreementOK` preimages
+  (`relay_request/response_preimage`, `verify_relay_request/response`);
+  only Ed25519 verifies. HolePunch codec (`hole_punch_conn_ids`,
+  `build/parse_hole_punch`) under Alice's intro key: DateTime +
+  Address + RelayResponse payload, `Dest = (nonce << 32) | nonce`.
+- Redacted `Debug` everywhere (counts/enablement only).
+
+### Introducer records (`introducer.rs`, Plan 160)
+
+- `IntroducerTable` — the single bounded validated-record owner (8
+  records: peer hash, endpoint, intro key, nonzero tag, expiry,
+  provenance). Deterministic oldest-expiry replacement, failed-peer
+  removal (never publish stale/failed), live selection capped at the
+  spec 3 with stable ordering, expiry withdrawal, and
+  `validated_introducers` conversion for the publication builder.
+- Redacted `Debug` (counts only).
 
 ## Errors
 
@@ -387,6 +467,9 @@ protocol-vs-operational mixing.
 | `SessionError` | `session.rs` | Packet/header/crypto/block mapping, session mismatch, replay/old/future, ACK underflow/invalid, packet-number exhaustion, queue/history/reassembly ceilings, conflict, terminated/policy denial |
 | `PathError` | `path.rs` | Candidate/family/challenge-budget ceilings, weak challenge, unknown/expired/mismatched response, invalid MTU |
 | `PublicationError` | `publication.rs` | Invalid public key, invalid MTU, unvalidated/too-many introducers |
+| `PeerTestError` | `peer_test.rs` | Global/per-peer ceilings, duplicate nonce, unknown correlation, wrong role/sender, invalid signature/unsupported signer, stale timestamp, unsupported version, expiry/cancel |
+| `RelayError` | `relay.rs` | Request/tag quotas, duplicate/unknown correlation, invalid tag, wrong role/sender, invalid signature/unsupported signer, stale timestamp, unsupported version, disabled service, invalid HolePunch, expiry/cancel |
+| `IntroducerError` | `introducer.rs` | Zero tag, full table, unknown/expired record |
 
 ## Dependencies
 
@@ -416,18 +499,21 @@ labels stay local. No runtime, socket, or async dependencies.
 
 ## Tests
 
-132 tests: synchronous unit tests (inline) plus 20 integration
+163 tests: synchronous unit tests (inline) plus 20 integration
 trajectories in `tests/handshake.rs`, 17 data-phase trajectories
 in `tests/data_phase.rs`, 9 sealed-packet path-validation
-trajectories in `tests/path_validation.rs` (Plan 159), plus 14 committed fixtures
+trajectories in `tests/path_validation.rs` (Plan 159), 8 sealed-packet
+peer/relay trajectories in `tests/peer_relay.rs` (Plan 160), plus 14 committed fixtures
 under `tests/fixtures/ssu2/` (pinned by `manifest.tsv`,
 enforced by `scripts/check-ssu2-vectors.sh`). Plan 158 added the
 inline `queued_new_token_round_trips_as_typed_event` and
 `inbound_matching_is_side_effect_free` unit tests; the 9-test
 real-loopback product suite lives in
-`crates/i2pr-runtime/tests/ssu2_local.rs`, and the 3-test real-UDP
+`crates/i2pr-runtime/tests/ssu2_local.rs`, the 3-test real-UDP
 path migration/spoof/round-trip suite lives inline in
-`crates/i2pr-runtime/src/ssu2_runtime.rs` (see
+`crates/i2pr-runtime/src/ssu2_runtime.rs`, and the 7-test real-UDP
+NAT-like peer/relay suite lives in
+`crates/i2pr-runtime/tests/ssu2_peer_relay.rs` (see
 [i2pr-runtime](i2pr-runtime.md)).
 
 | Area | Coverage |
@@ -446,6 +532,10 @@ path migration/spoof/round-trip suite lives inline in
 | `path.rs` (unit, Plan 159) | No-challenge on validated source, single bounded candidate, wrong-response rejection with candidate survival, exact-once migration with proof consumption, timeout retention, global/family quotas, v4/v6 separation, conservative candidate MTU, no packet-driven MTU, zero-challenge rejection, challenge-budget exhaustion, scheduler deadlines |
 | `publication.rs` (unit, Plan 159) | Deterministic canonical round trip, firewalled form without direct address, direct opt-out, expiry withdrawal, unvalidated-introducer rejection, zero-key/bad-MTU fail-closed, no private material |
 | `tests/path_validation.rs` (Plan 159) | Real sealed-packet trajectories: unauthenticated/replay rejection without candidates, bounded candidate creation, wrong-response rejection, exact-once migration with continued bidirectional delivery, timeout retention, v4/v6 cross-validation refusal, migration congestion reset with semantic retention and fresh retransmit, minimum-MTU control fit |
+| `peer_test.rs` (unit, Plan 160) | Spec preimage field order, full Alice trajectory to direct confirmation, unsigned-Msg 7 downgrade, contradiction without last-wins, invalid/stale/wrong-role/unknown boundedness, duplicate idempotency, concurrent isolation, exact quotas, expiry/cancel baselines, refusal/inconclusive neutrality, signer rejection, v6 separation |
+| `relay.rs` (unit, Plan 160) | Request/response preimage order, HolePunch conn-ID rule, HolePunch round trip with wrong-key rejection, requester correlation with distinct-tag isolation, disabled-by-default quotas with replay idempotency, target validation with replay suppression, quota/expiry baselines |
+| `introducer.rs` (unit, Plan 160) | Bounded deterministic live selection, failed-peer withdrawal, zero-tag/overflow eviction, publication-shape conversion |
+| `tests/peer_relay.rs` (Plan 160) | Sealed-session carriage of RelayRequest/Response/Intro and PeerTest Msg 4 into their tables, out-of-session PeerTest/HolePunch round trips, introducer→publication→expiry integration, conservative reachability consumption, privacy regression |
 
 ## Distinctive design choices
 
@@ -477,6 +567,16 @@ path migration/spoof/round-trip suite lives inline in
 9. **No new crypto dependency** — X25519/HKDF/signature reuse
    comes from `i2pr-crypto`; only transcript sequencing and
    SSU2 labels are local, per the Plan 156 dependency review.
+10. **Correlation by nonce, never by source** — NAT rewrites and
+    concurrent schedules cannot confuse tests because every
+    transition keys on the test nonce plus role/state, with the
+    source family as a separation check only (Plan 160).
+11. **Unsigned corroboration never confirms** — out-of-session
+    messages without signatures advance the machine but downgrade
+    the outcome to inconclusive rather than confirming (Plan 160).
+12. **Relay success proves firewalled, never direct** — introducer
+    use feeds `RelayFirewalledSignal`-class evidence; direct
+    publication still needs corroborated direct proof (Plan 160).
 
 ## Cross-references
 
@@ -494,9 +594,11 @@ path migration/spoof/round-trip suite lives inline in
 - Plan-of-record:
   `plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md`,
   `plans/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md`,
-  `plans/158-m8-ssu2-udp-runtime-and-local-session-product.md`, and
-  `plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md`.
+  `plans/158-m8-ssu2-udp-runtime-and-local-session-product.md`,
+  `plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md`, and
+  `plans/160-m8-ssu2-peer-test-and-relay-reachability.md`.
 - Closure: `plans/156-status.md`, `plans/157-status.md`,
-  `plans/158-status.md`, and `plans/159-status.md`.
+  `plans/158-status.md`, `plans/159-status.md`, and
+  `plans/160-status.md`.
 - Dossier: `specs/protocols/09-ssu2.md`,
   `specs/SOURCES.md` (Milestone 8 refresh).

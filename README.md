@@ -29,12 +29,13 @@ plan_156 = passed-m8-ssu2-v2-handshake-token-and-routerinfo
 plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
+plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
 milestone7_sam_localhost = passed-via-plan151
 milestone7_final_acceptance = closed
 milestone6_interoperable = not-yet-claimed
-next_executable_plan = 160
+next_executable_plan = 161
 next_product_layer = milestone8-ssu2-v2
 ```
 
@@ -52,6 +53,8 @@ The `[sam]` config section remains disabled by default and loopback-only when en
 
 [**Plan 159**](plans/159-status.md) passed Milestone 8 SSU2 path validation, publication policy, and transport selection without changing wire semantics or enabling production publication: the runtime-neutral `PathValidator` (bounded per-family candidates, OS-CSPRNG challenges, exact-proof promotion, minimum-MTU candidates), migration-safe congestion reset, the corroboration-gated router reachability policy (one observation can never publish `Reachable`), deterministic canonical publication snapshots (direct form needs explicit opt-in), and deterministic NTCP2/SSU2 reuse/dial/fallback selection through the generic manager — proven by sealed-packet trajectories, unit matrices, and real-UDP migration/spoof/round-trip tests. The daemon `[ssu2]` surface stays disabled by default with no advertisement; peer-test/relay roles belong to Plan 160 and independent interop to Plan 161.
 
+[**Plan 160**](plans/160-status.md) passed Milestone 8 SSU2 peer test and relay reachability without changing wire semantics or enabling production publication: runtime-neutral Alice/Bob/Charlie PeerTest roles with nonce correlation, exact spec signature preimages, and typed outcomes (`DirectReachabilityConfirmed`/`AddressMismatch`/`FirewalledLikely`/`Inconclusive`/`Rejected`); requester/introducer/target relay machines with nonce-derived HolePunch IDs, intro-key HolePunch/out-of-session PeerTest codecs, bounded tags, and 3x anti-amplification budgets; the single bounded validated-introducer table feeding Plan 159 publication; typed reachability consumption (inconclusive stays neutral; relay success never proves direct); full relay/peer-test block carriage in the data phase; and the runtime `Ssu2PeerRelayService` (tables, per-source rate limits, signer registry, central expiry, privacy-safe snapshots) with introducer service disabled by default — proven by sealed-packet trajectories, unit matrices, and real-UDP NAT-like tests including the relay-to-handshake product path through the normal handshake machinery. The daemon `[ssu2]` surface stays disabled by default with no advertisement; independent interop belongs to Plan 161.
+
 For the full plan hierarchy, MVP roadmap, and what's implemented vs. not, see [**`plans/README.md`**](plans/README.md).
 
 ## Workspace
@@ -64,8 +67,8 @@ crates/
   i2pr-core/                Shared contracts, lifecycle, budgets, health
   i2pr-transport/           Transport-neutral link management
    i2pr-transport-ntcp2/     NTCP2 protocol implementation (no I/O)
-    i2pr-transport-ssu2/     SSU2 v2 protocol (runtime-neutral) + one-shot NewToken queue (Plan 158) + path validation/publication (Plan 159)
-   i2pr-runtime/             Tokio-owned supervision, cancellation, I/O (incl. SSU2 UDP runtime, Plan 158; path validation, Plan 159)
+    i2pr-transport-ssu2/     SSU2 v2 protocol (runtime-neutral) + one-shot NewToken queue (Plan 158) + path validation/publication (Plan 159) + peer-test/relay/introducers (Plan 160)
+   i2pr-runtime/             Tokio-owned supervision, cancellation, I/O (incl. SSU2 UDP runtime, Plan 158; path validation, Plan 159; peer-test/relay coordination, Plan 160)
   i2pr-netdb/               RouterInfo + LeaseSet2 validation, store, lookup, publication
   i2pr-netdb-persist/       Persistent cache + bounded SU3 reseed ingestion
   i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build, runtime-neutral data plane

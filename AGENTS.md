@@ -35,7 +35,8 @@ Plan 156 = passed SSU2 v2 handshake/token/RouterInfo establishment (no sockets)
 Plan 157 = passed SSU2 v2 data-phase reliability/fragmentation (no sockets)
 Plan 158 = passed SSU2 v2 UDP runtime and local session product (localhost only)
 Plan 159 = passed SSU2 v2 path validation/publication/transport selection (no advertisement)
-next executable plan = 160
+Plan 160 = passed SSU2 v2 peer test and relay reachability (no advertisement)
+next executable plan = 161
 next product layer = milestone8-ssu2-v2
 ```
 
@@ -183,6 +184,7 @@ cargo test --locked -p i2pr-transport --all-targets
 cargo test --locked -p i2pr-transport-ssu2 --all-targets
 cargo test --locked -p i2pr-runtime --all-targets
 cargo test --locked -p i2pr-runtime --test ssu2_local -- --test-threads=1
+cargo test --locked -p i2pr-runtime --test ssu2_peer_relay
 bash scripts/check-ssu2-vectors.sh
 ```
 
@@ -250,7 +252,8 @@ checker composes with the existing lane.
 - Plan 157 is the passed SSU2 v2 data phase (authenticated short-header packets with the corrected two-step data KDF, packet-number/replay window, strict bounded ACK scheduling, fresh retransmission with conservative RTT/RTO/congestion control, exact I2NP fragmentation/reassembly with duplicate suppression, termination/rekey/idle handling; still no sockets, no runtime, no interop claim).
 - Plan 158 is the passed SSU2 v2 UDP runtime and local session product (localhost only).
 - Plan 159 is the passed SSU2 v2 path validation, conservative reachability/publication policy, and deterministic NTCP2/SSU2 selection (experimental, no advertisement, no interop claim).
-- Milestone 8 roadmap is registered via Plan 154; Plan 160 is the next executable plan after Plan 159 closure.
+- Plan 160 is the passed SSU2 v2 peer test and relay reachability (Alice/Bob/Charlie roles, requester/introducer/target machines, HolePunch, validated introducers, runtime coordination with introducer service disabled by default; experimental, no advertisement, no interop claim).
+- Milestone 8 roadmap is registered via Plan 154; Plan 161 is the next executable plan after Plan 160 closure.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - No localhost SAM evidence implies router-to-router NTCP2/SSU2 or public I2P interoperability.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
@@ -269,8 +272,9 @@ current-head workflow evidence.
 
 Current handoff: **Plan 151 passed, Plan 152 passed, Plan 153 passed,
 Plan 155 passed, Plan 156 passed, Plan 157 passed, Plan 158 passed,
-Plan 159 passed;
-next executable plan is 160 under the Plan 154 Milestone 8 roadmap.
+Plan 159 passed, Plan 160 passed;
+next executable plan is 161 under the Plan 154 Milestone 8 roadmap.
 SAM stays experimental, loopback-only, disabled by default, and non-advertised.
-SSU2 v2 has a localhost-only UDP runtime with authenticated path validation;
+SSU2 v2 has a localhost-only UDP runtime with authenticated path validation
+and peer-test/relay reachability;
 no public advertisement or router-to-router interoperability is claimed yet.**

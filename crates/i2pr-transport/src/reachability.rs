@@ -1,4 +1,4 @@
-//! Conservative router-level reachability and publication policy (Plan 159).
+//! Conservative router-level reachability and publication policy (Plans 159–160).
 //!
 //! This module owns the transport-neutral reachability state machine
 //! that sits outside every protocol codec. Packet code (SSU2 or
@@ -15,7 +15,7 @@
 //!                                          ↘ Firewalled / Unreachable
 //! ```
 //!
-//! Conservative rules enforced before Plan 160 peer-test evidence exists:
+//! Conservative rules (Plan 159, retained under Plan 160):
 //!
 //! - one peer's external-address observation can never reach
 //!   `Reachable` (structural: [`ReachabilityPolicy`] requires at least
@@ -29,12 +29,17 @@
 //! - observations expire; the snapshot carries the expiry so direct
 //!   addresses withdraw when evidence lapses.
 //!
-//! Plan 160 feeds peer-test/introducer evidence into these same
-//! `PeerTestResult` / `RelayFirewalledSignal` variants.
+//! Plan 160 feeds typed peer-test outcomes
+//! ([`PeerTestOutcomeKind::Confirmed`] supports, `AddressMismatch` /
+//! `FirewalledLikely` contradict, `Inconclusive` / `Rejected` stay
+//! neutral) and relay firewalled signals into these same variants.
+//! Relay success never proves direct reachability.
 //!
 //! Normative traceability: `plans/159-m8-ssu2-path-validation-`
-//! `publication-and-transport-selection.md` §§5–6. No sockets, no Tokio,
-//! no async; every contract is a concrete struct/enum.
+//! `publication-and-transport-selection.md` §§5–6 and
+//! `plans/160-m8-ssu2-peer-test-and-relay-reachability.md` §§4/11. No
+//! sockets, no Tokio, no async; every contract is a concrete
+//! struct/enum.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -82,13 +87,35 @@ pub enum ReachabilityState {
     Unreachable,
 }
 
-/// Privacy-safe typed reachability signal (plan §5).
+/// Privacy-safe typed peer-test outcome kind (Plan 160 §4).
+///
+/// Family-only so snapshots stay redacted; the full
+/// `PeerTestOutcome` (with endpoints) lives in
+/// `i2pr-transport-ssu2::peer_test` and maps onto this kind at the
+/// runtime boundary. `Confirmed` supports reachability;
+/// `AddressMismatch`/`FirewalledLikely` contradict it;
+/// `Inconclusive`/`Rejected` are neutral (they never confirm, and
+/// they never flip state arbitrarily — see `contradicts_reachability`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PeerTestOutcomeKind {
+    /// Corroborated direct reachability with address agreement.
+    Confirmed,
+    /// Authenticated observations disagree on the external address.
+    AddressMismatch,
+    /// Corroborated evidence indicates NAT/firewall.
+    FirewalledLikely,
+    /// Refusal/timeout/insufficient evidence: neither claim may be made.
+    Inconclusive,
+    /// Explicit protocol refusal/malformation.
+    Rejected,
+}
+
+/// Privacy-safe typed reachability signal (plans §5–§6, Plan 160 §4/§11).
 ///
 /// Variants carry only the address family — never a literal endpoint —
-/// so snapshots stay redacted by construction. The peer-test and
-/// relay variants are structurally present for Plan 160; this plan
-/// consumes them conservatively (success corroborates, failure
-/// contradicts) without implementing the Plan 160 protocols.
+/// so snapshots stay redacted by construction. Peer-test outcomes are
+/// typed (never a single boolean); relay success feeds
+/// `RelayFirewalledSignal` and never proves direct reachability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReachabilitySignal {
     /// A locally configured bind address exists for the family.
@@ -106,14 +133,15 @@ pub enum ReachabilitySignal {
         /// The validated path family.
         family: AddressFamily,
     },
-    /// A peer-test round completed (Plan 160 owns the protocol).
+    /// A peer-test round completed with a typed outcome (Plan 160).
     PeerTestResult {
         /// The tested address family.
         family: AddressFamily,
-        /// Whether the test succeeded.
-        success: bool,
+        /// The typed outcome kind.
+        outcome: PeerTestOutcomeKind,
     },
     /// A relay/firewalled indication arrived (Plan 160 owns the protocol).
+    /// Relay success never proves direct inbound reachability.
     RelayFirewalledSignal {
         /// The affected address family.
         family: AddressFamily,
@@ -138,15 +166,24 @@ impl ReachabilitySignal {
             Self::LocalConfiguredBind { .. }
             | Self::AuthenticatedPeerObservedExternalAddress { .. }
             | Self::ValidatedPath { .. } => true,
-            Self::PeerTestResult { success, .. } => success,
+            Self::PeerTestResult { outcome, .. } => {
+                matches!(outcome, PeerTestOutcomeKind::Confirmed)
+            }
             Self::RelayFirewalledSignal { .. } => false,
         }
     }
 
     /// Returns whether the signal contradicts direct reachability.
+    ///
+    /// Only `AddressMismatch`/`FirewalledLikely` (plus relay signals)
+    /// contradict; `Inconclusive`/`Rejected` are neutral so an
+    /// inconclusive test never flips state arbitrarily (Plan 160 §11).
     const fn contradicts_reachability(self) -> bool {
         match self {
-            Self::PeerTestResult { success, .. } => !success,
+            Self::PeerTestResult { outcome, .. } => matches!(
+                outcome,
+                PeerTestOutcomeKind::AddressMismatch | PeerTestOutcomeKind::FirewalledLikely
+            ),
             Self::RelayFirewalledSignal { .. } => true,
             _ => false,
         }
@@ -681,7 +718,7 @@ mod tests {
             tracker.record(
                 ReachabilitySignal::PeerTestResult {
                     family: AddressFamily::Ipv4,
-                    success: true,
+                    outcome: PeerTestOutcomeKind::Confirmed,
                 },
                 now + Duration::from_secs(2),
             ),
@@ -710,11 +747,52 @@ mod tests {
             tracker.record(
                 ReachabilitySignal::PeerTestResult {
                     family: AddressFamily::Ipv4,
-                    success: false,
+                    outcome: PeerTestOutcomeKind::AddressMismatch,
                 },
                 now + Duration::from_secs(2),
             ),
             ReachabilityState::ObservedUnconfirmed
+        );
+    }
+
+    #[test]
+    fn inconclusive_never_flips_state_arbitrarily() {
+        let mut tracker = configured_tracker();
+        let now = Duration::from_secs(450);
+        tracker.record(
+            ReachabilitySignal::LocalConfiguredBind {
+                family: AddressFamily::Ipv4,
+            },
+            now,
+        );
+        tracker.record(
+            ReachabilitySignal::ValidatedPath {
+                family: AddressFamily::Ipv4,
+            },
+            now + Duration::from_secs(1),
+        );
+        assert_eq!(tracker.state(), ReachabilityState::CandidateReachable);
+        // Inconclusive and Rejected are neutral: they neither support
+        // nor contradict, so the candidate state survives.
+        assert_eq!(
+            tracker.record(
+                ReachabilitySignal::PeerTestResult {
+                    family: AddressFamily::Ipv4,
+                    outcome: PeerTestOutcomeKind::Inconclusive,
+                },
+                now + Duration::from_secs(2),
+            ),
+            ReachabilityState::CandidateReachable
+        );
+        assert_eq!(
+            tracker.record(
+                ReachabilitySignal::PeerTestResult {
+                    family: AddressFamily::Ipv4,
+                    outcome: PeerTestOutcomeKind::Rejected,
+                },
+                now + Duration::from_secs(3),
+            ),
+            ReachabilityState::CandidateReachable
         );
     }
 
@@ -725,7 +803,7 @@ mod tests {
         tracker.record(
             ReachabilitySignal::PeerTestResult {
                 family: AddressFamily::Ipv4,
-                success: false,
+                outcome: PeerTestOutcomeKind::FirewalledLikely,
             },
             now,
         );

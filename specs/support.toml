@@ -221,10 +221,13 @@ plan_158_status = "passed-m8-ssu2-udp-runtime-and-local-session-product"
 plan_159_plan_of_record = "plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md"
 plan_159_closure = "plans/159-status.md"
 plan_159_status = "passed-m8-ssu2-path-validation-publication-and-transport-selection"
+plan_160_plan_of_record = "plans/160-m8-ssu2-peer-test-and-relay-reachability.md"
+plan_160_closure = "plans/160-status.md"
+plan_160_status = "passed-m8-ssu2-peer-test-and-relay-reachability"
 milestone8_protocol = "ssu2-v2-classical"
 ssu2_pq_v3_v4 = "deferred-compatibility-watch"
 ssu1 = "not-implemented"
-milestone8_implementation = "plan159-path-publication-selection-landed"
+milestone8_implementation = "plan160-peer-test-relay-reachability-landed"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
@@ -320,6 +323,27 @@ evidence = [
     "crates/i2pr-runtime/src/ssu2_runtime.rs",
     "plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md",
     "plans/159-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "ssu2.v2-peer-test-relay-reachability"
+protocol = "ssu2"
+structure = "peertest-requester-helper-roles-relay-introducer-target-holepunch-validated-introducers"
+scope = "required"
+status = "experimental"
+notes = "Plan 160 closed SSU2 PeerTest and relay reachability without changing wire semantics or enabling production publication. `i2pr-transport-ssu2::peer_test` owns the runtime-neutral Alice/Bob/Charlie roles with nonce correlation, exact spec signature preimages (`PeerTestValidate`), freshness, bounded tables (8 global, 2 per peer, central expiry) and typed outcomes (DirectConfirmed/AddressMismatch/FirewalledLikely/Inconclusive/Rejected); `relay` owns requester/introducer/target machines with exact `RelayRequestData`/`RelayAgreementOK` preimages, nonce-derived HolePunch connection IDs, intro-key HolePunch/PeerTest out-of-session codecs, bounded tags (16 global, 4 per peer, 120 s lifetime) and 3x anti-amplification budgets; `introducer` owns the single bounded validated-record table (8 records, 3 published, deterministic replacement/expiry). `i2pr-transport::reachability` consumes typed `PeerTestOutcomeKind` (Confirmed supports; Mismatch/Firewalled contradict; Inconclusive/Rejected neutral) plus `RelayFirewalledSignal` (relay success never proves direct reachability). `Ssu2Session` carries full relay/peer-test blocks as typed events and queues them single-shot bounded. `i2pr-runtime::Ssu2PeerRelayService` owns tables, per-source rate limits (8/sec, 1024 sources), signer registry, central expiry, and privacy-safe snapshots; introducer service stays disabled by default. Proven by 8 sealed-packet trajectories, unit matrices, and 7 real-UDP NAT-like tests (direct/firewalled/mismatch/inconclusive, flood boundedness, relay-to-handshake product path, expiry/disabled/shutdown, concurrency isolation, publication/privacy). Only Ed25519 signers verify (multi-algorithm interop is Plan 161 debt); RouterInfo signing-key plumbing is deferred. Daemon `[ssu2]` activation and non-loopback dials stay fail-closed; independent interop belongs to Plan 161. PQ-hybrid v3/v4 remains deferred compatibility-watch debt; SSU1 remains unsupported."
+evidence = [
+    "crates/i2pr-transport-ssu2/src/peer_test.rs",
+    "crates/i2pr-transport-ssu2/src/relay.rs",
+    "crates/i2pr-transport-ssu2/src/introducer.rs",
+    "crates/i2pr-transport-ssu2/src/session.rs",
+    "crates/i2pr-transport-ssu2/tests/peer_relay.rs",
+    "crates/i2pr-transport/src/reachability.rs",
+    "crates/i2pr-runtime/src/ssu2_peer_relay.rs",
+    "crates/i2pr-runtime/tests/ssu2_peer_relay.rs",
+    "plans/160-m8-ssu2-peer-test-and-relay-reachability.md",
+    "plans/160-status.md",
 ]
 advertised = false
 

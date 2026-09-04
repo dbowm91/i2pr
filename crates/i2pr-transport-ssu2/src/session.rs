@@ -98,7 +98,8 @@ use thiserror::Error;
 
 use crate::block::{
     AckBlock, Block, BlockError, DecodedBlock, FirstFragmentBlock, FollowOnFragmentBlock,
-    PathChallengeBlock, PathResponseBlock, encode_blocks, parse_blocks,
+    PathChallengeBlock, PathResponseBlock, PeerTestBlock, RelayIntroBlock, RelayRequestBlock,
+    RelayResponseBlock, encode_blocks, parse_blocks,
 };
 use crate::constants;
 use crate::crypto::{DataCipher, IntroKey, Ssu2CryptoError, Ssu2SplitKeys};
@@ -299,18 +300,22 @@ pub enum SessionEvent {
         /// Raw congestion flags.
         flags: u8,
     },
-    /// A relay block was observed (opaque; Plan 160 owns semantics).
-    Relay {
-        /// Wire block type (7/8/9).
-        block_type: u8,
-        /// Bounded opaque block length.
-        length: usize,
-    },
-    /// A peer-test block was observed (opaque; Plan 160 owns semantics).
-    PeerTest {
-        /// Peer-test message number (1..=7).
-        message: u8,
-    },
+    /// A relay request block was observed (Plan 160 owns semantics;
+    /// the caller feeds it to the introducer table after this
+    /// authenticated handoff).
+    RelayRequest(RelayRequestBlock),
+    /// A relay response block was observed (requester table input).
+    RelayResponse(RelayResponseBlock),
+    /// A relay introduction block was observed (target table input).
+    RelayIntro(RelayIntroBlock),
+    /// An empty relay-tag request was observed.
+    RelayTagRequest,
+    /// A nonzero relay tag was observed.
+    RelayTag(u32),
+    /// A peer-test block was observed with its full authenticated
+    /// contents (Plan 160 table input; signature/freshness/role checks
+    /// happen there, never here).
+    PeerTest(PeerTestBlock),
     /// An Address block was observed (no publication effect here).
     AddressObserved,
 }
@@ -458,7 +463,7 @@ struct DeliveredEntry {
     delivered_ms: u64,
 }
 
-/// Queued outbound control blocks (bounded).
+/// Queued outbound control blocks (bounded, single-shot).
 #[derive(Clone, Debug)]
 enum QueuedControl {
     PathChallenge(Vec<u8>),
@@ -471,6 +476,14 @@ enum QueuedControl {
         valid_packets_received: u64,
         reason: u8,
     },
+    /// One in-session RelayRequest (Plan 160; single-shot, bounded).
+    RelayRequest(RelayRequestBlock),
+    /// One in-session RelayResponse (Plan 160; single-shot, bounded).
+    RelayResponse(RelayResponseBlock),
+    /// One in-session RelayIntro (Plan 160; single-shot, bounded).
+    RelayIntro(RelayIntroBlock),
+    /// One in-session PeerTest block (Plan 160; single-shot, bounded).
+    PeerTest(PeerTestBlock),
 }
 
 // ---------------------------------------------------------------------------
@@ -887,6 +900,62 @@ impl Ssu2Session {
         Ok(())
     }
 
+    /// Queues one single-shot in-session RelayRequest (Plan 160).
+    ///
+    /// Like path controls, the block is emitted once on the next
+    /// transmit; a lost control packet is not automatically retried.
+    /// The queue is bounded by `DATA_MAX_SENT_PACKETS`.
+    pub fn queue_relay_request(&mut self, block: RelayRequestBlock) -> Result<(), SessionError> {
+        if self.is_terminated() {
+            return Err(SessionError::Terminated);
+        }
+        if self.queued_controls.len() >= constants::DATA_MAX_SENT_PACKETS {
+            return Err(SessionError::LocalPolicyDenied);
+        }
+        self.queued_controls
+            .push_back(QueuedControl::RelayRequest(block));
+        Ok(())
+    }
+
+    /// Queues one single-shot in-session RelayResponse (Plan 160).
+    pub fn queue_relay_response(&mut self, block: RelayResponseBlock) -> Result<(), SessionError> {
+        if self.is_terminated() {
+            return Err(SessionError::Terminated);
+        }
+        if self.queued_controls.len() >= constants::DATA_MAX_SENT_PACKETS {
+            return Err(SessionError::LocalPolicyDenied);
+        }
+        self.queued_controls
+            .push_back(QueuedControl::RelayResponse(block));
+        Ok(())
+    }
+
+    /// Queues one single-shot in-session RelayIntro (Plan 160).
+    pub fn queue_relay_intro(&mut self, block: RelayIntroBlock) -> Result<(), SessionError> {
+        if self.is_terminated() {
+            return Err(SessionError::Terminated);
+        }
+        if self.queued_controls.len() >= constants::DATA_MAX_SENT_PACKETS {
+            return Err(SessionError::LocalPolicyDenied);
+        }
+        self.queued_controls
+            .push_back(QueuedControl::RelayIntro(block));
+        Ok(())
+    }
+
+    /// Queues one single-shot in-session PeerTest block (Plan 160).
+    pub fn queue_peer_test(&mut self, block: PeerTestBlock) -> Result<(), SessionError> {
+        if self.is_terminated() {
+            return Err(SessionError::Terminated);
+        }
+        if self.queued_controls.len() >= constants::DATA_MAX_SENT_PACKETS {
+            return Err(SessionError::LocalPolicyDenied);
+        }
+        self.queued_controls
+            .push_back(QueuedControl::PeerTest(block));
+        Ok(())
+    }
+
     // -- Transmit path -------------------------------------------------
 
     /// Builds at most one outbound datagram from pending ACK, control,
@@ -943,8 +1012,9 @@ impl Ssu2Session {
                 self.counters.acks_sent = self.counters.acks_sent.saturating_add(1);
             }
         }
-        // Termination and path controls next (bounded, one per packet
-        // to keep datagrams small and deterministic).
+        // Termination, path, and Plan 160 relay/peer-test controls
+        // next (bounded, one per packet to keep datagrams small and
+        // deterministic).
         if let Some(control) = self.queued_controls.pop_front() {
             let rebuild = match &control {
                 QueuedControl::PathChallenge(data) => QueuedControl::PathChallenge(data.clone()),
@@ -960,6 +1030,10 @@ impl Ssu2Session {
                     valid_packets_received: *valid_packets_received,
                     reason: *reason,
                 },
+                QueuedControl::RelayRequest(block) => QueuedControl::RelayRequest(block.clone()),
+                QueuedControl::RelayResponse(block) => QueuedControl::RelayResponse(block.clone()),
+                QueuedControl::RelayIntro(block) => QueuedControl::RelayIntro(block.clone()),
+                QueuedControl::PeerTest(block) => QueuedControl::PeerTest(block.clone()),
             };
             let block = match control {
                 QueuedControl::PathChallenge(data) => {
@@ -981,6 +1055,10 @@ impl Ssu2Session {
                     );
                     Some(Block::Termination(block))
                 }
+                QueuedControl::RelayRequest(block) => Some(Block::RelayRequest(block)),
+                QueuedControl::RelayResponse(block) => Some(Block::RelayResponse(block)),
+                QueuedControl::RelayIntro(block) => Some(Block::RelayIntro(block)),
+                QueuedControl::PeerTest(block) => Some(Block::PeerTest(block)),
             };
             if let Some(block) = block {
                 let len = block.encoded_len();
@@ -1507,33 +1585,32 @@ impl Ssu2Session {
                         flags: congestion.flags(),
                     });
                 }
-                DecodedBlock::RelayRequest(_)
-                | DecodedBlock::RelayResponse(_)
-                | DecodedBlock::RelayIntro(_) => {
-                    outcome.events.push(SessionEvent::Relay {
-                        block_type: 7,
-                        length: 0,
-                    });
+                DecodedBlock::RelayRequest(request) => {
+                    outcome
+                        .events
+                        .push(SessionEvent::RelayRequest(request.clone()));
+                }
+                DecodedBlock::RelayResponse(response) => {
+                    outcome
+                        .events
+                        .push(SessionEvent::RelayResponse(response.clone()));
+                }
+                DecodedBlock::RelayIntro(intro) => {
+                    outcome.events.push(SessionEvent::RelayIntro(intro.clone()));
                 }
                 DecodedBlock::PeerTest(peer_test) => {
-                    outcome.events.push(SessionEvent::PeerTest {
-                        message: peer_test.message(),
-                    });
+                    outcome
+                        .events
+                        .push(SessionEvent::PeerTest(peer_test.clone()));
                 }
                 DecodedBlock::Address(_) => {
                     outcome.events.push(SessionEvent::AddressObserved);
                 }
                 DecodedBlock::RelayTagRequest => {
-                    outcome.events.push(SessionEvent::Relay {
-                        block_type: 15,
-                        length: 0,
-                    });
+                    outcome.events.push(SessionEvent::RelayTagRequest);
                 }
-                DecodedBlock::RelayTag(_) => {
-                    outcome.events.push(SessionEvent::Relay {
-                        block_type: 16,
-                        length: 4,
-                    });
+                DecodedBlock::RelayTag(tag) => {
+                    outcome.events.push(SessionEvent::RelayTag(tag.tag()));
                 }
                 DecodedBlock::FirstPacketNumber(first) => {
                     outcome

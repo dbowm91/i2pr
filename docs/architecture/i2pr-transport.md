@@ -40,7 +40,7 @@ Flat — declared in `src/lib.rs:16-25`. No subdirectories.
 | `src/manager.rs` | Synchronous transport-manager decisions and accounting | `TransportManager`, `LinkCandidate`, `PendingHandshake`, `DuplicateLinkPolicy`, `LinkDeliveryCapability`, + enums |
 | `src/snapshot.rs` | Privacy-safe bounded transport observations | `TransportSnapshot`, `LinkSnapshot`, `ReachabilityObservation`, `LinkResourceUsage`, `SnapshotError` |
 | `src/selection.rs` | Deterministic NTCP2/SSU2 selection/fallback (Plan 159) | `TransportCandidate`, `ExistingLink`, `SelectionPolicy`, `SelectionOutcome`, `select_peer_transport` |
-| `src/reachability.rs` | Conservative router-level reachability policy (Plan 159) | `ReachabilityState`, `ReachabilitySignal`, `ReachabilityPolicy`, `ReachabilityTracker`, `ReachabilitySnapshot` |
+| `src/reachability.rs` | Conservative router-level reachability policy (Plans 159–160) | `ReachabilityState`, `ReachabilitySignal`, `PeerTestOutcomeKind`, `ReachabilityPolicy`, `ReachabilityTracker`, `ReachabilitySnapshot` |
 | `src/tests.rs` | `#[cfg(test)]` synchronous unit tests | — |
 
 ## Public surface
@@ -101,11 +101,13 @@ pub use i2pr_core::{
   `select_peer_transport` (pure deterministic function),
   `MAX_SELECTION_CANDIDATES = 16` (over-bound input is denied, never
   truncated).
-- `reachability.rs` (Plan 159): `ReachabilityState` (`Unknown` /
+- `reachability.rs` (Plans 159–160): `ReachabilityState` (`Unknown` /
   `ObservedUnconfirmed` / `CandidateReachable` / `Reachable` /
   `Firewalled` / `Unreachable`), `ReachabilitySignal` (family-only,
-  endpoint-free variants incl. `PeerTestResult` /
-  `RelayFirewalledSignal` stubs for Plan 160),
+  endpoint-free variants with typed `PeerTestResult { outcome:
+  PeerTestOutcomeKind }` and `RelayFirewalledSignal`),
+  `PeerTestOutcomeKind` (`Confirmed` / `AddressMismatch` /
+  `FirewalledLikely` / `Inconclusive` / `Rejected`),
   `ReachabilityPolicy` (corroboration floor of two enforced by
   validation), `ReachabilityTracker` (bounded signal ring,
   corroboration/expiry recomputation), `ReachabilitySnapshot`
@@ -179,7 +181,7 @@ pub use i2pr_core::{
   with different transports; the caller (runtime/daemon) attempts them
   in order through the existing manager admission.
 
-### Reachability policy (`reachability.rs`, Plan 159)
+### Reachability policy (`reachability.rs`, Plans 159–160)
 - Corroboration counts distinct supporting signal *classes* per
   family, so one peer's repeated external-address observation can
   never reach `Reachable` (structural; the policy floor of two is
@@ -188,6 +190,11 @@ pub use i2pr_core::{
   `configured_direct_allowed`; contradiction downgrades to
   `ObservedUnconfirmed` (or `Firewalled`/`Unreachable` when
   corroborated); expiry withdraws support.
+- Plan 160 typed outcomes: only `PeerTestOutcomeKind::Confirmed`
+  supports reachability; `AddressMismatch`/`FirewalledLikely`
+  contradict; `Inconclusive`/`Rejected` are neutral (an inconclusive
+  test never flips state arbitrarily). Relay success feeds
+  `RelayFirewalledSignal` and never proves direct reachability.
 - `snapshot()` / `as_transport_observation()` hand publication and the
   manager ring buffer copies only — never packet/session objects.
 
@@ -239,7 +246,7 @@ and `i2pr-runtime` above transport. Confirmed compliant.
 
 Inline `src/tests.rs` (`lib.rs:25-26`), inline tests in
 `selection.rs` / `reachability.rs`, and `tests/contracts.rs`.
-43 synchronous tests:
+44 synchronous tests:
 
 | Test | Line | Coverage |
 | --- | --- | --- |
@@ -255,7 +262,7 @@ Inline `src/tests.rs` (`lib.rs:25-26`), inline tests in
 | `duplicate_policy_is_deterministic_and_direction_aware` | 446 | Hash-ordering determinism |
 | `manager_duplicate_policy_does_not_mutate_state` | 464 | `duplicate_resolution` is a pure read |
 | `selection::*` (15 tests) | `selection.rs` | Reuse precedence, ordered fallback, backoff/fallback, address-failure isolation, determinism, bounds |
-| `reachability::*` (11 tests) | `reachability.rs` | Single-observation ceiling, corroboration, configured-policy gating, contradiction, expiry/withdrawal, redaction |
+| `reachability::*` (12 tests) | `reachability.rs` | Single-observation ceiling, corroboration, configured-policy gating, contradiction, inconclusive neutrality (Plan 160), expiry/withdrawal, redaction |
 
 ## Distinctive design choices
 
@@ -284,7 +291,12 @@ Inline `src/tests.rs` (`lib.rs:25-26`), inline tests in
   validated descriptors, never RouterAddresses (Plan 159).
 - **Corroboration floor of two** — the reachability policy rejects
   single-class confirmation structurally, so packet code cannot talk
-  the router into publishing (Plan 159).
+  the router into publishing (Plan 159). Plan 160 keeps the floor
+  while typing the peer-test input so inconclusive evidence stays
+  neutral instead of contradicting.
+- **Relay success is firewalled-class** — a working introduction
+  proves the requester needs help, never that it is directly
+  reachable (Plan 160).
 
 ## Cross-references
 
@@ -300,3 +312,5 @@ Inline `src/tests.rs` (`lib.rs:25-26`), inline tests in
 - Related closure: `plans/031-closure.md`.
 - Plan 159 (`plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md`,
   `plans/159-status.md`) — selection and reachability policy.
+- Plan 160 (`plans/160-m8-ssu2-peer-test-and-relay-reachability.md`,
+  `plans/160-status.md`) — typed peer-test/relay outcomes.

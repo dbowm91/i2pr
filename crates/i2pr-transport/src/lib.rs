@@ -38,9 +38,9 @@ pub use manager::{
 };
 pub use payload::{EncodedI2npMessage, PayloadError};
 pub use reachability::{
-    DEFAULT_OBSERVATION_TTL, MAX_TRACKED_OBSERVATIONS, MIN_CORROBORATION_FLOOR, ReachabilityPolicy,
-    ReachabilityPolicyError, ReachabilitySignal, ReachabilitySnapshot, ReachabilityState,
-    ReachabilityTracker, corroboration_confidence,
+    DEFAULT_OBSERVATION_TTL, MAX_TRACKED_OBSERVATIONS, MIN_CORROBORATION_FLOOR,
+    PeerTestOutcomeKind, ReachabilityPolicy, ReachabilityPolicyError, ReachabilitySignal,
+    ReachabilitySnapshot, ReachabilityState, ReachabilityTracker, corroboration_confidence,
 };
 pub use resource::{
     TransportLease, TransportLimits, TransportQueueLease, TransportResourceLimitsError,

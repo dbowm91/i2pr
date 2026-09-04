@@ -12,9 +12,12 @@ router harness composition and authorized evidence remain pending.
 Plan 158 adds the runtime-owned SSU2 UDP service with its central
 bounded scheduler and real-loopback local session product; Plan 159
 adds authenticated path validation/migration, conservative
-reachability observations, and the scheduler-owned candidate expiry.
+reachability observations, and the scheduler-owned candidate expiry;
+Plan 160 adds the runtime peer-test/relay coordinator with rate
+limits, signer registry, validated introducer records, and the
+real-UDP NAT-like acceptance.
 Public advertisement and router-to-router interoperability remain
-pending (Plans 160–161).
+pending (Plan 161).
 
 Path: `crates/i2pr-runtime/`
 
@@ -60,6 +63,7 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
 | `ntcp2_link` | `src/ntcp2_link.rs` | Plan 042 | Authenticated frame reader/writer children and item/byte accounting leases | `AuthenticatedLink`, `ReceivedFrameLease`, `AuthenticatedLinkSnapshot` |
 | `ntcp2_runtime` | `src/ntcp2_runtime.rs` | — | Bounded NTCP2 socket/link lifecycle, TCP listener ownership, admission control, replay cache, dial backoff, link reader/writer children, exact I/O helpers | `Ntcp2RuntimeService`, `BoundNtcp2Listener`, `ListenerHandle`, `LinkHandle`, `InboundAdmission`, `ReplayCache`, `DialAdmission`, etc.; fns `read_exact`, `write_all_exact` |
 | `ssu2_runtime` | `src/ssu2_runtime.rs` | 5094 | Plan 158 bounded SSU2 UDP socket/session lifecycle plus Plan 159 path validation/migration and reachability observations: `Ssu2RuntimeService` + `Ssu2ServiceHandle`, cheap receive classification, OS randomness/time fulfillment, pending/active admission, central scheduler, per-session `PathValidator`, `TransportManager` promotion, cached-token dials, bounded I2NP handoff | `Ssu2RuntimeService`, `Ssu2ServiceHandle`, `Ssu2RuntimeConfig`, `Ssu2RuntimeLimits`, `Ssu2RuntimeDeadlines`, `Ssu2DialTarget`, `Ssu2DialOutcome`, `Ssu2SendOutcome`, `Ssu2LinkHandle`, `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2Snapshot`, `Ssu2TestFaults`, `Ssu2BindError`, `SSU2_MAX_PATH_CANDIDATES_GLOBAL`, `Ssu2SocketConfig` |
+| `ssu2_peer_relay` | `src/ssu2_peer_relay.rs` | Plan 160 | Plan 160 bounded peer-test/relay coordination: `Ssu2PeerRelayService`, table ownership (peer-test, requester, introducer, target, introducer records), per-source rate limits, bounded signer registry, central expiry scheduler, reachability mirroring, privacy-safe snapshots | `Ssu2PeerRelayService`, `Ssu2PeerRelayConfig`, `Ssu2PeerRelaySnapshot`, `PeerRelayAdmission`, `PEER_RELAY_*` bound constants |
 | `observability` | `src/observability.rs` | 360 | Privacy-aware runtime events (tracing), bounded aggregate snapshots, shared task counters | `RouterLifecycle`, `SupervisorSnapshot`, `ServiceSnapshot`, `RuntimeSnapshot`, `SimulationSnapshot`, `event::*` |
 | `supervisor` | `src/supervisor.rs` | 1703 | Service startup sequencing, health tracking, restart with bounded exponential backoff, graceful/forced shutdown | `Supervisor`, `SupervisorHandle`, `SupervisorError`, `SupervisorConfigError`, `ShutdownReport`, `ShutdownOutcome` |
 
@@ -107,6 +111,11 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
   `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2Snapshot`,
   `Ssu2TestFaults`, `Ssu2BindError`, `SSU2_MAX_PATH_CANDIDATES_GLOBAL`
   (Plan 159 service-wide candidate ceiling), plus `SSU2_*` bound constants
+- `ssu2_peer_relay` (Plan 160): `Ssu2PeerRelayService`,
+  `Ssu2PeerRelayConfig` (`introducer_enabled`, default `false`),
+  `Ssu2PeerRelaySnapshot`, `PeerRelayAdmission`,
+  `PEER_RELAY_RATE_SOURCES`, `PEER_RELAY_DATAGRAMS_PER_SECOND`,
+  `PEER_RELAY_MAX_SIGNERS`, `PEER_RELAY_RESPONSE_BUDGET_NUMERATOR`
 - `observability`: `MAX_SNAPSHOT_CHANNELS`, `MAX_SNAPSHOT_RESOURCES`,
   `RouterLifecycle`, `RuntimeSnapshot`, `ServiceSnapshot`,
   `SimulationSnapshot`, `SnapshotError`, `SupervisorSnapshot`,
@@ -258,8 +267,7 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
 - Local acceptance lives in `tests/ssu2_local.rs` (9 tests, real
   loopback datagrams, serial-safe and parallel-safe).
 
-### SSU2 path validation (`ssu2_runtime.rs`, Plan 159)
-- Every active session owns a `PathValidator` starting at the
+### SSU2 path validation (`ssu2_runtime.rs`, Plan 159)- Every active session owns a `PathValidator` starting at the
   promotion address. `handle_active_datagram` classifies the source
   only after the session authenticated the datagram: validated
   sources flow normally; unknown sources open at most one bounded
@@ -296,6 +304,42 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
   exact-once migration with behavioral post-migration delivery,
   automatic return migration on genuine re-validation, spoof
   boundedness, and the no-migration control round trip.
+
+### SSU2 peer-test/relay coordination (`ssu2_peer_relay.rs`, Plan 160)
+- `Ssu2PeerRelayService::new(config)` owns the five Plan 160 tables
+  (`PeerTestTable`, `RelayRequester`, `RelayIntroducer`,
+  `RelayTarget`, `IntroducerTable`) plus the router-level
+  `ReachabilityTracker`, a per-source sliding rate limiter (8/sec,
+  1024 sources, cheap-drop before parsing), and a bounded signer
+  registry (128 keys; tests register explicitly, production
+  RouterInfo plumbing is Plan 161 debt). The service holds no
+  private signing keys: outgoing blocks are signed by caller-supplied
+  keys.
+- Inbound flow per datagram: `check_admission(source)` →
+  protocol-table ingest with trial-commit multi-key verification
+  (wrong keys never mutate the peer's test) → typed outcome mirrored
+  into reachability as family-only signals (`Confirmed` supports;
+  `Mismatch`/`Firewalled` contradict; `Inconclusive`/`Rejected`
+  neutral; relay success → `RelayFirewalledSignal`, never direct).
+- Introducer methods (`issue_relay_tag`, `on_relay_request`) refuse
+  unless `introducer_enabled` (default `false`); the 3x response
+  budget is enforced before crypto. `poll_expired`/`next_deadline_ms`
+  form the single central scheduler input; `shutdown` returns every
+  table, tag, record, and rate window to baseline.
+- `Ssu2PeerRelaySnapshot` carries counts plus the conservative
+  reachability state (no hashes, nonces, tags, endpoints, or
+  signatures); `Debug` for the service and all tables is redacted.
+- Real-UDP NAT-like acceptance lives in
+  `tests/ssu2_peer_relay.rs` (7 tests, Alice/Bob/Charlie/Target plus
+  a test-only rewriting forwarder): direct PeerTest with NAT rewrite,
+  mismatch/inconclusive, 40-datagram flood boundedness, the relay
+  product path ending in a live `Ssu2RuntimeService` dial with
+  bidirectional I2NP, introducer expiry/disabled/shutdown,
+  concurrent isolation with crossing schedules, and
+  publication/privacy integration. Sealed-session carriage of
+  in-session blocks is proven in
+  `i2pr-transport-ssu2/tests/peer_relay.rs`; the forwarder moves whole
+  datagrams only, never parsed blocks.
 
 ### Observability / snapshots (`observability.rs`)
 - `RuntimeSnapshot::try_new()`,
@@ -362,7 +406,9 @@ in the paused runtime.
 | `graph.rs:577-648` | 3 sync | `topological_order_is_lexically_deterministic`, `invalid_graphs_are_rejected_before_startup`, `restartable_services_require_a_policy` |
 | `ntcp2_runtime.rs` | 8 | `admission_is_global_ip_and_subnet_bounded_and_releases`, `replay_cache_fails_closed_and_expires_deterministically`, `loopback_listener_and_exact_io_use_supervised_scope`, queue RAII, active-link admission, and repeated teardown tests |
 | `ssu2_runtime.rs` | 7 (4 sync + 3 async real-UDP path) | `limits_validate_rejects_zero_ceiling_and_scope_violations`, `deadlines_validate_ordering_and_bounds`, `dial_targets_validate_before_socket_activity`, `identity_rejects_malformed_router_info`, `legitimate_path_migration_over_real_udp`, `spoof_burst_from_new_sources_never_migrates`, `challenge_response_control_round_trip_over_real_udp` |
+| `ssu2_peer_relay.rs` | 7 sync | `introducer_stays_disabled_by_default`, `rate_limiter_cheap_drops_floods_before_crypto`, `peer_test_quotas_and_shutdown_return_to_baseline`, `relay_request_replay_does_not_reamplify`, `snapshot_and_debug_expose_no_secrets`, `next_deadline_tracks_earliest_table`, `unknown_signer_fails_closed_without_state` |
 | `tests/ssu2_local.rs` | 9 async | Real-loopback product suite: `tokenless_establishment_over_real_udp`, `cached_token_establishment_with_stale_recovery`, `bidirectional_i2np_exchange_with_fragmentation`, `data_loss_recovers_with_exact_once_delivery`, `ack_loss_reorder_and_duplicate_recover_exactly_once`, `malformed_and_random_traffic_creates_no_state`, `active_session_cap_denies_with_baseline_return`, `graceful_close_abrupt_peer_and_cancel_return_to_baseline`, `inbound_handoff_shape_is_transport_neutral` |
+| `tests/ssu2_peer_relay.rs` | 7 async | Real-UDP NAT-like suite: `peer_test_direct_over_real_udp_with_nat_rewrite`, `peer_test_mismatch_and_inconclusive_over_real_udp`, `peer_test_flood_is_cheap_dropped_over_real_udp`, `relay_product_path_over_real_udp_then_normal_handshake`, `introducer_expiry_disabled_and_shutdown_over_real_udp`, `concurrent_peer_tests_stay_isolated_over_real_udp`, `publication_integration_and_privacy_over_real_udp` |
 | `supervisor.rs:1267-1703` | 13 | **`forced_child_cleanup_is_repeatably_joined`** (100-iteration, requires `--test-threads=1`), `panic_is_classified_without_payload`, `forced_shutdown_aborts_and_joins_the_owned_child_scope`, `restartable_services_use_bounded_backoff` |
 
 The `ssu2_local` suite uses real time (monotonic handshake/data
@@ -427,6 +473,17 @@ never paused Tokio time — and ephemeral loopback ports only.
 19. **SSU2 migration requeues, never strands** — the runtime calls
     `note_path_migrated` so unacked fragments retransmit fresh on
     the new path under the existing ceilings (Plan 159).
+20. **Peer-test correlation is by nonce, never by source** — the
+    relay service keys every transition on the test nonce plus
+    role/state, so NAT rewrites and crossing schedules cannot
+    confuse tests (Plan 160).
+21. **Trial-commit multi-key verification** — out-of-session messages
+    try registered signer keys against a cloned table and commit
+    only the first success, so a wrong key never mutates a peer's
+    test (Plan 160).
+22. **Relay success is firewalled-class** — the service mirrors relay
+    completion as `RelayFirewalledSignal`, never as direct
+    reachability (Plan 160).
 
 ## Cross-references
 
@@ -445,7 +502,9 @@ never paused Tokio time — and ephemeral loopback ports only.
   `plans/035-m3-runtime-link-manager-and-addresses.md`,
   `plans/037-m3-corrective-integration-closure.md`,
   `plans/158-m8-ssu2-udp-runtime-and-local-session-product.md`,
-  `plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md`.
+  `plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md`,
+  `plans/160-m8-ssu2-peer-test-and-relay-reachability.md`.
 - Closures: `plans/021-closure.md`, `plans/022-closure.md`,
   `plans/035-closure.md`, `plans/037-closure.md`,
-  `plans/158-status.md`, `plans/159-status.md`.
+  `plans/158-status.md`, `plans/159-status.md`,
+  `plans/160-status.md`.
