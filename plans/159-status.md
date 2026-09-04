@@ -232,8 +232,14 @@ handoff commit message and below once available.
 
 Hosted lanes:
 
-- Closing commit `CPENDING` — routine CI run `RPENDING`: conclusion
-  `CPENDING`.
+- Closing commit `66bff72` — routine CI run `33875686312` (push,
+  `main`,
+  `66bff720c4e4ed8ccc61f9e67009f4577c890e67`): conclusion `success`.
+- The manual SAM external lane was not rerun: this plan touches no
+  SAM/client/product code paths (SSU2 path/publication/selection
+  protocol and policy modules, SSU2 session additive API, runtime
+  SSU2 service only), and the Plan 151 evidence-integrity checker
+  plus the full SAM suites pass locally on this tree.
 
 ## Acceptance criteria (all true, plan §15)
 
