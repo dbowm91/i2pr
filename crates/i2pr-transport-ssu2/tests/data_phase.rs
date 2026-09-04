@@ -161,10 +161,13 @@ fn i2np_bytes(message_type: u8, message_id: u32, body_len: usize, fill: u8) -> V
     i2np_bytes_exp(message_type, message_id, NOW_SECS as u32, body_len, fill)
 }
 
-fn fixture_bytes(name: &str) -> Vec<u8> {
-    // Integration tests run with the crate directory as CWD.
-    let text =
-        std::fs::read_to_string(format!("../../tests/fixtures/ssu2/{name}.hex")).expect("fixture");
+/// Decodes committed fixture hex embedded at compile time.
+///
+/// `include_str!` is relative to this source file, so the vectors
+/// resolve identically whether Cargo runs the test binary (CWD set to
+/// the package root) or a lane executes the binary directly from the
+/// workspace root (as the macOS quality lane does).
+fn fixture_bytes_from_hex(text: &str) -> Vec<u8> {
     let text = text.trim();
     assert!(text.len().is_multiple_of(2));
     text.as_bytes()
@@ -184,8 +187,12 @@ fn committed_data_vectors_reproduce_byte_for_byte() {
     // in header protection, AEAD, or block encoding fails this test.
     let (mut alice, mut bob) = paired_sessions();
     let mut now_ms = NOW_MS;
-    let first = fixture_bytes("data-phase-first");
-    let ack = fixture_bytes("data-phase-ack");
+    let first = fixture_bytes_from_hex(include_str!(
+        "../../../tests/fixtures/ssu2/data-phase-first.hex"
+    ));
+    let ack = fixture_bytes_from_hex(include_str!(
+        "../../../tests/fixtures/ssu2/data-phase-ack.hex"
+    ));
     assert_eq!(first.len(), 108);
     assert_eq!(ack.len(), 40);
     // Bob authenticates the committed first packet and delivers the
