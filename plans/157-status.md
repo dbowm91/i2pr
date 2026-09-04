@@ -246,10 +246,27 @@ Hosted lanes: routine CI and the manual SAM external workflow must
 pass on the exact closing commit; the run IDs are recorded in the
 handoff commit message and below once available.
 
-Hosted lanes on the exact closing commit `<closing-sha>`:
+Hosted lanes:
 
-- Routine CI run `<run-id>` (push, `main`, `<full-sha>`): conclusion
-  `<conclusion>`.
+- First closing commit `f8d3bd9` — routine CI run `33840877546`
+  (push, `main`,
+  `f8d3bd9a009acc7d6a8b5ede7635c52fadde39d7`): conclusion `failure`.
+  Dependency policy, MSRV, and Quality ubuntu all green; Quality
+  macos failed exactly one test,
+  `committed_data_vectors_reproduce_byte_for_byte` (`NotFound`
+  reading the committed fixture). Root cause was a real plan defect,
+  not runner flake: the test read fixtures through a CWD-relative
+  `fs` path, which holds under `cargo test` (CWD set to the package
+  root) but not under the macOS lane's direct-binary execution from
+  the workspace root. Fixed in `6e95810` by embedding both fixtures
+  with source-relative `include_str!` (the existing header/block
+  fixture pattern); the built binary was verified 17/17 from the
+  workspace root locally before pushing. No test or check was
+  weakened.
+- Fix commit `6e95810` — routine CI run `33842184286` (push, `main`,
+  `6e958109f0e20f2dba1aeac22866a7dfc6f477a6`): conclusion `success`.
+  Dependency policy, MSRV, Quality ubuntu, and Quality macos all
+  green.
 - The manual SAM external lane was not rerun: this plan touches no
   SAM/runtime/daemon/product code (ssu2 protocol crate plus
   docs/fixtures only), and the Plan 151 evidence-integrity checker
