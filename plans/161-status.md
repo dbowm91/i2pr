@@ -1,10 +1,10 @@
 # Plan 161 status — Milestone 8 SSU2 independent IPv4 interop (IN PROGRESS)
 
-Status: **`in-progress-direction-a-proven-blocked-by-plan162`**. Plan 161 is NOT closed:
+Status: **`in-progress-direction-a-proven`**. Plan 161 is NOT closed:
 direction B, the token/Retry matrix beyond the tokenless path, the
 malformed/spoof rows, and the Java secondary lane remain open. Direction A
-remains proven; Plan 162 temporarily owns one routine-CI lane-selection
-corrective before Plan 161 continues.
+remains proven. The temporary routine-CI lane-selection corrective is closed by
+Plan 162, so Plan 161 is the next executable plan.
 
 Plan of record:
 [`plans/161-m8-ssu2-independent-ipv4-interop-and-final-closure.md`](161-m8-ssu2-independent-ipv4-interop-and-final-closure.md).
@@ -13,10 +13,10 @@ Temporary corrective authority:
 [`plans/162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md`](162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md).
 
 ```text
-plan_161 = in-progress-direction-a-proven-blocked-by-plan162
-plan_161_current_blocker = routine-ci-external-test-lane-selection
-plan_162 = active-m8-ssu2-external-test-lane-isolation-and-ci-restoration
-next_executable_plan = 162
+plan_161 = in-progress-direction-a-proven
+plan_161_current_blocker = none (Plan 162 lane corrective passed)
+plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
+next_executable_plan = 161
 resume_after_plan162 = 161
 milestone8_final_acceptance = not-yet-closed
 ```
@@ -57,8 +57,8 @@ cargo test --locked -p i2pr-runtime --test ssu2_independent
 # test result: ok. 1 passed (3.45s)
 ```
 
-Plan 162 changes only test-lane selection. After its gate lands, the canonical
-external invocation must explicitly select the ignored external test:
+Plan 162 changed only test-lane selection. The canonical external invocation
+must explicitly select the ignored external test:
 
 ```text
 cargo test --locked -p i2pr-runtime --test ssu2_independent \
@@ -67,7 +67,9 @@ cargo test --locked -p i2pr-runtime --test ssu2_independent \
 
 That explicit command remains fail-closed when the required external
 environment is absent and must be re-proven against the same exact-pinned i2pd
-before Plan 162 closes.
+before Plan 162 closed. Hosted routine CI run `33941941145` passed Ubuntu,
+macOS, MSRV, and dependency policy on implementation commit
+`624e8cce177040674376163160cfbda47e6a60fe`.
 
 Plan 162 gate validation on 2026-09-05 confirmed the three required lane
 states: ordinary invocation reported `1 ignored` and exited 0; explicit
@@ -110,12 +112,14 @@ Plan 162 must not reopen or modify these protocol corrections unless its
 external re-run demonstrates a new concrete protocol defect. Its expected code
 change is only integration-test execution metadata/gating.
 
-## Routine CI blocker discovered after direction A
+## Routine CI lane corrective closed by Plan 162
 
 Routine CI run `33915994884` on exact head
 `4a38e2958c7d668f7c6abeb4a6aac0c13547bb0c` failed both quality jobs because
 ordinary workspace execution automatically ran the external integration test
-without its required i2pd environment:
+without its required i2pd environment. Plan 162 added the descriptive
+`#[ignore]` gate, retained all-target compilation, and restored routine CI;
+the dedicated external invocation remains explicit and fail-closed:
 
 ```text
 Quality (ubuntu-latest) = failure
@@ -129,7 +133,7 @@ missing required env I2PD_ROUTER_INFO
 
 All observed failure evidence points to test-lane selection. The external test
 is correctly fail-closed when actually run; it simply must not be run by the
-ordinary no-peer workspace lane. Plan 162 owns this correction. Do not weaken
+ordinary no-peer workspace lane. Plan 162 closed this correction. Do not weaken
 `env_value()` or turn missing environment into an early success.
 
 ## Harness hazards (recorded for the remaining rows)
@@ -161,7 +165,7 @@ ordinary no-peer workspace lane. Plan 162 owns this correction. Do not weaken
 
 ## Open rows (not claimed)
 
-After Plan 162 clears the CI-lane blocker, Plan 161 still owns:
+With the Plan 162 CI-lane blocker cleared, Plan 161 still owns:
 
 - Direction B (i2pd initiator → i2pr responder).
 - Token/Retry matrix beyond the tokenless path.
@@ -203,6 +207,6 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'  
 cargo deny check advisories bans sources
 ```
 
-Hosted routine CI is **not green** on this tree because of the lane-selection
-defect above. Plan 162 must restore routine CI on the exact corrective closing
-commit before Plan 161 resumes.
+Hosted routine CI is green on Plan 162 implementation commit
+`624e8cce177040674376163160cfbda47e6a60fe` via run `33941941145`; Plan 161
+now resumes for its remaining acceptance rows.

@@ -298,7 +298,7 @@ cargo test --locked -p i2pr-runtime --test ssu2_independent \
 The driver remains fail-closed when `I2PD_ROUTER_INFO`,
 `I2PD_SSU2_ENDPOINT`, `I2PR_SSU2_BIND`, `I2PR_SSU2_FLOODFILL`, or
 `EVIDENCE_DIR` is absent. Routine CI does not provision an external peer;
-Plan 162 records this as a test-lane boundary, not as a protocol or
+Plan 162 established this as a test-lane boundary, not as a protocol or
 interoperability skip.
 
 ## `.github/` — CI

@@ -1,6 +1,6 @@
 # Plan 162 status — Milestone 8 SSU2 external-test lane isolation and CI restoration
 
-Status: **`active-m8-ssu2-external-test-lane-isolation-and-ci-restoration`**.
+Status: **`passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration`**.
 
 Registered: **2026-09-04**.
 
@@ -18,8 +18,8 @@ plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
-plan_161 = in-progress-direction-a-proven-blocked-by-plan162
-plan_162 = active-m8-ssu2-external-test-lane-isolation-and-ci-restoration
+plan_161 = in-progress-direction-a-proven
+plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 
 milestone8_protocol = ssu2-v2-classical
 milestone8_ssu2_direction_a = passed-via-plan161
@@ -28,7 +28,7 @@ milestone6_interoperable = not-yet-claimed
 ssu2_pq_v3_v4 = deferred-compatibility-watch
 ssu1 = not-implemented
 
-next_executable_plan = 162
+next_executable_plan = 161
 resume_after_plan162 = 161
 next_product_layer = milestone8-ssu2-v2
 ```
@@ -64,22 +64,24 @@ Dependency policy and MSRV passed. The observed failure is therefore classified 
 
 ## Closure fields
 
-Populate these only from executed evidence:
+The closure fields below are populated only from executed evidence:
 
 ```text
-closing_sha = pending
-routine_ci_run = pending
-routine_ci_ubuntu = pending
-routine_ci_macos = pending
-msrv = locally-passed; hosted verification pending
-dependency_policy = locally-passed; hosted verification pending
+closing_sha = 624e8cce177040674376163160cfbda47e6a60fe
+routine_ci_run = 33941941145
+routine_ci_ubuntu = passed
+routine_ci_macos = passed
+msrv = passed
+dependency_policy = passed
 ordinary_external_test_invocation = locally-passed (1 ignored, exit 0)
 explicit_missing_env_invocation = locally-passed (exit 101, missing required env I2PD_ROUTER_INFO)
 explicit_i2pd_direction_a_invocation = locally-passed (1 passed, 3.47s, 24 sanitized evidence rows)
 i2pd_pin = 635b013a612ff47278ef02acf8580a28e10e26c5
 ```
 
-Do not mark this status passed until every acceptance criterion in Plan 162 §12 is satisfied.
+All acceptance criteria in Plan 162 §12 are satisfied. Hosted run
+`33941941145` passed all four routine jobs on the exact implementation closing
+commit `624e8cce177040674376163160cfbda47e6a60fe`.
 
 ## Local gate evidence
 
@@ -118,7 +120,7 @@ exact Linux routine workspace test command = passed
 
 ## Handoff
 
-Execute Plan **162** before continuing Plan 161. On successful closure, restore:
+Plan 162 is closed. Resume Plan **161** now; the restored authority is:
 
 ```text
 plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration

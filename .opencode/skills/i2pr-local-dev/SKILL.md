@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, and current Milestone 8 SSU2 execution. Plans 155–160 passed the local SSU2 v2 stack; Plan 161 direction A passed against exact-pinned i2pd 2.61.0; Plan 162 is the active external-test lane isolation/routine-CI corrective before Plan 161 resumes.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, and current Milestone 8 SSU2 execution. Plans 155–160 passed the local SSU2 v2 stack; Plan 161 direction A passed against exact-pinned i2pd 2.61.0; Plan 162 passed the external-test lane isolation/routine-CI corrective and Plan 161 resumes.
 ---
 
 # I2PR Local Development
@@ -42,8 +42,8 @@ plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
-plan_161 = in-progress-direction-a-proven-blocked-by-plan162
-plan_162 = active-m8-ssu2-external-test-lane-isolation-and-ci-restoration
+plan_161 = in-progress-direction-a-proven
+plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 
 milestone8_planning_authority = plan154
 milestone8_foundation = passed-via-plan155
@@ -55,7 +55,7 @@ milestone8_peer_test_relay = passed-via-plan160
 milestone8_ssu2_direction_a = passed-via-plan161
 milestone8_final_acceptance = not-yet-closed
 
-next_executable_plan = 162
+next_executable_plan = 161
 resume_after_plan162 = 161
 next_product_layer = milestone8-ssu2-v2
 ```
@@ -79,10 +79,10 @@ as needed.
 
 Plans 155–160 passed the local SSU2 v2 protocol/runtime/reachability sequence.
 Plan 161 has already proven direction A (`i2pr initiator -> i2pd responder`)
-over real loopback UDP against exact-pinned i2pd 2.61.0. Plan 162 temporarily
-blocks further Plan 161 work only to correct routine-CI selection of the
-external-process test. Execute Plan 162 now; return directly to Plan 161 after
-it passes.
+over real loopback UDP against exact-pinned i2pd 2.61.0. Plan 162 passed its
+narrow corrective: routine CI now ignores the environment-dependent external
+test while retaining all-target compilation, and explicit external selection
+remains fail-closed. Resume Plan 161 for direction B and the remaining matrix.
 
 SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 SSU2 public advertisement/public-network participation and broad router
@@ -176,7 +176,7 @@ graceful session/resource teardown
 Direction B and the remaining Plan 161 token/resource/Java/evidence-workflow
 matrix remain open.
 
-## Plan 162 execution rule
+## Plan 162 closure rule/result
 
 Current routine CI run `33915994884` on head
 `4a38e2958c7d668f7c6abeb4a6aac0c13547bb0c` failed both Ubuntu and macOS
@@ -189,7 +189,7 @@ crates/i2pr-runtime/tests/ssu2_independent.rs
 without an external i2pd environment. Dependency policy and MSRV passed; the
 observed error was `missing required env I2PD_ROUTER_INFO`.
 
-Plan 162 must implement this shape:
+Plan 162 implemented this shape:
 
 ```text
 ordinary workspace test
@@ -216,8 +216,10 @@ Forbidden fixes:
 - broad crate/integration-test exclusion;
 - production SSU2 changes merely to make CI green.
 
-Plan 162 must re-run direction A after gating and require routine Ubuntu/macOS
-CI green on its exact closing commit. Then restore `next_executable_plan = 161`.
+Plan 162 re-ran direction A after gating and required routine Ubuntu/macOS CI
+green on its exact closing commit. The implementation closing commit was
+`624e8cce177040674376163160cfbda47e6a60fe`, verified by hosted CI run
+`33941941145`; `next_executable_plan = 161` is restored.
 
 ## External SAM provenance
 
@@ -347,14 +349,12 @@ execute and pass the real direction-A trajectory.
 - Plan 153 passed post-M7 docs/CI hygiene.
 - Plans 155–160 passed the local SSU2 v2 protocol/runtime/path/reachability sequence.
 - Plan 161 direction A against exact-pinned i2pd is passed evidence, but Plan 161 final closure remains open.
-- Plan 162 is the active narrow external-test lane/CI corrective; it must not broaden or downgrade direction-A protocol evidence.
-- After Plan 162 passes, resume Plan 161 for direction B and final acceptance.
+- Plan 162 passed the narrow external-test lane/CI corrective; it must not broaden or downgrade direction-A protocol evidence.
+- Resume Plan 161 for direction B and final acceptance.
 - `milestone6_interoperable = not-yet-claimed` remains unchanged.
 - SSU2 public-network participation, broad router interoperability, IPv6 external interop, PQ v3/v4, and SSU1 remain unclaimed/deferred as documented.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
 
-Current handoff: **execute Plan 162 now. Preserve Plan 161 direction-A
-interop and transcript corrections, isolate the external test from ordinary
-workspace execution using explicit ignored-test semantics, keep explicit
-external execution fail-closed, re-prove direction A against the same pinned
-i2pd, require routine Ubuntu/macOS CI green, then return directly to Plan 161.**
+Current handoff: **resume Plan 161 now. Preserve its direction-A interop and
+transcript corrections while completing direction B and the remaining final
+acceptance matrix.**

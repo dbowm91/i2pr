@@ -18,8 +18,8 @@ plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
-plan_161 = in-progress-direction-a-proven-blocked-by-plan162
-plan_162 = active-m8-ssu2-external-test-lane-isolation-and-ci-restoration
+plan_161 = in-progress-direction-a-proven
+plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 
 milestone8_protocol = SSU2-v2-classical
 ssu2_pq_v3_v4 = deferred-compatibility-watch
@@ -28,7 +28,7 @@ milestone8_ssu2_direction_a = passed-via-plan161
 milestone8_final_acceptance = not-yet-closed
 milestone6_interoperable = not-yet-claimed
 
-next_executable_plan = 162
+next_executable_plan = 161
 resume_after_plan162 = 161
 ```
 
@@ -49,14 +49,14 @@ return traffic, and graceful cleanup.
 The direction-A commit also introduced an environment-dependent integration
 test into ordinary workspace execution. Routine CI run `33915994884` failed
 both Ubuntu and macOS quality jobs because the external i2pd environment is not
-present in routine CI. Plan 162 is therefore inserted as a narrow corrective:
-keep the test compiled, ignore it under ordinary workspace execution, require
-explicit fail-closed `--ignored` execution in the external lane, re-prove
-direction A, and restore exact-head routine CI.
+present in routine CI. Plan 162 closed this narrow corrective: the test stays
+compiled, is ignored under ordinary workspace execution, requires explicit
+fail-closed `--ignored --exact` execution in the external lane, and direction A
+was re-proven against the pinned i2pd. Hosted routine CI is green.
 
-Plan 162 does **not** replace or renumber Plan 161 and does not alter the
-Milestone 8 architecture. After Plan 162 passes, return directly to Plan 161
-for direction B and final closure.
+Plan 162 did **not** replace or renumber Plan 161 and did not alter the
+Milestone 8 architecture. Plan 161 is now the next executable plan for
+direction B and final closure.
 
 ## Architecture decisions locked by this roadmap
 
@@ -73,6 +73,6 @@ for direction B and final closure.
 
 ## Handoff
 
-Execute Plan **162** now. On its successful closure, resume Plan **161**. Do
+Resume Plan **161** now. Do
 not begin Milestone 9 or mark Milestone 8 closed until Plan 161 satisfies its
 full mandatory acceptance criteria.

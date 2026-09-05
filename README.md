@@ -30,8 +30,8 @@ plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
-plan_161 = in-progress-direction-a-proven-blocked-by-plan162
-plan_162 = active-m8-ssu2-external-test-lane-isolation-and-ci-restoration
+plan_161 = in-progress-direction-a-proven
+plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
 milestone7_sam_localhost = passed-via-plan151
@@ -39,7 +39,7 @@ milestone7_final_acceptance = closed
 milestone6_interoperable = not-yet-claimed
 milestone8_ssu2_direction_a = passed-via-plan161
 milestone8_final_acceptance = not-yet-closed
-next_executable_plan = 162
+next_executable_plan = 161
 resume_after_plan162 = 161
 next_product_layer = milestone8-ssu2-v2
 ```
@@ -62,7 +62,7 @@ The `[sam]` config section remains disabled by default and loopback-only when en
 
 [**Plan 161**](plans/161-status.md) is in progress. Direction A is genuinely proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real loopback UDP: tokenless Retry establishment, mutual authentication, one small and one fragmented DatabaseStore from i2pr to i2pd, DeliveryStatus traffic back to i2pr, and graceful teardown. Independent testing also exposed and corrected three SSU2 handshake transcript mismatches that i2pr↔i2pr testing could not reveal. Direction B and the remaining final acceptance matrix are still open.
 
-[**Plan 162**](plans/162-status.md) is the current narrow corrective. Routine CI currently runs the environment-dependent Plan 161 external test without an i2pd peer and therefore fails on both Ubuntu and macOS. Plan 162 requires the external test to stay compiled but be ignored by ordinary workspace execution, remain fail-closed under explicit `--ignored` execution, re-prove direction A against the same pinned i2pd, and restore exact-head routine CI. After it passes, execution returns directly to Plan 161.
+[**Plan 162**](plans/162-status.md) passed the narrow external-test lane corrective. The Plan 161 external test remains compiled but is ignored by ordinary workspace execution, fail-closed under explicit `--ignored --exact` selection, and direction A was re-proven against the same pinned i2pd. Hosted Ubuntu/macOS routine CI, MSRV, and dependency policy are green; execution now returns directly to Plan 161.
 
 For the full plan hierarchy, MVP roadmap, and what's implemented vs. not, see [**`plans/README.md`**](plans/README.md).
 

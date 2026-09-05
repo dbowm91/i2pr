@@ -19,17 +19,15 @@ authoritative closure record is [`plans/152-status.md`](152-status.md),
 normalized by Plan 153.
 
 The current **next executable plan** is
-[**Plan 162**](162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md),
-a narrow corrective that isolates the environment-dependent Plan 161 external
-i2pd test from ordinary workspace CI while preserving explicit fail-closed
-external execution. After Plan 162 passes, execution returns directly to
 [**Plan 161**](161-m8-ssu2-independent-ipv4-interop-and-final-closure.md).
+Plan 162 passed its narrow corrective: the environment-dependent Plan 161
+external i2pd test is isolated from ordinary workspace CI while preserving
+explicit fail-closed external execution.
 
 The registered **Milestone 8 planning authority** is
 [**Plan 154**](154-status.md). Plans 155–160 have passed. Plan 161 direction A
-(i2pr initiator -> exact-pinned i2pd 2.61.0 responder) is proven, but Plan 161
-is temporarily blocked by Plan 162 because routine CI currently executes the
-external test without its required peer environment.
+(i2pr initiator -> exact-pinned i2pd 2.61.0 responder) is proven, and Plan 161
+resumes for direction B and its remaining final matrix.
 
 Current classification:
 
@@ -50,8 +48,8 @@ plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
-plan_161 = in-progress-direction-a-proven-blocked-by-plan162
-plan_162 = active-m8-ssu2-external-test-lane-isolation-and-ci-restoration
+plan_161 = in-progress-direction-a-proven
+plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
@@ -69,7 +67,7 @@ milestone8_peer_test_relay = passed-via-plan160
 milestone8_ssu2_direction_a = passed-via-plan161
 milestone8_final_acceptance = not-yet-closed
 
-next_executable_plan = 162
+next_executable_plan = 161
 resume_after_plan162 = 161
 next_product_layer = milestone8-ssu2-v2
 ```
@@ -90,7 +88,7 @@ next_product_layer = milestone8-ssu2-v2
 - [`159-m8-ssu2-path-validation-publication-and-transport-selection.md`](159-m8-ssu2-path-validation-publication-and-transport-selection.md) — **passed** authenticated path migration, conservative reachability/address publication, IPv4/IPv6 structural separation, and deterministic NTCP2/SSU2 selection/fallback.
 - [`160-m8-ssu2-peer-test-and-relay-reachability.md`](160-m8-ssu2-peer-test-and-relay-reachability.md) — **passed** PeerTest and relay requester/introducer/target roles, anti-amplification/resource policy, introducer records, and real-loopback NAT-like acceptance without namespaces.
 - [`161-m8-ssu2-independent-ipv4-interop-and-final-closure.md`](161-m8-ssu2-independent-ipv4-interop-and-final-closure.md) — **in progress** final independent direct-session gate. Direction A is proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real localhost UDP with authenticated small + fragmented I2NP exchange and DeliveryStatus return traffic. Direction B and the remaining final matrix remain open.
-- [`162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md`](162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md) — **current corrective**. Make the environment-dependent Plan 161 test explicitly ignored in ordinary workspace execution while keeping it compiled and fail-closed under explicit `--ignored` external execution; restore routine Linux/macOS CI; re-prove direction A against the same pinned i2pd; then return to Plan 161.
+- [`162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md`](162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md) — **passed** narrow corrective. The environment-dependent Plan 161 test remains compiled, is ignored in ordinary workspace execution, and is fail-closed under explicit `--ignored` external execution; routine Linux/macOS CI is green and direction A was re-proven against the same pinned i2pd.
 
 Milestone 8 architecture remains deliberately constrained:
 
@@ -179,7 +177,7 @@ Plan 152 is a later M6 robustness correction discovered by the Plan 151 final SA
 ## What's not yet accepted
 
 - Live/public NTCP2 or SSU2 router transport activation and broad mixed-router interoperability.
-- Milestone 8 final SSU2 closure: Plan 161 direction B, remaining external Retry/resource rows, Java disposition, final evidence ledger/workflow, and exact-head closure remain open. Plan 162 must first restore routine CI without weakening external fail-closed behavior.
+- Milestone 8 final SSU2 closure: Plan 161 direction B, remaining external Retry/resource rows, Java disposition, final evidence ledger/workflow, and exact-head closure remain open.
 - Public I2P participation.
 - Network-transport-bound NetDB/public router behavior.
 - Milestone 6 independent-router destination/Streaming/tunnel interoperability.
@@ -196,9 +194,9 @@ When records disagree, the newest explicit superseding status wins.
 Current handoff:
 
 ```text
-execute Plan 162 now
-Plan 162 is a narrow external-test lane/CI corrective
-on Plan 162 pass: return directly to Plan 161
+resume Plan 161 now
+Plan 162 passed its narrow external-test lane/CI corrective
+Plan 161 direction B and final acceptance remain open
 Plan 154 remains the Milestone 8 roadmap authority
 Plans 155–160 passed; Plan 161 direction A is proven; Milestone 8 final acceptance remains open
 ```

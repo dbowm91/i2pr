@@ -72,7 +72,7 @@ roles with typed outcomes, requester/introducer/target machines with
 HolePunch, validated introducers, and runtime coordination with
 introducer service disabled by default — see
 [`plans/160-status.md`](../../plans/160-status.md)); Plan 161 remains
-the active independent-interop plan after the narrow Plan 162 test-lane
+the active independent-interop plan after the passed Plan 162 test-lane
 corrective. Its environment-dependent test is explicitly ignored by
 routine libtest execution and selected only by the dedicated external
 lane. The SAM lane stays experimental,

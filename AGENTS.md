@@ -38,8 +38,8 @@ Plan 158 = passed SSU2 v2 UDP runtime and local session product
 Plan 159 = passed SSU2 v2 path validation/publication/transport selection
 Plan 160 = passed SSU2 v2 peer test and relay reachability
 Plan 161 = in-progress; direction A against pinned i2pd is proven
-Plan 162 = active external-test lane isolation / routine-CI corrective
-next executable plan = 162
+Plan 162 = passed external-test lane isolation / routine-CI corrective
+next executable plan = 161
 resume after Plan 162 = 161
 next product layer = milestone8-ssu2-v2
 ```
@@ -152,9 +152,9 @@ make loopback tests match older fixtures.
 Direction B and the remaining Plan 161 final matrix are still open. Direction A
 does not imply public I2P or broad router interoperability.
 
-## Plan 162 scope (active)
+## Plan 162 scope (closed)
 
-Plan 162 is a narrow test-lane/CI corrective. Current routine CI run
+Plan 162 was a narrow test-lane/CI corrective. Routine CI run
 `33915994884` on Plan 161 direction-A head
 `4a38e2958c7d668f7c6abeb4a6aac0c13547bb0c` failed both Ubuntu and macOS
 quality jobs because ordinary workspace execution ran
@@ -170,7 +170,9 @@ Required correction:
 - do not add filename filtering, `|| true`, `continue-on-error`, fake peer values, or broad workspace exclusions;
 - re-run direction A against the exact same pinned i2pd after gating;
 - require ordinary Ubuntu + macOS CI green on the Plan 162 closing head;
-- then return directly to Plan 161.
+- then return directly to Plan 161. These conditions passed on implementation
+  commit `624e8cce177040674376163160cfbda47e6a60fe`, hosted CI run
+  `33941941145`.
 
 Do not change SSU2 production source or wire semantics inside Plan 162. If the
 explicit external re-run exposes a real protocol defect, stop and create a
@@ -324,8 +326,9 @@ commit = 9134f808337b401e8e53c73734c81fab04280c9d
 role = preferred secondary; nonblocking if narrow unprivileged orchestration is disproportionate
 ```
 
-Plan 161 direction A has passed. Plan 162 only corrects how that
-external-process test is selected by routine versus dedicated lanes.
+Plan 161 direction A has passed. Plan 162 corrected how that external-process
+test is selected by routine versus dedicated lanes; the corrective is now
+closed.
 
 ## Coding conventions
 
@@ -348,7 +351,7 @@ external-process test is selected by routine versus dedicated lanes.
 - Plan 153 is the passed docs/CI hygiene pass.
 - Plans 155–160 are passed Milestone 8 SSU2 v2 local protocol/runtime/reachability stages.
 - Plan 161 is in progress; direction A against exact-pinned i2pd 2.61.0 is proven over real loopback UDP with authenticated bidirectional evidence, but final M8 closure is not claimed.
-- Plan 162 is the active narrow external-test lane/CI corrective; after it passes, resume Plan 161.
+- Plan 162 passed the narrow external-test lane/CI corrective; resume Plan 161.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
 - No Plan 161 direction-A evidence implies Milestone 6 destination/Streaming/tunnel interoperability or broad router interoperability.
@@ -366,9 +369,6 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **execute Plan 162 now. It is a narrow lane-isolation
-corrective, not a protocol rewrite. Preserve Plan 161 direction-A evidence and
-its transcript corrections, make the external test ignored under ordinary
-workspace execution but fail-closed under explicit `--ignored` execution,
-re-prove direction A against exact-pinned i2pd, and require routine Ubuntu and
-macOS CI green. Then return directly to Plan 161. Milestone 8 remains open.**
+Current handoff: **Plan 162 is closed. Resume Plan 161 now. Preserve its
+direction-A evidence and transcript corrections while completing direction B
+and the remaining final matrix. Milestone 8 remains open.**
