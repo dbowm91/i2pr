@@ -1,12 +1,12 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming and Milestone 7 SAM 3.1. Plan 149 closed the self-composed localhost product; Plan 150 retains external-client core evidence; Plan 151 passed the final acceptance/evidence correction (with narrow Plan 152 M6 corrective); Plan 153 passed post-M7 hygiene; Milestone 8 roadmap registered via Plan 154; Plan 155 passed the SSU2 v2 protocol foundation; Plan 156 passed the SSU2 v2 handshake/token/RouterInfo establishment; Plan 157 passed the SSU2 v2 data-phase reliability/fragmentation; Plan 158 passed the SSU2 v2 UDP runtime and local session product; Plan 159 passed SSU2 path validation/publication/transport selection; Plan 160 passed SSU2 peer-test/relay reachability.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, and current Milestone 8 SSU2 execution. Plans 155–160 passed the local SSU2 v2 stack; Plan 161 direction A passed against exact-pinned i2pd 2.61.0; Plan 162 is the active external-test lane isolation/routine-CI corrective before Plan 161 resumes.
 ---
 
 # I2PR Local Development
 
-Use this skill for the local product/SAM side of the router. Historical
-mixed-router NTCP2 work remains separate acceptance debt.
+Use this skill for the local product/SAM/SSU2 execution side of the router.
+Historical mixed-router NTCP2 work remains separate acceptance debt.
 
 ## Current authority
 
@@ -18,7 +18,7 @@ milestone6_local_product = passed
 milestone6_interoperable = not-yet-claimed
 ```
 
-Milestone 7 current authority:
+Current M7/M8 authority:
 
 ```text
 plan_146_private_destination_reference = passed
@@ -34,6 +34,7 @@ milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
 milestone7_final_acceptance = closed
 milestone6_interoperable = not-yet-claimed
+
 plan_154 = registered-m8-ssu2-v2-roadmap
 plan_155 = passed-m8-ssu2-v2-protocol-foundation-and-addresses
 plan_156 = passed-m8-ssu2-v2-handshake-token-and-routerinfo
@@ -41,7 +42,9 @@ plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
-next_executable_plan = 161
+plan_161 = in-progress-direction-a-proven-blocked-by-plan162
+plan_162 = active-m8-ssu2-external-test-lane-isolation-and-ci-restoration
+
 milestone8_planning_authority = plan154
 milestone8_foundation = passed-via-plan155
 milestone8_handshake = passed-via-plan156
@@ -49,45 +52,41 @@ milestone8_data_phase = passed-via-plan157
 milestone8_udp_runtime = passed-via-plan158
 milestone8_path_publication_selection = passed-via-plan159
 milestone8_peer_test_relay = passed-via-plan160
+milestone8_ssu2_direction_a = passed-via-plan161
+milestone8_final_acceptance = not-yet-closed
+
+next_executable_plan = 162
+resume_after_plan162 = 161
 next_product_layer = milestone8-ssu2-v2
 ```
 
-Read in order:
+Read in order for current SSU2 work:
 
-1. `plans/160-status.md` (SSU2 peer-test/relay closure)
-2. `plans/159-status.md` (SSU2 path validation/publication/selection closure)
-2. `plans/158-status.md` (SSU2 v2 UDP runtime closure)
-2. `plans/157-status.md` (SSU2 v2 data-phase closure)
-3. `plans/156-status.md` (SSU2 v2 handshake/token/RouterInfo closure)
-4. `plans/155-status.md` (SSU2 v2 foundation closure)
-5. `plans/153-status.md` (passed hygiene pass)
-6. `plans/152-status.md` (narrow M6 corrective closure)
-7. `plans/151-status.md`
-8. `plans/151-m7-sam31-final-acceptance-evidence-correction.md`
-9. `plans/150-status.md`
-10. `plans/149-status.md`
-11. Plans 146–148 for retained/historical context.
+1. `plans/162-status.md`
+2. `plans/162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md`
+3. `plans/161-status.md`
+4. `plans/161-m8-ssu2-independent-ipv4-interop-and-final-closure.md`
+5. `plans/160-status.md`
+6. `plans/159-status.md`
+7. `plans/158-status.md`
+8. `plans/157-status.md`
+9. `plans/156-status.md`
+10. `plans/155-status.md`
+11. `plans/154-status.md`
 
-Plan 153 has passed. Plan 154 is the registered Milestone 8 roadmap
-authority; Plan 155 has passed the runtime-neutral SSU2 v2 protocol
-foundation (addresses/headers/blocks), Plan 156 has passed the
-runtime-neutral SSU2 v2 handshake/token/RouterInfo establishment, and
-Plan 157 has passed the runtime-neutral SSU2 v2 data-phase
-reliability/fragmentation (no UDP sockets, no runtime), and Plan 158
-has passed the localhost-only SSU2 v2 UDP runtime and local session
-product (`i2pr-runtime::Ssu2RuntimeService` plus the real-loopback
-`ssu2_local` suite), Plan 159 has passed authenticated SSU2 path
-validation/migration, conservative reachability/publication policy,
-deterministic NTCP2/SSU2 selection, and the real-UDP migration/spoof
-matrix, and Plan 160 has passed SSU2 peer-test/relay reachability
-(Alice/Bob/Charlie roles with typed outcomes, requester/introducer/
-target machines with HolePunch, validated introducers, runtime
-coordination with introducer service disabled by default, and the
-real-UDP NAT-like matrix including the relay-to-handshake product
-path). Execute Plan 161 next. SAM stays
-experimental, loopback-only, disabled by default, and non-advertised.
-SSU2 v2 claims no public advertisement or router-to-router
-interoperability yet.
+For SAM/local-product history, then read Plan 151, 150, 149 and Plans 146–148
+as needed.
+
+Plans 155–160 passed the local SSU2 v2 protocol/runtime/reachability sequence.
+Plan 161 has already proven direction A (`i2pr initiator -> i2pd responder`)
+over real loopback UDP against exact-pinned i2pd 2.61.0. Plan 162 temporarily
+blocks further Plan 161 work only to correct routine-CI selection of the
+external-process test. Execute Plan 162 now; return directly to Plan 161 after
+it passes.
+
+SAM stays experimental, loopback-only, disabled by default, and non-advertised.
+SSU2 public advertisement/public-network participation and broad router
+interoperability remain unclaimed.
 
 ## Retain these working pieces
 
@@ -103,82 +102,124 @@ Do not rebuild them without a concrete defect:
 - Plan 129 local destination/ECIES/Garlic/Streaming product path;
 - Plan 147 owned raw `TcpStream` handoff, same-read preservation, actual `Established` wait, OS CSPRNG runtime path, byte pump, and supervised ACK/retransmit driver;
 - Plan 149 transactional self-composed `SESSION CREATE`, one shared `Arc<DestinationIdentity>`, `SamLocalProductFabric`, local peer LeaseSet2 resolution, automatic destination driver, byte-exact SILENT/peer metadata, and typed delivery counters;
-- Plan 150 external core evidence: pinned i2psam + qualified i2plib SAM surface, exact two-direction 2 MiB transfers, private destinations, SILENT, NAMING, negative matrix, and positive FORWARD.
+- Plan 150 external core evidence: pinned i2psam + qualified i2plib SAM surface, exact two-direction 2 MiB transfers, private destinations, SILENT, NAMING, negative matrix, and positive FORWARD;
+- Plans 155–160 SSU2 local protocol/runtime/path/peer-test/relay architecture;
+- Plan 161 direction-A handshake transcript corrections and regenerated vectors. Independent i2pd comparison exposed those defects; do not revert them to match older i2pr↔i2pr assumptions.
 
 ## Why Plan 151 exists
 
 Plan 150's implementation/external-client work is useful, but its final
-acceptance ledger overclaimed several deferred cases. The clearest example is
-an unconditional `multiple-stream-lifecycle = passed` row that refers to a
-Plan 149 sibling-stream test that is not present.
+acceptance ledger overclaimed several deferred cases. The clearest example was
+an unconditional `multiple-stream-lifecycle = passed` row referring to a Plan
+149 sibling-stream test that did not exist.
 
-Plan 149 explicitly deferred these items:
+Plan 151 made the deferred sibling/backpressure/fault/CLOSE-RESET/FORWARD and
+focused M6 regression items executable through the real listener and required
+every final `passed` row to derive from a command/test that actually ran.
 
-- slow-reader / slow-writer boundedness;
-- DATA loss and retransmission;
-- ACK loss;
-- duplicate DATA;
-- reordered DATA;
-- authenticated/ciphertext corruption;
-- retransmission ceiling;
-- sibling-stream and broader CLOSE/RESET lifecycle acceptance.
-
-Plan 151 makes those executable through the real listener and requires every
-final `passed` row to derive from a command/test that actually ran.
-
-## Plan 151 implementation shape
-
-Prefer a new focused black-box acceptance suite such as:
-
-```text
-crates/i2pr-daemon/tests/sam_stream_final_acceptance.rs
-```
-
-Keep behavior-driving interactions TCP/SAM-only after listener startup.
-Read-only non-secret counters may be inspected for boundedness/resource release.
-
-For deterministic faults, prefer a narrow **pre-start test configuration**
-below the SAM socket boundary. Do not add production `i2pr-testkit`
-dependencies and do not mutate private product state after listener startup.
-
-Required executable areas:
-
-- sibling streams: two simultaneous streams, close one, prove the other remains usable;
-- slow reader and slow writer with explicit reservoir ceilings;
-- DATA drop, ACK drop, duplicate, reorder, corruption, retransmit ceiling;
-- graceful CLOSE, RESET/abrupt failure, control-session teardown, repeated lifecycle baselines;
-- full FORWARD lifecycle/negative matrix;
-- explicit focused Plan 127–134 regression commands;
-- final Plan 150 external-client rerun and hosted workflow.
-
-If one of these exposes a concrete M6 Streaming defect, stop and write a
-narrow M6 corrective plan rather than weakening the Plan 151 expectation.
-
-That stop fired once: Plan 152 (`plans/152-m6-session-streaming-robustness-corrective.md`)
-corrects three proven M6 defects with no wire change — D1 unbounded receiver
-retention (per-connection delivered-bytes cap + ACK snooze/NO_ACK gating),
-D2 duplicate-never-re-ACKs (coalesced immediate ACK), D3 sender ECIES ratchet
-retention (seal-side trim + absolute index ceiling). Fixes landed with
-manager/ECIES unit tests; do not re-weaken them to make a SAM test convenient.
+That pass exposed one narrow M6 robustness defect family, closed by Plan 152
+without a wire change: bounded receiver retention/ACK gating, coalesced
+duplicate ACK behavior, and sender ECIES ratchet-key trimming.
 
 ## Evidence-integrity rule
 
 No required final row may be marked passed merely because another plan/status
-says it passed. `tests/integration/sam/run-independent.sh` must derive each
-required final row from an executed command/test.
+says it passed. `tests/integration/sam/run-independent.sh` derives required SAM
+rows from executed commands/tests.
 
-Plan 151 added the static checker:
+Plan 151 added:
 
 ```text
 scripts/check-sam-acceptance-evidence.sh
 ```
 
-that rejects unconditional pass bookkeeping for required acceptance labels.
 The checker is enforced in routine Linux CI and the manual SAM external
-workflow; do not weaken it to make CI pass. Do not build a general
-orchestration framework.
+workflow. Do not weaken it to make CI pass.
 
-## External-client provenance
+The same principle applies to current SSU2 work: Plan 161 final evidence must
+come from explicitly executed local/external commands. An external test that
+is skipped because no peer exists is **not** an external-interoperability pass.
+
+## Plan 161 independent SSU2 provenance
+
+Retain exact pins:
+
+```text
+i2pd
+  version: 2.61.0
+  repo: PurpleI2P/i2pd
+  pin: 635b013a612ff47278ef02acf8580a28e10e26c5
+  role: mandatory independent Plan 161 SSU2 reference
+
+Java I2P
+  version: 2.13.0
+  repo: i2p/i2p.i2p
+  pin: 9134f808337b401e8e53c73734c81fab04280c9d
+  role: preferred secondary; nonblocking if narrow unprivileged orchestration is disproportionate
+```
+
+Do not patch or vendor external routers.
+
+Direction A retained evidence:
+
+```text
+i2pr initiator -> i2pd responder
+real loopback UDP
+tokenless TokenRequest -> Retry -> SessionRequest -> SessionCreated -> SessionConfirmed
+mutual authentication
+small DatabaseStore i2pr -> i2pd
+fragmented DatabaseStore i2pr -> i2pd
+DeliveryStatus return for both stores
+graceful session/resource teardown
+```
+
+Direction B and the remaining Plan 161 token/resource/Java/evidence-workflow
+matrix remain open.
+
+## Plan 162 execution rule
+
+Current routine CI run `33915994884` on head
+`4a38e2958c7d668f7c6abeb4a6aac0c13547bb0c` failed both Ubuntu and macOS
+quality jobs because ordinary workspace execution automatically ran:
+
+```text
+crates/i2pr-runtime/tests/ssu2_independent.rs
+```
+
+without an external i2pd environment. Dependency policy and MSRV passed; the
+observed error was `missing required env I2PD_ROUTER_INFO`.
+
+Plan 162 must implement this shape:
+
+```text
+ordinary workspace test
+  -> external test is compiled/discovered
+  -> external test is ignored
+  -> ordinary command exits 0
+
+dedicated external invocation
+  -> explicitly selects ignored test with --ignored --exact
+  -> missing external environment still fails hard
+  -> exact-pinned i2pd environment executes the real trajectory
+```
+
+Preferred mechanism: a descriptive Rust `#[ignore = "..."]` attribute on only
+the environment-dependent external test.
+
+Forbidden fixes:
+
+- missing-env early return/success;
+- CI executable-name filtering;
+- `|| true`;
+- `continue-on-error`;
+- fake `I2PD_*` values;
+- broad crate/integration-test exclusion;
+- production SSU2 changes merely to make CI green.
+
+Plan 162 must re-run direction A after gating and require routine Ubuntu/macOS
+CI green on its exact closing commit. Then restore `next_executable_plan = 161`.
+
+## External SAM provenance
 
 Retain exact pins:
 
@@ -196,7 +237,7 @@ i2plib
 libsam3
   repo: https://github.com/i2p/libsam3
   pin: 7d6e658798baec31394c5685f9583343cc00900b
-  role: built/probed, not counted because its public API rejects the compact 608-character Ed25519 PRIV
+  role: built/probed, not counted
 ```
 
 Do not patch or vendor external clients.
@@ -204,15 +245,17 @@ Do not patch or vendor external clients.
 ## Environment contract
 
 ```text
-root/sudo             = no
-Linux namespaces      = no
-Docker                = no
-VM/Multipass          = no
-systemd               = no
-public I2P network    = no
-live NTCP2/SSU2       = no
-localhost TCP         = yes
-manual GitHub-hosted external-client lane = yes
+root/sudo                         = no
+Linux namespaces                  = no
+Docker                            = no
+VM/Multipass                      = no
+systemd                           = no
+public I2P network                = no
+localhost TCP                     = yes
+localhost UDP                     = yes
+exact-pinned external i2pd process= yes, Plan 161 dedicated lane only
+routine CI external peer          = no
+manual GitHub external lane       = yes
 ```
 
 ## Development commands
@@ -233,6 +276,7 @@ bash scripts/check-ntcp2-vectors.sh
 bash scripts/check-ssu2-vectors.sh
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-constrained-host-lane-boundary.sh
+bash scripts/check-sam-acceptance-evidence.sh
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
 cargo deny check advisories bans sources
 ```
@@ -251,97 +295,66 @@ cargo test --locked -p i2pr-daemon --test sam_stream_self_composed -- --test-thr
 cargo test --locked -p i2pr-daemon --test sam_forward_naming -- --test-threads=1
 ```
 
-Plan 151 resolved and ran the actual focused Plan 127–134 tests from the
-current repository and listed them verbatim in its closure record
-(retained evidence; do not re-broaden the matrix without a new plan).
-
-Focused SSU2 floor (Plans 155–159):
+Focused SSU2 floor:
 
 ```text
 cargo test --locked -p i2pr-transport --all-targets
 cargo test --locked -p i2pr-transport-ssu2 --all-targets
-cargo test --locked -p i2pr-runtime --all-targets
+cargo test --locked -p i2pr-runtime --lib
 cargo test --locked -p i2pr-runtime --test ssu2_local -- --test-threads=1
+cargo test --locked -p i2pr-runtime --test ssu2_peer_relay -- --test-threads=1
 bash scripts/check-ssu2-vectors.sh
 ```
+
+Plan 162 ordinary no-peer regression:
+
+```text
+cargo test --locked -p i2pr-runtime --test ssu2_independent -- --test-threads=1
+# expected after Plan 162 implementation: test ignored, exit 0
+```
+
+Plan 162 / Plan 161 explicit external invocation:
+
+```text
+cargo test --locked -p i2pr-runtime --test ssu2_independent \
+  ssu2_independent_ipv4_interop -- --ignored --exact --test-threads=1
+```
+
+With required environment absent, that explicit command must fail for missing
+external configuration. With the exact-pinned i2pd lane provisioned, it must
+execute and pass the real direction-A trajectory.
 
 ## Coding rules
 
 - No new unbounded channels/queues.
 - Runtime/socket ownership stays in daemon/runtime layers.
-- The SSU2 central scheduler replaces a handshake's resend deadline
-  with each new arm batch; never min-merge with a stale past value
-  (Plan 158 burned the retry budget that way and died with
-  `RetriesExhausted`).
-- SSU2 path migration must requeue unacked fragments through the
-  bounded loss policy (`Ssu2Session::note_path_migrated` declares them
-  lost so they retransmit fresh); never just clear sent provenance,
-  which strands in-flight messages (caught by the Plan 159
-  sealed-packet suite).
-- SSU2 peer-test correlation is by nonce plus role/state, never by
-  source: NAT rewrites and crossing schedules must not confuse tests;
-  unsigned out-of-session corroboration advances the machine but
-  downgrades the outcome to inconclusive, never confirms (Plan 160).
-- SSU2 relay success proves firewalled, never direct: mirror it as
-  `RelayFirewalledSignal`, and verify HolePunch against
-  nonce-derived connection IDs before touching request state
-  (Plan 160). Trial-commit multi-key verification keeps a wrong key
-  from mutating a peer's test.
-- SSU2 path challenges/responses are single-shot minimum-MTU control
-  datagrams; never migrate on source change alone.
+- The SSU2 central scheduler replaces a handshake's resend deadline with each new arm batch; never min-merge with a stale past value (Plan 158 regression).
+- SSU2 path migration must requeue unacked fragments through the bounded loss policy; never just clear sent provenance (Plan 159 regression).
+- SSU2 peer-test correlation is by nonce plus role/state, never by source; unsigned out-of-session corroboration never confirms direct reachability (Plan 160).
+- SSU2 relay success proves firewalled, never direct; verify HolePunch against nonce-derived connection IDs before touching request state (Plan 160).
+- SSU2 path challenges/responses are single-shot minimum-MTU control datagrams; never migrate on source change alone.
 - OS CSPRNG for runtime material; deterministic randomness is test-only.
-- Never log private destination material or raw payloads.
+- Never log private destination material, SSU2 static/session keys, tokens, or raw payloads.
 - No second private identity copy for SAM bridge ownership.
-- Do not weaken M6 Streaming window/ACK/retransmit semantics for SAM tests.
-- Every concrete defect exposed by Plan 151 gets a regression.
+- Do not weaken M6 Streaming semantics for SAM tests.
+- Do not weaken SSU2 authentication/RouterInfo/token/replay semantics for external interop.
+- Do not modify SSU2 production wire behavior to repair Plan 162 CI selection.
 
 ## Final claim rules
 
 - SAM stays disabled by default, loopback-only, experimental, and non-advertised.
-- Plan 150's external-client result does not imply router-to-router interoperability.
 - Milestone 7 final localhost acceptance is closed via Plan 151; Plan 152 is the retained narrow M6 corrective underneath it.
-- Plan 153 (docs/CI hygiene, no `crates/` or `Cargo.lock` changes) has passed.
-- Plan 155 passed the Milestone 8 SSU2 v2 protocol foundation
-  (runtime-neutral `i2pr-transport-ssu2` addresses/headers/blocks,
-  no interop claim).
-- Plan 156 passed the Milestone 8 SSU2 v2 handshake/token/RouterInfo
-  establishment (Noise XK transcript, header protection,
-  TokenRequest/Retry, bounded one-use tokens, RouterInfo binding,
-  initiator/responder machines; still no UDP sockets, no data phase,
-  no interop claim). PQ-hybrid v3/v4 stays deferred; SSU1 stays
-  unsupported.
-- Plan 157 passed the Milestone 8 SSU2 v2 data-phase
-  reliability/fragmentation (authenticated `Ssu2Session` short-header
-  packets with the corrected two-step data KDF, replay window, strict
-  bounded ACK scheduling, fresh retransmission with RTT/RTO/congestion
-  control, exact fragmentation/reassembly with duplicate suppression,
-  termination/rekey/idle handling; still no UDP sockets, no runtime,
-  no interop claim).
+- Plan 153 passed post-M7 docs/CI hygiene.
+- Plans 155–160 passed the local SSU2 v2 protocol/runtime/path/reachability sequence.
+- Plan 161 direction A against exact-pinned i2pd is passed evidence, but Plan 161 final closure remains open.
+- Plan 162 is the active narrow external-test lane/CI corrective; it must not broaden or downgrade direction-A protocol evidence.
+- After Plan 162 passes, resume Plan 161 for direction B and final acceptance.
+- `milestone6_interoperable = not-yet-claimed` remains unchanged.
+- SSU2 public-network participation, broad router interoperability, IPv6 external interop, PQ v3/v4, and SSU1 remain unclaimed/deferred as documented.
+- Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
 
-- Plan 159 passed SSU2 path validation/publication/selection:
-  authenticated migration only on matching PathResponse proof with
-  bounded per-family candidates and conservative candidate MTU,
-  corroboration-gated reachability (one observation can never publish
-  `Reachable`), deterministic policy-gated publication snapshots
-  (direct form needs explicit opt-in; no production advertisement),
-  and deterministic NTCP2/SSU2 selection/fallback through the generic
-  manager. Daemon `[ssu2]` activation and non-loopback dials stay
-  fail-closed for Plans 160–161.
-
-- Plan 160 passed SSU2 peer-test/relay reachability: Alice/Bob/Charlie
-  roles with nonce correlation and typed outcomes (direct/mismatch/
-  firewalled/inconclusive/rejected; Msg 4 alone and unsigned Msgs 5–7
-  never confirm), requester/introducer/target machines with
-  nonce-derived HolePunch IDs and intro-key codecs, bounded tags with
-  3x anti-amplification budgets, the single validated-introducer table
-  feeding Plan 159 publication, typed reachability consumption
-  (inconclusive stays neutral; relay success never proves direct),
-  full block carriage in the data phase, and the runtime
-  `Ssu2PeerRelayService` (tables, per-source rate limits, signer
-  registry, central expiry, redacted snapshots) with introducer
-  service disabled by default. Only Ed25519 verifies; RouterInfo
-  signing-key plumbing and in-session auto-wiring are Plan 161 debt.
-  Daemon `[ssu2]` activation and non-loopback dials stay fail-closed
-  for Plan 161.
-
-Current handoff: **execute Plan 161 next under Plan 154**.
+Current handoff: **execute Plan 162 now. Preserve Plan 161 direction-A
+interop and transcript corrections, isolate the external test from ordinary
+workspace execution using explicit ignored-test semantics, keep explicit
+external execution fail-closed, re-prove direction A against the same pinned
+i2pd, require routine Ubuntu/macOS CI green, then return directly to Plan 161.**
