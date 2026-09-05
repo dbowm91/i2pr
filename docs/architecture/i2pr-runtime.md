@@ -17,7 +17,10 @@ Plan 160 adds the runtime peer-test/relay coordinator with rate
 limits, signer registry, validated introducer records, and the
 real-UDP NAT-like acceptance.
 Public advertisement and router-to-router interoperability remain
-pending (Plan 161).
+pending (Plan 161). Plan 162 adds no runtime behavior: the environment-
+dependent Plan 161 external test is compiled with the workspace, ignored
+by ordinary libtest execution, and explicitly selected by its dedicated
+exact-pinned-i2pd lane.
 
 Path: `crates/i2pr-runtime/`
 
@@ -45,6 +48,10 @@ rest of the world. It is where:
   leases. Listener/dial promotion keeps pending admission attached until
   active-link admission succeeds.
 - Privacy-safe runtime snapshots are produced.
+- The Plan 161 independent SSU2 test driver remains a test-only consumer of
+  this surface. Its `#[ignore]` metadata keeps routine workspace and direct
+  test-executable runs peer-free; the external lane opts in with
+  `--ignored --exact` and retains fail-closed environment validation.
 
 The contract that protocol, transport, and storage crates stay free
 of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
@@ -266,6 +273,15 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
   (`RetriesExhausted` — caught by the `ssu2_local` suite).
 - Local acceptance lives in `tests/ssu2_local.rs` (9 tests, real
   loopback datagrams, serial-safe and parallel-safe).
+
+The independent external acceptance driver lives in
+`tests/ssu2_independent.rs`, not in production runtime modules. Its single
+Plan 161 test is marked ignored with the reason that exact-pinned i2pd
+environment is required. This preserves all-target compilation and ordinary
+workspace/macOS executable discovery while preventing a peer-dependent test
+from running in routine CI. The dedicated lane must invoke the test with
+`--ignored --exact`; absent environment still reaches the driver's hard
+`missing required env` failure rather than becoming a skip.
 
 ### SSU2 path validation (`ssu2_runtime.rs`, Plan 159)- Every active session owns a `PathValidator` starting at the
   promotion address. `handle_active_datagram` classifies the source

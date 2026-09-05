@@ -349,6 +349,7 @@ impl Evidence {
 }
 
 #[tokio::test]
+#[ignore = "Plan 161: requires exact-pinned external i2pd environment"]
 async fn ssu2_independent_ipv4_interop() {
     let i2pd_ri_path = env_path("I2PD_ROUTER_INFO");
     let i2pd_endpoint: SocketAddr = env_value("I2PD_SSU2_ENDPOINT").parse().expect("endpoint");

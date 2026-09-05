@@ -282,6 +282,25 @@ color = "auto"
 Minimal. No rustflags, no target-dir overrides, no custom
 subcommands, no hidden `-Z` flags. Deliberately clean.
 
+## Plan 161 SSU2 external lane
+
+The independent SSU2 driver is `crates/i2pr-runtime/tests/ssu2_independent.rs`.
+It is compiled by `cargo check --workspace --all-targets` but its single
+environment-dependent test is explicitly ignored during ordinary workspace
+and direct-executable test runs. The dedicated loopback lane must provision
+the exact-pinned i2pd 2.61.0 reference and select it with:
+
+```text
+cargo test --locked -p i2pr-runtime --test ssu2_independent \
+  ssu2_independent_ipv4_interop -- --ignored --exact --test-threads=1
+```
+
+The driver remains fail-closed when `I2PD_ROUTER_INFO`,
+`I2PD_SSU2_ENDPOINT`, `I2PR_SSU2_BIND`, `I2PR_SSU2_FLOODFILL`, or
+`EVIDENCE_DIR` is absent. Routine CI does not provision an external peer;
+Plan 162 records this as a test-lane boundary, not as a protocol or
+interoperability skip.
+
 ## `.github/` — CI
 
 ### `.github/workflows/ci.yml` (single workflow, three jobs)

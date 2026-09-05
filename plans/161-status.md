@@ -69,6 +69,15 @@ That explicit command remains fail-closed when the required external
 environment is absent and must be re-proven against the same exact-pinned i2pd
 before Plan 162 closes.
 
+Plan 162 gate validation on 2026-09-05 confirmed the three required lane
+states: ordinary invocation reported `1 ignored` and exited 0; explicit
+`--ignored --exact` invocation without external variables failed with
+`missing required env I2PD_ROUTER_INFO`; and the explicit invocation with
+the cached, verified i2pd 2.61.0 reference passed direction A in 3.47 s
+with 24 sanitized evidence rows. The latter run used `I2PR_SSU2_FLOODFILL=1`
+and retained the established small/fragmented DatabaseStore, DeliveryStatus,
+and clean-resource-baseline assertions.
+
 Evidence artifact (`EVIDENCE_DIR/driver-evidence.tsv`): sent/reply
 lengths plus SHA-256 digests for both directions, peer RI length,
 close/resource counters. No secret material is recorded.

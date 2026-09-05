@@ -71,15 +71,50 @@ closing_sha = pending
 routine_ci_run = pending
 routine_ci_ubuntu = pending
 routine_ci_macos = pending
-msrv = pending
-dependency_policy = pending
-ordinary_external_test_invocation = pending
-explicit_missing_env_invocation = pending
-explicit_i2pd_direction_a_invocation = pending
+msrv = locally-passed; hosted verification pending
+dependency_policy = locally-passed; hosted verification pending
+ordinary_external_test_invocation = locally-passed (1 ignored, exit 0)
+explicit_missing_env_invocation = locally-passed (exit 101, missing required env I2PD_ROUTER_INFO)
+explicit_i2pd_direction_a_invocation = locally-passed (1 passed, 3.47s, 24 sanitized evidence rows)
 i2pd_pin = 635b013a612ff47278ef02acf8580a28e10e26c5
 ```
 
 Do not mark this status passed until every acceptance criterion in Plan 162 §12 is satisfied.
+
+## Local gate evidence
+
+The test-only gate was added on 2026-09-05 as a descriptive Rust `#[ignore]`
+attribute on `ssu2_independent_ipv4_interop`; no production source, vectors,
+dependencies, or CI selection logic changed.
+
+The ordinary no-peer command:
+
+```text
+cargo test --locked -p i2pr-runtime --test ssu2_independent -- --test-threads=1
+```
+
+reported `1 ignored` and exited 0. The direct-test-executable form used by the
+macOS workflow likewise reported `1 ignored` and exited 0. The explicit
+no-environment command selected the ignored test and failed closed with the
+bounded `missing required env I2PD_ROUTER_INFO` panic (exit 101).
+
+The explicit external command passed against the cached and verified i2pd
+2.61.0 reference at commit
+`635b013a612ff47278ef02acf8580a28e10e26c5`, over loopback UDP. It established
+the tokenless Retry path, mutual authentication, small and fragmented
+DatabaseStore delivery, both DeliveryStatus replies, graceful termination,
+and zero active/pending resources. The evidence directory contained only the
+driver's sanitized lengths, digests, and counters.
+
+Local quality evidence before hosted verification:
+
+```text
+fmt/check/all-targets/test/clippy/docs/doc-tests = passed
+MSRV 1.88 all-target check = passed
+SSU2/transport/runtime focused suites = passed
+boundary scripts, NTCP2 harness (153 tests), and cargo-deny = passed
+exact Linux routine workspace test command = passed
+```
 
 ## Handoff
 
