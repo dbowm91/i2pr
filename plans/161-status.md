@@ -433,6 +433,19 @@ Per-run results are recorded verbatim per the plan's variance rule;
 the passing hosted run re-proves the exact matrix with no code change
 between the failed and passing runs.
 
+Post-closure confirmation run `34051971905` on closing head `f9e27c8`
+(docs-only delta vs `b12a90a`) failed the same variance family:
+direction A fully green, direction-B small echo received, but the
+direction-B large (fragmented) echo never arrived inside the 30 s
+window (`small=true large=false`, session healthy, retransmits in
+flight). The peer log proves delivery anyway: i2pd ingested the
+direction-B large fixture (`RouterInfo added: qFXA...`, matching the
+driver's `b-large` hash) — reassembly just completed outside the echo
+window under runner load. No bound or code change is indicated (even a
+doubled window would not robustly cover this tail; the row's
+promptness signal stays as-is). Recorded verbatim; the lane was
+re-dispatched unchanged.
+
 ## Acceptance checklist (plan §17, criteria 1–24)
 
 1. Plans 155–160 passed; `plan155-160-focused-regressions` row green
