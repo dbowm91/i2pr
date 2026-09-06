@@ -30,7 +30,7 @@ plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
-plan_161 = in-progress-direction-a-proven
+plan_161 = in-progress-direction-b-proven
 plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
@@ -38,6 +38,7 @@ milestone7_sam_localhost = passed-via-plan151
 milestone7_final_acceptance = closed
 milestone6_interoperable = not-yet-claimed
 milestone8_ssu2_direction_a = passed-via-plan161
+milestone8_ssu2_direction_b = passed-via-plan161
 milestone8_final_acceptance = not-yet-closed
 next_executable_plan = 161
 resume_after_plan162 = 161
@@ -60,7 +61,7 @@ The `[sam]` config section remains disabled by default and loopback-only when en
 
 [**Plan 160**](plans/160-status.md) passed Milestone 8 SSU2 PeerTest/relay reachability, including bounded Alice/Bob/Charlie roles, requester/introducer/target relay machines, validated introducers, anti-amplification policy, and real-UDP NAT-like tests. Public advertisement remains disabled.
 
-[**Plan 161**](plans/161-status.md) is in progress. Direction A is genuinely proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real loopback UDP: tokenless Retry establishment, mutual authentication, one small and one fragmented DatabaseStore from i2pr to i2pd, DeliveryStatus traffic back to i2pr, and graceful teardown. Independent testing also exposed and corrected three SSU2 handshake transcript mismatches that i2pr↔i2pr testing could not reveal. Direction B and the remaining final acceptance matrix are still open.
+[**Plan 161**](plans/161-status.md) is in progress. Directions A and B are genuinely proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real loopback UDP: tokenless Retry establishment, mutual authentication, one small and one fragmented DatabaseStore from i2pr to i2pd per direction, DeliveryStatus traffic back to i2pr, and graceful teardown, plus the cached-token second dial and the compact malformed/resource rows. Independent testing also exposed and corrected three SSU2 handshake transcript mismatches that i2pr↔i2pr testing could not reveal, plus three responder-side behaviors (stale initiator destination ID, Alice-establishes-on-ACK bootstrap, endpoint-scoped data fallback). The final ledger/workflow/Java rows are still open.
 
 [**Plan 162**](plans/162-status.md) passed the narrow external-test lane corrective. The Plan 161 external test remains compiled but is ignored by ordinary workspace execution, fail-closed under explicit `--ignored --exact` selection, and direction A was re-proven against the same pinned i2pd. Hosted Ubuntu/macOS routine CI, MSRV, and dependency policy are green; execution now returns directly to Plan 161.
 

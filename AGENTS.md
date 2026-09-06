@@ -37,7 +37,7 @@ Plan 157 = passed SSU2 v2 data-phase reliability/fragmentation
 Plan 158 = passed SSU2 v2 UDP runtime and local session product
 Plan 159 = passed SSU2 v2 path validation/publication/transport selection
 Plan 160 = passed SSU2 v2 peer test and relay reachability
-Plan 161 = in-progress; direction A against pinned i2pd is proven
+Plan 161 = in-progress; directions A+B (+ cached-token/malformed rows) proven vs pinned i2pd; ledger/Java closure open
 Plan 162 = passed external-test lane isolation / routine-CI corrective
 next executable plan = 161
 resume after Plan 162 = 161
@@ -133,7 +133,8 @@ were made.
 ## Plan 161 direction-A evidence (retained)
 
 Plan 161 has already proven one independent direct SSU2 v2 direction against
-exact-pinned i2pd:
+exact-pinned i2pd (direction B has since been proven too; see
+`plans/161-status.md` for the current matrix):
 
 ```text
 i2pd 2.61.0
@@ -149,7 +150,8 @@ resource cleanup. Independent comparison exposed three real handshake
 transcript divergences that were corrected in Plan 161; do not revert them to
 make loopback tests match older fixtures.
 
-Direction B and the remaining Plan 161 final matrix are still open. Direction A
+Direction B and the remaining Plan 161 final ledger/workflow/Java rows
+are still open (see `plans/161-status.md`). Direction A
 does not imply public I2P or broad router interoperability.
 
 ## Plan 162 scope (closed)
@@ -350,7 +352,7 @@ closed.
 - Plan 152 is the passed narrow M6 robustness corrective retained underneath Plan 151.
 - Plan 153 is the passed docs/CI hygiene pass.
 - Plans 155–160 are passed Milestone 8 SSU2 v2 local protocol/runtime/reachability stages.
-- Plan 161 is in progress; direction A against exact-pinned i2pd 2.61.0 is proven over real loopback UDP with authenticated bidirectional evidence, but final M8 closure is not claimed.
+- Plan 161 is in progress; directions A+B (+ cached-token/malformed rows) against exact-pinned i2pd 2.61.0 are proven over real loopback UDP with authenticated bidirectional evidence, but final M8 closure is not claimed.
 - Plan 162 passed the narrow external-test lane/CI corrective; resume Plan 161.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.

@@ -25,9 +25,9 @@ external i2pd test is isolated from ordinary workspace CI while preserving
 explicit fail-closed external execution.
 
 The registered **Milestone 8 planning authority** is
-[**Plan 154**](154-status.md). Plans 155–160 have passed. Plan 161 direction A
-(i2pr initiator -> exact-pinned i2pd 2.61.0 responder) is proven, and Plan 161
-resumes for direction B and its remaining final matrix.
+[**Plan 154**](154-status.md). Plans 155–160 have passed. Plan 161 directions A
+and B (plus cached-token/malformed rows) are proven against exact-pinned
+i2pd 2.61.0, and Plan 161 continues for the final ledger/workflow/Java rows.
 
 Current classification:
 
@@ -48,7 +48,7 @@ plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
-plan_161 = in-progress-direction-a-proven
+plan_161 = in-progress-direction-b-proven
 plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 
 milestone7_local_product = passed-via-plan149
@@ -87,7 +87,7 @@ next_product_layer = milestone8-ssu2-v2
 - [`158-m8-ssu2-udp-runtime-and-local-session-product.md`](158-m8-ssu2-udp-runtime-and-local-session-product.md) — **passed** production UDP ownership in `i2pr-runtime`, existing `TransportManager` integration, central bounded scheduler, and real localhost i2pr↔i2pr UDP product tests.
 - [`159-m8-ssu2-path-validation-publication-and-transport-selection.md`](159-m8-ssu2-path-validation-publication-and-transport-selection.md) — **passed** authenticated path migration, conservative reachability/address publication, IPv4/IPv6 structural separation, and deterministic NTCP2/SSU2 selection/fallback.
 - [`160-m8-ssu2-peer-test-and-relay-reachability.md`](160-m8-ssu2-peer-test-and-relay-reachability.md) — **passed** PeerTest and relay requester/introducer/target roles, anti-amplification/resource policy, introducer records, and real-loopback NAT-like acceptance without namespaces.
-- [`161-m8-ssu2-independent-ipv4-interop-and-final-closure.md`](161-m8-ssu2-independent-ipv4-interop-and-final-closure.md) — **in progress** final independent direct-session gate. Direction A is proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real localhost UDP with authenticated small + fragmented I2NP exchange and DeliveryStatus return traffic. Direction B and the remaining final matrix remain open.
+- [`161-m8-ssu2-independent-ipv4-interop-and-final-closure.md`](161-m8-ssu2-independent-ipv4-interop-and-final-closure.md) — **in progress** final independent direct-session gate. Directions A and B are proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real localhost UDP with authenticated small + fragmented I2NP exchange and DeliveryStatus return traffic per direction, plus cached-token and malformed/resource rows. The final ledger/workflow/Java rows remain open.
 - [`162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md`](162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md) — **passed** narrow corrective. The environment-dependent Plan 161 test remains compiled, is ignored in ordinary workspace execution, and is fail-closed under explicit `--ignored` external execution; routine Linux/macOS CI is green and direction A was re-proven against the same pinned i2pd.
 
 Milestone 8 architecture remains deliberately constrained:
@@ -172,12 +172,12 @@ Plan 152 is a later M6 robustness correction discovered by the Plan 151 final SA
 - Plan 150 external SAM-client core interoperability evidence on localhost.
 - Plan 151 executable sibling/backpressure/fault/lifecycle/FORWARD evidence and final localhost SAM closure.
 - SSU2 v2 local protocol/runtime/reachability product through Plan 160.
-- Plan 161 direction A: authenticated direct IPv4 SSU2 v2 interop against exact-pinned i2pd 2.61.0 with small + fragmented I2NP exchange and return DeliveryStatus traffic.
+- Plan 161 directions A+B: authenticated direct IPv4 SSU2 v2 interop against exact-pinned i2pd 2.61.0 with small + fragmented I2NP exchange and return DeliveryStatus traffic per direction, plus cached-token and malformed/resource rows.
 
 ## What's not yet accepted
 
 - Live/public NTCP2 or SSU2 router transport activation and broad mixed-router interoperability.
-- Milestone 8 final SSU2 closure: Plan 161 direction B, remaining external Retry/resource rows, Java disposition, final evidence ledger/workflow, and exact-head closure remain open.
+- Milestone 8 final SSU2 closure: Plan 161 final evidence ledger/workflow, Java disposition, and exact-head closure remain open.
 - Public I2P participation.
 - Network-transport-bound NetDB/public router behavior.
 - Milestone 6 independent-router destination/Streaming/tunnel interoperability.
@@ -196,7 +196,7 @@ Current handoff:
 ```text
 resume Plan 161 now
 Plan 162 passed its narrow external-test lane/CI corrective
-Plan 161 direction B and final acceptance remain open
+Plan 161 final ledger/workflow/Java rows remain open
 Plan 154 remains the Milestone 8 roadmap authority
-Plans 155–160 passed; Plan 161 direction A is proven; Milestone 8 final acceptance remains open
+Plans 155–160 passed; Plan 161 directions A+B proven; Milestone 8 final acceptance remains open
 ```

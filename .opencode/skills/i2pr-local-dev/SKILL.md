@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, and current Milestone 8 SSU2 execution. Plans 155–160 passed the local SSU2 v2 stack; Plan 161 direction A passed against exact-pinned i2pd 2.61.0; Plan 162 passed the external-test lane isolation/routine-CI corrective and Plan 161 resumes.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, and current Milestone 8 SSU2 execution. Plans 155–160 passed the local SSU2 v2 stack; Plan 161 directions A+B (+ cached-token/malformed rows) pass against exact-pinned i2pd 2.61.0; Plan 162 passed the external-test lane isolation/routine-CI corrective and Plan 161 continues for final closure.
 ---
 
 # I2PR Local Development
@@ -42,7 +42,7 @@ plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
-plan_161 = in-progress-direction-a-proven
+plan_161 = in-progress-direction-b-proven
 plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 
 milestone8_planning_authority = plan154
@@ -53,6 +53,7 @@ milestone8_udp_runtime = passed-via-plan158
 milestone8_path_publication_selection = passed-via-plan159
 milestone8_peer_test_relay = passed-via-plan160
 milestone8_ssu2_direction_a = passed-via-plan161
+milestone8_ssu2_direction_b = passed-via-plan161
 milestone8_final_acceptance = not-yet-closed
 
 next_executable_plan = 161
@@ -78,11 +79,12 @@ For SAM/local-product history, then read Plan 151, 150, 149 and Plans 146–148
 as needed.
 
 Plans 155–160 passed the local SSU2 v2 protocol/runtime/reachability sequence.
-Plan 161 has already proven direction A (`i2pr initiator -> i2pd responder`)
-over real loopback UDP against exact-pinned i2pd 2.61.0. Plan 162 passed its
+Plan 161 has proven directions A (`i2pr initiator -> i2pd responder`) and B
+(`i2pd initiator -> i2pr responder`), plus cached-token and malformed/resource
+rows, over real loopback UDP against exact-pinned i2pd 2.61.0. Plan 162 passed its
 narrow corrective: routine CI now ignores the environment-dependent external
 test while retaining all-target compilation, and explicit external selection
-remains fail-closed. Resume Plan 161 for direction B and the remaining matrix.
+remains fail-closed. Plan 161 continues for the final ledger/workflow/Java rows.
 
 SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 SSU2 public advertisement/public-network participation and broad router
