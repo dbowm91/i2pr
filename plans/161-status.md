@@ -286,8 +286,8 @@ passes. Milestone 8 remains open.
 
 ## Quality state on direction-B closing tree (2026-09-06)
 
-Local validation green on the direction-B tree (uncommitted at time
-of writing; commit records the exact head):
+Local validation green on the direction-B closing commit `fde2bae`
+(code commit `6e7cef4`):
 
 ```text
 cargo fmt --all --check
@@ -314,6 +314,7 @@ cargo deny check advisories bans sources                       # ok
 ```
 
 Hosted routine CI is green on Plan 162 implementation commit
-`624e8cce177040674376163160cfbda47e6a60fe` via run `33941941145`;
-routine CI must re-run on the direction-B closing commit before any
-closure claim.
+`624e8cce177040674376163160cfbda47e6a60fe` via run `33941941145`.
+Routine CI also passes on the direction-B closing commit `fde2bae`
+via run `34001837935` (Quality ubuntu-latest, Quality macos-latest,
+MSRV Ubuntu, Dependency policy: all success).
