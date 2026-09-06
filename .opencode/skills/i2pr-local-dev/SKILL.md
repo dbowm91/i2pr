@@ -88,7 +88,8 @@ loopback UDP against exact-pinned i2pd 2.61.0, with the fail-closed
 its integrity checker (`scripts/check-ssu2-acceptance-evidence.sh`,
 routine-CI-enforced), and the manual
 `.github/workflows/ssu2-external.yml` lane green locally and hosted
-(routine CI run `34050058216`, external run `34051298144`); Java I2P is
+(routine CI runs `34050058216`/`34053041778`, external runs
+`34051298144`/`34053042857`); Java I2P is
 recorded nonblocking debt. Plan 162 passed its
 narrow corrective: routine CI now ignores the environment-dependent external
 test while retaining all-target compilation, and explicit external selection

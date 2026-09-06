@@ -63,8 +63,8 @@ the final fail-closed evidence ledger (`tests/integration/ssu2/run-independent.s
 its integrity checker (`scripts/check-ssu2-acceptance-evidence.sh`,
 enforced in routine Linux CI and the manual lane), and the manual
 `.github/workflows/ssu2-external.yml` workflow; the full 15-row lane
-passes locally and hosted (routine CI run `34050058216`, external run
-`34051298144`). Java I2P stays a recorded nonblocking secondary debt.
+passes locally and hosted (routine CI runs `34050058216`/`34053041778`,
+external runs `34051298144`/`34053042857`). Java I2P stays a recorded nonblocking secondary debt.
 Plan 161 is now **passed** and Milestone 8 is closed within its bounded
 direct-interop scope (see `plans/161-status.md` for the criterion
 checklist). Do not begin Milestone 9 work that assumes anything outside

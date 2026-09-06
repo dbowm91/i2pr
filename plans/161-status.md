@@ -457,7 +457,23 @@ attempt; evidence commits for the successful attempt only, plus
 per-phase `*-echo-attempts` counts; missing echo after the final
 attempt stays a hard failure). This distinguishes one lost
 fire-and-forget echo datagram under load from a genuinely
-unresponsive peer. Re-running the lane.
+unresponsive peer.
+
+Corrective validated hosted (head `d9c4757`):
+
+```text
+routine CI run 34053041778 on d9c4757 = success (all four jobs)
+manual ssu2-external run 34053042857 on d9c4757 = success (15/15)
+  direction-a-echo-attempts = 2 (first echo lost under load, fresh
+  second attempt proved delivery — the corrective working as designed)
+  direction-b-echo-attempts = 1, cached-echo-attempts = 1
+  artifact: ssu2-external-evidence-34053042857 (sanitized, no secrets)
+```
+
+Hosted external score is now 2/6 (two clean first-attempt passes, one
+pass via the bounded retry, three load-loss failures all with
+peer-side ingest proven); every run is recorded verbatim above. The
+retry changes no pass criterion and no production behavior.
 
 ## Acceptance checklist (plan §17, criteria 1–24)
 
@@ -495,10 +511,12 @@ unresponsive peer. Re-running the lane.
 17. Full local floor green on closing code (fmt, check, 1521 passed /
     1 ignored workspace tests, clippy, doc, doc-tests, 9 boundary
     scripts, ntcp2 harness 153 tests, deny). ✓
-18. Routine CI green (run `34050058216` on `f353736`; closing-head
-    delta is docs/authority-only). ✓
+18. Routine CI green (runs `34050058216` on `f353736` and
+    `34053041778` on `d9c4757`; later closing-head deltas are
+    docs/authority-only). ✓
 19. Manual external workflow green with uploaded evidence (run
-    `34051298144` on `b12a90a`, 15/15). ✓
+    `34051298144` on `b12a90a`, 15/15; corrective re-proven by run
+    `34053042857` on `d9c4757`, 15/15). ✓
 20. IPv4 direct SSU2 local + independent result classified passed
     (`specs/support.toml` `ssu2.v2-direct-ipv4-interop` surface). ✓
 21. IPv6 external explicit as infrastructure-limited debt (ledger +
