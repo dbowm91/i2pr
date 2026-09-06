@@ -441,10 +441,23 @@ window (`small=true large=false`, session healthy, retransmits in
 flight). The peer log proves delivery anyway: i2pd ingested the
 direction-B large fixture (`RouterInfo added: qFXA...`, matching the
 driver's `b-large` hash) — reassembly just completed outside the echo
-window under runner load. No bound or code change is indicated (even a
-doubled window would not robustly cover this tail; the row's
-promptness signal stays as-is). Recorded verbatim; the lane was
-re-dispatched unchanged.
+window under runner load.
+
+Second confirmation run `34052503059` (head `3e80ac6`, status-prose
+delta only) failed the same way in the cached-token phase: directions
+A and B fully completed with all four echoes, the cached-token dial
+established, the cached store was ingested (`RouterInfo added: KJsy...`,
+matching hash), but its single echo never arrived in 30 s. Hosted
+score stands at 1/4 with identical code while local lanes stay green:
+blind reruns are no longer justifiable, so the driver gains a narrow
+harness-only corrective (no wire/runtime change, no criterion change):
+at most two send/collect attempts per data phase with fresh
+fixtures/IDs/tokens per attempt (a late echo can never satisfy a later
+attempt; evidence commits for the successful attempt only, plus
+per-phase `*-echo-attempts` counts; missing echo after the final
+attempt stays a hard failure). This distinguishes one lost
+fire-and-forget echo datagram under load from a genuinely
+unresponsive peer. Re-running the lane.
 
 ## Acceptance checklist (plan §17, criteria 1–24)
 

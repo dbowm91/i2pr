@@ -23,6 +23,15 @@
 //! (Plan 156/158/159 suites); the external lane exercises only states
 //! the unmodified peer reaches naturally.
 //!
+//! Echo-loss tolerance: the peer's DeliveryStatus echo is fire-and-forget,
+//! so each data phase allows at most two send/collect attempts with fresh
+//! fixtures/IDs/tokens per attempt (a late echo from an earlier attempt can
+//! never satisfy a later one). The per-attempt pass criterion is unchanged
+//! (exact token echoes over the same authenticated session link); a missing
+//! echo after the final attempt stays a hard failure. Evidence rows/files
+//! are committed for the successful attempt only, plus per-phase
+//! `*-echo-attempts` counts.
+//!
 //! Environment (all required, fail-closed when absent):
 //!
 //! ```text
@@ -62,6 +71,15 @@ use rand_core::{OsRng, TryRngCore};
 const DIAL_TIMEOUT: Duration = Duration::from_secs(20);
 const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Bounded echo-loss tolerance: at most two send/collect attempts per
+/// data phase, each with fresh fixtures/IDs/tokens. The peer's
+/// DeliveryStatus echo is fire-and-forget, so one lost echo datagram
+/// under host load must not fail a healthy session; the per-attempt
+/// pass criterion is unchanged.
+const ECHO_ATTEMPTS: u32 = 2;
+/// Per-attempt message-ID/reply-token bump. Bases are spaced so the
+/// bumped values stay distinct across attempts and phases.
+const ATTEMPT_BUMP: u32 = 0x10;
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// How long direction B waits for the pinned peer to initiate a new
 /// session after it learned our RouterInfo in direction A.
@@ -321,7 +339,10 @@ async fn wait_for_active(service: &i2pr_runtime::Ssu2RuntimeService, expected: u
 /// Polls the service inbound handoff until the DeliveryStatus replies
 /// for both store tokens arrive, asserting type, token echo, and peer.
 /// Returns both reply bodies plus the exact session link they arrived
-/// on (both replies must share one link).
+/// on (both replies must share one link), or `None` on timeout: the
+/// peer's DeliveryStatus echo is fire-and-forget, so a lost echo
+/// datagram under host load must be distinguishable from a wrong peer,
+/// a wrong token, or split-link delivery (those stay hard failures).
 /// i2pd answers each ingested DatabaseStore directly (tunnel 0) over the
 /// same session, so the two replies prove small + fragmented delivery
 /// i2pr -> i2pd and the authenticated return path in one round trip.
@@ -331,16 +352,15 @@ async fn collect_delivery_status(
     peer: PeerId,
     small_token: u32,
     large_token: u32,
-) -> (Vec<u8>, Vec<u8>, LinkId) {
+) -> Option<(Vec<u8>, Vec<u8>, LinkId)> {
     let deadline = tokio::time::Instant::now() + REPLY_TIMEOUT;
     let mut small: Option<(Vec<u8>, LinkId)> = None;
     let mut large: Option<(Vec<u8>, LinkId)> = None;
     let mut last_progress = tokio::time::Instant::now();
     while small.is_none() || large.is_none() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "i2pd DeliveryStatus replies missing"
-        );
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
         if last_progress.elapsed() > Duration::from_secs(5) {
             last_progress = tokio::time::Instant::now();
             eprintln!(
@@ -358,7 +378,8 @@ async fn collect_delivery_status(
         let bytes = inbound.bytes;
         // i2pd randomizes the short header message ID on send, so the
         // reply token is matched in the DeliveryStatus body (offset 9),
-        // not in the transport header.
+        // not in the transport header. Tokens are fresh per attempt, so
+        // a late echo from an earlier attempt can never match here.
         if bytes.len() < 21 || bytes[0] != DELIVERY_STATUS_TYPE {
             continue;
         }
@@ -375,23 +396,23 @@ async fn collect_delivery_status(
         small_link, large_link,
         "both DeliveryStatus replies must share one session link"
     );
-    (small_bytes, large_bytes, small_link)
+    Some((small_bytes, large_bytes, small_link))
 }
 
 /// Single-reply variant for the cached-token dial (one store, one echo).
+/// Timeout returns `None` for the same bounded-retry reason as above.
 async fn collect_one_delivery_status(
     handle: &mut Ssu2ServiceHandle,
     service: &i2pr_runtime::Ssu2RuntimeService,
     peer: PeerId,
     token: u32,
-) -> (Vec<u8>, LinkId) {
+) -> Option<(Vec<u8>, LinkId)> {
     let deadline = tokio::time::Instant::now() + REPLY_TIMEOUT;
     let mut last_progress = tokio::time::Instant::now();
     loop {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "i2pd DeliveryStatus reply missing"
-        );
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
         if last_progress.elapsed() > Duration::from_secs(5) {
             last_progress = tokio::time::Instant::now();
             eprintln!("collect-one progress: snapshot={:?}", service.snapshot());
@@ -407,8 +428,180 @@ async fn collect_one_delivery_status(
         }
         let seen = u32::from_be_bytes(bytes[9..13].try_into().expect("token bytes"));
         if seen == token {
-            return (bytes, inbound.link_id);
+            return Some((bytes, inbound.link_id));
         }
+    }
+}
+
+/// Sends one small plus one fragmented DatabaseStore and collects both
+/// direct DeliveryStatus echoes over the same authenticated session.
+///
+/// Bounded echo-loss tolerance (`ECHO_ATTEMPTS`): every attempt uses
+/// fresh fixtures, message IDs, and reply tokens, so a late echo from
+/// an earlier attempt can never satisfy a later one. The pass criterion
+/// per attempt is unchanged: both token echoes, same session link.
+/// Evidence rows/files are committed only for the successful attempt,
+/// plus a `{tag}-echo-attempts` row recording how many attempts ran.
+/// A missing echo after the final attempt stays a hard failure.
+/// Returns the shared session link both echoes arrived on (needed for
+/// the graceful per-direction close).
+#[allow(clippy::too_many_arguments)]
+async fn prove_store_pair(
+    service: &i2pr_runtime::Ssu2RuntimeService,
+    handle: &mut Ssu2ServiceHandle,
+    evidence: &mut Evidence,
+    evidence_dir: &Path,
+    peer: PeerId,
+    gateway: Hash,
+    tag: &str,
+    name_small: &str,
+    name_large: &str,
+    small_port: u16,
+    large_port: u16,
+    small_msg_base: u32,
+    large_msg_base: u32,
+    small_token_base: u32,
+    large_token_base: u32,
+) -> LinkId {
+    let mut attempt: u32 = 0;
+    loop {
+        assert!(
+            attempt < ECHO_ATTEMPTS,
+            "{tag} DeliveryStatus echoes missing after {ECHO_ATTEMPTS} bounded attempts"
+        );
+        let bump = attempt * ATTEMPT_BUMP;
+        let small_token = small_token_base + bump;
+        let large_token = large_token_base + bump;
+        // Small DatabaseStore: one test RouterInfo fitting one SSU2 datagram.
+        let small = make_test_router("127.0.0.1", small_port, 0, false);
+        assert!(
+            small.router_info.len() < 1000,
+            "small fixture must fit one datagram"
+        );
+        let small_wire = database_store_wire(
+            small.hash,
+            &small.router_info,
+            small_msg_base + bump,
+            small_token,
+            gateway,
+        );
+        log_fixture(
+            &format!("{tag}-small"),
+            &small.hash,
+            small.router_info.len(),
+            small_wire.len(),
+        );
+        assert_eq!(
+            service.send_i2np(
+                peer,
+                EncodedI2npMessage::new(small_wire.clone()).expect("message"),
+                Duration::from_secs(5),
+            ),
+            i2pr_runtime::Ssu2SendOutcome::Accepted
+        );
+        // Fragmented DatabaseStore: a test RouterInfo requiring SSU2 I2NP
+        // fragmentation/reassembly across the independent boundary.
+        let large = make_test_router("127.0.0.1", large_port, 10, false);
+        assert!(
+            large.router_info.len() > 1400,
+            "large fixture must require fragmentation"
+        );
+        assert!(
+            large.router_info.len() < 3072,
+            "large fixture must fit the independent 3 KiB RouterInfo ceiling"
+        );
+        let large_wire = database_store_wire(
+            large.hash,
+            &large.router_info,
+            large_msg_base + bump,
+            large_token,
+            gateway,
+        );
+        log_fixture(
+            &format!("{tag}-large"),
+            &large.hash,
+            large.router_info.len(),
+            large_wire.len(),
+        );
+        assert_eq!(
+            service.send_i2np(
+                peer,
+                EncodedI2npMessage::new(large_wire.clone()).expect("message"),
+                Duration::from_secs(5),
+            ),
+            i2pr_runtime::Ssu2SendOutcome::Accepted
+        );
+        // i2pd-side proof: each ingested DatabaseStore earns a direct
+        // DeliveryStatus echoing our reply token over the same session.
+        // The two echoes prove small + fragmented delivery i2pr -> i2pd
+        // and the authenticated return path without depending on NetDB
+        // flush hygiene (i2pd purges RIs it cannot keep connected).
+        let collected =
+            collect_delivery_status(handle, service, peer, small_token, large_token).await;
+        let Some((small_reply, large_reply, link)) = collected else {
+            attempt += 1;
+            continue;
+        };
+        evidence.record(
+            &format!("{name_small}-routerinfo-len"),
+            small.router_info.len(),
+        );
+        write_file(
+            evidence_dir,
+            &format!("expected-{name_small}.ri"),
+            &small.router_info,
+        );
+        evidence.record(&format!("{name_small}-i2np-len"), small_wire.len());
+        evidence.record(
+            &format!("{name_small}-i2np-digest"),
+            digest_hex(i2pr_crypto::sha256(&small_wire).as_bytes()),
+        );
+        write_file(
+            evidence_dir,
+            &format!("sent-{name_small}.i2np"),
+            &small_wire,
+        );
+        evidence.record(
+            &format!("{name_large}-routerinfo-len"),
+            large.router_info.len(),
+        );
+        write_file(
+            evidence_dir,
+            &format!("expected-{name_large}.ri"),
+            &large.router_info,
+        );
+        evidence.record(&format!("{name_large}-i2np-len"), large_wire.len());
+        evidence.record(
+            &format!("{name_large}-i2np-digest"),
+            digest_hex(i2pr_crypto::sha256(&large_wire).as_bytes()),
+        );
+        write_file(
+            evidence_dir,
+            &format!("sent-{name_large}.i2np"),
+            &large_wire,
+        );
+        evidence.record(&format!("{name_small}-reply-len"), small_reply.len());
+        evidence.record(
+            &format!("{name_small}-reply-digest"),
+            digest_hex(i2pr_crypto::sha256(&small_reply).as_bytes()),
+        );
+        write_file(
+            evidence_dir,
+            &format!("reply-{name_small}.i2np"),
+            &small_reply,
+        );
+        evidence.record(&format!("{name_large}-reply-len"), large_reply.len());
+        evidence.record(
+            &format!("{name_large}-reply-digest"),
+            digest_hex(i2pr_crypto::sha256(&large_reply).as_bytes()),
+        );
+        write_file(
+            evidence_dir,
+            &format!("reply-{name_large}.i2np"),
+            &large_reply,
+        );
+        evidence.record(&format!("{tag}-echo-attempts"), attempt + 1);
+        return link;
     }
 }
 
@@ -600,107 +793,27 @@ async fn ssu2_independent_ipv4_interop() {
     }
     evidence.record("direction-a-warmup-received", warmup_received);
 
-    // Small DatabaseStore: one test RouterInfo fitting one SSU2 datagram.
-    let small = make_test_router("127.0.0.1", 43201, 0, false);
-    evidence.record("small-routerinfo-len", small.router_info.len());
-    assert!(
-        small.router_info.len() < 1000,
-        "small fixture must fit one datagram"
-    );
-    write_file(&evidence_dir, "expected-small.ri", &small.router_info);
-    let small_wire = database_store_wire(
-        small.hash,
-        &small.router_info,
-        SMALL_STORE_MSG_ID,
-        SMALL_STORE_REPLY_TOKEN,
-        local.hash,
-    );
-    evidence.record("small-i2np-len", small_wire.len());
-    evidence.record(
-        "small-i2np-digest",
-        digest_hex(i2pr_crypto::sha256(&small_wire).as_bytes()),
-    );
-    write_file(&evidence_dir, "sent-small.i2np", &small_wire);
-    log_fixture(
-        "small",
-        &small.hash,
-        small.router_info.len(),
-        small_wire.len(),
-    );
-    assert_eq!(
-        service.send_i2np(
-            i2pd_peer,
-            EncodedI2npMessage::new(small_wire).expect("message"),
-            Duration::from_secs(5),
-        ),
-        i2pr_runtime::Ssu2SendOutcome::Accepted
-    );
-
-    // Fragmented DatabaseStore: a test RouterInfo requiring SSU2 I2NP
-    // fragmentation/reassembly across the independent boundary.
-    let large = make_test_router("127.0.0.1", 43301, 10, false);
-    evidence.record("large-routerinfo-len", large.router_info.len());
-    assert!(
-        large.router_info.len() > 1400,
-        "large fixture must require fragmentation"
-    );
-    assert!(
-        large.router_info.len() < 3072,
-        "large fixture must fit the independent 3 KiB RouterInfo ceiling"
-    );
-    write_file(&evidence_dir, "expected-large.ri", &large.router_info);
-    let large_wire = database_store_wire(
-        large.hash,
-        &large.router_info,
-        LARGE_STORE_MSG_ID,
-        LARGE_STORE_REPLY_TOKEN,
-        local.hash,
-    );
-    evidence.record("large-i2np-len", large_wire.len());
-    evidence.record(
-        "large-i2np-digest",
-        digest_hex(i2pr_crypto::sha256(&large_wire).as_bytes()),
-    );
-    write_file(&evidence_dir, "sent-large.i2np", &large_wire);
-    log_fixture(
-        "large",
-        &large.hash,
-        large.router_info.len(),
-        large_wire.len(),
-    );
-    assert_eq!(
-        service.send_i2np(
-            i2pd_peer,
-            EncodedI2npMessage::new(large_wire).expect("message"),
-            Duration::from_secs(5),
-        ),
-        i2pr_runtime::Ssu2SendOutcome::Accepted
-    );
-    // i2pd-side proof: each ingested DatabaseStore earns a direct
-    // DeliveryStatus echoing our reply token over the same session.
-    // The two echoes prove small + fragmented delivery i2pr -> i2pd
-    // and the authenticated return path without depending on NetDB
-    // flush hygiene (i2pd purges RIs it cannot keep connected).
-    let (small_reply, large_reply, _) = collect_delivery_status(
-        &mut handle,
+    // Small + fragmented DatabaseStores with direct DeliveryStatus echoes
+    // per direction (bounded echo-loss retry inside; evidence committed
+    // for the successful attempt only).
+    let _ = prove_store_pair(
         &service,
+        &mut handle,
+        &mut evidence,
+        &evidence_dir,
         i2pd_peer,
+        local.hash,
+        "direction-a",
+        "small",
+        "large",
+        43201,
+        43301,
+        SMALL_STORE_MSG_ID,
+        LARGE_STORE_MSG_ID,
         SMALL_STORE_REPLY_TOKEN,
         LARGE_STORE_REPLY_TOKEN,
     )
     .await;
-    evidence.record("small-reply-len", small_reply.len());
-    evidence.record(
-        "small-reply-digest",
-        digest_hex(i2pr_crypto::sha256(&small_reply).as_bytes()),
-    );
-    write_file(&evidence_dir, "reply-small.i2np", &small_reply);
-    evidence.record("large-reply-len", large_reply.len());
-    evidence.record(
-        "large-reply-digest",
-        digest_hex(i2pr_crypto::sha256(&large_reply).as_bytes()),
-    );
-    write_file(&evidence_dir, "reply-large.i2np", &large_reply);
 
     // Graceful termination returns the i2pr session/task baseline.
     established.link.close(TerminationCategory::LocalShutdown);
@@ -759,97 +872,27 @@ async fn ssu2_independent_ipv4_interop() {
     // Bidirectional proof over the responder-promoted session: small +
     // fragmented stores i2pr -> i2pd (the peer answers with direct
     // DeliveryStatus echoes), with fresh fixtures/IDs/tokens so no
-    // earlier bytes can be mistaken for direction-B proof.
-    let b_small = make_test_router("127.0.0.1", 43203, 0, false);
-    evidence.record("b-small-routerinfo-len", b_small.router_info.len());
-    assert!(
-        b_small.router_info.len() < 1000,
-        "direction-B small fixture must fit one datagram"
-    );
-    write_file(&evidence_dir, "expected-b-small.ri", &b_small.router_info);
-    let b_small_wire = database_store_wire(
-        b_small.hash,
-        &b_small.router_info,
-        B_SMALL_STORE_MSG_ID,
-        B_SMALL_STORE_REPLY_TOKEN,
-        local.hash,
-    );
-    log_fixture(
-        "b-small",
-        &b_small.hash,
-        b_small.router_info.len(),
-        b_small_wire.len(),
-    );
-    evidence.record("b-small-i2np-len", b_small_wire.len());
-    evidence.record(
-        "b-small-i2np-digest",
-        digest_hex(i2pr_crypto::sha256(&b_small_wire).as_bytes()),
-    );
-    assert_eq!(
-        service.send_i2np(
-            i2pd_peer,
-            EncodedI2npMessage::new(b_small_wire).expect("message"),
-            Duration::from_secs(5),
-        ),
-        i2pr_runtime::Ssu2SendOutcome::Accepted
-    );
-    let b_large = make_test_router("127.0.0.1", 43302, 10, false);
-    evidence.record("b-large-routerinfo-len", b_large.router_info.len());
-    assert!(
-        b_large.router_info.len() > 1400,
-        "direction-B large fixture must require fragmentation"
-    );
-    assert!(
-        b_large.router_info.len() < 3072,
-        "direction-B large fixture must fit the independent 3 KiB RouterInfo ceiling"
-    );
-    write_file(&evidence_dir, "expected-b-large.ri", &b_large.router_info);
-    let b_large_wire = database_store_wire(
-        b_large.hash,
-        &b_large.router_info,
-        B_LARGE_STORE_MSG_ID,
-        B_LARGE_STORE_REPLY_TOKEN,
-        local.hash,
-    );
-    log_fixture(
-        "b-large",
-        &b_large.hash,
-        b_large.router_info.len(),
-        b_large_wire.len(),
-    );
-    evidence.record("b-large-i2np-len", b_large_wire.len());
-    evidence.record(
-        "b-large-i2np-digest",
-        digest_hex(i2pr_crypto::sha256(&b_large_wire).as_bytes()),
-    );
-    assert_eq!(
-        service.send_i2np(
-            i2pd_peer,
-            EncodedI2npMessage::new(b_large_wire).expect("message"),
-            Duration::from_secs(5),
-        ),
-        i2pr_runtime::Ssu2SendOutcome::Accepted
-    );
-    let (b_small_reply, b_large_reply, b_link) = collect_delivery_status(
-        &mut handle,
+    // earlier bytes can be mistaken for direction-B proof. Bounded
+    // echo-loss retry inside; the returned link is the exact session
+    // link both echoes shared.
+    let b_link = prove_store_pair(
         &service,
+        &mut handle,
+        &mut evidence,
+        &evidence_dir,
         i2pd_peer,
+        local.hash,
+        "direction-b",
+        "b-small",
+        "b-large",
+        43203,
+        43302,
+        B_SMALL_STORE_MSG_ID,
+        B_LARGE_STORE_MSG_ID,
         B_SMALL_STORE_REPLY_TOKEN,
         B_LARGE_STORE_REPLY_TOKEN,
     )
     .await;
-    evidence.record("b-small-reply-len", b_small_reply.len());
-    evidence.record(
-        "b-small-reply-digest",
-        digest_hex(i2pr_crypto::sha256(&b_small_reply).as_bytes()),
-    );
-    write_file(&evidence_dir, "reply-b-small.i2np", &b_small_reply);
-    evidence.record("b-large-reply-len", b_large_reply.len());
-    evidence.record(
-        "b-large-reply-digest",
-        digest_hex(i2pr_crypto::sha256(&b_large_reply).as_bytes()),
-    );
-    write_file(&evidence_dir, "reply-b-large.i2np", &b_large_reply);
 
     // Graceful termination of the responder-promoted session through
     // the exact link handle observed on the wire, then baseline.
@@ -903,54 +946,74 @@ async fn ssu2_independent_ipv4_interop() {
             Err(_) => {}
         }
     }
-    // Fresh fixture: earlier keys are already in the peer NetDB, so a
-    // duplicate store may earn no DeliveryStatus echo.
-    let cached_small = make_test_router("127.0.0.1", 43202, 0, false);
-    evidence.record("cached-routerinfo-len", cached_small.router_info.len());
-    assert!(
-        cached_small.router_info.len() < 1000,
-        "cached fixture must fit one datagram"
-    );
-    write_file(
-        &evidence_dir,
-        "expected-cached.ri",
-        &cached_small.router_info,
-    );
-    let cached_wire = database_store_wire(
-        cached_small.hash,
-        &cached_small.router_info,
-        CACHED_STORE_MSG_ID,
-        CACHED_STORE_REPLY_TOKEN,
-        local.hash,
-    );
-    log_fixture(
-        "cached-small",
-        &cached_small.hash,
-        cached_small.router_info.len(),
-        cached_wire.len(),
-    );
-    evidence.record("cached-i2np-len", cached_wire.len());
-    evidence.record(
-        "cached-i2np-digest",
-        digest_hex(i2pr_crypto::sha256(&cached_wire).as_bytes()),
-    );
-    assert_eq!(
-        service.send_i2np(
+    // Fresh fixture per attempt: earlier keys are already in the peer
+    // NetDB, so a duplicate store may earn no DeliveryStatus echo.
+    // Bounded echo-loss retry like the pair phases: fresh fixture/ID/
+    // token per attempt, same-session proof, hard failure at the end.
+    let mut cached_attempt: u32 = 0;
+    loop {
+        assert!(
+            cached_attempt < ECHO_ATTEMPTS,
+            "cached-token DeliveryStatus echo missing after {ECHO_ATTEMPTS} bounded attempts"
+        );
+        let bump = cached_attempt * ATTEMPT_BUMP;
+        let cached_small = make_test_router("127.0.0.1", 43202, 0, false);
+        assert!(
+            cached_small.router_info.len() < 1000,
+            "cached fixture must fit one datagram"
+        );
+        let cached_wire = database_store_wire(
+            cached_small.hash,
+            &cached_small.router_info,
+            CACHED_STORE_MSG_ID + bump,
+            CACHED_STORE_REPLY_TOKEN + bump,
+            local.hash,
+        );
+        log_fixture(
+            "cached-small",
+            &cached_small.hash,
+            cached_small.router_info.len(),
+            cached_wire.len(),
+        );
+        assert_eq!(
+            service.send_i2np(
+                i2pd_peer,
+                EncodedI2npMessage::new(cached_wire.clone()).expect("message"),
+                Duration::from_secs(5),
+            ),
+            i2pr_runtime::Ssu2SendOutcome::Accepted
+        );
+        let collected = collect_one_delivery_status(
+            &mut handle,
+            &service,
             i2pd_peer,
-            EncodedI2npMessage::new(cached_wire).expect("message"),
-            Duration::from_secs(5),
-        ),
-        i2pr_runtime::Ssu2SendOutcome::Accepted
-    );
-    let (cached_reply, _) =
-        collect_one_delivery_status(&mut handle, &service, i2pd_peer, CACHED_STORE_REPLY_TOKEN)
-            .await;
-    evidence.record("cached-reply-len", cached_reply.len());
-    evidence.record(
-        "cached-reply-digest",
-        digest_hex(i2pr_crypto::sha256(&cached_reply).as_bytes()),
-    );
-    write_file(&evidence_dir, "reply-cached.i2np", &cached_reply);
+            CACHED_STORE_REPLY_TOKEN + bump,
+        )
+        .await;
+        let Some((cached_reply, _)) = collected else {
+            cached_attempt += 1;
+            continue;
+        };
+        evidence.record("cached-routerinfo-len", cached_small.router_info.len());
+        write_file(
+            &evidence_dir,
+            "expected-cached.ri",
+            &cached_small.router_info,
+        );
+        evidence.record("cached-i2np-len", cached_wire.len());
+        evidence.record(
+            "cached-i2np-digest",
+            digest_hex(i2pr_crypto::sha256(&cached_wire).as_bytes()),
+        );
+        evidence.record("cached-reply-len", cached_reply.len());
+        evidence.record(
+            "cached-reply-digest",
+            digest_hex(i2pr_crypto::sha256(&cached_reply).as_bytes()),
+        );
+        write_file(&evidence_dir, "reply-cached.i2np", &cached_reply);
+        evidence.record("cached-echo-attempts", cached_attempt + 1);
+        break;
+    }
     cached.link.close(TerminationCategory::LocalShutdown);
     wait_for_active(&service, 0, "cached-token close").await;
     let after_cached = service.snapshot();
