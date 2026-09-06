@@ -62,8 +62,8 @@ pub use handshake::{
     ReplayDecision, ReplayToken, RetryMessage, RouterInfoFreshness, SessionCreatedParts,
     SessionRequestParts, TokenRequest, build_confirmed_payload, build_retry,
     build_session_confirmed, build_session_created, build_session_request, build_token_request,
-    parse_retry, parse_session_created, parse_session_request, parse_token_request,
-    prevalidate_long_datagram, require_first_router_info, require_timestamp,
+    find_establishment_token, parse_retry, parse_session_created, parse_session_request,
+    parse_token_request, prevalidate_long_datagram, require_first_router_info, require_timestamp,
     session_confirmed_first_header, split_confirmed_jumbo, validate_router_info,
 };
 pub use header::{
@@ -105,7 +105,7 @@ pub use session::{
 };
 pub use state_machine::{
     AuthenticatedSsu2Session, ConfirmedParams, DatagramBytes, DeadlineKind, DropCategory,
-    HandshakeAction, Initiator, InitiatorConfig, InitiatorSecrets, Responder, ResponderConfig,
-    ResponderParams, RetryAnswer, StateMachineError, TerminateReason,
+    HandshakeAction, Initiator, InitiatorConfig, InitiatorSecrets, PeerNewToken, Responder,
+    ResponderConfig, ResponderParams, RetryAnswer, StateMachineError, TerminateReason,
 };
 pub use token::{Ssu2Token, TokenError, TokenStore, retry_response_budget};

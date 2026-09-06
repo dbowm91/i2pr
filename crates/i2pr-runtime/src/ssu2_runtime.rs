@@ -1945,12 +1945,16 @@ impl Ssu2RuntimeService {
         let mut session = i2pr_transport_ssu2::Ssu2Session::new(config, auth.into_keys()).ok()?;
         // One spare token for the peer's next handshake, announced
         // in-band. Failures (RNG/table) only forfeit the cached-token
-        // fast path; the Retry path always remains.
+        // fast path; the Retry path always remains. Data-phase tokens
+        // carry no responder connection ID: the next handshake mints a
+        // fresh ID at SessionCreated.
         let now_secs = wall_secs();
         if !session.is_terminated() {
             let mut token_bytes = [0_u8; 8];
             if fill_random(&mut token_bytes).is_ok()
-                && let Ok(token) = state.token_store.issue(peer_addr, now_secs, token_bytes)
+                && let Ok(token) = state
+                    .token_store
+                    .issue(peer_addr, now_secs, token_bytes, None)
             {
                 let expires = now_secs
                     .saturating_add(constants::TOKEN_LIFETIME_SECONDS)
@@ -2030,6 +2034,18 @@ impl Ssu2RuntimeService {
             }
         };
         let target = entry.target;
+        // A peer-issued establishment token (SessionCreated NewToken)
+        // skips the next Retry round trip. Expired/zero announcements
+        // are dropped by the cache; the Retry path always remains.
+        if let Some(announced) = auth.peer_new_token() {
+            note_cached_token_locked(
+                state,
+                &target.peer(),
+                announced.token(),
+                u64::from(announced.expires()),
+                wall_secs(),
+            );
+        }
         let session =
             match self.construct_session(state, auth, target.responder_intro(), target.address()) {
                 Some(session) => session,
@@ -2188,7 +2204,7 @@ impl Ssu2RuntimeService {
                 return;
             }
         };
-        let session = match self.construct_session(state, auth, remote_intro, source) {
+        let mut session = match self.construct_session(state, auth, remote_intro, source) {
             Some(session) => session,
             None => {
                 self.shared
@@ -2198,6 +2214,12 @@ impl Ssu2RuntimeService {
                 return;
             }
         };
+        // Release the peer initiator immediately: it establishes only
+        // on its first received ACK block, which may otherwise wait
+        // for ack-eliciting data that never comes (proven against
+        // exact-pinned i2pd 2.61.0 in Plan 161 direction B). The
+        // honest zero ACK piggybacks on the NewToken packet below.
+        session.request_bootstrap_ack();
         if !self.active_capacity_locked(state, &source.ip()) {
             self.shared
                 .counters
@@ -2308,6 +2330,20 @@ impl Ssu2RuntimeService {
                 data_rx_observed: false,
             },
         );
+        // Flush the bootstrap ACK (+ NewToken) immediately so the peer
+        // initiator establishes without waiting for our first I2NP.
+        let now_ms = self.now_ms();
+        if let Some(record) = state.active.get_mut(&link_id)
+            && let Some(datagram) = record.session.poll_transmit(now_ms)
+        {
+            stage_one_locked(
+                state,
+                &self.shared.config.limits,
+                &self.shared.counters,
+                datagram,
+                source,
+            );
+        }
     }
 }
 
@@ -2890,8 +2926,21 @@ impl Ssu2RuntimeService {
             return;
         }
         if wrote {
+            // Re-key by the advertised ID when the machine adopted a
+            // token-bound one (normally identical to `key`); a live
+            // collision fails closed and releases the entry, mirroring
+            // the conflicting-handshake path below.
+            let advertised = machine.local_conn_id();
+            let rekey = if advertised != 0 { advertised } else { key };
+            if rekey != key && state.pending_inbound.contains_key(&rekey) {
+                self.shared
+                    .counters
+                    .protocol_drops
+                    .fetch_add(1, Ordering::Relaxed);
+                return;
+            }
             entry.machine = Some(machine);
-            state.pending_inbound.insert(key, entry);
+            state.pending_inbound.insert(rekey, entry);
         }
         // A silent drop for a duplicate-shaped datagram releases the
         // entry: conflicting re-handshakes must re-present a token.
@@ -3141,6 +3190,26 @@ impl Ssu2RuntimeService {
             // Token/replay/skew rejection: no state retained.
             return;
         }
+        // Key the entry by the connection ID the handshake actually
+        // advertises (the token-bound Retry ID when the machine adopted
+        // one), so the initiator's replies route back to this entry. A
+        // live collision fails closed: cross-wired handshakes must
+        // re-present a token; no accounting was charged yet.
+        let entry_key = {
+            let advertised = machine.local_conn_id();
+            if advertised != 0 {
+                advertised
+            } else {
+                local_conn_id
+            }
+        };
+        if entry_key != local_conn_id && state.pending_inbound.contains_key(&entry_key) {
+            self.shared
+                .counters
+                .protocol_drops
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         for action in actions {
             if let HandshakeAction::WriteDatagram(bytes) = action {
                 stage_one_locked(
@@ -3155,7 +3224,7 @@ impl Ssu2RuntimeService {
         count_up(&mut state.pending_ip, ip);
         subnet_up(&mut state.pending_subnet, subnet);
         state.pending_inbound.insert(
-            local_conn_id,
+            entry_key,
             PendingInbound {
                 machine: Some(machine),
                 source,
@@ -3701,6 +3770,37 @@ impl Ssu2RuntimeService {
             .find(|(_, record)| record.session.matches_inbound(bytes))
             .map(|(id, _)| *id);
         if let Some(link_id) = matched {
+            self.handle_active_datagram(
+                &mut state,
+                link_id,
+                source,
+                bytes,
+                now_ms,
+                now_secs,
+                &mut inbound,
+            );
+            return inbound;
+        }
+        // Endpoint-scoped data fallback: the independent peer never
+        // updates its initiator destination ID from SessionCreated, so
+        // genuine Alice-to-Bob data arrives with a stale destination ID
+        // that strict matching rejects. When exactly one active session
+        // serves the source endpoint and the short header decodes under
+        // its keys, deliver there; the session AEAD open over the wire
+        // header still fails closed on misrouting. Ambiguous (zero or
+        // several) candidates fall through to the handshake path.
+        let fallback: Option<LinkId> = {
+            let mut candidate = None;
+            let mut count = 0_usize;
+            for (id, record) in state.active.iter() {
+                if record.peer_addr == source && record.session.matches_data_header(bytes) {
+                    candidate = Some(*id);
+                    count += 1;
+                }
+            }
+            if count == 1 { candidate } else { None }
+        };
+        if let Some(link_id) = fallback {
             self.handle_active_datagram(
                 &mut state,
                 link_id,

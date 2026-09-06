@@ -99,6 +99,12 @@ struct TokenEntry {
     token: u64,
     source: SocketAddr,
     issued_at: u64,
+    /// Responder connection ID announced alongside this token (the
+    /// Retry source ID). The responder adopts it for SessionCreated so
+    /// the handshake advertises one stable ID; `None` for tokens issued
+    /// outside Retry (data-phase NewToken), where the responder mints a
+    /// fresh ID at SessionCreated instead.
+    responder_conn_id: Option<u64>,
 }
 
 /// A bounded one-use token table driven by caller-supplied time and
@@ -181,11 +187,16 @@ impl TokenStore {
     /// Issues a token bound to `source` from caller-supplied bytes.
     /// Expired entries are released first; a full per-source or global
     /// quota deterministically evicts the oldest entry in scope.
+    /// `responder_conn_id` records the responder connection ID the
+    /// token was announced with (Retry source ID), so a later
+    /// SessionCreated reuses it instead of minting a second ID the
+    /// initiator never saw.
     pub fn issue(
         &mut self,
         source: SocketAddr,
         now: u64,
         token_bytes: [u8; 8],
+        responder_conn_id: Option<u64>,
     ) -> Result<Ssu2Token, TokenError> {
         let token = Ssu2Token::new(u64::from_be_bytes(token_bytes))?;
         self.expire(now);
@@ -219,6 +230,7 @@ impl TokenStore {
             token: token.value(),
             source,
             issued_at: now,
+            responder_conn_id,
         });
         Ok(token)
     }
@@ -226,8 +238,14 @@ impl TokenStore {
     /// Validates and consumes a presented token: exact value, exact
     /// source (IP and port; family is part of the address comparison),
     /// and unexpired. Consumption removes the entry; any second use
-    /// fails closed as unknown.
-    pub fn consume(&mut self, token: u64, source: SocketAddr, now: u64) -> Result<(), TokenError> {
+    /// fails closed as unknown. Returns the responder connection ID
+    /// bound at issuance, if any.
+    pub fn consume(
+        &mut self,
+        token: u64,
+        source: SocketAddr,
+        now: u64,
+    ) -> Result<Option<u64>, TokenError> {
         if token == 0 {
             return Err(TokenError::ZeroToken);
         }
@@ -243,8 +261,8 @@ impl TokenStore {
         if entry.source != source {
             return Err(TokenError::WrongSource);
         }
-        self.entries.remove(index);
-        Ok(())
+        let entry = self.entries.remove(index);
+        Ok(entry.responder_conn_id)
     }
 
     /// Returns whether the exact source address family is IPv6.
@@ -279,7 +297,12 @@ mod tests {
     fn issue_consume_round_trip_is_one_use() {
         let mut store = TokenStore::establishment();
         let token = store
-            .issue(v4(1, 1000), 500, 0x0102_0304_0506_0708_u64.to_be_bytes())
+            .issue(
+                v4(1, 1000),
+                500,
+                0x0102_0304_0506_0708_u64.to_be_bytes(),
+                None,
+            )
             .expect("issue");
         assert_eq!(token.value(), 0x0102_0304_0506_0708);
         assert_eq!(store.len(), 1);
@@ -297,7 +320,7 @@ mod tests {
     fn zero_token_is_rejected() {
         let mut store = TokenStore::establishment();
         assert_eq!(
-            store.issue(v4(1, 1000), 500, [0_u8; 8]),
+            store.issue(v4(1, 1000), 500, [0_u8; 8], None),
             Err(TokenError::ZeroToken)
         );
         assert_eq!(
@@ -309,7 +332,9 @@ mod tests {
     #[test]
     fn expired_tokens_fail_and_release() {
         let mut store = TokenStore::establishment();
-        let token = store.issue(v4(1, 1000), 500, [7_u8; 8]).expect("issue");
+        let token = store
+            .issue(v4(1, 1000), 500, [7_u8; 8], None)
+            .expect("issue");
         assert_eq!(
             store.consume(
                 token.value(),
@@ -324,7 +349,9 @@ mod tests {
     #[test]
     fn wrong_source_and_wrong_port_fail_closed() {
         let mut store = TokenStore::establishment();
-        let token = store.issue(v4(1, 1000), 500, [7_u8; 8]).expect("issue");
+        let token = store
+            .issue(v4(1, 1000), 500, [7_u8; 8], None)
+            .expect("issue");
         assert_eq!(
             store.consume(token.value(), v4(2, 1000), 505),
             Err(TokenError::WrongSource)
@@ -346,9 +373,9 @@ mod tests {
     fn per_source_quota_evicts_oldest_deterministically() {
         let mut store = TokenStore::new(256, 2, 3600).expect("store");
         let source = v4(9, 9000);
-        let first = store.issue(source, 100, [1_u8; 8]).expect("first");
-        let _second = store.issue(source, 101, [2_u8; 8]).expect("second");
-        let _third = store.issue(source, 102, [3_u8; 8]).expect("third");
+        let first = store.issue(source, 100, [1_u8; 8], None).expect("first");
+        let _second = store.issue(source, 101, [2_u8; 8], None).expect("second");
+        let _third = store.issue(source, 102, [3_u8; 8], None).expect("third");
         assert_eq!(store.len(), 2);
         assert_eq!(
             store.consume(first.value(), source, 103),
@@ -359,9 +386,9 @@ mod tests {
     #[test]
     fn global_capacity_evicts_oldest_deterministically() {
         let mut store = TokenStore::new(2, 4, 3600).expect("store");
-        let first = store.issue(v4(1, 1), 100, [1_u8; 8]).expect("first");
-        let _second = store.issue(v4(2, 2), 101, [2_u8; 8]).expect("second");
-        let _third = store.issue(v4(3, 3), 102, [3_u8; 8]).expect("third");
+        let first = store.issue(v4(1, 1), 100, [1_u8; 8], None).expect("first");
+        let _second = store.issue(v4(2, 2), 101, [2_u8; 8], None).expect("second");
+        let _third = store.issue(v4(3, 3), 102, [3_u8; 8], None).expect("third");
         assert_eq!(store.len(), 2);
         assert_eq!(
             store.consume(first.value(), v4(1, 1), 103),
@@ -372,7 +399,9 @@ mod tests {
     #[test]
     fn rotation_invalidates_everything() {
         let mut store = TokenStore::establishment();
-        let token = store.issue(v4(1, 1000), 500, [7_u8; 8]).expect("issue");
+        let token = store
+            .issue(v4(1, 1000), 500, [7_u8; 8], None)
+            .expect("issue");
         let epoch = store.epoch();
         store.rotate();
         assert_eq!(store.epoch(), epoch + 1);
@@ -387,5 +416,20 @@ mod tests {
     fn retry_budget_is_three_times_request() {
         assert_eq!(retry_response_budget(80), 240);
         assert_eq!(retry_response_budget(0), 0);
+    }
+
+    #[test]
+    fn consume_returns_bound_responder_conn_id() {
+        let mut store = TokenStore::establishment();
+        let source = v4(1, 1000);
+        let token = store
+            .issue(source, 500, [9_u8; 8], Some(0x3333_3333))
+            .expect("issue");
+        assert_eq!(
+            store.consume(token.value(), source, 505),
+            Ok(Some(0x3333_3333))
+        );
+        let bare = store.issue(source, 500, [8_u8; 8], None).expect("issue");
+        assert_eq!(store.consume(bare.value(), source, 505), Ok(None));
     }
 }

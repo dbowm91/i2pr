@@ -35,9 +35,9 @@ use crate::handshake::{
     AuthenticatedPeer, ClockSkewPolicy, ConfirmedReassembly, HandshakeError, HandshakeReplayCache,
     ReplayDecision, ReplayToken, RouterInfoFreshness, build_confirmed_payload, build_retry,
     build_session_confirmed, build_session_created, build_session_request, build_token_request,
-    parse_retry, parse_session_created, parse_session_request, parse_token_request,
-    require_first_router_info, require_timestamp, session_confirmed_first_header,
-    split_confirmed_jumbo, validate_router_info,
+    find_establishment_token, parse_retry, parse_session_created, parse_session_request,
+    parse_token_request, require_first_router_info, require_timestamp,
+    session_confirmed_first_header, split_confirmed_jumbo, validate_router_info,
 };
 use crate::header::{LongHeader, MessageType, SessionConfirmedHeader};
 use crate::token::TokenStore;
@@ -217,6 +217,47 @@ pub struct AuthenticatedSsu2Session {
     remote_conn_id: u64,
     peer_endpoint: SocketAddr,
     local_mtu: u16,
+    peer_new_token: Option<PeerNewToken>,
+}
+
+/// One peer-issued future-handshake token observed in-band during
+/// establishment (currently the SessionCreated NewToken block the
+/// independent implementation embeds per the specification). The
+/// runtime caches it against the peer endpoint for a cached-token
+/// redial; the Retry path always remains when no token was offered.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct PeerNewToken {
+    /// One-use token value for the next handshake.
+    token: u64,
+    /// Unix-seconds expiry named by the issuing peer.
+    expires: u32,
+}
+
+impl PeerNewToken {
+    /// Wraps one peer-issued token announcement.
+    pub const fn new(token: u64, expires: u32) -> Self {
+        Self { token, expires }
+    }
+
+    /// Returns the one-use token value.
+    pub const fn token(self) -> u64 {
+        self.token
+    }
+
+    /// Returns the Unix-seconds expiry named by the issuing peer.
+    pub const fn expires(self) -> u32 {
+        self.expires
+    }
+}
+
+impl core::fmt::Debug for PeerNewToken {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("PeerNewToken")
+            .field("token", &"<redacted>")
+            .field("expires", &self.expires)
+            .finish()
+    }
 }
 
 impl AuthenticatedSsu2Session {
@@ -255,6 +296,12 @@ impl AuthenticatedSsu2Session {
     /// Returns the local MTU constraint.
     pub const fn local_mtu(&self) -> u16 {
         self.local_mtu
+    }
+
+    /// Returns the peer-issued future-handshake token observed in the
+    /// establishment payload, if the peer offered one.
+    pub const fn peer_new_token(&self) -> Option<PeerNewToken> {
+        self.peer_new_token
     }
 }
 
@@ -618,7 +665,7 @@ impl Initiator {
             .ok_or(StateMachineError::InvalidState)?;
         let ee = ephemeral_secret.diffie_hellman(parts.ephemeral.as_bytes())?;
         let request_ciphertext = std::mem::take(&mut self.request_ciphertext);
-        let (transcript, _created_payload) = match transcript.accept_session_created(
+        let (transcript, created_payload) = match transcript.accept_session_created(
             &request_ciphertext,
             &parts.header.encode(),
             parts.ephemeral,
@@ -683,6 +730,11 @@ impl Initiator {
             transport_static_key: self.config.responder_static,
             router_info: Vec::new(),
         };
+        // The independent implementation embeds its next-handshake
+        // token in SessionCreated; cache the announcement when present
+        // so a redial can skip the Retry round trip.
+        let peer_new_token = find_establishment_token(&created_payload)
+            .map(|(token, expires)| PeerNewToken::new(token, expires));
         let session = AuthenticatedSsu2Session {
             peer,
             keys,
@@ -690,6 +742,7 @@ impl Initiator {
             remote_conn_id: parts.header.src_conn_id(),
             peer_endpoint: confirmed.peer_endpoint,
             local_mtu: self.config.local_mtu,
+            peer_new_token,
         };
         self.confirmed_datagrams = fragments.clone();
         self.attempts = 1;
@@ -858,6 +911,15 @@ impl Responder {
         }
     }
 
+    /// Returns the responder connection ID this handshake currently
+    /// advertises (the Retry source ID, then the SessionCreated source
+    /// ID once emitted; zero before either is sent). The runtime keys
+    /// pending entries by this ID so initiator replies route to the
+    /// exact handshake that announced it.
+    pub const fn local_conn_id(&self) -> u64 {
+        self.local_conn_id
+    }
+
     /// Classifies one inbound datagram cheaply: deprotects a working
     /// copy of the first 16 bytes with the intro key (TokenRequest,
     /// SessionRequest, and Retry share `bik` for both halves) and reads
@@ -917,7 +979,7 @@ impl Responder {
             }
         };
         let token = store
-            .issue(source, now_secs, token_bytes)
+            .issue(source, now_secs, token_bytes, Some(local_conn_id))
             .map_err(StateMachineError::from)?;
         let retry = build_retry(
             &self.config.intro_key,
@@ -931,6 +993,9 @@ impl Responder {
             None,
             padding,
         )?;
+        // The responder stays stateless here (the caller discards the
+        // machine); the token table carries `local_conn_id` forward so
+        // SessionCreated reuses the exact ID this Retry advertised.
         Ok((
             self,
             vec![HandshakeAction::WriteDatagram(DatagramBytes::new(retry)?)],
@@ -947,7 +1012,7 @@ impl Responder {
         mut self,
         mut datagram: Vec<u8>,
         source: SocketAddr,
-        params: ResponderParams,
+        mut params: ResponderParams,
         retry_token_bytes: [u8; 8],
         store: &mut TokenStore,
         replay: &mut HandshakeReplayCache,
@@ -986,14 +1051,22 @@ impl Responder {
                 now_secs,
             );
         }
-        if store
-            .consume(parts.header.token(), source, now_secs)
-            .is_err()
-        {
-            return Ok((
-                self,
-                vec![HandshakeAction::DropSilently(DropCategory::BadToken)],
-            ));
+        let bound = match store.consume(parts.header.token(), source, now_secs) {
+            Ok(bound) => bound,
+            Err(_) => {
+                return Ok((
+                    self,
+                    vec![HandshakeAction::DropSilently(DropCategory::BadToken)],
+                ));
+            }
+        };
+        // Reuse the connection ID the token was announced with: the
+        // initiator latches our Retry source ID and echoes it back, so
+        // SessionCreated must advertise the same ID or the peer routes
+        // our reply to a dead handshake. Tokens without a bound ID
+        // (data-phase NewToken) keep the fresh params ID instead.
+        if let Some(id) = bound {
+            params.local_conn_id = id;
         }
         let replay_token = ReplayToken::from_ephemeral_bytes(parts.ephemeral.as_bytes());
         match replay.check_and_record(replay_token, now_secs) {
@@ -1150,7 +1223,7 @@ impl Responder {
 
     #[allow(clippy::too_many_arguments)]
     fn emit_retry_for_request(
-        self,
+        mut self,
         header: &LongHeader,
         source: SocketAddr,
         request_length: usize,
@@ -1160,7 +1233,12 @@ impl Responder {
         now_secs: u64,
     ) -> Result<(Self, Vec<HandshakeAction>), StateMachineError> {
         let token = store
-            .issue(source, now_secs, retry_token_bytes)
+            .issue(
+                source,
+                now_secs,
+                retry_token_bytes,
+                Some(params.local_conn_id),
+            )
             .map_err(StateMachineError::from)?;
         let retry = build_retry(
             &self.config.intro_key,
@@ -1174,6 +1252,9 @@ impl Responder {
             None,
             params.padding,
         )?;
+        // Record the advertised ID so the runtime keys this entry by
+        // the exact connection ID the initiator will answer.
+        self.local_conn_id = params.local_conn_id;
         Ok((
             self,
             vec![HandshakeAction::WriteDatagram(DatagramBytes::new(retry)?)],
@@ -1230,6 +1311,18 @@ impl Responder {
                 vec![HandshakeAction::DropSilently(DropCategory::Malformed)],
             ));
         }
+        // The destination connection ID is deliberately NOT enforced
+        // here. The independent implementation leaves its initiator
+        // destination ID at the construction-random value (it latches
+        // the responder ID for Retry/Request routing from inbound
+        // messages but never updates the outbound destination ID from
+        // SessionCreated), so a strict echo check rejects genuine
+        // handshakes while loopback peers (which echo exactly) stay
+        // green. Authenticity comes from the Noise transcript: only the
+        // entry holding the matching chain can unmask this header and
+        // open the static frame below, which demultiplexes same-source
+        // pendings cryptographically. The per-fragment coherence check
+        // inside `ConfirmedReassembly` is retained.
         let header =
             match SessionConfirmedHeader::decode(&datagram[..constants::SHORT_HEADER_LENGTH]) {
                 Ok(header) => header,
@@ -1240,14 +1333,6 @@ impl Responder {
                     ));
                 }
             };
-        if header.dst_conn_id() != self.local_conn_id {
-            return Ok((
-                self,
-                vec![HandshakeAction::DropSilently(
-                    DropCategory::ConnectionIdMismatch,
-                )],
-            ));
-        }
         let fragment = datagram[constants::SHORT_HEADER_LENGTH..].to_vec();
         if self.reassembly.is_none() {
             self.reassembly = Some(match ConfirmedReassembly::new(header) {
@@ -1383,6 +1468,10 @@ impl Responder {
             remote_conn_id: self.initiator_conn_id,
             peer_endpoint: source,
             local_mtu: self.config.local_mtu,
+            // Our responder does not yet embed a NewToken block in
+            // SessionCreated (data-phase announcement only); initiator
+            // peers fall back to the tokenless Retry path on redial.
+            peer_new_token: None,
         };
         Ok((self, vec![HandshakeAction::Established(session)]))
     }

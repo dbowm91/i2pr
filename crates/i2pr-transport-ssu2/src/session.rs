@@ -522,6 +522,13 @@ pub struct Ssu2Session {
     ack_deadline_ms: Option<u64>,
     ack_eliciting_since_ack: u32,
     last_received_eliciting: bool,
+    /// One-shot request to carry an ACK block on the next transmit
+    /// even when nothing ack-eliciting has been received yet (honest
+    /// `ackThrough = 0`). The independent initiator establishes only
+    /// on its first received ACK block, so a freshly promoted
+    /// responder must release it without waiting for eliciting data;
+    /// receivers treat unknown acked numbers as idempotent no-ops.
+    bootstrap_ack_pending: bool,
 
     srtt_ms: Option<u64>,
     rttvar_ms: u64,
@@ -607,6 +614,7 @@ impl Ssu2Session {
             ack_deadline_ms: None,
             ack_eliciting_since_ack: 0,
             last_received_eliciting: false,
+            bootstrap_ack_pending: false,
             srtt_ms: None,
             rttvar_ms: 0,
             rto_ms: constants::DATA_INITIAL_RTO_MS,
@@ -626,6 +634,15 @@ impl Ssu2Session {
             remote_terminate: None,
             counters,
         })
+    }
+
+    /// Requests the one-shot bootstrap ACK: the next transmit carries
+    /// an ACK block even when nothing ack-eliciting has been received
+    /// yet (honest `ackThrough = 0`). The runtime calls this exactly
+    /// once per responder promotion; the flag clears when the next
+    /// transmit seals.
+    pub fn request_bootstrap_ack(&mut self) {
+        self.bootstrap_ack_pending = true;
     }
 
     /// Returns whether an inbound datagram is addressed to this session
@@ -662,6 +679,44 @@ impl Ssu2Session {
             Ok(header) => header.dst_conn_id() == self.local_conn_id,
             Err(_) => false,
         }
+    }
+
+    /// Returns whether an inbound datagram carries a decodable data-phase
+    /// short header under this session's keys, without checking the
+    /// destination connection ID.
+    ///
+    /// The independent implementation leaves its initiator destination ID
+    /// at the construction-random value (it never updates it from
+    /// SessionCreated), so Alice-to-Bob data arrives with a stale
+    /// destination ID that can never match our responder
+    /// `local_conn_id`. The runtime uses this as an endpoint-scoped
+    /// fallback: only when exactly one active session serves the source
+    /// endpoint and the header decodes under its keys. Delivery still
+    /// requires the data-phase AEAD open over the wire header bytes, so
+    /// a misrouted datagram fails authentication with no effects.
+    pub fn matches_data_header(&self, datagram: &[u8]) -> bool {
+        if self.is_terminated() {
+            return false;
+        }
+        if DatagramLengthClass::classify(datagram.len()).is_err() {
+            return false;
+        }
+        if datagram.len() < constants::SHORT_HEADER_LENGTH + constants::MIN_POST_HEADER_BYTES {
+            return false;
+        }
+        let mut working = datagram.to_vec();
+        if crate::crypto::remove_header_protection(
+            &mut working,
+            constants::SHORT_HEADER_LENGTH,
+            self.local_intro.as_bytes(),
+            &self.receive_header_2,
+            false,
+        )
+        .is_err()
+        {
+            return false;
+        }
+        DataHeader::decode(&working[..constants::SHORT_HEADER_LENGTH]).is_ok()
     }
 
     /// Returns pending outbound depth for runtime queue accounting:
@@ -972,7 +1027,7 @@ impl Ssu2Session {
         if self.send_exhausted {
             return None;
         }
-        let want_ack = self.ack_pending;
+        let want_ack = self.ack_pending || self.bootstrap_ack_pending;
         let has_controls = !self.queued_controls.is_empty();
         let has_retransmit = !self.pending_retransmit.is_empty();
         let has_outbound = self
@@ -1003,7 +1058,17 @@ impl Ssu2Session {
         let mut used = 0_usize;
         let budget = self.max_payload_bytes;
         // ACK first so loss recovery always travels with fresh data.
-        if want_ack && let Some(ack) = self.build_ack_block() {
+        // A pending bootstrap contributes an honest zero ACK
+        // (`ackThrough = 0`, no ranges) when no receptions exist yet.
+        if want_ack
+            && let Some(ack) = self.build_ack_block().or_else(|| {
+                if self.bootstrap_ack_pending {
+                    AckBlock::new(0, 0, Vec::new()).ok()
+                } else {
+                    None
+                }
+            })
+        {
             let block = Block::Ack(ack);
             let len = block.encoded_len();
             if used + len <= budget {
@@ -1270,6 +1335,7 @@ impl Ssu2Session {
     /// is sealed (piggyback or standalone alike).
     fn clear_ack_state(&mut self) {
         self.ack_pending = false;
+        self.bootstrap_ack_pending = false;
         self.ack_deadline_ms = None;
         self.ack_eliciting_since_ack = 0;
     }
@@ -1333,8 +1399,9 @@ impl Ssu2Session {
             self.counters.bytes_in_flight = self.bytes_in_flight;
         }
         // ACK state is satisfied by any packet carrying the ACK block.
-        if self.ack_pending {
+        if self.ack_pending || self.bootstrap_ack_pending {
             self.ack_pending = false;
+            self.bootstrap_ack_pending = false;
             self.ack_deadline_ms = None;
             self.ack_eliciting_since_ack = 0;
         }
@@ -1421,11 +1488,16 @@ impl Ssu2Session {
             }
         };
         // 2. Session binding by connection ID (caller context).
-        if header.dst_conn_id() != self.local_conn_id {
-            self.counters.packets_rejected = self.counters.packets_rejected.saturating_add(1);
-            outcome.dropped = Some(DropReason::ConnectionIdMismatch);
-            return outcome;
-        }
+        // The destination connection ID is deliberately NOT enforced
+        // here. The independent implementation never updates its
+        // initiator destination ID from SessionCreated, so genuine
+        // Alice-to-Bob data arrives with a stale destination ID (proven
+        // against exact-pinned i2pd 2.61.0 in Plan 161 direction B).
+        // The runtime routes by strict ID first and only falls back to
+        // endpoint-scoped delivery when exactly one session serves the
+        // source; authenticity still comes from the AEAD open below over
+        // the wire header bytes, which fails closed on misrouting.
+        // The decoded header is retained for packet-number extraction.
         let packet_number = header.packet_number();
         outcome.packet_number = Some(packet_number);
         // 4. Replay/window admissibility (before AEAD).
@@ -2597,6 +2669,44 @@ mod tests {
         // Outbound depth reflects queued work for admission.
         let (messages, bytes) = alice.outbound_pending();
         assert_eq!((messages, bytes), (0, 0));
+    }
+
+    #[test]
+    fn stale_destination_id_still_delivers() {
+        let (mut alice, mut bob) = test_session_pair();
+        // Simulate the independent initiator's stale destination ID:
+        // Alice seals with a destination Bob never advertised, yet the
+        // payload must still authenticate and deliver (Plan 161
+        // direction B against exact-pinned i2pd 2.61.0).
+        alice.remote_conn_id = 0xdead_beef_dead_beef;
+        alice
+            .queue_new_token(1_700_000_030, 0x0102_0304_0506_0708)
+            .expect("queue");
+        let datagram = alice.poll_transmit(2_000_000).expect("datagram");
+        assert!(!bob.matches_inbound(&datagram));
+        assert!(bob.matches_data_header(&datagram));
+        let outcome = bob.receive_datagram(2_000_001, 1_700_000_000, &datagram);
+        assert!(outcome.dropped.is_none());
+        assert!(outcome.events.contains(&SessionEvent::NewToken {
+            expires: 1_700_000_030,
+            token: 0x0102_0304_0506_0708,
+        }));
+    }
+
+    #[test]
+    fn bootstrap_ack_emits_zero_ack_once() {
+        let (mut alice, mut bob) = test_session_pair();
+        // No receptions yet: the bootstrap still seals one honest
+        // `ackThrough = 0` packet that the peer accepts without error
+        // (unknown acked numbers are idempotent no-ops there).
+        bob.request_bootstrap_ack();
+        let datagram = bob.poll_transmit(2_000_000).expect("bootstrap datagram");
+        assert!(!bob.bootstrap_ack_pending);
+        let outcome = alice.receive_datagram(2_000_001, 1_700_000_000, &datagram);
+        assert!(outcome.dropped.is_none());
+        assert!(outcome.ack_only);
+        // One-shot: nothing further pending.
+        assert!(bob.poll_transmit(2_000_002).is_none());
     }
 
     #[test]

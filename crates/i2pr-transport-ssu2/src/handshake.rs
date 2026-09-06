@@ -1051,10 +1051,26 @@ pub fn require_timestamp(payload: &[u8]) -> Result<u32, HandshakeError> {
     Err(HandshakeError::MissingTimestamp)
 }
 
+/// Extracts the first NewToken announcement of an authenticated
+/// establishment payload (SessionCreated per the specification).
+/// A missing or unparsable announcement is not a handshake failure:
+/// the caller falls back to the tokenless Retry path. Malformed
+/// announcements inside an otherwise authenticated payload are
+/// ignored rather than terminating the session.
+pub fn find_establishment_token(payload: &[u8]) -> Option<(u64, u32)> {
+    let parsed = parse_blocks(payload).ok()?;
+    for block in parsed.blocks() {
+        if let DecodedBlock::NewToken(value) = block {
+            return Some((value.token(), value.expires()));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::block::PaddingBlock;
+    use crate::block::{NewTokenBlock, PaddingBlock};
 
     fn intro() -> IntroKey {
         IntroKey::new([0x42_u8; 32])
@@ -1063,6 +1079,29 @@ mod tests {
     fn endpoint() -> crate::address::Ssu2Endpoint {
         crate::address::Ssu2Endpoint::new("192.0.2.1".parse().expect("test ip"), 44000)
             .expect("endpoint")
+    }
+
+    #[test]
+    fn establishment_token_found_skipped_or_absent() {
+        let payload = encode_blocks(vec![
+            Block::Timestamp(TimestampBlock::new(1_700_000_000)),
+            Block::NewToken(NewTokenBlock::new(1_700_000_030, 0x0102_0304_0506_0708)),
+            Block::Padding(PaddingBlock::new(vec![0_u8; 8]).expect("padding")),
+        ])
+        .expect("encode");
+        assert_eq!(
+            find_establishment_token(&payload),
+            Some((0x0102_0304_0506_0708, 1_700_000_030))
+        );
+
+        let no_token = encode_blocks(vec![
+            Block::Timestamp(TimestampBlock::new(1_700_000_000)),
+            Block::Padding(PaddingBlock::new(vec![0_u8; 8]).expect("padding")),
+        ])
+        .expect("encode");
+        assert_eq!(find_establishment_token(&no_token), None);
+        assert_eq!(find_establishment_token(&[0xFF_u8; 4]), None);
+        assert_eq!(find_establishment_token(&[]), None);
     }
 
     #[test]

@@ -356,12 +356,24 @@ fn full_tokenless_retry_trajectory_reaches_matching_keys() {
 }
 
 #[test]
+fn tokenless_trajectory_carries_no_establishment_token() {
+    // Our responder embeds no NewToken block in SessionCreated yet
+    // (data-phase announcement only), so a local-only handshake offers
+    // the initiator nothing to cache. Independent peers that do embed
+    // the block are consumed via `find_establishment_token` (unit) and
+    // the Plan 161 external driver (live).
+    let (alice, bob) = full_tokenless_handshake();
+    assert!(alice.peer_new_token().is_none());
+    assert!(bob.peer_new_token().is_none());
+}
+
+#[test]
 fn cached_valid_token_trajectory_skips_retry() {
     let world = world();
     let alice_source = socket_addr(ALICE_SOURCE);
     let mut store = TokenStore::establishment();
     let token = store
-        .issue(alice_source, NOW_SECS, [0x0a_u8; 8])
+        .issue(alice_source, NOW_SECS, [0x0a_u8; 8], None)
         .expect("issue");
     assert_eq!(store.len(), 1);
 
@@ -434,6 +446,71 @@ fn cached_valid_token_trajectory_skips_retry() {
 }
 
 #[test]
+fn responder_reuses_retry_conn_id_for_session_created() {
+    // Regression (Plan 161 direction B): the Retry source ID and the
+    // SessionCreated source ID must match. The initiator latches the
+    // Retry ID and echoes it in SessionConfirmed; minting a second ID
+    // for Created breaks the peer's routing while loopback tests stay
+    // green (both sides tolerate the mismatch symmetrically).
+    let world = world();
+    let alice_source = socket_addr(ALICE_SOURCE);
+    let mut store = TokenStore::establishment();
+    let retry_conn_id = 0x7777_8888_9999_0000_u64;
+    let token = store
+        .issue(alice_source, NOW_SECS, [0x0b_u8; 8], Some(retry_conn_id))
+        .expect("issue");
+
+    let (initiator, actions) = Initiator::begin(
+        initiator_config(&world),
+        InitiatorSecrets {
+            static_secret: secret(11),
+            ephemeral_secret: secret(12),
+            local_conn_id: 0xaaaa_aaaa_aaaa_aaaa,
+            remote_conn_id: 0xbbbb_bbbb_bbbb_bbbb,
+            packet_number: 0x1111_2222,
+            timestamp: NOW_SECS as u32,
+        },
+        Some(token.value()),
+        vec![0x77_u8; 16],
+        NOW_MS,
+    )
+    .expect("begin");
+    let request = write_bytes(&actions).pop().expect("session request");
+    let _ = initiator;
+
+    // Fresh params with a *different* connection ID mirror production,
+    // where the stateless Retry admission and the SessionCreated
+    // admission mint independent IDs. The token-bound ID must win.
+    let responder = Responder::new(responder_config(&world), NOW_MS);
+    let mut replay = HandshakeReplayCache::new(64, 240).expect("replay");
+    let (responder, actions) = responder
+        .on_session_request(
+            request,
+            alice_source,
+            ResponderParams {
+                local_conn_id: 0xcccc_cccc_cccc_cccc,
+                ephemeral_secret: secret(22),
+                packet_number: 0x3333_4444,
+                timestamp: NOW_SECS as u32,
+                padding: Vec::new(),
+            },
+            [0x22_u8; 8],
+            &mut store,
+            &mut replay,
+            NOW_MS + 100,
+            NOW_SECS,
+        )
+        .expect("session request");
+    assert_eq!(responder.local_conn_id(), retry_conn_id);
+    assert!(
+        actions
+            .iter()
+            .any(|action| matches!(action, HandshakeAction::WriteDatagram(_))),
+        "SessionCreated must be emitted with the adopted ID"
+    );
+}
+
+#[test]
 fn token_reuse_expiry_and_wrong_source_fail_before_session_work() {
     let world = world();
     let alice_source = socket_addr(ALICE_SOURCE);
@@ -455,7 +532,7 @@ fn token_reuse_expiry_and_wrong_source_fail_before_session_work() {
     for (issue_at, present_at, source, token_bytes, expect_work) in matrix {
         let mut store = TokenStore::establishment();
         let token = store
-            .issue(alice_source, issue_at, token_bytes)
+            .issue(alice_source, issue_at, token_bytes, None)
             .expect("issue");
         let (initiator, actions) = Initiator::begin(
             initiator_config(&world),
@@ -516,7 +593,7 @@ fn token_reuse_expiry_and_wrong_source_fail_before_session_work() {
     // Reuse: a consumed token fails closed on second presentation.
     let mut store = TokenStore::establishment();
     let token = store
-        .issue(alice_source, NOW_SECS, [0x44_u8; 8])
+        .issue(alice_source, NOW_SECS, [0x44_u8; 8], None)
         .expect("issue");
     store
         .consume(token.value(), alice_source, NOW_SECS + 1)
@@ -529,7 +606,7 @@ fn token_reuse_expiry_and_wrong_source_fail_before_session_work() {
     // Rotation invalidates outstanding tokens.
     let mut store = TokenStore::establishment();
     let token = store
-        .issue(alice_source, NOW_SECS, [0x55_u8; 8])
+        .issue(alice_source, NOW_SECS, [0x55_u8; 8], None)
         .expect("issue");
     store.rotate();
     assert_eq!(
@@ -594,7 +671,7 @@ fn created_retry_and_duplicate_request_resend_identical_created() {
     let alice_source = socket_addr(ALICE_SOURCE);
     let mut store = TokenStore::establishment();
     let token = store
-        .issue(alice_source, NOW_SECS, [0x0a_u8; 8])
+        .issue(alice_source, NOW_SECS, [0x0a_u8; 8], None)
         .expect("issue");
     let (_, actions) = Initiator::begin(
         initiator_config(&world),
@@ -666,7 +743,7 @@ fn confirmed_duplicate_fragments_are_idempotent() {
     let alice_source = socket_addr(ALICE_SOURCE);
     let mut store = TokenStore::establishment();
     let token = store
-        .issue(alice_source, NOW_SECS, [0x0a_u8; 8])
+        .issue(alice_source, NOW_SECS, [0x0a_u8; 8], None)
         .expect("issue");
     let (initiator, actions) = Initiator::begin(
         initiator_config(&world),
@@ -818,7 +895,7 @@ fn deadline_exhaustion_and_cancellation_terminate_every_phase() {
     // Responder attempt exhaustion while awaiting confirmation.
     let mut store = TokenStore::establishment();
     let token = store
-        .issue(alice_source, NOW_SECS, [0x0a_u8; 8])
+        .issue(alice_source, NOW_SECS, [0x0a_u8; 8], None)
         .expect("issue");
     let (_, actions) = Initiator::begin(
         initiator_config(&world),
@@ -868,7 +945,7 @@ fn tag_mutation_never_produces_authenticated_material() {
     let alice_source = socket_addr(ALICE_SOURCE);
     let mut store = TokenStore::establishment();
     let token = store
-        .issue(alice_source, NOW_SECS, [0x0a_u8; 8])
+        .issue(alice_source, NOW_SECS, [0x0a_u8; 8], None)
         .expect("issue");
     let (initiator, actions) = Initiator::begin(
         initiator_config(&world),
@@ -1026,7 +1103,7 @@ fn router_info_matrix_enforces_binding() {
         let alice_source = socket_addr(ALICE_SOURCE);
         let mut store = TokenStore::establishment();
         let token = store
-            .issue(alice_source, NOW_SECS, [0x0a_u8; 8])
+            .issue(alice_source, NOW_SECS, [0x0a_u8; 8], None)
             .expect("issue");
         let (initiator, actions) = Initiator::begin(
             initiator_config(&world),
@@ -1196,7 +1273,7 @@ fn router_info_not_first_is_rejected() {
     let alice_source = socket_addr(ALICE_SOURCE);
     let mut store = TokenStore::establishment();
     let token = store
-        .issue(alice_source, NOW_SECS, [0x0a_u8; 8])
+        .issue(alice_source, NOW_SECS, [0x0a_u8; 8], None)
         .expect("issue");
     let (initiator, actions) = Initiator::begin(
         initiator_config(&world),
