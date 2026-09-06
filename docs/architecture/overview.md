@@ -71,11 +71,15 @@ Plan 160 passed peer-test/relay reachability (Alice/Bob/Charlie
 roles with typed outcomes, requester/introducer/target machines with
 HolePunch, validated introducers, and runtime coordination with
 introducer service disabled by default — see
-[`plans/160-status.md`](../../plans/160-status.md)); Plan 161 remains
-the active independent-interop plan after the passed Plan 162 test-lane
-corrective. Its environment-dependent test is explicitly ignored by
-routine libtest execution and selected only by the dedicated external
-lane. The SAM lane stays experimental,
+[`plans/160-status.md`](../../plans/160-status.md)); Plan 161 has proven
+both direct SSU2 v2 directions plus cached-token/malformed rows against
+exact-pinned i2pd 2.61.0 over real loopback UDP and landed the fail-closed
+15-row evidence ledger with its routine-CI-enforced checker and manual
+external workflow (see [`plans/161-status.md`](../../plans/161-status.md)).
+It remains the active plan for hosted closure evidence after the passed
+Plan 162 test-lane corrective. Its environment-dependent test is explicitly
+ignored by routine libtest execution and selected only by the dedicated
+external lane. The SAM lane stays experimental,
 loopback-only, disabled by default, and non-advertised; no
 localhost result implies router-to-router interoperability. SSU2
 v2 has a localhost-only runtime with path validation and
@@ -407,6 +411,8 @@ The boundary contract is enforced by scripts under `scripts/`:
 | `check-multipass-interop-boundary.sh` | Forbidden host-policy mutations in the Plan 048/049/050/051 Multipass recovery lane (no global `multipass purge`; no host lifecycle mutation outside an atomic reservation). |
 | `check-constrained-host-lane-boundary.sh` | Bypasses of the Plan 077 constrained-host selection order (rootful Docker `--network none` → QEMU TCG `-nic none` → reduced inherited descriptors + seccomp → manual remote Linux → typed `no-full-runtime-lane` result). |
 | `check-plan095-workflow.sh` | Artifact-path drift and cleanup-guard violations on the manual Plan 095 live-wire workflow. |
+| `check-sam-acceptance-evidence.sh` | Plan 151 SAM evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code-gated helpers (CI-enforced). |
+| `check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code/evidence-key-gated helpers with explicit `--ignored --exact` external selection (CI-enforced). |
 | `fuzz-smoke.sh` | Opt-in smoke run of all 22 fuzz targets (requires nightly + `cargo-fuzz`). |
 
 ## Conventions

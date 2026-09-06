@@ -1,16 +1,17 @@
 # Plan 161 status — Milestone 8 SSU2 independent IPv4 interop (IN PROGRESS)
 
-Status: **`in-progress-direction-b-proven`**. Plan 161 is NOT closed:
+Status: **`in-progress-ledger-landed`**. Plan 161 is NOT closed:
 direction A, direction B, the externally exercisable token/Retry rows
 (tokenless + cached-token), and the compact malformed/spoof/resource
-rows all pass against exact-pinned i2pd 2.61.0 over real loopback UDP
-(two consecutive full-matrix passes, see below). Remaining for final
-closure: the Java secondary lane decision, the SSU2 evidence
-ledger/checker, the manual external workflow, and the
-`specs/support.toml` / `specs/CONFORMANCE.md` classification. No
-public-network, NetDB/tunnel/destination, or advertisement claim is
-made. The temporary routine-CI lane-selection corrective stays closed
-under Plan 162.
+rows all pass against exact-pinned i2pd 2.61.0 over real loopback UDP,
+and the final fail-closed evidence ledger/checker plus the manual
+external workflow have now landed and pass locally (15/15 rows on the
+current head, see below). Remaining for final closure: routine CI and
+the manual SSU2 external workflow green on the exact closing commit,
+then the `specs/support.toml` / `specs/CONFORMANCE.md` final
+classification. No public-network, NetDB/tunnel/destination, or
+advertisement claim is made. The temporary routine-CI lane-selection
+corrective stays closed under Plan 162.
 
 Plan of record:
 [`plans/161-m8-ssu2-independent-ipv4-interop-and-final-closure.md`](161-m8-ssu2-independent-ipv4-interop-and-final-closure.md).
@@ -19,8 +20,8 @@ Temporary corrective authority:
 [`plans/162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md`](162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md).
 
 ```text
-plan_161 = in-progress-direction-b-proven
-plan_161_current_blocker = none (direction-B deadlock fixed; final ledger/workflow/Java rows remain)
+plan_161 = in-progress-ledger-landed
+plan_161_current_blocker = hosted-closure-evidence (routine CI + manual ssu2-external workflow on closing commit)
 plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 next_executable_plan = 161
 resume_after_plan162 = 161
@@ -180,8 +181,11 @@ value is follow-up work, not a closure blocker.
 Run variance note: two of six runs during this pass timed out on the
 direction-A large DeliveryStatus (small arrived, session healthy,
 retransmits in flight) under host load; both passed on immediate
-re-run with no code change. No protocol defect is indicated; the
-final ledger runs should record per-run results verbatim.
+re-run with no code change. A later full-lane run exposed the
+settle-window redial race (peer redialed during the 15 s settle;
+fixed by capturing `b_baseline` pre-settle, driver-only). No
+protocol defect is indicated in either case; the final ledger runs
+should record per-run results verbatim.
 
 ## Protocol corrective (retained)
 
@@ -264,25 +268,98 @@ ordinary no-peer workspace lane. Plan 162 closed this correction. Do not weaken
 
 ## Open rows (not claimed)
 
-With directions A/B, the cached-token row, and the compact
-malformed/resource rows proven against the live peer, Plan 161 still
-owns for final closure:
+With directions A/B, the cached-token row, the compact
+malformed/resource rows, and the fail-closed ledger/checker/workflow
+rows proven locally against the live peer, Plan 161 still owns for
+final closure:
 
-- Java I2P secondary lane or exact documented nonblocking blocker
-  (plan sections 12 / criterion 13).
-- Final fail-closed SSU2 evidence ledger/checker
-  (`scripts/check-ssu2-acceptance-evidence.sh`) and the manual
-  external workflow (`.github/workflows/ssu2-external.yml`),
-  CI-enforced (criteria 14–16, 18–19).
+- Routine CI green on the exact closing commit (criteria 17–18).
+- Manual `.github/workflows/ssu2-external.yml` pass on the exact
+  closing commit with uploaded sanitized evidence (criterion 19).
+- `specs/support.toml` / `specs/CONFORMANCE.md` final closure only
+  after the two hosted rows above pass (criteria 20–24).
+- Java I2P secondary lane: documented as nonblocking
+  narrow-orchestration debt (plan section 12 / criterion 13); see
+  below. It does not silently disappear: the ledger records it in
+  every evidence artifact.
 - Unsupported-version / spoofed-source / tag-corruption rows beyond
   the driver's short/oversized/random probe: retain the local Plan
   157 proof where the external lane cannot inject without patching,
   recorded explicitly (plan section 11).
-- `specs/support.toml` / `specs/CONFORMANCE.md` final closure only
-  after all mandatory Plan 161 criteria pass (criteria 20–24).
 
 No new support or advertisement claim is made by the direction-A/B
 passes. Milestone 8 remains open.
+
+## Final ledger/checker/workflow (landed, passing locally)
+
+Plan 161 §13–14 artifacts (modeled deliberately on the Plan 151
+pattern):
+
+- `tests/integration/ssu2/run-independent.sh` — fail-closed external
+  lane. Provisions one ephemeral unprivileged i2pd 2.61.0 on
+  `127.0.0.1:43823` from the verified cache (fresh datadir per run,
+  so no stale netDb; private keys never leave scratch), runs the six
+  local focused suites plus the single explicit `--ignored --exact`
+  driver invocation (now with `--nocapture` so passing-run
+  transcripts persist), and derives all 15 required rows from
+  executed commands: local rows via `record_guarded` on the suite
+  exit code, external rows via `ssu2_row` on the driver exit code
+  plus the row's own sanitized evidence keys. Emits sanitized
+  `evidence.json` / `evidence.md` (commits, pins, OS, toolchain,
+  bind policy, per-row commands, digests/counters, known
+  limitations; no secrets).
+- `scripts/check-ssu2-acceptance-evidence.sh` — static
+  evidence-integrity checker: rejects literal unconditional `passed`
+  records, requires a `record_guarded`/`ssu2_row` call site per
+  required row, pins the exit-code and evidence-key gates, the
+  explicit `--ignored --exact` selection, the exact i2pd pin, the
+  loopback bind policy, and no `|| true` forgiveness. Enforced in
+  routine Linux CI (`.github/workflows/ci.yml`) and the manual
+  SSU2 external workflow.
+- `.github/workflows/ssu2-external.yml` — manual
+  (`workflow_dispatch`-only) Ubuntu 24.04 lane: fetch/verify exact
+  i2pd, run the evidence-integrity checker, run the full matrix,
+  upload sanitized evidence even on failure. No sudo, no
+  Docker/namespaces/VM/systemd, no public-I2P participation beyond
+  the GitHub source fetch.
+
+Full-lane pass on the current head (2026-09-06, ephemeral i2pd
+`670`-byte router.info, `I2PR_SSU2_FLOODFILL=1`):
+
+```text
+bash tests/integration/ssu2/run-independent.sh
+# Plan 161 SSU2 lane passed; sanitized evidence: target/interop/ssu2-evidence
+# 15/15 rows passed (6 local + plan155-160 regressions + 7 external + workspace-gates)
+bash scripts/check-ssu2-acceptance-evidence.sh
+# SSU2 acceptance evidence integrity: 15 rows command-derived, no literal pass records
+```
+
+## Direction-B settle-race fix (driver-only, no wire change)
+
+The first full-lane run on this head reproduced a driver timing race
+the two earlier 63 s passes never hit: the pinned peer redialed
+*during* the fixed 15 s inter-direction settle, so the post-settle
+`b_baseline` already included the direction-B establishment and the
+wait deadlocked 150 s expecting a third session
+(`pinned peer did not initiate a session (i2pd redial)`; the wait
+snapshots showed `sessions_established: 2, active_sessions: 1` throughout).
+`b_baseline` is now captured before the settle sleep, so a redial
+that lands during the settle still counts as the fresh initiation;
+a later redial behaves exactly as before. Test-only change in
+`crates/i2pr-runtime/tests/ssu2_independent.rs`; the re-run passed
+the full matrix in 56.93 s with no protocol or runtime edit.
+
+## Java secondary lane decision (nonblocking debt, recorded)
+
+Java I2P 2.13.0 (`9134f808337b401e8e53c73734c81fab04280c9d`) is
+retained as the preferred secondary reference and is recorded in
+every ledger artifact, but no Java router is orchestrated in this
+pass: no narrow unprivileged standalone SSU2 driver exists for it,
+and building a JVM/Gradle router orchestration inside M8 would
+recreate the harness build-up Plan 161 §12 forbids. This is the
+plan-sanctioned nonblocking outcome (criterion 13), not a silent
+disappearance. Revisit only with a narrow unprivileged seam that
+keeps the lane loopback-only.
 
 ## Quality state on direction-B closing tree (2026-09-06)
 
@@ -318,3 +395,9 @@ Hosted routine CI is green on Plan 162 implementation commit
 Routine CI also passes on the direction-B closing commit `fde2bae`
 via run `34001837935` (Quality ubuntu-latest, Quality macos-latest,
 MSRV Ubuntu, Dependency policy: all success).
+
+The ledger/checker/workflow landing plus the driver settle-race fix
+are unpushed local work on top of `71a763e`; the full local floor
+(including the 15/15 external lane above) is green here. Routine CI
+and the manual `ssu2-external` workflow must still pass on the exact
+closing commit before any Milestone 8 closure claim.

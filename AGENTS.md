@@ -4,7 +4,7 @@
 use it for anonymity, privacy, censorship resistance, or any security-sensitive
 workload. NTCP2 remains experimental and non-advertised; the production daemon
 does not activate NTCP2. SSU2 v2 has a localhost UDP runtime and Plan 161 has
-proven one direct authenticated IPv4 direction against exact-pinned i2pd 2.61.0;
+proven both direct authenticated IPv4 directions against exact-pinned i2pd 2.61.0;
 no public advertisement, public-network participation, broad router
 interoperability, or Milestone 6 interoperability is claimed.
 
@@ -37,7 +37,7 @@ Plan 157 = passed SSU2 v2 data-phase reliability/fragmentation
 Plan 158 = passed SSU2 v2 UDP runtime and local session product
 Plan 159 = passed SSU2 v2 path validation/publication/transport selection
 Plan 160 = passed SSU2 v2 peer test and relay reachability
-Plan 161 = in-progress; directions A+B (+ cached-token/malformed rows) proven vs pinned i2pd; ledger/Java closure open
+Plan 161 = in-progress; directions A+B (+ cached-token/malformed rows) proven vs pinned i2pd; ledger/checker/workflow landed locally; hosted closure evidence open
 Plan 162 = passed external-test lane isolation / routine-CI corrective
 next executable plan = 161
 resume after Plan 162 = 161
@@ -150,8 +150,10 @@ resource cleanup. Independent comparison exposed three real handshake
 transcript divergences that were corrected in Plan 161; do not revert them to
 make loopback tests match older fixtures.
 
-Direction B and the remaining Plan 161 final ledger/workflow/Java rows
-are still open (see `plans/161-status.md`). Direction A
+Direction B, the cached-token/malformed rows, and the final
+ledger/checker/workflow lane are now landed too (see
+`plans/161-status.md`); Java I2P is recorded nonblocking secondary
+debt. Direction A+B evidence
 does not imply public I2P or broad router interoperability.
 
 ## Plan 162 scope (closed)
@@ -217,6 +219,7 @@ bash scripts/check-ssu2-vectors.sh
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-constrained-host-lane-boundary.sh
 bash scripts/check-sam-acceptance-evidence.sh
+bash scripts/check-ssu2-acceptance-evidence.sh
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
 cargo deny check advisories bans sources
 ```
@@ -267,7 +270,16 @@ cargo test --locked -p i2pr-runtime --test ssu2_independent \
 ```
 
 Without the required external environment, that explicit command must fail
-closed. With exact-pinned i2pd provisioned, it must execute and pass direction A.
+closed. With exact-pinned i2pd provisioned, it must execute and pass the
+full matrix (directions A+B, cached-token, malformed/resource rows).
+
+The full Plan 161 lane (local suites + matrix + gates, 15 command-derived
+rows) is:
+
+```text
+bash tests/integration/ssu2/run-independent.sh
+bash scripts/check-ssu2-acceptance-evidence.sh
+```
 
 Plan 155 added the SSU2 fixture corpus (`tests/fixtures/ssu2/`) and its
 checker (`scripts/check-ssu2-vectors.sh`), enforced in routine Linux CI;
@@ -325,10 +337,11 @@ Preferred secondary reference:
 ```text
 Java I2P 2.13.0
 commit = 9134f808337b401e8e53c73734c81fab04280c9d
-role = preferred secondary; nonblocking if narrow unprivileged orchestration is disproportionate
+role = preferred secondary; recorded nonblocking narrow-orchestration debt (see plans/161-status.md)
 ```
 
-Plan 161 direction A has passed. Plan 162 corrected how that external-process
+Plan 161 directions A+B plus the ledger/checker/workflow lane have
+passed locally. Plan 162 corrected how that external-process
 test is selected by routine versus dedicated lanes; the corrective is now
 closed.
 
@@ -352,7 +365,7 @@ closed.
 - Plan 152 is the passed narrow M6 robustness corrective retained underneath Plan 151.
 - Plan 153 is the passed docs/CI hygiene pass.
 - Plans 155–160 are passed Milestone 8 SSU2 v2 local protocol/runtime/reachability stages.
-- Plan 161 is in progress; directions A+B (+ cached-token/malformed rows) against exact-pinned i2pd 2.61.0 are proven over real loopback UDP with authenticated bidirectional evidence, but final M8 closure is not claimed.
+- Plan 161 is in progress; directions A+B (+ cached-token/malformed rows) against exact-pinned i2pd 2.61.0 are proven over real loopback UDP with authenticated bidirectional evidence, and the fail-closed ledger/checker/workflow lane passes locally, but final M8 closure is not claimed.
 - Plan 162 passed the narrow external-test lane/CI corrective; resume Plan 161.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
@@ -372,5 +385,6 @@ someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
 Current handoff: **Plan 162 is closed. Resume Plan 161 now. Preserve its
-direction-A evidence and transcript corrections while completing direction B
-and the remaining final matrix. Milestone 8 remains open.**
+direction-A/B evidence and transcript corrections while completing hosted
+closure evidence (routine CI + manual SSU2 external workflow on the closing
+commit). Milestone 8 remains open.**

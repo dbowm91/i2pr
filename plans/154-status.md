@@ -18,13 +18,14 @@ plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
-plan_161 = in-progress-direction-a-proven
+plan_161 = in-progress-ledger-landed
 plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 
 milestone8_protocol = SSU2-v2-classical
 ssu2_pq_v3_v4 = deferred-compatibility-watch
 ssu1 = not-implemented
 milestone8_ssu2_direction_a = passed-via-plan161
+milestone8_ssu2_direction_b = passed-via-plan161
 milestone8_final_acceptance = not-yet-closed
 milestone6_interoperable = not-yet-claimed
 
@@ -55,8 +56,16 @@ fail-closed `--ignored --exact` execution in the external lane, and direction A
 was re-proven against the pinned i2pd. Hosted routine CI is green.
 
 Plan 162 did **not** replace or renumber Plan 161 and did not alter the
-Milestone 8 architecture. Plan 161 is now the next executable plan for
-direction B and final closure.
+Milestone 8 architecture. Since then Plan 161 has proven direction B
+(i2pd initiator -> i2pr responder) plus the cached-token and compact
+malformed/resource rows against the same pinned i2pd, and has landed
+the final fail-closed evidence ledger (`tests/integration/ssu2/run-independent.sh`),
+its integrity checker (`scripts/check-ssu2-acceptance-evidence.sh`,
+enforced in routine Linux CI and the manual lane), and the manual
+`.github/workflows/ssu2-external.yml` workflow; the full 15-row lane
+passes locally. Java I2P stays a recorded nonblocking secondary debt.
+Plan 161 is now the next executable plan for hosted closure evidence
+(routine CI + manual external workflow on the closing commit).
 
 ## Architecture decisions locked by this roadmap
 

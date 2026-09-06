@@ -105,7 +105,7 @@ Each milestone should maintain an executable or machine-readable matrix similar 
 | Transit tunnel | participant | pending | pending | family duplicate | optional | testnet artifact |
 | Streaming | connect/listen | pending | pending | family duplicate | optional | client transcript |
 | SAM | client-facing server | client tests | client tests | client tests | optional | protocol transcript |
-| SSU2 | initiator/responder | pending | pending | family duplicate | optional | packet/test logs |
+| SSU2 | initiator/responder | pending (secondary debt) | direct IPv4 loopback both directions via Plan 161 lane | family duplicate | optional | `plans/161-status.md`, `tests/integration/ssu2/run-independent.sh` |
 | I2CP | router-facing server | client tests | client tests | client tests | optional | protocol transcript |
 
 Interoperability tests must run only in an authorized private or controlled mixed-router testnet until the milestone plan explicitly permits public-network observation.

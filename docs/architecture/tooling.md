@@ -6,7 +6,7 @@ rejects, fix the boundary, do not suppress the script.
 
 Paths are relative to the workspace root.
 
-## `scripts/` — Eight guardrail shells
+## `scripts/` — Guardrail shells
 
 | Script | What it catches |
 | --- | --- |
@@ -20,6 +20,8 @@ Paths are relative to the workspace root.
 | `scripts/check-multipass-interop-boundary.sh` | Plan 048/049/050/051 Multipass recovery lane boundary. Forbids host-policy mutations and global `multipass purge` outside an atomic reservation. |
 | `scripts/check-constrained-host-lane-boundary.sh` | Plan 077 constrained-host selection-order boundary (rootful Docker `--network none` → QEMU TCG `-nic none` → reduced inherited descriptors + seccomp → manual remote Linux → typed `no-full-runtime-lane` result). |
 | `scripts/check-plan095-workflow.sh` | Plan 095 manual live-wire workflow artifact-path drift and cleanup-guard violations. |
+| `scripts/check-sam-acceptance-evidence.sh` | Plan 151 SAM evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code-gated helpers (CI-enforced). |
+| `scripts/check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code/evidence-key-gated helpers with explicit `--ignored --exact` external selection (CI-enforced). |
 | `scripts/fuzz-smoke.sh` | Opt-in smoke run of all 22 fuzz targets for 32 iterations each at seed=1 (`-runs=32 -seed=1`). Requires `cargo-fuzz` + nightly. Disables LeakSanitizer (`LSAN_OPTIONS=detect_leaks=0`) for managed environments. |
 
 **How they work**: `check-dependency-direction.sh` uses
@@ -301,17 +303,38 @@ The driver remains fail-closed when `I2PD_ROUTER_INFO`,
 Plan 162 established this as a test-lane boundary, not as a protocol or
 interoperability skip.
 
+The full Plan 161 lane derives all 15 required rows from executed
+commands (local focused suites plus the single explicit driver
+invocation) with no literal `passed` bookkeeping:
+
+```text
+bash tests/integration/ssu2/run-independent.sh
+bash scripts/check-ssu2-acceptance-evidence.sh
+```
+
+The checker is enforced in routine Linux CI and the manual
+`.github/workflows/ssu2-external.yml` lane. Do not weaken it to make
+CI pass.
+
 ## `.github/` — CI
 
 ### `.github/workflows/ci.yml` (single workflow, three jobs)
 
 | Job | OS | Steps |
 | --- | --- | --- |
-| **Quality** | ubuntu-latest + macos-latest (matrix, fail-fast: false) | Checkout → Rust 1.95.0 + rustfmt + clippy → `cargo fmt --all --check` → `cargo check --workspace` → `cargo check --workspace --all-targets` → `cargo test --workspace` → `cargo clippy --workspace --all-targets --all-features -- -D warnings` → `cargo doc` (with `-D warnings`) → `check-dependency-direction.sh` (both OS) → `check-runtime-boundaries.sh` (Linux) → `check-fixture-manifest.sh` (Linux) → `check-ntcp2-vectors.sh` (Linux) → `check-ssu2-vectors.sh` (Linux) → `check-ntcp2-interoperability.sh` (Linux) |
+| **Quality** | ubuntu-latest + macos-latest (matrix, fail-fast: false) | Checkout → Rust 1.95.0 + rustfmt + clippy → `cargo fmt --all --check` → `cargo check --workspace` → `cargo check --workspace --all-targets` → `cargo test --workspace` → `cargo clippy --workspace --all-targets --all-features -- -D warnings` → `cargo doc` (with `-D warnings`) → `check-dependency-direction.sh` (both OS) → `check-runtime-boundaries.sh` (Linux) → `check-fixture-manifest.sh` (Linux) → `check-ntcp2-vectors.sh` (Linux) → `check-ssu2-vectors.sh` (Linux) → `check-ntcp2-interoperability.sh` (Linux) → `check-constrained-host-lane-boundary.sh` (Linux) → `check-sam-acceptance-evidence.sh` (Linux) → `check-ssu2-acceptance-evidence.sh` (Linux) |
 | **MSRV** | ubuntu-latest | Rust **1.88.0** → `cargo check --workspace --all-targets` |
 | **Dependency policy** | ubuntu-latest | Rust 1.95.0 → `cargo-deny check advisories bans sources` |
 
 Triggers: `on: push`, `on: pull_request` (all branches).
+
+### `.github/workflows/ssu2-external.yml` (manual lane)
+
+- `workflow_dispatch`-only Ubuntu 24.04 lane for Plan 161: fetch/verify
+  the exact i2pd 2.61.0 reference → run the SSU2 evidence-integrity
+  checker → run `tests/integration/ssu2/run-independent.sh` → upload
+  sanitized evidence even on failure. Bounded 45-minute timeout; no
+  public-I2P participation beyond the GitHub source fetch.
 
 ### `.github/dependabot.yml`
 
@@ -321,10 +344,11 @@ Triggers: `on: push`, `on: pull_request` (all branches).
 ## `.opencode/` and `.agents/`
 
 - `.opencode/skills/` — loadable skill bundles for OpenCode sessions
-  operating on the harness lanes. Three skills ship with the repo:
-  `i2pr-ntcp2-interop`, `i2pr-rootless-sandbox`,
-  `i2pr-multipass-recovery`. These are the source of truth for
-  harness details; load the matching skill before touching a lane.
+  operating on the harness lanes. Five skills ship with the repo:
+  `i2pr-local-dev`, `i2pr-architecture`, `i2pr-ntcp2-interop`,
+  `i2pr-rootless-sandbox`, `i2pr-multipass-recovery`. These are the
+  source of truth for harness details; load the matching skill before
+  touching a lane.
 - `.agents/` — symlink to `../.opencode/skills` (consumed by agents
   that resolve the conventional `.agents/` location).
 
@@ -448,6 +472,8 @@ bash scripts/check-fixture-manifest.sh        # when I2NP fixture bytes change
 bash scripts/check-ntcp2-vectors.sh           # when NTCP2 vector bytes change
 bash scripts/check-ssu2-vectors.sh            # when SSU2 vector bytes change
 bash scripts/check-ntcp2-interoperability.sh  # when ntcp2 evidence/manifest change
+bash scripts/check-sam-acceptance-evidence.sh   # SAM ledger changed
+bash scripts/check-ssu2-acceptance-evidence.sh  # SSU2 ledger changed
 bash scripts/fuzz-smoke.sh                    # opt-in; requires cargo-fuzz + nightly
 ```
 

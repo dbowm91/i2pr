@@ -281,7 +281,13 @@ environment is required. This preserves all-target compilation and ordinary
 workspace/macOS executable discovery while preventing a peer-dependent test
 from running in routine CI. The dedicated lane must invoke the test with
 `--ignored --exact`; absent environment still reaches the driver's hard
-`missing required env` failure rather than becoming a skip.
+`missing required env` failure rather than becoming a skip. The full
+Plan 161 lane (`tests/integration/ssu2/run-independent.sh`) provisions one
+ephemeral exact-pinned i2pd on loopback and derives all 15 required rows
+from executed commands; `scripts/check-ssu2-acceptance-evidence.sh`
+guards the ledger in routine CI. The direction-B baseline predates the
+inter-direction settle sleep so a peer redial landing inside the settle
+still counts as the fresh initiation.
 
 ### SSU2 path validation (`ssu2_runtime.rs`, Plan 159)- Every active session owns a `PathValidator` starting at the
   promotion address. `handle_active_datagram` classifies the source

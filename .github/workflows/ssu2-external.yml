@@ -1,0 +1,40 @@
+name: SSU2 external interoperability
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ssu2-external:
+    name: SSU2 independent interop (Ubuntu)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Install pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Fetch and verify exact i2pd reference
+        run: bash scripts/interop/fetch-ssu2-reference.sh --rebuild
+
+      - name: Check SSU2 acceptance evidence integrity
+        run: bash scripts/check-ssu2-acceptance-evidence.sh
+
+      - name: Run SSU2 independent interop matrix
+        run: bash tests/integration/ssu2/run-independent.sh
+        env:
+          I2PR_SSU2_EXECUTION_ID: github-${{ github.run_id }}
+
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssu2-external-evidence-${{ github.run_id }}
+          path: target/interop/ssu2-evidence
+          if-no-files-found: warn

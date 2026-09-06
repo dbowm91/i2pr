@@ -198,9 +198,23 @@ record is not `superseded-by-*`. Currently:
   runtime-neutral authenticated `Ssu2Session` short-header packets
   with the corrected two-step data KDF, replay window, strict bounded
   ACK scheduling, fresh retransmission with RTT/RTO/congestion
-  control, exact fragmentation/reassembly with duplicate suppression,
-  termination/rekey/idle handling; still no UDP sockets, no runtime,
-  no interop claim. Next executable plan is 158.
+   control, exact fragmentation/reassembly with duplicate suppression,
+   termination/rekey/idle handling; still no UDP sockets, no runtime,
+   no interop claim.
+- **Milestone 8 SSU2 v2 runtime/reachability (passed)**: Plans 158–160
+  (UDP runtime/local session product, path validation/publication/
+  transport selection, peer-test/relay reachability; see
+  [`plans/158-status.md`](../../plans/158-status.md) through
+  [`plans/160-status.md`](../../plans/160-status.md)).
+- **Milestone 8 SSU2 v2 independent interop (in progress)**: Plan 161
+  (directions A+B plus cached-token/malformed rows proven against
+  exact-pinned i2pd 2.61.0; fail-closed 15-row ledger
+  `tests/integration/ssu2/run-independent.sh` with checker
+  `scripts/check-ssu2-acceptance-evidence.sh` and manual workflow
+  `.github/workflows/ssu2-external.yml` landed; see
+  [`plans/161-status.md`](../../plans/161-status.md)); Plan 162 passed
+  the narrow external-test lane/CI corrective. Milestone 8 final
+  acceptance remains open.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).
@@ -231,6 +245,7 @@ not weaken the script.
 | `scripts/check-constrained-host-lane-boundary.sh` | Plan 077 constrained-host lane order. |
 | `scripts/check-plan095-workflow.sh` | Plan 095 manual live-wire workflow artifact paths. |
 | `scripts/check-sam-acceptance-evidence.sh` | Plan 151 SAM evidence integrity (no synthetic `passed` rows; CI-enforced). |
+| `scripts/check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity (no synthetic `passed` rows; CI-enforced). |
 
 ## Doc-vs-source audit pattern
 
@@ -248,8 +263,8 @@ When asked to audit doc-vs-source drift:
    - Missing modules (cross-check `mod foo;` declarations in `lib.rs`)
    - Missing crate-level deep-dives in `overview.md` (the crate
      index table must link every workspace member)
-   - Stale scripts in the boundary-script table (the eight scripts
-     above; count and names must match `ls scripts/check-*.sh`)
+   - Stale scripts in the boundary-script table (the scripts
+     above; names must match `ls scripts/check-*.sh`)
 5. Return a structured report:
    STALE / MISSING / INCORRECT BOUNDS / WRONG LINKS / GOOD, each
    citing doc-line vs source-file-line.

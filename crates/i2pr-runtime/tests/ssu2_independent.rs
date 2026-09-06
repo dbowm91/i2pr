@@ -716,6 +716,11 @@ async fn ssu2_independent_ipv4_interop() {
     // the peer retire direction A before it initiates direction B: its
     // session table is keyed by router hash, and a fresh initiation
     // must not race the previous session's teardown.
+    // The direction-B baseline is captured BEFORE the settle sleep: the
+    // pinned peer may redial during the settle window itself, and a
+    // post-settle baseline would already include that initiation and
+    // deadlock the wait below expecting a third session.
+    let b_baseline = service.snapshot().sessions_established;
     let drain_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while tokio::time::Instant::now() < drain_deadline {
         match tokio::time::timeout(POLL_INTERVAL, handle.next_inbound()).await {
@@ -730,7 +735,8 @@ async fn ssu2_independent_ipv4_interop() {
     // A. Keep the same identity/service up and wait for it to initiate
     // a fresh session: token/source validation, Retry, and promotion
     // all run through the normal responder path (no test bypass).
-    let b_baseline = service.snapshot().sessions_established;
+    // `b_baseline` predates the settle sleep above, so a redial that
+    // landed during the settle still counts as the fresh initiation.
     evidence.record("direction-b-wait-secs", DIRECTION_B_WAIT.as_secs());
     wait_for_peer_initiated_session(&service, b_baseline, "i2pd redial").await;
     let b_promoted = service.snapshot();

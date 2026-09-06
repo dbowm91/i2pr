@@ -70,8 +70,10 @@ It does **not** own UDP sockets (those live in `i2pr-runtime` since
 Plan 158) or transport selection (generic manager concern, Plan 159).
 Peer-test/relay roles, previously deferred to Plans 160–161, landed
 in Plan 160 (this crate) with runtime coordination in
-`i2pr-runtime::Ssu2PeerRelayService`; independent interop belongs to
-Plan 161.
+`i2pr-runtime::Ssu2PeerRelayService`; independent interop is proven
+by Plan 161 in both direct IPv4 directions against exact-pinned
+i2pd 2.61.0 (see `plans/161-status.md` and the
+`tests/integration/ssu2/run-independent.sh` ledger).
 
 ## Module layout
 

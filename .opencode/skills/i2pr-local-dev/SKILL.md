@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, and current Milestone 8 SSU2 execution. Plans 155–160 passed the local SSU2 v2 stack; Plan 161 directions A+B (+ cached-token/malformed rows) pass against exact-pinned i2pd 2.61.0; Plan 162 passed the external-test lane isolation/routine-CI corrective and Plan 161 continues for final closure.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, and current Milestone 8 SSU2 execution. Plans 155–160 passed the local SSU2 v2 stack; Plan 161 directions A+B (+ cached-token/malformed rows) and the fail-closed evidence ledger pass against exact-pinned i2pd 2.61.0; Plan 162 passed the external-test lane isolation/routine-CI corrective and Plan 161 continues for hosted closure.
 ---
 
 # I2PR Local Development
@@ -42,7 +42,7 @@ plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
-plan_161 = in-progress-direction-b-proven
+plan_161 = in-progress-ledger-landed
 plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 
 milestone8_planning_authority = plan154
@@ -54,6 +54,7 @@ milestone8_path_publication_selection = passed-via-plan159
 milestone8_peer_test_relay = passed-via-plan160
 milestone8_ssu2_direction_a = passed-via-plan161
 milestone8_ssu2_direction_b = passed-via-plan161
+milestone8_ssu2_ledger = landed-via-plan161
 milestone8_final_acceptance = not-yet-closed
 
 next_executable_plan = 161
@@ -81,10 +82,15 @@ as needed.
 Plans 155–160 passed the local SSU2 v2 protocol/runtime/reachability sequence.
 Plan 161 has proven directions A (`i2pr initiator -> i2pd responder`) and B
 (`i2pd initiator -> i2pr responder`), plus cached-token and malformed/resource
-rows, over real loopback UDP against exact-pinned i2pd 2.61.0. Plan 162 passed its
+rows, over real loopback UDP against exact-pinned i2pd 2.61.0, and has landed
+the fail-closed 15-row evidence ledger (`tests/integration/ssu2/run-independent.sh`),
+its integrity checker (`scripts/check-ssu2-acceptance-evidence.sh`, routine-CI-enforced),
+and the manual `.github/workflows/ssu2-external.yml` lane; Java I2P is recorded
+nonblocking debt. Plan 162 passed its
 narrow corrective: routine CI now ignores the environment-dependent external
 test while retaining all-target compilation, and explicit external selection
-remains fail-closed. Plan 161 continues for the final ledger/workflow/Java rows.
+remains fail-closed. Plan 161 continues for hosted closure evidence (routine CI
++ manual external workflow on the closing commit).
 
 SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 SSU2 public advertisement/public-network participation and broad router
@@ -175,8 +181,12 @@ DeliveryStatus return for both stores
 graceful session/resource teardown
 ```
 
-Direction B and the remaining Plan 161 token/resource/Java/evidence-workflow
-matrix remain open.
+Direction B is proven symmetrically (i2pd initiator -> i2pr responder
+promotion through the normal token/Retry path, same small + fragmented
+proof shape). The direction-B baseline predates the inter-direction
+settle sleep so a redial landing inside the settle still counts;
+see `plans/161-status.md`. Java I2P is recorded nonblocking
+narrow-orchestration debt in every ledger artifact, not a silent gap.
 
 ## Plan 162 closure rule/result
 
@@ -281,6 +291,7 @@ bash scripts/check-ssu2-vectors.sh
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-constrained-host-lane-boundary.sh
 bash scripts/check-sam-acceptance-evidence.sh
+bash scripts/check-ssu2-acceptance-evidence.sh
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
 cargo deny check advisories bans sources
 ```
@@ -326,7 +337,16 @@ cargo test --locked -p i2pr-runtime --test ssu2_independent \
 
 With required environment absent, that explicit command must fail for missing
 external configuration. With the exact-pinned i2pd lane provisioned, it must
-execute and pass the real direction-A trajectory.
+execute and pass the full matrix (directions A+B, cached-token,
+malformed/resource rows).
+
+The full Plan 161 lane (local suites + matrix + gates, 15 command-derived
+rows) is:
+
+```text
+bash tests/integration/ssu2/run-independent.sh
+bash scripts/check-ssu2-acceptance-evidence.sh
+```
 
 ## Coding rules
 
@@ -350,13 +370,15 @@ execute and pass the real direction-A trajectory.
 - Milestone 7 final localhost acceptance is closed via Plan 151; Plan 152 is the retained narrow M6 corrective underneath it.
 - Plan 153 passed post-M7 docs/CI hygiene.
 - Plans 155–160 passed the local SSU2 v2 protocol/runtime/path/reachability sequence.
-- Plan 161 direction A against exact-pinned i2pd is passed evidence, but Plan 161 final closure remains open.
+- Plan 161 directions A+B (+ cached-token/malformed rows) against exact-pinned
+  i2pd are passed evidence, and the fail-closed ledger/checker/workflow lane
+  passes locally; Plan 161 final closure still needs hosted closure evidence.
 - Plan 162 passed the narrow external-test lane/CI corrective; it must not broaden or downgrade direction-A protocol evidence.
-- Resume Plan 161 for direction B and final acceptance.
+- Resume Plan 161 for hosted closure evidence.
 - `milestone6_interoperable = not-yet-claimed` remains unchanged.
 - SSU2 public-network participation, broad router interoperability, IPv6 external interop, PQ v3/v4, and SSU1 remain unclaimed/deferred as documented.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
 
-Current handoff: **resume Plan 161 now. Preserve its direction-A interop and
-transcript corrections while completing direction B and the remaining final
-acceptance matrix.**
+Current handoff: **resume Plan 161 now. Preserve its direction-A/B interop,
+transcript corrections, and ledger lane while completing hosted closure
+evidence (routine CI + manual SSU2 external workflow on the closing commit).**
