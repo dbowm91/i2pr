@@ -20,8 +20,23 @@ jobs:
         with:
           toolchain: 1.95.0
 
+      - name: Install i2pd build dependencies
+        # Declared sudo exception (cf. Plan 099 lane): building the
+        # exact-pinned i2pd C++ reference absolutely requires system
+        # Boost/OpenSSL/zlib headers; everything else runs unprivileged.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libboost-all-dev libssl-dev zlib1g-dev
+
       - name: Fetch and verify exact i2pd reference
         run: bash scripts/interop/fetch-ssu2-reference.sh --rebuild
+
+      - name: Show i2pd build log on failure
+        if: failure()
+        run: tail -n 100 target/interop/cache/ssu2/i2pd/*/logs/build.log
 
       - name: Check SSU2 acceptance evidence integrity
         run: bash scripts/check-ssu2-acceptance-evidence.sh

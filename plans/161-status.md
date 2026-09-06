@@ -401,3 +401,13 @@ are unpushed local work on top of `71a763e`; the full local floor
 (including the 15/15 external lane above) is green here. Routine CI
 and the manual `ssu2-external` workflow must still pass on the exact
 closing commit before any Milestone 8 closure claim.
+
+Hosted external-lane note (2026-09-06): the first manual
+`ssu2-external` run `34050762669` on closing commit `f353736` failed
+in under a second at `Fetch and verify exact i2pd reference`
+(make exit 2, no build output): the Ubuntu 24.04 runner image does
+not ship the i2pd C++ build headers. Fix (workflow-only, same head
+line): declared-sudo `install-build-deps` step (`build-essential`,
+`libboost-all-dev`, `libssl-dev`, `zlib1g-dev`) mirroring the Plan 099
+lane precedent, plus a failure-only build-log tail. No protocol,
+driver, ledger, or pin change.
