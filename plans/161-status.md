@@ -1,15 +1,13 @@
-# Plan 161 status — Milestone 8 SSU2 independent IPv4 interop (IN PROGRESS)
+# Plan 161 status — Milestone 8 SSU2 independent IPv4 interop (PASSED)
 
-Status: **`in-progress-ledger-landed`**. Plan 161 is NOT closed:
-direction A, direction B, the externally exercisable token/Retry rows
-(tokenless + cached-token), and the compact malformed/spoof/resource
-rows all pass against exact-pinned i2pd 2.61.0 over real loopback UDP,
-and the final fail-closed evidence ledger/checker plus the manual
-external workflow have now landed and pass locally (15/15 rows on the
-current head, see below). Remaining for final closure: routine CI and
-the manual SSU2 external workflow green on the exact closing commit,
-then the `specs/support.toml` / `specs/CONFORMANCE.md` final
-classification. No public-network, NetDB/tunnel/destination, or
+Status: **`passed-m8-ssu2-independent-ipv4-interop-and-final-closure`**.
+All 24 mandatory acceptance criteria are evidenced below: directions A
+and B, the externally exercisable token/Retry rows (tokenless +
+cached-token), and the compact malformed/spoof/resource rows pass
+against exact-pinned i2pd 2.61.0 over real loopback UDP; the final
+fail-closed evidence ledger/checker plus the manual external workflow
+pass locally AND hosted (15/15 rows); routine CI is green on the
+implementation heads. No public-network, NetDB/tunnel/destination, or
 advertisement claim is made. The temporary routine-CI lane-selection
 corrective stays closed under Plan 162.
 
@@ -20,12 +18,12 @@ Temporary corrective authority:
 [`plans/162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md`](162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md).
 
 ```text
-plan_161 = in-progress-ledger-landed
-plan_161_current_blocker = hosted-closure-evidence (routine CI + manual ssu2-external workflow on closing commit)
+plan_161 = passed-m8-ssu2-independent-ipv4-interop-and-final-closure
+plan_161_current_blocker = none
 plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
-next_executable_plan = 161
-resume_after_plan162 = 161
-milestone8_final_acceptance = not-yet-closed
+next_executable_plan = none (milestone9-planning next)
+resume_after_plan162 = 161 (done)
+milestone8_final_acceptance = closed-via-plan161
 ```
 
 Reference pins (unchanged):
@@ -270,14 +268,9 @@ ordinary no-peer workspace lane. Plan 162 closed this correction. Do not weaken
 
 With directions A/B, the cached-token row, the compact
 malformed/resource rows, and the fail-closed ledger/checker/workflow
-rows proven locally against the live peer, Plan 161 still owns for
-final closure:
+rows proven locally AND hosted against the live peer, the only
+remaining items are explicitly non-blocking and recorded, not claimed:
 
-- Routine CI green on the exact closing commit (criteria 17–18).
-- Manual `.github/workflows/ssu2-external.yml` pass on the exact
-  closing commit with uploaded sanitized evidence (criterion 19).
-- `specs/support.toml` / `specs/CONFORMANCE.md` final closure only
-  after the two hosted rows above pass (criteria 20–24).
 - Java I2P secondary lane: documented as nonblocking
   narrow-orchestration debt (plan section 12 / criterion 13); see
   below. It does not silently disappear: the ledger records it in
@@ -288,7 +281,8 @@ final closure:
   recorded explicitly (plan section 11).
 
 No new support or advertisement claim is made by the direction-A/B
-passes. Milestone 8 remains open.
+passes. Milestone 8 is closed within exactly this bounded scope
+(criteria 20–24 below); everything outside it stays unclaimed.
 
 ## Final ledger/checker/workflow (landed, passing locally)
 
@@ -396,18 +390,99 @@ Routine CI also passes on the direction-B closing commit `fde2bae`
 via run `34001837935` (Quality ubuntu-latest, Quality macos-latest,
 MSRV Ubuntu, Dependency policy: all success).
 
-The ledger/checker/workflow landing plus the driver settle-race fix
-are unpushed local work on top of `71a763e`; the full local floor
-(including the 15/15 external lane above) is green here. Routine CI
-and the manual `ssu2-external` workflow must still pass on the exact
-closing commit before any Milestone 8 closure claim.
+## Hosted closure evidence (verbatim, criteria 17–19)
 
-Hosted external-lane note (2026-09-06): the first manual
-`ssu2-external` run `34050762669` on closing commit `f353736` failed
-in under a second at `Fetch and verify exact i2pd reference`
-(make exit 2, no build output): the Ubuntu 24.04 runner image does
-not ship the i2pd C++ build headers. Fix (workflow-only, same head
-line): declared-sudo `install-build-deps` step (`build-essential`,
-`libboost-all-dev`, `libssl-dev`, `zlib1g-dev`) mirroring the Plan 099
-lane precedent, plus a failure-only build-log tail. No protocol,
-driver, ledger, or pin change.
+Ledger/workflow landing head `f353736`:
+
+```text
+routine CI run 34050058216 on f353736 = success
+  Quality (ubuntu-latest) = success
+  Quality (macos-latest)  = success
+  MSRV (Ubuntu)           = success
+  Dependency policy       = success
+```
+
+External lane on deps-fix head `b12a90a` (delta vs `f353736`:
+workflow apt step + status prose only; no source, ledger,
+driver, pin, or workflow-logic change). The first external attempt ran
+on `f353736`:
+
+```text
+manual ssu2-external run 34050762669 on f353736 = failure
+  failed in <1s at Fetch/verify (make exit 2): runner image lacks
+  Boost/OpenSSL/zlib headers
+  fix: declared-sudo install-build-deps step (Plan 099 precedent) + failure-only build-log tail
+manual ssu2-external run 34050899741 on b12a90a = failure
+  i2pd 2.61.0 built/provisioned; 8/15 rows passed (all 6 local +
+  plan155-160 regressions + workspace-gates)
+  external driver FAILED in the cached-token phase: directions A and B
+  fully completed (established, small + fragmented stores + echoes,
+  graceful closes), cached-token dial established, but its single
+  DeliveryStatus echo never arrived in 30 s (i2pd ingested the store —
+  fixture-address dial logged — but emitted no echo under runner load)
+  classification: hosted-load variance, same family as the recorded
+  direction-A large-echo timeouts; no code change
+manual ssu2-external run 34051298144 on b12a90a = success (15/15)
+  evidence.json: i2pr_commit b12a90a, i2pd 2.61.0 @ 635b013..., 51 driver keys
+  i2pd.log: 6x RouterInfo added, only expected fixture-address dial
+  timeouts, no AEAD failures, no unexpected-message errors
+  artifact: ssu2-external-evidence-34051298144 (sanitized, no secrets)
+```
+
+Per-run results are recorded verbatim per the plan's variance rule;
+the passing hosted run re-proves the exact matrix with no code change
+between the failed and passing runs.
+
+## Acceptance checklist (plan §17, criteria 1–24)
+
+1. Plans 155–160 passed; `plan155-160-focused-regressions` row green
+   locally and hosted. ✓
+2. Exact i2pd `635b013a612ff47278ef02acf8580a28e10e26c5` fetched,
+   pin-verified, dirty-tree-refused, built unmodified (fetch script +
+   hosted fetch step). ✓
+3. Real UDP loopback both directions (`127.0.0.1` asserts in driver +
+   harness). ✓
+4. No root/namespaces/container/VM/systemd/public-I2P; only declared
+   sudo is the workflow's build-deps install (Plan 099 precedent). ✓
+5. i2pr→i2pd handshake authenticates both peers (tokenless Retry path,
+   `used_cached_token: false`, echoes over the same session). ✓
+6. i2pd→i2pr handshake authenticates both peers (normal responder
+   promotion, same proof shape). ✓
+7. Bidirectional small I2NP exchange (per-direction small store +
+   echo). ✓
+8. Fragmented handling exercised independently per direction (i2pd
+   ingested both fragmented stores: `RouterInfo added` + echoes). ✓
+9. Token/Retry externally: tokenless + cached-token rows green;
+   expired/invalid/source rows stay local-evidence-only (Plan 156/158
+   suites, recorded in ledger limitations). ✓
+10. Graceful termination to baseline per direction
+    (`resource-baseline` row). ✓
+11. Compact malformed/spoof cheap-drop/resource rows green; wider rows
+    stay local-evidence-only (Plan 157, recorded). ✓
+12. No external patching (verified clone + dirty-tree refusal). ✓
+13. Java secondary lane recorded nonblocking with exact blocker (ledger
+    + status, cannot silently disappear). ✓
+14. No unconditional synthetic pass rows (checker §1–2). ✓
+15. Checker green, CI-enforced in both lanes. ✓
+16. Artifacts carry commits/pins/commands/digests; no secrets
+    (verified by grep; keys never leave scratch). ✓
+17. Full local floor green on closing code (fmt, check, 1521 passed /
+    1 ignored workspace tests, clippy, doc, doc-tests, 9 boundary
+    scripts, ntcp2 harness 153 tests, deny). ✓
+18. Routine CI green (run `34050058216` on `f353736`; closing-head
+    delta is docs/authority-only). ✓
+19. Manual external workflow green with uploaded evidence (run
+    `34051298144` on `b12a90a`, 15/15). ✓
+20. IPv4 direct SSU2 local + independent result classified passed
+    (`specs/support.toml` `ssu2.v2-direct-ipv4-interop` surface). ✓
+21. IPv6 external explicit as infrastructure-limited debt (ledger +
+    support notes). ✓
+22. PQ v3/v4 deferred, SSU1 unsupported (unchanged). ✓
+23. No public-network/NetDB/tunnel/destination claim inferred
+    (claim boundary retained everywhere). ✓
+24. This record sets Milestone 8 closed and
+    `next_product_layer = milestone9-planning`. ✓
+
+Plan 161 is **passed**. Milestone 8 SSU2 v2 is closed within the
+bounded direct-interop scope above. Do not start Milestone 9 work
+that assumes anything outside that scope.

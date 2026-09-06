@@ -37,11 +37,10 @@ Plan 157 = passed SSU2 v2 data-phase reliability/fragmentation
 Plan 158 = passed SSU2 v2 UDP runtime and local session product
 Plan 159 = passed SSU2 v2 path validation/publication/transport selection
 Plan 160 = passed SSU2 v2 peer test and relay reachability
-Plan 161 = in-progress; directions A+B (+ cached-token/malformed rows) proven vs pinned i2pd; ledger/checker/workflow landed locally; hosted closure evidence open
+Plan 161 = passed M8 SSU2 independent IPv4 interop and final closure
 Plan 162 = passed external-test lane isolation / routine-CI corrective
-next executable plan = 161
-resume after Plan 162 = 161
-next product layer = milestone8-ssu2-v2
+next executable plan = none (milestone9-planning next)
+next product layer = milestone9-planning
 ```
 
 For current SSU2 interop work, read in this order:
@@ -130,11 +129,11 @@ the Plan 151 SAM evidence-integrity checker in routine Linux CI and
 the manual SAM external workflow. No `crates/` or `Cargo.lock` changes
 were made.
 
-## Plan 161 direction-A evidence (retained)
+## Plan 161 interop evidence (passed, retained)
 
-Plan 161 has already proven one independent direct SSU2 v2 direction against
-exact-pinned i2pd (direction B has since been proven too; see
-`plans/161-status.md` for the current matrix):
+Plan 161 has proven both independent direct SSU2 v2 directions against
+exact-pinned i2pd (see `plans/161-status.md` for the full matrix and
+the 24-criterion checklist):
 
 ```text
 i2pd 2.61.0
@@ -151,10 +150,11 @@ transcript divergences that were corrected in Plan 161; do not revert them to
 make loopback tests match older fixtures.
 
 Direction B, the cached-token/malformed rows, and the final
-ledger/checker/workflow lane are now landed too (see
+ledger/checker/workflow lane have passed locally and hosted (see
 `plans/161-status.md`); Java I2P is recorded nonblocking secondary
 debt. Direction A+B evidence
-does not imply public I2P or broad router interoperability.
+does not imply public I2P or broad router interoperability. Milestone 8
+is closed within this bounded scope; the next layer is milestone9-planning.
 
 ## Plan 162 scope (closed)
 
@@ -365,8 +365,8 @@ closed.
 - Plan 152 is the passed narrow M6 robustness corrective retained underneath Plan 151.
 - Plan 153 is the passed docs/CI hygiene pass.
 - Plans 155–160 are passed Milestone 8 SSU2 v2 local protocol/runtime/reachability stages.
-- Plan 161 is in progress; directions A+B (+ cached-token/malformed rows) against exact-pinned i2pd 2.61.0 are proven over real loopback UDP with authenticated bidirectional evidence, and the fail-closed ledger/checker/workflow lane passes locally, but final M8 closure is not claimed.
-- Plan 162 passed the narrow external-test lane/CI corrective; resume Plan 161.
+- Plan 161 is passed: directions A+B (+ cached-token/malformed rows) against exact-pinned i2pd 2.61.0 are proven over real loopback UDP with authenticated bidirectional evidence, and the fail-closed ledger/checker/workflow lane passes locally and hosted (routine CI run `34050058216`, external run `34051298144`). Milestone 8 is closed within that bounded scope.
+- Plan 162 passed the narrow external-test lane/CI corrective.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
 - No Plan 161 direction-A evidence implies Milestone 6 destination/Streaming/tunnel interoperability or broad router interoperability.
@@ -384,7 +384,6 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 162 is closed. Resume Plan 161 now. Preserve its
-direction-A/B evidence and transcript corrections while completing hosted
-closure evidence (routine CI + manual SSU2 external workflow on the closing
-commit). Milestone 8 remains open.**
+Current handoff: **Plan 161 has passed and Milestone 8 is closed within its
+bounded direct-interop scope. The next product layer is milestone9-planning.
+Do not extend Plan 161's evidence into broader interoperability claims.**

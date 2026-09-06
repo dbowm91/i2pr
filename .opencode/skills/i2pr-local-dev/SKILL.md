@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, and current Milestone 8 SSU2 execution. Plans 155–160 passed the local SSU2 v2 stack; Plan 161 directions A+B (+ cached-token/malformed rows) and the fail-closed evidence ledger pass against exact-pinned i2pd 2.61.0; Plan 162 passed the external-test lane isolation/routine-CI corrective and Plan 161 continues for hosted closure.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, and Milestone 8 SSU2 execution. Plans 155–161 passed the SSU2 v2 stack including independent IPv4 interop against exact-pinned i2pd 2.61.0; Milestone 8 is closed within its bounded scope and milestone9-planning is next.
 ---
 
 # I2PR Local Development
@@ -42,7 +42,7 @@ plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
-plan_161 = in-progress-ledger-landed
+plan_161 = passed-m8-ssu2-independent-ipv4-interop-and-final-closure
 plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 
 milestone8_planning_authority = plan154
@@ -55,11 +55,11 @@ milestone8_peer_test_relay = passed-via-plan160
 milestone8_ssu2_direction_a = passed-via-plan161
 milestone8_ssu2_direction_b = passed-via-plan161
 milestone8_ssu2_ledger = landed-via-plan161
-milestone8_final_acceptance = not-yet-closed
+milestone8_final_acceptance = closed-via-plan161
 
-next_executable_plan = 161
-resume_after_plan162 = 161
-next_product_layer = milestone8-ssu2-v2
+next_executable_plan = none (milestone9-planning next)
+resume_after_plan162 = 161 (done)
+next_product_layer = milestone9-planning
 ```
 
 Read in order for current SSU2 work:
@@ -80,17 +80,20 @@ For SAM/local-product history, then read Plan 151, 150, 149 and Plans 146–148
 as needed.
 
 Plans 155–160 passed the local SSU2 v2 protocol/runtime/reachability sequence.
-Plan 161 has proven directions A (`i2pr initiator -> i2pd responder`) and B
-(`i2pd initiator -> i2pr responder`), plus cached-token and malformed/resource
-rows, over real loopback UDP against exact-pinned i2pd 2.61.0, and has landed
-the fail-closed 15-row evidence ledger (`tests/integration/ssu2/run-independent.sh`),
-its integrity checker (`scripts/check-ssu2-acceptance-evidence.sh`, routine-CI-enforced),
-and the manual `.github/workflows/ssu2-external.yml` lane; Java I2P is recorded
-nonblocking debt. Plan 162 passed its
+Plan 161 has passed the final independent gate: directions A
+(`i2pr initiator -> i2pd responder`) and B (`i2pd initiator -> i2pr
+responder`), plus cached-token and malformed/resource rows, over real
+loopback UDP against exact-pinned i2pd 2.61.0, with the fail-closed
+15-row evidence ledger (`tests/integration/ssu2/run-independent.sh`),
+its integrity checker (`scripts/check-ssu2-acceptance-evidence.sh`,
+routine-CI-enforced), and the manual
+`.github/workflows/ssu2-external.yml` lane green locally and hosted
+(routine CI run `34050058216`, external run `34051298144`); Java I2P is
+recorded nonblocking debt. Plan 162 passed its
 narrow corrective: routine CI now ignores the environment-dependent external
 test while retaining all-target compilation, and explicit external selection
-remains fail-closed. Plan 161 continues for hosted closure evidence (routine CI
-+ manual external workflow on the closing commit).
+remains fail-closed. Milestone 8 is closed within this bounded scope;
+milestone9-planning is next.
 
 SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 SSU2 public advertisement/public-network participation and broad router
@@ -370,15 +373,17 @@ bash scripts/check-ssu2-acceptance-evidence.sh
 - Milestone 7 final localhost acceptance is closed via Plan 151; Plan 152 is the retained narrow M6 corrective underneath it.
 - Plan 153 passed post-M7 docs/CI hygiene.
 - Plans 155–160 passed the local SSU2 v2 protocol/runtime/path/reachability sequence.
-- Plan 161 directions A+B (+ cached-token/malformed rows) against exact-pinned
-  i2pd are passed evidence, and the fail-closed ledger/checker/workflow lane
-  passes locally; Plan 161 final closure still needs hosted closure evidence.
+- Plan 161 passed the final independent gate against exact-pinned i2pd
+  (directions A+B, cached-token/malformed rows, fail-closed
+  ledger/checker/workflow lane green locally and hosted); Milestone 8 is
+  closed within that bounded scope.
 - Plan 162 passed the narrow external-test lane/CI corrective; it must not broaden or downgrade direction-A protocol evidence.
-- Resume Plan 161 for hosted closure evidence.
+- Next product layer is milestone9-planning; do not extend Plan 161's evidence into broader claims.
 - `milestone6_interoperable = not-yet-claimed` remains unchanged.
 - SSU2 public-network participation, broad router interoperability, IPv6 external interop, PQ v3/v4, and SSU1 remain unclaimed/deferred as documented.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
 
-Current handoff: **resume Plan 161 now. Preserve its direction-A/B interop,
-transcript corrections, and ledger lane while completing hosted closure
-evidence (routine CI + manual SSU2 external workflow on the closing commit).**
+Current handoff: **Plan 161 has passed and Milestone 8 is closed within its
+bounded direct-interop scope. The next product layer is
+milestone9-planning; do not extend Plan 161's evidence into broader
+interoperability claims.**

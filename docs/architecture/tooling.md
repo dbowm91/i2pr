@@ -284,7 +284,7 @@ color = "auto"
 Minimal. No rustflags, no target-dir overrides, no custom
 subcommands, no hidden `-Z` flags. Deliberately clean.
 
-## Plan 161 SSU2 external lane
+## Plan 161 SSU2 external lane (passed, retained)
 
 The independent SSU2 driver is `crates/i2pr-runtime/tests/ssu2_independent.rs`.
 It is compiled by `cargo check --workspace --all-targets` but its single

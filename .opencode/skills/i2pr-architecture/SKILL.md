@@ -206,15 +206,16 @@ record is not `superseded-by-*`. Currently:
   transport selection, peer-test/relay reachability; see
   [`plans/158-status.md`](../../plans/158-status.md) through
   [`plans/160-status.md`](../../plans/160-status.md)).
-- **Milestone 8 SSU2 v2 independent interop (in progress)**: Plan 161
-  (directions A+B plus cached-token/malformed rows proven against
-  exact-pinned i2pd 2.61.0; fail-closed 15-row ledger
+- **Milestone 8 SSU2 v2 independent interop (passed)**: Plan 161
+  (`passed-m8-ssu2-independent-ipv4-interop-and-final-closure`, see
+  [`plans/161-status.md`](../../plans/161-status.md)): directions A+B
+  plus cached-token/malformed rows proven against exact-pinned i2pd
+  2.61.0; fail-closed 15-row ledger
   `tests/integration/ssu2/run-independent.sh` with checker
   `scripts/check-ssu2-acceptance-evidence.sh` and manual workflow
-  `.github/workflows/ssu2-external.yml` landed; see
-  [`plans/161-status.md`](../../plans/161-status.md)); Plan 162 passed
-  the narrow external-test lane/CI corrective. Milestone 8 final
-  acceptance remains open.
+  `.github/workflows/ssu2-external.yml` green locally and hosted;
+  Milestone 8 closed within that bounded scope, milestone9-planning
+  next); Plan 162 passed the narrow external-test lane/CI corrective.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).

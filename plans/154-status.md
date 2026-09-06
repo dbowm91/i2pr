@@ -18,7 +18,7 @@ plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
-plan_161 = in-progress-ledger-landed
+plan_161 = passed-m8-ssu2-independent-ipv4-interop-and-final-closure
 plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 
 milestone8_protocol = SSU2-v2-classical
@@ -26,11 +26,11 @@ ssu2_pq_v3_v4 = deferred-compatibility-watch
 ssu1 = not-implemented
 milestone8_ssu2_direction_a = passed-via-plan161
 milestone8_ssu2_direction_b = passed-via-plan161
-milestone8_final_acceptance = not-yet-closed
+milestone8_ssu2_ledger = landed-via-plan161
+milestone8_final_acceptance = closed-via-plan161
 milestone6_interoperable = not-yet-claimed
 
-next_executable_plan = 161
-resume_after_plan162 = 161
+next_executable_plan = none (milestone9-planning next)
 ```
 
 ## Plan 153 closure note
@@ -63,9 +63,12 @@ the final fail-closed evidence ledger (`tests/integration/ssu2/run-independent.s
 its integrity checker (`scripts/check-ssu2-acceptance-evidence.sh`,
 enforced in routine Linux CI and the manual lane), and the manual
 `.github/workflows/ssu2-external.yml` workflow; the full 15-row lane
-passes locally. Java I2P stays a recorded nonblocking secondary debt.
-Plan 161 is now the next executable plan for hosted closure evidence
-(routine CI + manual external workflow on the closing commit).
+passes locally and hosted (routine CI run `34050058216`, external run
+`34051298144`). Java I2P stays a recorded nonblocking secondary debt.
+Plan 161 is now **passed** and Milestone 8 is closed within its bounded
+direct-interop scope (see `plans/161-status.md` for the criterion
+checklist). Do not begin Milestone 9 work that assumes anything outside
+that scope.
 
 ## Architecture decisions locked by this roadmap
 
@@ -82,6 +85,8 @@ Plan 161 is now the next executable plan for hosted closure evidence
 
 ## Handoff
 
-Resume Plan **161** now. Do
-not begin Milestone 9 or mark Milestone 8 closed until Plan 161 satisfies its
-full mandatory acceptance criteria.
+Plan **161** has passed; Milestone 8 is closed within its bounded
+direct-interop scope. The next product layer is milestone9-planning.
+Do not extend Plan 161's evidence into public-network, NetDB/tunnel/
+destination, advertisement, IPv6-external, PQ, SSU1, or Milestone 6
+interoperability claims.

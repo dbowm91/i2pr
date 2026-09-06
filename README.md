@@ -30,7 +30,7 @@ plan_157 = passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation
 plan_158 = passed-m8-ssu2-udp-runtime-and-local-session-product
 plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
-plan_161 = in-progress-ledger-landed
+plan_161 = passed-m8-ssu2-independent-ipv4-interop-and-final-closure
 plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
@@ -40,10 +40,9 @@ milestone6_interoperable = not-yet-claimed
 milestone8_ssu2_direction_a = passed-via-plan161
 milestone8_ssu2_direction_b = passed-via-plan161
 milestone8_ssu2_ledger = landed-via-plan161
-milestone8_final_acceptance = not-yet-closed
-next_executable_plan = 161
-resume_after_plan162 = 161
-next_product_layer = milestone8-ssu2-v2
+milestone8_final_acceptance = closed-via-plan161
+next_executable_plan = none (milestone9-planning next)
+next_product_layer = milestone9-planning
 ```
 
 Milestone 8 roadmap is registered via [**Plan 154**](plans/154-status.md); Plan 153 passed, and Plans 155–160 have completed the local SSU2 v2 protocol/runtime/reachability sequence.
@@ -62,7 +61,7 @@ The `[sam]` config section remains disabled by default and loopback-only when en
 
 [**Plan 160**](plans/160-status.md) passed Milestone 8 SSU2 PeerTest/relay reachability, including bounded Alice/Bob/Charlie roles, requester/introducer/target relay machines, validated introducers, anti-amplification policy, and real-UDP NAT-like tests. Public advertisement remains disabled.
 
-[**Plan 161**](plans/161-status.md) is in progress. Directions A and B are genuinely proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real loopback UDP: tokenless Retry establishment, mutual authentication, one small and one fragmented DatabaseStore from i2pr to i2pd per direction, DeliveryStatus traffic back to i2pr, and graceful teardown, plus the cached-token second dial and the compact malformed/resource rows. Independent testing also exposed and corrected three SSU2 handshake transcript mismatches that i2pr↔i2pr testing could not reveal, plus three responder-side behaviors (stale initiator destination ID, Alice-establishes-on-ACK bootstrap, endpoint-scoped data fallback) and one driver settle-window race (direction-B baseline now predates the settle sleep; test-only fix). The final fail-closed evidence ledger (`tests/integration/ssu2/run-independent.sh`, 15 command-derived rows), its integrity checker (`scripts/check-ssu2-acceptance-evidence.sh`, enforced in routine Linux CI and the manual lane), and the manual `.github/workflows/ssu2-external.yml` workflow have landed and pass locally; Java I2P is recorded nonblocking secondary debt. Hosted routine-CI + external-workflow evidence on the closing commit is still required before any Milestone 8 closure claim.
+[**Plan 161**](plans/161-status.md) has **passed** and closed Milestone 8 within its bounded direct-interop scope. Directions A and B are genuinely proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real loopback UDP: tokenless Retry establishment, mutual authentication, one small and one fragmented DatabaseStore from i2pr to i2pd per direction, DeliveryStatus traffic back to i2pr, and graceful teardown, plus the cached-token second dial and the compact malformed/resource rows. Independent testing also exposed and corrected three SSU2 handshake transcript mismatches that i2pr↔i2pr testing could not reveal, plus three responder-side behaviors (stale initiator destination ID, Alice-establishes-on-ACK bootstrap, endpoint-scoped data fallback) and one driver settle-window race (direction-B baseline now predates the settle sleep; test-only fix). The final fail-closed evidence ledger (`tests/integration/ssu2/run-independent.sh`, 15 command-derived rows), its integrity checker (`scripts/check-ssu2-acceptance-evidence.sh`, enforced in routine Linux CI and the manual lane), and the manual `.github/workflows/ssu2-external.yml` workflow pass locally and hosted (routine CI run `34050058216`, external run `34051298144`); Java I2P is recorded nonblocking secondary debt. Scope stays bounded: no public-network, NetDB/tunnel/destination, advertisement, IPv6-external, PQ, SSU1, or Milestone 6 interop claim.
 
 [**Plan 162**](plans/162-status.md) passed the narrow external-test lane corrective. The Plan 161 external test remains compiled but is ignored by ordinary workspace execution, fail-closed under explicit `--ignored --exact` selection, and direction A was re-proven against the same pinned i2pd. Hosted Ubuntu/macOS routine CI, MSRV, and dependency policy are green; execution now returns directly to Plan 161.
 

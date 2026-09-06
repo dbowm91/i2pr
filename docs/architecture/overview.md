@@ -71,12 +71,14 @@ Plan 160 passed peer-test/relay reachability (Alice/Bob/Charlie
 roles with typed outcomes, requester/introducer/target machines with
 HolePunch, validated introducers, and runtime coordination with
 introducer service disabled by default — see
-[`plans/160-status.md`](../../plans/160-status.md)); Plan 161 has proven
-both direct SSU2 v2 directions plus cached-token/malformed rows against
-exact-pinned i2pd 2.61.0 over real loopback UDP and landed the fail-closed
-15-row evidence ledger with its routine-CI-enforced checker and manual
-external workflow (see [`plans/161-status.md`](../../plans/161-status.md)).
-It remains the active plan for hosted closure evidence after the passed
+[`plans/160-status.md`](../../plans/160-status.md)); Plan 161 has passed
+the final independent gate and closed Milestone 8 within its bounded
+scope: both direct SSU2 v2 directions plus cached-token/malformed rows
+against exact-pinned i2pd 2.61.0 over real loopback UDP, with the
+fail-closed 15-row evidence ledger, its routine-CI-enforced checker,
+and the manual external workflow green locally and hosted (see
+[`plans/161-status.md`](../../plans/161-status.md)).
+It closed after the passed
 Plan 162 test-lane corrective. Its environment-dependent test is explicitly
 ignored by routine libtest execution and selected only by the dedicated
 external lane. The SAM lane stays experimental,
