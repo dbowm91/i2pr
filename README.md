@@ -10,12 +10,12 @@ Milestone 7 / SAM has several strong retained results:
 
 - [**Plan 146**](plans/146-status.md) passed bidirectional SAM 3.1 private-destination reference requalification against pinned Java I2P/i2pd behavior.
 - [**Plan 147**](plans/147-status.md) landed the dedicated same-socket raw STREAM owner, TCP↔Streaming byte pump, actual Streaming `Established` wait, OS-CSPRNG runtime path, and supervised ACK/retransmit driver.
-- [**Plan 149**](plans/149-status.md) passed the self-composing localhost STREAM product. `SESSION CREATE` now builds the destination/LeaseSet2/bridge/local-delivery/runtime-driver composition before returning success, and the canonical black-box test drives the resulting path only through SAM TCP after listener startup.
-- [**Plan 150**](plans/150-status.md) retains successful external-client core evidence with exact pinned `i2psam` and qualified pinned `i2plib.sam` client surfaces: both cross-client 2 MiB directions, private destinations, SILENT, NAMING, negative inputs, and a positive loopback FORWARD trajectory passed. Its original broad final-closure interpretation was superseded after audit found required sibling-stream, slow-peer, fault, full FORWARD lifecycle, and focused M6 regression rows were not all executed by the closing harness.
+- [**Plan 149**](plans/149-status.md) passed the self-composing localhost STREAM product. `SESSION CREATE` builds the destination/LeaseSet2/bridge/local-delivery/runtime-driver composition before returning success, and the canonical black-box test drives the resulting path only through SAM TCP after listener startup.
+- [**Plan 150**](plans/150-status.md) retains successful external-client core evidence with exact pinned `i2psam` and qualified pinned `i2plib.sam` client surfaces. Its broad final-closure interpretation was superseded by the stricter Plan 151 evidence gate.
 
-[**Plan 151**](plans/151-m7-sam31-final-acceptance-evidence-correction.md) closed the Milestone 7 final acceptance: synthetic `passed` bookkeeping removed, executable sibling-stream/backpressure/fault/CLOSE-RESET/FORWARD lifecycle acceptance green, Plan 127–134 regression floor rerun, and the hosted external lane passed on the closing head (see [`plans/151-status.md`](plans/151-status.md) for the closure record).
+[**Plan 151**](plans/151-status.md) closed Milestone 7 final localhost SAM acceptance with executable sibling-stream/backpressure/fault/CLOSE-RESET/FORWARD lifecycle evidence, focused M6 regressions, and hosted external-client evidence.
 
-[**Plan 152**](plans/152-m6-session-streaming-robustness-corrective.md) is the narrow Milestone 6 corrective Plan 151 §17 required (receiver retention cap with ACK gating, coalesced duplicate ACKs, sender ECIES ratchet-key trimming; no wire change). Fixes landed with unit tests; the full workspace floor was green on the Plan 151 closing head with routine CI and the hosted SAM external lane passing (see [`plans/151-status.md`](plans/151-status.md) and [`plans/152-status.md`](plans/152-status.md) for the closure records).
+[**Plan 152**](plans/152-status.md) is the retained narrow Milestone 6 robustness corrective discovered by Plan 151: receiver-retention cap with ACK gating, coalesced duplicate ACKs, and sender ECIES ratchet-key trimming, without a wire-format change.
 
 Current classification:
 
@@ -32,6 +32,8 @@ plan_159 = passed-m8-ssu2-path-validation-publication-and-transport-selection
 plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
 plan_161 = passed-m8-ssu2-independent-ipv4-interop-and-final-closure
 plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
+plan_163 = registered-m9-i2cp-roadmap
+
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
 milestone7_sam_localhost = passed-via-plan151
@@ -41,29 +43,17 @@ milestone8_ssu2_direction_a = passed-via-plan161
 milestone8_ssu2_direction_b = passed-via-plan161
 milestone8_ssu2_ledger = landed-via-plan161
 milestone8_final_acceptance = closed-via-plan161
-next_executable_plan = none (milestone9-planning next)
-next_product_layer = milestone9-planning
+milestone9_planning_authority = plan163
+milestone9_final_acceptance = not-yet-closed
+next_executable_plan = 164
+next_product_layer = milestone9-i2cp
 ```
 
-Milestone 8 roadmap is registered via [**Plan 154**](plans/154-status.md); Plan 153 passed, and Plans 155–160 have completed the local SSU2 v2 protocol/runtime/reachability sequence.
+Milestone 8 is **closed** via [**Plan 161**](plans/161-status.md) within its bounded direct-interop scope. Directions A and B are genuinely proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real loopback UDP, including authenticated session establishment, small and fragmented I2NP/DatabaseStore exchange with return DeliveryStatus traffic, cached-token behavior, malformed/resource rows, and the fail-closed external evidence lane. [**Plan 162**](plans/162-status.md) passed the narrow external-test lane correction. Public-network, NetDB/tunnel/destination, IPv6-external, PQ, SSU1, and Milestone 6 mixed-router interoperability remain outside that claim.
 
-[**Plan 155**](plans/155-status.md) passed the Milestone 8 SSU2 v2 protocol foundation: runtime-neutral `i2pr-transport-ssu2` (strict v2 RouterAddress/header/block primitives with fixture-backed vectors, no handshake, no UDP sockets), `TransportKind::Ssu2` integration, and the SSU2 source-authority refresh.
+Milestone 9 / I2CP planning is now registered via [**Plan 163**](plans/163-status.md). Execute [**Plan 164**](plans/164-m9-i2cp-protocol-and-wire-foundation.md) next, then Plans 165–170 in order. The M9 architecture reuses the existing destination product rather than creating an I2CP-specific router stack: runtime-neutral I2CP framing/session state lives in `i2pr-api`, TCP/Tokio listener ownership remains in `i2pr-daemon`, and `i2pr-client` gains an explicit client-owned destination capability. For I2CP, the external client proves Destination signing-key ownership with a signed SessionConfig and supplies a signed Standard LeaseSet2 plus required X25519 decryption key; i2pr must not require the client's Destination signing private key. I2CP remains experimental, disabled by default, and loopback-only throughout M9. Final Plan 170 targets independent Java I2P and Go I2CP clients with cross-client application traffic and fail-closed hosted evidence.
 
-[**Plan 156**](plans/156-status.md) passed the Milestone 8 SSU2 v2 establishment protocol, still fully runtime-neutral (no UDP sockets, no runtime service): the Noise XK transcript (`Noise_XKchaobfse+hs1+hs2+hs3_25519_ChaChaPoly_SHA256`), ChaCha20 header protection, strict TokenRequest/Retry/SessionRequest/SessionCreated codecs with cheap prevalidation, the bounded one-use token lifecycle, RouterInfo fragmentation/validation/binding, replay/deadline state, and consuming initiator/responder machines reaching matching directional data keys.
-
-[**Plan 157**](plans/157-status.md) passed the Milestone 8 SSU2 v2 data phase: authenticated `Ssu2Session` short-header packets, bounded packet-number/replay windows, strict ACK interpretation, fresh retransmission with conservative congestion control, exact MTU-aware I2NP fragmentation/reassembly, duplicate suppression, and termination/rekey/idle handling.
-
-[**Plan 158**](plans/158-status.md) passed the first Milestone 8 SSU2 UDP runtime: `i2pr-runtime::Ssu2RuntimeService` owns real UDP sockets and drives the Plan 156/157 state machines through a central bounded scheduler, promotes through the generic `TransportManager`, and proves the i2pr↔i2pr local session product over real localhost datagrams. The daemon `[ssu2]` surface remains disabled by default and non-advertised.
-
-The `[sam]` config section remains disabled by default and loopback-only when enabled. No localhost SAM result is router-to-router interoperability evidence.
-
-[**Plan 159**](plans/159-status.md) passed Milestone 8 SSU2 path validation, conservative publication policy, and deterministic NTCP2/SSU2 selection/fallback without enabling public advertisement.
-
-[**Plan 160**](plans/160-status.md) passed Milestone 8 SSU2 PeerTest/relay reachability, including bounded Alice/Bob/Charlie roles, requester/introducer/target relay machines, validated introducers, anti-amplification policy, and real-UDP NAT-like tests. Public advertisement remains disabled.
-
-[**Plan 161**](plans/161-status.md) has **passed** and closed Milestone 8 within its bounded direct-interop scope. Directions A and B are genuinely proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real loopback UDP: tokenless Retry establishment, mutual authentication, one small and one fragmented DatabaseStore from i2pr to i2pd per direction, DeliveryStatus traffic back to i2pr, and graceful teardown, plus the cached-token second dial and the compact malformed/resource rows. Independent testing also exposed and corrected three SSU2 handshake transcript mismatches that i2pr↔i2pr testing could not reveal, plus three responder-side behaviors (stale initiator destination ID, Alice-establishes-on-ACK bootstrap, endpoint-scoped data fallback) and one driver settle-window race (direction-B baseline now predates the settle sleep; test-only fix). The final fail-closed evidence ledger (`tests/integration/ssu2/run-independent.sh`, 15 command-derived rows), its integrity checker (`scripts/check-ssu2-acceptance-evidence.sh`, enforced in routine Linux CI and the manual lane), and the manual `.github/workflows/ssu2-external.yml` workflow pass locally and hosted (routine CI runs `34050058216`/`34053041778`, external runs `34051298144`/`34053042857`); Java I2P is recorded nonblocking secondary debt. Scope stays bounded: no public-network, NetDB/tunnel/destination, advertisement, IPv6-external, PQ, SSU1, or Milestone 6 interop claim.
-
-[**Plan 162**](plans/162-status.md) passed the narrow external-test lane corrective. The Plan 161 external test remains compiled but is ignored by ordinary workspace execution, fail-closed under explicit `--ignored --exact` selection, and direction A was re-proven against the same pinned i2pd. Hosted Ubuntu/macOS routine CI, MSRV, and dependency policy are green; execution now returns directly to Plan 161.
+The `[sam]` config section remains disabled by default and loopback-only when enabled. No localhost SAM or I2CP result is router-to-router interoperability evidence.
 
 For the full plan hierarchy, MVP roadmap, and what's implemented vs. not, see [**`plans/README.md`**](plans/README.md).
 
@@ -78,13 +68,13 @@ crates/
   i2pr-transport/           Transport-neutral link management
   i2pr-transport-ntcp2/     NTCP2 protocol implementation (no I/O)
   i2pr-transport-ssu2/      SSU2 v2 protocol (runtime-neutral), path validation/publication, peer-test/relay/introducers
-  i2pr-runtime/             Tokio-owned supervision, cancellation, I/O (including SSU2 UDP runtime and external-test driver seam)
+  i2pr-runtime/             Tokio-owned supervision, cancellation, transport I/O
   i2pr-netdb/               RouterInfo + LeaseSet2 validation, store, lookup, publication
   i2pr-netdb-persist/       Persistent cache + bounded SU3 reseed ingestion
   i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build, runtime-neutral data plane
-  i2pr-client/              Local destinations, ECIES-X25519-AEAD-Ratchet session layer, I2P Streaming
-  i2pr-api/                 Application-protocol adapter (SAM 3.1): bounded parser, typed commands, private-destination codec
-  i2pr-daemon/              CLI, configuration, composition, supervision
+  i2pr-client/              Destinations, ECIES-X25519-AEAD-Ratchet session layer, routing, I2P Streaming
+  i2pr-api/                 Runtime-neutral application-protocol adapters (SAM 3.1 today; I2CP planned by M9)
+  i2pr-daemon/              CLI, configuration, composition, supervision, application listener ownership
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
 tools/
   i2pr-interop/             Non-production interop launcher (test only)
@@ -110,7 +100,7 @@ Focused seams and the constrained-host lane are documented in [`AGENTS.md`](AGEN
 
 ## OpenCode skills
 
-Loadable skill bundles under [`.opencode/skills/`](.opencode/skills/) cover the routine development seam ([`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md)), documentation navigation ([`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md)), the closed NTCP2 interop lane ([`i2pr-ntcp2-interop`](.opencode/skills/i2pr-ntcp2-interop/SKILL.md)), the Plan 046 rootless sandbox ([`i2pr-rootless-sandbox`](.opencode/skills/i2pr-rootless-sandbox/SKILL.md)), and the Plan 048–051 Multipass recovery guest ([`i2pr-multipass-recovery`](.opencode/skills/i2pr-multipass-recovery/SKILL.md)). Load the matching skill before touching its surface.
+Loadable skill bundles under [`.opencode/skills/`](.opencode/skills/) cover the routine development seam ([`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md)), documentation navigation ([`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md)), the closed NTCP2 interop lane ([`i2pr-ntcp2-interop`](.opencode/skills/i2pr-ntcp2-interop/SKILL.md)), the historical rootless sandbox ([`i2pr-rootless-sandbox`](.opencode/skills/i2pr-rootless-sandbox/SKILL.md)), and the historical Multipass recovery guest ([`i2pr-multipass-recovery`](.opencode/skills/i2pr-multipass-recovery/SKILL.md)). Load the matching skill before touching its surface.
 
 ## License
 
