@@ -17,9 +17,17 @@ underneath it; router-to-router interoperability remains unclaimed.
 
 Plan 164 adds the runtime-neutral I2CP wire/profile foundation
 (`src/i2cp/`): strict bounded framing, structural message codecs,
-and the explicit M9 compatibility profile. No listener, session
-state machine, destination activation, or client-interoperability
-claim follows; those belong to Plans 165–170.
+and the explicit M9 compatibility profile.
+
+Plan 165 extends `src/i2cp/` with the connection state machine,
+canonical SessionConfig verification (signature, date, options,
+ceiling checks), the bounded option disposition table and
+projection into `i2pr-client::DestinationConfig`, the bounded
+runtime-neutral session registry (reserve / commit / rollback),
+the reconfiguration taxonomy, and the typed `I2cpAction`
+vocabulary the Plan 167 daemon projects into runtime state. No
+listener, destination activation, or client-interoperability
+claim follows; those belong to Plans 166–170.
 
 > [Plan 136](../plans/136-m7-sam31-protocol-private-destination-foundation.md):
 > create the `i2pr-api` crate at the intended application-adapter
@@ -119,17 +127,22 @@ depend on `i2pr-runtime`. `i2pr-client` must never depend on
 
 ```text
 crates/i2pr-api/
-├── Cargo.toml            workspace member, depends on i2pr-client/i2pr-crypto/i2pr-proto
+├── Cargo.toml            workspace member, depends on i2pr-client/i2pr-crypto/i2pr-proto/i2pr-tunnel
 └── src/
     ├── lib.rs            facade and re-exports
-    ├── i2cp/               Plan 164 runtime-neutral I2CP foundation
+    ├── i2cp/               Plans 164+165 runtime-neutral I2CP foundation
     │   ├── mod.rs            module facade, M9 compatibility profile
     │   ├── frame.rs          0x2a preamble, common frame, incremental decoder
     │   ├── message.rs        type IDs, dispositions, structural body codecs
     │   ├── ids.rs            SessionId/MessageId/ClientNonce/HostRequestId
     │   ├── payload.rs        payload wrapper, gzip metadata contract
     │   ├── mapping.rs        strict/lenient Mapping postures, signing bytes
-    │   └── error.rs          I2cpError typed classification
+    │   ├── error.rs          I2cpError typed classification
+    │   ├── connection.rs     Plan 165 ConnectionStateMachine + version handshake
+    │   ├── verify.rs         Plan 165 SessionConfig signature/date/ceiling verification
+    │   ├── config.rs         Plan 165 option disposition table + DestinationConfig projection
+    │   ├── session.rs        Plan 165 bounded session registry
+    │   └── actions.rs        Plan 165 typed I2cpAction vocabulary
     └── sam/
         ├── mod.rs            module facade and named byte ceilings
         ├── version.rs        SamVersion, parse_version, negotiate, is_advertised
@@ -137,9 +150,9 @@ crates/i2pr-api/
         ├── command.rs        Command, CommandKind, OptionPair, CommandOutcome,
         │                      malformed/unknown/unsupported enums,
         │                      stream request parsers (Plans 138–139)
-        ├── parser.rs         parse_line, tokenise, recognise_* per command family
-        ├── reply.rs          ReplyLine, Reply, HelloReply, DestReply, SessionStatus,
-        │                      StreamStatus (with `result()` accessor), NamingReply, PongReply
+        ├── parser.rs        parse_line, tokenise, recognise_* per command family
+        ├── reply.rs         ReplyLine, Reply, HelloReply, DestReply, SessionStatus,
+        │                     StreamStatus (with `result()` accessor), NamingReply, PongReply
         ├── private_destination.rs  SamPrivateDestination wrapper, from_identity/from_base64/from_bytes, into_identity
         ├── dest_generate.rs        DestGenerateRequest, DestGenerateSignatureType, dest_generate core op
         ├── session_create.rs       SessionCreateRequest, parse_session_create
@@ -148,7 +161,7 @@ crates/i2pr-api/
         ├── registry.rs             SamSessionRegistry, reserve/commit/rollback (Plan 137)
         ├── line_reader.rs          LineReader, LineEvent (Plan 137)
         ├── server_state.rs         ServerConnectionState, dispatch, stream/naming appliers,
-        │                           Require* dispatch outcomes (Plans 137–139),
+        │                           Require* dispatch outcomes (Plans 138–139),
         │                           and StreamRawMode (Plan 143)
         ├── streams.rs              SamStreamRegistry, SamStreamAttachment,
                                     InboundMode, SamStreamRegistryError,
@@ -188,8 +201,56 @@ behavior:
 
 The full feature table lives in `src/i2cp/mod.rs` and
 `specs/protocols/10-i2cp-service-tunnels.md`; the support ledger
-rows are `i2cp.wire-foundation` and `i2cp.message-codecs` in
-`specs/support.toml`. No support row is advertised.
+rows are `i2cp.wire-foundation`, `i2cp.message-codecs`, and
+`i2cp.connection-session-options` in `specs/support.toml`. No
+support row is advertised.
+
+## Plan 165 I2CP connection / session / option surface
+
+`src/i2cp/connection.rs`, `verify.rs`, `config.rs`, `session.rs`,
+and `actions.rs` extend `src/i2cp/` with runtime-neutral state,
+verification, registry, option projection, and typed action
+vocabulary; they still own no sockets, timers, channels, or task
+runtimes:
+
+- **Connection state machine.** `ConnectionStateMachine` tracks
+  `AwaitProtocolByte → AwaitGetDate → ReadyForSession →
+  SessionPending → Active → Closing → Closed`. The M9 profile
+  accepts only API version `0.9.67` and rejects `GetDate`
+  authentication. Illegal message families are rejected with
+  `I2cpError::IllegalInState`; the machine never silently
+  resynchronizes.
+- **SessionConfig verification.** `verify_session_config` consumes
+  a parsed `SessionConfig` plus the raw body bytes and verifies
+  (in order) canonical bytes, supported signing/encryption types,
+  certificate agreement, mapping shape (≤ 64 entries, ≤ 96-byte
+  keys/values, ≤ 64 KiB total), creation timestamp within ±30 s of
+  the injected `Clock` (`FixedClock` in tests, `SystemClock` in
+  production), and signature over the retained signed region. The
+  only output is `VerifiedSessionConfig`, the typed value the
+  Plan 166 destination reservation may see.
+- **Option disposition table.** `project_options` parses every
+  numeric option strictly (unsigned, no whitespace, no overflow);
+  rejects unknown signing/encryption types, zero-hop tunnels,
+  guaranteed reliability, and non-fast-receive; records the
+  Proposal 171 outbound-tunnel-switching flag as ignored;
+  classifies unknown keys. The result is a `ProjectedPolicy` whose
+  `DestinationConfig` is built via the existing
+  `DestinationConfig::try_new` constructor so router-wide ceilings
+  cannot be bypassed.
+- **Session registry.** `SessionRegistry` exposes
+  `reserve → commit → rollback` for sessions, tracks per-connection
+  and per-router ceilings, prevents duplicate Destination ownership
+  across active/reserved sessions, and assigns monotonic session
+  IDs (skipping `0xffff`). `ReconfigurationClass` classifies every
+  known option as `MutableWithRebuild`, `MutableImmediate`,
+  `ImmutableAfterCreate`, or `Unsupported`; `validate_reconfigure_classifications`
+  enforces all-or-nothing application.
+- **Typed actions.** `I2cpAction::ReserveClientDestination`,
+  `ReconfigureClientDestination`, `DestroyClientDestination`,
+  `RequestBandwidthSnapshot`, and `RequestDestinationLookup` carry
+  verified typed values only. The Plan 167 daemon is the sole
+  translator from these actions to runtime state.
 
 ## Public surface
 

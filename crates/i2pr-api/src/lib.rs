@@ -22,6 +22,15 @@
 //! the explicit M9 compatibility profile, with no sockets, sessions,
 //! or interoperability claim.
 //!
+//! Plan 165 adds the runtime-neutral I2CP connection/session/option
+//! state machines: typed `ConnectionStateMachine`, canonical
+//! `SessionConfig` signature/date/ceiling verification with an
+//! injected clock, the bounded session registry with reserve/commit/
+//! rollback, the option disposition table and bounded projection
+//! into `i2pr-client::DestinationConfig`, the `ReconfigurationClass`
+//! taxonomy, and the typed `I2cpAction` vocabulary. No listener or
+//! destination activation is added; those belong to Plan 167.
+//!
 //! # Layering
 //!
 //! ```text

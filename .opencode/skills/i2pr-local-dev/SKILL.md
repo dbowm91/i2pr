@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, Milestone 8 SSU2, and Milestone 9 I2CP execution. Plans 155–161 passed the SSU2 v2 stack including independent IPv4 interop against exact-pinned i2pd 2.61.0; Milestone 8 is closed within its bounded scope, Plan 163 registered the M9 I2CP roadmap, and Plan 164 passed the I2CP wire/profile foundation; Plan 165 is next.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, Milestone 8 SSU2, and Milestone 9 I2CP execution. Plans 155–161 passed the SSU2 v2 stack including independent IPv4 interop against exact-pinned i2pd 2.61.0; Milestone 8 is closed within its bounded scope, Plan 163 registered the M9 I2CP roadmap, Plan 164 passed the I2CP wire/profile foundation, and Plan 165 passed the connection/session/options state machines; Plan 166 is next.
 ---
 
 # I2PR Local Development
@@ -59,12 +59,14 @@ milestone8_final_acceptance = closed-via-plan161
 
 plan_163 = registered-m9-i2cp-roadmap
 plan_164 = passed-m9-i2cp-protocol-and-wire-foundation
+plan_165 = passed-m9-i2cp-connection-session-and-options
 
 milestone9_planning_authority = plan163
 milestone9_wire_foundation = passed-via-plan164
+milestone9_connection_session_options = passed-via-plan165
 milestone9_final_acceptance = not-yet-closed
 
-next_executable_plan = 165
+next_executable_plan = 166
 next_product_layer = milestone9-i2cp
 ```
 
@@ -87,10 +89,12 @@ as needed.
 
 Read in order for Milestone 9 I2CP work:
 
-1. `plans/164-status.md`
-2. `plans/164-m9-i2cp-protocol-and-wire-foundation.md`
-3. `plans/163-m9-i2cp-roadmap.md` (planning authority)
-4. Plans 165–170 in execution order; do not skip ahead.
+1. `plans/165-status.md`
+2. `plans/165-m9-i2cp-connection-session-and-options.md`
+3. `plans/164-status.md`
+4. `plans/164-m9-i2cp-protocol-and-wire-foundation.md`
+5. `plans/163-m9-i2cp-roadmap.md` (planning authority)
+6. Plans 166–170 in execution order; do not skip ahead.
 
 Plans 155–160 passed the local SSU2 v2 protocol/runtime/reachability sequence.
 Plan 161 has passed the final independent gate: directions A
@@ -116,9 +120,16 @@ foundation: pinned official I2CP sources with Java I2P 2.13.0 and
 go-i2cp references, the explicit M9 compatibility profile,
 runtime-neutral `i2pr-api::i2cp` bounded framing/message codecs with
 committed fixtures (`tests/fixtures/i2cp/`) and the routine-CI
-vector checker (`scripts/check-i2cp-vectors.sh`). No listener,
-session, destination activation, or client-interoperability claim
-exists yet; those belong to Plans 165–170.
+vector checker (`scripts/check-i2cp-vectors.sh`).
+Plan 165 passed the connection/session/options state machines
+(`ConnectionStateMachine` with explicit message-family transitions,
+canonical `SessionConfig` signature/date/ceiling verification with
+injected `Clock`, option disposition table and projection into
+`i2pr-client::DestinationConfig`, bounded `SessionRegistry` with
+reserve/commit/rollback, reconfiguration taxonomy, typed
+`I2cpAction` vocabulary). No listener, destination activation, or
+client-interoperability claim exists yet; those belong to
+Plans 166–170.
 
 SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 SSU2 public advertisement/public-network participation and broad router
@@ -143,6 +154,7 @@ Do not rebuild them without a concrete defect:
 - Plans 155–160 SSU2 local protocol/runtime/path/peer-test/relay architecture;
 - Plan 161 direction-A handshake transcript corrections and regenerated vectors. Independent i2pd comparison exposed those defects; do not revert them to match older i2pr↔i2pr assumptions.
 - Plan 164 I2CP framing/message codecs, the M9 compatibility profile, and the committed `tests/fixtures/i2cp/` vectors. Do not extend structural codecs into behavior/session/listener claims; those belong to Plans 165–170.
+- Plan 165 I2CP `ConnectionStateMachine`/SessionConfig verification/option projection/session registry/typed `I2cpAction` vocabulary. Do not extend into a listener, destination activation, or interoperability claim; those belong to Plans 166–170.
 
 ## Why Plan 151 exists
 
@@ -419,12 +431,14 @@ bash scripts/check-ssu2-acceptance-evidence.sh
 - Plan 162 passed the narrow external-test lane/CI corrective; it must not broaden or downgrade direction-A protocol evidence.
 - Plan 163 registered the M9 I2CP roadmap (planning authority only).
 - Plan 164 passed the M9 I2CP wire/profile foundation (structural codecs, fixtures, profile; no behavior claim).
-- Next product layer is milestone9-i2cp (Plan 165 next); do not extend Plan 161's evidence into broader claims.
+- Next product layer is milestone9-i2cp (Plan 166 next); do not extend Plan 161's evidence into broader claims.
 - `milestone6_interoperable = not-yet-claimed` remains unchanged.
 - SSU2 public-network participation, broad router interoperability, IPv6 external interop, PQ v3/v4, and SSU1 remain unclaimed/deferred as documented.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
 
-Current handoff: **Plan 164 has passed the M9 I2CP wire/profile
-foundation. Execute Plan 165 next (connection/session/options), then
-Plans 166–170 in order. Do not extend Plan 164's structural codecs
-into a behavior or interoperability claim.**
+Current handoff: **Plan 165 has passed the M9 I2CP
+connection/session/options state machines. Execute Plan 166 next
+(client-owned destination + LeaseSet2), then Plans 167–170 in
+order. Do not extend Plan 164's structural codecs or Plan 165's
+state machines into a listener, destination activation, or
+interoperability claim.**

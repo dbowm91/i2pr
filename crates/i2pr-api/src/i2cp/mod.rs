@@ -1,9 +1,23 @@
-//! Runtime-neutral I2CP wire and profile foundation (Plan 164).
+//! Runtime-neutral I2CP wire, profile, connection, session, and option
+//! surface (Plans 164 and 165).
 //!
-//! This module owns the strict bounded I2CP framing and structural
-//! message codecs shared by the future daemon listener (Plan 167)
-//! and session/option state machines (Plan 165). It owns no sockets,
-//! timers, channels, or task runtimes.
+//! This module owns:
+//!
+//! - the strict bounded I2CP framing and structural message codecs
+//!   ([`frame`], [`message`]);
+//! - the connection state machine and version handshake
+//!   ([`connection`]);
+//! - canonical SessionConfig verification with injected clock
+//!   ([`verify`]);
+//! - the option disposition table and bounded projection into
+//!   `i2pr_client::DestinationConfig` ([`config`]);
+//! - the bounded runtime-neutral session registry with reserve/commit/
+//!   rollback ([`session`]);
+//! - the typed action vocabulary the state machine emits ([`actions`]).
+//!
+//! It owns **no** sockets, timers, channels, or task runtimes. The
+//! Plan 167 daemon projects these typed actions into `i2pr-client`
+//! destination runtime operations.
 //!
 //! Normative authority is the official I2CP specification at
 //! `i2p/i2p.website @ 26467e4b275e3a58280b9d4e6d4745d58bb8c499`
@@ -45,7 +59,7 @@
 //!
 //! spec-defined-ignore
 //!   Proposal 171 outbound-tunnel-switching flag (draft; no switching
-//!     is implemented — exact flag key verified at Plan 165)
+//!     is implemented — Plan 165 documents the disposition)
 //!   SendMessageExpires reliability-override bits 10-9 (unimplemented
 //!     per specification; accepted without effect)
 //!
@@ -59,17 +73,32 @@
 //!
 //! Deprecated, unsupported, and unknown message types are rejected at
 //! the classification layer without parsing their bodies, so framing
-//! never desynchronizes. No listener, destination activation, or
-//! external-client interoperability claim is introduced by this
-//! module.
+//! never desynchronizes.
 
+pub mod actions;
+pub mod config;
+pub mod connection;
 pub mod error;
 pub mod frame;
 pub mod ids;
 pub mod mapping;
 pub mod message;
 pub mod payload;
+pub mod session;
+pub mod verify;
 
+pub use actions::{DestinationLookupKey, I2cpAction};
+pub use config::{
+    M9_FAST_RECEIVE_DEFAULT, M9_LEASE_SET_ENC_TYPE, M9_LEASE_SET_TYPE,
+    M9_MESSAGE_RELIABILITY_BEST_EFFORT, MAX_SESSION_CONFIG_KEY_BYTES, MAX_SESSION_CONFIG_OPTIONS,
+    MAX_SESSION_CONFIG_VALUE_BYTES, OptionDisposition, OptionNote, ProjectedPolicy,
+    ReconfigurationClass, SessionConfigLimits, classify_reconfigure_diff, default_registry_config,
+    default_tunnel_lifetime, project_options, reconfiguration_class, validate_mapping_shape,
+    validate_reconfigure_classifications,
+};
+pub use connection::{
+    ConnectionState, ConnectionStateMachine, M9_ADVERTISED_VERSION, MAX_VERSION_STRING_BYTES,
+};
 pub use error::I2cpError;
 pub use frame::{
     FRAME_HEADER_LEN, FrameDecoder, FrameHeader, MAX_I2CP_BODY_BYTES, PROTOCOL_BYTE, RawFrame,
@@ -99,4 +128,12 @@ pub use payload::{
     MAX_I2CP_DECOMPRESSED_BYTES, MAX_I2CP_PAYLOAD_BYTES, PROTOCOL_DATAGRAM, PROTOCOL_DATAGRAM_RAW,
     PROTOCOL_EXPERIMENTAL_FIRST, PROTOCOL_EXPERIMENTAL_LAST, PROTOCOL_RESERVED, PROTOCOL_STREAMING,
     Payload, PayloadGzipHeader, split_payload,
+};
+pub use session::{
+    MAX_REGISTRY_SESSION_ID, SessionEntry, SessionRegistry, SessionRegistryLimits,
+    SessionReservation,
+};
+pub use verify::{
+    Clock, FixedClock, SystemClock, VERIFICATION_SKEW_MS, VerifiedSessionConfig,
+    verify_session_config,
 };

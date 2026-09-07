@@ -228,7 +228,22 @@ record is not `superseded-by-*`. Currently:
    runtime-neutral `i2pr-api::i2cp` preamble/frame/message codecs,
    M9 compatibility profile, committed `tests/fixtures/i2cp/`
    vectors with `scripts/check-i2cp-vectors.sh`; no sockets,
-   sessions, or interop claim. Plan 165 is next.
+   sessions, or interop claim.
+- **Milestone 9 I2CP connection/session/options (passed)**: Plan 165
+   (`passed-m9-i2cp-connection-session-and-options`, see
+   [`plans/165-status.md`](../../plans/165-status.md)):
+   `i2pr-api::i2cp` runtime-neutral `ConnectionStateMachine`
+   (AwaitProtocolByte → AwaitGetDate → ReadyForSession →
+   SessionPending → Active → Closing → Closed) with explicit
+   message-family transitions; canonical `SessionConfig` signature,
+   date (±30 s skew), and ceiling verification with an injected
+   `Clock`; bounded option disposition table and projection into
+   `i2pr-client::DestinationConfig` with router-wide ceilings
+   authoritative; bounded `SessionRegistry` with
+   reserve/commit/rollback and duplicate-destination prevention;
+   reconfiguration taxonomy and typed `I2cpAction` vocabulary. No
+   listener, destination activation, or interoperability claim;
+   those belong to Plans 166–170.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).

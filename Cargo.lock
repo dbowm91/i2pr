@@ -697,9 +697,11 @@ dependencies = [
 name = "i2pr-api"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "i2pr-client",
  "i2pr-crypto",
  "i2pr-proto",
+ "i2pr-tunnel",
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
  "thiserror",

@@ -11,11 +11,13 @@ publish = false
 i2pr-client = { path = "../i2pr-client" }
 i2pr-crypto = { path = "../i2pr-crypto" }
 i2pr-proto = { path = "../i2pr-proto" }
+i2pr-tunnel = { path = "../i2pr-tunnel" }
 rand_core = { workspace = true }
 thiserror.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+ed25519-dalek = { workspace = true }
 rand_chacha.workspace = true
 
 [lints]

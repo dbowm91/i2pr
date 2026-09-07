@@ -248,11 +248,15 @@ plan_163_status = "registered-m9-i2cp-roadmap"
 plan_164_plan_of_record = "plans/164-m9-i2cp-protocol-and-wire-foundation.md"
 plan_164_closure = "plans/164-status.md"
 plan_164_status = "passed-m9-i2cp-protocol-and-wire-foundation"
+plan_165_plan_of_record = "plans/165-m9-i2cp-connection-session-and-options.md"
+plan_165_closure = "plans/165-status.md"
+plan_165_status = "passed-m9-i2cp-connection-session-and-options"
 milestone9_planning_authority = "plan163"
 milestone9_protocol = "i2cp"
 milestone9_i2cp_wire_foundation = "passed-via-plan164"
+milestone9_i2cp_connection_session_options = "passed-via-plan165"
 milestone9_final_acceptance = "not-yet-closed"
-next_executable_plan = "165"
+next_executable_plan = "166"
 next_product_layer = "milestone9-i2cp"
 
 [[surface]]
@@ -1165,5 +1169,24 @@ evidence = [
     "crates/i2pr-api/tests/i2cp_vectors.rs",
     "plans/164-m9-i2cp-protocol-and-wire-foundation.md",
     "plans/164-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "i2cp.connection-session-options"
+protocol = "i2cp"
+structure = "runtime-neutral-connection-state-session-registry-option-disposition-reconfiguration"
+scope = "required"
+status = "experimental"
+notes = "Plan 165 closed the M9 I2CP connection/session/options state machines in `i2pr-api::i2cp` (no Tokio, no sockets, no async, no destination secret material): typed `ConnectionStateMachine` covering `AwaitProtocolByte -> AwaitGetDate -> ReadyForSession -> SessionPending -> Active -> Closing -> Closed` with explicit rejection of illegal message families (no silent resync); canonical SessionConfig verification (signature over retained signed region, ±30 s skew window via injected `Clock`, supported signing type Ed25519 / encryption type X25519 only, certificate type agreement) before any destination resource reservation; bounded option disposition table with strict unsigned parser, projection into `i2pr_client::DestinationConfig` via checked constructors, router-wide ceilings authoritative, signed/whitespace/overflow rejected, LeaseSet type/encryption type 3/4 only, Proposal 171 ignored, fast-receive true only, best-effort reliability only, zero-hop rejected; bounded `SessionRegistry` with reserve/commit/rollback, duplicate-destination prevention across active/reserved, per-connection ceiling, per-router ceiling, monotonic session IDs skipping `0xffff`; `ReconfigurationClass` taxonomy (MutableWithRebuild, MutableImmediate, ImmutableAfterCreate, Unsupported) with all-or-nothing validation; typed `I2cpAction` vocabulary (`ReserveClientDestination`, `ReconfigureClientDestination`, `DestroyClientDestination`, `RequestBandwidthSnapshot`, `RequestDestinationLookup`) carrying only verified/typed values. No listener, no destination activation, no interoperability claim; those belong to Plans 166-170."
+evidence = [
+    "crates/i2pr-api/src/i2cp/connection.rs",
+    "crates/i2pr-api/src/i2cp/verify.rs",
+    "crates/i2pr-api/src/i2cp/config.rs",
+    "crates/i2pr-api/src/i2cp/session.rs",
+    "crates/i2pr-api/src/i2cp/actions.rs",
+    "crates/i2pr-api/src/i2cp/error.rs",
+    "plans/165-m9-i2cp-connection-session-and-options.md",
+    "plans/165-status.md",
 ]
 advertised = false

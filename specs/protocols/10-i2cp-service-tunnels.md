@@ -10,6 +10,15 @@ Dependencies: destinations, NetDB, streaming and router lifecycle
 > dossier (HTTP, SOCKS5, generic TCP, IRC) is **Milestone 10** scope
 > and is unchanged by Plans 164–170.
 >
+> Plan 165 note: the connection state machine, canonical SessionConfig
+> signature/date/ceiling verification, bounded option disposition
+> table and projection into `i2pr-client::DestinationConfig`,
+> bounded session registry with reserve/commit/rollback,
+> reconfiguration taxonomy, and typed `I2cpAction` vocabulary are
+> landed (`crates/i2pr-api/src/i2cp/{connection,verify,config,
+> session,actions}.rs`). No listener, no destination activation, and
+> no interoperability claim; those belong to Plans 166–170.
+>
 > Normative M9 sources: official I2CP specification and overview at
 > `i2p/i2p.website @ 26467e4b275e3a58280b9d4e6d4745d58bb8c499`
 > (accurate for API 0.9.67); Java I2P 2.13.0
@@ -188,7 +197,138 @@ For service adapters, behavior may be policy rather than I2P wire protocol. Reco
 Plan 164 lands structural codecs only: no listener, no sessions, no
 destination activation, and no interoperability claim.
 
-### Compatibility profile
+## M9 I2CP connection/session/options (Plan 165)
+
+Plan 165 lands the runtime-neutral session control semantics. No TCP
+listener, no destination private key installation, no LeaseSet2
+semantic validation: those belong to Plans 166–170.
+
+### Connection state machine
+
+```text
+AwaitProtocolByte
+  -> AwaitGetDate
+  -> ReadyForSession
+  -> SessionPending
+  -> Active
+  -> Closing
+  -> Closed
+```
+
+- The M9 profile advertises only `I2CP API version 0.9.67`. Any other
+  syntactically-valid version string returns `SessionStatus::Refused`.
+- `GetDate` `i2cp.username`/`i2cp.password` and any other auth mapping
+  are rejected with `SessionStatus::Refused` (M9 has no
+  authentication surface).
+- Duplicate `GetDate` and any message family the protocol does not
+  permit in the current state are rejected with a typed
+  `IllegalInState` error; the state machine never silently
+  resynchronizes.
+- M9 enforces one primary session per connection; a second
+  `CreateSession` after `Active` is rejected.
+
+### SessionConfig verification (before any destination reservation)
+
+Required pre-checks (any failure becomes `SessionStatus::Invalid`):
+
+1. Destination decodes strictly and uses supported signing/encryption
+   types (`SigningKeyType::EdDsaSha512Ed25519` and
+   `CryptoKeyType::X25519` only).
+2. The `KeyCertificate` signing/encryption types agree with the
+   embedded keys.
+3. The options mapping uses the canonical sorted-key byte
+   representation defined in Plan 164.
+4. The total SessionConfig body fits inside the 64 KiB I2CP frame
+   ceiling; option count, key byte length, and value byte length
+   stay within the named ceilings (64 entries, 96 bytes per key,
+   96 bytes per value).
+5. Creation timestamp is within ±30 seconds of the injected router
+   clock (`FixedClock` in tests, `SystemClock` in production).
+6. The signature verifies over the exact received signed region
+   (Destination || Mapping || creation timestamp bytes retained by
+   the structural decoder). The verifier never re-serializes the
+   SessionConfig.
+
+The verifier produces a single typed `VerifiedSessionConfig`. No raw
+unverified SessionConfig may reach the destination-reservation
+action.
+
+### Option disposition table
+
+| Key | Disposition | Notes |
+| --- | --- | --- |
+| `inbound.length` | applied | mapped to `DestinationConfig::length_hops` |
+| `outbound.length` | applied | fallback if `inbound.length` is absent |
+| `inbound.quantity` | applied | must be `1..=MAX_DESTINATION_INBOUND` |
+| `outbound.quantity` | applied | must be `1..=MAX_DESTINATION_OUTBOUND` |
+| `inbound.backupQuantity` | applied (informational) | target quantity drives pool sizing |
+| `outbound.backupQuantity` | applied (informational) | target quantity drives pool sizing |
+| `inbound.lengthVariance` | applied (informational) | target length drives pool sizing |
+| `outbound.lengthVariance` | applied (informational) | target length drives pool sizing |
+| `inbound.allowZeroHop` | rejected | no zero-hop support in M9 |
+| `outbound.allowZeroHop` | rejected | no zero-hop support in M9 |
+| `i2cp.messageReliability` | applied (`BestEffort` only) | `Guaranteed` rejected |
+| `i2cp.fastReceive` | applied (`true` only) | `false` rejected (only fast-receive is delivered) |
+| `i2cp.leaseSetType` | applied (`3` only) | classic/encrypted/meta/PQ rejected |
+| `i2cp.leaseSetEncType` | applied (`4` only) | PQ types 5–7 rejected |
+| `i2cp.outbound.tunnel.switch` | ignored | Proposal 171 draft; spec-defined ignore |
+| _unknown key_ | recorded | logged as `Unknown` note; never alters policy |
+
+Parsing rules for every numeric option:
+
+- Empty value rejected.
+- Leading `+`/`-` rejected (unsigned only).
+- ASCII whitespace rejected.
+- `u8`/`u16`/`u32` overflow rejected.
+- Mixed-case `True`/`TRUE` rejected; literal `true`/`false` only for
+  boolean options.
+
+Backup quantity and length variance are recorded as informational
+notes; they never silently replace target quantity/length. Router-wide
+ceilings (`MAX_DESTINATION_INBOUND`, `MAX_DESTINATION_OUTBOUND`,
+`MAX_DESTINATION_BUILD_CONCURRENCY`, `MAX_DESTINATION_FAILURE_THRESHOLD`,
+`MAX_PENDING_DESTINATION_MESSAGES`, `MAX_PENDING_DESTINATION_BYTES`,
+`MAX_LEASE_PUBLICATION_MARGIN_SECONDS`,
+`MAX_LEASE_ROTATION_MARGIN_SECONDS`) are authoritative.
+
+### Session registry
+
+Bounded per-connection and per-router counters; default M9 limits are
+`max_per_connection = 1`, `max_per_router = 16`. Sessions use a
+reserve → commit → rollback transaction shape. Session IDs are
+monotonically assigned by the registry, skip the reserved `0xffff`,
+and never reuse a stale ID while a reservation still exists. Duplicate
+Destination ownership across active/reserved sessions is rejected.
+
+### Reconfiguration classes
+
+| Class | Behaviour |
+| --- | --- |
+| `MutableWithRebuild` | `inbound.quantity`, `outbound.quantity`, `inbound.length`, `outbound.length` |
+| `MutableImmediate` | `inbound.backupQuantity`, `outbound.backupQuantity`, `inbound.lengthVariance`, `outbound.lengthVariance` |
+| `ImmutableAfterCreate` | `i2cp.leaseSetType`, `i2cp.leaseSetEncType` |
+| `Unsupported` | `i2cp.messageReliability`, `i2cp.fastReceive`, all unknown keys |
+
+Reconfigure requests are validated all-or-nothing before any
+mutation; any `ImmutableAfterCreate` or `Unsupported` classification
+rejects the whole request.
+
+### Typed actions
+
+```text
+ReserveClientDestination { verified_session, projected_config, connection }
+ReconfigureClientDestination { verified_session, projected_config, connection }
+DestroyClientDestination { connection, session, destination_hash }
+RequestBandwidthSnapshot { connection }
+RequestDestinationLookup { connection, key }
+```
+
+Action payloads contain only verified/typed values; raw client
+strings never appear in an `I2cpAction`. `i2pr-api` owns no sockets,
+timers, or Tokio tasks; the Plan 167 daemon is the sole translator
+from these actions to runtime state.
+
+### M9 compatibility profile (Plan 164)
 
 i2pr does not claim blanket API 0.9.67 compliance. The M9 profile
 targets the modern Standard LeaseSet2 + Ed25519/X25519 path:
@@ -208,24 +348,24 @@ implemented-m9
   Disconnect (30)
 
 planned-later
-  multi-session subsession semantics (Plan 165 decides acceptance)
+  multi-session subsession semantics (Plan 165 decided: unsupported)
 
 explicitly-unsupported
   BlindingInfo (42); EncryptedLeaseSet/MetaLeaseSet publication;
-  PQ encryption types 5-7; offline-signed sections
+  PQ encryption types 5-7; offline-signed sections; zero-hop tunnels;
+  guaranteed reliability; non-fast receive
 
 spec-defined-ignore
-  Proposal 171 outbound-tunnel-switching flag (draft; exact flag key
-    verified at Plan 165); SendMessageExpires reliability-override
-    bits 10-9 (unimplemented per specification)
+  Proposal 171 outbound-tunnel-switching flag (draft; ignored
+    per Plan 165 disposition table);
+  SendMessageExpires reliability-override bits 10-9 (unimplemented
+    per specification)
 
 legacy-deprecated
   CreateLeaseSet (4); ReceiveMessageBegin/End (6/7);
   RequestLeaseSet (21); ReportAbuse (29);
   abandoned preliminary CreateLeaseSet2 (40, treated as unknown)
 ```
-
-### Wire rules recorded
 
 - Connection preamble: single protocol byte `0x2a`.
 - Common frame: big-endian `uint32` body length, `uint8` type, body.
@@ -263,10 +403,16 @@ legacy-deprecated
   `manifest.tsv`, enforced by `scripts/check-i2cp-vectors.sh` in
   routine Linux CI; `crates/i2pr-api/tests/i2cp_vectors.rs` pins
   field expectations and typed rejections.
-- Later passes own behavior: Plan 165 (connection/session/options),
-  Plan 166 (client-owned destinations + LeaseSet2), Plan 167
-  (loopback listener), Plan 168 (data plane), Plan 169 (product +
-  hardening), Plan 170 (independent clients + closure).
+- Plan 165 extends `crates/i2pr-api/src/i2cp/` with `connection`,
+  `verify`, `config`, `session`, and `actions` modules; unit tests in
+  each module cover the plan §9 cases (legal/illegal transitions,
+  SessionConfig signature/date/option verification, registry
+  reserve/commit/rollback, duplicate-destination rejection, exact
+  SessionStatus mapping, reconfiguration all-or-nothing).
+- Later passes own behavior: Plan 166 (client-owned destinations +
+  LeaseSet2), Plan 167 (loopback listener), Plan 168 (data plane),
+  Plan 169 (product + hardening), Plan 170 (independent clients +
+  closure).
 
 ## Open decisions
 
