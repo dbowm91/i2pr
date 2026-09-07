@@ -103,11 +103,11 @@ Populated only from executed evidence:
 
 ```text
 closing_sha = d30718f
-routine_ci_run = <hosted run ID, filled after push>
-routine_ci_ubuntu = <pending>
-routine_ci_macos = <pending>
-msrv = <hosted-only>
-dependency_policy = passed (local)
+routine_ci_run = 34152551072
+routine_ci_ubuntu = passed
+routine_ci_macos = passed
+msrv = passed
+dependency_policy = passed (local + hosted)
 ```
 
 Local floor on the closing tree (all executed 2026-09-07):
@@ -134,10 +134,20 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py' =
 cargo deny check advisories bans sources = passed
 ```
 
-All acceptance criteria in Plan 164 §12 are satisfied except hosted
-CI confirmation, which follows the push. Criterion 14 (routine CI on
-the exact closing commit) is closed by the hosted run recorded
-above; any hosted failure reopens this status before Plan 165.
+All acceptance criteria in Plan 164 §12 are satisfied. Hosted run
+`34152551072` passed all four routine jobs (Quality Ubuntu, Quality
+macOS, MSRV, Dependency policy) on tip `9bb6a16`, which contains the
+implementation closing commit `d30718f` plus two evidence-record
+commits.
+
+One hosted failure occurred during closure and was corrected without
+weakening any check: run `34151478141` failed Quality macOS because
+`crates/i2pr-api/tests/i2cp_vectors.rs` resolved fixtures relative
+to the process working directory, while the macOS lane executes each
+test binary directly from the workspace root. Fixed in `9bb6a16` by
+resolving via `CARGO_MANIFEST_DIR` (verified locally by running the
+test binary directly); no fixture, codec, checker, or workflow logic
+changed.
 
 ## Handoff
 
