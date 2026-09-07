@@ -33,6 +33,7 @@ plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
 plan_161 = passed-m8-ssu2-independent-ipv4-interop-and-final-closure
 plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 plan_163 = registered-m9-i2cp-roadmap
+plan_164 = passed-m9-i2cp-protocol-and-wire-foundation
 
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
@@ -44,14 +45,15 @@ milestone8_ssu2_direction_b = passed-via-plan161
 milestone8_ssu2_ledger = landed-via-plan161
 milestone8_final_acceptance = closed-via-plan161
 milestone9_planning_authority = plan163
+milestone9_wire_foundation = passed-via-plan164
 milestone9_final_acceptance = not-yet-closed
-next_executable_plan = 164
+next_executable_plan = 165
 next_product_layer = milestone9-i2cp
 ```
 
 Milestone 8 is **closed** via [**Plan 161**](plans/161-status.md) within its bounded direct-interop scope. Directions A and B are genuinely proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real loopback UDP, including authenticated session establishment, small and fragmented I2NP/DatabaseStore exchange with return DeliveryStatus traffic, cached-token behavior, malformed/resource rows, and the fail-closed external evidence lane. [**Plan 162**](plans/162-status.md) passed the narrow external-test lane correction. Public-network, NetDB/tunnel/destination, IPv6-external, PQ, SSU1, and Milestone 6 mixed-router interoperability remain outside that claim.
 
-Milestone 9 / I2CP planning is now registered via [**Plan 163**](plans/163-status.md). Execute [**Plan 164**](plans/164-m9-i2cp-protocol-and-wire-foundation.md) next, then Plans 165–170 in order. The M9 architecture reuses the existing destination product rather than creating an I2CP-specific router stack: runtime-neutral I2CP framing/session state lives in `i2pr-api`, TCP/Tokio listener ownership remains in `i2pr-daemon`, and `i2pr-client` gains an explicit client-owned destination capability. For I2CP, the external client proves Destination signing-key ownership with a signed SessionConfig and supplies a signed Standard LeaseSet2 plus required X25519 decryption key; i2pr must not require the client's Destination signing private key. I2CP remains experimental, disabled by default, and loopback-only throughout M9. Final Plan 170 targets independent Java I2P and Go I2CP clients with cross-client application traffic and fail-closed hosted evidence.
+Milestone 9 / I2CP planning is now registered via [**Plan 163**](plans/163-status.md). [**Plan 164**](plans/164-status.md) passed the I2CP source/profile/wire foundation: pinned official I2CP sources with Java I2P 2.13.0 and go-i2cp references, the explicit M9 compatibility profile, runtime-neutral `i2pr-api::i2cp` bounded framing/message codecs with committed fixtures and a routine-CI vector checker, and no sockets or sessions. Execute [**Plan 165**](plans/165-m9-i2cp-connection-session-and-options.md) next, then Plans 166–170 in order. The M9 architecture reuses the existing destination product rather than creating an I2CP-specific router stack: runtime-neutral I2CP framing/session state lives in `i2pr-api`, TCP/Tokio listener ownership remains in `i2pr-daemon`, and `i2pr-client` gains an explicit client-owned destination capability. For I2CP, the external client proves Destination signing-key ownership with a signed SessionConfig and supplies a signed Standard LeaseSet2 plus required X25519 decryption key; i2pr must not require the client's Destination signing private key. I2CP remains experimental, disabled by default, and loopback-only throughout M9. Final Plan 170 targets independent Java I2P and Go I2CP clients with cross-client application traffic and fail-closed hosted evidence.
 
 The `[sam]` config section remains disabled by default and loopback-only when enabled. No localhost SAM or I2CP result is router-to-router interoperability evidence.
 
@@ -73,7 +75,7 @@ crates/
   i2pr-netdb-persist/       Persistent cache + bounded SU3 reseed ingestion
   i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build, runtime-neutral data plane
   i2pr-client/              Destinations, ECIES-X25519-AEAD-Ratchet session layer, routing, I2P Streaming
-  i2pr-api/                 Runtime-neutral application-protocol adapters (SAM 3.1 today; I2CP planned by M9)
+  i2pr-api/                 Runtime-neutral application-protocol adapters (SAM 3.1 plus the M9 I2CP wire/profile foundation; no sockets)
   i2pr-daemon/              CLI, configuration, composition, supervision, application listener ownership
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
 tools/

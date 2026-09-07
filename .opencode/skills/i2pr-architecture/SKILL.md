@@ -112,6 +112,7 @@ writing or updating a deep-dive.
 | `i2pr-runtime` | `docs/architecture/i2pr-runtime.md` | The only production owner of Tokio, sockets, timers, channels, cancellation. |
 | `i2pr-daemon` | `docs/architecture/i2pr-daemon.md` | CLI, config, identity lifecycle, Plan 106 NetDB/bootstrap, Plan 117 dispatch. |
 | `i2pr-client` | `docs/architecture/i2pr-client.md` | Local destination runtime, ECIES destination Garlic session, destination routing, Streaming core. |
+| `i2pr-api` | `docs/architecture/i2pr-api.md` | Runtime-neutral application adapters: SAM 3.1 parsing/session/registry/FORWARD/NAMING plus the M9 I2CP wire/profile foundation. No sockets, no Tokio. |
 | `i2pr-testkit` | `docs/architecture/i2pr-testkit.md` | Deterministic simulation; no production crate may depend on it. |
 | `tools/i2pr-interop/` | `docs/architecture/tooling.md` | Non-production launcher seam; never activates `i2pr-daemon`. |
 
@@ -213,9 +214,21 @@ record is not `superseded-by-*`. Currently:
   2.61.0; fail-closed 15-row ledger
   `tests/integration/ssu2/run-independent.sh` with checker
   `scripts/check-ssu2-acceptance-evidence.sh` and manual workflow
-  `.github/workflows/ssu2-external.yml` green locally and hosted;
-  Milestone 8 closed within that bounded scope, milestone9-planning
-  next); Plan 162 passed the narrow external-test lane/CI corrective.
+   `.github/workflows/ssu2-external.yml` green locally and hosted;
+   Milestone 8 closed within that bounded scope); Plan 162 passed the
+   narrow external-test lane/CI corrective.
+- **Milestone 9 planning authority**: Plan 163 (registered M9 I2CP
+   roadmap, see [`plans/163-status.md`](../../plans/163-status.md)):
+   client-owned destinations, `i2pr-api::i2cp` framing/session
+   state, daemon-owned loopback listener, reuse of the
+   `i2pr-client` destination product, Plans 164–170 in order.
+- **Milestone 9 I2CP wire/profile foundation (passed)**: Plan 164
+   (`passed-m9-i2cp-protocol-and-wire-foundation`, see
+   [`plans/164-status.md`](../../plans/164-status.md)):
+   runtime-neutral `i2pr-api::i2cp` preamble/frame/message codecs,
+   M9 compatibility profile, committed `tests/fixtures/i2cp/`
+   vectors with `scripts/check-i2cp-vectors.sh`; no sockets,
+   sessions, or interop claim. Plan 165 is next.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).
@@ -247,6 +260,7 @@ not weaken the script.
 | `scripts/check-plan095-workflow.sh` | Plan 095 manual live-wire workflow artifact paths. |
 | `scripts/check-sam-acceptance-evidence.sh` | Plan 151 SAM evidence integrity (no synthetic `passed` rows; CI-enforced). |
 | `scripts/check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity (no synthetic `passed` rows; CI-enforced). |
+| `scripts/check-i2cp-vectors.sh` | Plan 164 I2CP fixture corpus drift (CI-enforced). |
 
 ## Doc-vs-source audit pattern
 
@@ -277,9 +291,10 @@ When asked to audit doc-vs-source drift:
 
 The 2026-08-27 audit
 (`docs/architecture/audit/2026-08-27-doc-audit.md`) is the canonical
-template. The script tables in `overview.md` (10 boundary scripts)
-and `tooling.md` (10 scripts + 13 crates + 32 deps) are the common
-drift points; re-check them after any new script lands.
+template. The script tables in `overview.md` and `tooling.md` are the
+common drift points; re-check row counts against
+`ls scripts/check-*.sh` after any new script lands (a new checker
+must appear in both tables, in routine CI, and in the floors).
 
 ## Writing or updating a deep-dive
 

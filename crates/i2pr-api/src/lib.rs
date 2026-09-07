@@ -17,6 +17,11 @@
 //! stays runtime-neutral; `i2pr-daemon` wires it into the
 //! supervised loopback listener.
 //!
+//! Plan 164 adds the runtime-neutral I2CP wire/profile foundation
+//! (`i2cp`): strict bounded framing, structural message codecs, and
+//! the explicit M9 compatibility profile, with no sockets, sessions,
+//! or interoperability claim.
+//!
 //! # Layering
 //!
 //! ```text
@@ -36,6 +41,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod i2cp;
 pub mod sam;
 
 pub use sam::{

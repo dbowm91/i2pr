@@ -22,6 +22,7 @@ Paths are relative to the workspace root.
 | `scripts/check-plan095-workflow.sh` | Plan 095 manual live-wire workflow artifact-path drift and cleanup-guard violations. |
 | `scripts/check-sam-acceptance-evidence.sh` | Plan 151 SAM evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code-gated helpers (CI-enforced). |
 | `scripts/check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code/evidence-key-gated helpers with explicit `--ignored --exact` external selection (CI-enforced). |
+| `scripts/check-i2cp-vectors.sh` | Drift in the I2CP wire fixture corpus under `tests/fixtures/i2cp/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, the required Plan 164 fixture IDs, and the narrow `i2pr-api --test i2cp_vectors` suite. |
 | `scripts/fuzz-smoke.sh` | Opt-in smoke run of all 22 fuzz targets for 32 iterations each at seed=1 (`-runs=32 -seed=1`). Requires `cargo-fuzz` + nightly. Disables LeakSanitizer (`LSAN_OPTIONS=detect_leaks=0`) for managed environments. |
 
 **How they work**: `check-dependency-direction.sh` uses
@@ -75,6 +76,25 @@ pattern scanning and `sha256sum` / `find` for manifest integrity.
   data-phase vectors, reproduced byte-for-byte through the session
   path). No private keys, tokens, or operational secrets.
 - **Verified by** `scripts/check-ssu2-vectors.sh` on every CI run.
+
+## `tests/fixtures/i2cp/` — I2CP wire fixture corpus (Plan 164)
+
+- `manifest.tsv` — 29 entries (22 positive, 7 malformed) with id,
+  path, classification, SHA-256, and provenance
+  (`locally-authored-deterministic-vector`).
+- Hex files: `protocol-byte`, framed `get-date`/`set-date`,
+  `create-session`/`reconfigure-session`/`destroy-session`,
+  `session-status-created`, `request-variable-leaseset`,
+  `create-leaseset2` (Standard LeaseSet2 + test-only decryption
+  key), `send-message`/`send-message-expires`,
+  `message-payload`/`message-status-accepted`,
+  `get-bandwidth-limits`/`bandwidth-limits`, `dest-lookup`,
+  `dest-reply-destination`/`dest-reply-hash`, `disconnect`,
+  `host-lookup-hostname`, `host-reply-success`/`host-reply-failure`,
+  plus malformed unknown/deprecated/oversize/truncated/trailing/
+  bad-destination/short-signature negatives. Fixed test-only
+  keys/inputs are documented in `README.md`; no secrets present.
+- **Verified by** `scripts/check-i2cp-vectors.sh` on every CI run.
 
 ## `tests/integration/ntcp2/` — synthetic interoperability lane (Plan 036)
 
@@ -322,7 +342,7 @@ CI pass.
 
 | Job | OS | Steps |
 | --- | --- | --- |
-| **Quality** | ubuntu-latest + macos-latest (matrix, fail-fast: false) | Checkout → Rust 1.95.0 + rustfmt + clippy → `cargo fmt --all --check` → `cargo check --workspace` → `cargo check --workspace --all-targets` → `cargo test --workspace` → `cargo clippy --workspace --all-targets --all-features -- -D warnings` → `cargo doc` (with `-D warnings`) → `check-dependency-direction.sh` (both OS) → `check-runtime-boundaries.sh` (Linux) → `check-fixture-manifest.sh` (Linux) → `check-ntcp2-vectors.sh` (Linux) → `check-ssu2-vectors.sh` (Linux) → `check-ntcp2-interoperability.sh` (Linux) → `check-constrained-host-lane-boundary.sh` (Linux) → `check-sam-acceptance-evidence.sh` (Linux) → `check-ssu2-acceptance-evidence.sh` (Linux) |
+| **Quality** | ubuntu-latest + macos-latest (matrix, fail-fast: false) | Checkout → Rust 1.95.0 + rustfmt + clippy → `cargo fmt --all --check` → `cargo check --workspace` → `cargo check --workspace --all-targets` → `cargo test --workspace` → `cargo clippy --workspace --all-targets --all-features -- -D warnings` → `cargo doc` (with `-D warnings`) → `check-dependency-direction.sh` (both OS) → `check-runtime-boundaries.sh` (Linux) → `check-fixture-manifest.sh` (Linux) → `check-ntcp2-vectors.sh` (Linux) → `check-ssu2-vectors.sh` (Linux) → `check-ntcp2-interoperability.sh` (Linux) → `check-constrained-host-lane-boundary.sh` (Linux) → `check-sam-acceptance-evidence.sh` (Linux) → `check-ssu2-acceptance-evidence.sh` (Linux) → `check-i2cp-vectors.sh` (Linux) |
 | **MSRV** | ubuntu-latest | Rust **1.88.0** → `cargo check --workspace --all-targets` |
 | **Dependency policy** | ubuntu-latest | Rust 1.95.0 → `cargo-deny check advisories bans sources` |
 
@@ -447,9 +467,9 @@ unwinding panics and no LTO (fast builds over binary size).
 7. **`LSAN_OPTIONS=detect_leaks=0` in fuzz-smoke.** Disabled
    because managed CI runs sanitizer binaries under ptrace, which
    triggers false LeakSanitizer aborts.
-8. **Manifest-driven fixture integrity.** Both I2NP and NTCP2
-   corpora use TSV manifests with SHA-256 hashes, classification,
-   provenance, and independence tracking.
+8. **Manifest-driven fixture integrity.** The I2NP, NTCP2,
+   SSU2, and I2CP corpora use TSV manifests with SHA-256 hashes,
+   classification, provenance, and independence tracking.
 9. **Edition 2024 in production, 2021 in fuzz.** Likely because
    `libfuzzer-sys` / `cargo-fuzz` aren't edition-2024-compatible
    yet.
@@ -471,6 +491,7 @@ bash scripts/check-runtime-boundaries.sh
 bash scripts/check-fixture-manifest.sh        # when I2NP fixture bytes change
 bash scripts/check-ntcp2-vectors.sh           # when NTCP2 vector bytes change
 bash scripts/check-ssu2-vectors.sh            # when SSU2 vector bytes change
+bash scripts/check-i2cp-vectors.sh             # when I2CP vector bytes change
 bash scripts/check-ntcp2-interoperability.sh  # when ntcp2 evidence/manifest change
 bash scripts/check-sam-acceptance-evidence.sh   # SAM ledger changed
 bash scripts/check-ssu2-acceptance-evidence.sh  # SSU2 ledger changed

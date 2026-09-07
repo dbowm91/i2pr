@@ -39,8 +39,10 @@ Plan 159 = passed SSU2 v2 path validation/publication/transport selection
 Plan 160 = passed SSU2 v2 peer test and relay reachability
 Plan 161 = passed M8 SSU2 independent IPv4 interop and final closure
 Plan 162 = passed external-test lane isolation / routine-CI corrective
-next executable plan = none (milestone9-planning next)
-next product layer = milestone9-planning
+Plan 163 = registered M9 I2CP roadmap
+Plan 164 = passed M9 I2CP protocol and wire foundation
+next executable plan = 165
+next product layer = milestone9-i2cp
 ```
 
 For current SSU2 interop work, read in this order:
@@ -60,6 +62,13 @@ Read in this order for SAM work:
 4. [`plans/149-status.md`](plans/149-status.md) — passed product-composition authority
 5. Plans 146–148 for historical/reference context.
 
+Read in this order for Milestone 9 I2CP work:
+
+1. [`plans/164-status.md`](plans/164-status.md)
+2. [`plans/164-m9-i2cp-protocol-and-wire-foundation.md`](plans/164-m9-i2cp-protocol-and-wire-foundation.md)
+3. [`plans/163-m9-i2cp-roadmap.md`](plans/163-m9-i2cp-roadmap.md) — planning authority
+4. Plans 165–170 in execution order; do not skip ahead.
+
 Do **not** trust prose that disagrees with executable tests/scripts. The newest
 explicit superseding status wins when historical records conflict.
 
@@ -75,7 +84,7 @@ explicit superseding status wins when historical records conflict.
 - `i2pr-daemon` — CLI/composition root and SAM runtime/socket ownership.
 - `i2pr-tunnel` — runtime-neutral exploratory/tunnel substrate.
 - `i2pr-client` — destination lifecycle, LeaseSet2, ECIES session/routing, Streaming.
-- `i2pr-api` — runtime-neutral SAM 3.1 parsing/state/registry/FORWARD/NAMING.
+- `i2pr-api` — runtime-neutral SAM 3.1 parsing/state/registry/FORWARD/NAMING plus the M9 I2CP wire/profile foundation (no sockets).
 - `i2pr-testkit` — deterministic simulation/fault fixtures; no production crate may depend on it.
 - `tools/i2pr-interop` — non-production test launcher.
 
@@ -216,6 +225,7 @@ bash scripts/check-runtime-boundaries.sh
 bash scripts/check-fixture-manifest.sh
 bash scripts/check-ntcp2-vectors.sh
 bash scripts/check-ssu2-vectors.sh
+bash scripts/check-i2cp-vectors.sh
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-constrained-host-lane-boundary.sh
 bash scripts/check-sam-acceptance-evidence.sh
@@ -284,6 +294,19 @@ bash scripts/check-ssu2-acceptance-evidence.sh
 Plan 155 added the SSU2 fixture corpus (`tests/fixtures/ssu2/`) and its
 checker (`scripts/check-ssu2-vectors.sh`), enforced in routine Linux CI;
 do not weaken it to make CI pass.
+
+Focused I2CP seams currently include:
+
+```text
+cargo test --locked -p i2pr-api --all-targets
+cargo test --locked -p i2pr-api --test i2cp_vectors
+bash scripts/check-i2cp-vectors.sh
+```
+
+Plan 164 added the I2CP fixture corpus (`tests/fixtures/i2cp/`) and its
+checker (`scripts/check-i2cp-vectors.sh`), enforced in routine Linux CI;
+do not weaken it to make CI pass. No I2CP listener, session, or
+client-interoperability claim exists yet; those belong to Plans 165–170.
 
 ## Testing conventions
 
@@ -367,6 +390,8 @@ closed.
 - Plans 155–160 are passed Milestone 8 SSU2 v2 local protocol/runtime/reachability stages.
 - Plan 161 is passed: directions A+B (+ cached-token/malformed rows) against exact-pinned i2pd 2.61.0 are proven over real loopback UDP with authenticated bidirectional evidence, and the fail-closed ledger/checker/workflow lane passes locally and hosted (routine CI runs `34050058216`/`34053041778`, external runs `34051298144`/`34053042857`). Milestone 8 is closed within that bounded scope.
 - Plan 162 passed the narrow external-test lane/CI corrective.
+- Plan 163 registered the Milestone 9 I2CP roadmap (planning authority only).
+- Plan 164 passed the M9 I2CP protocol and wire foundation (structural codecs, fixtures, profile; no behavior claim).
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
 - No Plan 161 direction-A evidence implies Milestone 6 destination/Streaming/tunnel interoperability or broad router interoperability.
@@ -384,6 +409,7 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 161 has passed and Milestone 8 is closed within its
-bounded direct-interop scope. The next product layer is milestone9-planning.
-Do not extend Plan 161's evidence into broader interoperability claims.**
+Current handoff: **Plan 164 has passed the M9 I2CP wire/profile
+foundation. Execute Plan 165 next (connection/session/options), then
+Plans 166–170 in order. Do not extend Plan 164's structural codecs
+into a behavior or interoperability claim.**

@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, and Milestone 8 SSU2 execution. Plans 155–161 passed the SSU2 v2 stack including independent IPv4 interop against exact-pinned i2pd 2.61.0; Milestone 8 is closed within its bounded scope and milestone9-planning is next.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, Milestone 8 SSU2, and Milestone 9 I2CP execution. Plans 155–161 passed the SSU2 v2 stack including independent IPv4 interop against exact-pinned i2pd 2.61.0; Milestone 8 is closed within its bounded scope, Plan 163 registered the M9 I2CP roadmap, and Plan 164 passed the I2CP wire/profile foundation; Plan 165 is next.
 ---
 
 # I2PR Local Development
@@ -57,9 +57,15 @@ milestone8_ssu2_direction_b = passed-via-plan161
 milestone8_ssu2_ledger = landed-via-plan161
 milestone8_final_acceptance = closed-via-plan161
 
-next_executable_plan = none (milestone9-planning next)
-resume_after_plan162 = 161 (done)
-next_product_layer = milestone9-planning
+plan_163 = registered-m9-i2cp-roadmap
+plan_164 = passed-m9-i2cp-protocol-and-wire-foundation
+
+milestone9_planning_authority = plan163
+milestone9_wire_foundation = passed-via-plan164
+milestone9_final_acceptance = not-yet-closed
+
+next_executable_plan = 165
+next_product_layer = milestone9-i2cp
 ```
 
 Read in order for current SSU2 work:
@@ -79,6 +85,13 @@ Read in order for current SSU2 work:
 For SAM/local-product history, then read Plan 151, 150, 149 and Plans 146–148
 as needed.
 
+Read in order for Milestone 9 I2CP work:
+
+1. `plans/164-status.md`
+2. `plans/164-m9-i2cp-protocol-and-wire-foundation.md`
+3. `plans/163-m9-i2cp-roadmap.md` (planning authority)
+4. Plans 165–170 in execution order; do not skip ahead.
+
 Plans 155–160 passed the local SSU2 v2 protocol/runtime/reachability sequence.
 Plan 161 has passed the final independent gate: directions A
 (`i2pr initiator -> i2pd responder`) and B (`i2pd initiator -> i2pr
@@ -93,12 +106,24 @@ routine-CI-enforced), and the manual
 recorded nonblocking debt. Plan 162 passed its
 narrow corrective: routine CI now ignores the environment-dependent external
 test while retaining all-target compilation, and explicit external selection
-remains fail-closed. Milestone 8 is closed within this bounded scope;
-milestone9-planning is next.
+remains fail-closed. Milestone 8 is closed within this bounded scope.
+
+Plan 163 registered the Milestone 9 I2CP roadmap (client-owned
+destinations, `i2pr-api::i2cp` framing/session state, daemon-owned
+loopback listener, reuse of the `i2pr-client` destination product,
+Plans 164–170 in order). Plan 164 passed the wire/profile
+foundation: pinned official I2CP sources with Java I2P 2.13.0 and
+go-i2cp references, the explicit M9 compatibility profile,
+runtime-neutral `i2pr-api::i2cp` bounded framing/message codecs with
+committed fixtures (`tests/fixtures/i2cp/`) and the routine-CI
+vector checker (`scripts/check-i2cp-vectors.sh`). No listener,
+session, destination activation, or client-interoperability claim
+exists yet; those belong to Plans 165–170.
 
 SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 SSU2 public advertisement/public-network participation and broad router
-interoperability remain unclaimed.
+interoperability remain unclaimed. I2CP stays experimental,
+loopback-only, disabled by default, and non-advertised throughout M9.
 
 ## Retain these working pieces
 
@@ -117,6 +142,7 @@ Do not rebuild them without a concrete defect:
 - Plan 150 external core evidence: pinned i2psam + qualified i2plib SAM surface, exact two-direction 2 MiB transfers, private destinations, SILENT, NAMING, negative matrix, and positive FORWARD;
 - Plans 155–160 SSU2 local protocol/runtime/path/peer-test/relay architecture;
 - Plan 161 direction-A handshake transcript corrections and regenerated vectors. Independent i2pd comparison exposed those defects; do not revert them to match older i2pr↔i2pr assumptions.
+- Plan 164 I2CP framing/message codecs, the M9 compatibility profile, and the committed `tests/fixtures/i2cp/` vectors. Do not extend structural codecs into behavior/session/listener claims; those belong to Plans 165–170.
 
 ## Why Plan 151 exists
 
@@ -292,6 +318,7 @@ bash scripts/check-runtime-boundaries.sh
 bash scripts/check-fixture-manifest.sh
 bash scripts/check-ntcp2-vectors.sh
 bash scripts/check-ssu2-vectors.sh
+bash scripts/check-i2cp-vectors.sh
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-constrained-host-lane-boundary.sh
 bash scripts/check-sam-acceptance-evidence.sh
@@ -323,6 +350,14 @@ cargo test --locked -p i2pr-runtime --lib
 cargo test --locked -p i2pr-runtime --test ssu2_local -- --test-threads=1
 cargo test --locked -p i2pr-runtime --test ssu2_peer_relay -- --test-threads=1
 bash scripts/check-ssu2-vectors.sh
+```
+
+Focused I2CP floor:
+
+```text
+cargo test --locked -p i2pr-api --all-targets
+cargo test --locked -p i2pr-api --test i2cp_vectors
+bash scripts/check-i2cp-vectors.sh
 ```
 
 Plan 162 ordinary no-peer regression:
@@ -367,6 +402,9 @@ bash scripts/check-ssu2-acceptance-evidence.sh
 - Do not weaken M6 Streaming semantics for SAM tests.
 - Do not weaken SSU2 authentication/RouterInfo/token/replay semantics for external interop.
 - Do not modify SSU2 production wire behavior to repair Plan 162 CI selection.
+- I2CP framing/session state stays in `i2pr-api` with no sockets, Tokio, timers, or task ownership; TCP/Tokio ownership stays in `i2pr-daemon`; destination behavior stays in `i2pr-client` (which must never depend on `i2pr-api`).
+- I2CP decryption material stays non-`Clone`, redacted, and zeroized; never log private keys, session secrets, tokens, or raw payloads.
+- Do not claim I2CP behavior, sessions, listeners, or client interop from structural codecs alone.
 
 ## Final claim rules
 
@@ -379,12 +417,14 @@ bash scripts/check-ssu2-acceptance-evidence.sh
   ledger/checker/workflow lane green locally and hosted); Milestone 8 is
   closed within that bounded scope.
 - Plan 162 passed the narrow external-test lane/CI corrective; it must not broaden or downgrade direction-A protocol evidence.
-- Next product layer is milestone9-planning; do not extend Plan 161's evidence into broader claims.
+- Plan 163 registered the M9 I2CP roadmap (planning authority only).
+- Plan 164 passed the M9 I2CP wire/profile foundation (structural codecs, fixtures, profile; no behavior claim).
+- Next product layer is milestone9-i2cp (Plan 165 next); do not extend Plan 161's evidence into broader claims.
 - `milestone6_interoperable = not-yet-claimed` remains unchanged.
 - SSU2 public-network participation, broad router interoperability, IPv6 external interop, PQ v3/v4, and SSU1 remain unclaimed/deferred as documented.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
 
-Current handoff: **Plan 161 has passed and Milestone 8 is closed within its
-bounded direct-interop scope. The next product layer is
-milestone9-planning; do not extend Plan 161's evidence into broader
-interoperability claims.**
+Current handoff: **Plan 164 has passed the M9 I2CP wire/profile
+foundation. Execute Plan 165 next (connection/session/options), then
+Plans 166–170 in order. Do not extend Plan 164's structural codecs
+into a behavior or interoperability claim.**

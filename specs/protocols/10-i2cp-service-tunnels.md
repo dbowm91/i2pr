@@ -4,6 +4,20 @@ Status: **required**
 Primary roadmap milestones: **9–10**  
 Dependencies: destinations, NetDB, streaming and router lifecycle
 
+> Plan 164 note: the M9 I2CP wire/profile foundation is landed
+> (`crates/i2pr-api/src/i2cp/`, fixtures under
+> `tests/fixtures/i2cp/`). All service-tunnel material in this
+> dossier (HTTP, SOCKS5, generic TCP, IRC) is **Milestone 10** scope
+> and is unchanged by Plans 164–170.
+>
+> Normative M9 sources: official I2CP specification and overview at
+> `i2p/i2p.website @ 26467e4b275e3a58280b9d4e6d4745d58bb8c499`
+> (accurate for API 0.9.67); Java I2P 2.13.0
+> (`i2p/i2p.i2p @ 9134f808337b401e8e53c73734c81fab04280c9d`) and
+> go-i2cp (`go-i2p/go-i2cp @ b529ee1c10a6011558b4d69fc9436a4afc489eac`)
+> as unmodified inspected references. See [SOURCES.md](../SOURCES.md)
+> and the M9 section below.
+
 ## Scope
 
 This dossier covers two related but distinct layers:
@@ -168,6 +182,91 @@ For service adapters, behavior may be policy rather than I2P wire protocol. Reco
 - Arbitrary HTTP CONNECT, transparent proxying and browser-specific helper features: deferred.
 - Full I2PTunnel UI/configuration parity: deferred; the MVP is CLI/config driven.
 - Every specialized Java tunnel type: deferred unless required by HTTP, SOCKS5, generic TCP or IRC MVP profiles.
+
+## M9 I2CP wire/profile foundation (Plan 164)
+
+Plan 164 lands structural codecs only: no listener, no sessions, no
+destination activation, and no interoperability claim.
+
+### Compatibility profile
+
+i2pr does not claim blanket API 0.9.67 compliance. The M9 profile
+targets the modern Standard LeaseSet2 + Ed25519/X25519 path:
+
+```text
+implemented-m9
+  GetDate / SetDate (32/33)
+  CreateSession / ReconfigureSession / DestroySession (1/2/3)
+  SessionStatus (20; codes 0-4)
+  RequestVariableLeaseSet (37; at most 16 leases)
+  CreateLeaseSet2 (41; Standard LeaseSet2 only)
+  SendMessage / SendMessageExpires (5/36)
+  MessagePayload / MessageStatus (31/22; codes 0-23, higher reserved)
+  GetBandwidthLimits / BandwidthLimits (8/23; sixteen integers, 64 bytes)
+  DestLookup / DestReply (34/35; empty/hash/destination shapes)
+  HostLookup / HostReply (38/39; structural; client probing at Plan 170)
+  Disconnect (30)
+
+planned-later
+  multi-session subsession semantics (Plan 165 decides acceptance)
+
+explicitly-unsupported
+  BlindingInfo (42); EncryptedLeaseSet/MetaLeaseSet publication;
+  PQ encryption types 5-7; offline-signed sections
+
+spec-defined-ignore
+  Proposal 171 outbound-tunnel-switching flag (draft; exact flag key
+    verified at Plan 165); SendMessageExpires reliability-override
+    bits 10-9 (unimplemented per specification)
+
+legacy-deprecated
+  CreateLeaseSet (4); ReceiveMessageBegin/End (6/7);
+  RequestLeaseSet (21); ReportAbuse (29);
+  abandoned preliminary CreateLeaseSet2 (40, treated as unknown)
+```
+
+### Wire rules recorded
+
+- Connection preamble: single protocol byte `0x2a`.
+- Common frame: big-endian `uint32` body length, `uint8` type, body.
+  The official "about 64 KB" limit is enforced as exactly 64 KiB,
+  rejected before allocation on decode and on encode.
+- Session ID: two bytes; `0xffff` means "no session".
+- Message ID and client nonce: four bytes each; nonce zero
+  suppresses status replies.
+- Strings: one-byte length prefix, at most 255 UTF-8 bytes.
+- Mapping: two-byte body length with canonical sorted-key order;
+  SessionConfig options must arrive sorted, while GetDate
+  authentication and HostReply option mappings are accepted unsorted
+  and normalized to canonical form.
+- SessionConfig: Destination, sorted Mapping, eight-byte creation
+  Date, signature sized by the destination signing type; the exact
+  received signed region is retained for Plan 165/166.
+- Payload: four-byte length prefix (64 KiB ceiling); gzip content
+  uses the ten-byte header with source/destination ports in MTIME,
+  XFL 2, and the protocol number in OS (6 Streaming, 17 datagram,
+  18 raw datagram, 224–254 experimental, 255 reserved). No
+  decompression exists yet; the 64 KiB expansion ceiling is recorded
+  for Plan 168.
+- `SendMessageExpires`: nonce, two-byte flags (bits 15–11 must be
+  zero), six-byte expiration instant (48-bit milliseconds).
+- `CreateLeaseSet2` private keys: one per LeaseSet2 encryption key
+  in order, at most eight keys and 8 KiB aggregate; secret-bearing
+  values are non-`Clone`, redacted, and zeroized.
+
+### Evidence
+
+- `crates/i2pr-api/src/i2cp/` (`mod`, `frame`, `message`, `ids`,
+  `payload`, `mapping`, `error`); `#![forbid(unsafe_code)]`, no
+  Tokio, sockets, timers, or async ownership.
+- `tests/fixtures/i2cp/` (22 positive, 7 malformed) with
+  `manifest.tsv`, enforced by `scripts/check-i2cp-vectors.sh` in
+  routine Linux CI; `crates/i2pr-api/tests/i2cp_vectors.rs` pins
+  field expectations and typed rejections.
+- Later passes own behavior: Plan 165 (connection/session/options),
+  Plan 166 (client-owned destinations + LeaseSet2), Plan 167
+  (loopback listener), Plan 168 (data plane), Plan 169 (product +
+  hardening), Plan 170 (independent clients + closure).
 
 ## Open decisions
 

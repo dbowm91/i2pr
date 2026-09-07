@@ -23,10 +23,13 @@ session gate in both directions against exact-pinned i2pd 2.61.0, and Plan 162
 closed the narrow external-test/routine-CI lane correction.
 
 The registered **Milestone 9 planning authority** is
-[**Plan 163**](163-status.md) (`registered-m9-i2cp-roadmap`). The current
-**next executable plan is Plan 164**, the I2CP source/profile/wire foundation.
-Execute Plans 164–170 sequentially; do not skip ahead based on aggregate
-workspace green status.
+[**Plan 163**](163-status.md) (`registered-m9-i2cp-roadmap`).
+[**Plan 164**](164-status.md)
+(`passed-m9-i2cp-protocol-and-wire-foundation`) closed the I2CP
+source/profile/wire foundation. The current **next executable plan is
+Plan 165**, the I2CP connection/session/options pass. Execute Plans
+165–170 sequentially; do not skip ahead based on aggregate workspace
+green status.
 
 Current classification:
 
@@ -50,6 +53,7 @@ plan_160 = passed-m8-ssu2-peer-test-and-relay-reachability
 plan_161 = passed-m8-ssu2-independent-ipv4-interop-and-final-closure
 plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 plan_163 = registered-m9-i2cp-roadmap
+plan_164 = passed-m9-i2cp-protocol-and-wire-foundation
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
@@ -70,8 +74,9 @@ milestone8_final_acceptance = closed-via-plan161
 
 milestone9_planning_authority = plan163
 milestone9_protocol = i2cp
+milestone9_wire_foundation = passed-via-plan164
 milestone9_final_acceptance = not-yet-closed
-next_executable_plan = 164
+next_executable_plan = 165
 m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 170
 next_product_layer = milestone9-i2cp
 ```
@@ -93,7 +98,7 @@ next_product_layer = milestone9-i2cp
 ### Milestone 9 — I2CP (current)
 
 - [`163-m9-i2cp-roadmap.md`](163-m9-i2cp-roadmap.md) — **registered planning authority**. Locks architecture, source/reference policy, client-owned destination ownership, loopback exposure policy, evidence model, and M9 final acceptance.
-- [`164-m9-i2cp-protocol-and-wire-foundation.md`](164-m9-i2cp-protocol-and-wire-foundation.md) — **next executable**. Refresh/pin official I2CP sources and Java/Go references; define the honest M9 feature/API profile; add runtime-neutral `i2pr-api::i2cp` bounded framing/message codecs, fixtures, and routine-CI vector checker. No sockets or sessions.
+- [`164-m9-i2cp-protocol-and-wire-foundation.md`](164-m9-i2cp-protocol-and-wire-foundation.md) — **passed**. Official I2CP sources and Java/Go references pinned; honest M9 feature/API profile; runtime-neutral `i2pr-api::i2cp` bounded framing/message codecs, fixtures, and routine-CI vector checker. No sockets or sessions.
 - [`165-m9-i2cp-connection-session-and-options.md`](165-m9-i2cp-connection-session-and-options.md) — connection/version/session state machines, canonical SessionConfig signature/date validation, bounded session registry, SessionStatus mapping, and explicit tunnel/session option projection into existing `DestinationConfig` policy.
 - [`166-m9-i2cp-client-owned-destination-and-leaseset2.md`](166-m9-i2cp-client-owned-destination-and-leaseset2.md) — central ownership pass. Add a client-owned destination mode without requiring the client's signing private key; request leases from real destination tunnels; validate/install client-signed Standard LeaseSet2 plus matching X25519 decryption key transactionally; reuse existing ECIES/routing; preserve router-owned SAM behavior.
 - [`167-m9-i2cp-loopback-server-runtime.md`](167-m9-i2cp-loopback-server-runtime.md) — daemon-owned supervised TCP listener/runtime. Disabled by default, loopback-only, bounded read/write/session resources, real-TCP session/LeaseSet2 activation and cleanup.
@@ -190,11 +195,11 @@ Plan 152 is a later M6 robustness correction discovered by the Plan 151 final SA
 - Milestone 6 local product correctness closed via Plan 134, with Plan 152 robustness corrections retained.
 - SAM 3.1 parser/session/STREAM/FORWARD/NAMING product with independent localhost client evidence; M7 closed via Plan 151.
 - SSU2 v2 local protocol/runtime/reachability product and independent direct IPv4 i2pd interop; M8 closed via Plan 161.
-- M9 I2CP implementation plans are registered; no M9 implementation claim exists yet.
+- M9 I2CP implementation plans are registered; the Plan 164 wire/profile foundation is landed with no behavior claim yet.
 
 ## What's not yet accepted
 
-- Any M9 I2CP implementation or independent-client result until Plans 164–170 execute.
+- Any M9 I2CP session/listener/behavior or independent-client result until Plans 165–170 execute.
 - Non-loopback/remote I2CP, TLS/authentication, or broad historical I2CP feature compliance.
 - Live/public NTCP2 or SSU2 router transport activation and broad mixed-router interoperability.
 - Public I2P participation and network-transport-bound NetDB/public router behavior.
@@ -213,6 +218,7 @@ Current handoff:
 ```text
 M8 closed via Plan 161; Plan 162 corrective passed
 Plan 163 = registered M9 I2CP planning authority
-execute Plan 164 next
-then 165 -> 166 -> 167 -> 168 -> 169 -> 170
+Plan 164 = passed M9 I2CP wire/profile foundation
+execute Plan 165 next
+then 166 -> 167 -> 168 -> 169 -> 170
 ```

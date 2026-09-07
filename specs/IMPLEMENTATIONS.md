@@ -19,6 +19,24 @@ compatibility-watch debt, not an M8 target. Specifications remain
 normative; implementation code is reference-only under the
 clean-room restriction in [SOURCES.md](SOURCES.md).
 
+Milestone 9 I2CP references (Plan 163 roadmap, Plan 164 foundation):
+Java I2P 2.13.0 exact commit
+`9134f808337b401e8e53c73734c81fab04280c9d` is the mandatory primary
+I2CP client reference; go-i2p/go-i2cp exact commit
+`b529ee1c10a6011558b4d69fc9436a4afc489eac` is the mandatory
+secondary client target (both unmodified at Plan 170). The official
+I2CP specification pages at website commit
+`26467e4b275e3a58280b9d4e6d4745d58bb8c499` are normative; client
+code below is reference-only under the clean-room restriction in
+[SOURCES.md](SOURCES.md). Plan 164 implements structural codecs only
+(no listener, no sessions, no interoperability claim).
+
+| Surface | Primary source area |
+|---|---|
+| Java I2P client-side I2CP API | I2CP message classes and session-config/options types under `core` at the 2.13.0 pin |
+| Java I2P router-side I2CP handlers | I2CP session establishment, LeaseSet2 intake, and message dispatch handlers under `router` at the 2.13.0 pin |
+| go-i2cp client library | message codecs and session lifecycle at the pinned commit |
+
 ## How to use implementation evidence
 
 For each protocol implementation, compare at least the following:

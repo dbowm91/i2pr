@@ -10,6 +10,35 @@ Repository: [`i2p/i2p.website`](https://github.com/i2p/i2p.website)
 
 Pinned commit: [`88596022920bdf99f27db27688faf4f204792fcd`](https://github.com/i2p/i2p.website/commit/88596022920bdf99f27db27688faf4f204792fcd)
 
+## Milestone 9 refresh (Plan 164, 2026-09-07)
+
+Plan 164 verified the Plan 163 starting snapshot before implementing
+the `i2pr-api::i2cp` wire foundation. The official I2CP specification
+and overview pages exist at the pinned website commit with no
+materially newer I2CP revision (the only later touch is cosmetic
+anchor repair); the Plan 163 pin is retained unchanged.
+
+- Official I2CP spec snapshot: website commit
+  `26467e4b275e3a58280b9d4e6d4745d58bb8c499`,
+  `content/en/docs/specs/i2cp.md` (updated 2025-07, `accurateFor`
+  0.9.67; protocol byte `0x2a`, common frame, 25 assigned message
+  types, SessionConfig ±30 s window, "about 64 KB" limit) and
+  `content/en/docs/specs/i2cp-overview.md` (gzip payload metadata:
+  source/destination ports in MTIME, XFL 2, protocol number in OS,
+  CRC-32 integrity).
+- Java I2P 2.13.0 exact commit
+  `9134f808337b401e8e53c73734c81fab04280c9d` is the M9 mandatory
+  primary client reference (Plan 163/170).
+- go-i2p/go-i2cp exact commit
+  `b529ee1c10a6011558b4d69fc9436a4afc489eac` is the M9 mandatory
+  secondary client target (Plan 163/170).
+- Clean-room restriction: specifications and observed behavior may be
+  used; implementation code is reference-only and must not be copied
+  without license/provenance review.
+
+No protocol-support surface is advanced to advertised/production by
+this refresh.
+
 ## Milestone 8 refresh (Plan 155, 2026-09-03)
 
 Plan 155 re-verified the SSU2 v2 source authority against the pinned

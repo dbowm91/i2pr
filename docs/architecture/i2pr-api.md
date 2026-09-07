@@ -15,6 +15,12 @@ with exact i2psam and qualified i2plib.sam evidence; Plan 151 passed
 the final acceptance and Plan 152 is the retained narrow M6 corrective
 underneath it; router-to-router interoperability remains unclaimed.
 
+Plan 164 adds the runtime-neutral I2CP wire/profile foundation
+(`src/i2cp/`): strict bounded framing, structural message codecs,
+and the explicit M9 compatibility profile. No listener, session
+state machine, destination activation, or client-interoperability
+claim follows; those belong to Plans 165–170.
+
 > [Plan 136](../plans/136-m7-sam31-protocol-private-destination-foundation.md):
 > create the `i2pr-api` crate at the intended application-adapter
 > layer; implement a strict bounded SAM v3.1 line/command/reply model;
@@ -43,7 +49,11 @@ underneath it; router-to-router interoperability remains unclaimed.
 
 The crate owns **no** sockets, timers, channels, or Tokio tasks. It
 is a pure runtime-neutral surface that Plans 137–139 wire into the
-supervised loopback listener through `i2pr-daemon`.
+supervised loopback listener through `i2pr-daemon`. The Plan 164
+`i2cp` module keeps the same boundary for the Milestone 9 I2CP
+passes: framing and structural codecs live here, while TCP/Tokio
+ownership stays in `i2pr-daemon` (Plan 167) and destination behavior
+stays in `i2pr-client` (Plan 166).
 
 ## What this crate owns
 
@@ -112,6 +122,14 @@ crates/i2pr-api/
 ├── Cargo.toml            workspace member, depends on i2pr-client/i2pr-crypto/i2pr-proto
 └── src/
     ├── lib.rs            facade and re-exports
+    ├── i2cp/               Plan 164 runtime-neutral I2CP foundation
+    │   ├── mod.rs            module facade, M9 compatibility profile
+    │   ├── frame.rs          0x2a preamble, common frame, incremental decoder
+    │   ├── message.rs        type IDs, dispositions, structural body codecs
+    │   ├── ids.rs            SessionId/MessageId/ClientNonce/HostRequestId
+    │   ├── payload.rs        payload wrapper, gzip metadata contract
+    │   ├── mapping.rs        strict/lenient Mapping postures, signing bytes
+    │   └── error.rs          I2cpError typed classification
     └── sam/
         ├── mod.rs            module facade and named byte ceilings
         ├── version.rs        SamVersion, parse_version, negotiate, is_advertised
@@ -138,6 +156,40 @@ crates/i2pr-api/
         ├── forward.rs              loopback-only STREAM FORWARD request/host policy (Plan 139)
         └── naming.rs               local NAME=ME/public-Destination/.b32 validation (Plan 139)
 ```
+
+## Plan 164 I2CP surface
+
+`src/i2cp/` owns the M9 wire/profile foundation with no runtime
+behavior:
+
+- The `0x2a` preamble check and the common frame (`u32` length +
+  `u8` type + body) with an exact 64 KiB ceiling enforced before
+  allocation, plus a capped incremental decoder for partial reads.
+- Exact type IDs, directions, and M9 dispositions for all 25
+  assigned types; deprecated (4/6/7/21/29), unsupported
+  (BlindingInfo 42), and unknown (including abandoned 40) types are
+  classified without body parsing.
+- Structural codecs for the implemented profile (GetDate/SetDate,
+  session create/reconfigure/destroy/status, variable-lease
+  request, Standard-LeaseSet2 publication with ordered redacted
+  zeroized decryption keys, send/expires, payload/status,
+  bandwidth, destination and host lookup, disconnect) with strict
+  trailing-byte rejection and typed malformed errors.
+- Canonical Mapping reuse: strict sorted posture for SessionConfig
+  (with the exact received signed region retained for Plans
+  165–166) and lenient normalize posture for GetDate auth and
+  HostReply options.
+- The payload/gzip metadata contract (ports, protocol number,
+  flags) with a recorded 64 KiB expansion ceiling and no
+  decompression yet (Plan 168).
+- Committed vectors under `tests/fixtures/i2cp/` pinned by
+  `scripts/check-i2cp-vectors.sh` and asserted in
+  `crates/i2pr-api/tests/i2cp_vectors.rs`.
+
+The full feature table lives in `src/i2cp/mod.rs` and
+`specs/protocols/10-i2cp-service-tunnels.md`; the support ledger
+rows are `i2cp.wire-foundation` and `i2cp.message-codecs` in
+`specs/support.toml`. No support row is advertised.
 
 ## Public surface
 

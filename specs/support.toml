@@ -243,8 +243,17 @@ ssu2_direct_ipv4 = "passed"
 ssu2_ipv6_structure = "passed"
 ssu2_ipv6_interop = "infrastructure-limited-debt"
 milestone8_final_acceptance = "closed-via-plan161"
-next_executable_plan = "none-m8-closed"
-next_product_layer = "milestone9-planning"
+plan_163_plan_of_record = "plans/163-m9-i2cp-roadmap.md"
+plan_163_status = "registered-m9-i2cp-roadmap"
+plan_164_plan_of_record = "plans/164-m9-i2cp-protocol-and-wire-foundation.md"
+plan_164_closure = "plans/164-status.md"
+plan_164_status = "passed-m9-i2cp-protocol-and-wire-foundation"
+milestone9_planning_authority = "plan163"
+milestone9_protocol = "i2cp"
+milestone9_i2cp_wire_foundation = "passed-via-plan164"
+milestone9_final_acceptance = "not-yet-closed"
+next_executable_plan = "165"
+next_product_layer = "milestone9-i2cp"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
@@ -1115,5 +1124,46 @@ evidence = [
     "plans/161-status.md",
     "plans/162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md",
     "plans/162-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "i2cp.wire-foundation"
+protocol = "i2cp"
+structure = "runtime-neutral-preamble-frame-message-primitives"
+scope = "required"
+status = "experimental"
+notes = "Plan 164 closed the M9 I2CP wire/profile foundation in `i2pr-api::i2cp` (no Tokio, no sockets, no async): the 0x2a preamble check, the strict common frame (big-endian u32 length plus u8 type, exactly 64 KiB ceiling rejected before allocation, incremental partial-read decoder with a capped buffer), typed SessionId/MessageId/ClientNonce/HostRequestId primitives, canonical Mapping helpers (strict sorted posture for SessionConfig, lenient normalize posture for GetDate auth and HostReply options), and the payload wrapper plus gzip metadata contract (ports/protocol/XFL, recorded 64 KiB expansion ceiling, no decompression yet). Normative authority is the official I2CP spec/overview at i2p/i2p.website 26467e4b275e3a58280b9d4e6d4745d58bb8c499 with Java I2P 2.13.0 (9134f808337b401e8e53c73734c81fab04280c9d) and go-i2cp (b529ee1c10a6011558b4d69fc9436a4afc489eac) as unmodified inspected references. No listener, session, destination activation, or interoperability claim."
+evidence = [
+    "crates/i2pr-api/src/i2cp/mod.rs",
+    "crates/i2pr-api/src/i2cp/frame.rs",
+    "crates/i2pr-api/src/i2cp/message.rs",
+    "crates/i2pr-api/src/i2cp/ids.rs",
+    "crates/i2pr-api/src/i2cp/payload.rs",
+    "crates/i2pr-api/src/i2cp/mapping.rs",
+    "crates/i2pr-api/src/i2cp/error.rs",
+    "tests/fixtures/i2cp/manifest.tsv",
+    "scripts/check-i2cp-vectors.sh",
+    "crates/i2pr-api/tests/i2cp_vectors.rs",
+    "plans/163-m9-i2cp-roadmap.md",
+    "plans/164-m9-i2cp-protocol-and-wire-foundation.md",
+    "plans/164-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "i2cp.message-codecs"
+protocol = "i2cp"
+structure = "structural-message-codecs-classified-deprecated-unsupported-unknown"
+scope = "required"
+status = "experimental"
+notes = "Plan 164 structural codecs with exact type IDs, named bounds, strict trailing-byte policy, and typed malformed errors: GetDate/SetDate (32/33), CreateSession/ReconfigureSession/DestroySession (1/2/3) with retained SessionConfig signed region, SessionStatus (20, codes 0-4), RequestVariableLeaseSet (37, at most 16 leases), CreateLeaseSet2 (41, Standard LeaseSet2 only with ordered non-Clone redacted zeroized decryption keys; types 1/5/7 typed unsupported), SendMessage/SendMessageExpires (5/36, 48-bit expiry, reserved flag bits rejected), MessagePayload/MessageStatus (31/22, codes 0-23 plus reserved failures), GetBandwidthLimits/BandwidthLimits (8/23, sixteen integers), DestLookup/DestReply (34/35, empty/hash/destination shapes), HostLookup/HostReply (38/39, structural; client probing deferred to Plan 170), Disconnect (30). Deprecated types 4/6/7/21/29, unsupported BlindingInfo (42), and unknown types (including abandoned 40) are classified without body parsing. Behavior (sessions, LeaseSet2 validation, listener, data plane) belongs to Plans 165-170."
+evidence = [
+    "crates/i2pr-api/src/i2cp/message.rs",
+    "tests/fixtures/i2cp/manifest.tsv",
+    "scripts/check-i2cp-vectors.sh",
+    "crates/i2pr-api/tests/i2cp_vectors.rs",
+    "plans/164-m9-i2cp-protocol-and-wire-foundation.md",
+    "plans/164-status.md",
 ]
 advertised = false
