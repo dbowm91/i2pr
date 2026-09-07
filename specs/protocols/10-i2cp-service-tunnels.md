@@ -201,7 +201,77 @@ destination activation, and no interoperability claim.
 
 Plan 165 lands the runtime-neutral session control semantics. No TCP
 listener, no destination private key installation, no LeaseSet2
-semantic validation: those belong to Plans 166–170.
+semantic validation: those belong to Plan 166.
+
+## M9 I2CP client-owned destination + LeaseSet2 bridge (Plan 166)
+
+Plan 166 adapts the existing `i2pr-client` destination runtime to
+host an I2CP client-owned destination through one explicit ownership
+mode and one inbound-decryption capability surface. The router never
+receives the destination signing private key; it only stores the
+public `Destination`, the matching X25519 inbound decryption secret
+(after atomic validation), and the client-signed Standard LeaseSet2.
+
+Ownership modes are capability-oriented rather than `Option<secret>`:
+
+- `DestinationOwnership::RouterOwned` retains the existing
+  `Arc<DestinationIdentity>` allocation so SAM continues to share
+  one private identity allocation between the runtime and the SAM
+  bridge.
+- `DestinationOwnership::ClientOwned` keeps no destination signing
+  secret; the runtime exposes `DestinationPublic` and rejects any
+  attempt to read the private identity.
+
+`DestinationRuntime::new_client_owned(public, config)` is the only
+client-owned constructor. Inbound traffic is rejected until the
+Plan 167 daemon drives
+`install_client_lease_set2(record, capability, now)` through to a
+successful commit. The installer runs the full Plan 166 §6
+checklist atomically:
+
+1. structural decode within Plan 164 ceilings;
+2. Standard LeaseSet2 type (LS2 type 3);
+3. signature verifies against the embedded destination's signing
+   public key;
+4. destination/session binding matches the runtime's
+   `DestinationPublic`;
+5. every advertised lease is owned by the destination runtime's
+   real inbound pool;
+6. no lease is expired, duplicate, foreign, or excessively long
+   lived;
+7. encryption public-key type is X25519 / type 4;
+8. the supplied private decryption capability matches the LS2's
+   advertised encryption public key (Plan 166 §6 step 9) — a
+   mismatched capability is a hard session error before any state
+   mutates;
+9. publication and decryption-key installation commit atomically;
+10. cancellation at any step restores the prior baseline.
+
+LeaseSet2 refresh does not synthesize a replacement locally. When
+leases approach the configured rotation margin the lifecycle emits
+`LeaseSetDecision::RequestClientRefresh(cause)`; the daemon pulls
+the typed `LeaseRequest` material through
+`take_client_refresh_request()` and ships it to the client through
+the typed `I2cpAction::RequestVariableLeaseSet` action. The lease
+material is sourced from the destination's real inbound pool; no
+synthetic gateways are ever produced.
+
+`InboundDecryptionCapability` is the smallest possible
+secret-bearing wrapper for the inbound decryption secret: non-`Clone`,
+manual `Debug` that redacts the secret bytes, zeroized on drop, no
+serialization, no equality over the secret bytes, no raw accessor
+exposed through `i2pr-api`, no logging/evidence. The Plan 166
+trajectory test `crates/i2pr-client/tests/plan166_trajectory.rs`
+covers every Plan 166 §11 case (client-owned construction without a
+signing secret, valid install with matching decryption key,
+mismatched decryption key, foreign lease, unknown-pool lease after
+eviction, duplicate lease, lease rotation requesting refresh,
+refresh via install, shutdown releasing every resource, install
+while stopping, and router-owned rejection of client install). SAM
+router-owned product regressions remain green.
+
+No listener, no socket ownership, no interoperability claim: those
+belong to Plans 167–170.
 
 ### Connection state machine
 
@@ -409,10 +479,21 @@ legacy-deprecated
   SessionConfig signature/date/option verification, registry
   reserve/commit/rollback, duplicate-destination rejection, exact
   SessionStatus mapping, reconfiguration all-or-nothing).
-- Later passes own behavior: Plan 166 (client-owned destinations +
-  LeaseSet2), Plan 167 (loopback listener), Plan 168 (data plane),
-  Plan 169 (product + hardening), Plan 170 (independent clients +
-  closure).
+- Plan 166 extends `crates/i2pr-client/src/identity.rs`,
+  `leaseset.rs`, `registry.rs` with the explicit
+  `DestinationOwnership`, `DestinationPublic`, and non-`Clone`
+  redacted zeroized `InboundDecryptionCapability` surface; the new
+  `install_client_lease_set2` transaction validates Standard
+  LeaseSet2 signature, lease ownership, expiry, encryption-key
+  type, and decryption-key match atomically; the typed
+  `LeaseRequest` material and the `I2cpAction::RequestVariableLeaseSet`
+  action carry lease refresh requests from real inbound tunnels
+  through the `i2pr-api::i2cp` boundary. The 12-test
+  `crates/i2pr-client/tests/plan166_trajectory.rs` covers every
+  Plan 166 §11 case.
+- Later passes own behavior: Plan 167 (loopback listener), Plan 168
+  (data plane), Plan 169 (product + hardening), Plan 170
+  (independent clients + closure).
 
 ## Open decisions
 

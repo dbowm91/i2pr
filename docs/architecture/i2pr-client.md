@@ -528,6 +528,65 @@ shared `i2pr_core::HealthState` vocabulary so the daemon can compose
 destinations into its existing service graph without inventing a parallel
 health model.
 
+## Plan 166 — Client-owned destinations and the LeaseSet2 bridge
+
+Plan 166 widens `DestinationRuntime` to carry one explicit ownership
+mode and one inbound-decryption capability surface so the M9 I2CP
+server can operate a destination whose signing key remains owned by
+the external client. The router-owned SAM path is unchanged: SAM
+still shares a single `Arc<DestinationIdentity>` between the runtime
+and the SAM bridge, and the existing Plan 149 / Plan 151 / Plan 152
+regression trajectory continues to pass through the same constructors
+and seams.
+
+The new surface is capability-oriented rather than `Option<secret>`:
+
+- `DestinationOwnership` — typed marker; `RouterOwned` keeps the
+  `Arc<DestinationIdentity>` ownership invariant; `ClientOwned` keeps
+  no destination signing secret.
+- `DestinationPublic` — non-secret wrapper around the canonical
+  `Destination`, the cached static X25519 public key, and the derived
+  `DestinationId`. Both ownership modes expose it so the ECIES
+  primitives and the dispatcher never branch on ownership.
+- `InboundDecryptionCapability` — non-`Clone`, redacted-`Debug`,
+  zeroized-on-drop wrapper for the X25519 private key the client
+  supplies alongside its Standard LeaseSet2. The wrapper exposes only
+  `static_public_bytes()`, `secret_bytes()`, and `diffie_hellman()`,
+  and the inbound public key is matched against the embedded
+  destination encryption key before the secret is ever stored.
+
+`DestinationRuntime::new_client_owned(public, config)` is the only
+constructor that mints a client-owned runtime. The runtime carries no
+signing private key and reports `static_secret_bytes() == None` until
+the Plan 167 daemon drives `install_client_lease_set2(record,
+capability, now)` through to a successful commit. The installer
+runs the full Plan 166 §6 checklist (structural decode, signature,
+lease ownership, expiry, encryption key type, decryption-key match)
+atomically — every step fails before any state mutates, and a
+mismatched public key is rejected as a hard session error rather than
+published-then-fixed.
+
+`LeaseSetLifecycle` gains a parallel client-owned path. The lifecycle
+never signs a replacement LS2 in client-owned mode; instead it emits
+[`LeaseSetDecision::RequestClientRefresh`] whenever leases approach
+the configured rotation margin and surfaces a typed
+[`LeaseRequest`] (sourced from the real inbound pool) through
+[`DestinationRuntime::take_client_refresh_request`]. The Plan 167
+daemon projects that material into
+[`i2pr_api::i2cp::I2cpAction::RequestVariableLeaseSet`] without ever
+re-deriving it from raw bytes.
+
+The Plan 166 trajectory test
+`crates/i2pr-client/tests/plan166_trajectory.rs` covers every Plan 166
+§11 case: client-owned construction without a signing secret,
+valid install with a matching decryption key, mismatched decryption
+key, foreign lease, unknown-pool lease after eviction, duplicate
+lease, lease rotation requesting refresh, refresh via install,
+shutdown releasing every resource, install while stopping, and
+router-owned rejection of client install. The 12 tests run alongside
+the existing Plan 120–134 trajectories; SAM regressions remain
+green.
+
 ## Deterministic test fixtures
 
 `i2pr_client::testing` exposes `established_inbound(seed)` and

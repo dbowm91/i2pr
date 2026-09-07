@@ -28,11 +28,13 @@ The registered **Milestone 9 planning authority** is
 (`passed-m9-i2cp-protocol-and-wire-foundation`) closed the I2CP
 source/profile/wire foundation. [**Plan 165**](165-status.md)
 (`passed-m9-i2cp-connection-session-and-options`) closed the
-runtime-neutral connection/session/options state machines. The
-current **next executable plan is Plan 166**, the
-client-owned destination + LeaseSet2 pass. Execute Plans
-166–170 sequentially; do not skip ahead based on aggregate workspace
-green status.
+runtime-neutral connection/session/options state machines.
+[**Plan 166**](166-status.md)
+(`passed-m9-i2cp-client-owned-destination-and-leaseset2`) closed
+the client-owned destination + LeaseSet2 bridge. The current
+**next executable plan is Plan 167**, the loopback server runtime.
+Execute Plans 167–170 sequentially; do not skip ahead based on
+aggregate workspace green status.
 
 Current classification:
 
@@ -58,6 +60,7 @@ plan_162 = passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration
 plan_163 = registered-m9-i2cp-roadmap
 plan_164 = passed-m9-i2cp-protocol-and-wire-foundation
 plan_165 = passed-m9-i2cp-connection-session-and-options
+plan_166 = passed-m9-i2cp-client-owned-destination-and-leaseset2
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
@@ -200,11 +203,11 @@ Plan 152 is a later M6 robustness correction discovered by the Plan 151 final SA
 - Milestone 6 local product correctness closed via Plan 134, with Plan 152 robustness corrections retained.
 - SAM 3.1 parser/session/STREAM/FORWARD/NAMING product with independent localhost client evidence; M7 closed via Plan 151.
 - SSU2 v2 local protocol/runtime/reachability product and independent direct IPv4 i2pd interop; M8 closed via Plan 161.
-- M9 I2CP implementation plans are registered; the Plan 164 wire/profile foundation and Plan 165 connection/session/options state machines are landed with no listener, destination activation, or interoperability claim yet.
+- M9 I2CP implementation plans are registered; the Plan 164 wire/profile foundation, Plan 165 connection/session/options state machines, and Plan 166 client-owned destination + LeaseSet2 bridge are landed with no listener, destination activation, or interoperability claim yet.
 
 ## What's not yet accepted
 
-- Any M9 I2CP listener/behavior/destination-activation or independent-client result until Plans 166–170 execute.
+- Any M9 I2CP listener/behavior/destination-activation or independent-client result until Plans 167–170 execute.
 - Non-loopback/remote I2CP, TLS/authentication, or broad historical I2CP feature compliance.
 - Live/public NTCP2 or SSU2 router transport activation and broad mixed-router interoperability.
 - Public I2P participation and network-transport-bound NetDB/public router behavior.
@@ -225,6 +228,7 @@ M8 closed via Plan 161; Plan 162 corrective passed
 Plan 163 = registered M9 I2CP planning authority
 Plan 164 = passed M9 I2CP wire foundation
 Plan 165 = passed M9 I2CP connection/session/options
-execute Plan 166 next
-then 167 -> 168 -> 169 -> 170
+Plan 166 = passed M9 I2CP client-owned destination + LeaseSet2 bridge
+execute Plan 167 next
+then 168 -> 169 -> 170
 ```

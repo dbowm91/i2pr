@@ -127,9 +127,19 @@ canonical `SessionConfig` signature/date/ceiling verification with
 injected `Clock`, option disposition table and projection into
 `i2pr-client::DestinationConfig`, bounded `SessionRegistry` with
 reserve/commit/rollback, reconfiguration taxonomy, typed
-`I2cpAction` vocabulary). No listener, destination activation, or
-client-interoperability claim exists yet; those belong to
-Plans 166–170.
+`I2cpAction` vocabulary). Plan 166 passed the M9 client-owned
+destination + LeaseSet2 bridge: `DestinationOwnership::RouterOwned`
+/ `ClientOwned`, `DestinationPublic` (non-secret public destination),
+`InboundDecryptionCapability` (non-`Clone`, redacted, zeroized
+wrapper for the client-supplied X25519 inbound decryption secret),
+atomic `install_client_lease_set2` (signature + lease ownership +
+expiry + decryption-key match), typed `LeaseRequest` (sourced from
+real inbound tunnels, never synthesized) with
+`take_client_refresh_request`, and the
+`I2cpAction::RequestVariableLeaseSet` action. SAM router-owned
+product regressions remain green; no listener, destination
+activation, or interoperability claim exists yet; those belong to
+Plans 167–170.
 
 SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 SSU2 public advertisement/public-network participation and broad router
@@ -155,6 +165,7 @@ Do not rebuild them without a concrete defect:
 - Plan 161 direction-A handshake transcript corrections and regenerated vectors. Independent i2pd comparison exposed those defects; do not revert them to match older i2pr↔i2pr assumptions.
 - Plan 164 I2CP framing/message codecs, the M9 compatibility profile, and the committed `tests/fixtures/i2cp/` vectors. Do not extend structural codecs into behavior/session/listener claims; those belong to Plans 165–170.
 - Plan 165 I2CP `ConnectionStateMachine`/SessionConfig verification/option projection/session registry/typed `I2cpAction` vocabulary. Do not extend into a listener, destination activation, or interoperability claim; those belong to Plans 166–170.
+- Plan 166 client-owned destination capability surface (`DestinationOwnership`, `DestinationPublic`, `InboundDecryptionCapability`, `install_client_lease_set2`, `LeaseRequest`, `take_client_refresh_request`) and the `I2cpAction::RequestVariableLeaseSet` action. Do not extend into a listener, socket ownership, or interoperability claim; those belong to Plans 167–170.
 
 ## Why Plan 151 exists
 
@@ -431,14 +442,16 @@ bash scripts/check-ssu2-acceptance-evidence.sh
 - Plan 162 passed the narrow external-test lane/CI corrective; it must not broaden or downgrade direction-A protocol evidence.
 - Plan 163 registered the M9 I2CP roadmap (planning authority only).
 - Plan 164 passed the M9 I2CP wire/profile foundation (structural codecs, fixtures, profile; no behavior claim).
-- Next product layer is milestone9-i2cp (Plan 166 next); do not extend Plan 161's evidence into broader claims.
+- Plan 165 passed the M9 I2CP connection/session/options state machines (typed connection state, SessionConfig signature/date/ceiling verification with injected clock, option disposition table, bounded session registry, reconfiguration taxonomy, typed `I2cpAction` vocabulary; no listener, destination activation, or interoperability claim).
+- Plan 166 passed the M9 I2CP client-owned destination + LeaseSet2 bridge: `DestinationOwnership`, `DestinationPublic`, `InboundDecryptionCapability`, atomic `install_client_lease_set2`, typed `LeaseRequest`, `take_client_refresh_request`, and the `I2cpAction::RequestVariableLeaseSet` action. SAM router-owned product regressions remain green; no listener, socket ownership, or interoperability claim.
+- Next product layer is milestone9-i2cp (Plan 167 next); do not extend Plan 161's evidence into broader claims.
 - `milestone6_interoperable = not-yet-claimed` remains unchanged.
 - SSU2 public-network participation, broad router interoperability, IPv6 external interop, PQ v3/v4, and SSU1 remain unclaimed/deferred as documented.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
 
-Current handoff: **Plan 165 has passed the M9 I2CP
-connection/session/options state machines. Execute Plan 166 next
-(client-owned destination + LeaseSet2), then Plans 167–170 in
-order. Do not extend Plan 164's structural codecs or Plan 165's
-state machines into a listener, destination activation, or
-interoperability claim.**
+Current handoff: **Plan 166 has passed the M9 I2CP
+client-owned destination + LeaseSet2 bridge. Execute Plan 167 next
+(loopback server runtime), then Plans 168–170 in order. Do not
+extend Plan 164's structural codecs, Plan 165's state machines, or
+Plan 166's client-owned destination runtime into a listener, socket
+ownership, or interoperability claim.**

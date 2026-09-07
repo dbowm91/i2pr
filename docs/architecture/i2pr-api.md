@@ -252,6 +252,31 @@ runtimes:
   verified typed values only. The Plan 167 daemon is the sole
   translator from these actions to runtime state.
 
+## Plan 166 — I2CP client-owned LeaseSet2 request action
+
+The typed action vocabulary in `src/i2cp/actions.rs` grows by one
+variant for Plan 166:
+
+- **`I2cpAction::RequestVariableLeaseSet`** — emits the lease
+  material the M9 client must include in its next Standard
+  LeaseSet2. The action payload carries the connection capability, the
+  session identifier, the verified destination hash, a typed
+  [`LeaseRefreshCause`] (`InitialGeneration` /
+  `ApproachingExpiry`), and the deterministic ordered lease list
+  sourced from the destination's real inbound tunnel pool. No raw
+  client bytes ever appear in the action: the lease material is
+  produced by `i2pr_client::DestinationRuntime::take_client_refresh_request`,
+  which the Plan 167 daemon hands to the typed `I2cpAction`
+  envelope.
+
+The action is non-secret: it carries only typed destination
+metadata and the `(gateway, tunnel_id, end_date)` triple the client
+should sign. The corresponding inbound-decryption capability stays
+inside `i2pr_client`; the api layer never sees a `DestinationIdentity`
+or a private key. The `LeaseRefreshCause` enum and the `LeaseRequestLease`
+struct are exported from `i2pr_api::i2cp` alongside `I2cpAction` so
+downstream consumers never have to translate an integer status.
+
 ## Public surface
 
 The crate re-exports the most commonly used types from

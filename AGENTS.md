@@ -42,7 +42,8 @@ Plan 162 = passed external-test lane isolation / routine-CI corrective
 Plan 163 = registered M9 I2CP roadmap
 Plan 164 = passed M9 I2CP protocol and wire foundation
 Plan 165 = passed M9 I2CP connection/session/options
-next executable plan = 166
+Plan 166 = passed M9 I2CP client-owned destination + LeaseSet2 bridge
+next executable plan = 167
 next product layer = milestone9-i2cp
 ```
 
@@ -65,12 +66,14 @@ Read in this order for SAM work:
 
 Read in this order for Milestone 9 I2CP work:
 
-1. [`plans/165-status.md`](plans/165-status.md)
-2. [`plans/165-m9-i2cp-connection-session-and-options.md`](plans/165-m9-i2cp-connection-session-and-options.md)
-3. [`plans/164-status.md`](plans/164-status.md)
-4. [`plans/164-m9-i2cp-protocol-and-wire-foundation.md`](plans/164-m9-i2cp-protocol-and-wire-foundation.md)
-5. [`plans/163-m9-i2cp-roadmap.md`](plans/163-m9-i2cp-roadmap.md) — planning authority
-6. Plans 166–170 in execution order; do not skip ahead.
+1. [`plans/166-status.md`](plans/166-status.md)
+2. [`plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md`](plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md)
+3. [`plans/165-status.md`](plans/165-status.md)
+4. [`plans/165-m9-i2cp-connection-session-and-options.md`](plans/165-m9-i2cp-connection-session-and-options.md)
+5. [`plans/164-status.md`](plans/164-status.md)
+6. [`plans/164-m9-i2cp-protocol-and-wire-foundation.md`](plans/164-m9-i2cp-protocol-and-wire-foundation.md)
+7. [`plans/163-m9-i2cp-roadmap.md`](plans/163-m9-i2cp-roadmap.md) — planning authority
+8. Plans 167–170 in execution order; do not skip ahead.
 
 Do **not** trust prose that disagrees with executable tests/scripts. The newest
 explicit superseding status wins when historical records conflict.
@@ -312,7 +315,14 @@ do not weaken it to make CI pass. Plan 165 added the connection state
 machine, SessionConfig verification, option disposition table, and
 session registry under `crates/i2pr-api/src/i2cp/`; no I2CP
 listener, destination activation, or client-interoperability claim
-exists yet; those belong to Plans 166–170.
+exists yet. Plan 166 added the client-owned destination runtime +
+Standard LeaseSet2 validation path under `crates/i2pr-client/`
+(`DestinationOwnership`, `DestinationPublic`,
+`InboundDecryptionCapability`, `install_client_lease_set2`,
+`LeaseRequest`, `take_client_refresh_request`) and the
+`I2cpAction::RequestVariableLeaseSet` typed action in
+`crates/i2pr-api/src/i2cp/actions.rs`; the listener, socket
+ownership, and client-interoperability claim remain Plans 167–170.
 
 ## Testing conventions
 
@@ -399,6 +409,7 @@ closed.
 - Plan 163 registered the Milestone 9 I2CP roadmap (planning authority only).
 - Plan 164 passed the M9 I2CP protocol and wire foundation (structural codecs, fixtures, profile; no behavior claim).
 - Plan 165 passed the M9 I2CP connection/session/options state machines (typed connection state, SessionConfig signature/date/ceiling verification with injected clock, option disposition table, bounded session registry, reconfiguration taxonomy, typed `I2cpAction` vocabulary; no listener, destination activation, or interoperability claim).
+- Plan 166 passed the M9 I2CP client-owned destination + LeaseSet2 bridge: `DestinationOwnership::RouterOwned` / `ClientOwned`, `DestinationPublic`, `InboundDecryptionCapability`, atomic `install_client_lease_set2` (signature + lease ownership + expiry + decryption-key match), typed `LeaseRequest` for refresh from real inbound tunnels, and the `I2cpAction::RequestVariableLeaseSet` action. SAM router-owned product regressions remain green; no listener, socket ownership, or interoperability claim.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
 - No Plan 161 direction-A evidence implies Milestone 6 destination/Streaming/tunnel interoperability or broad router interoperability.
@@ -416,9 +427,10 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 165 has passed the M9 I2CP
-connection/session/options state machines. Execute Plan 166 next
-(client-owned destination + LeaseSet2), then Plans 167–170 in
-order. Do not extend Plan 164's structural codecs or Plan 165's
-state machines into a listener, destination activation, or
-interoperability claim.**
+Current handoff: **Plan 166 has passed the M9 I2CP
+client-owned destination + LeaseSet2 bridge. Execute Plan 167 next
+(loopback server runtime), then Plans 168–170 in order. Do not
+extend Plan 164's structural codecs, Plan 165's state machines, or
+Plan 166's client-owned destination runtime into a listener, socket
+ownership, or interoperability claim; those belong to the later M9
+passes.**

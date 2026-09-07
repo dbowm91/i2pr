@@ -111,8 +111,8 @@ writing or updating a deep-dive.
 | `i2pr-tunnel` | `docs/architecture/i2pr-tunnel.md` | Runtime-neutral exploratory pool, ECIES-X25519 short build, data plane, Plan 117 NetDB composition. |
 | `i2pr-runtime` | `docs/architecture/i2pr-runtime.md` | The only production owner of Tokio, sockets, timers, channels, cancellation. |
 | `i2pr-daemon` | `docs/architecture/i2pr-daemon.md` | CLI, config, identity lifecycle, Plan 106 NetDB/bootstrap, Plan 117 dispatch. |
-| `i2pr-client` | `docs/architecture/i2pr-client.md` | Local destination runtime, ECIES destination Garlic session, destination routing, Streaming core. |
-| `i2pr-api` | `docs/architecture/i2pr-api.md` | Runtime-neutral application adapters: SAM 3.1 parsing/session/registry/FORWARD/NAMING plus the M9 I2CP wire/profile foundation. No sockets, no Tokio. |
+| `i2pr-client` | `docs/architecture/i2pr-client.md` | Local destination runtime (router-owned and client-owned modes), ECIES destination Garlic session, destination routing, Streaming core, LeaseSet2 lifecycle, typed `LeaseRequest`. |
+| `i2pr-api` | `docs/architecture/i2pr-api.md` | Runtime-neutral application adapters: SAM 3.1 parsing/session/registry/FORWARD/NAMING plus the M9 I2CP wire/profile/connection/options foundation, session registry, typed `I2cpAction` (including `RequestVariableLeaseSet`). No sockets, no Tokio. |
 | `i2pr-testkit` | `docs/architecture/i2pr-testkit.md` | Deterministic simulation; no production crate may depend on it. |
 | `tools/i2pr-interop/` | `docs/architecture/tooling.md` | Non-production launcher seam; never activates `i2pr-daemon`. |
 
@@ -244,6 +244,23 @@ record is not `superseded-by-*`. Currently:
    reconfiguration taxonomy and typed `I2cpAction` vocabulary. No
    listener, destination activation, or interoperability claim;
    those belong to Plans 166–170.
+- **Milestone 9 I2CP client-owned destination + LeaseSet2 bridge
+  (passed)**: Plan 166 (`passed-m9-i2cp-client-owned-destination-and-leaseset2`,
+  see [`plans/166-status.md`](../../plans/166-status.md)):
+  `i2pr-client` gains explicit `DestinationOwnership::RouterOwned`
+  / `ClientOwned` ownership modes on a single destination runtime;
+  `DestinationPublic` (non-secret public destination), and the
+  non-`Clone`, redacted, zeroized `InboundDecryptionCapability`
+  wrapper for the client-supplied X25519 inbound decryption secret.
+  `DestinationRuntime::install_client_lease_set2` atomically
+  validates Standard LeaseSet2 signature, lease ownership, expiry,
+  encryption-key type, and decryption-key match; the lifecycle
+  emits typed `LeaseRequest` (sourced from real inbound tunnels,
+  never synthesized) and `I2cpAction::RequestVariableLeaseSet` so
+  the daemon projects refresh actions without ever re-deriving
+  them from raw bytes. SAM router-owned product regressions
+  remain green; no listener, socket ownership, or interoperability
+  claim; those belong to Plans 167–170.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).

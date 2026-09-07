@@ -251,12 +251,16 @@ plan_164_status = "passed-m9-i2cp-protocol-and-wire-foundation"
 plan_165_plan_of_record = "plans/165-m9-i2cp-connection-session-and-options.md"
 plan_165_closure = "plans/165-status.md"
 plan_165_status = "passed-m9-i2cp-connection-session-and-options"
+plan_166_plan_of_record = "plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md"
+plan_166_closure = "plans/166-status.md"
+plan_166_status = "passed-m9-i2cp-client-owned-destination-and-leaseset2"
 milestone9_planning_authority = "plan163"
 milestone9_protocol = "i2cp"
 milestone9_i2cp_wire_foundation = "passed-via-plan164"
 milestone9_i2cp_connection_session_options = "passed-via-plan165"
+milestone9_i2cp_client_owned_destination = "passed-via-plan166"
 milestone9_final_acceptance = "not-yet-closed"
-next_executable_plan = "166"
+next_executable_plan = "167"
 next_product_layer = "milestone9-i2cp"
 
 [[surface]]
@@ -1188,5 +1192,22 @@ evidence = [
     "crates/i2pr-api/src/i2cp/error.rs",
     "plans/165-m9-i2cp-connection-session-and-options.md",
     "plans/165-status.md",
+]
+
+[[surface]]
+id = "i2cp.client-owned-destination"
+protocol = "i2cp"
+structure = "client-owned-destination-runtime-Standard-LeaseSet2-bridge-and-RPC"
+scope = "required"
+status = "experimental"
+notes = "Plan 166 closed the M9 I2CP client-owned destination + LeaseSet2 bridge in `i2pr-client` and `i2pr-api::i2cp`. `i2pr-client` gains explicit `DestinationOwnership::RouterOwned` / `ClientOwned` ownership modes on a single destination runtime; `DestinationPublic` (non-secret public destination), and the non-`Clone`, redacted, zeroized `InboundDecryptionCapability` wrapper for the client-supplied X25519 inbound decryption secret. `DestinationRuntime::install_client_lease_set2` atomically validates Standard LeaseSet2 signature, lease ownership, expiry, encryption-key type, and decryption-key match (Plan 166 §6 steps 1-11); the lifecycle emits typed `LeaseRequest` (sourced from real inbound tunnels, never synthesized) with `take_client_refresh_request`, and the typed `I2cpAction::RequestVariableLeaseSet` action carries the lease material through the `i2pr-api::i2cp` boundary without ever re-deriving it from raw bytes. SAM router-owned product regressions remain green. No listener, no socket ownership, no interoperability claim; those belong to Plans 167-170."
+evidence = [
+    "crates/i2pr-client/src/identity.rs",
+    "crates/i2pr-client/src/leaseset.rs",
+    "crates/i2pr-client/src/registry.rs",
+    "crates/i2pr-client/tests/plan166_trajectory.rs",
+    "crates/i2pr-api/src/i2cp/actions.rs",
+    "plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md",
+    "plans/166-status.md",
 ]
 advertised = false
