@@ -102,7 +102,7 @@ claim is introduced.
 Populated only from executed evidence:
 
 ```text
-closing_sha = <implementation commit SHA, filled after commit>
+closing_sha = d30718f
 routine_ci_run = <hosted run ID, filled after push>
 routine_ci_ubuntu = <pending>
 routine_ci_macos = <pending>
