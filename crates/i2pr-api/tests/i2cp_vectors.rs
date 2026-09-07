@@ -14,7 +14,13 @@ use i2pr_api::i2cp::message::{
 use i2pr_api::i2cp::{ClientNonce, I2cpError, check_protocol_byte, decode_frame};
 
 fn fixture_hex(name: &str) -> Vec<u8> {
-    let path = format!("../../tests/fixtures/i2cp/{name}");
+    // `CARGO_MANIFEST_DIR` keeps fixture lookup independent of the
+    // process working directory: routine CI runs workspace tests via
+    // Cargo (package CWD), while the macOS lane executes each test
+    // binary directly from the workspace root.
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/i2cp")
+        .join(name);
     let text = std::fs::read_to_string(&path).expect("fixture readable");
     let text = text.trim();
     assert!(text.len() % 2 == 0, "even hex digits in {name}");
