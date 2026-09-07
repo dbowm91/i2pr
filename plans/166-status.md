@@ -164,12 +164,13 @@ trajectories all run from `crates/i2pr-client/tests/`.
 Populated only from executed evidence:
 
 ```text
-closing_sha = (see `git log -1 --format=%H` after Plan 166 commit)
-routine_ci_run = pending (post-merge hosted run)
-routine_ci_ubuntu = pending
-routine_ci_macos = pending
-msrv = passed (local cargo check)
-dependency_policy = passed (local cargo deny check)
+closing_sha = e86c0c4 (plan166 implementation)
+docs_sha = 57db8e7 (plan166 docs register)
+routine_ci_run = 34160927204
+routine_ci_ubuntu = passed (Quality ubuntu-latest)
+routine_ci_macos = passed (Quality macos-latest)
+msrv = passed
+dependency_policy = passed
 ```
 
 Local floor on the closing tree (all executed 2026-09-07):
