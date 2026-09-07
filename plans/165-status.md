@@ -132,8 +132,8 @@ fixture was modified by Plan 165.
 Populated only from executed evidence:
 
 ```text
-closing_sha = <set on commit>
-routine_ci_run = <recorded in follow-up hosted run on the Plan 165 closing head>
+closing_sha = 5388cbf
+routine_ci_run = 34156534970
 routine_ci_ubuntu = passed
 routine_ci_macos = passed
 msrv = passed
