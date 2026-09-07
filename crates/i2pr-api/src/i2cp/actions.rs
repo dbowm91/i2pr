@@ -9,6 +9,10 @@
 //! strings. A `VerifiedSessionConfig` is the only typed value that may
 //! reach a `ReserveClientDestination` action; a `ProjectedPolicy` is
 //! the only typed value that may drive a destination activation.
+//!
+//! Plan 166 adds the [`I2cpAction::RequestVariableLeaseSet`] variant so
+//! the Plan 167 daemon can ship a typed lease-request to the client
+//! whenever the destination needs a fresh signed Standard LeaseSet2.
 
 use i2pr_proto::Hash;
 
@@ -17,7 +21,7 @@ use super::ids::SessionId;
 use super::verify::VerifiedSessionConfig;
 
 /// One typed action emitted by the Plan 165 connection/session state
-/// machine.
+/// machine and the Plan 166 destination-runtime polling layer.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum I2cpAction {
@@ -61,6 +65,51 @@ pub enum I2cpAction {
         /// Lookup key: either a destination hash or a hostname.
         key: DestinationLookupKey,
     },
+    /// Ask the I2CP client to supply a fresh Standard LeaseSet2 for
+    /// a client-owned destination (Plan 166 §5 / §9). The lease
+    /// material is sourced from the destination's real inbound tunnel
+    /// pool; the router never synthesizes replacement leases.
+    RequestVariableLeaseSet {
+        /// Connection capability the destination is bound to.
+        connection: u32,
+        /// Session identifier the destination belongs to.
+        session: SessionId,
+        /// Verified destination hash the lease request is bound to.
+        destination_hash: Hash,
+        /// Reason the lease set must be refreshed.
+        cause: LeaseRefreshCause,
+        /// Lease material the client should include in its next
+        /// signed Standard LeaseSet2. The router never modifies the
+        /// list after this action is emitted.
+        leases: Vec<LeaseRequestLease>,
+    },
+}
+
+/// Reason the destination must request a fresh LeaseSet2 from the
+/// I2CP client. Mirrors the typed `ClientRefreshCause` vocabulary in
+/// `i2pr-client` so the daemon never has to translate an integer
+/// status code.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum LeaseRefreshCause {
+    /// The destination has no LeaseSet2 yet but is otherwise ready to
+    /// publish.
+    InitialGeneration,
+    /// The previously installed LeaseSet2 is approaching the
+    /// configured rotation margin and must be replaced before its
+    /// leases expire.
+    ApproachingExpiry,
+}
+
+/// One lease entry inside a [`I2cpAction::RequestVariableLeaseSet`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LeaseRequestLease {
+    /// Inbound gateway router hash.
+    pub gateway: Hash,
+    /// Tunnel identifier the gateway must accept delivery on.
+    pub tunnel_id: u32,
+    /// Absolute lease end-date in seconds.
+    pub end_date_seconds: u32,
 }
 
 /// One destination lookup key carried in an action.
@@ -91,6 +140,13 @@ mod tests {
         let _action = I2cpAction::RequestDestinationLookup {
             connection: 1,
             key: DestinationLookupKey::Hash(Hash::from_bytes([1u8; 32])),
+        };
+        let _action = I2cpAction::RequestVariableLeaseSet {
+            connection: 1,
+            session: SessionId::new(3),
+            destination_hash: Hash::from_bytes([2u8; 32]),
+            cause: LeaseRefreshCause::InitialGeneration,
+            leases: Vec::new(),
         };
     }
 }

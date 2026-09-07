@@ -5,19 +5,33 @@
 //! LeaseSet2 lifecycle, and the bounded payload queues. Readiness is derived
 //! from real usable tunnels: a destination is never `Usable` merely because its
 //! keys exist.
+//!
+//! Plan 166 preserves the router-owned path unchanged and adds a
+//! capability-oriented client-owned mode that shares one destination
+//! runtime. The router-owned seam still owns the destination signing
+//! private key and at most one `Arc<DestinationIdentity>` allocation; the
+//! client-owned seam stores the public destination, an optional
+//! [`InboundDecryptionCapability`] once a LeaseSet2 commits, and never
+//! sees the destination signing private key. Both modes drive the same
+//! destination tunnel pool, registry, ECIES session manager, and
+//! dispatcher.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use i2pr_core::{DegradationCode, HealthState};
 use i2pr_netdb::DestinationHash;
-use i2pr_proto::Hash;
+use i2pr_proto::{Hash, LeaseSet2};
 use i2pr_tunnel::{EstablishedMaterial, TunnelSlot};
 
 use crate::config::{DestinationConfig, RegistryConfig};
-use crate::identity::{DestinationId, DestinationIdentity};
+use crate::identity::{
+    DestinationId, DestinationIdentity, DestinationIdentityError, DestinationOwnership,
+    DestinationPublic, InboundDecryptionCapability,
+};
 use crate::leaseset::{
-    LeaseSetDecision, LeaseSetError, LeaseSetLifecycle, LeaseSetSummary, LocalLeaseSet,
+    LeaseRequest, LeaseRequestLease, LeaseSetDecision, LeaseSetError, LeaseSetLifecycle,
+    LeaseSetSummary, LocalLeaseSet,
 };
 use crate::message::{
     BoundedPayloadQueue, DestinationPayload, PayloadError, QueuedOutbound, RoutingUnavailable,
@@ -127,7 +141,22 @@ pub enum DestinationEvent {
 /// One local destination runtime.
 #[derive(Debug)]
 pub struct DestinationRuntime {
-    identity: Arc<DestinationIdentity>,
+    ownership: DestinationOwnership,
+    /// Router-owned destinations own their signing + X25519 secrets
+    /// through this `Arc`. Client-owned destinations leave this field
+    /// `None`; the destination signing private key never enters the
+    /// runtime in that mode.
+    identity: Option<Arc<DestinationIdentity>>,
+    /// Public destination material for client-owned mode. For
+    /// router-owned mode the public view is derived from
+    /// `identity`; the field is `Some` for both so the ECIES
+    /// dispatcher and the Plan 167 daemon can read the public
+    /// destination without branching.
+    public: DestinationPublic,
+    /// Client-owned inbound decryption capability. `None` until a
+    /// LeaseSet2 is installed and validated; `Some` once the
+    /// destination is usable for inbound ECIES traffic.
+    decryption: Option<InboundDecryptionCapability>,
     config: DestinationConfig,
     pool: DestinationTunnelPool,
     lease_sets: LeaseSetLifecycle,
@@ -137,7 +166,8 @@ pub struct DestinationRuntime {
 }
 
 impl DestinationRuntime {
-    /// Constructs a destination runtime around an owned identity.
+    /// Constructs a router-owned destination runtime around an owned
+    /// identity.
     ///
     /// The identity is moved into a single `Arc<DestinationIdentity>` allocation.
     /// Callers that already hold a shared `Arc<DestinationIdentity>` (e.g. a
@@ -146,21 +176,33 @@ impl DestinationRuntime {
     pub fn new(
         identity: DestinationIdentity,
         config: DestinationConfig,
-    ) -> Result<Self, DestinationPoolError> {
+    ) -> Result<Self, DestinationRuntimeError> {
         Self::with_shared_identity(Arc::new(identity), config)
     }
 
-    /// Constructs a destination runtime that shares an existing
-    /// `Arc<DestinationIdentity>` allocation with another owner (e.g. the SAM
-    /// product bridge). Plan 149 §3 Option A preserves the
+    /// Constructs a router-owned destination runtime that shares an
+    /// existing `Arc<DestinationIdentity>` allocation with another owner
+    /// (e.g. the SAM product bridge). Plan 149 §3 Option A preserves the
     /// "one logical destination -> one private identity allocation" invariant
     /// by routing both owners through the same `Arc`.
     pub fn with_shared_identity(
         identity: Arc<DestinationIdentity>,
         config: DestinationConfig,
-    ) -> Result<Self, DestinationPoolError> {
+    ) -> Result<Self, DestinationRuntimeError> {
+        let public = DestinationPublic::from_destination(identity.destination().clone())?;
+        Self::assemble_router_owned(identity, public, config)
+    }
+
+    fn assemble_router_owned(
+        identity: Arc<DestinationIdentity>,
+        public: DestinationPublic,
+        config: DestinationConfig,
+    ) -> Result<Self, DestinationRuntimeError> {
         Ok(Self {
-            identity,
+            ownership: DestinationOwnership::RouterOwned,
+            identity: Some(identity),
+            public,
+            decryption: None,
             config,
             pool: DestinationTunnelPool::new(config)?,
             lease_sets: LeaseSetLifecycle::new(config),
@@ -176,34 +218,112 @@ impl DestinationRuntime {
         })
     }
 
+    /// Constructs a client-owned destination runtime from a verified
+    /// SessionConfig-derived public destination and the projected
+    /// destination policy. The runtime never holds the client's
+    /// signing private key. Inbound traffic is rejected until
+    /// [`Self::install_client_lease_set2`] commits a matched
+    /// [`InboundDecryptionCapability`] alongside a validated Standard
+    /// LeaseSet2.
+    pub fn new_client_owned(
+        public: DestinationPublic,
+        config: DestinationConfig,
+    ) -> Result<Self, DestinationPoolError> {
+        Ok(Self {
+            ownership: DestinationOwnership::ClientOwned,
+            identity: None,
+            public,
+            decryption: None,
+            config,
+            pool: DestinationTunnelPool::new(config)?,
+            lease_sets: LeaseSetLifecycle::new(config),
+            outbound: BoundedPayloadQueue::new(
+                config.max_pending_messages(),
+                config.max_pending_bytes(),
+            ),
+            inbound: BoundedPayloadQueue::new(
+                config.max_pending_messages(),
+                config.max_pending_bytes(),
+            ),
+            state: DestinationState::BuildingTunnels,
+        })
+    }
+
+    /// Returns the destination ownership mode.
+    pub const fn ownership(&self) -> DestinationOwnership {
+        self.ownership
+    }
+
     /// Returns the non-secret destination identifier.
     pub fn id(&self) -> DestinationId {
-        self.identity.id()
+        self.public.id()
     }
 
     /// Borrows the destination identity owner. Only the runtime itself uses
     /// this; the public [`DestinationHandle`] deliberately does not expose it.
-    pub fn identity(&self) -> &DestinationIdentity {
-        &self.identity
+    /// Returns `None` for client-owned destinations; the router never
+    /// receives the destination signing private key in that mode.
+    pub fn identity(&self) -> Option<&DestinationIdentity> {
+        self.identity.as_deref()
     }
 
     /// Returns a clone of the shared `Arc<DestinationIdentity>` capability.
     /// Plan 149 §3 Option A lets the SAM product bridge and the runtime share
     /// one secret allocation: callers that need long-lived identity access
     /// (e.g. the SAM STREAM bridge) clone this `Arc`, never the underlying
-    /// `DestinationIdentity`.
-    pub fn identity_arc(&self) -> Arc<DestinationIdentity> {
-        Arc::clone(&self.identity)
+    /// `DestinationIdentity`. Returns `None` for client-owned destinations.
+    pub fn identity_arc(&self) -> Option<Arc<DestinationIdentity>> {
+        self.identity.as_ref().map(Arc::clone)
+    }
+
+    /// Borrows the public destination (signing key bytes included). Both
+    /// router-owned and client-owned runtimes expose this view so callers
+    /// never need to branch on ownership to read the public side.
+    pub const fn public(&self) -> &DestinationPublic {
+        &self.public
+    }
+
+    /// Returns a borrowed view of the installed inbound decryption
+    /// capability. `None` for router-owned destinations (the
+    /// [`DestinationIdentity`] owns the secret directly) or until a
+    /// client-owned destination installs a LeaseSet2.
+    pub fn decryption_capability(&self) -> Option<&InboundDecryptionCapability> {
+        self.decryption.as_ref()
+    }
+
+    /// Returns the static X25519 public-key bytes the runtime uses to
+    /// decrypt inbound ECIES traffic. Both ownership modes expose the
+    /// same lookup so the ECIES primitives do not need to branch.
+    pub fn static_public_bytes(&self) -> &[u8; i2pr_crypto::X25519_KEY_LENGTH] {
+        // Both ownership modes cache the destination's static X25519
+        // public key inside the [`DestinationPublic`] field; routing
+        // through the cached copy avoids a second copy out of the
+        // router-owned identity.
+        self.public.static_public_bytes()
+    }
+
+    /// Returns the static X25519 secret bytes the runtime uses to
+    /// decrypt inbound ECIES traffic. Router-owned destinations hand
+    /// the secret out from [`DestinationIdentity`]; client-owned
+    /// destinations hand it out from the installed capability.
+    pub fn static_secret_bytes(&self) -> Option<&[u8; i2pr_crypto::X25519_KEY_LENGTH]> {
+        if let Some(identity) = self.identity.as_ref() {
+            Some(identity.static_secret_bytes())
+        } else {
+            self.decryption
+                .as_ref()
+                .map(|capability| capability.secret_bytes())
+        }
     }
 
     /// Returns the NetDB destination key.
     pub fn netdb_key(&self) -> DestinationHash {
-        self.identity.id().as_netdb_key()
+        self.public.id().as_netdb_key()
     }
 
     /// Returns the destination hash by value.
     pub fn destination_hash(&self) -> Hash {
-        self.identity.id().as_hash().copy()
+        self.public.id().as_hash().copy()
     }
 
     /// Returns the current lifecycle state.
@@ -221,19 +341,142 @@ impl DestinationRuntime {
         &self.pool
     }
 
-    /// Borrows the current signed LeaseSet2, when one is held.
+    /// Mutably borrows the destination tunnel pool. Production
+    /// callers use the typed `admit_*` accessors; this seam exists
+    /// for fixtures and Plan 166 tests that need to drop a tunnel
+    /// out of band to simulate expiry races.
+    pub fn pool_mut(&mut self) -> &mut DestinationTunnelPool {
+        &mut self.pool
+    }
+
+    /// Borrows the current router-signed LeaseSet2, when one is held.
+    /// Router-owned destinations always read from here; client-owned
+    /// destinations read from [`Self::client_lease_set`] instead.
     pub const fn lease_set(&self) -> Option<&LocalLeaseSet> {
         self.lease_sets.current()
     }
 
-    /// Returns a non-secret LeaseSet2 summary.
+    /// Borrows the current client-supplied LeaseSet2, when one has been
+    /// installed. Router-owned destinations always return `None` here.
+    pub const fn client_lease_set(&self) -> Option<&crate::leaseset::ClientOwnedLeaseSet> {
+        self.lease_sets.client_current()
+    }
+
+    /// Returns a non-secret LeaseSet2 summary that covers whichever
+    /// ownership mode is active.
     pub fn lease_set_summary(&self) -> LeaseSetSummary {
-        LeaseSetSummary::from_lifecycle(&self.lease_sets)
+        LeaseSetSummary::from_lifecycle(&self.lease_sets, self.ownership)
+    }
+
+    /// Returns the current outbound LeaseSet2 the routing layer should
+    /// bundle into fresh bound New Session messages: the router-signed
+    /// lease set for router-owned destinations, the client-installed
+    /// lease set for client-owned destinations. `None` when neither is
+    /// installed yet.
+    pub fn outbound_lease_set(&self) -> Option<&i2pr_proto::LeaseSet2> {
+        match self.ownership {
+            DestinationOwnership::RouterOwned => {
+                self.lease_sets.current().map(|local| local.lease_set2())
+            }
+            DestinationOwnership::ClientOwned => self
+                .lease_sets
+                .client_current()
+                .map(|client| client.lease_set2()),
+        }
     }
 
     /// Returns a non-secret handle view over the destination.
     pub fn handle(&self) -> DestinationHandle<'_> {
         DestinationHandle { runtime: self }
+    }
+
+    /// Atomically validates, stores, and stages publication for a
+    /// client-supplied Standard LeaseSet2 paired with the matching
+    /// inbound decryption capability. Router-owned destinations
+    /// reject this call.
+    ///
+    /// `install_client_lease_set2` is the single transaction that
+    /// wires a client-owned destination into the inbound ECIES path:
+    /// on success the validated LeaseSet2 and the decryption
+    /// capability are both installed and the destination becomes
+    /// publishable; on failure no state is mutated.
+    pub fn install_client_lease_set2(
+        &mut self,
+        lease_set2: LeaseSet2,
+        capability: InboundDecryptionCapability,
+        now_seconds: u64,
+    ) -> Result<(), LeaseSetError> {
+        if !matches!(self.ownership, DestinationOwnership::ClientOwned) {
+            return Err(LeaseSetError::InstallWhileStopping);
+        }
+        if self.state == DestinationState::Stopping || self.state == DestinationState::Stopped {
+            return Err(LeaseSetError::InstallWhileStopping);
+        }
+        // Cross-check the supplied capability public key against the
+        // destination's embedded encryption public key BEFORE we
+        // even look at the LeaseSet2.
+        if capability.static_public_bytes() != self.public.static_public_bytes() {
+            return Err(DestinationIdentityError::DecryptionCapabilityKeyMismatch.into());
+        }
+        // Validate against the actual inbound pool owned by this
+        // destination runtime. Foreign / expired / duplicate leases
+        // are rejected before the LeaseSet2 signature is re-checked.
+        let leases = self.pool.inbound_lease_sources(now_seconds);
+        let capability_public = *capability.static_public_bytes();
+        self.lease_sets.install_external(
+            &self.public,
+            lease_set2,
+            &leases,
+            &capability_public,
+            now_seconds,
+        )?;
+        self.decryption = Some(capability);
+        self.recompute_state(now_seconds);
+        Ok(())
+    }
+
+    /// Builds the lease request material the Plan 167 daemon sends
+    /// to the client when leases approach expiry. The request is
+    /// sourced from the destination's real inbound pool; the router
+    /// never synthesizes replacement leases for client-owned mode.
+    ///
+    /// Returns `None` when no refresh is currently pending.
+    pub fn take_client_refresh_request(
+        &mut self,
+        now_seconds: u64,
+    ) -> Result<Option<LeaseRequest>, LeaseSetError> {
+        if !matches!(self.ownership, DestinationOwnership::ClientOwned) {
+            return Ok(None);
+        }
+        // Drive the client refresh decision so the pending flag is up
+        // to date; if leases are still healthy the flag stays false
+        // and `take_client_refresh_request` returns `None`.
+        let leases = self.pool.inbound_lease_sources(now_seconds);
+        let decision = self.lease_sets.refresh_client(&leases, now_seconds);
+        if !matches!(
+            decision,
+            LeaseSetDecision::RequestClientRefresh(_) | LeaseSetDecision::Retain
+        ) {
+            return Ok(None);
+        }
+        let request_leases: Vec<LeaseRequestLease> =
+            leases.iter().map(LeaseRequestLease::from).collect();
+        let hash = self.public.id().as_hash().copy();
+        Ok(self
+            .lease_sets
+            .take_client_refresh_request(hash, request_leases))
+    }
+
+    /// Advances the client-owned LeaseSet2 refresh decision without
+    /// popping the request. The Plan 167 daemon calls this once per
+    /// poll cycle to keep `client_refresh_pending` in sync with
+    /// `now_seconds`.
+    pub fn poll_client_refresh(&mut self, now_seconds: u64) {
+        if !matches!(self.ownership, DestinationOwnership::ClientOwned) {
+            return;
+        }
+        let leases = self.pool.inbound_lease_sources(now_seconds);
+        self.lease_sets.refresh_client(&leases, now_seconds);
     }
 
     /// Admits real one-shot inbound established material into the destination
@@ -304,9 +547,18 @@ impl DestinationRuntime {
             return Ok(LeaseSetDecision::Stopping);
         }
         let leases = self.pool.inbound_lease_sources(now_seconds);
-        let decision = self
-            .lease_sets
-            .refresh(&self.identity, &leases, now_seconds)?;
+        let decision = match self.ownership {
+            DestinationOwnership::RouterOwned => {
+                let identity = self
+                    .identity
+                    .as_ref()
+                    .expect("router-owned runtime always carries identity");
+                self.lease_sets.refresh(identity, &leases, now_seconds)?
+            }
+            DestinationOwnership::ClientOwned => {
+                self.lease_sets.refresh_client(&leases, now_seconds)
+            }
+        };
         self.recompute_state(now_seconds);
         Ok(decision)
     }
@@ -375,6 +627,9 @@ impl DestinationRuntime {
         let released_pool_slots = self.pool.release_all();
         let released_outbound = self.outbound.release_all();
         let released_inbound = self.inbound.release_all();
+        // Drop the client-owned inbound decryption capability last so
+        // its bytes are zeroized immediately at shutdown.
+        self.decryption = None;
         self.state = DestinationState::Stopped;
         DestinationShutdown {
             released_pool_slots,
@@ -640,6 +895,9 @@ pub enum DestinationRuntimeError {
     /// The LeaseSet2 lifecycle rejected the operation.
     #[error("destination lease set rejected: {0}")]
     LeaseSet(#[from] LeaseSetError),
+    /// The destination identity / public material was rejected.
+    #[error("destination identity rejected: {0}")]
+    Identity(#[from] DestinationIdentityError),
 }
 
 #[cfg(test)]

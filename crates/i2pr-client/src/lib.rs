@@ -54,14 +54,18 @@ pub use dispatch::{
     DestinationDispatcher, InboundDispatchError, InboundDispatchOutcome, MAX_INBOUND_DESTINATIONS,
     MAX_INBOUND_PAYLOAD_BYTES_PER_DESTINATION, MAX_INBOUND_PENDING_MESSAGES,
 };
-pub use identity::{DestinationId, DestinationIdentity, DestinationIdentityError};
+pub use identity::{
+    DestinationId, DestinationIdentity, DestinationIdentityError, DestinationOwnership,
+    DestinationPublic, InboundDecryptionCapability, InboundDecryptionRef,
+};
 pub use lease_selection::{
     LeaseSelectionError, LeaseSelectionPolicy, LeaseSelector, MAX_LEASE_SAFETY_MARGIN_SECONDS,
     SelectedLease,
 };
 pub use leaseset::{
-    LEASE_SET2_SIGNATURE_DOMAIN, LeaseSetDecision, LeaseSetError, LeaseSetLifecycle,
-    LeaseSetRotationCause, LeaseSetSummary, LocalLeaseSet, build_signed_lease_set2, encoded_hash,
+    ClientOwnedLeaseSet, ClientRefreshCause, LEASE_SET2_SIGNATURE_DOMAIN, LeaseRequest,
+    LeaseRequestLease, LeaseSetDecision, LeaseSetError, LeaseSetLifecycle, LeaseSetRotationCause,
+    LeaseSetSummary, LocalLeaseSet, build_signed_lease_set2, encoded_hash,
 };
 pub use message::{
     BoundedPayloadQueue, DestinationPayload, MAX_DESTINATION_PAYLOAD_BYTES, PayloadError,

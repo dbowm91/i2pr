@@ -5,6 +5,12 @@
 //! canonical unsigned Plan 119 LeaseSet2, signs the `0x03 || signed_bytes`
 //! preimage with the destination key, and then self-validates the finalized
 //! record through the same `i2pr-netdb` validation used for received entries.
+//!
+//! Plan 166 preserves this path for router-owned destinations and adds a
+//! parallel client-owned lifecycle that never signs locally: the validated
+//! `Standard LeaseSet2` and matching inbound-decryption capability arrive
+//! from the I2CP client; the lifecycle only stores them, requests a refresh
+//! when leases approach expiry, and refuses to synthesize a replacement.
 
 use core::fmt;
 
@@ -12,13 +18,13 @@ use i2pr_netdb::{
     DestinationHash, LeaseSet2ValidationContext, LeaseSet2ValidationError, ValidatedLeaseSet2,
 };
 use i2pr_proto::{
-    CodecError, Date32, Hash, LEASE_SET2_SIGNATURE_DOMAIN_BYTE, Lease2, LeaseSet2,
+    CodecError, CryptoKeyType, Date32, Hash, LEASE_SET2_SIGNATURE_DOMAIN_BYTE, Lease2, LeaseSet2,
     LeaseSet2BuildError, LeaseSet2EncryptionKey, LeaseSet2Flags, LeaseSet2Header,
-    LeaseSet2HeaderError, Mapping, SignatureValue,
+    LeaseSet2HeaderError, LeaseSet2KeySelectionError, Mapping, SignatureValue,
 };
 
 use crate::config::DestinationConfig;
-use crate::identity::{DestinationIdentity, DestinationIdentityError};
+use crate::identity::{DestinationIdentity, DestinationIdentityError, DestinationPublic};
 use crate::pool::InboundLeaseSource;
 
 /// Signature domain byte prepended to the LeaseSet2 signature preimage.
@@ -86,6 +92,19 @@ pub enum LeaseSetRotationCause {
     ApproachingExpiry,
 }
 
+/// Reason a client-owned destination must request a fresh LeaseSet2 from
+/// the I2CP client instead of synthesizing one locally.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClientRefreshCause {
+    /// No client-signed LeaseSet2 has been installed yet; the destination
+    /// is ready to publish as soon as the client supplies one.
+    InitialGeneration,
+    /// The previously installed client LeaseSet2 is approaching the
+    /// configured rotation margin and must be replaced before its leases
+    /// expire.
+    ApproachingExpiry,
+}
+
 /// Outcome of evaluating the local LeaseSet2 lifecycle against the current
 /// usable inbound tunnel set.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,19 +119,119 @@ pub enum LeaseSetDecision {
     Retain,
     /// A replacement LeaseSet2 is required for the stated reason.
     Regenerate(LeaseSetRotationCause),
+    /// The client-owned destination needs a fresh LeaseSet2 from the
+    /// I2CP client (router never signs a replacement).
+    RequestClientRefresh(ClientRefreshCause),
+}
+
+/// Typed LeaseSet2 rotation outcome for the Plan 167 daemon to project
+/// into an I2CP `RequestVariableLeaseSet` material. The router never
+/// signs the result; the daemon transmits the request to the client and
+/// the client supplies the signed Standard LeaseSet2 in return.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeaseRequest {
+    /// Destination identity hash the lease request is bound to.
+    pub destination_hash: Hash,
+    /// Deterministic ordered lease set the client should include in
+    /// its next Standard LeaseSet2. Sourced from the real inbound
+    /// tunnel pool, never synthesized.
+    pub leases: Vec<LeaseRequestLease>,
+    /// Reason the lease set must be refreshed.
+    pub cause: ClientRefreshCause,
+}
+
+/// One lease entry inside a [`LeaseRequest`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LeaseRequestLease {
+    /// Inbound gateway router hash.
+    pub gateway: Hash,
+    /// Tunnel identifier the gateway must accept delivery on.
+    pub tunnel_id: u32,
+    /// Absolute lease end-date in seconds.
+    pub end_date_seconds: u32,
+}
+
+impl From<&InboundLeaseSource> for LeaseRequestLease {
+    fn from(source: &InboundLeaseSource) -> Self {
+        let end_date_seconds =
+            u32::try_from(source.advertised_expires_seconds()).unwrap_or(u32::MAX);
+        Self {
+            gateway: source.gateway(),
+            tunnel_id: source.gateway_receive_tunnel_id(),
+            end_date_seconds,
+        }
+    }
+}
+
+/// A finalized client-supplied, validated Standard LeaseSet2 paired with
+/// the non-secret metadata used to decide when it must be refreshed.
+#[derive(Clone, Debug)]
+pub struct ClientOwnedLeaseSet {
+    validated: ValidatedLeaseSet2,
+    leases: Vec<InboundLeaseSource>,
+}
+
+impl ClientOwnedLeaseSet {
+    /// Borrows the validated LeaseSet2.
+    pub const fn validated(&self) -> &ValidatedLeaseSet2 {
+        &self.validated
+    }
+
+    /// Borrows the signed LeaseSet2 record.
+    pub const fn lease_set2(&self) -> &LeaseSet2 {
+        self.validated.lease_set2()
+    }
+
+    /// Returns the NetDB destination key this LeaseSet2 is stored under.
+    pub const fn key(&self) -> DestinationHash {
+        self.validated.key()
+    }
+
+    /// Returns the `published` timestamp in seconds.
+    pub fn published_seconds(&self) -> u32 {
+        self.validated.published_seconds()
+    }
+
+    /// Returns the record's absolute expiry timestamp in seconds.
+    pub fn expires_seconds(&self) -> u32 {
+        self.validated.lease_set2().expires_seconds()
+    }
+
+    /// Returns the pool sources that produced the advertised leases.
+    pub fn lease_sources(&self) -> &[InboundLeaseSource] {
+        &self.leases
+    }
+
+    /// Returns the earliest advertised lease end date in seconds.
+    pub fn earliest_lease_expiry_seconds(&self) -> u64 {
+        self.leases
+            .iter()
+            .map(InboundLeaseSource::advertised_expires_seconds)
+            .min()
+            .unwrap_or(0)
+    }
 }
 
 /// Bounded local LeaseSet2 lifecycle owner.
 ///
 /// The lifecycle never reads a wall clock: callers supply a deterministic
 /// `now_seconds`.
+///
+/// Plan 166 preserves the router-owned refresh path and adds the
+/// `install_external` plus `evaluate_client_refresh` entry points for
+/// client-owned destinations. Both share the same `Retain` /
+/// `NotPublishable` / `Stopping` semantics; only the regeneration
+/// branches differ.
 #[derive(Debug)]
 pub struct LeaseSetLifecycle {
     config: DestinationConfig,
     current: Option<LocalLeaseSet>,
+    client_current: Option<ClientOwnedLeaseSet>,
     last_published_seconds: Option<u32>,
     generations: u32,
+    client_generations: u32,
     publication_pending: bool,
+    client_refresh_pending: bool,
     stopping: bool,
 }
 
@@ -122,41 +241,96 @@ impl LeaseSetLifecycle {
         Self {
             config,
             current: None,
+            client_current: None,
             last_published_seconds: None,
             generations: 0,
+            client_generations: 0,
             publication_pending: false,
+            client_refresh_pending: false,
             stopping: false,
         }
     }
 
-    /// Borrows the current LeaseSet2, when one has been generated.
+    /// Borrows the current router-owned LeaseSet2, when one has been
+    /// generated.
     pub const fn current(&self) -> Option<&LocalLeaseSet> {
         self.current.as_ref()
     }
 
-    /// Number of LeaseSet2 versions generated so far.
+    /// Borrows the current client-owned LeaseSet2, when one has been
+    /// installed through [`Self::install_external`].
+    pub const fn client_current(&self) -> Option<&ClientOwnedLeaseSet> {
+        self.client_current.as_ref()
+    }
+
+    /// Number of router-owned LeaseSet2 versions generated so far.
     pub const fn generations(&self) -> u32 {
         self.generations
     }
 
-    /// Whether a publication has been requested and not yet acknowledged.
-    /// Plan 122 owns the network composition that clears this flag.
+    /// Number of client-owned LeaseSet2 installations so far.
+    pub const fn client_generations(&self) -> u32 {
+        self.client_generations
+    }
+
+    /// Whether a router-owned publication has been requested and not
+    /// yet acknowledged. Plan 122 owns the network composition that
+    /// clears this flag.
     pub const fn publication_pending(&self) -> bool {
         self.publication_pending
     }
 
-    /// Marks the pending publication acknowledged.
+    /// Whether a client-owned LeaseSet2 refresh has been requested and
+    /// not yet fulfilled by the I2CP client. The Plan 167 daemon
+    /// emits an I2CP `RequestVariableLeaseSet` action when this is
+    /// set; the request is cleared once the client supplies a fresh
+    /// Standard LeaseSet2.
+    pub const fn client_refresh_pending(&self) -> bool {
+        self.client_refresh_pending
+    }
+
+    /// Pops and clears the pending client-refresh request. Returns the
+    /// lease material the daemon should ship to the client.
+    pub fn take_client_refresh_request(
+        &mut self,
+        destination_hash: Hash,
+        leases: Vec<LeaseRequestLease>,
+    ) -> Option<LeaseRequest> {
+        if !self.client_refresh_pending {
+            return None;
+        }
+        self.client_refresh_pending = false;
+        let cause = self
+            .client_current
+            .as_ref()
+            .map(|_| ClientRefreshCause::ApproachingExpiry)
+            .unwrap_or(ClientRefreshCause::InitialGeneration);
+        Some(LeaseRequest {
+            destination_hash,
+            leases,
+            cause,
+        })
+    }
+
+    /// Marks the pending router-owned publication acknowledged.
     pub fn acknowledge_publication(&mut self) {
         self.publication_pending = false;
     }
 
-    /// Marks the lifecycle as stopping. No further LeaseSet2 is generated and
-    /// the retained record is dropped so a stale lease set can never be
-    /// advertised as healthy.
+    /// Marks the pending client-owned refresh acknowledged.
+    pub fn acknowledge_client_refresh(&mut self) {
+        self.client_refresh_pending = false;
+    }
+
+    /// Marks the lifecycle as stopping. No further LeaseSet2 is
+    /// generated and every retained record is dropped so a stale
+    /// lease set can never be advertised as healthy.
     pub fn begin_stopping(&mut self) {
         self.stopping = true;
         self.publication_pending = false;
+        self.client_refresh_pending = false;
         self.current = None;
+        self.client_current = None;
     }
 
     /// Whether the lifecycle is stopping.
@@ -189,6 +363,35 @@ impl LeaseSetLifecycle {
         LeaseSetDecision::Retain
     }
 
+    /// Evaluates whether the client-owned destination needs to ask the
+    /// I2CP client for a fresh Standard LeaseSet2. The router never
+    /// signs a replacement; it only signals the refresh cause through
+    /// [`LeaseSetDecision::RequestClientRefresh`].
+    pub fn evaluate_client_refresh(
+        &self,
+        leases: &[InboundLeaseSource],
+        now_seconds: u64,
+    ) -> LeaseSetDecision {
+        if self.stopping {
+            return LeaseSetDecision::Stopping;
+        }
+        if leases.len() < usize::from(self.config.minimum_usable_inbound()) {
+            return LeaseSetDecision::NotPublishable;
+        }
+        let Some(current) = self.client_current.as_ref() else {
+            return LeaseSetDecision::RequestClientRefresh(ClientRefreshCause::InitialGeneration);
+        };
+        let rotation_margin = u64::from(self.config.lease_rotation_margin_seconds());
+        if current
+            .earliest_lease_expiry_seconds()
+            .saturating_sub(rotation_margin)
+            <= now_seconds
+        {
+            return LeaseSetDecision::RequestClientRefresh(ClientRefreshCause::ApproachingExpiry);
+        }
+        LeaseSetDecision::Retain
+    }
+
     /// Evaluates and, when required, generates a replacement LeaseSet2.
     ///
     /// Returns the decision that was acted upon. A `NotPublishable` decision
@@ -213,8 +416,160 @@ impl LeaseSetLifecycle {
                 self.publication_pending = true;
                 self.generations = self.generations.saturating_add(1);
             }
+            // The router-owned refresh path never produces a
+            // client-owned refresh decision.
+            LeaseSetDecision::RequestClientRefresh(_) => {}
         }
         Ok(decision)
+    }
+
+    /// Refreshes a client-owned lifecycle: never signs a replacement,
+    /// only records whether the next I2CP-supplied LeaseSet2 should be
+    /// requested. The decision must be paired with a Plan 167 daemon
+    /// action; the router does not synthesize replacement material.
+    pub fn refresh_client(
+        &mut self,
+        leases: &[InboundLeaseSource],
+        now_seconds: u64,
+    ) -> LeaseSetDecision {
+        let decision = self.evaluate_client_refresh(leases, now_seconds);
+        match decision {
+            LeaseSetDecision::Stopping => {}
+            LeaseSetDecision::NotPublishable => {
+                self.client_current = None;
+                self.client_refresh_pending = false;
+            }
+            LeaseSetDecision::Retain => {}
+            LeaseSetDecision::RequestClientRefresh(_) => {
+                self.client_refresh_pending = true;
+            }
+            // The client-owned refresh path never produces a
+            // router-owned regeneration decision.
+            LeaseSetDecision::Regenerate(_) => {}
+        }
+        decision
+    }
+
+    /// Atomically validates, stores, and stages publication for a
+    /// client-supplied Standard LeaseSet2.
+    ///
+    /// The supplied record is validated through
+    /// [`ValidatedLeaseSet2::from_lease_set2`] against the destination
+    /// hash and the supplied lease set. Validation succeeds only when:
+    ///
+    /// - the structural decoder accepted the bytes (Plan 164);
+    /// - the LeaseSet2 is a supported `type 3` Standard LeaseSet2;
+    /// - the signature verifies against the contained destination's
+    ///   signing public key;
+    /// - every advertised lease belongs to the supplied
+    ///   [`InboundLeaseSource`] set;
+    /// - no lease is expired, lives longer than the configured
+    ///   rotation horizon, or duplicates another lease in the same
+    ///   record;
+    /// - the encryption public key matches the supplied decryption
+    ///   capability's public key (Plan 166 §6 step 9).
+    ///
+    /// On success the validated record is installed as the current
+    /// client-owned lease set and the publication lifecycle is reset;
+    /// on failure no state is mutated.
+    pub fn install_external(
+        &mut self,
+        destination: &DestinationPublic,
+        lease_set2: LeaseSet2,
+        leases: &[InboundLeaseSource],
+        decryption_capability_static_public: &[u8; i2pr_crypto::X25519_KEY_LENGTH],
+        now_seconds: u64,
+    ) -> Result<(), LeaseSetError> {
+        if self.stopping {
+            return Err(LeaseSetError::InstallWhileStopping);
+        }
+        if leases.len() < usize::from(self.config.minimum_usable_inbound()) {
+            return Err(LeaseSetError::NoUsableInboundTunnels);
+        }
+        let published_seconds = lease_set2.published_seconds();
+        let expires_seconds = lease_set2.expires_seconds();
+        let now_32 = u32::try_from(now_seconds).map_err(|_| LeaseSetError::TimestampOverflow)?;
+        if expires_seconds <= now_32 {
+            return Err(LeaseSetError::ExpiredLeaseSet2 {
+                expires_seconds,
+                now_seconds: now_32,
+            });
+        }
+        let advertised = lease_set2.leases();
+        if advertised.is_empty() {
+            return Err(LeaseSetError::LeaseSet2MissingLeases);
+        }
+        // Every advertised lease must be one we currently own; Plan 166
+        // §6 forbids foreign or unknown leases.
+        let mut matched: Vec<InboundLeaseSource> = Vec::with_capacity(advertised.len());
+        for lease in advertised {
+            if lease.end_date().as_seconds() <= published_seconds {
+                return Err(LeaseSetError::ExpiredLeaseSet2Lease {
+                    lease_end_seconds: lease.end_date().as_seconds(),
+                    published_seconds,
+                });
+            }
+            if lease.end_date().as_seconds() > expires_seconds {
+                return Err(LeaseSetError::LeaseOutlivesExpiration {
+                    lease_end_seconds: lease.end_date().as_seconds(),
+                    expires_seconds,
+                });
+            }
+            let source = leases
+                .iter()
+                .find(|source| {
+                    source.gateway() == lease.tunnel_gateway()
+                        && source.gateway_receive_tunnel_id() == lease.tunnel_id()
+                })
+                .copied()
+                .ok_or(LeaseSetError::ForeignLease {
+                    gateway: lease.tunnel_gateway(),
+                    tunnel_id: lease.tunnel_id(),
+                })?;
+            if matched
+                .iter()
+                .any(|existing| existing.slot() == source.slot())
+            {
+                return Err(LeaseSetError::DuplicateLease {
+                    gateway: source.gateway(),
+                    tunnel_id: source.gateway_receive_tunnel_id(),
+                });
+            }
+            matched.push(source);
+        }
+        // Plan 166 §6 step 7: only supported encryption public key type
+        // (X25519 / type 4) is acceptable in M9.
+        let ls2_key = lease_set2
+            .usable_x25519_key()
+            .map_err(map_key_selection_error)?;
+        if ls2_key.key_type() != CryptoKeyType::X25519 {
+            return Err(LeaseSetError::UnsupportedEncryptionKeyType {
+                key_type: ls2_key.key_type().code(),
+            });
+        }
+        if ls2_key.as_bytes() != decryption_capability_static_public {
+            return Err(LeaseSetError::DecryptionKeyMismatch);
+        }
+        // Validate against the contained destination hash.
+        let expected_key = destination.id().as_netdb_key();
+        let context = LeaseSet2ValidationContext::new(now_32);
+        let validated =
+            ValidatedLeaseSet2::from_lease_set2(lease_set2, Some(expected_key), context)
+                .map_err(LeaseSetError::SelfValidation)?;
+        self.client_current = Some(ClientOwnedLeaseSet {
+            validated,
+            leases: matched,
+        });
+        self.client_generations = self.client_generations.saturating_add(1);
+        self.client_refresh_pending = false;
+        Ok(())
+    }
+
+    /// Releases the client-owned lease set without touching the
+    /// router-owned one. Idempotent.
+    pub fn release_client(&mut self) {
+        self.client_current = None;
+        self.client_refresh_pending = false;
     }
 
     fn generate(
@@ -376,6 +731,71 @@ pub enum LeaseSetError {
     /// LeaseSet2 entries.
     #[error("local lease set failed self-validation: {0}")]
     SelfValidation(#[from] LeaseSet2ValidationError),
+    /// The destination lifecycle is stopping; no further install is
+    /// accepted (Plan 166 §4 step 9 rollback).
+    #[error("cannot install LeaseSet2 while destination is stopping")]
+    InstallWhileStopping,
+    /// The supplied Standard LeaseSet2 has no usable inbound leases.
+    #[error("client-supplied LeaseSet2 carries no leases")]
+    LeaseSet2MissingLeases,
+    /// A lease inside the supplied Standard LeaseSet2 has expired
+    /// relative to the record's published timestamp.
+    #[error("LeaseSet2 lease end {lease_end_seconds} is not after published {published_seconds}")]
+    ExpiredLeaseSet2Lease {
+        /// The lease end date inside the record.
+        lease_end_seconds: u32,
+        /// The record's published timestamp.
+        published_seconds: u32,
+    },
+    /// A lease inside the supplied Standard LeaseSet2 outlives the
+    /// record's `expires` field.
+    #[error("LeaseSet2 lease end {lease_end_seconds} outlives record expires {expires_seconds}")]
+    LeaseOutlivesExpiration {
+        /// The lease end date.
+        lease_end_seconds: u32,
+        /// The record's absolute expires timestamp.
+        expires_seconds: u32,
+    },
+    /// A lease inside the supplied Standard LeaseSet2 is foreign to
+    /// the destination's inbound pool.
+    #[error(
+        "LeaseSet2 advertised lease not owned by destination runtime (gateway {gateway:?}, tunnel {tunnel_id})"
+    )]
+    ForeignLease {
+        /// Foreign gateway router hash.
+        gateway: Hash,
+        /// Foreign tunnel identifier.
+        tunnel_id: u32,
+    },
+    /// Two leases inside the supplied Standard LeaseSet2 advertise
+    /// the same (gateway, tunnel id).
+    #[error("LeaseSet2 advertises duplicate lease (gateway {gateway:?}, tunnel {tunnel_id})")]
+    DuplicateLease {
+        /// Duplicate gateway router hash.
+        gateway: Hash,
+        /// Duplicate tunnel identifier.
+        tunnel_id: u32,
+    },
+    /// The supplied Standard LeaseSet2 carries an unsupported
+    /// encryption public-key type. M9 only accepts X25519 / type 4.
+    #[error("LeaseSet2 encryption key type {key_type} is unsupported by M9")]
+    UnsupportedEncryptionKeyType {
+        /// Numeric encryption key type code.
+        key_type: u16,
+    },
+    /// The supplied Standard LeaseSet2's encryption public key does not
+    /// match the supplied inbound decryption capability's public key.
+    #[error("LeaseSet2 encryption public key does not match supplied decryption capability")]
+    DecryptionKeyMismatch,
+    /// The supplied Standard LeaseSet2 has already expired relative to
+    /// the supplied deterministic clock.
+    #[error("LeaseSet2 already expired at {expires_seconds} vs now {now_seconds}")]
+    ExpiredLeaseSet2 {
+        /// The record's absolute expires timestamp.
+        expires_seconds: u32,
+        /// Current deterministic clock reading.
+        now_seconds: u32,
+    },
 }
 
 /// Non-secret summary of the local LeaseSet2 state, suitable for a handle.
@@ -396,24 +816,49 @@ pub struct LeaseSetSummary {
 }
 
 impl LeaseSetSummary {
-    pub(crate) fn from_lifecycle(lifecycle: &LeaseSetLifecycle) -> Self {
-        match lifecycle.current() {
-            Some(current) => Self {
-                present: true,
-                lease_count: current.lease_sources().len(),
-                published_seconds: Some(current.published_seconds()),
-                expires_seconds: Some(current.expires_seconds()),
-                generations: lifecycle.generations(),
-                publication_pending: lifecycle.publication_pending(),
+    pub(crate) fn from_lifecycle(
+        lifecycle: &LeaseSetLifecycle,
+        ownership: crate::identity::DestinationOwnership,
+    ) -> Self {
+        match ownership {
+            crate::identity::DestinationOwnership::RouterOwned => match lifecycle.current() {
+                Some(current) => Self {
+                    present: true,
+                    lease_count: current.lease_sources().len(),
+                    published_seconds: Some(current.published_seconds()),
+                    expires_seconds: Some(current.expires_seconds()),
+                    generations: lifecycle.generations(),
+                    publication_pending: lifecycle.publication_pending(),
+                },
+                None => Self {
+                    present: false,
+                    lease_count: 0,
+                    published_seconds: None,
+                    expires_seconds: None,
+                    generations: lifecycle.generations(),
+                    publication_pending: lifecycle.publication_pending(),
+                },
             },
-            None => Self {
-                present: false,
-                lease_count: 0,
-                published_seconds: None,
-                expires_seconds: None,
-                generations: lifecycle.generations(),
-                publication_pending: lifecycle.publication_pending(),
-            },
+            crate::identity::DestinationOwnership::ClientOwned => {
+                match lifecycle.client_current() {
+                    Some(current) => Self {
+                        present: true,
+                        lease_count: current.lease_sources().len(),
+                        published_seconds: Some(current.published_seconds()),
+                        expires_seconds: Some(current.expires_seconds()),
+                        generations: lifecycle.client_generations(),
+                        publication_pending: lifecycle.client_refresh_pending(),
+                    },
+                    None => Self {
+                        present: false,
+                        lease_count: 0,
+                        published_seconds: None,
+                        expires_seconds: None,
+                        generations: lifecycle.client_generations(),
+                        publication_pending: lifecycle.client_refresh_pending(),
+                    },
+                }
+            }
         }
     }
 }
@@ -432,6 +877,20 @@ impl fmt::Display for LeaseSetSummary {
 pub fn encoded_hash(record: &LeaseSet2) -> Result<Hash, CodecError> {
     let encoded = record.encode_to_vec(i2pr_proto::MAX_LEASE_SET2_BYTES)?;
     Ok(i2pr_crypto::sha256(&encoded))
+}
+
+fn map_key_selection_error(error: LeaseSet2KeySelectionError) -> LeaseSetError {
+    match error {
+        LeaseSet2KeySelectionError::NoKeys => {
+            LeaseSetError::UnsupportedEncryptionKeyType { key_type: 0 }
+        }
+        LeaseSet2KeySelectionError::DuplicateX25519 => {
+            LeaseSetError::UnsupportedEncryptionKeyType { key_type: 4 }
+        }
+        LeaseSet2KeySelectionError::X25519NotFound => {
+            LeaseSetError::UnsupportedEncryptionKeyType { key_type: 0 }
+        }
+    }
 }
 
 #[cfg(test)]

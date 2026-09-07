@@ -208,8 +208,12 @@ fn plan_120_deterministic_local_trajectory() {
     let leases = runtime.inbound_lease_sources(now);
     assert_eq!(leases.len(), 1);
     let lease_source = leases[0];
-    let record = build_signed_lease_set2(runtime.identity(), &leases, u32::try_from(now).unwrap())
-        .expect("signed");
+    let record = build_signed_lease_set2(
+        runtime.identity().expect("router-owned"),
+        &leases,
+        u32::try_from(now).unwrap(),
+    )
+    .expect("signed");
     let lease2: &Lease2 = &record.leases()[0];
     assert_eq!(lease2.tunnel_gateway(), lease_source.gateway());
     assert_eq!(lease2.tunnel_id(), lease_source.gateway_receive_tunnel_id());
@@ -293,7 +297,7 @@ fn plan_120_deterministic_local_trajectory() {
     let refreshed = runtime.lease_set().expect("lease set");
     let _ = refreshed;
     let refreshed_record = build_signed_lease_set2(
-        runtime.identity(),
+        runtime.identity().expect("router-owned"),
         &runtime.inbound_lease_sources(now_expiry),
         refreshed.published_seconds(),
     )

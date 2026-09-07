@@ -87,7 +87,7 @@ pub mod payload;
 pub mod session;
 pub mod verify;
 
-pub use actions::{DestinationLookupKey, I2cpAction};
+pub use actions::{DestinationLookupKey, I2cpAction, LeaseRefreshCause, LeaseRequestLease};
 pub use config::{
     M9_FAST_RECEIVE_DEFAULT, M9_LEASE_SET_ENC_TYPE, M9_LEASE_SET_TYPE,
     M9_MESSAGE_RELIABILITY_BEST_EFFORT, MAX_SESSION_CONFIG_KEY_BYTES, MAX_SESSION_CONFIG_OPTIONS,
