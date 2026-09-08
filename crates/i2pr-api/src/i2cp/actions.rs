@@ -13,6 +13,13 @@
 //! Plan 166 adds the [`I2cpAction::RequestVariableLeaseSet`] variant so
 //! the Plan 167 daemon can ship a typed lease-request to the client
 //! whenever the destination needs a fresh signed Standard LeaseSet2.
+//!
+//! Plan 168 re-exports the data-plane action vocabulary through
+//! the `I2cpDataPlaneAction` enum from the `data_plane` module.
+//! The `I2cpAction` enum remains the connection/session vocabulary;
+//! the data-plane actions are deliberately separated so the
+//! connection state machine and the payload dispatcher can evolve
+//! independently.
 
 use i2pr_proto::Hash;
 

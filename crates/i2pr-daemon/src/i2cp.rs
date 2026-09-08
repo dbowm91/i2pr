@@ -40,13 +40,16 @@
 use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use i2pr_api::i2cp::{
-    BandwidthLimits, Clock, ConnectionStateMachine, CreateLeaseSet2, DestroySession, Disconnect,
-    FrameDecoder, GetDate, I2cpAction, Message, PROTOCOL_BYTE, ProjectedPolicy, SessionId,
+    BandwidthLimits, Clock, ConnectionStateMachine, CreateLeaseSet2, DestLookup, DestroySession,
+    Disconnect, FrameDecoder, GetDate, I2cpAction, I2cpMessageOutcome, InboundPayloadFrame,
+    InboundPayloadQueue, MAX_PENDING_OUTBOUND_MESSAGES_PER_SESSION, Message, MessageId,
+    MessagePayload, MessageStatus, PROTOCOL_BYTE, Payload, PayloadGzipHeader, PendingStatusEntry,
+    PendingStatusTable, ProjectedPolicy, SendMessage, SendMessageExpires, SessionId,
     SessionRegistry, SessionRegistryLimits, SessionStatus, SessionStatusCode,
     VerifiedSessionConfig, decode_typed, encode_frame, project_options, verify_session_config,
 };
@@ -54,8 +57,8 @@ use i2pr_api::i2cp::{
     DestReply, DestReplyBody, HostReply, HostReplyResult, SessionConfig, SessionConfigLimits,
 };
 use i2pr_client::{
-    DestinationConfig, DestinationId, DestinationPublic, DestinationRegistry, DestinationRuntime,
-    InboundDecryptionCapability, RegistryConfig,
+    DestinationConfig, DestinationId, DestinationPayload, DestinationPublic, DestinationRegistry,
+    DestinationRuntime, InboundDecryptionCapability, PayloadError, RegistryConfig,
 };
 use i2pr_crypto::X25519_KEY_LENGTH;
 use i2pr_proto::Hash;
@@ -63,7 +66,7 @@ use i2pr_runtime::{CancellationToken, ChildScope};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::{Notify, OwnedSemaphorePermit};
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
@@ -147,6 +150,162 @@ pub struct I2cpServiceSnapshot {
     pub connection_count: usize,
 }
 
+/// Per-session Plan 168 data-plane bookkeeping.
+///
+/// One `I2cpSessionState` exists for every committed I2CP session.
+/// The struct is held inside the shared `I2cpServiceState` so both
+/// the per-connection task (which drains the inbound queue and writes
+/// `MessagePayload` frames) and the `enqueue_outbound` path (which
+/// inserts into the receiving session's queue) operate against the
+/// same bounded counters.
+#[derive(Debug)]
+pub struct I2cpSessionState {
+    /// Owning session identifier.
+    pub session: SessionId,
+    /// Connection that owns the session.
+    pub connection: u32,
+    /// Verified destination hash the session is bound to.
+    pub destination_hash: Hash,
+    /// Destination identifier the session registers through.
+    pub destination_id: DestinationId,
+    /// Bounded inbound payload queue (Plan 168 §5).
+    pub inbound: Mutex<InboundPayloadQueue>,
+    /// Bounded pending `MessageStatus` correlations (Plan 168 §4).
+    pub pending_status: Mutex<PendingStatusTable>,
+    /// Bounded outbound I2CP message counter (Plan 168 §10).
+    pub pending_outbound: AtomicU32,
+    /// Router-assigned message id counter.
+    pub next_message_id: AtomicU32,
+    /// Next outbound message id that was assigned to a payload.
+    pub last_message_id: AtomicU32,
+    /// Notifier the per-connection task uses to wake up when a
+    /// `MessagePayload` is pushed onto the inbound queue by a
+    /// sibling connection. Without this notifier the receiving
+    /// task would block in `read_chunk` and the cross-session
+    /// loopback shortcut would never surface the bytes.
+    pub inbound_notify: Notify,
+}
+
+impl I2cpSessionState {
+    /// Constructs a fresh session state.
+    fn new(
+        session: SessionId,
+        connection: u32,
+        destination_hash: Hash,
+        destination_id: DestinationId,
+    ) -> Self {
+        Self {
+            session,
+            connection,
+            destination_hash,
+            destination_id,
+            inbound: Mutex::new(InboundPayloadQueue::new()),
+            pending_status: Mutex::new(PendingStatusTable::new()),
+            pending_outbound: AtomicU32::new(0),
+            next_message_id: AtomicU32::new(1),
+            last_message_id: AtomicU32::new(0),
+            inbound_notify: Notify::new(),
+        }
+    }
+
+    /// Allocates a fresh router message id, recording the correlation
+    /// against the supplied client nonce. Returns the assigned id.
+    fn allocate_message_id(
+        &self,
+        nonce: i2pr_api::i2cp::ClientNonce,
+    ) -> Result<MessageId, i2pr_api::i2cp::DataPlaneError> {
+        let mut pending = self.pending_status.lock().expect("pending poisoned");
+        let id = self
+            .next_message_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1).filter(|next| *next != 0)
+            })
+            .map_err(|_| i2pr_api::i2cp::DataPlaneError::CapacityExceeded)?;
+        let message_id = MessageId::new(id);
+        pending.record(PendingStatusEntry {
+            message_id,
+            session: self.session,
+            nonce,
+        })?;
+        self.last_message_id.store(id, Ordering::Relaxed);
+        Ok(message_id)
+    }
+
+    /// Reserves one outbound slot, returning the new depth.
+    fn reserve_outbound_slot(&self) -> Result<u32, I2cpConnectionError> {
+        let previous =
+            self.pending_outbound
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    if current as usize >= MAX_PENDING_OUTBOUND_MESSAGES_PER_SESSION {
+                        None
+                    } else {
+                        Some(current + 1)
+                    }
+                });
+        match previous {
+            Ok(value) => Ok(value + 1),
+            Err(_) => Err(I2cpConnectionError::Overflow),
+        }
+    }
+
+    /// Releases one outbound slot.
+    fn release_outbound_slot(&self) {
+        self.pending_outbound
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(1))
+            })
+            .ok();
+    }
+
+    /// Releases the session's bounded bookkeeping. Returns the counts.
+    fn release(&self) -> (usize, usize, usize) {
+        let inbound = self
+            .inbound
+            .lock()
+            .map(|mut queue| queue.release_all())
+            .unwrap_or(0);
+        let pending = self
+            .pending_status
+            .lock()
+            .map(|mut table| table.release_all())
+            .unwrap_or(0);
+        let outbound = self.pending_outbound.swap(0, Ordering::Relaxed) as usize;
+        (inbound, pending, outbound)
+    }
+
+    /// Pushes one inbound payload frame. Returns the new depth on success.
+    fn push_inbound(&self, frame: InboundPayloadFrame) -> Result<usize, I2cpConnectionError> {
+        let mut queue = self.inbound.lock().expect("inbound poisoned");
+        let result = queue.push(frame).map_err(|_| I2cpConnectionError::Overflow);
+        // Always notify the receiving connection task so the
+        // inbound drain runs even when the receiver is parked in
+        // `read_chunk`. The notification is no-op when the queue is
+        // empty (the next drain observes nothing) and harmless when
+        // the task has already exited.
+        drop(queue);
+        self.inbound_notify.notify_one();
+        result
+    }
+
+    /// Pops the next inbound payload frame, releasing its byte accounting.
+    fn pop_inbound(&self) -> Option<InboundPayloadFrame> {
+        self.inbound.lock().ok().and_then(|mut queue| queue.pop())
+    }
+
+    /// Removes the pending status entry keyed by `message_id`.
+    fn take_pending_status(&self, message_id: MessageId) -> Option<PendingStatusEntry> {
+        self.pending_status
+            .lock()
+            .ok()
+            .and_then(|mut table| table.take(message_id))
+    }
+
+    /// Reports the current pending outbound I2CP message count.
+    pub fn pending_outbound_count(&self) -> u32 {
+        self.pending_outbound.load(Ordering::Relaxed)
+    }
+}
+
 /// The complete state the I2CP service exposes to the daemon supervisor.
 #[derive(Debug)]
 pub struct I2cpServiceState {
@@ -154,6 +313,7 @@ pub struct I2cpServiceState {
     session_registry: Mutex<SessionRegistry>,
     destination_registry: Arc<Mutex<DestinationRegistry>>,
     destinations: Mutex<HashMap<Hash, I2cpDestinationEntry>>,
+    sessions: Mutex<HashMap<SessionId, Arc<I2cpSessionState>>>,
     next_connection: AtomicU64,
     active_connections: Mutex<HashMap<u32, I2cpConnection>>,
 }
@@ -182,6 +342,7 @@ impl I2cpServiceState {
             session_registry,
             destination_registry,
             destinations: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
             next_connection: AtomicU64::new(1),
             active_connections: Mutex::new(HashMap::new()),
         })
@@ -267,6 +428,61 @@ impl I2cpServiceState {
             session_count: self.session_count(),
             connection_count: self.connection_count(),
         }
+    }
+
+    /// Returns the per-session data-plane state for the supplied
+    /// session id, when one is registered. The accessor is the
+    /// single source of truth for the per-connection inbound queue,
+    /// pending status correlations, and outbound counter.
+    pub fn session_state(&self, session: SessionId) -> Option<Arc<I2cpSessionState>> {
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&session).cloned())
+    }
+
+    /// Returns the destination hash owned by the supplied session id.
+    pub fn session_destination_hash(&self, session: SessionId) -> Option<Hash> {
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&session).map(|state| state.destination_hash))
+    }
+
+    /// Looks up the I2CP session that owns a destination hash. The
+    /// lookup is the Plan 168 cross-session delivery seam: when a
+    /// destination owned by one session receives a payload, the
+    /// daemon routes it to the session returned here.
+    pub fn session_for_destination(&self, hash: &Hash) -> Option<Arc<I2cpSessionState>> {
+        let entry = self
+            .destinations
+            .lock()
+            .ok()
+            .and_then(|map| map.get(hash).copied())?;
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&entry.session).cloned())
+    }
+
+    /// Returns the live outbound payload byte aggregate across every
+    /// session on the supplied connection. Used by the Plan 168
+    /// aggregate-budget assertions.
+    pub fn connection_outbound_depth(&self, connection: u32) -> (u32, usize) {
+        let Ok(sessions) = self.sessions.lock() else {
+            return (0, 0);
+        };
+        let mut pending = 0u32;
+        let mut inbound_bytes = 0usize;
+        for state in sessions.values() {
+            if state.connection == connection {
+                pending = pending.saturating_add(state.pending_outbound_count());
+                if let Ok(queue) = state.inbound.lock() {
+                    inbound_bytes = inbound_bytes.saturating_add(queue.queued_bytes());
+                }
+            }
+        }
+        (pending, inbound_bytes)
     }
 
     /// Runs the supervised I2CP listener until the supplied
@@ -429,6 +645,19 @@ impl I2cpServiceState {
                 },
             );
         }
+        // Plan 168: register the per-session data-plane bookkeeping
+        // keyed by the freshly committed session id. The map is
+        // authoritative for the per-session bounded counters;
+        // teardown drains it back to baseline.
+        let session_state = Arc::new(I2cpSessionState::new(
+            entry.session,
+            connection_id,
+            dest_hash,
+            destination_id,
+        ));
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.insert(entry.session, session_state);
+        }
         Ok(entry.session)
     }
 
@@ -529,6 +758,28 @@ impl I2cpServiceState {
             for (hash, _id, session) in owned {
                 map.remove(&hash);
                 let _ = sessions.destroy(session);
+            }
+        }
+        // Plan 168: drain every per-session data-plane state for
+        // this connection; the inbound queues, pending status
+        // correlations, and outbound counters are released back to
+        // baseline. The session map is the only source of truth for
+        // the bookkeeping.
+        if let Ok(mut session_states) = self.sessions.lock() {
+            let to_remove: Vec<SessionId> = session_states
+                .iter()
+                .filter_map(|(session, state)| {
+                    if state.connection == connection_id {
+                        Some(*session)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for session in to_remove {
+                if let Some(state) = session_states.remove(&session) {
+                    let _ = state.release();
+                }
             }
         }
     }
@@ -634,6 +885,13 @@ async fn handle_connection_inner(
             biased;
             _ = task_cancellation.cancelled() => return Ok(()),
             _ = parent_token.cancelled() => return Ok(()),
+            // Plan 168: a sibling connection may push a
+            // `MessagePayload` onto this session's inbound queue.
+            // The notify lets the receiver drain it without waiting
+            // for the next client-driven read.
+            _ = wait_for_inbound_notify(state, connection_id) => {
+                drain_inbound_payloads(state, connection_id, stream).await?;
+            }
             chunk = read_chunk(stream, read_timeout, task_cancellation.clone()) => {
                 let chunk = chunk?;
                 if chunk.is_empty() {
@@ -659,9 +917,86 @@ async fn handle_connection_inner(
                         FrameOutcome::Close => return Ok(()),
                     }
                 }
+                // Plan 168: after every inbound frame batch, drain
+                // any queued `MessagePayload` frames for the
+                // connection's owning session. Cross-session
+                // loopback delivery deposits into these queues; the
+                // drain keeps slow readers bounded because the
+                // per-session byte accounting enforces
+                // backpressure on the producer side.
+                drain_inbound_payloads(state, connection_id, stream).await?;
             }
         }
     }
+}
+
+/// Awaits the next inbound payload notify for the supplied
+/// connection. Returns immediately when no session exists yet (the
+/// connection has not activated a session). The helper exists so
+/// `handle_connection_inner` does not need to thread the per-session
+/// notify through the `select!` branches.
+async fn wait_for_inbound_notify(state: &I2cpServiceState, connection_id: u32) {
+    let Some(session) = session_state_for_connection(state, connection_id) else {
+        // Park indefinitely; cancellation paths cancel the parent.
+        std::future::pending::<()>().await;
+        return;
+    };
+    session.inbound_notify.notified().await;
+}
+
+/// Drains and writes every queued `MessagePayload` for the connection's
+/// owning session. Slow readers accumulate bounded backpressure in
+/// the per-session queue; this function emits at most one write per
+/// drained frame and never blocks on the wire beyond the configured
+/// write deadline.
+async fn drain_inbound_payloads(
+    state: &Arc<I2cpServiceState>,
+    connection_id: u32,
+    stream: &mut TcpStream,
+) -> Result<(), I2cpConnectionError> {
+    let Some(session_state) = session_state_for_connection(state, connection_id) else {
+        return Ok(());
+    };
+    loop {
+        let Some(frame) = session_state.pop_inbound() else {
+            return Ok(());
+        };
+        let header = PayloadGzipHeader {
+            source_port: frame.source_port,
+            destination_port: frame.destination_port,
+            xflags: i2pr_api::i2cp::GZIP_XFLAGS_JAVA,
+            protocol: frame.protocol,
+        };
+        let payload = match Payload::new(frame.payload) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let message = MessagePayload {
+            session: frame.session,
+            message_id: frame.message_id,
+            payload,
+        };
+        write_message(stream, &Message::MessagePayload(message)).await?;
+        // Recompute the header for diagnostics; the encoded payload
+        // carries the same bytes either way.
+        let _ = header;
+    }
+}
+
+/// Returns the per-session data-plane state for the supplied
+/// connection, when the connection owns exactly one session. The M9
+/// default policy is one primary session per connection; multi-session
+/// semantics remain deferred to a later pass.
+fn session_state_for_connection(
+    state: &I2cpServiceState,
+    connection_id: u32,
+) -> Option<Arc<I2cpSessionState>> {
+    state.sessions.lock().ok().and_then(|sessions| {
+        sessions
+            .values()
+            .find(|state| state.connection == connection_id)
+            .cloned()
+    })
 }
 
 #[derive(Debug)]
@@ -685,6 +1020,14 @@ enum I2cpConnectionError {
     Timeout,
     #[error("i2cp connection io error: {0}")]
     Io(#[from] io::Error),
+    /// A bounded Plan 168 data-plane ceiling was exceeded.
+    #[error("i2cp data plane boundedness exceeded")]
+    Overflow,
+    /// Plan 168 payload validation failed for a non-malformed
+    /// structural reason (out-of-range expiration, expired instant,
+    /// unsupported semantics).
+    #[error("i2cp payload rejected: {0}")]
+    PayloadRejected(String),
 }
 
 async fn dispatch_frame(
@@ -760,13 +1103,9 @@ async fn dispatch_message(
         }
         Message::Disconnect(_disconnect) => Ok(FrameOutcome::Close),
         Message::GetBandwidthLimits(_) => Ok(FrameOutcome::Reply(Box::new(
-            Message::BandwidthLimits(zero_bandwidth_limits()),
+            Message::BandwidthLimits(derive_bandwidth_reply(&state.config)),
         ))),
-        Message::DestLookup(_lookup) => Ok(FrameOutcome::Reply(Box::new(Message::DestReply(
-            DestReply {
-                body: DestReplyBody::LegacyEmpty,
-            },
-        )))),
+        Message::DestLookup(lookup) => Ok(handle_dest_lookup(state, lookup)),
         Message::HostLookup(_lookup) => Ok(FrameOutcome::Reply(Box::new(Message::HostReply(
             HostReply {
                 session: SessionId::new(0),
@@ -776,11 +1115,11 @@ async fn dispatch_message(
                 options: None,
             },
         )))),
-        Message::SendMessage(_) | Message::SendMessageExpires(_) => {
-            Err(I2cpConnectionError::StateMachine(format!(
-                "message type {} deferred to Plan 168",
-                message_label(message.message_type())
-            )))
+        Message::SendMessage(send) => {
+            handle_send_message(state, connection_id, per_connection_session, send).await
+        }
+        Message::SendMessageExpires(send) => {
+            handle_send_message_expires(state, connection_id, per_connection_session, send).await
         }
     }
 }
@@ -951,6 +1290,455 @@ async fn handle_create_lease_set2(
     Ok(FrameOutcome::Continue)
 }
 
+// ---- Plan 168 SendMessage / SendMessageExpires / DestLookup / BandwidthLimits ----
+
+/// Splits one I2CP payload into its gzip header and body, returning
+/// the typed header and the post-header compressed body.
+fn split_payload_header(
+    payload: &Payload,
+) -> Result<(PayloadGzipHeader, &[u8]), I2cpConnectionError> {
+    let bytes = payload.as_bytes();
+    if bytes.len() < i2pr_api::i2cp::GZIP_HEADER_LEN {
+        return Err(I2cpConnectionError::PayloadRejected(
+            "i2cp payload body too small for gzip header".to_owned(),
+        ));
+    }
+    let header = PayloadGzipHeader::parse(bytes).map_err(|error| {
+        I2cpConnectionError::PayloadRejected(format!("i2cp payload gzip header malformed: {error}"))
+    })?;
+    Ok((header, &bytes[i2pr_api::i2cp::GZIP_HEADER_LEN..]))
+}
+
+/// Validates the SendMessageExpires expiration against the bounded
+/// M9 horizon. Returns the typed outcome to surface in `MessageStatus`.
+fn validate_expiration(expiration_ms: u64, now_ms: u64) -> Result<(), I2cpMessageOutcome> {
+    // Past expirations fail with `MessageExpired`; far-future
+    // expirations fail with `BadOptions`.
+    if expiration_ms <= now_ms {
+        return Err(I2cpMessageOutcome::MessageExpired);
+    }
+    let horizon_ms: u64 = i2pr_api::i2cp::MAX_MESSAGE_EXPIRATION_HORIZON
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX);
+    let delta = expiration_ms.saturating_sub(now_ms);
+    if delta > horizon_ms {
+        return Err(I2cpMessageOutcome::BadExpirationHorizon);
+    }
+    Ok(())
+}
+
+/// Returns the protocol byte carried in the I2CP payload header, or
+/// `I2cpMessageOutcome::BadMessage` if the header is malformed.
+fn parse_payload_protocol(payload: &Payload) -> Result<u8, I2cpMessageOutcome> {
+    let bytes = payload.as_bytes();
+    if bytes.len() < i2pr_api::i2cp::GZIP_HEADER_LEN {
+        return Err(I2cpMessageOutcome::BadMessage);
+    }
+    Ok(bytes[i2pr_api::i2cp::GZIP_HEADER_LEN - 1])
+}
+
+async fn handle_send_message(
+    state: &Arc<I2cpServiceState>,
+    connection_id: u32,
+    per_connection_session: &mut Option<SessionId>,
+    send: SendMessage,
+) -> Result<FrameOutcome, I2cpConnectionError> {
+    let session = *per_connection_session;
+    let message = enqueue_outbound_payload(
+        state,
+        connection_id,
+        session,
+        send.session,
+        send.destination
+            .hash()
+            .map_err(|error| I2cpConnectionError::Wire(format!("destination hash: {error}")))?,
+        send.payload,
+        send.nonce,
+        None,
+        None,
+    )
+    .await?;
+    Ok(FrameOutcome::Reply(Box::new(Message::MessageStatus(
+        message,
+    ))))
+}
+
+async fn handle_send_message_expires(
+    state: &Arc<I2cpServiceState>,
+    connection_id: u32,
+    per_connection_session: &mut Option<SessionId>,
+    send: SendMessageExpires,
+) -> Result<FrameOutcome, I2cpConnectionError> {
+    let session = *per_connection_session;
+    // The structural codec already rejects reserved flag bits;
+    // accept the remaining semantics per the M9 profile (bit 8
+    // `NO_BUNDLE` is informational here, reliability-override bits
+    // 10-9 are documented as spec-defined-ignore, and tag-threshold
+    // / tags-to-send are ElGamal-only and therefore ignored).
+    let message = enqueue_outbound_payload(
+        state,
+        connection_id,
+        session,
+        send.session,
+        send.destination
+            .hash()
+            .map_err(|error| I2cpConnectionError::Wire(format!("destination hash: {error}")))?,
+        send.payload,
+        send.nonce,
+        Some(send.flags),
+        Some(send.expiration_ms),
+    )
+    .await?;
+    Ok(FrameOutcome::Reply(Box::new(Message::MessageStatus(
+        message,
+    ))))
+}
+
+/// Routes one verified outbound payload through the Plan 168 data
+/// plane: validates the session/ownership/payload/expiration/flags,
+/// reserves an outbound slot, allocates a router message id,
+/// invokes the destination runtime, and maps the runtime outcome
+/// into an honest `MessageStatus` reply. Cross-session local delivery
+/// is implemented as the Plan 168 loopback shortcut.
+#[allow(clippy::too_many_arguments)]
+async fn enqueue_outbound_payload(
+    state: &Arc<I2cpServiceState>,
+    connection_id: u32,
+    owning_session: Option<SessionId>,
+    declared_session: SessionId,
+    target_hash: Hash,
+    payload: Payload,
+    nonce: i2pr_api::i2cp::ClientNonce,
+    flags: Option<i2pr_api::i2cp::SendFlags>,
+    expiration_ms: Option<u64>,
+) -> Result<MessageStatus, I2cpConnectionError> {
+    if let Some(active) = owning_session {
+        if active != declared_session {
+            return Ok(status_message(
+                declared_session,
+                MessageId::new(0),
+                I2cpMessageOutcome::BadSession,
+                payload.as_bytes().len(),
+                nonce,
+            ));
+        }
+    } else {
+        return Ok(status_message(
+            declared_session,
+            MessageId::new(0),
+            I2cpMessageOutcome::BadSession,
+            payload.as_bytes().len(),
+            nonce,
+        ));
+    }
+    let Some(session_state) = state.session_state(declared_session) else {
+        return Ok(status_message(
+            declared_session,
+            MessageId::new(0),
+            I2cpMessageOutcome::BadSession,
+            payload.as_bytes().len(),
+            nonce,
+        ));
+    };
+    if session_state.connection != connection_id {
+        return Ok(status_message(
+            declared_session,
+            MessageId::new(0),
+            I2cpMessageOutcome::BadSession,
+            payload.as_bytes().len(),
+            nonce,
+        ));
+    }
+    // Parse the gzip header up front so the status reply carries
+    // the right outcome class for malformed/malicious payloads.
+    let header = match split_payload_header(&payload) {
+        Ok((header, _body)) => header,
+        Err(_) => {
+            return Ok(status_message(
+                declared_session,
+                MessageId::new(0),
+                I2cpMessageOutcome::BadMessage,
+                payload.as_bytes().len(),
+                nonce,
+            ));
+        }
+    };
+    let _ = header; // protocol/sport/dport are recorded in the inbound frame
+    // Validate the expiration when present.
+    if let Some(expiration) = expiration_ms {
+        let now_ms = i2cp_now_ms();
+        if let Err(outcome) = validate_expiration(expiration, now_ms) {
+            return Ok(status_message(
+                declared_session,
+                MessageId::new(0),
+                outcome,
+                payload.as_bytes().len(),
+                nonce,
+            ));
+        }
+    }
+    // Reject the unsupported ElGamal-only flag bits; the structural
+    // codec already filtered reserved bits 15-11. We treat non-zero
+    // tag-threshold / tags-to-send bits as unsupported because the
+    // M9 profile never sets an ElGamal destination key.
+    if let Some(flags) = flags
+        && (flags.tag_threshold() != 0 || flags.tags_to_send() != 0)
+    {
+        return Ok(status_message(
+            declared_session,
+            MessageId::new(0),
+            I2cpMessageOutcome::UnsupportedFlags,
+            payload.as_bytes().len(),
+            nonce,
+        ));
+    }
+    // Reserve the bounded outbound slot before touching the
+    // destination runtime so the per-session ceiling is enforced
+    // before any state mutates.
+    let session_state = match session_state.reserve_outbound_slot() {
+        Ok(_) => session_state,
+        Err(_) => {
+            return Ok(status_message(
+                declared_session,
+                MessageId::new(0),
+                I2cpMessageOutcome::Overflow,
+                payload.as_bytes().len(),
+                nonce,
+            ));
+        }
+    };
+    let message_id = match session_state.allocate_message_id(nonce) {
+        Ok(id) => id,
+        Err(_) => {
+            session_state.release_outbound_slot();
+            return Ok(status_message(
+                declared_session,
+                MessageId::new(0),
+                I2cpMessageOutcome::Overflow,
+                payload.as_bytes().len(),
+                nonce,
+            ));
+        }
+    };
+    let protocol = match parse_payload_protocol(&payload) {
+        Ok(value) => value,
+        Err(outcome) => {
+            session_state.take_pending_status(message_id);
+            session_state.release_outbound_slot();
+            return Ok(status_message(
+                declared_session,
+                message_id,
+                outcome,
+                payload.as_bytes().len(),
+                nonce,
+            ));
+        }
+    };
+    let (source_port, destination_port) = match split_payload_header(&payload) {
+        Ok((header, _)) => (header.source_port, header.destination_port),
+        Err(_) => {
+            session_state.take_pending_status(message_id);
+            session_state.release_outbound_slot();
+            return Ok(status_message(
+                declared_session,
+                message_id,
+                I2cpMessageOutcome::BadMessage,
+                payload.as_bytes().len(),
+                nonce,
+            ));
+        }
+    };
+    // Hand the payload to the destination runtime. The runtime owns
+    // its bounded outbound queue and reports whether it accepted
+    // the payload; we map the typed result into the Plan 168
+    // outcome vocabulary. The payload bytes are *not* logged.
+    let outcome = invoke_destination_outbound(state, &session_state, protocol, &payload).await;
+    match outcome {
+        Ok(()) => {
+            // Plan 168 §6 loopback shortcut: when the target
+            // destination is owned by another I2CP session on this
+            // router, route the same compressed payload to the
+            // receiving session's `MessagePayload` queue so the
+            // owning connection task can write it onto the wire.
+            // The cross-session delivery goes through the inbound
+            // queue so sibling-isolation, byte accounting, and
+            // backpressure all apply.
+            if let Some(receiving) = state.session_for_destination(&target_hash)
+                && receiving.session != declared_session
+            {
+                let frame = InboundPayloadFrame {
+                    message_id: next_message_id(&receiving),
+                    session: receiving.session,
+                    protocol,
+                    source_port,
+                    destination_port,
+                    payload: payload.as_bytes().to_vec(),
+                };
+                let _ = receiving.push_inbound(frame);
+            }
+            Ok(status_message(
+                declared_session,
+                message_id,
+                I2cpMessageOutcome::Accepted,
+                payload.as_bytes().len(),
+                nonce,
+            ))
+        }
+        Err(outcome) => {
+            // Terminal failure: drop the pending status correlation
+            // so the client does not see a stale entry later. The
+            // outbound slot is also released because the destination
+            // rejected the enqueue.
+            session_state.take_pending_status(message_id);
+            session_state.release_outbound_slot();
+            Ok(status_message(
+                declared_session,
+                message_id,
+                outcome,
+                payload.as_bytes().len(),
+                nonce,
+            ))
+        }
+    }
+}
+
+/// Allocates a fresh inbound message id without recording a status
+/// correlation (inbound frames are not status-tracked). Wraps the
+/// atomic counter so saturation cannot deadlock the receiver.
+fn next_message_id(session_state: &Arc<I2cpSessionState>) -> MessageId {
+    let raw = session_state
+        .next_message_id
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1).filter(|next| *next != 0)
+        })
+        .unwrap_or(1);
+    MessageId::new(raw)
+}
+
+/// Pushes the I2CP payload into the destination runtime's outbound
+/// queue. The runtime is the only authority on whether the payload
+/// is acceptable; the I2CP data plane never duplicates destination
+/// routing state.
+async fn invoke_destination_outbound(
+    state: &Arc<I2cpServiceState>,
+    session_state: &Arc<I2cpSessionState>,
+    protocol: u8,
+    payload: &Payload,
+) -> Result<(), I2cpMessageOutcome> {
+    let _ = protocol;
+    let bytes = payload.as_bytes();
+    // The destination payload body is the gzip header + compressed
+    // body. The destination runtime queue rejects empty bodies, so
+    // supply the whole payload bytes (the runtime does not inspect
+    // them) — an empty body is unreachable here because the codec
+    // already rejected zero-length payload bodies on the wire.
+    let body = bytes.to_vec();
+    let destination_payload = match DestinationPayload::new(protocol, body) {
+        Ok(value) => value,
+        Err(PayloadError::EmptyBody) | Err(PayloadError::BodyTooLarge { .. }) => {
+            return Err(I2cpMessageOutcome::BadMessage);
+        }
+        Err(_) => return Err(I2cpMessageOutcome::BadMessage),
+    };
+    let destination_id = session_state.destination_id;
+    let mut registry = state
+        .destination_registry
+        .lock()
+        .map_err(|_| I2cpMessageOutcome::DestinationStopping)?;
+    let runtime = match registry.get_mut(&destination_id) {
+        Some(runtime) => runtime,
+        None => return Err(I2cpMessageOutcome::BadSession),
+    };
+    match runtime.enqueue_outbound(destination_payload) {
+        Ok(_) => Ok(()),
+        Err(PayloadError::QueueFull { .. }) => Err(I2cpMessageOutcome::Overflow),
+        Err(PayloadError::QueueBytesExceeded { .. }) => Err(I2cpMessageOutcome::Overflow),
+        Err(PayloadError::Stopping) => Err(I2cpMessageOutcome::DestinationStopping),
+        Err(PayloadError::EmptyBody) | Err(PayloadError::BodyTooLarge { .. }) => {
+            Err(I2cpMessageOutcome::BadMessage)
+        }
+        Err(_) => Err(I2cpMessageOutcome::BadMessage),
+    }
+}
+
+fn status_message(
+    session: SessionId,
+    message_id: MessageId,
+    outcome: I2cpMessageOutcome,
+    size: usize,
+    nonce: i2pr_api::i2cp::ClientNonce,
+) -> MessageStatus {
+    MessageStatus {
+        session,
+        message_id,
+        status: outcome.status_code(),
+        size: u32::try_from(size).unwrap_or(u32::MAX),
+        nonce,
+    }
+}
+
+fn handle_dest_lookup(state: &I2cpServiceState, lookup: DestLookup) -> FrameOutcome {
+    // DestLookup in the M9 profile resolves through the local
+    // destination registry first; remote lookup through NetDB
+    // belongs to Plan 169. The plan 168 data plane never invents
+    // network lookups or system DNS.
+    let hash = lookup.hash;
+    if let Ok(destinations) = state.destinations.lock()
+        && let Some(entry) = destinations.get(&hash).copied()
+        && let Ok(registry) = state.destination_registry.lock()
+        && let Some(runtime) = registry.get(&entry.destination_id)
+    {
+        // Local hit: deliver the destination bytes back through the
+        // destination registry. The payload envelope is the canonical
+        // Destination encoding.
+        let destination = runtime.public().destination().clone();
+        return FrameOutcome::Reply(Box::new(Message::DestReply(DestReply {
+            body: DestReplyBody::Destination(destination),
+        })));
+    }
+    // Not found: protocol-correct typed not-found reply that echoes
+    // the requested hash so outstanding lookups correlate.
+    FrameOutcome::Reply(Box::new(Message::DestReply(DestReply {
+        body: DestReplyBody::Hash(hash),
+    })))
+}
+
+/// Returns a typed BandwidthLimits reply. The router-internal limits
+/// stay at the documented neutral zero value (the router does not
+/// yet measure bandwidth); the client-side limits reflect the
+/// configured `max_buffered_bytes_per_connection` ceiling so a client
+/// can read a useful ceiling without crossing into router policy.
+fn derive_bandwidth_reply(config: &I2cpConfig) -> BandwidthLimits {
+    // Documented in Plan 168 §8: client-side ceilings are derived
+    // from the router configuration snapshot; router-side limits stay
+    // at the spec-defined neutral zero value. We expose the client
+    // limits in KB/s rounded down so the I2CP wire never reports
+    // values that are not config-derived.
+    let buffered_bytes = config.max_buffered_bytes_per_connection;
+    let client_inbound_kbps = u32::try_from(buffered_bytes / 1024).unwrap_or(u32::MAX);
+    let client_outbound_kbps = client_inbound_kbps;
+    BandwidthLimits {
+        client_inbound: client_inbound_kbps,
+        client_outbound: client_outbound_kbps,
+        router_inbound: 0,
+        router_inbound_burst: 0,
+        router_outbound: 0,
+        router_outbound_burst: 0,
+        router_burst_time: 0,
+        reserved: [0u32; 9],
+    }
+}
+
+/// Current wall-clock milliseconds since the Unix epoch. Used by
+/// the Plan 168 expiration horizon check.
+fn i2cp_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
 async fn read_protocol_byte(
     stream: &mut TcpStream,
     config: &I2cpConfig,
@@ -1050,19 +1838,6 @@ fn lookup_destination_hash(state: &I2cpServiceState, session: SessionId) -> Opti
             .get(&entry.destination_id)
             .map(|runtime| runtime.destination_hash())
     })
-}
-
-fn zero_bandwidth_limits() -> BandwidthLimits {
-    BandwidthLimits {
-        client_inbound: 0,
-        client_outbound: 0,
-        router_inbound: 0,
-        router_inbound_burst: 0,
-        router_outbound: 0,
-        router_outbound_burst: 0,
-        router_burst_time: 0,
-        reserved: [0u32; 9],
-    }
 }
 
 fn message_label(message_type: i2pr_api::i2cp::MessageType) -> &'static str {

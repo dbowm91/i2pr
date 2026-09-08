@@ -14,12 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use i2pr_api::i2cp::{
-    BandwidthLimits, ConnectionState, DestReply, DestReplyBody, GetBandwidthLimits, HostLookupKey,
-    I2cpAction, LeaseRefreshCause, LeaseRequestLease, M9_ADVERTISED_VERSION, MessageStatusCode,
-    PROTOCOL_BYTE, RequestedLease, SessionId, SessionStatus, SessionStatusCode, encode_frame,
-};
-use i2pr_client::{
-    DestinationConfig, DestinationIdentity, DestinationPublic, InboundDecryptionCapability,
+    M9_ADVERTISED_VERSION, PROTOCOL_BYTE, SessionId, SessionStatusCode, encode_frame,
 };
 use i2pr_crypto::{SigningPrivateKey, X25519_KEY_LENGTH};
 use i2pr_daemon::config::I2cpConfig;
@@ -519,75 +514,4 @@ async fn create_lease_set2_with_mismatched_key_fails() {
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
     let _ = scope.shutdown().await;
     drop(state);
-}
-
-// Reference marker so unused imports stay recognized for Plan 168.
-#[allow(dead_code)]
-fn _reference_marker() {
-    let (destination, _signing_key, _x25519) = build_signed_destination();
-    let _ = (
-        I2cpAction::RequestBandwidthSnapshot { connection: 1 },
-        LeaseRequestLease {
-            gateway: Hash::from_bytes([0u8; 32]),
-            tunnel_id: 0,
-            end_date_seconds: 0,
-        },
-        LeaseRefreshCause::InitialGeneration,
-        RequestedLease {
-            gateway: Hash::from_bytes([0u8; 32]),
-            tunnel_id: 0,
-        },
-        BandwidthLimits {
-            client_inbound: 0,
-            client_outbound: 0,
-            router_inbound: 0,
-            router_inbound_burst: 0,
-            router_outbound: 0,
-            router_outbound_burst: 0,
-            router_burst_time: 0,
-            reserved: [0u32; 9],
-        },
-        HostLookupKey::Hash(Hash::from_bytes([0u8; 32])),
-        DestReply {
-            body: DestReplyBody::LegacyEmpty,
-        },
-        GetBandwidthLimits,
-        SessionStatus {
-            session: SessionId::new(0),
-            status: SessionStatusCode::Created,
-        },
-        SessionStatusCode::Created,
-        MessageStatusCode::Accepted,
-        ConnectionState::Closed,
-        DestinationPublic::from_destination(destination.clone()).ok(),
-        DestinationConfig::balanced(),
-        destination.dummy_marker(),
-        destination,
-        InboundDecryptionCapability::from_secret_bytes(
-            [0u8; X25519_KEY_LENGTH],
-            [0u8; X25519_KEY_LENGTH],
-        ),
-        Mapping::from_entries(Vec::<(String, String)>::new()).unwrap(),
-        SessionId::new(0),
-    );
-}
-
-trait DestinationMarkerExt {
-    fn dummy_marker(&self) -> &'static str;
-}
-
-impl DestinationMarkerExt for Destination {
-    fn dummy_marker(&self) -> &'static str {
-        "destination"
-    }
-}
-
-impl DestinationMarkerExt for DestinationIdentity {
-    fn dummy_marker(&self) -> &'static str {
-        "identity"
-    }
-}
-
-fn _resolve_marker<T: DestinationMarkerExt>(_value: &T) -> &'static str {
-    "marker"
 }

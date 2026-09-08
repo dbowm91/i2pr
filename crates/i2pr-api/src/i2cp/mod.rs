@@ -78,6 +78,7 @@
 pub mod actions;
 pub mod config;
 pub mod connection;
+pub mod data_plane;
 pub mod error;
 pub mod frame;
 pub mod ids;
@@ -98,6 +99,16 @@ pub use config::{
 };
 pub use connection::{
     ConnectionState, ConnectionStateMachine, M9_ADVERTISED_VERSION, MAX_VERSION_STRING_BYTES,
+};
+pub use data_plane::{
+    DataPlaneError, I2cpDataPlaneAction, I2cpMessageOutcome, InboundPayloadFrame,
+    InboundPayloadQueue, MAX_CONCURRENT_DESTINATION_LOOKUPS_PER_CONNECTION,
+    MAX_DESTINATION_LOOKUP_HORIZON, MAX_INBOUND_PAYLOAD_BYTES_PER_SESSION,
+    MAX_INBOUND_PAYLOAD_FRAMES_PER_SESSION, MAX_MESSAGE_EXPIRATION_HORIZON,
+    MAX_PENDING_OUTBOUND_MESSAGES_PER_SESSION, MAX_PENDING_STATUS_CORRELATIONS_PER_SESSION,
+    PendingStatusEntry, PendingStatusTable, max_destination_lookup_horizon,
+    max_inbound_payload_bytes_per_session, max_pending_messages_per_session,
+    max_pending_status_correlations,
 };
 pub use error::I2cpError;
 pub use frame::{
