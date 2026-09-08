@@ -304,12 +304,62 @@ which is the single atomic Plan 166 install path.
 
 The api layer is deliberately ignorant of the daemon. Every
 traversal (read, write, frame decode) goes through the runtime-neutral
-codecs the api already owns. The Plan 168 follow-on work lands the
+codecs the api already owns. Plan 168 lands the
 `SendMessage` / `SendMessageExpires` / `MessagePayload` /
-`MessageStatus` adapters behind the same boundary; Plan 169 lands the
-self-composed local I2CP product behind the same boundary; Plan 170
-lands the independent Java/Go client evidence without touching the
-api.
+`MessageStatus` adapters behind the same boundary; Plan 169 will
+land the self-composed local I2CP product behind the same boundary;
+Plan 170 will land the independent Java/Go client evidence without
+touching the api.
+
+## Plan 168 — I2CP message data plane surface
+
+Plan 168 closes the M9 I2CP message/data-plane scope. The new
+runtime-neutral surface lives in
+`crates/i2pr-api/src/i2cp/data_plane.rs` and is re-exported from
+`i2pr-api::i2cp`:
+
+- `I2cpMessageOutcome` — bounded router-side outcome vocabulary
+  (`Accepted`, `BadLocalLeaseSet`, `NoLocalTunnels`, `Overflow`,
+  `DestinationStopping`, `BadSession`, `BadMessage`,
+  `MessageExpired`, `BadExpirationHorizon`, `UnsupportedFlags`,
+  `SessionError`). `status_code()` maps every variant to the
+  matching `MessageStatusCode`; `Accepted` is the only success
+  class in the vocabulary so the daemon never claims stronger
+  delivery than the destination runtime observed.
+- `I2cpDataPlaneAction::{EnqueueOutboundPayload,
+  DeliverInboundPayload, ResolveDestinationLookup}` — the three
+  typed data-plane actions the daemon projects into runtime state.
+  Every variant carries only typed values; raw client bytes never
+  appear in a payload.
+- `PendingStatusTable` / `PendingStatusEntry` — bounded per-session
+  correlation bookkeeping with explicit count ceiling
+  (`MAX_PENDING_STATUS_CORRELATIONS_PER_SESSION = 128`) and
+  duplicate/late-idempotent `take()` semantics.
+- `InboundPayloadQueue` / `InboundPayloadFrame` — bounded per-session
+  inbound frame buffer with explicit frame
+  (`MAX_INBOUND_PAYLOAD_FRAMES_PER_SESSION = 64`) and byte
+  (`MAX_INBOUND_PAYLOAD_BYTES_PER_SESSION = 64 KiB`) ceilings.
+  The `InboundPayloadFrame::WIRE_OVERHEAD_BYTES = 14` constant is
+  the only per-frame overhead the daemon and tests rely on.
+- `DataPlaneError::CapacityExceeded` — single bounded-failure type
+  shared by the correlation table and inbound queue.
+- Bounded per-session ceilings
+  (`MAX_PENDING_OUTBOUND_MESSAGES_PER_SESSION`,
+  `MAX_CONCURRENT_DESTINATION_LOOKUPS_PER_CONNECTION`,
+  `MAX_DESTINATION_LOOKUP_HORIZON = 10 s`,
+  `MAX_MESSAGE_EXPIRATION_HORIZON = 1 h`) plus the helper accessors
+  `max_pending_messages_per_session`,
+  `max_pending_status_correlations`,
+  `max_inbound_payload_bytes_per_session`,
+  `max_destination_lookup_horizon`.
+
+Plan 168 §3 pins the I2CP payload format: the four-byte length
+prefix, the ten-byte gzip header (magic `0x1f 0x8b`, deflate method
+`0x08`, no flag bits, source/destination ports in MTIME, xflags `2`,
+I2P protocol number in OS), and the existing 64 KiB expansion
+ceiling. The structural codec already rejects malformed gzip
+metadata before routing; Plan 168 adds the runtime-neutral typed
+outcome vocabulary the daemon maps into `MessageStatus` replies.
 
 Configuration surface lives in the daemon: `[i2cp]` adds `enabled`
 (default `false`), `bind_address` (default `127.0.0.1`), `port`

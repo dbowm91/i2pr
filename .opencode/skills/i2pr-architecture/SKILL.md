@@ -281,6 +281,32 @@ record is not `superseded-by-*`. Currently:
   `MessageStatus` direction, no `DestLookup` / `HostLookup`
   resolution, no reconfiguration, and no independent-client
   evidence claim; those belong to Plans 168–170.
+- **Milestone 9 I2CP message data plane (passed)**: Plan 168
+  (`passed-m9-i2cp-message-data-plane`, see
+  [`plans/168-status.md`](../../plans/168-status.md)):
+  `crates/i2pr-api/src/i2cp/data_plane.rs` adds the bounded
+  `I2cpMessageOutcome` vocabulary, the `I2cpDataPlaneAction`
+  variants, `PendingStatusTable`, `InboundPayloadQueue` with
+  `WIRE_OVERHEAD_BYTES = 14`, and per-session ceilings
+  (`MAX_PENDING_OUTBOUND_MESSAGES_PER_SESSION = 64`,
+  `MAX_PENDING_STATUS_CORRELATIONS_PER_SESSION = 128`,
+  `MAX_INBOUND_PAYLOAD_FRAMES_PER_SESSION = 64`,
+  `MAX_INBOUND_PAYLOAD_BYTES_PER_SESSION = 64 KiB`,
+  `MAX_DESTINATION_LOOKUP_HORIZON = 10 s`,
+  `MAX_MESSAGE_EXPIRATION_HORIZON = 1 h`).
+  `crates/i2pr-daemon/src/i2cp.rs` projects them into the existing
+  `i2pr_client::DestinationRuntime::enqueue_outbound` seam, drains
+  `MessagePayload` inbound frames through a `tokio::sync::Notify`,
+  and resolves `DestLookup` / `GetBandwidthLimits` against the
+  local registry / configuration snapshot. The cross-session
+  local loopback shortcut routes payloads between two destinations
+  owned by active I2CP sessions through the receiving session's
+  inbound queue. Eighteen real-TCP black-box tests in
+  `crates/i2pr-daemon/tests/i2cp_message_data_plane.rs` exercise
+  every Plan 168 §11 case. SAM router-owned product regressions
+  remain green. No reconfiguration, no `HostLookup`/`HostReply`
+  resolution, and no independent-client evidence claim; those
+  belong to Plans 169–170.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).

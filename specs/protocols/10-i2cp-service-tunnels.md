@@ -421,6 +421,91 @@ bytes against the real listener on `127.0.0.1:0`:
 - `CreateLeaseSet2` with a mismatched decryption key is rejected
   and the destination is cleaned up on connection exit.
 
+### M9 I2CP message data plane (Plan 168)
+
+Plan 168 wires the Plan 164 framing, Plan 165 connection/session
+state, and Plan 166 client-owned destination runtime into a real
+application-message transport over the existing
+`i2pr_client::DestinationRuntime::enqueue_outbound` seam. The
+Plan 168 surface lives in
+[`crates/i2pr-api/src/i2cp/data_plane.rs`](../../crates/i2pr-api/src/i2cp/data_plane.rs)
+and the daemon projection lives in
+[`crates/i2pr-daemon/src/i2cp.rs`](../../crates/i2pr-daemon/src/i2cp.rs).
+
+```text
+I2CP SendMessage / SendMessageExpires
+  -> I2cpSessionState (per-session bounded counter + status table + Notify)
+  -> DestinationRuntime::enqueue_outbound   (existing Plan 120 seam)
+  -> I2cpMessageOutcome -> MessageStatus{Accepted | ...}
+                       -> inbound queue (loopback shortcut)
+                          -> inbound Notify
+                             -> receiving connection task
+                                -> MessagePayload frame on the wire
+```
+
+#### Per-session ceilings
+
+The Plan 168 surface enforces the following bounded ceilings,
+every one of them a `const` in `data_plane.rs` and the source of
+truth for the daemon's projection:
+
+```text
+MAX_PENDING_OUTBOUND_MESSAGES_PER_SESSION = 64
+MAX_PENDING_STATUS_CORRELATIONS_PER_SESSION = 128
+MAX_INBOUND_PAYLOAD_FRAMES_PER_SESSION = 64
+MAX_INBOUND_PAYLOAD_BYTES_PER_SESSION = 64 KiB
+MAX_CONCURRENT_DESTINATION_LOOKUPS_PER_CONNECTION = 16
+MAX_DESTINATION_LOOKUP_HORIZON = 10 s
+MAX_MESSAGE_EXPIRATION_HORIZON = 1 h
+InboundPayloadFrame::WIRE_OVERHEAD_BYTES = 14
+```
+
+The outbound ceiling is **strictly below** the per-destination
+`MAX_PENDING_DESTINATION_MESSAGES = 256` so the I2CP data plane
+cannot use many small frames to bypass the destination runtime's
+bounded queue.
+
+#### Status mapping
+
+`I2cpMessageOutcome` is the bounded router-side outcome vocabulary.
+`status_code()` maps every variant one-to-one into a `MessageStatusCode`
+so the daemon never overclaims end-to-end delivery:
+
+| Outcome | Status code | Notes |
+| --- | --- | --- |
+| `Accepted` | `MessageStatus::Accepted` | Local queue acceptance only. |
+| `BadLocalLeaseSet` | `MessageStatus::BadLocalLeaseSet` | Destination runtime reports no signed LeaseSet2. |
+| `NoLocalTunnels` | `MessageStatus::NoLocalTunnels` | Destination has no usable outbound tunnel. |
+| `Overflow` | `MessageStatus::OverflowFailure` | Per-session outbound ceiling exceeded. |
+| `DestinationStopping` | `MessageStatus::BadSession` | Destination is stopping/stopped. |
+| `BadSession` | `MessageStatus::BadSession` | Owning session is missing or session-id mismatch. |
+| `BadMessage` | `MessageStatus::BadMessage` | Empty body, oversized body, malformed gzip header. |
+| `MessageExpired` | `MessageStatus::MessageExpired` | `SendMessageExpires` expiration is in the past. |
+| `BadExpirationHorizon` | `MessageStatus::BadOptions` | Expiration beyond the bounded horizon. |
+| `UnsupportedFlags` | `MessageStatus::BadOptions` | Non-zero ElGamal-only flag bits. |
+| `SessionError` | `MessageStatus::GuaranteedFailure` | Destination runtime's session manager rejected the payload. |
+
+#### Inbound delivery
+
+Per-session `MessagePayload` frames are enqueued onto the owning
+session's bounded `InboundPayloadQueue`. A `tokio::sync::Notify`
+(`I2cpSessionState::inbound_notify`) wakes the receiving connection
+task between `read_chunk` branches so slow readers cannot starve
+sibling sessions. Cross-session local loopback: when both endpoints
+are owned by active I2CP sessions on the same router, the receiving
+session's inbound queue receives a copy of the payload; non-loopback
+targets still report `Accepted` because the destination runtime
+accepts the payload locally.
+
+#### Destination lookup and bandwidth
+
+`DestLookup` resolves through the local destination registry; not-
+found returns the documented typed echo (`DestReplyBody::Hash`).
+`GetBandwidthLimits` returns the config-derived client ceiling
+(`max_buffered_bytes_per_connection / 1024`) and the documented
+neutral router values; router-side limits stay at zero because
+the router does not yet measure bandwidth.
+
 No application-message transport, `SendMessage`/`SendMessageExpires`
 direction, `MessageStatus` correlation, or independent-client
 evidence is claimed in Plan 167. Application-message data plane

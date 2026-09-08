@@ -257,14 +257,18 @@ plan_166_status = "passed-m9-i2cp-client-owned-destination-and-leaseset2"
 plan_167_plan_of_record = "plans/167-m9-i2cp-loopback-server-runtime.md"
 plan_167_closure = "plans/167-status.md"
 plan_167_status = "passed-m9-i2cp-loopback-server-runtime"
+plan_168_plan_of_record = "plans/168-m9-i2cp-message-data-plane.md"
+plan_168_closure = "plans/168-status.md"
+plan_168_status = "passed-m9-i2cp-message-data-plane"
 milestone9_planning_authority = "plan163"
 milestone9_protocol = "i2cp"
 milestone9_i2cp_wire_foundation = "passed-via-plan164"
 milestone9_i2cp_connection_session_options = "passed-via-plan165"
 milestone9_i2cp_client_owned_destination = "passed-via-plan166"
 milestone9_i2cp_loopback_server_runtime = "passed-via-plan167"
+milestone9_i2cp_message_data_plane = "passed-via-plan168"
 milestone9_final_acceptance = "not-yet-closed"
-next_executable_plan = "168"
+next_executable_plan = "169"
 next_product_layer = "milestone9-i2cp"
 
 [[surface]]
@@ -1229,5 +1233,23 @@ evidence = [
     "crates/i2pr-daemon/tests/i2cp_loopback.rs",
     "plans/167-m9-i2cp-loopback-server-runtime.md",
     "plans/167-status.md",
+]
+
+[[surface]]
+id = "i2cp.message-data-plane"
+protocol = "i2cp"
+structure = "send-message-and-status-message-payload-and-lookup-and-bandwidth"
+scope = "required"
+status = "experimental"
+notes = "Plan 168 closed the M9 I2CP message data plane in `i2pr-daemon::i2cp` and `i2pr-api::i2cp::data_plane`. SendMessage and SendMessageExpires validate session ownership, payload body, expiration horizon, and flag bits before routing through the existing `i2pr_client::DestinationRuntime::enqueue_outbound` seam (no second routing stack). The bounded per-session `MessageStatus` correlation table is sized strictly below the per-destination outbound ceiling so a client cannot bypass the destination runtime's bounded queue. `MessagePayload` inbound frames are delivered only to the owning session's bounded queue, drained by the connection task through a `tokio::sync::Notify`. The cross-session loopback shortcut routes payloads between two local destinations owned by active I2CP sessions through the inbound queue. `DestLookup` resolves through the local destination registry; not-found returns the documented typed echo. `GetBandwidthLimits` returns the config-derived client ceiling and the documented neutral router values. The bounded per-session ceilings (`MAX_PENDING_OUTBOUND_MESSAGES_PER_SESSION`, `MAX_PENDING_STATUS_CORRELATIONS_PER_SESSION`, `MAX_INBOUND_PAYLOAD_FRAMES_PER_SESSION`, `MAX_INBOUND_PAYLOAD_BYTES_PER_SESSION`, `MAX_CONCURRENT_DESTINATION_LOOKUPS_PER_CONNECTION`, `MAX_DESTINATION_LOOKUP_HORIZON`, `MAX_MESSAGE_EXPIRATION_HORIZON`) are part of the Plan 168 surface and are enforced before any state mutates. `InboundPayloadFrame::WIRE_OVERHEAD_BYTES = 14` is the only per-frame overhead constant the tests rely on. Eighteen real-TCP acceptance tests in `crates/i2pr-daemon/tests/i2cp_message_data_plane.rs` cover every Plan 168 §11 case. No reconfiguration, no HostLookup/HostReply resolution, no independent-client evidence; those belong to Plans 169-170."
+evidence = [
+    "crates/i2pr-api/src/i2cp/data_plane.rs",
+    "crates/i2pr-api/src/i2cp/actions.rs",
+    "crates/i2pr-api/src/i2cp/mod.rs",
+    "crates/i2pr-daemon/src/i2cp.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/tests/i2cp_message_data_plane.rs",
+    "plans/168-m9-i2cp-message-data-plane.md",
+    "plans/168-status.md",
 ]
 advertised = false

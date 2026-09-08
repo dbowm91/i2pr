@@ -587,6 +587,32 @@ router-owned rejection of client install. The 12 tests run alongside
 the existing Plan 120–134 trajectories; SAM regressions remain
 green.
 
+## Plan 168 — `enqueue_outbound` seam
+
+The Plan 168 I2CP message data plane routes outbound application
+payloads through the existing
+`DestinationRuntime::enqueue_outbound` seam (Plan 120 §10, retained
+unchanged). The runtime owns its bounded outbound queue
+(`DestinationConfig::max_pending_messages`,
+`DestinationConfig::max_pending_bytes`) and reports a typed
+`PayloadError` (`QueueFull`, `QueueBytesExceeded`, `Stopping`,
+`EmptyBody`, `BodyTooLarge`) that the Plan 168 daemon maps
+one-to-one into the bounded `I2cpMessageOutcome` vocabulary. The
+Plan 168 ceiling
+`MAX_PENDING_OUTBOUND_MESSAGES_PER_SESSION = 64` is **stricter**
+than the destination's per-session outbound ceiling
+(`MAX_PENDING_DESTINATION_MESSAGES = 256`) so the I2CP data plane
+cannot use many small frames to bypass the destination runtime's
+bounded queue. The router rejects the send before any destination
+state mutates; on terminal failure the per-session `MessageStatus`
+correlation is removed so duplicate or late internal events cannot
+resurrect the entry.
+
+The inbound side is unchanged at this layer; the Plan 168 daemon
+calls `accept_inbound_payload` only as a hook for the cross-session
+local loopback shortcut (Plan 168 §6), not as a primary
+delivery path.
+
 ## Deterministic test fixtures
 
 `i2pr_client::testing` exposes `established_inbound(seed)` and

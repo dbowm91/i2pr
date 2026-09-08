@@ -32,12 +32,12 @@ runtime-neutral connection/session/options state machines.
 [**Plan 166**](166-status.md)
 (`passed-m9-i2cp-client-owned-destination-and-leaseset2`) closed
 the client-owned destination + LeaseSet2 bridge.
-[**Plan 167**](167-status.md)
-(`passed-m9-i2cp-loopback-server-runtime`) closed the loopback
-I2CP server runtime. The current **next executable plan is
-Plan 168**, the message data plane. Execute Plans 168–170
-sequentially; do not skip ahead based on aggregate workspace
-green status.
+[**Plan 168**](168-status.md)
+(`passed-m9-i2cp-message-data-plane`) closed the M9 I2CP
+message data plane. The current **next executable plan is
+Plan 169**, the self-composed local product and hardening pass.
+Execute Plans 169–170 sequentially; do not skip ahead based on
+aggregate workspace green status.
 
 Current classification:
 
@@ -65,6 +65,7 @@ plan_164 = passed-m9-i2cp-protocol-and-wire-foundation
 plan_165 = passed-m9-i2cp-connection-session-and-options
 plan_166 = passed-m9-i2cp-client-owned-destination-and-leaseset2
 plan_167 = passed-m9-i2cp-loopback-server-runtime
+plan_168 = passed-m9-i2cp-message-data-plane
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
@@ -89,8 +90,9 @@ milestone9_wire_foundation = passed-via-plan164
 milestone9_connection_session_options = passed-via-plan165
 milestone9_client_owned_destination = passed-via-plan166
 milestone9_i2cp_loopback_server_runtime = passed-via-plan167
+milestone9_i2cp_message_data_plane = passed-via-plan168
 milestone9_final_acceptance = not-yet-closed
-next_executable_plan = 168
+next_executable_plan = 169
 next_product_layer = milestone9-i2cp
 m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 170
 ```
@@ -116,7 +118,7 @@ m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 170
 - [`165-m9-i2cp-connection-session-and-options.md`](165-m9-i2cp-connection-session-and-options.md) — **passed**. Connection/version/session state machines; canonical SessionConfig signature/date/ceiling verification; bounded option disposition table and `i2pr-client::DestinationConfig` projection; bounded `SessionRegistry` with reserve/commit/rollback; reconfiguration taxonomy; typed `I2cpAction` vocabulary. No listener or destination activation.
 - [`166-m9-i2cp-client-owned-destination-and-leaseset2.md`](166-m9-i2cp-client-owned-destination-and-leaseset2.md) — central ownership pass. Add a client-owned destination mode without requiring the client's signing private key; request leases from real destination tunnels; validate/install client-signed Standard LeaseSet2 plus matching X25519 decryption key transactionally; reuse existing ECIES/routing; preserve router-owned SAM behavior.
 - [`167-m9-i2cp-loopback-server-runtime.md`](167-m9-i2cp-loopback-server-runtime.md) — **passed**. Daemon-owned supervised loopback I2CP v0.9.67 listener/runtime in `crates/i2pr-daemon/src/i2cp.rs`. Disabled by default, loopback-only, bounded read/write/session resources, real-TCP `0x2a` preamble + incremental `FrameDecoder` + multi-frame dispatch, signed `SessionConfig` reservation, signed Standard LeaseSet2 + matching X25519 decryption key installation, mismatched-key rejection, disconnect cleanup, supervised per-connection `ChildScope`, single cleanup path on EOF/reset/timeout/cancel. Twelve real-TCP acceptance tests in `crates/i2pr-daemon/tests/i2cp_loopback.rs`. No `SendMessage`/`SendMessageExpires` direction, `DestLookup`/`HostLookup` resolution, reconfiguration, or independent-client evidence; those belong to Plans 168–170.
-- [`168-m9-i2cp-message-data-plane.md`](168-m9-i2cp-message-data-plane.md) — SendMessage/Expires, bounded payload format, honest MessageStatus semantics, inbound MessagePayload, destination lookup, bandwidth replies, flags, backpressure, and bidirectional local application data over the existing destination routing/ECIES path.
+- [`168-m9-i2cp-message-data-plane.md`](168-m9-i2cp-message-data-plane.md) — **passed**. Bounded per-session `SendMessage`/`SendMessageExpires` validation against the existing `i2pr_client::DestinationRuntime::enqueue_outbound` seam (no second routing stack), bounded `MessageStatus` correlation table, `MessagePayload` inbound frames delivered only to the owning session's bounded queue and drained through a `tokio::sync::Notify` (sibling-isolation guaranteed), cross-session local loopback shortcut for two destinations owned by active I2CP sessions, `DestLookup` resolving through the local destination registry, and `GetBandwidthLimits` returning the config-derived client ceiling and the documented neutral router values. Eighteen real-TCP black-box tests in `crates/i2pr-daemon/tests/i2cp_message_data_plane.rs` cover every Plan 168 §11 case. No reconfiguration, no `HostLookup`/`HostReply` resolution, and no independent-client evidence; those belong to Plans 169–170.
 - [`169-m9-i2cp-self-composed-local-product-and-hardening.md`](169-m9-i2cp-self-composed-local-product-and-hardening.md) — transactional reconfigure/destroy, complete adversarial/resource matrix, repeated lifecycle baselines, and canonical two-destination self-composed real-TCP product driven only through I2CP after listener startup.
 - [`170-m9-i2cp-independent-clients-and-final-closure.md`](170-m9-i2cp-independent-clients-and-final-closure.md) — final independent-client gate. Exact-pinned Java I2P 2.13.0 plus target exact-pinned go-i2cp create modern client-owned sessions and exchange cross-client traffic both directions; fail-closed command-derived ledger/checker/manual workflow; exact-head routine + external CI; final M9 closure.
 
@@ -209,11 +211,11 @@ Plan 152 is a later M6 robustness correction discovered by the Plan 151 final SA
 - Milestone 6 local product correctness closed via Plan 134, with Plan 152 robustness corrections retained.
 - SAM 3.1 parser/session/STREAM/FORWARD/NAMING product with independent localhost client evidence; M7 closed via Plan 151.
 - SSU2 v2 local protocol/runtime/reachability product and independent direct IPv4 i2pd interop; M8 closed via Plan 161.
-- M9 I2CP implementation plans are registered; the Plan 164 wire/profile foundation, Plan 165 connection/session/options state machines, and Plan 166 client-owned destination + LeaseSet2 bridge are landed with no listener, destination activation, or interoperability claim yet.
+- M9 I2CP implementation plans are registered; the Plan 164 wire/profile foundation, Plan 165 connection/session/options state machines, Plan 166 client-owned destination + LeaseSet2 bridge, Plan 167 loopback server runtime, and Plan 168 message data plane are landed with no reconfiguration, no `HostLookup`/`HostReply` resolution, and no independent-client evidence yet.
 
 ## What's not yet accepted
 
-- Any M9 I2CP listener/behavior/destination-activation or independent-client result until Plans 167–170 execute.
+- Any M9 I2CP listener/behavior/destination-activation or independent-client result until Plans 167–170 execute (Plans 167–168 are passed; 169–170 remain).
 - Non-loopback/remote I2CP, TLS/authentication, or broad historical I2CP feature compliance.
 - Live/public NTCP2 or SSU2 router transport activation and broad mixed-router interoperability.
 - Public I2P participation and network-transport-bound NetDB/public router behavior.
@@ -236,6 +238,7 @@ Plan 164 = passed M9 I2CP wire foundation
 Plan 165 = passed M9 I2CP connection/session/options
 Plan 166 = passed M9 I2CP client-owned destination + LeaseSet2 bridge
 Plan 167 = passed M9 I2CP loopback server runtime
-execute Plan 168 next
-then 169 -> 170
+Plan 168 = passed M9 I2CP message data plane
+execute Plan 169 next
+then 170
 ```
