@@ -34,10 +34,11 @@ runtime-neutral connection/session/options state machines.
 the client-owned destination + LeaseSet2 bridge.
 [**Plan 168**](168-status.md)
 (`passed-m9-i2cp-message-data-plane`) closed the M9 I2CP
-message data plane. The current **next executable plan is
-Plan 169**, the self-composed local product and hardening pass.
-Execute Plans 169–170 sequentially; do not skip ahead based on
-aggregate workspace green status.
+message data plane. [**Plan 169**](169-status.md)
+(`passed-m9-i2cp-self-composed-local-product-and-hardening`)
+closed the self-composed local product and hardening pass. The
+current **next executable plan is Plan 170**, the final
+independent-client gate.
 
 Current classification:
 
@@ -66,6 +67,7 @@ plan_165 = passed-m9-i2cp-connection-session-and-options
 plan_166 = passed-m9-i2cp-client-owned-destination-and-leaseset2
 plan_167 = passed-m9-i2cp-loopback-server-runtime
 plan_168 = passed-m9-i2cp-message-data-plane
+plan_169 = passed-m9-i2cp-self-composed-local-product-and-hardening
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
@@ -91,8 +93,9 @@ milestone9_connection_session_options = passed-via-plan165
 milestone9_client_owned_destination = passed-via-plan166
 milestone9_i2cp_loopback_server_runtime = passed-via-plan167
 milestone9_i2cp_message_data_plane = passed-via-plan168
+milestone9_i2cp_self_composed_local_product = passed-via-plan169
 milestone9_final_acceptance = not-yet-closed
-next_executable_plan = 169
+next_executable_plan = 170
 next_product_layer = milestone9-i2cp
 m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 170
 ```

@@ -45,7 +45,8 @@ Plan 165 = passed M9 I2CP connection/session/options
 Plan 166 = passed M9 I2CP client-owned destination + LeaseSet2 bridge
 Plan 167 = passed M9 I2CP loopback server runtime
 Plan 168 = passed M9 I2CP message data plane
-next executable plan = 169
+Plan 169 = passed M9 I2CP self-composed local product and hardening
+next executable plan = 170
 next product layer = milestone9-i2cp
 ```
 
@@ -68,18 +69,20 @@ Read in this order for SAM work:
 
 Read in this order for Milestone 9 I2CP work:
 
-1. [`plans/168-status.md`](plans/168-status.md)
-2. [`plans/168-m9-i2cp-message-data-plane.md`](plans/168-m9-i2cp-message-data-plane.md)
-3. [`plans/167-status.md`](plans/167-status.md)
-4. [`plans/167-m9-i2cp-loopback-server-runtime.md`](plans/167-m9-i2cp-loopback-server-runtime.md)
-5. [`plans/166-status.md`](plans/166-status.md)
-6. [`plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md`](plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md)
-7. [`plans/165-status.md`](plans/165-status.md)
-8. [`plans/165-m9-i2cp-connection-session-and-options.md`](plans/165-m9-i2cp-connection-session-and-options.md)
-9. [`plans/164-status.md`](plans/164-status.md)
-10. [`plans/164-m9-i2cp-protocol-and-wire-foundation.md`](plans/164-m9-i2cp-protocol-and-wire-foundation.md)
-11. [`plans/163-m9-i2cp-roadmap.md`](plans/163-m9-i2cp-roadmap.md) — planning authority
-12. Plans 169–170 in execution order; do not skip ahead.
+1. [`plans/169-status.md`](plans/169-status.md)
+2. [`plans/169-m9-i2cp-self-composed-local-product-and-hardening.md`](plans/169-m9-i2cp-self-composed-local-product-and-hardening.md)
+3. [`plans/168-status.md`](plans/168-status.md)
+4. [`plans/168-m9-i2cp-message-data-plane.md`](plans/168-m9-i2cp-message-data-plane.md)
+5. [`plans/167-status.md`](plans/167-status.md)
+6. [`plans/167-m9-i2cp-loopback-server-runtime.md`](plans/167-m9-i2cp-loopback-server-runtime.md)
+7. [`plans/166-status.md`](plans/166-status.md)
+8. [`plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md`](plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md)
+9. [`plans/165-status.md`](plans/165-status.md)
+10. [`plans/165-m9-i2cp-connection-session-and-options.md`](plans/165-m9-i2cp-connection-session-and-options.md)
+11. [`plans/164-status.md`](plans/164-status.md)
+12. [`plans/164-m9-i2cp-protocol-and-wire-foundation.md`](plans/164-m9-i2cp-protocol-and-wire-foundation.md)
+13. [`plans/163-m9-i2cp-roadmap.md`](plans/163-m9-i2cp-roadmap.md) — planning authority
+14. Plan 170 next; do not skip ahead.
 
 Do **not** trust prose that disagrees with executable tests/scripts. The newest
 explicit superseding status wins when historical records conflict.
@@ -314,6 +317,9 @@ cargo test --locked -p i2pr-api --all-targets
 cargo test --locked -p i2pr-api --test i2cp_vectors
 cargo test --locked -p i2pr-daemon --test i2cp_loopback -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test i2cp_message_data_plane -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test i2cp_final_acceptance -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test i2cp_adversarial_matrix -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test i2cp_resource_matrix -- --test-threads=1
 bash scripts/check-i2cp-vectors.sh
 ```
 
@@ -344,9 +350,20 @@ the daemon validates `SendMessage`/`SendMessageExpires`, routes
 payloads through the existing `i2pr_client::DestinationRuntime::enqueue_outbound`,
 drains `MessagePayload` inbound frames through a `tokio::sync::Notify`,
 resolves `DestLookup` against the local destination registry, and
-returns the config-derived `BandwidthLimits` reply. Reconfiguration,
-self-composed local product hardening, and independent Java/Go client
-evidence remain in Plans 169–170.
+returns the config-derived `BandwidthLimits` reply. Plan 169 added
+the reconfigure transaction handler (`handle_reconfigure_session` +
+`apply_reconfigure` + `ReconfigurationOutcome`) and the per-session
+reconfigure baseline (`I2cpSessionState::last_options`), the
+synchronous `handle_destroy_session` data-plane drain, and three
+new narrowly named acceptance suites:
+`crates/i2pr-daemon/tests/i2cp_final_acceptance.rs` (the canonical
+self-composed trajectory plus a bounded repeated-lifecycle soak and
+a destroy-one-session/keep-sibling usable proof),
+`crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs` (the Plan 169
+§5 adversarial protocol matrix), and
+`crates/i2pr-daemon/tests/i2cp_resource_matrix.rs` (the Plan 169 §6
+concurrency/resource matrix). Independent Java/Go client evidence
+remains in Plan 170.
 
 ## Testing conventions
 
@@ -436,6 +453,7 @@ closed.
 - Plan 166 passed the M9 I2CP client-owned destination + LeaseSet2 bridge: `DestinationOwnership::RouterOwned` / `ClientOwned`, `DestinationPublic`, `InboundDecryptionCapability`, atomic `install_client_lease_set2` (signature + lease ownership + expiry + decryption-key match), typed `LeaseRequest` for refresh from real inbound tunnels, and the `I2cpAction::RequestVariableLeaseSet` action. SAM router-owned product regressions remain green; no listener, socket ownership, or interoperability claim.
 - Plan 167 passed the M9 I2CP loopback server runtime in `crates/i2pr-daemon/src/i2cp.rs`: disabled-by-default `[i2cp]` block, supervised Tokio listener, per-connection `ChildScope`, typed `I2cpAction` dispatch, single `teardown_connection` cleanup path on EOF/reset/timeout/cancel, and twelve real-TCP black-box tests in `crates/i2pr-daemon/tests/i2cp_loopback.rs`. No application-message direction, no lookup, no reconfiguration, no independent-client interop claim.
 - Plan 168 passed the M9 I2CP message data plane: bounded per-session `SendMessage`/`SendMessageExpires` validation against the existing `i2pr_client::DestinationRuntime::enqueue_outbound` seam, bounded `MessageStatus` correlation table, `MessagePayload` inbound frames delivered only to the owning session's bounded queue (sibling-isolation guaranteed), cross-session local loopback shortcut, `DestLookup` resolving through the local destination registry, and `GetBandwidthLimits` returning the config-derived client ceiling and the documented neutral router values. Eighteen real-TCP black-box tests in `crates/i2pr-daemon/tests/i2cp_message_data_plane.rs` exercise every Plan 168 §11 case. SAM router-owned product regressions remain green. No reconfiguration, no `HostLookup`/`HostReply` resolution, and no independent-client interop claim.
+- Plan 169 passed the M9 I2CP self-composed local product and hardening: the `ReconfigureSession` transaction handler (`handle_reconfigure_session` + `apply_reconfigure` + `ReconfigurationOutcome`) parses/verifies the full new SessionConfig, classifies each diff entry using the Plan 165 `reconfiguration_class` table, and commits the new baseline atomically through `I2cpSessionState::last_options`; immutable and unsupported keys reject the whole transaction without state mutation. `handle_destroy_session` now drains the per-session Plan 168 data-plane bookkeeping synchronously so repeated DestroySession/CreateSession cycles retain zero inbound queue, status correlation, or outbound slot. The Plan 169 acceptance suites are `crates/i2pr-daemon/tests/i2cp_final_acceptance.rs` (5 tests), `crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs` (19 tests), and `crates/i2pr-daemon/tests/i2cp_resource_matrix.rs` (6 tests); every test binds the listener to `127.0.0.1:0` and drives behavior only through TCP/I2CP inputs. SAM router-owned product regressions, the Plan 167 listener regression in `i2cp_loopback.rs`, and the Plan 168 data-plane suite in `i2cp_message_data_plane.rs` remain green. No `HostLookup`/`HostReply` resolution and no independent Java/Go client evidence yet; those belong to Plan 170.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
 - No Plan 161 direction-A evidence implies Milestone 6 destination/Streaming/tunnel interoperability or broad router interoperability.
@@ -453,9 +471,11 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 168 has passed the M9 I2CP
-message data plane. Execute Plan 169 next (self-composed local
-product and hardening), then Plan 170 in order. Do not extend Plan
-168's data plane into reconfiguration, `HostLookup`/`HostReply`
-resolution, or independent-client evidence; those belong to the
-later M9 passes.**
+Current handoff: **Plan 169 has passed the M9 I2CP
+self-composed local product and hardening. Execute Plan
+170 next (independent Java/Go client evidence and final
+closure), then no further M9 plans. Do not extend Plan
+169's reconfigure/destroy/hardening surface into
+`HostLookup`/`HostReply` resolution, into independent-client
+evidence, or into public-network participation; those belong to
+Plan 170 only.**

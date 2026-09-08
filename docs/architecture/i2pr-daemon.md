@@ -86,6 +86,27 @@ work is scoped to:
   [`plans/168-m9-i2cp-message-data-plane.md`](../../plans/168-m9-i2cp-message-data-plane.md)
   and the canonical real-TCP evidence in
   [`crates/i2pr-daemon/tests/i2cp_message_data_plane.rs`](../../crates/i2pr-daemon/tests/i2cp_message_data_plane.rs).
+- **I2CP reconfiguration + self-composed local product**
+  (Plan 169): adds the Plan 165 reconfigure transaction handler
+  (`handle_reconfigure_session` + `apply_reconfigure`) plus the
+  Plan 169 §3 session-destruction hardening. The reconfigure
+  handler parses/verifies the full new SessionConfig, classifies
+  each diff entry using `classify_reconfigure_diff`, and commits
+  the new baseline atomically through
+  `I2cpSessionState::last_options` only when every change is
+  `MutableImmediate` or `MutableWithRebuild`; immutable and
+  unsupported options reject the whole transaction without
+  state mutation. `handle_destroy_session` now drains the
+  per-session data-plane bookkeeping synchronously so repeated
+  DestroySession/CreateSession cycles retain zero bounded
+  resource. See
+  [`plans/169-m9-i2cp-self-composed-local-product-and-hardening.md`](../../plans/169-m9-i2cp-self-composed-local-product-and-hardening.md)
+  and the canonical real-TCP evidence in three narrowly named
+  suites —
+  [`crates/i2pr-daemon/tests/i2cp_final_acceptance.rs`](../../crates/i2pr-daemon/tests/i2cp_final_acceptance.rs),
+  [`crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs`](../../crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs),
+  and
+  [`crates/i2pr-daemon/tests/i2cp_resource_matrix.rs`](../../crates/i2pr-daemon/tests/i2cp_resource_matrix.rs).
 
 What it **does not** do yet:
 
@@ -122,7 +143,7 @@ which undercounted `netdb_seam`, `outbound_lookup`, and
 | `src/outbound_lookup.rs` | Plan 117 §8/§10 outbound exploratory data-plane composition | `compose_outbound_lookup`, `compose_outbound_publication`, `OutboundLookupDispatch`, `MAX_OUTBOUND_LOOKUP_CELLS`, `MAX_OUTBOUND_PUBLICATION_CELLS` |
 | `src/inbound_dispatch.rs` | Plan 117 §9 inbound exploratory `TunnelData` dispatch | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE` |
 | `src/sam.rs` | Plans 137–149 supervised SAM 3.1 listener and composition root | `SamServiceState`, `execute_session_create` (self-composes bridge + driver), `execute_stream_connect`, `execute_stream_accept`, byte-exact `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw transition, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP` |
-| `src/i2cp.rs` | Plan 167 supervised loopback I2CP v0.9.67 listener and composition root extended by Plan 168 with the bounded per-session message/data-plane surface | `I2cpServiceState`, `I2cpSessionState`, `bind`, `serve`, `handle_connection`, `install_client_lease_set2`, `reserve_client_destination`, `handle_send_message`, `handle_send_message_expires`, `handle_dest_lookup`, `derive_bandwidth_reply`, `teardown_connection`, `I2cpServiceSnapshot` |
+| `src/i2cp.rs` | Plan 167 supervised loopback I2CP v0.9.67 listener and composition root extended by Plan 168 with the bounded per-session message/data-plane surface and by Plan 169 with the reconfigure transaction handler, the atomic reconfigure baseline in `I2cpSessionState::last_options`, and the synchronous `handle_destroy_session` data-plane drain | `I2cpServiceState`, `I2cpSessionState`, `bind`, `serve`, `handle_connection`, `install_client_lease_set2`, `reserve_client_destination`, `handle_send_message`, `handle_send_message_expires`, `handle_dest_lookup`, `derive_bandwidth_reply`, `handle_reconfigure_session`, `handle_destroy_session`, `apply_reconfigure`, `ReconfigurationOutcome`, `teardown_connection`, `I2cpServiceSnapshot` |
 | `src/sam/fabric.rs` | Plan 149 localhost product fabric (OS-CSPRNG tunnel material, signed LeaseSet2, per-destination runtime-driver factory, typed `DeliverySweepCounters`) | `SamLocalProductFabric`, `LocalDestinationProduct`, `LocalhostInboundTunnelFactory`, `DeliverySweepCounters`, `LocalDeliveryDegradation` |
 | `src/sam/streams.rs` | Plan 138 + Plan 143 + Plan 144 SAM Streaming bridge (captured-outbound seam removed, Plan 129 destination stack drives live bridge through `i2pr_client::deliver`, canonical-streaming routing for SYN responses) | `SamDestinationBridge`, `SamDestinations`, `bridge_to_peer`, `BridgeDiagnostics`, `SamDestinationHandle::lookup_by_peer_hash`, `receiver_streaming`, `peer_destination_hash`, strict destination decoding |
 

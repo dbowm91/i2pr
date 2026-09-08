@@ -385,7 +385,7 @@ CreateLeaseSet2     -> install_client_lease_set2
                         (Plan 166 atomic install_external path)
 DestroySession      -> destroy owned destination
                     -> release session registry slot
-ReconfigureSession  -> SessionStatus{Refused}  (deferred to Plan 169)
+ReconfigureSession  -> SessionStatus{Updated,Invalid,Refused}  (Plan 169)
 Disconnect          -> close the connection
 GetBandwidthLimits  -> BandwidthLimits (neutral zeros in M9)
 DestLookup/HostLookup -> typed not-found reply (deferred to Plan 168)
@@ -506,11 +506,60 @@ found returns the documented typed echo (`DestReplyBody::Hash`).
 neutral router values; router-side limits stay at zero because
 the router does not yet measure bandwidth.
 
+### M9 I2CP self-composed local product and hardening (Plan 169)
+
+Plan 169 closes the M9 I2CP local self-composed product. The
+runtime surface lives in `crates/i2pr-daemon/src/i2cp.rs` and
+reuses the Plan 165 reconfiguration model and the Plan 168
+bounded data plane without modifying either:
+
+- **`ReconfigureSession` transaction** — the handler parses
+  the full new SessionConfig, runs `verify_session_config`
+  with the injected `Clock`, projects the options through
+  `project_options`, classifies the diff against the previous
+  baseline using `classify_reconfigure_diff` +
+  `reconfiguration_class`, and commits the new baseline
+  atomically through `I2cpSessionState::last_options`.
+  `MutableImmediate` changes commit directly;
+  `MutableWithRebuild` changes stage the new baseline for the
+  next tunnel rebuild cycle; `ImmutableAfterCreate` and
+  `Unsupported` keys reject the whole transaction without any
+  state mutation. The outcome is mapped onto `SessionStatus
+  {Updated, Invalid, Refused}` for the wire reply.
+- **`DestroySession` hardening** — `handle_destroy_session`
+  drains the per-session Plan 168 data-plane bookkeeping
+  synchronously (`state.sessions.remove(&destroy.session)`
+  followed by `state.release()`) so repeated
+  `DestroySession`/`CreateSession` cycles retain zero inbound
+  queue, status correlation, or outbound slot.
+- **No second secret allocation** — Plan 169 never holds the
+  client's destination signing private key; the reconfigure
+  path validates the supplied SessionConfig signature against
+  the destination's embedded public key only.
+
+The Plan 169 acceptance surface is three narrowly named
+real-TCP black-box suites:
+
+```text
+crates/i2pr-daemon/tests/i2cp_final_acceptance.rs    (5 tests)
+crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs (19 tests)
+crates/i2pr-daemon/tests/i2cp_resource_matrix.rs    (6 tests)
+```
+
+The Plan 168 data-plane suite (`i2cp_message_data_plane.rs`,
+18 tests) and the Plan 167 listener regression
+(`i2cp_loopback.rs`, 12 tests) remain green. I2CP stays
+experimental, loopback-only, disabled by default, and
+non-advertised. `HostLookup`/`HostReply` resolution and
+independent Java/Go client evidence are deferred to
+Plan 170.
+
 No application-message transport, `SendMessage`/`SendMessageExpires`
 direction, `MessageStatus` correlation, or independent-client
-evidence is claimed in Plan 167. Application-message data plane
-lands in Plan 168, self-composed local product in Plan 169,
-independent Java/Go client evidence in Plan 170.
+evidence is claimed in Plan 167; Plan 168 owns the message
+data plane, Plan 169 owns the local self-composed product and
+hardening, and Plan 170 owns independent Java/Go client
+evidence.
 
 ### Connection state machine
 
@@ -731,8 +780,12 @@ legacy-deprecated
   `crates/i2pr-client/tests/plan166_trajectory.rs` covers every
   Plan 166 §11 case.
 - Later passes own behavior: Plan 167 (loopback listener), Plan 168
-  (data plane), Plan 169 (product + hardening), Plan 170
-  (independent clients + closure).
+  (data plane), Plan 169 (reconfigure + destroy hardening + self-composed
+  local product; 30 black-box tests in
+  `crates/i2pr-daemon/tests/i2cp_final_acceptance.rs`,
+  `crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs`, and
+  `crates/i2pr-daemon/tests/i2cp_resource_matrix.rs` cover every
+  Plan 169 §4/§5/§6/§7 case), Plan 170 (independent clients + closure).
 
 ## Open decisions
 

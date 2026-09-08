@@ -306,10 +306,71 @@ The api layer is deliberately ignorant of the daemon. Every
 traversal (read, write, frame decode) goes through the runtime-neutral
 codecs the api already owns. Plan 168 lands the
 `SendMessage` / `SendMessageExpires` / `MessagePayload` /
-`MessageStatus` adapters behind the same boundary; Plan 169 will
-land the self-composed local I2CP product behind the same boundary;
+`MessageStatus` adapters behind the same boundary; Plan 169 lands
+the self-composed local I2CP product behind the same boundary;
 Plan 170 will land the independent Java/Go client evidence without
 touching the api.
+
+## Plan 169 — I2CP reconfiguration transaction surface
+
+Plan 169 closes the M9 I2CP local self-composed product by
+implementing the Plan 165 reconfiguration model against the real
+client-owned destination runtime. The Plan 169 surface is layered
+on top of the existing Plan 165 disposition table and Plan 168
+data plane; nothing in the api grows new sockets, timers, or
+secrets:
+
+- **`apply_reconfigure` outcome vocabulary** — every Plan 169
+  transaction returns a closed classification
+  (`Accepted`, `RebuildStaged`, `RebuildRequired`,
+  `InvalidOptions`, `ImmutableChange`, `UnsupportedChange`,
+  `BadSignature`, `BadDate`, `ShapeRejected`, `Unchanged`,
+  `Refused`). The daemon maps the outcome onto a typed
+  `SessionStatusCode` (`Updated`, `Invalid`, or `Refused`) for
+  the wire reply; tests assert the variant, never the
+  status code alone, so regressions cannot silently overclaim.
+- **`classify_reconfigure_diff` + `validate_reconfigure_classifications`**
+  — the Plan 165 helpers classify each option-key change as
+  `MutableWithRebuild`, `MutableImmediate`,
+  `ImmutableAfterCreate`, or `Unsupported`. Plan 169 reuses
+  them without modification; the helpers are the canonical
+  all-or-nothing rule.
+- **Atomic baseline replacement** — the runtime-neutral
+  `I2cpSessionState::last_options` (`Mapping`) carries the
+  previous verified SessionConfig mapping. The reconfigure
+  handler replaces the baseline atomically inside a single
+  mutex critical section, so the diff is computed against a
+  stable view of the previous options regardless of any
+  concurrent destroy path.
+- **No second secret allocation** — Plan 169 never holds the
+  client's destination signing private key. The reconfigure
+  handler validates the supplied SessionConfig signature
+  against the destination's embedded public key, accepts the
+  new options, and lets the existing client-owned
+  `DestinationRuntime` observe the staged replacement through
+  its existing tunnel pool plumbing. The router never copies,
+  clones, or re-derives any private identity material.
+- **Bounded outcome enum** — `ReconfigurationOutcome` is
+  `#[derive(Debug, Eq, PartialEq)]` and finite; the daemon
+  adds no fallthrough branches, so wire-reply mapping cannot
+  drift between Plan 169 and the test surface.
+
+Plan 169 §5/§6/§7 evidence lives in three narrowly named
+acceptance suites:
+
+```text
+crates/i2pr-daemon/tests/i2cp_final_acceptance.rs
+crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs
+crates/i2pr-daemon/tests/i2cp_resource_matrix.rs
+```
+
+The Plan 167 listener/runtime regression in
+`crates/i2pr-daemon/tests/i2cp_loopback.rs` and the Plan 168
+data-plane suite in
+`crates/i2pr-daemon/tests/i2cp_message_data_plane.rs` remain
+green; Plan 169 never weakens the Plan 165 disposition table
+or the Plan 168 bounded outcome vocabulary to satisfy a
+reconfigure case.
 
 ## Plan 168 — I2CP message data plane surface
 

@@ -613,6 +613,39 @@ calls `accept_inbound_payload` only as a hook for the cross-session
 local loopback shortcut (Plan 168 §6), not as a primary
 delivery path.
 
+## Plan 169 — reconfigure + destroy semantics
+
+Plan 169 hardens the client-owned `DestinationRuntime` path used
+by the I2CP daemon:
+
+- `handle_destroy_session` now drains the per-session data-plane
+  state synchronously (`state.sessions.remove(&destroy.session)`
+  followed by `state.release()`), so repeated
+  `DestroySession`/`CreateSession` cycles retain zero inbound
+  queue, status correlation, or outbound slot.
+- The Plan 169 reconfigure transaction uses the Plan 165
+  `classify_reconfigure_diff` table to project the new options
+  against the previous baseline. `MutableImmediate` changes
+  commit atomically through `I2cpSessionState::last_options`;
+  `MutableWithRebuild` changes stage the new baseline for the
+  next tunnel rebuild cycle. `ImmutableAfterCreate` and
+  `Unsupported` keys reject the whole transaction without any
+  state mutation; the M9 default policy is `Refused` for
+  policy violations and `Invalid` for malformed
+  SessionConfig.
+- The runtime never holds the client's destination signing
+  private key. The Plan 169 reconfigure path validates the
+  supplied SessionConfig signature against the destination's
+  embedded public key only.
+- `DestinationRuntime::shutdown` continues to release every
+  destination-owned resource
+  (`pool.release_all`, `outbound.release_all`,
+  `inbound.release_all`, dropped `InboundDecryptionCapability`)
+  and remains idempotent. The Plan 169 path adds the bounded
+  data-plane bookkeeping drain on the per-session layer so a
+  destroyed session leaves no queue, status correlation, or
+  outbound counter behind.
+
 ## Deterministic test fixtures
 
 `i2pr_client::testing` exposes `established_inbound(seed)` and

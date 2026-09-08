@@ -307,6 +307,34 @@ record is not `superseded-by-*`. Currently:
   remain green. No reconfiguration, no `HostLookup`/`HostReply`
   resolution, and no independent-client evidence claim; those
   belong to Plans 169–170.
+- **Milestone 9 I2CP self-composed local product and hardening
+  (passed)**: Plan 169
+  (`passed-m9-i2cp-self-composed-local-product-and-hardening`,
+  see [`plans/169-status.md`](../../plans/169-status.md)):
+  `crates/i2pr-daemon/src/i2cp.rs` adds
+  `handle_reconfigure_session` + `apply_reconfigure` +
+  `ReconfigurationOutcome` (the Plan 165 reconfiguration model
+  applied against the real client-owned destination runtime),
+  `I2cpSessionState::last_options` (the atomic reconfigure
+  baseline mutex), and the synchronous `handle_destroy_session`
+  data-plane drain. The trajectory is documented in
+  [`docs/architecture/i2pr-daemon.md`](../../docs/architecture/i2pr-daemon.md).
+  Three narrowly named acceptance suites drive behavior only
+  through TCP/I2CP inputs:
+  `crates/i2pr-daemon/tests/i2cp_final_acceptance.rs` (5 tests,
+  the canonical Plan 169 §4 self-composed trajectory plus a
+  bounded repeated-lifecycle soak and a destroy-one-session /
+  keep-sibling usable proof),
+  `crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs` (19
+  tests, the Plan 169 §5 protocol/security matrix), and
+  `crates/i2pr-daemon/tests/i2cp_resource_matrix.rs` (6 tests,
+  the Plan 169 §6 concurrency/resource matrix plus the §7
+  bounded soak). SAM router-owned product regressions, the Plan
+  167 listener regression in `i2cp_loopback.rs`, and the Plan
+  168 data-plane suite in `i2cp_message_data_plane.rs` remain
+  green. No `HostLookup`/`HostReply` resolution and no
+  independent Java/Go client evidence yet; those belong to
+  Plan 170.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).

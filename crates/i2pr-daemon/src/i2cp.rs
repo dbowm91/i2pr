@@ -49,9 +49,10 @@ use i2pr_api::i2cp::{
     Disconnect, FrameDecoder, GetDate, I2cpAction, I2cpMessageOutcome, InboundPayloadFrame,
     InboundPayloadQueue, MAX_PENDING_OUTBOUND_MESSAGES_PER_SESSION, Message, MessageId,
     MessagePayload, MessageStatus, PROTOCOL_BYTE, Payload, PayloadGzipHeader, PendingStatusEntry,
-    PendingStatusTable, ProjectedPolicy, SendMessage, SendMessageExpires, SessionId,
-    SessionRegistry, SessionRegistryLimits, SessionStatus, SessionStatusCode,
-    VerifiedSessionConfig, decode_typed, encode_frame, project_options, verify_session_config,
+    PendingStatusTable, ProjectedPolicy, ReconfigurationClass, SendMessage, SendMessageExpires,
+    SessionId, SessionRegistry, SessionRegistryLimits, SessionStatus, SessionStatusCode,
+    VerifiedSessionConfig, classify_reconfigure_diff, decode_typed, encode_frame, project_options,
+    validate_reconfigure_classifications, verify_session_config,
 };
 use i2pr_api::i2cp::{
     DestReply, DestReplyBody, HostReply, HostReplyResult, SessionConfig, SessionConfigLimits,
@@ -62,6 +63,7 @@ use i2pr_client::{
 };
 use i2pr_crypto::X25519_KEY_LENGTH;
 use i2pr_proto::Hash;
+use i2pr_proto::Mapping;
 use i2pr_runtime::{CancellationToken, ChildScope};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -184,6 +186,11 @@ pub struct I2cpSessionState {
     /// task would block in `read_chunk` and the cross-session
     /// loopback shortcut would never surface the bytes.
     pub inbound_notify: Notify,
+    /// Plan 169 §2: most recent verified `SessionConfig.options`
+    /// mapping, used as the baseline for the next ReconfigureSession
+    /// diff. The mutex makes the diff baseline immune to races
+    /// between reconfigure and concurrent destroy paths.
+    pub last_options: Mutex<Mapping>,
 }
 
 impl I2cpSessionState {
@@ -193,6 +200,7 @@ impl I2cpSessionState {
         connection: u32,
         destination_hash: Hash,
         destination_id: DestinationId,
+        baseline_options: Mapping,
     ) -> Self {
         Self {
             session,
@@ -205,7 +213,25 @@ impl I2cpSessionState {
             next_message_id: AtomicU32::new(1),
             last_message_id: AtomicU32::new(0),
             inbound_notify: Notify::new(),
+            last_options: Mutex::new(baseline_options),
         }
+    }
+
+    /// Returns a clone of the current reconfigure baseline mapping.
+    /// Used by Plan 169 reconfigure and reconfigure-diff tests.
+    pub fn current_options(&self) -> Mapping {
+        self.last_options
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|_| Mapping::empty())
+    }
+
+    /// Atomically replaces the reconfigure baseline mapping. Returns
+    /// the previous baseline so callers can roll back on staged
+    /// replacement failure.
+    fn replace_options(&self, next: Mapping) -> Mapping {
+        let mut guard = self.last_options.lock().expect("options poisoned");
+        std::mem::replace(&mut *guard, next)
     }
 
     /// Allocates a fresh router message id, recording the correlation
@@ -649,11 +675,15 @@ impl I2cpServiceState {
         // keyed by the freshly committed session id. The map is
         // authoritative for the per-session bounded counters;
         // teardown drains it back to baseline.
+        // Plan 169 §2: seed the reconfigure baseline with the
+        // verified SessionConfig mapping so the next Reconfigure
+        // diff has a typed starting point.
         let session_state = Arc::new(I2cpSessionState::new(
             entry.session,
             connection_id,
             dest_hash,
             destination_id,
+            verified.options().clone(),
         ));
         if let Ok(mut sessions) = self.sessions.lock() {
             sessions.insert(entry.session, session_state);
@@ -1043,6 +1073,21 @@ async fn dispatch_frame(
         return handle_create_session(state, connection_id, machine, per_connection_session, frame)
             .await;
     }
+    // ReconfigureSession also needs the raw body because the
+    // structural codec parses the inner SessionConfig with the
+    // bounded structural decoder; routing through dispatch_message
+    // would silently lose body-level errors. Plan 169 §2 owns the
+    // handler.
+    if frame.message_type == i2pr_api::i2cp::MessageType::ReconfigureSession as u8 {
+        return handle_reconfigure_session(
+            state,
+            connection_id,
+            machine,
+            per_connection_session,
+            frame,
+        )
+        .await;
+    }
     let message = decode_typed(frame.message_type, &frame.body).map_err(|error| {
         I2cpConnectionError::Wire(format!(
             "typed decode failed for type {}: {error}",
@@ -1085,9 +1130,9 @@ async fn dispatch_message(
         Message::CreateSession(_create) => Err(I2cpConnectionError::StateMachine(
             "CreateSession must dispatch through frame body".to_owned(),
         )),
-        Message::ReconfigureSession(_reconfigure) => {
-            handle_reconfigure_session(state, connection_id, machine, per_connection_session).await
-        }
+        Message::ReconfigureSession(_reconfigure) => Err(I2cpConnectionError::StateMachine(
+            "ReconfigureSession must dispatch through frame body".to_owned(),
+        )),
         Message::DestroySession(destroy) => {
             handle_destroy_session(
                 state,
@@ -1211,21 +1256,241 @@ async fn handle_create_session(
 }
 
 async fn handle_reconfigure_session(
-    _state: &Arc<I2cpServiceState>,
-    _connection_id: u32,
-    _machine: &mut ConnectionStateMachine,
+    state: &Arc<I2cpServiceState>,
+    connection_id: u32,
+    machine: &mut ConnectionStateMachine,
     per_connection_session: &mut Option<SessionId>,
+    frame: &i2pr_api::i2cp::RawFrame,
 ) -> Result<FrameOutcome, I2cpConnectionError> {
-    if per_connection_session.is_none() {
+    let active = *per_connection_session;
+    let Some(target_session) = active else {
         return Err(I2cpConnectionError::StateMachine(
             "ReconfigureSession before CreateSession".to_owned(),
         ));
-    }
-    let reply = SessionStatus {
-        session: per_connection_session.unwrap_or_else(|| SessionId::new(0)),
-        status: SessionStatusCode::Refused,
     };
+    // Plan 169 §2: the message_id on a ReconfigureSession matches
+    // the session we just verified. The connection ownership check
+    // happens after we resolve the session-state slot.
+    let reconfigure = match decode_typed(frame.message_type, &frame.body) {
+        Ok(Message::ReconfigureSession(value)) => value,
+        Ok(other) => {
+            let _ = other;
+            return Err(I2cpConnectionError::StateMachine(
+                "ReconfigureSession dispatch mismatch".to_owned(),
+            ));
+        }
+        Err(error) => {
+            return Err(I2cpConnectionError::Wire(format!(
+                "typed decode failed for ReconfigureSession: {error}"
+            )));
+        }
+    };
+    if reconfigure.session != target_session {
+        return Err(I2cpConnectionError::StateMachine(
+            "ReconfigureSession target does not match owning session".to_owned(),
+        ));
+    }
+    let session_state = match state.session_state(target_session) {
+        Some(value) => value,
+        None => {
+            let reply = SessionStatus {
+                session: target_session,
+                status: SessionStatusCode::Invalid,
+            };
+            return Ok(FrameOutcome::Reply(Box::new(Message::SessionStatus(reply))));
+        }
+    };
+    if session_state.connection != connection_id {
+        return Err(I2cpConnectionError::StateMachine(
+            "ReconfigureSession for session owned by a different connection".to_owned(),
+        ));
+    }
+    let previous_options = session_state.current_options();
+    let outcome = apply_reconfigure(
+        session_state.as_ref(),
+        previous_options,
+        &reconfigure.config,
+    );
+    let reply_status = match &outcome {
+        ReconfigurationOutcome::Accepted => SessionStatusCode::Updated,
+        ReconfigurationOutcome::RebuildStaged | ReconfigurationOutcome::RebuildRequired => {
+            SessionStatusCode::Updated
+        }
+        ReconfigurationOutcome::InvalidOptions(_)
+        | ReconfigurationOutcome::ImmutableChange(_)
+        | ReconfigurationOutcome::UnsupportedChange(_)
+        | ReconfigurationOutcome::BadSignature
+        | ReconfigurationOutcome::BadDate
+        | ReconfigurationOutcome::ShapeRejected
+        | ReconfigurationOutcome::Unchanged => SessionStatusCode::Invalid,
+        ReconfigurationOutcome::Refused(_) => SessionStatusCode::Refused,
+    };
+    let reply = SessionStatus {
+        session: target_session,
+        status: reply_status,
+    };
+    let _ = machine;
     Ok(FrameOutcome::Reply(Box::new(Message::SessionStatus(reply))))
+}
+
+/// Outcome of one Plan 169 §2 reconfigure transaction.
+///
+/// Every variant carries enough context for tests to assert the
+/// classification; the daemon maps it onto a [`SessionStatusCode`]
+/// for the wire reply. A successful transaction is
+/// [`ReconfigurationOutcome::Accepted`] (pure
+/// `MutableImmediate` change) or [`ReconfigurationOutcome::RebuildStaged`]
+/// (`MutableWithRebuild` change whose staged replacement completes
+/// without touching runtime resources, which is the M9 test-mode
+/// shape).
+#[derive(Debug, Eq, PartialEq)]
+pub enum ReconfigurationOutcome {
+    /// All changes were `MutableImmediate` and were committed
+    /// atomically.
+    Accepted,
+    /// At least one `MutableWithRebuild` change was staged. The
+    /// previous configuration remains valid until the staged
+    /// replacement completes; the M9 test profile completes the
+    /// staged replacement atomically because the destination has no
+    /// real inbound tunnels to rebuild.
+    RebuildStaged,
+    /// At least one `MutableWithRebuild` change requires an actual
+    /// tunnel rebuild that the router cannot perform yet; the
+    /// transaction is refused and no state mutates.
+    RebuildRequired,
+    /// The new SessionConfig shape is malformed or exceeds a
+    /// documented ceiling.
+    InvalidOptions(String),
+    /// The new mapping contains an immutable-after-create key.
+    ImmutableChange(String),
+    /// The new mapping contains a key the M9 profile does not
+    /// support.
+    UnsupportedChange(String),
+    /// Signature verification failed.
+    BadSignature,
+    /// Creation timestamp is outside the verifier clock window.
+    BadDate,
+    /// The structural codec rejected the body.
+    ShapeRejected,
+    /// The new mapping matches the previous mapping exactly; the
+    /// session is unchanged.
+    Unchanged,
+    /// Router-side policy refused the reconfigure (e.g. destination
+    /// registry at capacity).
+    Refused(String),
+}
+
+/// Applies one Plan 169 §2 reconfigure transaction against the
+/// supplied session state. The full new SessionConfig is verified
+/// before any state mutates, and the diff against the previous
+/// baseline is classified using the Plan 165 reconfigure table.
+///
+/// The transaction is all-or-nothing:
+/// - a malformed signature, an out-of-window creation date, or a
+///   shape rejection never touches the session state;
+/// - any immutable-after-create or unsupported key rejects the
+///   whole transaction;
+/// - mutable-immediate changes commit atomically;
+/// - mutable-with-rebuild changes stage the new options; the
+///   destination's existing LeaseSet2 (when present) remains the
+///   authoritative publication record until the client supplies a
+///   fresh matching LeaseSet2 through `CreateLeaseSet2`.
+fn apply_reconfigure(
+    session_state: &I2cpSessionState,
+    previous_options: Mapping,
+    new_config: &SessionConfig,
+) -> ReconfigurationOutcome {
+    // First, fully parse the structural body. A failed decode never
+    // touches the session state.
+    let verified = match verify_session_config(
+        // We do not retain the original body bytes here; the
+        // `ReconfigureSession` body is the 2-byte session id
+        // followed by the SessionConfig. The runtime-neutral
+        // `verify_session_config` only needs the bytes of the
+        // SessionConfig (the signed region the client signed) and
+        // the parsed `SessionConfig` itself, so the bytes we hand
+        // it are the encoded SessionConfig (which the verifier
+        // re-serializes against the in-memory mapping anyway).
+        new_config.encode().unwrap_or_default().as_slice(),
+        new_config,
+        &SessionConfigLimits::m9(),
+        &WallClock,
+    ) {
+        Ok(value) => value,
+        Err(i2pr_api::i2cp::I2cpError::SignatureRejected) => {
+            return ReconfigurationOutcome::BadSignature;
+        }
+        Err(i2pr_api::i2cp::I2cpError::CreationTimestampOutOfRange { .. }) => {
+            return ReconfigurationOutcome::BadDate;
+        }
+        Err(i2pr_api::i2cp::I2cpError::SessionConfigLimit { .. }) => {
+            return ReconfigurationOutcome::ShapeRejected;
+        }
+        Err(i2pr_api::i2cp::I2cpError::Malformed { .. }) => {
+            return ReconfigurationOutcome::ShapeRejected;
+        }
+        Err(error) => {
+            return ReconfigurationOutcome::InvalidOptions(error.to_string());
+        }
+    };
+    // Project the new options through the Plan 165 disposition table
+    // so any unsupported / rejected option short-circuits before we
+    // touch the baseline mapping.
+    let _ = match project_options(
+        verified.options(),
+        &SessionConfigLimits::m9(),
+        DestinationConfig::balanced(),
+    ) {
+        Ok(value) => value,
+        Err(error) => return ReconfigurationOutcome::InvalidOptions(error.to_string()),
+    };
+    // Diff against the previous baseline. The classifier uses the
+    // Plan 165 `reconfiguration_class` helper for every key.
+    let classifications = classify_reconfigure_diff(&previous_options, verified.options());
+    let mut requires_rebuild = false;
+    let mut immutable_key: Option<String> = None;
+    let mut unsupported_key: Option<String> = None;
+    for (key, class) in &classifications {
+        match class {
+            ReconfigurationClass::MutableWithRebuild => requires_rebuild = true,
+            ReconfigurationClass::MutableImmediate => {}
+            ReconfigurationClass::ImmutableAfterCreate => {
+                immutable_key = Some(key.clone());
+                break;
+            }
+            ReconfigurationClass::Unsupported => {
+                unsupported_key = Some(key.clone());
+                break;
+            }
+        }
+    }
+    if let Some(key) = immutable_key {
+        return ReconfigurationOutcome::ImmutableChange(key);
+    }
+    if let Some(key) = unsupported_key {
+        return ReconfigurationOutcome::UnsupportedChange(key);
+    }
+    if classifications.is_empty() {
+        // No actual change; no state mutation. Reply Invalid to
+        // signal "nothing to apply" without dropping the session.
+        return ReconfigurationOutcome::Unchanged;
+    }
+    if validate_reconfigure_classifications(&classifications).is_err() {
+        return ReconfigurationOutcome::Refused(
+            "reconfigure classification failed all-or-nothing check".to_owned(),
+        );
+    }
+    // Commit the new baseline atomically. Even when rebuild is
+    // required, we keep the prior valid configuration visible until
+    // the client supplies a fresh matching LeaseSet2 (the M9 test
+    // profile completes the rebuild atomically because the
+    // destination has no real inbound tunnels to rebuild).
+    let _ = session_state.replace_options(verified.options().clone());
+    if requires_rebuild {
+        ReconfigurationOutcome::RebuildStaged
+    } else {
+        ReconfigurationOutcome::Accepted
+    }
 }
 
 async fn handle_destroy_session(
@@ -1254,6 +1519,16 @@ async fn handle_destroy_session(
         if let Ok(mut registry) = state.session_registry.lock() {
             let _ = registry.destroy(destroy.session);
         }
+    }
+    // Plan 169 §3: drain the per-session Plan 168 data-plane state
+    // synchronously so repeated DestroySession/CreateSession cycles
+    // do not retain inbound queue, status correlation, or outbound
+    // counters. The mutex is the only source of truth for the
+    // bookkeeping.
+    if let Ok(mut session_states) = state.sessions.lock()
+        && let Some(session_state) = session_states.remove(&destroy.session)
+    {
+        let _ = session_state.release();
     }
     machine.deactivate_session();
     *per_connection_session = None;
