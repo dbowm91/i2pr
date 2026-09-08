@@ -19,6 +19,28 @@ Dependencies: destinations, NetDB, streaming and router lifecycle
 > session,actions}.rs`). No listener, no destination activation, and
 > no interoperability claim; those belong to Plans 166–170.
 >
+> Plan 166 note: `DestinationOwnership::{RouterOwned, ClientOwned}`,
+> `DestinationPublic`, `InboundDecryptionCapability`, atomic
+> `install_client_lease_set2`, typed `LeaseRequest` /
+> `ClientRefreshCause`, and `I2cpAction::RequestVariableLeaseSet`
+> are landed (`crates/i2pr-client/src/{identity,leaseset,
+> registry}.rs` and `crates/i2pr-api/src/i2cp/actions.rs`).
+> SAM router-owned regressions remain green; no listener, no
+> interoperability claim.
+>
+> Plan 167 note: the loopback I2CP v0.9.67 listener/runtime is
+> landed (`crates/i2pr-daemon/src/i2cp.rs` plus
+> `crates/i2pr-daemon/tests/i2cp_loopback.rs`). Disabled by default,
+> loopback-only, bounded read/write/session resources, real-TCP
+> `0x2a` preamble, fragmented frame reads, multiple frames per
+> write, signed `SessionConfig` reservation, signed Standard
+> LeaseSet2 + matching X25519 decryption key installation,
+> mismatched-key rejection, disconnect cleanup, and graceful
+> daemon cancellation. Application-message transport
+> (`SendMessage` / `SendMessageExpires` / `MessagePayload` /
+> `MessageStatus`), `DestLookup` / `DestReply` / `HostLookup` /
+> `HostReply`, reconfiguration, and independent-client evidence
+> remain in Plans 168–170.
 > Normative M9 sources: official I2CP specification and overview at
 > `i2p/i2p.website @ 26467e4b275e3a58280b9d4e6d4745d58bb8c499`
 > (accurate for API 0.9.67); Java I2P 2.13.0
@@ -272,6 +294,138 @@ router-owned product regressions remain green.
 
 No listener, no socket ownership, no interoperability claim: those
 belong to Plans 167–170.
+
+## M9 I2CP loopback server runtime (Plan 167)
+
+Plan 167 composes the runtime-neutral Plan 164/165/166 surface into
+a real Tokio-owned loopback I2CP v0.9.67 listener owned by the
+production daemon (`crates/i2pr-daemon/src/i2cp.rs`). The service is
+the single composition root for the I2CP wire:
+
+```text
+i2pr-daemon::i2cp::I2cpServiceState
+  -> loopback TcpListener (127.0.0.1, port 7654, ephemeral in tests)
+  -> tokio::sync::Semaphore (max_clients admission)
+  -> per-connection ChildScope task
+       -> i2pr_api::i2cp::FrameDecoder  (Plan 164 incremental framing)
+       -> ConnectionStateMachine       (Plan 165 version/state)
+       -> SessionRegistry               (Plan 165 reserve/commit/rollback)
+       -> DestinationRegistry           (Plan 120)
+            -> DestinationRuntime::new_client_owned (Plan 166)
+            -> DestinationRuntime::install_client_lease_set2 (Plan 166)
+       -> i2pr_api::i2cp::I2cpAction dispatch
+```
+
+### Configuration surface
+
+The daemon `[i2cp]` block is the only place the I2CP listener is
+controlled. Defaults and validation live in
+`crates/i2pr-daemon/src/config.rs`:
+
+```text
+[i2cp]
+enabled             = false            # disabled by default
+bind_address        = "127.0.0.1"      # non-loopback rejected
+port                = 7654             # 0 selects ephemeral
+max_clients         = 16               # bounded admission semaphore
+max_sessions_per_connection = 1
+max_sessions_router = 16
+max_buffered_bytes_per_connection = 65536
+max_pending_writes_per_connection = 64
+protocol_byte_timeout_ms = 10000        # 1..=60 seconds
+command_timeout_ms       = 60000        # 5..=3600 seconds
+shutdown_timeout_ms      = 5000         # 1..=30 seconds
+```
+
+Non-loopback bind addresses (`bind_address` outside `127.0.0.0/8` or
+`::1`) fail semantic validation before the listener binds. The
+router-wide `limits.max_tasks` and `limits.max_buffered_bytes` budgets
+remain authoritative: an `[i2cp]` block whose aggregate buffered
+bytes exceeds the router budget is rejected.
+
+### Runtime boundary
+
+The api layer (`crates/i2pr-api/src/i2cp/`) owns no Tokio, sockets,
+timers, channels, or destination private material. The Plan 167
+daemon is the only place where the typed `I2cpAction` vocabulary
+projects into runtime state. The action envelope is the single
+hand-off point: the per-connection task builds it, the daemon
+projects it, and the typed result is the only thing the api layer
+ever sees from runtime state.
+
+### Frame and read behavior
+
+The runtime enforces every Plan 164 frame rule:
+
+- `0x2a` protocol byte first; non-magic bytes close the connection.
+- `FrameDecoder::push` handles partial header/body reads; the
+  per-connection read buffer is bounded near the frame ceiling.
+- Multiple complete frames in one read are dispatched in order.
+- A second `GetDate`, premature `CreateSession`, and any
+  state-machine violation produce a typed rejection.
+- The read deadline is `command_timeout_ms` (default 60s, set to
+  `Duration::MAX` in the test profile so the paused
+  `tokio::time::test-util` harness cannot race a finite timer).
+- Connection exit converges on one cleanup path: drop the
+  connection admission, cancel the per-connection task, run
+  `teardown_connection` which removes every owned destination and
+  releases the session registry slot. There is no second source of
+  truth for owned resources.
+
+### Action composition
+
+The per-connection task builds one `I2cpAction` per accepted frame:
+
+```text
+GetDate             -> SetDate (only router-to-client reply)
+CreateSession       -> ReserveClientDestination + verified SessionConfig
+                        + projected DestinationConfig
+                    -> reply SessionStatus{Created|Invalid|Refused}
+CreateLeaseSet2     -> install_client_lease_set2
+                        (Plan 166 atomic install_external path)
+DestroySession      -> destroy owned destination
+                    -> release session registry slot
+ReconfigureSession  -> SessionStatus{Refused}  (deferred to Plan 169)
+Disconnect          -> close the connection
+GetBandwidthLimits  -> BandwidthLimits (neutral zeros in M9)
+DestLookup/HostLookup -> typed not-found reply (deferred to Plan 168)
+SendMessage/SendMessageExpires -> deferred to Plan 168
+```
+
+`CreateSession` and `CreateLeaseSet2` failure paths return a
+`SessionStatus{Invalid}` reply instead of closing the connection,
+so a client can recover from a single malformed frame and continue
+using the same control socket. Wire-level framing errors and
+timeout/cancellation close the connection.
+
+### Evidence
+
+The canonical real-TCP evidence lives in
+[`crates/i2pr-daemon/tests/i2cp_loopback.rs`](../../crates/i2pr-daemon/tests/i2cp_loopback.rs).
+Every Plan 167 §8 case is exercised through raw `tokio::net::TcpStream`
+bytes against the real listener on `127.0.0.1:0`:
+
+- disabled config / non-loopback config rejection;
+- valid protocol byte / `GetDate` / `SetDate`;
+- fragmented protocol byte + frame reads (byte-by-byte and
+  multi-frame writes);
+- valid signed `CreateSession` activates a client-owned destination;
+- tampered signature / stale `creation_ms` produce
+  `SessionStatus{Invalid}` without closing the connection;
+- `DestroySession` releases the destination and the session slot;
+- `Disconnect` tears down every owned resource and closes the
+  connection;
+- client admission ceiling drops the extra socket after the
+  `max_clients` permits are exhausted;
+- `GetBandwidthLimits` returns a neutral 64-byte reply;
+- `CreateLeaseSet2` with a mismatched decryption key is rejected
+  and the destination is cleaned up on connection exit.
+
+No application-message transport, `SendMessage`/`SendMessageExpires`
+direction, `MessageStatus` correlation, or independent-client
+evidence is claimed in Plan 167. Application-message data plane
+lands in Plan 168, self-composed local product in Plan 169,
+independent Java/Go client evidence in Plan 170.
 
 ### Connection state machine
 

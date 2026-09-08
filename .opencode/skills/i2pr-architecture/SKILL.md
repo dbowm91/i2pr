@@ -261,6 +261,26 @@ record is not `superseded-by-*`. Currently:
   them from raw bytes. SAM router-owned product regressions
   remain green; no listener, socket ownership, or interoperability
   claim; those belong to Plans 167–170.
+- **Milestone 9 I2CP loopback server runtime (passed)**: Plan 167
+  (`passed-m9-i2cp-loopback-server-runtime`, see
+  [`plans/167-status.md`](../../plans/167-status.md)):
+  `crates/i2pr-daemon/src/i2cp.rs` composes the runtime-neutral
+  `i2pr-api::i2cp` state and the Plan 166 client-owned
+  destination runtime into a real Tokio-owned loopback I2CP
+  v0.9.67 listener: `0x2a` preamble, incremental `FrameDecoder`
+  (Plan 164), Plan 165 `ConnectionStateMachine` +
+  `SessionRegistry` + `I2cpAction` dispatch, atomic
+  `install_client_lease_set2` (Plan 166), per-connection
+  `ChildScope`, supervised admission semaphore, bounded
+  per-connection read/write ceilings, and one cleanup path on
+  EOF/cancel/shutdown. Disabled by default, loopback-only,
+  non-loopback bind addresses fail semantic validation, TLS and
+  credentialed authentication are deferred. SAM router-owned
+  product regressions remain green. No
+  `SendMessage` / `SendMessageExpires` / `MessagePayload` /
+  `MessageStatus` direction, no `DestLookup` / `HostLookup`
+  resolution, no reconfiguration, and no independent-client
+  evidence claim; those belong to Plans 168–170.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).

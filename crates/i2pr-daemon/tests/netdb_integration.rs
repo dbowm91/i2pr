@@ -119,6 +119,19 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             idle_timeout: std::time::Duration::from_millis(300_000),
             scheduler_poll_max: std::time::Duration::from_millis(200),
         },
+        i2cp: i2pr_daemon::config::I2cpConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 7654,
+            max_clients: 16,
+            max_sessions_per_connection: 1,
+            max_sessions_router: 16,
+            max_buffered_bytes_per_connection: 64 * 1024,
+            max_pending_writes_per_connection: 64,
+            protocol_byte_timeout: std::time::Duration::from_millis(10_000),
+            command_timeout: std::time::Duration::from_millis(60_000),
+            shutdown_timeout: std::time::Duration::from_millis(5_000),
+        },
     }
 }
 

@@ -254,13 +254,17 @@ plan_165_status = "passed-m9-i2cp-connection-session-and-options"
 plan_166_plan_of_record = "plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md"
 plan_166_closure = "plans/166-status.md"
 plan_166_status = "passed-m9-i2cp-client-owned-destination-and-leaseset2"
+plan_167_plan_of_record = "plans/167-m9-i2cp-loopback-server-runtime.md"
+plan_167_closure = "plans/167-status.md"
+plan_167_status = "passed-m9-i2cp-loopback-server-runtime"
 milestone9_planning_authority = "plan163"
 milestone9_protocol = "i2cp"
 milestone9_i2cp_wire_foundation = "passed-via-plan164"
 milestone9_i2cp_connection_session_options = "passed-via-plan165"
 milestone9_i2cp_client_owned_destination = "passed-via-plan166"
+milestone9_i2cp_loopback_server_runtime = "passed-via-plan167"
 milestone9_final_acceptance = "not-yet-closed"
-next_executable_plan = "167"
+next_executable_plan = "168"
 next_product_layer = "milestone9-i2cp"
 
 [[surface]]
@@ -1209,5 +1213,21 @@ evidence = [
     "crates/i2pr-api/src/i2cp/actions.rs",
     "plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md",
     "plans/166-status.md",
+]
+
+[[surface]]
+id = "i2cp.loopback-server-runtime"
+protocol = "i2cp"
+structure = "loopback-server-runtime-127.0.0.1-7654-DisabledByDefault"
+scope = "required"
+status = "experimental"
+notes = "Plan 167 closed the M9 I2CP loopback server runtime in `i2pr-daemon::i2cp`. The daemon composes the runtime-neutral `i2pr-api::i2cp` state and the Plan 166 client-owned destination runtime into a real Tokio-owned loopback I2CP v0.9.67 listener: `0x2a` protocol preamble, incremental `FrameDecoder` (Plan 164), Plan 165 `ConnectionStateMachine` + `SessionRegistry` + `I2cpAction` dispatch, atomic `install_client_lease_set2` (Plan 166), per-connection `ChildScope`, supervised admission semaphore, bounded per-connection read/write ceilings, and one cleanup path on EOF/cancel/shutdown. Disabled by default, loopback-only, non-loopback bind addresses fail semantic validation, TLS and credentialed authentication are deferred. SAM router-owned product regressions remain green. No `SendMessage`/`SendMessageExpires`/`MessagePayload`/`MessageStatus` direction, no `DestLookup`/`HostLookup` / `HostReply` resolution, no reconfiguration, and no independent-client evidence; those belong to Plans 168-170."
+evidence = [
+    "crates/i2pr-daemon/src/i2cp.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-daemon/tests/i2cp_loopback.rs",
+    "plans/167-m9-i2cp-loopback-server-runtime.md",
+    "plans/167-status.md",
 ]
 advertised = false

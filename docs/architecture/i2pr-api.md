@@ -277,6 +277,49 @@ or a private key. The `LeaseRefreshCause` enum and the `LeaseRequestLease`
 struct are exported from `i2pr_api::i2cp` alongside `I2cpAction` so
 downstream consumers never have to translate an integer status.
 
+## Plan 167 — I2CP daemon runtime boundary
+
+The Plan 167 daemon in `crates/i2pr-daemon/src/i2cp.rs` is the
+single composition root for the I2CP wire. It owns:
+
+- the loopback `TcpListener` (one per `[i2cp]` block, port `7654`
+  by default, `0` for ephemeral tests, IPv4/IPv6 loopback only);
+- the per-connection `ChildScope` that owns every accepted socket;
+- one `i2pr_api::i2cp::SessionRegistry` for I2CP session IDs;
+- one `i2pr_client::DestinationRegistry` populated through the
+  Plan 166 client-owned destination runtime.
+
+The api layer owns **no** Tokio, sockets, timers, channels, or
+destination private material. The Plan 167 daemon is the only place
+where the typed `I2cpAction` vocabulary is projected into runtime
+state: `reserve_client_destination` constructs a Plan 166
+`DestinationPublic` from the verified `SessionConfig`, runs it
+through `DestinationRuntime::new_client_owned`, registers it in
+`DestinationRegistry`, commits the `SessionRegistry` reservation, and
+hands the assigned session id back to the per-connection task.
+`install_client_lease_set2` cross-checks the supplied
+`InboundDecryptionCapability` against the destination's static X25519
+public key and delegates to `DestinationRuntime::install_client_lease_set2`,
+which is the single atomic Plan 166 install path.
+
+The api layer is deliberately ignorant of the daemon. Every
+traversal (read, write, frame decode) goes through the runtime-neutral
+codecs the api already owns. The Plan 168 follow-on work lands the
+`SendMessage` / `SendMessageExpires` / `MessagePayload` /
+`MessageStatus` adapters behind the same boundary; Plan 169 lands the
+self-composed local I2CP product behind the same boundary; Plan 170
+lands the independent Java/Go client evidence without touching the
+api.
+
+Configuration surface lives in the daemon: `[i2cp]` adds `enabled`
+(default `false`), `bind_address` (default `127.0.0.1`), `port`
+(default `7654`), `max_clients`, `max_sessions_per_connection`,
+`max_sessions_router`, `max_buffered_bytes_per_connection`,
+`max_pending_writes_per_connection`, `protocol_byte_timeout_ms`,
+`command_timeout_ms`, and `shutdown_timeout_ms`. Non-loopback bind
+addresses fail semantic validation; oversized ceilings fail at the
+same step.
+
 ## Public surface
 
 The crate re-exports the most commonly used types from

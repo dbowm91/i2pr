@@ -10,12 +10,14 @@ pub mod bootstrap;
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod i2cp;
 pub mod inbound_dispatch;
 pub mod netdb_seam;
 pub mod outbound_lookup;
 pub mod sam;
 
 pub use error::DaemonError;
+pub use i2cp::{I2cpServiceError, I2cpServiceSnapshot, I2cpServiceState};
 pub use netdb_seam::{
     CompositionOutcome, ExploratoryPathStatus, LeaseSet2ResponseOutcome, NetDbSeam, NetDbSeamError,
 };
@@ -177,6 +179,10 @@ pub fn build_daemon_graph(config: &Config) -> Result<i2pr_runtime::ServiceGraph,
         register_sam_service(&mut builder, config)?;
     }
 
+    if config.i2cp.enabled {
+        register_i2cp_service(&mut builder, config)?;
+    }
+
     builder
         .build()
         .map_err(|e| DaemonError::RuntimeSupervisorFailed(format!("invalid service graph: {e}")))
@@ -241,6 +247,70 @@ fn register_sam_service(
         ))
         .map_err(|e| {
             DaemonError::RuntimeSupervisorFailed(format!("failed to register SAM service: {e}"))
+        })?;
+    Ok(())
+}
+
+/// Registers the supervised loopback I2CP service in the supplied
+/// builder. The factory captures the [`I2cpServiceState`] so the
+/// per-connection tokio tasks own Arc clones that share the same
+/// session/destination registries. Plan 167 keeps I2CP experimental,
+/// loopback-only, and disabled by default.
+fn register_i2cp_service(
+    builder: &mut i2pr_runtime::ServiceGraphBuilder,
+    config: &Config,
+) -> Result<(), DaemonError> {
+    let i2cp_config = config.i2cp.clone();
+    let address = i2cp_config.bind_socket();
+    let i2cp_name = ServiceName::new("i2cp-bridge").expect("valid service name");
+    builder
+        .register(ServiceSpec::new(
+            i2cp_name,
+            ServiceClassification::Optional,
+            move |ctx| {
+                let i2cp_config = i2cp_config.clone();
+                let cancellation = ctx.cancellation().clone();
+                let children = ctx.children();
+                Box::pin(async move {
+                    let state = match I2cpServiceState::new(i2cp_config) {
+                        Ok(state) => Arc::new(state),
+                        Err(error) => {
+                            let detail = i2pr_core::HealthDetail::new(format!(
+                                "I2CP service construction failed: {error}"
+                            ))
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        }
+                    };
+                    let token = cancellation.clone();
+                    let join_result =
+                        i2pr_runtime::bounded_timeout(Duration::from_secs(1), async {
+                            state.run(address, children, token).await
+                        })
+                        .await;
+                    if join_result.is_err() {
+                        let detail = i2pr_core::HealthDetail::new(
+                            "I2CP listener failed to start within the bounded timeout",
+                        )
+                        .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::Internal,
+                                detail,
+                            ),
+                        );
+                    }
+                    i2pr_runtime::ServiceResult::RequestedShutdown
+                })
+            },
+        ))
+        .map_err(|e| {
+            DaemonError::RuntimeSupervisorFailed(format!("failed to register I2CP service: {e}"))
         })?;
     Ok(())
 }

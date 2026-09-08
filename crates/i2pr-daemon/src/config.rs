@@ -47,6 +47,8 @@ struct RawConfig {
     sam: RawSamConfig,
     #[serde(default)]
     ssu2: RawSsu2Config,
+    #[serde(default)]
+    i2cp: RawI2cpConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -224,6 +226,58 @@ struct RawReseedSource {
     signer_id: String,
     #[serde(default)]
     certificate_path: String,
+}
+
+/// Raw Plan 167 I2CP listener configuration.
+///
+/// M9 (Milestone 9) I2CP listens on the conventional `127.0.0.1:7654`
+/// loopback port. The listener is disabled by default; non-loopback
+/// addresses are rejected during semantic validation. Independent
+/// remote-client exposure, TLS, and credentialed authentication
+/// remain deferred.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawI2cpConfig {
+    #[serde(default = "default_i2cp_enabled")]
+    enabled: bool,
+    #[serde(default = "default_i2cp_bind_address")]
+    bind_address: String,
+    #[serde(default = "default_i2cp_port")]
+    port: u16,
+    #[serde(default = "default_i2cp_max_clients")]
+    max_clients: u16,
+    #[serde(default = "default_i2cp_max_sessions_per_connection")]
+    max_sessions_per_connection: u16,
+    #[serde(default = "default_i2cp_max_sessions_router")]
+    max_sessions_router: u16,
+    #[serde(default = "default_i2cp_max_buffered_bytes_per_connection")]
+    max_buffered_bytes_per_connection: usize,
+    #[serde(default = "default_i2cp_max_pending_writes_per_connection")]
+    max_pending_writes_per_connection: u32,
+    #[serde(default = "default_i2cp_protocol_byte_timeout_ms")]
+    protocol_byte_timeout_ms: u64,
+    #[serde(default = "default_i2cp_command_timeout_ms")]
+    command_timeout_ms: u64,
+    #[serde(default = "default_i2cp_shutdown_timeout_ms")]
+    shutdown_timeout_ms: u64,
+}
+
+impl Default for RawI2cpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_i2cp_enabled(),
+            bind_address: default_i2cp_bind_address(),
+            port: default_i2cp_port(),
+            max_clients: default_i2cp_max_clients(),
+            max_sessions_per_connection: default_i2cp_max_sessions_per_connection(),
+            max_sessions_router: default_i2cp_max_sessions_router(),
+            max_buffered_bytes_per_connection: default_i2cp_max_buffered_bytes_per_connection(),
+            max_pending_writes_per_connection: default_i2cp_max_pending_writes_per_connection(),
+            protocol_byte_timeout_ms: default_i2cp_protocol_byte_timeout_ms(),
+            command_timeout_ms: default_i2cp_command_timeout_ms(),
+            shutdown_timeout_ms: default_i2cp_shutdown_timeout_ms(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -489,6 +543,64 @@ const fn default_sam_shutdown_timeout_ms() -> u64 {
     5_000
 }
 
+// --- Plan 167 I2CP defaults: disabled, loopback-only. ---
+
+fn default_i2cp_enabled() -> bool {
+    false
+}
+
+fn default_i2cp_bind_address() -> String {
+    String::from("127.0.0.1")
+}
+
+const fn default_i2cp_port() -> u16 {
+    7654
+}
+
+const fn default_i2cp_max_clients() -> u16 {
+    16
+}
+
+const fn default_i2cp_max_sessions_per_connection() -> u16 {
+    1
+}
+
+const fn default_i2cp_max_sessions_router() -> u16 {
+    16
+}
+
+const fn default_i2cp_max_buffered_bytes_per_connection() -> usize {
+    64 * 1024
+}
+
+const fn default_i2cp_max_pending_writes_per_connection() -> u32 {
+    64
+}
+
+const fn default_i2cp_protocol_byte_timeout_ms() -> u64 {
+    10_000
+}
+
+const fn default_i2cp_command_timeout_ms() -> u64 {
+    60_000
+}
+
+const fn default_i2cp_shutdown_timeout_ms() -> u64 {
+    5_000
+}
+
+const MAX_I2CP_CLIENTS: u16 = 256;
+const MAX_I2CP_SESSIONS_PER_CONNECTION: u16 = 16;
+const MAX_I2CP_SESSIONS_ROUTER: u16 = 256;
+const MAX_I2CP_BUFFERED_BYTES_PER_CONNECTION: usize = 1024 * 1024;
+const MAX_I2CP_PENDING_WRITES_PER_CONNECTION: u32 = 4096;
+const MIN_I2CP_PROTOCOL_BYTE_TIMEOUT_MS: u64 = 1_000;
+const MAX_I2CP_PROTOCOL_BYTE_TIMEOUT_MS: u64 = 60_000;
+const MIN_I2CP_COMMAND_TIMEOUT_MS: u64 = 5_000;
+const MAX_I2CP_COMMAND_TIMEOUT_MS: u64 = 3_600_000;
+const MIN_I2CP_SHUTDOWN_TIMEOUT_MS: u64 = 1_000;
+const MAX_I2CP_SHUTDOWN_TIMEOUT_MS: u64 = 30_000;
+
 // --- Plan 158 SSU2 defaults: disabled, loopback-only, non-advertised. ---
 
 fn default_ssu2_enabled() -> bool {
@@ -567,6 +679,71 @@ const MAX_SSU2_HANDSHAKE_TIMEOUT_MS: u64 = 60_000;
 const MIN_SSU2_SCHEDULER_POLL_MAX_MS: u64 = 10;
 const MAX_SSU2_SCHEDULER_POLL_MAX_MS: u64 = 1_000;
 const MIN_SSU2_SERVICE_PORT: u16 = 1024;
+
+/// Normalized Plan 167 I2CP listener configuration.
+///
+/// M9 I2CP listens on the conventional `127.0.0.1:7654` loopback port.
+/// `enabled = false` keeps the production daemon silent; integration
+/// tests opt in by setting the flag explicitly. Non-loopback bind
+/// addresses are rejected during semantic validation, the same as the
+/// SAM listener. TLS and credentialed authentication are explicitly
+/// deferred.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct I2cpConfig {
+    /// Whether the I2CP listener is enabled.
+    pub enabled: bool,
+    /// Loopback bind IP. Non-loopback is rejected.
+    pub bind_address: IpAddr,
+    /// Bind port. `0` selects an ephemeral port (integration tests).
+    pub port: u16,
+    /// Maximum concurrent TCP clients accepted by the loopback listener.
+    pub max_clients: u16,
+    /// Maximum active sessions owned by a single TCP connection.
+    pub max_sessions_per_connection: u16,
+    /// Maximum active sessions across every I2CP connection.
+    pub max_sessions_router: u16,
+    /// Aggregate buffered-byte ceiling per connection read buffer.
+    pub max_buffered_bytes_per_connection: usize,
+    /// Maximum queued outbound frames per connection.
+    pub max_pending_writes_per_connection: u32,
+    /// Deadline for the opening protocol byte.
+    pub protocol_byte_timeout: Duration,
+    /// Per-command/idle deadline.
+    pub command_timeout: Duration,
+    /// Graceful shutdown deadline.
+    pub shutdown_timeout: Duration,
+}
+
+impl I2cpConfig {
+    /// Returns the loopback bind address.
+    pub const fn bind_socket(&self) -> SocketAddr {
+        SocketAddr::new(self.bind_address, self.port)
+    }
+
+    /// Returns the loopback-only integration-test profile with
+    /// `Duration::MAX` deadlines that disable timer races under
+    /// `tokio::time::test-util`.
+    pub const fn loopback_test_profile(
+        max_clients: u16,
+        max_sessions_router: u16,
+        max_buffered_bytes_per_connection: usize,
+        max_pending_writes_per_connection: u32,
+    ) -> Self {
+        Self {
+            enabled: true,
+            bind_address: IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+            port: 0,
+            max_clients,
+            max_sessions_per_connection: 1,
+            max_sessions_router,
+            max_buffered_bytes_per_connection,
+            max_pending_writes_per_connection,
+            protocol_byte_timeout: Duration::MAX,
+            command_timeout: Duration::MAX,
+            shutdown_timeout: Duration::from_secs(5),
+        }
+    }
+}
 
 /// Normalized router policy placeholder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -788,6 +965,8 @@ pub struct Config {
     pub sam: SamConfig,
     /// SSU2 UDP runtime settings (Plan 158; disabled, loopback-only).
     pub ssu2: Ssu2Config,
+    /// I2CP listener settings (Plan 167; disabled, loopback-only).
+    pub i2cp: I2cpConfig,
 }
 
 impl Config {
@@ -891,6 +1070,7 @@ impl Config {
         let reseed = normalize_reseed(&raw.reseed, &netdb)?;
         let sam = normalize_sam(&raw.sam, &raw.limits)?;
         let ssu2 = normalize_ssu2(&raw.ssu2)?;
+        let i2cp = normalize_i2cp(&raw.i2cp, &raw.limits)?;
 
         Ok(Self {
             schema_version: raw.schema_version,
@@ -913,8 +1093,152 @@ impl Config {
             reseed,
             sam,
             ssu2,
+            i2cp,
         })
     }
+}
+
+fn normalize_i2cp(
+    raw: &RawI2cpConfig,
+    global: &RawLimitsConfig,
+) -> Result<I2cpConfig, ConfigError> {
+    let bind_address: IpAddr = raw
+        .bind_address
+        .parse()
+        .map_err(|_| ConfigError::Semantic {
+            field: "i2cp.bind_address",
+            reason: "must be a valid IP address",
+        })?;
+    if !bind_address.is_loopback() {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.bind_address",
+            reason: "must be a loopback address while remote I2CP exposure is unsupported",
+        });
+    }
+    if raw.max_clients == 0 {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.max_clients",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.max_clients > MAX_I2CP_CLIENTS {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.max_clients",
+            reason: "exceeds the bootstrap safety limit",
+        });
+    }
+    if raw.max_sessions_per_connection == 0 {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.max_sessions_per_connection",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.max_sessions_per_connection > MAX_I2CP_SESSIONS_PER_CONNECTION {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.max_sessions_per_connection",
+            reason: "exceeds the bootstrap safety limit",
+        });
+    }
+    if raw.max_sessions_router == 0 {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.max_sessions_router",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.max_sessions_router > MAX_I2CP_SESSIONS_ROUTER {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.max_sessions_router",
+            reason: "exceeds the bootstrap safety limit",
+        });
+    }
+    if raw.max_buffered_bytes_per_connection == 0 {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.max_buffered_bytes_per_connection",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.max_buffered_bytes_per_connection > MAX_I2CP_BUFFERED_BYTES_PER_CONNECTION {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.max_buffered_bytes_per_connection",
+            reason: "exceeds the bootstrap safety limit",
+        });
+    }
+    if raw.max_pending_writes_per_connection == 0 {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.max_pending_writes_per_connection",
+            reason: "must be greater than zero",
+        });
+    }
+    if raw.max_pending_writes_per_connection > MAX_I2CP_PENDING_WRITES_PER_CONNECTION {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.max_pending_writes_per_connection",
+            reason: "exceeds the bootstrap safety limit",
+        });
+    }
+    let protocol_byte_timeout = Duration::from_millis(raw.protocol_byte_timeout_ms);
+    let command_timeout = Duration::from_millis(raw.command_timeout_ms);
+    let shutdown_timeout = Duration::from_millis(raw.shutdown_timeout_ms);
+
+    if protocol_byte_timeout.is_zero()
+        || raw.protocol_byte_timeout_ms < MIN_I2CP_PROTOCOL_BYTE_TIMEOUT_MS
+        || raw.protocol_byte_timeout_ms > MAX_I2CP_PROTOCOL_BYTE_TIMEOUT_MS
+    {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.protocol_byte_timeout_ms",
+            reason: "must be within 1000..=60000",
+        });
+    }
+    if command_timeout.is_zero()
+        || raw.command_timeout_ms < MIN_I2CP_COMMAND_TIMEOUT_MS
+        || raw.command_timeout_ms > MAX_I2CP_COMMAND_TIMEOUT_MS
+    {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.command_timeout_ms",
+            reason: "must be within 5000..=3600000",
+        });
+    }
+    if shutdown_timeout.is_zero()
+        || raw.shutdown_timeout_ms < MIN_I2CP_SHUTDOWN_TIMEOUT_MS
+        || raw.shutdown_timeout_ms > MAX_I2CP_SHUTDOWN_TIMEOUT_MS
+    {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.shutdown_timeout_ms",
+            reason: "must be within 1000..=30000",
+        });
+    }
+
+    // Plan 167 §2: the I2CP listener must not silently exceed the
+    // router-wide task or buffered-byte ceilings. Tests exercise a
+    // 64 KiB per-connection read ceiling while keeping the router-wide
+    // budget far below the SAM defaults.
+    let per_connection_budget = u64::from(raw.max_clients)
+        .saturating_mul(u64::from(raw.max_sessions_per_connection))
+        .saturating_mul(raw.max_buffered_bytes_per_connection as u64);
+    let aggregate_budget =
+        u64::from(raw.max_clients).saturating_mul(raw.max_buffered_bytes_per_connection as u64);
+    if u64::from(raw.max_clients) > global.max_tasks
+        || aggregate_budget > global.max_buffered_bytes
+        || per_connection_budget > global.max_buffered_bytes
+    {
+        return Err(ConfigError::Semantic {
+            field: "i2cp.aggregate",
+            reason: "I2CP client and buffered-byte ceilings exceed router-wide budgets",
+        });
+    }
+
+    Ok(I2cpConfig {
+        enabled: raw.enabled,
+        bind_address,
+        port: raw.port,
+        max_clients: raw.max_clients,
+        max_sessions_per_connection: raw.max_sessions_per_connection,
+        max_sessions_router: raw.max_sessions_router,
+        max_buffered_bytes_per_connection: raw.max_buffered_bytes_per_connection,
+        max_pending_writes_per_connection: raw.max_pending_writes_per_connection,
+        protocol_byte_timeout,
+        command_timeout,
+        shutdown_timeout,
+    })
 }
 
 fn normalize_data_dir(value: &str) -> Result<PathBuf, ConfigError> {
