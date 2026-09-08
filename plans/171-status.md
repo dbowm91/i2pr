@@ -197,10 +197,20 @@ converted into a connection-closing error.
 Routine CI on the closing SHA:
 
 ```text
-CLOSING_SHA = <filled after push>
-HOSTED_RUN_ID = <filled after green run>
-Quality (ubuntu-latest) = <pending>
-Quality (macos-latest)  = <pending; must execute wrong_protocol_byte_is_closed>
-MSRV (Ubuntu)           = <pending>
-Dependency policy       = <pending>
+CLOSING_SHA = c3bf8419c8578c7aa157aa522421a9c5882af419
+HOSTED_RUN_ID = 34272024453
+Quality (ubuntu-latest) = success
+Quality (macos-latest)  = success
+MSRV (Ubuntu)           = success
+Dependency policy       = success
 ```
+
+The macOS job log executes the strict row on hosted hardware:
+
+```text
+test wrong_protocol_byte_is_closed ... ok
+test wrong_protocol_byte_is_closed_real_time ... ok
+```
+
+Plan 171 is closed on this run. Planning authority returns to
+Plan 170.
