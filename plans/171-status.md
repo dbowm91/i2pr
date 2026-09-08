@@ -194,23 +194,90 @@ converted into a connection-closing error.
 
 ## Hosted acceptance
 
-Routine CI on the closing SHA:
+Routine CI on the first closing SHA `c3bf841` (run `34272024453`):
 
 ```text
-CLOSING_SHA = c3bf8419c8578c7aa157aa522421a9c5882af419
-HOSTED_RUN_ID = 34272024453
 Quality (ubuntu-latest) = success
 Quality (macos-latest)  = success
 MSRV (Ubuntu)           = success
 Dependency policy       = success
 ```
 
-The macOS job log executes the strict row on hosted hardware:
+The macOS job log on that run executes the strict row on hosted
+hardware:
 
 ```text
 test wrong_protocol_byte_is_closed ... ok
 test wrong_protocol_byte_is_closed_real_time ... ok
 ```
 
-Plan 171 is closed on this run. Planning authority returns to
-Plan 170.
+## Follow-up macOS intermittent on the status-record head
+
+The docs-only status-record commit `e69f659` (code-identical to
+`c3bf841`) went red on macOS in run `34273372087`:
+
+```text
+test wrong_protocol_byte_is_closed ... FAILED
+test wrong_protocol_byte_is_closed_real_time ... ok
+thread 'wrong_protocol_byte_is_closed' panicked at
+  crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs:303:23:
+  expected close, got timeout
+test result: FAILED. 19 passed; 1 failed
+```
+
+Same code, same OS, seconds apart: the non-paused twin observes
+EOF while the `start_paused` twin reports `Elapsed`. That
+signature localizes the flake to the paused-harness wait
+mechanism, not the product close contract: under
+`start_paused` the virtual clock auto-advances while the thread
+parks, so the finite `tokio::time::timeout(2 s)` deadline races
+the server task's first poll for real socket I/O, and the timer
+can win before the server task runs. The product path
+(explicit `shutdown()` + 24-iteration baselines + real-time
+EOF) is exonerated by the twin passing on the same runner.
+
+This is the Plan 171 §6 anticipated case ("if paused-time
+semantics materially contribute, separate product-close
+evidence from timer behavior"), not a §13 stop: no shared
+`ChildScope`/runtime defect is indicated, valid clients and SAM
+are unaffected, and the close assertion itself is unchanged.
+
+## Test-mechanism hardening (no product change)
+
+`wrong_protocol_byte_is_closed` keeps `start_paused = true`,
+24 iterations, zeroed baselines, the subsequent valid client,
+and still treats a still-open socket as failure — but the wait
+no longer uses a virtual-time timeout. Each iteration pumps the
+scheduler with a bounded 256-yield budget and drains the close
+with `try_read`; exhausting the bound panics exactly like a
+timeout. No `Elapsed`-as-success, no timeout increase, no OS
+branch, no ignore, no serialization, no wire change.
+
+Re-validation after the hardening:
+
+```text
+cargo test --locked -p i2pr-daemon --test i2cp_adversarial_matrix -- --test-threads=1
+# 20 passed (10/10 repeated matrix runs)
+
+wrong_protocol_byte_is_closed -- --exact (32x loop)
+# 32/32 passed
+
+cargo test --locked --workspace --all-targets -- --test-threads=1
+# 1729 passed, 1 ignored (routine SSU2 external lane)
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+# clean
+```
+
+## Closing hosted acceptance (current head)
+
+Plan 171 closes on the hardening head below. Planning authority
+returns to Plan 170 after this run is green.
+
+```text
+CLOSING_SHA = <filled after push>
+HOSTED_RUN_ID = <filled after green run>
+Quality (ubuntu-latest) = <pending>
+Quality (macos-latest)  = <pending; must execute wrong_protocol_byte_is_closed>
+MSRV (Ubuntu)           = <pending>
+Dependency policy       = <pending>
+```

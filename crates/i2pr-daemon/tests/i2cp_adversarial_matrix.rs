@@ -280,9 +280,18 @@ fn build_payload(source_port: u16, destination_port: u16, protocol: u8, body: &[
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn wrong_protocol_byte_is_closed() {
     // Plan 171: an invalid I2CP preamble must result in an observable
-    // peer close/reset within a bounded interval. Silence with a
-    // still-open socket until timeout is failure — timeout is never
-    // accepted as success for this row.
+    // peer close/reset. Silence with a still-open socket is failure.
+    //
+    // The wait below deliberately avoids `tokio::time::timeout`:
+    // under `start_paused` the virtual clock auto-advances while the
+    // thread parks, so a finite virtual deadline races the server
+    // task's first poll for real socket I/O. That race surfaced as
+    // an intermittent macOS `Elapsed` on code-identical heads while
+    // the non-paused twin on the same runner observed EOF. Each
+    // iteration therefore pumps the scheduler with a bounded number
+    // of yields and drains the close with `try_read`; exhausting
+    // the bound panics exactly like a timeout, so a still-open
+    // socket remains failure — never success.
     let (state, address, scope, parent) = start_listener(i2cp_config()).await;
     // Repeated invalid-preamble trajectory: 24 iterations prove
     // rejected connects do not monotonically retain
@@ -292,16 +301,28 @@ async fn wrong_protocol_byte_is_closed() {
         client.write_all(&[0x00]).await.expect("write bad byte");
         client.flush().await.expect("flush");
         let mut buf = [0u8; 8];
-        let outcome = tokio::time::timeout(Duration::from_secs(2), client.read(&mut buf)).await;
-        match outcome {
-            // EOF: the server terminated the stream without sending
-            // any application/I2CP reply frame.
-            Ok(Ok(0)) => {}
-            // Reset / broken pipe class: equally observable termination.
-            Ok(Err(_)) => {}
-            Ok(Ok(n)) => panic!("expected close, got {n} bytes"),
-            Err(_) => panic!("expected close, got timeout"),
+        let mut closed = false;
+        for _ in 0..256 {
+            match client.try_read(&mut buf) {
+                // EOF: the server terminated the stream without
+                // sending any application/I2CP reply frame.
+                Ok(0) => {
+                    closed = true;
+                    break;
+                }
+                // Reset / broken-pipe class: equally observable
+                // termination.
+                Err(error) if error.kind() != std::io::ErrorKind::WouldBlock => {
+                    closed = true;
+                    break;
+                }
+                Ok(n) => panic!("expected close, got {n} bytes"),
+                // Not yet readable: let the server task run. The
+                // bound above keeps the wait finite.
+                Err(_) => tokio::task::yield_now().await,
+            }
         }
+        assert!(closed, "expected close, got timeout");
         drop(client);
         for _ in 0..32 {
             tokio::task::yield_now().await;

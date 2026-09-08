@@ -94,7 +94,10 @@ path (`handle_connection` calls `stream.shutdown()` before
 blocks cleanup; no frame is written for an invalid first byte).
 `wrong_protocol_byte_is_closed` stays strict — timeout is failure —
 and proves a 24-iteration rejection trajectory with zeroed
-baselines plus a subsequent valid client; the non-paused
+baselines plus a subsequent valid client; the paused test waits
+via a bounded yield-pump/`try_read` drain (no virtual-time
+timeout, which raced server polling intermittently on macOS)
+and the non-paused
 `wrong_protocol_byte_is_closed_real_time` companion separates
 product-close evidence from paused-clock timer behavior. Never
 revert to drop-timing dependence to make a test convenient.
