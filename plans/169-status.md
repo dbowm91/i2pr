@@ -188,13 +188,12 @@ green. The SAM router-owned product regressions
 Populated only from executed evidence:
 
 ```text
-implementation_sha = c849a52 (Plan 169 implementation)
-docs_sha           = (pending Plan 169 docs register commit)
-routine_ci_run      = pending hosted CI run on the docs register commit
-routine_ci_ubuntu   = pending
-routine_ci_macos    = pending
-msrv               = passed (local)
-dependency_policy  = passed (local)
+closing_sha       = dc13223 (Plan 169 single committed tree)
+routine_ci_run    = pending hosted CI run on dc13223
+routine_ci_ubuntu = pending
+routine_ci_macos  = pending
+msrv              = passed (local)
+dependency_policy = passed (local)
 ```
 
 Local floor on the closing implementation tree (all executed
