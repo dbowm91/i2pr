@@ -169,11 +169,12 @@ same types directly.
 Populated only from executed evidence:
 
 ```text
-closing_sha = local (to be updated by post-CI commit)
-docs_sha   = local (single committed tree)
-routine_ci_run = pending (hosted run to be recorded by closing commit)
-routine_ci_ubuntu = pending
-routine_ci_macos  = pending
+closing_sha = 379f1e3 (Plan 168 docs register)
+implementation_sha = d328792 (Plan 168 implementation)
+docs_sha   = 379f1e3 (single committed tree)
+routine_ci_run = 34192916683 (Quality ubuntu-latest, all jobs passed)
+routine_ci_ubuntu = passed
+routine_ci_macos  = passed
 msrv              = passed
 dependency_policy = passed
 ```
