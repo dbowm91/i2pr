@@ -372,6 +372,20 @@ green; Plan 169 never weakens the Plan 165 disposition table
 or the Plan 168 bounded outcome vocabulary to satisfy a
 reconfigure case.
 
+## Plan 171 — I2CP invalid-preamble close corrective
+
+Plan 171 retains the Plan 169 surface and hardens the daemon's
+common per-connection terminal path: `handle_connection` calls
+`stream.shutdown()` before `teardown_connection` +
+`drop_connection`, so every terminal pre-session rejection
+terminates TCP deterministically instead of relying on
+`TcpStream` drop timing. No api codec, state machine, or wire
+byte changes; nonterminal `SessionStatus`/`MessageStatus`
+behavior is unchanged. Evidence is the strict 24-iteration
+`wrong_protocol_byte_is_closed` row plus its non-paused
+`wrong_protocol_byte_is_closed_real_time` companion in
+`crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs`.
+
 ## Plan 168 — I2CP message data plane surface
 
 Plan 168 closes the M9 I2CP message/data-plane scope. The new

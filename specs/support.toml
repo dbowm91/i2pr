@@ -263,6 +263,9 @@ plan_168_status = "passed-m9-i2cp-message-data-plane"
 plan_169_plan_of_record = "plans/169-m9-i2cp-self-composed-local-product-and-hardening.md"
 plan_169_closure = "plans/169-status.md"
 plan_169_status = "passed-m9-i2cp-self-composed-local-product-and-hardening"
+plan_171_plan_of_record = "plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md"
+plan_171_closure = "plans/171-status.md"
+plan_171_status = "passed-m9-i2cp-invalid-preamble-close-and-ci-corrective"
 milestone9_planning_authority = "plan163"
 milestone9_protocol = "i2cp"
 milestone9_i2cp_wire_foundation = "passed-via-plan164"
@@ -271,6 +274,7 @@ milestone9_i2cp_client_owned_destination = "passed-via-plan166"
 milestone9_i2cp_loopback_server_runtime = "passed-via-plan167"
 milestone9_i2cp_message_data_plane = "passed-via-plan168"
 milestone9_i2cp_self_composed_local_product = "passed-via-plan169"
+milestone9_i2cp_invalid_preamble_close = "passed-via-plan171"
 milestone9_final_acceptance = "not-yet-closed"
 next_executable_plan = "170"
 next_product_layer = "milestone9-i2cp"
@@ -1264,7 +1268,7 @@ protocol = "i2cp"
 structure = "reconfigure-transaction-and-destroy-semantics-and-self-composed-trajectory"
 scope = "required"
 status = "experimental"
-notes = "Plan 169 closed the M9 I2CP self-composed local product and hardening in `i2pr-daemon::i2cp`. The `handle_reconfigure_session` + `apply_reconfigure` + `ReconfigurationOutcome` reconfigure transaction parses/verifies the full new SessionConfig, classifies each diff entry using the Plan 165 `classify_reconfigure_diff` + `reconfiguration_class` table, and commits the new baseline atomically through `I2cpSessionState::last_options`; immutable and unsupported keys reject the whole transaction without state mutation. `handle_destroy_session` drains the per-session Plan 168 data-plane bookkeeping synchronously so repeated DestroySession/CreateSession cycles retain zero inbound queue, status correlation, or outbound slot. Three narrowly named acceptance suites drive behavior only through TCP/I2CP inputs: `crates/i2pr-daemon/tests/i2cp_final_acceptance.rs` (5 tests covering the Plan 169 §4 canonical self-composed trajectory, the §7 bounded repeated-lifecycle soak, and the §3 destroy-one-session/keep-sibling usable proof), `crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs` (19 tests covering the §5 adversarial protocol matrix: wrong/missing protocol byte, oversized frame length before body allocation, truncated/stalled frame, high-rate unknown frames, message family in invalid state, duplicate CreateSession/destination, malformed/noncanonical mapping, bad SessionConfig signature, stale/future date just outside boundary, unsupported signing/encryption/LeaseSet types, invalid option min/max/max+1 and numeric overflow, send before session usable, payload max/max+1 and decompression expansion ceiling, invalid/expired SendMessageExpires, status-nonce flood, concurrent lookup ceiling, slow reader and slow writer, abrupt reset at each lifecycle phase, daemon cancellation with active sessions), and `crates/i2pr-daemon/tests/i2cp_resource_matrix.rs` (6 tests covering the §6 capacity/max+1 evidence for TCP connections, sessions/destinations, pending I2CP outbound frames/bytes, pending application messages/bytes, pending status correlations, pending lookups, pending lease/reconfigure transactions, and the §7 bounded repeat). I2CP remains loopback-only, disabled by default, and non-advertised. No HostLookup/HostReply resolution and no independent Java/Go client evidence yet; those belong to Plan 170."
+notes = "Plan 169 closed the M9 I2CP self-composed local product and hardening in `i2pr-daemon::i2cp`. The `handle_reconfigure_session` + `apply_reconfigure` + `ReconfigurationOutcome` reconfigure transaction parses/verifies the full new SessionConfig, classifies each diff entry using the Plan 165 `classify_reconfigure_diff` + `reconfiguration_class` table, and commits the new baseline atomically through `I2cpSessionState::last_options`; immutable and unsupported keys reject the whole transaction without state mutation. `handle_destroy_session` drains the per-session Plan 168 data-plane bookkeeping synchronously so repeated DestroySession/CreateSession cycles retain zero inbound queue, status correlation, or outbound slot. Three narrowly named acceptance suites drive behavior only through TCP/I2CP inputs: `crates/i2pr-daemon/tests/i2cp_final_acceptance.rs` (5 tests covering the Plan 169 §4 canonical self-composed trajectory, the §7 bounded repeated-lifecycle soak, and the §3 destroy-one-session/keep-sibling usable proof), `crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs` (20 tests covering the §5 adversarial protocol matrix: wrong/missing protocol byte, oversized frame length before body allocation, truncated/stalled frame, high-rate unknown frames, message family in invalid state, duplicate CreateSession/destination, malformed/noncanonical mapping, bad SessionConfig signature, stale/future date just outside boundary, unsupported signing/encryption/LeaseSet types, invalid option min/max/max+1 and numeric overflow, send before session usable, payload max/max+1 and decompression expansion ceiling, invalid/expired SendMessageExpires, status-nonce flood, concurrent lookup ceiling, slow reader and slow writer, abrupt reset at each lifecycle phase, daemon cancellation with active sessions), and `crates/i2pr-daemon/tests/i2cp_resource_matrix.rs` (6 tests covering the §6 capacity/max+1 evidence for TCP connections, sessions/destinations, pending I2CP outbound frames/bytes, pending application messages/bytes, pending status correlations, pending lookups, pending lease/reconfigure transactions, and the §7 bounded repeat). I2CP remains loopback-only, disabled by default, and non-advertised. No HostLookup/HostReply resolution and no independent Java/Go client evidence yet; those belong to Plan 170."
 evidence = [
     "crates/i2pr-api/src/i2cp/data_plane.rs",
     "crates/i2pr-api/src/i2cp/actions.rs",
@@ -1277,5 +1281,20 @@ evidence = [
     "crates/i2pr-daemon/tests/i2cp_resource_matrix.rs",
     "plans/169-m9-i2cp-self-composed-local-product-and-hardening.md",
     "plans/169-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "i2cp.invalid-preamble-close"
+protocol = "i2cp"
+structure = "terminal-pre-session-close-contract"
+scope = "required"
+status = "experimental"
+notes = "Plan 171 closed the M9 I2CP invalid-preamble exact-head CI corrective. Every terminal pre-session protocol rejection now terminates the TCP stream explicitly on the common per-connection path (`handle_connection` calls `stream.shutdown()` before `teardown_connection` + `drop_connection`; shutdown failure never blocks cleanup; no protocol frame is written for an invalid first byte) instead of relying on `TcpStream` drop timing, which macOS hosted CI observed as a still-open socket until timeout for the wrong-preamble row. `wrong_protocol_byte_is_closed` stays strict (timeout is failure), now proves a 24-iteration rejection trajectory with connection/session/destination baselines at zero plus a subsequent valid GetDate/SetDate client, and a companion non-paused `wrong_protocol_byte_is_closed_real_time` test separates product-close evidence from paused-clock timer behavior. Nonterminal SessionStatus/MessageStatus behavior is unchanged. No independent-client or public-network claim."
+evidence = [
+    "crates/i2pr-daemon/src/i2cp.rs",
+    "crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs",
+    "plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md",
+    "plans/171-status.md",
 ]
 advertised = false

@@ -80,9 +80,8 @@ work is scoped to:
   ceiling and the documented neutral router values. The Plan 168
   data plane is the documented caller of the existing
   `i2pr_client::DestinationRuntime::enqueue_outbound` seam; it
-  never duplicates destination routing state. Reconfiguration,
-  the self-composed local product hardening, and independent
-  Java/Go client evidence remain deferred to Plans 169–170. See
+   never duplicates destination routing state. Independent
+   Java/Go client evidence remains deferred to Plan 170. See
   [`plans/168-m9-i2cp-message-data-plane.md`](../../plans/168-m9-i2cp-message-data-plane.md)
   and the canonical real-TCP evidence in
   [`crates/i2pr-daemon/tests/i2cp_message_data_plane.rs`](../../crates/i2pr-daemon/tests/i2cp_message_data_plane.rs).
@@ -105,8 +104,20 @@ work is scoped to:
   suites —
   [`crates/i2pr-daemon/tests/i2cp_final_acceptance.rs`](../../crates/i2pr-daemon/tests/i2cp_final_acceptance.rs),
   [`crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs`](../../crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs),
-  and
-  [`crates/i2pr-daemon/tests/i2cp_resource_matrix.rs`](../../crates/i2pr-daemon/tests/i2cp_resource_matrix.rs).
+   and
+   [`crates/i2pr-daemon/tests/i2cp_resource_matrix.rs`](../../crates/i2pr-daemon/tests/i2cp_resource_matrix.rs).
+- **I2CP invalid-preamble close corrective** (Plan 171): retains
+  the Plan 169 surface and hardens the common per-connection
+  terminal path — `handle_connection` calls
+  `stream.shutdown()` before `teardown_connection` +
+  `drop_connection` so every terminal pre-session rejection
+  terminates TCP deterministically instead of relying on
+  `TcpStream` drop timing (shutdown failure never blocks
+  cleanup; no frame is written for an invalid first byte). The
+  strict `wrong_protocol_byte_is_closed` row plus its non-paused
+  `wrong_protocol_byte_is_closed_real_time` companion prove the
+  close with resource baselines. See
+  [`plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md`](../../plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md).
 
 What it **does not** do yet:
 
@@ -143,7 +154,7 @@ which undercounted `netdb_seam`, `outbound_lookup`, and
 | `src/outbound_lookup.rs` | Plan 117 §8/§10 outbound exploratory data-plane composition | `compose_outbound_lookup`, `compose_outbound_publication`, `OutboundLookupDispatch`, `MAX_OUTBOUND_LOOKUP_CELLS`, `MAX_OUTBOUND_PUBLICATION_CELLS` |
 | `src/inbound_dispatch.rs` | Plan 117 §9 inbound exploratory `TunnelData` dispatch | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE` |
 | `src/sam.rs` | Plans 137–149 supervised SAM 3.1 listener and composition root | `SamServiceState`, `execute_session_create` (self-composes bridge + driver), `execute_stream_connect`, `execute_stream_accept`, byte-exact `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw transition, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP` |
-| `src/i2cp.rs` | Plan 167 supervised loopback I2CP v0.9.67 listener and composition root extended by Plan 168 with the bounded per-session message/data-plane surface and by Plan 169 with the reconfigure transaction handler, the atomic reconfigure baseline in `I2cpSessionState::last_options`, and the synchronous `handle_destroy_session` data-plane drain | `I2cpServiceState`, `I2cpSessionState`, `bind`, `serve`, `handle_connection`, `install_client_lease_set2`, `reserve_client_destination`, `handle_send_message`, `handle_send_message_expires`, `handle_dest_lookup`, `derive_bandwidth_reply`, `handle_reconfigure_session`, `handle_destroy_session`, `apply_reconfigure`, `ReconfigurationOutcome`, `teardown_connection`, `I2cpServiceSnapshot` |
+| `src/i2cp.rs` | Plan 167 supervised loopback I2CP v0.9.67 listener and composition root extended by Plan 168 with the bounded per-session message/data-plane surface, by Plan 169 with the reconfigure transaction handler, the atomic reconfigure baseline in `I2cpSessionState::last_options`, and the synchronous `handle_destroy_session` data-plane drain, and by Plan 171 with the explicit `stream.shutdown()` on the common per-connection terminal path | `I2cpServiceState`, `I2cpSessionState`, `bind`, `serve`, `handle_connection`, `install_client_lease_set2`, `reserve_client_destination`, `handle_send_message`, `handle_send_message_expires`, `handle_dest_lookup`, `derive_bandwidth_reply`, `handle_reconfigure_session`, `handle_destroy_session`, `apply_reconfigure`, `ReconfigurationOutcome`, `teardown_connection`, `I2cpServiceSnapshot` |
 | `src/sam/fabric.rs` | Plan 149 localhost product fabric (OS-CSPRNG tunnel material, signed LeaseSet2, per-destination runtime-driver factory, typed `DeliverySweepCounters`) | `SamLocalProductFabric`, `LocalDestinationProduct`, `LocalhostInboundTunnelFactory`, `DeliverySweepCounters`, `LocalDeliveryDegradation` |
 | `src/sam/streams.rs` | Plan 138 + Plan 143 + Plan 144 SAM Streaming bridge (captured-outbound seam removed, Plan 129 destination stack drives live bridge through `i2pr_client::deliver`, canonical-streaming routing for SYN responses) | `SamDestinationBridge`, `SamDestinations`, `bridge_to_peer`, `BridgeDiagnostics`, `SamDestinationHandle::lookup_by_peer_hash`, `receiver_streaming`, `peer_destination_hash`, strict destination decoding |
 

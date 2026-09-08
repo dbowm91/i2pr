@@ -46,6 +46,7 @@ Plan 166 = passed M9 I2CP client-owned destination + LeaseSet2 bridge
 Plan 167 = passed M9 I2CP loopback server runtime
 Plan 168 = passed M9 I2CP message data plane
 Plan 169 = passed M9 I2CP self-composed local product and hardening
+Plan 171 = passed M9 I2CP invalid-preamble close and CI corrective
 next executable plan = 170
 next product layer = milestone9-i2cp
 ```
@@ -69,8 +70,10 @@ Read in this order for SAM work:
 
 Read in this order for Milestone 9 I2CP work:
 
-1. [`plans/169-status.md`](plans/169-status.md)
-2. [`plans/169-m9-i2cp-self-composed-local-product-and-hardening.md`](plans/169-m9-i2cp-self-composed-local-product-and-hardening.md)
+1. [`plans/171-status.md`](plans/171-status.md)
+2. [`plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md`](plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md)
+3. [`plans/169-status.md`](plans/169-status.md)
+4. [`plans/169-m9-i2cp-self-composed-local-product-and-hardening.md`](plans/169-m9-i2cp-self-composed-local-product-and-hardening.md)
 3. [`plans/168-status.md`](plans/168-status.md)
 4. [`plans/168-m9-i2cp-message-data-plane.md`](plans/168-m9-i2cp-message-data-plane.md)
 5. [`plans/167-status.md`](plans/167-status.md)
@@ -83,6 +86,18 @@ Read in this order for Milestone 9 I2CP work:
 12. [`plans/164-m9-i2cp-protocol-and-wire-foundation.md`](plans/164-m9-i2cp-protocol-and-wire-foundation.md)
 13. [`plans/163-m9-i2cp-roadmap.md`](plans/163-m9-i2cp-roadmap.md) — planning authority
 14. Plan 170 next; do not skip ahead.
+
+Plan 171 corrective (retained): every terminal pre-session I2CP
+rejection terminates TCP explicitly on the common per-connection
+path (`handle_connection` calls `stream.shutdown()` before
+`teardown_connection` + `drop_connection`; shutdown failure never
+blocks cleanup; no frame is written for an invalid first byte).
+`wrong_protocol_byte_is_closed` stays strict — timeout is failure —
+and proves a 24-iteration rejection trajectory with zeroed
+baselines plus a subsequent valid client; the non-paused
+`wrong_protocol_byte_is_closed_real_time` companion separates
+product-close evidence from paused-clock timer behavior. Never
+revert to drop-timing dependence to make a test convenient.
 
 Do **not** trust prose that disagrees with executable tests/scripts. The newest
 explicit superseding status wins when historical records conflict.
@@ -453,7 +468,8 @@ closed.
 - Plan 166 passed the M9 I2CP client-owned destination + LeaseSet2 bridge: `DestinationOwnership::RouterOwned` / `ClientOwned`, `DestinationPublic`, `InboundDecryptionCapability`, atomic `install_client_lease_set2` (signature + lease ownership + expiry + decryption-key match), typed `LeaseRequest` for refresh from real inbound tunnels, and the `I2cpAction::RequestVariableLeaseSet` action. SAM router-owned product regressions remain green; no listener, socket ownership, or interoperability claim.
 - Plan 167 passed the M9 I2CP loopback server runtime in `crates/i2pr-daemon/src/i2cp.rs`: disabled-by-default `[i2cp]` block, supervised Tokio listener, per-connection `ChildScope`, typed `I2cpAction` dispatch, single `teardown_connection` cleanup path on EOF/reset/timeout/cancel, and twelve real-TCP black-box tests in `crates/i2pr-daemon/tests/i2cp_loopback.rs`. No application-message direction, no lookup, no reconfiguration, no independent-client interop claim.
 - Plan 168 passed the M9 I2CP message data plane: bounded per-session `SendMessage`/`SendMessageExpires` validation against the existing `i2pr_client::DestinationRuntime::enqueue_outbound` seam, bounded `MessageStatus` correlation table, `MessagePayload` inbound frames delivered only to the owning session's bounded queue (sibling-isolation guaranteed), cross-session local loopback shortcut, `DestLookup` resolving through the local destination registry, and `GetBandwidthLimits` returning the config-derived client ceiling and the documented neutral router values. Eighteen real-TCP black-box tests in `crates/i2pr-daemon/tests/i2cp_message_data_plane.rs` exercise every Plan 168 §11 case. SAM router-owned product regressions remain green. No reconfiguration, no `HostLookup`/`HostReply` resolution, and no independent-client interop claim.
-- Plan 169 passed the M9 I2CP self-composed local product and hardening: the `ReconfigureSession` transaction handler (`handle_reconfigure_session` + `apply_reconfigure` + `ReconfigurationOutcome`) parses/verifies the full new SessionConfig, classifies each diff entry using the Plan 165 `reconfiguration_class` table, and commits the new baseline atomically through `I2cpSessionState::last_options`; immutable and unsupported keys reject the whole transaction without state mutation. `handle_destroy_session` now drains the per-session Plan 168 data-plane bookkeeping synchronously so repeated DestroySession/CreateSession cycles retain zero inbound queue, status correlation, or outbound slot. The Plan 169 acceptance suites are `crates/i2pr-daemon/tests/i2cp_final_acceptance.rs` (5 tests), `crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs` (19 tests), and `crates/i2pr-daemon/tests/i2cp_resource_matrix.rs` (6 tests); every test binds the listener to `127.0.0.1:0` and drives behavior only through TCP/I2CP inputs. SAM router-owned product regressions, the Plan 167 listener regression in `i2cp_loopback.rs`, and the Plan 168 data-plane suite in `i2cp_message_data_plane.rs` remain green. No `HostLookup`/`HostReply` resolution and no independent Java/Go client evidence yet; those belong to Plan 170.
+- Plan 169 passed the M9 I2CP self-composed local product and hardening: the `ReconfigureSession` transaction handler (`handle_reconfigure_session` + `apply_reconfigure` + `ReconfigurationOutcome`) parses/verifies the full new SessionConfig, classifies each diff entry using the Plan 165 `reconfiguration_class` table, and commits the new baseline atomically through `I2cpSessionState::last_options`; immutable and unsupported keys reject the whole transaction without state mutation. `handle_destroy_session` now drains the per-session Plan 168 data-plane bookkeeping synchronously so repeated DestroySession/CreateSession cycles retain zero inbound queue, status correlation, or outbound slot. The Plan 169 acceptance suites are `crates/i2pr-daemon/tests/i2cp_final_acceptance.rs` (5 tests), `crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs` (19 tests at Plan 169 close; 20 after the Plan 171 companion), and `crates/i2pr-daemon/tests/i2cp_resource_matrix.rs` (6 tests); every test binds the listener to `127.0.0.1:0` and drives behavior only through TCP/I2CP inputs. SAM router-owned product regressions, the Plan 167 listener regression in `i2cp_loopback.rs`, and the Plan 168 data-plane suite in `i2cp_message_data_plane.rs` remain green. No `HostLookup`/`HostReply` resolution and no independent Java/Go client evidence yet; those belong to Plan 170.
+- Plan 171 passed the M9 I2CP invalid-preamble close and CI corrective: the common per-connection terminal path in `crates/i2pr-daemon/src/i2cp.rs` explicitly shuts the TCP stream down before bookkeeping release (no wire change, no independent-client claim). The adversarial matrix is now 20 tests (the strict 24-iteration `wrong_protocol_byte_is_closed` plus its non-paused `wrong_protocol_byte_is_closed_real_time` companion).
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
 - No Plan 161 direction-A evidence implies Milestone 6 destination/Streaming/tunnel interoperability or broad router interoperability.
@@ -471,8 +487,8 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 169 has passed the M9 I2CP
-self-composed local product and hardening. Execute Plan
+Current handoff: **Plan 171 has passed the M9 I2CP
+invalid-preamble close and CI corrective. Execute Plan
 170 next (independent Java/Go client evidence and final
 closure), then no further M9 plans. Do not extend Plan
 169's reconfigure/destroy/hardening surface into

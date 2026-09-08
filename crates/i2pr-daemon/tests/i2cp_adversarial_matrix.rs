@@ -279,14 +279,79 @@ fn build_payload(source_port: u16, destination_port: u16, protocol: u8, body: &[
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn wrong_protocol_byte_is_closed() {
-    // Wrong protocol byte before the I2CP header: the listener
-    // closes the connection without sending a frame.
+    // Plan 171: an invalid I2CP preamble must result in an observable
+    // peer close/reset within a bounded interval. Silence with a
+    // still-open socket until timeout is failure — timeout is never
+    // accepted as success for this row.
+    let (state, address, scope, parent) = start_listener(i2cp_config()).await;
+    // Repeated invalid-preamble trajectory: 24 iterations prove
+    // rejected connects do not monotonically retain
+    // connection/admission state.
+    for _ in 0..24 {
+        let mut client = TcpStream::connect(address).await.expect("connect");
+        client.write_all(&[0x00]).await.expect("write bad byte");
+        client.flush().await.expect("flush");
+        let mut buf = [0u8; 8];
+        let outcome = tokio::time::timeout(Duration::from_secs(2), client.read(&mut buf)).await;
+        match outcome {
+            // EOF: the server terminated the stream without sending
+            // any application/I2CP reply frame.
+            Ok(Ok(0)) => {}
+            // Reset / broken pipe class: equally observable termination.
+            Ok(Err(_)) => {}
+            Ok(Ok(n)) => panic!("expected close, got {n} bytes"),
+            Err(_) => panic!("expected close, got timeout"),
+        }
+        drop(client);
+        for _ in 0..32 {
+            tokio::task::yield_now().await;
+        }
+    }
+    // Connection/session/destination resource baselines return to
+    // zero after rejection.
+    let snapshot = state.snapshot();
+    assert_eq!(
+        snapshot.connection_count, 0,
+        "connection baseline must return to zero after invalid-preamble rejection"
+    );
+    assert_eq!(
+        snapshot.session_count, 0,
+        "session baseline must remain zero after invalid-preamble rejection"
+    );
+    assert_eq!(
+        snapshot.destination_count, 0,
+        "destination baseline must remain zero after invalid-preamble rejection"
+    );
+    // The listener remains usable: a subsequent valid client
+    // completes GetDate/SetDate after the rejected peers are closed.
+    let mut valid = TcpStream::connect(address).await.expect("connect valid");
+    hello_i2cp(&mut valid).await;
+    drop(valid);
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    let snapshot = state.snapshot();
+    assert_eq!(snapshot.connection_count, 0);
+    assert_eq!(snapshot.session_count, 0);
+    assert_eq!(snapshot.destination_count, 0);
+    parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
+    let _ = scope.shutdown().await;
+    drop(state);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn wrong_protocol_byte_is_closed_real_time() {
+    // Plan 171: non-paused product-close evidence for the invalid
+    // preamble row, separated from `start_paused` timer behavior.
+    // The same strict contract holds under a real wall-clock
+    // deadline: wrong first byte, no reply frame, observable
+    // EOF/reset, baselines at zero, listener still usable.
     let (state, address, scope, parent) = start_listener(i2cp_config()).await;
     let mut client = TcpStream::connect(address).await.expect("connect");
     client.write_all(&[0x00]).await.expect("write bad byte");
     client.flush().await.expect("flush");
     let mut buf = [0u8; 8];
-    let outcome = tokio::time::timeout(Duration::from_secs(2), client.read(&mut buf)).await;
+    let outcome = tokio::time::timeout(Duration::from_secs(5), client.read(&mut buf)).await;
     match outcome {
         Ok(Ok(0)) => {}
         Ok(Err(_)) => {}
@@ -294,6 +359,22 @@ async fn wrong_protocol_byte_is_closed() {
         Err(_) => panic!("expected close, got timeout"),
     }
     drop(client);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let snapshot = state.snapshot();
+    assert_eq!(
+        snapshot.connection_count, 0,
+        "connection baseline must return to zero after invalid-preamble rejection"
+    );
+    assert_eq!(snapshot.session_count, 0);
+    assert_eq!(snapshot.destination_count, 0);
+    let mut valid = TcpStream::connect(address).await.expect("connect valid");
+    hello_i2cp(&mut valid).await;
+    drop(valid);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let snapshot = state.snapshot();
+    assert_eq!(snapshot.connection_count, 0);
+    assert_eq!(snapshot.session_count, 0);
+    assert_eq!(snapshot.destination_count, 0);
     parent.cancel(i2pr_core::CancellationReason::OperatorRequest);
     let _ = scope.shutdown().await;
     drop(state);

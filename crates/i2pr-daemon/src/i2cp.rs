@@ -885,6 +885,16 @@ async fn handle_connection(
     if let Err(error) = result {
         debug!(error = %error, "i2cp connection ended");
     }
+    // Plan 171: every terminal connection outcome must terminate the
+    // TCP stream deterministically before router-side bookkeeping is
+    // released. Relying on `TcpStream` drop at task exit left the
+    // peer-visible FIN/RST ordered after teardown scheduling, which
+    // macOS hosted CI observed as a still-open socket until timeout
+    // for the invalid-preamble row. `shutdown()` sends FIN while the
+    // per-connection owner still holds the socket; a shutdown error
+    // (already-closed/reset peer) must never block resource cleanup,
+    // and no protocol frame is written for an invalid first byte.
+    let _ = stream.shutdown().await;
     state.teardown_connection(connection_id);
     state.drop_connection(connection_id);
 }

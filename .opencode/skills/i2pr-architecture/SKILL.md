@@ -325,16 +325,26 @@ record is not `superseded-by-*`. Currently:
   the canonical Plan 169 §4 self-composed trajectory plus a
   bounded repeated-lifecycle soak and a destroy-one-session /
   keep-sibling usable proof),
-  `crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs` (19
-  tests, the Plan 169 §5 protocol/security matrix), and
+   `crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs` (19
+   tests at Plan 169 close, 20 after the Plan 171 companion; the
+   Plan 169 §5 protocol/security matrix), and
   `crates/i2pr-daemon/tests/i2cp_resource_matrix.rs` (6 tests,
   the Plan 169 §6 concurrency/resource matrix plus the §7
   bounded soak). SAM router-owned product regressions, the Plan
   167 listener regression in `i2cp_loopback.rs`, and the Plan
   168 data-plane suite in `i2cp_message_data_plane.rs` remain
-  green. No `HostLookup`/`HostReply` resolution and no
-  independent Java/Go client evidence yet; those belong to
-  Plan 170.
+   green. No `HostLookup`/`HostReply` resolution and no
+   independent Java/Go client evidence yet; those belong to
+   Plan 170.
+- **Milestone 9 I2CP invalid-preamble close corrective
+  (passed)**: Plan 171
+  (`passed-m9-i2cp-invalid-preamble-close-and-ci-corrective`,
+  see [`plans/171-status.md`](../../plans/171-status.md)):
+  the common per-connection terminal path in
+  `crates/i2pr-daemon/src/i2cp.rs` explicitly shuts the TCP
+  stream down before bookkeeping release (no wire change, no
+  independent-client claim). The trajectory is documented in
+  [`docs/architecture/i2pr-daemon.md`](../../docs/architecture/i2pr-daemon.md).
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).

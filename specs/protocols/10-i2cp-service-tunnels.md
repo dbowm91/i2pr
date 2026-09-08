@@ -542,7 +542,7 @@ real-TCP black-box suites:
 
 ```text
 crates/i2pr-daemon/tests/i2cp_final_acceptance.rs    (5 tests)
-crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs (19 tests)
+crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs (20 tests)
 crates/i2pr-daemon/tests/i2cp_resource_matrix.rs    (6 tests)
 ```
 
@@ -554,11 +554,27 @@ non-advertised. `HostLookup`/`HostReply` resolution and
 independent Java/Go client evidence are deferred to
 Plan 170.
 
+### M9 I2CP invalid-preamble close corrective (Plan 171)
+
+Plan 171 retains the Plan 169 surface and hardens the common
+per-connection terminal path: `handle_connection` calls
+`stream.shutdown()` before `teardown_connection` +
+`drop_connection`, so every terminal pre-session rejection
+terminates TCP deterministically instead of relying on
+`TcpStream` drop timing. No wire change, no new remote-I2CP
+behavior, no independent-client claim. The strict
+`wrong_protocol_byte_is_closed` row (timeout is failure) proves
+a 24-iteration rejection trajectory with zeroed baselines plus
+a subsequent valid client; the non-paused
+`wrong_protocol_byte_is_closed_real_time` companion separates
+product-close evidence from paused-clock timer behavior.
+
 No application-message transport, `SendMessage`/`SendMessageExpires`
 direction, `MessageStatus` correlation, or independent-client
 evidence is claimed in Plan 167; Plan 168 owns the message
 data plane, Plan 169 owns the local self-composed product and
-hardening, and Plan 170 owns independent Java/Go client
+hardening, Plan 171 owns the terminal close corrective, and
+Plan 170 owns independent Java/Go client
 evidence.
 
 ### Connection state machine
@@ -781,11 +797,12 @@ legacy-deprecated
   Plan 166 §11 case.
 - Later passes own behavior: Plan 167 (loopback listener), Plan 168
   (data plane), Plan 169 (reconfigure + destroy hardening + self-composed
-  local product; 30 black-box tests in
+  local product; 31 black-box tests in
   `crates/i2pr-daemon/tests/i2cp_final_acceptance.rs`,
   `crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs`, and
   `crates/i2pr-daemon/tests/i2cp_resource_matrix.rs` cover every
-  Plan 169 §4/§5/§6/§7 case), Plan 170 (independent clients + closure).
+  Plan 169 §4/§5/§6/§7 case), Plan 171 (terminal close corrective),
+  Plan 170 (independent clients + closure).
 
 ## Open decisions
 
