@@ -145,9 +145,13 @@ The test profile uses `I2cpConfig::loopback_test_profile` with
 Populated only from executed evidence:
 
 ```text
-closing_sha = 624e8cce (Plan 167 implementation)
-docs_sha   = 1f8d2a39 (Plan 167 docs register)
-routine_ci_run = pending (Plan 167 CI evidence recorded after merge)
+closing_sha = 346199c (Plan 167 implementation + docs)
+docs_sha   = 346199c (single committed tree)
+routine_ci_run = 34173980179 (Quality ubuntu-latest, all jobs passed)
+routine_ci_ubuntu = passed
+routine_ci_macos  = passed
+msrv              = passed
+dependency_policy = passed
 ```
 
 Local floor on the closing tree (all executed 2026-09-08):
