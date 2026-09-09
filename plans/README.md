@@ -127,9 +127,12 @@ milestone9_i2cp_independent_leaseset2 = passed-via-plan172
 milestone9_final_acceptance = closed-via-plan172
 milestone10_planning_authority = plan173
 milestone10_foundation = passed-via-plan174
+milestone10_generic_tunnels = passed-via-plan175
+milestone10_http_proxy = passed-via-plan176
+milestone10_socks5 = passed-via-plan177
 milestone10_final_acceptance = not-yet-closed
 next_product_layer = milestone10-service-tunnels
-next_executable_plan = 175
+next_executable_plan = 178
 m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172
 m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 181
 ```
@@ -292,8 +295,10 @@ Plan 173 = registered M10 service-tunnels roadmap
 Plan 174 = passed M10 service-tunnel foundation and shared stream runtime
 Plan 175 = passed M10 generic client/server service tunnels
 Plan 176 = passed M10 HTTP `.i2p` proxy and CONNECT
+Plan 177 = passed M10 SOCKS5 `.i2p` CONNECT proxy
 Milestone 10 foundation = passed-via-plan174
 Milestone 10 generic tunnels = passed-via-plan175
 Milestone 10 HTTP proxy = passed-via-plan176
-next_executable_plan = 177
+Milestone 10 SOCKS5 = passed-via-plan177
+next_executable_plan = 178
 ```

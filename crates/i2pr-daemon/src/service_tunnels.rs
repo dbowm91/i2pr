@@ -69,6 +69,7 @@ use crate::sam::streams::{
     InboundTunnelFactory, SamDestinationBridge, SamDestinationHandle, SamDestinations,
 };
 use crate::service_tunnels_http::run_http_client_loop;
+use crate::service_tunnels_socks5::run_socks5_client_loop;
 
 /// Process-local monotonic clock used for Streaming deadlines.
 pub fn service_streaming_now_ms() -> u64 {
@@ -150,6 +151,8 @@ pub struct ServiceRuntime {
     is_server: bool,
     /// Whether this is an HTTP client tunnel.
     is_http: bool,
+    /// Whether this is a SOCKS5 client tunnel.
+    is_socks5: bool,
 }
 
 impl std::fmt::Debug for ServiceRuntime {
@@ -562,6 +565,7 @@ impl ServiceTunnelManager {
         let active_connections = Arc::new(AtomicUsize::new(0));
         let failed_connects = Arc::new(AtomicUsize::new(0));
         let is_http = matches!(spec.kind, ServiceTunnelKind::HttpClient);
+        let is_socks5 = matches!(spec.kind, ServiceTunnelKind::Socks5Client);
         let runtime = Arc::new(ServiceRuntime {
             spec_id: spec.id.as_str().to_owned(),
             kind: spec.kind,
@@ -576,6 +580,7 @@ impl ServiceTunnelManager {
             server_streaming_port,
             is_server,
             is_http,
+            is_socks5,
         });
         let mut runtimes = self.runtimes.lock().expect("runtimes poisoned");
         runtimes.insert(spec.id.as_str().to_owned(), Arc::clone(&runtime));
@@ -831,6 +836,8 @@ async fn run_service_loop(
         run_server_loop(&manager, &runtime, &spec, &task_cancellation).await
     } else if runtime.is_http {
         run_http_client_loop(&manager, &runtime, &spec, &task_cancellation).await
+    } else if runtime.is_socks5 {
+        run_socks5_client_loop(&manager, &runtime, &spec, &task_cancellation).await
     } else {
         run_client_loop(&manager, &runtime, &spec, &task_cancellation).await
     };

@@ -499,6 +499,9 @@ pub struct ServiceTunnelSpec {
     /// HTTP-specific profile options. Mandatory for `HttpClient`
     /// kinds; ignored otherwise.
     pub http_options: Option<crate::http::HttpClientOptions>,
+    /// SOCKS5-specific profile options. Mandatory for
+    /// `Socks5Client` kinds; ignored otherwise.
+    pub socks5_options: Option<crate::socks5::Socks5ClientOptions>,
 }
 
 impl ServiceTunnelSpec {
@@ -598,6 +601,27 @@ impl ServiceTunnelSpec {
                 }
             }
         }
+        // Plan 177: socks5-client must carry SOCKS5 profile options;
+        // non-SOCKS5 kinds must not.
+        match self.kind {
+            ServiceTunnelKind::Socks5Client => {
+                let options = self.socks5_options.as_ref().ok_or_else(|| {
+                    ServiceTunnelError::ContradictoryOptions {
+                        id: id.clone(),
+                        reason: "socks5-client requires socks5_options",
+                    }
+                })?;
+                options.validate()?;
+            }
+            _ => {
+                if self.socks5_options.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "socks5_options must not be set for non-SOCKS5 kinds",
+                    });
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -690,6 +714,7 @@ mod tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
             http_options: None,
+            socks5_options: None,
         }
     }
 
@@ -788,6 +813,7 @@ mod tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
             http_options: None,
+            socks5_options: None,
         };
         assert!(server.validate().is_err());
     }
@@ -814,6 +840,18 @@ mod tests {
         spec.http_options = Some(crate::http::HttpClientOptions::default());
         spec.validate().expect("http options validate");
         // Non-HTTP kinds must not carry http_options.
+        spec.kind = ServiceTunnelKind::GenericClient;
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn socks5_client_requires_options() {
+        let mut spec = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
+        spec.kind = ServiceTunnelKind::Socks5Client;
+        assert!(spec.validate().is_err());
+        spec.socks5_options = Some(crate::socks5::Socks5ClientOptions::default());
+        spec.validate().expect("socks5 options validate");
+        // Non-SOCKS5 kinds must not carry socks5_options.
         spec.kind = ServiceTunnelKind::GenericClient;
         assert!(spec.validate().is_err());
     }

@@ -1,11 +1,12 @@
 # Service tunnels (Milestone 10)
 
-Status: **HTTP `.i2p` proxy landed** (Plan 176 passed; SOCKS5/IRC still not implemented)  
+Status: **SOCKS5 `.i2p` CONNECT landed** (Plan 177 passed; IRC still not implemented)  
 Planning authority: **Plan 173** (`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`)  
 Foundation: **Plan 174** (`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`)  
 Generic client/server tunnels: **Plan 175** (`plans/175-m10-generic-client-server-service-tunnels.md`)  
 HTTP `.i2p` proxy + CONNECT: **Plan 176** (`plans/176-m10-http-i2p-proxy-and-connect.md`)  
-Next executable plan: **177** (SOCKS5 no-auth CONNECT)
+SOCKS5 `.i2p` CONNECT: **Plan 177** (`plans/177-m10-socks5-i2p-connect-proxy.md`)  
+Next executable plan: **178** (IRC client)
 
 > Plan 174 is a refactor/foundation pass. It must not change I2P wire
 > semantics or broaden listener exposure. No generic, HTTP, SOCKS5,
@@ -147,6 +148,70 @@ Plan 176 does not silently weaken that criterion: every behavior
 that is testable without the runtime driver loop is exercised,
 while the byte round-trip remains a Plan 180 deliverable.
 
+## Plan 177 SOCKS5 surface (added)
+
+The `socks5-client` service kind is enabled alongside
+`generic-client`, `generic-server`, and `http-client` in
+Plan 177. Its runtime-neutral surface lives under
+`crates/i2pr-service-tunnels/src/socks5/`:
+
+- `negotiation` — incremental RFC 1928 greeting parser
+  (`VER=0x05`, `NMETHODS=1..16`, requires `0x00 NO AUTHENTICATION
+  REQUIRED`); rejects `0x02` username/password even when offered;
+  replies `05 00` on success and `05 ff` on no acceptable method.
+- `request` — incremental CONNECT request parser
+  (`VER/CMD/RSV/ATYP`, `ATYP=0x03 DOMAINNAME` only); rejects
+  `IPv4`/`IPv6`, `BIND`, `UDP ASSOCIATE`, unknown commands,
+  zero-length domain, zero port, and NUL/control/whitespace
+  domain bytes; preserves same-read post-request bytes verbatim.
+- `reply` — deterministic 10-byte RFC 1928 reply generator with
+  a neutral loopback `127.0.0.1:0` bind; never echoes untrusted
+  request bytes or destination private material.
+- `errors` — typed `Socks5ErrorKind` mapped to the eight RFC 1928
+  reply codes (`0x00` success, `0x01` general failure, `0x02`
+  connection not allowed, `0x04` host unreachable, `0x05`
+  connection refused, `0x06` TTL expired, `0x07` command not
+  supported, `0x08` address type not supported).
+- `config` — `Socks5ClientOptions { port_policy: ConnectPortPolicy,
+  destination_ports, allowed_hosts }`. Default CONNECT allowed
+  ports: `{443}`; bounded to `SOCKS5_OPTIONS_MAX_PORTS` (16).
+- `limits` — `Socks5Limits` with hard typed ceilings for method
+  count (16), greeting bytes (32), request header bytes (32),
+  domain length (255), retained buffer (320), and reply bytes
+  (64). Every ceiling is also a hard maximum validated against
+  the typed maximum at startup.
+
+Daemon-side composition:
+
+- `crates/i2pr-daemon/src/service_tunnels_socks5.rs` owns the
+  per-connection SOCKS5 executor. Reads greeting + CONNECT under
+  bounded deadlines (30 s each), validates the CONNECT port
+  against the per-service `ConnectPortPolicy`, resolves the
+  destination through the manager (Base32/alias/local-delivery
+  path), opens I2P Streaming, sends the success reply only after
+  Streaming reaches `Established`, then runs the shared Plan 174
+  byte pump in opaque tunnel mode with same-read post-request
+  bytes preserved as first tunnel bytes. Termination emits
+  Streaming CLOSE on success and RESET on pump error.
+- `crates/i2pr-daemon/src/service_tunnels.rs` adds `is_socks5`
+  on `ServiceRuntime` and dispatches `socks5-client` services to
+  the new SOCKS5 supervisor loop.
+- `crates/i2pr-daemon/src/config.rs` (`[service_tunnels]`)
+  accepts `enabled = true` for `generic-client`,
+  `generic-server`, `http-client`, and `socks5-client`; IRC
+  remains rejected as not-yet-available.
+
+Explicit non-support (Plan 177 §11): clearnet outproxy, DNS
+resolution of SOCKS hostnames, IP-literal forwarding, SOCKS UDP,
+BIND, SOCKS4/4a, authentication, Tor RESOLVE/RESOLVE_PTR, and
+arbitrary local/LAN target relay. SOCKS5 is strictly stricter
+than Java I2P's broad SOCKS/outproxy profile.
+
+The full I2P Streaming byte round-trip over local TCP for the
+SOCKS5 profile is the same Plan 180 reconcile pass that
+generalizes the per-destination runtime driver to service
+tunnels; Plan 177 does not silently weaken that criterion.
+
 ## Explicit not-yet-implemented product rows
 
 | Product | Status | Owning plan |
@@ -155,7 +220,7 @@ while the byte round-trip remains a Plan 180 deliverable.
 | Generic TCP server destination + target | passed-experimental-loopback-only | 175 |
 | Persistent server destination storage | passed-experimental-secret-safe | 175 |
 | HTTP `.i2p` proxy + CONNECT | passed-experimental-loopback-only | 176 |
-| SOCKS5 no-auth `.i2p` CONNECT | not-yet-implemented | 177 |
+| SOCKS5 no-auth `.i2p` CONNECT | passed-experimental-loopback-only | 177 |
 | IRC client privacy filter | not-yet-implemented | 178 |
 | IRC server authenticated hostname | not-yet-implemented | 179 |
 | Full composition / reconcile / hardening | not-yet-implemented | 180 |

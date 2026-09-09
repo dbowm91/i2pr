@@ -124,12 +124,9 @@ fn enabled_non_generic_service_tunnel_is_rejected() {
     let directory = tempfile::tempdir().expect("temp directory");
     let b32 = canonical_b32();
     // Each non-generic kind uses a complete enough config that
-    // only the enabled-rejection check fires.
+    // only the enabled-rejection check fires. Plan 177 enabled
+    // http-client and socks5-client, so only IRC remains rejected.
     let cases = [
-        (
-            "socks5-client",
-            format!("listener = \"127.0.0.1:8080\"\ndestination = \"{b32}\"\n"),
-        ),
         (
             "irc-client",
             format!("listener = \"127.0.0.1:8080\"\ndestination = \"{b32}\"\n"),

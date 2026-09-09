@@ -103,6 +103,7 @@ fn http_client_spec(target_b32: &str, listener: SocketAddr) -> ServiceTunnelSpec
         max_buffered_bytes_per_direction: 65536,
         timeouts: ServiceTimeouts::defaults(),
         http_options: Some(HttpClientOptions::default()),
+        socks5_options: None,
     }
 }
 

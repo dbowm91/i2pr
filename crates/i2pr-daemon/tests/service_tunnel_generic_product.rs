@@ -98,6 +98,7 @@ fn server_spec(target_socket: SocketAddr) -> ServiceTunnelSpec {
         max_buffered_bytes_per_direction: 65536,
         timeouts: ServiceTimeouts::defaults(),
         http_options: None,
+        socks5_options: None,
     }
 }
 
@@ -119,6 +120,7 @@ fn client_spec(target_b32: &str) -> ServiceTunnelSpec {
         max_buffered_bytes_per_direction: 65536,
         timeouts: ServiceTimeouts::defaults(),
         http_options: None,
+        socks5_options: None,
     }
 }
 

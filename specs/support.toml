@@ -299,18 +299,21 @@ plan_175_status = "passed-m10-generic-client-server-service-tunnels"
 plan_176_plan_of_record = "plans/176-m10-http-i2p-proxy-and-connect.md"
 plan_176_closure = "plans/176-status.md"
 plan_176_status = "passed-m10-http-i2p-proxy-and-connect"
+plan_177_plan_of_record = "plans/177-m10-socks5-i2p-connect-proxy.md"
+plan_177_closure = "plans/177-status.md"
+plan_177_status = "passed-m10-socks5-i2p-connect-proxy"
 milestone10_planning_authority = "plan173"
 milestone10_foundation = "passed-via-plan174"
 milestone10_generic_tunnels = "passed-via-plan175"
 milestone10_http_proxy = "passed-via-plan176"
-milestone10_socks5 = "not-yet-passed"
+milestone10_socks5 = "passed-via-plan177"
 milestone10_irc_client = "not-yet-passed"
 milestone10_irc_server = "not-yet-passed"
 milestone10_local_product = "not-yet-passed"
 milestone10_remote_service_interop = "not-yet-passed"
 milestone10_final_acceptance = "not-yet-closed"
 next_product_layer = "milestone10-service-tunnels"
-next_executable_plan = "177"
+next_executable_plan = "178"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
@@ -1380,5 +1383,33 @@ evidence = [
     "crates/i2pr-daemon/tests/service_tunnels_foundation.rs",
     "specs/protocols/11-service-tunnels.md",
     "plans/176-m10-http-i2p-proxy-and-connect.md",
+]
+advertised = false
+
+[[surface]]
+id = "service-tunnels.socks5-proxy"
+protocol = "service-tunnels"
+structure = "loopback-only-socks5-client-connect-proxy"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 177 passed the second M10 application profile: the runtime-neutral `i2pr-service-tunnels::socks5` module owns a bounded RFC 1928 no-auth greeting negotiation (VER=0x05, NMETHODS=1..16, requires 0x00 NO AUTHENTICATION REQUIRED; rejects 0x02 username/password and any non-acceptable method list with `05 ff`), an incremental CONNECT request parser (VER/CMD/RSV/ATYP, ATYP=0x03 DOMAINNAME only; rejects IPv4/IPv6/non-CONNECT commands/zero domain/zero port with the typed RFC 1928 reply codes), strict `.i2p`/Base32/static-alias target validation (clearnet/IP literals/localhost/mixed-suffix/malformed alias rejected as `0x02` ConnectionNotAllowed), a bounded CONNECT allowed-port policy (default `{443}`), and a deterministic RFC 1928 reply generator with a neutral `127.0.0.1:0` bind that never echoes untrusted request bytes or destination private material. The daemon-owned `i2pr-daemon::service_tunnels_socks5` executor binds one loopback listener per `socks5-client` spec, runs greeting + CONNECT negotiation under bounded deadlines, validates the CONNECT port against the per-service policy, resolves the destination through the manager (Plan 149 local-delivery path or static alias), opens I2P Streaming, sends the success reply only after Streaming reaches `Established`, and runs the shared Plan 174 byte pump in opaque tunnel mode with same-read post-request bytes preserved as first tunnel bytes. No clearnet outproxy, SOCKS UDP, BIND, SOCKS4/4a, authentication, Tor RESOLVE, or arbitrary local/LAN target relay. The full I2P Streaming byte round-trip over local TCP for the SOCKS5 profile is Plan 180 reconcile work; Plan 177 does not silently weaken that criterion."
+evidence = [
+    "crates/i2pr-service-tunnels/src/socks5/mod.rs",
+    "crates/i2pr-service-tunnels/src/socks5/negotiation.rs",
+    "crates/i2pr-service-tunnels/src/socks5/request.rs",
+    "crates/i2pr-service-tunnels/src/socks5/reply.rs",
+    "crates/i2pr-service-tunnels/src/socks5/errors.rs",
+    "crates/i2pr-service-tunnels/src/socks5/limits.rs",
+    "crates/i2pr-service-tunnels/src/socks5/config.rs",
+    "crates/i2pr-service-tunnels/src/lib.rs",
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-daemon/src/service_tunnels_socks5.rs",
+    "crates/i2pr-daemon/src/service_tunnels.rs",
+    "crates/i2pr-daemon/src/destination_streaming.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_socks5_product.rs",
+    "crates/i2pr-daemon/tests/service_tunnels_foundation.rs",
+    "specs/protocols/11-service-tunnels.md",
+    "plans/177-m10-socks5-i2p-connect-proxy.md",
 ]
 advertised = false
