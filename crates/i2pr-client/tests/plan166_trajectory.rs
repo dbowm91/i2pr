@@ -85,10 +85,16 @@ fn client_owned_runtime_carries_no_signing_secret() {
 }
 
 #[test]
-fn unverified_public_with_wrong_encryption_curve_is_rejected() {
-    // Build a Destination by hand with a wrong (ElGamal) encryption
-    // key type; the public wrapper must reject it before the runtime
-    // even accepts the destination.
+fn legacy_elgamal_destination_is_accepted_but_cannot_install() {
+    // Plan 170 policy relocation: the Destination encryption-key slot
+    // is an I2P legacy field that every unmodified client (Java I2P
+    // 2.13.0, go-i2cp, i2pd) still populates with ElGamal even for
+    // X25519 LeaseSet2 sessions. The public wrapper accepts it (with
+    // a zeroed static slot, since the legacy 256-byte field carries
+    // no X25519 key) so independent-client sessions can register;
+    // X25519 enforcement lives at LeaseSet2 install, which stays
+    // fail-closed here because no real capability can match the
+    // zeroed legacy slot.
     let signing = i2pr_crypto::SigningPrivateKey::from_bytes([0x99_u8; 32]);
     let signing_public = signing.public_key().expect("signing public");
     let public_key =
@@ -105,11 +111,30 @@ fn unverified_public_with_wrong_encryption_curve_is_rejected() {
         i2pr_proto::KeyAndCert::new(public_key, signing_public, vec![0x33; 96], cert).expect("kc"),
     )
     .expect("dest");
-    let error =
-        DestinationPublic::from_destination(dest).expect_err("ElGamal destination rejected");
+    let public = DestinationPublic::from_destination(dest).expect("legacy slot accepted");
+    assert_eq!(
+        public.encryption_public_key_type(),
+        i2pr_proto::CryptoKeyType::ElGamal
+    );
+    // A caller-supplied X25519 capability can never match the zeroed
+    // legacy slot, so install stays fail-closed at the capability
+    // pre-check before any LeaseSet2 bytes are consulted. Build a
+    // well-formed LS2 from an unrelated X25519 identity to prove the
+    // rejection comes from the capability match, not LS2 parsing.
+    let (identity, _helper_public, helper_runtime) = usable_client_runtime(3);
+    let helper_leases = helper_runtime.inbound_lease_sources(NOW_SECONDS);
+    let record =
+        build_signed_lease_set2(&identity, &helper_leases, NOW_SECONDS.try_into().unwrap())
+            .expect("helper LS2");
+    let capability = InboundDecryptionCapability::from_secret_bytes([0x42_u8; 32], [0x43_u8; 32]);
+    let config = DestinationConfig::balanced();
+    let mut runtime = DestinationRuntime::new_client_owned(public, config).expect("client runtime");
+    let error = runtime
+        .install_client_lease_set2(record, capability, NOW_SECONDS)
+        .expect_err("legacy slot install stays fail-closed");
     assert!(matches!(
         error,
-        DestinationIdentityError::UnsupportedCryptoType { .. }
+        LeaseSetError::Identity(DestinationIdentityError::DecryptionCapabilityKeyMismatch)
     ));
 }
 

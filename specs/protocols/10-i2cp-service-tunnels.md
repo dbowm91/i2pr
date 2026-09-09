@@ -550,9 +550,9 @@ The Plan 168 data-plane suite (`i2cp_message_data_plane.rs`,
 18 tests) and the Plan 167 listener regression
 (`i2cp_loopback.rs`, 12 tests) remain green. I2CP stays
 experimental, loopback-only, disabled by default, and
-non-advertised. `HostLookup`/`HostReply` resolution and
-independent Java/Go client evidence are deferred to
-Plan 170.
+non-advertised. `HostLookup`/`HostReply` resolution is answered
+as documented failure; independent Java/Go client evidence
+passed via Plan 170 (below).
 
 ### M9 I2CP invalid-preamble close corrective (Plan 171)
 
@@ -573,9 +573,34 @@ No application-message transport, `SendMessage`/`SendMessageExpires`
 direction, `MessageStatus` correlation, or independent-client
 evidence is claimed in Plan 167; Plan 168 owns the message
 data plane, Plan 169 owns the local self-composed product and
-hardening, Plan 171 owns the terminal close corrective, and
-Plan 170 owns independent Java/Go client
-evidence.
+hardening, Plan 171 owns the terminal close corrective (retained),
+and Plan 170 owns independent Java/Go client
+evidence (passed; Milestone 9 closed).
+
+### M9 I2CP independent clients and final closure (Plan 170)
+
+Plan 170 proves the loopback daemon against exact-pinned
+unmodified Java I2P 2.13.0 (`9134f808337b401e8e53c73734c81fab04280c9d`)
+and go-i2cp (`b529ee1c10a6011558b4d69fc9436a4afc489eac`): both
+complete `0.x.y` version negotiation, empty-auth GetDate, and
+modern client-owned sessions through their public APIs, then
+exchange digest-matched 25 B / 32 KiB payloads in both directions
+(`Java -> Go`, `Go -> Java`) through the daemon cross-session
+loopback path with `MessageStatus` accept-on-enqueue semantics
+and `GetBandwidthLimits` ceilings. Daemon deltas are the
+`ReplyAndFollowup` `RequestVariableLeaseSet` after
+`SessionStatus(Created)`, `0.x.y` negotiation answering
+`0.9.67`, empty-auth acceptance, `messageReliability=none`
+best-effort mapping, and the ElGamal-legacy-slot relocation
+(SessionConfig/`DestinationPublic` accept; X25519 enforced at
+`install_client_lease_set2`, fail-closed for legacy slots).
+Evidence is the fail-closed 9-row lane
+(`tests/integration/i2cp/run-independent.sh`,
+`scripts/check-i2cp-acceptance-evidence.sh` in routine CI,
+manual `.github/workflows/i2cp-external.yml`), run twice
+consecutively on the closing tree. No `HostLookup`/`HostReply`
+resolution, no remote-I2CP/public-network claim; Milestone 9 is
+closed (experimental, loopback-only).
 
 ### Connection state machine
 
@@ -589,11 +614,14 @@ AwaitProtocolByte
   -> Closed
 ```
 
-- The M9 profile advertises only `I2CP API version 0.9.67`. Any other
-  syntactically-valid version string returns `SessionStatus::Refused`.
-- `GetDate` `i2cp.username`/`i2cp.password` and any other auth mapping
-  are rejected with `SessionStatus::Refused` (M9 has no
-  authentication surface).
+- The M9 profile advertises `I2CP API version 0.9.67` in `SetDate`
+  but accepts any well-formed `0.x.y` client string (Java I2P
+  2.13.0 sends `0.9.70`, go-i2cp sends `0.9.67`); a non-zero major
+  is rejected as unnegotiable.
+- `GetDate` with an empty authentication mapping (I2CP 0.9.11+
+  compliance, sent by both references) is accepted; non-empty
+  `i2cp.username`/`i2cp.password` mappings are rejected with
+  `SessionStatus::Refused` (M9 has no authentication surface).
 - Duplicate `GetDate` and any message family the protocol does not
   permit in the current state are rejected with a typed
   `IllegalInState` error; the state machine never silently
@@ -605,11 +633,15 @@ AwaitProtocolByte
 
 Required pre-checks (any failure becomes `SessionStatus::Invalid`):
 
-1. Destination decodes strictly and uses supported signing/encryption
-   types (`SigningKeyType::EdDsaSha512Ed25519` and
-   `CryptoKeyType::X25519` only).
-2. The `KeyCertificate` signing/encryption types agree with the
-   embedded keys.
+1. Destination decodes strictly with an Ed25519 signing key
+   (`SigningKeyType::EdDsaSha512Ed25519` only). The encryption-key
+   slot is the I2P legacy field: SessionConfig verification
+   accepts both X25519 and ElGamal-2048 here (every reference
+   ships ElGamal even for X25519 sessions); X25519 is enforced at
+   `install_client_lease_set2`, fail-closed for legacy slots.
+2. The `KeyCertificate` signing type agrees with the embedded
+   signing key (the legacy `crypto_type` slot is read but not
+   enforced).
 3. The options mapping uses the canonical sorted-key byte
    representation defined in Plan 164.
 4. The total SessionConfig body fits inside the 64 KiB I2CP frame
@@ -641,7 +673,7 @@ action.
 | `outbound.lengthVariance` | applied (informational) | target length drives pool sizing |
 | `inbound.allowZeroHop` | rejected | no zero-hop support in M9 |
 | `outbound.allowZeroHop` | rejected | no zero-hop support in M9 |
-| `i2cp.messageReliability` | applied (`BestEffort` only) | `Guaranteed` rejected |
+| `i2cp.messageReliability` | applied (`BestEffort` only; `none` maps to best-effort with an ignored note) | `Guaranteed` rejected |
 | `i2cp.fastReceive` | applied (`true` only) | `false` rejected (only fast-receive is delivered) |
 | `i2cp.leaseSetType` | applied (`3` only) | classic/encrypted/meta/PQ rejected |
 | `i2cp.leaseSetEncType` | applied (`4` only) | PQ types 5–7 rejected |

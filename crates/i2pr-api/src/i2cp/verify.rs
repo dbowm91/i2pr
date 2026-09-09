@@ -163,12 +163,16 @@ pub fn verify_session_config(
             signing_type: signing_type.code(),
         });
     }
-    if !m9_encryption_type_allowed(encryption_type) {
-        return Err(I2cpError::UnsupportedCryptoType {
-            crypto_type: encryption_type.code(),
-        });
-    }
-    if !certificate_matches(signing_type, encryption_type, destination.certificate()) {
+    // The Destination's encryption public key is the I2P legacy field
+    // unused since release 0.6 (2005). The Java I2P 2.13.0 reference,
+    // the go-i2cp reference, and the i2pd reference all continue to
+    // ship ElGamal-2048 (type 0) here even when the actual LeaseSet2
+    // uses X25519. The Plan 170 lane therefore accepts any encryption
+    // key type the Destination carries; the runtime LeaseSet2 install
+    // path (Plan 166 `install_client_lease_set2`) is the actual M9
+    // X25519 enforcement point.
+    let _ = encryption_type;
+    if !certificate_matches_legacy(signing_type, encryption_type, destination.certificate()) {
         return Err(I2cpError::UnsupportedSigningType {
             signing_type: signing_type.code(),
         });
@@ -210,23 +214,22 @@ fn m9_signing_type_allowed(signing_type: SigningKeyType) -> bool {
     matches!(signing_type, SigningKeyType::EdDsaSha512Ed25519)
 }
 
-fn m9_encryption_type_allowed(encryption_type: CryptoKeyType) -> bool {
-    matches!(encryption_type, CryptoKeyType::X25519)
-}
-
-fn certificate_matches(
+/// Plan 170 §6 relaxed the certificate check: the M9 profile accepts
+/// every Destination whose `signing_type` matches its embedded
+/// signing public key AND whose `Certificate::Key` signing type
+/// matches that key (the legacy `crypto_type` slot is read but not
+/// enforced — see the `encryption_type` discussion in
+/// `verify_session_config`). A Null certificate is accepted iff the
+/// signing key type is one of the M9-permitted Ed25519 family.
+fn certificate_matches_legacy(
     signing_type: SigningKeyType,
     encryption_type: CryptoKeyType,
     certificate: &Certificate,
 ) -> bool {
+    let _ = encryption_type;
     match certificate {
-        Certificate::Null => {
-            m9_signing_type_allowed(signing_type) && m9_encryption_type_allowed(encryption_type)
-        }
-        Certificate::Key(cert) => {
-            cert.signing_type().code() == signing_type.code()
-                && cert.crypto_type().code() == encryption_type.code()
-        }
+        Certificate::Null => m9_signing_type_allowed(signing_type),
+        Certificate::Key(cert) => cert.signing_type().code() == signing_type.code(),
         Certificate::Unsupported { .. } => false,
     }
 }
@@ -456,7 +459,15 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_encryption_type_is_rejected() {
+    fn legacy_elgamal_slot_is_accepted_at_session_config() {
+        // Plan 170 policy relocation: the Destination encryption-key
+        // slot is an I2P legacy field (unused since 2005) that every
+        // unmodified client (Java I2P 2.13.0, go-i2cp, i2pd) still
+        // populates with ElGamal-2048 even for X25519 LeaseSet2
+        // sessions. Rejecting it here would make an independent-client
+        // session unsatisfiable, so SessionConfig verification accepts
+        // the legacy slot and X25519 enforcement lives at the Plan 166
+        // `install_client_lease_set2` decryption-key match instead.
         let raw = {
             let public = PublicKey::new(CryptoKeyType::ElGamal, vec![0x11; 256]).expect("public");
             let signing_key = SigningPrivateKey::from_bytes(signing_seed());
@@ -479,16 +490,14 @@ mod tests {
             let creation_ms: u64 = 1_786_000_000_000;
             bytes.extend_from_slice(&creation_ms.to_be_bytes());
             bytes.extend_from_slice(&[0u8; 64]);
-            bytes
+            let mut raw = bytes.clone();
+            sign(&mut raw);
+            raw
         };
         let config = SessionConfig::decode(&raw).expect("config");
         let clock = FixedClock::at(1_786_000_000_000);
-        let error = verify_session_config(&raw, &config, &SessionConfigLimits::m9(), &clock)
-            .expect_err("elgamal rejected");
-        assert!(matches!(
-            error,
-            I2cpError::UnsupportedCryptoType { crypto_type: 0 }
-        ));
+        let _verified = verify_session_config(&raw, &config, &SessionConfigLimits::m9(), &clock)
+            .expect("legacy elgamal slot accepted at session config");
     }
 
     #[test]

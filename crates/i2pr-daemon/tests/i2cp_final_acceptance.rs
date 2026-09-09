@@ -245,6 +245,20 @@ async fn write_create_session(
         SessionStatusCode::Created as u8,
         "expected Created, got {status}"
     );
+    // Plan 170 §5: the daemon emits a follow-up RequestVariableLeaseSet
+    // immediately after SessionStatus(Created) so unmodified Java I2P
+    // clients do not block waiting for tunnels. Drain that frame so
+    // the rest of the trajectory reads inbound frames only.
+    let followup = read_exact_frame(stream).await;
+    assert_eq!(
+        followup[4], 37,
+        "expected RequestVariableLeaseSet follow-up, got reply {followup:?}"
+    );
+    assert_eq!(
+        followup.len(),
+        5 + 3,
+        "RequestVariableLeaseSet body must be 3 bytes"
+    );
     (reply, SessionId::new(session_raw))
 }
 

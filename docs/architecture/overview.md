@@ -416,6 +416,7 @@ The boundary contract is enforced by scripts under `scripts/`:
 | `check-sam-acceptance-evidence.sh` | Plan 151 SAM evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code-gated helpers (CI-enforced). |
 | `check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code/evidence-key-gated helpers with explicit `--ignored --exact` external selection (CI-enforced). |
 | `check-i2cp-vectors.sh` | Drift in the I2CP wire fixture corpus under `tests/fixtures/i2cp/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, the required Plan 164 fixture IDs, and the narrow `i2pr-api --test i2cp_vectors` suite. |
+| `check-i2cp-acceptance-evidence.sh` | Plan 170 I2CP evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code-gated `record_guarded` helper with digest-equality + strong-parse-path gates and explicit Java/Go pins (CI-enforced). |
 | `fuzz-smoke.sh` | Opt-in smoke run of all 22 fuzz targets (requires nightly + `cargo-fuzz`). |
 
 ## Conventions

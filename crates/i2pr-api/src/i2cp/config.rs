@@ -379,6 +379,21 @@ pub fn project_options(
                         key: key.to_owned(),
                         reason: "guaranteed reliability not delivered by M9",
                     });
+                } else if value.eq_ignore_ascii_case("none") {
+                    // The Java I2P 2.13.0 reference and the go-i2cp
+                    // reference both ship "none" by default (see
+                    // I2PSessionImpl.java + client_connect.go).
+                    // Mapping it to the M9 best-effort posture keeps
+                    // the negotiation fail-open for every unmodified
+                    // client while still recording the documented
+                    // ignored note.
+                    push_note(
+                        &mut notes,
+                        key,
+                        OptionDisposition::Ignored,
+                        Some("treated as best-effort"),
+                    );
+                    message_reliability = Some(M9_MESSAGE_RELIABILITY_BEST_EFFORT);
                 } else {
                     return Err(I2cpError::OptionRejected {
                         key: key.to_owned(),

@@ -308,8 +308,10 @@ codecs the api already owns. Plan 168 lands the
 `SendMessage` / `SendMessageExpires` / `MessagePayload` /
 `MessageStatus` adapters behind the same boundary; Plan 169 lands
 the self-composed local I2CP product behind the same boundary;
-Plan 170 will land the independent Java/Go client evidence without
-touching the api.
+Plan 170 lands the independent Java/Go client compatibility
+(`0.x.y` version negotiation, empty-auth GetDate acceptance,
+`messageReliability=none` best-effort mapping, ElGamal-legacy-slot
+policy relocation) without touching socket ownership.
 
 ## Plan 169 — I2CP reconfiguration transaction surface
 
@@ -385,6 +387,36 @@ behavior is unchanged. Evidence is the strict 24-iteration
 `wrong_protocol_byte_is_closed` row plus its non-paused
 `wrong_protocol_byte_is_closed_real_time` companion in
 `crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs`.
+
+## Plan 170 — I2CP independent-client compatibility
+
+Plan 170 keeps every api codec wire-compatible while accepting
+what unmodified Java I2P 2.13.0 and go-i2cp actually send:
+
+- **`0.x.y` version negotiation** (`connection.rs`) — the daemon
+  advertises `0.9.67` in `SetDate` but accepts any well-formed
+  `0.x.y` client string (Java sends `0.9.70`, go-i2cp sends
+  `0.9.67`); a non-zero major is still rejected as unnegotiable.
+- **Empty-auth GetDate acceptance** — an empty `Mapping` body
+  after the version string (I2CP 0.9.11+ compliance, sent by both
+  clients) is accepted; non-empty credentials are still rejected
+  with `AuthNotSupported`.
+- **`messageReliability=none` mapping** (`config.rs`) — both
+  references ship `none` by default; it maps to the M9
+  best-effort posture with a documented ignored note instead of
+  `OptionRejected`.
+- **ElGamal-legacy-slot policy relocation** (`verify.rs`) — the
+  Destination encryption-key slot is an I2P legacy field every
+  reference populates with ElGamal-2048 even for X25519 LeaseSet2
+  sessions. SessionConfig verification accepts the legacy slot;
+  X25519 enforcement lives at the Plan 166
+  `install_client_lease_set2` capability↔LS2 match, which stays
+  fail-closed for legacy-slot sessions
+  (`DecryptionCapabilityKeyMismatch`).
+
+No socket, timer, or task ownership enters the api; the daemon
+(Plan 170 `ReplyAndFollowup`) owns the post-`Created`
+`RequestVariableLeaseSet` follow-up both clients wait on.
 
 ## Plan 168 — I2CP message data plane surface
 

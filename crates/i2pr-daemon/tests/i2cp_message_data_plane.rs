@@ -202,6 +202,12 @@ async fn write_create_session(
         SessionStatusCode::Created as u8,
         "expected Created, got {status}"
     );
+    // Plan 170 §5: drain the follow-up RequestVariableLeaseSet.
+    let followup = read_exact_frame(stream).await;
+    assert_eq!(
+        followup[4], 37,
+        "expected RequestVariableLeaseSet follow-up, got reply {followup:?}"
+    );
     (reply, SessionId::new(session_raw))
 }
 

@@ -23,6 +23,7 @@ Paths are relative to the workspace root.
 | `scripts/check-sam-acceptance-evidence.sh` | Plan 151 SAM evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code-gated helpers (CI-enforced). |
 | `scripts/check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code/evidence-key-gated helpers with explicit `--ignored --exact` external selection (CI-enforced). |
 | `scripts/check-i2cp-vectors.sh` | Drift in the I2CP wire fixture corpus under `tests/fixtures/i2cp/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, the required Plan 164 fixture IDs, and the narrow `i2pr-api --test i2cp_vectors` suite. |
+| `scripts/check-i2cp-acceptance-evidence.sh` | Plan 170 I2CP evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code-gated `record_guarded` helper with digest-equality + strong-parse-path gates and explicit Java/Go pins (CI-enforced). |
 | `scripts/fuzz-smoke.sh` | Opt-in smoke run of all 22 fuzz targets for 32 iterations each at seed=1 (`-runs=32 -seed=1`). Requires `cargo-fuzz` + nightly. Disables LeakSanitizer (`LSAN_OPTIONS=detect_leaks=0`) for managed environments. |
 
 **How they work**: `check-dependency-direction.sh` uses
@@ -342,7 +343,7 @@ CI pass.
 
 | Job | OS | Steps |
 | --- | --- | --- |
-| **Quality** | ubuntu-latest + macos-latest (matrix, fail-fast: false) | Checkout → Rust 1.95.0 + rustfmt + clippy → `cargo fmt --all --check` → `cargo check --workspace` → `cargo check --workspace --all-targets` → `cargo test --workspace` → `cargo clippy --workspace --all-targets --all-features -- -D warnings` → `cargo doc` (with `-D warnings`) → `check-dependency-direction.sh` (both OS) → `check-runtime-boundaries.sh` (Linux) → `check-fixture-manifest.sh` (Linux) → `check-ntcp2-vectors.sh` (Linux) → `check-ssu2-vectors.sh` (Linux) → `check-ntcp2-interoperability.sh` (Linux) → `check-constrained-host-lane-boundary.sh` (Linux) → `check-sam-acceptance-evidence.sh` (Linux) → `check-ssu2-acceptance-evidence.sh` (Linux) → `check-i2cp-vectors.sh` (Linux) |
+| **Quality** | ubuntu-latest + macos-latest (matrix, fail-fast: false) | Checkout → Rust 1.95.0 + rustfmt + clippy → `cargo fmt --all --check` → `cargo check --workspace` → `cargo check --workspace --all-targets` → `cargo test --workspace` → `cargo clippy --workspace --all-targets --all-features -- -D warnings` → `cargo doc` (with `-D warnings`) → `check-dependency-direction.sh` (both OS) → `check-runtime-boundaries.sh` (Linux) → `check-fixture-manifest.sh` (Linux) → `check-ntcp2-vectors.sh` (Linux) → `check-ssu2-vectors.sh` (Linux) → `check-ntcp2-interoperability.sh` (Linux) → `check-constrained-host-lane-boundary.sh` (Linux) → `check-sam-acceptance-evidence.sh` (Linux) → `check-ssu2-acceptance-evidence.sh` (Linux) → `check-i2cp-vectors.sh` (Linux) → `check-i2cp-acceptance-evidence.sh` (Linux) |
 | **MSRV** | ubuntu-latest | Rust **1.88.0** → `cargo check --workspace --all-targets` |
 | **Dependency policy** | ubuntu-latest | Rust 1.95.0 → `cargo-deny check advisories bans sources` |
 
@@ -355,6 +356,17 @@ Triggers: `on: push`, `on: pull_request` (all branches).
   checker → run `tests/integration/ssu2/run-independent.sh` → upload
   sanitized evidence even on failure. Bounded 45-minute timeout; no
   public-I2P participation beyond the GitHub source fetch.
+
+### `.github/workflows/i2cp-external.yml` (manual lane)
+
+- `workflow_dispatch`-only Ubuntu 24.04 lane for Plan 170: install
+  ant/JDK/Go → fetch/verify the exact Java I2P 2.13.0 + go-i2cp pins
+  → run the I2CP evidence-integrity checker → run
+  `tests/integration/i2cp/run-independent.sh` (9 fail-closed rows:
+  4 cross-client digest rows + message-status + bandwidth +
+  regressions + gates + resource baseline) → upload sanitized
+  evidence even on failure. Bounded 45-minute timeout; loopback-only,
+  no public-I2P participation beyond the GitHub/Maven source fetch.
 
 ### `.github/dependabot.yml`
 

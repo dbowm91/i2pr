@@ -332,12 +332,12 @@ record is not `superseded-by-*`. Currently:
   the Plan 169 §6 concurrency/resource matrix plus the §7
   bounded soak). SAM router-owned product regressions, the Plan
   167 listener regression in `i2cp_loopback.rs`, and the Plan
-  168 data-plane suite in `i2cp_message_data_plane.rs` remain
-   green. No `HostLookup`/`HostReply` resolution and no
+   168 data-plane suite in `i2cp_message_data_plane.rs` remain
+    green. No `HostLookup`/`HostReply` resolution and no
    independent Java/Go client evidence yet; those belong to
    Plan 170.
 - **Milestone 9 I2CP invalid-preamble close corrective
-  (passed)**: Plan 171
+  (passed, retained)**: Plan 171
   (`passed-m9-i2cp-invalid-preamble-close-and-ci-corrective`,
   see [`plans/171-status.md`](../../plans/171-status.md)):
   the common per-connection terminal path in
@@ -345,6 +345,21 @@ record is not `superseded-by-*`. Currently:
   stream down before bookkeeping release (no wire change, no
   independent-client claim). The trajectory is documented in
   [`docs/architecture/i2pr-daemon.md`](../../docs/architecture/i2pr-daemon.md).
+- **Milestone 9 I2CP independent clients and final closure
+  (passed)**: Plan 170
+  (`passed-m9-i2cp-independent-clients-and-final-closure`,
+  see [`plans/170-status.md`](../../plans/170-status.md)):
+  exact-pinned Java I2P 2.13.0 and go-i2cp exchange
+  digest-matched 25 B/32 KiB payloads both directions through
+  the loopback daemon under the fail-closed 9-row lane
+  (`tests/integration/i2cp/run-independent.sh`,
+  `scripts/check-i2cp-acceptance-evidence.sh` in routine CI,
+  manual `.github/workflows/i2cp-external.yml`). Daemon deltas:
+  `ReplyAndFollowup` `RequestVariableLeaseSet` after
+  `CreateSession`, `0.x.y` version negotiation, empty-auth
+  GetDate acceptance, `messageReliability=none` best-effort
+  mapping, ElGamal-legacy-slot relocation. Milestone 9 is closed
+  (experimental, loopback-only).
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).
@@ -377,6 +392,7 @@ not weaken the script.
 | `scripts/check-sam-acceptance-evidence.sh` | Plan 151 SAM evidence integrity (no synthetic `passed` rows; CI-enforced). |
 | `scripts/check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity (no synthetic `passed` rows; CI-enforced). |
 | `scripts/check-i2cp-vectors.sh` | Plan 164 I2CP fixture corpus drift (CI-enforced). |
+| `scripts/check-i2cp-acceptance-evidence.sh` | Plan 170 I2CP evidence integrity (no synthetic `passed` rows; CI-enforced). |
 
 ## Doc-vs-source audit pattern
 

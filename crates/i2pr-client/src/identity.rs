@@ -117,13 +117,35 @@ impl DestinationPublic {
                 signing_type: signing_type.code(),
             });
         }
-        if encryption_type != ROUTER_CRYPTO_KEY_TYPE {
+        // Plan 170 §6: the Destination's encryption key type is the
+        // legacy I2P 0.6 era field. Every modern reference client
+        // (Java I2P 2.13.0, go-i2cp, i2pd) ships ElGamal (type 0)
+        // here even when the LeaseSet2 install path uses X25519
+        // (type 4) encryption. The Plan 166 `install_client_lease_set2`
+        // path is the actual X25519 enforcement point; the runtime
+        // destination identity accepts both ElGamal (legacy 256-byte
+        // public-key slot, contents unused) and X25519 (32-byte
+        // static public-key slot, used for ECIES inbound decryption).
+        if !matches!(
+            encryption_type,
+            ROUTER_CRYPTO_KEY_TYPE | CryptoKeyType::ElGamal
+        ) {
             return Err(DestinationIdentityError::UnsupportedCryptoType {
                 crypto_type: encryption_type.code(),
             });
         }
-        let static_public_bytes = extract_x25519_public_bytes(destination.public_key().as_bytes())
-            .ok_or(DestinationIdentityError::StaticPublicLengthMismatch)?;
+        // For X25519 destinations the static public key is a
+        // 32-byte slot extracted from the destination's encryption
+        // field. For legacy ElGamal destinations the field is
+        // 256 bytes (unused since I2P 0.6, 2005); we zero the slot
+        // because the actual X25519 keypair material arrives later
+        // through the Plan 166 LeaseSet2 install path.
+        let static_public_bytes = if encryption_type == ROUTER_CRYPTO_KEY_TYPE {
+            extract_x25519_public_bytes(destination.public_key().as_bytes())
+                .ok_or(DestinationIdentityError::StaticPublicLengthMismatch)?
+        } else {
+            [0_u8; 32]
+        };
         Ok(Self {
             destination,
             id,

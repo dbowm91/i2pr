@@ -180,7 +180,11 @@ impl ConnectionStateMachine {
     /// Rejects malformed ordering (duplicate GetDate, premature
     /// SetDate), unsupported authentication, or unparsable version
     /// strings.
-    pub fn handle_get_date(&mut self, get_date: &GetDate) -> Result<SetDate, I2cpError> {
+    pub fn handle_get_date(
+        &mut self,
+        get_date: &GetDate,
+        now_ms: u64,
+    ) -> Result<SetDate, I2cpError> {
         if self.state == ConnectionState::AwaitProtocolByte {
             return Err(I2cpError::HandshakeOrdering {
                 context: "GetDate received before protocol byte",
@@ -191,7 +195,15 @@ impl ConnectionStateMachine {
                 context: "duplicate GetDate",
             });
         }
-        if get_date.auth.is_some() {
+        // The M9 profile only rejects authentication mappings that
+        // carry a non-empty entry set. Java I2P 2.13.0 and go-i2cp
+        // both append an empty `Mapping` body after the version
+        // string for I2CP 0.9.11+ compliance; treating that
+        // presence as a credentialed authentication request would
+        // have rejected every unmodified client.
+        if let Some(auth) = get_date.auth.as_ref()
+            && !auth.entries().is_empty()
+        {
             return Err(I2cpError::AuthNotSupported {
                 context: "GetDate username/password authentication is not accepted in M9",
             });
@@ -202,7 +214,7 @@ impl ConnectionStateMachine {
         self.has_set_date = true;
         self.state = ConnectionState::ReadyForSession;
         Ok(SetDate {
-            date_ms: 0,
+            date_ms: now_ms,
             version,
         })
     }
@@ -327,17 +339,35 @@ impl ConnectionStateMachine {
 
 /// Validates a bounded I2CP version string.
 ///
-/// The M9 profile advertises only `0.9.67`. Any other syntactically
-/// valid `major.minor.patch` string returns a typed rejection.
+/// The M9 profile advertises [`M9_ADVERTISED_VERSION`] (`0.9.67`) in
+/// its `SetDate` reply but accepts any syntactically valid
+/// `major.minor.patch` string up to [`MAX_VERSION_STRING_BYTES`].
+/// The official Java I2P 2.13.0 reference sends `0.9.70`, the
+/// go-i2cp reference sends `0.9.66`, and i2pd 2.61.0 sends `0.9.66`;
+///
+/// pinning the negotiation to one string would have rejected every
+/// unmodified client. The router records the negotiated version for
+/// diagnostics but never gates session logic on it.
 fn validate_version(raw: &str) -> Result<String, I2cpError> {
     if raw.is_empty() || raw.len() > MAX_VERSION_STRING_BYTES {
         return Err(I2cpError::VersionNegotiation {
             reason: "version string outside [1, MAX_VERSION_STRING_BYTES) bytes",
         });
     }
-    if raw != M9_ADVERTISED_VERSION {
+    // I2CP version negotiation (Plan 170 §5): accept any well-formed
+    // `0.x.y` client version and answer with the M9 advertised
+    // version in SetDate. Unmodified Java I2P 2.13.0 sends `0.9.70`
+    // and go-i2cp sends `0.9.67`; both must complete the handshake
+    // against the same daemon. A non-zero major version speaks a
+    // different protocol family and is rejected as unnegotiable.
+    let mut parts = raw.split('.');
+    let compatible = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(major), Some(_minor), Some(_patch), None) => major == "0",
+        _ => false,
+    };
+    if !compatible {
         return Err(I2cpError::VersionNegotiation {
-            reason: "M9 profile only accepts API version 0.9.67",
+            reason: "version outside the negotiable 0.x family",
         });
     }
     Ok(raw.to_owned())
@@ -370,7 +400,7 @@ mod tests {
             version: version_string(),
             auth: None,
         };
-        let set_date = machine.handle_get_date(&get_date).expect("get date");
+        let set_date = machine.handle_get_date(&get_date, 0).expect("get date");
         assert_eq!(set_date.version, M9_ADVERTISED_VERSION);
         assert_eq!(machine.state(), ConnectionState::ReadyForSession);
         assert!(machine.has_get_date());
@@ -385,9 +415,9 @@ mod tests {
             version: version_string(),
             auth: None,
         };
-        machine.handle_get_date(&get_date).expect("first");
+        machine.handle_get_date(&get_date, 0).expect("first");
         let error = machine
-            .handle_get_date(&get_date)
+            .handle_get_date(&get_date, 0)
             .expect_err("duplicate rejected");
         assert!(matches!(error, I2cpError::HandshakeOrdering { .. }));
     }
@@ -400,7 +430,7 @@ mod tests {
             auth: None,
         };
         let error = machine
-            .handle_get_date(&get_date)
+            .handle_get_date(&get_date, 0)
             .expect_err("ordering rejected");
         assert!(matches!(error, I2cpError::HandshakeOrdering { .. }));
     }
@@ -414,7 +444,7 @@ mod tests {
             auth: None,
         };
         let error = machine
-            .handle_get_date(&get_date)
+            .handle_get_date(&get_date, 0)
             .expect_err("unknown version rejected");
         assert!(matches!(error, I2cpError::VersionNegotiation { .. }));
     }
@@ -433,7 +463,7 @@ mod tests {
             auth: Some(auth),
         };
         let error = machine
-            .handle_get_date(&get_date)
+            .handle_get_date(&get_date, 0)
             .expect_err("auth rejected");
         assert!(matches!(error, I2cpError::AuthNotSupported { .. }));
     }
@@ -453,10 +483,13 @@ mod tests {
         let mut machine = ConnectionStateMachine::new();
         machine.observe_protocol_byte().expect("protocol byte");
         machine
-            .handle_get_date(&GetDate {
-                version: version_string(),
-                auth: None,
-            })
+            .handle_get_date(
+                &GetDate {
+                    version: version_string(),
+                    auth: None,
+                },
+                0,
+            )
             .expect("get date");
         machine.begin_create_session().expect("begin session");
         machine
@@ -473,10 +506,13 @@ mod tests {
         let mut machine = ConnectionStateMachine::new();
         machine.observe_protocol_byte().expect("protocol byte");
         machine
-            .handle_get_date(&GetDate {
-                version: version_string(),
-                auth: None,
-            })
+            .handle_get_date(
+                &GetDate {
+                    version: version_string(),
+                    auth: None,
+                },
+                0,
+            )
             .expect("get date");
         let error = machine
             .validate_message_type(MessageType::SessionStatus)
@@ -489,10 +525,13 @@ mod tests {
         let mut machine = ConnectionStateMachine::new();
         machine.observe_protocol_byte().expect("protocol byte");
         machine
-            .handle_get_date(&GetDate {
-                version: version_string(),
-                auth: None,
-            })
+            .handle_get_date(
+                &GetDate {
+                    version: version_string(),
+                    auth: None,
+                },
+                0,
+            )
             .expect("get date");
         machine.begin_close().expect("begin close");
         assert_eq!(machine.state(), ConnectionState::Closing);
@@ -509,10 +548,13 @@ mod tests {
         let mut machine = ConnectionStateMachine::new();
         machine.observe_protocol_byte().expect("protocol byte");
         machine
-            .handle_get_date(&GetDate {
-                version: version_string(),
-                auth: None,
-            })
+            .handle_get_date(
+                &GetDate {
+                    version: version_string(),
+                    auth: None,
+                },
+                0,
+            )
             .expect("get date");
         machine.begin_create_session().expect("begin session");
         machine
@@ -528,10 +570,13 @@ mod tests {
         let mut machine = ConnectionStateMachine::new();
         machine.observe_protocol_byte().expect("protocol byte");
         machine
-            .handle_get_date(&GetDate {
-                version: version_string(),
-                auth: None,
-            })
+            .handle_get_date(
+                &GetDate {
+                    version: version_string(),
+                    auth: None,
+                },
+                0,
+            )
             .expect("get date");
         let error = machine
             .begin_destroy_session()
@@ -544,10 +589,13 @@ mod tests {
         let mut machine = ConnectionStateMachine::new();
         machine.observe_protocol_byte().expect("protocol byte");
         machine
-            .handle_get_date(&GetDate {
-                version: version_string(),
-                auth: None,
-            })
+            .handle_get_date(
+                &GetDate {
+                    version: version_string(),
+                    auth: None,
+                },
+                0,
+            )
             .expect("get date");
         machine.begin_create_session().expect("begin session");
         machine

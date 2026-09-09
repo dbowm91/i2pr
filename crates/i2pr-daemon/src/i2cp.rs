@@ -954,6 +954,10 @@ async fn handle_connection_inner(
                         FrameOutcome::Reply(message) => {
                             write_message(stream, &message).await?;
                         }
+                        FrameOutcome::ReplyAndFollowup(primary, followup) => {
+                            write_message(stream, &primary).await?;
+                            write_message(stream, &followup).await?;
+                        }
                         FrameOutcome::Close => return Ok(()),
                     }
                 }
@@ -1043,6 +1047,12 @@ fn session_state_for_connection(
 enum FrameOutcome {
     Continue,
     Reply(Box<Message>),
+    /// Emit a primary reply, then a follow-up message after the
+    /// primary has been flushed. Used by CreateSession to emit the
+    /// SessionStatus(Created) reply and then immediately the
+    /// RequestVariableLeaseSet the unmodified Java I2P
+    /// `I2PSessionImpl.connect()` waits for.
+    ReplyAndFollowup(Box<Message>, Box<Message>),
     Close,
 }
 
@@ -1183,8 +1193,9 @@ fn handle_get_date(
     machine: &mut ConnectionStateMachine,
     get_date: GetDate,
 ) -> Result<FrameOutcome, I2cpConnectionError> {
+    let now_ms = u64::from(i2cp_now_seconds()).saturating_mul(1000);
     let set_date = machine
-        .handle_get_date(&get_date)
+        .handle_get_date(&get_date, now_ms)
         .map_err(|error| I2cpConnectionError::StateMachine(error.to_string()))?;
     machine.mark_set_date_sent();
     Ok(FrameOutcome::Reply(Box::new(Message::SetDate(set_date))))
@@ -1252,7 +1263,22 @@ async fn handle_create_session(
                 session,
                 status: SessionStatusCode::Created,
             };
-            Ok(FrameOutcome::Reply(Box::new(Message::SessionStatus(reply))))
+            // Plan 170 §5: after CreateSession succeeds, emit a
+            // follow-up RequestVariableLeaseSet with zero tunnel
+            // leases so the unmodified Java I2P
+            // `I2PSessionImpl.connect()` wait does not block forever
+            // waiting for tunnels that the M9 test profile cannot
+            // build. The empty lease list signals to the client
+            // that no inbound tunnels are available; the client may
+            // proceed with a LeaseSet install carrying zero leases.
+            let followup = i2pr_api::i2cp::RequestVariableLeaseSet {
+                session,
+                leases: Vec::new(),
+            };
+            Ok(FrameOutcome::ReplyAndFollowup(
+                Box::new(Message::SessionStatus(reply)),
+                Box::new(Message::RequestVariableLeaseSet(followup)),
+            ))
         }
         Err(_error) => {
             let code = map_reserve_error_to_code(&_error);

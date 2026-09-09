@@ -1,0 +1,53 @@
+name: I2CP external-client interoperability
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  i2cp-external:
+    name: I2CP independent clients (Ubuntu)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Install pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Install Java/Ant/Go build dependencies
+        # Unprivileged localhost lane: ant + JDK build the exact-pinned
+        # Java I2P core jar; Go verifies the exact-pinned go-i2cp
+        # module cache (the driver itself builds with GOTOOLCHAIN
+        # go1.26.3 inside run-independent.sh).
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ant \
+            default-jdk-headless \
+            golang-go
+
+      - name: Fetch and verify exact external revisions
+        run: bash scripts/interop/fetch-i2cp-clients.sh
+
+      - name: Check I2CP acceptance evidence integrity
+        run: bash scripts/check-i2cp-acceptance-evidence.sh
+
+      - name: Run localhost I2CP independent-client matrix
+        run: bash tests/integration/i2cp/run-independent.sh
+        env:
+          I2PR_I2CP_EXECUTION_ID: github-${{ github.run_id }}
+
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: i2cp-external-evidence-${{ github.run_id }}
+          path: target/interop/i2cp-evidence
+          if-no-files-found: warn
