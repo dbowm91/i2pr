@@ -1,7 +1,8 @@
 # Plan 170 status — Milestone 9 I2CP independent clients and final closure
 
 Status: **`passed-m9-i2cp-independent-clients-and-final-closure`
-(local lane evidence complete; commit + hosted CI pending — see §8).**
+(closed on exact head `b108af2` — routine + external CI green,
+see §8).**
 
 Registered: **2026-09-08**.
 
@@ -171,12 +172,30 @@ advisories bans sources` — all green.
   mixed-router claim. I2CP stays experimental, disabled by
   default, loopback-only.
 
-## §8 pending (not executable from this session)
+## §8 closure (exact head)
 
-Working tree is uncommitted; on commit record the closing SHA here.
-Routine CI and the manual `i2cp-external.yml` dispatch must go green
-on the exact closing head before M9 is treated as closed in CI.
-No Milestone 10 work is implemented in this plan.
+```text
+CLOSING_SHA            = b108af2
+ROUTINE_CI_RUN         = 34303648879
+Quality (ubuntu-latest) = success
+Quality (macos-latest)  = success
+MSRV (Ubuntu)           = success
+Dependency policy       = success
+EXTERNAL_RUN           = 34303650808 (.github/workflows/i2cp-external.yml)
+I2CP independent clients (Ubuntu) = success
+```
+
+Implementation commit `c39bbff` went green on routine CI
+(`34301983059`, all four jobs success) and proved the local +
+external lane, but its first external dispatch (`34303111631`)
+failed closed in `fetch-i2cp-clients.sh` (fresh hosted clone at
+the default tip instead of the pin; see Hosted-lane corrective
+below). The lane-script fix commit is the closing head `b108af2`;
+routine + external are green on that exact head. Evidence
+artifacts upload on the external run; digests match the local
+lane (`f5cd0143d29d...` small, `d8690a426100...` large, attempt
+1/3, ports 7/8, protocol 6). No Milestone 10 work is implemented
+in this plan.
 
 ## Hosted-lane corrective (exact-head, lane-script only)
 
