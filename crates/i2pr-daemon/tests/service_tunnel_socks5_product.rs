@@ -54,7 +54,7 @@ use i2pr_crypto::OsRng;
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
 use i2pr_service_tunnels::{
     DestinationPolicy, DestinationRef, LocalListenerSpec, ServiceTimeouts, ServiceTunnelId,
-    ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec, Socks5ClientOptions, StaticAliasTable,
+    ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec, StaticAliasTable,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -113,7 +113,8 @@ fn socks5_client_spec(target_b32: &str, listener: SocketAddr) -> ServiceTunnelSp
         max_buffered_bytes_per_direction: 65536,
         timeouts: ServiceTimeouts::defaults(),
         http_options: None,
-        socks5_options: Some(Socks5ClientOptions::default()),
+        socks5_options: None,
+        irc_options: None,
     }
 }
 

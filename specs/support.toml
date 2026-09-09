@@ -302,18 +302,21 @@ plan_176_status = "passed-m10-http-i2p-proxy-and-connect"
 plan_177_plan_of_record = "plans/177-m10-socks5-i2p-connect-proxy.md"
 plan_177_closure = "plans/177-status.md"
 plan_177_status = "passed-m10-socks5-i2p-connect-proxy"
+plan_178_plan_of_record = "plans/178-m10-irc-client-profile-and-privacy-filtering.md"
+plan_178_closure = "plans/178-status.md"
+plan_178_status = "passed-m10-irc-client-profile-and-privacy-filtering"
 milestone10_planning_authority = "plan173"
 milestone10_foundation = "passed-via-plan174"
 milestone10_generic_tunnels = "passed-via-plan175"
 milestone10_http_proxy = "passed-via-plan176"
 milestone10_socks5 = "passed-via-plan177"
-milestone10_irc_client = "not-yet-passed"
+milestone10_irc_client = "passed-via-plan178"
 milestone10_irc_server = "not-yet-passed"
 milestone10_local_product = "not-yet-passed"
 milestone10_remote_service_interop = "not-yet-passed"
 milestone10_final_acceptance = "not-yet-closed"
 next_product_layer = "milestone10-service-tunnels"
-next_executable_plan = "178"
+next_executable_plan = "179"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
@@ -1411,5 +1414,33 @@ evidence = [
     "crates/i2pr-daemon/tests/service_tunnels_foundation.rs",
     "specs/protocols/11-service-tunnels.md",
     "plans/177-m10-socks5-i2p-connect-proxy.md",
+]
+advertised = false
+
+[[surface]]
+id = "service-tunnels.irc-client"
+protocol = "service-tunnels"
+structure = "loopback-only-irc-client-profile-and-privacy-filter"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 178 passed the third M10 application profile: the runtime-neutral `i2pr-service-tunnels::irc` module owns a bounded IRC/IRCv3 line parser (512-byte core line, 8191-byte tag envelope, 4094-byte client tag data, 8192-byte per-direction line buffer; overlong lines are dropped without truncation), structural IRCv3 message-tag framing (opaque tag names/values, per-key/count/data ceilings, invalid escapes rejected), a typed command classifier with an explicit per-direction allowlist (PASS/CAP/AUTHENTICATE/NICK/USER/PING/PONG/JOIN/PART/QUIT/PRIVMSG/NOTICE/MODE/TOPIC/AWAY/NAMES/LIST/WHO/WHOIS/WHOWAS/ISON/INVITE/KICK/USERHOST plus numeric replies and documented server commands; unknown commands are dropped, never passed, and tags cannot bypass classification), client-to-network privacy rewrites (USER hostname/servername replaced with stable non-identifying placeholders, location-bearing PING rewritten with one bounded per-connection PONG token, optional stable QUIT/PART reason replacement), and a CTCP/DCC policy that allows ACTION while dropping malformed/multi-delimiter messages, address-bearing DCC, and unsupported CTCP by default. The daemon-owned `i2pr-daemon::service_tunnels_irc_client` executor binds one loopback listener per `irc-client` spec, runs the per-connection line parser under bounded deadlines with one partial-line buffer per side, and reuses the Plan 149 destination product path plus the Plan 174 shared byte pump (no new Garlic/I2NP/Streaming implementation is introduced). No DCC tunnel support, WEBIRC, TLS termination, SASL credential management, bouncer state, or server-side filter claim. The full I2P Streaming byte round-trip over local TCP for the IRC client profile is Plan 180 reconcile work; Plan 178 does not silently weaken that criterion."
+evidence = [
+    "crates/i2pr-service-tunnels/src/irc/mod.rs",
+    "crates/i2pr-service-tunnels/src/irc/line.rs",
+    "crates/i2pr-service-tunnels/src/irc/tags.rs",
+    "crates/i2pr-service-tunnels/src/irc/policy.rs",
+    "crates/i2pr-service-tunnels/src/irc/client_filter.rs",
+    "crates/i2pr-service-tunnels/src/irc/config.rs",
+    "crates/i2pr-service-tunnels/src/irc/errors.rs",
+    "crates/i2pr-service-tunnels/src/irc/limits.rs",
+    "crates/i2pr-service-tunnels/src/lib.rs",
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-daemon/src/service_tunnels_irc_client.rs",
+    "crates/i2pr-daemon/src/service_tunnels.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_irc_client_product.rs",
+    "crates/i2pr-daemon/tests/service_tunnels_foundation.rs",
+    "specs/protocols/11-service-tunnels.md",
+    "plans/178-m10-irc-client-profile-and-privacy-filtering.md",
 ]
 advertised = false

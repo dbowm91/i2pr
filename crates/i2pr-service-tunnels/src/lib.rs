@@ -6,7 +6,12 @@
 //! privacy rewrite, request-target validation, and bounded error
 //! response generation, plus the Plan 177 runtime-neutral SOCKS5
 //! no-authentication negotiation, CONNECT request parser, and
-//! bounded reply generator for the M10 `socks5-client` profile.
+//! bounded reply generator for the M10 `socks5-client` profile,
+//! plus the Plan 178 runtime-neutral IRC line parser, IRCv3
+//! message-tag framing, command classification + per-direction
+//! allowlist, and client-to-network privacy filter (USER/PING/
+//! QUIT/PART rewrites + CTCP/DCC policy) for the M10 `irc-client`
+//! profile.
 //!
 //! This crate owns no sockets, no Tokio tasks, no timers, no
 //! filesystem access, no transport internals, no NetDB mutation, and
@@ -27,6 +32,7 @@
 //! Plan 174/175 enabled `generic-client` / `generic-server`. Plan
 //! 176 adds the runtime-neutral HTTP module for `http-client`. Plan
 //! 177 adds the runtime-neutral SOCKS5 module for `socks5-client`.
+//! Plan 178 adds the runtime-neutral IRC module for `irc-client`.
 //! No listener starts in this crate and no Tokio primitive exists
 //! here.
 
@@ -37,6 +43,7 @@ pub mod destination;
 pub mod errors;
 pub mod events;
 pub mod http;
+pub mod irc;
 pub mod socks5;
 
 pub use config::{
@@ -55,6 +62,13 @@ pub use http::{
     HttpRequestHead, ParseError, PrivacyPolicy, RequestLine, RequestTarget, TargetKind,
     TargetParseError, UserAgentPolicy, build_error_response, parse_authority_form,
     parse_request_head, parse_request_target, rewrite_headers,
+};
+pub use irc::{
+    IrcClientOptions, IrcCommand, IrcCommandClass, IrcDropReason, IrcError, IrcErrorKind,
+    IrcLimits, IrcLineParser, IrcTag, LineDirection, LineParserOutcome, ParsedLine,
+    PingRewriteState, PrivacySubstitutions, ReasonRewritePolicy, TagsOutcome, TagsParser,
+    classify_core as classify_irc_core, classify_post_tag_core,
+    is_allowed as is_irc_command_allowed, is_command_allowed as is_irc_command_allowed_alias,
 };
 pub use socks5::{
     ConnectDestination, ConnectPortPolicy, GreetingOutcome, GreetingParser, RequestOutcome,

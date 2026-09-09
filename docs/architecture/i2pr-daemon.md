@@ -152,7 +152,7 @@ work is scoped to:
   installs the client-signed LS2 locally without public NetDB publication.
   Milestone 9 final acceptance is closed via Plan 172. See
   [`plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md`](../../plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md).
-- **M10 service-tunnel foundation** (Plan 174), **generic client/server tunnels** (Plan 175), and **HTTP `.i2p` proxy + CONNECT** (Plan 176): adds the shared
+- **M10 service-tunnel foundation** (Plan 174), **generic client/server tunnels** (Plan 175), **HTTP `.i2p` proxy + CONNECT** (Plan 176), **SOCKS5 `.i2p` CONNECT proxy** (Plan 177), and **IRC `.i2p` client profile + privacy filtering** (Plan 178): adds the shared
   `destination_streaming` pump (`run_stream_pump` generic over
   `AsyncRead + AsyncWrite` with bounded chunk, negotiated
   segmentation, backpressure, sibling-isolated drain, and
@@ -173,15 +173,30 @@ work is scoped to:
   generation) and the daemon-owned HTTP proxy executor that owns
   one loopback listener per `http-client` spec, dispatches CONNECT
   to a 2xx tunnel or rewrites/forwards ordinary proxy requests,
-  and reuses the shared byte pump + destination product path. Plan 176
-  enables `enabled = true` for `generic-client`, `generic-server`,
-  and `http-client`; SOCKS/IRC remain rejected as not-yet-available
-  until Plans 177-179. The full M10 per-service Streaming byte
-  round-trip over local TCP remains Plan 180 reconcile work. See
+  and reuses the shared byte pump + destination product path. Plan 177
+  adds the runtime-neutral `i2pr-service-tunnels::socks5` module
+  (RFC 1928 no-auth greeting negotiation, CONNECT request parser
+  with strict `.i2p`/DOMAINNAME-only target policy, deterministic
+  reply generator with neutral loopback bind) and the daemon-owned
+  SOCKS5 proxy executor that owns one loopback listener per
+  `socks5-client` spec. Plan 178 adds the runtime-neutral
+  `i2pr-service-tunnels::irc` module (bounded IRC/IRCv3 line
+  parser, message-tag framing, typed command classifier with
+  per-direction allowlist, USER/PING/QUIT/PART privacy rewrites,
+  CTCP/DCC policy) and the daemon-owned IRC client executor that
+  owns one loopback listener per `irc-client` spec. Plans 175-178
+  enable `enabled = true` for `generic-client`,
+  `generic-server`, `http-client`, `socks5-client`, and
+  `irc-client` in order; `irc-server` remains rejected as
+  not-yet-available until Plan 179. The full M10 per-service
+  Streaming byte round-trip over local TCP remains Plan 180
+  reconcile work. See
   [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](../../plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md),
   [`plans/175-m10-generic-client-server-service-tunnels.md`](../../plans/175-m10-generic-client-server-service-tunnels.md),
+  [`plans/176-m10-http-i2p-proxy-and-connect.md`](../../plans/176-m10-http-i2p-proxy-and-connect.md),
+  [`plans/177-m10-socks5-i2p-connect-proxy.md`](../../plans/177-m10-socks5-i2p-connect-proxy.md),
   and
-  [`plans/176-m10-http-i2p-proxy-and-connect.md`](../../plans/176-m10-http-i2p-proxy-and-connect.md).
+  [`plans/178-m10-irc-client-profile-and-privacy-filtering.md`](../../plans/178-m10-irc-client-profile-and-privacy-filtering.md).
 
 What it **does not** do yet:
 

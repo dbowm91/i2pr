@@ -122,17 +122,10 @@ fn enabled_generic_client_tunnel_is_accepted() {
 #[test]
 fn enabled_non_generic_service_tunnel_is_rejected() {
     let directory = tempfile::tempdir().expect("temp directory");
-    let b32 = canonical_b32();
     // Each non-generic kind uses a complete enough config that
-    // only the enabled-rejection check fires. Plan 177 enabled
-    // http-client and socks5-client, so only IRC remains rejected.
-    let cases = [
-        (
-            "irc-client",
-            format!("listener = \"127.0.0.1:8080\"\ndestination = \"{b32}\"\n"),
-        ),
-        ("irc-server", "target = \"127.0.0.1:9090\"\n".to_owned()),
-    ];
+    // only the enabled-rejection check fires. Plan 178 enabled
+    // irc-client, so only irc-server remains rejected.
+    let cases = [("irc-server", "target = \"127.0.0.1:9090\"\n".to_owned())];
     for (kind, body) in cases {
         let text = format!(
             "{}\n[service_tunnels]\nenabled = true\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"{kind}\"\nenabled = true\n{body}",
@@ -168,5 +161,23 @@ fn enabled_http_client_tunnel_is_accepted() {
     assert!(matches!(
         config.service_tunnels.tunnels.tunnels[0].kind,
         i2pr_service_tunnels::ServiceTunnelKind::HttpClient
+    ));
+}
+
+#[test]
+fn enabled_irc_client_tunnel_is_accepted() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let b32 = canonical_b32();
+    let text = format!(
+        "{}\n[service_tunnels]\nenabled = true\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"irc-client\"\nenabled = true\nlistener = \"127.0.0.1:8080\"\ndestination = \"{b32}\"\n",
+        minimal(directory.path())
+    );
+    let config = Config::parse(&text).expect("enabled irc-client must be accepted");
+    assert!(config.service_tunnels.enabled);
+    assert_eq!(config.service_tunnels.tunnels.len(), 1);
+    assert!(config.service_tunnels.tunnels.tunnels[0].enabled);
+    assert!(matches!(
+        config.service_tunnels.tunnels.tunnels[0].kind,
+        i2pr_service_tunnels::ServiceTunnelKind::IrcClient
     ));
 }

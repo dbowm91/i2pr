@@ -56,11 +56,13 @@ Plan 174 = passed M10 service-tunnel foundation and shared stream runtime
 Plan 175 = passed M10 generic client/server service tunnels and persistent server destinations
 Plan 176 = passed M10 HTTP `.i2p` proxy and CONNECT
 Plan 177 = passed M10 SOCKS5 `.i2p` CONNECT proxy
+Plan 178 = passed M10 IRC `.i2p` client profile and privacy filtering
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
 Milestone 10 generic tunnels = passed-via-plan175 (no round-trip integration yet)
 Milestone 10 HTTP proxy = passed-via-plan176 (full byte round-trip via Plan 180 reconcile)
 Milestone 10 SOCKS5 = passed-via-plan177 (full byte round-trip via Plan 180 reconcile)
-next_executable_plan = 178
+Milestone 10 IRC client = passed-via-plan178 (full byte round-trip via Plan 180 reconcile)
+next_executable_plan = 179
 next product layer = milestone10-service-tunnels
 ```
 
@@ -105,17 +107,19 @@ Read in this order for Milestone 9 I2CP work:
 
 Read in this order for Milestone 10 service-tunnel work:
 
-1. [`plans/177-status.md`](plans/177-status.md) — passed SOCKS5 `.i2p` CONNECT
-2. [`plans/177-m10-socks5-i2p-connect-proxy.md`](plans/177-m10-socks5-i2p-connect-proxy.md)
-3. [`plans/176-status.md`](plans/176-status.md) — passed HTTP `.i2p` proxy + CONNECT
-4. [`plans/176-m10-http-i2p-proxy-and-connect.md`](plans/176-m10-http-i2p-proxy-and-connect.md)
-5. [`plans/175-status.md`](plans/175-status.md) — passed generic client/server tunnels
-6. [`plans/175-m10-generic-client-server-service-tunnels.md`](plans/175-m10-generic-client-server-service-tunnels.md)
-7. [`plans/174-status.md`](plans/174-status.md) — passed foundation
-8. [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md)
-9. [`plans/173-status.md`](plans/173-status.md) — roadmap authority
-10. [`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`](plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md)
-11. Do not start Plan 178 until Plan 177 is passed (it is); do not implement later profiles early.
+1. [`plans/178-status.md`](plans/178-status.md) — passed IRC `.i2p` client profile and privacy filtering
+2. [`plans/178-m10-irc-client-profile-and-privacy-filtering.md`](plans/178-m10-irc-client-profile-and-privacy-filtering.md)
+3. [`plans/177-status.md`](plans/177-status.md) — passed SOCKS5 `.i2p` CONNECT
+4. [`plans/177-m10-socks5-i2p-connect-proxy.md`](plans/177-m10-socks5-i2p-connect-proxy.md)
+5. [`plans/176-status.md`](plans/176-status.md) — passed HTTP `.i2p` proxy + CONNECT
+6. [`plans/176-m10-http-i2p-proxy-and-connect.md`](plans/176-m10-http-i2p-proxy-and-connect.md)
+7. [`plans/175-status.md`](plans/175-status.md) — passed generic client/server tunnels
+8. [`plans/175-m10-generic-client-server-service-tunnels.md`](plans/175-m10-generic-client-server-service-tunnels.md)
+9. [`plans/174-status.md`](plans/174-status.md) — passed foundation
+10. [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md)
+11. [`plans/173-status.md`](plans/173-status.md) — roadmap authority
+12. [`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`](plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md)
+13. Do not start Plan 179 until Plan 178 is passed (it is); do not implement later profiles early.
 
 Plan 171 corrective (retained): every terminal pre-session I2CP
 rejection terminates TCP explicitly on the common per-connection
@@ -351,6 +355,23 @@ local TCP for the SOCKS5 profile is the same Plan 180 reconcile
 pass that generalizes the per-destination runtime driver to service
 tunnels; Plan 177 does not silently weaken that criterion.
 
+Plan 178 added the runtime-neutral `i2pr-service-tunnels::irc`
+module (bounded IRC/IRCv3 line parser with 512-byte core / 8191-byte
+tag-envelope / 4094-byte tag-data ceilings, typed command classifier
+with per-direction allowlist, client-to-network privacy rewrites for
+USER/PING/QUIT/PART, CTCP/DCC policy allowing ACTION while dropping
+DCC and unsupported CTCP, bounded typed errors) and the daemon IRC
+client tunnel executor
+(`crates/i2pr-daemon/src/service_tunnels_irc_client.rs`) that owns one
+loopback listener per `irc-client` spec. It reuses the Plan 174 shared
+byte pump + Plan 149 destination product path; no new Garlic/I2NP/Streaming
+implementation exists. Unknown/unclassified commands are dropped, never
+passed; overlong lines are dropped without truncation. The full I2P
+Streaming byte round-trip over local TCP for the IRC client profile is
+the same Plan 180 reconcile pass that generalizes the per-destination
+runtime driver to service tunnels; Plan 178 does not silently weaken
+that criterion.
+
 Focused SSU2 seams currently include:
 
 ```text
@@ -415,6 +436,7 @@ cargo test --locked -p i2pr-daemon --test service_tunnels_foundation -- --test-t
 cargo test --locked -p i2pr-daemon --test service_tunnel_generic_product -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test service_tunnel_http_product -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test service_tunnel_socks5_product -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnel_irc_client_product -- --test-threads=1
 ```
 
 Plan 164 added the I2CP fixture corpus (`tests/fixtures/i2cp/`) and its
@@ -568,21 +590,18 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 177 passed the M10 SOCKS5 `.i2p`
-CONNECT proxy (runtime-neutral `i2pr-service-tunnels::socks5`
-module with RFC 1928 no-auth greeting negotiation, CONNECT
-request parser with strict `.i2p`/DOMAINNAME-only target
-policy, deterministic RFC 1928 reply generator with neutral
-`127.0.0.1:0` bind; daemon SOCKS5 proxy executor with one
-loopback listener per `socks5-client` spec that runs greeting +
-CONNECT negotiation under bounded deadlines, dispatches to the
-Plan 174 shared byte pump in opaque tunnel mode after real
-Streaming `Established`, and reuses the Plan 149 destination
-product path; success is sent only after Streaming reaches
-`Established` and same-read post-request bytes are preserved
-as first tunnel bytes). Plan 176 already passed the
-equivalent HTTP/1.1 proxy. Milestone 9 remains closed via
-Plan 172. Do not implement IRC listeners until Plan 178
-(IRC client) / Plan 179 (IRC server) without a fresh
-plan-of-record. The full client/server byte round-trip
-integration belongs to Plan 180 reconcile work.**
+Current handoff: **Plan 178 passed the M10 IRC `.i2p`
+client profile and privacy filtering (runtime-neutral
+`i2pr-service-tunnels::irc` module with bounded IRC/IRCv3 line
+parser, typed command classifier with per-direction allowlist,
+client-to-network privacy rewrites for USER/PING/QUIT/PART, and
+CTCP/DCC policy allowing ACTION while dropping DCC and unsupported
+CTCP; daemon IRC client tunnel executor with one loopback listener
+per `irc-client` spec that reuses the Plan 174 shared byte pump +
+Plan 149 destination product path; no new Garlic/I2NP/Streaming
+implementation exists). Plan 176 already passed the HTTP/1.1 proxy
+and Plan 177 already passed the SOCKS5 CONNECT proxy. Milestone 9
+remains closed via Plan 172. Do not implement the IRC server
+listener until Plan 179 without a fresh plan-of-record. The full
+client/server byte round-trip integration belongs to Plan 180
+reconcile work.**

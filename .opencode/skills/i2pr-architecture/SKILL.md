@@ -113,7 +113,7 @@ writing or updating a deep-dive.
 | `i2pr-daemon` | `docs/architecture/i2pr-daemon.md` | CLI, config, identity lifecycle, Plan 106 NetDB/bootstrap, Plan 117 dispatch. |
 | `i2pr-client` | `docs/architecture/i2pr-client.md` | Local destination runtime (router-owned and client-owned modes), ECIES destination Garlic session, destination routing, Streaming core, LeaseSet2 lifecycle, typed `LeaseRequest`. |
 | `i2pr-api` | `docs/architecture/i2pr-api.md` | Runtime-neutral application adapters: SAM 3.1 parsing/session/registry/FORWARD/NAMING plus the M9 I2CP wire/profile/connection/options foundation, session registry, typed `I2cpAction` (including `RequestVariableLeaseSet`). No sockets, no Tokio. |
-| `i2pr-service-tunnels` | `docs/architecture/i2pr-service-tunnels.md` | Runtime-neutral M10 service-tunnel config/policy (Plan 174 foundation only, no listener). No sockets, no Tokio. |
+| `i2pr-service-tunnels` | `docs/architecture/i2pr-service-tunnels.md` | Runtime-neutral M10 service-tunnel config/policy plus the Plan 176 HTTP, Plan 177 SOCKS5, and Plan 178 IRC client profile surfaces. No sockets, no Tokio; the daemon owns all listeners. |
 | `i2pr-testkit` | `docs/architecture/i2pr-testkit.md` | Deterministic simulation; no production crate may depend on it. |
 | `tools/i2pr-interop/` | `docs/architecture/tooling.md` | Non-production launcher seam; never activates `i2pr-daemon`. |
 

@@ -42,9 +42,8 @@ use i2pr_client::DestinationIdentity;
 use i2pr_crypto::OsRng;
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
 use i2pr_service_tunnels::{
-    DestinationPolicy, DestinationRef, HttpClientOptions, LocalListenerSpec, PrivacyPolicy,
-    ServiceTimeouts, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec,
-    StaticAliasTable,
+    DestinationPolicy, DestinationRef, LocalListenerSpec, PrivacyPolicy, ServiceTimeouts,
+    ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec, StaticAliasTable,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -102,8 +101,9 @@ fn http_client_spec(target_b32: &str, listener: SocketAddr) -> ServiceTunnelSpec
         max_connections: 4,
         max_buffered_bytes_per_direction: 65536,
         timeouts: ServiceTimeouts::defaults(),
-        http_options: Some(HttpClientOptions::default()),
+        http_options: None,
         socks5_options: None,
+        irc_options: None,
     }
 }
 

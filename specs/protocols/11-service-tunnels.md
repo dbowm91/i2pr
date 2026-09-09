@@ -1,12 +1,13 @@
 # Service tunnels (Milestone 10)
 
-Status: **SOCKS5 `.i2p` CONNECT landed** (Plan 177 passed; IRC still not implemented)  
+Status: **IRC `.i2p` client profile landed** (Plan 178 passed; IRC server still not implemented)  
 Planning authority: **Plan 173** (`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`)  
 Foundation: **Plan 174** (`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`)  
 Generic client/server tunnels: **Plan 175** (`plans/175-m10-generic-client-server-service-tunnels.md`)  
 HTTP `.i2p` proxy + CONNECT: **Plan 176** (`plans/176-m10-http-i2p-proxy-and-connect.md`)  
 SOCKS5 `.i2p` CONNECT: **Plan 177** (`plans/177-m10-socks5-i2p-connect-proxy.md`)  
-Next executable plan: **178** (IRC client)
+IRC `.i2p` client profile + privacy filter: **Plan 178** (`plans/178-m10-irc-client-profile-and-privacy-filtering.md`)  
+Next executable plan: **179** (IRC server)
 
 > Plan 174 is a refactor/foundation pass. It must not change I2P wire
 > semantics or broaden listener exposure. No generic, HTTP, SOCKS5,
@@ -43,10 +44,12 @@ i2pr-daemon (only socket/task/composition owner)
 
 - `crates/i2pr-service-tunnels` owns configuration validation,
   destination references, static aliases, the Plan 176 HTTP/1.1
-  parser/rewrite/target-validation/error-response surface, and
-  future SOCKS5/IRC parsers and policies. No Tokio, no listeners,
-  no timers, no filesystem, no transport/tunnel-build internals,
-  no NetDB mutation, no Garlic/I2NP construction.
+  parser/rewrite/target-validation/error-response surface, the
+  Plan 177 SOCKS5 negotiation/request/reply surface, and the
+  Plan 178 IRC line-parser/tag/classifier/filter surface. No
+  Tokio, no listeners, no timers, no filesystem, no
+  transport/tunnel-build internals, no NetDB mutation, no
+  Garlic/I2NP construction.
 - `crates/i2pr-daemon/src/destination_streaming.rs` owns the shared
   bounded socket<->Streaming pump. SAM reuses it via a narrow
   capability; service tunnels reuse the same primitive.
@@ -212,6 +215,94 @@ SOCKS5 profile is the same Plan 180 reconcile pass that
 generalizes the per-destination runtime driver to service
 tunnels; Plan 177 does not silently weaken that criterion.
 
+## Plan 178 IRC client surface (added)
+
+The `irc-client` service kind is enabled alongside
+`generic-client`, `generic-server`, `http-client`, and
+`socks5-client` in Plan 178. Its runtime-neutral surface lives
+under `crates/i2pr-service-tunnels/src/irc/`:
+
+- `line` — incremental CRLF line parser: one bounded
+  partial-line buffer per direction, multiple lines per read,
+  one line fragmented across many reads, IRCv3 tagged-line
+  fragmentation, accepted line followed by partial next line.
+  Overlong lines are dropped without truncation, never split
+  into a syntactically different valid command.
+- `tags` — structural IRCv3 message-tag framing: opaque tag
+  names/values, leading-`@` envelope with separating space,
+  per-key / per-count / cumulative tag-data ceilings, invalid
+  escapes rejected. Tag presence never bypasses command
+  filtering; core/tag size limits are enforced separately.
+- `policy` — typed command classifier with an explicit
+  per-direction allowlist. Client-to-server admits the full
+  client set: `PASS CAP AUTHENTICATE NICK USER PING PONG
+  JOIN PART QUIT PRIVMSG NOTICE MODE TOPIC AWAY NAMES LIST
+  WHO WHOIS WHOWAS ISON INVITE KICK USERHOST`.
+  Server-to-client admits numeric replies (`001`–`999`),
+  the documented server commands (`ACCOUNT CHGHOST ERROR`),
+  and the relayed channel/messaging set (`PING PONG PRIVMSG
+  NOTICE MODE JOIN NICK QUIT PART KICK TOPIC CAP
+  AUTHENTICATE`); registration-only commands are rejected
+  inbound. Unknown/unclassified commands are dropped, never
+  passed.
+- `client_filter` — client-to-network privacy rewrites:
+  `USER` hostname/servername replaced with stable
+  non-identifying placeholders (username + realname preserved
+  within bounds); location-bearing `PING` rewritten with one
+  bounded per-connection outstanding rewrite token so the
+  expected `PONG` shape can be presented back; `QUIT`/`PART`
+  reasons pass unchanged by default with a named opt-in stable
+  replacement policy. `PRIVMSG`/`NOTICE` CTCP policy allows
+  `ACTION`, drops malformed/multi-delimiter messages, drops
+  address-bearing `DCC`, and drops unsupported CTCP by default.
+- `config` — `IrcClientOptions { allowed_hosts,
+  reason_rewrite, user_realname_max_bytes }`. Reason rewrite
+  defaults to `Keep`.
+- `errors`/`limits` — bounded typed errors (no secrets, no
+  message text in diagnostics) and hard ceilings: core 512,
+  tag envelope 8191, client tag data 4094, line buffer 8192,
+  tag count 128, tag key 64.
+
+Daemon-side composition:
+
+- `crates/i2pr-daemon/src/service_tunnels_irc_client.rs` owns
+  the per-connection IRC client executor. Binds one loopback
+  listener per `irc-client` spec, runs the per-direction line
+  parser under bounded deadlines with one partial-line buffer
+  per side, consumes runtime-neutral filter decisions, and
+  reuses the Plan 149 destination product path + Plan 174
+  shared byte pump. No new Garlic/I2NP/Streaming implementation
+  is introduced.
+- `crates/i2pr-daemon/src/service_tunnels.rs` adds `is_irc`
+  on `ServiceRuntime` and dispatches `irc-client` services to
+  the new IRC supervisor loop.
+- `crates/i2pr-daemon/src/config.rs` (`[service_tunnels]`)
+  accepts `enabled = true` for `generic-client`,
+  `generic-server`, `http-client`, `socks5-client`, and now
+  `irc-client`; `irc-server` remains rejected as
+  not-yet-available.
+
+Explicit non-support (Plan 178 §12): DCC tunnel support,
+WEBIRC, TLS termination, SASL credential management, IRC
+bouncer functionality, channel/user state database, and an
+arbitrary protocol-aware server-side filter. The IRC profile
+is strictly stricter than Java I2P's broad IRC/DCC/operator
+profile.
+
+Tag-size semantics (recorded explicitly per Plan 178 §13):
+the 512-byte ceiling applies to the post-tag core portion
+including CRLF; the 8191-byte ceiling applies to the tag
+envelope (leading `@` plus tags plus separating space); the
+4094-byte ceiling applies to cumulative un-escaped client tag
+values; the 8192-byte per-direction buffer is the combined
+documented maximum plus terminator allowance, not unbounded
+`read_line` growth.
+
+The full I2P Streaming byte round-trip over local TCP for the
+IRC client profile is the same Plan 180 reconcile pass that
+generalizes the per-destination runtime driver to service
+tunnels; Plan 178 does not silently weaken that criterion.
+
 ## Explicit not-yet-implemented product rows
 
 | Product | Status | Owning plan |
@@ -221,13 +312,62 @@ tunnels; Plan 177 does not silently weaken that criterion.
 | Persistent server destination storage | passed-experimental-secret-safe | 175 |
 | HTTP `.i2p` proxy + CONNECT | passed-experimental-loopback-only | 176 |
 | SOCKS5 no-auth `.i2p` CONNECT | passed-experimental-loopback-only | 177 |
-| IRC client privacy filter | not-yet-implemented | 178 |
+| IRC client privacy filter | passed-experimental-loopback-only | 178 |
 | IRC server authenticated hostname | not-yet-implemented | 179 |
 | Full composition / reconcile / hardening | not-yet-implemented | 180 |
 | Independent acceptance / final closure | not-yet-implemented | 181 |
 
 No row above may be marked passed until its owning plan has an
 explicit passing status record with command-derived evidence.
+
+## Evidence (Plan 178)
+
+- `crates/i2pr-service-tunnels/src/irc/` (line, tags, policy,
+  client_filter, config, errors, limits; `#![forbid(unsafe_code)]`,
+  runtime-neutral; unit tests covering exact-maximum and `+1`
+  ceilings, tag/count/key/data bounds, command classification,
+  per-direction allowlist, tag-bypass attempts, USER rewrite,
+  PING rewrite + PONG token accounting, QUIT/PART policy, CTCP
+  ACTION/DCC/VERSION/malformed cases, incremental fragmentation,
+  coalesced lines, sibling-state isolation).
+- `crates/i2pr-service-tunnels/src/lib.rs` re-exports the
+  IRC module types (`IrcClientOptions`, `IrcCommand`,
+  `IrcCommandClass`, `IrcDropReason`, `IrcError`, `IrcLimits`,
+  `IrcLineParser`, `LineDirection`, `LineParserOutcome`,
+  `ParsedLine`, `PingRewriteState`, `ReasonRewritePolicy`,
+  `TagsParser`).
+- `crates/i2pr-service-tunnels/src/config.rs` accepts
+  `ServiceTunnelSpec.irc_options`; only `IrcClient` carries
+  options and the unit test confirms non-IRC kinds reject any
+  options.
+- `crates/i2pr-daemon/src/service_tunnels_irc_client.rs` (IRC
+  supervisor + per-connection executor; per-listener `permit`
+  budget; bounded line read deadlines; bounded cleanup on
+  EOF/reset/cancel).
+- `crates/i2pr-daemon/src/service_tunnels.rs`
+  (`is_irc` flag on `ServiceRuntime`; IRC-specific dispatch in
+  `run_service_loop`).
+- `crates/i2pr-daemon/src/config.rs` (`[service_tunnels]`
+  accepts `enabled = true` for `generic-client`,
+  `generic-server`, `http-client`, `socks5-client`, and now
+  `irc-client`; `irc-server` remains rejected as
+  not-yet-available).
+- `crates/i2pr-daemon/tests/service_tunnel_irc_client_product.rs`
+  (18 black-box tests: listener accept, unknown-command drop,
+  sibling isolation, snapshot accounting, overlong core/tag
+  rejection, fragmented/coalesced lines, CTCP ACTION pass,
+  CTCP DCC drop, USER rewrite path, tagged message path,
+  registration/CAP-SASL/JOIN/PRIVMSG/NOTICE path, slowloris
+  boundedness, aggregate ceiling).
+- `crates/i2pr-daemon/tests/service_tunnels_foundation.rs`
+  (Plan 174 black-box config/graph tests, updated to confirm
+  the Plan 178 `irc-client` acceptance rule and the remaining
+  `irc-server` rejection).
+- `scripts/check-dependency-direction.sh` (workspace graph
+  unchanged) and `scripts/check-runtime-boundaries.sh`
+  (`i2pr-service-tunnels::irc` remains runtime-neutral).
+- `plans/178-status.md` (exact evidence,
+  `next_executable_plan = 179`).
 
 ## Evidence (Plan 176)
 

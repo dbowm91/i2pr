@@ -502,6 +502,9 @@ pub struct ServiceTunnelSpec {
     /// SOCKS5-specific profile options. Mandatory for
     /// `Socks5Client` kinds; ignored otherwise.
     pub socks5_options: Option<crate::socks5::Socks5ClientOptions>,
+    /// IRC-specific profile options. Mandatory for `IrcClient`
+    /// kinds; ignored otherwise.
+    pub irc_options: Option<crate::irc::IrcClientOptions>,
 }
 
 impl ServiceTunnelSpec {
@@ -622,6 +625,27 @@ impl ServiceTunnelSpec {
                 }
             }
         }
+        // Plan 178: irc-client must carry IRC profile options;
+        // non-IRC kinds must not.
+        match self.kind {
+            ServiceTunnelKind::IrcClient => {
+                let options = self.irc_options.as_ref().ok_or_else(|| {
+                    ServiceTunnelError::ContradictoryOptions {
+                        id: id.clone(),
+                        reason: "irc-client requires irc_options",
+                    }
+                })?;
+                options.validate()?;
+            }
+            _ => {
+                if self.irc_options.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "irc_options must not be set for non-IRC kinds",
+                    });
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -715,6 +739,7 @@ mod tests {
             timeouts: ServiceTimeouts::defaults(),
             http_options: None,
             socks5_options: None,
+            irc_options: None,
         }
     }
 
@@ -814,6 +839,7 @@ mod tests {
             timeouts: ServiceTimeouts::defaults(),
             http_options: None,
             socks5_options: None,
+            irc_options: None,
         };
         assert!(server.validate().is_err());
     }
@@ -853,6 +879,24 @@ mod tests {
         spec.validate().expect("socks5 options validate");
         // Non-SOCKS5 kinds must not carry socks5_options.
         spec.kind = ServiceTunnelKind::GenericClient;
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn irc_client_requires_options() {
+        let mut spec = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
+        spec.kind = ServiceTunnelKind::IrcClient;
+        assert!(spec.validate().is_err());
+        spec.irc_options = Some(crate::irc::IrcClientOptions::default());
+        spec.validate().expect("irc options validate");
+        // Non-IRC kinds must not carry irc_options.
+        spec.kind = ServiceTunnelKind::GenericClient;
+        assert!(spec.validate().is_err());
+        // IRC options with bad allowed host must reject.
+        spec.kind = ServiceTunnelKind::IrcClient;
+        let mut bad_options = crate::irc::IrcClientOptions::default();
+        bad_options.allowed_hosts.insert("example.com".to_owned());
+        spec.irc_options = Some(bad_options);
         assert!(spec.validate().is_err());
     }
 }

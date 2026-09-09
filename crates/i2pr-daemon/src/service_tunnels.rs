@@ -69,6 +69,7 @@ use crate::sam::streams::{
     InboundTunnelFactory, SamDestinationBridge, SamDestinationHandle, SamDestinations,
 };
 use crate::service_tunnels_http::run_http_client_loop;
+use crate::service_tunnels_irc_client::run_irc_client_loop;
 use crate::service_tunnels_socks5::run_socks5_client_loop;
 
 /// Process-local monotonic clock used for Streaming deadlines.
@@ -153,6 +154,8 @@ pub struct ServiceRuntime {
     is_http: bool,
     /// Whether this is a SOCKS5 client tunnel.
     is_socks5: bool,
+    /// Whether this is an IRC client tunnel.
+    is_irc: bool,
 }
 
 impl std::fmt::Debug for ServiceRuntime {
@@ -566,6 +569,7 @@ impl ServiceTunnelManager {
         let failed_connects = Arc::new(AtomicUsize::new(0));
         let is_http = matches!(spec.kind, ServiceTunnelKind::HttpClient);
         let is_socks5 = matches!(spec.kind, ServiceTunnelKind::Socks5Client);
+        let is_irc = matches!(spec.kind, ServiceTunnelKind::IrcClient);
         let runtime = Arc::new(ServiceRuntime {
             spec_id: spec.id.as_str().to_owned(),
             kind: spec.kind,
@@ -581,6 +585,7 @@ impl ServiceTunnelManager {
             is_server,
             is_http,
             is_socks5,
+            is_irc,
         });
         let mut runtimes = self.runtimes.lock().expect("runtimes poisoned");
         runtimes.insert(spec.id.as_str().to_owned(), Arc::clone(&runtime));
@@ -838,6 +843,8 @@ async fn run_service_loop(
         run_http_client_loop(&manager, &runtime, &spec, &task_cancellation).await
     } else if runtime.is_socks5 {
         run_socks5_client_loop(&manager, &runtime, &spec, &task_cancellation).await
+    } else if runtime.is_irc {
+        run_irc_client_loop(&manager, &runtime, &spec, &task_cancellation).await
     } else {
         run_client_loop(&manager, &runtime, &spec, &task_cancellation).await
     };
