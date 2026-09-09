@@ -505,6 +505,66 @@ impl DestinationRuntime {
         Ok(slot)
     }
 
+    /// Registers the Plan 172 local zero-hop inbound/outbound pair for a
+    /// client-owned localhost destination.
+    ///
+    /// The gateway is `ctx.local_router_hash` (the actual local router
+    /// identity hash, never synthesized per session). Both entries share
+    /// the supplied bounded lifetime. On success the pool becomes usable
+    /// once the minimum inbound count and one outbound route hold.
+    pub fn ensure_local_zero_hop(
+        &mut self,
+        ctx: crate::config::LocalRouterContext,
+        inbound_tunnel_id: i2pr_tunnel::TunnelId,
+        outbound_route_id: i2pr_tunnel::TunnelId,
+        now_seconds: u64,
+        lifetime_seconds: u32,
+    ) -> Result<(TunnelSlot, TunnelSlot), DestinationRuntimeError> {
+        self.reject_when_stopping()?;
+        if !matches!(
+            self.ownership,
+            crate::identity::DestinationOwnership::ClientOwned
+        ) {
+            return Err(DestinationRuntimeError::Pool(
+                DestinationPoolError::Register(
+                    "zero-hop routes require a client-owned destination".to_owned(),
+                ),
+            ));
+        }
+        let inbound = i2pr_tunnel::LocalZeroHopInbound::new(
+            ctx.local_router_hash,
+            inbound_tunnel_id,
+            now_seconds,
+            lifetime_seconds,
+        )
+        .map_err(|error| {
+            DestinationRuntimeError::Pool(DestinationPoolError::Register(error.to_string()))
+        })?;
+        let outbound = i2pr_tunnel::LocalZeroHopOutbound::new(
+            outbound_route_id,
+            now_seconds,
+            lifetime_seconds,
+        )
+        .map_err(|error| {
+            DestinationRuntimeError::Pool(DestinationPoolError::Register(error.to_string()))
+        })?;
+        let inbound_slot = self
+            .pool
+            .register_local_zero_hop_inbound(inbound, now_seconds)?;
+        let outbound_slot = match self
+            .pool
+            .register_local_zero_hop_outbound(outbound, now_seconds)
+        {
+            Ok(slot) => slot,
+            Err(error) => {
+                let _ = self.pool.remove(inbound_slot);
+                return Err(DestinationRuntimeError::Pool(error));
+            }
+        };
+        self.transition_from_tunnels(now_seconds);
+        Ok((inbound_slot, outbound_slot))
+    }
+
     /// Records a bounded tunnel build/replacement failure. A build failure
     /// degrades only this destination; it never panics or fails the router.
     pub fn note_build_failure(&mut self) -> BuildFailureDisposition {

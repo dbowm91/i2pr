@@ -78,7 +78,13 @@ pub struct OptionNote {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectedPolicy {
     /// The bounded destination configuration honored by `i2pr-client`.
+    /// For `LocalZeroHop` mode this carries a valid remote placeholder
+    /// (length 2) plus the explicit mode; the daemon creates the real
+    /// local routes via the Plan 166 pool seam. The remote minimum-hop
+    /// invariant is never lowered to make length 0 pass.
     pub destination_config: DestinationConfig,
+    /// Explicit tunnel mode (Plan 172 §8).
+    pub tunnel_mode: i2pr_client::DestinationTunnelMode,
     /// Recorder of every option disposition seen during projection.
     pub notes: Vec<OptionNote>,
     /// Selected LeaseSet type (must equal [`M9_LEASE_SET_TYPE`]).
@@ -93,6 +99,10 @@ pub struct ProjectedPolicy {
     pub inbound_allow_zero_hop: bool,
     /// `outbound.allowZeroHop` selection.
     pub outbound_allow_zero_hop: bool,
+    /// `i2cp.dontPublishLeaseSet` selection. `true` installs the
+    /// client-signed LS2 locally without public NetDB publication;
+    /// local/cross-client routing may still use it (Plan 172 §10).
+    pub dont_publish_lease_set: bool,
 }
 
 /// Validated SessionConfig ceilings; the same limits apply to every
@@ -265,8 +275,11 @@ pub fn project_options(
     let mut outbound_target: Option<u16> = None;
     let mut inbound_length: Option<u8> = None;
     let mut outbound_length: Option<u8> = None;
+    let mut inbound_backup: Option<u16> = None;
+    let mut outbound_backup: Option<u16> = None;
     let mut inbound_allow_zero_hop = false;
     let mut outbound_allow_zero_hop = false;
+    let mut dont_publish_lease_set: Option<bool> = None;
     let mut message_reliability: Option<&'static str> = None;
     let mut fast_receive: Option<bool> = None;
     let mut lease_set_type: Option<u8> = None;
@@ -312,33 +325,23 @@ pub fn project_options(
             }
             "inbound.backupQuantity" => {
                 let parsed = parse_u16_strict(key, value)?;
-                if parsed == 0 {
-                    return Err(I2cpError::OptionRejected {
-                        key: key.to_owned(),
-                        reason: "inbound.backupQuantity must be nonzero",
-                    });
-                }
                 push_note(
                     &mut notes,
                     key,
                     OptionDisposition::Applied,
                     Some("backup quantity recorded; target drives pool sizing"),
                 );
+                inbound_backup = Some(parsed);
             }
             "outbound.backupQuantity" => {
                 let parsed = parse_u16_strict(key, value)?;
-                if parsed == 0 {
-                    return Err(I2cpError::OptionRejected {
-                        key: key.to_owned(),
-                        reason: "outbound.backupQuantity must be nonzero",
-                    });
-                }
                 push_note(
                     &mut notes,
                     key,
                     OptionDisposition::Applied,
                     Some("backup quantity recorded; target drives pool sizing"),
                 );
+                outbound_backup = Some(parsed);
             }
             "inbound.lengthVariance" => {
                 let parsed = parse_i16_strict(key, value)?;
@@ -369,6 +372,16 @@ pub fn project_options(
                 let parsed = parse_bool_strict(key, value)?;
                 push_note(&mut notes, key, OptionDisposition::Applied, None);
                 outbound_allow_zero_hop = parsed;
+            }
+            "i2cp.dontPublishLeaseSet" => {
+                let parsed = parse_bool_strict(key, value)?;
+                push_note(
+                    &mut notes,
+                    key,
+                    OptionDisposition::Applied,
+                    Some("unpublished LS2 still installed locally; publication suppressed"),
+                );
+                dont_publish_lease_set = Some(parsed);
             }
             "i2cp.messageReliability" => {
                 if value.eq_ignore_ascii_case("besteffort") {
@@ -453,26 +466,128 @@ pub fn project_options(
         }
     }
 
-    // Zero-hop requests require explicit existing router policy support
-    // or are rejected per Plan 165 §6; the M9 profile has no zero-hop
-    // support, so any nonzero value is rejected.
-    if inbound_allow_zero_hop {
-        return Err(I2cpError::OptionRejected {
-            key: "inbound.allowZeroHop".to_owned(),
-            reason: "zero-hop tunnels not supported by M9 router policy",
+    // Plan 172 §8: explicit local zero-hop profile. Remote
+    // one-plus-hop behavior is unchanged; the remote minimum is never
+    // lowered to make length 0 pass as remote.
+    let inbound_is_zero = inbound_length == Some(0);
+    let outbound_is_zero = outbound_length == Some(0);
+    if inbound_is_zero || outbound_is_zero {
+        // Mixed local/remote modes are unsupported: reject explicitly
+        // rather than silently rewriting.
+        if inbound_is_zero != outbound_is_zero {
+            return Err(I2cpError::OptionRejected {
+                key: "inbound.length".to_owned(),
+                reason: "mixed zero-hop/remote modes not supported in M9",
+            });
+        }
+        // allowZeroHop=false + length 0 must reject.
+        if !inbound_allow_zero_hop || !outbound_allow_zero_hop {
+            return Err(I2cpError::OptionRejected {
+                key: "inbound.allowZeroHop".to_owned(),
+                reason: "length 0 requires inbound.allowZeroHop=true and outbound.allowZeroHop=true",
+            });
+        }
+        // Quantity must be exactly 1 when explicitly supplied.
+        if let Some(value) = inbound_target
+            && value != 1
+        {
+            return Err(I2cpError::OptionRejected {
+                key: "inbound.quantity".to_owned(),
+                reason: "zero-hop profile requires inbound.quantity=1",
+            });
+        }
+        if let Some(value) = outbound_target
+            && value != 1
+        {
+            return Err(I2cpError::OptionRejected {
+                key: "outbound.quantity".to_owned(),
+                reason: "zero-hop profile requires outbound.quantity=1",
+            });
+        }
+        // Backup quantity must be 0 when explicitly supplied.
+        if let Some(value) = inbound_backup
+            && value != 0
+        {
+            return Err(I2cpError::OptionRejected {
+                key: "inbound.backupQuantity".to_owned(),
+                reason: "zero-hop profile requires inbound.backupQuantity=0",
+            });
+        }
+        if let Some(value) = outbound_backup
+            && value != 0
+        {
+            return Err(I2cpError::OptionRejected {
+                key: "outbound.backupQuantity".to_owned(),
+                reason: "zero-hop profile requires outbound.backupQuantity=0",
+            });
+        }
+        // dontPublishLeaseSet=false would require public NetDB
+        // publication, which the M9 localhost profile does not do.
+        if dont_publish_lease_set == Some(false) {
+            return Err(I2cpError::OptionRejected {
+                key: "i2cp.dontPublishLeaseSet".to_owned(),
+                reason: "M9 localhost profile requires i2cp.dontPublishLeaseSet=true",
+            });
+        }
+        let destination_config = DestinationConfig::try_new(
+            1,
+            1,
+            1,
+            defaults.length_hops(),
+            defaults.tunnel_lifetime_seconds(),
+            defaults.build_concurrency(),
+            defaults.failure_threshold(),
+            defaults.max_pending_messages(),
+            defaults.max_pending_bytes(),
+            defaults.lease_publication_margin_seconds(),
+            defaults.lease_rotation_margin_seconds(),
+        )
+        .map_err(projection_error_to_i2cp)?;
+        return Ok(ProjectedPolicy {
+            destination_config,
+            tunnel_mode: i2pr_client::DestinationTunnelMode::LocalZeroHop,
+            notes,
+            lease_set_type: lease_set_type.unwrap_or(M9_LEASE_SET_TYPE),
+            lease_set_enc_type: lease_set_enc_type.unwrap_or(M9_LEASE_SET_ENC_TYPE),
+            message_reliability: message_reliability.unwrap_or(M9_MESSAGE_RELIABILITY_BEST_EFFORT),
+            fast_receive: fast_receive.unwrap_or(M9_FAST_RECEIVE_DEFAULT),
+            inbound_allow_zero_hop: true,
+            outbound_allow_zero_hop: true,
+            dont_publish_lease_set: dont_publish_lease_set.unwrap_or(true),
         });
     }
-    if outbound_allow_zero_hop {
+    // Remote path: any explicit allowZeroHop=true without length 0 is
+    // an unsupported fallback request; reject explicitly rather than
+    // silently treating it as remote.
+    if inbound_allow_zero_hop || outbound_allow_zero_hop {
         return Err(I2cpError::OptionRejected {
-            key: "outbound.allowZeroHop".to_owned(),
-            reason: "zero-hop tunnels not supported by M9 router policy",
+            key: "inbound.allowZeroHop".to_owned(),
+            reason: "allowZeroHop=true requires inbound.length=0 and outbound.length=0 in M9",
+        });
+    }
+    // Non-zero lengths flow through the remote policy. Length 0 was
+    // handled above; here length is either absent or >= 1.
+    if let Some(value) = inbound_length
+        && value == 0
+    {
+        return Err(I2cpError::OptionRejected {
+            key: "inbound.length".to_owned(),
+            reason: "length 0 requires allowZeroHop",
+        });
+    }
+    if let Some(value) = outbound_length
+        && value == 0
+    {
+        return Err(I2cpError::OptionRejected {
+            key: "outbound.length".to_owned(),
+            reason: "length 0 requires allowZeroHop",
         });
     }
 
     // Backup quantity/variance may not silently replace target quantity/
     // length; only the explicit `quantity`/`length` keys drive pool
     // sizing. Backup/variance are recorded as notes and dropped here.
-    let _ = (inbound_length, outbound_length);
+    let _ = (inbound_backup, outbound_backup);
 
     let inbound_target_value = inbound_target.unwrap_or_else(|| defaults.inbound_target());
     let outbound_target_value = outbound_target.unwrap_or_else(|| defaults.outbound_target());
@@ -510,6 +625,7 @@ pub fn project_options(
 
     Ok(ProjectedPolicy {
         destination_config,
+        tunnel_mode: i2pr_client::DestinationTunnelMode::Remote { length_hops },
         notes,
         lease_set_type: lease_set_type.unwrap_or(M9_LEASE_SET_TYPE),
         lease_set_enc_type: lease_set_enc_type.unwrap_or(M9_LEASE_SET_ENC_TYPE),
@@ -517,6 +633,7 @@ pub fn project_options(
         fast_receive: fast_receive.unwrap_or(M9_FAST_RECEIVE_DEFAULT),
         inbound_allow_zero_hop: false,
         outbound_allow_zero_hop: false,
+        dont_publish_lease_set: dont_publish_lease_set.unwrap_or(false),
     })
 }
 

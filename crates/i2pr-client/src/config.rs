@@ -40,6 +40,55 @@ pub const DEFAULT_LEASE_PUBLICATION_MARGIN_SECONDS: u32 = 60;
 /// earliest advertised lease is within this window of expiry.
 pub const DEFAULT_LEASE_ROTATION_MARGIN_SECONDS: u32 = 120;
 
+/// Explicit destination tunnel mode (Plan 172 §8).
+///
+/// Remote mode preserves the existing one-plus-hop tunnel policy.
+/// LocalZeroHop mode is the legitimate localhost path where gateway ==
+/// endpoint == this router, with no remote hops and no LayerKeys.
+/// Mixed inbound/outbound modes are rejected explicitly by the I2CP
+/// projection; the destination pool never silently rewrites them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DestinationTunnelMode {
+    /// Remote established tunnels with `length_hops >= 1`.
+    Remote {
+        /// Tunnel hop length.
+        length_hops: u8,
+    },
+    /// Local zero-hop path (length 0 + allowZeroHop).
+    LocalZeroHop,
+}
+
+impl DestinationTunnelMode {
+    /// Whether the mode is the local zero-hop path.
+    pub const fn is_local_zero_hop(self) -> bool {
+        matches!(self, Self::LocalZeroHop)
+    }
+}
+
+/// Runtime-neutral local-router context for zero-hop composition
+/// (Plan 172 §7).
+///
+/// The hash must be the actual configured router identity hash of the
+/// process that owns the I2CP service (an ephemeral test-process
+/// identity is acceptable for localhost, but it must remain stable
+/// for the session). No private key material is carried here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LocalRouterContext {
+    /// Local router hash used as the zero-hop Lease gateway.
+    pub local_router_hash: i2pr_proto::Hash,
+}
+
+impl LocalRouterContext {
+    /// Constructs a local-router context from the supplied hash.
+    /// Rejects the all-zero hash.
+    pub fn new(local_router_hash: i2pr_proto::Hash) -> Result<Self, DestinationConfigError> {
+        if local_router_hash == i2pr_proto::Hash::from_bytes([0; 32]) {
+            return Err(DestinationConfigError::ZeroInboundTarget);
+        }
+        Ok(Self { local_router_hash })
+    }
+}
+
 /// Bounded per-destination configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DestinationConfig {

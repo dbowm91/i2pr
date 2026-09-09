@@ -152,6 +152,28 @@ pub struct I2cpServiceSnapshot {
     pub connection_count: usize,
 }
 
+/// Per-session Plan 172 lifecycle phase.
+///
+/// The daemon no longer equates CreateSession success with a usable
+/// client destination. Remote profiles preserve the pre-172
+/// best-effort behavior (Usable immediately); the counted
+/// local-zero-hop profile moves CreatedAwaitingTunnels ->
+/// AwaitingLeaseSet2 -> Usable only after the Plan 166 atomic
+/// install commits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum I2cpSessionPhase {
+    /// Destination reserved; tunnels not yet established.
+    Reserved,
+    /// Destination created; local routes being established.
+    CreatedAwaitingTunnels,
+    /// Routes ready; waiting for client-signed CreateLeaseSet2.
+    AwaitingLeaseSet2,
+    /// LeaseSet2 installed; data plane allowed.
+    Usable,
+    /// Shutdown requested.
+    Stopping,
+}
+
 /// Per-session Plan 168 data-plane bookkeeping.
 ///
 /// One `I2cpSessionState` exists for every committed I2CP session.
@@ -191,6 +213,12 @@ pub struct I2cpSessionState {
     /// diff. The mutex makes the diff baseline immune to races
     /// between reconfigure and concurrent destroy paths.
     pub last_options: Mutex<Mapping>,
+    /// Plan 172 §9: explicit lifecycle phase.
+    pub phase: Mutex<I2cpSessionPhase>,
+    /// Whether this session uses the counted local-zero-hop profile.
+    pub is_zero_hop: bool,
+    /// Whether a client-signed LeaseSet2 has been atomically installed.
+    pub lease_set_installed: std::sync::atomic::AtomicBool,
 }
 
 impl I2cpSessionState {
@@ -201,6 +229,8 @@ impl I2cpSessionState {
         destination_hash: Hash,
         destination_id: DestinationId,
         baseline_options: Mapping,
+        is_zero_hop: bool,
+        initial_phase: I2cpSessionPhase,
     ) -> Self {
         Self {
             session,
@@ -214,7 +244,38 @@ impl I2cpSessionState {
             last_message_id: AtomicU32::new(0),
             inbound_notify: Notify::new(),
             last_options: Mutex::new(baseline_options),
+            phase: Mutex::new(initial_phase),
+            is_zero_hop,
+            lease_set_installed: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Returns the current lifecycle phase.
+    pub fn phase(&self) -> I2cpSessionPhase {
+        self.phase
+            .lock()
+            .map(|guard| *guard)
+            .unwrap_or(I2cpSessionPhase::Stopping)
+    }
+
+    /// Sets the lifecycle phase.
+    fn set_phase(&self, next: I2cpSessionPhase) {
+        if let Ok(mut guard) = self.phase.lock() {
+            *guard = next;
+        }
+    }
+
+    /// Whether the session may send/receive application traffic.
+    /// Remote profiles preserve pre-172 best-effort behavior;
+    /// zero-hop sessions require Usable + installed LS2.
+    pub fn is_usable_for_data(&self) -> bool {
+        if !self.is_zero_hop {
+            return true;
+        }
+        self.phase() == I2cpSessionPhase::Usable
+            && self
+                .lease_set_installed
+                .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Returns a clone of the current reconfigure baseline mapping.
@@ -342,6 +403,13 @@ pub struct I2cpServiceState {
     sessions: Mutex<HashMap<SessionId, Arc<I2cpSessionState>>>,
     next_connection: AtomicU64,
     active_connections: Mutex<HashMap<u32, I2cpConnection>>,
+    /// Plan 172 §7: actual local router hash for zero-hop Lease gateways.
+    /// Derived once from an ephemeral router identity for this process
+    /// (stable across sessions; no private key retained here).
+    local_router_hash: Hash,
+    /// Typed zero-hop tunnel-id allocator (fresh, non-zero, never
+    /// `u32::MAX`; never aliases an active local route).
+    next_zero_hop_tunnel_id: AtomicU32,
 }
 
 impl I2cpServiceState {
@@ -363,6 +431,22 @@ impl I2cpServiceState {
                     ))
                 })?;
         let destination_registry = Arc::new(Mutex::new(DestinationRegistry::new(registry_config)));
+        // Plan 172 §7: derive the local router hash from a fresh
+        // ephemeral router identity for this process. The private
+        // material is dropped immediately; only the public hash is
+        // retained as Lease gateway metadata (public, non-secret).
+        let local_router_hash = {
+            let mut rng = i2pr_crypto::OsRng;
+            let bundle =
+                i2pr_crypto::RouterIdentityBundle::generate(&mut rng).map_err(|error| {
+                    I2cpServiceError::InvalidConfig(format!(
+                        "local router identity unavailable: {error}"
+                    ))
+                })?;
+            bundle.identity().hash().map_err(|error| {
+                I2cpServiceError::InvalidConfig(format!("local router hash unavailable: {error}"))
+            })?
+        };
         Ok(Self {
             config,
             session_registry,
@@ -371,7 +455,28 @@ impl I2cpServiceState {
             sessions: Mutex::new(HashMap::new()),
             next_connection: AtomicU64::new(1),
             active_connections: Mutex::new(HashMap::new()),
+            local_router_hash,
+            next_zero_hop_tunnel_id: AtomicU32::new(0x1000),
         })
+    }
+
+    /// Returns the local router hash used as the zero-hop Lease gateway.
+    pub const fn local_router_hash(&self) -> Hash {
+        self.local_router_hash
+    }
+
+    /// Allocates a fresh non-zero, non-sentinel zero-hop tunnel id.
+    fn allocate_zero_hop_tunnel_id(&self) -> i2pr_tunnel::TunnelId {
+        loop {
+            let raw = self.next_zero_hop_tunnel_id.fetch_add(1, Ordering::Relaxed);
+            // Skip zero and the u32::MAX sentinel.
+            if raw == 0 || raw == u32::MAX {
+                continue;
+            }
+            if let Ok(id) = i2pr_tunnel::TunnelId::new(raw) {
+                return id;
+            }
+        }
     }
 
     /// Returns the validated I2CP configuration.
@@ -625,6 +730,10 @@ impl I2cpServiceState {
         let public = DestinationPublic::from_destination(destination)
             .map_err(|error| ReserveError::SessionInvalid(error.to_string()))?;
         let dest_hash = public.id().as_hash().copy();
+        let is_zero_hop = matches!(
+            projected.tunnel_mode,
+            i2pr_client::DestinationTunnelMode::LocalZeroHop
+        );
         let mut registry = match self.session_registry.lock() {
             Ok(registry) => registry,
             Err(_) => return Err(ReserveError::RegistryLocked),
@@ -652,6 +761,36 @@ impl I2cpServiceState {
             registry.rollback(reservation.clone());
             return Err(ReserveError::DestinationRegistry(error.to_string()));
         }
+        // Plan 172 §9: for the counted local-zero-hop profile,
+        // establish the real local inbound/outbound routes before the
+        // Lease request is derived. The gateway is this process's
+        // actual local router hash; tunnel ids are fresh, non-zero,
+        // non-sentinel allocations.
+        if is_zero_hop {
+            let inbound_id = self.allocate_zero_hop_tunnel_id();
+            let outbound_id = self.allocate_zero_hop_tunnel_id();
+            let ctx = i2pr_client::LocalRouterContext {
+                local_router_hash: self.local_router_hash,
+            };
+            let now = u64::from(i2cp_now_seconds());
+            let lifetime = config.tunnel_lifetime_seconds();
+            let zero_hop_result = match self.destination_registry.lock() {
+                Ok(mut dest_registry) => match dest_registry.get_mut(&destination_id) {
+                    Some(runtime) => {
+                        runtime.ensure_local_zero_hop(ctx, inbound_id, outbound_id, now, lifetime)
+                    }
+                    None => Err(i2pr_client::DestinationRuntimeError::Stopping),
+                },
+                Err(_) => Err(i2pr_client::DestinationRuntimeError::Stopping),
+            };
+            if let Err(error) = zero_hop_result {
+                if let Ok(mut dest_registry) = self.destination_registry.lock() {
+                    let _ = dest_registry.remove(&destination_id);
+                }
+                registry.rollback(reservation.clone());
+                return Err(ReserveError::DestinationRuntime(error.to_string()));
+            }
+        }
         let entry = match registry.commit(reservation) {
             Ok(entry) => entry,
             Err(error) => {
@@ -678,12 +817,22 @@ impl I2cpServiceState {
         // Plan 169 §2: seed the reconfigure baseline with the
         // verified SessionConfig mapping so the next Reconfigure
         // diff has a typed starting point.
+        // Plan 172 §9: remote sessions stay Usable (pre-172
+        // best-effort); zero-hop sessions start AwaitingLeaseSet2 and
+        // become Usable only after the atomic install commits.
+        let initial_phase = if is_zero_hop {
+            I2cpSessionPhase::AwaitingLeaseSet2
+        } else {
+            I2cpSessionPhase::Usable
+        };
         let session_state = Arc::new(I2cpSessionState::new(
             entry.session,
             connection_id,
             dest_hash,
             destination_id,
             verified.options().clone(),
+            is_zero_hop,
+            initial_phase,
         ));
         if let Ok(mut sessions) = self.sessions.lock() {
             sessions.insert(entry.session, session_state);
@@ -759,6 +908,16 @@ impl I2cpServiceState {
                 "install_client_lease_set2 failed: {error}"
             )));
         }
+        drop(registry);
+        // Plan 172 §9: mark the session Usable only after the atomic
+        // install commits. Rejection leaves no installed LS2,
+        // decryption capability, or usable phase (fail-closed).
+        if let Some(session_state) = self.session_state(session) {
+            session_state.set_phase(I2cpSessionPhase::Usable);
+            session_state
+                .lease_set_installed
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(())
     }
 
@@ -813,6 +972,85 @@ impl I2cpServiceState {
             }
         }
     }
+
+    /// Derives the Plan 172 counted `RequestVariableLeaseSet` leases
+    /// from the destination's real local zero-hop inbound pool.
+    /// Returns an empty vector when the session, destination, or pool
+    /// is missing (caller must fail closed and never emit it).
+    pub(crate) fn zero_hop_requested_leases(
+        &self,
+        session: SessionId,
+    ) -> Vec<i2pr_api::i2cp::RequestedLease> {
+        let Some(session_state) = self.session_state(session) else {
+            return Vec::new();
+        };
+        let destination_id = session_state.destination_id;
+        let now = u64::from(i2cp_now_seconds());
+        let Ok(registry) = self.destination_registry.lock() else {
+            return Vec::new();
+        };
+        let Some(runtime) = registry.get(&destination_id) else {
+            return Vec::new();
+        };
+        runtime
+            .pool()
+            .inbound_lease_sources(now)
+            .iter()
+            .map(|source| i2pr_api::i2cp::RequestedLease {
+                gateway: source.gateway(),
+                tunnel_id: source.gateway_receive_tunnel_id(),
+            })
+            .collect()
+    }
+
+    /// Removes one session and its destination after a fail-closed
+    /// zero-hop setup failure. Releases LeaseSet2/decryption
+    /// capability (via runtime drop), zero-hop routes (via pool drop),
+    /// session reservation, and per-session bookkeeping.
+    fn remove_session_for_test_cleanup(&self, session: SessionId) {
+        let entry = match self.sessions.lock() {
+            Ok(mut sessions) => sessions.remove(&session),
+            Err(_) => None,
+        };
+        let Some(state) = entry else {
+            return;
+        };
+        let _ = state.release();
+        let dest_hash = state.destination_hash;
+        let destination_id = state.destination_id;
+        if let Ok(mut registry) = self.destination_registry.lock() {
+            let _ = registry.remove(&destination_id);
+        }
+        if let Ok(mut map) = self.destinations.lock() {
+            map.remove(&dest_hash);
+        }
+        if let Ok(mut registry) = self.session_registry.lock() {
+            let _ = registry.destroy(session);
+        }
+    }
+
+    /// Sanitized lifecycle observation for evidence (no private bytes):
+    /// session usability, zero-hop flag, installed flag, and lease count.
+    pub fn session_lifecycle_fact(&self, session: SessionId) -> Option<(bool, bool, bool, usize)> {
+        let session_state = self.session_state(session)?;
+        let is_zero_hop = session_state.is_zero_hop;
+        let installed = session_state
+            .lease_set_installed
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let usable = session_state.is_usable_for_data();
+        let now = u64::from(i2cp_now_seconds());
+        let lease_count = self
+            .destination_registry
+            .lock()
+            .ok()
+            .and_then(|registry| {
+                registry
+                    .get(&session_state.destination_id)
+                    .map(|runtime| runtime.pool().inbound_lease_sources(now).len())
+            })
+            .unwrap_or(0);
+        Some((is_zero_hop, installed, usable, lease_count))
+    }
 }
 
 /// Outcome of a CreateSession reservation attempt.
@@ -858,12 +1096,12 @@ fn map_reserve_error_to_code(outcome: &ReserveError) -> SessionStatusCode {
 
 /// Projects the Plan 165 projected policy into a [`DestinationConfig`].
 ///
-/// Plan 167 only needs the destination to be registered so that
-/// CreateLeaseSet2 has a runtime to install into; we deliberately defer
-/// the full option projection into the destination configuration to
-/// Plan 169.
-fn projected_to_config(_projected: ProjectedPolicy) -> DestinationConfig {
-    DestinationConfig::balanced()
+/// Plan 172 uses the projected destination config directly so the
+/// zero-hop quantity (1,1) and remote quantities flow into the
+/// destination pool ceilings. Router-wide ceilings remain authoritative
+/// via [`project_options`].
+fn projected_to_config(projected: ProjectedPolicy) -> DestinationConfig {
+    projected.destination_config
 }
 
 /// Drives one accepted I2CP connection through the read/dispatch loop.
@@ -1263,14 +1501,36 @@ async fn handle_create_session(
                 session,
                 status: SessionStatusCode::Created,
             };
-            // Plan 170 §5: after CreateSession succeeds, emit a
-            // follow-up RequestVariableLeaseSet with zero tunnel
-            // leases so the unmodified Java I2P
-            // `I2PSessionImpl.connect()` wait does not block forever
-            // waiting for tunnels that the M9 test profile cannot
-            // build. The empty lease list signals to the client
-            // that no inbound tunnels are available; the client may
-            // proceed with a LeaseSet install carrying zero leases.
+            // Plan 172 §9: the counted local-zero-hop profile derives
+            // the Lease request from the destination's real local pool
+            // via the Plan 166 seam and requires >= 1 lease. An empty
+            // request is never emitted for the counted path.
+            let is_zero_hop = state.session_state(session).is_some_and(|s| s.is_zero_hop);
+            if is_zero_hop {
+                let leases = state.zero_hop_requested_leases(session);
+                if leases.is_empty() {
+                    // Fail closed: tear down the just-created session
+                    // rather than emitting a zero-lease request.
+                    state.remove_session_for_test_cleanup(session);
+                    *per_connection_session = None;
+                    machine.deactivate_session();
+                    return Ok(FrameOutcome::Reply(Box::new(Message::SessionStatus(
+                        SessionStatus {
+                            session: SessionId::new(0),
+                            status: SessionStatusCode::Invalid,
+                        },
+                    ))));
+                }
+                let followup = i2pr_api::i2cp::RequestVariableLeaseSet { session, leases };
+                return Ok(FrameOutcome::ReplyAndFollowup(
+                    Box::new(Message::SessionStatus(reply)),
+                    Box::new(Message::RequestVariableLeaseSet(followup)),
+                ));
+            }
+            // Remote/best-effort path (pre-172): emit the empty
+            // follow-up so existing local suites and the retained Plan
+            // 170 diagnostic driver do not block. This path is never
+            // counted as Plan 172 lifecycle success.
             let followup = i2pr_api::i2cp::RequestVariableLeaseSet {
                 session,
                 leases: Vec::new(),
@@ -1757,6 +2017,18 @@ async fn enqueue_outbound_payload(
             declared_session,
             MessageId::new(0),
             I2cpMessageOutcome::BadSession,
+            payload.as_bytes().len(),
+            nonce,
+        ));
+    }
+    // Plan 172 §9/§13: counted zero-hop sessions may send only after
+    // the LS2 install commits. Remote profiles preserve pre-172
+    // best-effort behavior so existing suites stay green.
+    if !session_state.is_usable_for_data() {
+        return Ok(status_message(
+            declared_session,
+            MessageId::new(0),
+            I2cpMessageOutcome::BadLocalLeaseSet,
             payload.as_bytes().len(),
             nonce,
         ));

@@ -681,3 +681,7 @@ and inbound return stages are not claimed. Plan 119 closed as
 - Inbound policy evidence and closure:
   [`specs/references/short-build-inbound-creator-key.md`](../../specs/references/short-build-inbound-creator-key.md),
   [`plans/113-status.md`](../../plans/113-status.md).
+
+## Plan 172 - explicit local zero-hop kind (active)
+
+Zero-hop is a typed local path (gateway == endpoint == this router, non-zero local tunnel id, bounded lifetime, explicit direction, no remote hops, no LayerKeys, never offered to the remote IBGW/OBEP data plane). Remote EstablishedTunnel/TunnelRegistration still reject empty hop lists; ExploratoryPoolConfig::MIN_HOPS remains 1. See plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md.

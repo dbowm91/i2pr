@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, Milestone 8 SSU2, and Milestone 9 I2CP execution. Plans 155–161 passed the SSU2 v2 stack including independent IPv4 interop against exact-pinned i2pd 2.61.0; Milestone 8 is closed within its bounded scope, Plans 163–169 passed the M9 I2CP roadmap through the self-composed local product, and Plan 171 passed the invalid-preamble close corrective; Plan 170 is next.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, Milestone 8 SSU2, and Milestone 9 I2CP execution. Plans 155–161 passed the SSU2 v2 stack including independent IPv4 interop against exact-pinned i2pd 2.61.0; Milestone 8 is closed within its bounded scope, Plans 163–169 passed the M9 I2CP roadmap through the self-composed local product, and Plan 171 passed the invalid-preamble close corrective; Plan 170 wire/data-plane is retained-passed with final acceptance superseded by active Plan 172.
 ---
 
 # I2PR Local Development
@@ -64,8 +64,10 @@ plan_166 = passed-m9-i2cp-client-owned-destination-and-leaseset2
 plan_167 = passed-m9-i2cp-loopback-server-runtime
 plan_168 = passed-m9-i2cp-message-data-plane
 plan_169 = passed-m9-i2cp-self-composed-local-product-and-hardening
-plan_170 = passed-m9-i2cp-independent-clients-and-final-closure
+plan_170_external_wire_data_plane = retained-passed
+plan_170_final_acceptance = superseded-by-plan172
 plan_171 = passed-m9-i2cp-invalid-preamble-close-and-ci-corrective-retained
+plan_172 = active-m9-i2cp-independent-leaseset2-lifecycle-corrective
 
 milestone9_planning_authority = plan163
 milestone9_wire_foundation = passed-via-plan164
@@ -74,11 +76,12 @@ milestone9_client_owned_destination = passed-via-plan166
 milestone9_i2cp_loopback_server_runtime = passed-via-plan167
 milestone9_i2cp_message_data_plane = passed-via-plan168
 milestone9_i2cp_self_composed_local_product = passed-via-plan169
-milestone9_i2cp_independent_clients = passed-via-plan170
+milestone9_i2cp_independent_wire_data_plane = passed-via-plan170
+milestone9_i2cp_independent_leaseset2 = not-yet-proven
 milestone9_i2cp_invalid_preamble_close = passed-via-plan171
-milestone9_final_acceptance = closed-via-plan170
+milestone9_final_acceptance = reopened-by-plan172
 
-next_product_layer = milestone10-planning
+next_product_layer = milestone9-i2cp-corrective
 ```
 
 Read in order for current SSU2 work:
@@ -117,7 +120,7 @@ Read in order for Milestone 9 I2CP work:
 15. `plans/164-status.md`
 16. `plans/164-m9-i2cp-protocol-and-wire-foundation.md`
 17. `plans/163-m9-i2cp-roadmap.md` (planning authority)
-18. Milestone 9 is closed via Plan 170; do not start Milestone 10
+18. Milestone 9 is reopened by Plan 172; do not start Milestone 10
 without a new plan-of-record.
 
 Plans 155–160 passed the local SSU2 v2 protocol/runtime/reachability sequence.
@@ -513,16 +516,17 @@ bash scripts/check-ssu2-acceptance-evidence.sh
 - Plan 168 passed the M9 I2CP message data plane: bounded per-session `SendMessage`/`SendMessageExpires` validation against the existing `i2pr_client::DestinationRuntime::enqueue_outbound` seam, bounded `MessageStatus` correlation table, `MessagePayload` inbound frames delivered only to the owning session's bounded queue (sibling-isolation guaranteed), cross-session local loopback shortcut, `DestLookup` resolving through the local destination registry, and `GetBandwidthLimits` returning the config-derived client ceiling and the documented neutral router values. Eighteen real-TCP black-box tests in `crates/i2pr-daemon/tests/i2cp_message_data_plane.rs` exercise every Plan 168 §11 case. SAM router-owned product regressions remain green. No reconfiguration, no `HostLookup`/`HostReply` resolution, and no independent-client interop claim.
 - Plan 169 passed the M9 I2CP self-composed local product and hardening (reconfigure transaction handler, atomic reconfigure baseline, synchronous destroy drain; 5 + 19 + 6 black-box tests, all TCP/I2CP-driven; no `HostLookup`/`HostReply`, no independent-client evidence — those belong to Plan 170).
 - Plan 171 passed the M9 I2CP invalid-preamble close and CI corrective (retained): explicit `stream.shutdown()` on the common per-connection terminal path before bookkeeping release (no wire change); the strict wrong-preamble row now proves 24-iteration rejection with zeroed baselines plus a subsequent valid client (paused test waits via a bounded yield-pump/`try_read` drain, no virtual-time timeout), with a non-paused companion test separating product-close evidence from paused-clock behavior. The adversarial matrix is now 20 tests.
-- Plan 170 passed the M9 I2CP independent clients and final closure: exact-pinned Java I2P 2.13.0 and go-i2cp exchange digest-matched 25 B/32 KiB payloads both directions through the loopback daemon under the fail-closed 9-row lane. Milestone 9 is closed (experimental, loopback-only).
-- Next product layer is milestone10-planning; do not implement service tunnels/HTTP/SOCKS/IRC without a new plan-of-record.
+- Plan 170 external wire/data-plane evidence is retained-passed: exact-pinned Java I2P 2.13.0 and go-i2cp exchange digest-matched 25 B/32 KiB payloads both directions through the loopback daemon under the fail-closed 9-row lane. Its final-acceptance interpretation is superseded by Plan 172 (counted Java driver bypassed `I2PSession.connect()`; no external LeaseSet2 install).
+- Plan 172 is the active M9 I2CP independent LeaseSet2 lifecycle corrective: explicit local zero-hop tunnel kind, non-empty real `RequestVariableLeaseSet`, Plan 166 atomic install, high-level Java `I2PSession.connect()` plus public go-i2cp lifecycle proof, post-LS2 traffic, fail-closed evidence. Milestone 9 final acceptance is reopened until Plan 172 passes.
+- Next product layer is milestone9-i2cp-corrective; do not implement service tunnels/HTTP/SOCKS/IRC without a new plan-of-record.
 - `milestone6_interoperable = not-yet-claimed` remains unchanged.
 - SSU2 public-network participation, broad router interoperability, IPv6 external interop, PQ v3/v4, and SSU1 remain unclaimed/deferred as documented.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
 
-Current handoff: **Plan 170 has passed the M9 I2CP
-independent Java/Go client evidence and final closure
-(9-row fail-closed lane, digest-matched payloads both directions,
-full local floor green). Plan 171 invalid-preamble close corrective
-remains retained. Milestone 9 is closed
-(experimental, loopback-only). Do not implement Milestone 10
+Current handoff: **Plan 172 is the active M9 I2CP independent LeaseSet2
+lifecycle corrective (Milestone 9 final acceptance reopened-by-plan172,
+experimental, loopback-only). Plan 170 external wire/data-plane evidence
+remains retained-passed; its final-acceptance interpretation is
+superseded-by-plan172. Plan 171 invalid-preamble close corrective
+remains retained. Do not implement Milestone 10
 service tunnels/HTTP/SOCKS/IRC without a new plan-of-record.**

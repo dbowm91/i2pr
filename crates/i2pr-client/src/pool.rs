@@ -10,8 +10,8 @@
 
 use i2pr_proto::Hash;
 use i2pr_tunnel::{
-    BoundedTunnelPool, EstablishedMaterial, RegisterError, RegisterOutcome, TunnelDirection,
-    TunnelSlot, TunnelState,
+    BoundedTunnelPool, EstablishedMaterial, LocalZeroHopInbound, LocalZeroHopOutbound,
+    RegisterError, RegisterOutcome, TunnelDirection, TunnelSlot, TunnelState,
 };
 
 use crate::config::{DestinationConfig, DestinationConfigError};
@@ -30,6 +30,24 @@ pub struct InboundLeaseSource {
 }
 
 impl InboundLeaseSource {
+    /// Constructs a lease source from explicit parts. Used by the
+    /// destination pool for both remote and local zero-hop entries.
+    pub const fn from_parts(
+        slot: TunnelSlot,
+        gateway: Hash,
+        gateway_receive_tunnel_id: u32,
+        tunnel_expires_seconds: u64,
+        advertised_expires_seconds: u64,
+    ) -> Self {
+        Self {
+            slot,
+            gateway,
+            gateway_receive_tunnel_id,
+            tunnel_expires_seconds,
+            advertised_expires_seconds,
+        }
+    }
+
     /// Pool slot that owns the tunnel.
     pub const fn slot(&self) -> TunnelSlot {
         self.slot
@@ -80,6 +98,9 @@ pub struct DestinationTunnelPool {
     config: DestinationConfig,
     inner: BoundedTunnelPool,
     consecutive_failures: u16,
+    zero_hop_inbound: Option<(TunnelSlot, LocalZeroHopInbound)>,
+    zero_hop_outbound: Option<(TunnelSlot, LocalZeroHopOutbound)>,
+    next_zero_hop_slot: u32,
 }
 
 impl DestinationTunnelPool {
@@ -92,12 +113,122 @@ impl DestinationTunnelPool {
             config,
             inner: BoundedTunnelPool::new(pool_config),
             consecutive_failures: 0,
+            zero_hop_inbound: None,
+            zero_hop_outbound: None,
+            // Zero-hop slots live in a disjoint namespace so they can
+            // never alias a remote pool slot. Remote slots allocate
+            // from zero upward; zero-hop allocates from 0x4000_0000.
+            next_zero_hop_slot: 0x4000_0000,
         })
     }
 
     /// Returns the destination policy backing this pool.
     pub const fn config(&self) -> DestinationConfig {
         self.config
+    }
+
+    /// Allocates the next zero-hop slot identifier.
+    fn alloc_zero_hop_slot(&mut self) -> TunnelSlot {
+        let slot = TunnelSlot::from_raw(self.next_zero_hop_slot);
+        self.next_zero_hop_slot = self.next_zero_hop_slot.saturating_add(1);
+        slot
+    }
+
+    /// Registers one bounded local zero-hop inbound tunnel (Plan 172 §6.1).
+    ///
+    /// The gateway must be the actual local router hash; the tunnel id
+    /// must be fresh, non-zero, and non-sentinel. Capacity follows the
+    /// destination inbound target: a second distinct inbound entry is
+    /// rejected once the combined remote + zero-hop inbound count
+    /// reaches the target. A duplicate tunnel id is idempotent per the
+    /// existing pool policy.
+    pub fn register_local_zero_hop_inbound(
+        &mut self,
+        entry: LocalZeroHopInbound,
+        now_seconds: u64,
+    ) -> Result<TunnelSlot, DestinationPoolError> {
+        if !entry.is_usable(now_seconds) {
+            return Err(DestinationPoolError::Register(
+                "zero-hop inbound already expired".to_owned(),
+            ));
+        }
+        // Duplicate tunnel id is idempotent.
+        if let Some((slot, existing)) = &self.zero_hop_inbound
+            && existing.receive_tunnel() == entry.receive_tunnel()
+        {
+            let _ = existing;
+            return Ok(*slot);
+        }
+        // Also check remote registrations for aliasing.
+        for registration in self.inner.inbound_registrations() {
+            if registration.tunnel_id() == entry.receive_tunnel() {
+                return Err(DestinationPoolError::Register(
+                    "zero-hop tunnel id aliases an active remote route".to_owned(),
+                ));
+            }
+        }
+        let combined =
+            self.inner.inbound_len() + usize::from(self.zero_hop_inbound.is_some() as u8);
+        if combined >= usize::from(self.config.inbound_target()) {
+            return Err(DestinationPoolError::Register(
+                "destination inbound pool full".to_owned(),
+            ));
+        }
+        let slot = self.alloc_zero_hop_slot();
+        self.zero_hop_inbound = Some((slot, entry));
+        self.consecutive_failures = 0;
+        Ok(slot)
+    }
+
+    /// Registers one bounded local zero-hop outbound path (Plan 172 §6.2).
+    ///
+    /// The entry is the destination tunnel product's local route, not a
+    /// fabricated transport peer. Local cross-destination routing may
+    /// continue to use the Plan 168 shortcut; this entry makes
+    /// [`Self::is_usable`] honest about the outbound route.
+    pub fn register_local_zero_hop_outbound(
+        &mut self,
+        entry: LocalZeroHopOutbound,
+        now_seconds: u64,
+    ) -> Result<TunnelSlot, DestinationPoolError> {
+        if !entry.is_usable(now_seconds) {
+            return Err(DestinationPoolError::Register(
+                "zero-hop outbound already expired".to_owned(),
+            ));
+        }
+        if let Some((slot, existing)) = &self.zero_hop_outbound
+            && existing.local_route() == entry.local_route()
+        {
+            let _ = existing;
+            return Ok(*slot);
+        }
+        let combined =
+            self.inner.outbound_len() + usize::from(self.zero_hop_outbound.is_some() as u8);
+        if combined >= usize::from(self.config.outbound_target()) {
+            return Err(DestinationPoolError::Register(
+                "destination outbound pool full".to_owned(),
+            ));
+        }
+        let slot = self.alloc_zero_hop_slot();
+        self.zero_hop_outbound = Some((slot, entry));
+        self.consecutive_failures = 0;
+        Ok(slot)
+    }
+
+    /// Returns the local zero-hop inbound entry when present.
+    pub const fn zero_hop_inbound(&self) -> Option<(TunnelSlot, LocalZeroHopInbound)> {
+        match &self.zero_hop_inbound {
+            Some((slot, entry)) => Some((*slot, *entry)),
+            None => None,
+        }
+    }
+
+    /// Returns the local zero-hop outbound entry when present.
+    pub const fn zero_hop_outbound(&self) -> Option<(TunnelSlot, LocalZeroHopOutbound)> {
+        match &self.zero_hop_outbound {
+            Some((slot, entry)) => Some((*slot, *entry)),
+            None => None,
+        }
     }
 
     /// Registers real inbound established material.
@@ -139,9 +270,24 @@ impl DestinationTunnelPool {
     }
 
     /// Advances the pool's deterministic view of time and returns the slots
-    /// evicted because their tunnels expired.
+    /// evicted because their tunnels expired. Zero-hop entries expire
+    /// through the same deterministic clock and are removed so the
+    /// lease source disappears.
     pub fn advance_time(&mut self, now_seconds: u64) -> Vec<TunnelSlot> {
-        self.inner.advance_time(now_seconds)
+        let mut evicted = self.inner.advance_time(now_seconds);
+        if let Some((slot, entry)) = &self.zero_hop_inbound
+            && !entry.is_usable(now_seconds)
+        {
+            evicted.push(*slot);
+            self.zero_hop_inbound = None;
+        }
+        if let Some((slot, entry)) = &self.zero_hop_outbound
+            && !entry.is_usable(now_seconds)
+        {
+            evicted.push(*slot);
+            self.zero_hop_outbound = None;
+        }
+        evicted
     }
 
     /// Records a bounded destination build/replacement failure.
@@ -171,8 +317,22 @@ impl DestinationTunnelPool {
     }
 
     /// Marks a slot failed, removing it and incrementing the bounded failure
-    /// counter.
+    /// counter. Zero-hop slots are removed from the zero-hop tables.
     pub fn mark_failed(&mut self, slot: TunnelSlot) -> bool {
+        if let Some((stored, _)) = &self.zero_hop_inbound
+            && *stored == slot
+        {
+            self.zero_hop_inbound = None;
+            let _ = self.note_build_failure();
+            return true;
+        }
+        if let Some((stored, _)) = &self.zero_hop_outbound
+            && *stored == slot
+        {
+            self.zero_hop_outbound = None;
+            let _ = self.note_build_failure();
+            return true;
+        }
         let removed = self.inner.mark_failed(slot).is_some();
         if removed {
             let _ = self.note_build_failure();
@@ -181,18 +341,31 @@ impl DestinationTunnelPool {
     }
 
     /// Removes a slot unconditionally, dropping (and zeroizing) its material.
+    /// Zero-hop entries return to baseline.
     pub fn remove(&mut self, slot: TunnelSlot) -> bool {
+        if let Some((stored, _)) = &self.zero_hop_inbound
+            && *stored == slot
+        {
+            self.zero_hop_inbound = None;
+            return true;
+        }
+        if let Some((stored, _)) = &self.zero_hop_outbound
+            && *stored == slot
+        {
+            self.zero_hop_outbound = None;
+            return true;
+        }
         self.inner.remove(slot).is_some()
     }
 
-    /// Number of registered inbound tunnels.
+    /// Number of registered inbound tunnels (remote + zero-hop).
     pub fn inbound_len(&self) -> usize {
-        self.inner.inbound_len()
+        self.inner.inbound_len() + usize::from(self.zero_hop_inbound.is_some())
     }
 
-    /// Number of registered outbound tunnels.
+    /// Number of registered outbound tunnels (remote + zero-hop).
     pub fn outbound_len(&self) -> usize {
-        self.inner.outbound_len()
+        self.inner.outbound_len() + usize::from(self.zero_hop_outbound.is_some())
     }
 
     /// Total number of registered tunnels.
@@ -206,10 +379,17 @@ impl DestinationTunnelPool {
     }
 
     /// Whether the pool satisfies the configured minimum usable inbound count
-    /// and holds at least one usable outbound tunnel.
+    /// and holds at least one usable outbound tunnel. Zero-hop entries
+    /// count as honest local routes; remote-only callers are unaffected.
     pub fn is_usable(&self, now_seconds: u64) -> bool {
         let inbound = self.inbound_lease_sources(now_seconds).len();
-        inbound >= usize::from(self.config.minimum_usable_inbound()) && self.outbound_len() > 0
+        let outbound_usable = self.inner.outbound_len()
+            + usize::from(
+                self.zero_hop_outbound
+                    .as_ref()
+                    .is_some_and(|(_, entry)| entry.is_usable(now_seconds)),
+            );
+        inbound >= usize::from(self.config.minimum_usable_inbound()) && outbound_usable > 0
     }
 
     /// Returns the public routing metadata for every currently usable inbound
@@ -217,7 +397,9 @@ impl DestinationTunnelPool {
     ///
     /// A tunnel is excluded when it is not `Established`, when its real expiry
     /// has already passed, or when the configured publication margin would
-    /// produce a lease that has already ended.
+    /// produce a lease that has already ended. A usable local zero-hop
+    /// inbound entry is returned as a normal [`InboundLeaseSource`] with
+    /// the exact local router hash and registered tunnel id.
     pub fn inbound_lease_sources(&self, now_seconds: u64) -> Vec<InboundLeaseSource> {
         let lifetime = u64::from(self.config.tunnel_lifetime_seconds());
         let margin = u64::from(self.config.lease_publication_margin_seconds());
@@ -238,13 +420,30 @@ impl DestinationTunnelPool {
             if advertised <= now_seconds {
                 continue;
             }
-            sources.push(InboundLeaseSource {
+            sources.push(InboundLeaseSource::from_parts(
                 slot,
-                gateway: routing.first_hop_router(),
-                gateway_receive_tunnel_id: routing.first_hop_receive_tunnel().get(),
-                tunnel_expires_seconds: tunnel_expires,
-                advertised_expires_seconds: advertised,
-            });
+                routing.first_hop_router(),
+                routing.first_hop_receive_tunnel().get(),
+                tunnel_expires,
+                advertised,
+            ));
+        }
+        if let Some((slot, entry)) = &self.zero_hop_inbound
+            && entry.is_usable(now_seconds)
+        {
+            let tunnel_expires = entry.expires_seconds();
+            if tunnel_expires > now_seconds {
+                let advertised = tunnel_expires.saturating_sub(margin);
+                if advertised > now_seconds {
+                    sources.push(InboundLeaseSource::from_parts(
+                        *slot,
+                        entry.gateway(),
+                        entry.receive_tunnel().get(),
+                        tunnel_expires,
+                        advertised,
+                    ));
+                }
+            }
         }
         sources.sort_by_key(|source| source.slot.get());
         sources
@@ -252,6 +451,7 @@ impl DestinationTunnelPool {
 
     /// Releases every pool registration, returning the number of slots
     /// dropped. Established material is zeroized by its own `Drop` impl.
+    /// Zero-hop entries return to baseline.
     pub fn release_all(&mut self) -> usize {
         let mut slots: Vec<TunnelSlot> = self
             .inner
@@ -270,6 +470,12 @@ impl DestinationTunnelPool {
             if self.inner.remove(slot).is_some() {
                 released += 1;
             }
+        }
+        if self.zero_hop_inbound.take().is_some() {
+            released += 1;
+        }
+        if self.zero_hop_outbound.take().is_some() {
+            released += 1;
         }
         self.consecutive_failures = 0;
         released

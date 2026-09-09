@@ -120,7 +120,7 @@ work is scoped to:
    `wrong_protocol_byte_is_closed_real_time` companion prove the
    close with resource baselines. See
    [`plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md`](../../plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md).
-- **I2CP independent clients and final closure** (Plan 170):
+- **I2CP independent wire/data-plane** (Plan 170, retained-passed):
   exact-pinned Java I2P 2.13.0 and go-i2cp exchange
   digest-matched 25 B/32 KiB payloads both directions through
   the loopback daemon under the fail-closed 9-row lane
@@ -131,8 +131,23 @@ work is scoped to:
   `CreateSession`, `0.x.y` version negotiation, empty-auth
   GetDate acceptance, `messageReliability=none` best-effort
   mapping, and the ElGamal-legacy-slot policy relocation.
-  Milestone 9 is closed (experimental, loopback-only). See
+  Its wire/data-plane evidence is retained; its final-acceptance
+  interpretation is superseded by Plan 172 (counted Java driver
+  bypassed `I2PSession.connect()`; no external LeaseSet2 install).
+  See
   [`plans/170-m9-i2cp-independent-clients-and-final-closure.md`](../../plans/170-m9-i2cp-independent-clients-and-final-closure.md).
+- **I2CP independent LeaseSet2 lifecycle corrective** (Plan 172,
+  active): explicit local zero-hop tunnel kind (typed, not empty
+  remote `EstablishedMaterial`), non-empty real
+  `RequestVariableLeaseSet` derived from the destination pool via
+  the Plan 166 `take_client_refresh_request` seam, existing Plan 166
+  atomic `install_client_lease_set2`, session usability gated on LS2
+  install, high-level Java `I2PSession.connect()` plus public go-i2cp
+  `ProcessIO` lifecycle proof, post-LS2 cross-client traffic, and
+  fail-closed evidence. `i2cp.dontPublishLeaseSet=true` installs the
+  client-signed LS2 locally without public NetDB publication.
+  Milestone 9 final acceptance is reopened until Plan 172 passes. See
+  [`plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md`](../../plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md).
 
 What it **does not** do yet:
 

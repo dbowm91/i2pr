@@ -85,6 +85,7 @@ pub mod roles;
 pub mod short;
 pub mod short_record;
 pub mod short_state;
+pub mod zero_hop;
 
 pub use bridge::{BridgeError, BridgeHeader, BridgeRecord, ShortBuildI2npBridge};
 pub use build::{
@@ -168,3 +169,6 @@ pub use short_record::{
     ShortBuildError, ShortReplyRecord, ShortRequestRecord, ShortResponseCode,
 };
 pub use short_state::{HopResponse, ShortBuildRegistrar, ShortBuildState, ShortBuildStateMachine};
+pub use zero_hop::{
+    LocalZeroHopInbound, LocalZeroHopOutbound, MAX_ZERO_HOP_LIFETIME_SECONDS, ZeroHopError,
+};

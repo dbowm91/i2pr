@@ -646,6 +646,10 @@ by the I2CP daemon:
   destroyed session leaves no queue, status correlation, or
   outbound counter behind.
 
+## Plan 172 - local zero-hop lifecycle corrective (active; M9 reopened)
+
+Plan 172 adds the explicit local zero-hop tunnel kind (typed, not empty remote EstablishedMaterial), destination-pool zero-hop routes, LocalRouterContext (actual local router hash + typed tunnel-id allocation), and session usability gated on the existing Plan 166 atomic install. Remote EstablishedTunnel::new() still rejects empty hops; ExploratoryPoolConfig::MIN_HOPS stays 1. dontPublishLeaseSet=true installs locally without NetDB publication.
+
 ## Plan 170 — legacy-slot policy relocation
 
 Plan 170 accepts the Destination encryption-key slot as the I2P

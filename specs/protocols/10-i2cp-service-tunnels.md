@@ -575,7 +575,7 @@ evidence is claimed in Plan 167; Plan 168 owns the message
 data plane, Plan 169 owns the local self-composed product and
 hardening, Plan 171 owns the terminal close corrective (retained),
 and Plan 170 owns independent Java/Go client
-evidence (passed; Milestone 9 closed).
+evidence (retained-passed; Milestone 9 final acceptance reopened by Plan 172 - independent LeaseSet2 lifecycle not-yet-proven).
 
 ### M9 I2CP independent clients and final closure (Plan 170)
 
@@ -599,8 +599,10 @@ Evidence is the fail-closed 9-row lane
 `scripts/check-i2cp-acceptance-evidence.sh` in routine CI,
 manual `.github/workflows/i2cp-external.yml`), run twice
 consecutively on the closing tree. No `HostLookup`/`HostReply`
-resolution, no remote-I2CP/public-network claim; Milestone 9 is
-closed (experimental, loopback-only).
+resolution, no remote-I2CP/public-network claim; Milestone 9 final
+acceptance is reopened by Plan 172 (Plan 170 wire/data-plane
+retained-passed; independent LeaseSet2 lifecycle not-yet-proven;
+experimental, loopback-only).
 
 ### Connection state machine
 
