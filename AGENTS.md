@@ -310,6 +310,21 @@ the existing self-composed file. The Plan 151 evidence-integrity checker
 (`scripts/check-sam-acceptance-evidence.sh`) is enforced in routine Linux CI
 and the manual SAM external workflow; do not weaken it to make CI pass.
 
+Plan 176 added the runtime-neutral `i2pr-service-tunnels::http` module
+(bounded HTTP/1.1 parser with smuggling rejection, hop-by-hop +
+privacy rewrite, `.i2p`-only target validation, bounded error
+response generation) and the daemon HTTP proxy executor
+(`crates/i2pr-daemon/src/service_tunnels_http.rs`) that owns one
+loopback listener per `http-client` spec. It reuses the Plan 174
+shared byte pump + Plan 149 destination product path; no new
+Garlic/I2NP/Streaming implementation exists. The full I2P Streaming
+byte round-trip over local TCP for the HTTP profile is deferred to
+the Plan 180 reconcile pass, which generalizes the per-destination
+runtime driver to service tunnels. Plan 176 does not silently
+weaken that criterion: every behavior that is testable without the
+runtime driver loop is exercised, while the byte round-trip remains
+an explicit Plan 180 deliverable.
+
 Focused SSU2 seams currently include:
 
 ```text
@@ -371,6 +386,8 @@ cargo test --locked -p i2pr-service-tunnels --all-targets
 cargo test --locked -p i2pr-daemon --lib destination_streaming
 cargo test --locked -p i2pr-daemon --lib config
 cargo test --locked -p i2pr-daemon --test service_tunnels_foundation -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnel_generic_product -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnel_http_product -- --test-threads=1
 ```
 
 Plan 164 added the I2CP fixture corpus (`tests/fixtures/i2cp/`) and its

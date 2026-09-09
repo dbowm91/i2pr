@@ -296,11 +296,21 @@ plan_174_status = "passed-m10-service-tunnel-foundation-and-shared-stream-runtim
 plan_175_plan_of_record = "plans/175-m10-generic-client-server-service-tunnels.md"
 plan_175_closure = "plans/175-status.md"
 plan_175_status = "passed-m10-generic-client-server-service-tunnels"
+plan_176_plan_of_record = "plans/176-m10-http-i2p-proxy-and-connect.md"
+plan_176_closure = "plans/176-status.md"
+plan_176_status = "passed-m10-http-i2p-proxy-and-connect"
 milestone10_planning_authority = "plan173"
 milestone10_foundation = "passed-via-plan174"
 milestone10_generic_tunnels = "passed-via-plan175"
+milestone10_http_proxy = "passed-via-plan176"
+milestone10_socks5 = "not-yet-passed"
+milestone10_irc_client = "not-yet-passed"
+milestone10_irc_server = "not-yet-passed"
+milestone10_local_product = "not-yet-passed"
+milestone10_remote_service_interop = "not-yet-passed"
 milestone10_final_acceptance = "not-yet-closed"
 next_product_layer = "milestone10-service-tunnels"
+next_executable_plan = "177"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
@@ -1342,5 +1352,33 @@ evidence = [
     "specs/protocols/11-service-tunnels.md",
     "plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md",
     "plans/174-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "service-tunnels.http-proxy"
+protocol = "service-tunnels"
+structure = "loopback-only-http-client-proxy-and-connect"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 176 passed the first M10 application profile: the runtime-neutral `i2pr-service-tunnels::http` module owns a bounded HTTP/1.1 parser (smuggling ambiguities fail closed: `Transfer-Encoding`+`Content-Length`, conflicting `Content-Length`, GET/HEAD with framing, duplicate conflicting `Host`, lone LF/bare CR/obs-fold, control bytes, header count/length ceilings), `.i2p`/`Base32` target validation (clearnet/IP literals/localhost/mixed-suffix confusion/userinfo/non-`http` schemes are all rejected; CONNECT requires explicit non-zero allowed port; default CONNECT port policy is `{443}`), hop-by-hop Connection-nominated removal plus hop-by-hop field stripping (`Proxy-Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`, `Transfer-Encoding`), privacy rewrite (`Via`, `Forwarded`, `X-Forwarded-*`, `Proxy-Authorization`, optional `Referer`/`From` strip; `User-Agent` keep/strip/replace-stable), forced `Connection: close`, Host normalization, and a bounded error response generator that never echoes untrusted bytes. The daemon-owned `i2pr-daemon::service_tunnels_http` executor binds one loopback listener per `http-client` spec, reads headers under a 30 s deadline, dispatches CONNECT to a 2xx reply plus shared Plan 174 byte pump in tunnel mode, or rewrites/forwards ordinary proxy requests through the same pump in body/response mode, and reuses the Plan 175 manager destination/Streaming bridge (no new Garlic/I2NP/Streaming implementation is introduced). The full I2P Streaming byte round-trip over local TCP for the HTTP profile is Plan 180 reconcile work; Plan 176 does not silently weaken that criterion. No clearnet outproxy, TLS interception, HTTP/2/3, SOCKS, or IRC claim."
+evidence = [
+    "crates/i2pr-service-tunnels/src/http/parser.rs",
+    "crates/i2pr-service-tunnels/src/http/target.rs",
+    "crates/i2pr-service-tunnels/src/http/rewrite.rs",
+    "crates/i2pr-service-tunnels/src/http/response.rs",
+    "crates/i2pr-service-tunnels/src/http/config.rs",
+    "crates/i2pr-service-tunnels/src/http/error.rs",
+    "crates/i2pr-service-tunnels/src/http/limits.rs",
+    "crates/i2pr-service-tunnels/src/lib.rs",
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-daemon/src/service_tunnels_http.rs",
+    "crates/i2pr-daemon/src/service_tunnels.rs",
+    "crates/i2pr-daemon/src/destination_streaming.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_http_product.rs",
+    "crates/i2pr-daemon/tests/service_tunnels_foundation.rs",
+    "specs/protocols/11-service-tunnels.md",
+    "plans/176-m10-http-i2p-proxy-and-connect.md",
 ]
 advertised = false

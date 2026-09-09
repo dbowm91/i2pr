@@ -1524,6 +1524,11 @@ fn normalize_service_tunnels(
         let max_buffered = entry
             .max_buffered_bytes_per_direction
             .unwrap_or(raw.max_buffered_bytes_per_direction);
+        let http_options = if matches!(kind, ServiceTunnelKind::HttpClient) {
+            Some(i2pr_service_tunnels::HttpClientOptions::defaults())
+        } else {
+            None
+        };
         let spec = ServiceTunnelSpec {
             id,
             kind,
@@ -1536,6 +1541,7 @@ fn normalize_service_tunnels(
             max_connections,
             max_buffered_bytes_per_direction: max_buffered,
             timeouts,
+            http_options,
         };
         spec.validate().map_err(|err| match err {
             i2pr_service_tunnels::ServiceTunnelError::DuplicateId { .. }
@@ -1583,14 +1589,16 @@ fn normalize_service_tunnels(
         reason: "duplicate service id, duplicate listener, or ceiling exceeded",
     })?;
 
-    // Plan 175 §13/§6: only `generic-client` and `generic-server`
-    // tunnels may activate in this plan. Any other enabled kind
-    // (HTTP, SOCKS, IRC) is rejected as not-yet-available rather than
-    // silently ignored.
+    // Plan 175 §13/§6 + Plan 176 §13: `generic-client`,
+    // `generic-server`, and `http-client` tunnels may activate
+    // after their plans land. Any other enabled kind (SOCKS, IRC)
+    // is rejected as not-yet-available rather than silently
+    // ignored.
     for spec in set.tunnels.iter().filter(|spec| spec.enabled) {
         match spec.kind {
             i2pr_service_tunnels::ServiceTunnelKind::GenericClient
-            | i2pr_service_tunnels::ServiceTunnelKind::GenericServer => {}
+            | i2pr_service_tunnels::ServiceTunnelKind::GenericServer
+            | i2pr_service_tunnels::ServiceTunnelKind::HttpClient => {}
             _ => {
                 return Err(ConfigError::Semantic {
                     field: "service_tunnels.tunnel.enabled",
@@ -2824,8 +2832,10 @@ data_dir = "./state"
 
     #[test]
     fn enabled_non_generic_service_tunnel_rejected_as_not_yet_available() {
+        // Plan 176: http-client is now accepted; only socks5/irc
+        // remain rejected as not-yet-available.
         let mut text = format!(
-            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"http-client\"\nenabled = true\nlistener = \"127.0.0.1:8080\"\ndestination = \"{}\"\n",
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"socks5-client\"\nenabled = true\nlistener = \"127.0.0.1:8080\"\ndestination = \"{}\"\n",
             MINIMAL,
             service_b32()
         );
@@ -2836,7 +2846,7 @@ data_dir = "./state"
                 ..
             })
         ));
-        text = text.replace("http-client", "socks5-client");
+        text = text.replace("socks5-client", "irc-client");
         assert!(matches!(
             Config::parse(&text),
             Err(ConfigError::Semantic {
@@ -2844,6 +2854,29 @@ data_dir = "./state"
                 ..
             })
         ));
+        let irc_server_text = format!(
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"irc-server\"\nenabled = true\ntarget = \"127.0.0.1:9090\"\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&irc_server_text),
+            Err(ConfigError::Semantic {
+                field: "service_tunnels.tunnel.enabled",
+                ..
+            })
+        ));
+        let _ = text; // suppress unused mutation warning.
+    }
+
+    #[test]
+    fn enabled_http_client_service_tunnel_is_accepted() {
+        let text = format!(
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"http-client\"\nenabled = true\nlistener = \"127.0.0.1:8080\"\ndestination = \"{}\"\n",
+            MINIMAL,
+            service_b32()
+        );
+        let config = Config::parse(&text).expect("http-client must accept");
+        assert!(config.service_tunnels.tunnels.tunnels[0].enabled);
     }
 
     #[test]

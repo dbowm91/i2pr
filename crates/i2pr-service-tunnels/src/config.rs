@@ -496,6 +496,9 @@ pub struct ServiceTunnelSpec {
     pub max_buffered_bytes_per_direction: usize,
     /// Service deadlines.
     pub timeouts: ServiceTimeouts,
+    /// HTTP-specific profile options. Mandatory for `HttpClient`
+    /// kinds; ignored otherwise.
+    pub http_options: Option<crate::http::HttpClientOptions>,
 }
 
 impl ServiceTunnelSpec {
@@ -570,6 +573,27 @@ impl ServiceTunnelSpec {
                     return Err(ServiceTunnelError::ContradictoryOptions {
                         id,
                         reason: "server service kinds require a dedicated destination",
+                    });
+                }
+            }
+        }
+        // Plan 176: http-client must carry HTTP profile options;
+        // non-HTTP kinds must not.
+        match self.kind {
+            ServiceTunnelKind::HttpClient => {
+                let options = self.http_options.as_ref().ok_or_else(|| {
+                    ServiceTunnelError::ContradictoryOptions {
+                        id: id.clone(),
+                        reason: "http-client requires http_options",
+                    }
+                })?;
+                options.validate()?;
+            }
+            _ => {
+                if self.http_options.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "http_options must not be set for non-HTTP kinds",
                     });
                 }
             }
@@ -665,6 +689,7 @@ mod tests {
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            http_options: None,
         }
     }
 
@@ -762,6 +787,7 @@ mod tests {
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            http_options: None,
         };
         assert!(server.validate().is_err());
     }
@@ -777,6 +803,18 @@ mod tests {
         assert!(spec.validate().is_err());
         spec.max_connections = 16;
         spec.max_buffered_bytes_per_direction = MAX_BUFFERED_BYTES_PER_DIRECTION + 1;
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn http_client_requires_options() {
+        let mut spec = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
+        spec.kind = ServiceTunnelKind::HttpClient;
+        assert!(spec.validate().is_err());
+        spec.http_options = Some(crate::http::HttpClientOptions::default());
+        spec.validate().expect("http options validate");
+        // Non-HTTP kinds must not carry http_options.
+        spec.kind = ServiceTunnelKind::GenericClient;
         assert!(spec.validate().is_err());
     }
 }

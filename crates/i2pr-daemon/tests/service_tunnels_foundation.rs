@@ -127,10 +127,6 @@ fn enabled_non_generic_service_tunnel_is_rejected() {
     // only the enabled-rejection check fires.
     let cases = [
         (
-            "http-client",
-            format!("listener = \"127.0.0.1:8080\"\ndestination = \"{b32}\"\n"),
-        ),
-        (
             "socks5-client",
             format!("listener = \"127.0.0.1:8080\"\ndestination = \"{b32}\"\n"),
         ),
@@ -158,4 +154,22 @@ fn enabled_non_generic_service_tunnel_is_rejected() {
             "{kind} rejection must be explicit, got: {err:?}"
         );
     }
+}
+
+#[test]
+fn enabled_http_client_tunnel_is_accepted() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let b32 = canonical_b32();
+    let text = format!(
+        "{}\n[service_tunnels]\nenabled = true\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"http-client\"\nenabled = true\nlistener = \"127.0.0.1:8080\"\ndestination = \"{b32}\"\n",
+        minimal(directory.path())
+    );
+    let config = Config::parse(&text).expect("enabled http-client must be accepted");
+    assert!(config.service_tunnels.enabled);
+    assert_eq!(config.service_tunnels.tunnels.len(), 1);
+    assert!(config.service_tunnels.tunnels.tunnels[0].enabled);
+    assert!(matches!(
+        config.service_tunnels.tunnels.tunnels[0].kind,
+        i2pr_service_tunnels::ServiceTunnelKind::HttpClient
+    ));
 }

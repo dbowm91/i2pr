@@ -290,6 +290,10 @@ Plan 172 = passed M9 I2CP independent LeaseSet2 lifecycle corrective
 Milestone 9 final acceptance = closed-via-plan172 (experimental, loopback-only)
 Plan 173 = registered M10 service-tunnels roadmap
 Plan 174 = passed M10 service-tunnel foundation and shared stream runtime
-Milestone 10 foundation = passed-via-plan174 (no listener yet)
-next_executable_plan = 175
+Plan 175 = passed M10 generic client/server service tunnels
+Plan 176 = passed M10 HTTP `.i2p` proxy and CONNECT
+Milestone 10 foundation = passed-via-plan174
+Milestone 10 generic tunnels = passed-via-plan175
+Milestone 10 HTTP proxy = passed-via-plan176
+next_executable_plan = 177
 ```

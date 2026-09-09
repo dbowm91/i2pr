@@ -68,9 +68,10 @@ use crate::sam::fabric::SamLocalProductFabric;
 use crate::sam::streams::{
     InboundTunnelFactory, SamDestinationBridge, SamDestinationHandle, SamDestinations,
 };
+use crate::service_tunnels_http::run_http_client_loop;
 
 /// Process-local monotonic clock used for Streaming deadlines.
-fn service_streaming_now_ms() -> u64 {
+pub fn service_streaming_now_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     let start = *START.get_or_init(Instant::now);
     Instant::now()
@@ -132,21 +133,23 @@ pub struct ServiceRuntime {
     /// Whether the per-service supervisor loop has stopped.
     stopped: Arc<AtomicBool>,
     /// Per-service connection count.
-    active_connections: Arc<AtomicUsize>,
+    pub(crate) active_connections: Arc<AtomicUsize>,
     /// Per-service failed-connect counter.
-    failed_connects: Arc<AtomicUsize>,
+    pub(crate) failed_connects: Arc<AtomicUsize>,
     /// Bridge handle shared by the supervisor and the per-service connection pump.
     bridge: SamDestinationHandle,
     /// The destination id used for this service.
-    destination_id: DestinationId,
+    pub(crate) destination_id: DestinationId,
     /// Listener for client tunnels (loopback TCP).
-    client_listener: Option<TcpListener>,
+    pub(crate) client_listener: Option<TcpListener>,
     /// Local TCP target address for server tunnels.
     server_target: Option<SocketAddr>,
     /// I2P destination port for server tunnel Streaming listener.
     server_streaming_port: Option<u16>,
     /// Whether this is a server-side tunnel.
     is_server: bool,
+    /// Whether this is an HTTP client tunnel.
+    is_http: bool,
 }
 
 impl std::fmt::Debug for ServiceRuntime {
@@ -558,6 +561,7 @@ impl ServiceTunnelManager {
         let stopped = Arc::new(AtomicBool::new(false));
         let active_connections = Arc::new(AtomicUsize::new(0));
         let failed_connects = Arc::new(AtomicUsize::new(0));
+        let is_http = matches!(spec.kind, ServiceTunnelKind::HttpClient);
         let runtime = Arc::new(ServiceRuntime {
             spec_id: spec.id.as_str().to_owned(),
             kind: spec.kind,
@@ -571,6 +575,7 @@ impl ServiceTunnelManager {
             server_target,
             server_streaming_port,
             is_server,
+            is_http,
         });
         let mut runtimes = self.runtimes.lock().expect("runtimes poisoned");
         runtimes.insert(spec.id.as_str().to_owned(), Arc::clone(&runtime));
@@ -637,7 +642,7 @@ impl ServiceTunnelManager {
         self.resolve_reference(reference)
     }
 
-    fn resolve_reference(
+    pub fn resolve_reference(
         &self,
         reference: &DestinationRef,
     ) -> Result<ClientTarget, DestinationFailure> {
@@ -824,6 +829,8 @@ async fn run_service_loop(
     debug!(service = %id, "service tunnel supervisor entered");
     let result = if runtime.is_server {
         run_server_loop(&manager, &runtime, &spec, &task_cancellation).await
+    } else if runtime.is_http {
+        run_http_client_loop(&manager, &runtime, &spec, &task_cancellation).await
     } else {
         run_client_loop(&manager, &runtime, &spec, &task_cancellation).await
     };
@@ -1206,7 +1213,7 @@ fn lookup_connect_timeout(manager: &ServiceTunnelManager, spec_id: &str) -> u64 
 }
 
 /// Streaming pump endpoint adapted to one service-tunnel destination.
-struct ServicePumpEndpoint {
+pub struct ServicePumpEndpoint {
     manager: Arc<ServiceTunnelManager>,
     destination_id: DestinationId,
     connection_id: ConnectionId,
@@ -1223,7 +1230,7 @@ enum ServiceDirection {
 }
 
 impl ServicePumpEndpoint {
-    fn new_client(
+    pub fn new_client(
         manager: Arc<ServiceTunnelManager>,
         destination_id: DestinationId,
         connection_id: ConnectionId,
@@ -1238,7 +1245,7 @@ impl ServicePumpEndpoint {
         }
     }
 
-    fn new_server(
+    pub fn new_server(
         manager: Arc<ServiceTunnelManager>,
         destination_id: DestinationId,
         connection_id: ConnectionId,

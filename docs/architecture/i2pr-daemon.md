@@ -152,24 +152,36 @@ work is scoped to:
   installs the client-signed LS2 locally without public NetDB publication.
   Milestone 9 final acceptance is closed via Plan 172. See
   [`plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md`](../../plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md).
-- **M10 service-tunnel foundation** (Plan 174) and **generic client/server tunnels** (Plan 175): adds the shared
+- **M10 service-tunnel foundation** (Plan 174), **generic client/server tunnels** (Plan 175), and **HTTP `.i2p` proxy + CONNECT** (Plan 176): adds the shared
   `destination_streaming` pump (`run_stream_pump` generic over
   `AsyncRead + AsyncWrite` with bounded chunk, negotiated
   segmentation, backpressure, sibling-isolated drain, and
-  cancel/EOF/terminal convergence) and adapts SAM plus the Plan 175
-  `ServiceTunnelManager` to it via narrow capability traits
-  (no second byte pump). Plan 175 adds the persistent
-  `ServiceDestinationStore` (versioned, atomic, secret-safe) plus a
-  daemon-owned `ServiceTunnelManager` that binds loopback TCP for
+  cancel/EOF/terminal convergence) and adapts SAM plus the
+  Plan 175 `ServiceTunnelManager` and the Plan 176 HTTP proxy
+  executor (`crates/i2pr-daemon/src/service_tunnels_http.rs`)
+  to it via narrow capability traits (no second byte pump).
+  Plan 175 adds the persistent `ServiceDestinationStore`
+  (versioned, atomic, secret-safe) plus a daemon-owned
+  `ServiceTunnelManager` that binds loopback TCP for
   `generic-client` and a loopback Streaming listener for
   `generic-server`, reuses the Plan 149 local destination product
   path, and exposes a typed cross-tunnel local destination lookup.
-  Plan 175 enables `enabled = true` for `generic-client` and
-  `generic-server` only; HTTP/SOCKS/IRC remain rejected as
-  not-yet-available until Plans 176-179. See
-  [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](../../plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md)
+  Plan 176 adds the runtime-neutral `i2pr-service-tunnels::http`
+  module (bounded HTTP/1.1 parser with smuggling rejection,
+  hop-by-hop `Connection` removal, conservative privacy/header
+  rewrite, `.i2p`-only target validation, bounded error response
+  generation) and the daemon-owned HTTP proxy executor that owns
+  one loopback listener per `http-client` spec, dispatches CONNECT
+  to a 2xx tunnel or rewrites/forwards ordinary proxy requests,
+  and reuses the shared byte pump + destination product path. Plan 176
+  enables `enabled = true` for `generic-client`, `generic-server`,
+  and `http-client`; SOCKS/IRC remain rejected as not-yet-available
+  until Plans 177-179. The full M10 per-service Streaming byte
+  round-trip over local TCP remains Plan 180 reconcile work. See
+  [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](../../plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md),
+  [`plans/175-m10-generic-client-server-service-tunnels.md`](../../plans/175-m10-generic-client-server-service-tunnels.md),
   and
-  [`plans/175-m10-generic-client-server-service-tunnels.md`](../../plans/175-m10-generic-client-server-service-tunnels.md).
+  [`plans/176-m10-http-i2p-proxy-and-connect.md`](../../plans/176-m10-http-i2p-proxy-and-connect.md).
 
 What it **does not** do yet:
 

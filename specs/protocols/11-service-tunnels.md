@@ -1,10 +1,11 @@
 # Service tunnels (Milestone 10)
 
-Status: **generic tunnels landed** (Plan 175 passed; HTTP/SOCKS/IRC still not implemented)  
+Status: **HTTP `.i2p` proxy landed** (Plan 176 passed; SOCKS5/IRC still not implemented)  
 Planning authority: **Plan 173** (`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`)  
 Foundation: **Plan 174** (`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`)  
 Generic client/server tunnels: **Plan 175** (`plans/175-m10-generic-client-server-service-tunnels.md`)  
-Next executable plan: **176** (HTTP `.i2p` proxy + CONNECT)
+HTTP `.i2p` proxy + CONNECT: **Plan 176** (`plans/176-m10-http-i2p-proxy-and-connect.md`)  
+Next executable plan: **177** (SOCKS5 no-auth CONNECT)
 
 > Plan 174 is a refactor/foundation pass. It must not change I2P wire
 > semantics or broaden listener exposure. No generic, HTTP, SOCKS5,
@@ -40,13 +41,14 @@ i2pr-daemon (only socket/task/composition owner)
 ```
 
 - `crates/i2pr-service-tunnels` owns configuration validation,
-  destination references, static aliases, and (later) HTTP/SOCKS/IRC
-  parsers and policies. No Tokio, no listeners, no timers, no
-  filesystem, no transport/tunnel-build internals, no NetDB mutation,
-  no Garlic/I2NP construction.
+  destination references, static aliases, the Plan 176 HTTP/1.1
+  parser/rewrite/target-validation/error-response surface, and
+  future SOCKS5/IRC parsers and policies. No Tokio, no listeners,
+  no timers, no filesystem, no transport/tunnel-build internals,
+  no NetDB mutation, no Garlic/I2NP construction.
 - `crates/i2pr-daemon/src/destination_streaming.rs` owns the shared
   bounded socket<->Streaming pump. SAM reuses it via a narrow
-  capability; future service tunnels reuse the same primitive.
+  capability; service tunnels reuse the same primitive.
 - Server tunnels use versioned, atomic, secret-safe persistent
   router-owned destinations (Plan 175). Client tunnels default to
   ephemeral router-owned destinations; sharing only through explicit
@@ -82,14 +84,68 @@ i2pr-daemon (only socket/task/composition owner)
 - Daemon `[service_tunnels]` is strict (`deny_unknown_fields`),
   disabled by default, loopback-only, with duplicate-bind detection
   and router-wide budget guards. Any `enabled = true` tunnel is
-  rejected as not-yet-available until Plan 175; no listener starts
-  in Plan 174.
+  rejected as not-yet-available until its owning plan lands; no
+  listener starts in Plan 174.
 - Shared pump (`destination_streaming::run_stream_pump`) is generic
   over `AsyncRead + AsyncWrite`, bounded per-read chunk, negotiated
   segmentation, send-window backpressure without busy spin,
   sibling-isolated drain, fair ACK/driver progress, and
   cancellation/EOF/terminal convergence. SAM delegates to it;
   no second byte pump remains.
+
+## Plan 176 HTTP surface (added)
+
+The `http-client` service kind is enabled alongside `generic-client`
+and `generic-server` in Plan 176. Its runtime-neutral surface lives
+under `crates/i2pr-service-tunnels/src/http/`:
+
+- `parser` — strict HTTP/1.1 request-line + header parser with hard
+  ceilings (request-line 8192, header total 65536, header count
+  100, name 256, value 8192, retained 65536). Rejects NUL/control
+  bytes, bare CR, lone LF, obs-fold, conflicting `Content-Length`,
+  `Transfer-Encoding`+`Content-Length`, duplicate/conflicting Host,
+  overlong fields, smuggling ambiguities. Headers are emitted as
+  single-line entries (no folding).
+- `target` — `RequestTarget` parser for absolute-form / origin-form
+  / authority-form. Validates `.i2p` / `.b32.i2p` authorities only;
+  rejects IP literals, `localhost`, mixed-suffix confusion
+  (`foo.i2p.example`), userinfo, malformed/empty port, overlong
+  hosts. `origin_form()` produces the rewritten request-target;
+  `canonical_authority()` returns the normalized `Host`.
+- `rewrite` — `Connection` header parse + iterate-and-drop, drop
+  known hop-by-hops (`Proxy-Connection`, `Keep-Alive`, `TE`,
+  `Trailer`, `Upgrade`, `Transfer-Encoding`), force
+  `Connection: close`, normalize `Host`, apply the privacy policy
+  (`Via`, `Forwarded`, `X-Forwarded-*`, `Proxy-Authorization`,
+  `Referer`, `From` strip; `User-Agent` keep/strip/replace-stable).
+- `response` — bounded HTTP/1.1 error response builder. Body is
+  always the static reason phrase; diagnostic detail is bounded
+  to a sanitized `X-HTTP-Proxy-Reason` header (no CR/LF/control
+  byte echo).
+- `config` — `HttpClientOptions { privacy: PrivacyPolicy, ...
+  }`. Default `User-AgentPolicy` is `ReplaceStable` with value
+  `i2pr/0.1`. Default CONNECT-allowed port is `{ 443 }`; the set
+  is bounded to `HTTP_OPTIONS_MAX_PORTS` entries (16).
+
+Daemon-side composition:
+- `crates/i2pr-daemon/src/service_tunnels_http.rs` owns the
+  per-connection HTTP executor. Reads headers under a 30 s
+  deadline, dispatches CONNECT to a 2xx reply followed by the
+  shared Plan 174 byte pump in tunnel mode, or rewrites + forwards
+  ordinary requests and runs the shared pump in body/response
+  mode. Termination emits Streaming CLOSE on success and RESET on
+  error. No new Garlic/I2NP/Streaming implementation is introduced.
+- `crates/i2pr-daemon/src/service_tunnels.rs` adds `is_http` on
+  `ServiceRuntime` and dispatches `http-client` services to the new
+  HTTP supervisor loop. The pre-existing `service_tunnels_http`
+  module owns the listener/connection/sibling-isolation logic.
+
+The full I2P Streaming byte round-trip over local TCP for the
+HTTP profile is owned by Plan 180 reconcile work, which
+generalizes the per-destination runtime driver to service tunnels.
+Plan 176 does not silently weaken that criterion: every behavior
+that is testable without the runtime driver loop is exercised,
+while the byte round-trip remains a Plan 180 deliverable.
 
 ## Explicit not-yet-implemented product rows
 
@@ -98,7 +154,7 @@ i2pr-daemon (only socket/task/composition owner)
 | Generic TCP client listener | passed-experimental-loopback-only | 175 |
 | Generic TCP server destination + target | passed-experimental-loopback-only | 175 |
 | Persistent server destination storage | passed-experimental-secret-safe | 175 |
-| HTTP `.i2p` proxy + CONNECT | not-yet-implemented | 176 |
+| HTTP `.i2p` proxy + CONNECT | passed-experimental-loopback-only | 176 |
 | SOCKS5 no-auth `.i2p` CONNECT | not-yet-implemented | 177 |
 | IRC client privacy filter | not-yet-implemented | 178 |
 | IRC server authenticated hostname | not-yet-implemented | 179 |
@@ -107,6 +163,50 @@ i2pr-daemon (only socket/task/composition owner)
 
 No row above may be marked passed until its owning plan has an
 explicit passing status record with command-derived evidence.
+
+## Evidence (Plan 176)
+
+- `crates/i2pr-service-tunnels/src/http/` (parser, target,
+  rewrite, response, config, error, limits; `#![forbid(unsafe_code)]`,
+  runtime-neutral; 41 runtime-neutral unit tests covering parse
+  round-trip, target validation, hop-by-hop removal, privacy
+  rewrite, error response generation, and limits).
+- `crates/i2pr-service-tunnels/src/lib.rs` re-exports the
+  HTTP module types (`HttpClientOptions`, `PrivacyPolicy`,
+  `UserAgentPolicy`, `parse_request_head`, `rewrite_headers`,
+  `build_error_response`, `parse_request_target`,
+  `parse_authority_form`, `HttpLimits`, `HttpError`).
+- `crates/i2pr-service-tunnels/src/config.rs` accepts
+  `ServiceTunnelSpec.http_options`; only `HttpClient` carries
+  options and the unit test confirms non-HTTP kinds reject any
+  options.
+- `crates/i2pr-daemon/src/service_tunnels_http.rs` (HTTP
+  supervisor + per-connection executor; per-listener
+  `permit` budget; bounded header read deadline; bounded CONNECT
+  port policy; typed error responses on 400/403/502; bounded
+  cleanup on EOF/reset/cancel).
+- `crates/i2pr-daemon/src/service_tunnels.rs`
+  (`is_http` flag on `ServiceRuntime`; HTTP-specific dispatch in
+  `run_service_loop`).
+- `crates/i2pr-daemon/src/config.rs` (`[service_tunnels]`
+  accepts `enabled = true` for `generic-client`,
+  `generic-server`, and `http-client`; SOCKS/IRC remain rejected
+  as not-yet-available).
+- `crates/i2pr-daemon/tests/service_tunnel_http_product.rs`
+  (15 black-box tests: clearnet/IP/localhost/mixed-suffix
+  rejection, non-`http` scheme/userinfo/smuggling rejection,
+  unknown `.i2p` 502, CONNECT-with-disallowed-port 403,
+  CONNECT-without-port 400, HTTP/1.0 rejection, sibling isolation,
+  slow-incomplete-header timeout, snapshot accounting, default
+  privacy-policy port policy).
+- `crates/i2pr-daemon/tests/service_tunnels_foundation.rs`
+  (Plan 174 + 175 graph/config regression updated to confirm the
+  Plan 176 `http-client` acceptance rule).
+- `scripts/check-dependency-direction.sh` (workspace graph
+  unchanged) and `scripts/check-runtime-boundaries.sh`
+  (`i2pr-service-tunnels::http` remains runtime-neutral).
+- `plans/176-status.md` (exact evidence,
+  `next_executable_plan = 177`).
 
 ## Evidence (Plan 175)
 
@@ -123,7 +223,7 @@ explicit passing status record with command-derived evidence.
   `lookup_local_service_destination` typed capabilities).
 - `crates/i2pr-daemon/src/config.rs` (`[service_tunnels]`
   accepts `enabled = true` for `generic-client` / `generic-server`;
-  HTTP/SOCKS/IRC remain rejected).
+  SOCKS/IRC remain rejected).
 - `crates/i2pr-daemon/tests/service_tunnel_generic_product.rs`
   (9 black-box manager tests: prepare/restart-stable identity,
   corrupt-identity rejection, missing-target rejection,
@@ -131,8 +231,7 @@ explicit passing status record with command-derived evidence.
   cross-tunnel local destination lookup, snapshot accounting,
   disabled-service ignored).
 - `crates/i2pr-daemon/tests/service_tunnels_foundation.rs`
-  (Plan 174 graph/config regression suite; updated to confirm
-  the Plan 175 generic-client/server acceptance rule).
+  (Plan 174 graph/config regression suite).
 - `scripts/check-dependency-direction.sh` (workspace graph
   unchanged) and `scripts/check-runtime-boundaries.sh`
   (`i2pr-service-tunnels` remains runtime-neutral).

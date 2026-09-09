@@ -84,12 +84,21 @@ milestone9_final_acceptance = closed-via-plan172
 
 plan_173 = registered-m10-service-tunnels-roadmap
 plan_174 = passed-m10-service-tunnel-foundation-and-shared-stream-runtime
+plan_175 = passed-m10-generic-client-server-service-tunnels
+plan_176 = passed-m10-http-i2p-proxy-and-connect
 milestone10_planning_authority = plan173
 milestone10_foundation = passed-via-plan174
+milestone10_generic_tunnels = passed-via-plan175
+milestone10_http_proxy = passed-via-plan176
+milestone10_socks5 = not-yet-passed
+milestone10_irc_client = not-yet-passed
+milestone10_irc_server = not-yet-passed
+milestone10_local_product = not-yet-passed
+milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 
 next_product_layer = milestone10-service-tunnels
-next_executable_plan = 175
+next_executable_plan = 177
 ```
 
 Read in order for current SSU2 work:
@@ -132,13 +141,15 @@ Read in order for Milestone 9 I2CP work:
 
 Read in order for Milestone 10 service-tunnel work:
 
-1. `plans/175-status.md` (passed generic client/server tunnels)
-2. `plans/175-m10-generic-client-server-service-tunnels.md`
-3. `plans/174-status.md` (passed foundation)
-4. `plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`
-5. `plans/173-status.md` (roadmap authority)
-6. `plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`
-7. Do not start Plan 176 until Plan 175 is passed (it is); do not
+1. `plans/176-status.md` (passed HTTP `.i2p` proxy + CONNECT)
+2. `plans/176-m10-http-i2p-proxy-and-connect.md`
+3. `plans/175-status.md` (passed generic client/server tunnels)
+4. `plans/175-m10-generic-client-server-service-tunnels.md`
+5. `plans/174-status.md` (passed foundation)
+6. `plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`
+7. `plans/173-status.md` (roadmap authority)
+8. `plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`
+9. Do not start Plan 177 until Plan 176 is passed (it is); do not
    implement later profiles early.
 
 Plans 155–160 passed the local SSU2 v2 protocol/runtime/reachability sequence.
@@ -539,20 +550,23 @@ bash scripts/check-ssu2-acceptance-evidence.sh
 - Plan 173 registered the M10 service-tunnels roadmap (planning authority only).
 - Plan 174 passed the M10 service-tunnel foundation and shared stream runtime: runtime-neutral `i2pr-service-tunnels` crate, strict disabled-by-default loopback-only `[service_tunnels]` surface, generic bounded socket<->Streaming pump reused by SAM, no listener yet. Do not implement generic, HTTP, SOCKS5, or IRC listeners until Plan 175.
 - Plan 175 passed the first complete M10 application service product: persistent router-owned service destinations (`ServiceDestinationStore`; versioned, atomic, secret-safe) and a daemon-owned `ServiceTunnelManager` that binds loopback TCP for `generic-client` and a loopback Streaming listener for `generic-server`, reuses the Plan 149 local destination product path and the Plan 174 shared byte pump, and exposes a typed cross-tunnel local destination lookup so client/server tunnels owned by the same router do not need an external LeaseSet lookup. Plan 175 enables `enabled = true` only for `generic-client` and `generic-server`; HTTP/SOCKS/IRC remain rejected as not-yet-available until Plans 176-179.
+- Plan 176 passed the first M10 application profile: the runtime-neutral `i2pr-service-tunnels::http` module (bounded HTTP/1.1 parser with smuggling rejection, hop-by-hop `Connection` removal, conservative privacy/header rewrite, `.i2p`-only target validation, bounded error response generation), the strict disabled-by-default `http-client` configuration surface, and the daemon HTTP proxy executor (`crates/i2pr-daemon/src/service_tunnels_http.rs`) that owns one loopback listener, parses headers under a bounded deadline, dispatches CONNECT to a port-policy-gated 2xx tunnel or rewrites/forwards ordinary proxy requests, and reuses the Plan 174 shared byte pump + Plan 149 destination product path. No new Garlic/I2NP/Streaming implementation is introduced; the full I2P Streaming byte round-trip over local TCP for the HTTP profile is owned by Plan 180 reconcile work. Plan 176 enables `enabled = true` for `generic-client`, `generic-server`, and `http-client`; SOCKS/IRC remain rejected as not-yet-available until Plans 177-179.
 - `milestone6_interoperable = not-yet-claimed` remains unchanged.
 - SSU2 public-network participation, broad router interoperability, IPv6 external interop, PQ v3/v4, and SSU1 remain unclaimed/deferred as documented.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
 
-Current handoff: **Plan 175 passed the M10 generic client/server
-service tunnels and persistent server destinations (versioned,
-atomic, secret-safe storage seam; runtime-neutral
-`i2pr-service-tunnels` crate, strict disabled-by-default
-loopback-only `[service_tunnels]` surface that accepts
-`enabled = true` only for `generic-client` / `generic-server`; the
-daemon `ServiceTunnelManager` owns the per-service destination
-runtime, the loopback TCP listener / Streaming listener lifecycle,
-and the typed cross-tunnel local destination lookup). Milestone 9
-remains closed via Plan 172. Do not implement HTTP, SOCKS5, or IRC
-listeners until Plan 176 (HTTP) / Plan 177 (SOCKS5) / Plan 178-179
-(IRC) without a fresh plan-of-record. The full client/server byte
-round-trip integration belongs to Plan 180 reconcile work.**
+Current handoff: **Plan 176 passed the M10 HTTP `.i2p` proxy +
+CONNECT (runtime-neutral `i2pr-service-tunnels::http` module with
+bounded parser, hop-by-hop + privacy rewrite, `.i2p`-only target
+validation, bounded error response generation; daemon HTTP proxy
+executor with one loopback listener per `http-client` spec that
+dispatches CONNECT port-policy-gated 2xx or rewrites/forwards
+ordinary proxy requests, reusing the Plan 174 shared byte pump
+and Plan 149 destination product path). Milestone 9 remains
+closed via Plan 172. Do not implement SOCKS5 or IRC listeners
+until Plan 177 (SOCKS5) / Plan 178-179 (IRC) without a fresh
+plan-of-record. The full M10 per-service Streaming byte
+round-trip over local TCP, the per-destination runtime driver
+task, the transactional reconcile pass, and the Plan 176 §10
+black-box byte-round-trip matrix belong to Plan 180 reconcile
+work.**
