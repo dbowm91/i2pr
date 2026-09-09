@@ -359,14 +359,17 @@ Triggers: `on: push`, `on: pull_request` (all branches).
 
 ### `.github/workflows/i2cp-external.yml` (manual lane)
 
-- `workflow_dispatch`-only Ubuntu 24.04 lane for Plan 170: install
-  ant/JDK/Go → fetch/verify the exact Java I2P 2.13.0 + go-i2cp pins
-  → run the I2CP evidence-integrity checker → run
-  `tests/integration/i2cp/run-independent.sh` (9 fail-closed rows:
-  4 cross-client digest rows + message-status + bandwidth +
-  regressions + gates + resource baseline) → upload sanitized
-  evidence even on failure. Bounded 45-minute timeout; loopback-only,
-  no public-I2P participation beyond the GitHub/Maven source fetch.
+- `workflow_dispatch`-only Ubuntu 24.04 lane for Plan 172 (Plan 170
+  retained): install ant/JDK/Go → fetch/verify the exact Java I2P
+  2.13.0 + go-i2cp pins → run the I2CP evidence-integrity checker →
+  run `tests/integration/i2cp/run-independent.sh` (24 fail-closed
+  rows: 9 retained Plan 170 wire/data-plane rows + 15 counted Plan 172
+  lifecycle rows including high-level connect, non-empty lease requests,
+  client-generated LS2 installs, gateway/tunnel ownership, usable-after-LS2,
+  and 4 post-LS2 digest rows + regressions + gates + resource baseline) →
+  upload sanitized evidence even on failure. Bounded 45-minute timeout;
+  loopback-only, no public-I2P participation beyond the GitHub/Maven
+  source fetch.
 
 ### `.github/dependabot.yml`
 

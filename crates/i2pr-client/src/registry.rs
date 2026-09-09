@@ -414,8 +414,16 @@ impl DestinationRuntime {
         }
         // Cross-check the supplied capability public key against the
         // destination's embedded encryption public key BEFORE we
-        // even look at the LeaseSet2.
-        if capability.static_public_bytes() != self.public.static_public_bytes() {
+        // even look at the LeaseSet2. Plan 172 §11: legacy ElGamal-slot
+        // destinations (every modern reference client ships ElGamal
+        // type 0 in the Destination slot even for X25519 LS2 sessions;
+        // the slot has been unused since 2005) carry a zeroed static
+        // slot, so the check is skipped for them. The X25519-vs-LS2
+        // match inside `install_external` remains fail-closed for all
+        // destinations. X25519-slot destinations keep the strict match.
+        if self.public.encryption_public_key_type() == i2pr_crypto::ROUTER_CRYPTO_KEY_TYPE
+            && capability.static_public_bytes() != self.public.static_public_bytes()
+        {
             return Err(DestinationIdentityError::DecryptionCapabilityKeyMismatch.into());
         }
         // Validate against the actual inbound pool owned by this

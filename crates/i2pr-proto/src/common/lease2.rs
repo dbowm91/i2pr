@@ -60,9 +60,12 @@ pub const MAX_LEASE_SET2_BYTES: usize = MAX_COMMON_STRUCTURE_SIZE;
 
 /// Recognized LS2 flag bits.
 ///
-/// Only the ordinary online-signed published subset is accepted in
-/// this plan. Reserved bits must be zero; offline, unpublished, leased,
-/// and blinded flags produce typed policy rejections.
+/// Only the ordinary online-signed subset is accepted in this plan.
+/// Reserved bits must be zero; offline and blinded flags produce typed
+/// policy rejections. The unpublished flag (0x0002) is accepted per
+/// Plan 172 §10: `dontPublishLeaseSet=true` installs the client-signed
+/// LS2 locally without public NetDB publication. The leased flag is
+/// currently accepted (no M9 profile sets it).
 pub mod flags {
     /// Offline-signature section follows the fixed header.
     pub const OFFLINE_SIGNATURE: u16 = 0x0001;
@@ -343,13 +346,8 @@ impl LeaseSet2Header {
                 u64::from(raw_flags),
             ));
         }
-        if flags.is_unpublished() {
-            return Err(unsupported(
-                cursor.offset().saturating_sub(2),
-                "LeaseSet2 unpublished flag",
-                u64::from(raw_flags),
-            ));
-        }
+        // Plan 172 §10: unpublished LS2 is installed locally; publication
+        // to public NetDB is suppressed (no NetDB write occurs in M9).
         if flags.is_blinded() {
             return Err(unsupported(
                 cursor.offset().saturating_sub(2),
@@ -526,10 +524,13 @@ impl LeaseSet2 {
         let header_start = cursor.offset();
         let header = LeaseSet2Header::decode_from(&mut cursor)?;
         let options = Mapping::decode_from(&mut cursor, MAX_LEASE_SET2_OPTIONS_BYTES)?;
-        let key_count = cursor.read_u16()?;
+        // Plan 172 §5: Java I2P `LeaseSet2.readBytes` uses a single-byte
+        // key count (`in.read()`), not u16. Match the reference so
+        // exact-pinned Java/go-i2cp CreateLeaseSet2 parses.
+        let key_count = cursor.read_u8()?;
         if usize::from(key_count) > MAX_LEASE_SET2_ENCRYPTION_KEYS {
             return Err(CodecError::LengthExceeded {
-                offset: cursor.offset().saturating_sub(2),
+                offset: cursor.offset().saturating_sub(1),
                 declared: usize::from(key_count),
                 maximum: MAX_LEASE_SET2_ENCRYPTION_KEYS,
                 context: "LeaseSet2 encryption key count",
@@ -867,12 +868,13 @@ fn encode_unsigned(
     encoder.write_u16(header.expires_offset_seconds())?;
     encoder.write_u16(header.flags().as_raw())?;
     options.encode_into(encoder)?;
+    // Plan 172 §5: single-byte key count to match Java I2P reference.
     let key_count =
-        u16::try_from(encryption_keys.len()).map_err(|_| CodecError::InvalidFieldValue {
+        u8::try_from(encryption_keys.len()).map_err(|_| CodecError::InvalidFieldValue {
             offset: encoder.len(),
             context: "LeaseSet2 encryption key count",
         })?;
-    encoder.write_u16(key_count)?;
+    encoder.write_u8(key_count)?;
     for key in encryption_keys {
         encoder.write_u16(key.key_type().code())?;
         let key_length =

@@ -658,13 +658,17 @@ both X25519 (32-byte static slot, used for ECIES inbound
 decryption) and ElGamal-2048 (256-byte legacy slot, contents
 unused, zeroed static slot) because every unmodified reference
 (Java I2P 2.13.0, go-i2cp, i2pd) ships ElGamal here even for
-X25519 LeaseSet2 sessions. X25519 enforcement lives at
-`install_client_lease_set2`, which stays fail-closed for
-legacy-slot sessions (`DecryptionCapabilityKeyMismatch`) since no
-real capability can match the zeroed slot. SessionConfig
-verification (`i2pr-api::i2cp::verify`) applies the same
-relocation: signing type + certificate signing-type match are
-enforced, the legacy `crypto_type` slot is read but not enforced.
+X25519 LeaseSet2 sessions. SessionConfig verification
+(`i2pr-api::i2cp::verify`) applies the same relocation: signing
+type + certificate signing-type match are enforced, the legacy
+`crypto_type` slot is read but not enforced. Plan 172 corrects the
+install path for reference compat: ElGamal-slot destinations skip
+the early capability-vs-destination pre-check (the slot has been
+unused since 2005); X25519 enforcement lives in `install_external`
+as the LS2-key-vs-capability match plus lease ownership, expiry,
+and signature checks. X25519-slot destinations keep the strict
+pre-check. Foreign/empty-pool LS2 stays fail-closed via pool
+validation.
 
 ## Deterministic test fixtures
 

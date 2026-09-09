@@ -91,10 +91,14 @@ fn legacy_elgamal_destination_is_accepted_but_cannot_install() {
     // 2.13.0, go-i2cp, i2pd) still populates with ElGamal even for
     // X25519 LeaseSet2 sessions. The public wrapper accepts it (with
     // a zeroed static slot, since the legacy 256-byte field carries
-    // no X25519 key) so independent-client sessions can register;
-    // X25519 enforcement lives at LeaseSet2 install, which stays
-    // fail-closed here because no real capability can match the
-    // zeroed legacy slot.
+    // no X25519 key) so independent-client sessions can register.
+    // Plan 172 §11: for ElGamal-slot destinations the early
+    // capability-vs-destination pre-check is skipped (the slot has
+    // been unused since 2005); X25519 enforcement lives in
+    // `install_external` as the LS2-key-vs-capability match plus
+    // lease ownership. A foreign/empty-pool LS2 therefore still
+    // fails closed, but with pool/lease validation rather than the
+    // pre-check mismatch.
     let signing = i2pr_crypto::SigningPrivateKey::from_bytes([0x99_u8; 32]);
     let signing_public = signing.public_key().expect("signing public");
     let public_key =
@@ -116,11 +120,10 @@ fn legacy_elgamal_destination_is_accepted_but_cannot_install() {
         public.encryption_public_key_type(),
         i2pr_proto::CryptoKeyType::ElGamal
     );
-    // A caller-supplied X25519 capability can never match the zeroed
-    // legacy slot, so install stays fail-closed at the capability
-    // pre-check before any LeaseSet2 bytes are consulted. Build a
-    // well-formed LS2 from an unrelated X25519 identity to prove the
-    // rejection comes from the capability match, not LS2 parsing.
+    // A foreign LS2 against an empty pool stays fail-closed via pool
+    // validation (no usable inbound tunnels), not via the skipped
+    // ElGamal pre-check. Build a well-formed LS2 from an unrelated
+    // X25519 identity to prove the rejection is fail-closed.
     let (identity, _helper_public, helper_runtime) = usable_client_runtime(3);
     let helper_leases = helper_runtime.inbound_lease_sources(NOW_SECONDS);
     let record =
@@ -134,7 +137,9 @@ fn legacy_elgamal_destination_is_accepted_but_cannot_install() {
         .expect_err("legacy slot install stays fail-closed");
     assert!(matches!(
         error,
-        LeaseSetError::Identity(DestinationIdentityError::DecryptionCapabilityKeyMismatch)
+        LeaseSetError::NoUsableInboundTunnels
+            | LeaseSetError::ForeignLease { .. }
+            | LeaseSetError::SelfValidation(_)
     ));
 }
 

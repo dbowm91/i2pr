@@ -999,6 +999,7 @@ impl I2cpServiceState {
             .map(|source| i2pr_api::i2cp::RequestedLease {
                 gateway: source.gateway(),
                 tunnel_id: source.gateway_receive_tunnel_id(),
+                end_date_ms: source.advertised_expires_seconds().saturating_mul(1000),
             })
             .collect()
     }
@@ -1347,6 +1348,15 @@ async fn dispatch_frame(
         .await;
     }
     let message = decode_typed(frame.message_type, &frame.body).map_err(|error| {
+        // Plan 172 §15: sanitized decode observation for the counted
+        // CreateLeaseSet2 path (no private bytes, no payload, no hex).
+        if frame.message_type == i2pr_api::i2cp::MessageType::CreateLeaseSet2 as u8 {
+            eprintln!(
+                "I2CP_LS2_DECODE_FAILED bytes={} reason={}",
+                frame.body.len(),
+                error
+            );
+        }
         I2cpConnectionError::Wire(format!(
             "typed decode failed for type {}: {error}",
             frame.message_type
@@ -1522,6 +1532,30 @@ async fn handle_create_session(
                     ))));
                 }
                 let followup = i2pr_api::i2cp::RequestVariableLeaseSet { session, leases };
+                // Plan 172 §15: sanitized request observation (gateway hash
+                // hex is public router metadata; no private bytes).
+                for lease in followup.leases.iter() {
+                    let gateway_hex = {
+                        const HEX: &[u8; 16] = b"0123456789abcdef";
+                        let bytes = lease.gateway.as_bytes();
+                        let mut out = [0u8; 64];
+                        let mut i = 0;
+                        while i < 32 {
+                            out[2 * i] = HEX[(bytes[i] >> 4) as usize];
+                            out[2 * i + 1] = HEX[(bytes[i] & 0x0f) as usize];
+                            i += 1;
+                        }
+                        String::from_utf8_lossy(&out).into_owned()
+                    };
+                    eprintln!(
+                        "I2CP_LEASE_REQUEST session={} leases={} gateway={} tunnel={} end_ms={}",
+                        session.get(),
+                        followup.leases.len(),
+                        gateway_hex,
+                        lease.tunnel_id,
+                        lease.end_date_ms
+                    );
+                }
                 return Ok(FrameOutcome::ReplyAndFollowup(
                     Box::new(Message::SessionStatus(reply)),
                     Box::new(Message::RequestVariableLeaseSet(followup)),
@@ -1850,15 +1884,32 @@ async fn handle_create_lease_set2(
             "CreateLeaseSet2 session mismatch".to_owned(),
         ));
     }
-    state
-        .install_client_lease_set2(
-            connection_id,
-            session,
-            create.lease_set,
-            &create.private_keys,
-        )
-        .map_err(|error| I2cpConnectionError::Wire(error.to_string()))?;
-    Ok(FrameOutcome::Continue)
+    // Plan 172 §15: sanitized lifecycle observation (no private bytes).
+    let lease_count = create.lease_set.leases().len();
+    match state.install_client_lease_set2(
+        connection_id,
+        session,
+        create.lease_set,
+        &create.private_keys,
+    ) {
+        Ok(()) => {
+            eprintln!(
+                "I2CP_LS2_INSTALLED session={} leases={} usable=true",
+                session.get(),
+                lease_count
+            );
+            Ok(FrameOutcome::Continue)
+        }
+        Err(error) => {
+            eprintln!(
+                "I2CP_LS2_REJECTED session={} leases={} reason={}",
+                session.get(),
+                lease_count,
+                error
+            );
+            Err(I2cpConnectionError::Wire(error.to_string()))
+        }
+    }
 }
 
 // ---- Plan 168 SendMessage / SendMessageExpires / DestLookup / BandwidthLimits ----

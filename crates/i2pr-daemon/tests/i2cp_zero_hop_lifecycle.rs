@@ -543,11 +543,17 @@ async fn zero_hop_request_is_nonempty_and_session_unusable_before_install() {
     );
     assert_eq!(request.leases.len(), 1);
     // Gateway is the process's actual local router hash, tunnel id non-zero non-sentinel.
+    // End date is the 44-byte Lease compat field (advertised expiry in ms, non-zero future).
     let lease = &request.leases[0];
     assert_eq!(lease.gateway, state.local_router_hash());
     assert_ne!(lease.gateway, Hash::from_bytes([0; 32]));
     assert_ne!(lease.tunnel_id, 0);
     assert_ne!(lease.tunnel_id, u32::MAX);
+    assert_ne!(lease.end_date_ms, 0);
+    assert!(
+        lease.end_date_ms > now_ms(),
+        "lease end date must be in the future"
+    );
     // §14 item 2: not usable before install.
     let session_state = state.session_state(session).expect("session state");
     assert!(session_state.is_zero_hop);

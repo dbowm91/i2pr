@@ -754,13 +754,22 @@ impl SessionStatus {
     }
 }
 
-/// One requested tunnel lease: gateway hash plus tunnel ID.
+/// One requested tunnel lease: gateway hash, tunnel ID, plus end date.
+///
+/// The wire form is the 44-byte I2CP `Lease` layout (32-byte gateway
+/// hash, 4-byte big-endian tunnel ID, 8-byte big-endian millisecond
+/// end date) so exact-pinned Java I2P (`Lease.readBytes`) and go-i2cp
+/// (`NewLeaseFromStream`) parse our `RequestVariableLeaseSet` without
+/// modification. Plan 172 §5 requires this compatibility for the
+/// counted `I2PSession.connect()` lifecycle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RequestedLease {
     /// Gateway router hash.
     pub gateway: Hash,
     /// Tunnel ID at that gateway.
     pub tunnel_id: u32,
+    /// Lease end date in milliseconds since the Unix epoch.
+    pub end_date_ms: u64,
 }
 
 /// A `RequestVariableLeaseSet` body: session plus requested leases.
@@ -796,22 +805,26 @@ impl RequestVariableLeaseSet {
         let mut leases = Vec::with_capacity(count);
         let mut rest = &rest[1..];
         for _ in 0..count {
-            if rest.len() < 36 {
+            if rest.len() < 44 {
                 return Err(truncated(
                     Self::NAME,
                     body.len() - rest.len(),
-                    36,
+                    44,
                     rest.len(),
                 ));
             }
             let mut gateway = [0u8; 32];
             gateway.copy_from_slice(&rest[..32]);
             let tunnel_id = u32::from_be_bytes([rest[32], rest[33], rest[34], rest[35]]);
+            let end_date_ms = u64::from_be_bytes([
+                rest[36], rest[37], rest[38], rest[39], rest[40], rest[41], rest[42], rest[43],
+            ]);
             leases.push(RequestedLease {
                 gateway: Hash::from_bytes(gateway),
                 tunnel_id,
+                end_date_ms,
             });
-            rest = &rest[36..];
+            rest = &rest[44..];
         }
         require_empty(Self::NAME, rest, body.len() - rest.len())?;
         Ok(Self {
@@ -833,12 +846,13 @@ impl RequestVariableLeaseSet {
                 },
             ));
         }
-        let mut out = Vec::with_capacity(3 + 36 * self.leases.len());
+        let mut out = Vec::with_capacity(3 + 44 * self.leases.len());
         out.extend_from_slice(&self.session.get().to_be_bytes());
         out.push(self.leases.len() as u8);
         for lease in &self.leases {
             out.extend_from_slice(lease.gateway.as_bytes());
             out.extend_from_slice(&lease.tunnel_id.to_be_bytes());
+            out.extend_from_slice(&lease.end_date_ms.to_be_bytes());
         }
         Ok(out)
     }
@@ -2497,10 +2511,12 @@ mod tests {
                 RequestedLease {
                     gateway: Hash::from_bytes([0x01; 32]),
                     tunnel_id: 11,
+                    end_date_ms: 1_786_000_000_000,
                 },
                 RequestedLease {
                     gateway: Hash::from_bytes([0x02; 32]),
                     tunnel_id: 12,
+                    end_date_ms: 1_786_000_000_000,
                 },
             ],
         });
@@ -2517,13 +2533,14 @@ mod tests {
                 .map(|index| RequestedLease {
                     gateway: Hash::from_bytes([index as u8; 32]),
                     tunnel_id: index,
+                    end_date_ms: 1_786_000_000_000 + u64::from(index),
                 })
                 .collect(),
         };
         round_trip(&Message::RequestVariableLeaseSet(many));
         // Seventeen leases exceed the ceiling on encode and decode.
         let mut over = vec![0x00u8, 0x01, 17];
-        over.extend_from_slice(&[0xabu8; 36]);
+        over.extend_from_slice(&[0xabu8; 44]);
         assert!(matches!(
             RequestVariableLeaseSet::decode(&over),
             Err(I2cpError::Malformed { .. })

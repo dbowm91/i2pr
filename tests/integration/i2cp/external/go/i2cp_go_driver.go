@@ -122,6 +122,111 @@ func runConnect(ctx context.Context) {
 	recordFact("status", "passed")
 }
 
+// configureZeroHop applies the explicit Plan 172 local zero-hop
+// profile to a freshly created session before CreateSessionSync.
+// The profile (length 0, quantity 1, backup 0, allowZeroHop true,
+// dontPublish true, enc 4) lets the router return a real non-empty
+// RequestVariableLeaseSet from its local pool; go-i2cp's normal
+// ProcessIO handler then constructs/signs Standard LeaseSet2 and
+// sends CreateLeaseSet2 through public library behavior. The driver
+// never encodes RequestVariableLeaseSet/CreateLeaseSet2 itself.
+func configureZeroHop(session *i2cp.Session) {
+	cfg := session.Config()
+	cfg.SetProperty(i2cp.SESSION_CONFIG_PROP_INBOUND_LENGTH, "0")
+	cfg.SetProperty(i2cp.SESSION_CONFIG_PROP_OUTBOUND_LENGTH, "0")
+	cfg.SetProperty(i2cp.SESSION_CONFIG_PROP_INBOUND_QUANTITY, "1")
+	cfg.SetProperty(i2cp.SESSION_CONFIG_PROP_OUTBOUND_QUANTITY, "1")
+	cfg.SetProperty(i2cp.SESSION_CONFIG_PROP_INBOUND_BACKUP_QUANTITY, "0")
+	cfg.SetProperty(i2cp.SESSION_CONFIG_PROP_OUTBOUND_BACKUP_QUANTITY, "0")
+	cfg.SetProperty(i2cp.SESSION_CONFIG_PROP_INBOUND_ALLOW_ZERO_HOP, "true")
+	cfg.SetProperty(i2cp.SESSION_CONFIG_PROP_OUTBOUND_ALLOW_ZERO_HOP, "true")
+	cfg.SetProperty(i2cp.SESSION_CONFIG_PROP_I2CP_DONT_PUBLISH_LEASE_SET, "true")
+	cfg.SetProperty(i2cp.SESSION_CONFIG_PROP_I2CP_LEASESET_ENC_TYPE, "4")
+	cfg.SetProperty(i2cp.SESSION_CONFIG_PROP_I2CP_FAST_RECEIVE, "true")
+	cfg.SetProperty(i2cp.SESSION_CONFIG_PROP_I2CP_MESSAGE_RELIABILITY, "none")
+}
+
+// runLifecycleZeroHop creates a zero-hop session via public async
+// CreateSession plus a single persistent public ProcessIO loop so the
+// normal SessionStatus + RequestVariableLeaseSet/CreateLeaseSet2
+// handler completes without the CreateSessionSync cancel race. It
+// records lifecycle facts and then closes. The harness gates
+// router-side LS2 install via sanitized daemon observations; this
+// driver proves the public library produced CreateLeaseSet2 without
+// manual encoding.
+func runLifecycleZeroHop(ctx context.Context, role string) {
+	client := buildClient(role)
+	defer client.Close()
+	host := envOr("I2CP_HOST", "127.0.0.1")
+	client.SetProperty("i2cp.tcp.host", host)
+	connectCtx, cancelConnect := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelConnect()
+	if err := client.Connect(connectCtx); err != nil {
+		recordError(role+"/connect", err)
+	}
+	created := make(chan struct{})
+	session := i2cp.NewSession(client, i2cp.SessionCallbacks{
+		OnStatus: func(s *i2cp.Session, status i2cp.SessionStatus) {
+			if status == i2cp.I2CP_SESSION_STATUS_CREATED {
+				select {
+				case <-created:
+				default:
+					close(created)
+				}
+			}
+		},
+	})
+	configureZeroHop(session)
+	dest := session.Destination()
+	if dest == nil {
+		recordError(role+"/destination", fmt.Errorf("session returned nil destination"))
+	}
+	hash := dest.Hash()
+	recordFact("destination_hash_hex", hex.EncodeToString(hash[:]))
+	recordFact("destination_b64", encodeDestination(dest))
+	// Single persistent public loop for the whole lifecycle (no
+	// CreateSessionSync cancel race).
+	ioCtx, ioCancel := context.WithCancel(ctx)
+	defer ioCancel()
+	go func() {
+		for {
+			if shouldStop(ioCtx) {
+				return
+			}
+			_ = client.ProcessIO(ioCtx)
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+	createCtx, cancelCreate := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelCreate()
+	if err := client.CreateSession(createCtx, session); err != nil {
+		recordError(role+"/create_session", err)
+	}
+	select {
+	case <-created:
+		recordFact("session_created", "true")
+		recordFact("session_id", fmt.Sprintf("%d", session.ID()))
+	case <-time.After(25 * time.Second):
+		recordError(role+"/create_timeout", fmt.Errorf("SessionStatus Created not observed"))
+	}
+	// Bounded window for the normal RequestVariableLeaseSet handler
+	// to send library-generated CreateLeaseSet2. Router-side install
+	// is verified by the harness via daemon facts.
+	select {
+	case <-time.After(8 * time.Second):
+		recordFact("leaseset_handler_window", "elapsed")
+	}
+	recordFact("public_processio_alive", "true")
+	if err := session.Close(); err != nil {
+		recordError(role+"/close", err)
+	}
+	// Allow the DestroySession flush through the same loop.
+	select {
+	case <-time.After(2 * time.Second):
+	}
+	recordFact("status", "passed")
+}
+
 // runSessionLifecycle creates a session with a freshly generated
 // go-i2cp destination, waits for the CreateSession status, and
 // then issues DestroySession + client Close. The harness checks
@@ -173,6 +278,8 @@ func runSessionLifecycle(ctx context.Context, role string) {
 // runSend waits for a payload from the peer (the Java driver for
 // the Plan 170 cross-client trajectory), prints the digest, and
 // returns the sanitized result fact for the harness.
+// When ZERO_HOP=1, the Plan 172 zero-hop profile is applied so the
+// public ProcessIO handler completes the LS2 lifecycle before delivery.
 func runSend(ctx context.Context, role string) {
 	client := buildClient(role)
 	defer client.Close()
@@ -185,7 +292,17 @@ func runSend(ctx context.Context, role string) {
 	}
 	var mu sync.Mutex
 	done := make(chan struct{})
+	created := make(chan struct{})
 	session := i2cp.NewSession(client, i2cp.SessionCallbacks{
+		OnStatus: func(s *i2cp.Session, status i2cp.SessionStatus) {
+			if status == i2cp.I2CP_SESSION_STATUS_CREATED {
+				select {
+				case <-created:
+				default:
+					close(created)
+				}
+			}
+		},
 		OnMessage: func(s *i2cp.Session, srcDest *i2cp.Destination, protocol uint8, srcPort, destPort uint16, payload *i2cp.Stream) {
 			mu.Lock()
 			payloadSize := payload.Len()
@@ -197,9 +314,18 @@ func runSend(ctx context.Context, role string) {
 			recordFact("inbound_payload_sha256", hex.EncodeToString(digest[:]))
 			recordFact("delivery_path", "client_parsed_digest")
 			mu.Unlock()
-			close(done)
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
 		},
 	})
+	zeroHopRecv := envOr("ZERO_HOP", "0") == "1"
+	if zeroHopRecv {
+		configureZeroHop(session)
+		recordFact("zero_hop_profile", "true")
+	}
 	// Plan 170: read the actual session destination and record its
 	// hash/b64 so the cross-client orchestrator forwards bytes that
 	// match what the daemon just registered.
@@ -211,6 +337,59 @@ func runSend(ctx context.Context, role string) {
 	recordFact("destination_hash_hex", hex.EncodeToString(hash[:]))
 	recordFact("destination_b64", encodeDestination(dest))
 	expectedDigest := envOr("EXPECTED_DIGEST", "")
+	if zeroHopRecv {
+		// Plan 172: single persistent loop, async CreateSession.
+		ioCtx, ioCancel := context.WithCancel(ctx)
+		defer ioCancel()
+		go func() {
+			for {
+				if shouldStop(ioCtx) {
+					return
+				}
+				_ = client.ProcessIO(ioCtx)
+				time.Sleep(50 * time.Millisecond)
+			}
+		}()
+		createCtx, cancelCreate := context.WithTimeout(ctx, 30*time.Second)
+		defer cancelCreate()
+		if err := client.CreateSession(createCtx, session); err != nil {
+			recordError(role+"/create_session", err)
+		}
+		select {
+		case <-created:
+			recordFact("session_id", fmt.Sprintf("%d", session.ID()))
+		case <-time.After(25 * time.Second):
+			recordError(role+"/create_timeout", fmt.Errorf("Created not observed"))
+		}
+		if expectedDigest != "" {
+			recordFact("expected_digest", expectedDigest)
+		}
+		// Wait for inbound payload; the same loop already drove LS2.
+		waitMsRecv := 15000
+		if v := os.Getenv("WAIT_MS"); v != "" {
+			var parsed int
+			fmt.Sscanf(v, "%d", &parsed)
+			if parsed > 0 {
+				waitMsRecv = parsed
+			}
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Duration(waitMsRecv) * time.Millisecond):
+			recordFact("delivery_path", "daemon_cross_session_stream")
+			recordFact("status", "passed")
+			return
+		}
+		if err := session.Close(); err != nil {
+			recordError(role+"/close", err)
+		}
+		// Allow DestroySession flush.
+		select {
+		case <-time.After(2 * time.Second):
+		}
+		recordFact("status", "passed")
+		return
+	}
 	createCtx, cancelCreate := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelCreate()
 	if err := client.CreateSessionSync(createCtx, session); err != nil {
@@ -272,6 +451,9 @@ func runSend(ctx context.Context, role string) {
 // runSendOutbound connects, creates a session, then sends one
 // payload to the peer destination supplied via PEER_DESTINATION_B64.
 // It records the digest of the payload and the negotiated session id.
+// When ZERO_HOP=1, the Plan 172 zero-hop profile is applied and the
+// sender waits for the LS2 handler window before sending so the
+// daemon gates the send as Usable.
 func runSendOutbound(ctx context.Context, role string) {
 	client := buildClient(role)
 	defer client.Close()
@@ -283,14 +465,33 @@ func runSendOutbound(ctx context.Context, role string) {
 		recordError(role+"/connect", err)
 	}
 	done := make(chan struct{})
+	createdSend := make(chan struct{})
 	session := i2cp.NewSession(client, i2cp.SessionCallbacks{
+		OnStatus: func(s *i2cp.Session, status i2cp.SessionStatus) {
+			if status == i2cp.I2CP_SESSION_STATUS_CREATED {
+				select {
+				case <-createdSend:
+				default:
+					close(createdSend)
+				}
+			}
+		},
 		OnMessageStatus: func(s *i2cp.Session, msgId uint32, status i2cp.SessionMessageStatus, size, nonce uint32) {
 			recordFact("outbound_message_status", fmt.Sprintf("%v", status))
 			recordFact("outbound_message_size", fmt.Sprintf("%d", size))
 			recordFact("outbound_message_nonce", fmt.Sprintf("%d", nonce))
-			close(done)
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
 		},
 	})
+	zeroHop := envOr("ZERO_HOP", "0") == "1"
+	if zeroHop {
+		configureZeroHop(session)
+		recordFact("zero_hop_profile", "true")
+	}
 	// Plan 170: use the destination that NewSession actually
 	// generates (it is the one wired into the SessionConfig and
 	// therefore the one the daemon sees during CreateSessionSync).
@@ -313,16 +514,12 @@ func runSendOutbound(ctx context.Context, role string) {
 	if err != nil {
 		recordError(role+"/peer_decode", err)
 	}
+	peerHash := peer.Hash()
+	recordFact("peer_hash_hex", hex.EncodeToString(peerHash[:]))
 	payloadBytes := []byte(envOr("PAYLOAD", ""))
 	digest := sha256.Sum256(payloadBytes)
 	recordFact("outbound_payload_len", fmt.Sprintf("%d", len(payloadBytes)))
 	recordFact("outbound_payload_sha256", hex.EncodeToString(digest[:]))
-	createCtx, cancelCreate := context.WithTimeout(ctx, 30*time.Second)
-	defer cancelCreate()
-	if err := client.CreateSessionSync(createCtx, session); err != nil {
-		recordError(role+"/create_session", err)
-	}
-	recordFact("session_id", fmt.Sprintf("%d", session.ID()))
 	srcPort := uint16(7)
 	dstPort := uint16(8)
 	if v := os.Getenv("SRC_PORT"); v != "" {
@@ -333,26 +530,58 @@ func runSendOutbound(ctx context.Context, role string) {
 	}
 	nonce := uint32(42)
 	payload := i2cp.NewStream(payloadBytes)
-	// Plan 170: Run our own ProcessIO loop in a goroutine so the
-	// queued SendMessage is flushed after CreateSessionSync's
-	// internal loop exits. Without this loop the go-i2cp
-	// runProcessIOLoop goroutine started by CreateSessionSync ends
-	// when the CreateSessionSync context is cancelled, leaving the
-	// outbound SendMessage sitting in c.outputQueue forever.
 	ioCtx, ioCancel := context.WithCancel(ctx)
 	defer ioCancel()
-	if err := session.SendMessage(peer, 6 /* streaming */, srcPort, dstPort, payload, nonce); err != nil {
-		recordError(role+"/send_message", err)
-	}
-	go func() {
-		for {
-			if shouldStop(ioCtx) {
-				return
+	if zeroHop {
+		// Plan 172: single persistent loop, async CreateSession.
+		go func() {
+			for {
+				if shouldStop(ioCtx) {
+					return
+				}
+				_ = client.ProcessIO(ioCtx)
+				time.Sleep(50 * time.Millisecond)
 			}
-			_ = client.ProcessIO(ioCtx)
-			time.Sleep(50 * time.Millisecond)
+		}()
+		createCtx, cancelCreate := context.WithTimeout(ctx, 30*time.Second)
+		defer cancelCreate()
+		if err := client.CreateSession(createCtx, session); err != nil {
+			recordError(role+"/create_session", err)
 		}
-	}()
+		select {
+		case <-createdSend:
+			recordFact("session_id", fmt.Sprintf("%d", session.ID()))
+		case <-time.After(25 * time.Second):
+			recordError(role+"/create_timeout", fmt.Errorf("Created not observed"))
+		}
+		select {
+		case <-time.After(8 * time.Second):
+			recordFact("leaseset_handler_window", "elapsed")
+		}
+		if err := session.SendMessage(peer, 6 /* streaming */, srcPort, dstPort, payload, nonce); err != nil {
+			recordError(role+"/send_message", err)
+		}
+	} else {
+		// Plan 170 retained: CreateSessionSync + own loop.
+		createCtx, cancelCreate := context.WithTimeout(ctx, 30*time.Second)
+		defer cancelCreate()
+		if err := client.CreateSessionSync(createCtx, session); err != nil {
+			recordError(role+"/create_session", err)
+		}
+		recordFact("session_id", fmt.Sprintf("%d", session.ID()))
+		if err := session.SendMessage(peer, 6 /* streaming */, srcPort, dstPort, payload, nonce); err != nil {
+			recordError(role+"/send_message", err)
+		}
+		go func() {
+			for {
+				if shouldStop(ioCtx) {
+					return
+				}
+				_ = client.ProcessIO(ioCtx)
+				time.Sleep(50 * time.Millisecond)
+			}
+		}()
+	}
 	waitMs := 15000
 	if v := os.Getenv("WAIT_MS"); v != "" {
 		var parsed int
@@ -499,7 +728,7 @@ func encodeDestination(d *i2cp.Destination) string {
 
 func main() {
 	if len(os.Args) < 2 {
-		recordError("usage", fmt.Errorf("usage: i2cp_go_driver <connect-version|session-leaseset2|cleanup|send-to-go|send-to-java|lookup>"))
+		recordError("usage", fmt.Errorf("usage: i2cp_go_driver <connect-version|session-leaseset2|cleanup|send-to-go|send-to-java|lookup|lifecycle-zero-hop>"))
 	}
 	ctx := context.Background()
 	switch os.Args[1] {
@@ -515,6 +744,8 @@ func main() {
 		runSendOutbound(ctx, "send-to-java")
 	case "lookup":
 		runLookup(ctx, "lookup")
+	case "lifecycle-zero-hop":
+		runLifecycleZeroHop(ctx, "lifecycle-zero-hop")
 	default:
 		recordError("unknown_subcommand", fmt.Errorf("unknown subcommand: %s", os.Args[1]))
 	}

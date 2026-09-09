@@ -111,6 +111,9 @@ fn request_variable_leaseset_vector() {
     assert_eq!(body.leases.len(), 2);
     assert_eq!(body.leases[0].tunnel_id, 11);
     assert_eq!(body.leases[1].tunnel_id, 12);
+    // Plan 172 §5: 44-byte Lease compat (gateway + tunnel id + 8-byte ms end date).
+    assert_eq!(body.leases[0].end_date_ms, 1_786_000_000_000);
+    assert_eq!(body.leases[1].end_date_ms, 1_786_000_060_000);
 }
 
 #[test]

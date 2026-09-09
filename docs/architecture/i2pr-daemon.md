@@ -138,14 +138,18 @@ work is scoped to:
   [`plans/170-m9-i2cp-independent-clients-and-final-closure.md`](../../plans/170-m9-i2cp-independent-clients-and-final-closure.md).
 - **I2CP independent LeaseSet2 lifecycle corrective** (Plan 172,
   active): explicit local zero-hop tunnel kind (typed, not empty
-  remote `EstablishedMaterial`), non-empty real
-  `RequestVariableLeaseSet` derived from the destination pool via
-  the Plan 166 `take_client_refresh_request` seam, existing Plan 166
-  atomic `install_client_lease_set2`, session usability gated on LS2
+  remote `EstablishedMaterial`), non-empty real 44-byte
+  Lease-compatible `RequestVariableLeaseSet` (gateway + tunnel id +
+  8-byte ms end date) derived from the destination pool via the Plan
+  166 `take_client_refresh_request` seam, existing Plan 166 atomic
+  `install_client_lease_set2` (ElGamal-slot skip, unpublished accepted,
+  u8 LS2 key count per reference), session usability gated on LS2
   install, high-level Java `I2PSession.connect()` plus public go-i2cp
-  `ProcessIO` lifecycle proof, post-LS2 cross-client traffic, and
-  fail-closed evidence. `i2cp.dontPublishLeaseSet=true` installs the
-  client-signed LS2 locally without public NetDB publication.
+  async `CreateSession` + persistent `ProcessIO` lifecycle proof,
+  post-LS2 cross-client traffic with digest equality mandatory, and
+  fail-closed sanitized listener facts (`I2CP_LEASE_REQUEST` /
+  `I2CP_LS2_INSTALLED`, no private bytes). `i2cp.dontPublishLeaseSet=true`
+  installs the client-signed LS2 locally without public NetDB publication.
   Milestone 9 final acceptance is reopened until Plan 172 passes. See
   [`plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md`](../../plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md).
 
