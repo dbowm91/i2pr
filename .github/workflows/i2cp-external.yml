@@ -22,7 +22,8 @@ jobs:
 
       - name: Install Java/Ant/Go build dependencies
         # Unprivileged localhost lane: ant + JDK build the exact-pinned
-        # Java I2P core jar; Go verifies the exact-pinned go-i2cp
+        # Java I2P core jar (gettext-base provides the libintl.jar the
+        # ant build needs); Go verifies the exact-pinned go-i2cp
         # module cache (the driver itself builds with GOTOOLCHAIN
         # go1.26.3 inside run-independent.sh).
         run: |
@@ -31,6 +32,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ant \
             default-jdk-headless \
+            gettext-base \
             golang-go
 
       - name: Fetch and verify exact external revisions

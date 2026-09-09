@@ -69,7 +69,13 @@ prepare_source() {
 
   if [[ -n "${source_override}" ]]; then
     :
-  elif [[ "${REBUILD}" == "--rebuild" ]]; then
+  else
+    # Fresh clones land on the remote default branch, not the pinned
+    # revision; rebuilds refresh then pin. Either way the lane must
+    # detach at the exact pin before verification — a hosted runner
+    # with an empty cache failed here (Java I2P cloned at the default
+    # tip instead of 9134f808...) because checkout only ran on
+    # --rebuild.
     git -C "${source}" checkout --detach "${pin}"
   fi
 

@@ -146,7 +146,9 @@ Ports `7/8`, protocol `6` matched on every parsed inbound.
 
 Full floor on the closing tree: `cargo fmt --check`, `cargo check
 --locked --workspace --all-targets`, `cargo test --locked --workspace
---all-targets` (1728 passed, 1 ignored, 68 suites), `cargo clippy
+--all-targets` (1729 passed, 1 ignored, 68 suites — 1728 at Plan 170
+draft time plus the Plan 171 `wrong_protocol_byte_is_closed_real_time`
+companion retained on the merged head), `cargo clippy
 --all-targets --all-features -D warnings`, `cargo doc -D warnings`,
 doc tests, all eleven static boundary/vector/evidence scripts,
 `python3 -m unittest discover` (153 OK), `cargo deny check
@@ -175,3 +177,21 @@ Working tree is uncommitted; on commit record the closing SHA here.
 Routine CI and the manual `i2cp-external.yml` dispatch must go green
 on the exact closing head before M9 is treated as closed in CI.
 No Milestone 10 work is implemented in this plan.
+
+## Hosted-lane corrective (exact-head, lane-script only)
+
+Routine CI run `34301983059` on implementation commit `c39bbff`:
+Quality (ubuntu-latest) = success, Quality (macos-latest) = success,
+MSRV = success, Dependency policy = success.
+
+The first manual `i2cp-external.yml` dispatch (`34303111631`) on the
+same head failed closed in `fetch-i2cp-clients.sh`: a fresh hosted
+clone lands on the remote default branch, but `prepare_source`
+only ran `checkout --detach <pin>` on `--rebuild`, so Java I2P
+verified at the default tip (`78529310...`) instead of the Plan 170
+pin (`9134f808...`) and exited 1 before any client ran. No protocol,
+wire, or evidence-row change: the fix checks out the exact pin on
+every non-override fetch (fresh clone or rebuild), and pins
+`gettext-base` in the workflow (it provides the `libintl.jar` the
+ant core-jar build needs). Local `fetch-i2cp-clients.sh` (cache hit)
+still passes; the lane is re-dispatched below.
