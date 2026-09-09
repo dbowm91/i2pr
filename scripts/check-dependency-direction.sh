@@ -39,6 +39,7 @@ expected = {
         "i2pr-netdb",
         "i2pr-netdb-persist",
         "i2pr-runtime",
+        "i2pr-service-tunnels",
         "i2pr-storage",
         "i2pr-transport",
         "i2pr-tunnel",
@@ -49,6 +50,9 @@ expected = {
     },
     "i2pr-client": {
         "i2pr-core", "i2pr-crypto", "i2pr-netdb", "i2pr-proto", "i2pr-tunnel"
+    },
+    "i2pr-service-tunnels": {
+        "i2pr-client", "i2pr-proto"
     },
     "i2pr-api": {
         "i2pr-client", "i2pr-crypto", "i2pr-proto", "i2pr-tunnel"

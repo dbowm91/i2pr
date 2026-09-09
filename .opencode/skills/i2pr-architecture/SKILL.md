@@ -113,6 +113,7 @@ writing or updating a deep-dive.
 | `i2pr-daemon` | `docs/architecture/i2pr-daemon.md` | CLI, config, identity lifecycle, Plan 106 NetDB/bootstrap, Plan 117 dispatch. |
 | `i2pr-client` | `docs/architecture/i2pr-client.md` | Local destination runtime (router-owned and client-owned modes), ECIES destination Garlic session, destination routing, Streaming core, LeaseSet2 lifecycle, typed `LeaseRequest`. |
 | `i2pr-api` | `docs/architecture/i2pr-api.md` | Runtime-neutral application adapters: SAM 3.1 parsing/session/registry/FORWARD/NAMING plus the M9 I2CP wire/profile/connection/options foundation, session registry, typed `I2cpAction` (including `RequestVariableLeaseSet`). No sockets, no Tokio. |
+| `i2pr-service-tunnels` | `docs/architecture/i2pr-service-tunnels.md` | Runtime-neutral M10 service-tunnel config/policy (Plan 174 foundation only, no listener). No sockets, no Tokio. |
 | `i2pr-testkit` | `docs/architecture/i2pr-testkit.md` | Deterministic simulation; no production crate may depend on it. |
 | `tools/i2pr-interop/` | `docs/architecture/tooling.md` | Non-production launcher seam; never activates `i2pr-daemon`. |
 
@@ -346,7 +347,8 @@ record is not `superseded-by-*`. Currently:
   independent-client claim). The trajectory is documented in
   [`docs/architecture/i2pr-daemon.md`](../../docs/architecture/i2pr-daemon.md).
 - **Milestone 9 I2CP independent clients and final closure
-  (passed)**: Plan 170
+  (wire/data-plane retained-passed; final acceptance superseded by
+  Plan 172)**: Plan 170
   (`passed-m9-i2cp-independent-clients-and-final-closure`,
   see [`plans/170-status.md`](../../plans/170-status.md)):
   exact-pinned Java I2P 2.13.0 and go-i2cp exchange
@@ -358,8 +360,22 @@ record is not `superseded-by-*`. Currently:
   `ReplyAndFollowup` `RequestVariableLeaseSet` after
   `CreateSession`, `0.x.y` version negotiation, empty-auth
   GetDate acceptance, `messageReliability=none` best-effort
-  mapping, ElGamal-legacy-slot relocation. Milestone 9 is closed
-  (experimental, loopback-only).
+  mapping, ElGamal-legacy-slot relocation.
+- **Milestone 9 I2CP independent LeaseSet2 lifecycle corrective
+  (passed; M9 closed via Plan 172)**: Plan 172 (see
+  [`plans/172-status.md`](../../plans/172-status.md)).
+- **Milestone 10 planning authority (registered)**: Plan 173
+  (see [`plans/173-status.md`](../../plans/173-status.md)):
+  service tunnels, HTTP, SOCKS5, IRC roadmap; Plans 174–181 in
+  order.
+- **Milestone 10 service-tunnel foundation (passed)**: Plan 174
+  (`passed-m10-service-tunnel-foundation-and-shared-stream-runtime`,
+  see [`plans/174-status.md`](../../plans/174-status.md)):
+  runtime-neutral `i2pr-service-tunnels` crate, strict
+  disabled-by-default loopback-only `[service_tunnels]` surface,
+  shared daemon Streaming pump reused by SAM, no listener yet.
+  Next executable plan is 175; do not implement later profiles
+  early.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).

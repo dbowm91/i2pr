@@ -51,7 +51,11 @@ Plan 170 final acceptance = superseded-by-plan172
 Plan 171 = passed M9 I2CP invalid-preamble close and CI corrective (retained)
 Plan 172 = passed M9 I2CP independent LeaseSet2 lifecycle corrective
 Milestone 9 I2CP final acceptance = closed-via-plan172 (experimental, loopback-only)
-next product layer = milestone10-planning
+Plan 173 = registered M10 service-tunnels roadmap
+Plan 174 = passed M10 service-tunnel foundation and shared stream runtime
+Milestone 10 foundation = passed-via-plan174 (no listener yet)
+next_executable_plan = 175
+next product layer = milestone10-service-tunnels
 ```
 
 For current SSU2 interop work, read in this order:
@@ -73,24 +77,33 @@ Read in this order for SAM work:
 
 Read in this order for Milestone 9 I2CP work:
 
-1. [`plans/170-status.md`](plans/170-status.md)
-2. [`plans/170-m9-i2cp-independent-clients-and-final-closure.md`](plans/170-m9-i2cp-independent-clients-and-final-closure.md)
-3. [`plans/171-status.md`](plans/171-status.md)
-4. [`plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md`](plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md)
-5. [`plans/169-status.md`](plans/169-status.md)
-6. [`plans/169-m9-i2cp-self-composed-local-product-and-hardening.md`](plans/169-m9-i2cp-self-composed-local-product-and-hardening.md)
-7. [`plans/168-status.md`](plans/168-status.md)
-8. [`plans/168-m9-i2cp-message-data-plane.md`](plans/168-m9-i2cp-message-data-plane.md)
-9. [`plans/167-status.md`](plans/167-status.md)
-10. [`plans/167-m9-i2cp-loopback-server-runtime.md`](plans/167-m9-i2cp-loopback-server-runtime.md)
-11. [`plans/166-status.md`](plans/166-status.md)
-12. [`plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md`](plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md)
-13. [`plans/165-status.md`](plans/165-status.md)
-14. [`plans/165-m9-i2cp-connection-session-and-options.md`](plans/165-m9-i2cp-connection-session-and-options.md)
-15. [`plans/164-status.md`](plans/164-status.md)
-16. [`plans/164-m9-i2cp-protocol-and-wire-foundation.md`](plans/164-m9-i2cp-protocol-and-wire-foundation.md)
-17. [`plans/163-m9-i2cp-roadmap.md`](plans/163-m9-i2cp-roadmap.md) — planning authority
-18. Milestone 9 is closed via Plan 172; do not start Milestone 10 without a new plan-of-record.
+1. [`plans/172-status.md`](plans/172-status.md) — closed final acceptance
+2. [`plans/170-status.md`](plans/170-status.md)
+3. [`plans/170-m9-i2cp-independent-clients-and-final-closure.md`](plans/170-m9-i2cp-independent-clients-and-final-closure.md)
+4. [`plans/171-status.md`](plans/171-status.md)
+5. [`plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md`](plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md)
+6. [`plans/169-status.md`](plans/169-status.md)
+7. [`plans/169-m9-i2cp-self-composed-local-product-and-hardening.md`](plans/169-m9-i2cp-self-composed-local-product-and-hardening.md)
+8. [`plans/168-status.md`](plans/168-status.md)
+9. [`plans/168-m9-i2cp-message-data-plane.md`](plans/168-m9-i2cp-message-data-plane.md)
+10. [`plans/167-status.md`](plans/167-status.md)
+11. [`plans/167-m9-i2cp-loopback-server-runtime.md`](plans/167-m9-i2cp-loopback-server-runtime.md)
+12. [`plans/166-status.md`](plans/166-status.md)
+13. [`plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md`](plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md)
+14. [`plans/165-status.md`](plans/165-status.md)
+15. [`plans/165-m9-i2cp-connection-session-and-options.md`](plans/165-m9-i2cp-connection-session-and-options.md)
+16. [`plans/164-status.md`](plans/164-status.md)
+17. [`plans/164-m9-i2cp-protocol-and-wire-foundation.md`](plans/164-m9-i2cp-protocol-and-wire-foundation.md)
+18. [`plans/163-m9-i2cp-roadmap.md`](plans/163-m9-i2cp-roadmap.md) — planning authority
+19. Milestone 9 is closed via Plan 172.
+
+Read in this order for Milestone 10 service-tunnel work:
+
+1. [`plans/174-status.md`](plans/174-status.md) — passed foundation
+2. [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md)
+3. [`plans/173-status.md`](plans/173-status.md) — roadmap authority
+4. [`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`](plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md)
+5. Do not start Plan 175 until Plan 174 is passed (it is); do not implement later profiles early.
 
 Plan 171 corrective (retained): every terminal pre-session I2CP
 rejection terminates TCP explicitly on the common per-connection
@@ -123,6 +136,7 @@ explicit superseding status wins when historical records conflict.
 - `i2pr-tunnel` — runtime-neutral exploratory/tunnel substrate.
 - `i2pr-client` — destination lifecycle, LeaseSet2, ECIES session/routing, Streaming.
 - `i2pr-api` — runtime-neutral SAM 3.1 parsing/state/registry/FORWARD/NAMING plus the M9 I2CP wire/profile foundation (no sockets).
+- `i2pr-service-tunnels` — runtime-neutral M10 service-tunnel config/policy (no sockets; foundation only, no listener yet).
 - `i2pr-testkit` — deterministic simulation/fault fixtures; no production crate may depend on it.
 - `tools/i2pr-interop` — non-production test launcher.
 
@@ -346,6 +360,15 @@ cargo test --locked -p i2pr-daemon --test i2cp_resource_matrix -- --test-threads
 bash scripts/check-i2cp-vectors.sh
 ```
 
+Focused M10 service-tunnel foundation seams currently include:
+
+```text
+cargo test --locked -p i2pr-service-tunnels --all-targets
+cargo test --locked -p i2pr-daemon --lib destination_streaming
+cargo test --locked -p i2pr-daemon --lib config
+cargo test --locked -p i2pr-daemon --test service_tunnels_foundation -- --test-threads=1
+```
+
 Plan 164 added the I2CP fixture corpus (`tests/fixtures/i2cp/`) and its
 checker (`scripts/check-i2cp-vectors.sh`), enforced in routine Linux CI;
 do not weaken it to make CI pass. Plan 165 added the connection state
@@ -497,10 +520,10 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 172 passed the M9 I2CP independent LeaseSet2
-lifecycle corrective (Milestone 9 final acceptance closed-via-plan172,
-experimental, loopback-only). Plan 170 external wire/data-plane evidence
-remains retained-passed; its final-acceptance interpretation is
-superseded-by-plan172. Plan 171 invalid-preamble close corrective
-remains retained. Do not implement Milestone 10
-service tunnels/HTTP/SOCKS/IRC without a new plan-of-record.**
+Current handoff: **Plan 174 passed the M10 service-tunnel
+foundation and shared Streaming runtime (runtime-neutral
+`i2pr-service-tunnels` crate, strict disabled-by-default
+loopback-only `[service_tunnels]` surface, generic bounded
+socket<->Streaming pump reused by SAM, no listener yet).
+Milestone 9 remains closed via Plan 172. Do not implement generic,
+HTTP, SOCKS5, or IRC listeners until Plan 175.**

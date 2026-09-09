@@ -59,4 +59,30 @@ if grep -En 'i2pr-daemon|i2pr-runtime|i2pr-testkit' \
   exit 1
 fi
 
+if grep -REn 'tokio::|TcpListener|TcpStream|UdpSocket|UnixListener|UnixStream|tokio::net|tokio::spawn|tokio::time|tokio::sync' \
+  "$root/crates/i2pr-service-tunnels/src" >/dev/null; then
+  echo "i2pr-service-tunnels must remain runtime-neutral: no Tokio, sockets, listeners, tasks, or timers" >&2
+  exit 1
+fi
+
+# std::net::IpAddr/SocketAddr values are allowed as validated data, but
+# listener/stream ownership is forbidden in the runtime-neutral crate.
+if grep -REn 'TcpListener|TcpStream|UdpSocket|UnixListener|UnixStream' \
+  "$root/crates/i2pr-service-tunnels/src" >/dev/null; then
+  echo "i2pr-service-tunnels must not own listeners or streams; daemon owns sockets" >&2
+  exit 1
+fi
+
+if grep -En 'i2pr-transport|i2pr-tunnel|i2pr-runtime|i2pr-daemon|i2pr-testkit' \
+  "$root/crates/i2pr-service-tunnels/Cargo.toml" >/dev/null; then
+  echo "i2pr-service-tunnels must not depend on transport/tunnel internals, runtime, daemon, or testkit" >&2
+  exit 1
+fi
+
+if grep -REn "unbounded_channel|unbounded::<|UnboundedSender|UnboundedReceiver" \
+  "$root/crates/i2pr-service-tunnels/src" >/dev/null; then
+  echo "unbounded asynchronous channels are forbidden in service-tunnels source" >&2
+  exit 1
+fi
+
 echo "runtime boundary checks passed"

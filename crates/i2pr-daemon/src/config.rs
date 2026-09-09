@@ -49,6 +49,8 @@ struct RawConfig {
     ssu2: RawSsu2Config,
     #[serde(default)]
     i2cp: RawI2cpConfig,
+    #[serde(default)]
+    service_tunnels: RawServiceTunnelsConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -391,6 +393,83 @@ impl Default for RawSsu2Config {
     }
 }
 
+/// Raw Plan 174 service-tunnel configuration.
+///
+/// Disabled by default and loopback-only. No listener starts in
+/// Plan 174; any `enabled = true` tunnel is rejected as
+/// not-yet-available until Plan 175 rather than silently ignored.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawServiceTunnelsConfig {
+    #[serde(default = "default_service_tunnels_enabled")]
+    enabled: bool,
+    #[serde(default = "default_service_tunnels_max_active_connections")]
+    max_active_connections: usize,
+    #[serde(default = "default_service_tunnels_max_buffered_bytes_per_direction")]
+    max_buffered_bytes_per_direction: usize,
+    #[serde(default = "default_service_tunnels_connect_timeout_ms")]
+    connect_timeout_ms: u64,
+    #[serde(default = "default_service_tunnels_read_timeout_ms")]
+    read_timeout_ms: u64,
+    #[serde(default = "default_service_tunnels_write_timeout_ms")]
+    write_timeout_ms: u64,
+    #[serde(default = "default_service_tunnels_shutdown_timeout_ms")]
+    shutdown_timeout_ms: u64,
+    #[serde(default)]
+    tunnel: Vec<RawServiceTunnelEntry>,
+    #[serde(default)]
+    alias: Vec<RawServiceTunnelAlias>,
+}
+
+impl Default for RawServiceTunnelsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_service_tunnels_enabled(),
+            max_active_connections: default_service_tunnels_max_active_connections(),
+            max_buffered_bytes_per_direction:
+                default_service_tunnels_max_buffered_bytes_per_direction(),
+            connect_timeout_ms: default_service_tunnels_connect_timeout_ms(),
+            read_timeout_ms: default_service_tunnels_read_timeout_ms(),
+            write_timeout_ms: default_service_tunnels_write_timeout_ms(),
+            shutdown_timeout_ms: default_service_tunnels_shutdown_timeout_ms(),
+            tunnel: Vec::new(),
+            alias: Vec::new(),
+        }
+    }
+}
+
+/// One raw `[[service_tunnels.tunnel]]` entry.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawServiceTunnelEntry {
+    id: String,
+    kind: String,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    listener: Option<String>,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    targets: Vec<String>,
+    #[serde(default)]
+    destination: Option<String>,
+    #[serde(default)]
+    group: Option<String>,
+    #[serde(default)]
+    max_connections: Option<usize>,
+    #[serde(default)]
+    max_buffered_bytes_per_direction: Option<usize>,
+}
+
+/// One raw `[[service_tunnels.alias]]` static alias mapping.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawServiceTunnelAlias {
+    name: String,
+    target: String,
+}
+
 fn default_profile() -> String {
     String::from("balanced")
 }
@@ -680,6 +759,36 @@ const MIN_SSU2_SCHEDULER_POLL_MAX_MS: u64 = 10;
 const MAX_SSU2_SCHEDULER_POLL_MAX_MS: u64 = 1_000;
 const MIN_SSU2_SERVICE_PORT: u16 = 1024;
 
+// --- Plan 174 service-tunnel defaults: disabled, loopback-only, no listener. ---
+
+const fn default_service_tunnels_enabled() -> bool {
+    false
+}
+
+const fn default_service_tunnels_max_active_connections() -> usize {
+    128
+}
+
+const fn default_service_tunnels_max_buffered_bytes_per_direction() -> usize {
+    65_536
+}
+
+const fn default_service_tunnels_connect_timeout_ms() -> u64 {
+    10_000
+}
+
+const fn default_service_tunnels_read_timeout_ms() -> u64 {
+    60_000
+}
+
+const fn default_service_tunnels_write_timeout_ms() -> u64 {
+    60_000
+}
+
+const fn default_service_tunnels_shutdown_timeout_ms() -> u64 {
+    5_000
+}
+
 /// Normalized Plan 167 I2CP listener configuration.
 ///
 /// M9 I2CP listens on the conventional `127.0.0.1:7654` loopback port.
@@ -967,6 +1076,29 @@ pub struct Config {
     pub ssu2: Ssu2Config,
     /// I2CP listener settings (Plan 167; disabled, loopback-only).
     pub i2cp: I2cpConfig,
+    /// Service-tunnel settings (Plan 174; disabled, loopback-only,
+    /// no listener yet).
+    pub service_tunnels: ServiceTunnelsConfig,
+}
+
+/// Normalized Plan 174 service-tunnel configuration.
+///
+/// The surface is strict, disabled by default, and loopback-only
+/// for local listeners. No service listener starts in Plan 174;
+/// any `enabled = true` tunnel is rejected as not-yet-available
+/// until Plan 175 rather than silently ignored.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServiceTunnelsConfig {
+    /// Whether the service-tunnel subsystem is enabled.
+    pub enabled: bool,
+    /// Central resource ceilings.
+    pub limits: i2pr_service_tunnels::ServiceResourceLimits,
+    /// Central deadline ceilings.
+    pub timeouts: i2pr_service_tunnels::ServiceTimeouts,
+    /// Validated service specifications.
+    pub tunnels: i2pr_service_tunnels::ServiceTunnelSet,
+    /// Validated static alias table.
+    pub aliases: i2pr_service_tunnels::StaticAliasTable,
 }
 
 impl Config {
@@ -1071,6 +1203,7 @@ impl Config {
         let sam = normalize_sam(&raw.sam, &raw.limits)?;
         let ssu2 = normalize_ssu2(&raw.ssu2)?;
         let i2cp = normalize_i2cp(&raw.i2cp, &raw.limits)?;
+        let service_tunnels = normalize_service_tunnels(&raw.service_tunnels, &raw.limits)?;
 
         Ok(Self {
             schema_version: raw.schema_version,
@@ -1094,6 +1227,7 @@ impl Config {
             sam,
             ssu2,
             i2cp,
+            service_tunnels,
         })
     }
 }
@@ -1238,6 +1372,233 @@ fn normalize_i2cp(
         protocol_byte_timeout,
         command_timeout,
         shutdown_timeout,
+    })
+}
+
+fn normalize_service_tunnels(
+    raw: &RawServiceTunnelsConfig,
+    global: &RawLimitsConfig,
+) -> Result<ServiceTunnelsConfig, ConfigError> {
+    use i2pr_service_tunnels::{
+        DestinationPolicy, LocalListenerSpec, ServerTarget, ServiceClientGroupId,
+        ServiceResourceLimits, ServiceTimeouts, ServiceTunnelId, ServiceTunnelKind,
+        ServiceTunnelSet, ServiceTunnelSpec, StaticAliasTable,
+    };
+
+    // Central ceilings validate first; the crate owns the hard maxima.
+    let limits = ServiceResourceLimits {
+        max_active_connections_per_service:
+            i2pr_service_tunnels::MAX_ACTIVE_CONNECTIONS_PER_SERVICE
+                .min(raw.max_active_connections.max(1)),
+        max_active_connections_aggregate: raw.max_active_connections,
+        max_buffered_bytes_per_direction: raw.max_buffered_bytes_per_direction,
+        max_configured_targets: i2pr_service_tunnels::MAX_CONFIGURED_TARGETS,
+    };
+    // Validate aggregate and per-direction ceilings explicitly so
+    // daemon field names appear in diagnostics.
+    if raw.max_active_connections == 0
+        || raw.max_active_connections > i2pr_service_tunnels::MAX_ACTIVE_CONNECTIONS_AGGREGATE
+    {
+        return Err(ConfigError::Semantic {
+            field: "service_tunnels.max_active_connections",
+            reason: "must be within 1..=1024",
+        });
+    }
+    if raw.max_buffered_bytes_per_direction < i2pr_service_tunnels::MIN_BUFFERED_BYTES_PER_DIRECTION
+        || raw.max_buffered_bytes_per_direction
+            > i2pr_service_tunnels::MAX_BUFFERED_BYTES_PER_DIRECTION
+    {
+        return Err(ConfigError::Semantic {
+            field: "service_tunnels.max_buffered_bytes_per_direction",
+            reason: "must be within 1024..=1048576",
+        });
+    }
+    let timeouts = ServiceTimeouts {
+        connect_timeout_ms: raw.connect_timeout_ms,
+        read_timeout_ms: raw.read_timeout_ms,
+        write_timeout_ms: raw.write_timeout_ms,
+        shutdown_timeout_ms: raw.shutdown_timeout_ms,
+    };
+    timeouts.validate().map_err(|_| ConfigError::Semantic {
+        field: "service_tunnels.timeouts",
+        reason: "service tunnel deadline out of range",
+    })?;
+    limits.validate().map_err(|_| ConfigError::Semantic {
+        field: "service_tunnels.limits",
+        reason: "service tunnel resource ceiling out of range",
+    })?;
+
+    // Router-wide budget guard: service tunnels must not silently
+    // exceed the global task or buffered-byte ceilings.
+    if (raw.max_active_connections as u64) > global.max_tasks {
+        return Err(ConfigError::Semantic {
+            field: "service_tunnels.aggregate",
+            reason: "service tunnel connection ceiling exceeds router-wide tasks",
+        });
+    }
+    let aggregate_bytes = (raw.max_active_connections as u64)
+        .saturating_mul(raw.max_buffered_bytes_per_direction as u64)
+        .saturating_mul(2);
+    if aggregate_bytes > global.max_buffered_bytes {
+        return Err(ConfigError::Semantic {
+            field: "service_tunnels.aggregate",
+            reason: "service tunnel buffered-byte ceiling exceeds router-wide budget",
+        });
+    }
+
+    // Static alias table.
+    let mut aliases = StaticAliasTable::new();
+    for entry in &raw.alias {
+        let target = i2pr_service_tunnels::DestinationRef::parse(&entry.target).map_err(|_| {
+            ConfigError::Semantic {
+                field: "service_tunnels.alias.target",
+                reason: "alias target is malformed",
+            }
+        })?;
+        aliases
+            .insert(&entry.name, target)
+            .map_err(|_| ConfigError::Semantic {
+                field: "service_tunnels.alias",
+                reason: "alias is malformed, duplicate, or exceeds the ceiling",
+            })?;
+    }
+
+    // Service specifications.
+    let mut specs = Vec::with_capacity(raw.tunnel.len());
+    for entry in &raw.tunnel {
+        let id = ServiceTunnelId::parse(&entry.id).map_err(|_| ConfigError::Semantic {
+            field: "service_tunnels.tunnel.id",
+            reason: "service tunnel id is malformed",
+        })?;
+        let kind = ServiceTunnelKind::parse(&entry.kind).map_err(|_| ConfigError::Semantic {
+            field: "service_tunnels.tunnel.kind",
+            reason: "service tunnel kind is unsupported",
+        })?;
+        let listener = entry
+            .listener
+            .as_deref()
+            .map(LocalListenerSpec::parse_socket)
+            .transpose()
+            .map_err(|_| ConfigError::Semantic {
+                field: "service_tunnels.tunnel.listener",
+                reason: "local listener must be a loopback ip:port",
+            })?;
+        let target = entry
+            .target
+            .as_deref()
+            .map(ServerTarget::parse)
+            .transpose()
+            .map_err(|_| ConfigError::Semantic {
+                field: "service_tunnels.tunnel.target",
+                reason: "server target must be loopback ip:port or unix:/path",
+            })?;
+        let mut targets = Vec::with_capacity(entry.targets.len());
+        for raw_target in &entry.targets {
+            let parsed = ServerTarget::parse(raw_target).map_err(|_| ConfigError::Semantic {
+                field: "service_tunnels.tunnel.targets",
+                reason: "server target must be loopback ip:port or unix:/path",
+            })?;
+            targets.push(parsed);
+        }
+        let destination = entry
+            .destination
+            .as_deref()
+            .map(i2pr_service_tunnels::DestinationRef::parse)
+            .transpose()
+            .map_err(|_| ConfigError::Semantic {
+                field: "service_tunnels.tunnel.destination",
+                reason: "destination reference is malformed",
+            })?;
+        let policy = match entry.group.as_deref() {
+            None => DestinationPolicy::Dedicated,
+            Some(group) => {
+                let parsed =
+                    ServiceClientGroupId::parse(group).map_err(|_| ConfigError::Semantic {
+                        field: "service_tunnels.tunnel.group",
+                        reason: "shared client group id is malformed",
+                    })?;
+                DestinationPolicy::SharedClientGroup(parsed)
+            }
+        };
+        let max_connections = entry.max_connections.unwrap_or(16);
+        let max_buffered = entry
+            .max_buffered_bytes_per_direction
+            .unwrap_or(raw.max_buffered_bytes_per_direction);
+        let spec = ServiceTunnelSpec {
+            id,
+            kind,
+            enabled: entry.enabled,
+            listener,
+            target,
+            targets,
+            destination,
+            policy,
+            max_connections,
+            max_buffered_bytes_per_direction: max_buffered,
+            timeouts,
+        };
+        spec.validate().map_err(|err| match err {
+            i2pr_service_tunnels::ServiceTunnelError::DuplicateId { .. }
+            | i2pr_service_tunnels::ServiceTunnelError::DuplicateListener { .. } => {
+                ConfigError::Semantic {
+                    field: "service_tunnels.tunnel",
+                    reason: "duplicate service id or listener",
+                }
+            }
+            i2pr_service_tunnels::ServiceTunnelError::InvalidListener { .. } => {
+                ConfigError::Semantic {
+                    field: "service_tunnels.tunnel.listener",
+                    reason: "local listener must be a loopback ip:port",
+                }
+            }
+            i2pr_service_tunnels::ServiceTunnelError::InvalidTarget { .. } => {
+                ConfigError::Semantic {
+                    field: "service_tunnels.tunnel.target",
+                    reason: "server target must be loopback ip:port or unix:/path",
+                }
+            }
+            i2pr_service_tunnels::ServiceTunnelError::InvalidDestinationRef { .. }
+            | i2pr_service_tunnels::ServiceTunnelError::InvalidAlias { .. } => {
+                ConfigError::Semantic {
+                    field: "service_tunnels.tunnel.destination",
+                    reason: "destination reference is malformed",
+                }
+            }
+            i2pr_service_tunnels::ServiceTunnelError::ContradictoryOptions { .. } => {
+                ConfigError::Semantic {
+                    field: "service_tunnels.tunnel",
+                    reason: "service tunnel options are contradictory",
+                }
+            }
+            _ => ConfigError::Semantic {
+                field: "service_tunnels.tunnel",
+                reason: "service tunnel specification exceeds a ceiling",
+            },
+        })?;
+        specs.push(spec);
+    }
+    let set = ServiceTunnelSet { tunnels: specs };
+    set.validate().map_err(|_| ConfigError::Semantic {
+        field: "service_tunnels.tunnel",
+        reason: "duplicate service id, duplicate listener, or ceiling exceeded",
+    })?;
+
+    // Plan 174 §6: no service listener starts in this plan. Any
+    // `enabled = true` tunnel is rejected as not-yet-available
+    // rather than silently ignored.
+    if set.tunnels.iter().any(|spec| spec.enabled) {
+        return Err(ConfigError::Semantic {
+            field: "service_tunnels.tunnel.enabled",
+            reason: "service tunnel execution is not yet available in this milestone",
+        });
+    }
+
+    Ok(ServiceTunnelsConfig {
+        enabled: raw.enabled,
+        limits,
+        timeouts,
+        tunnels: set,
+        aliases,
     })
 }
 
@@ -2352,5 +2713,149 @@ data_dir = "./state"
     fn unknown_ssu2_fields_are_rejected() {
         let text = format!("{}\n[ssu2]\nunknown = true\n", MINIMAL);
         assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
+    }
+
+    // --- Plan 174 service-tunnel foundation ---
+
+    fn service_b32() -> String {
+        format!("{}.b32.i2p", "a".repeat(52))
+    }
+
+    #[test]
+    fn service_tunnels_disabled_by_default() {
+        let config = Config::parse(MINIMAL).expect("valid defaults");
+        assert!(!config.service_tunnels.enabled);
+        assert!(config.service_tunnels.tunnels.is_empty());
+        assert!(config.service_tunnels.aliases.is_empty());
+    }
+
+    #[test]
+    fn unknown_service_tunnels_fields_are_rejected() {
+        let text = format!("{}\n[service_tunnels]\nunknown = true\n", MINIMAL);
+        assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
+        let text = format!(
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"a\"\nkind = \"generic-client\"\nunknown = true\n",
+            MINIMAL
+        );
+        assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
+    }
+
+    #[test]
+    fn non_loopback_local_listener_rejected() {
+        for listener in ["0.0.0.0:8080", "192.168.1.10:8080", "8.8.8.8:53"] {
+            let text = format!(
+                "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"generic-client\"\nlistener = \"{}\"\ndestination = \"{}\"\n",
+                MINIMAL,
+                listener,
+                service_b32()
+            );
+            assert!(
+                matches!(
+                    Config::parse(&text),
+                    Err(ConfigError::Semantic {
+                        field: "service_tunnels.tunnel.listener",
+                        ..
+                    })
+                ),
+                "listener {listener} must be rejected"
+            );
+        }
+        // Loopback listeners validate structurally (disabled tunnels
+        // are accepted; enabled tunnels are rejected as
+        // not-yet-available in a separate test).
+        let text = format!(
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"generic-client\"\nlistener = \"127.0.0.1:8080\"\ndestination = \"{}\"\n",
+            MINIMAL,
+            service_b32()
+        );
+        Config::parse(&text).expect("loopback listener validates");
+    }
+
+    #[test]
+    fn non_loopback_server_tcp_target_rejected() {
+        for target in ["192.168.1.10:9090", "0.0.0.0:9090"] {
+            let text = format!(
+                "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"srv\"\nkind = \"generic-server\"\ntarget = \"{}\"\n",
+                MINIMAL, target
+            );
+            assert!(
+                matches!(
+                    Config::parse(&text),
+                    Err(ConfigError::Semantic {
+                        field: "service_tunnels.tunnel.target",
+                        ..
+                    })
+                ),
+                "target {target} must be rejected"
+            );
+        }
+        let text = format!(
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"srv\"\nkind = \"generic-server\"\ntarget = \"127.0.0.1:9090\"\n",
+            MINIMAL
+        );
+        Config::parse(&text).expect("loopback target validates");
+        let text = format!(
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"srv\"\nkind = \"generic-server\"\ntarget = \"unix:/run/i2pr/service.sock\"\n",
+            MINIMAL
+        );
+        Config::parse(&text).expect("unix target validates as a path value");
+    }
+
+    #[test]
+    fn enabled_service_tunnel_rejected_as_not_yet_available() {
+        let text = format!(
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"generic-client\"\nenabled = true\nlistener = \"127.0.0.1:8080\"\ndestination = \"{}\"\n",
+            MINIMAL,
+            service_b32()
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "service_tunnels.tunnel.enabled",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn duplicate_service_ids_and_listeners_rejected() {
+        let b32 = service_b32();
+        let text = format!(
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"generic-client\"\nlistener = \"127.0.0.1:8080\"\ndestination = \"{b32}\"\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"generic-client\"\nlistener = \"127.0.0.1:8081\"\ndestination = \"{b32}\"\n",
+            MINIMAL
+        );
+        assert!(Config::parse(&text).is_err());
+        let text = format!(
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"generic-client\"\nlistener = \"127.0.0.1:8080\"\ndestination = \"{b32}\"\n[[service_tunnels.tunnel]]\nid = \"beta\"\nkind = \"generic-client\"\nlistener = \"127.0.0.1:8080\"\ndestination = \"{b32}\"\n",
+            MINIMAL
+        );
+        assert!(Config::parse(&text).is_err());
+    }
+
+    #[test]
+    fn service_tunnel_bounds_enforced() {
+        // Aggregate ceiling.
+        let text = format!(
+            "{}\n[service_tunnels]\nmax_active_connections = 0\n",
+            MINIMAL
+        );
+        assert!(Config::parse(&text).is_err());
+        let text = format!(
+            "{}\n[service_tunnels]\nmax_active_connections = 1025\n",
+            MINIMAL
+        );
+        assert!(Config::parse(&text).is_err());
+        // Per-direction buffered bytes.
+        let text = format!(
+            "{}\n[service_tunnels]\nmax_buffered_bytes_per_direction = 0\n",
+            MINIMAL
+        );
+        assert!(Config::parse(&text).is_err());
+        // Unknown kind.
+        let text = format!(
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"http-server\"\n",
+            MINIMAL
+        );
+        assert!(Config::parse(&text).is_err());
     }
 }

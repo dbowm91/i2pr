@@ -92,6 +92,8 @@ plan_170_external_wire_data_plane = retained-passed
 plan_170_final_acceptance = superseded-by-plan172
 plan_171 = passed-m9-i2cp-invalid-preamble-close-and-ci-corrective-retained
 plan_172 = passed-m9-i2cp-independent-leaseset2-lifecycle-corrective
+plan_173 = registered-m10-service-tunnels-roadmap
+plan_174 = passed-m10-service-tunnel-foundation-and-shared-stream-runtime
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
@@ -123,8 +125,13 @@ milestone9_i2cp_independent_wire_data_plane = passed-via-plan170
 milestone9_i2cp_independent_clients = passed-via-plan170-and-plan172
 milestone9_i2cp_independent_leaseset2 = passed-via-plan172
 milestone9_final_acceptance = closed-via-plan172
-next_product_layer = milestone10-planning
+milestone10_planning_authority = plan173
+milestone10_foundation = passed-via-plan174
+milestone10_final_acceptance = not-yet-closed
+next_product_layer = milestone10-service-tunnels
+next_executable_plan = 175
 m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172
+m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 181
 ```
 
 ## Current handoff sequence
@@ -151,7 +158,13 @@ m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172
 - [`168-m9-i2cp-message-data-plane.md`](168-m9-i2cp-message-data-plane.md) — **passed**. Bounded per-session `SendMessage`/`SendMessageExpires` validation against the existing `i2pr_client::DestinationRuntime::enqueue_outbound` seam (no second routing stack), bounded `MessageStatus` correlation table, `MessagePayload` inbound frames delivered only to the owning session's bounded queue and drained through a `tokio::sync::Notify` (sibling-isolation guaranteed), cross-session local loopback shortcut for two destinations owned by active I2CP sessions, `DestLookup` resolving through the local destination registry, and `GetBandwidthLimits` returning the config-derived client ceiling and the documented neutral router values. Eighteen real-TCP black-box tests in `crates/i2pr-daemon/tests/i2cp_message_data_plane.rs` cover every Plan 168 §11 case. No reconfiguration, no `HostLookup`/`HostReply` resolution, and no independent-client evidence; those belong to Plans 169–170.
 - [`169-m9-i2cp-self-composed-local-product-and-hardening.md`](169-m9-i2cp-self-composed-local-product-and-hardening.md) — transactional reconfigure/destroy, complete adversarial/resource matrix, repeated lifecycle baselines, and canonical two-destination self-composed real-TCP product driven only through I2CP after listener startup.
 - [`171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md`](171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md) — **passed** narrow exact-head corrective (retained). Explicit `stream.shutdown()` on the common per-connection terminal path before bookkeeping release; strict wrong-preamble row with 24-iteration baselines plus a non-paused companion test. No wire change, no independent-client evidence.
-- [`170-m9-i2cp-independent-clients-and-final-closure.md`](170-m9-i2cp-independent-clients-and-final-closure.md) — **passed**. Exact-pinned Java I2P 2.13.0 plus exact-pinned go-i2cp create modern client-owned sessions and exchange digest-matched small/large payloads both directions; fail-closed 9-row command-derived ledger/checker/manual workflow; M9 closed.
+- [`170-m9-i2cp-independent-clients-and-final-closure.md`](170-m9-i2cp-independent-clients-and-final-closure.md) — wire/data-plane **retained-passed**; final acceptance superseded by Plan 172.
+- [`172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md`](172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md) — **passed** independent LeaseSet2 lifecycle corrective; M9 final acceptance closed via Plan 172.
+
+### Milestone 10 — service tunnels (current)
+
+- [`173-m10-service-tunnels-http-socks5-irc-roadmap.md`](173-m10-service-tunnels-http-socks5-irc-roadmap.md) — **registered planning authority**.
+- [`174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](174-m10-service-tunnel-foundation-and-shared-stream-runtime.md) — **passed** runtime-neutral `i2pr-service-tunnels` crate, strict disabled-by-default loopback-only `[service_tunnels]` surface, shared daemon Streaming pump reused by SAM, no listener yet.
 
 Milestone 9 architecture is deliberately constrained:
 
@@ -243,6 +256,7 @@ Plan 152 is a later M6 robustness correction discovered by the Plan 151 final SA
 - SAM 3.1 parser/session/STREAM/FORWARD/NAMING product with independent localhost client evidence; M7 closed via Plan 151.
 - SSU2 v2 local protocol/runtime/reachability product and independent direct IPv4 i2pd interop; M8 closed via Plan 161.
 - M9 I2CP implementation plans are registered; the Plan 164 wire/profile foundation, Plan 165 connection/session/options state machines, Plan 166 client-owned destination + LeaseSet2 bridge, Plan 167 loopback server runtime, Plan 168 message data plane, and Plan 169 self-composed local product are landed, with the Plan 171 invalid-preamble close corrective retained on the common terminal path. Plan 170 wire/data-plane evidence is retained-passed (exact-pinned Java I2P 2.13.0 + go-i2cp, digest-matched payloads both directions, fail-closed 9-row lane); its final-acceptance interpretation is superseded by Plan 172. Plan 172 passed the independent LeaseSet2 lifecycle corrective (high-level Java connect + public Go lifecycle, non-empty zero-hop requests, client-signed LS2 installs, post-LS2 bidirectional digests, 24 fail-closed rows). No `HostLookup`/`HostReply` resolution; Milestone 9 final acceptance is closed via Plan 172 (experimental, loopback-only).
+- M10 service-tunnel foundation is landed via Plan 174 (runtime-neutral `i2pr-service-tunnels` crate, strict `[service_tunnels]` surface, shared Streaming pump reused by SAM; no listener yet).
 
 ## What's not yet accepted
 
@@ -250,7 +264,7 @@ Plan 152 is a later M6 robustness correction discovered by the Plan 151 final SA
 - Live/public NTCP2 or SSU2 router transport activation and broad mixed-router interoperability.
 - Public I2P participation and network-transport-bound NetDB/public router behavior.
 - Milestone 6 independent-router destination/Streaming/tunnel interoperability.
-- Service tunnels, HTTP proxy, SOCKS5, and IRC (Milestone 10).
+- Generic service tunnels, HTTP proxy, SOCKS5, and IRC listeners/product (Milestone 10 Plans 175–181).
 - SSU2 IPv6 external interop, PQ SSU2, SSU1, encrypted/meta LeaseSets, or PQ destination encryption unless separately closed later.
 
 The historical NTCP2 development interoperability result remains separate evidence; no passed broad mixed-router claim exists.
@@ -274,4 +288,8 @@ Plan 171 = passed M9 I2CP invalid-preamble close corrective (retained)
 Plan 170 external wire/data-plane = retained-passed; final acceptance superseded-by-plan172
 Plan 172 = passed M9 I2CP independent LeaseSet2 lifecycle corrective
 Milestone 9 final acceptance = closed-via-plan172 (experimental, loopback-only)
+Plan 173 = registered M10 service-tunnels roadmap
+Plan 174 = passed M10 service-tunnel foundation and shared stream runtime
+Milestone 10 foundation = passed-via-plan174 (no listener yet)
+next_executable_plan = 175
 ```

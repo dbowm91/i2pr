@@ -44,10 +44,12 @@ use i2pr_client::DestinationId;
 use i2pr_client::streaming::connection::{ConnectionId, ConnectionState};
 use i2pr_client::streaming::manager::RemoteDestination;
 use i2pr_runtime::CancellationToken;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
+use crate::destination_streaming::{
+    PumpConfig, PumpEndpointError, PumpSendDisposition, StreamPumpEndpoint, run_stream_pump,
+};
 use crate::sam::{SamServiceState, sam_now_seconds, streaming_now_ms};
 
 /// Direction of the underlying Streaming connection.
@@ -175,23 +177,162 @@ pub(crate) struct RawStreamCleanup {
     pub(crate) direction: RawDirection,
 }
 
-/// Spins one raw-mode TCP <-> StreamingManager byte pump for the
-/// supplied handoff. The driver terminates when:
-/// - the parent cancellation token fires (parent socket close,
-///   service shutdown, SAM session teardown);
-/// - the TCP read returns EOF or I/O error;
-/// - the local application closes the connection;
-/// - the underlying `StreamingManager` connection becomes terminal.
+/// SAM narrow capability adapting one Streaming connection to the
+/// shared pump.
 ///
-/// The driver does **not** own the `StreamingManager`; it borrows
-/// it through the bridge handle the runtime driver keeps alive.
+/// The endpoint references exactly one router-owned destination
+/// runtime (via `SamServiceState` + `destination_id`), one
+/// `StreamingManager` (canonical for CONNECT, receiver-mirror for
+/// ACCEPT, selected by `direction`), the existing
+/// `StreamingDestinationAdapter` routing seam (through
+/// `send_data_segment` + `notify_outbound_signal` +
+/// `deliver_outbound` driven by the per-destination driver),
+/// per-destination driver cancellation/notification, and bounded
+/// delivery accounting. It exposes no `Arc<RouterContext>` service
+/// locator and no SAM command parser state.
+struct SamPumpEndpoint {
+    state: Arc<SamServiceState>,
+    destination_id: DestinationId,
+    connection_id: ConnectionId,
+    peer_destination: RemoteDestination,
+    direction: RawDirection,
+}
+
+impl StreamPumpEndpoint for SamPumpEndpoint {
+    fn max_payload_bytes(&self) -> usize {
+        let mut negotiated = i2pr_proto::streaming::DEFAULT_ADVERTISED_MAX_PAYLOAD as usize;
+        let destinations = self.state.sam_destinations();
+        let Ok(destinations) = destinations.lock() else {
+            return negotiated.max(1);
+        };
+        if let Some(bridge) = destinations.get(self.destination_id) {
+            let observed = bridge.with(|b| match self.direction {
+                RawDirection::Outbound => b
+                    .streaming()
+                    .get_connection(self.connection_id)
+                    .map(|c| c.max_payload_size() as usize),
+                RawDirection::Inbound => b
+                    .receiver_streaming()
+                    .get_connection(self.connection_id)
+                    .map(|c| c.max_payload_size() as usize),
+            });
+            if let Some(observed) = observed {
+                negotiated = observed;
+            }
+        }
+        negotiated.max(1)
+    }
+
+    fn try_send(&self, segment: &[u8]) -> Result<PumpSendDisposition, PumpEndpointError> {
+        match self.state.send_data_segment(
+            self.destination_id,
+            self.connection_id,
+            &self.peer_destination,
+            segment,
+            self.direction,
+            streaming_now_ms(),
+        ) {
+            Ok(true) => Ok(PumpSendDisposition::Accepted),
+            Ok(false) => Ok(PumpSendDisposition::Backpressured),
+            Err(error) => {
+                let message = error.to_string();
+                if message.contains("UnknownConnection")
+                    || message.contains("unknown")
+                    || message.contains("no installed bridge")
+                {
+                    Err(PumpEndpointError::UnknownConnection)
+                } else if message.contains("InvalidConnectionState")
+                    || message.contains("PortTupleMismatch")
+                {
+                    Err(PumpEndpointError::InvalidState)
+                } else {
+                    Err(PumpEndpointError::Streaming(message))
+                }
+            }
+        }
+    }
+
+    fn drain_delivered(&self) -> Vec<Vec<u8>> {
+        let destinations = self.state.sam_destinations();
+        let Ok(destinations) = destinations.lock() else {
+            return Vec::new();
+        };
+        let Some(bridge) = destinations.get(self.destination_id) else {
+            return Vec::new();
+        };
+        bridge
+            .with(|b| match self.direction {
+                RawDirection::Outbound => b.streaming_mut().drain_delivered_for(self.connection_id),
+                RawDirection::Inbound => b
+                    .receiver_streaming_mut()
+                    .drain_delivered_for(self.connection_id),
+            })
+            .into_iter()
+            .filter_map(|delivered| {
+                if delivered.bytes.is_empty() {
+                    None
+                } else {
+                    Some(delivered.bytes)
+                }
+            })
+            .collect()
+    }
+
+    fn is_terminal(&self) -> bool {
+        let destinations = self.state.sam_destinations();
+        let Ok(destinations) = destinations.lock() else {
+            return true;
+        };
+        let Some(bridge) = destinations.get(self.destination_id) else {
+            return true;
+        };
+        bridge.with(|bridge| {
+            let connection = match self.direction {
+                RawDirection::Outbound => bridge.streaming().get_connection(self.connection_id),
+                RawDirection::Inbound => bridge
+                    .receiver_streaming()
+                    .get_connection(self.connection_id),
+            };
+            connection.is_none_or(|connection| {
+                matches!(
+                    connection.state(),
+                    ConnectionState::ClosingRemote
+                        | ConnectionState::Closed
+                        | ConnectionState::Reset
+                )
+            })
+        })
+    }
+
+    fn notify_outbound(&self) {
+        self.state.notify_outbound_signal(self.destination_id);
+    }
+}
+
+/// Spins one raw-mode TCP <-> StreamingManager byte pump for the
+/// supplied handoff.
+///
+/// Plan 174: this is now a thin SAM adaptation over the shared
+/// `run_stream_pump` primitive. The generic pump owns the socket
+/// loop (bounded chunk, negotiated segmentation, backpressure,
+/// sibling-isolated drain, cancellation/EOF/terminal convergence);
+/// this wrapper only constructs the narrow `SamPumpEndpoint`
+/// capability. Terminal CLOSE/RESET emission and
+/// SAM attachment release remain with `finish_raw_stream`.
+///
+/// The driver terminates when the parent cancellation token fires,
+/// the TCP read returns EOF or I/O error, the local application
+/// closes the connection, or the Streaming connection becomes
+/// terminal. The driver does **not** own the `StreamingManager`; it
+/// borrows it through the bridge handle the runtime driver keeps
+/// alive.
 pub async fn run_raw_stream(
     state: Arc<SamServiceState>,
     handoff: RawStreamHandoff,
     cancellation: CancellationToken,
 ) -> Result<(), RawStreamError> {
     let RawStreamHandoff {
-        mut stream,
+        stream,
         session_id,
         destination_id,
         attachment_id,
@@ -217,210 +358,43 @@ pub async fn run_raw_stream(
         .limits()
         .max_buffered_bytes_per_stream_direction
         .clamp(1, 32 * 1024);
-    let mut chunk = vec![0_u8; max_chunk];
-    let mut carry: Vec<u8> = initial_raw_bytes;
-    let mut eof = false;
-    // Plan 147: the TCP read must not indefinitely starve the
-    // Streaming->TCP drain. The test runs payloads in both
-    // directions simultaneously; if A blocks on TCP read while B's
-    // data sits in A's StreamingManager, EOF is never observed.
-    // A 20 ms read timeout lets the loop periodically drain
-    // without adding a new Notify.
-    let mut read_timeout = tokio::time::interval(tokio::time::Duration::from_millis(20));
-    read_timeout.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    read_timeout.tick().await;
-
-    while !eof {
-        // ----- TCP -> Streaming: read bounded chunk and admit -----
-        let mut timed_out = false;
-        let mut backpressured = false;
-        let read_size = if carry.is_empty() {
-            tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return Ok(()),
-                _ = read_timeout.tick() => {
-                    // Timeout: fall through to the drain step even
-                    // though no TCP byte arrived.
-                    timed_out = true;
-                    0
-                }
-                result = stream.read(&mut chunk) => match result {
-                    Ok(0) => 0,
-                    Ok(n) => n,
-                    Err(error) => return Err(RawStreamError::Io(error)),
-                },
-            }
-        } else {
-            carry.len()
-        };
-        if timed_out {
-            // No TCP byte, but we may have Streaming->TCP data to
-            // forward. Fall through to the drain section without
-            // admitting any TCP chunk.
-        } else if read_size == 0 && carry.is_empty() {
-            eof = true;
+    let endpoint: Arc<dyn StreamPumpEndpoint> = Arc::new(SamPumpEndpoint {
+        state: Arc::clone(&state),
+        destination_id,
+        connection_id,
+        peer_destination,
+        direction,
+    });
+    let config = PumpConfig::defaults(max_chunk);
+    match run_stream_pump(stream, initial_raw_bytes, endpoint, config, cancellation).await {
+        Ok(()) => {}
+        Err(crate::destination_streaming::PumpError::Io(error)) => {
+            return Err(RawStreamError::Io(error));
         }
-        if !eof && !timed_out {
-            let payload: Vec<u8> = if carry.is_empty() {
-                chunk[..read_size].to_vec()
-            } else {
-                std::mem::take(&mut carry)
-            };
-
-            // Segment the payload to the negotiated Streaming max payload
-            // (Plan 147 §8 step 3). Bounded admission. The
-            // connection lives on `bridge.streaming` for outbound
-            // (CONNECT) attachments and on `bridge.receiver_streaming`
-            // for inbound (ACCEPT) attachments because the SYN
-            // routing in `LocalDeliveryReceiver::deliver` lands
-            // inbound SYNs on the mirror.
-            let max_payload = {
-                let mut negotiated = i2pr_proto::streaming::DEFAULT_ADVERTISED_MAX_PAYLOAD as usize;
-                let destinations = state.sam_destinations();
-                let destinations = destinations.lock().expect("sam destinations poisoned");
-                if let Some(bridge) = destinations.get(destination_id) {
-                    let observed = bridge.with(|b| match direction {
-                        RawDirection::Outbound => b
-                            .streaming()
-                            .get_connection(connection_id)
-                            .map(|c| c.max_payload_size() as usize),
-                        RawDirection::Inbound => b
-                            .receiver_streaming()
-                            .get_connection(connection_id)
-                            .map(|c| c.max_payload_size() as usize),
-                    });
-                    if let Some(observed) = observed {
-                        negotiated = observed;
-                    }
+        Err(crate::destination_streaming::PumpError::Endpoint(endpoint_error)) => {
+            match &endpoint_error {
+                PumpEndpointError::UnknownConnection | PumpEndpointError::InvalidState => {
+                    warn!(
+                        session_id = %session_id,
+                        destination = ?destination_id,
+                        connection_id = connection_id.raw(),
+                        direction = ?direction,
+                        error = %endpoint_error,
+                        "raw driver endpoint terminal"
+                    );
                 }
-                negotiated.max(1)
-            };
-
-            let mut offset = 0_usize;
-            while offset < payload.len() {
-                let end = (offset + max_payload).min(payload.len());
-                let segment = &payload[offset..end];
-                let produced = state.send_data_segment(
-                    destination_id,
-                    connection_id,
-                    &peer_destination,
-                    segment,
-                    direction,
-                    streaming_now_ms(),
-                );
-                match produced {
-                    Ok(true) => {
-                        offset = end;
-                        // Plan 147: wake the per-destination driver
-                        // so the STREAMING packet is routed through
-                        // `bridge_to_peer` without waiting for the
-                        // 250 ms poll.
-                        state.notify_outbound_signal(destination_id);
-                    }
-                    Ok(false) => {
-                        // Backpressure: stop reading until the send
-                        // window drains. Park the remainder and try
-                        // again next iteration.
-                        carry = payload[offset..].to_vec();
-                        backpressured = true;
-                        break;
-                    }
-                    Err(error) => {
-                        warn!(
-                            session_id = %session_id,
-                            destination = ?destination_id,
-                            connection_id = connection_id.raw(),
-                            direction = ?direction,
-                            initial_bytes = carry.len(),
-                            segment_len = segment.len(),
-                            error = %error,
-                            "raw driver send_data failed"
-                        );
-                        return Err(RawStreamError::Streaming(error.to_string()));
-                    }
+                PumpEndpointError::Streaming(_) => {
+                    warn!(
+                        session_id = %session_id,
+                        destination = ?destination_id,
+                        connection_id = connection_id.raw(),
+                        direction = ?direction,
+                        error = %endpoint_error,
+                        "raw driver send_data failed"
+                    );
                 }
             }
-            // Give the runtime driver a chance to run `deliver_outbound`
-            // before we loop back to TCP read; otherwise, if this task
-            // loops fast enough it can starve the driver task on a
-            // single-threaded runtime.
-            tokio::task::yield_now().await;
-        }
-
-        // ----- Streaming -> TCP: drain delivered bytes, write TCP -----
-        // Plan 151 sibling isolation: drain only this stream's bytes.
-        // A shared whole-queue drain would discard bytes owned by a
-        // sibling stream whose ACKs the sender already received.
-        let drained = {
-            let destinations = state.sam_destinations();
-            let destinations = destinations.lock().expect("sam destinations poisoned");
-            let bridge = match destinations.get(destination_id) {
-                Some(b) => b,
-                None => return Ok(()),
-            };
-            bridge.with(|b| match direction {
-                RawDirection::Outbound => b.streaming_mut().drain_delivered_for(connection_id),
-                RawDirection::Inbound => b
-                    .receiver_streaming_mut()
-                    .drain_delivered_for(connection_id),
-            })
-        };
-        for delivered in drained {
-            if delivered.bytes.is_empty() {
-                continue;
-            }
-            let write = tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return Ok(()),
-                result = stream.write_all(&delivered.bytes) => result,
-            };
-            if let Err(error) = write {
-                return Err(RawStreamError::Io(error));
-            }
-            let flush = stream.flush().await;
-            if let Err(error) = flush {
-                return Err(RawStreamError::Io(error));
-            }
-        }
-        let remote_terminal = {
-            let destinations = state.sam_destinations();
-            let destinations = destinations
-                .lock()
-                .map_err(|_| RawStreamError::Streaming("sam destinations poisoned".to_owned()))?;
-            let Some(bridge) = destinations.get(destination_id) else {
-                return Ok(());
-            };
-            bridge.with(|bridge| {
-                let connection = match direction {
-                    RawDirection::Outbound => bridge.streaming().get_connection(connection_id),
-                    RawDirection::Inbound => {
-                        bridge.receiver_streaming().get_connection(connection_id)
-                    }
-                };
-                connection.is_none_or(|connection| {
-                    matches!(
-                        connection.state(),
-                        ConnectionState::ClosingRemote
-                            | ConnectionState::Closed
-                            | ConnectionState::Reset
-                    )
-                })
-            })
-        };
-        if remote_terminal {
-            eof = true;
-        }
-        if backpressured && !carry.is_empty() {
-            // A full congestion/send window is an expected flow-control
-            // result, not a terminal stream error. Avoid a ready-loop
-            // while the peer's delayed ACK timer is running; the short
-            // bounded park also gives the per-destination driver a fair
-            // opportunity to poll and dispatch that ACK.
-            tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return Ok(()),
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(5)) => {}
-            }
+            return Err(RawStreamError::Streaming(endpoint_error.to_string()));
         }
     }
 

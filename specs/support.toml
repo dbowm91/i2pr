@@ -287,7 +287,16 @@ milestone9_i2cp_independent_wire_data_plane = "passed-via-plan170"
 milestone9_i2cp_independent_clients = "passed-via-plan170-and-plan172"
 milestone9_i2cp_independent_leaseset2 = "passed-via-plan172"
 milestone9_final_acceptance = "closed-via-plan172"
-next_product_layer = "milestone10-planning"
+plan_173_plan_of_record = "plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md"
+plan_173_closure = "plans/173-status.md"
+plan_173_status = "registered-m10-service-tunnels-roadmap"
+plan_174_plan_of_record = "plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md"
+plan_174_closure = "plans/174-status.md"
+plan_174_status = "passed-m10-service-tunnel-foundation-and-shared-stream-runtime"
+milestone10_planning_authority = "plan173"
+milestone10_foundation = "passed-via-plan174"
+milestone10_final_acceptance = "not-yet-closed"
+next_product_layer = "milestone10-service-tunnels"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
@@ -1306,5 +1315,28 @@ evidence = [
     "crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs",
     "plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md",
     "plans/171-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "service-tunnels.foundation"
+protocol = "service-tunnels"
+structure = "runtime-neutral-config-and-shared-stream-pump-foundation"
+scope = "required"
+status = "experimental"
+notes = "Plan 174 passed the M10 service-tunnel foundation without adding a product listener. `crates/i2pr-service-tunnels` owns bounded typed kinds/policy/listener/target/limits/timeouts, strict Base32/static-alias validation with a negative matrix, and value-only events/snapshots (no Tokio, sockets, timers, filesystem, transport internals). `crates/i2pr-daemon/src/destination_streaming.rs` owns the generic bounded socket<->Streaming pump (bounded chunk, negotiated segmentation, send-window backpressure without busy spin, sibling-isolated drain, fair ACK/driver progress, cancellation/EOF/terminal convergence); `crates/i2pr-daemon/src/sam/raw_stream.rs` is a thin SAM adaptation over that primitive with Plan 151/152 regressions green. Daemon `[service_tunnels]` is strict, disabled by default, loopback-only, with duplicate-bind detection and router-wide budget guards; any enabled tunnel is rejected as not-yet-available until Plan 175. No generic/HTTP/SOCKS/IRC listener is active; no wire or routing semantic change."
+evidence = [
+    "crates/i2pr-service-tunnels/src/lib.rs",
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-service-tunnels/src/destination.rs",
+    "crates/i2pr-service-tunnels/src/errors.rs",
+    "crates/i2pr-service-tunnels/src/events.rs",
+    "crates/i2pr-daemon/src/destination_streaming.rs",
+    "crates/i2pr-daemon/src/sam/raw_stream.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/tests/service_tunnels_foundation.rs",
+    "specs/protocols/11-service-tunnels.md",
+    "plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md",
+    "plans/174-status.md",
 ]
 advertised = false

@@ -82,7 +82,14 @@ milestone9_i2cp_independent_leaseset2 = passed-via-plan172
 milestone9_i2cp_invalid_preamble_close = passed-via-plan171
 milestone9_final_acceptance = closed-via-plan172
 
-next_product_layer = milestone10-planning
+plan_173 = registered-m10-service-tunnels-roadmap
+plan_174 = passed-m10-service-tunnel-foundation-and-shared-stream-runtime
+milestone10_planning_authority = plan173
+milestone10_foundation = passed-via-plan174
+milestone10_final_acceptance = not-yet-closed
+
+next_product_layer = milestone10-service-tunnels
+next_executable_plan = 175
 ```
 
 Read in order for current SSU2 work:
@@ -121,8 +128,16 @@ Read in order for Milestone 9 I2CP work:
 15. `plans/164-status.md`
 16. `plans/164-m9-i2cp-protocol-and-wire-foundation.md`
 17. `plans/163-m9-i2cp-roadmap.md` (planning authority)
-18. Milestone 9 is closed via Plan 172; do not start Milestone 10
-without a new plan-of-record.
+18. Milestone 9 is closed via Plan 172.
+
+Read in order for Milestone 10 service-tunnel work:
+
+1. `plans/174-status.md` (passed foundation)
+2. `plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`
+3. `plans/173-status.md` (roadmap authority)
+4. `plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`
+5. Do not start Plan 175 until Plan 174 is passed (it is); do not
+   implement later profiles early.
 
 Plans 155–160 passed the local SSU2 v2 protocol/runtime/reachability sequence.
 Plan 161 has passed the final independent gate: directions A
@@ -519,15 +534,16 @@ bash scripts/check-ssu2-acceptance-evidence.sh
 - Plan 171 passed the M9 I2CP invalid-preamble close and CI corrective (retained): explicit `stream.shutdown()` on the common per-connection terminal path before bookkeeping release (no wire change); the strict wrong-preamble row now proves 24-iteration rejection with zeroed baselines plus a subsequent valid client (paused test waits via a bounded yield-pump/`try_read` drain, no virtual-time timeout), with a non-paused companion test separating product-close evidence from paused-clock behavior. The adversarial matrix is now 20 tests.
 - Plan 170 external wire/data-plane evidence is retained-passed: exact-pinned Java I2P 2.13.0 and go-i2cp exchange digest-matched 25 B/32 KiB payloads both directions through the loopback daemon under the fail-closed 9-row lane. Its final-acceptance interpretation is superseded by Plan 172 (counted Java driver bypassed `I2PSession.connect()`; no external LeaseSet2 install).
 - Plan 172 passed the M9 I2CP independent LeaseSet2 lifecycle corrective: explicit local zero-hop tunnel kind, 44-byte Lease-compatible non-empty real `RequestVariableLeaseSet`, Plan 166 atomic install (ElGamal-slot skip, unpublished accepted, u8 LS2 key count), high-level Java `I2PSession.connect()` plus public go-i2cp async `ProcessIO` lifecycle proof, post-LS2 digest-matched cross-client traffic both directions, fail-closed 24-row evidence. Milestone 9 final acceptance is closed via Plan 172.
-- Next product layer is milestone10-planning; do not implement service tunnels/HTTP/SOCKS/IRC without a new plan-of-record.
+- Plan 173 registered the M10 service-tunnels roadmap (planning authority only).
+- Plan 174 passed the M10 service-tunnel foundation and shared stream runtime: runtime-neutral `i2pr-service-tunnels` crate, strict disabled-by-default loopback-only `[service_tunnels]` surface, generic bounded socket<->Streaming pump reused by SAM, no listener yet. Do not implement generic, HTTP, SOCKS5, or IRC listeners until Plan 175.
 - `milestone6_interoperable = not-yet-claimed` remains unchanged.
 - SSU2 public-network participation, broad router interoperability, IPv6 external interop, PQ v3/v4, and SSU1 remain unclaimed/deferred as documented.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
 
-Current handoff: **Plan 172 passed the M9 I2CP independent LeaseSet2
-lifecycle corrective (Milestone 9 final acceptance closed-via-plan172,
-experimental, loopback-only). Plan 170 external wire/data-plane evidence
-remains retained-passed; its final-acceptance interpretation is
-superseded-by-plan172. Plan 171 invalid-preamble close corrective
-remains retained. Do not implement Milestone 10
-service tunnels/HTTP/SOCKS/IRC without a new plan-of-record.**
+Current handoff: **Plan 174 passed the M10 service-tunnel
+foundation and shared Streaming runtime (runtime-neutral
+`i2pr-service-tunnels` crate, strict disabled-by-default
+loopback-only `[service_tunnels]` surface, generic bounded
+socket<->Streaming pump reused by SAM, no listener yet).
+Milestone 9 remains closed via Plan 172. Do not implement generic,
+HTTP, SOCKS5, or IRC listeners until Plan 175.**

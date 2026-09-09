@@ -760,6 +760,7 @@ dependencies = [
  "i2pr-netdb-persist",
  "i2pr-proto",
  "i2pr-runtime",
+ "i2pr-service-tunnels",
  "i2pr-storage",
  "i2pr-transport",
  "i2pr-tunnel",
@@ -858,6 +859,14 @@ dependencies = [
  "tokio-util",
  "tracing",
  "zeroize",
+]
+
+[[package]]
+name = "i2pr-service-tunnels"
+version = "0.1.0"
+dependencies = [
+ "i2pr-proto",
+ "thiserror",
 ]
 
 [[package]]

@@ -152,6 +152,17 @@ work is scoped to:
   installs the client-signed LS2 locally without public NetDB publication.
   Milestone 9 final acceptance is closed via Plan 172. See
   [`plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md`](../../plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md).
+- **M10 service-tunnel foundation** (Plan 174): adds the shared
+  `destination_streaming` pump (`run_stream_pump` generic over
+  `AsyncRead + AsyncWrite` with bounded chunk, negotiated
+  segmentation, backpressure, sibling-isolated drain, and
+  cancel/EOF/terminal convergence) and adapts SAM to it via a
+  narrow `SamPumpEndpoint` capability (no second byte pump). Adds
+  the strict disabled-by-default loopback-only `[service_tunnels]`
+  surface; any `enabled = true` tunnel is rejected as
+  not-yet-available until Plan 175. No generic/HTTP/SOCKS/IRC
+  listener starts. See
+  [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](../../plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md).
 
 What it **does not** do yet:
 

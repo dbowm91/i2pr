@@ -9,6 +9,7 @@ members = [
     "crates/i2pr-netdb",
     "crates/i2pr-netdb-persist",
     "crates/i2pr-runtime",
+    "crates/i2pr-service-tunnels",
     "crates/i2pr-storage",
     "crates/i2pr-testkit",
     "crates/i2pr-transport",

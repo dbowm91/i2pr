@@ -132,6 +132,13 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             command_timeout: std::time::Duration::from_millis(60_000),
             shutdown_timeout: std::time::Duration::from_millis(5_000),
         },
+        service_tunnels: i2pr_daemon::config::ServiceTunnelsConfig {
+            enabled: false,
+            limits: i2pr_service_tunnels::ServiceResourceLimits::defaults(),
+            timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            tunnels: i2pr_service_tunnels::ServiceTunnelSet::new(),
+            aliases: i2pr_service_tunnels::StaticAliasTable::new(),
+        },
     }
 }
 

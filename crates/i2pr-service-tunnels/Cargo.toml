@@ -1,0 +1,15 @@
+[package]
+name = "i2pr-service-tunnels"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Runtime-neutral Milestone 10 service-tunnel configuration, destination references, and policy"
+publish = false
+
+[dependencies]
+i2pr-proto = { path = "../i2pr-proto" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

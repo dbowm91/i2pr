@@ -17,6 +17,7 @@ i2pr-netdb = { path = "../i2pr-netdb" }
 i2pr-netdb-persist = { path = "../i2pr-netdb-persist" }
 i2pr-proto = { path = "../i2pr-proto" }
 i2pr-runtime = { path = "../i2pr-runtime" }
+i2pr-service-tunnels = { path = "../i2pr-service-tunnels" }
 i2pr-storage = { path = "../i2pr-storage" }
 i2pr-transport = { path = "../i2pr-transport" }
 i2pr-tunnel = { path = "../i2pr-tunnel" }

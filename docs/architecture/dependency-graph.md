@@ -23,7 +23,8 @@ from this production graph; they are allowed to support crate-local tests.
 | `i2pr-transport-ssu2` (Plans 155–158) | `i2pr-proto`, `i2pr-crypto`, `i2pr-transport` + `chacha20`, `chacha20poly1305`, `hmac`, `rand_core`, `sha2`, `thiserror`, `zeroize` |
 | `i2pr-tunnel` | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto` + `aes`, `cbc`, `chacha20`, `chacha20poly1305`, `rand_core`, `sha2`, `thiserror`, `x25519-dalek`, `zeroize` |
 | `i2pr-runtime` | `i2pr-core`, `i2pr-crypto`, `i2pr-proto`, `i2pr-transport`, `i2pr-transport-ntcp2`, `i2pr-transport-ssu2` + `tokio`, `tokio-util`, `futures-util`, `rand_core`, `tracing`, `zeroize` |
-| `i2pr-daemon` | `i2pr-crypto`, `i2pr-core`, `i2pr-proto`, `i2pr-runtime`, `i2pr-storage`, `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-transport`, `i2pr-tunnel` + `clap`, `serde`, `toml`, `thiserror`, `tracing`, `tracing-subscriber`, `rand_core`, `tokio` |
+| `i2pr-daemon` | `i2pr-crypto`, `i2pr-core`, `i2pr-proto`, `i2pr-runtime`, `i2pr-storage`, `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-transport`, `i2pr-tunnel`, `i2pr-client`, `i2pr-api`, `i2pr-service-tunnels` + `clap`, `serde`, `toml`, `thiserror`, `tracing`, `tracing-subscriber`, `rand_core`, `tokio` |
+| `i2pr-service-tunnels` (Plan 174) | `i2pr-client`, `i2pr-proto` + `thiserror` (implementation uses `i2pr-proto` only; `i2pr-client` edge explicitly allowed for future destination/Streaming reuse) |
 | `i2pr-testkit` (test-only) | every transport-and-runtime crate + `rand_chacha`, `rand_core`, `sha2`, `tokio` |
 | `i2pr-client` (Plan 120 / Plan 121) | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, `i2pr-tunnel` + `rand_chacha`, `rand_core`, `thiserror`, `zeroize` |
 | `i2pr-api` (Plan 136) | `i2pr-client`, `i2pr-crypto`, `i2pr-proto` |
@@ -119,10 +120,17 @@ From `scripts/check-runtime-boundaries.sh`:
 
 - No `unbounded_channel` / `UnboundedSender` / `UnboundedReceiver`
   in `i2pr-runtime`, `i2pr-testkit`, `i2pr-transport`,
-  `i2pr-transport-ntcp2`, `i2pr-transport-ssu2`.
+  `i2pr-transport-ntcp2`, `i2pr-transport-ssu2`,
+  `i2pr-service-tunnels`.
 - No `tokio::*`, `std::net`, `std::fs`, `TcpStream`, `TcpListener`,
   `UdpSocket`, etc. in `i2pr-transport` / `i2pr-transport-ntcp2` /
   `i2pr-transport-ssu2`.
+- No `tokio::*`, `TcpListener`/`TcpStream`/`UdpSocket`/`UnixListener`/
+  `UnixStream`, tasks, or timers in `i2pr-service-tunnels`
+  (runtime-neutral; daemon owns sockets). `IpAddr`/`SocketAddr`
+  values are allowed as validated data.
+- No `i2pr-transport*`, `i2pr-tunnel`, `i2pr-runtime`, `i2pr-daemon`,
+  or `i2pr-testkit` dependency in `i2pr-service-tunnels`.
 - No `async fn`, `async_trait`, `i2pr-netdb`, `i2pr-tunnel`,
   `i2pr-client` in transport contracts (they stay synchronous).
 - Only `i2pr-runtime` and `i2pr-testkit` may list `tokio` /

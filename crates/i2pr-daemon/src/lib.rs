@@ -9,6 +9,7 @@
 pub mod bootstrap;
 pub mod cli;
 pub mod config;
+pub mod destination_streaming;
 pub mod error;
 pub mod i2cp;
 pub mod inbound_dispatch;
