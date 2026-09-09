@@ -49,9 +49,9 @@ Plan 169 = passed M9 I2CP self-composed local product and hardening
 Plan 170 external wire/data-plane = retained-passed
 Plan 170 final acceptance = superseded-by-plan172
 Plan 171 = passed M9 I2CP invalid-preamble close and CI corrective (retained)
-Plan 172 = active M9 I2CP independent LeaseSet2 lifecycle corrective
-Milestone 9 I2CP final acceptance = reopened-by-plan172 (experimental, loopback-only)
-next product layer = milestone9-i2cp-corrective
+Plan 172 = passed M9 I2CP independent LeaseSet2 lifecycle corrective
+Milestone 9 I2CP final acceptance = closed-via-plan172 (experimental, loopback-only)
+next product layer = milestone10-planning
 ```
 
 For current SSU2 interop work, read in this order:
@@ -90,7 +90,7 @@ Read in this order for Milestone 9 I2CP work:
 15. [`plans/164-status.md`](plans/164-status.md)
 16. [`plans/164-m9-i2cp-protocol-and-wire-foundation.md`](plans/164-m9-i2cp-protocol-and-wire-foundation.md)
 17. [`plans/163-m9-i2cp-roadmap.md`](plans/163-m9-i2cp-roadmap.md) — planning authority
-18. Milestone 9 is reopened by Plan 172; do not start Milestone 10 without a new plan-of-record.
+18. Milestone 9 is closed via Plan 172; do not start Milestone 10 without a new plan-of-record.
 
 Plan 171 corrective (retained): every terminal pre-session I2CP
 rejection terminates TCP explicitly on the common per-connection
@@ -479,7 +479,7 @@ closed.
 - Plan 169 passed the M9 I2CP self-composed local product and hardening: the `ReconfigureSession` transaction handler (`handle_reconfigure_session` + `apply_reconfigure` + `ReconfigurationOutcome`) parses/verifies the full new SessionConfig, classifies each diff entry using the Plan 165 `reconfiguration_class` table, and commits the new baseline atomically through `I2cpSessionState::last_options`; immutable and unsupported keys reject the whole transaction without state mutation. `handle_destroy_session` now drains the per-session Plan 168 data-plane bookkeeping synchronously so repeated DestroySession/CreateSession cycles retain zero inbound queue, status correlation, or outbound slot. The Plan 169 acceptance suites are `crates/i2pr-daemon/tests/i2cp_final_acceptance.rs` (5 tests), `crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs` (19 tests at Plan 169 close; 20 after the Plan 171 companion), and `crates/i2pr-daemon/tests/i2cp_resource_matrix.rs` (6 tests); every test binds the listener to `127.0.0.1:0` and drives behavior only through TCP/I2CP inputs. SAM router-owned product regressions, the Plan 167 listener regression in `i2cp_loopback.rs`, and the Plan 168 data-plane suite in `i2cp_message_data_plane.rs` remain green. No `HostLookup`/`HostReply` resolution and no independent Java/Go client evidence yet; those belong to Plan 170.
 - Plan 171 passed the M9 I2CP invalid-preamble close and CI corrective (retained): the common per-connection terminal path in `crates/i2pr-daemon/src/i2cp.rs` explicitly shuts the TCP stream down before bookkeeping release (no wire change, no independent-client claim). The adversarial matrix is now 20 tests (the strict 24-iteration `wrong_protocol_byte_is_closed` plus its non-paused `wrong_protocol_byte_is_closed_real_time` companion).
 - Plan 170 external wire/data-plane evidence is retained-passed: exact-pinned Java I2P 2.13.0 (`9134f808337b401e8e53c73734c81fab04280c9d`) and go-i2cp (`b529ee1c10a6011558b4d69fc9436a4afc489eac`) exchange digest-matched 25 B/32 KiB payloads in both directions through the loopback daemon (`tests/integration/i2cp/run-independent.sh`, 9 fail-closed rows, `scripts/check-i2cp-acceptance-evidence.sh` in routine CI, manual `.github/workflows/i2cp-external.yml`). Its final-acceptance interpretation is superseded by Plan 172: the counted Java driver bypassed `I2PSession.connect()` and no external session installed a LeaseSet2. Do not claim independent LeaseSet2 lifecycle from Plan 170 rows alone.
-- Plan 172 is the active M9 I2CP independent LeaseSet2 lifecycle corrective (see `plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md` and `plans/172-status.md`): explicit local zero-hop tunnel kind, non-empty real `RequestVariableLeaseSet` from the destination pool, existing Plan 166 atomic install, high-level Java `I2PSession.connect()` plus public go-i2cp lifecycle proof, post-LS2 cross-client traffic, fail-closed evidence. Milestone 9 final acceptance is reopened until Plan 172 passes.
+- Plan 172 passed the M9 I2CP independent LeaseSet2 lifecycle corrective (see `plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md` and `plans/172-status.md`): explicit local zero-hop tunnel kind, 44-byte Lease-compatible non-empty real `RequestVariableLeaseSet` from the destination pool, existing Plan 166 atomic install (ElGamal-slot skip, unpublished accepted, u8 LS2 key count), high-level Java `I2PSession.connect()` plus public go-i2cp async `ProcessIO` lifecycle proof, post-LS2 digest-matched cross-client traffic both directions, fail-closed 24-row evidence. Milestone 9 final acceptance is closed-via-plan172.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
 - No Plan 161 direction-A evidence implies Milestone 6 destination/Streaming/tunnel interoperability or broad router interoperability.
@@ -497,8 +497,8 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 172 is the active M9 I2CP independent LeaseSet2
-lifecycle corrective (Milestone 9 final acceptance reopened-by-plan172,
+Current handoff: **Plan 172 passed the M9 I2CP independent LeaseSet2
+lifecycle corrective (Milestone 9 final acceptance closed-via-plan172,
 experimental, loopback-only). Plan 170 external wire/data-plane evidence
 remains retained-passed; its final-acceptance interpretation is
 superseded-by-plan172. Plan 171 invalid-preamble close corrective

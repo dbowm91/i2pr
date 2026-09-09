@@ -42,7 +42,7 @@ plan_169 = passed-m9-i2cp-self-composed-local-product-and-hardening
 plan_170_external_wire_data_plane = retained-passed
 plan_170_final_acceptance = superseded-by-plan172
 plan_171 = passed-m9-i2cp-invalid-preamble-close-and-ci-corrective
-plan_172 = active-m9-i2cp-independent-leaseset2-lifecycle-corrective
+plan_172 = passed-m9-i2cp-independent-leaseset2-lifecycle-corrective
 
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
@@ -62,9 +62,10 @@ milestone9_i2cp_message_data_plane = passed-via-plan168
 milestone9_i2cp_self_composed_local_product = passed-via-plan169
 milestone9_i2cp_invalid_preamble_close = passed-via-plan171
 milestone9_i2cp_independent_wire_data_plane = passed-via-plan170
-milestone9_i2cp_independent_leaseset2 = not-yet-proven
-milestone9_final_acceptance = reopened-by-plan172
-next_product_layer = milestone9-i2cp-corrective
+milestone9_i2cp_independent_clients = passed-via-plan170-and-plan172
+milestone9_i2cp_independent_leaseset2 = passed-via-plan172
+milestone9_final_acceptance = closed-via-plan172
+next_product_layer = milestone10-planning
 ```
 
 Milestone 8 is **closed** via [**Plan 161**](plans/161-status.md) within its bounded direct-interop scope. Directions A and B are genuinely proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real loopback UDP, including authenticated session establishment, small and fragmented I2NP/DatabaseStore exchange with return DeliveryStatus traffic, cached-token behavior, malformed/resource rows, and the fail-closed external evidence lane. [**Plan 162**](plans/162-status.md) passed the narrow external-test lane correction. Public-network, NetDB/tunnel/destination, IPv6-external, PQ, SSU1, and Milestone 6 mixed-router interoperability remain outside that claim.
@@ -73,7 +74,7 @@ Milestone 9 / I2CP planning is now registered via [**Plan 163**](plans/163-statu
 
 The `[sam]` config section remains disabled by default and loopback-only when enabled. No localhost SAM or I2CP result is router-to-router interoperability evidence.
 
-Milestone 9 final acceptance is **reopened by [Plan 172](plans/172-status.md)**: Plan 170 wire/data-plane evidence is retained-passed, but its final-acceptance interpretation is superseded because the counted Java driver bypassed `I2PSession.connect()` and no external session installed a LeaseSet2. Plan 172 is the active independent LeaseSet2 lifecycle corrective (experimental, loopback-only).
+Milestone 9 final acceptance is **closed via [Plan 172](plans/172-status.md)** (experimental, loopback-only): Plan 170 wire/data-plane evidence is retained-passed; Plan 172 proves the independent LeaseSet2 lifecycle with exact-pinned Java I2P 2.13.0 high-level `I2PSession.connect()` plus public go-i2cp `ProcessIO` lifecycle, real non-empty local zero-hop `RequestVariableLeaseSet`, client-signed Standard LeaseSet2 + X25519 capability installs, usability gated on install, and digest-matched bidirectional traffic after both installs (24 fail-closed rows).
 
 For the full plan hierarchy, MVP roadmap, and what's implemented vs. not, see [**`plans/README.md`**](plans/README.md).
 

@@ -150,7 +150,7 @@ work is scoped to:
   fail-closed sanitized listener facts (`I2CP_LEASE_REQUEST` /
   `I2CP_LS2_INSTALLED`, no private bytes). `i2cp.dontPublishLeaseSet=true`
   installs the client-signed LS2 locally without public NetDB publication.
-  Milestone 9 final acceptance is reopened until Plan 172 passes. See
+  Milestone 9 final acceptance is closed via Plan 172. See
   [`plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md`](../../plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md).
 
 What it **does not** do yet:

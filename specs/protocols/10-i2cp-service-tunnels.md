@@ -572,10 +572,11 @@ product-close evidence from paused-clock timer behavior.
 No application-message transport, `SendMessage`/`SendMessageExpires`
 direction, `MessageStatus` correlation, or independent-client
 evidence is claimed in Plan 167; Plan 168 owns the message
-data plane, Plan 169 owns the local self-composed product and
+data plane, Plan 169 owns the local self-composed local product and
 hardening, Plan 171 owns the terminal close corrective (retained),
-and Plan 170 owns independent Java/Go client
-evidence (retained-passed; Milestone 9 final acceptance reopened by Plan 172 - independent LeaseSet2 lifecycle not-yet-proven).
+Plan 170 owns independent Java/Go wire/data-plane evidence
+(retained-passed), and Plan 172 owns the independent LeaseSet2
+lifecycle corrective closing Milestone 9 (see below).
 
 ### M9 I2CP independent clients and final closure (Plan 170)
 
@@ -599,10 +600,29 @@ Evidence is the fail-closed 9-row lane
 `scripts/check-i2cp-acceptance-evidence.sh` in routine CI,
 manual `.github/workflows/i2cp-external.yml`), run twice
 consecutively on the closing tree. No `HostLookup`/`HostReply`
-resolution, no remote-I2CP/public-network claim; Milestone 9 final
-acceptance is reopened by Plan 172 (Plan 170 wire/data-plane
-retained-passed; independent LeaseSet2 lifecycle not-yet-proven;
-experimental, loopback-only).
+resolution, no remote-I2CP/public-network claim; Plan 170
+wire/data-plane is retained-passed with final acceptance superseded
+by Plan 172 (experimental, loopback-only).
+
+### M9 I2CP independent LeaseSet2 lifecycle corrective (Plan 172, passed)
+
+Plan 172 corrects the Plan 170 acceptance gap (counted Java bypassed
+`I2PSession.connect()`; no external LS2 install) with protocol-correct
+evidence: explicit local zero-hop tunnel kind (typed, gateway ==
+endpoint == local router, no remote LayerKeys, non-zero non-sentinel
+tunnel ids), destination-pool zero-hop routes, `LocalRouterContext`,
+zero-hop option projection (length 0, quantity 1, backup 0,
+allowZeroHop true, dontPublish true, type 3/enc 4), non-empty real
+44-byte Lease-compatible `RequestVariableLeaseSet` from the pool,
+existing Plan 166 atomic install (ElGamal-slot skip, unpublished
+accepted, u8 LS2 key count), per-session `AwaitingLeaseSet2` -> `Usable`
+gating with pre-install `BadLocalLeaseSet`, high-level Java
+`I2PSession.connect()` plus public go-i2cp async `ProcessIO` lifecycle
+(no manual framing/encoding), and digest-matched bidirectional traffic
+after both installs. Evidence is the fail-closed 24-row lane (9 retained
+Plan 170 + 15 counted Plan 172) run twice consecutively locally and
+twice hosted on the exact closing head. Milestone 9 final acceptance is
+closed via Plan 172 (experimental, loopback-only).
 
 ### Connection state machine
 

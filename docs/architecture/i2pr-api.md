@@ -308,7 +308,7 @@ codecs the api already owns. Plan 168 lands the
 `SendMessage` / `SendMessageExpires` / `MessagePayload` /
 `MessageStatus` adapters behind the same boundary; Plan 169 lands
 the self-composed local I2CP product behind the same boundary;
-Plan 170 lands the independent Java/Go wire/data-plane compatibility (retained-passed; final acceptance superseded by Plan 172). Plan 172 is the active independent LeaseSet2 lifecycle corrective (explicit local zero-hop mode, non-empty real 44-byte Lease-compatible RequestVariableLeaseSet, usability gated on Plan 166 install; Milestone 9 reopened)
+Plan 170 lands the independent Java/Go wire/data-plane compatibility (retained-passed; final acceptance superseded by Plan 172). Plan 172 passed the independent LeaseSet2 lifecycle corrective (explicit local zero-hop mode, non-empty real 44-byte Lease-compatible RequestVariableLeaseSet, usability gated on Plan 166 install; Milestone 9 closed)
 (`0.x.y` version negotiation, empty-auth GetDate acceptance,
 `messageReliability=none` best-effort mapping, ElGamal-legacy-slot
 policy relocation) without touching socket ownership. Reference compat

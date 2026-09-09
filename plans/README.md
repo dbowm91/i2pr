@@ -52,11 +52,13 @@ directions through the loopback daemon under a fail-closed 9-row
 lane. Its wire/data-plane evidence is retained-passed, but its
 final-acceptance interpretation is superseded by Plan 172.
 [**Plan 172**](172-status.md)
-(`active-m9-i2cp-independent-leaseset2-lifecycle-corrective`) is the
-active corrective: the counted Java driver bypassed
-`I2PSession.connect()` and no external session installed a LeaseSet2,
-so Milestone 9 final acceptance is reopened until the independent
-LeaseSet2 lifecycle passes.
+(`passed-m9-i2cp-independent-leaseset2-lifecycle-corrective`) passed
+the independent LeaseSet2 lifecycle corrective: high-level Java
+`I2PSession.connect()` plus public go-i2cp lifecycle, real non-empty
+local zero-hop `RequestVariableLeaseSet`, client-signed Standard LS2 +
+X25519 installs, usability gated on install, and digest-matched
+bidirectional traffic after both installs (24 fail-closed rows).
+Milestone 9 final acceptance is closed via Plan 172.
 
 Current classification:
 
@@ -89,7 +91,7 @@ plan_169 = passed-m9-i2cp-self-composed-local-product-and-hardening
 plan_170_external_wire_data_plane = retained-passed
 plan_170_final_acceptance = superseded-by-plan172
 plan_171 = passed-m9-i2cp-invalid-preamble-close-and-ci-corrective-retained
-plan_172 = active-m9-i2cp-independent-leaseset2-lifecycle-corrective
+plan_172 = passed-m9-i2cp-independent-leaseset2-lifecycle-corrective
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
@@ -118,9 +120,10 @@ milestone9_i2cp_message_data_plane = passed-via-plan168
 milestone9_i2cp_self_composed_local_product = passed-via-plan169
 milestone9_i2cp_invalid_preamble_close = passed-via-plan171
 milestone9_i2cp_independent_wire_data_plane = passed-via-plan170
-milestone9_i2cp_independent_leaseset2 = not-yet-proven
-milestone9_final_acceptance = reopened-by-plan172
-next_product_layer = milestone9-i2cp-corrective
+milestone9_i2cp_independent_clients = passed-via-plan170-and-plan172
+milestone9_i2cp_independent_leaseset2 = passed-via-plan172
+milestone9_final_acceptance = closed-via-plan172
+next_product_layer = milestone10-planning
 m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172
 ```
 
@@ -239,7 +242,7 @@ Plan 152 is a later M6 robustness correction discovered by the Plan 151 final SA
 - Milestone 6 local product correctness closed via Plan 134, with Plan 152 robustness corrections retained.
 - SAM 3.1 parser/session/STREAM/FORWARD/NAMING product with independent localhost client evidence; M7 closed via Plan 151.
 - SSU2 v2 local protocol/runtime/reachability product and independent direct IPv4 i2pd interop; M8 closed via Plan 161.
-- M9 I2CP implementation plans are registered; the Plan 164 wire/profile foundation, Plan 165 connection/session/options state machines, Plan 166 client-owned destination + LeaseSet2 bridge, Plan 167 loopback server runtime, Plan 168 message data plane, and Plan 169 self-composed local product are landed, with the Plan 171 invalid-preamble close corrective retained on the common terminal path. Plan 170 wire/data-plane evidence is retained-passed (exact-pinned Java I2P 2.13.0 + go-i2cp, digest-matched payloads both directions, fail-closed 9-row lane); its final-acceptance interpretation is superseded by Plan 172. No `HostLookup`/`HostReply` resolution; Milestone 9 final acceptance is reopened by Plan 172 (experimental, loopback-only).
+- M9 I2CP implementation plans are registered; the Plan 164 wire/profile foundation, Plan 165 connection/session/options state machines, Plan 166 client-owned destination + LeaseSet2 bridge, Plan 167 loopback server runtime, Plan 168 message data plane, and Plan 169 self-composed local product are landed, with the Plan 171 invalid-preamble close corrective retained on the common terminal path. Plan 170 wire/data-plane evidence is retained-passed (exact-pinned Java I2P 2.13.0 + go-i2cp, digest-matched payloads both directions, fail-closed 9-row lane); its final-acceptance interpretation is superseded by Plan 172. Plan 172 passed the independent LeaseSet2 lifecycle corrective (high-level Java connect + public Go lifecycle, non-empty zero-hop requests, client-signed LS2 installs, post-LS2 bidirectional digests, 24 fail-closed rows). No `HostLookup`/`HostReply` resolution; Milestone 9 final acceptance is closed via Plan 172 (experimental, loopback-only).
 
 ## What's not yet accepted
 
@@ -269,6 +272,6 @@ Plan 168 = passed M9 I2CP message data plane
 Plan 169 = passed M9 I2CP self-composed local product and hardening
 Plan 171 = passed M9 I2CP invalid-preamble close corrective (retained)
 Plan 170 external wire/data-plane = retained-passed; final acceptance superseded-by-plan172
-Plan 172 = active M9 I2CP independent LeaseSet2 lifecycle corrective
-Milestone 9 final acceptance = reopened-by-plan172 (experimental, loopback-only)
+Plan 172 = passed M9 I2CP independent LeaseSet2 lifecycle corrective
+Milestone 9 final acceptance = closed-via-plan172 (experimental, loopback-only)
 ```
