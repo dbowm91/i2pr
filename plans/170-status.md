@@ -175,13 +175,13 @@ advisories bans sources` — all green.
 ## §8 closure (exact head)
 
 ```text
-CLOSING_SHA            = b108af2
-ROUTINE_CI_RUN         = 34303648879
+CLOSING_SHA            = d9fff42 (docs-only status record; code+lane identical to b108af2)
+ROUTINE_CI_RUN         = 34304667891
 Quality (ubuntu-latest) = success
 Quality (macos-latest)  = success
 MSRV (Ubuntu)           = success
 Dependency policy       = success
-EXTERNAL_RUN           = 34303650808 (.github/workflows/i2cp-external.yml)
+EXTERNAL_RUN           = 34305769352 (.github/workflows/i2cp-external.yml)
 I2CP independent clients (Ubuntu) = success
 ```
 
@@ -190,12 +190,14 @@ Implementation commit `c39bbff` went green on routine CI
 external lane, but its first external dispatch (`34303111631`)
 failed closed in `fetch-i2cp-clients.sh` (fresh hosted clone at
 the default tip instead of the pin; see Hosted-lane corrective
-below). The lane-script fix commit is the closing head `b108af2`;
-routine + external are green on that exact head. Evidence
-artifacts upload on the external run; digests match the local
-lane (`f5cd0143d29d...` small, `d8690a426100...` large, attempt
-1/3, ports 7/8, protocol 6). No Milestone 10 work is implemented
-in this plan.
+below). The lane-script fix (`b108af2`) went green on routine
+(`34303648879`) and external (`34303650808`). The closing head
+(`d9fff42`) differs from `b108af2` only in this status file;
+the exact-head external re-dispatch above confirms the lane on the
+final tree. Evidence artifacts upload on the external run; digests
+match the local lane (`f5cd0143d29d...` small, `d8690a426100...`
+large, attempt 1/3, ports 7/8, protocol 6). No Milestone 10 work
+is implemented in this plan.
 
 ## Hosted-lane corrective (exact-head, lane-script only)
 
