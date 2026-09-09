@@ -19,6 +19,7 @@ pub mod sam;
 pub mod service_tunnels;
 pub mod service_tunnels_http;
 pub mod service_tunnels_irc_client;
+pub mod service_tunnels_irc_server;
 pub mod service_tunnels_socks5;
 
 pub use error::DaemonError;

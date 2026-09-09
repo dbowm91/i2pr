@@ -11,7 +11,9 @@
 //! message-tag framing, command classification + per-direction
 //! allowlist, and client-to-network privacy filter (USER/PING/
 //! QUIT/PART rewrites + CTCP/DCC policy) for the M10 `irc-client`
-//! profile.
+//! profile, plus the Plan 179 runtime-neutral IRC server
+//! registration interceptor and authenticated peer Destination
+//! hostname projection for the M10 `irc-server` profile.
 //!
 //! This crate owns no sockets, no Tokio tasks, no timers, no
 //! filesystem access, no transport internals, no NetDB mutation, and
@@ -32,9 +34,10 @@
 //! Plan 174/175 enabled `generic-client` / `generic-server`. Plan
 //! 176 adds the runtime-neutral HTTP module for `http-client`. Plan
 //! 177 adds the runtime-neutral SOCKS5 module for `socks5-client`.
-//! Plan 178 adds the runtime-neutral IRC module for `irc-client`.
-//! No listener starts in this crate and no Tokio primitive exists
-//! here.
+//! Plan 178 adds the runtime-neutral IRC client module for
+//! `irc-client`. Plan 179 adds the runtime-neutral IRC server
+//! registration interceptor for `irc-server`. No listener starts in
+//! this crate and no Tokio primitive exists here.
 
 #![forbid(unsafe_code)]
 
@@ -65,10 +68,12 @@ pub use http::{
 };
 pub use irc::{
     IrcClientOptions, IrcCommand, IrcCommandClass, IrcDropReason, IrcError, IrcErrorKind,
-    IrcLimits, IrcLineParser, IrcTag, LineDirection, LineParserOutcome, ParsedLine,
-    PingRewriteState, PrivacySubstitutions, ReasonRewritePolicy, TagsOutcome, TagsParser,
-    classify_core as classify_irc_core, classify_post_tag_core,
+    IrcLimits, IrcLineParser, IrcServerOptions, IrcServerRegistration, IrcTag, LineDirection,
+    LineParserOutcome, ParsedLine, PingRewriteState, PrivacySubstitutions, ReasonRewritePolicy,
+    RegistrationOutcome, RegistrationRejection, RegistrationState, TagsOutcome, TagsParser,
+    classify_core as classify_irc_core, classify_post_tag_core, encode_b32_label,
     is_allowed as is_irc_command_allowed, is_command_allowed as is_irc_command_allowed_alias,
+    project_peer_hostname,
 };
 pub use socks5::{
     ConnectDestination, ConnectPortPolicy, GreetingOutcome, GreetingParser, RequestOutcome,

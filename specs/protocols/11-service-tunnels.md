@@ -1,13 +1,14 @@
 # Service tunnels (Milestone 10)
 
-Status: **IRC `.i2p` client profile landed** (Plan 178 passed; IRC server still not implemented)  
+Status: **IRC `.i2p` server profile landed** (Plan 179 passed; full client/server byte round-trip integration still on Plan 180 reconcile roadmap)  
 Planning authority: **Plan 173** (`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`)  
 Foundation: **Plan 174** (`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`)  
 Generic client/server tunnels: **Plan 175** (`plans/175-m10-generic-client-server-service-tunnels.md`)  
 HTTP `.i2p` proxy + CONNECT: **Plan 176** (`plans/176-m10-http-i2p-proxy-and-connect.md`)  
 SOCKS5 `.i2p` CONNECT: **Plan 177** (`plans/177-m10-socks5-i2p-connect-proxy.md`)  
 IRC `.i2p` client profile + privacy filter: **Plan 178** (`plans/178-m10-irc-client-profile-and-privacy-filtering.md`)  
-Next executable plan: **179** (IRC server)
+IRC `.i2p` server profile + authenticated peer hostname: **Plan 179** (`plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`)  
+Next executable plan: **180** (composition, reconcile, hardening)
 
 > Plan 174 is a refactor/foundation pass. It must not change I2P wire
 > semantics or broaden listener exposure. No generic, HTTP, SOCKS5,
@@ -313,7 +314,7 @@ tunnels; Plan 178 does not silently weaken that criterion.
 | HTTP `.i2p` proxy + CONNECT | passed-experimental-loopback-only | 176 |
 | SOCKS5 no-auth `.i2p` CONNECT | passed-experimental-loopback-only | 177 |
 | IRC client privacy filter | passed-experimental-loopback-only | 178 |
-| IRC server authenticated hostname | not-yet-implemented | 179 |
+| IRC server authenticated hostname | passed-experimental-loopback-only | 179 |
 | Full composition / reconcile / hardening | not-yet-implemented | 180 |
 | Independent acceptance / final closure | not-yet-implemented | 181 |
 

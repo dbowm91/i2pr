@@ -187,6 +187,7 @@ fn classify_command_name(name: &str) -> IrcCommandClass {
         "AUTHENTICATE" => IrcCommandClass::Known(IrcCommand::Authenticate),
         "NICK" => IrcCommandClass::Known(IrcCommand::Nick),
         "USER" => IrcCommandClass::Known(IrcCommand::User),
+        "SERVER" => IrcCommandClass::Known(IrcCommand::Server),
         "PING" => IrcCommandClass::Known(IrcCommand::Ping),
         "PONG" => IrcCommandClass::Known(IrcCommand::Pong),
         "JOIN" => IrcCommandClass::Known(IrcCommand::Join),

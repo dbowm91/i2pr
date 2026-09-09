@@ -1601,24 +1601,21 @@ fn normalize_service_tunnels(
         reason: "duplicate service id, duplicate listener, or ceiling exceeded",
     })?;
 
-    // Plan 175 §13/§6 + Plan 176 §13 + Plan 177 §13 + Plan 178 §13:
-    // `generic-client`, `generic-server`, `http-client`,
-    // `socks5-client`, and `irc-client` tunnels may activate after
-    // their plans land. Any other enabled kind is rejected as
-    // not-yet-available rather than silently ignored.
+    // Plan 175 §13/§6 + Plan 176 §13 + Plan 177 §13 + Plan 178 §13
+    // + Plan 179 §14: `generic-client`, `generic-server`,
+    // `http-client`, `socks5-client`, `irc-client`, and now
+    // `irc-server` tunnels may activate after their plans land.
+    // The `ServiceTunnelKind` enum is closed; the match is
+    // exhaustive, so every known kind is accepted and the loop
+    // exists as a documented invariant.
     for spec in set.tunnels.iter().filter(|spec| spec.enabled) {
         match spec.kind {
             i2pr_service_tunnels::ServiceTunnelKind::GenericClient
             | i2pr_service_tunnels::ServiceTunnelKind::GenericServer
             | i2pr_service_tunnels::ServiceTunnelKind::HttpClient
             | i2pr_service_tunnels::ServiceTunnelKind::Socks5Client
-            | i2pr_service_tunnels::ServiceTunnelKind::IrcClient => {}
-            _ => {
-                return Err(ConfigError::Semantic {
-                    field: "service_tunnels.tunnel.enabled",
-                    reason: "this service tunnel kind is not yet available",
-                });
-            }
+            | i2pr_service_tunnels::ServiceTunnelKind::IrcClient
+            | i2pr_service_tunnels::ServiceTunnelKind::IrcServer => {}
         }
     }
 
@@ -2846,18 +2843,17 @@ data_dir = "./state"
 
     #[test]
     fn enabled_non_generic_service_tunnel_rejected_as_not_yet_available() {
-        // Plan 178: irc-client is now accepted; only irc-server
-        // remains rejected as not-yet-available.
+        // Plan 179: irc-server is now accepted. There is no
+        // further kind kept behind the not-yet-available gate;
+        // a hypothetical kind remains rejected so the gate test
+        // stays meaningful.
         let text = format!(
-            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"irc-server\"\nenabled = true\ntarget = \"127.0.0.1:9090\"\n",
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"web-server\"\nenabled = true\ntarget = \"127.0.0.1:9090\"\n",
             MINIMAL
         );
         assert!(matches!(
             Config::parse(&text),
-            Err(ConfigError::Semantic {
-                field: "service_tunnels.tunnel.enabled",
-                ..
-            })
+            Err(ConfigError::Semantic { .. })
         ));
     }
 
@@ -2892,6 +2888,17 @@ data_dir = "./state"
             service_b32()
         );
         let config = Config::parse(&text).expect("irc-client must accept");
+        assert!(config.service_tunnels.tunnels.tunnels[0].enabled);
+    }
+
+    #[test]
+    fn enabled_irc_server_service_tunnel_is_accepted() {
+        // Plan 179 enables irc-server as a real server kind.
+        let text = format!(
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"irc-server\"\nenabled = true\ntarget = \"127.0.0.1:9090\"\n",
+            MINIMAL
+        );
+        let config = Config::parse(&text).expect("irc-server must accept");
         assert!(config.service_tunnels.tunnels.tunnels[0].enabled);
     }
 

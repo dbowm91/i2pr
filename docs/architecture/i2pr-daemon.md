@@ -152,7 +152,7 @@ work is scoped to:
   installs the client-signed LS2 locally without public NetDB publication.
   Milestone 9 final acceptance is closed via Plan 172. See
   [`plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md`](../../plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md).
-- **M10 service-tunnel foundation** (Plan 174), **generic client/server tunnels** (Plan 175), **HTTP `.i2p` proxy + CONNECT** (Plan 176), **SOCKS5 `.i2p` CONNECT proxy** (Plan 177), and **IRC `.i2p` client profile + privacy filtering** (Plan 178): adds the shared
+- **M10 service-tunnel foundation** (Plan 174), **generic client/server tunnels** (Plan 175), **HTTP `.i2p` proxy + CONNECT** (Plan 176), **SOCKS5 `.i2p` CONNECT proxy** (Plan 177), **IRC `.i2p` client profile + privacy filtering** (Plan 178), and **IRC `.i2p` server profile + authenticated peer hostname** (Plan 179): adds the shared
   `destination_streaming` pump (`run_stream_pump` generic over
   `AsyncRead + AsyncWrite` with bounded chunk, negotiated
   segmentation, backpressure, sibling-isolated drain, and
@@ -184,19 +184,38 @@ work is scoped to:
   parser, message-tag framing, typed command classifier with
   per-direction allowlist, USER/PING/QUIT/PART privacy rewrites,
   CTCP/DCC policy) and the daemon-owned IRC client executor that
-  owns one loopback listener per `irc-client` spec. Plans 175-178
-  enable `enabled = true` for `generic-client`,
-  `generic-server`, `http-client`, `socks5-client`, and
-  `irc-client` in order; `irc-server` remains rejected as
-  not-yet-available until Plan 179. The full M10 per-service
-  Streaming byte round-trip over local TCP remains Plan 180
-  reconcile work. See
+  owns one loopback listener per `irc-client` spec. Plan 179 adds
+  the runtime-neutral `i2pr-service-tunnels::irc::server`
+  registration interceptor (bounded pre-registration line/byte
+  ceilings, cross-protocol rejection of HTTP/BitTorrent first
+  lines, authenticated peer Destination hash projection to
+  `<52-char base32>.b32.i2p` that replaces the USER hostname
+  and is bound to the streaming peer identity, RFC 2812 four-arg
+  and legacy RFC 1459 USER shapes, IRCv3 tagged USER rewrite with
+  envelope preserved, PASS / CAP / AUTHENTICATE / NICK passthrough,
+  same-read post-USER bytes preserved as first raw-pump bytes,
+  optional `SERVER` server-to-server handoff) plus the
+  daemon-owned IRC server executor
+  (`crates/i2pr-daemon/src/service_tunnels_irc_server.rs`) that
+  waits for the Streaming connection to reach `Established`,
+  captures the peer Destination hash, runs the bounded
+  registration interceptor under a 30 s total deadline,
+  connects to the loopback target under a 10 s deadline, writes
+  the rewritten prefix + leftover exactly once, and switches to
+  the shared Plan 174 byte pump in opaque mode for the
+  post-registration stream. Plans 175-179 enable `enabled = true`
+  for `generic-client`, `generic-server`, `http-client`,
+  `socks5-client`, `irc-client`, and `irc-server` in order; no
+  remaining not-yet-available gate exists for the current kinds.
+  The full M10 per-service Streaming byte round-trip over local
+  TCP remains Plan 180 reconcile work. See
   [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](../../plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md),
   [`plans/175-m10-generic-client-server-service-tunnels.md`](../../plans/175-m10-generic-client-server-service-tunnels.md),
   [`plans/176-m10-http-i2p-proxy-and-connect.md`](../../plans/176-m10-http-i2p-proxy-and-connect.md),
   [`plans/177-m10-socks5-i2p-connect-proxy.md`](../../plans/177-m10-socks5-i2p-connect-proxy.md),
+  [`plans/178-m10-irc-client-profile-and-privacy-filtering.md`](../../plans/178-m10-irc-client-profile-and-privacy-filtering.md),
   and
-  [`plans/178-m10-irc-client-profile-and-privacy-filtering.md`](../../plans/178-m10-irc-client-profile-and-privacy-filtering.md).
+  [`plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`](../../plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md).
 
 What it **does not** do yet:
 

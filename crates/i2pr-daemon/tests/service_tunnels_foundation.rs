@@ -120,30 +120,22 @@ fn enabled_generic_client_tunnel_is_accepted() {
 }
 
 #[test]
-fn enabled_non_generic_service_tunnel_is_rejected() {
+fn enabled_unknown_service_tunnel_is_rejected() {
     let directory = tempfile::tempdir().expect("temp directory");
-    // Each non-generic kind uses a complete enough config that
-    // only the enabled-rejection check fires. Plan 178 enabled
-    // irc-client, so only irc-server remains rejected.
-    let cases = [("irc-server", "target = \"127.0.0.1:9090\"\n".to_owned())];
-    for (kind, body) in cases {
-        let text = format!(
-            "{}\n[service_tunnels]\nenabled = true\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"{kind}\"\nenabled = true\n{body}",
-            minimal(directory.path())
-        );
-        let err = Config::parse(&text)
-            .expect_err(format!("{kind} must be rejected until its plan lands").as_str());
-        assert!(
-            matches!(
-                err,
-                i2pr_daemon::config::ConfigError::Semantic {
-                    field: "service_tunnels.tunnel.enabled",
-                    ..
-                }
-            ),
-            "{kind} rejection must be explicit, got: {err:?}"
-        );
-    }
+    // Plan 179 enables every currently-defined service-tunnel
+    // kind. There is no further kind kept behind the
+    // not-yet-available gate; a hypothetical kind remains
+    // rejected so the gate stays meaningful.
+    let text = format!(
+        "{}\n[service_tunnels]\nenabled = true\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"web-server\"\nenabled = true\ntarget = \"127.0.0.1:9090\"\n",
+        minimal(directory.path())
+    );
+    let err = Config::parse(&text)
+        .expect_err("unknown service kind must be rejected until its plan lands");
+    assert!(
+        matches!(err, i2pr_daemon::config::ConfigError::Semantic { .. }),
+        "unknown kind rejection must be explicit, got: {err:?}"
+    );
 }
 
 #[test]

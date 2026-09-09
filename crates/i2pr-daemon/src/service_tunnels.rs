@@ -70,6 +70,7 @@ use crate::sam::streams::{
 };
 use crate::service_tunnels_http::run_http_client_loop;
 use crate::service_tunnels_irc_client::run_irc_client_loop;
+use crate::service_tunnels_irc_server::run_irc_server_loop;
 use crate::service_tunnels_socks5::run_socks5_client_loop;
 
 /// Process-local monotonic clock used for Streaming deadlines.
@@ -156,6 +157,8 @@ pub struct ServiceRuntime {
     is_socks5: bool,
     /// Whether this is an IRC client tunnel.
     is_irc: bool,
+    /// Whether this is an IRC server tunnel.
+    is_irc_server: bool,
 }
 
 impl std::fmt::Debug for ServiceRuntime {
@@ -425,6 +428,16 @@ impl ServiceTunnelManager {
         runtimes.get(service_id)?.server_target
     }
 
+    /// Returns the configured loopback target address for a runtime handle.
+    pub fn server_target_for(&self, runtime: &ServiceRuntime) -> Option<SocketAddr> {
+        runtime.server_target
+    }
+
+    /// Returns the configured server streaming port for a runtime handle.
+    pub fn server_streaming_port_for(&self, runtime: &ServiceRuntime) -> Option<u16> {
+        runtime.server_streaming_port
+    }
+
     /// Runs `closure` against the bridge registered for `destination_id`.
     pub fn with_destination_bridge<R>(
         &self,
@@ -487,7 +500,10 @@ impl ServiceTunnelManager {
         spec: &i2pr_service_tunnels::ServiceTunnelSpec,
     ) -> Result<Arc<ServiceRuntime>, ServiceTunnelError> {
         let id_owned = spec.id.as_str().to_owned();
-        let is_server = matches!(spec.kind, ServiceTunnelKind::GenericServer);
+        let is_server = matches!(
+            spec.kind,
+            ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer
+        );
         let bridge_data = self.create_bridge_for_spec(spec).await?;
         let bridge = {
             let mut sam_destinations = self
@@ -570,6 +586,7 @@ impl ServiceTunnelManager {
         let is_http = matches!(spec.kind, ServiceTunnelKind::HttpClient);
         let is_socks5 = matches!(spec.kind, ServiceTunnelKind::Socks5Client);
         let is_irc = matches!(spec.kind, ServiceTunnelKind::IrcClient);
+        let is_irc_server = matches!(spec.kind, ServiceTunnelKind::IrcServer);
         let runtime = Arc::new(ServiceRuntime {
             spec_id: spec.id.as_str().to_owned(),
             kind: spec.kind,
@@ -586,6 +603,7 @@ impl ServiceTunnelManager {
             is_http,
             is_socks5,
             is_irc,
+            is_irc_server,
         });
         let mut runtimes = self.runtimes.lock().expect("runtimes poisoned");
         runtimes.insert(spec.id.as_str().to_owned(), Arc::clone(&runtime));
@@ -597,7 +615,10 @@ impl ServiceTunnelManager {
         spec: &i2pr_service_tunnels::ServiceTunnelSpec,
     ) -> Result<BridgeData, ServiceTunnelError> {
         let now_seconds = service_now_seconds();
-        let identity = if matches!(spec.kind, ServiceTunnelKind::GenericServer) {
+        let identity = if matches!(
+            spec.kind,
+            ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer
+        ) {
             let store =
                 ServiceDestinationStore::for_service(&self.config.data_dir, spec.id.as_str())
                     .map_err(ServiceTunnelError::Storage)?;
@@ -837,7 +858,9 @@ async fn run_service_loop(
 ) {
     let id = runtime.spec_id.clone();
     debug!(service = %id, "service tunnel supervisor entered");
-    let result = if runtime.is_server {
+    let result = if runtime.is_irc_server {
+        run_irc_server_loop(&manager, &runtime, &spec, &task_cancellation).await
+    } else if runtime.is_server {
         run_server_loop(&manager, &runtime, &spec, &task_cancellation).await
     } else if runtime.is_http {
         run_http_client_loop(&manager, &runtime, &spec, &task_cancellation).await

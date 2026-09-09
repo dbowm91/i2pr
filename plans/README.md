@@ -298,10 +298,12 @@ Plan 175 = passed M10 generic client/server service tunnels
 Plan 176 = passed M10 HTTP `.i2p` proxy and CONNECT
 Plan 177 = passed M10 SOCKS5 `.i2p` CONNECT proxy
 Plan 178 = passed M10 IRC `.i2p` client profile and privacy filtering
+Plan 179 = passed M10 IRC `.i2p` server profile and authenticated peer hostname
 Milestone 10 foundation = passed-via-plan174
 Milestone 10 generic tunnels = passed-via-plan175
 Milestone 10 HTTP proxy = passed-via-plan176
 Milestone 10 SOCKS5 = passed-via-plan177
 Milestone 10 IRC client = passed-via-plan178
-next_executable_plan = 179
+Milestone 10 IRC server = passed-via-plan179
+next_executable_plan = 180
 ```

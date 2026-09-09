@@ -305,18 +305,21 @@ plan_177_status = "passed-m10-socks5-i2p-connect-proxy"
 plan_178_plan_of_record = "plans/178-m10-irc-client-profile-and-privacy-filtering.md"
 plan_178_closure = "plans/178-status.md"
 plan_178_status = "passed-m10-irc-client-profile-and-privacy-filtering"
+plan_179_plan_of_record = "plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md"
+plan_179_closure = "plans/179-status.md"
+plan_179_status = "passed-m10-irc-server-profile-and-authenticated-peer-hostname"
 milestone10_planning_authority = "plan173"
 milestone10_foundation = "passed-via-plan174"
 milestone10_generic_tunnels = "passed-via-plan175"
 milestone10_http_proxy = "passed-via-plan176"
 milestone10_socks5 = "passed-via-plan177"
 milestone10_irc_client = "passed-via-plan178"
-milestone10_irc_server = "not-yet-passed"
+milestone10_irc_server = "passed-via-plan179"
 milestone10_local_product = "not-yet-passed"
 milestone10_remote_service_interop = "not-yet-passed"
 milestone10_final_acceptance = "not-yet-closed"
 next_product_layer = "milestone10-service-tunnels"
-next_executable_plan = "179"
+next_executable_plan = "180"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
@@ -1442,5 +1445,27 @@ evidence = [
     "crates/i2pr-daemon/tests/service_tunnels_foundation.rs",
     "specs/protocols/11-service-tunnels.md",
     "plans/178-m10-irc-client-profile-and-privacy-filtering.md",
+]
+advertised = false
+
+[[surface]]
+id = "service-tunnels.irc-server"
+protocol = "service-tunnels"
+structure = "loopback-only-irc-server-profile-and-authenticated-peer-hostname"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 179 passed the fourth M10 application profile: the runtime-neutral `i2pr-service-tunnels::irc::server` registration interceptor owns bounded pre-registration line / byte ceilings (10-line / 8192-byte defaults with hard maxima), structural cross-protocol rejection of HTTP and BitTorrent first lines via a small fixed list, an authenticated peer Destination hash projection to a 52-character `.b32.i2p` hostname that replaces the USER hostname and is bound to the streaming peer identity (never derived from IRC USER hostname/servername fields, remote IP/socket metadata, unverified destination text, an unauthenticated NetDB lookup, or caller-supplied arbitrary text), RFC 2812 four-arg USER rewriting with the username/servername/realname preserved and the legacy RFC 1459 mode parameter rejected, IRCv3 tagged USER rewrite with the envelope preserved verbatim, PASS / CAP / AUTHENTICATE / NICK passthrough, same-read post-USER bytes preserved as first raw-pump bytes, an optional `SERVER` server-to-server handoff that is passed through verbatim, and typed `RegistrationOutcome::{Incomplete, Ready, Rejected, Eof}` plus bounded typed rejection reasons (`TooManyLines`, `BufferOverflow`, `CrossProtocol`, `UnknownCommand`, `InvalidLine`, `InvalidUser`, `InvalidServer`, `CoreLineTooLong`). The daemon-owned `i2pr-daemon::service_tunnels_irc_server` executor owns one Streaming accept loop per `irc-server` spec, waits for the Streaming connection to reach `Established`, captures the peer Destination hash from authenticated Streaming metadata (the only acceptable source for the projected hostname), runs the bounded registration interceptor under a 30 s total deadline (with a 20 ms poll cadence), connects to the loopback target under a 10 s deadline, writes the rewritten prefix + leftover exactly once, and switches to the shared Plan 174 byte pump in opaque mode for the post-registration stream. The Plan 175 persistent server destination storage owns the IRC server destination identity so restart preserves both the public service Destination and the projected hostname algorithm. No new Garlic/I2NP/Streaming implementation is introduced; no WEBIRC, no cloaked hostnames, no DCC, no TLS termination, no IRC daemon implementation, and no post-registration server-side filter claim (the post-handoff stream is byte-transparent). The full I2P Streaming byte round-trip over local TCP for the IRC server profile is Plan 180 reconcile work; Plan 179 does not silently weaken that criterion."
+evidence = [
+    "crates/i2pr-service-tunnels/src/irc/server.rs",
+    "crates/i2pr-service-tunnels/src/irc/mod.rs",
+    "crates/i2pr-service-tunnels/src/lib.rs",
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-daemon/src/service_tunnels_irc_server.rs",
+    "crates/i2pr-daemon/src/service_tunnels.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_irc_server_product.rs",
+    "crates/i2pr-daemon/tests/service_tunnels_foundation.rs",
+    "specs/protocols/11-service-tunnels.md",
+    "plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md",
 ]
 advertised = false

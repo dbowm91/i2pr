@@ -70,7 +70,8 @@ pub const DEFAULT_USER_SERVERNAME: &str = "localhost";
 /// client PING includes a proxy-revealing location.
 pub const DEFAULT_PING_LOCATION: &str = "i2p";
 
-/// IRC command classification allowlist categories (Plan 178 §4).
+/// IRC command classification allowlist categories (Plan 178 §4,
+/// extended by Plan 179 §7 for the server-side `SERVER` command).
 ///
 /// Commands are categorized client-originated or server-originated
 /// and given a typed [`IrcCommand`] identity. The classifier only
@@ -82,6 +83,10 @@ pub enum IrcCommand {
     Authenticate,
     Nick,
     User,
+    /// Server-to-server IRC handshake (Plan 179 §7). Carries a
+    /// server name (not a per-user identity) and is not
+    /// rewritten; the daemon passes the line through verbatim.
+    Server,
     Ping,
     Pong,
     Join,
@@ -117,6 +122,7 @@ impl IrcCommand {
             Self::Authenticate => "AUTHENTICATE",
             Self::Nick => "NICK",
             Self::User => "USER",
+            Self::Server => "SERVER",
             Self::Ping => "PING",
             Self::Pong => "PONG",
             Self::Join => "JOIN",
