@@ -1,7 +1,7 @@
 # Plan 172 status — Milestone 9 independent LeaseSet2 lifecycle corrective
 
 Status: **`passed-m9-i2cp-independent-leaseset2-lifecycle-corrective`
-(closed on exact head `e3ceb08` — routine + external CI green, see §8).**
+(closed on exact head `299d17a` — routine + external CI green, see §8).**
 
 Registered: **2026-09-08**.
 Closed: **2026-09-09**.
@@ -201,24 +201,27 @@ advisories bans sources` — all green.
 ## §19 closure (exact head)
 
 ```text
-CLOSING_SHA            = e3ceb08da5ae6a91fc9f3705f677903f3ebe0b43
-ROUTINE_CI_RUN         = 34316200716
+CLOSING_SHA            = 299d17a1996af4b78850822d3eb782d508c051c6
+ROUTINE_CI_RUN         = 34318789357
 Quality (ubuntu-latest) = success
 Quality (macos-latest)  = success
 MSRV (Ubuntu)           = success
 Dependency policy       = success
-EXTERNAL_RUN_1         = 34317406711 (.github/workflows/i2cp-external.yml)
+EXTERNAL_RUN_1         = 34319840286 (.github/workflows/i2cp-external.yml)
 I2CP independent clients (Ubuntu) = success
-EXTERNAL_RUN_2         = 34317801182 (.github/workflows/i2cp-external.yml)
+EXTERNAL_RUN_2         = 34320329109 (.github/workflows/i2cp-external.yml)
 I2CP independent clients (Ubuntu) = success
 ```
 
 Implementation commit `e3ceb08` went green on routine CI
 (`34316200716`, all four jobs success) and proved the 24-row lane
-twice locally plus twice hosted on the same head (all attempt 1/3,
-digests match local: retained `f5cd0143d29d...` small,
+twice locally plus twice hosted (`34317406711`, `34317801182`, all
+attempt 1/3). Closure head `299d17a` (docs/authority only, no `crates/`
+delta) re-verified routine CI (`34318789357`, all four jobs success)
+and the 24-row lane twice hosted on the exact closing tree (all
+attempt 1/3, digests match local: retained `f5cd0143d29d...` small,
 `d8690a426100...` large; after-LS2 `078ab1785258...` small,
-`d8690a426100...` large). Evidence artifacts upload on both external
+`d8690a426100...` large). Evidence artifacts upload on all external
 runs; hosted `results.tsv` matches local row-for-row. No Milestone 10
 work is implemented in this plan.
 
