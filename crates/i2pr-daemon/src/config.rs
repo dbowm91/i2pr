@@ -1583,14 +1583,21 @@ fn normalize_service_tunnels(
         reason: "duplicate service id, duplicate listener, or ceiling exceeded",
     })?;
 
-    // Plan 174 §6: no service listener starts in this plan. Any
-    // `enabled = true` tunnel is rejected as not-yet-available
-    // rather than silently ignored.
-    if set.tunnels.iter().any(|spec| spec.enabled) {
-        return Err(ConfigError::Semantic {
-            field: "service_tunnels.tunnel.enabled",
-            reason: "service tunnel execution is not yet available in this milestone",
-        });
+    // Plan 175 §13/§6: only `generic-client` and `generic-server`
+    // tunnels may activate in this plan. Any other enabled kind
+    // (HTTP, SOCKS, IRC) is rejected as not-yet-available rather than
+    // silently ignored.
+    for spec in set.tunnels.iter().filter(|spec| spec.enabled) {
+        match spec.kind {
+            i2pr_service_tunnels::ServiceTunnelKind::GenericClient
+            | i2pr_service_tunnels::ServiceTunnelKind::GenericServer => {}
+            _ => {
+                return Err(ConfigError::Semantic {
+                    field: "service_tunnels.tunnel.enabled",
+                    reason: "this service tunnel kind is not yet available",
+                });
+            }
+        }
     }
 
     Ok(ServiceTunnelsConfig {
@@ -2802,12 +2809,34 @@ data_dir = "./state"
     }
 
     #[test]
-    fn enabled_service_tunnel_rejected_as_not_yet_available() {
+    fn enabled_service_tunnel_accepted_for_generic_client() {
+        // Plan 175 enables generic-client and generic-server; only
+        // HTTP/SOCKS/IRC remain not-yet-available.
         let text = format!(
             "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"generic-client\"\nenabled = true\nlistener = \"127.0.0.1:8080\"\ndestination = \"{}\"\n",
             MINIMAL,
             service_b32()
         );
+        let config = Config::parse(&text).expect("generic-client must accept");
+        assert_eq!(config.service_tunnels.tunnels.len(), 1);
+        assert!(config.service_tunnels.tunnels.tunnels[0].enabled);
+    }
+
+    #[test]
+    fn enabled_non_generic_service_tunnel_rejected_as_not_yet_available() {
+        let mut text = format!(
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"http-client\"\nenabled = true\nlistener = \"127.0.0.1:8080\"\ndestination = \"{}\"\n",
+            MINIMAL,
+            service_b32()
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "service_tunnels.tunnel.enabled",
+                ..
+            })
+        ));
+        text = text.replace("http-client", "socks5-client");
         assert!(matches!(
             Config::parse(&text),
             Err(ConfigError::Semantic {

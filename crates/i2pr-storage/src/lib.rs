@@ -1,5 +1,6 @@
-//! Permission-hardened persistence for the local router identity and the
-//! bounded raw-byte cache seam used by the Plan 104 NetDB composition
+//! Permission-hardened persistence for the local router identity,
+//! Plan 175 persistent service destinations, and the bounded
+//! raw-byte cache seam used by the Plan 104 NetDB composition
 //! owner.
 //!
 //! The identity format is intentionally independent of Rust layout and serde.
@@ -27,6 +28,13 @@ use i2pr_crypto::{
 use rand_core::TryCryptoRng;
 use thiserror::Error;
 use zeroize::Zeroizing;
+
+pub mod service_destination;
+pub use service_destination::{
+    MAX_SERVICE_DESTINATION_FILE_SIZE, SERVICE_DESTINATION_FILE_NAME,
+    SERVICE_DESTINATION_FORMAT_VERSION, SERVICE_DESTINATIONS_SUBDIR, ServiceDestinationRecord,
+    ServiceDestinationStorageError, ServiceDestinationStore, decode_service_destination_bytes,
+};
 
 /// The only private identity filename used by the explicit CLI lifecycle.
 pub const IDENTITY_FILE_NAME: &str = "router.identity";

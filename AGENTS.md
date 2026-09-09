@@ -53,8 +53,10 @@ Plan 172 = passed M9 I2CP independent LeaseSet2 lifecycle corrective
 Milestone 9 I2CP final acceptance = closed-via-plan172 (experimental, loopback-only)
 Plan 173 = registered M10 service-tunnels roadmap
 Plan 174 = passed M10 service-tunnel foundation and shared stream runtime
+Plan 175 = passed M10 generic client/server service tunnels and persistent server destinations
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
-next_executable_plan = 175
+Milestone 10 generic tunnels = passed-via-plan175 (no round-trip integration yet)
+next_executable_plan = 176
 next product layer = milestone10-service-tunnels
 ```
 
@@ -99,11 +101,13 @@ Read in this order for Milestone 9 I2CP work:
 
 Read in this order for Milestone 10 service-tunnel work:
 
-1. [`plans/174-status.md`](plans/174-status.md) — passed foundation
-2. [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md)
-3. [`plans/173-status.md`](plans/173-status.md) — roadmap authority
-4. [`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`](plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md)
-5. Do not start Plan 175 until Plan 174 is passed (it is); do not implement later profiles early.
+1. [`plans/175-status.md`](plans/175-status.md) — passed generic client/server tunnels
+2. [`plans/175-m10-generic-client-server-service-tunnels.md`](plans/175-m10-generic-client-server-service-tunnels.md)
+3. [`plans/174-status.md`](plans/174-status.md) — passed foundation
+4. [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md)
+5. [`plans/173-status.md`](plans/173-status.md) — roadmap authority
+6. [`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`](plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md)
+7. Do not start Plan 176 until Plan 175 is passed (it is); do not implement later profiles early.
 
 Plan 171 corrective (retained): every terminal pre-session I2CP
 rejection terminates TCP explicitly on the common per-connection
@@ -520,10 +524,16 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 174 passed the M10 service-tunnel
-foundation and shared Streaming runtime (runtime-neutral
+Current handoff: **Plan 175 passed the M10 generic client/server
+service tunnels and persistent server destinations (versioned,
+atomic, secret-safe storage seam; runtime-neutral
 `i2pr-service-tunnels` crate, strict disabled-by-default
-loopback-only `[service_tunnels]` surface, generic bounded
-socket<->Streaming pump reused by SAM, no listener yet).
-Milestone 9 remains closed via Plan 172. Do not implement generic,
-HTTP, SOCKS5, or IRC listeners until Plan 175.**
+loopback-only `[service_tunnels]` surface that accepts
+`enabled = true` only for `generic-client` / `generic-server`; the
+daemon `ServiceTunnelManager` owns the per-service destination
+runtime, the loopback TCP listener / Streaming listener lifecycle,
+and the typed cross-tunnel local destination lookup). Milestone 9
+remains closed via Plan 172. Do not implement HTTP, SOCKS5, or IRC
+listeners until Plan 176 (HTTP) / Plan 177 (SOCKS5) / Plan 178-179
+(IRC) without a fresh plan-of-record. The full client/server byte
+round-trip integration belongs to Plan 180 reconcile work.**

@@ -16,6 +16,7 @@ pub mod inbound_dispatch;
 pub mod netdb_seam;
 pub mod outbound_lookup;
 pub mod sam;
+pub mod service_tunnels;
 
 pub use error::DaemonError;
 pub use i2cp::{I2cpServiceError, I2cpServiceSnapshot, I2cpServiceState};

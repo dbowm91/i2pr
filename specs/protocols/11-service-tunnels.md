@@ -1,9 +1,10 @@
 # Service tunnels (Milestone 10)
 
-Status: **foundation** (Plan 174 passed; product listeners not yet implemented)  
+Status: **generic tunnels landed** (Plan 175 passed; HTTP/SOCKS/IRC still not implemented)  
 Planning authority: **Plan 173** (`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`)  
 Foundation: **Plan 174** (`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`)  
-Next executable plan: **175**
+Generic client/server tunnels: **Plan 175** (`plans/175-m10-generic-client-server-service-tunnels.md`)  
+Next executable plan: **176** (HTTP `.i2p` proxy + CONNECT)
 
 > Plan 174 is a refactor/foundation pass. It must not change I2P wire
 > semantics or broaden listener exposure. No generic, HTTP, SOCKS5,
@@ -94,9 +95,9 @@ i2pr-daemon (only socket/task/composition owner)
 
 | Product | Status | Owning plan |
 | --- | --- | --- |
-| Generic TCP client listener | not-yet-implemented | 175 |
-| Generic TCP server destination + target | not-yet-implemented | 175 |
-| Persistent server destination storage | not-yet-implemented | 175 |
+| Generic TCP client listener | passed-experimental-loopback-only | 175 |
+| Generic TCP server destination + target | passed-experimental-loopback-only | 175 |
+| Persistent server destination storage | passed-experimental-secret-safe | 175 |
 | HTTP `.i2p` proxy + CONNECT | not-yet-implemented | 176 |
 | SOCKS5 no-auth `.i2p` CONNECT | not-yet-implemented | 177 |
 | IRC client privacy filter | not-yet-implemented | 178 |
@@ -106,6 +107,36 @@ i2pr-daemon (only socket/task/composition owner)
 
 No row above may be marked passed until its owning plan has an
 explicit passing status record with command-derived evidence.
+
+## Evidence (Plan 175)
+
+- `crates/i2pr-storage/src/service_destination.rs`
+  (`ServiceDestinationStore`, `ServiceDestinationRecord`,
+  `ServiceDestinationStorageError`; `#![forbid(unsafe_code)]`;
+  versioned, permission-hardened, atomic, no-replace; corruption
+  fail-closed).
+- `crates/i2pr-daemon/src/service_tunnels.rs`
+  (`ServiceTunnelManager`, `ServiceRuntime`,
+  `ServiceTunnelSnapshot`, `ClientTarget`,
+  `DestinationFailure`; per-service supervisor loops under a
+  shared `ChildScope`; `with_destination_bridge` /
+  `lookup_local_service_destination` typed capabilities).
+- `crates/i2pr-daemon/src/config.rs` (`[service_tunnels]`
+  accepts `enabled = true` for `generic-client` / `generic-server`;
+  HTTP/SOCKS/IRC remain rejected).
+- `crates/i2pr-daemon/tests/service_tunnel_generic_product.rs`
+  (9 black-box manager tests: prepare/restart-stable identity,
+  corrupt-identity rejection, missing-target rejection,
+  Unix-target not-yet-supported, no HTTP/SOCKS/IRC leak,
+  cross-tunnel local destination lookup, snapshot accounting,
+  disabled-service ignored).
+- `crates/i2pr-daemon/tests/service_tunnels_foundation.rs`
+  (Plan 174 graph/config regression suite; updated to confirm
+  the Plan 175 generic-client/server acceptance rule).
+- `scripts/check-dependency-direction.sh` (workspace graph
+  unchanged) and `scripts/check-runtime-boundaries.sh`
+  (`i2pr-service-tunnels` remains runtime-neutral).
+- `plans/175-status.md` (exact evidence, `next_executable_plan = 176`).
 
 ## Evidence (Plan 174)
 

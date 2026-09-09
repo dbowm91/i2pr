@@ -69,6 +69,7 @@ milestone9_i2cp_independent_leaseset2 = passed-via-plan172
 milestone9_final_acceptance = closed-via-plan172
 milestone10_planning_authority = plan173
 milestone10_foundation = passed-via-plan174
+milestone10_generic_tunnels = passed-via-plan175
 milestone10_final_acceptance = not-yet-closed
 next_product_layer = milestone10-service-tunnels
 next_executable_plan = 175
@@ -82,7 +83,7 @@ The `[sam]` config section remains disabled by default and loopback-only when en
 
 Milestone 9 final acceptance is **closed via [Plan 172](plans/172-status.md)** (experimental, loopback-only): Plan 170 wire/data-plane evidence is retained-passed; Plan 172 proves the independent LeaseSet2 lifecycle with exact-pinned Java I2P 2.13.0 high-level `I2PSession.connect()` plus public go-i2cp `ProcessIO` lifecycle, real non-empty local zero-hop `RequestVariableLeaseSet`, client-signed Standard LeaseSet2 + X25519 capability installs, usability gated on install, and digest-matched bidirectional traffic after both installs (24 fail-closed rows).
 
-Milestone 10 planning is registered via [**Plan 173**](plans/173-status.md). [**Plan 174**](plans/174-status.md) passed the service-tunnel foundation: runtime-neutral `i2pr-service-tunnels` crate (typed kinds, destination policy, Base32/alias validation, loopback-only listener/target shapes, central ceilings), the shared daemon Streaming pump reused by SAM with no second byte pump, and the strict disabled-by-default `[service_tunnels]` surface. No generic, HTTP, SOCKS5, or IRC listener is active yet; `enabled = true` tunnels are rejected as not-yet-available until Plan 175.
+Milestone 10 planning is registered via [**Plan 173**](plans/173-status.md). [**Plan 174**](plans/174-status.md) passed the service-tunnel foundation: runtime-neutral `i2pr-service-tunnels` crate (typed kinds, destination policy, Base32/alias validation, loopback-only listener/target shapes, central ceilings), the shared daemon Streaming pump reused by SAM with no second byte pump, and the strict disabled-by-default `[service_tunnels]` surface. [**Plan 175**](plans/175-status.md) passed the first complete M10 application service product: persistent router-owned service destinations (`ServiceDestinationStore`; versioned, atomic, secret-safe), a daemon-owned `ServiceTunnelManager` that binds loopback TCP for `generic-client` and a loopback Streaming listener for `generic-server`, reuse of the Plan 149 local destination product path and the Plan 174 shared byte pump, and a typed cross-tunnel local destination lookup so client/server tunnels owned by the same router do not need an external LeaseSet lookup. No HTTP, SOCKS5, or IRC listener is active yet; those remain rejected as not-yet-available until Plans 176-179.
 
 For the full plan hierarchy, MVP roadmap, and what's implemented vs. not, see [**`plans/README.md`**](plans/README.md).
 
@@ -103,7 +104,7 @@ crates/
   i2pr-tunnel/              Tunnel identity, exploratory pool, ECIES-X25519 short-build, runtime-neutral data plane
   i2pr-client/              Destinations, ECIES-X25519-AEAD-Ratchet session layer, routing, I2P Streaming
   i2pr-api/                 Runtime-neutral application-protocol adapters (SAM 3.1 plus the M9 I2CP wire/profile foundation; no sockets)
-  i2pr-service-tunnels/     Runtime-neutral M10 service-tunnel config/policy (no sockets; Plan 174 foundation only)
+  i2pr-service-tunnels/     Runtime-neutral M10 service-tunnel config/policy (no sockets; Plan 175 generic client/server tunnels composition lives in i2pr-daemon)
   i2pr-daemon/              CLI, configuration, composition, supervision, application listener ownership
   i2pr-testkit/             Deterministic simulation and adversarial fixtures
 tools/

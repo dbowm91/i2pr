@@ -132,11 +132,13 @@ Read in order for Milestone 9 I2CP work:
 
 Read in order for Milestone 10 service-tunnel work:
 
-1. `plans/174-status.md` (passed foundation)
-2. `plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`
-3. `plans/173-status.md` (roadmap authority)
-4. `plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`
-5. Do not start Plan 175 until Plan 174 is passed (it is); do not
+1. `plans/175-status.md` (passed generic client/server tunnels)
+2. `plans/175-m10-generic-client-server-service-tunnels.md`
+3. `plans/174-status.md` (passed foundation)
+4. `plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`
+5. `plans/173-status.md` (roadmap authority)
+6. `plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`
+7. Do not start Plan 176 until Plan 175 is passed (it is); do not
    implement later profiles early.
 
 Plans 155–160 passed the local SSU2 v2 protocol/runtime/reachability sequence.
@@ -536,14 +538,21 @@ bash scripts/check-ssu2-acceptance-evidence.sh
 - Plan 172 passed the M9 I2CP independent LeaseSet2 lifecycle corrective: explicit local zero-hop tunnel kind, 44-byte Lease-compatible non-empty real `RequestVariableLeaseSet`, Plan 166 atomic install (ElGamal-slot skip, unpublished accepted, u8 LS2 key count), high-level Java `I2PSession.connect()` plus public go-i2cp async `ProcessIO` lifecycle proof, post-LS2 digest-matched cross-client traffic both directions, fail-closed 24-row evidence. Milestone 9 final acceptance is closed via Plan 172.
 - Plan 173 registered the M10 service-tunnels roadmap (planning authority only).
 - Plan 174 passed the M10 service-tunnel foundation and shared stream runtime: runtime-neutral `i2pr-service-tunnels` crate, strict disabled-by-default loopback-only `[service_tunnels]` surface, generic bounded socket<->Streaming pump reused by SAM, no listener yet. Do not implement generic, HTTP, SOCKS5, or IRC listeners until Plan 175.
+- Plan 175 passed the first complete M10 application service product: persistent router-owned service destinations (`ServiceDestinationStore`; versioned, atomic, secret-safe) and a daemon-owned `ServiceTunnelManager` that binds loopback TCP for `generic-client` and a loopback Streaming listener for `generic-server`, reuses the Plan 149 local destination product path and the Plan 174 shared byte pump, and exposes a typed cross-tunnel local destination lookup so client/server tunnels owned by the same router do not need an external LeaseSet lookup. Plan 175 enables `enabled = true` only for `generic-client` and `generic-server`; HTTP/SOCKS/IRC remain rejected as not-yet-available until Plans 176-179.
 - `milestone6_interoperable = not-yet-claimed` remains unchanged.
 - SSU2 public-network participation, broad router interoperability, IPv6 external interop, PQ v3/v4, and SSU1 remain unclaimed/deferred as documented.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
 
-Current handoff: **Plan 174 passed the M10 service-tunnel
-foundation and shared Streaming runtime (runtime-neutral
+Current handoff: **Plan 175 passed the M10 generic client/server
+service tunnels and persistent server destinations (versioned,
+atomic, secret-safe storage seam; runtime-neutral
 `i2pr-service-tunnels` crate, strict disabled-by-default
-loopback-only `[service_tunnels]` surface, generic bounded
-socket<->Streaming pump reused by SAM, no listener yet).
-Milestone 9 remains closed via Plan 172. Do not implement generic,
-HTTP, SOCKS5, or IRC listeners until Plan 175.**
+loopback-only `[service_tunnels]` surface that accepts
+`enabled = true` only for `generic-client` / `generic-server`; the
+daemon `ServiceTunnelManager` owns the per-service destination
+runtime, the loopback TCP listener / Streaming listener lifecycle,
+and the typed cross-tunnel local destination lookup). Milestone 9
+remains closed via Plan 172. Do not implement HTTP, SOCKS5, or IRC
+listeners until Plan 176 (HTTP) / Plan 177 (SOCKS5) / Plan 178-179
+(IRC) without a fresh plan-of-record. The full client/server byte
+round-trip integration belongs to Plan 180 reconcile work.**

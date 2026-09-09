@@ -106,24 +106,56 @@ fn non_loopback_server_tcp_target_rejected_before_mutation() {
 }
 
 #[test]
-fn enabled_service_tunnel_is_not_yet_available_and_starts_no_listener() {
+fn enabled_generic_client_tunnel_is_accepted() {
     let directory = tempfile::tempdir().expect("temp directory");
     let b32 = canonical_b32();
     let text = format!(
         "{}\n[service_tunnels]\nenabled = true\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"generic-client\"\nenabled = true\nlistener = \"127.0.0.1:8080\"\ndestination = \"{b32}\"\n",
         minimal(directory.path())
     );
-    let err = Config::parse(&text).expect_err("enabled tunnel must be rejected in Plan 174");
-    assert!(
-        matches!(
-            err,
-            i2pr_daemon::config::ConfigError::Semantic {
-                field: "service_tunnels.tunnel.enabled",
-                ..
-            }
+    let config = Config::parse(&text).expect("enabled generic-client must be accepted");
+    assert!(config.service_tunnels.enabled);
+    assert_eq!(config.service_tunnels.tunnels.len(), 1);
+    assert!(config.service_tunnels.tunnels.tunnels[0].enabled);
+}
+
+#[test]
+fn enabled_non_generic_service_tunnel_is_rejected() {
+    let directory = tempfile::tempdir().expect("temp directory");
+    let b32 = canonical_b32();
+    // Each non-generic kind uses a complete enough config that
+    // only the enabled-rejection check fires.
+    let cases = [
+        (
+            "http-client",
+            format!("listener = \"127.0.0.1:8080\"\ndestination = \"{b32}\"\n"),
         ),
-        "enabled rejection must be explicit, got: {err:?}"
-    );
-    // Because validation fails, no graph (and therefore no
-    // listener) can be constructed from the rejected config.
+        (
+            "socks5-client",
+            format!("listener = \"127.0.0.1:8080\"\ndestination = \"{b32}\"\n"),
+        ),
+        (
+            "irc-client",
+            format!("listener = \"127.0.0.1:8080\"\ndestination = \"{b32}\"\n"),
+        ),
+        ("irc-server", "target = \"127.0.0.1:9090\"\n".to_owned()),
+    ];
+    for (kind, body) in cases {
+        let text = format!(
+            "{}\n[service_tunnels]\nenabled = true\n[[service_tunnels.tunnel]]\nid = \"alpha\"\nkind = \"{kind}\"\nenabled = true\n{body}",
+            minimal(directory.path())
+        );
+        let err = Config::parse(&text)
+            .expect_err(format!("{kind} must be rejected until its plan lands").as_str());
+        assert!(
+            matches!(
+                err,
+                i2pr_daemon::config::ConfigError::Semantic {
+                    field: "service_tunnels.tunnel.enabled",
+                    ..
+                }
+            ),
+            "{kind} rejection must be explicit, got: {err:?}"
+        );
+    }
 }
