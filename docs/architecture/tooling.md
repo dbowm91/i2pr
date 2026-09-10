@@ -343,7 +343,7 @@ CI pass.
 
 | Job | OS | Steps |
 | --- | --- | --- |
-| **Quality** | ubuntu-latest + macos-latest (matrix, fail-fast: false) | Checkout → Rust 1.95.0 + rustfmt + clippy → `cargo fmt --all --check` → `cargo check --workspace` → `cargo check --workspace --all-targets` → `cargo test --workspace` → `cargo clippy --workspace --all-targets --all-features -- -D warnings` → `cargo doc` (with `-D warnings`) → `check-dependency-direction.sh` (both OS) → `check-runtime-boundaries.sh` (Linux) → `check-fixture-manifest.sh` (Linux) → `check-ntcp2-vectors.sh` (Linux) → `check-ssu2-vectors.sh` (Linux) → `check-ntcp2-interoperability.sh` (Linux) → `check-constrained-host-lane-boundary.sh` (Linux) → `check-sam-acceptance-evidence.sh` (Linux) → `check-ssu2-acceptance-evidence.sh` (Linux) → `check-i2cp-vectors.sh` (Linux) → `check-i2cp-acceptance-evidence.sh` (Linux) |
+| **Quality** | ubuntu-latest + macos-latest (matrix, fail-fast: false) | Checkout → Rust 1.95.0 + rustfmt + clippy → `cargo fmt --all --check` → `cargo check --workspace` → `cargo check --workspace --all-targets` → `cargo test --workspace` → `cargo clippy --workspace --all-targets --all-features -- -D warnings` → `cargo doc` (with `-D warnings`) → `check-dependency-direction.sh` (both OS) → `check-runtime-boundaries.sh` (Linux) → `check-fixture-manifest.sh` (Linux) → `check-ntcp2-vectors.sh` (Linux) → `check-ssu2-vectors.sh` (Linux) → `check-ntcp2-interoperability.sh` (Linux) → `check-constrained-host-lane-boundary.sh` (Linux) → `check-sam-acceptance-evidence.sh` (Linux) → `check-ssu2-acceptance-evidence.sh` (Linux) → `check-i2cp-vectors.sh` (Linux) → `check-i2cp-acceptance-evidence.sh` (Linux) → `check-service-tunnel-acceptance-evidence.sh` (Linux) |
 | **MSRV** | ubuntu-latest | Rust **1.88.0** → `cargo check --workspace --all-targets` |
 | **Dependency policy** | ubuntu-latest | Rust 1.95.0 → `cargo-deny check advisories bans sources` |
 
@@ -356,6 +356,27 @@ Triggers: `on: push`, `on: pull_request` (all branches).
   checker → run `tests/integration/ssu2/run-independent.sh` → upload
   sanitized evidence even on failure. Bounded 45-minute timeout; no
   public-I2P participation beyond the GitHub source fetch.
+
+### `.github/workflows/service-tunnels-external.yml` (manual lane)
+
+- `workflow_dispatch`-only Ubuntu 24.04 lane for Plan 181 (local
+  rows green, remote rows `blocked` per §6.3): install i2pd build
+  deps + netcat → fetch/verify the exact jaraco/irc pin and the
+  exact i2pd 2.61.0 reference → run the service-tunnel
+  evidence-integrity checker → run
+  `tests/integration/service-tunnels/run-independent.sh` (31
+  command-derived rows: prerequisite/tool/pin gates, static
+  boundary checks, focused Rust suites with per-test ok-line
+  rows, unmodified curl HTTP/SOCKS rows, nc + stdlib generic
+  rows, exact-pinned jaraco/irc rows, restart stability, the
+  i2pd SAM DEST GENERATE qualification with the ignored-driver
+  stop-condition assertion, resource baseline,
+  unsupported-profile ledger) → upload sanitized evidence even on
+  failure. Full lane exits nonzero while the remote rows stay
+  blocked (fail-closed by design); `--local-only` skips only the
+  i2pd section and still records the remote rows as blocked.
+  Bounded 45-minute timeout; loopback-only, no public-I2P
+  participation beyond the GitHub source fetch.
 
 ### `.github/workflows/i2cp-external.yml` (manual lane)
 

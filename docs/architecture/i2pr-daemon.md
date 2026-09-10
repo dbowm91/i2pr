@@ -207,8 +207,12 @@ work is scoped to:
   for `generic-client`, `generic-server`, `http-client`,
   `socks5-client`, `irc-client`, and `irc-server` in order; no
   remaining not-yet-available gate exists for the current kinds.
-  The full M10 per-service Streaming byte round-trip over local
-  TCP remains Plan 180 reconcile work. See
+  Plan 182 proved the per-service Streaming byte round-trip over
+  local TCP (per-destination delivery drivers, wildcard port 0,
+  SAM-parity accepts, completed IRC client executor, orderly
+  half-close). Plan 181's external lane passes its 29 local
+  independent-application-client rows while the two remote rows
+  stay `blocked` on the retained M6 debt. See
   [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](../../plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md),
   [`plans/175-m10-generic-client-server-service-tunnels.md`](../../plans/175-m10-generic-client-server-service-tunnels.md),
   [`plans/176-m10-http-i2p-proxy-and-connect.md`](../../plans/176-m10-http-i2p-proxy-and-connect.md),

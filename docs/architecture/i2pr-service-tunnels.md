@@ -375,8 +375,27 @@ closed; identity rotation is never a side effect of reload.
   seeds the authoritative committed generation
   (`ServiceTunnelGeneration`).
 - `start_supervisors(runtimes, children, cancellation)` spawns the
-  per-service supervisor loops under the daemon's child scope.
-- `shutdown()` cancels every per-service supervisor token.
+  per-service supervisor loops under the daemon's child scope,
+  plus one supervised per-destination local-delivery driver per
+  runtime (Plan 182; fail-closed when the child scope rejects
+  the spawn).
+- `shutdown()` cancels every per-service supervisor token and
+  every delivery-driver token (counter entries retained).
+- Plan 182 delivery substrate: per-destination outbound `Notify`
+  signals (`outbound_signal` / `notify_outbound_signal`),
+  cumulative `DeliverySweepCounters` (`delivery_counters`),
+  and `deliver_outbound` sweeping the manager-level
+  `sam_destinations` mirror through the public Plan 129
+  `bridge_to_peer` seam (sender LeaseSet2 install, peer
+  inbound-tunnel build, typed counters, failed-delivery
+  termination). Stale drivers are cancelled on reconcile;
+  the sweep covers both canonical and receiver-mirror queues.
+- Plan 182 Streaming conventions: server tunnels listen on
+  wildcard port 0 (SAM convention; clients connect `(0, 0)`),
+  accepts use the connection's real authenticated peer/ports
+  with the SYN response queued for the driver, and
+  `ServicePumpEndpoint::try_send` branches on direction with
+  typed backpressure matching (never Display-string matching).
 - `lookup_local_service_destination(hash)` resolves a Base32 hash to
   a [`ClientTarget`] when the hash matches a service destination
   registered with the manager (cross-tunnel local delivery).
@@ -587,7 +606,30 @@ all M10 sockets and tasks.
   registration/CAP-SASL/JOIN/PRIVMSG/NOTICE path, slowloris
   boundedness, aggregate ceiling).
 - Pump-side: `crates/i2pr-daemon/src/destination_streaming.rs` (5
-  deterministic pump tests, retained from Plan 174).
+  deterministic pump tests, retained from Plan 174; Plan 182
+  adds the default-no-op `shutdown_write()` hook with CLOSE
+  linger, byte-identical for the SAM endpoint).
+- Plan 182 local-delivery tests:
+  `crates/i2pr-daemon/tests/service_tunnels_local_roundtrip.rs`
+  (9 tests: generic small/large/sibling echo digests, framed
+  reverse, half-close EOF propagation, HTTP GET 200 + digest,
+  SOCKS5 CONNECT + echo, IRC register/message/projection,
+  resource baseline with zero `unknown_peer`/`missing_factory`)
+  and
+  `crates/i2pr-daemon/tests/service_tunnels_independent_application_clients.rs`
+  (6 wire-surface tests incl. restart-stable server identity).
+- Plan 181 external lane:
+  `tests/integration/service-tunnels/run-independent.sh` (31
+  command-derived rows),
+  `scripts/check-service-tunnel-acceptance-evidence.sh`
+  (routine-CI static checker),
+  `scripts/interop/fetch-service-tunnel-clients.sh`
+  (exact-pin jaraco/irc fetch),
+  `.github/workflows/service-tunnels-external.yml` (manual
+  full/local-only lane), and the ignored-by-default
+  `service_tunnels_remote_qualification.rs` driver asserting
+  the §6.3 stop condition (local rows passed, remote rows
+  `blocked` on retained M6 debt).
 
 ## Distinctive design choices
 

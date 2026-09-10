@@ -59,15 +59,22 @@ Plan 177 = passed M10 SOCKS5 `.i2p` CONNECT proxy
 Plan 178 = passed M10 IRC `.i2p` client profile and privacy filtering
 Plan 179 = passed M10 IRC `.i2p` server profile and authenticated peer hostname
 Plan 180 = passed M10 service-tunnel composition, reconcile, and hardening
+Plan 181 = blocked-by-m6-mixed-router-streaming-blocker (local rows passed; remote gate pending plan183)
+Plan 182 = passed M10 local-delivery corrective
+Plan 183 = registered M6 mixed-router streaming interop program
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
-Milestone 10 generic tunnels = passed-via-plan175 (no round-trip integration yet)
-Milestone 10 HTTP proxy = passed-via-plan176 (full byte round-trip via Plan 180 reconcile)
-Milestone 10 SOCKS5 = passed-via-plan177 (full byte round-trip via Plan 180 reconcile)
-Milestone 10 IRC client = passed-via-plan178 (full byte round-trip via Plan 180 reconcile)
-Milestone 10 IRC server = passed-via-plan179 (full byte round-trip via Plan 180 reconcile)
-Milestone 10 local product = passed-via-plan180 (transactional reconcile, generation/draining model, cross-service adversarial matrix)
-next_executable_plan = 181
-next product layer = milestone10-independent-acceptance
+Milestone 10 generic tunnels = passed-via-plan175 (profile; byte round-trip proven-via-plan182)
+Milestone 10 HTTP proxy = passed-via-plan176 (profile; byte round-trip proven-via-plan182)
+Milestone 10 SOCKS5 = passed-via-plan177 (profile; byte round-trip proven-via-plan182)
+Milestone 10 IRC client = passed-via-plan178 (profile; byte round-trip proven-via-plan182)
+Milestone 10 IRC server = passed-via-plan179 (profile; byte round-trip proven-via-plan182)
+Milestone 10 local product = passed-via-plan180-and-plan182 (reconcile model + local-delivery driver)
+Milestone 10 local round-trip = passed-via-plan182 (generic/HTTP/SOCKS/IRC success paths)
+Milestone 10 independent application clients = local-rows-passed-plan181-not-closed
+Milestone 10 remote service interop = not-yet-passed
+Milestone 10 final acceptance = not-yet-closed
+next_executable_plan = 183
+next product layer = m6-mixed-router-streaming-interop
 ```
 
 For current SSU2 interop work, read in this order:
@@ -111,24 +118,33 @@ Read in this order for Milestone 9 I2CP work:
 
 Read in this order for Milestone 10 service-tunnel work:
 
-1. [`plans/180-status.md`](plans/180-status.md) — passed M10 composition, reconcile, and hardening (current authority)
-2. [`plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md`](plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md)
-3. [`plans/179-status.md`](plans/179-status.md) — passed IRC `.i2p` server profile and authenticated peer hostname
-4. [`plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`](plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md)
-5. [`plans/178-status.md`](plans/178-status.md) — passed IRC `.i2p` client profile and privacy filtering
-6. [`plans/178-m10-irc-client-profile-and-privacy-filtering.md`](plans/178-m10-irc-client-profile-and-privacy-filtering.md)
-7. [`plans/177-status.md`](plans/177-status.md) — passed SOCKS5 `.i2p` CONNECT
-8. [`plans/177-m10-socks5-i2p-connect-proxy.md`](plans/177-m10-socks5-i2p-connect-proxy.md)
-9. [`plans/176-status.md`](plans/176-status.md) — passed HTTP `.i2p` proxy + CONNECT
-10. [`plans/176-m10-http-i2p-proxy-and-connect.md`](plans/176-m10-http-i2p-proxy-and-connect.md)
-11. [`plans/175-status.md`](plans/175-status.md) — passed generic client/server tunnels
-12. [`plans/175-m10-generic-client-server-service-tunnels.md`](plans/175-m10-generic-client-server-service-tunnels.md)
-13. [`plans/174-status.md`](plans/174-status.md) — passed foundation
-14. [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md)
-15. [`plans/173-status.md`](plans/173-status.md) — roadmap authority
-16. [`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`](plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md)
-17. Do not claim M10 final closure or independent router interop from
-    Plan 180 alone; Plan 181 owns that gate.
+1. [`plans/181-status.md`](plans/181-status.md) — blocked M10 independent acceptance (current authority: local rows green, remote gate pending Plan 183)
+2. [`plans/181-m10-independent-application-and-service-interop-final-closure.md`](plans/181-m10-independent-application-and-service-interop-final-closure.md)
+3. [`plans/182-status.md`](plans/182-status.md) — passed M10 local-delivery corrective
+4. [`plans/182-m10-local-delivery-corrective.md`](plans/182-m10-local-delivery-corrective.md)
+5. [`plans/183-status.md`](plans/183-status.md) — registered M6 mixed-router program (next)
+6. [`plans/183-m6-mixed-router-streaming-interop-program.md`](plans/183-m6-mixed-router-streaming-interop-program.md)
+7. [`plans/180-status.md`](plans/180-status.md) — passed M10 composition, reconcile, and hardening
+8. [`plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md`](plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md)
+9. [`plans/179-status.md`](plans/179-status.md) — passed IRC `.i2p` server profile and authenticated peer hostname
+10. [`plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`](plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md)
+11. [`plans/178-status.md`](plans/178-status.md) — passed IRC `.i2p` client profile and privacy filtering
+12. [`plans/178-m10-irc-client-profile-and-privacy-filtering.md`](plans/178-m10-irc-client-profile-and-privacy-filtering.md)
+13. [`plans/177-status.md`](plans/177-status.md) — passed SOCKS5 `.i2p` CONNECT
+14. [`plans/177-m10-socks5-i2p-connect-proxy.md`](plans/177-m10-socks5-i2p-connect-proxy.md)
+15. [`plans/176-status.md`](plans/176-status.md) — passed HTTP `.i2p` proxy + CONNECT
+16. [`plans/176-m10-http-i2p-proxy-and-connect.md`](plans/176-m10-http-i2p-proxy-and-connect.md)
+17. [`plans/175-status.md`](plans/175-status.md) — passed generic client/server tunnels
+18. [`plans/175-m10-generic-client-server-service-tunnels.md`](plans/175-m10-generic-client-server-service-tunnels.md)
+19. [`plans/174-status.md`](plans/174-status.md) — passed foundation
+20. [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md)
+21. [`plans/173-status.md`](plans/173-status.md) — roadmap authority
+22. [`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`](plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md)
+23. Do not claim M10 final closure or independent router interop:
+    Plan 181 is blocked by the retained M6 mixed-router Streaming
+    debt (`m6-mixed-router-streaming-blocker`); Plan 183 owns the
+    corrective program and Plan 181 resumes only after it produces
+    passing remote rows.
 
 Plan 171 corrective (retained): every terminal pre-session I2CP
 rejection terminates TCP explicitly on the common per-connection
@@ -481,7 +497,26 @@ cargo test --locked -p i2pr-daemon --test service_tunnel_irc_client_product -- -
 cargo test --locked -p i2pr-daemon --test service_tunnel_irc_server_product -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test service_tunnels_final_acceptance -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test service_tunnels_adversarial_matrix -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnels_local_roundtrip -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnels_independent_application_clients -- --test-threads=1
+bash scripts/check-service-tunnel-acceptance-evidence.sh
 ```
+
+The full Plan 181 lane (local suites + matrix + gates, 31
+command-derived rows with 2 remote rows recorded blocked) is:
+
+```text
+bash tests/integration/service-tunnels/run-independent.sh
+bash scripts/check-service-tunnel-acceptance-evidence.sh
+```
+
+Plan 182 added the M10 local-delivery corrective (per-destination
+delivery drivers, wildcard Streaming port 0, SAM-parity accept
+paths, direction-branched pump sends, completed IRC client
+executor, orderly pump half-close) plus the `jaraco/irc`
+fetch script (`scripts/interop/fetch-service-tunnel-clients.sh`)
+and the manual `.github/workflows/service-tunnels-external.yml`
+lane; do not weaken the evidence checker to make CI pass.
 
 Plan 164 added the I2CP fixture corpus (`tests/fixtures/i2cp/`) and its
 checker (`scripts/check-i2cp-vectors.sh`), enforced in routine Linux CI;
@@ -625,6 +660,9 @@ closed.
  - Plan 178 passed the M10 IRC `.i2p` client profile + privacy filter.
  - Plan 179 passed the M10 IRC `.i2p` server profile + authenticated peer hostname projection.
  - Plan 180 passed the M10 service-tunnel composition, reconcile, and hardening (see `plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md` and `plans/180-status.md`): the runtime-neutral `i2pr_service_tunnels::generation::DiffClass` typed classification (`Unchanged`, `MutableInPlace`, `ReplaceListener`, `ReplaceDestination`, `Remove`, `Add`); the daemon-owned `ServiceTunnelGeneration`/`DrainingGeneration` committed-generation model with `GenerationCounters { active_current_generation, active_draining_generation, forced_drain_closes_total }`; the `ServiceTunnelManager::reconcile(candidate, drain_deadline)` transactional algorithm that validates, diffs, stages Add/Replace*, then publishes the new generation atomically and pushes only replaced/removed old runtimes onto the draining list under a hard deadline; `reap_expired_drains` for forced-drain close handling; `generation_snapshot` for the Plan 180 §9 unified cross-service resource accounting matrix; the static `scripts/check-service-tunnel-boundaries.sh` checker enforcing the runtime-neutral constraint, no Garlic/I2NP construction in service-tunnels, the single shared `run_stream_pump` invariant, no unbounded Tokio channels, and exactly one `register_service_tunnel_manager` entry point. Two new narrowly named suites (`crates/i2pr-daemon/tests/service_tunnels_final_acceptance.rs` — 15 tests covering the Plan 180 §12 reconcile matrix, `crates/i2pr-daemon/tests/service_tunnels_adversarial_matrix.rs` — 12 tests covering the Plan 180 §13 cross-service adversarial matrix) bind the manager to a temp data directory and drive behavior only through the public API. Every Plan 174/175/176/177/178/179 product test remains green. Plan 180 closes the M10 local product layer; Plan 181 owns the M10 independent acceptance gate. M10 service tunnels stay experimental, loopback-only, disabled by default, and non-advertised; no independent router interop claim.
+ - Plan 181 is blocked by the retained M6 mixed-router Streaming debt (see `plans/181-m10-independent-application-and-service-interop-final-closure.md` and `plans/181-status.md`): 29 local independent-application-client rows pass (unmodified curl HTTP/SOCKS, nc, stdlib generic driver, exact-pinned jaraco/irc through the real manager; restart stability; resource baselines; unsupported-profile ledger), and the two remote rows are recorded `blocked` with command/log provenance from a genuine qualification attempt (exact-pinned i2pd 2.61.0 SAM `DEST GENERATE` public destination; `unknown_peer>0`, `delivered=0`, no establishment, bounded timeout). Self-composed rows are never substituted for interop. Milestone 10 final acceptance stays open.
+ - Plan 182 passed the M10 local-delivery corrective (see `plans/182-m10-local-delivery-corrective.md` and `plans/182-status.md`): per-destination delivery drivers reusing the Plan 129 `bridge_to_peer` seam, inbound-factory install, wildcard Streaming port 0 (SAM convention), SAM-parity accept paths with queued SYN responses, direction-branched pump sends with typed backpressure matching, orderly pump half-close (default no-op keeps SAM byte-identical), completed line-filtering IRC client executor, permit-for-task-lifetime capture, and active-slot release on every exit path. Nine round-trip tests in `service_tunnels_local_roundtrip.rs` plus six wire-surface tests prove the local byte round-trip the Plan 174–179 profiles assumed. No wire change.
+ - Plan 183 registered the M6 mixed-router destination/Streaming interop program Plan 181 §6.3 requires (see `plans/183-m6-mixed-router-streaming-interop-program.md` and `plans/183-status.md`): registration only, no implementation, no M10 closure claim.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
 - No Plan 161 direction-A evidence implies Milestone 6 destination/Streaming/tunnel interoperability or broad router interoperability.
@@ -642,27 +680,18 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 180 passed the M10 service-tunnel
-composition, reconcile, and hardening (runtime-neutral
-`i2pr_service_tunnels::generation::DiffClass` typed classification,
-daemon-owned `ServiceTunnelGeneration`/`DrainingGeneration`
-committed-generation model with `GenerationCounters
-{ active_current_generation, active_draining_generation,
-forced_drain_closes_total }`, `ServiceTunnelManager::reconcile`
-that validates, diffs, stages Add/Replace*, publishes the new
-generation atomically, and pushes only replaced/removed old
-runtimes onto the draining list under a hard deadline;
-`reap_expired_drains` for forced-drain close handling;
-`generation_snapshot` for the unified cross-service resource
-accounting matrix; static
-`scripts/check-service-tunnel-boundaries.sh` checker enforcing
-the runtime-neutral constraint, no Garlic/I2NP construction in
-service-tunnels, the single shared `run_stream_pump` invariant,
-no unbounded Tokio channels, and exactly one
-`register_service_tunnel_manager` entry point; 15 final-acceptance
-tests in `service_tunnels_final_acceptance.rs` and 12
-adversarial-matrix tests in `service_tunnels_adversarial_matrix.rs`;
-no new Garlic/I2NP/Streaming implementation is introduced).
-Plan 174/175/176/177/178/179 product suites remain green. Plan
-180 closes the M10 local product layer; Plan 181 owns the M10
-independent acceptance gate.**
+Current handoff: **Plan 182 passed the M10 local-delivery
+corrective (per-destination delivery drivers over the Plan 129
+`bridge_to_peer` seam, inbound-factory install, wildcard
+Streaming port 0 per the SAM convention, SAM-parity accept
+paths, direction-branched pump sends with typed backpressure
+matching, orderly pump half-close, completed IRC client
+executor, permit-for-task-lifetime capture, active-slot release
+on every exit path; 9 round-trip + 6 wire-surface tests green).
+Plan 181 ran its full lane: 29 local independent-application-client
+rows pass (unmodified curl, nc, stdlib generic driver,
+exact-pinned jaraco/irc, restart stability, baselines, ledger)
+while the two remote rows are recorded `blocked` with genuine
+i2pd-2.61.0 qualification provenance
+(`m6-mixed-router-streaming-blocker`); Plan 183 registers the
+required M6 program. M10 final acceptance stays open.**

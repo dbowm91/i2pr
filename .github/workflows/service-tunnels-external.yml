@@ -1,0 +1,71 @@
+name: Service-tunnels external interoperability
+
+on:
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: "Evidence lane: 'full' (default, includes the i2pd remote qualification) or 'local-only'"
+        required: false
+        default: "full"
+
+permissions:
+  contents: read
+
+jobs:
+  service-tunnels-external:
+    name: M10 independent application clients (Ubuntu)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Install pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Install external-lane build dependencies
+        # Declared sudo exception (cf. Plan 161 lane): building the
+        # exact-pinned i2pd C++ reference absolutely requires system
+        # Boost/OpenSSL/zlib headers; netcat provides the `nc`
+        # generic client; everything else runs unprivileged.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libboost-all-dev libssl-dev zlib1g-dev \
+            netcat-openbsd
+
+      - name: Fetch and verify exact jaraco/irc client
+        run: bash scripts/interop/fetch-service-tunnel-clients.sh
+
+      - name: Fetch and verify exact i2pd reference
+        run: bash scripts/interop/fetch-ssu2-reference.sh --rebuild
+
+      - name: Show i2pd build log on failure
+        if: failure()
+        run: tail -n 100 target/interop/cache/ssu2/i2pd/*/logs/build.log
+
+      - name: Check service-tunnel acceptance evidence integrity
+        run: bash scripts/check-service-tunnel-acceptance-evidence.sh
+
+      - name: Run M10 independent application/service matrix
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event.inputs.lane }}" == "local-only" ]]; then
+            bash tests/integration/service-tunnels/run-independent.sh --local-only
+          else
+            bash tests/integration/service-tunnels/run-independent.sh
+          fi
+        env:
+          I2PR_M10_EXECUTION_ID: github-${{ github.run_id }}
+
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: service-tunnels-external-evidence-${{ github.run_id }}
+          path: target/interop/service-tunnels-evidence
+          if-no-files-found: warn

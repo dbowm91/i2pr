@@ -88,6 +88,9 @@ jobs:
       - name: Check I2CP acceptance evidence integrity
         if: runner.os == 'Linux'
         run: bash scripts/check-i2cp-acceptance-evidence.sh
+      - name: Check service-tunnel acceptance evidence integrity
+        if: runner.os == 'Linux'
+        run: bash scripts/check-service-tunnel-acceptance-evidence.sh
       - name: Test constrained-host lane contracts
         if: runner.os == 'Linux'
         run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'

@@ -1,6 +1,6 @@
 # Service tunnels (Milestone 10)
 
-Status: **Local product layer closed via Plan 180** (transactional reconcile, generation/draining model, cross-service adversarial matrix; independent acceptance still on Plan 181 roadmap)
+Status: **Local product + round-trip closed via Plans 180–182** (transactional reconcile, generation/draining model, cross-service adversarial matrix, per-destination local-delivery driver with generic/HTTP/SOCKS/IRC byte round-trip; independent-application-client local rows passed via Plan 181 lane; remote independent-router rows blocked on retained M6 debt, final acceptance open)
 Planning authority: **Plan 173** (`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`)
 Foundation: **Plan 174** (`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`)
 Generic client/server tunnels: **Plan 175** (`plans/175-m10-generic-client-server-service-tunnels.md`)
@@ -9,7 +9,10 @@ SOCKS5 `.i2p` CONNECT: **Plan 177** (`plans/177-m10-socks5-i2p-connect-proxy.md`
 IRC `.i2p` client profile + privacy filter: **Plan 178** (`plans/178-m10-irc-client-profile-and-privacy-filtering.md`)
 IRC `.i2p` server profile + authenticated peer hostname: **Plan 179** (`plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`)
 Composition, reconcile, and hardening: **Plan 180** (`plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md`)
-Next executable plan: **181** (independent acceptance / final closure)
+Local-delivery corrective: **Plan 182** (`plans/182-m10-local-delivery-corrective.md`)
+Independent acceptance (blocked): **Plan 181** (`plans/181-m10-independent-application-and-service-interop-final-closure.md`)
+M6 mixed-router program (registered): **Plan 183** (`plans/183-m6-mixed-router-streaming-interop-program.md`)
+Next executable plan: **183** (scoping first; Plan 181 resumes after passing remote rows)
 
 > Plan 174 is a refactor/foundation pass. It must not change I2P wire
 > semantics or broaden listener exposure. No generic, HTTP, SOCKS5,
@@ -147,11 +150,12 @@ Daemon-side composition:
   module owns the listener/connection/sibling-isolation logic.
 
 The full I2P Streaming byte round-trip over local TCP for the
-HTTP profile is owned by Plan 180 reconcile work, which
-generalizes the per-destination runtime driver to service tunnels.
-Plan 176 does not silently weaken that criterion: every behavior
-that is testable without the runtime driver loop is exercised,
-while the byte round-trip remains a Plan 180 deliverable.
+HTTP profile was proven by the Plan 182 local-delivery
+corrective (per-destination delivery driver, wildcard port 0,
+SAM-parity accept), which closed the gap the Plan 180 reconcile
+pass left open. Plan 176 did not silently weaken that
+criterion: every behavior testable without the driver loop was
+exercised, and the round-trip is now proven, not deferred.
 
 ## Plan 177 SOCKS5 surface (added)
 
@@ -213,9 +217,9 @@ arbitrary local/LAN target relay. SOCKS5 is strictly stricter
 than Java I2P's broad SOCKS/outproxy profile.
 
 The full I2P Streaming byte round-trip over local TCP for the
-SOCKS5 profile is the same Plan 180 reconcile pass that
-generalizes the per-destination runtime driver to service
-tunnels; Plan 177 does not silently weaken that criterion.
+SOCKS5 profile was proven by the same Plan 182 corrective that
+closed the HTTP gap; Plan 177 did not silently weaken that
+criterion.
 
 ## Plan 178 IRC client surface (added)
 
@@ -301,9 +305,9 @@ documented maximum plus terminator allowance, not unbounded
 `read_line` growth.
 
 The full I2P Streaming byte round-trip over local TCP for the
-IRC client profile is the same Plan 180 reconcile pass that
-generalizes the per-destination runtime driver to service
-tunnels; Plan 178 does not silently weaken that criterion.
+IRC client profile was proven by the same Plan 182 corrective
+(completed line-filtering executor included); Plan 178 did not
+silently weaken that criterion.
 
 ## Explicit not-yet-implemented product rows
 
@@ -317,7 +321,10 @@ tunnels; Plan 178 does not silently weaken that criterion.
 | IRC client privacy filter | passed-experimental-loopback-only | 178 |
 | IRC server authenticated hostname | passed-experimental-loopback-only | 179 |
 | Full composition / reconcile / hardening | passed-experimental-loopback-only | 180 |
-| Independent acceptance / final closure | not-yet-implemented | 181 |
+| Local delivery driver + byte round-trip | passed-experimental-loopback-only | 182 |
+| Independent application clients (local rows) | passed-experimental-loopback-only | 181 |
+| Remote independent-router interop | blocked-by-m6-mixed-router-streaming-blocker | 181/183 |
+| Independent acceptance / final closure | not-yet-closed | 181 |
 
 No row above may be marked passed until its owning plan has an
 explicit passing status record with command-derived evidence.
@@ -522,3 +529,67 @@ explicit passing status record with command-derived evidence.
   `scripts/check-runtime-boundaries.sh` (runtime-neutral
   enforcement).
 - `plans/174-status.md` (exact evidence, `next_executable_plan = 175`).
+
+## Evidence (Plan 182)
+
+- `crates/i2pr-daemon/src/service_tunnels.rs`: per-destination
+  outbound `Notify` signals, cumulative `DeliverySweepCounters`,
+  supervised delivery drivers, `deliver_outbound` sweep over the
+  manager-level `sam_destinations` mirror reusing the public
+  `crate::sam::streams::bridge_to_peer` seam,
+  `terminate_failed_delivery`, inbound-factory install at staged
+  build, wildcard Streaming port 0 for servers (SAM convention),
+  SAM-parity generic accept (real peer/ports, queued SYN
+  response), direction-branched `try_send` with typed
+  backpressure matching, orderly `shutdown_write` (CLOSE),
+  stale-driver cancellation on reconcile, driver cancellation on
+  shutdown, permit-for-task-lifetime capture, active-slot release
+  in spawn wrappers on every exit path.
+- `crates/i2pr-daemon/src/service_tunnels_irc_server.rs`:
+  SAM-parity accept step before the Established wait,
+  wildcard-port fallback 0, full peer threaded through the
+  established-wait/connection/raw-pump path.
+- `crates/i2pr-daemon/src/service_tunnels_irc_client.rs`:
+  completed `run_irc_connection` (resolve, connect, bounded
+  Established wait, line-oriented bidirectional filter loop with
+  CRLF re-appended on `Allow`, 50 ms poll reads, orderly
+  shutdown_write on EOF, bounded backpressure retries).
+- `crates/i2pr-daemon/src/destination_streaming.rs`:
+  default-no-op `shutdown_write()` hook (SAM byte-identical),
+  CLOSE linger (drain-only until terminal or 15 s cap),
+  CLOSE-response on terminal exit.
+- `crates/i2pr-daemon/tests/service_tunnels_local_roundtrip.rs`
+  (9 tests: small/large/sibling echo digests, framed reverse,
+  half-close EOF propagation, HTTP GET 200 + digest, SOCKS5
+  CONNECT + echo, IRC register/message/projection, resource
+  baseline with zero unknown_peer/missing_factory).
+- `crates/i2pr-daemon/tests/service_tunnels_independent_application_clients.rs`
+  (6 wire-surface tests incl. restart-stable server identity).
+- `plans/182-status.md` (defect provenance, fix list,
+  command-derived evidence).
+
+## Evidence (Plan 181, local rows passed, remote rows blocked)
+
+- `tests/integration/service-tunnels/run-independent.sh`
+  (31 command-derived rows: prerequisite/tool/pin gates, static
+  boundary checks, focused Rust suites with per-test ok-line
+  rows, unmodified curl HTTP/SOCKS rows, nc + stdlib generic
+  rows, exact-pinned jaraco/irc rows, restart stability, i2pd
+  SAM DEST GENERATE qualification with the ignored-driver
+  stop-condition assertion, resource baseline,
+  unsupported-profile ledger; `record_guarded` is the only pass
+  path, remote rows use `record_blocked` only).
+- `scripts/interop/fetch-service-tunnel-clients.sh`
+  (exact-pin jaraco/irc fetch, clean-checkout enforcement).
+- `scripts/check-service-tunnel-acceptance-evidence.sh`
+  (routine-CI static checker: 29 command-derived rows, 2
+  blocked-only remote rows).
+- `.github/workflows/service-tunnels-external.yml` (manual
+  full/local-only lane).
+- `crates/i2pr-daemon/tests/service_tunnels_remote_qualification.rs`
+  (ignored-by-default driver asserting the §6.3 stop condition:
+  no establishment, `unknown_peer > 0`, `delivered = 0`,
+  counted failure; fail-closed without `I2PD_PEER_PUB_B64`).
+- `plans/181-status.md` (29 passed local rows, 2 blocked remote
+  rows with i2pd-2.61.0 qualification provenance,
+  `m6-mixed-router-streaming-blocker` classification).

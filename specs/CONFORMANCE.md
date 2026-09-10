@@ -110,6 +110,45 @@ Each milestone should maintain an executable or machine-readable matrix similar 
 
 Interoperability tests must run only in an authorized private or controlled mixed-router testnet until the milestone plan explicitly permits public-network observation.
 
+### Milestone 10 service-tunnel profile ledger
+
+Bounded M10 application profile (experimental, loopback-only,
+disabled by default; Plans 174–180 local product, Plan 182 local
+round-trip corrective, Plan 181 independent-application-client
+evidence):
+
+- generic TCP client/server tunnels with digest-matched byte
+  round-trip (small, >=32 KiB multi-segment, reverse, half-close
+  EOF propagation, siblings) and restart-stable persistent
+  server destinations;
+- HTTP/1.1 `.i2p` proxy plus CONNECT with the conservative
+  privacy rewrite (User-Agent replaced, Referer/From stripped),
+  `.i2p`-only targets, hop-by-hop stripping, smuggling
+  rejection, and bounded typed 400/403/502 responses;
+- SOCKS5 no-auth DOMAINNAME CONNECT with hostname-at-proxy
+  semantics and the default 443-only port policy;
+- IRC client profile with the runtime-neutral privacy filter
+  (USER/PING/QUIT/PART rewrites, CTCP ACTION allowed, DCC and
+  unsupported CTCP dropped, unknown commands dropped);
+- IRC server profile with the authenticated peer-Destination
+  hostname projection (`<52-char base32>.b32.i2p`) and bounded
+  registration interception;
+- bounded transactional reconcile with generation/draining
+  lifecycle and unified cross-service resource accounting.
+
+Explicitly unsupported or deferred (fail-closed, never silently
+bridged): clearnet outproxy; SOCKS UDP ASSOCIATE; SOCKS BIND;
+SOCKS4; SOCKS username/password auth; transparent proxying;
+HTTP/2 or HTTP/3 proxy termination; TLS interception; IRC DCC;
+WEBIRC and cloaked-hostname extensions; arbitrary remote admin
+exposure; general address-book/subscription management; transit
+or floodfill router roles (M11/M12); broad public-network
+interoperability beyond exactly demonstrated rows. Remote
+independent-I2P HTTP/IRC service interop is blocked on the
+retained M6 mixed-router destination/Streaming debt
+(`m6-mixed-router-streaming-blocker`, Plan 181 §6.3); see
+`plans/181-status.md`.
+
 ## Fuzzing targets
 
 At minimum, fuzz:

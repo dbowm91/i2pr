@@ -100,6 +100,9 @@ plan_177 = passed-m10-socks5-i2p-connect-proxy
 plan_178 = passed-m10-irc-client-profile-and-privacy-filtering
 plan_179 = passed-m10-irc-server-profile-and-authenticated-peer-hostname
 plan_180 = passed-m10-service-tunnel-composition-reconcile-and-hardening
+plan_181 = blocked-by-m6-mixed-router-streaming-blocker
+plan_182 = passed-m10-local-delivery-corrective
+plan_183 = registered-m6-mixed-router-streaming-interop-program
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
@@ -138,12 +141,15 @@ milestone10_http_proxy = passed-via-plan176
 milestone10_socks5 = passed-via-plan177
 milestone10_irc_client = passed-via-plan178
 milestone10_irc_server = passed-via-plan179
-milestone10_local_product = passed-via-plan180
+milestone10_local_product = passed-via-plan180-and-plan182
+milestone10_local_roundtrip = passed-via-plan182
+milestone10_independent_application_clients = local-rows-passed-plan181-not-closed
+milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
-next_product_layer = milestone10-independent-acceptance
-next_executable_plan = 181
+next_product_layer = m6-mixed-router-streaming-interop
+next_executable_plan = 183
 m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172
-m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 181
+m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181(blocked) -> 183
 ```
 
 ## Current handoff sequence
@@ -182,7 +188,10 @@ m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 181
 - [`177-m10-socks5-i2p-connect-proxy.md`](177-m10-socks5-i2p-connect-proxy.md) — **passed** SOCKS5 `.i2p` CONNECT proxy.
 - [`178-m10-irc-client-profile-and-privacy-filtering.md`](178-m10-irc-client-profile-and-privacy-filtering.md) — **passed** IRC `.i2p` client profile + privacy filter.
 - [`179-m10-irc-server-profile-and-authenticated-peer-hostname.md`](179-m10-irc-server-profile-and-authenticated-peer-hostname.md) — **passed** IRC `.i2p` server profile + authenticated peer hostname projection.
-- [`180-m10-service-tunnel-composition-reconcile-and-hardening.md`](180-m10-service-tunnel-composition-reconcile-and-hardening.md) — **passed** the M10 local product layer: transactional `ServiceTunnelManager::reconcile(candidate, drain_deadline)` with typed `DiffClass`, `ServiceTunnelGeneration`/`DrainingGeneration` committed-generation model, forced-drain deadline handling, unified cross-service resource accounting matrix, and the static `scripts/check-service-tunnel-boundaries.sh` checker. Plan 181 owns the M10 independent acceptance / final closure gate.
+- [`180-m10-service-tunnel-composition-reconcile-and-hardening.md`](180-m10-service-tunnel-composition-reconcile-and-hardening.md) — **passed** the M10 local product layer: transactional `ServiceTunnelManager::reconcile(candidate, drain_deadline)` with typed `DiffClass`, `ServiceTunnelGeneration`/`DrainingGeneration` committed-generation model, forced-drain deadline handling, unified cross-service resource accounting matrix, and the static `scripts/check-service-tunnel-boundaries.sh` checker.
+- [`182-m10-local-delivery-corrective.md`](182-m10-local-delivery-corrective.md) — **passed** the M10 local-delivery corrective: per-destination delivery drivers over the Plan 129 `bridge_to_peer` seam, wildcard Streaming port 0, SAM-parity accept paths, direction-branched pump sends, completed IRC client executor, orderly pump half-close, and active-slot hygiene. Nine round-trip tests plus six wire-surface tests prove the local byte round-trip.
+- [`181-m10-independent-application-and-service-interop-final-closure.md`](181-m10-independent-application-and-service-interop-final-closure.md) — **blocked** by the retained M6 mixed-router Streaming debt: 29 local independent-application-client rows pass (unmodified curl/nc/stdlib/jaraco-irc, restart stability, baselines, ledger) while the two remote rows are recorded `blocked` with genuine i2pd-2.61.0 qualification provenance. Milestone 10 final acceptance stays open.
+- [`183-m6-mixed-router-streaming-interop-program.md`](183-m6-mixed-router-streaming-interop-program.md) — **registered** the M6 mixed-router program Plan 181 §6.3 requires; Plan 181 resumes after it produces passing remote rows.
 
 Milestone 9 architecture is deliberately constrained:
 
@@ -282,7 +291,8 @@ Plan 152 is a later M6 robustness correction discovered by the Plan 151 final SA
 - Live/public NTCP2 or SSU2 router transport activation and broad mixed-router interoperability.
 - Public I2P participation and network-transport-bound NetDB/public router behavior.
 - Milestone 6 independent-router destination/Streaming/tunnel interoperability.
-- Generic service tunnels, HTTP proxy, SOCKS5, and IRC listeners/product (Milestone 10 Plans 175–181).
+- Generic service tunnels, HTTP proxy, SOCKS5, and IRC listeners/product beyond the proven local scope (Milestone 10 Plans 175–182 passed; Plan 181 local rows passed, remote rows blocked).
+- Milestone 6 independent-router destination/Streaming/tunnel interoperability (Plan 183 program registered, not yet scoped for execution).
 - SSU2 IPv6 external interop, PQ SSU2, SSU1, encrypted/meta LeaseSets, or PQ destination encryption unless separately closed later.
 
 The historical NTCP2 development interoperability result remains separate evidence; no passed broad mixed-router claim exists.
@@ -314,12 +324,19 @@ Plan 177 = passed M10 SOCKS5 `.i2p` CONNECT proxy
 Plan 178 = passed M10 IRC `.i2p` client profile and privacy filtering
 Plan 179 = passed M10 IRC `.i2p` server profile and authenticated peer hostname
 Plan 180 = passed M10 service-tunnel composition, reconcile, and hardening
+Plan 181 = blocked-by-m6-mixed-router-streaming-blocker (local rows passed; remote gate pending plan183)
+Plan 182 = passed M10 local-delivery corrective
+Plan 183 = registered M6 mixed-router streaming interop program
 Milestone 10 foundation = passed-via-plan174
 Milestone 10 generic tunnels = passed-via-plan175
 Milestone 10 HTTP proxy = passed-via-plan176
 Milestone 10 SOCKS5 = passed-via-plan177
 Milestone 10 IRC client = passed-via-plan178
 Milestone 10 IRC server = passed-via-plan179
-Milestone 10 local product = passed-via-plan180
-next_executable_plan = 181
+Milestone 10 local product = passed-via-plan180-and-plan182
+Milestone 10 local round-trip = passed-via-plan182
+Milestone 10 independent application clients = local-rows-passed-plan181-not-closed
+Milestone 10 remote service interop = not-yet-passed
+Milestone 10 final acceptance = not-yet-closed
+next_executable_plan = 183
 ```
