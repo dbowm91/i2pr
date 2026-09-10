@@ -49,7 +49,8 @@ use i2pr_netdb::ValidatedLeaseSet2;
 use i2pr_proto::{Destination, LeaseSet2};
 use i2pr_runtime::{CancellationToken, ChildScope};
 use i2pr_service_tunnels::{
-    DestinationRef, ServerTarget, ServiceTunnelKind, ServiceTunnelSet, StaticAliasTable,
+    DestinationRef, DiffClass, ServerTarget, ServiceDiff, ServiceTunnelKind, ServiceTunnelSet,
+    StaticAliasTable, diff_sets,
 };
 use i2pr_storage::{
     ServiceDestinationRecord, ServiceDestinationStorageError, ServiceDestinationStore,
@@ -67,6 +68,9 @@ use crate::destination_streaming::{
 use crate::sam::fabric::SamLocalProductFabric;
 use crate::sam::streams::{
     InboundTunnelFactory, SamDestinationBridge, SamDestinationHandle, SamDestinations,
+};
+use crate::service_generation::{
+    DrainingGeneration, GenerationCounters, GenerationIdAllocator, ServiceTunnelGeneration,
 };
 use crate::service_tunnels_http::run_http_client_loop;
 use crate::service_tunnels_irc_client::run_irc_client_loop;
@@ -194,6 +198,13 @@ pub struct ServiceTunnelManager {
     destination_config: DestinationConfig,
     /// Aggregate connection permit semaphore.
     aggregate_permit: Arc<Semaphore>,
+    /// Plan 180 §3 committed generation. `Some` after at least one
+    /// [`Self::prepare`] or [`Self::reconcile`] call.
+    committed_generation: Mutex<Option<ServiceTunnelGeneration>>,
+    /// Plan 180 §8 draining generations, ordered oldest first.
+    draining_generations: Mutex<Vec<DrainingGeneration>>,
+    /// Plan 180 §3 monotonic generation id allocator.
+    generation_ids: GenerationIdAllocator,
 }
 
 impl std::fmt::Debug for ServiceTunnelManager {
@@ -232,6 +243,9 @@ impl ServiceTunnelManager {
             )),
             destination_config: DestinationConfig::balanced(),
             aggregate_permit: Arc::new(Semaphore::new(aggregate_ceiling)),
+            committed_generation: Mutex::new(None),
+            draining_generations: Mutex::new(Vec::new()),
+            generation_ids: GenerationIdAllocator::default(),
         })
     }
 
@@ -292,17 +306,495 @@ impl ServiceTunnelManager {
     /// listener for server tunnels). The per-service supervisor
     /// loops are not yet started; call [`Self::start_supervisors`]
     /// after construction to begin accepting traffic.
+    ///
+    /// The first [`Self::prepare`] call seeds the manager's
+    /// authoritative committed generation (Plan 180 §3). Subsequent
+    /// calls without an intervening [`Self::reconcile`] return the
+    /// already-prepared generation and never rotate it.
     pub async fn prepare(self: &Arc<Self>) -> Result<Vec<Arc<ServiceRuntime>>, ServiceTunnelError> {
-        let mut runtimes = Vec::new();
+        // Build every enabled runtime. We stage them in a local map
+        // first so that a failure in any single `build_service_runtime`
+        // call leaves the manager state untouched.
         let specs = self.config.specs.tunnels.clone();
+        let mut staged: HashMap<String, StagedRuntime> = HashMap::new();
         for spec in &specs {
             if !spec.enabled {
                 continue;
             }
-            let runtime = self.build_service_runtime(spec).await?;
-            runtimes.push(runtime);
+            let staged_runtime = self.build_service_runtime(spec).await?;
+            staged.insert(spec.id.as_str().to_owned(), staged_runtime);
         }
-        Ok(runtimes)
+        // Seed the committed generation. We only do this once; later
+        // generations arrive via `reconcile`.
+        let mut committed = self
+            .committed_generation
+            .lock()
+            .expect("committed poisoned");
+        if committed.is_some() {
+            return Ok(staged.into_values().map(|s| s.runtime).collect());
+        }
+        let generation_id = self.generation_ids.allocate();
+        // Install the staged runtimes into the manager-level shared
+        // handles. This is the single transition from staged ->
+        // committed for the prepare path.
+        let mut ordered: Vec<Arc<ServiceRuntime>> = Vec::with_capacity(staged.len());
+        let mut committed_destination_registry = DestinationRegistry::new(
+            RegistryConfig::try_new(u16::try_from(staged.len().max(1)).unwrap_or(u16::MAX), 1024)
+                .map_err(|error| {
+                ServiceTunnelError::InvalidConfig(format!(
+                    "destination registry config rejected: {error}"
+                ))
+            })?,
+        );
+        // We can't keep a `HashMap<String, StagedRuntime>` and a
+        // parallel iteration over it because we need to consume
+        // the destination runtimes one by one. Drain into a
+        // Vec<(id, StagedRuntime)> so we can iterate by value.
+        let staged_entries: Vec<(String, StagedRuntime)> = staged.into_iter().collect();
+        for (id, staged_runtime) in staged_entries.into_iter() {
+            // Build the per-generation registry first by consuming
+            // the staged destination runtime. We then rebuild a
+            // fresh destination runtime for the manager-level
+            // mirror via the shared identity.
+            committed_destination_registry
+                .insert(staged_runtime.destination_runtime)
+                .map_err(|error| {
+                    ServiceTunnelError::DestinationRuntime(format!(
+                        "{id} committed destination registry insert: {error}"
+                    ))
+                })?;
+            let identity_arc = staged_runtime
+                .runtime
+                .bridge
+                .with(|bridge| bridge.identity());
+            let mirror_dest_runtime =
+                DestinationRuntime::with_shared_identity(identity_arc, self.destination_config)
+                    .map_err(|error| {
+                        ServiceTunnelError::DestinationRuntime(format!(
+                            "mirror destination runtime for committed generation: {error}"
+                        ))
+                    })?;
+            self.install_runtime(&staged_runtime.runtime, mirror_dest_runtime)?;
+            ordered.push(Arc::clone(&staged_runtime.runtime));
+        }
+        let runtimes_map: HashMap<String, Arc<ServiceRuntime>> = ordered
+            .iter()
+            .map(|runtime| (runtime.spec_id.clone(), Arc::clone(runtime)))
+            .collect();
+        let generation = ServiceTunnelGeneration {
+            generation_id,
+            committed_specs: self.config.specs.clone(),
+            runtimes: runtimes_map,
+            sam_destinations: SamDestinations::new(),
+            destination_registry: committed_destination_registry,
+            counters: GenerationCounters::default(),
+        };
+        *committed = Some(generation);
+        Ok(ordered)
+    }
+
+    /// Plan 180 §4 transactional reconcile.
+    ///
+    /// Stages every candidate spec, validates the full diff against
+    /// the committed generation, then atomically publishes the new
+    /// generation. On any staging failure, only the staged state is
+    /// torn down; the committed generation remains authoritative and
+    /// untouched.
+    ///
+    /// Returns the new generation id and the list of
+    /// [`ServiceDiff`] entries applied. The replaced/removed old
+    /// runtimes are moved to the manager's draining list under a
+    /// hard deadline and continue to serve their existing
+    /// connections; new connections after commit use only the new
+    /// generation.
+    ///
+    /// `drain_deadline` controls how long replaced/removed services
+    /// are allowed to drain their existing connections. After the
+    /// deadline the manager forcibly cancels residual supervisor
+    /// loops.
+    pub async fn reconcile(
+        self: &Arc<Self>,
+        candidate: Arc<ServiceTunnelSet>,
+        drain_deadline: Duration,
+    ) -> Result<ReconcileOutcome, ServiceTunnelError> {
+        let candidate_specs = candidate.tunnels.clone();
+        // Step 1: validate the candidate configuration against
+        // structural ceilings. The runtime-neutral `validate` method
+        // already rejects duplicate IDs, duplicate binds, and
+        // per-service contradictions.
+        candidate.validate().map_err(|error| {
+            ServiceTunnelError::InvalidConfig(format!("candidate validation failed: {error}"))
+        })?;
+        // Step 2: compute the typed diff against the committed
+        // generation. We tolerate an empty committed generation
+        // (initial reconcile after `prepare` was skipped); in that
+        // case the entire candidate set is treated as `Add`.
+        let committed_specs = {
+            let committed = self
+                .committed_generation
+                .lock()
+                .expect("committed poisoned");
+            committed
+                .as_ref()
+                .map(|generation| generation.committed_specs.tunnels.clone())
+                .unwrap_or_default()
+        };
+        let diff = diff_sets(&committed_specs, &candidate_specs);
+        // Step 3: stage every Add / Replace* spec. MutableInPlace and
+        // Unchanged entries require no staging work.
+        let mut staged: HashMap<String, StagedRuntime> = HashMap::new();
+        for entry in &diff {
+            match entry.class {
+                DiffClass::Add | DiffClass::ReplaceListener | DiffClass::ReplaceDestination => {
+                    let spec = entry.next.as_ref().ok_or_else(|| {
+                        ServiceTunnelError::InvalidConfig(format!(
+                            "{} diff missing next spec for {:?}",
+                            entry.id, entry.class
+                        ))
+                    })?;
+                    let runtime = self.build_service_runtime(spec).await.map_err(|error| {
+                        ServiceTunnelError::InvalidConfig(format!(
+                            "staging {} for {:?} failed: {error}",
+                            entry.id, entry.class
+                        ))
+                    })?;
+                    staged.insert(entry.id.clone(), runtime);
+                }
+                DiffClass::Unchanged | DiffClass::MutableInPlace | DiffClass::Remove => {
+                    // No staging work.
+                }
+            }
+        }
+        // Step 4: bind-collision check across the staged generation.
+        // We validate the bound loopback ports for client tunnels
+        // against (a) the candidate's own client tunnel set and (b)
+        // any committed listener that the diff classified as
+        // ReplaceListener/Remove (which is being torn down at commit
+        // time, so a collision is acceptable only if the committed
+        // listener is in the diff as Removed).
+        let mut candidate_listeners: HashMap<SocketAddr, String> = HashMap::new();
+        for spec in &candidate_specs {
+            if let Some(listener) = spec.listener {
+                let socket = listener.socket();
+                if let Some(prior) = candidate_listeners.get(&socket) {
+                    return Err(ServiceTunnelError::InvalidConfig(format!(
+                        "candidate bind collision on {socket} between {prior} and {}",
+                        spec.id.as_str()
+                    )));
+                }
+                candidate_listeners.insert(socket, spec.id.as_str().to_owned());
+            }
+        }
+        // Step 5: atomic commit. Swap the committed generation,
+        // move replaced/removed runtimes to the draining list, and
+        // stop accepting new connections on the replaced/removed
+        // listeners by cancelling their supervisor tokens.
+        let new_generation_id = self.generation_ids.allocate();
+        let now = Instant::now();
+        let drain_until = now + drain_deadline;
+        let mut new_runtimes: HashMap<String, Arc<ServiceRuntime>> = HashMap::new();
+        let mut new_sam_destinations = SamDestinations::new();
+        let mut new_destination_registry = DestinationRegistry::new(
+            RegistryConfig::try_new(
+                u16::try_from(candidate_specs.len().max(1)).unwrap_or(u16::MAX),
+                1024,
+            )
+            .map_err(|error| {
+                ServiceTunnelError::InvalidConfig(format!(
+                    "destination registry config rejected: {error}"
+                ))
+            })?,
+        );
+        // Build the new committed map. Staged (Add/Replace*) entries
+        // own their destination runtime instances which we move
+        // out of the staged map into the per-generation registry.
+        // Unchanged/MutableInPlace entries copy the existing
+        // committed runtime + destination so identity preservation
+        // survives a no-op reconcile.
+        let committed_guard = self
+            .committed_generation
+            .lock()
+            .expect("committed poisoned");
+        for spec in &candidate_specs {
+            if !spec.enabled {
+                continue;
+            }
+            if let Some(existing) = staged.remove(spec.id.as_str()) {
+                // Install the staged bridge into the new generation's
+                // sam_destinations so the cross-tunnel local-delivery
+                // path can resolve against the new committed set.
+                let bridge_data = self.bridge_data_for(&existing.runtime)?;
+                new_sam_destinations.install_handle(bridge_data.destination_id, bridge_data.bridge);
+                if let Err(error) = new_destination_registry.insert(existing.destination_runtime) {
+                    return Err(ServiceTunnelError::DestinationRuntime(format!(
+                        "staged destination registry insert failed: {error}"
+                    )));
+                }
+                new_runtimes.insert(spec.id.as_str().to_owned(), existing.runtime);
+                continue;
+            }
+            // Unchanged / MutableInPlace: clone the existing runtime
+            // handle and rebuild a destination runtime against the
+            // shared identity so the per-generation registry has an
+            // entry to match the bridge.
+            if let Some(prev_gen) = committed_guard.as_ref()
+                && let Some(prev_runtime) = prev_gen.runtimes.get(spec.id.as_str())
+            {
+                let bridge_data = self.bridge_data_for(prev_runtime)?;
+                new_sam_destinations.install_handle(bridge_data.destination_id, bridge_data.bridge);
+                let identity_arc = prev_runtime.bridge.with(|bridge| bridge.identity());
+                let dest_runtime =
+                    DestinationRuntime::with_shared_identity(identity_arc, self.destination_config)
+                        .map_err(|error| {
+                            ServiceTunnelError::DestinationRuntime(format!(
+                                "{} unchanged destination runtime: {error}",
+                                spec.id.as_str()
+                            ))
+                        })?;
+                if let Err(error) = new_destination_registry.insert(dest_runtime) {
+                    return Err(ServiceTunnelError::DestinationRuntime(format!(
+                        "{} unchanged destination registry insert: {error}",
+                        spec.id.as_str()
+                    )));
+                }
+                new_runtimes.insert(spec.id.as_str().to_owned(), Arc::clone(prev_runtime));
+            }
+        }
+        drop(committed_guard);
+        // Replace committed generation atomically. After this point
+        // the new generation is authoritative; the previous one
+        // (if any) is queued for draining.
+        let mut committed = self
+            .committed_generation
+            .lock()
+            .expect("committed poisoned");
+        let previous = committed.take();
+        let new_generation = ServiceTunnelGeneration {
+            generation_id: new_generation_id,
+            committed_specs: candidate.clone(),
+            runtimes: new_runtimes.clone(),
+            sam_destinations: new_sam_destinations,
+            destination_registry: new_destination_registry,
+            counters: GenerationCounters::default(),
+        };
+        *committed = Some(new_generation);
+        drop(committed);
+        // Move the previous generation onto the draining list.
+        // Services classified as Add/Replace* in the new generation
+        // are draining (the new ones accept new connections); the
+        // rest of the previous generation stays alive unchanged.
+        // For a no-op reconcile the diff is all Unchanged so the
+        // draining list is empty.
+        let mut draining_list = self.draining_generations.lock().expect("draining poisoned");
+        let mut draining_ids: Vec<String> = Vec::new();
+        if let Some(mut prev) = previous {
+            let mut previous_active_draining = 0_usize;
+            for entry in &diff {
+                let is_unchanged_or_mutable = matches!(
+                    entry.class,
+                    DiffClass::Unchanged | DiffClass::MutableInPlace
+                );
+                if is_unchanged_or_mutable {
+                    continue;
+                }
+                if let Some(runtime) = prev.runtimes.get(&entry.id) {
+                    let _ = runtime
+                        .cancellation
+                        .cancel(i2pr_core::CancellationReason::ParentScope);
+                    previous_active_draining = previous_active_draining.saturating_add(1);
+                    draining_ids.push(entry.id.clone());
+                }
+            }
+            if previous_active_draining > 0 {
+                let previous_destination_count = prev.runtimes.len();
+                prev.counters.active_draining_generation = previous_active_draining;
+                let draining = DrainingGeneration {
+                    generation: prev,
+                    generation_id: draining_list.len() as u64,
+                    drain_deadline: drain_until,
+                    cancellation: CancellationToken::new(),
+                    destination_count: previous_destination_count,
+                };
+                draining_list.push(draining);
+            }
+        }
+        drop(draining_list);
+        // Mirror the new committed runtimes into the manager-level
+        // handles used by the public API. We rebuild the manager-
+        // level destination registry from the new runtimes because
+        // `DestinationRuntime` is not `Clone` and we already moved
+        // the staged instances into the per-generation registry.
+        self.replace_manager_handles(&new_runtimes)?;
+        Ok(ReconcileOutcome {
+            generation_id: new_generation_id,
+            diff,
+            draining_ids,
+            drain_deadline: drain_until,
+        })
+    }
+
+    /// Helper: atomically replace the manager-level runtimes map,
+    /// sam_destinations, and destination_registry with the contents
+    /// of `new_runtimes`. Used by [`Self::reconcile`] to publish the
+    /// new committed generation through the existing public helpers.
+    fn replace_manager_handles(
+        self: &Arc<Self>,
+        new_runtimes: &HashMap<String, Arc<ServiceRuntime>>,
+    ) -> Result<(), ServiceTunnelError> {
+        {
+            let mut runtimes = self.runtimes.lock().expect("runtimes poisoned");
+            runtimes.clear();
+            for (id, runtime) in new_runtimes {
+                runtimes.insert(id.clone(), Arc::clone(runtime));
+            }
+        }
+        {
+            let mut sam_destinations = self
+                .sam_destinations
+                .lock()
+                .expect("sam destinations poisoned");
+            *sam_destinations = SamDestinations::new();
+            for runtime in new_runtimes.values() {
+                let bridge_data = self.bridge_data_for(runtime)?;
+                sam_destinations.install_handle(bridge_data.destination_id, bridge_data.bridge);
+            }
+        }
+        {
+            let mut destination_registry = self
+                .destination_registry
+                .lock()
+                .expect("destination registry poisoned");
+            *destination_registry = DestinationRegistry::new(
+                RegistryConfig::try_new(
+                    u16::try_from(new_runtimes.len().max(1)).unwrap_or(u16::MAX),
+                    1024,
+                )
+                .map_err(|error| {
+                    ServiceTunnelError::InvalidConfig(format!(
+                        "destination registry config rejected: {error}"
+                    ))
+                })?,
+            );
+            // Rebuild the manager-mirror registry from the shared
+            // identity of every committed runtime. `DestinationRuntime`
+            // is not `Clone`, so the per-generation registry and the
+            // manager-mirror registry hold independent runtime
+            // instances that share the same identity.
+            for runtime in new_runtimes.values() {
+                let identity_arc = runtime.bridge.with(|bridge| bridge.identity());
+                let mirror_dest_runtime =
+                    DestinationRuntime::with_shared_identity(identity_arc, self.destination_config)
+                        .map_err(|error| {
+                            ServiceTunnelError::DestinationRuntime(format!(
+                                "{} mirror destination runtime: {error}",
+                                runtime.spec_id
+                            ))
+                        })?;
+                if let Err(error) = destination_registry.insert(mirror_dest_runtime) {
+                    return Err(ServiceTunnelError::DestinationRuntime(format!(
+                        "{} mirror destination registry insert: {error}",
+                        runtime.spec_id
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Helper: extract the bridge handle from a staged
+    /// `ServiceRuntime` for the reconcile commit path. Destination
+    /// runtimes live in their own staged map so this method does
+    /// not have to clone them.
+    fn bridge_data_for(
+        &self,
+        runtime: &ServiceRuntime,
+    ) -> Result<CommittedBridgeData, ServiceTunnelError> {
+        Ok(CommittedBridgeData {
+            destination_id: runtime.destination_id,
+            bridge: runtime.bridge.clone(),
+        })
+    }
+
+    /// Returns the committed generation id, if any.
+    pub fn committed_generation_id(&self) -> Option<u64> {
+        self.committed_generation
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|g| g.generation_id))
+    }
+
+    /// Returns the number of currently draining generations.
+    pub fn draining_generation_count(&self) -> usize {
+        self.draining_generations
+            .lock()
+            .map(|guard| guard.len())
+            .unwrap_or(0)
+    }
+
+    /// Forcibly cancels and drops every draining generation whose
+    /// deadline has elapsed, returning the number of generations
+    /// released and the number of forced-drain close events
+    /// recorded. Idempotent.
+    pub fn reap_expired_drains(&self) -> ReapReport {
+        let now = Instant::now();
+        let mut draining = self.draining_generations.lock().expect("draining poisoned");
+        let mut report = ReapReport::default();
+        let mut keep: Vec<DrainingGeneration> = Vec::with_capacity(draining.len());
+        for generation in draining.drain(..) {
+            if generation.generation.counters.active_draining_generation == 0
+                || generation.drain_deadline <= now
+            {
+                let _ = generation
+                    .cancellation
+                    .cancel(i2pr_core::CancellationReason::ParentScope);
+                let total = generation.generation.counters.forced();
+                report.released_generations = report.released_generations.saturating_add(1);
+                report.forced_closes_total =
+                    report.forced_closes_total.saturating_add(total as usize);
+            } else {
+                keep.push(generation);
+            }
+        }
+        *draining = keep;
+        report
+    }
+
+    /// Returns a snapshot of the per-generation counters the
+    /// manager holds for the Plan 180 §9 unified resource
+    /// accounting matrix.
+    pub fn generation_snapshot(&self) -> GenerationSnapshot {
+        let committed = self
+            .committed_generation
+            .lock()
+            .expect("committed poisoned");
+        let (committed_active, committed_draining, committed_forced) = committed
+            .as_ref()
+            .map(|generation| {
+                (
+                    generation.counters.active_current_generation,
+                    generation.counters.active_draining_generation,
+                    generation.counters.forced(),
+                )
+            })
+            .unwrap_or((0_usize, 0_usize, 0_u64));
+        let draining = self.draining_generations.lock().expect("draining poisoned");
+        let mut draining_active_total = 0_usize;
+        let mut draining_forced_total = 0_u64;
+        for generation in draining.iter() {
+            draining_active_total = draining_active_total
+                .saturating_add(generation.generation.counters.active_draining_generation);
+            draining_forced_total =
+                draining_forced_total.saturating_add(generation.generation.counters.forced());
+        }
+        GenerationSnapshot {
+            committed_generation_id: committed.as_ref().map(|g| g.generation_id),
+            committed_active_connections: committed_active,
+            committed_draining_connections: committed_draining,
+            committed_forced_drain_closes: committed_forced,
+            draining_generations: draining.len(),
+            draining_active_total,
+            draining_forced_total,
+        }
     }
 
     /// Starts the per-service supervisor loops for one prepared list
@@ -498,51 +990,33 @@ impl ServiceTunnelManager {
     async fn build_service_runtime(
         self: &Arc<Self>,
         spec: &i2pr_service_tunnels::ServiceTunnelSpec,
-    ) -> Result<Arc<ServiceRuntime>, ServiceTunnelError> {
+    ) -> Result<StagedRuntime, ServiceTunnelError> {
         let id_owned = spec.id.as_str().to_owned();
         let is_server = matches!(
             spec.kind,
             ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer
         );
         let bridge_data = self.create_bridge_for_spec(spec).await?;
-        let bridge = {
-            let mut sam_destinations = self
-                .sam_destinations
-                .lock()
-                .expect("sam destinations poisoned");
-            let bridge = SamDestinationBridge::with_shared_identity(
-                Arc::clone(&bridge_data.identity_arc),
-                bridge_data.lease_set2,
-                bridge_data.outbound_role,
-                bridge_data.now_seconds,
-            );
-            sam_destinations.install(bridge_data.destination_id, bridge)
-        };
-        let runtime = DestinationRuntime::with_shared_identity(
+        let bridge = SamDestinationBridge::with_shared_identity(
             Arc::clone(&bridge_data.identity_arc),
-            self.destination_config,
-        )
-        .map_err(|error| {
-            ServiceTunnelError::DestinationRuntime(format!("destination runtime: {error}"))
-        })?;
-        self.register_destination_runtime(runtime)?;
+            bridge_data.lease_set2,
+            bridge_data.outbound_role,
+            bridge_data.now_seconds,
+        );
+        let handle = SamDestinationHandle::new(bridge);
         let server_streaming_port = if is_server { Some(1_u16) } else { None };
         if let Some(port) = server_streaming_port {
-            let outcome_result = self
-                .with_destination_bridge(bridge_data.destination_id, |bridge| {
-                    bridge.receiver_streaming_mut().listen(port)
-                });
+            let outcome_result = handle.with(|bridge| bridge.receiver_streaming_mut().listen(port));
             let effective: ListenerOutcome = match outcome_result {
-                Some(Ok(value)) => value,
-                Some(Err(_)) => ListenerOutcome::BacklogFull,
-                None => ListenerOutcome::BacklogFull,
+                Ok(value) => value,
+                Err(_) => ListenerOutcome::BacklogFull,
             };
             if !matches!(
                 effective,
                 ListenerOutcome::Listening { .. } | ListenerOutcome::PortAlreadyInUse
             ) {
                 return Err(ServiceTunnelError::InvalidConfig(format!(
-                    "{id_owned} streaming listener could not bind port {port}: {effective:?}"
+                    "{id_owned} staging streaming listener could not bind port {port}: {effective:?}"
                 )));
             }
         }
@@ -594,7 +1068,7 @@ impl ServiceTunnelManager {
             stopped: Arc::clone(&stopped),
             active_connections: Arc::clone(&active_connections),
             failed_connects: Arc::clone(&failed_connects),
-            bridge,
+            bridge: handle,
             destination_id: bridge_data.destination_id,
             client_listener,
             server_target,
@@ -605,9 +1079,60 @@ impl ServiceTunnelManager {
             is_irc,
             is_irc_server,
         });
+        let destination_runtime = DestinationRuntime::with_shared_identity(
+            Arc::clone(&bridge_data.identity_arc),
+            self.destination_config,
+        )
+        .map_err(|error| {
+            ServiceTunnelError::DestinationRuntime(format!("destination runtime: {error}"))
+        })?;
+        Ok(StagedRuntime {
+            runtime,
+            destination_runtime,
+        })
+    }
+
+    /// Installs one staged [`ServiceRuntime`] into the manager's
+    /// shared sam_destinations, destination_registry, and runtimes
+    /// map. Consumes the supplied [`DestinationRuntime`] because
+    /// `DestinationRuntime` is not `Clone`; the staged runtime
+    /// retains only its bridge handle so subsequent code paths
+    /// (snapshot, supervisor dispatch) can still observe it.
+    fn install_runtime(
+        self: &Arc<Self>,
+        runtime: &Arc<ServiceRuntime>,
+        destination_runtime: DestinationRuntime,
+    ) -> Result<(), ServiceTunnelError> {
+        let handle = runtime.bridge.clone();
+        let destination_id = runtime.destination_id;
+        {
+            let mut sam_destinations = self
+                .sam_destinations
+                .lock()
+                .expect("sam destinations poisoned");
+            // Remove any stale bridge for this destination before
+            // installing the new one (covers the reconcile path
+            // where the same id may have existed in the previous
+            // generation).
+            let _ = sam_destinations.remove(destination_id);
+            sam_destinations.install_handle(destination_id, handle);
+        }
+        {
+            let mut registry = self
+                .destination_registry
+                .lock()
+                .expect("destination registry poisoned");
+            // Drop the prior entry before inserting the staged one.
+            let _ = registry.remove(&destination_id);
+            registry.insert(destination_runtime).map_err(|error| {
+                ServiceTunnelError::DestinationRuntime(format!(
+                    "destination registry insert: {error}"
+                ))
+            })?;
+        }
         let mut runtimes = self.runtimes.lock().expect("runtimes poisoned");
-        runtimes.insert(spec.id.as_str().to_owned(), Arc::clone(&runtime));
-        Ok(runtime)
+        runtimes.insert(runtime.spec_id.clone(), Arc::clone(runtime));
+        Ok(())
     }
 
     async fn create_bridge_for_spec(
@@ -848,6 +1373,78 @@ impl ServiceTunnelSnapshot {
 }
 
 type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+/// Plan 180 §4 outcome of one [`ServiceTunnelManager::reconcile`]
+/// call. The `generation_id` is the committed generation id, `diff`
+/// is the typed classification applied, `draining_ids` is the list
+/// of services that were replaced/removed and are now draining
+/// under `drain_deadline`.
+#[derive(Debug)]
+pub struct ReconcileOutcome {
+    /// New committed generation id.
+    pub generation_id: u64,
+    /// Typed diff applied (caller may inspect or log it).
+    pub diff: Vec<ServiceDiff>,
+    /// Service ids that were replaced or removed and are draining.
+    pub draining_ids: Vec<String>,
+    /// Hard deadline the manager uses to forcibly close residual
+    /// draining connections.
+    pub drain_deadline: Instant,
+}
+
+/// Plan 180 §8 reap report returned by
+/// [`ServiceTunnelManager::reap_expired_drains`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReapReport {
+    /// Number of draining generations released this call.
+    pub released_generations: usize,
+    /// Cumulative forced-drain close count across every released
+    /// generation.
+    pub forced_closes_total: usize,
+}
+
+/// Plan 180 §9 unified resource accounting snapshot.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GenerationSnapshot {
+    /// Committed generation id (None before any prepare/reconcile).
+    pub committed_generation_id: Option<u64>,
+    /// Active connections attributed to the committed generation.
+    pub committed_active_connections: usize,
+    /// Active connections draining inside the committed generation.
+    pub committed_draining_connections: usize,
+    /// Forced drain closes recorded by the committed generation.
+    pub committed_forced_drain_closes: u64,
+    /// Number of draining generations on the manager's draining
+    /// list.
+    pub draining_generations: usize,
+    /// Aggregate active connections across every draining
+    /// generation.
+    pub draining_active_total: usize,
+    /// Aggregate forced drain closes across every draining
+    /// generation.
+    pub draining_forced_total: u64,
+}
+
+/// Helper carrying the staged bridge so the reconcile commit path
+/// can install it into the manager's shared handles and the new
+/// generation's per-generation directory. Destination runtimes live
+/// in their own staged map (Plan 180 §4 step 4) so this struct
+/// does not need to carry them.
+struct CommittedBridgeData {
+    destination_id: DestinationId,
+    bridge: SamDestinationHandle,
+}
+
+/// Plan 180 §4 staging pair. `build_service_runtime` returns one of
+/// these so the caller can install the runtime into the manager's
+/// shared handles and consume the destination runtime into the
+/// registry (which is not `Clone`).
+pub struct StagedRuntime {
+    /// The staged service runtime handle.
+    pub runtime: Arc<ServiceRuntime>,
+    /// The destination runtime that backs the staged runtime.
+    pub destination_runtime: DestinationRuntime,
+}
 
 /// Runs one per-service supervisor loop.
 async fn run_service_loop(

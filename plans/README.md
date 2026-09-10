@@ -94,6 +94,12 @@ plan_171 = passed-m9-i2cp-invalid-preamble-close-and-ci-corrective-retained
 plan_172 = passed-m9-i2cp-independent-leaseset2-lifecycle-corrective
 plan_173 = registered-m10-service-tunnels-roadmap
 plan_174 = passed-m10-service-tunnel-foundation-and-shared-stream-runtime
+plan_175 = passed-m10-generic-client-server-service-tunnels
+plan_176 = passed-m10-http-i2p-proxy-and-connect
+plan_177 = passed-m10-socks5-i2p-connect-proxy
+plan_178 = passed-m10-irc-client-profile-and-privacy-filtering
+plan_179 = passed-m10-irc-server-profile-and-authenticated-peer-hostname
+plan_180 = passed-m10-service-tunnel-composition-reconcile-and-hardening
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
@@ -131,9 +137,11 @@ milestone10_generic_tunnels = passed-via-plan175
 milestone10_http_proxy = passed-via-plan176
 milestone10_socks5 = passed-via-plan177
 milestone10_irc_client = passed-via-plan178
+milestone10_irc_server = passed-via-plan179
+milestone10_local_product = passed-via-plan180
 milestone10_final_acceptance = not-yet-closed
-next_product_layer = milestone10-service-tunnels
-next_executable_plan = 179
+next_product_layer = milestone10-independent-acceptance
+next_executable_plan = 181
 m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172
 m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 181
 ```
@@ -169,6 +177,12 @@ m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 181
 
 - [`173-m10-service-tunnels-http-socks5-irc-roadmap.md`](173-m10-service-tunnels-http-socks5-irc-roadmap.md) — **registered planning authority**.
 - [`174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](174-m10-service-tunnel-foundation-and-shared-stream-runtime.md) — **passed** runtime-neutral `i2pr-service-tunnels` crate, strict disabled-by-default loopback-only `[service_tunnels]` surface, shared daemon Streaming pump reused by SAM, no listener yet.
+- [`175-m10-generic-client-server-service-tunnels.md`](175-m10-generic-client-server-service-tunnels.md) — **passed** generic client/server service tunnels and persistent server destinations.
+- [`176-m10-http-i2p-proxy-and-connect.md`](176-m10-http-i2p-proxy-and-connect.md) — **passed** HTTP `.i2p` proxy + CONNECT.
+- [`177-m10-socks5-i2p-connect-proxy.md`](177-m10-socks5-i2p-connect-proxy.md) — **passed** SOCKS5 `.i2p` CONNECT proxy.
+- [`178-m10-irc-client-profile-and-privacy-filtering.md`](178-m10-irc-client-profile-and-privacy-filtering.md) — **passed** IRC `.i2p` client profile + privacy filter.
+- [`179-m10-irc-server-profile-and-authenticated-peer-hostname.md`](179-m10-irc-server-profile-and-authenticated-peer-hostname.md) — **passed** IRC `.i2p` server profile + authenticated peer hostname projection.
+- [`180-m10-service-tunnel-composition-reconcile-and-hardening.md`](180-m10-service-tunnel-composition-reconcile-and-hardening.md) — **passed** the M10 local product layer: transactional `ServiceTunnelManager::reconcile(candidate, drain_deadline)` with typed `DiffClass`, `ServiceTunnelGeneration`/`DrainingGeneration` committed-generation model, forced-drain deadline handling, unified cross-service resource accounting matrix, and the static `scripts/check-service-tunnel-boundaries.sh` checker. Plan 181 owns the M10 independent acceptance / final closure gate.
 
 Milestone 9 architecture is deliberately constrained:
 
@@ -299,11 +313,13 @@ Plan 176 = passed M10 HTTP `.i2p` proxy and CONNECT
 Plan 177 = passed M10 SOCKS5 `.i2p` CONNECT proxy
 Plan 178 = passed M10 IRC `.i2p` client profile and privacy filtering
 Plan 179 = passed M10 IRC `.i2p` server profile and authenticated peer hostname
+Plan 180 = passed M10 service-tunnel composition, reconcile, and hardening
 Milestone 10 foundation = passed-via-plan174
 Milestone 10 generic tunnels = passed-via-plan175
 Milestone 10 HTTP proxy = passed-via-plan176
 Milestone 10 SOCKS5 = passed-via-plan177
 Milestone 10 IRC client = passed-via-plan178
 Milestone 10 IRC server = passed-via-plan179
-next_executable_plan = 180
+Milestone 10 local product = passed-via-plan180
+next_executable_plan = 181
 ```

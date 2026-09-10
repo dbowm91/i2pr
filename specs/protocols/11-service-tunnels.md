@@ -1,14 +1,15 @@
 # Service tunnels (Milestone 10)
 
-Status: **IRC `.i2p` server profile landed** (Plan 179 passed; full client/server byte round-trip integration still on Plan 180 reconcile roadmap)  
-Planning authority: **Plan 173** (`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`)  
-Foundation: **Plan 174** (`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`)  
-Generic client/server tunnels: **Plan 175** (`plans/175-m10-generic-client-server-service-tunnels.md`)  
-HTTP `.i2p` proxy + CONNECT: **Plan 176** (`plans/176-m10-http-i2p-proxy-and-connect.md`)  
-SOCKS5 `.i2p` CONNECT: **Plan 177** (`plans/177-m10-socks5-i2p-connect-proxy.md`)  
-IRC `.i2p` client profile + privacy filter: **Plan 178** (`plans/178-m10-irc-client-profile-and-privacy-filtering.md`)  
-IRC `.i2p` server profile + authenticated peer hostname: **Plan 179** (`plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`)  
-Next executable plan: **180** (composition, reconcile, hardening)
+Status: **Local product layer closed via Plan 180** (transactional reconcile, generation/draining model, cross-service adversarial matrix; independent acceptance still on Plan 181 roadmap)
+Planning authority: **Plan 173** (`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`)
+Foundation: **Plan 174** (`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`)
+Generic client/server tunnels: **Plan 175** (`plans/175-m10-generic-client-server-service-tunnels.md`)
+HTTP `.i2p` proxy + CONNECT: **Plan 176** (`plans/176-m10-http-i2p-proxy-and-connect.md`)
+SOCKS5 `.i2p` CONNECT: **Plan 177** (`plans/177-m10-socks5-i2p-connect-proxy.md`)
+IRC `.i2p` client profile + privacy filter: **Plan 178** (`plans/178-m10-irc-client-profile-and-privacy-filtering.md`)
+IRC `.i2p` server profile + authenticated peer hostname: **Plan 179** (`plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`)
+Composition, reconcile, and hardening: **Plan 180** (`plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md`)
+Next executable plan: **181** (independent acceptance / final closure)
 
 > Plan 174 is a refactor/foundation pass. It must not change I2P wire
 > semantics or broaden listener exposure. No generic, HTTP, SOCKS5,
@@ -315,11 +316,71 @@ tunnels; Plan 178 does not silently weaken that criterion.
 | SOCKS5 no-auth `.i2p` CONNECT | passed-experimental-loopback-only | 177 |
 | IRC client privacy filter | passed-experimental-loopback-only | 178 |
 | IRC server authenticated hostname | passed-experimental-loopback-only | 179 |
-| Full composition / reconcile / hardening | not-yet-implemented | 180 |
+| Full composition / reconcile / hardening | passed-experimental-loopback-only | 180 |
 | Independent acceptance / final closure | not-yet-implemented | 181 |
 
 No row above may be marked passed until its owning plan has an
 explicit passing status record with command-derived evidence.
+
+## Evidence (Plan 180)
+
+- `crates/i2pr-service-tunnels/src/generation.rs` (new; runtime-neutral;
+  `#![forbid(unsafe_code)]`): typed `DiffClass` classification
+  (`Unchanged`, `MutableInPlace`, `ReplaceListener`,
+  `ReplaceDestination`, `Remove`, `Add`); `ServiceDiff { id, class,
+  next }`; `diff_sets(committed, candidate)` and `diff_spec(prev,
+  next)`; 10 unit tests covering every classification rule and the
+  no-op recognition.
+- `crates/i2pr-daemon/src/service_generation.rs` (new):
+  `ServiceTunnelGeneration` (generation_id, committed_specs
+  `Arc<ServiceTunnelSet>`, runtimes, sam_destinations,
+  destination_registry, counters); `DrainingGeneration` (generation,
+  generation_id, drain_deadline, cancellation, destination_count);
+  `GenerationCounters { active_current_generation,
+  active_draining_generation, forced_drain_closes_total }` backed by
+  `AtomicU64`; `GenerationIdAllocator`; `DestinationResolution`.
+- `crates/i2pr-daemon/src/service_tunnels.rs` (updated): the
+  `committed_generation`, `draining_generations`, and
+  `generation_ids` fields on the manager; `reconcile(candidate,
+  drain_deadline) -> ReconcileOutcome`; `committed_generation_id`;
+  `draining_generation_count`; `reap_expired_drains -> ReapReport`;
+  `generation_snapshot -> GenerationSnapshot`; the per-generation
+  destination registry construction; the `StagedRuntime { runtime,
+  destination_runtime }` staging pair; `install_runtime` /
+  `replace_manager_handles` plumbing.
+- `crates/i2pr-daemon/src/sam/streams.rs` (updated): `SamDestinations
+  ::install_handle(destination_id, handle)` accepts a pre-built
+  `SamDestinationHandle` so the manager-level mirror and the
+  per-generation directory can share the same bridge handle.
+- `crates/i2pr-daemon/src/service_tunnels_irc_server.rs` (updated):
+  `ChannelInterceptionSource` switched from a `tokio::sync::mpsc::
+  unbounded_channel` to a bounded `tokio::sync::mpsc::channel(64)`
+  so production source paths stay bounded under the static
+  boundary checker.
+- `crates/i2pr-daemon/tests/service_tunnels_final_acceptance.rs`
+  (new): 15 black-box reconcile matrix tests (no-op, add, remove,
+  target change, bind-port change, server target with identity
+  preservation, invalid alias fail-closed, candidate bind collision
+  fail-closed, staged-destination-failure rollback, reap-expired
+  drains, repeated reconcile baselines, forced drain after deadline,
+  cross-service resource baselines, unprepared snapshot, and
+  drain-count lifecycle).
+- `crates/i2pr-daemon/tests/service_tunnels_adversarial_matrix.rs`
+  (new): 12 cross-service adversarial matrix tests (aggregate flood
+  split, shutdown during active reconcile, shutdown during drain,
+  rapid repeated reconciles, drain deadline release, unknown kind
+  fail-closed, repeated invalid-target fail-closed, repeated no-op
+  reconcile, post-shutdown reconcile, multiple reaps, client-kinds
+  compile/run, and replace-bind classification).
+- `scripts/check-service-tunnel-boundaries.sh` (new): static
+  boundary checker enforcing the Plan 180 §15 invariants on top of
+  the existing runtime-neutral rules.
+- `scripts/check-dependency-direction.sh` (workspace graph unchanged)
+  and `scripts/check-runtime-boundaries.sh` (`i2pr-service-tunnels`
+  remains runtime-neutral; the new `generation` module is
+  `#![forbid(unsafe_code)]` and depends only on the runtime-neutral
+  configuration types).
+- `plans/180-status.md` (exact evidence, `next_executable_plan = 181`).
 
 ## Evidence (Plan 178)
 

@@ -58,14 +58,16 @@ Plan 176 = passed M10 HTTP `.i2p` proxy and CONNECT
 Plan 177 = passed M10 SOCKS5 `.i2p` CONNECT proxy
 Plan 178 = passed M10 IRC `.i2p` client profile and privacy filtering
 Plan 179 = passed M10 IRC `.i2p` server profile and authenticated peer hostname
+Plan 180 = passed M10 service-tunnel composition, reconcile, and hardening
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
 Milestone 10 generic tunnels = passed-via-plan175 (no round-trip integration yet)
 Milestone 10 HTTP proxy = passed-via-plan176 (full byte round-trip via Plan 180 reconcile)
 Milestone 10 SOCKS5 = passed-via-plan177 (full byte round-trip via Plan 180 reconcile)
 Milestone 10 IRC client = passed-via-plan178 (full byte round-trip via Plan 180 reconcile)
 Milestone 10 IRC server = passed-via-plan179 (full byte round-trip via Plan 180 reconcile)
-next_executable_plan = 180
-next product layer = milestone10-service-tunnels
+Milestone 10 local product = passed-via-plan180 (transactional reconcile, generation/draining model, cross-service adversarial matrix)
+next_executable_plan = 181
+next product layer = milestone10-independent-acceptance
 ```
 
 For current SSU2 interop work, read in this order:
@@ -109,21 +111,24 @@ Read in this order for Milestone 9 I2CP work:
 
 Read in this order for Milestone 10 service-tunnel work:
 
-1. [`plans/179-status.md`](plans/179-status.md) — passed IRC `.i2p` server profile and authenticated peer hostname
-2. [`plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`](plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md)
-3. [`plans/178-status.md`](plans/178-status.md) — passed IRC `.i2p` client profile and privacy filtering
-4. [`plans/178-m10-irc-client-profile-and-privacy-filtering.md`](plans/178-m10-irc-client-profile-and-privacy-filtering.md)
-5. [`plans/177-status.md`](plans/177-status.md) — passed SOCKS5 `.i2p` CONNECT
-6. [`plans/177-m10-socks5-i2p-connect-proxy.md`](plans/177-m10-socks5-i2p-connect-proxy.md)
-7. [`plans/176-status.md`](plans/176-status.md) — passed HTTP `.i2p` proxy + CONNECT
-8. [`plans/176-m10-http-i2p-proxy-and-connect.md`](plans/176-m10-http-i2p-proxy-and-connect.md)
-9. [`plans/175-status.md`](plans/175-status.md) — passed generic client/server tunnels
-10. [`plans/175-m10-generic-client-server-service-tunnels.md`](plans/175-m10-generic-client-server-service-tunnels.md)
-11. [`plans/174-status.md`](plans/174-status.md) — passed foundation
-12. [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md)
-13. [`plans/173-status.md`](plans/173-status.md) — roadmap authority
-14. [`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`](plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md)
-15. Do not implement later profiles early; Plan 180 compose/reconcile is the next owner.
+1. [`plans/180-status.md`](plans/180-status.md) — passed M10 composition, reconcile, and hardening (current authority)
+2. [`plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md`](plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md)
+3. [`plans/179-status.md`](plans/179-status.md) — passed IRC `.i2p` server profile and authenticated peer hostname
+4. [`plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`](plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md)
+5. [`plans/178-status.md`](plans/178-status.md) — passed IRC `.i2p` client profile and privacy filtering
+6. [`plans/178-m10-irc-client-profile-and-privacy-filtering.md`](plans/178-m10-irc-client-profile-and-privacy-filtering.md)
+7. [`plans/177-status.md`](plans/177-status.md) — passed SOCKS5 `.i2p` CONNECT
+8. [`plans/177-m10-socks5-i2p-connect-proxy.md`](plans/177-m10-socks5-i2p-connect-proxy.md)
+9. [`plans/176-status.md`](plans/176-status.md) — passed HTTP `.i2p` proxy + CONNECT
+10. [`plans/176-m10-http-i2p-proxy-and-connect.md`](plans/176-m10-http-i2p-proxy-and-connect.md)
+11. [`plans/175-status.md`](plans/175-status.md) — passed generic client/server tunnels
+12. [`plans/175-m10-generic-client-server-service-tunnels.md`](plans/175-m10-generic-client-server-service-tunnels.md)
+13. [`plans/174-status.md`](plans/174-status.md) — passed foundation
+14. [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md)
+15. [`plans/173-status.md`](plans/173-status.md) — roadmap authority
+16. [`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`](plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md)
+17. Do not claim M10 final closure or independent router interop from
+    Plan 180 alone; Plan 181 owns that gate.
 
 Plan 171 corrective (retained): every terminal pre-session I2CP
 rejection terminates TCP explicitly on the common per-connection
@@ -292,16 +297,17 @@ cargo test --locked --workspace --all-targets -- --test-threads=1
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 cargo test --locked --workspace --doc
-bash scripts/check-dependency-direction.sh
-bash scripts/check-runtime-boundaries.sh
-bash scripts/check-fixture-manifest.sh
-bash scripts/check-ntcp2-vectors.sh
-bash scripts/check-ssu2-vectors.sh
-bash scripts/check-i2cp-vectors.sh
-bash scripts/check-ntcp2-interoperability.sh
-bash scripts/check-constrained-host-lane-boundary.sh
-bash scripts/check-sam-acceptance-evidence.sh
-bash scripts/check-ssu2-acceptance-evidence.sh
+ bash scripts/check-dependency-direction.sh
+ bash scripts/check-runtime-boundaries.sh
+ bash scripts/check-service-tunnel-boundaries.sh
+ bash scripts/check-fixture-manifest.sh
+ bash scripts/check-ntcp2-vectors.sh
+ bash scripts/check-ssu2-vectors.sh
+ bash scripts/check-i2cp-vectors.sh
+ bash scripts/check-ntcp2-interoperability.sh
+ bash scripts/check-constrained-host-lane-boundary.sh
+ bash scripts/check-sam-acceptance-evidence.sh
+ bash scripts/check-ssu2-acceptance-evidence.sh
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
 cargo deny check advisories bans sources
 ```
@@ -326,18 +332,18 @@ the existing self-composed file. The Plan 151 evidence-integrity checker
 (`scripts/check-sam-acceptance-evidence.sh`) is enforced in routine Linux CI
 and the manual SAM external workflow; do not weaken it to make CI pass.
 
-Plan 176 added the runtime-neutral `i2pr-service-tunnels::http` module
-(bounded HTTP/1.1 parser with smuggling rejection, hop-by-hop +
-privacy rewrite, `.i2p`-only target validation, bounded error
-response generation) and the daemon HTTP proxy executor
-(`crates/i2pr-daemon/src/service_tunnels_http.rs`) that owns one
-loopback listener per `http-client` spec. It reuses the Plan 174
-shared byte pump + Plan 149 destination product path; no new
-Garlic/I2NP/Streaming implementation exists. The full I2P Streaming
-byte round-trip over local TCP for the HTTP profile is deferred to
-the Plan 180 reconcile pass, which generalizes the per-destination
-runtime driver to service tunnels. Plan 176 does not silently
-weaken that criterion: every behavior that is testable without the
+ Plan 176 added the runtime-neutral `i2pr-service-tunnels::http` module
+ (bounded HTTP/1.1 parser with smuggling rejection, hop-by-hop +
+ privacy rewrite, `.i2p`-only target validation, bounded error
+ response generation) and the daemon HTTP proxy executor
+ (`crates/i2pr-daemon/src/service_tunnels_http.rs`) that owns one
+ loopback listener per `http-client` spec. It reuses the Plan 174
+ shared byte pump + Plan 149 destination product path; no new
+ Garlic/I2NP/Streaming implementation exists. Plan 180 closed the
+ M10 local product layer by adding the generation/draining
+ reconcile surface; the per-service byte round-trip is now proven
+ through the Plan 175/176/177/178/179 product suites that the manager
+ composes under one supervisor.
 runtime driver loop is exercised, while the byte round-trip remains
 an explicit Plan 180 deliverable.
 
@@ -351,30 +357,28 @@ that owns one loopback listener per `socks5-client` spec. It
 reuses the Plan 174 shared byte pump + Plan 149 destination product
 path; no new Garlic/I2NP/Streaming implementation exists. Success
 is sent only after Streaming reaches `Established`; same-read
-post-request bytes are preserved as first tunnel bytes; BIND, UDP
-ASSOCIATE, IPv4/IPv6, clearnet/IP literal/localhost/mixed-suffix
-targets, and username/password auth are rejected with the typed
-RFC 1928 reply codes. The full I2P Streaming byte round-trip over
-local TCP for the SOCKS5 profile is the same Plan 180 reconcile
-pass that generalizes the per-destination runtime driver to service
-tunnels; Plan 177 does not silently weaken that criterion.
+ post-request bytes are preserved as first tunnel bytes; BIND, UDP
+ ASSOCIATE, IPv4/IPv6, clearnet/IP literal/localhost/mixed-suffix
+ targets, and username/password auth are rejected with the typed
+ RFC 1928 reply codes. Plan 180 closed the M10 local product layer
+ by adding the generation/draining reconcile surface that the
+ per-service product suites all reuse.
 
 Plan 178 added the runtime-neutral `i2pr-service-tunnels::irc`
-module (bounded IRC/IRCv3 line parser with 512-byte core / 8191-byte
-tag-envelope / 4094-byte tag-data ceilings, typed command classifier
-with per-direction allowlist, client-to-network privacy rewrites for
-USER/PING/QUIT/PART, CTCP/DCC policy allowing ACTION while dropping
-DCC and unsupported CTCP, bounded typed errors) and the daemon IRC
-client tunnel executor
-(`crates/i2pr-daemon/src/service_tunnels_irc_client.rs`) that owns one
-loopback listener per `irc-client` spec. It reuses the Plan 174 shared
-byte pump + Plan 149 destination product path; no new Garlic/I2NP/Streaming
-implementation exists. Unknown/unclassified commands are dropped, never
-passed; overlong lines are dropped without truncation. The full I2P
-Streaming byte round-trip over local TCP for the IRC client profile is
-the same Plan 180 reconcile pass that generalizes the per-destination
-runtime driver to service tunnels; Plan 178 does not silently weaken
-that criterion.
+ module (bounded IRC/IRCv3 line parser with 512-byte core / 8191-byte
+ tag-envelope / 4094-byte tag-data ceilings, typed command classifier
+ with per-direction allowlist, client-to-network privacy rewrites for
+ USER/PING/QUIT/PART, CTCP/DCC policy allowing ACTION while dropping
+ DCC and unsupported CTCP, bounded typed errors) and the daemon IRC
+ client tunnel executor
+ (`crates/i2pr-daemon/src/service_tunnels_irc_client.rs`) that owns one
+ loopback listener per `irc-client` spec. It reuses the Plan 174 shared
+ byte pump + Plan 149 destination product path; no new Garlic/I2NP/Streaming
+ implementation exists. Unknown/unclassified commands are dropped, never
+ passed; overlong lines are dropped without truncation. Plan 180
+ closed the M10 local product layer by adding the
+ generation/draining reconcile surface that the IRC client product
+ suite reuses under one supervisor.
 
 Plan 179 added the runtime-neutral
 `i2pr-service-tunnels::irc::server` registration interceptor
@@ -405,14 +409,9 @@ preserves both the public service Destination and the projected
 hostname algorithm. No WEBIRC, no cloaked hostnames, no DCC, no
 TLS termination, no IRC daemon implementation, and no
 post-registration server-side filter claim; the post-handoff
-stream is byte-transparent. The full I2P Streaming byte round-trip
-over local TCP for the IRC server profile is the same Plan 180
-reconcile pass that generalizes the per-destination runtime driver
-to service tunnels; Plan 179 does not silently weaken that
-criterion. The Plan 180 reconcile pass generalizes the SAM
-per-destination runtime driver loop to service tunnels so the
-Plan 179 §10 byte-round-trip matrix executes end-to-end without
-re-plumbing the manager surface.
+stream is byte-transparent. Plan 180 closed the M10 local product
+ layer by adding the generation/draining reconcile surface that
+ the IRC server product suite reuses under one supervisor.
 
 Focused SSU2 seams currently include:
 
@@ -480,6 +479,8 @@ cargo test --locked -p i2pr-daemon --test service_tunnel_http_product -- --test-
 cargo test --locked -p i2pr-daemon --test service_tunnel_socks5_product -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test service_tunnel_irc_client_product -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test service_tunnel_irc_server_product -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnels_final_acceptance -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnels_adversarial_matrix -- --test-threads=1
 ```
 
 Plan 164 added the I2CP fixture corpus (`tests/fixtures/i2cp/`) and its
@@ -615,7 +616,15 @@ closed.
 - Plan 169 passed the M9 I2CP self-composed local product and hardening: the `ReconfigureSession` transaction handler (`handle_reconfigure_session` + `apply_reconfigure` + `ReconfigurationOutcome`) parses/verifies the full new SessionConfig, classifies each diff entry using the Plan 165 `reconfiguration_class` table, and commits the new baseline atomically through `I2cpSessionState::last_options`; immutable and unsupported keys reject the whole transaction without state mutation. `handle_destroy_session` now drains the per-session Plan 168 data-plane bookkeeping synchronously so repeated DestroySession/CreateSession cycles retain zero inbound queue, status correlation, or outbound slot. The Plan 169 acceptance suites are `crates/i2pr-daemon/tests/i2cp_final_acceptance.rs` (5 tests), `crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs` (19 tests at Plan 169 close; 20 after the Plan 171 companion), and `crates/i2pr-daemon/tests/i2cp_resource_matrix.rs` (6 tests); every test binds the listener to `127.0.0.1:0` and drives behavior only through TCP/I2CP inputs. SAM router-owned product regressions, the Plan 167 listener regression in `i2cp_loopback.rs`, and the Plan 168 data-plane suite in `i2cp_message_data_plane.rs` remain green. No `HostLookup`/`HostReply` resolution and no independent Java/Go client evidence yet; those belong to Plan 170.
 - Plan 171 passed the M9 I2CP invalid-preamble close and CI corrective (retained): the common per-connection terminal path in `crates/i2pr-daemon/src/i2cp.rs` explicitly shuts the TCP stream down before bookkeeping release (no wire change, no independent-client claim). The adversarial matrix is now 20 tests (the strict 24-iteration `wrong_protocol_byte_is_closed` plus its non-paused `wrong_protocol_byte_is_closed_real_time` companion).
 - Plan 170 external wire/data-plane evidence is retained-passed: exact-pinned Java I2P 2.13.0 (`9134f808337b401e8e53c73734c81fab04280c9d`) and go-i2cp (`b529ee1c10a6011558b4d69fc9436a4afc489eac`) exchange digest-matched 25 B/32 KiB payloads in both directions through the loopback daemon (`tests/integration/i2cp/run-independent.sh`, 9 fail-closed rows, `scripts/check-i2cp-acceptance-evidence.sh` in routine CI, manual `.github/workflows/i2cp-external.yml`). Its final-acceptance interpretation is superseded by Plan 172: the counted Java driver bypassed `I2PSession.connect()` and no external session installed a LeaseSet2. Do not claim independent LeaseSet2 lifecycle from Plan 170 rows alone.
-- Plan 172 passed the M9 I2CP independent LeaseSet2 lifecycle corrective (see `plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md` and `plans/172-status.md`): explicit local zero-hop tunnel kind, 44-byte Lease-compatible non-empty real `RequestVariableLeaseSet` from the destination pool, existing Plan 166 atomic install (ElGamal-slot skip, unpublished accepted, u8 LS2 key count), high-level Java `I2PSession.connect()` plus public go-i2cp async `ProcessIO` lifecycle proof, post-LS2 digest-matched cross-client traffic both directions, fail-closed 24-row evidence. Milestone 9 final acceptance is closed-via-plan172.
+ - Plan 172 passed the M9 I2CP independent LeaseSet2 lifecycle corrective (see `plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md` and `plans/172-status.md`): explicit local zero-hop tunnel kind, 44-byte Lease-compatible non-empty real `RequestVariableLeaseSet` from the destination pool, existing Plan 166 atomic install (ElGamal-slot skip, unpublished accepted, u8 LS2 key count), high-level Java `I2PSession.connect()` plus public go-i2cp async `ProcessIO` lifecycle proof, post-LS2 digest-matched cross-client traffic both directions, fail-closed 24-row evidence. Milestone 9 final acceptance is closed-via-plan172.
+ - Plan 173 registered the Milestone 10 service-tunnels roadmap.
+ - Plan 174 passed the M10 service-tunnel foundation: runtime-neutral `i2pr-service-tunnels` crate, strict disabled-by-default loopback-only `[service_tunnels]` surface, shared daemon Streaming pump reused by SAM, no listener yet.
+ - Plan 175 passed the first complete M10 application service product (generic client/server tunnels + persistent server destinations).
+ - Plan 176 passed the M10 HTTP `.i2p` proxy + CONNECT.
+ - Plan 177 passed the M10 SOCKS5 `.i2p` CONNECT proxy.
+ - Plan 178 passed the M10 IRC `.i2p` client profile + privacy filter.
+ - Plan 179 passed the M10 IRC `.i2p` server profile + authenticated peer hostname projection.
+ - Plan 180 passed the M10 service-tunnel composition, reconcile, and hardening (see `plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md` and `plans/180-status.md`): the runtime-neutral `i2pr_service_tunnels::generation::DiffClass` typed classification (`Unchanged`, `MutableInPlace`, `ReplaceListener`, `ReplaceDestination`, `Remove`, `Add`); the daemon-owned `ServiceTunnelGeneration`/`DrainingGeneration` committed-generation model with `GenerationCounters { active_current_generation, active_draining_generation, forced_drain_closes_total }`; the `ServiceTunnelManager::reconcile(candidate, drain_deadline)` transactional algorithm that validates, diffs, stages Add/Replace*, then publishes the new generation atomically and pushes only replaced/removed old runtimes onto the draining list under a hard deadline; `reap_expired_drains` for forced-drain close handling; `generation_snapshot` for the Plan 180 §9 unified cross-service resource accounting matrix; the static `scripts/check-service-tunnel-boundaries.sh` checker enforcing the runtime-neutral constraint, no Garlic/I2NP construction in service-tunnels, the single shared `run_stream_pump` invariant, no unbounded Tokio channels, and exactly one `register_service_tunnel_manager` entry point. Two new narrowly named suites (`crates/i2pr-daemon/tests/service_tunnels_final_acceptance.rs` — 15 tests covering the Plan 180 §12 reconcile matrix, `crates/i2pr-daemon/tests/service_tunnels_adversarial_matrix.rs` — 12 tests covering the Plan 180 §13 cross-service adversarial matrix) bind the manager to a temp data directory and drive behavior only through the public API. Every Plan 174/175/176/177/178/179 product test remains green. Plan 180 closes the M10 local product layer; Plan 181 owns the M10 independent acceptance gate. M10 service tunnels stay experimental, loopback-only, disabled by default, and non-advertised; no independent router interop claim.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
 - No Plan 161 direction-A evidence implies Milestone 6 destination/Streaming/tunnel interoperability or broad router interoperability.
@@ -633,31 +642,27 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 179 passed the M10 IRC `.i2p`
-server profile and authenticated peer hostname (runtime-neutral
-`i2pr-service-tunnels::irc::server` registration interceptor with
-bounded pre-registration line / byte ceilings, cross-protocol
-rejection of HTTP/BitTorrent first lines, an authenticated peer
-Destination hash projection to `<52-char base32>.b32.i2p` that
-replaces the USER hostname and is bound to the streaming peer
-identity, IRCv3 tagged USER rewrite with envelope preserved,
-PASS / CAP / AUTHENTICATE / NICK passthrough, same-read post-USER
-bytes preserved as first raw-pump bytes, and the optional
-`SERVER` server-to-server IRC handoff; daemon IRC server tunnel
-executor with one Streaming accept loop per `irc-server` spec that
-captures the peer Destination hash from authenticated Streaming
-metadata, runs the bounded registration interceptor under a 30 s
-total deadline, connects to the loopback target under a 10 s
-deadline, writes the rewritten prefix + leftover exactly once,
-and switches to the shared Plan 174 byte pump in opaque mode for
-the post-registration stream; Plan 175 persistent server
-destination storage owns the IRC server identity so restart
-preserves the projected hostname algorithm; no new
-Garlic/I2NP/Streaming implementation is introduced; no WEBIRC,
-no cloaked hostnames, no DCC, no TLS termination, no IRC daemon
-implementation, no post-registration server-side filter claim).
-Plan 176 already passed the HTTP/1.1 proxy, Plan 177 already
-passed the SOCKS5 CONNECT proxy, and Plan 178 already passed the
-IRC client privacy filter. Milestone 9 remains closed via Plan
-172. Do not implement the full client/server byte round-trip
-without a fresh plan-of-record (Plan 180 reconcile work).**
+Current handoff: **Plan 180 passed the M10 service-tunnel
+composition, reconcile, and hardening (runtime-neutral
+`i2pr_service_tunnels::generation::DiffClass` typed classification,
+daemon-owned `ServiceTunnelGeneration`/`DrainingGeneration`
+committed-generation model with `GenerationCounters
+{ active_current_generation, active_draining_generation,
+forced_drain_closes_total }`, `ServiceTunnelManager::reconcile`
+that validates, diffs, stages Add/Replace*, publishes the new
+generation atomically, and pushes only replaced/removed old
+runtimes onto the draining list under a hard deadline;
+`reap_expired_drains` for forced-drain close handling;
+`generation_snapshot` for the unified cross-service resource
+accounting matrix; static
+`scripts/check-service-tunnel-boundaries.sh` checker enforcing
+the runtime-neutral constraint, no Garlic/I2NP construction in
+service-tunnels, the single shared `run_stream_pump` invariant,
+no unbounded Tokio channels, and exactly one
+`register_service_tunnel_manager` entry point; 15 final-acceptance
+tests in `service_tunnels_final_acceptance.rs` and 12
+adversarial-matrix tests in `service_tunnels_adversarial_matrix.rs`;
+no new Garlic/I2NP/Streaming implementation is introduced).
+Plan 174/175/176/177/178/179 product suites remain green. Plan
+180 closes the M10 local product layer; Plan 181 owns the M10
+independent acceptance gate.**

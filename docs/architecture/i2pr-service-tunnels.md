@@ -6,9 +6,10 @@ the Plan 175 generic client/server tunnel composition surface owned by
 the daemon, the Plan 176 HTTP/1.1 proxy parser/rewrite/target-validation
 surface, the Plan 177 SOCKS5 no-auth CONNECT proxy
 negotiation/request/reply surface, the Plan 178 IRC
-client line-parser/tag/classifier/filter surface, and the Plan 179
+client line-parser/tag/classifier/filter surface, the Plan 179
 IRC server registration interceptor plus the authenticated peer
-Destination hash projection.
+Destination hash projection, and the Plan 180 generation diff
+classification surface.
 
 Path:
 - `crates/i2pr-service-tunnels/` (configuration + reference parsing + HTTP + SOCKS5 + IRC client/server).
@@ -22,9 +23,11 @@ Path:
 ## Purpose
 
 Plan 175 lands the first complete Milestone 10 application service
-product; Plan 176 adds the first M10 application profile; Plan 177
-adds the second; Plan 178 adds the third; Plan 179 adds the
-fourth. The crate builds on the Plan 174 foundation
+product; Plan 176 adds the first M10 application profile; Plan 177 adds
+the second; Plan 178 adds the third; Plan 179 adds the
+fourth; Plan 180 adds the runtime-neutral diff classification
+that backs the daemon-side transactional reconcile. The crate
+builds on the Plan 174 foundation
 (`ServiceTunnelSet`, `LocalListenerSpec`, `ServerTarget`, bounded
 resource/timeouts) and adds:
 
@@ -54,7 +57,12 @@ resource/timeouts) and adds:
   storage seam (Plan 175);
 - a daemon-owned manager that wires loopback TCP, I2P Streaming, and
   the existing Plan 149 local destination product path together
-  (Plan 175 + Plan 176 + Plan 177 + Plan 178 + Plan 179).
+  (Plan 175 + Plan 176 + Plan 177 + Plan 178 + Plan 179);
+- the runtime-neutral `DiffClass` typed generation diff classification
+  (`Unchanged`, `MutableInPlace`, `ReplaceListener`,
+  `ReplaceDestination`, `Remove`, `Add`) and the `diff_sets` /
+  `diff_spec` helpers used by the daemon-side reconcile algorithm
+  (Plan 180).
 
 It must not own:
 
@@ -66,8 +74,9 @@ It must not own:
 - SAM or I2CP protocol parsing.
 
 The daemon remains the sole M10 socket/task/composition owner.
-Milestone 10 final closure (full byte round-trip, independent
-interop) is owned by Plans 180–181.
+Milestone 10 independent acceptance / final closure (independent
+interop) is owned by Plan 181; Plan 180 closed the M10 local
+product layer.
 
 ## Module layout
 
@@ -75,6 +84,7 @@ interop) is owned by Plans 180–181.
 | --- | --- | --- | --- |
 | `lib` | `crates/i2pr-service-tunnels/src/lib.rs` | Crate root, re-exports, architecture pointer | `ServiceTunnelId`, `DestinationRef`, `ServiceTunnelError`, HTTP re-exports |
 | `config` | `crates/i2pr-service-tunnels/src/config.rs` | Typed kinds, policy, listener/target, limits, timeouts, set validation | `ServiceTunnelKind`, `DestinationPolicy`, `LocalListenerSpec`, `ServerTarget`, `ServiceResourceLimits`, `ServiceTimeouts`, `ServiceTunnelSpec`, `ServiceTunnelSet` |
+| `generation` | `crates/i2pr-service-tunnels/src/generation.rs` | Plan 180 runtime-neutral generation diff model | `DiffClass`, `ServiceDiff`, `diff_sets`, `diff_spec`, `kind_string` |
 | `destination` | `crates/i2pr-service-tunnels/src/destination.rs` | Base32/alias/configured parsing, alias table | `DestinationRef`, `StaticAliasTable` |
 | `errors` | `crates/i2pr-service-tunnels/src/errors.rs` | Typed structural errors, no secrets | `ServiceTunnelError` |
 | `events` | `crates/i2pr-service-tunnels/src/events.rs` | Value-only lifecycle events and snapshots | `ServiceTunnelEvent`, `ServiceTunnelSnapshot` |
@@ -82,7 +92,8 @@ interop) is owned by Plans 180–181.
 | `socks5` | `crates/i2pr-service-tunnels/src/socks5/` | Plan 177 runtime-neutral RFC 1928 no-auth greeting + CONNECT request parser, `.i2p`/DOMAINNAME-only target policy, deterministic reply generator | `Socks5Limits`, `Socks5ClientOptions`, `ConnectPortPolicy`, `GreetingParser`, `RequestParser`, `ConnectDestination`, `Socks5Error`, `Socks5ErrorKind`, `Socks5ReplyCode`, `build_socks5_reply` |
 | `irc` | `crates/i2pr-service-tunnels/src/irc/` | Plan 178 runtime-neutral IRC/IRCv3 line parser, tag framing, command classifier + per-direction allowlist, USER/PING/QUIT/PART rewrites, CTCP/DCC policy; plus the Plan 179 server registration interceptor, authenticated peer Destination hash projection, and the typed `RegistrationOutcome` handoff contract | `IrcLimits`, `IrcClientOptions`, `ReasonRewritePolicy`, `IrcCommand`, `IrcCommandClass`, `LineDirection`, `ParsedLine`, `FilterOutcome`, `IrcDropReason`, `IrcLineParser`, `LineParserOutcome`, `PingRewriteState`, `TagsParser`, `IrcError`, `IrcErrorKind`, `IrcServerOptions`, `IrcServerRegistration`, `RegistrationOutcome`, `RegistrationRejection`, `RegistrationState`, `project_peer_hostname` |
 | `service_destination` | `crates/i2pr-storage/src/service_destination.rs` | Versioned, atomic, secret-safe persistent service destination storage | `ServiceDestinationStore`, `ServiceDestinationRecord`, `ServiceDestinationStorageError` |
-| `service_tunnels` | `crates/i2pr-daemon/src/service_tunnels.rs` | Generic client/server tunnel composition root | `ServiceTunnelManager`, `ServiceTunnelManagerConfig`, `ServiceRuntime`, `ServiceTunnelSnapshot`, `ClientTarget`, `DestinationFailure` |
+| `service_tunnels` | `crates/i2pr-daemon/src/service_tunnels.rs` | Generic client/server tunnel composition root + Plan 180 generation/reconcile/draining | `ServiceTunnelManager`, `ServiceTunnelManagerConfig`, `ServiceRuntime`, `ServiceTunnelSnapshot`, `ClientTarget`, `DestinationFailure`, `ReconcileOutcome`, `ReapReport`, `GenerationSnapshot`, `StagedRuntime` |
+| `service_generation` | `crates/i2pr-daemon/src/service_generation.rs` | Plan 180 committed-generation bookkeeping | `ServiceTunnelGeneration`, `DrainingGeneration`, `GenerationCounters`, `GenerationIdAllocator`, `DestinationResolution` |
 | `service_tunnels_http` | `crates/i2pr-daemon/src/service_tunnels_http.rs` | Plan 176 HTTP client tunnel executor (supervisor + per-connection handler) | `HttpConnectionOutcome`, `run_http_connection`, `run_http_client_loop` |
 | `service_tunnels_socks5` | `crates/i2pr-daemon/src/service_tunnels_socks5.rs` | Plan 177 SOCKS5 client tunnel executor (supervisor + per-connection handler) | `Socks5ConnectionOutcome`, `run_socks5_connection`, `run_socks5_client_loop` |
 | `service_tunnels_irc_client` | `crates/i2pr-daemon/src/service_tunnels_irc_client.rs` | Plan 178 IRC client tunnel executor (supervisor + per-connection handler) | `IrcConnectionOutcome`, `run_irc_connection`, `run_irc_client_loop` |
@@ -100,6 +111,7 @@ i2pr_service_tunnels:
   pub use destination::{DestinationRef, StaticAliasTable};
   pub use errors::ServiceTunnelError;
   pub use events::{ServiceTunnelEvent, ServiceTunnelSnapshot};
+  pub use generation::{DiffClass, ServiceDiff, diff_sets, diff_spec, kind_string};
   pub use http::{HeaderEntry, HeaderName, HttpClientOptions, HttpError,
     HttpErrorKind, HttpLimits, HttpRequestHead, ParseError, PrivacyPolicy,
     RequestLine, RequestTarget, TargetKind, TargetParseError, UserAgentPolicy,
@@ -128,7 +140,12 @@ i2pr_storage:
 i2pr_daemon::service_tunnels:
   pub ServiceTunnelManager, ServiceTunnelManagerConfig, ServiceRuntime,
   ServiceTunnelSnapshot, ClientTarget, DestinationFailure,
+  ReconcileOutcome, ReapReport, GenerationSnapshot, StagedRuntime,
   register_service_tunnel_manager.
+
+i2pr_daemon::service_generation:
+  pub ServiceTunnelGeneration, DrainingGeneration, GenerationCounters,
+  GenerationIdAllocator, DestinationResolution.
 
 i2pr_daemon::service_tunnels_http:
   pub HttpConnectionOutcome, run_http_connection, run_http_client_loop.
@@ -354,7 +371,9 @@ closed; identity rotation is never a side effect of reload.
   data directory.
 - `prepare()` builds each enabled service's destination runtime,
   binds loopback TCP listeners for client tunnels, and installs the
-  per-service Streaming listener for server tunnels.
+  per-service Streaming listener for server tunnels. The first call
+  seeds the authoritative committed generation
+  (`ServiceTunnelGeneration`).
 - `start_supervisors(runtimes, children, cancellation)` spawns the
   per-service supervisor loops under the daemon's child scope.
 - `shutdown()` cancels every per-service supervisor token.
@@ -365,6 +384,17 @@ closed; identity rotation is never a side effect of reload.
   private-destination wrapper base64 for one service.
 - `snapshot()` returns a sanitized accounting view (counts and
   identifiers only; no secrets).
+- Plan 180 transactional reconcile: `reconcile(candidate,
+  drain_deadline) -> ReconcileOutcome { generation_id, diff,
+  draining_ids, drain_deadline }` validates the candidate,
+  computes the typed `DiffClass` diff against the committed
+  generation, stages every `Add` / `Replace*` entry, then
+  atomically publishes the new generation and pushes only
+  replaced/removed old runtimes onto the draining list under a
+  hard deadline. `committed_generation_id`,
+  `draining_generation_count`, `reap_expired_drains -> ReapReport`,
+  and `generation_snapshot -> GenerationSnapshot` complete the
+  unified cross-service resource accounting surface.
 
 The manager never logs private destination material, signing seeds,
 static secrets, raw payloads, or base64 of the private destination.
@@ -612,12 +642,32 @@ all M10 sockets and tasks.
     deadlines, and drop counters stay bounded; no
     per-connection memory grows with stream length, and
     sibling connections keep independent filter state.
+20. Plan 180 transactional reconcile: the runtime-neutral
+    `DiffClass` typed classification drives a single-stage
+    generation swap. `Unchanged` / `MutableInPlace` entries copy
+    the existing committed runtime + identity (preserving the
+    persistent server destination across no-op reconciles);
+    `ReplaceListener` / `ReplaceDestination` / `Remove` entries
+    push the old runtime onto the draining list under a hard
+    deadline; `Add` entries install fresh destinations.
+    Stable server identities survive a no-op or
+    target-only reconcile; forced-drain closes are bounded by
+    a single `AtomicU64` per generation; the per-service
+    runtime carries no Garlic/I2NP/Streaming implementation.
+21. Plan 180 static boundary checker
+    (`scripts/check-service-tunnel-boundaries.sh`) is enforced
+    in routine CI and rejects the same runtime-neutral
+    invariants `check-runtime-boundaries.sh` enforces plus the
+    no-Glob/I2NP-construction, no-duplicate-byte-pump,
+    no-unbounded-Tokio-channel, and exactly-one-entry-point
+    Plan 180 §15 invariants.
 
 ## Cross-references
 
 - Plans 173 (roadmap authority), 174 (foundation),
-  175 (generic tunnels), 176 (HTTP), 177 (SOCKS5), 178 (this
-  plan).
+  175 (generic tunnels), 176 (HTTP), 177 (SOCKS5), 178 (IRC
+  client), 179 (IRC server), 180 (composition / reconcile /
+  hardening).
 - `docs/architecture/i2pr-daemon.md` (manager + runtime surface).
 - `docs/architecture/i2pr-storage.md` (persistent destination storage).
 - `specs/protocols/11-service-tunnels.md` (M10 dossier).

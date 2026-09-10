@@ -186,14 +186,21 @@ impl<'a> InterceptionSource for StreamingInterceptionSource<'a> {
 /// is fed by an in-process channel. Production code must use
 /// [`StreamingInterceptionSource`] instead.
 pub struct ChannelInterceptionSource {
-    receiver: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    receiver: tokio::sync::mpsc::Receiver<Vec<u8>>,
     closed: bool,
 }
 
+/// Bounded capacity for the test interception source channel. The
+/// production path uses the Plan 149 streaming manager queue, so
+/// this value only has to be large enough to drive the
+/// `service_tunnel_irc_server_product` tests without backpressuring
+/// the producer.
+const CHANNEL_INTERCEPTION_SOURCE_CAPACITY: usize = 64;
+
 impl ChannelInterceptionSource {
     /// Creates a bounded test source plus its producer handle.
-    pub fn bounded() -> (Self, tokio::sync::mpsc::UnboundedSender<Vec<u8>>) {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    pub fn bounded() -> (Self, tokio::sync::mpsc::Sender<Vec<u8>>) {
+        let (tx, rx) = tokio::sync::mpsc::channel(CHANNEL_INTERCEPTION_SOURCE_CAPACITY);
         (
             Self {
                 receiver: rx,

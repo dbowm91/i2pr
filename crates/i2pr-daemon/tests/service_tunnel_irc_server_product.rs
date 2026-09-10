@@ -208,7 +208,7 @@ async fn irc_server_registration_rewrites_user_hostname_to_peer_projection() {
     let (_scope, _cancel) = start_supervisors_for_test(&manager).await;
     let (mut source, tx) = ChannelInterceptionSource::bounded();
     let bytes = b"NICK alice\r\nUSER alice attacker.example.com attacker-server :Alice\r\n";
-    tx.send(bytes.to_vec()).expect("send bytes");
+    tx.send(bytes.to_vec()).await.expect("send bytes");
     drop(tx);
     let cancel = CancellationToken::new();
     let result = intercept_registration(
@@ -244,7 +244,7 @@ async fn irc_server_registration_preserves_same_read_post_user_bytes() {
     let (_scope, _cancel) = start_supervisors_for_test(&manager).await;
     let (mut source, tx) = ChannelInterceptionSource::bounded();
     let bytes = b"NICK alice\r\nUSER alice h s :Alice\r\nPRIVMSG #chan :hi\r\n";
-    tx.send(bytes.to_vec()).expect("send bytes");
+    tx.send(bytes.to_vec()).await.expect("send bytes");
     drop(tx);
     let cancel = CancellationToken::new();
     let result = intercept_registration(
@@ -273,7 +273,7 @@ async fn irc_server_registration_rejects_http_get_first_line() {
     let manager = build_manager(directory.path(), irc_server_spec(target_socket));
     let (_scope, _cancel) = start_supervisors_for_test(&manager).await;
     let (mut source, tx) = ChannelInterceptionSource::bounded();
-    tx.send(b"GET / HTTP/1.1\r\n".to_vec()).expect("send");
+    tx.send(b"GET / HTTP/1.1\r\n".to_vec()).await.expect("send");
     drop(tx);
     let cancel = CancellationToken::new();
     let result = intercept_registration(
@@ -298,6 +298,7 @@ async fn irc_server_registration_rejects_bittorrent_first_line() {
     let (_scope, _cancel) = start_supervisors_for_test(&manager).await;
     let (mut source, tx) = ChannelInterceptionSource::bounded();
     tx.send(b"\x13BitTorrent protocolxxxxxxxxxxxxx\r\n".to_vec())
+        .await
         .expect("send");
     drop(tx);
     let cancel = CancellationToken::new();
@@ -327,6 +328,7 @@ async fn irc_server_registration_rejects_too_many_lines() {
     };
     let (mut source, tx) = ChannelInterceptionSource::bounded();
     tx.send(b"NICK a\r\nCAP LS\r\nUSER a h s :Alice\r\n".to_vec())
+        .await
         .expect("send");
     drop(tx);
     let cancel = CancellationToken::new();
@@ -345,7 +347,7 @@ async fn irc_server_registration_eof_before_user() {
     let manager = build_manager(directory.path(), irc_server_spec(target_socket));
     let (_scope, _cancel) = start_supervisors_for_test(&manager).await;
     let (mut source, tx) = ChannelInterceptionSource::bounded();
-    tx.send(b"NICK alice\r\n".to_vec()).expect("send");
+    tx.send(b"NICK alice\r\n".to_vec()).await.expect("send");
     drop(tx);
     let cancel = CancellationToken::new();
     let result = intercept_registration(
@@ -373,6 +375,7 @@ async fn irc_server_registration_same_peer_across_reconnects() {
     for _ in 0..2 {
         let (mut source, tx) = ChannelInterceptionSource::bounded();
         tx.send(b"NICK alice\r\nUSER alice h s :Alice\r\n".to_vec())
+            .await
             .expect("send");
         drop(tx);
         let cancel = CancellationToken::new();
@@ -409,6 +412,7 @@ async fn irc_server_registration_different_peer_maps_to_different_hostname() {
     let (_scope, _cancel) = start_supervisors_for_test(&manager).await;
     let (mut source_a, tx_a) = ChannelInterceptionSource::bounded();
     tx_a.send(b"NICK alice\r\nUSER alice h s :Alice\r\n".to_vec())
+        .await
         .expect("send");
     drop(tx_a);
     let cancel = CancellationToken::new();
@@ -421,6 +425,7 @@ async fn irc_server_registration_different_peer_maps_to_different_hostname() {
     .await;
     let (mut source_b, tx_b) = ChannelInterceptionSource::bounded();
     tx_b.send(b"NICK bob\r\nUSER bob h s :Bob\r\n".to_vec())
+        .await
         .expect("send");
     drop(tx_b);
     let cancel = CancellationToken::new();
@@ -461,6 +466,7 @@ async fn irc_server_registration_nick_changes_do_not_affect_hostname() {
     // NICK bob is sent after USER alice; the projected hostname
     // remains bound to the peer destination hash, not the nick.
     tx.send(b"NICK alice\r\nUSER alice h s :Alice\r\nNICK bob\r\n".to_vec())
+        .await
         .expect("send");
     drop(tx);
     let cancel = CancellationToken::new();
@@ -492,6 +498,7 @@ async fn irc_server_registration_ircv3_tagged_user_rewrite() {
     let (_scope, _cancel) = start_supervisors_for_test(&manager).await;
     let (mut source, tx) = ChannelInterceptionSource::bounded();
     tx.send(b"@time=2020-01-01T00:00:00.000Z USER alice h s :Alice\r\n".to_vec())
+        .await
         .expect("send");
     drop(tx);
     let cancel = CancellationToken::new();
@@ -528,7 +535,7 @@ async fn irc_server_registration_fragmented_user_completes() {
         b"USER alice h s :Al",
         b"ice\r\n",
     ] {
-        tx.send(chunk.to_vec()).expect("send");
+        tx.send(chunk.to_vec()).await.expect("send");
     }
     drop(tx);
     let cancel = CancellationToken::new();
@@ -567,6 +574,7 @@ async fn irc_server_registration_target_writes_prefix_then_handsoff() {
     let peer = peer_hash(0xab);
     let (mut source, tx) = ChannelInterceptionSource::bounded();
     tx.send(b"NICK alice\r\nUSER alice h s :Alice\r\n".to_vec())
+        .await
         .expect("send");
     drop(tx);
     let cancel = CancellationToken::new();
@@ -641,6 +649,7 @@ async fn irc_server_snapshot_accounting_returns_to_baseline() {
     let peer = peer_hash(0xab);
     let (mut source, tx) = ChannelInterceptionSource::bounded();
     tx.send(b"NICK alice\r\nUSER alice h s :Alice\r\n".to_vec())
+        .await
         .expect("send");
     drop(tx);
     let cancel = CancellationToken::new();
@@ -665,6 +674,7 @@ async fn irc_server_target_refusal_closes_cleanly() {
     let peer = peer_hash(0xab);
     let (mut source, tx) = ChannelInterceptionSource::bounded();
     tx.send(b"NICK alice\r\nUSER alice h s :Alice\r\n".to_vec())
+        .await
         .expect("send");
     drop(tx);
     let cancel = CancellationToken::new();
@@ -692,6 +702,7 @@ async fn irc_server_after_handoff_bytes_are_transparent() {
     let peer = peer_hash(0xab);
     let (mut source, tx) = ChannelInterceptionSource::bounded();
     tx.send(b"NICK alice\r\nUSER alice h s :Alice\r\nPRIVMSG #chan :hi\r\nJOIN #chan\r\n".to_vec())
+        .await
         .expect("send");
     drop(tx);
     let cancel = CancellationToken::new();
@@ -721,7 +732,9 @@ async fn irc_server_unknown_pre_registration_command_rejected() {
     let manager = build_manager(directory.path(), irc_server_spec(target_socket));
     let (_scope, _cancel) = start_supervisors_for_test(&manager).await;
     let (mut source, tx) = ChannelInterceptionSource::bounded();
-    tx.send(b"OPER alice secret\r\n".to_vec()).expect("send");
+    tx.send(b"OPER alice secret\r\n".to_vec())
+        .await
+        .expect("send");
     drop(tx);
     let cancel = CancellationToken::new();
     let result = intercept_registration(
@@ -746,7 +759,7 @@ async fn irc_server_invalid_user_rejected() {
     let (_scope, _cancel) = start_supervisors_for_test(&manager).await;
     let (mut source, tx) = ChannelInterceptionSource::bounded();
     // USER with only 3 args (no realname) is rejected.
-    tx.send(b"USER alice h s\r\n".to_vec()).expect("send");
+    tx.send(b"USER alice h s\r\n".to_vec()).await.expect("send");
     drop(tx);
     let cancel = CancellationToken::new();
     let result = intercept_registration(
@@ -774,6 +787,7 @@ async fn irc_server_pass_cap_authenticate_passthrough() {
         b"PASS secret\r\nCAP LS\r\nCAP REQ :sasl\r\nAUTHENTICATE PLAIN\r\nNICK alice\r\nUSER alice h s :Alice\r\n"
             .to_vec(),
     )
+    .await
     .expect("send");
     drop(tx);
     let cancel = CancellationToken::new();

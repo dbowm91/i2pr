@@ -45,6 +45,7 @@ pub mod config;
 pub mod destination;
 pub mod errors;
 pub mod events;
+pub mod generation;
 pub mod http;
 pub mod irc;
 pub mod socks5;
@@ -60,6 +61,7 @@ pub use config::{
 pub use destination::{DestinationRef, StaticAliasTable};
 pub use errors::ServiceTunnelError;
 pub use events::{ServiceTunnelEvent, ServiceTunnelSnapshot};
+pub use generation::{DiffClass, ServiceDiff, diff_sets, diff_spec, kind_string};
 pub use http::{
     HeaderEntry, HeaderName, HttpClientOptions, HttpError, HttpErrorKind, HttpLimits,
     HttpRequestHead, ParseError, PrivacyPolicy, RequestLine, RequestTarget, TargetKind,

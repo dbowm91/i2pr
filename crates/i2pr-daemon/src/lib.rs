@@ -16,6 +16,7 @@ pub mod inbound_dispatch;
 pub mod netdb_seam;
 pub mod outbound_lookup;
 pub mod sam;
+pub mod service_generation;
 pub mod service_tunnels;
 pub mod service_tunnels_http;
 pub mod service_tunnels_irc_client;

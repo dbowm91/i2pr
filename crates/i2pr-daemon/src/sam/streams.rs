@@ -416,6 +416,23 @@ impl SamDestinations {
         handle
     }
 
+    /// Plan 180 §3 install path: accepts a pre-built
+    /// [`SamDestinationHandle`] instead of consuming the bridge by
+    /// value. Used when the same bridge handle is shared with the
+    /// staged `ServiceRuntime` and the manager-level mirror.
+    pub fn install_handle(
+        &mut self,
+        destination_id: DestinationId,
+        handle: SamDestinationHandle,
+    ) -> SamDestinationHandle {
+        let peer_hash = handle.peer_destination_hash();
+        if let Some(prior) = self.by_id.insert(destination_id, handle.clone()) {
+            let _ = self.by_peer.remove(&prior.peer_destination_hash());
+        }
+        self.by_peer.insert(peer_hash, destination_id);
+        handle
+    }
+
     pub fn get(&self, destination_id: DestinationId) -> Option<SamDestinationHandle> {
         self.by_id.get(&destination_id).cloned()
     }
