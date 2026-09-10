@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, Milestone 8 SSU2, and Milestone 9 I2CP execution. Plans 155–161 passed the SSU2 v2 stack including independent IPv4 interop against exact-pinned i2pd 2.61.0; Milestone 8 is closed within its bounded scope, Plans 163–169 passed the M9 I2CP roadmap through the self-composed local product, Plan 171 passed the invalid-preamble close corrective, and Plan 172 passed the independent LeaseSet2 lifecycle corrective closing Milestone 9; Plan 170 wire/data-plane is retained-passed with final acceptance superseded by Plan 172.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, Milestone 8 SSU2, Milestone 9 I2CP, and Milestone 10 service tunnels execution. Plans 155–161 passed the SSU2 v2 stack including independent IPv4 interop against exact-pinned i2pd 2.61.0; Milestone 8 is closed within its bounded scope, Plans 163–169 passed the M9 I2CP roadmap through the self-composed local product, Plan 171 passed the invalid-preamble close corrective, and Plan 172 passed the independent LeaseSet2 lifecycle corrective closing Milestone 9; Plan 170 wire/data-plane is retained-passed with final acceptance superseded by Plan 172; Plans 174–180 passed the M10 service-tunnel foundation/profiles/reconcile, Plan 182 passed the M10 local-delivery corrective proving the local byte round-trip, Plan 181 local rows pass with remote rows blocked on retained M6 debt, and Plan 183 registers the M6 mixed-router program.
 ---
 
 # I2PR Local Development
@@ -467,6 +467,8 @@ bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-constrained-host-lane-boundary.sh
 bash scripts/check-sam-acceptance-evidence.sh
 bash scripts/check-ssu2-acceptance-evidence.sh
+bash scripts/check-i2cp-acceptance-evidence.sh
+bash scripts/check-service-tunnel-acceptance-evidence.sh
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
 cargo deny check advisories bans sources
 ```
@@ -501,7 +503,33 @@ Focused I2CP floor:
 ```text
 cargo test --locked -p i2pr-api --all-targets
 cargo test --locked -p i2pr-api --test i2cp_vectors
+cargo test --locked -p i2pr-daemon --test i2cp_loopback -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test i2cp_message_data_plane -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test i2cp_final_acceptance -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test i2cp_adversarial_matrix -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test i2cp_resource_matrix -- --test-threads=1
 bash scripts/check-i2cp-vectors.sh
+bash scripts/check-i2cp-acceptance-evidence.sh
+```
+
+Focused M10 service-tunnel floor:
+
+```text
+cargo test --locked -p i2pr-service-tunnels --all-targets
+cargo test --locked -p i2pr-daemon --lib destination_streaming
+cargo test --locked -p i2pr-daemon --lib config
+cargo test --locked -p i2pr-daemon --test service_tunnels_foundation -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnel_generic_product -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnel_http_product -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnel_socks5_product -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnel_irc_client_product -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnel_irc_server_product -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnels_final_acceptance -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnels_adversarial_matrix -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnels_local_roundtrip -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnels_independent_application_clients -- --test-threads=1
+bash scripts/check-service-tunnel-boundaries.sh
+bash scripts/check-service-tunnel-acceptance-evidence.sh
 ```
 
 Plan 162 ordinary no-peer regression:

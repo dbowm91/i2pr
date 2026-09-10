@@ -324,6 +324,8 @@ cargo test --locked --workspace --doc
  bash scripts/check-constrained-host-lane-boundary.sh
  bash scripts/check-sam-acceptance-evidence.sh
  bash scripts/check-ssu2-acceptance-evidence.sh
+ bash scripts/check-i2cp-acceptance-evidence.sh
+ bash scripts/check-service-tunnel-acceptance-evidence.sh
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
 cargo deny check advisories bans sources
 ```

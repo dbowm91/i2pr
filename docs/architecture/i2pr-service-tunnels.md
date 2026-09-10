@@ -74,9 +74,11 @@ It must not own:
 - SAM or I2CP protocol parsing.
 
 The daemon remains the sole M10 socket/task/composition owner.
-Milestone 10 independent acceptance / final closure (independent
-interop) is owned by Plan 181; Plan 180 closed the M10 local
-product layer.
+Milestone 10 independent acceptance is owned by Plan 181 (29 local
+rows passed; 2 remote rows blocked on the retained M6
+mixed-router Streaming debt; Plan 183 owns the corrective
+program). Plans 180-and-182 jointly close the M10 local product +
+round-trip layer (reconcile model + local-delivery driver).
 
 ## Module layout
 
@@ -709,7 +711,9 @@ all M10 sockets and tasks.
 - Plans 173 (roadmap authority), 174 (foundation),
   175 (generic tunnels), 176 (HTTP), 177 (SOCKS5), 178 (IRC
   client), 179 (IRC server), 180 (composition / reconcile /
-  hardening).
+  hardening), 182 (local-delivery corrective), 181 (independent
+  acceptance, blocked on retained M6 debt), 183 (M6 mixed-router
+  program, registered).
 - `docs/architecture/i2pr-daemon.md` (manager + runtime surface).
 - `docs/architecture/i2pr-storage.md` (persistent destination storage).
 - `specs/protocols/11-service-tunnels.md` (M10 dossier).

@@ -283,16 +283,15 @@ Plan 152 is a later M6 robustness correction discovered by the Plan 151 final SA
 - SAM 3.1 parser/session/STREAM/FORWARD/NAMING product with independent localhost client evidence; M7 closed via Plan 151.
 - SSU2 v2 local protocol/runtime/reachability product and independent direct IPv4 i2pd interop; M8 closed via Plan 161.
 - M9 I2CP implementation plans are registered; the Plan 164 wire/profile foundation, Plan 165 connection/session/options state machines, Plan 166 client-owned destination + LeaseSet2 bridge, Plan 167 loopback server runtime, Plan 168 message data plane, and Plan 169 self-composed local product are landed, with the Plan 171 invalid-preamble close corrective retained on the common terminal path. Plan 170 wire/data-plane evidence is retained-passed (exact-pinned Java I2P 2.13.0 + go-i2cp, digest-matched payloads both directions, fail-closed 9-row lane); its final-acceptance interpretation is superseded by Plan 172. Plan 172 passed the independent LeaseSet2 lifecycle corrective (high-level Java connect + public Go lifecycle, non-empty zero-hop requests, client-signed LS2 installs, post-LS2 bidirectional digests, 24 fail-closed rows). No `HostLookup`/`HostReply` resolution; Milestone 9 final acceptance is closed via Plan 172 (experimental, loopback-only).
-- M10 service-tunnel foundation is landed via Plan 174 (runtime-neutral `i2pr-service-tunnels` crate, strict `[service_tunnels]` surface, shared Streaming pump reused by SAM; no listener yet).
+- M10 service-tunnel foundation is landed via Plan 174 (runtime-neutral `i2pr-service-tunnels` crate, strict `[service_tunnels]` surface, shared Streaming pump reused by SAM) plus the Plan 175 generic client/server tunnels, Plan 176 HTTP proxy, Plan 177 SOCKS5 proxy, Plan 178 IRC client profile, Plan 179 IRC server profile, Plan 180 composition/reconcile/hardening, and Plan 182 local-delivery corrective. Local product + byte round-trip are passed via Plans 180-and-182 (9 round-trip + 6 wire-surface tests); Plan 181 local independent-application-client rows pass with remote rows blocked.
 
 ## What's not yet accepted
 
 - Non-loopback/remote I2CP, TLS/authentication, or broad historical I2CP feature compliance.
 - Live/public NTCP2 or SSU2 router transport activation and broad mixed-router interoperability.
 - Public I2P participation and network-transport-bound NetDB/public router behavior.
-- Milestone 6 independent-router destination/Streaming/tunnel interoperability.
-- Generic service tunnels, HTTP proxy, SOCKS5, and IRC listeners/product beyond the proven local scope (Milestone 10 Plans 175–182 passed; Plan 181 local rows passed, remote rows blocked).
-- Milestone 6 independent-router destination/Streaming/tunnel interoperability (Plan 183 program registered, not yet scoped for execution).
+- Milestone 6 independent-router destination/Streaming/tunnel interoperability (Plan 183 program registered, not yet scoped for execution; Plan 181 remote rows blocked on this debt).
+- Milestone 10 remote service interop / final acceptance (local rows passed via Plan 181; remote HTTP/IRC rows not-yet-passed).
 - SSU2 IPv6 external interop, PQ SSU2, SSU1, encrypted/meta LeaseSets, or PQ destination encryption unless separately closed later.
 
 The historical NTCP2 development interoperability result remains separate evidence; no passed broad mixed-router claim exists.

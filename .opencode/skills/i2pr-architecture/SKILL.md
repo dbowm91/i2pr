@@ -113,7 +113,7 @@ writing or updating a deep-dive.
 | `i2pr-daemon` | `docs/architecture/i2pr-daemon.md` | CLI, config, identity lifecycle, Plan 106 NetDB/bootstrap, Plan 117 dispatch. |
 | `i2pr-client` | `docs/architecture/i2pr-client.md` | Local destination runtime (router-owned and client-owned modes), ECIES destination Garlic session, destination routing, Streaming core, LeaseSet2 lifecycle, typed `LeaseRequest`. |
 | `i2pr-api` | `docs/architecture/i2pr-api.md` | Runtime-neutral application adapters: SAM 3.1 parsing/session/registry/FORWARD/NAMING plus the M9 I2CP wire/profile/connection/options foundation, session registry, typed `I2cpAction` (including `RequestVariableLeaseSet`). No sockets, no Tokio. |
-| `i2pr-service-tunnels` | `docs/architecture/i2pr-service-tunnels.md` | Runtime-neutral M10 service-tunnel config/policy plus the Plan 176 HTTP, Plan 177 SOCKS5, Plan 178 IRC client profile, and Plan 179 IRC server profile surfaces. No sockets, no Tokio; the daemon owns all listeners. |
+| `i2pr-service-tunnels` | `docs/architecture/i2pr-service-tunnels.md` | Runtime-neutral M10 service-tunnel config/policy plus the Plan 176 HTTP, Plan 177 SOCKS5, Plan 178 IRC client, Plan 179 IRC server, Plan 180 generation/reconcile, and Plan 182 local-delivery surfaces. No sockets, no Tokio; the daemon owns all listeners. |
 | `i2pr-testkit` | `docs/architecture/i2pr-testkit.md` | Deterministic simulation; no production crate may depend on it. |
 | `tools/i2pr-interop/` | `docs/architecture/tooling.md` | Non-production launcher seam; never activates `i2pr-daemon`. |
 
@@ -366,7 +366,7 @@ record is not `superseded-by-*`. Currently:
   [`plans/172-status.md`](../../plans/172-status.md)).
 - **Milestone 10 planning authority (registered)**: Plan 173
   (see [`plans/173-status.md`](../../plans/173-status.md)):
-  service tunnels, HTTP, SOCKS5, IRC roadmap; Plans 174–181 in
+  service tunnels, HTTP, SOCKS5, IRC roadmap; Plans 174–183 in
   order.
 - **Milestone 10 service-tunnel foundation (passed)**: Plan 174
   (`passed-m10-service-tunnel-foundation-and-shared-stream-runtime`,
@@ -374,8 +374,21 @@ record is not `superseded-by-*`. Currently:
   runtime-neutral `i2pr-service-tunnels` crate, strict
   disabled-by-default loopback-only `[service_tunnels]` surface,
   shared daemon Streaming pump reused by SAM, no listener yet.
-  Next executable plan is 175; do not implement later profiles
-  early.
+- **Milestone 10 profiles + reconcile + local delivery (passed)**:
+  Plans 175 (generic tunnels), 176 (HTTP), 177 (SOCKS5), 178 (IRC
+  client), 179 (IRC server), 180 (composition/reconcile/hardening),
+  and 182 (local-delivery corrective proving the local byte
+  round-trip). See [`plans/175-status.md`](../../plans/175-status.md)
+  through [`plans/180-status.md`](../../plans/180-status.md) and
+  [`plans/182-status.md`](../../plans/182-status.md).
+- **Milestone 10 independent acceptance (blocked)**: Plan 181
+  (`blocked-by-m6-mixed-router-streaming-blocker`, see
+  [`plans/181-status.md`](../../plans/181-status.md)): 29 local
+  rows passed, 2 remote rows blocked with i2pd-2.61.0
+  qualification provenance. Plan 183 registers the M6
+  mixed-router program (see
+  [`plans/183-status.md`](../../plans/183-status.md)); M10 final
+  acceptance stays open.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).
@@ -408,7 +421,9 @@ not weaken the script.
 | `scripts/check-sam-acceptance-evidence.sh` | Plan 151 SAM evidence integrity (no synthetic `passed` rows; CI-enforced). |
 | `scripts/check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity (no synthetic `passed` rows; CI-enforced). |
 | `scripts/check-i2cp-vectors.sh` | Plan 164 I2CP fixture corpus drift (CI-enforced). |
-| `scripts/check-i2cp-acceptance-evidence.sh` | Plan 170 I2CP evidence integrity (no synthetic `passed` rows; CI-enforced). |
+| `scripts/check-i2cp-acceptance-evidence.sh` | Plan 170/172 I2CP evidence integrity (no synthetic `passed` rows; CI-enforced). |
+| `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants (no Tokio/sockets in service-tunnels, no Garlic/I2NP, single pump, no unbounded channels, one entry point). |
+| `scripts/check-service-tunnel-acceptance-evidence.sh` | Plan 181 service-tunnel evidence integrity (29 local + 2 blocked remote rows; CI-enforced). |
 
 ## Doc-vs-source audit pattern
 

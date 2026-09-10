@@ -24,6 +24,8 @@ Paths are relative to the workspace root.
 | `scripts/check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code/evidence-key-gated helpers with explicit `--ignored --exact` external selection (CI-enforced). |
 | `scripts/check-i2cp-vectors.sh` | Drift in the I2CP wire fixture corpus under `tests/fixtures/i2cp/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, the required Plan 164 fixture IDs, and the narrow `i2pr-api --test i2cp_vectors` suite. |
 | `scripts/check-i2cp-acceptance-evidence.sh` | Plan 170/172 I2CP evidence integrity (Plan 170 9-row lane retained; Plan 172 adds lifecycle rows, raw-driver substitution rejection, zero-lease rejection, and LeaseSet2-install gating): no literal unconditional `passed` rows; every required row flows through the exit-code-gated `record_guarded` helper with digest-equality + strong-parse-path gates and explicit Java/Go pins (CI-enforced). |
+| `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants: no Tokio/sockets in `i2pr-service-tunnels`, no Garlic/I2NP construction, single shared `run_stream_pump`, no unbounded Tokio channels, exactly one `register_service_tunnel_manager` entry point. |
+| `scripts/check-service-tunnel-acceptance-evidence.sh` | Plan 181 service-tunnel evidence integrity: 29 command-derived local rows plus 2 blocked-only remote rows; no literal passes; pin/head/cleanliness and curl/SOCKS/jaraco gates (CI-enforced). |
 | `scripts/fuzz-smoke.sh` | Opt-in smoke run of all 22 fuzz targets for 32 iterations each at seed=1 (`-runs=32 -seed=1`). Requires `cargo-fuzz` + nightly. Disables LeakSanitizer (`LSAN_OPTIONS=detect_leaks=0`) for managed environments. |
 
 **How they work**: `check-dependency-direction.sh` uses
@@ -518,19 +520,24 @@ unwinding panics and no LTO (fast builds over binary size).
 
 ```text
 cargo fmt --all --check
-cargo check --workspace --all-targets
-cargo test --workspace
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+cargo check --locked --workspace --all-targets
+cargo test --locked --workspace --all-targets -- --test-threads=1
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
+cargo test --locked --workspace --doc
 bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh
-bash scripts/check-fixture-manifest.sh        # when I2NP fixture bytes change
-bash scripts/check-ntcp2-vectors.sh           # when NTCP2 vector bytes change
-bash scripts/check-ssu2-vectors.sh            # when SSU2 vector bytes change
-bash scripts/check-i2cp-vectors.sh             # when I2CP vector bytes change
-bash scripts/check-ntcp2-interoperability.sh  # when ntcp2 evidence/manifest change
-bash scripts/check-sam-acceptance-evidence.sh   # SAM ledger changed
-bash scripts/check-ssu2-acceptance-evidence.sh  # SSU2 ledger changed
+bash scripts/check-service-tunnel-boundaries.sh
+bash scripts/check-fixture-manifest.sh
+bash scripts/check-ntcp2-vectors.sh
+bash scripts/check-ssu2-vectors.sh
+bash scripts/check-i2cp-vectors.sh
+bash scripts/check-ntcp2-interoperability.sh
+bash scripts/check-constrained-host-lane-boundary.sh
+bash scripts/check-sam-acceptance-evidence.sh
+bash scripts/check-ssu2-acceptance-evidence.sh
+bash scripts/check-i2cp-acceptance-evidence.sh
+bash scripts/check-service-tunnel-acceptance-evidence.sh
 bash scripts/fuzz-smoke.sh                    # opt-in; requires cargo-fuzz + nightly
 ```
 
