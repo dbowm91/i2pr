@@ -97,6 +97,10 @@ pub use ssu2_runtime::{
     Ssu2RuntimeDeadlines, Ssu2RuntimeLimits, Ssu2RuntimeService, Ssu2SendOutcome,
     Ssu2ServiceHandle, Ssu2Snapshot, Ssu2SocketConfig, Ssu2TestFaults,
 };
+// Plan 184 daemon-owned SSU2 re-exports: the daemon composes the
+// controlled SSU2 identity/address surface through the runtime so it
+// never depends on `i2pr-transport-ssu2` directly.
+pub use i2pr_transport_ssu2::{IntroKey, Ssu2PublicKey, Ssu2RouterAddress, constants};
 pub use supervisor::{
     MAX_SHUTDOWN_DEADLINE, ShutdownOutcome, ShutdownReport, Supervisor, SupervisorConfigError,
     SupervisorError, SupervisorHandle,

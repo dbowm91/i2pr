@@ -1008,15 +1008,16 @@ impl SamConfig {
 /// Re-export of the Plan 137 service-limits type.
 pub use i2pr_api::sam::limits::SamLimits;
 
-/// Normalized Plan 158 SSU2 runtime configuration.
+/// Normalized Plan 184 SSU2 runtime configuration.
 ///
-/// The daemon parses and validates this surface but does not start an
-/// SSU2 service yet: production activation (identity/RouterInfo
-/// plumbing, publication policy) belongs to Plan 159. `enabled = true`
-/// is therefore rejected fail-closed until that plan lands.
+/// The daemon parses and validates this surface and starts the
+/// daemon-owned SSU2 service only under the strict Plan 184
+/// controlled profile: loopback bind, `advertise = false`,
+/// `introducer_service = false`, no wildcard/non-loopback exposure.
+/// Broader publication/exposure remains rejected fail-closed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Ssu2Config {
-    /// Whether the SSU2 UDP runtime is enabled (always false in Plan 158).
+    /// Whether the SSU2 UDP runtime is enabled (strict controlled profile only).
     pub enabled: bool,
     /// IPv4 bind literal, or `None` when the IPv4 socket is disabled.
     pub bind_ipv4: Option<IpAddr>,
@@ -1736,16 +1737,10 @@ fn parse_ssu2_bind(
 }
 
 fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
-    // Plan 158 §13: production activation belongs to a later plan
-    // (identity/RouterInfo plumbing plus publication policy). Accepting
-    // `enabled = true` while the daemon cannot construct the service
-    // would silently misconfigure the router, so fail closed here.
-    if raw.enabled {
-        return Err(ConfigError::Semantic {
-            field: "ssu2.enabled",
-            reason: "SSU2 runtime activation is unavailable while support is experimental",
-        });
-    }
+    // Plan 184 §3: the daemon accepts `enabled = true` only under the
+    // strict controlled profile (loopback bind, non-advertised, no
+    // introducer/relay publication). Broader exposure stays rejected
+    // fail-closed; protocol semantics are unchanged from Plan 161.
     if raw.advertise {
         return Err(ConfigError::Semantic {
             field: "ssu2.advertise",
@@ -1760,6 +1755,16 @@ fn normalize_ssu2(raw: &RawSsu2Config) -> Result<Ssu2Config, ConfigError> {
     }
     let bind_ipv4 = parse_ssu2_bind("ssu2.bind_ipv4", &raw.bind_ipv4, false)?;
     let bind_ipv6 = parse_ssu2_bind("ssu2.bind_ipv6", &raw.bind_ipv6, true)?;
+    // Plan 184 §3 strict controlled profile: an enabled service must
+    // bind at least one loopback family and must never advertise or
+    // offer introducer service (both rejected above). `parse_ssu2_bind`
+    // already rejects wildcard/non-loopback literals fail-closed.
+    if raw.enabled && bind_ipv4.is_none() && bind_ipv6.is_none() {
+        return Err(ConfigError::Semantic {
+            field: "ssu2.enabled",
+            reason: "SSU2 activation requires at least one loopback bind address",
+        });
+    }
     // Port 0 selects an ephemeral port for integration tests; a
     // configured service port must be in the normal (non-privileged) range.
     if raw.port != 0 && raw.port < MIN_SSU2_SERVICE_PORT {
@@ -2623,8 +2628,24 @@ data_dir = "./state"
     }
 
     #[test]
-    fn ssu2_enabled_true_is_rejected_fail_closed() {
+    fn ssu2_enabled_true_accepts_strict_loopback_profile() {
+        // Plan 184 §3: `enabled = true` is accepted only with loopback
+        // bind, non-advertised, no introducer service.
         let text = format!("{}\n[ssu2]\nenabled = true\n", MINIMAL);
+        let config = Config::parse(&text).expect("strict controlled profile");
+        assert!(config.ssu2.enabled);
+        assert!(!config.ssu2.advertise);
+        assert!(!config.ssu2.introducer_service);
+        assert!(config.ssu2.bind_ipv4.is_some_and(|ip| ip.is_loopback()));
+    }
+
+    #[test]
+    fn ssu2_enabled_true_requires_loopback_bind() {
+        // Both families disabled while enabled must fail closed.
+        let text = format!(
+            "{}\n[ssu2]\nenabled = true\nbind_ipv4 = \"\"\nbind_ipv6 = \"\"\n",
+            MINIMAL
+        );
         assert!(matches!(
             Config::parse(&text),
             Err(ConfigError::Semantic {
@@ -2632,6 +2653,25 @@ data_dir = "./state"
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn ssu2_enabled_true_rejects_broad_exposure() {
+        // advertise/introducer stay rejected even under the controlled
+        // profile; no wildcard/non-loopback bind is reachable because
+        // `parse_ssu2_bind` rejects it fail-closed.
+        for extra in [
+            "advertise = true",
+            "introducer_service = true",
+            "bind_ipv4 = \"0.0.0.0\"",
+            "bind_ipv4 = \"192.0.2.1\"",
+        ] {
+            let text = format!("{}\n[ssu2]\nenabled = true\n{}\n", MINIMAL, extra);
+            assert!(
+                Config::parse(&text).is_err(),
+                "broad exposure `{extra}` must be rejected"
+            );
+        }
     }
 
     #[test]

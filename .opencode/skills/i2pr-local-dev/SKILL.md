@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, Milestone 8 SSU2, Milestone 9 I2CP, and Milestone 10 service tunnels execution. Plans 155–161 passed the SSU2 v2 stack including independent IPv4 interop against exact-pinned i2pd 2.61.0; Milestone 8 is closed within its bounded scope, Plans 163–169 passed the M9 I2CP roadmap through the self-composed local product, Plan 171 passed the invalid-preamble close corrective, and Plan 172 passed the independent LeaseSet2 lifecycle corrective closing Milestone 9; Plan 170 wire/data-plane is retained-passed with final acceptance superseded by Plan 172; Plans 174–180 passed the M10 service-tunnel foundation/profiles/reconcile, Plan 182 passed the M10 local-delivery corrective proving the local byte round-trip, Plan 181 local rows pass with remote rows blocked on retained M6 debt, and Plan 183 registers the M6 mixed-router program.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, Milestone 8 SSU2, Milestone 9 I2CP, and Milestone 10 service tunnels execution. Plans 155–161 passed the SSU2 v2 stack including independent IPv4 interop against exact-pinned i2pd 2.61.0; Milestone 8 is closed within its bounded scope, Plans 163–169 passed the M9 I2CP roadmap through the self-composed local product, Plan 171 passed the invalid-preamble close corrective, and Plan 172 passed the independent LeaseSet2 lifecycle corrective closing Milestone 9; Plan 170 wire/data-plane is retained-passed with final acceptance superseded by Plan 172; Plans 174–180 passed the M10 service-tunnel foundation/profiles/reconcile, Plan 182 passed the M10 local-delivery corrective proving the local byte round-trip, Plan 181 local rows pass with remote rows blocked on retained M6 debt, Plan 183 registers the M6 mixed-router program, and Plan 184 passed the authenticated I2NP preflight with no tunnel/NetDB/Streaming claim.
 ---
 
 # I2PR Local Development
@@ -93,6 +93,7 @@ plan_180 = passed-m10-service-tunnel-composition-reconcile-and-hardening
 plan_181 = blocked-by-m6-mixed-router-streaming-blocker
 plan_182 = passed-m10-local-delivery-corrective
 plan_183 = registered-m6-mixed-router-streaming-interop-program
+plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 milestone10_planning_authority = plan173
 milestone10_foundation = passed-via-plan174
 milestone10_generic_tunnels = passed-via-plan175
@@ -107,7 +108,7 @@ milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 
 next_product_layer = m6-mixed-router-streaming-interop
-next_executable_plan = 183
+next_executable_plan = 185
 ```
 
 Read in order for current SSU2 work:
@@ -123,6 +124,14 @@ Read in order for current SSU2 work:
 9. `plans/156-status.md`
 10. `plans/155-status.md`
 11. `plans/154-status.md`
+
+Read in order for M6 mixed-router preflight work:
+
+1. `plans/184-status.md` (passed authenticated I2NP preflight; current authority)
+2. `plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md`
+3. `plans/183-status.md` (registered program)
+4. `plans/183-m6-mixed-router-streaming-interop-program.md`
+5. Do not claim NetDB, destination, Streaming, or M10 remote-service interop; Plan 185 owns the first Short Tunnel Build.
 
 For SAM/local-product history, then read Plan 151, 150, 149 and Plans 146–148
 as needed.
@@ -628,4 +637,6 @@ exact-pinned jaraco/irc, restart stability, baselines, ledger)
 while the two remote rows are recorded `blocked` with genuine
 i2pd-2.61.0 qualification provenance
 (`m6-mixed-router-streaming-blocker`); Plan 183 registers the
-required M6 program. M10 final acceptance stays open.**
+required M6 program; Plan 184 passed the authenticated I2NP
+preflight with no tunnel/NetDB/Streaming claim and Plan 185 owns
+the first Short Tunnel Build. M10 final acceptance stays open.**

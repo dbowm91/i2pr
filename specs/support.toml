@@ -320,6 +320,10 @@ plan_182_status = "passed-m10-local-delivery-corrective"
 plan_183_plan_of_record = "plans/183-m6-mixed-router-streaming-interop-program.md"
 plan_183_closure = "plans/183-status.md"
 plan_183_status = "registered-m6-mixed-router-streaming-interop-program"
+plan_184_plan_of_record = "plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md"
+plan_184_closure = "plans/184-status.md"
+plan_184_status = "passed-m6-authenticated-i2np-runtime-and-reference-preflight"
+m6_authenticated_i2np_preflight = "passed-via-plan184"
 milestone10_planning_authority = "plan173"
 milestone10_foundation = "passed-via-plan174"
 milestone10_generic_tunnels = "passed-via-plan175"
@@ -333,7 +337,7 @@ milestone10_independent_application_clients = "local-rows-passed-plan181-not-clo
 milestone10_remote_service_interop = "not-yet-passed"
 milestone10_final_acceptance = "not-yet-closed"
 next_product_layer = "m6-mixed-router-streaming-interop"
-next_executable_plan = "183"
+next_executable_plan = "185"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
@@ -1481,5 +1485,23 @@ evidence = [
     "crates/i2pr-daemon/tests/service_tunnels_foundation.rs",
     "specs/protocols/11-service-tunnels.md",
     "plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md",
+]
+advertised = false
+
+[[surface]]
+id = "m6.authenticated-i2np-preflight"
+protocol = "i2np"
+structure = "daemon-owned-ssu2-router-dispatch-and-narrow-delivery"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 184 passed the M6 authenticated I2NP preflight: strict loopback/non-advertised [ssu2] activation, daemon-owned Ssu2DaemonService under ssu2-router supervision, central router_i2np dispatcher with authenticated peer preservation (standard/short classification, expiration/size/type validation, TunnelBuildReserved/TunnelData/RouterControl/Unsupported outcomes), narrow RouterDeliveryService over existing send_i2np, exact-pinned i2pd 2.61.0 bidirectional DeliveryStatus control with fail-closed 10-row lane. No tunnel/NetDB/Streaming/M10-remote claim; Plan 185 owns the first Short Tunnel Build."
+evidence = [
+    "crates/i2pr-daemon/src/router_i2np.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-daemon/tests/ssu2_daemon_preflight.rs",
+    "tests/integration/m6-interop/run-preflight.sh",
+    "plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md",
+    "plans/184-status.md",
 ]
 advertised = false

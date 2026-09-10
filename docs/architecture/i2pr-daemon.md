@@ -11,6 +11,13 @@ Path: `crates/i2pr-daemon/`
 
 Binary: `i2pr` (declared via `[[bin]]` in `Cargo.toml`).
 
+Plan 184 activates the first daemon-owned SSU2 transport under the
+strict loopback/non-advertised controlled profile
+(`crates/i2pr-daemon/src/router_i2np.rs`, `ssu2-router` service).
+No public advertisement, NetDB/tunnel/destination/Streaming, or M10
+remote-service claim follows from it; Plan 185 owns the first Short
+Tunnel Build.
+
 ## Purpose
 
 `i2pr-daemon` is the top of the dependency graph — it sees every
@@ -221,10 +228,25 @@ work is scoped to:
   and
   [`plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`](../../plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md).
 
+- **SSU2 router service** (Plan 184): owns the strict
+  `[ssu2]` controlled activation, the daemon-owned
+  `Ssu2DaemonService` under `ssu2-router` supervision, the central
+  authenticated router-I2NP dispatcher (`dispatch_router_i2np` with
+  standard/short classification and authenticated peer
+  preservation), and the narrow `RouterDeliveryService` over the
+  existing `send_i2np` seam. Exact-pinned i2pd 2.61.0 bidirectional
+  control is proven in
+  [`crates/i2pr-daemon/tests/ssu2_daemon_preflight.rs`](../../crates/i2pr-daemon/tests/ssu2_daemon_preflight.rs)
+  via `tests/integration/m6-interop/run-preflight.sh`. See
+  [`plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md`](../../plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md).
+
 What it **does not** do yet:
 
 - Open NTCP2 listeners (disabled under current authority).
 - Run `Ntcp2RuntimeService` or register `ntcp2-transport`.
+- Build tunnels, drive NetDB exchange, or run Streaming over the
+  router link (Plans 185–188 own those layers; the dispatcher only
+  reserves their hooks).
 - Apply live configuration changes.
 - Drive a live exploratory tunnel build (Plan 107 lands the
   substrate; Plan 108 landed the local architecture but its
@@ -254,7 +276,8 @@ which undercounted `netdb_seam`, `outbound_lookup`, and
 | `src/bootstrap.rs` | Plan 106 NetDB/bootstrap state machine | `BootstrapState`, `BootstrapPolicy`, `BootstrapSnapshot`, `BootstrapReport`, `ReseedAttemptSummary`, `Bootstrap`, `bootstrap_daemon`, `bootstrap_with_offline_reseed`, `build_trust_set`, `store_summary` |
 | `src/netdb_seam.rs` | Plan 106/117 runtime-facing seam for Plan 105 actions | `NetDbSeam`, `CompositionOutcome`, `ExploratoryPathStatus` |
 | `src/outbound_lookup.rs` | Plan 117 §8/§10 outbound exploratory data-plane composition | `compose_outbound_lookup`, `compose_outbound_publication`, `OutboundLookupDispatch`, `MAX_OUTBOUND_LOOKUP_CELLS`, `MAX_OUTBOUND_PUBLICATION_CELLS` |
-| `src/inbound_dispatch.rs` | Plan 117 §9 inbound exploratory `TunnelData` dispatch | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE` |
+| `src/inbound_dispatch.rs` | Plan 117 §9 inbound exploratory `TunnelData` dispatch (unchanged by Plan 184; the new router dispatcher sits above it) | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE` |
+| `src/router_i2np.rs` | Plan 184 central authenticated router-I2NP dispatcher, narrow delivery, and daemon-owned SSU2 service | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `verify_reference_router_info` |
 | `src/sam.rs` | Plans 137–149 supervised SAM 3.1 listener and composition root | `SamServiceState`, `execute_session_create` (self-composes bridge + driver), `execute_stream_connect`, `execute_stream_accept`, byte-exact `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw transition, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP` |
 | `src/i2cp.rs` | Plan 167 supervised loopback I2CP v0.9.67 listener and composition root extended by Plan 168 with the bounded per-session message/data-plane surface, by Plan 169 with the reconfigure transaction handler, the atomic reconfigure baseline in `I2cpSessionState::last_options`, and the synchronous `handle_destroy_session` data-plane drain, by Plan 171 with the explicit `stream.shutdown()` on the common per-connection terminal path, and by Plan 170 with the `ReplyAndFollowup` `RequestVariableLeaseSet` after `CreateSession` | `I2cpServiceState`, `I2cpSessionState`, `bind`, `serve`, `handle_connection`, `install_client_lease_set2`, `reserve_client_destination`, `handle_send_message`, `handle_send_message_expires`, `handle_dest_lookup`, `derive_bandwidth_reply`, `handle_reconfigure_session`, `handle_destroy_session`, `apply_reconfigure`, `ReconfigurationOutcome`, `teardown_connection`, `I2cpServiceSnapshot` |
 | `src/sam/fabric.rs` | Plan 149 localhost product fabric (OS-CSPRNG tunnel material, signed LeaseSet2, per-destination runtime-driver factory, typed `DeliverySweepCounters`) | `SamLocalProductFabric`, `LocalDestinationProduct`, `LocalhostInboundTunnelFactory`, `DeliverySweepCounters`, `LocalDeliveryDegradation` |

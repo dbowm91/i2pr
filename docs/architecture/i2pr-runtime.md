@@ -118,6 +118,10 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
   `Ssu2EstablishedLink`, `Ssu2InboundI2np`, `Ssu2Snapshot`,
   `Ssu2TestFaults`, `Ssu2BindError`, `SSU2_MAX_PATH_CANDIDATES_GLOBAL`
   (Plan 159 service-wide candidate ceiling), plus `SSU2_*` bound constants
+- Plan 184 daemon-composition re-exports (no new runtime behavior):
+  `IntroKey`, `Ssu2PublicKey`, `Ssu2RouterAddress`, `constants` so
+  `i2pr-daemon` composes controlled identity/addresses without
+  depending on `i2pr-transport-ssu2` directly
 - `ssu2_peer_relay` (Plan 160): `Ssu2PeerRelayService`,
   `Ssu2PeerRelayConfig` (`introducer_enabled`, default `false`),
   `Ssu2PeerRelaySnapshot`, `PeerRelayAdmission`,

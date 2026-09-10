@@ -387,7 +387,10 @@ record is not `superseded-by-*`. Currently:
   rows passed, 2 remote rows blocked with i2pd-2.61.0
   qualification provenance. Plan 183 registers the M6
   mixed-router program (see
-  [`plans/183-status.md`](../../plans/183-status.md)); M10 final
+  [`plans/183-status.md`](../../plans/183-status.md)); Plan 184
+  passed the authenticated I2NP preflight with no
+  tunnel/NetDB/Streaming claim (see
+  [`plans/184-status.md`](../../plans/184-status.md)); M10 final
   acceptance stays open.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).

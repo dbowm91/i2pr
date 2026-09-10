@@ -5,8 +5,10 @@ use it for anonymity, privacy, censorship resistance, or any security-sensitive
 workload. NTCP2 remains experimental and non-advertised; the production daemon
 does not activate NTCP2. SSU2 v2 has a localhost UDP runtime and Plan 161 has
 proven both direct authenticated IPv4 directions against exact-pinned i2pd 2.61.0;
-no public advertisement, public-network participation, broad router
-interoperability, or Milestone 6 interoperability is claimed.
+Plan 184 has proven the daemon-owned authenticated I2NP preflight against the same
+pin with no tunnel/NetDB/Streaming claim; no public advertisement, public-network
+participation, broad router interoperability, or Milestone 6 interoperability is
+claimed.
 
 ## Read first
 
@@ -62,6 +64,7 @@ Plan 180 = passed M10 service-tunnel composition, reconcile, and hardening
 Plan 181 = blocked-by-m6-mixed-router-streaming-blocker (local rows passed; remote gate pending plan183)
 Plan 182 = passed M10 local-delivery corrective
 Plan 183 = registered M6 mixed-router streaming interop program
+Plan 184 = passed M6 authenticated I2NP runtime and reference preflight
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
 Milestone 10 generic tunnels = passed-via-plan175 (profile; byte round-trip proven-via-plan182)
 Milestone 10 HTTP proxy = passed-via-plan176 (profile; byte round-trip proven-via-plan182)
@@ -73,7 +76,8 @@ Milestone 10 local round-trip = passed-via-plan182 (generic/HTTP/SOCKS/IRC succe
 Milestone 10 independent application clients = local-rows-passed-plan181-not-closed
 Milestone 10 remote service interop = not-yet-passed
 Milestone 10 final acceptance = not-yet-closed
-next_executable_plan = 183
+M6 authenticated I2NP preflight = passed-via-plan184 (no tunnel/NetDB/Streaming claim)
+next_executable_plan = 185
 next product layer = m6-mixed-router-streaming-interop
 ```
 
@@ -520,6 +524,28 @@ fetch script (`scripts/interop/fetch-service-tunnel-clients.sh`)
 and the manual `.github/workflows/service-tunnels-external.yml`
 lane; do not weaken the evidence checker to make CI pass.
 
+Focused M6 preflight seams currently include:
+
+```text
+cargo test --locked -p i2pr-daemon --lib router_i2np -- --test-threads=1
+cargo test --locked -p i2pr-daemon --lib config -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test ssu2_daemon_preflight -- --test-threads=1
+# expected: 5 passed, 1 ignored (external preflight gated)
+cargo test --locked -p i2pr-daemon --test ssu2_daemon_preflight \
+  ssu2_daemon_preflight_against_i2pd -- --ignored --exact --test-threads=1
+# without lane env: fail-closed (missing required env); with lane env: passes
+bash tests/integration/m6-interop/run-preflight.sh
+```
+
+Plan 184 owns the daemon-owned authenticated I2NP spine
+(`crates/i2pr-daemon/src/router_i2np.rs`: central dispatcher,
+narrow `RouterDeliveryService` over existing `send_i2np`, strict
+loopback/non-advertised `[ssu2]` activation, daemon-owned
+`Ssu2DaemonService` under `ssu2-router` supervision). The external
+preflight is ignored in routine CI and explicitly selected in its
+dedicated lane; do not add filename filtering, `|| true`, fake
+peer values, or production wire changes to make it green.
+
 Plan 164 added the I2CP fixture corpus (`tests/fixtures/i2cp/`) and its
 checker (`scripts/check-i2cp-vectors.sh`), enforced in routine Linux CI;
 do not weaken it to make CI pass. Plan 165 added the connection state
@@ -664,7 +690,8 @@ closed.
  - Plan 180 passed the M10 service-tunnel composition, reconcile, and hardening (see `plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md` and `plans/180-status.md`): the runtime-neutral `i2pr_service_tunnels::generation::DiffClass` typed classification (`Unchanged`, `MutableInPlace`, `ReplaceListener`, `ReplaceDestination`, `Remove`, `Add`); the daemon-owned `ServiceTunnelGeneration`/`DrainingGeneration` committed-generation model with `GenerationCounters { active_current_generation, active_draining_generation, forced_drain_closes_total }`; the `ServiceTunnelManager::reconcile(candidate, drain_deadline)` transactional algorithm that validates, diffs, stages Add/Replace*, then publishes the new generation atomically and pushes only replaced/removed old runtimes onto the draining list under a hard deadline; `reap_expired_drains` for forced-drain close handling; `generation_snapshot` for the Plan 180 §9 unified cross-service resource accounting matrix; the static `scripts/check-service-tunnel-boundaries.sh` checker enforcing the runtime-neutral constraint, no Garlic/I2NP construction in service-tunnels, the single shared `run_stream_pump` invariant, no unbounded Tokio channels, and exactly one `register_service_tunnel_manager` entry point. Two new narrowly named suites (`crates/i2pr-daemon/tests/service_tunnels_final_acceptance.rs` — 15 tests covering the Plan 180 §12 reconcile matrix, `crates/i2pr-daemon/tests/service_tunnels_adversarial_matrix.rs` — 12 tests covering the Plan 180 §13 cross-service adversarial matrix) bind the manager to a temp data directory and drive behavior only through the public API. Every Plan 174/175/176/177/178/179 product test remains green. Plan 180 closes the M10 local product layer; Plan 181 owns the M10 independent acceptance gate. M10 service tunnels stay experimental, loopback-only, disabled by default, and non-advertised; no independent router interop claim.
  - Plan 181 is blocked by the retained M6 mixed-router Streaming debt (see `plans/181-m10-independent-application-and-service-interop-final-closure.md` and `plans/181-status.md`): 29 local independent-application-client rows pass (unmodified curl HTTP/SOCKS, nc, stdlib generic driver, exact-pinned jaraco/irc through the real manager; restart stability; resource baselines; unsupported-profile ledger), and the two remote rows are recorded `blocked` with command/log provenance from a genuine qualification attempt (exact-pinned i2pd 2.61.0 SAM `DEST GENERATE` public destination; `unknown_peer>0`, `delivered=0`, no establishment, bounded timeout). Self-composed rows are never substituted for interop. Milestone 10 final acceptance stays open.
  - Plan 182 passed the M10 local-delivery corrective (see `plans/182-m10-local-delivery-corrective.md` and `plans/182-status.md`): per-destination delivery drivers reusing the Plan 129 `bridge_to_peer` seam, inbound-factory install, wildcard Streaming port 0 (SAM convention), SAM-parity accept paths with queued SYN responses, direction-branched pump sends with typed backpressure matching, orderly pump half-close (default no-op keeps SAM byte-identical), completed line-filtering IRC client executor, permit-for-task-lifetime capture, and active-slot release on every exit path. Nine round-trip tests in `service_tunnels_local_roundtrip.rs` plus six wire-surface tests prove the local byte round-trip the Plan 174–179 profiles assumed. No wire change.
- - Plan 183 registered the M6 mixed-router destination/Streaming interop program Plan 181 §6.3 requires (see `plans/183-m6-mixed-router-streaming-interop-program.md` and `plans/183-status.md`): registration only, no implementation, no M10 closure claim.
+  - Plan 183 registered the M6 mixed-router destination/Streaming interop program Plan 181 §6.3 requires (see `plans/183-m6-mixed-router-streaming-interop-program.md` and `plans/183-status.md`): registration only, no implementation, no M10 closure claim.
+ - Plan 184 passed the M6 authenticated I2NP preflight (see `plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md` and `plans/184-status.md`): strict loopback/non-advertised `[ssu2]` activation, daemon-owned `Ssu2DaemonService` under `ssu2-router` supervision, central `router_i2np` dispatcher with authenticated peer preservation, narrow `RouterDeliveryService` over existing `send_i2np`, exact-pinned i2pd 2.61.0 bidirectional control with fail-closed 10-row lane. No tunnel/NetDB/Streaming/M10-remote claim; Plan 185 owns the first Short Tunnel Build.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
 - No Plan 161 direction-A evidence implies Milestone 6 destination/Streaming/tunnel interoperability or broad router interoperability.
@@ -682,18 +709,12 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 182 passed the M10 local-delivery
-corrective (per-destination delivery drivers over the Plan 129
-`bridge_to_peer` seam, inbound-factory install, wildcard
-Streaming port 0 per the SAM convention, SAM-parity accept
-paths, direction-branched pump sends with typed backpressure
-matching, orderly pump half-close, completed IRC client
-executor, permit-for-task-lifetime capture, active-slot release
-on every exit path; 9 round-trip + 6 wire-surface tests green).
-Plan 181 ran its full lane: 29 local independent-application-client
-rows pass (unmodified curl, nc, stdlib generic driver,
-exact-pinned jaraco/irc, restart stability, baselines, ledger)
-while the two remote rows are recorded `blocked` with genuine
-i2pd-2.61.0 qualification provenance
-(`m6-mixed-router-streaming-blocker`); Plan 183 registers the
-required M6 program. M10 final acceptance stays open.**
+Current handoff: **Plan 184 passed the M6 authenticated I2NP
+runtime and reference preflight (strict loopback/non-advertised
+`[ssu2]` activation, daemon-owned `Ssu2DaemonService` under
+`ssu2-router` supervision, central `router_i2np` dispatcher with
+authenticated peer preservation, narrow `RouterDeliveryService`
+over existing `send_i2np`, exact-pinned i2pd 2.61.0 bidirectional
+control with fail-closed 10-row lane; no tunnel/NetDB/Streaming
+claim). Plan 185 owns the first Short Tunnel Build. M10 final
+acceptance stays open.**

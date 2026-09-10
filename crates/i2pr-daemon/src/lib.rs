@@ -15,6 +15,7 @@ pub mod i2cp;
 pub mod inbound_dispatch;
 pub mod netdb_seam;
 pub mod outbound_lookup;
+pub mod router_i2np;
 pub mod sam;
 pub mod service_generation;
 pub mod service_tunnels;
@@ -190,6 +191,10 @@ pub fn build_daemon_graph(config: &Config) -> Result<i2pr_runtime::ServiceGraph,
         register_i2cp_service(&mut builder, config)?;
     }
 
+    if config.ssu2.enabled {
+        register_ssu2_service(&mut builder, config)?;
+    }
+
     builder
         .build()
         .map_err(|e| DaemonError::RuntimeSupervisorFailed(format!("invalid service graph: {e}")))
@@ -318,6 +323,186 @@ fn register_i2cp_service(
         ))
         .map_err(|e| {
             DaemonError::RuntimeSupervisorFailed(format!("failed to register I2CP service: {e}"))
+        })?;
+    Ok(())
+}
+
+/// Registers the supervised loopback SSU2 router service in the
+/// supplied builder. Plan 184 owns the first daemon activation of
+/// the existing SSU2 runtime under the strict controlled profile
+/// (loopback bind, `advertise = false`, no introducer service). The
+/// factory loads the persistent router bundle, generates ephemeral
+/// controlled SSU2 identity material with the OS CSPRNG, starts the
+/// daemon-owned [`crate::router_i2np::Ssu2DaemonService`] under the
+/// service child scope, and pumps the bounded central dispatcher
+/// until cancellation. No hidden standalone runtime coexists with
+/// this instance in counted tests.
+fn register_ssu2_service(
+    builder: &mut i2pr_runtime::ServiceGraphBuilder,
+    config: &Config,
+) -> Result<(), DaemonError> {
+    use crate::router_i2np::{
+        Ssu2DaemonService, dispatch_router_i2np, generate_controlled_identity,
+    };
+    let ssu2_config = config.ssu2.clone();
+    let data_dir = config.router.data_dir.clone();
+    let ssu2_name = ServiceName::new("ssu2-router").expect("valid service name");
+    builder
+        .register(ServiceSpec::new(
+            ssu2_name,
+            ServiceClassification::Optional,
+            move |ctx| {
+                let ssu2_config = ssu2_config.clone();
+                let data_dir = data_dir.clone();
+                let cancellation = ctx.cancellation().clone();
+                let children = ctx.children();
+                Box::pin(async move {
+                    // Strict profile is enforced twice: once at config
+                    // parse time and again here so a future bypass
+                    // cannot reach socket ownership.
+                    if !ssu2_config.enabled
+                        || ssu2_config.advertise
+                        || ssu2_config.introducer_service
+                    {
+                        let detail = i2pr_core::HealthDetail::new(
+                            "SSU2 service requires the strict controlled profile",
+                        )
+                        .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::InvalidState,
+                                detail,
+                            ),
+                        );
+                    }
+                    let store = IdentityStore::in_data_dir(&data_dir);
+                    let bundle = match store.load() {
+                        Ok(bundle) => bundle,
+                        Err(error) => {
+                            let detail = i2pr_core::HealthDetail::new(format!(
+                                "SSU2 router identity unavailable: {error}"
+                            ))
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        }
+                    };
+                    // Controlled RouterInfo host/port: prefer IPv4
+                    // loopback when bound, otherwise IPv6 loopback.
+                    // An ephemeral `port = 0` uses a loopback
+                    // placeholder for the in-band RouterInfo because
+                    // `advertise = false` means the record is never
+                    // published; authentication binds through the
+                    // static key with out-of-band dial addresses.
+                    let (host, ri_port) = if ssu2_config.bind_ipv4.is_some() {
+                        (
+                            "127.0.0.1",
+                            if ssu2_config.port == 0 {
+                                44001
+                            } else {
+                                ssu2_config.port
+                            },
+                        )
+                    } else if ssu2_config.bind_ipv6.is_some() {
+                        (
+                            "::1",
+                            if ssu2_config.port == 0 {
+                                44001
+                            } else {
+                                ssu2_config.port
+                            },
+                        )
+                    } else {
+                        let detail =
+                            i2pr_core::HealthDetail::new("SSU2 service has no loopback bind").ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::InvalidState,
+                                detail,
+                            ),
+                        );
+                    };
+                    let identity = match generate_controlled_identity(&bundle, host, ri_port) {
+                        Ok(identity) => identity,
+                        Err(error) => {
+                            let detail = i2pr_core::HealthDetail::new(format!(
+                                "SSU2 identity failed: {error}"
+                            ))
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        }
+                    };
+                    let daemon_service = match Ssu2DaemonService::new(&ssu2_config, identity) {
+                        Ok(service) => service,
+                        Err(error) => {
+                            let detail = i2pr_core::HealthDetail::new(format!(
+                                "SSU2 service failed: {error}"
+                            ))
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        }
+                    };
+                    let mut handle = match daemon_service.start(&children, &ssu2_config).await {
+                        Ok(handle) => handle,
+                        Err(error) => {
+                            let detail =
+                                i2pr_core::HealthDetail::new(format!("SSU2 bind failed: {error}"))
+                                    .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::Internal,
+                                    detail,
+                                ),
+                            );
+                        }
+                    };
+                    // Central dispatcher pump: no task per message, no
+                    // unbounded retention. Outcomes are classified and
+                    // dropped; Plan 185/186 own the live tunnel/NetDB
+                    // hooks. Cancellation drains orderly.
+                    let token = cancellation.clone();
+                    loop {
+                        tokio::select! {
+                            biased;
+                            _ = token.cancelled() => {
+                                handle.shutdown();
+                                return i2pr_runtime::ServiceResult::RequestedShutdown;
+                            }
+                            inbound = handle.next_inbound() => {
+                                let Some(inbound) = inbound else {
+                                    return i2pr_runtime::ServiceResult::RequestedShutdown;
+                                };
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+                                    .unwrap_or(0);
+                                // Bounded dispatch: success and failure
+                                // both release the inbound bytes with the
+                                // call frame. Unsupported bodies are an
+                                // explicit disposition, not an error.
+                                let _ = dispatch_router_i2np(&inbound, now_ms);
+                            }
+                        }
+                    }
+                })
+            },
+        ))
+        .map_err(|e| {
+            DaemonError::RuntimeSupervisorFailed(format!("failed to register SSU2 service: {e}"))
         })?;
     Ok(())
 }
