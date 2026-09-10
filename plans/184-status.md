@@ -108,11 +108,13 @@ tests/integration/m6-interop/run-preflight.sh (new)
 
 ## Evidence (Plan 184)
 
-Base tree for the lane: `6f598fc8274860e109fb84a466dc7ca612c045b1`
-plus the Plan 184 working tree (this status's commit contains the
-same code plus docs). Full workspace floor passed on the working
-tree before commit; routine CI is verified on the pushed head
-afterwards (see handoff).
+Implementation head: `782a8fe056875f491a1b02daaa1715ef1d2b3cb6`
+(`plan184: pass M6 authenticated I2NP runtime and reference
+preflight`). Base tree for the lane run below was
+`6f598fc8274860e109fb84a466dc7ca612c045b1` plus the identical
+Plan 184 working tree; routine CI run `34539210477` is green on
+the implementation head (MSRV + dependency-policy + quality
+ubuntu + quality macos, all `success`).
 
 Preflight lane (exact-pinned i2pd, loopback, unmodified):
 
