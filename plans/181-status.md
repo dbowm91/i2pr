@@ -199,6 +199,23 @@ milestone10_final_acceptance = not-yet-closed
 next_executable_plan = 183
 ```
 
-Closing implementation heads and exact-head CI run IDs are
-recorded in the follow-up closure pointer commit once routine
-CI is green (same practice as prior plans).
+Closing implementation heads and exact-head CI evidence
+(same practice as prior plans):
+
+```text
+plan_182 implementation = d3be34f
+plan_181 lane + docs   = e9ce9db
+routine CI run         = 34519916576 (success)
+  Quality (ubuntu-latest) = success (fmt, check, workspace
+    test incl. the 9 + 6 new suites, clippy, doc, all static
+    checkers incl. check-service-tunnel-acceptance-evidence.sh,
+    ntcp2 harness)
+  Quality (macos-latest)  = success
+  MSRV (Ubuntu)           = success
+  Dependency policy       = success
+```
+
+Full workspace floor also passed locally on the closing tree
+before push (`cargo test --locked --workspace --all-targets`:
+2130 passed, 2 ignored across 82 suites; clippy/doc/deny and
+every static checker green).
