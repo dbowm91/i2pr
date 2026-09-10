@@ -287,6 +287,9 @@ async fn open_streaming(
             ));
         }
     };
+    // Plan 182: kick the delivery driver so the queued SYN is
+    // routed immediately instead of waiting for the fallback tick.
+    manager.notify_outbound_signal(destination_id);
     wait_for_established(manager, destination_id, connection_id, timeout_ms)
         .await
         .map_err(|_| Socks5Error::new(Socks5ErrorKind::ConnectFailure, "deadline reached"))?;
@@ -559,7 +562,7 @@ pub async fn run_socks5_client_loop(
         };
         let aggregate_permit: Option<tokio::sync::OwnedSemaphorePermit> =
             manager.aggregate_permit().try_acquire_owned().ok();
-        let Some(_aggregate_permit) = aggregate_permit else {
+        let Some(permit_for_task) = aggregate_permit else {
             warn!(
                 service = %runtime.spec_id,
                 "socks5 client tunnel aggregate ceiling reached; rejecting connection"
@@ -575,6 +578,10 @@ pub async fn run_socks5_client_loop(
         let cancellation_for_task = cancellation.clone();
         let spec_id_for_log = runtime.spec_id.clone();
         tokio::spawn(async move {
+            // Plan 182: hold the aggregate slot for the connection
+            // lifetime; the previous let-else binding released it
+            // at spawn time so the ceiling never engaged.
+            let _permit_for_task = permit_for_task;
             let outcome = run_socks5_connection(
                 manager_for_task,
                 runtime_for_task.clone(),

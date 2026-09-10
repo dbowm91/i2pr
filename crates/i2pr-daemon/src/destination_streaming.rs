@@ -36,7 +36,7 @@
 #![forbid(unsafe_code)]
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -104,7 +104,25 @@ pub trait StreamPumpEndpoint: Send + Sync {
     /// Wakes the per-destination delivery driver so admitted
     /// Streaming packets are routed without waiting for a poll.
     fn notify_outbound(&self);
+    /// Emits an orderly Streaming CLOSE for the owning connection
+    /// after the local socket reached EOF. Returns `true` when a
+    /// CLOSE was queued; the pump then lingers (drain only, no
+    /// admission) for the peer close up to its deadline so
+    /// in-flight responses still reach the half-closed socket.
+    /// The default no-op returns `false` and the pump exits on EOF
+    /// exactly as before (the SAM endpoint keeps this default).
+    fn shutdown_write(&self) -> bool {
+        false
+    }
 }
+
+/// Bounded linger after an orderly CLOSE so a half-closed socket
+/// still receives in-flight responses. Only endpoints whose
+/// `shutdown_write` queued a CLOSE linger; the default path exits
+/// on EOF exactly as before.
+const PUMP_EOF_LINGER: Duration = Duration::from_secs(15);
+/// Park between linger drain polls.
+const PUMP_EOF_PARK: Duration = Duration::from_millis(5);
 
 /// Bounded pump configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,35 +187,50 @@ where
     let mut chunk = vec![0_u8; max_chunk];
     let mut carry: Vec<u8> = initial_bytes;
     let mut eof = false;
+    let mut linger_deadline: Option<Instant> = None;
     let mut read_timeout = tokio::time::interval(config.read_timeout);
     read_timeout.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     read_timeout.tick().await;
 
-    while !eof {
+    loop {
         // ----- Local -> Streaming: read bounded chunk and admit -----
+        // After local EOF no more bytes are admitted; the loop only
+        // drains until the peer close arrives or the linger deadline
+        // fires.
         let mut timed_out = false;
         let mut backpressured = false;
-        let read_size = if carry.is_empty() {
-            tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return Ok(()),
-                _ = read_timeout.tick() => {
-                    timed_out = true;
-                    0
+        let mut read_size = 0_usize;
+        if !eof {
+            read_size = if carry.is_empty() {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => return Ok(()),
+                    _ = read_timeout.tick() => {
+                        timed_out = true;
+                        0
+                    }
+                    result = socket.read(&mut chunk) => match result {
+                        Ok(0) => 0,
+                        Ok(n) => n,
+                        Err(error) => return Err(PumpError::Io(error)),
+                    },
                 }
-                result = socket.read(&mut chunk) => match result {
-                    Ok(0) => 0,
-                    Ok(n) => n,
-                    Err(error) => return Err(PumpError::Io(error)),
-                },
+            } else {
+                carry.len()
+            };
+            if timed_out {
+                // No local byte, but Streaming->local data may be ready.
+            } else if read_size == 0 && carry.is_empty() {
+                eof = true;
+                // Orderly half-close: endpoints that queued a CLOSE
+                // linger for the peer close; the default no-op keeps
+                // the historical exit-on-EOF behavior exactly.
+                if endpoint.shutdown_write() {
+                    linger_deadline = Some(Instant::now() + PUMP_EOF_LINGER);
+                }
             }
         } else {
-            carry.len()
-        };
-        if timed_out {
-            // No local byte, but Streaming->local data may be ready.
-        } else if read_size == 0 && carry.is_empty() {
-            eof = true;
+            timed_out = true;
         }
         if !eof && !timed_out {
             let payload: Vec<u8> = if carry.is_empty() {
@@ -248,8 +281,29 @@ where
                 return Err(PumpError::Io(error));
             }
         }
+        // A peer CLOSE is answered with our own CLOSE response so
+        // both directions converge promptly instead of leaving one
+        // side lingering to its deadline. Endpoints without
+        // orderly-close support return `false` (no-op) and behavior
+        // is unchanged.
         if endpoint.is_terminal() {
-            eof = true;
+            endpoint.shutdown_write();
+            break;
+        }
+        if eof {
+            match linger_deadline {
+                None => break,
+                Some(deadline) => {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => return Ok(()),
+                        _ = tokio::time::sleep(PUMP_EOF_PARK) => {}
+                    }
+                }
+            }
         }
         if backpressured && !carry.is_empty() {
             tokio::select! {

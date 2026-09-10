@@ -37,6 +37,8 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use i2pr_client::streaming::connection::ConnectionId;
+use i2pr_client::streaming::manager::{DEFAULT_ADVERTISED_MAX_PAYLOAD, RemoteDestination};
+use i2pr_crypto::OsRng;
 use i2pr_runtime::CancellationToken;
 use i2pr_service_tunnels::IrcLimits;
 use tokio::io::AsyncWriteExt;
@@ -348,12 +350,14 @@ async fn run_irc_raw_pump(
     runtime: Arc<ServiceRuntime>,
     target_stream: TcpStream,
     connection_id: ConnectionId,
+    peer: RemoteDestination,
     cancellation: CancellationToken,
 ) -> IrcServerConnectionOutcome {
     let endpoint: Arc<dyn StreamPumpEndpoint> = Arc::new(ServicePumpEndpoint::new_server(
         Arc::clone(&manager),
         runtime.destination_id,
         connection_id,
+        peer,
     ));
     let config = PumpConfig::defaults(32 * 1024);
     let result = run_stream_pump(target_stream, Vec::new(), endpoint, config, cancellation).await;
@@ -396,14 +400,19 @@ pub async fn run_irc_server_connection(
     runtime: Arc<ServiceRuntime>,
     target: SocketAddr,
     connection_id: ConnectionId,
-    peer_destination_hash: [u8; 32],
+    peer: RemoteDestination,
     options: IrcServerOptions,
     cancellation: CancellationToken,
 ) -> IrcServerConnectionOutcome {
     let mut source =
         StreamingInterceptionSource::new(&manager, runtime.destination_id, connection_id);
     let interception =
-        intercept_registration(&mut source, peer_destination_hash, options, &cancellation).await;
+        intercept_registration(&mut source, peer.destination_hash, options, &cancellation).await;
+    debug!(service = %runtime.spec_id, connection_id = connection_id.raw(), outcome = ?match &interception {
+        InterceptionResult::Ready { .. } => "ready",
+        InterceptionResult::Rejected(_) => "rejected",
+        InterceptionResult::PeerClosed => "peer-closed",
+    }, "irc registration outcome");
     match interception {
         InterceptionResult::PeerClosed => IrcServerConnectionOutcome::PeerClosed,
         InterceptionResult::Rejected(_reason) => IrcServerConnectionOutcome::RegistrationRejected,
@@ -412,7 +421,15 @@ pub async fn run_irc_server_connection(
                 Ok(stream) => stream,
                 Err(outcome) => return outcome,
             };
-            run_irc_raw_pump(manager, runtime, target_stream, connection_id, cancellation).await
+            run_irc_raw_pump(
+                manager,
+                runtime,
+                target_stream,
+                connection_id,
+                peer,
+                cancellation,
+            )
+            .await
         }
     }
 }
@@ -436,7 +453,12 @@ pub async fn run_irc_server_loop(
     let mut ticker = tokio::time::interval(Duration::from_millis(50));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ticker.tick().await;
-    let port = manager.server_streaming_port_for(runtime).unwrap_or(1_u16);
+    // Plan 182: wildcard port 0 matches the port-0 client SYNs per
+    // the SAM convention (see `build_service_runtime`). The stored
+    // port is always `Some(0)` for server tunnels; the fallback
+    // stays 0 so a missing value can never resurrect the old
+    // port-1 mismatch.
+    let port = manager.server_streaming_port_for(runtime).unwrap_or(0_u16);
     loop {
         tokio::select! {
             biased;
@@ -450,6 +472,16 @@ pub async fn run_irc_server_loop(
             }
         });
         for connection_id in accepted_ids {
+            // Plan 182: answer the SYN before waiting for
+            // Established. Without the SYN response the handshake
+            // can never complete; see `accept_irc_inbound_syn`.
+            if accept_irc_inbound_syn(manager, runtime, connection_id).is_none() {
+                debug!(service = %runtime.spec_id, connection_id = connection_id.raw(), "irc accept failed");
+                runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            debug!(service = %runtime.spec_id, connection_id = connection_id.raw(), "irc SYN answered");
+            manager.notify_outbound_signal(runtime.destination_id);
             spawn_irc_server_connection(
                 Arc::clone(manager),
                 Arc::clone(runtime),
@@ -461,6 +493,61 @@ pub async fn run_irc_server_loop(
         }
     }
     Ok(())
+}
+
+/// Answers one accepted inbound SYN with the connection's real
+/// authenticated peer metadata and real port tuple (SAM parity),
+/// queues the SYN response for the delivery driver, and returns
+/// the authenticated peer [`RemoteDestination`] the pump needs
+/// for server-to-client sends. Returns `None` when the accept
+/// fails; the caller counts the failure and drops the connection.
+fn accept_irc_inbound_syn(
+    manager: &ServiceTunnelManager,
+    runtime: &ServiceRuntime,
+    connection_id: ConnectionId,
+) -> Option<RemoteDestination> {
+    let now_ms = service_streaming_now_ms();
+    manager.with_destination_bridge(runtime.destination_id, |bridge| {
+        let (local_port, remote_port, peer_hash, peer_signing, peer_static_public) = {
+            let conn = bridge.receiver_streaming().get_connection(connection_id)?;
+            let peer_static_public: [u8; 32] = conn
+                .peer_destination()
+                .and_then(|destination| destination.public_key().as_bytes().try_into().ok())
+                .unwrap_or([0_u8; 32]);
+            (
+                conn.local_port(),
+                conn.remote_port(),
+                *conn.peer_destination_hash(),
+                conn.peer_signing_key().clone(),
+                peer_static_public,
+            )
+        };
+        let peer = RemoteDestination {
+            destination_hash: peer_hash,
+            signing_public_key: peer_signing,
+            static_public_key: peer_static_public,
+        };
+        let identity_arc = bridge.identity();
+        let mut os_rng = OsRng;
+        let mut rng = rand_core::UnwrapMut(&mut os_rng);
+        let request = bridge
+            .receiver_streaming_mut()
+            .accept_inbound_syn(
+                identity_arc.as_ref(),
+                &peer,
+                connection_id,
+                local_port,
+                remote_port,
+                DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                now_ms,
+                &mut rng,
+            )
+            .ok()?;
+        bridge
+            .receiver_streaming_mut()
+            .queue_outbound_packet(request);
+        Some(peer)
+    })?
 }
 
 fn info_irc_server_loop_started(runtime: &ServiceRuntime, target: std::net::SocketAddr) {
@@ -547,23 +634,35 @@ async fn run_irc_server_connection_established(
     cancellation: CancellationToken,
 ) -> IrcServerConnectionOutcome {
     let deadline = Instant::now() + Duration::from_secs(15);
-    let mut peer_hash: Option<[u8; 32]> = None;
+    let started = Instant::now();
+    let mut peer: Option<RemoteDestination> = None;
+    let mut last_state_log = Instant::now();
     while Instant::now() < deadline {
         if cancellation.is_cancelled() {
             return IrcServerConnectionOutcome::PeerClosed;
         }
-        let snapshot: Option<
-            Option<(
-                [u8; 32],
-                i2pr_client::streaming::connection::ConnectionState,
-            )>,
-        > = manager.with_destination_bridge(runtime.destination_id, move |bridge| {
-            let conn = bridge.receiver_streaming().get_connection(connection_id);
-            conn.map(|c| (*c.peer_destination_hash(), c.state()))
+        let snapshot = manager.with_destination_bridge(runtime.destination_id, |bridge| {
+            let conn = bridge.receiver_streaming().get_connection(connection_id)?;
+            let peer_static_public: [u8; 32] = conn
+                .peer_destination()
+                .and_then(|destination| destination.public_key().as_bytes().try_into().ok())
+                .unwrap_or([0_u8; 32]);
+            Some((
+                RemoteDestination {
+                    destination_hash: *conn.peer_destination_hash(),
+                    signing_public_key: conn.peer_signing_key().clone(),
+                    static_public_key: peer_static_public,
+                },
+                conn.state(),
+            ))
         });
-        let Some(Some((hash, state))) = snapshot else {
+        let Some(Some((candidate, state))) = snapshot else {
             return IrcServerConnectionOutcome::PeerClosed;
         };
+        if last_state_log.elapsed() >= Duration::from_secs(1) {
+            last_state_log = Instant::now();
+            debug!(service = %runtime.spec_id, connection_id = connection_id.raw(), state = ?state, elapsed = ?started.elapsed(), "irc waiting for established");
+        }
         {
             use i2pr_client::streaming::connection::ConnectionState;
             if matches!(state, ConnectionState::Closed | ConnectionState::Reset) {
@@ -575,14 +674,14 @@ async fn run_irc_server_connection_established(
             // the hash be the only acceptable source for the
             // projected hostname, so we capture it here even
             // before the connection reaches Established.
-            peer_hash = Some(hash);
+            peer = Some(candidate);
             if matches!(state, ConnectionState::Established) {
                 break;
             }
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    let Some(peer_hash) = peer_hash else {
+    let Some(peer) = peer else {
         return IrcServerConnectionOutcome::PeerClosed;
     };
     run_irc_server_connection(
@@ -590,7 +689,7 @@ async fn run_irc_server_connection_established(
         runtime,
         target,
         connection_id,
-        peer_hash,
+        peer,
         options,
         cancellation,
     )

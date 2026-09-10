@@ -36,16 +36,18 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use i2pr_client::streaming::StreamingError;
 use i2pr_client::streaming::connection::{ConnectionId, ConnectionState};
 use i2pr_client::streaming::manager::{
     ConnectOutcome, DEFAULT_ADVERTISED_MAX_PAYLOAD, ListenerOutcome, RemoteDestination,
+    StreamingManagerError,
 };
 use i2pr_client::{
     DestinationConfig, DestinationId, DestinationIdentity, DestinationOutboundRole,
     DestinationRegistry, DestinationRuntime, DestinationShutdown, RegistryConfig,
 };
 use i2pr_crypto::{IDENTITY_PADDING_LENGTH, OsRng, PRIVATE_KEY_LENGTH, X25519_KEY_LENGTH};
-use i2pr_netdb::ValidatedLeaseSet2;
+use i2pr_netdb::{LeaseSet2ValidationContext, ValidatedLeaseSet2};
 use i2pr_proto::{Destination, LeaseSet2};
 use i2pr_runtime::{CancellationToken, ChildScope};
 use i2pr_service_tunnels::{
@@ -55,9 +57,10 @@ use i2pr_service_tunnels::{
 use i2pr_storage::{
     ServiceDestinationRecord, ServiceDestinationStorageError, ServiceDestinationStore,
 };
+use i2pr_tunnel::TunnelId;
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
@@ -65,9 +68,10 @@ use zeroize::Zeroizing;
 use crate::destination_streaming::{
     PumpConfig, PumpEndpointError, PumpSendDisposition, StreamPumpEndpoint, run_stream_pump,
 };
-use crate::sam::fabric::SamLocalProductFabric;
+use crate::sam::fabric::{DeliverySweepCounters, SamLocalProductFabric, degrade_to_reason};
 use crate::sam::streams::{
     InboundTunnelFactory, SamDestinationBridge, SamDestinationHandle, SamDestinations,
+    bridge_to_peer,
 };
 use crate::service_generation::{
     DrainingGeneration, GenerationCounters, GenerationIdAllocator, ServiceTunnelGeneration,
@@ -205,6 +209,18 @@ pub struct ServiceTunnelManager {
     draining_generations: Mutex<Vec<DrainingGeneration>>,
     /// Plan 180 §3 monotonic generation id allocator.
     generation_ids: GenerationIdAllocator,
+    /// Plan 182 per-destination outbound wake signals for the
+    /// local-delivery driver. `send_data` admission and SYN/SYN-response
+    /// queueing notify the owning destination's entry so the driver
+    /// routes without waiting for its fallback tick.
+    outbound_signals: Mutex<HashMap<DestinationId, Arc<Notify>>>,
+    /// Plan 182 cumulative typed delivery-sweep counters per
+    /// destination. Sweeps accumulate with saturating arithmetic;
+    /// payloads and peer identities are never retained.
+    delivery_counters: Mutex<HashMap<DestinationId, DeliverySweepCounters>>,
+    /// Plan 182 per-destination delivery-driver cancellation tokens.
+    /// One entry per live driver; removed when the driver exits.
+    destination_drivers: Mutex<HashMap<DestinationId, CancellationToken>>,
 }
 
 impl std::fmt::Debug for ServiceTunnelManager {
@@ -246,6 +262,9 @@ impl ServiceTunnelManager {
             committed_generation: Mutex::new(None),
             draining_generations: Mutex::new(Vec::new()),
             generation_ids: GenerationIdAllocator::default(),
+            outbound_signals: Mutex::new(HashMap::new()),
+            delivery_counters: Mutex::new(HashMap::new()),
+            destination_drivers: Mutex::new(HashMap::new()),
         })
     }
 
@@ -625,6 +644,24 @@ impl ServiceTunnelManager {
         // `DestinationRuntime` is not `Clone` and we already moved
         // the staged instances into the per-generation registry.
         self.replace_manager_handles(&new_runtimes)?;
+        // Plan 182: cancel delivery drivers whose destination is no
+        // longer committed. Their sweep would idle forever against
+        // a map that no longer contains their id; the owning child
+        // scope still bounds the task lifetime. Counter entries are
+        // retained for evidence.
+        {
+            let live: std::collections::HashSet<DestinationId> = new_runtimes
+                .values()
+                .map(|runtime| runtime.destination_id)
+                .collect();
+            if let Ok(drivers) = self.destination_drivers.lock() {
+                for (id, token) in drivers.iter() {
+                    if !live.contains(id) {
+                        let _ = token.cancel(i2pr_core::CancellationReason::ParentScope);
+                    }
+                }
+            }
+        }
         Ok(ReconcileOutcome {
             generation_id: new_generation_id,
             diff,
@@ -804,10 +841,33 @@ impl ServiceTunnelManager {
         self: &Arc<Self>,
         runtimes: Vec<Arc<ServiceRuntime>>,
         children: &ChildScope,
-        _cancellation: CancellationToken,
+        cancellation: CancellationToken,
     ) -> Result<usize, ServiceTunnelError> {
         let mut started = 0_usize;
         for runtime in runtimes {
+            // Plan 182: every service destination owns one supervised
+            // local-delivery driver so queued Streaming packets reach
+            // co-owned peer bridges. Without the driver the SYN
+            // never leaves the client bridge and establishment
+            // times out; see plans/182-m10-local-delivery-corrective.md.
+            // A spawn failure for the driver is fail-closed: the
+            // service loop below would never establish, so surface
+            // the error instead of starting a half-wired service.
+            self.spawn_destination_driver(runtime.destination_id, children, cancellation.clone());
+            // `spawn_destination_driver` is idempotent and never
+            // fails; a missing driver entry afterwards means the
+            // child scope rejected the spawn.
+            let driver_live = self
+                .destination_drivers
+                .lock()
+                .map(|drivers| drivers.contains_key(&runtime.destination_id))
+                .unwrap_or(false);
+            if !driver_live {
+                return Err(ServiceTunnelError::InvalidConfig(format!(
+                    "{} child scope rejected service delivery driver",
+                    runtime.spec_id
+                )));
+            }
             let manager_for_task = Arc::clone(self);
             let runtime_for_task = Arc::clone(&runtime);
             let spec_id = runtime.spec_id.clone();
@@ -844,7 +904,7 @@ impl ServiceTunnelManager {
         Ok(started)
     }
 
-    /// Stops every service runtime.
+    /// Stops every service runtime and every delivery driver.
     pub async fn shutdown(&self) {
         let runtimes = match self.runtimes.lock() {
             Ok(guard) => guard,
@@ -854,6 +914,15 @@ impl ServiceTunnelManager {
             let _ = runtime
                 .cancellation
                 .cancel(i2pr_core::CancellationReason::ParentScope);
+        }
+        // Plan 182: delivery drivers are owned by the same
+        // supervisor scope, but cancel them explicitly so an
+        // idle driver cannot outlive the runtimes it serves.
+        // Counter entries are retained for post-shutdown evidence.
+        if let Ok(drivers) = self.destination_drivers.lock() {
+            for (_, token) in drivers.iter() {
+                let _ = token.cancel(i2pr_core::CancellationReason::ParentScope);
+            }
         }
     }
 
@@ -943,6 +1012,261 @@ impl ServiceTunnelManager {
         guard.get(destination_id).map(|handle| handle.with(closure))
     }
 
+    /// Returns (or lazily creates) the outbound-signal [`Notify`]
+    /// for one service destination. Plan 182: the per-destination
+    /// local-delivery driver awaits this handle; SYN queueing,
+    /// SYN-response queueing, and pump admission notify it.
+    pub fn outbound_signal(&self, destination_id: DestinationId) -> Arc<Notify> {
+        let mut map = self
+            .outbound_signals
+            .lock()
+            .expect("outbound signals poisoned");
+        map.entry(destination_id)
+            .or_insert_with(|| Arc::new(Notify::new()))
+            .clone()
+    }
+
+    /// Wakes the delivery driver for one service destination.
+    /// Idempotent; safe to call when no driver is registered.
+    pub fn notify_outbound_signal(&self, destination_id: DestinationId) {
+        let notify = self.outbound_signal(destination_id);
+        notify.notify_one();
+    }
+
+    /// Returns the cumulative typed delivery-sweep counters for one
+    /// service destination. Payloads and peer identities are never
+    /// retained.
+    pub fn delivery_counters(&self, destination_id: DestinationId) -> DeliverySweepCounters {
+        self.delivery_counters
+            .lock()
+            .ok()
+            .and_then(|counters| counters.get(&destination_id).copied())
+            .unwrap_or_default()
+    }
+
+    fn record_delivery_counters(
+        &self,
+        destination_id: DestinationId,
+        counters: DeliverySweepCounters,
+    ) {
+        if let Ok(mut entries) = self.delivery_counters.lock() {
+            entries
+                .entry(destination_id)
+                .or_default()
+                .saturating_add_assign(counters);
+        }
+    }
+
+    /// Spawns the Plan 182 per-destination local-delivery driver for
+    /// `destination_id` under `children`. The driver drains the
+    /// destination's queued `TransportSendRequest`s through the
+    /// Plan 129 local seam into co-owned peer bridges (the same
+    /// seam SAM uses), so client/server tunnels owned by one
+    /// manager can establish Streaming and move bytes without any
+    /// external router. Idempotent per destination; a spawn failure
+    /// leaves no half-registered driver behind.
+    pub fn spawn_destination_driver(
+        self: &Arc<Self>,
+        destination_id: DestinationId,
+        children: &ChildScope,
+        cancellation: CancellationToken,
+    ) {
+        let driver_cancellation = cancellation.child_token();
+        {
+            let mut drivers = self
+                .destination_drivers
+                .lock()
+                .expect("destination drivers poisoned");
+            if drivers.contains_key(&destination_id) {
+                return;
+            }
+            drivers.insert(destination_id, driver_cancellation.clone());
+        }
+        let state = Arc::clone(self);
+        let spawn_result = children.spawn(move |task_cancellation| async move {
+            run_service_delivery_driver(
+                state,
+                destination_id,
+                driver_cancellation,
+                task_cancellation,
+            )
+            .await;
+            Ok(())
+        });
+        if spawn_result.is_err()
+            && let Ok(mut drivers) = self.destination_drivers.lock()
+        {
+            drivers.remove(&destination_id);
+        }
+    }
+
+    /// Drains every queued `TransportSendRequest` from both the
+    /// canonical and the receiver-mirror `StreamingManager`s of one
+    /// service destination, delivers each through the Plan 129
+    /// local seam to the co-owned peer bridge (looked up by
+    /// destination hash in the manager-level mirror), and returns
+    /// typed per-sweep counters. Mirrors the SAM `deliver_outbound`
+    /// seam; the deterministic fault-profile hook stays a SAM-test
+    /// seam and is intentionally absent here.
+    pub fn deliver_outbound(&self, destination_id: DestinationId) -> DeliverySweepCounters {
+        let now_seconds = service_now_seconds();
+        let now_ms = service_streaming_now_ms();
+        let destinations_arc = {
+            // Clone the mirror map handle scope: the mirror itself
+            // stays behind its own mutex; we only need the Arc to
+            // the map guard pattern used below. Re-lock per step
+            // exactly as the SAM seam does.
+            &self.sam_destinations
+        };
+        let sender = {
+            let destinations = destinations_arc.lock().expect("sam destinations poisoned");
+            match destinations.get(destination_id) {
+                Some(bridge) => bridge,
+                None => return DeliverySweepCounters::default(),
+            }
+        };
+        let requests: Vec<i2pr_client::streaming::transport::TransportSendRequest> =
+            sender.with(|bridge| {
+                let mut all = bridge.streaming_mut().drain_outbound();
+                all.extend(bridge.receiver_streaming_mut().drain_outbound());
+                all
+            });
+        if requests.is_empty() {
+            return DeliverySweepCounters::default();
+        }
+        let mut counters = DeliverySweepCounters {
+            delivered: 0,
+            missing_factory: 0,
+            factory_exhausted: 0,
+            unknown_peer: 0,
+            delivery_failed: 0,
+        };
+        let outbound_hop0_hash = i2pr_proto::Hash::from_bytes([0xA1; 32]);
+        let outbound_hop1_hash = i2pr_proto::Hash::from_bytes([0xA2; 32]);
+        let outbound_tunnel_id = match TunnelId::new(0x0200_0000) {
+            Ok(id) => id,
+            Err(_) => return counters,
+        };
+        let mut os_rng = OsRng;
+        let mut rng = rand_core::UnwrapMut(&mut os_rng);
+        for request in requests {
+            let peer_destination_hash = request.destination_hash;
+            let peer = destinations_arc
+                .lock()
+                .expect("sam destinations poisoned")
+                .lookup_by_peer_hash(&peer_destination_hash);
+            let peer = match peer {
+                Some(peer) => peer,
+                None => {
+                    counters.unknown_peer = counters.unknown_peer.saturating_add(1);
+                    self.terminate_failed_delivery(destination_id, &request);
+                    continue;
+                }
+            };
+            let sender_clone = destinations_arc
+                .lock()
+                .expect("sam destinations poisoned")
+                .get(destination_id)
+                .expect("sender still registered");
+            let (peer_lease_set2, peer_identity_key) =
+                peer.with(|bridge| (bridge.lease_set2().clone(), bridge.identity_netdb_key()));
+            let peer_lease_set2 = match ValidatedLeaseSet2::from_lease_set2(
+                peer_lease_set2,
+                Some(peer_identity_key),
+                LeaseSet2ValidationContext::new(now_seconds),
+            ) {
+                Ok(validated) => validated,
+                Err(error) => {
+                    debug!(error = %error, "service local peer LeaseSet2 validation failed");
+                    counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                    self.terminate_failed_delivery(destination_id, &request);
+                    continue;
+                }
+            };
+            if let Err(error) = sender_clone.with(|bridge| {
+                bridge
+                    .routing_mut()
+                    .install_remote_lease_set2(peer_lease_set2)
+            }) {
+                debug!(error = %error, "service local peer LeaseSet2 install failed");
+                counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                self.terminate_failed_delivery(destination_id, &request);
+                continue;
+            }
+            let inbound_factory_present =
+                peer.with(|bridge| bridge.inbound_tunnel_factory().is_some());
+            let inbound_tunnel = peer.with(|bridge| {
+                bridge
+                    .inbound_tunnel_factory()
+                    .and_then(|factory| factory.build_inbound_tunnel().ok())
+            });
+            let inbound_tunnel = match inbound_tunnel {
+                Some(tunnel) => tunnel,
+                None => {
+                    if inbound_factory_present {
+                        counters.factory_exhausted = counters.factory_exhausted.saturating_add(1);
+                    } else {
+                        counters.missing_factory = counters.missing_factory.saturating_add(1);
+                    }
+                    self.terminate_failed_delivery(destination_id, &request);
+                    continue;
+                }
+            };
+            let delivery = bridge_to_peer(
+                &sender_clone,
+                &peer,
+                outbound_hop0_hash,
+                outbound_hop1_hash,
+                &request,
+                now_seconds,
+                now_ms,
+                outbound_tunnel_id,
+                inbound_tunnel,
+                &mut rng,
+            );
+            if delivery.is_ok() {
+                counters.delivered = counters.delivered.saturating_add(1);
+            } else {
+                counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                self.terminate_failed_delivery(destination_id, &request);
+            }
+        }
+        counters
+    }
+
+    /// Releases the local connection behind a failed delivery so a
+    /// dead SYN/DATA sweep cannot pin a phantom entry. Mirrors the
+    /// SAM `terminate_failed_delivery` seam.
+    fn terminate_failed_delivery(
+        &self,
+        destination_id: DestinationId,
+        request: &i2pr_client::streaming::transport::TransportSendRequest,
+    ) {
+        let destinations = self
+            .sam_destinations
+            .lock()
+            .expect("sam destinations poisoned");
+        let Some(handle) = destinations.get(destination_id) else {
+            return;
+        };
+        handle.with(|bridge| {
+            let stream_id = request.receive_stream_id;
+            if let Some(connection_id) = bridge
+                .streaming()
+                .lookup_outbound(stream_id)
+                .or_else(|| bridge.receiver_streaming().lookup_inbound(stream_id))
+            {
+                if bridge.streaming().get_connection(connection_id).is_some() {
+                    let _ = bridge.streaming_mut().remove_connection(connection_id);
+                } else {
+                    let _ = bridge
+                        .receiver_streaming_mut()
+                        .remove_connection(connection_id);
+                }
+            }
+        });
+    }
+
     /// Returns a clone of the aggregate connection permit semaphore.
     pub fn aggregate_permit(&self) -> Arc<Semaphore> {
         Arc::clone(&self.aggregate_permit)
@@ -1004,7 +1328,20 @@ impl ServiceTunnelManager {
             bridge_data.now_seconds,
         );
         let handle = SamDestinationHandle::new(bridge);
-        let server_streaming_port = if is_server { Some(1_u16) } else { None };
+        // Plan 182: install the fabric inbound-tunnel factory so the
+        // Plan 129 local seam can build the peer inbound tunnel for
+        // every delivery. Without this every sweep counts
+        // `missing_factory` and no SYN ever reaches a co-owned peer.
+        handle.install_inbound_tunnel_factory(Arc::clone(&bridge_data.inbound_tunnel_factory));
+        // Plan 182: server tunnels listen on the wildcard Streaming
+        // port 0, matching the proven SAM convention (connect with
+        // local/remote port 0 on every client path). The previous
+        // hardcoded port 1 matched no client SYN (wire
+        // destination_port 0), so `handle_inbound_syn` failed every
+        // handshake with `NoMatchingListener`. Do not revert to a
+        // non-zero port without a passing round-trip test behind
+        // the revert.
+        let server_streaming_port = if is_server { Some(0_u16) } else { None };
         if let Some(port) = server_streaming_port {
             let outcome_result = handle.with(|bridge| bridge.receiver_streaming_mut().listen(port));
             let effective: ListenerOutcome = match outcome_result {
@@ -1447,6 +1784,60 @@ pub struct StagedRuntime {
 }
 
 /// Runs one per-service supervisor loop.
+/// Plan 182 per-destination local-delivery driver task. Mirrors
+/// the SAM `run_destination_driver`: wake on the outbound signal
+/// or a 50 ms fallback tick, double-sweep with a timer poll
+/// between (so a just-delivered SYN response is routed back in
+/// the same tick), record typed counters, then yield for
+/// single-threaded scheduler fairness.
+async fn run_service_delivery_driver(
+    manager: Arc<ServiceTunnelManager>,
+    destination_id: DestinationId,
+    cancellation: CancellationToken,
+    task_cancellation: CancellationToken,
+) {
+    debug!(destination = ?destination_id, "service delivery driver starting");
+    let outbound_notify = manager.outbound_signal(destination_id);
+    outbound_notify.notify_one();
+    let mut ticker = tokio::time::interval(Duration::from_millis(50));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::task::yield_now().await;
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => break,
+            _ = task_cancellation.cancelled() => break,
+            _ = outbound_notify.notified() => {}
+            _ = ticker.tick() => {}
+        }
+        let now_ms = service_streaming_now_ms();
+        let mut sweep = manager.deliver_outbound(destination_id);
+        manager.with_destination_bridge(destination_id, |bridge| {
+            bridge.poll_streaming_timers(now_ms);
+        });
+        let second_sweep = manager.deliver_outbound(destination_id);
+        sweep.saturating_add_assign(second_sweep);
+        manager.record_delivery_counters(destination_id, sweep);
+        if let Some(reason) = degrade_to_reason(sweep) {
+            debug!(
+                destination = ?destination_id,
+                delivered = sweep.delivered,
+                missing_factory = sweep.missing_factory,
+                factory_exhausted = sweep.factory_exhausted,
+                unknown_peer = sweep.unknown_peer,
+                delivery_failed = sweep.delivery_failed,
+                reason = %reason,
+                "service delivery driver observed typed local-delivery degradation"
+            );
+        }
+        tokio::task::yield_now().await;
+    }
+    if let Ok(mut drivers) = manager.destination_drivers.lock() {
+        drivers.remove(&destination_id);
+    }
+    debug!(destination = ?destination_id, "service delivery driver stopped");
+}
+
 async fn run_service_loop(
     manager: Arc<ServiceTunnelManager>,
     runtime: Arc<ServiceRuntime>,
@@ -1539,11 +1930,15 @@ async fn run_client_loop(
         let target_for_task = client_target.clone();
         let cancellation_for_task = cancellation.clone();
         let spec_id_for_log = runtime.spec_id.clone();
-        let _aggregate_permit = aggregate_permit;
+        // Plan 182: the permit moves into the task so the aggregate
+        // ceiling covers the whole connection lifetime. Binding it
+        // outside the task (the previous shape) released the slot
+        // at spawn time and the ceiling never engaged.
+        let permit_for_task = aggregate_permit;
         tokio::spawn(async move {
             if let Err(error) = run_client_connection(
                 manager_for_task,
-                runtime_for_task,
+                runtime_for_task.clone(),
                 target_for_task,
                 stream,
                 cancellation_for_task,
@@ -1552,6 +1947,17 @@ async fn run_client_loop(
             {
                 warn!(service = %spec_id_for_log, error = %error, "client connection failed");
             }
+            // Plan 182: release the active slot on every exit path.
+            // run_client_connection returns without touching it so
+            // failed handshakes cannot pin phantom slots (the HTTP /
+            // SOCKS / IRC loops already follow this shape).
+            runtime_for_task
+                .active_connections
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    Some(value.saturating_sub(1))
+                })
+                .ok();
+            drop(permit_for_task);
         });
     }
     Ok(())
@@ -1602,31 +2008,59 @@ async fn handle_server_syn(
     cancellation: &CancellationToken,
 ) {
     let now_ms = service_streaming_now_ms();
-    let identity_arc =
-        manager.with_destination_bridge(runtime.destination_id, |bridge| bridge.identity());
-    let identity_arc = match identity_arc {
-        Some(identity) => identity,
-        None => return,
-    };
-    let _accept_outcome = manager.with_destination_bridge(runtime.destination_id, |bridge| {
-        let remote = RemoteDestination {
-            destination_hash: [0_u8; 32],
-            signing_public_key: identity_arc.destination().signing_key().clone(),
-            static_public_key: identity_arc.static_public_bytes(),
+    // Plan 182: answer the SYN with the connection's real
+    // authenticated peer metadata and real port tuple (SAM parity
+    // with `sam.rs` accept). The previous code passed a zeroed peer
+    // carrying the server's own signing key and dropped the SYN
+    // response, so no handshake could complete.
+    let accept_outcome = manager.with_destination_bridge(runtime.destination_id, |bridge| {
+        let (local_port, remote_port, peer_hash, peer_signing, peer_static_public) = {
+            let conn = bridge.receiver_streaming().get_connection(connection_id)?;
+            let peer_static_public: [u8; 32] = conn
+                .peer_destination()
+                .and_then(|destination| destination.public_key().as_bytes().try_into().ok())
+                .unwrap_or([0_u8; 32]);
+            (
+                conn.local_port(),
+                conn.remote_port(),
+                *conn.peer_destination_hash(),
+                conn.peer_signing_key().clone(),
+                peer_static_public,
+            )
         };
+        let peer = RemoteDestination {
+            destination_hash: peer_hash,
+            signing_public_key: peer_signing,
+            static_public_key: peer_static_public,
+        };
+        let identity_arc = bridge.identity();
         let mut os_rng = OsRng;
         let mut rng = rand_core::UnwrapMut(&mut os_rng);
-        bridge.receiver_streaming_mut().accept_inbound_syn(
-            identity_arc.as_ref(),
-            &remote,
-            connection_id,
-            0_u16,
-            0_u16,
-            DEFAULT_ADVERTISED_MAX_PAYLOAD,
-            now_ms,
-            &mut rng,
-        )
+        let request = bridge
+            .receiver_streaming_mut()
+            .accept_inbound_syn(
+                identity_arc.as_ref(),
+                &peer,
+                connection_id,
+                local_port,
+                remote_port,
+                DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                now_ms,
+                &mut rng,
+            )
+            .ok()?;
+        bridge
+            .receiver_streaming_mut()
+            .queue_outbound_packet(request);
+        Some(peer)
     });
+    let Some(peer) = accept_outcome.flatten() else {
+        runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    // Wake the delivery driver so the queued SYN response is routed
+    // back to the originator without waiting for the fallback tick.
+    manager.notify_outbound_signal(runtime.destination_id);
     let aggregate_permit: Option<OwnedSemaphorePermit> =
         manager.aggregate_permit.clone().try_acquire_owned().ok();
     let Some(aggregate_permit) = aggregate_permit else {
@@ -1638,7 +2072,9 @@ async fn handle_server_syn(
         return;
     };
     runtime.active_connections.fetch_add(1, Ordering::Relaxed);
-    let _aggregate_permit = aggregate_permit;
+    // Plan 182: hold the aggregate slot for the connection
+    // lifetime (see the client-loop note above).
+    let permit_for_task = aggregate_permit;
     let manager_for_task = Arc::clone(manager);
     let runtime_for_task = Arc::clone(runtime);
     let cancellation_for_task = cancellation.clone();
@@ -1646,15 +2082,25 @@ async fn handle_server_syn(
     tokio::spawn(async move {
         if let Err(error) = run_server_connection(
             manager_for_task,
-            runtime_for_task,
+            runtime_for_task.clone(),
             target,
             connection_id,
+            peer,
             cancellation_for_task,
         )
         .await
         {
             warn!(service = %spec_id_for_log, error = %error, "server connection failed");
         }
+        // Plan 182: release the active slot on every exit path (see
+        // the client-loop note above).
+        runtime_for_task
+            .active_connections
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                Some(value.saturating_sub(1))
+            })
+            .ok();
+        drop(permit_for_task);
     });
 }
 
@@ -1663,6 +2109,7 @@ async fn run_server_connection(
     runtime: Arc<ServiceRuntime>,
     target: SocketAddr,
     connection_id: ConnectionId,
+    peer: RemoteDestination,
     cancellation: CancellationToken,
 ) -> Result<(), BoxError> {
     let connect_deadline = lookup_connect_timeout(&manager, &runtime.spec_id);
@@ -1690,16 +2137,14 @@ async fn run_server_connection(
         Arc::clone(&manager),
         runtime.destination_id,
         connection_id,
+        peer,
     ));
     let config = PumpConfig::defaults(32 * 1024);
     let pump = run_stream_pump(target_stream, Vec::new(), endpoint, config, cancellation);
     let result = pump.await;
-    runtime
-        .active_connections
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-            Some(value.saturating_sub(1))
-        })
-        .ok();
+    // Plan 182: the active slot is released by the spawn wrapper
+    // on every exit path (see handle_server_syn), never here, so
+    // early returns cannot pin phantom slots.
     if let Err(error) = result {
         warn!(
             service = %runtime.spec_id,
@@ -1771,6 +2216,9 @@ async fn run_client_connection(
             ))));
         }
     };
+    // Plan 182: kick the delivery driver so the queued SYN is
+    // routed immediately instead of waiting for the fallback tick.
+    manager.notify_outbound_signal(runtime.destination_id);
     if let Err(error) = wait_for_established(
         &manager,
         runtime.destination_id,
@@ -1780,6 +2228,12 @@ async fn run_client_connection(
     .await
     {
         runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+        // Abandon the dead handshake entry so its retransmit timer
+        // cannot spam the driver forever. The active slot is
+        // released by the spawn wrapper (see run_client_loop).
+        manager.with_destination_bridge(runtime.destination_id, |bridge| {
+            let _ = bridge.streaming_mut().remove_connection(connection_id);
+        });
         return Err(error);
     }
     let endpoint: Arc<dyn StreamPumpEndpoint> = Arc::new(ServicePumpEndpoint::new_client(
@@ -1791,12 +2245,9 @@ async fn run_client_connection(
     let config = PumpConfig::defaults(32 * 1024);
     let pump = run_stream_pump(stream, Vec::new(), endpoint, config, cancellation);
     let result = pump.await;
-    runtime
-        .active_connections
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-            Some(value.saturating_sub(1))
-        })
-        .ok();
+    // Plan 182: the active slot is released by the spawn wrapper
+    // on every exit path (see run_client_loop), never here, so
+    // failed handshakes cannot pin phantom slots.
     if let Err(error) = result {
         warn!(
             service = %runtime.spec_id,
@@ -1883,12 +2334,13 @@ impl ServicePumpEndpoint {
         manager: Arc<ServiceTunnelManager>,
         destination_id: DestinationId,
         connection_id: ConnectionId,
+        peer: RemoteDestination,
     ) -> Self {
         Self {
             manager,
             destination_id,
             connection_id,
-            remote: None,
+            remote: Some(peer),
             direction: ServiceDirection::Server,
         }
     }
@@ -1913,6 +2365,13 @@ impl StreamPumpEndpoint for ServicePumpEndpoint {
     }
 
     fn try_send(&self, segment: &[u8]) -> Result<PumpSendDisposition, PumpEndpointError> {
+        // Plan 182: server-direction connections live on the
+        // receiver-mirror manager, so sends must go through
+        // `receiver_streaming_mut` (mirroring the SAM raw-stream
+        // direction branch). The previous code always used the
+        // canonical manager, which made every server-to-client
+        // send fail with `UnknownConnection`.
+        let direction = self.direction;
         let Some(remote) = self.remote.as_ref().cloned() else {
             return Err(PumpEndpointError::UnknownConnection);
         };
@@ -1925,34 +2384,60 @@ impl StreamPumpEndpoint for ServicePumpEndpoint {
         self.manager
             .with_destination_bridge(self.destination_id, |bridge| {
                 let now_ms = service_streaming_now_ms();
-                let conn = bridge.streaming().get_connection(self.connection_id);
-                let Some(conn) = conn else {
+                let ports = match direction {
+                    ServiceDirection::Client => bridge
+                        .streaming()
+                        .get_connection(self.connection_id)
+                        .map(|conn| (conn.local_port(), conn.remote_port())),
+                    ServiceDirection::Server => bridge
+                        .receiver_streaming()
+                        .get_connection(self.connection_id)
+                        .map(|conn| (conn.local_port(), conn.remote_port())),
+                };
+                let Some((local_port, remote_port)) = ports else {
                     return Err(PumpEndpointError::UnknownConnection);
                 };
-                let local_port = conn.local_port();
-                let remote_port = conn.remote_port();
-                match bridge.streaming_mut().send_data(
-                    self.connection_id,
-                    identity_arc.as_ref(),
-                    &remote,
-                    local_port,
-                    remote_port,
-                    segment,
-                    now_ms,
-                ) {
+                let send = match direction {
+                    ServiceDirection::Client => bridge.streaming_mut().send_data(
+                        self.connection_id,
+                        identity_arc.as_ref(),
+                        &remote,
+                        local_port,
+                        remote_port,
+                        segment,
+                        now_ms,
+                    ),
+                    ServiceDirection::Server => bridge.receiver_streaming_mut().send_data(
+                        self.connection_id,
+                        identity_arc.as_ref(),
+                        &remote,
+                        local_port,
+                        remote_port,
+                        segment,
+                        now_ms,
+                    ),
+                };
+                // Plan 182: match the typed error variants, never
+                // their Display strings. The Displays read
+                // "streaming send window full" /
+                // "streaming congestion control rejection" /
+                // "streaming manager unknown connection", so the
+                // previous `contains("SendWindowFull")` /
+                // `contains("Congestion")` / `contains("UnknownConnection")`
+                // checks never fired and the pump died on the first
+                // window-full event instead of backpressuring.
+                match send {
                     Ok(_) => Ok(PumpSendDisposition::Accepted),
-                    Err(error) => {
-                        let message = error.to_string();
-                        if message.contains("SendWindowFull") || message.contains("Congestion") {
-                            Ok(PumpSendDisposition::Backpressured)
-                        } else if message.contains("UnknownConnection") {
-                            Err(PumpEndpointError::UnknownConnection)
-                        } else if message.contains("InvalidState") {
-                            Err(PumpEndpointError::InvalidState)
-                        } else {
-                            Err(PumpEndpointError::Streaming(message))
-                        }
+                    Err(StreamingManagerError::Streaming(
+                        StreamingError::SendWindowFull | StreamingError::CongestionRejected,
+                    )) => Ok(PumpSendDisposition::Backpressured),
+                    Err(StreamingManagerError::UnknownConnection) => {
+                        Err(PumpEndpointError::UnknownConnection)
                     }
+                    Err(StreamingManagerError::InvalidConnectionState) => {
+                        Err(PumpEndpointError::InvalidState)
+                    }
+                    Err(error) => Err(PumpEndpointError::Streaming(error.to_string())),
                 }
             })
             .unwrap_or(Err(PumpEndpointError::UnknownConnection))
@@ -2015,6 +2500,81 @@ impl StreamPumpEndpoint for ServicePumpEndpoint {
                 bridge.poll_streaming_timers(service_streaming_now_ms());
             });
         }
+        // Plan 182: wake the per-destination delivery driver so the
+        // just-admitted segment is routed without waiting for the
+        // fallback tick. Timer polling alone never moves bytes.
+        self.manager.notify_outbound_signal(self.destination_id);
+    }
+
+    fn shutdown_write(&self) -> bool {
+        // Plan 182: orderly half-close. Emit Streaming CLOSE for the
+        // owning connection through the direction-correct manager
+        // and queue it for the delivery driver, so the peer
+        // observes EOF and in-flight responses still drain during
+        // the pump linger. Returns `false` (pump exits as before)
+        // when the connection is already gone.
+        let direction = self.direction;
+        let Some(remote) = self.remote.as_ref().cloned() else {
+            return false;
+        };
+        let queued = self
+            .manager
+            .with_destination_bridge(self.destination_id, |bridge| {
+                let now_ms = service_streaming_now_ms();
+                let identity_arc = bridge.identity();
+                let ports = match direction {
+                    ServiceDirection::Client => bridge
+                        .streaming()
+                        .get_connection(self.connection_id)
+                        .map(|conn| (conn.local_port(), conn.remote_port())),
+                    ServiceDirection::Server => bridge
+                        .receiver_streaming()
+                        .get_connection(self.connection_id)
+                        .map(|conn| (conn.local_port(), conn.remote_port())),
+                };
+                let Some((local_port, remote_port)) = ports else {
+                    return false;
+                };
+                let request = match direction {
+                    ServiceDirection::Client => bridge.streaming_mut().send_close(
+                        self.connection_id,
+                        identity_arc.as_ref(),
+                        &remote,
+                        local_port,
+                        remote_port,
+                        now_ms,
+                    ),
+                    ServiceDirection::Server => bridge.receiver_streaming_mut().send_close(
+                        self.connection_id,
+                        identity_arc.as_ref(),
+                        &remote,
+                        local_port,
+                        remote_port,
+                        now_ms,
+                    ),
+                };
+                match request {
+                    Ok(request) => {
+                        match direction {
+                            ServiceDirection::Client => {
+                                bridge.streaming_mut().queue_outbound_packet(request);
+                            }
+                            ServiceDirection::Server => {
+                                bridge
+                                    .receiver_streaming_mut()
+                                    .queue_outbound_packet(request);
+                            }
+                        }
+                        true
+                    }
+                    Err(_) => false,
+                }
+            })
+            .unwrap_or(false);
+        if queued {
+            self.manager.notify_outbound_signal(self.destination_id);
+        }
+        queued
     }
 }
 
