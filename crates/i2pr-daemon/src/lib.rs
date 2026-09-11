@@ -11,6 +11,7 @@ pub mod cli;
 pub mod config;
 pub mod destination_streaming;
 pub mod error;
+pub mod exploratory_build;
 pub mod i2cp;
 pub mod inbound_dispatch;
 pub mod netdb_seam;
@@ -23,6 +24,7 @@ pub mod service_tunnels_http;
 pub mod service_tunnels_irc_client;
 pub mod service_tunnels_irc_server;
 pub mod service_tunnels_socks5;
+pub mod tunnel_liveness;
 
 pub use error::DaemonError;
 pub use i2cp::{I2cpServiceError, I2cpServiceSnapshot, I2cpServiceState};

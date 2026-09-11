@@ -64,6 +64,7 @@ Plan 180 = passed M10 service-tunnel composition, reconcile, and hardening
 Plan 181 = blocked-by-m6-mixed-router-streaming-blocker (local rows passed; remote gate pending plan183)
 Plan 182 = passed M10 local-delivery corrective
 Plan 183 = registered M6 mixed-router streaming interop program
+Plan 185 = passed M6 live one-hop exploratory tunnels and liveness
 Plan 184 = passed M6 authenticated I2NP runtime and reference preflight
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
 Milestone 10 generic tunnels = passed-via-plan175 (profile; byte round-trip proven-via-plan182)
@@ -77,7 +78,8 @@ Milestone 10 independent application clients = local-rows-passed-plan181-not-clo
 Milestone 10 remote service interop = not-yet-passed
 Milestone 10 final acceptance = not-yet-closed
 M6 authenticated I2NP preflight = passed-via-plan184 (no tunnel/NetDB/Streaming claim)
-next_executable_plan = 185
+M6 exploratory one-hop tunnels = passed-via-plan185 (no multi-hop / LeaseSet2 / Streaming claim)
+next_executable_plan = 186
 next product layer = m6-mixed-router-streaming-interop
 ```
 
@@ -537,14 +539,45 @@ cargo test --locked -p i2pr-daemon --test ssu2_daemon_preflight \
 bash tests/integration/m6-interop/run-preflight.sh
 ```
 
+Focused M6 exploratory tunnel seams currently include:
+
+```text
+cargo test --locked -p i2pr-daemon --test exploratory_build_unit -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test exploratory_build_live -- --test-threads=1
+cargo test --locked -p i2pr-daemon --lib tunnel_liveness -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test exploratory_tunnel_external \
+  exploratory_tunnels_against_i2pd -- --ignored --exact --test-threads=1
+# without lane env: ignored; with lane env: passes (12-row external lane)
+bash tests/integration/m6-interop/run-tunnels.sh
+bash scripts/check-exploratory-tunnel-evidence.sh
+```
+
 Plan 184 owns the daemon-owned authenticated I2NP spine
 (`crates/i2pr-daemon/src/router_i2np.rs`: central dispatcher,
 narrow `RouterDeliveryService` over existing `send_i2np`, strict
 loopback/non-advertised `[ssu2]` activation, daemon-owned
-`Ssu2DaemonService` under `ssu2-router` supervision). The external
-preflight is ignored in routine CI and explicitly selected in its
-dedicated lane; do not add filename filtering, `|| true`, fake
-peer values, or production wire changes to make it green.
+`Ssu2DaemonService` under `ssu2-router` supervision). Plan 185
+adds the daemon-owned exploratory build coordinator
+(`crates/i2pr-daemon/src/exploratory_build.rs`: bounded pending
+table, monotonic attempt / creator tunnel ids, single central
+scheduler, strict OTBRM extraction, `register_*_with_material`
+installs through the existing `ExploratoryPool` then activates
+once into `DataPlaneRegistry`) and the bounded creator-side
+tunnel liveness scheduler
+(`crates/i2pr-daemon/src/tunnel_liveness.rs`: one central scheduler,
+no per-tunnel task or per-tunnel timer, first-test / repeat /
+response-timeout / failure-threshold policy well below the
+two-minute idle deletion boundary). The exploratory tunnel
+external lane is ignored in routine CI and explicitly selected
+in its dedicated lane; do not add filename filtering, `|| true`,
+fake peer values, or production wire changes to make it green.
+The external driver derives the build encryption key from
+`RouterInfo.router_identity().public_key()` (NOT the SSU2 `s`
+option) so the daemon-owned runtime key and the build key share
+the same X25519 keypair. i2pd is provisioned with
+`notransit = false` so the reference accepts one-hop exploratory
+builds; the lane stays loopback + unpublished and no public I2P
+claim is made.
 
 Plan 164 added the I2CP fixture corpus (`tests/fixtures/i2cp/`) and its
 checker (`scripts/check-i2cp-vectors.sh`), enforced in routine Linux CI;
@@ -691,7 +724,8 @@ closed.
  - Plan 181 is blocked by the retained M6 mixed-router Streaming debt (see `plans/181-m10-independent-application-and-service-interop-final-closure.md` and `plans/181-status.md`): 29 local independent-application-client rows pass (unmodified curl HTTP/SOCKS, nc, stdlib generic driver, exact-pinned jaraco/irc through the real manager; restart stability; resource baselines; unsupported-profile ledger), and the two remote rows are recorded `blocked` with command/log provenance from a genuine qualification attempt (exact-pinned i2pd 2.61.0 SAM `DEST GENERATE` public destination; `unknown_peer>0`, `delivered=0`, no establishment, bounded timeout). Self-composed rows are never substituted for interop. Milestone 10 final acceptance stays open.
  - Plan 182 passed the M10 local-delivery corrective (see `plans/182-m10-local-delivery-corrective.md` and `plans/182-status.md`): per-destination delivery drivers reusing the Plan 129 `bridge_to_peer` seam, inbound-factory install, wildcard Streaming port 0 (SAM convention), SAM-parity accept paths with queued SYN responses, direction-branched pump sends with typed backpressure matching, orderly pump half-close (default no-op keeps SAM byte-identical), completed line-filtering IRC client executor, permit-for-task-lifetime capture, and active-slot release on every exit path. Nine round-trip tests in `service_tunnels_local_roundtrip.rs` plus six wire-surface tests prove the local byte round-trip the Plan 174–179 profiles assumed. No wire change.
   - Plan 183 registered the M6 mixed-router destination/Streaming interop program Plan 181 §6.3 requires (see `plans/183-m6-mixed-router-streaming-interop-program.md` and `plans/183-status.md`): registration only, no implementation, no M10 closure claim.
- - Plan 184 passed the M6 authenticated I2NP preflight (see `plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md` and `plans/184-status.md`): strict loopback/non-advertised `[ssu2]` activation, daemon-owned `Ssu2DaemonService` under `ssu2-router` supervision, central `router_i2np` dispatcher with authenticated peer preservation, narrow `RouterDeliveryService` over existing `send_i2np`, exact-pinned i2pd 2.61.0 bidirectional control with fail-closed 10-row lane. No tunnel/NetDB/Streaming/M10-remote claim; Plan 185 owns the first Short Tunnel Build.
+ - Plan 184 passed the M6 authenticated I2NP preflight (see `plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md` and `plans/184-status.md`): strict loopback/non-advertised `[ssu2]` activation, daemon-owned `Ssu2DaemonService` under `ssu2-router` supervision, central `router_i2np` dispatcher with authenticated peer preservation, narrow `RouterDeliveryService` over existing `send_i2np`, exact-pinned i2pd 2.61.0 bidirectional control with fail-closed 10-row lane. No tunnel/NetDB/Streaming/M10-remote claim.
+- Plan 185 passed the M6 live one-hop exploratory tunnels and liveness lane (see `plans/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md` and `plans/185-status.md`): daemon-owned `ExploratoryBuildCoordinator` + `TunnelLivenessScheduler` drive the existing `i2pr-tunnel::short::ShortBuildStateMachine` / `i2pr-tunnel::pool::ExploratoryPool` / `i2pr-tunnel::data_plane_registry::DataPlaneRegistry` seams end-to-end through the Plan 184 central `router_i2np` dispatcher; one real outbound and one real inbound one-hop exploratory build accepted by the exact-pinned i2pd 2.61.0 reference with `notransit=false`; bounded first-test / repeat / response-timeout / failure-threshold liveness policy; 12-row external lane + `scripts/check-exploratory-tunnel-evidence.sh` static evidence check. No multi-hop, no destination LeaseSet2 / Streaming claim; Plan 186 owns the live mixed-router NetDB lookup / publication program.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
 - No Plan 161 direction-A evidence implies Milestone 6 destination/Streaming/tunnel interoperability or broad router interoperability.
@@ -709,12 +743,18 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 184 passed the M6 authenticated I2NP
-runtime and reference preflight (strict loopback/non-advertised
-`[ssu2]` activation, daemon-owned `Ssu2DaemonService` under
-`ssu2-router` supervision, central `router_i2np` dispatcher with
-authenticated peer preservation, narrow `RouterDeliveryService`
-over existing `send_i2np`, exact-pinned i2pd 2.61.0 bidirectional
-control with fail-closed 10-row lane; no tunnel/NetDB/Streaming
-claim). Plan 185 owns the first Short Tunnel Build. M10 final
-acceptance stays open.**
+Current handoff: **Plan 185 passed the M6 live one-hop
+exploratory tunnels and liveness lane (Plan 185 exploratory
+build coordinator + creator-side liveness scheduler drive the
+existing `ShortBuildStateMachine` / `ExploratoryPool` /
+`DataPlaneRegistry` seams end-to-end through the Plan 184
+central `router_i2np` dispatcher; one-hop outbound (i2pr
+OBGW → i2pd OBEP) and one-hop inbound (i2pd IBGW → i2pr
+endpoint) builds accepted by the exact-pinned i2pd 2.61.0
+reference with `notransit=false`; bounded first-test / repeat
+/ response-timeout / failure-threshold liveness policy; 12-row
+external lane + `scripts/check-exploratory-tunnel-evidence.sh`
+static evidence check; no multi-hop, no destination LeaseSet2 /
+Streaming claim). Plan 186 owns the first live mixed-router
+NetDB lookup / publication program. M10 final acceptance stays
+open.**

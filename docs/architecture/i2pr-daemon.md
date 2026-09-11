@@ -14,9 +14,14 @@ Binary: `i2pr` (declared via `[[bin]]` in `Cargo.toml`).
 Plan 184 activates the first daemon-owned SSU2 transport under the
 strict loopback/non-advertised controlled profile
 (`crates/i2pr-daemon/src/router_i2np.rs`, `ssu2-router` service).
-No public advertisement, NetDB/tunnel/destination/Streaming, or M10
-remote-service claim follows from it; Plan 185 owns the first Short
-Tunnel Build.
+Plan 185 adds the daemon-owned exploratory build coordinator
+(`crates/i2pr-daemon/src/exploratory_build.rs`) and the bounded
+creator-side tunnel liveness scheduler
+(`crates/i2pr-daemon/src/tunnel_liveness.rs`); both route the
+existing Plan 184 central dispatcher. No public advertisement,
+NetDB lookup / publication, destination LeaseSet2, Streaming, or
+M10 remote-service claim follows from it; Plan 186 owns the
+live mixed-router NetDB lookup / publication program.
 
 ## Purpose
 
@@ -239,6 +244,36 @@ work is scoped to:
   [`crates/i2pr-daemon/tests/ssu2_daemon_preflight.rs`](../../crates/i2pr-daemon/tests/ssu2_daemon_preflight.rs)
   via `tests/integration/m6-interop/run-preflight.sh`. See
   [`plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md`](../../plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md).
+- **Exploratory build coordinator + tunnel liveness scheduler**
+  (Plan 185): the daemon-owned
+  [`ExploratoryBuildCoordinator`](../../crates/i2pr-daemon/src/exploratory_build.rs)
+  drives the existing `i2pr_tunnel::short::ShortBuildStateMachine`
+  end-to-end through the Plan 184 central dispatcher with one
+  bounded pending table (16), monotonic attempt / creator tunnel
+  ids, a single central scheduler (no per-build task), strict
+  canonical OTBRM extraction, and `register_*_with_material`
+  installs through the existing `i2pr_tunnel::pool::ExploratoryPool`
+  then activates once into the existing
+  `i2pr_tunnel::data_plane_registry::DataPlaneRegistry` (no
+  synthetic insertion). The bounded creator-side
+  [`TunnelLivenessScheduler`](../../crates/i2pr-daemon/src/tunnel_liveness.rs)
+  owns every active pair with one central scheduler (no per-tunnel
+  task or per-tunnel timer); the first test is scheduled
+  ≤ 30 s after establishment, the repeat interval is ≤ 60 s while
+  active, the response timeout stays well below the two-minute idle
+  deletion boundary, and the bounded failure threshold removes the
+  affected pair and asks the coordinator to rebuild. The full lane
+  is proven against exact-pinned i2pd 2.61.0 in
+  [`crates/i2pr-daemon/tests/exploratory_tunnel_external.rs`](../../crates/i2pr-daemon/tests/exploratory_tunnel_external.rs)
+  via `tests/integration/m6-interop/run-tunnels.sh`; the local
+  two-daemon-pair suite
+  [`crates/i2pr-daemon/tests/exploratory_build_live.rs`](../../crates/i2pr-daemon/tests/exploratory_build_live.rs)
+  drives the same coordinator end-to-end against a simulated
+  build responder and exercises the full OTBRM-to-Installed
+  pipeline. The static
+  [`scripts/check-exploratory-tunnel-evidence.sh`](../../scripts/check-exploratory-tunnel-evidence.sh)
+  rejects hard-coded `passed` rows. See
+  [`plans/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md`](../../plans/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md).
 
 What it **does not** do yet:
 
@@ -278,6 +313,8 @@ which undercounted `netdb_seam`, `outbound_lookup`, and
 | `src/outbound_lookup.rs` | Plan 117 §8/§10 outbound exploratory data-plane composition | `compose_outbound_lookup`, `compose_outbound_publication`, `OutboundLookupDispatch`, `MAX_OUTBOUND_LOOKUP_CELLS`, `MAX_OUTBOUND_PUBLICATION_CELLS` |
 | `src/inbound_dispatch.rs` | Plan 117 §9 inbound exploratory `TunnelData` dispatch (unchanged by Plan 184; the new router dispatcher sits above it) | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE` |
 | `src/router_i2np.rs` | Plan 184 central authenticated router-I2NP dispatcher, narrow delivery, and daemon-owned SSU2 service | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `verify_reference_router_info` |
+| `src/exploratory_build.rs` | Plan 185 daemon-owned exploratory build coordinator (bounded pending table, monotonic attempt / creator tunnel ids, single central scheduler, strict OTBRM extraction, `register_*_with_material` installs through `ExploratoryPool` then activates once into `DataPlaneRegistry`) | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
+| `src/tunnel_liveness.rs` | Plan 185 bounded creator-side tunnel liveness scheduler (first-test / repeat / response-timeout / failure-threshold policy well below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer) | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
 | `src/sam.rs` | Plans 137–149 supervised SAM 3.1 listener and composition root | `SamServiceState`, `execute_session_create` (self-composes bridge + driver), `execute_stream_connect`, `execute_stream_accept`, byte-exact `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw transition, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP` |
 | `src/i2cp.rs` | Plan 167 supervised loopback I2CP v0.9.67 listener and composition root extended by Plan 168 with the bounded per-session message/data-plane surface, by Plan 169 with the reconfigure transaction handler, the atomic reconfigure baseline in `I2cpSessionState::last_options`, and the synchronous `handle_destroy_session` data-plane drain, by Plan 171 with the explicit `stream.shutdown()` on the common per-connection terminal path, and by Plan 170 with the `ReplyAndFollowup` `RequestVariableLeaseSet` after `CreateSession` | `I2cpServiceState`, `I2cpSessionState`, `bind`, `serve`, `handle_connection`, `install_client_lease_set2`, `reserve_client_destination`, `handle_send_message`, `handle_send_message_expires`, `handle_dest_lookup`, `derive_bandwidth_reply`, `handle_reconfigure_session`, `handle_destroy_session`, `apply_reconfigure`, `ReconfigurationOutcome`, `teardown_connection`, `I2cpServiceSnapshot` |
 | `src/sam/fabric.rs` | Plan 149 localhost product fabric (OS-CSPRNG tunnel material, signed LeaseSet2, per-destination runtime-driver factory, typed `DeliverySweepCounters`) | `SamLocalProductFabric`, `LocalDestinationProduct`, `LocalhostInboundTunnelFactory`, `DeliverySweepCounters`, `LocalDeliveryDegradation` |

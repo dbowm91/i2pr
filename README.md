@@ -52,6 +52,7 @@ plan_178 = passed-m10-irc-client-profile-and-privacy-filtering
 plan_179 = passed-m10-irc-server-profile-and-authenticated-peer-hostname
 plan_180 = passed-m10-service-tunnel-composition-reconcile-and-hardening
 plan_183 = registered-m6-mixed-router-streaming-interop-program
+plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 
 milestone7_local_product = passed-via-plan149
@@ -89,8 +90,9 @@ milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 m6_mixed_router_program = registered-via-plan183
 m6_authenticated_i2np_preflight = passed-via-plan184
-next_product_layer = m6-mixed-router-streaming-interop
-next_executable_plan = 185
+m6_exploratory_one_hop_tunnels = passed-via-plan185
+next_product_layer = m6-mixed-router-netdb
+next_executable_plan = 186
 ```
 
 Milestone 8 is **closed** via [**Plan 161**](plans/161-status.md) within its bounded direct-interop scope. Directions A and B are genuinely proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real loopback UDP, including authenticated session establishment, small and fragmented I2NP/DatabaseStore exchange with return DeliveryStatus traffic, cached-token behavior, malformed/resource rows, and the fail-closed external evidence lane. [**Plan 162**](plans/162-status.md) passed the narrow external-test lane correction. Public-network, NetDB/tunnel/destination, IPv6-external, PQ, SSU1, and Milestone 6 mixed-router interoperability remain outside that claim.

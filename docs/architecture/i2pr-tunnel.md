@@ -664,6 +664,37 @@ and inbound return stages are not claimed. Plan 119 closed as
   existing parsing/layout types;
 - ElGamal/ECIES mixed-router construction.
 
+## Plan 185 - live one-hop exploratory tunnels (passed; no tunnel claim)
+
+The Plan 185 daemon-owned
+[`ExploratoryBuildCoordinator`](../../crates/i2pr-daemon/src/exploratory_build.rs)
+and bounded
+[`TunnelLivenessScheduler`](../../crates/i2pr-daemon/src/tunnel_liveness.rs)
+drive the existing `ShortBuildStateMachine` end-to-end through
+the Plan 184 central `router_i2np` dispatcher:
+
+- one-hop outbound (creator OBGW → i2pd OBEP) and one-hop inbound
+  (i2pd IBGW → creator endpoint) exploratory builds accepted by
+  the exact-pinned i2pd 2.61.0 reference with `notransit=false`;
+- `register_*_with_material` installs through the existing
+  `ExploratoryPool` and `activate` extracts the tunnel once for
+  the existing `DataPlaneRegistry` (no synthetic insertion);
+- the central liveness scheduler owns every active pair
+  (first-test ≤ 30 s, repeat ≤ 60 s, response-timeout well below
+  the two-minute idle deletion boundary, bounded failure threshold
+  removes the affected pair and asks the coordinator to rebuild);
+- no per-tunnel task or per-tunnel timer; no multi-hop build; no
+  destination LeaseSet2 / Streaming claim; Plan 186 owns the live
+  mixed-router NetDB lookup / publication program.
+
+The cross-crate surface used by the Plan 185 daemon-owned
+coordinator is unchanged: `ShortBuildStateMachine`,
+`ShortBuildI2npBridge`, `ExploratoryPool`, `DataPlaneRegistry`,
+and the `MessageHopProcessor` short-build primitives stay exactly
+the same. See
+[`plans/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md`](../../plans/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md)
+and [`plans/185-status.md`](../../plans/185-status.md).
+
 ## Cross-references
 
 - [`i2pr-crypto`](i2pr-crypto.md) — owns the X25519 wrappers,
