@@ -21,9 +21,15 @@ creator-side tunnel liveness scheduler
 existing Plan 184 central dispatcher. Plan 186 adds the daemon-owned
 NetDB-over-tunnels coordinator
 (`crates/i2pr-daemon/src/netdb_tunnels.rs`) over the Plan 185 pair
-through the authoritative bounded store. No public advertisement,
-destination LeaseSet2, Streaming, or M10 remote-service claim follows
-from it; Plan 187 owns the destination program.
+through the authoritative bounded store. Plan 187 adds the
+daemon-owned destination LeaseSet2/Garlic-over-tunnels coordinator
+(`crates/i2pr-daemon/src/destination_tunnels.rs`) with the full
+local destination message plane (27 unit + 9 live two-role rows);
+the external lane stops fail-closed at the §11 build-reply gate
+(reference accepts builds but emits no consumable reply; 7
+install-dependent rows blocked, Plan 188 owns the corrective). No
+public advertisement, Streaming, or M10 remote-service claim
+follows from any of it.
 
 ## Purpose
 
@@ -281,9 +287,12 @@ What it **does not** do yet:
 
 - Open NTCP2 listeners (disabled under current authority).
 - Run `Ntcp2RuntimeService` or register `ntcp2-transport`.
-- Build tunnels, drive NetDB exchange, or run Streaming over the
-  router link (Plans 185–188 own those layers; the dispatcher only
-  reserves their hooks).
+- Claim mixed-router destination/Streaming interop: one-hop
+  builds are accepted by exact-pinned i2pd (Plans 185–186) and
+  the local destination plane passes (Plan 187: 27 unit + 9
+  live rows), but no consumable reference build reply has been
+  observed, so 7 install-dependent rows are blocked pending the
+  Plan 188 narrow corrective.
 - Apply live configuration changes.
 - Drive a live exploratory tunnel build (Plan 107 lands the
   substrate; Plan 108 landed the local architecture but its
@@ -298,10 +307,9 @@ What it **does not** do yet:
 
 ## Module layout
 
-Flat — nine files at the crate root (the row count in the table below
-matches the filesystem; previous revisions of this doc listed six,
-which undercounted `netdb_seam`, `outbound_lookup`, and
-`inbound_dispatch`):
+Flat — twenty-three files at the crate root plus the `sam/`
+subdirectory (the row count in the table below matches the
+filesystem):
 
 | File | Responsibility | Main items |
 | --- | --- | --- |
@@ -311,13 +319,14 @@ which undercounted `netdb_seam`, `outbound_lookup`, and
 | `src/config.rs` | Strict versioned TOML configuration (`serde(deny_unknown_fields)` everywhere) | `CURRENT_SCHEMA_VERSION`, `DEFAULT_MAX_TASKS`, `DEFAULT_MAX_BUFFERED_BYTES`, `RouterProfile`, `LogFormat`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `Config`, `ConfigError` |
 | `src/error.rs` | Typed error hierarchy and stable exit-code mapping | `ExitCode`, `DaemonError` |
 | `src/bootstrap.rs` | Plan 106 NetDB/bootstrap state machine | `BootstrapState`, `BootstrapPolicy`, `BootstrapSnapshot`, `BootstrapReport`, `ReseedAttemptSummary`, `Bootstrap`, `bootstrap_daemon`, `bootstrap_with_offline_reseed`, `build_trust_set`, `store_summary` |
-| `src/netdb_seam.rs` | Plan 106/117 runtime-facing seam for Plan 105 actions | `NetDbSeam`, `CompositionOutcome`, `ExploratoryPathStatus` |
-| `src/outbound_lookup.rs` | Plan 117 §8/§10 outbound exploratory data-plane composition | `compose_outbound_lookup`, `compose_outbound_publication`, `OutboundLookupDispatch`, `MAX_OUTBOUND_LOOKUP_CELLS`, `MAX_OUTBOUND_PUBLICATION_CELLS` |
-| `src/inbound_dispatch.rs` | Plan 117 §9 inbound exploratory `TunnelData` dispatch (unchanged by Plan 184; the new router dispatcher sits above it) | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE` |
+| `src/netdb_seam.rs` | Plan 106/117 runtime-facing seam for Plan 105 actions, extended by Plan 187 with store-parameter LeaseSet2 lookup (`begin_lease_set2_lookup_with_store`, `advance_lease_set2_after_path_with_store`) and `ingest_lease_set2_search_reply` | `NetDbSeam`, `CompositionOutcome`, `ExploratoryPathStatus`, `LeaseSet2ResponseOutcome` |
+| `src/outbound_lookup.rs` | Plan 117 §8/§10 outbound exploratory data-plane composition, extended by Plan 187 with `deliver_outbound_cells` for client-composed Garlic cells | `compose_outbound_lookup`, `compose_outbound_publication`, `deliver_outbound_cells`, `OutboundLookupDispatch`, `MAX_OUTBOUND_LOOKUP_CELLS`, `MAX_OUTBOUND_PUBLICATION_CELLS` |
+| `src/inbound_dispatch.rs` | Plan 117 §9 inbound exploratory `TunnelData` dispatch (unchanged by Plan 184; the new router dispatcher sits above it), extended by Plan 187 with the `GarlicComplete` outcome for destination carriers | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchOutcome`, `InboundResponseKind`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE` |
 | `src/router_i2np.rs` | Plan 184 central authenticated router-I2NP dispatcher, narrow delivery, and daemon-owned SSU2 service | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `verify_reference_router_info` |
 | `src/exploratory_build.rs` | Plan 185 daemon-owned exploratory build coordinator (bounded pending table, monotonic attempt / creator tunnel ids, single central scheduler, strict OTBRM extraction, `register_*_with_material` installs through `ExploratoryPool` then activates once into `DataPlaneRegistry`) | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
 | `src/tunnel_liveness.rs` | Plan 185 bounded creator-side tunnel liveness scheduler (first-test / repeat / response-timeout / failure-threshold policy well below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer) | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
 | `src/netdb_tunnels.rs` | Plan 186 daemon-owned NetDB-over-tunnels coordinator (authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel-loss) | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
+| `src/destination_tunnels.rs` | Plan 187 daemon-owned destination LeaseSet2/Garlic-over-tunnels coordinator (authoritative RouterInfo store + store-parameter LeaseSet2 lookup, authoritative LeaseSet2 cache, real-material proofs rejecting `LocalZeroHop`, bounded local-LS2 publication with protocol-derived ack, registry-backed Garlic recovery, typed tunnel-loss; local product passed, remote rows blocked on the build-reply gap pending Plan 188) | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome` |
 | `src/sam.rs` | Plans 137–149 supervised SAM 3.1 listener and composition root | `SamServiceState`, `execute_session_create` (self-composes bridge + driver), `execute_stream_connect`, `execute_stream_accept`, byte-exact `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw transition, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP` |
 | `src/i2cp.rs` | Plan 167 supervised loopback I2CP v0.9.67 listener and composition root extended by Plan 168 with the bounded per-session message/data-plane surface, by Plan 169 with the reconfigure transaction handler, the atomic reconfigure baseline in `I2cpSessionState::last_options`, and the synchronous `handle_destroy_session` data-plane drain, by Plan 171 with the explicit `stream.shutdown()` on the common per-connection terminal path, and by Plan 170 with the `ReplyAndFollowup` `RequestVariableLeaseSet` after `CreateSession` | `I2cpServiceState`, `I2cpSessionState`, `bind`, `serve`, `handle_connection`, `install_client_lease_set2`, `reserve_client_destination`, `handle_send_message`, `handle_send_message_expires`, `handle_dest_lookup`, `derive_bandwidth_reply`, `handle_reconfigure_session`, `handle_destroy_session`, `apply_reconfigure`, `ReconfigurationOutcome`, `teardown_connection`, `I2cpServiceSnapshot` |
 | `src/sam/fabric.rs` | Plan 149 localhost product fabric (OS-CSPRNG tunnel material, signed LeaseSet2, per-destination runtime-driver factory, typed `DeliverySweepCounters`) | `SamLocalProductFabric`, `LocalDestinationProduct`, `LocalhostInboundTunnelFactory`, `DeliverySweepCounters`, `LocalDeliveryDegradation` |
@@ -331,6 +340,8 @@ There are no subdirectories.
 - `pub mod bootstrap;`
 - `pub mod cli;`
 - `pub mod config;`
+- `pub mod destination_streaming;`
+- `pub mod destination_tunnels;`
 - `pub mod error;`
 - `pub mod i2cp;`
 - `pub mod inbound_dispatch;`

@@ -1,6 +1,6 @@
 ---
 name: i2pr-local-dev
-description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, Milestone 8 SSU2, Milestone 9 I2CP, and Milestone 10 service tunnels execution. Plans 155–161 passed the SSU2 v2 stack including independent IPv4 interop against exact-pinned i2pd 2.61.0; Milestone 8 is closed within its bounded scope, Plans 163–169 passed the M9 I2CP roadmap through the self-composed local product, Plan 171 passed the invalid-preamble close corrective, and Plan 172 passed the independent LeaseSet2 lifecycle corrective closing Milestone 9; Plan 170 wire/data-plane is retained-passed with final acceptance superseded by Plan 172; Plans 174–180 passed the M10 service-tunnel foundation/profiles/reconcile, Plan 182 passed the M10 local-delivery corrective proving the local byte round-trip, Plan 181 local rows pass with remote rows blocked on retained M6 debt, Plan 183 registers the M6 mixed-router program, Plan 184 passed the authenticated I2NP preflight with no tunnel/NetDB/Streaming claim, Plan 185 passed the live one-hop exploratory tunnels + liveness lane with no multi-hop / LeaseSet2 / Streaming claim, and Plan 186 passed the mixed-router NetDB lookup / publication lane with no LeaseSet2 / Streaming claim; Plan 187 owns the destination program.
+description: Work on the local product path of the i2pr Rust I2P router — Milestone 6 destinations/garlic/LeaseSet2/Streaming, Milestone 7 SAM 3.1, Milestone 8 SSU2, Milestone 9 I2CP, and Milestone 10 service tunnels execution. Plans 155–161 passed the SSU2 v2 stack including independent IPv4 interop against exact-pinned i2pd 2.61.0; Milestone 8 is closed within its bounded scope, Plans 163–169 passed the M9 I2CP roadmap through the self-composed local product, Plan 171 passed the invalid-preamble close corrective, and Plan 172 passed the independent LeaseSet2 lifecycle corrective closing Milestone 9; Plan 170 wire/data-plane is retained-passed with final acceptance superseded by Plan 172; Plans 174–180 passed the M10 service-tunnel foundation/profiles/reconcile, Plan 182 passed the M10 local-delivery corrective proving the local byte round-trip, Plan 181 local rows pass with remote rows blocked on retained M6 debt, Plan 183 registers the M6 mixed-router program, Plan 184 passed the authenticated I2NP preflight with no tunnel/NetDB/Streaming claim, Plan 185 passed the live one-hop exploratory tunnels + liveness lane with no multi-hop / LeaseSet2 / Streaming claim, and Plan 186 passed the mixed-router NetDB lookup / publication lane with no LeaseSet2 / Streaming claim; Plan 187 landed the local destination message plane with remote rows blocked on the build-reply gap, and Plan 188 owns the narrow build-reply corrective.
 ---
 
 # I2PR Local Development
@@ -108,7 +108,9 @@ milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 
 next_product_layer = m6-mixed-router-leaseset2
-next_executable_plan = 187
+next_executable_plan = 188
+m6_destination_local_product = passed-via-plan187
+m6_destination_remote_interop = blocked-pending-plan188
 ```
 
 Read in order for current SSU2 work:
@@ -127,14 +129,17 @@ Read in order for current SSU2 work:
 
 Read in order for M6 mixed-router preflight work:
 
-1. `plans/186-status.md` (passed NetDB lookup/publication; current authority)
-2. `plans/186-m6-mixed-router-netdb-lookup-and-publication.md`
-3. `plans/185-status.md` (passed one-hop tunnels + liveness)
-4. `plans/184-status.md` (passed authenticated I2NP preflight)
-5. `plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md`
-6. `plans/183-status.md` (registered program)
-7. `plans/183-m6-mixed-router-streaming-interop-program.md`
-8. Do not claim destination LeaseSet2, Streaming, or M10 remote-service interop; Plan 187 owns the destination program. The NetDB lane is `bash tests/integration/m6-interop/run-netdb.sh` + `bash scripts/check-netdb-tunnel-evidence.sh`; the tunnel lane stays `bash tests/integration/m6-interop/run-tunnels.sh` + `bash scripts/check-exploratory-tunnel-evidence.sh`.
+1. `plans/187-status.md` (blocked: local destination rows passed, remote gate pending Plan 188)
+2. `plans/187-m6-remote-leaseset2-and-destination-garlic-routing.md`
+3. `plans/188-m6-short-build-reply-interop-corrective.md` (registered narrow corrective; next)
+4. `plans/186-status.md` (passed NetDB lookup/publication)
+5. `plans/186-m6-mixed-router-netdb-lookup-and-publication.md`
+6. `plans/185-status.md` (passed one-hop tunnels + liveness)
+7. `plans/184-status.md` (passed authenticated I2NP preflight)
+8. `plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md`
+9. `plans/183-status.md` (registered program)
+10. `plans/183-m6-mixed-router-streaming-interop-program.md`
+11. Do not claim destination remote interop, Streaming, or M10 remote-service interop. The destination lane is `bash tests/integration/m6-interop/run-destination.sh` + `bash scripts/check-destination-tunnel-evidence.sh` (21 guarded rows; 7 install-dependent rows recorded blocked on the build-reply gap); the NetDB lane stays `bash tests/integration/m6-interop/run-netdb.sh` + `bash scripts/check-netdb-tunnel-evidence.sh`; the tunnel lane stays `bash tests/integration/m6-interop/run-tunnels.sh` + `bash scripts/check-exploratory-tunnel-evidence.sh`. Creator-known tunnel keys are never installed without a consumed build reply.
 
 For SAM/local-product history, then read Plan 151, 150, 149 and Plans 146–148
 as needed.
@@ -622,15 +627,19 @@ bash scripts/check-ssu2-acceptance-evidence.sh
 - Plan 182 passed the M10 local-delivery corrective the profiles assumed but never had: per-destination delivery drivers reusing the Plan 129 `bridge_to_peer` seam, inbound-factory install, wildcard Streaming port 0 (SAM convention), SAM-parity accept paths with queued SYN responses, direction-branched pump sends with typed backpressure matching, orderly pump half-close (default no-op keeps SAM byte-identical), a completed line-filtering IRC client executor, permit-for-task-lifetime capture, and active-slot release on every exit path. Nine round-trip tests (`service_tunnels_local_roundtrip.rs`) plus six wire-surface tests (`service_tunnels_independent_application_clients.rs`) prove the local byte round-trip. No wire change.
 - Plan 181 ran its full external lane to the §6.3 stop condition: 29 local independent-application-client rows pass (unmodified curl HTTP/SOCKS, nc, stdlib generic driver, exact-pinned jaraco/irc through the real manager; restart stability; resource baselines; unsupported-profile ledger) while the two remote rows are recorded `blocked` with genuine exact-pinned i2pd 2.61.0 qualification provenance (`unknown_peer>0`, `delivered=0`, no establishment). Self-composed rows are never substituted for interop. Milestone 10 final acceptance stays open.
 - Plan 183 registered the M6 mixed-router destination/Streaming interop program Plan 181 §6.3 requires (registration only); Plan 181 resumes after it produces passing remote rows.
+- Plan 184 passed the M6 authenticated I2NP preflight with no tunnel/NetDB/Streaming claim; Plan 185 passed the live one-hop exploratory tunnels + liveness lane; Plan 186 passed the mixed-router NetDB lookup/publication lane with no LeaseSet2/Streaming claim.
+- Plan 187 landed the local destination message plane (daemon-owned `DestinationTunnelCoordinator`, 27 unit + 9 live two-role rows including the bidirectional ECIES/Garlic round-trip with sibling isolation, narrow additive seams, no wire change) with the external lane stopping fail-closed at the §11 build-reply gate (session + reference build acceptance both directions + SAM DATAGRAM destination + reference LS2 publication proven; 7 install-dependent rows blocked with multi-run diagnosis; creator-known keys never installed without a consumed reply). Plan 188 owns the narrow build-reply corrective; no LeaseSet2/Streaming interop is claimed.
  - `milestone6_interoperable = not-yet-claimed` remains unchanged.
 - SSU2 public-network participation, broad router interoperability, IPv6 external interop, PQ v3/v4, and SSU1 remain unclaimed/deferred as documented.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
 
-Current handoff: **Plan 186 passed the M6 mixed-router NetDB
-lookup and publication lane (daemon-owned `NetDbTunnelCoordinator`
-over the Plan 185 exploratory pair through the authoritative bounded
-store; exact-pinned i2pd 2.61.0 with `notransit=false,floodfill=true`;
-22 unit + 9 live + 12-row external lane +
-`scripts/check-netdb-tunnel-evidence.sh`; no multi-hop, no destination
-LeaseSet2 / Streaming claim). Plan 187 owns the destination program.
-M10 final acceptance stays open.**
+Current handoff: **Plan 187 landed the local destination message
+plane (daemon-owned `DestinationTunnelCoordinator`, 27 unit + 9 live
+two-role rows including the bidirectional ECIES/Garlic round-trip
+with sibling isolation, narrow additive seams, no wire change) with
+the external lane stopping fail-closed at the §11 build-reply gate
+(session + reference build acceptance both directions + SAM DATAGRAM
+destination + reference LS2 publication proven; 7 install-dependent
+rows recorded `blocked` with multi-run diagnosis; creator-known keys
+never installed without a consumed reply). Plan 188 owns the narrow
+build-reply corrective. M10 final acceptance stays open.**

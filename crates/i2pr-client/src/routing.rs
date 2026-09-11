@@ -275,6 +275,18 @@ impl DestinationOutboundRole {
         }
     }
 
+    /// Wraps an already-constructed outbound gateway role by move
+    /// (Plan 187 §6: the daemon-owned build coordinator owns the
+    /// installed role; moving it here preserves the exclusive
+    /// secret-material ownership invariant — the role is never
+    /// cloned).
+    pub fn from_role(role: OutboundGatewayRole, expires_at_ms: u64) -> Self {
+        Self {
+            role,
+            expires_at_ms,
+        }
+    }
+
     /// Returns the underlying role.
     pub const fn role(&self) -> &OutboundGatewayRole {
         &self.role

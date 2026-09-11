@@ -8,7 +8,9 @@ proven both direct authenticated IPv4 directions against exact-pinned i2pd 2.61.
 Plan 186 has proven daemon-owned NetDB lookup/publication over exploratory
 tunnels against the same pin with no LeaseSet2/Streaming claim; no public
 advertisement, public-network participation, broad router interoperability,
-or Milestone 6 interoperability is claimed.
+or Milestone 6 interoperability is claimed. Plan 187 landed the local
+destination message plane (27 unit + 9 live two-role rows) with 7
+remote rows blocked on the build-reply interop gap pending Plan 188.
 
 ## Read first
 
@@ -67,6 +69,8 @@ Plan 183 = registered M6 mixed-router streaming interop program
 Plan 184 = passed M6 authenticated I2NP runtime and reference preflight
 Plan 185 = passed M6 live one-hop exploratory tunnels and liveness
 Plan 186 = passed M6 mixed-router NetDB lookup and publication
+Plan 187 = blocked-by-m6-build-reply-interop-gap (local destination rows passed; remote gate pending plan188)
+Plan 188 = registered M6 short-build-reply interop corrective (next)
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
 Milestone 10 generic tunnels = passed-via-plan175 (profile; byte round-trip proven-via-plan182)
 Milestone 10 HTTP proxy = passed-via-plan176 (profile; byte round-trip proven-via-plan182)
@@ -81,7 +85,9 @@ Milestone 10 final acceptance = not-yet-closed
 M6 authenticated I2NP preflight = passed-via-plan184 (no tunnel/NetDB/Streaming claim)
 M6 exploratory one-hop tunnels = passed-via-plan185 (no multi-hop / LeaseSet2 / Streaming claim)
 M6 NetDB lookup/publication = passed-via-plan186 (no LeaseSet2 / Streaming claim)
-next_executable_plan = 187
+M6 destination local product = passed-via-plan187 (27 unit + 9 live rows; no remote claim)
+M6 destination remote interop = blocked-pending-plan188
+next_executable_plan = 188
 next product layer = m6-mixed-router-leaseset2
 ```
 
@@ -569,6 +575,22 @@ bash tests/integration/m6-interop/run-netdb.sh
 bash scripts/check-netdb-tunnel-evidence.sh
 ```
 
+Focused M6 destination seams currently include:
+
+```text
+cargo test --locked -p i2pr-daemon --test destination_tunnel_unit -- --test-threads=1
+# expected: 27 passed
+cargo test --locked -p i2pr-daemon --test destination_tunnel_live -- --test-threads=1
+# expected: 9 passed
+cargo test --locked -p i2pr-daemon --lib tunnel_liveness -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test destination_tunnel_external \
+  destination_message_plane_against_i2pd -- --ignored --exact --test-threads=1
+# without lane env: fail-closed (missing required env); with lane env: stops at the
+# §11 build-reply gate after recording every reachable row (7 install-dependent rows blocked)
+bash tests/integration/m6-interop/run-destination.sh
+bash scripts/check-destination-tunnel-evidence.sh
+```
+
 Plan 184 owns the daemon-owned authenticated I2NP spine
 (`crates/i2pr-daemon/src/router_i2np.rs`: central dispatcher,
 narrow `RouterDeliveryService` over existing `send_i2np`, strict
@@ -602,6 +624,27 @@ matrices, typed tunnel-loss without direct fallback). The NetDB external
 lane is ignored in routine CI and explicitly selected in its dedicated
 lane; i2pd is provisioned with `notransit = false, floodfill = true`
 so the reference accepts builds and acts as the controlled floodfill.
+Plan 187 adds the daemon-owned destination-over-tunnels coordinator
+(`crates/i2pr-daemon/src/destination_tunnels.rs`: authoritative
+bounded RouterInfo store, store-parameter LeaseSet2 lookup through
+the existing seam, tunnel-path proofs, authoritative LeaseSet2
+cache, real-material proofs rejecting `LocalZeroHop`, bounded
+local-LS2 publication with protocol-derived ack, registry-backed
+Garlic recovery, typed tunnel-loss without direct fallback) plus
+narrow additive seams (`begin_lease_set2_lookup_with_store` /
+`ingest_lease_set2_search_reply` on the seam, `GarlicComplete` on
+inbound dispatch, `deliver_outbound_cells` for client-composed
+Garlic cells, registry/role accessors, `DestinationOutboundRole::from_role`
+by move). The destination external lane is ignored in routine CI
+and explicitly selected in its dedicated lane; i2pd is provisioned
+with `notransit = false, floodfill = true` plus loopback SAM so the
+reference DATAGRAM destination is created through its public
+client surface. The lane stops fail-closed at the §11
+build-reply gate (reference accepts builds per its transit log
+but emits no consumable reply; 7 install-dependent rows recorded
+blocked with multi-run diagnosis); Plan 188 owns the narrow
+corrective. The raw i2pd log is never evidence (SAM session
+lines); only sanitized counts reach evidence.
 
 Plan 164 added the I2CP fixture corpus (`tests/fixtures/i2cp/`) and its
 checker (`scripts/check-i2cp-vectors.sh`), enforced in routine Linux CI;
@@ -750,7 +793,8 @@ closed.
   - Plan 183 registered the M6 mixed-router destination/Streaming interop program Plan 181 §6.3 requires (see `plans/183-m6-mixed-router-streaming-interop-program.md` and `plans/183-status.md`): registration only, no implementation, no M10 closure claim.
  - Plan 184 passed the M6 authenticated I2NP preflight (see `plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md` and `plans/184-status.md`): strict loopback/non-advertised `[ssu2]` activation, daemon-owned `Ssu2DaemonService` under `ssu2-router` supervision, central `router_i2np` dispatcher with authenticated peer preservation, narrow `RouterDeliveryService` over existing `send_i2np`, exact-pinned i2pd 2.61.0 bidirectional control with fail-closed 10-row lane. No tunnel/NetDB/Streaming/M10-remote claim.
 - Plan 185 passed the M6 live one-hop exploratory tunnels and liveness lane (see `plans/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md` and `plans/185-status.md`): daemon-owned `ExploratoryBuildCoordinator` + `TunnelLivenessScheduler` drive the existing `i2pr-tunnel::short::ShortBuildStateMachine` / `i2pr-tunnel::pool::ExploratoryPool` / `i2pr-tunnel::data_plane_registry::DataPlaneRegistry` seams end-to-end through the Plan 184 central `router_i2np` dispatcher; one real outbound and one real inbound one-hop exploratory build accepted by the exact-pinned i2pd 2.61.0 reference with `notransit=false`; bounded first-test / repeat / response-timeout / failure-threshold liveness policy; 12-row external lane + `scripts/check-exploratory-tunnel-evidence.sh` static evidence check. No multi-hop, no destination LeaseSet2 / Streaming claim.
-- Plan 186 passed the M6 mixed-router NetDB lookup and publication lane (see `plans/186-m6-mixed-router-netdb-lookup-and-publication.md` and `plans/186-status.md`): daemon-owned `NetDbTunnelCoordinator` drives the existing lookup/publication state machines over the Plan 185 pair through the authoritative bounded store (ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded matrices, typed tunnel-loss); exact-pinned i2pd 2.61.0 with `notransit=false,floodfill=true`; 22 unit + 9 live + 12-row external lane + `scripts/check-netdb-tunnel-evidence.sh`. No multi-hop, no destination LeaseSet2 / Streaming claim; Plan 187 owns the destination program.
+- Plan 186 passed the M6 mixed-router NetDB lookup and publication lane (see `plans/186-m6-mixed-router-netdb-lookup-and-publication.md` and `plans/186-status.md`): daemon-owned `NetDbTunnelCoordinator` drives the existing lookup/publication state machines over the Plan 185 pair through the authoritative bounded store (ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded matrices, typed tunnel-loss); exact-pinned i2pd 2.61.0 with `notransit=false,floodfill=true`; 22 unit + 9 live + 12-row external lane + `scripts/check-netdb-tunnel-evidence.sh`. No multi-hop, no destination LeaseSet2 / Streaming claim; Plan 187 landed the destination program (local rows passed, remote gate pending Plan 188).
+- Plan 187 is blocked by the `m6-build-reply-interop-gap` (see `plans/187-m6-remote-leaseset2-and-destination-garlic-routing.md` and `plans/187-status.md`): the daemon-owned `DestinationTunnelCoordinator` with the full local destination message plane is landed (27 unit + 9 live two-role rows including the bidirectional ECIES/Garlic round-trip with sibling isolation over real TunnelData cells; narrow additive seams on the NetDB seam/inbound-dispatch/outbound-lookup/registry, no wire change), and the 21-row external lane proves session, reference build acceptance both directions, SAM DATAGRAM destination, reference LS2 publication, direct rejection, and liveness — but exact-pinned i2pd 2.61.0 emits no consumable ShortTunnelBuildReply (multi-run diagnosis: lossless session, `kind_reply=0`, reference transit acceptance logged), so no tunnel material installs and 7 install-dependent rows are recorded `blocked` with stop provenance. Creator-known keys are never installed without a consumed reply. Plan 188 owns the narrow build-reply corrective; no LeaseSet2/Streaming interop is claimed.
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
 - No Plan 161 direction-A evidence implies Milestone 6 destination/Streaming/tunnel interoperability or broad router interoperability.
@@ -768,11 +812,13 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 186 passed the M6 mixed-router NetDB
-lookup and publication lane (daemon-owned `NetDbTunnelCoordinator`
-over the Plan 185 exploratory pair through the authoritative bounded
-store; exact-pinned i2pd 2.61.0 with `notransit=false,floodfill=true`;
-22 unit + 9 live + 12-row external lane +
-`scripts/check-netdb-tunnel-evidence.sh`; no multi-hop, no destination
-LeaseSet2 / Streaming claim). Plan 187 owns the destination program.
-M10 final acceptance stays open.**
+Current handoff: **Plan 187 landed the local destination message
+plane (daemon-owned `DestinationTunnelCoordinator`, 27 unit + 9 live
+two-role rows, narrow additive seams, no wire change) with the
+external lane stopping fail-closed at the §11 build-reply gate
+(session + reference build acceptance both directions + SAM
+DATAGRAM destination + reference LS2 publication proven; 7
+install-dependent rows recorded `blocked` with multi-run
+diagnosis; creator-known keys never installed without a consumed
+reply). Plan 188 owns the narrow build-reply corrective. M10 final
+acceptance stays open.**

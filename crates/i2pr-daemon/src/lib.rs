@@ -10,6 +10,7 @@ pub mod bootstrap;
 pub mod cli;
 pub mod config;
 pub mod destination_streaming;
+pub mod destination_tunnels;
 pub mod error;
 pub mod exploratory_build;
 pub mod i2cp;

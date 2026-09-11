@@ -31,7 +31,7 @@ mod routing;
 mod store;
 mod store_message;
 
-pub use base64::{I2pBase64Error, MAX_DECODED_LEN, encode_filename_prefix};
+pub use base64::{I2pBase64Error, MAX_DECODED_LEN, decode, encode, encode_filename_prefix};
 pub use databaselookup::{DatabaseLookupBuildError, build_databaselookup};
 pub use lease_set2::{
     DestinationHash, LeaseSet2InsertOutcome, LeaseSet2Store, LeaseSet2StoreConfig,

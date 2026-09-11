@@ -160,6 +160,16 @@ impl DataPlaneRegistry {
         self.inbound.len()
     }
 
+    /// Returns the local receive tunnel ids with activated inbound
+    /// endpoint roles. Plan 187 uses this for reply-path selection:
+    /// the caller picks an activated receive id for the
+    /// `DatabaseLookup` reply path so recovered replies dispatch
+    /// through a real endpoint. Public metadata only; no secret
+    /// material leaves the registry.
+    pub fn inbound_receive_ids(&self) -> Vec<TunnelId> {
+        self.inbound.keys().copied().collect()
+    }
+
     /// Activates an established outbound tunnel and binds it to
     /// the supplied slot. Returns the role the data plane can
     /// consume.

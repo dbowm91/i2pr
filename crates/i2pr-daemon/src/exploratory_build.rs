@@ -521,6 +521,21 @@ impl ExploratoryBuildCoordinator {
         self.registry.outbound_first_hop(slot)
     }
 
+    /// Returns the data-plane registry holding the installed tunnel
+    /// roles. Plan 187 §6/§7 drives destination lookup/publication
+    /// composition and inbound Garlic recovery through these real
+    /// roles; the borrow is scoped to one composition or dispatch
+    /// call so pool ownership never moves.
+    pub fn registry(&self) -> &DataPlaneRegistry {
+        &self.registry
+    }
+
+    /// Returns a mutable borrow of the data-plane registry for
+    /// inbound TunnelData dispatch. Scoped like [`Self::registry`].
+    pub fn registry_mut(&mut self) -> &mut DataPlaneRegistry {
+        &mut self.registry
+    }
+
     /// Advances the wall-clock view of the coordinator. Callers
     /// must call this before any operation that depends on time.
     pub fn advance_time(&mut self, now_ms: u64) {

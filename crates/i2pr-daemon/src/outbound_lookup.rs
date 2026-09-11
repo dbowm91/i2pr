@@ -218,6 +218,45 @@ fn encode_transport_tunnel_data<R: CryptoRng + RngCore>(
     EncodedI2npMessage::new(bytes).map_err(|error| OutboundLookupError::Codec(error.to_string()))
 }
 
+/// Wrap pre-built outbound TunnelData cells (Plan 187 §6: the
+/// client-layer ECIES/Garlic composition already ran
+/// `OutboundGatewayRole::forward_cells` through a destination
+/// handle) into short-transport deliveries addressed to each
+/// cell's first hop. The helper never re-composes tunnel
+/// cryptography and never substitutes a direct-transport route.
+pub fn deliver_outbound_cells<R: CryptoRng + RngCore>(
+    cells: &[i2pr_tunnel::roles::OBGWRouterDelivery],
+    expiration_ms: u64,
+    deadline: Deadline,
+    rng: &mut R,
+) -> Result<OutboundLookupDispatch, OutboundLookupError> {
+    if cells.is_empty() || cells.len() > MAX_OUTBOUND_LOOKUP_CELLS {
+        return Err(OutboundLookupError::Codec(format!(
+            "destination delivery produced {} cells, expected 1..={}",
+            cells.len(),
+            MAX_OUTBOUND_LOOKUP_CELLS
+        )));
+    }
+    let mut deliveries = Vec::with_capacity(cells.len());
+    for cell in cells {
+        let encoded = encode_transport_tunnel_data(cell.cell.clone(), expiration_ms, rng)?;
+        let delivery_id = i2pr_transport::DeliveryId::generate()
+            .map_err(|error| OutboundLookupError::Codec(format!("{error:?}")))?;
+        let delivery = DeliveryRequest::with_id(
+            delivery_id,
+            PeerId::from_hash(cell.target_router.hash()),
+            encoded,
+            deadline,
+        );
+        deliveries.push(delivery);
+    }
+    let cell_count = deliveries.len();
+    Ok(OutboundLookupDispatch {
+        deliveries,
+        cell_count,
+    })
+}
+
 fn dispatch_cells<R: CryptoRng + RngCore>(
     payload_header: TunnelPayloadHeader,
     envelope: Vec<u8>,

@@ -139,6 +139,8 @@ pub enum InboundResponseKind {
     DatabaseSearchReply,
     /// DeliveryStatus (I2NP wire code 0x0A).
     DeliveryStatus,
+    /// Garlic destination message (I2NP wire code 0x0B, Plan 187).
+    Garlic,
 }
 
 impl InboundResponseKind {
@@ -148,6 +150,7 @@ impl InboundResponseKind {
             Self::DatabaseStore => MessageType::DatabaseStore.code(),
             Self::DatabaseSearchReply => MessageType::DatabaseSearchReply.code(),
             Self::DeliveryStatus => MessageType::DeliveryStatus.code(),
+            Self::Garlic => MessageType::Garlic.code(),
         }
     }
 }
@@ -173,6 +176,14 @@ pub enum InboundDispatchOutcome {
     },
     /// The cell completed a `DeliveryStatus` message.
     DeliveryStatusComplete {
+        /// Reassembled I2NP envelope.
+        bytes: Vec<u8>,
+    },
+    /// The cell completed a destination `Garlic` message (Plan
+    /// 187 §7). The caller may hand the bytes to the
+    /// destination/ECIES dispatch path; the NetDB state machines
+    /// never consume this outcome.
+    GarlicComplete {
         /// Reassembled I2NP envelope.
         bytes: Vec<u8>,
     },
@@ -230,6 +241,9 @@ pub fn dispatch_inbound_tunnel_data(
         I2npBody::DeliveryStatus(_) => Ok(InboundDispatchOutcome::DeliveryStatusComplete {
             bytes: bytes.to_vec(),
         }),
+        I2npBody::Garlic(_) => Ok(InboundDispatchOutcome::GarlicComplete {
+            bytes: bytes.to_vec(),
+        }),
         other => {
             let _ = body_kind(other);
             let type_byte = other.message_type().code();
@@ -271,5 +285,6 @@ mod tests {
         assert_eq!(InboundResponseKind::DatabaseStore.wire_code(), 0x01);
         assert_eq!(InboundResponseKind::DatabaseSearchReply.wire_code(), 0x03);
         assert_eq!(InboundResponseKind::DeliveryStatus.wire_code(), 0x0A);
+        assert_eq!(InboundResponseKind::Garlic.wire_code(), 0x0B);
     }
 }

@@ -303,17 +303,39 @@ impl NetDbSeam {
         target: DestinationHash,
         routing_key: &RouterHash,
     ) -> LookupAction {
+        self.begin_lease_set2_lookup_with_store(
+            &empty_router_info_store(),
+            request_id,
+            target,
+            routing_key,
+        )
+    }
+
+    /// Plan 187 §5: begin a LeaseSet2 lookup with floodfill
+    /// candidate selection against the supplied authoritative
+    /// store. The daemon-owned destination coordinator passes its
+    /// authoritative `RouterInfoStore` here so the live tunnel path
+    /// never consults the placeholder empty store; the LeaseSet2
+    /// record itself is still cached through the dedicated
+    /// `LeaseSet2Store` on ingest.
+    pub fn begin_lease_set2_lookup_with_store(
+        &mut self,
+        store: &RouterInfoStore,
+        request_id: u64,
+        target: DestinationHash,
+        routing_key: &RouterHash,
+    ) -> LookupAction {
         let lookup_id = LookupId::new(
             request_id,
             LookupKind::LeaseSet2,
             router_hash_from_destination(target),
         );
         let outcome = self.lease_set2_lookup.start(
-            // The LeaseSet2 lookup state machine carries only the
-            // router-side `RouterInfoStore` as a placeholder for
-            // floodfill selection. The LeaseSet2 store is supplied
-            // separately through `ingest_lease_set2_response`.
-            &empty_router_info_store(),
+            // The LeaseSet2 lookup state machine carries the
+            // router-side `RouterInfoStore` for floodfill selection.
+            // The LeaseSet2 store is supplied separately through
+            // `ingest_lease_set2_response`.
+            store,
             lookup_id,
             routing_key,
         );
@@ -324,7 +346,7 @@ impl NetDbSeam {
                     && let Some(path) = provider.provide_reply_path()
                     && self.lease_set2_lookup.accept_reply_path(lookup_id, path)
                 {
-                    self.advance_lease_set2_after_path(routing_key)
+                    self.advance_lease_set2_after_path_with_store(store, routing_key)
                 } else {
                     action
                 }
@@ -354,9 +376,20 @@ impl NetDbSeam {
     /// Plan 122 §B: drive the LeaseSet2 lookup to its next action
     /// after a reply path has been accepted.
     pub fn advance_lease_set2_after_path(&mut self, routing_key: &RouterHash) -> LookupAction {
+        self.advance_lease_set2_after_path_with_store(&empty_router_info_store(), routing_key)
+    }
+
+    /// Plan 187 §5: drive the LeaseSet2 lookup to its next action
+    /// after a reply path has been accepted, with floodfill
+    /// selection against the supplied authoritative store.
+    pub fn advance_lease_set2_after_path_with_store(
+        &mut self,
+        store: &RouterInfoStore,
+        routing_key: &RouterHash,
+    ) -> LookupAction {
         let outcome = self
             .lease_set2_lookup
-            .handle_pending_after_path(&empty_router_info_store(), routing_key);
+            .handle_pending_after_path(store, routing_key);
         match outcome {
             StartOutcome::PendingAttempt(action) => action,
             StartOutcome::NeedsReplyPath(action) => action,
@@ -443,6 +476,29 @@ impl NetDbSeam {
             i2pr_netdb::ResponseOutcome::Continue => Ok(LeaseSet2ResponseOutcome::Continue),
             i2pr_netdb::ResponseOutcome::Ignored => Ok(LeaseSet2ResponseOutcome::Ignored),
         }
+    }
+
+    /// Plan 187 §5: ingest a `DatabaseSearchReply` response into
+    /// the active LeaseSet2 lookup. Unknown peers never cause
+    /// unbounded work; the supplied policy caps suggestions.
+    pub fn ingest_lease_set2_search_reply(
+        &mut self,
+        envelope: &I2npMessage,
+        policy: &LookupPolicy,
+    ) -> Result<i2pr_netdb::ResponseOutcome, NetDbSeamError> {
+        let lookup_id = self
+            .active_lease_set2_lookup()
+            .ok_or(NetDbSeamError::NoActiveLeaseSet2Lookup)?;
+        if !matches!(envelope.body(), I2npBody::DatabaseSearchReply(_)) {
+            return Err(NetDbSeamError::UnsupportedBody);
+        }
+        let outcome = i2pr_netdb::handle_searchreply_message(
+            &mut self.lease_set2_lookup,
+            lookup_id,
+            envelope,
+            policy,
+        )?;
+        Ok(outcome)
     }
 
     /// Plan 122 §B: forward a delivery outcome (success / failure /
