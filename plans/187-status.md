@@ -1,7 +1,11 @@
 # Plan 187 status — M6 remote LeaseSet2 and destination Garlic routing
 
 Status: **`blocked-by-m6-build-reply-interop-gap`** (local rows passed;
-remote gate pending Plan 188).
+remote gate pending Plan 188). Plan 188 already flipped 2/7 rows via
+consumed reference replies; the remaining 5/7 destination rows were
+blocked on the inbound NetDB reply-path metadata defect that Plan 190
+isolates and corrects (see [`plans/190-status.md`](190-status.md);
+Plan 190 is now passed locally with the corrected reply path).
 
 Plan of record:
 [`plans/187-m6-remote-leaseset2-and-destination-garlic-routing.md`](187-m6-remote-leaseset2-and-destination-garlic-routing.md).
@@ -9,17 +13,19 @@ Plan of record:
 ## Current authority
 
 ```text
-plan_187 = blocked-by-m6-build-reply-interop-gap
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending exact-pinned i2pd run)
+plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
+plan_187 = blocked-by-m6-build-reply-interop-gap (local rows passed; 2/7 flipped via plan188 installs; 5/7 reply-path gap isolated by plan190)
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
 plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 plan_183 = registered-m6-mixed-router-streaming-interop-program
 m6_destination_local_product = passed-via-plan187
-m6_destination_remote_interop = not-yet-passed
+m6_destination_remote_interop = installs-proven-lookup-pending-plan190-external-run
 milestone6_interoperable = not-yet-claimed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
-next_executable_plan = 188
+next_executable_plan = 188 (continue external lane with plan190 reply-path correction)
 ```
 
 ## What landed
@@ -365,8 +371,10 @@ without weakening authentication, acceptance correlation, or
 evidence hygiene.
 
 ```text
-plan_187 = blocked-by-m6-build-reply-interop-gap
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending)
+plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
+plan_187 = blocked-by-m6-build-reply-interop-gap (local rows passed; 2/7 flipped via plan188 installs)
 m6_destination_local_product = passed-via-plan187
-m6_destination_remote_interop = blocked-pending-plan188
-next_executable_plan = 188
+m6_destination_remote_interop = installs-proven-lookup-pending-plan190-external-run
+next_executable_plan = 188 (continue external lane with plan190 reply-path correction)
 ```

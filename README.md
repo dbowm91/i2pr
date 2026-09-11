@@ -56,8 +56,9 @@ plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
 plan_187 = blocked-by-m6-build-reply-interop-gap (2/7 flipped via plan188 installs)
-plan_188 = in-progress-m6-short-build-reply-installs-proven
-plan_189 = registered-m6-java-second-family-qualification-and-closure (blocked-by-plan188)
+plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
+plan_189 = registered-m6-java-second-family-qualification-and-closure (blocked-by-plan188-and-plan190)
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending exact-pinned i2pd run)
 
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
@@ -101,7 +102,7 @@ m6_destination_remote_interop = installs-proven-lookup-pending-plan190
 m6_inbound_netdb_reply_path_correction = passed-via-plan190 (typed route + adapter; remote lane pending)
 m6_mixed_router_cross_family_ledger = landed-via-plan189 (i2pd-only-runs; java-second-family-deferred)
 next_product_layer = m6-mixed-router-leaseset2
-next_executable_plan = 190 (continue external lane + handoff to plan188)
+next_executable_plan = 188 (continue external lane with plan190 reply-path correction)
 ```
 
 Milestone 8 is **closed** via [**Plan 161**](plans/161-status.md) within its bounded direct-interop scope. Directions A and B are genuinely proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real loopback UDP, including authenticated session establishment, small and fragmented I2NP/DatabaseStore exchange with return DeliveryStatus traffic, cached-token behavior, malformed/resource rows, and the fail-closed external evidence lane. [**Plan 162**](plans/162-status.md) passed the narrow external-test lane correction. Public-network, NetDB/tunnel/destination, IPv6-external, PQ, SSU1, and Milestone 6 mixed-router interoperability remain outside that claim.

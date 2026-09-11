@@ -1,38 +1,47 @@
 # Plan 189 status — M6 Java I2P second-family qualification and mixed-router closure
 
-Status: **`registered-blocked-by-plan188-lookup-gap`** (the i2pd
+Status: **`registered-blocked-by-plan188-and-plan190`** (the i2pd
 first-family destination lookup row is still blocked; no Java
 second-family qualification has started yet; the cross-family
 ledger/checker/workflow scaffold is landed and routed through the
-existing per-layer evidence scripts).
+existing per-layer evidence scripts). Plan 190 isolates and corrects
+the inbound NetDB reply-path metadata defect that kept the
+destination LeaseSet2 lookup row blocked after the Plan 188 installs;
+see [`plans/190-status.md`](190-status.md).
 
 Plan of record:
 [`plans/189-m6-java-i2p-second-family-qualification-and-closure.md`](189-m6-java-i2p-second-family-qualification-and-closure.md).
 
-> Numbering note. The deferred `plans/188-m6-mixed-router-streaming-with-i2pd.md`
-> is the Streaming pass that Plan 188 §11 names as the next executable
-> after the i2pd destination rows go green; the docs prune that swaps
-> 188-streaming → 189 and the present file → 190 is deferred until the
-> i2pd rows actually pass. The file under `plans/189-` stays blocked
-> on Plan 188 in the meantime so the current numbering does not
-> imply a closure that has not been earned.
+> Numbering note (as of Plan 190). The deferred
+> `plans/188-m6-mixed-router-streaming-with-i2pd.md` is the
+> Streaming pass that Plan 188 names as the next executable after
+> the i2pd destination rows go green. No file renumbering is
+> planned unless the deferred Streaming pass actually exercises:
+> when (and only when) it does, it will be renumbered to the next
+> free plan slot (likely `191`) so the in-flight references in
+> `plans/README.md`, `docs/architecture/i2pr-daemon.md`, and the
+> agent skills remain accurate. Plan 190 was added as a new file
+> for the inbound NetDB reply-path corrective rather than via the
+> 189→190 renumber originally promised here; the present file
+> stays at `189` and Plan 190 stays at `190`.
 
 ## Current authority
 
 ```text
-plan_189 = registered-blocked-by-plan188-lookup-gap
-plan_188 = in-progress-m6-short-build-reply-installs-proven
-plan_187 = blocked-by-m6-build-reply-interop-gap (2/7 flipped via plan188 installs)
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending exact-pinned i2pd run)
+plan_189 = registered-blocked-by-plan188-and-plan190
+plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
+plan_187 = blocked-by-m6-build-reply-interop-gap (2/7 flipped via plan188 installs; 5/7 reply-path gap that Plan 190 isolates)
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
 plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 plan_183 = registered-m6-mixed-router-streaming-interop-program
 m6_destination_local_product = passed-via-plan187
-m6_destination_remote_interop = installs-proven-lookup-pending-plan188
+m6_destination_remote_interop = installs-proven-lookup-pending-plan190-external-run
 milestone6_interoperable = not-yet-claimed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
-next_executable_plan = 188 (resolve the destination LeaseSet2-lookup gap)
+next_executable_plan = 188 (continue external lane with plan190 reply-path correction)
 m6_second_family_java = not-yet-started
 ```
 
@@ -145,7 +154,9 @@ Plan 189 waits for:
 Until then:
 
 ```text
-plan_189 = registered-blocked-by-plan188-lookup-gap
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending)
+plan_189 = registered-blocked-by-plan188-and-plan190
+plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
 m6_second_family_java = not-yet-started
-next_executable_plan = 188 (resolve the destination LeaseSet2-lookup gap)
+next_executable_plan = 188 (continue external lane with plan190 reply-path correction)
 ```

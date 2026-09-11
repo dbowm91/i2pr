@@ -8,9 +8,11 @@ Plan of record:
 ## Current authority
 
 ```text
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending exact-pinned i2pd run)
+plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
 plan_183 = registered-m6-mixed-router-streaming-interop-program
 milestone10_final_acceptance = not-yet-closed
-next_executable_plan = 183 (scoping first)
+next_executable_plan = 188 (continue external lane with plan190 reply-path correction; plan 183 scopes M10 remote-Streaming work)
 ```
 
 ## What landed

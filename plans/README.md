@@ -107,8 +107,8 @@ plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
 plan_187 = blocked-by-m6-build-reply-interop-gap (2/7 flipped via plan188 installs)
-plan_188 = in-progress-m6-short-build-reply-installs-proven
-plan_189 = registered-m6-java-second-family-qualification-and-closure (blocked-by-plan188)
+plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
+plan_189 = registered-m6-java-second-family-qualification-and-closure (blocked-by-plan188-and-plan190)
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
@@ -163,7 +163,7 @@ next_product_layer = m6-mixed-router-leaseset2
 next_executable_plan = 188
 m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172
 m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181(blocked) -> 183
-m6_sequence = 183(registered) -> 184(passed) -> 185(passed) -> 186(passed) -> 187(blocked-local-passed-2/7-flipped) -> 188(in-progress)
+m6_sequence = 183(registered) -> 184(passed) -> 185(passed) -> 186(passed) -> 187(blocked-local-passed-2/7-flipped) -> 188(blocked-by-plan190-reply-path-corrective; installs retained-passed) -> 190(passed-locally; remote lane pending) -> plan189(java-second-family) after 188/streaming close
 ```
 
 ## Current handoff sequence
@@ -352,8 +352,8 @@ Plan 184 = passed M6 authenticated I2NP runtime and reference preflight
 Plan 185 = passed M6 live one-hop exploratory tunnels and liveness
 Plan 186 = passed M6 mixed-router NetDB lookup and publication
 Plan 187 = blocked-by-m6-build-reply-interop-gap (local rows passed; 2/7 flipped via plan188 installs)
-Plan 188 = in-progress-m6-short-build-reply-installs-proven (lookup/publication rows pending; 5/7 reply-path gap)
-Plan 189 = registered-m6-java-second-family-qualification-and-closure (blocked-by-plan188; §8 cross-family ledger/checker/workflow landed)
+Plan 188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed; lookup/publication rows pending corrected external run)
+Plan 189 = registered-m6-java-second-family-qualification-and-closure (blocked-by-plan188 and plan190; §8 cross-family ledger/checker/workflow landed)
 Plan 190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending i2pd run)
 Milestone 10 foundation = passed-via-plan174
 Milestone 10 generic tunnels = passed-via-plan175
@@ -374,8 +374,8 @@ M6 destination remote interop = installs-proven-lookup-pending-plan190
 M6 inbound NetDB reply-path correction = passed-via-plan190 (typed route + adapter; remote lane pending)
 M6 mixed-router cross-family ledger = landed-via-plan189 (i2pd-only-runs; java-second-family-deferred)
 Plan 187 = blocked-by-m6-build-reply-interop-gap (local rows passed; 2/7 flipped via plan188 installs)
-Plan 188 = in-progress-m6-short-build-reply-installs-proven (lookup/publication rows pending; 5/7 reply-path gap)
+Plan 188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed; lookup/publication rows pending corrected external run)
 Plan 189 = registered-m6-java-second-family-qualification-and-closure (blocked-by-plan188 and plan190; §8 cross-family ledger/checker/workflow landed)
 Plan 190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending i2pd run)
-next_executable_plan = 190 (continue external lane + handoff to plan188)
+next_executable_plan = 188 (continue external lane with plan190 reply-path correction)
 ```

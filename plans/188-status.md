@@ -1,35 +1,46 @@
 # Plan 188 status — M6 short-build-reply interop corrective
 
-Status: **`in-progress-m6-build-reply-installs-proven`** (2/7 rows
-flipped to passed; 5/7 remain blocked on the LeaseSet2-lookup gap;
-no Streaming claim).
+Status: **`blocked-by-plan190-reply-path-corrective`** (2/7 rows
+flipped to passed via consumed reference replies;
+real outbound and inbound i2pd one-hop installs are
+retained-passed; 5/7 destination rows remain blocked on the
+LeaseSet2-lookup gap that Plan 190 isolates and corrects; no
+Streaming claim). Plan 190 has been passed locally with the
+corrected reply path; this status reopens at the first remaining
+destination row after the corrected external
+`run-destination.sh` proves a real tunneled lookup response. See
+[`plans/190-status.md`](190-status.md).
 
 Plan of record:
 [`plans/188-m6-short-build-reply-interop-corrective.md`](188-m6-short-build-reply-interop-corrective.md).
 
-> Numbering note: `plans/188-m6-mixed-router-streaming-with-i2pd.md`
+> Numbering note (as of Plan 190): `plans/188-m6-mixed-router-streaming-with-i2pd.md`
 > is the deferred Streaming pass (blocked until destination rows go
-> green). It is **not** the executable corrective; it will be
-> renumbered to 189 (and Java second-family to 190) in a follow-up
-> docs prune. The executable corrective is the
+> green). It is **not** the executable corrective; no renumbering is
+> planned until the deferred Streaming pass actually executes. The
+> executable corrective is the
 > `188-m6-short-build-reply-interop-corrective.md` file this status
-> closes against. `plans/189-m6-java-i2p-second-family-qualification-and-closure.md`
-> stays blocked until Streaming passes.
+> closes against.
+> `plans/189-m6-java-i2p-second-family-qualification-and-closure.md`
+> stays blocked until Streaming passes, and Plan 190 is the inbound
+> NetDB reply-path corrective (now passed locally) rather than the
+> originally-promised 189-Java renumber.
 
 ## Current authority
 
 ```text
-plan_188 = in-progress-m6-build-reply-installs-proven
-plan_187 = blocked-by-m6-build-reply-interop-gap (2/7 flipped; 5/7 still blocked)
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending exact-pinned i2pd run)
+plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
+plan_187 = blocked-by-m6-build-reply-interop-gap (2/7 flipped; 5/7 still blocked on reply-path gap that Plan 190 isolates)
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
 plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 m6_destination_local_product = passed-via-plan187
-m6_destination_remote_interop = not-yet-passed (installs proven, lookup pending)
+m6_destination_remote_interop = installs-proven-lookup-pending-plan190-external-run
 milestone6_interoperable = not-yet-claimed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
-next_executable_plan = 188 (complete lookup/publication/messaging rows)
+next_executable_plan = 188 (continue external lane with plan190 reply-path correction)
 ```
 
 ## Root cause (build-reply half, resolved)
@@ -225,7 +236,8 @@ resuming the Plan 187 §12 handoff (destination rows green →
 Streaming layers on top per the deferred streaming pass).
 
 ```text
-plan_188 = in-progress-m6-build-reply-installs-proven
-m6_destination_remote_interop = installs-proven-lookup-pending
-next_executable_plan = 188 (complete lookup/publication/messaging rows)
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending)
+plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
+m6_destination_remote_interop = installs-proven-lookup-pending-plan190-external-run
+next_executable_plan = 188 (continue external lane with plan190 reply-path correction)
 ```

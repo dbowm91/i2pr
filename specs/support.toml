@@ -361,7 +361,7 @@ milestone10_independent_application_clients = "local-rows-passed-plan181-not-clo
 milestone10_remote_service_interop = "not-yet-passed"
 milestone10_final_acceptance = "not-yet-closed"
 next_product_layer = "m6-mixed-router-leaseset2"
-next_executable_plan = "190"
+next_executable_plan = "188"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"

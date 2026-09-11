@@ -122,7 +122,7 @@ Plan 189 passes only when:
 9. full workspace/static floor and exact-head routine CI pass;
 10. exact-head external M6 workflow passes, preferably twice for the final implementation revision;
 11. `specs/CONFORMANCE.md`, support docs, plans authority, and relevant architecture docs are updated to the **bounded** claim actually proven;
-12. `plans/189-status.md` may set `milestone6_interoperable = passed-via-plan189` and advances `next_executable_plan = 190`.
+12. `plans/189-status.md` may set `milestone6_interoperable = passed-via-plan189` and advance the handoff. The next executable plan after Plan 189 will be the (currently unregistered) plan that resumes Plan 181's two remote M10 application rows.
 
 ## 10. Claim boundary
 
@@ -141,4 +141,4 @@ Do not close M6 if either reference family relies on a patched router, self-comp
 
 ## 12. Handoff
 
-After M6 closure, execute Plan 190 to resume Plan 181's two remote M10 application rows. Plan 189 itself does not close M10.
+After M6 closure, register and execute a follow-up plan that resumes Plan 181's two remote M10 application rows. Plan 190 is the inbound NetDB reply-path corrective (now passed locally) and is not the M10 application-row resumption; the M10 resumption will live at the next free plan number after Plan 189. Plan 189 itself does not close M10.

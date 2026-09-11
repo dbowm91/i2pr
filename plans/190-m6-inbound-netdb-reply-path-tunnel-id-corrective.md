@@ -12,7 +12,10 @@ This corrective must preserve the distinction between those two IDs in productio
 
 ## 2. Starting authority and observed failure
 
-Starting repository authority:
+Starting repository authority (snapshot at the time Plan 190
+was registered; current state is recorded in
+[`plans/190-status.md`](190-status.md) and
+[`plans/README.md`](README.md)):
 
 ```text
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
@@ -376,7 +379,8 @@ In each case preserve the passing reply-path correction and escalate only the ne
 
 ## 11. Handoff / authority transition
 
-Until execution:
+Before execution (historical; Plan 190 has since passed locally on
+commit `a70cdd0`):
 
 ```text
 plan_190 = registered-executable-m6-inbound-netdb-reply-path-tunnel-id-corrective
@@ -388,12 +392,16 @@ next_executable_plan = 190
 resume_after_plan190 = 188
 ```
 
-After Plan 190 passes:
+After Plan 190 passes (current state — local regression rows green;
+external `run-destination.sh` rerun pending exact-pinned i2pd
+2.61.0):
 
 ```text
 plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective
 plan_188 = resume-at-first-remaining-destination-row
 plan_189 = remains-blocked-until-plan188-and-streaming-close
+m6_destination_remote_interop = installs-proven-lookup-pending-plan190-external-run
+milestone6_interoperable = not-yet-claimed
 next_executable_plan = 188
 ```
 

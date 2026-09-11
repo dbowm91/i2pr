@@ -9,17 +9,23 @@ Plan of record:
 ## Current authority
 
 ```text
-plan_173 = registered-m10-service-tunnels-roadmap
-plan_174 = passed-m10-service-tunnel-foundation-and-shared-stream-runtime
-plan_175 = passed-m10-generic-client-server-service-tunnels
-plan_176 = passed-m10-http-i2p-proxy-and-connect
-plan_177 = passed-m10-socks5-i2p-connect-proxy
-plan_178 = passed-m10-irc-client-profile-and-privacy-filtering
-plan_179 = passed-m10-irc-server-profile-and-authenticated-peer-hostname
-plan_180 = passed-m10-service-tunnel-composition-reconcile-and-hardening
-plan_181 = blocked-by-m6-mixed-router-streaming-blocker
-plan_182 = passed-m10-local-delivery-corrective
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending exact-pinned i2pd run)
+plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
+plan_187 = blocked-by-m6-build-reply-interop-gap (local rows passed; 2/7 flipped via plan188 installs; 5/7 reply-path gap isolated by plan190)
+plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
+plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
+plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 plan_183 = registered-m6-mixed-router-streaming-interop-program
+plan_182 = passed-m10-local-delivery-corrective
+plan_181 = blocked-by-m6-mixed-router-streaming-blocker
+plan_180 = passed-m10-service-tunnel-composition-reconcile-and-hardening
+plan_179 = passed-m10-irc-server-profile-and-authenticated-peer-hostname
+plan_178 = passed-m10-irc-client-profile-and-privacy-filtering
+plan_177 = passed-m10-socks5-i2p-connect-proxy
+plan_176 = passed-m10-http-i2p-proxy-and-connect
+plan_175 = passed-m10-generic-client-server-service-tunnels
+plan_174 = passed-m10-service-tunnel-foundation-and-shared-stream-runtime
+plan_173 = registered-m10-service-tunnels-roadmap
 milestone10_planning_authority = plan173
 milestone10_foundation = passed-via-plan174
 milestone10_generic_tunnels = passed-via-plan175
@@ -32,7 +38,7 @@ milestone10_local_roundtrip = passed-via-plan182
 milestone10_independent_application_clients = local-rows-passed-plan181-not-closed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
-next_executable_plan = 183
+next_executable_plan = 188 (continue external lane with plan190 reply-path correction)
 next_product_layer = m6-mixed-router-streaming-interop
 ```
 
