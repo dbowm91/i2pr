@@ -27,14 +27,17 @@
 //! - bootstrap traverses the same parser/signature/freshness
 //!   validation used for ordinary records before eligibility;
 //! - floodfill selection reuses the existing
-//!   [`select_floodfill_candidates`] routing-key logic;
-//! - outbound dispatch reuses [`compose_outbound_lookup`] /
-//!   [`compose_outbound_publication`] through the supplied
-//!   [`OutboundGatewayRole`]; direct SSU2 `DatabaseLookup` delivery is
-//!   never a counted success path;
-//! - inbound recovery reuses [`dispatch_inbound_tunnel_data`] +
-//!   [`route_databasestore`] / [`route_database_search_reply`];
-//! - publication reuses [`PublicationCoordinator`] with normal i2pr
+//!   [`i2pr_netdb::select_floodfill_candidates`] routing-key logic;
+//! - outbound dispatch reuses
+//!   [`crate::outbound_lookup::compose_outbound_lookup`] /
+//!   [`crate::outbound_lookup::compose_outbound_publication`] through
+//!   the supplied [`i2pr_tunnel::roles::OutboundGatewayRole`]; direct
+//!   SSU2 `DatabaseLookup` delivery is never a counted success path;
+//! - inbound recovery reuses
+//!   [`crate::inbound_dispatch::dispatch_inbound_tunnel_data`] +
+//!   [`crate::inbound_dispatch::route_databasestore`] /
+//!   [`crate::inbound_dispatch::route_database_search_reply`];
+//! - publication reuses [`i2pr_netdb::PublicationCoordinator`] with normal i2pr
 //!   identity/publication code and protocol-derived acknowledgement;
 //! - concurrent lookups, candidate count, pending publication
 //!   acknowledgements, retained reply paths, store entries/bytes, and
