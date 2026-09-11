@@ -401,12 +401,24 @@ record is not `superseded-by-*`. Currently:
   [`plans/187-status.md`](../../plans/187-status.md)); Plan 188
   is the in-progress short-build-reply corrective
   (`installed_ob=1 installed_ib=1` via consumed reference
-  replies, 2/7 rows flipped to passed, 5/7 still blocked on the
-  LeaseSet2-lookup gap; see
-  [`plans/188-status.md`](../../plans/188-status.md)); Plan 189
+  replies, 2/7 rows flipped to passed, 5/7 were blocked on the
+  inbound NetDB reply-path metadata defect Plan 190 isolates
+  and corrects; see [`plans/188-status.md`](../../plans/188-status.md));
+  Plan 190 is the passed inbound NetDB reply-path tunnel-ID
+  corrective (typed public `InboundGatewayRoute` in
+  `i2pr-tunnel::DataPlaneRegistry`; daemon-owned
+  `reply_path_for_inbound_route` adapter in
+  `crates/i2pr-daemon/src/destination_tunnels.rs` derives
+  `i2pr_netdb::ReplyPath` only from `(gateway_router,
+  gateway_receive_tunnel)`; local regression rows with unequal
+  IDs `0x9601` vs `0x9602` prove the encoded `DatabaseLookup`
+  advertises the gateway tuple; `destination_tunnel_unit` 31
+  passed; remote lane pending i2pd run; no M6 wire change; no
+  `milestone6_interoperable = passed-via-plan190` claim; see
+  [`plans/190-status.md`](../../plans/190-status.md)); Plan 189
   is the registered M6 Java I2P second-family qualification
-  plan, blocked-by-plan188 with the §8 cross-family
-  ledger/checker/workflow scaffold landed
+  plan, blocked-by-plan188 (and Plan 190) with the §8
+  cross-family ledger/checker/workflow scaffold landed
   (`scripts/check-m6-mixed-router-acceptance-evidence.sh`,
   `tests/integration/m6-interop/run-m6-mixed-router.sh`,
   `.github/workflows/m6-mixed-router-external.yml`) and the

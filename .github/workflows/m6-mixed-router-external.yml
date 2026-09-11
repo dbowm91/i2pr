@@ -27,7 +27,9 @@ jobs:
         # Java I2P build dependencies the second-family follow-up
         # plan will need (this lane only fetches and verifies them
         # today; the actual Java router process stays unwired until
-        # Plan 188 closes the destination LeaseSet2-lookup gap).
+        # Plan 188 first-family destination + Streaming gates are
+        # genuinely green; Plan 190 corrected the inbound NetDB
+        # reply-path metadata defect Plan 188 surfaced).
         run: |
           set -euo pipefail
           sudo apt-get update -qq

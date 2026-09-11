@@ -305,7 +305,7 @@ plus `garlic_reply` (Plan 188) are noted in the table.
 | `garlic_reply` | Plan 188 bounded OBEP Garlic unwrap (`decrypt_build_reply_garlic`): tag-gated ChaCha20-Poly1305 decrypt plus local ShortTunnelBuildReply clove parse; typed `GarlicReplyError` |
 | `fixed_vectors` | Frozen Noise-N conformance constants |
 | `established` | `EstablishedTunnel`, `EstablishedHop`, `EstablishedMaterial` (secret-bearing companion; one-shot `into_established_tunnel`), `EstablishedRole`, `EstablishedNextHop` |
-| `data_plane_registry` | `DataPlaneRegistry`, `DataPlaneCapacity`, `RegistryRemoval`, `RegistryError` — Plan 117 bounded activation state for local roles |
+| `data_plane_registry` | `DataPlaneRegistry`, `DataPlaneCapacity`, `InboundGatewayRoute`, `RegistryRemoval`, `RegistryError` — Plan 117 bounded activation state for local roles; Plan 190 retains the typed `InboundGatewayRoute` (`gateway_router`, `gateway_receive_tunnel`, `local_receive_tunnel`) so the reply path advertised on a tunneled `DatabaseLookup` derives from real installed material instead of the local endpoint id |
 | `data` | `TunnelMessageBuilder`, `TunnelMessageParser`, `DeliveryInstruction`, `FragmentDelivery`, `TunnelPayloadHeader`, overhead constants |
 | `fragment` | `BoundedReassembler`, `TunnelFragment`, `ReassemblyKey`, `ReassembledFragment`, `insert_with_delivery`, `expire_due`, `purge` |
 | `layer` | `TunnelLayerTransform` (AES-256 ECB/CBC), `DuplicateWindow`, `DuplicateToken` |
@@ -712,6 +712,33 @@ and the `MessageHopProcessor` short-build primitives stay exactly
 the same. See
 [`plans/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md`](../../plans/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md)
 and [`plans/185-status.md`](../../plans/185-status.md).
+
+## Plan 190 - typed inbound-gateway route in `DataPlaneRegistry` (passed; local rows)
+
+Plan 190 keeps the registry non-secret by extending it with a
+single typed struct:
+
+```rust
+pub struct InboundGatewayRoute {
+    pub gateway_router: Hash,
+    pub gateway_receive_tunnel: TunnelId,
+    pub local_receive_tunnel: TunnelId,
+}
+```
+
+`DataPlaneRegistry::activate_inbound` reads `EstablishedTunnel::inbound_gateway()`
+before the role is consumed, retains the gateway router hash and
+gateway receive tunnel id together with the local endpoint receive
+tunnel id, and exposes them through
+`DataPlaneRegistry::inbound_gateway_route(local_receive)`. The
+existing `inbound_first_hop` accessor is preserved for callers that
+do not need the gateway receive id. `remove_inbound` and
+`remove_slot` clean the new metadata atomically; `ReplyPath`
+construction stays out of `i2pr-tunnel` and lives in the daemon
+composition layer (`reply_path_for_inbound_route` in
+`crates/i2pr-daemon/src/destination_tunnels.rs`). See
+[`plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md`](../../plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md)
+and [`plans/190-status.md`](../../plans/190-status.md).
 
 ## Cross-references
 

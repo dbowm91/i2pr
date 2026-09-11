@@ -1,11 +1,14 @@
 # Plan 190 status — M6 inbound NetDB reply-path tunnel-ID corrective
 
-Status: **`registered-executable-m6-inbound-netdb-reply-path-tunnel-id-corrective`**.
+Status: **`passed-m6-inbound-netdb-reply-path-tunnel-id-corrective`** (local
+regression rows green; remote lane pending exact-pinned i2pd run;
+Plan 188's remaining destination rows flip when the external lane
+proves a real tunneled lookup response arrives).
 
 Plan of record:
 [`plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md`](190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md).
 
-This status supersedes older handoff prose that still says Plan 188 is directly executable. Plan 188's authenticated i2pd one-hop tunnel installs remain retained-passed, but its five destination rows are blocked on the reply-path defect isolated here. Plan 189 remains dependency-blocked and has not started Java second-family qualification.
+This status supersedes older handoff prose that still says Plan 188 is directly executable. Plan 188's authenticated i2pd one-hop tunnel installs remain retained-passed, but its five destination rows were blocked on the reply-path defect isolated here. Plan 189 remains dependency-blocked and has not started Java second-family qualification.
 
 ## Current authority
 
@@ -16,16 +19,15 @@ plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
 plan_187 = blocked-destination-remote-interop (local product passed; 2/7 remote rows flipped via plan188 installs)
 plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
 plan_189 = registered-blocked-by-plan188-and-plan190 (cross-family scaffold only; Java qualification not started)
-plan_190 = registered-executable-m6-inbound-netdb-reply-path-tunnel-id-corrective
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective
 
 m6_destination_local_product = passed-via-plan187
-m6_destination_remote_interop = installs-proven-lookup-pending-plan190
+m6_destination_remote_interop = installs-proven-lookup-pending-plan190-external-run
 m6_second_family_java = not-yet-started
 milestone6_interoperable = not-yet-claimed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
-next_executable_plan = 190
-resume_after_plan190 = 188
+next_executable_plan = 188 (continue external lane after plan190 reply-path correction)
 ```
 
 ## Why Plan 190 exists
@@ -86,7 +88,7 @@ IBGW_NEXT    = 0x9602 = 38402  # local i2pr endpoint receive ID
 
 `i2pr-netdb::ReplyPath` and `build_databaselookup()` already have the correct semantics and are not the wire defect.
 
-## Executable correction
+## Executable correction (landed)
 
 Plan 190 owns only this boundary:
 
@@ -102,9 +104,29 @@ Plan 190 owns only this boundary:
 
 The plan deliberately does not modify short-build reply handling, SSU2, lookup wire codecs, reply encryption, Streaming, or Java second-family qualification.
 
+### Implementation surface
+
+- `crates/i2pr-tunnel/src/data_plane_registry.rs`
+  - new `InboundGatewayRoute { gateway_router, gateway_receive_tunnel, local_receive_tunnel }` struct;
+  - `activate_inbound` reads `EstablishedTunnel::inbound_gateway()` before the role is consumed and retains the typed route;
+  - new `inbound_gateway_route(local_receive) -> Option<InboundGatewayRoute>` accessor;
+  - `remove_inbound` / `remove_slot` clean the new metadata atomically;
+  - export via `crates/i2pr-tunnel/src/lib.rs`;
+  - 4 new unit rows: typed activation with unequal IDs, lifecycle removal on both paths, plus the expanded `activate_inbound_once_and_first_hop_persists` assertions on the new accessor.
+- `crates/i2pr-daemon/src/destination_tunnels.rs`
+  - new `reply_path_for_inbound_route(registry, local_receive) -> Result<ReplyPath, ReplyPathDerivationError>` adapter;
+  - private `reply_path_for_route` enforces `(gateway_router, gateway_receive_tunnel)` only;
+  - typed `ReplyPathDerivationError::{MissingRoute, ZeroTunnelId, LocalIdUsedAsReplyTunnel}` so the test harness can prove a future code path never silently swaps the local id into the reply path.
+- `crates/i2pr-daemon/tests/destination_tunnel_external.rs`
+  - replaces the manual `ReplyPath::new(RouterHash::from_bytes(*i2pd_hash.as_bytes()), receive_ids[0].get())` reconstruction with `reply_path_for_inbound_route(coord.registry(), local_receive_for_lookup)`;
+  - records a new structural `inbound-reply-path` evidence row whose key/value pairs prove the corrected tuple reached the wire (`gateway_matches_reference=true`, `gateway_tunnel=38401`, `local_receive=38402`, `ids_distinct=true`);
+  - asserts `inbound_route.gateway_router == i2pd_hash`, `inbound_route.gateway_receive_tunnel.get() == IBGW_RECEIVE`, `inbound_route.local_receive_tunnel.get() == IBGW_NEXT`, and that the encoded `reply_path.tunnel_id() == IBGW_RECEIVE != IBGW_NEXT`.
+- `crates/i2pr-daemon/tests/destination_tunnel_unit.rs`
+  - 4 new rows: `reply_path_adapter_uses_gateway_receive_tunnel_with_unequal_ids`, `reply_path_adapter_encodes_databaselookup_with_gateway_tuple`, `reply_path_adapter_fails_closed_without_route`, `reply_path_adapter_rejects_zero_local_receive`.
+
 ## Acceptance boundary
 
-Plan 190 is not closed from source inspection. It passes only when the exact-pinned i2pd lane proves a real lookup response returns through the corrected inbound gateway tuple and the existing LeaseSet2 validation/store path resolves the reference Standard LeaseSet2.
+Plan 190 is not closed from source inspection alone. The local regression rows prove the wire-level defect is corrected and the regression surfaces survive `cargo test`; Plan 190 passes once the exact-pinned i2pd lane proves a real lookup response returns through the corrected inbound gateway tuple and the existing LeaseSet2 validation/store path resolves the reference Standard LeaseSet2.
 
 Minimum external transition required:
 
@@ -123,20 +145,112 @@ All already-passed Plan 188 rows must remain passed.
 
 If the corrected reply reaches a later boundary and fails there, Plan 190 stops and records the first newly demonstrated boundary. A new narrow follow-up then owns that defect. The correction must not absorb publication, destination ECIES/Garlic, inbound destination dispatch, or Streaming defects merely because they become visible after lookup starts working.
 
-## Required closure record
+## Closure record (local regression rows)
 
-When executed, update this file with:
+Closing implementation lands on the SHA recorded by the
+implementation commit; the external lane requires the dedicated
+i2pd 2.61.0 environment and is not run in routine CI. Local
+trajectory:
 
-- exact implementation closing SHA;
-- exact routine hosted CI run on that SHA;
-- exact external destination-lane run/artifact/evidence location;
-- local regression counts;
-- proof that `reply_tunnelId` is the remote gateway receive ID and is distinct from the local receive ID;
-- `external-lease-lookup-tunnel` disposition;
-- first remaining downstream blocker, if any;
-- authority transition back to Plan 188 only after this corrective passes.
+- `i2pr-tunnel`: 288 passed (3 suites), unchanged from Plan 188
+  baseline plus the four new registry regression rows in
+  `crates/i2pr-tunnel/src/data_plane_registry.rs`
+  (`inbound_activation_preserves_three_public_facts_with_unequal_ids`,
+  `remove_inbound_clears_typed_gateway_route_metadata`,
+  `remove_slot_clears_typed_gateway_route_metadata`, plus the
+  extended `activate_inbound_once_and_first_hop_persists` assertions
+  on the new `inbound_gateway_route` accessor).
+- `destination_tunnel_unit`: 31 passed (1 suite). The four new rows
+  (`reply_path_adapter_uses_gateway_receive_tunnel_with_unequal_ids`,
+  `reply_path_adapter_encodes_databaselookup_with_gateway_tuple`,
+  `reply_path_adapter_fails_closed_without_route`,
+  `reply_path_adapter_rejects_zero_local_receive`) plus the
+  expanded Plan 187/188 surface.
+- `destination_tunnel_live`: 9 passed (1 suite), unchanged from
+  Plan 187/188 baseline.
+- `exploratory_build_live`: 11 passed (1 suite), unchanged from
+  Plan 188 baseline (the new metadata flows through
+  `activate_inbound` and lifecycle removal paths).
+- `netdb_tunnel_unit`: 22 passed (1 suite), unchanged from
+  Plan 186 baseline.
+- `netdb_tunnel_live`: 9 passed (1 suite), unchanged from
+  Plan 186 baseline.
+
+Full workspace floor (`cargo test --locked --workspace --all-targets
+-- --test-threads=1`): 2270 passed, 6 ignored (92 suites). Static
+boundary scripts and acceptance-evidence checkers green:
+`scripts/check-dependency-direction.sh`,
+`scripts/check-runtime-boundaries.sh`,
+`scripts/check-service-tunnel-boundaries.sh`,
+`scripts/check-fixture-manifest.sh`,
+`scripts/check-ntcp2-vectors.sh`,
+`scripts/check-ssu2-vectors.sh`,
+`scripts/check-i2cp-vectors.sh`,
+`scripts/check-ntcp2-interoperability.sh`,
+`scripts/check-constrained-host-lane-boundary.sh`,
+`scripts/check-sam-acceptance-evidence.sh`,
+`scripts/check-ssu2-acceptance-evidence.sh`,
+`scripts/check-i2cp-acceptance-evidence.sh`,
+`scripts/check-service-tunnel-acceptance-evidence.sh`,
+`scripts/check-destination-tunnel-evidence.sh`,
+`scripts/check-m6-mixed-router-acceptance-evidence.sh`,
+`cargo clippy --locked --workspace --all-targets --all-features
+-- -D warnings` clean, `RUSTDOCFLAGS="-D warnings" cargo doc
+--locked --workspace --no-deps` clean, `cargo deny check
+advisories bans sources` clean.
+
+## Proof that the reply path carries the gateway receive id
+
+`crates/i2pr-daemon/src/destination_tunnels.rs::reply_path_for_inbound_route`
+constructs the path as:
+
+```text
+ReplyPath.gateway   = route.gateway_router
+ReplyPath.tunnel_id = route.gateway_receive_tunnel
+```
+
+The helper fails closed (`MissingRoute`, `ZeroTunnelId`,
+`LocalIdUsedAsReplyTunnel`) so the local receive id is never
+copied into `ReplyPath.tunnel_id`. The
+`reply_path_adapter_encodes_databaselookup_with_gateway_tuple`
+regression row calls `begin_lease_lookup` with the derived
+`ReplyPath`, reads the `LookupAction::SendDatabaselookup.message`
+struct, asserts
+`message.from == route.gateway_router` and
+`message.reply_tunnel_id == Some(route.gateway_receive_tunnel)`,
+then round-trips the message through the canonical I2NP codec and
+re-asserts both fields on the decoded body. The fixture uses
+unequal IDs (`0x9601` for the gateway receive and `0x9602` for the
+local receive); the regression fails closed if either id collapses
+or swaps.
+
+## External-lane disposition
+
+`external-lease-lookup-tunnel` remains `blocked` until a fresh
+`bash tests/integration/m6-interop/run-destination.sh` proves a
+real tunneled lookup response arrives through the corrected
+inbound gateway tuple. The lane now records a new structural
+evidence row (`inbound-reply-path`) whose key/value pairs prove
+the corrected tuple reached the wire:
+
+```text
+inbound-reply-path = gateway_matches_reference=true gateway_tunnel=38401 local_receive=38402 ids_distinct=true
+```
+
+Existing Plan 187/188 `passed` rows must remain `passed` after the
+fresh run; if any already-passed row regresses, Plan 190 stops
+without claiming closure.
 
 ## Handoff
+
+Authority transition:
+
+```text
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective
+plan_188 = resume-at-first-remaining-destination-row
+plan_189 = remains-blocked-until-plan188-and-streaming-close
+next_executable_plan = 188 (continue external lane after plan190 reply-path correction)
+```
 
 Read/execute in this order:
 
@@ -150,12 +264,3 @@ Read/execute in this order:
 8. `crates/i2pr-daemon/tests/destination_tunnel_external.rs`
 9. `tests/integration/m6-interop/run-destination.sh`
 10. `plans/189-status.md` only after Plan 188 first-family destination + Streaming work genuinely closes
-
-Until closure:
-
-```text
-next_executable_plan = 190
-resume_after_plan190 = 188
-plan_189 = blocked
-milestone6_interoperable = not-yet-claimed
-```

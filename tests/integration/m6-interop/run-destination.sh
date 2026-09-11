@@ -430,6 +430,7 @@ evidence = {
         "loopback-only i2pd reference; no public I2P participation",
         "negative matrix (tamper, replay, sibling, stale, tunnel-loss) proven in local suites; external proves the success path plus direct-rejection",
         "no Streaming claim; Plan 188 owns the Streaming layer on this path",
+        "Plan 190 corrects the inbound NetDB reply-path metadata defect (typed InboundGatewayRoute + daemon-owned reply_path_for_inbound_route adapter) so the encoded DatabaseLookup advertises the remote gateway receive id (0x9601), not the local endpoint id (0x9602); external-lease-lookup-tunnel flips from blocked to passed only after a fresh run proves a real tunneled lookup response arrives",
         "no per-tunnel task/timer design; one central scheduler owns every attempt",
     ],
 }

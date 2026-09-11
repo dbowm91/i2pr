@@ -1,4 +1,5 @@
-//! Plan 117 bounded runtime-side data-plane role registry.
+//! Plan 117 bounded runtime-side data-plane role registry
+//! (extended by Plan 190 with the typed inbound-gateway route).
 //!
 //! The registry is the explicit owner of activated local roles:
 //!
@@ -6,6 +7,17 @@
 //!   [`OutboundGatewayRole`];
 //! - one inbound [`TunnelSlot`] maps to one local receive tunnel id and
 //!   [`LocalInboundEndpointRole`].
+//!
+//! Plan 190 adds the [`InboundGatewayRoute`] struct so the reply
+//! path advertised on a tunneled `DatabaseLookup` can be derived from
+//! the remote inbound-gateway tuple `(gateway_router,
+//! gateway_receive_tunnel)` rather than the local endpoint receive
+//! tunnel id. The typed route is retained together with the
+//! [`LocalInboundEndpointRole`], cleaned atomically by `remove_inbound`
+//! / `remove_slot`, and exposed through
+//! [`DataPlaneRegistry::inbound_gateway_route`]. The existing
+//! [`DataPlaneRegistry::inbound_first_hop`] accessor is preserved for
+//! callers that do not need the gateway receive id.
 //!
 //! The registry holds secret material exclusively inside the role
 //! constructors; the `LayerKeys` are not cloned outside the role.
@@ -36,6 +48,43 @@ pub struct DataPlaneCapacity {
     pub outbound: u8,
     /// Maximum number of activated inbound endpoint roles.
     pub inbound: u8,
+}
+
+/// Typed public routing metadata for one activated inbound
+/// exploratory tunnel.
+///
+/// Plan 190 owns this surface so the reply path advertised on a
+/// tunneled `DatabaseLookup` can be derived from real installed
+/// material instead of being reconstructed from a single id. The
+/// three independent tunnel-id concepts the I2P protocol
+/// distinguishes must remain impossible to confuse at every
+/// public boundary:
+///
+/// ```text
+/// gateway_router           remote IBGW router hash
+/// gateway_receive_tunnel   tunnel id accepted on that gateway
+/// local_receive_tunnel     local creator endpoint receive tunnel id
+/// ```
+///
+/// The first two form the I2NP `DatabaseLookup.from` /
+/// `reply_tunnelId` pair; the third is the i2pr-local id the
+/// inbound `TunnelData` dispatch uses to recover reassembled
+/// envelopes. The struct is `Copy` because every field is a
+/// non-secret public 32-byte hash or `TunnelId`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InboundGatewayRoute {
+    /// Remote IBGW router hash the gateway reply must be addressed
+    /// to. Source of truth for `DatabaseLookup.from`.
+    pub gateway_router: i2pr_proto::Hash,
+    /// Tunnel id the remote IBGW expects incoming reply
+    /// `TunnelGateway`s on. Source of truth for
+    /// `DatabaseLookup.reply_tunnelId`. Must never be confused with
+    /// [`Self::local_receive_tunnel`].
+    pub gateway_receive_tunnel: TunnelId,
+    /// Local creator endpoint receive tunnel id the inbound
+    /// `TunnelData` dispatch keys on. Used only as a registry
+    /// selector; never copied into `ReplyPath`.
+    pub local_receive_tunnel: TunnelId,
 }
 
 impl DataPlaneCapacity {
@@ -119,6 +168,15 @@ pub struct DataPlaneRegistry {
     /// activation so the registry can serve reply-path selection
     /// without cloning the role's secret material.
     inbound_first_hop: BTreeMap<TunnelId, i2pr_proto::Hash>,
+    /// Plan 190 typed inbound-gateway route metadata: keeps the
+    /// remote gateway router hash, the remote gateway receive
+    /// tunnel id, and the local creator endpoint receive tunnel id
+    /// together so the three concepts cannot be confused at any
+    /// public boundary. The map is keyed by the local receive
+    /// tunnel id (the same key the inbound role map uses) so
+    /// lifecycle removal in `remove_inbound` / `remove_slot`
+    /// cleans every public fact atomically.
+    inbound_gateway_route: BTreeMap<TunnelId, InboundGatewayRoute>,
     /// Reverse mapping from the pool's canonical inbound slot to the
     /// local receive tunnel id. Pool expiry/failure reports slots, so
     /// this mapping keeps lifecycle cleanup independent of an
@@ -140,6 +198,7 @@ impl DataPlaneRegistry {
             inbound: BTreeMap::new(),
             outbound_first_hop: BTreeMap::new(),
             inbound_first_hop: BTreeMap::new(),
+            inbound_gateway_route: BTreeMap::new(),
             inbound_slot_to_receive: BTreeMap::new(),
             inbound_receive_to_slot: BTreeMap::new(),
         }
@@ -224,7 +283,14 @@ impl DataPlaneRegistry {
         if self.inbound.len() >= self.capacity.inbound as usize {
             return Err(RegistryError::InboundFull);
         }
-        let ibgw_router = established.first_hop_router().hash();
+        // Plan 190: read the inbound-gateway tuple from the
+        // established tunnel **before** it is consumed by
+        // `LocalInboundEndpointRole::new`. The metadata survives
+        // activation as a public, non-secret surface so reply-path
+        // selection can use the *gateway* receive id without
+        // reaching for the *local* receive id.
+        let (ibgw_peer, ibgw_receive) = established.inbound_gateway();
+        let ibgw_router = ibgw_peer.hash();
         let role = LocalInboundEndpointRole::new(
             established,
             reassembler_capacity,
@@ -234,6 +300,14 @@ impl DataPlaneRegistry {
             expires_at_ms,
         );
         self.inbound_first_hop.insert(local_receive, ibgw_router);
+        self.inbound_gateway_route.insert(
+            local_receive,
+            InboundGatewayRoute {
+                gateway_router: ibgw_router,
+                gateway_receive_tunnel: ibgw_receive,
+                local_receive_tunnel: local_receive,
+            },
+        );
         self.inbound_slot_to_receive.insert(slot, local_receive);
         self.inbound_receive_to_slot.insert(local_receive, slot);
         self.inbound.insert(local_receive, role);
@@ -246,6 +320,20 @@ impl DataPlaneRegistry {
     /// `ReplyPath` tokens without retaining secret material.
     pub fn inbound_first_hop(&self, local_receive: TunnelId) -> Option<i2pr_proto::Hash> {
         self.inbound_first_hop.get(&local_receive).copied()
+    }
+
+    /// Returns the typed Plan 190 [`InboundGatewayRoute`] for the
+    /// supplied local receive tunnel id, when one exists.
+    ///
+    /// The three independent tunnel-id concepts that I2NP
+    /// distinguishes (gateway router, gateway receive tunnel, local
+    /// endpoint receive tunnel) are exposed together so callers
+    /// cannot select the local endpoint id for the
+    /// `reply_tunnelId` field by accident. The daemon composition
+    /// layer owns the `i2pr_netdb::ReplyPath` derivation from this
+    /// struct; this registry never produces a `ReplyPath`.
+    pub fn inbound_gateway_route(&self, local_receive: TunnelId) -> Option<InboundGatewayRoute> {
+        self.inbound_gateway_route.get(&local_receive).copied()
     }
 
     /// Returns the pool slot bound to the supplied local receive
@@ -295,6 +383,10 @@ impl DataPlaneRegistry {
     pub fn remove_inbound(&mut self, local_receive: TunnelId) -> Option<LocalInboundEndpointRole> {
         let role = self.inbound.remove(&local_receive);
         self.inbound_first_hop.remove(&local_receive);
+        // Plan 190: clean the typed gateway-route metadata
+        // atomically with the inbound role so callers cannot
+        // resolve a stale reply path after the role is gone.
+        self.inbound_gateway_route.remove(&local_receive);
         if let Some(slot) = self.inbound_receive_to_slot.remove(&local_receive) {
             self.inbound_slot_to_receive.remove(&slot);
         }
@@ -436,6 +528,20 @@ mod tests {
             registry.inbound_first_hop(local_receive),
             Some(peer(0x20).hash())
         );
+        // Plan 190: the typed route exposes the remote IBGW
+        // receive tunnel id separately from the local creator
+        // endpoint receive tunnel id; the helper fixture here
+        // derives the IBGW receive from `creator + 0x20`.
+        let route = registry
+            .inbound_gateway_route(local_receive)
+            .expect("inbound route");
+        assert_eq!(route.gateway_router, peer(0x20).hash());
+        assert_eq!(route.gateway_receive_tunnel.get(), 0x1000 + 0x20);
+        assert_eq!(route.local_receive_tunnel, local_receive);
+        assert_ne!(
+            route.gateway_receive_tunnel, route.local_receive_tunnel,
+            "fixture must distinguish the two IDs"
+        );
         assert_eq!(registry.inbound_slot(local_receive), Some(slot));
         // Second activation on the same local receive id fails closed.
         let (_id, duplicate_tunnel) = inbound_established_with(0x1001, 0xC0DE);
@@ -449,6 +555,94 @@ mod tests {
             60_000,
         );
         assert!(matches!(duplicate, Err(RegistryError::DuplicateInbound(_))));
+    }
+
+    #[test]
+    fn inbound_activation_preserves_three_public_facts_with_unequal_ids() {
+        // Plan 190 explicit unequal-id regression: the controlled
+        // one-hop shape uses IBGW_RECEIVE = 0x9601 (remote) and
+        // IBGW_NEXT = 0x9602 (local creator endpoint). The fixture
+        // proves the registry preserves all three facts separately.
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
+        let ibgw_router = peer(0x77);
+        let ibgw_receive = TunnelId::new(0x9601).expect("id");
+        let local_receive = TunnelId::new(0x9602).expect("id");
+        let hops = vec![EstablishedHop::with_next(
+            ibgw_router,
+            EstablishedRole::InboundGateway,
+            ibgw_receive,
+            keys(),
+            EstablishedNextHop {
+                router: peer(0x78),
+                tunnel: local_receive,
+            },
+        )];
+        let tunnel = EstablishedTunnel::new(
+            TunnelDirection::Inbound,
+            TunnelId::new(0x9600).expect("id"),
+            hops,
+            0,
+            Some((ibgw_router, ibgw_receive)),
+            Some(local_receive),
+        )
+        .expect("inbound established");
+        let slot = TunnelSlot::from_raw(0x960);
+        registry
+            .activate_inbound(slot, tunnel, 16, 4096, 60_000, 0, 60_000)
+            .expect("activate");
+        let route = registry
+            .inbound_gateway_route(local_receive)
+            .expect("inbound route");
+        assert_eq!(route.gateway_router, ibgw_router.hash());
+        assert_eq!(route.gateway_receive_tunnel, ibgw_receive);
+        assert_eq!(route.local_receive_tunnel, local_receive);
+        assert_ne!(
+            route.gateway_receive_tunnel, route.local_receive_tunnel,
+            "Plan 190 requires the two IDs to be distinguishable"
+        );
+        // `inbound_first_hop` keeps its Plan 117 shape; callers that
+        // do not need the gateway receive tunnel id can still use it.
+        assert_eq!(
+            registry.inbound_first_hop(local_receive),
+            Some(ibgw_router.hash())
+        );
+    }
+
+    #[test]
+    fn remove_inbound_clears_typed_gateway_route_metadata() {
+        // Plan 190: lifecycle removal must clear the typed route
+        // metadata atomically so callers cannot resolve a stale
+        // reply path after the role is gone.
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
+        let (local_receive, tunnel) = inbound_established();
+        let slot = TunnelSlot::from_raw(0x40);
+        registry
+            .activate_inbound(slot, tunnel, 16, 4096, 60_000, 0, 60_000)
+            .expect("activate");
+        assert!(registry.inbound_gateway_route(local_receive).is_some());
+        let _ = registry.remove_inbound(local_receive).expect("role");
+        assert!(registry.inbound_gateway_route(local_receive).is_none());
+        assert!(matches!(
+            registry.remove_slot(slot),
+            RegistryRemoval::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn remove_slot_clears_typed_gateway_route_metadata() {
+        // Plan 190: pool-driven slot removal must also drop the
+        // typed route metadata.
+        let mut registry = DataPlaneRegistry::new(DataPlaneCapacity::new(4, 4));
+        let (local_receive, tunnel) = inbound_established();
+        let slot = TunnelSlot::from_raw(0x41);
+        registry
+            .activate_inbound(slot, tunnel, 16, 4096, 60_000, 0, 60_000)
+            .expect("activate");
+        assert!(matches!(
+            registry.remove_slot(slot),
+            RegistryRemoval::Inbound(_)
+        ));
+        assert!(registry.inbound_gateway_route(local_receive).is_none());
     }
 
     #[test]

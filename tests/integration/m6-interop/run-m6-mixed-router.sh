@@ -7,7 +7,9 @@
 # a per-layer result.
 #
 # The script does NOT start a Java router yet: Plan 189 is registered
-# but blocked on Plan 188's destination LeaseSet2-lookup gap and on
+# but blocked on Plan 188's destination LeaseSet2-lookup gap (Plan 190
+# corrects the inbound NetDB reply-path metadata defect that left
+# 5/7 destination rows blocked after the Plan 188 installs) and on
 # the deferred `188-m6-mixed-router-streaming-with-i2pd.md` Streaming
 # pass. Once Plan 188 closes the i2pd family, a follow-up plan will
 # add the Java second-family qualification harness under

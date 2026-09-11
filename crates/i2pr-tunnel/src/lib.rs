@@ -108,7 +108,7 @@ pub use data::{
     TunnelMessageError, TunnelMessageParser, TunnelPayloadHeader,
 };
 pub use data_plane_registry::{
-    DataPlaneCapacity, DataPlaneRegistry, RegistryError, RegistryRemoval,
+    DataPlaneCapacity, DataPlaneRegistry, InboundGatewayRoute, RegistryError, RegistryRemoval,
 };
 pub use established::{
     EstablishedHop, EstablishedMaterial, EstablishedNextHop, EstablishedRole, EstablishedTunnel,

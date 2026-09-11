@@ -48,7 +48,9 @@ use i2pr_client::{
     OutboundRequest, build_signed_lease_set2, compose_outbound_delivery,
 };
 use i2pr_daemon::config::Config;
-use i2pr_daemon::destination_tunnels::{DestinationTunnelCoordinator, LeaseStoreIngestOutcome};
+use i2pr_daemon::destination_tunnels::{
+    DestinationTunnelCoordinator, LeaseStoreIngestOutcome, reply_path_for_inbound_route,
+};
 use i2pr_daemon::exploratory_build::{
     BuildCoordinatorOutcome, BuildDirection, BuildRequest, ExploratoryBuildCoordinator,
     PeerBuildMaterial,
@@ -60,7 +62,7 @@ use i2pr_daemon::router_i2np::{
 use i2pr_daemon::tunnel_liveness::{
     FIRST_LIVENESS_DELAY_MS, LivenessAction, LivenessConfig, TunnelLivenessScheduler,
 };
-use i2pr_netdb::{LookupPolicy, ReplyPath, RouterHash, RouterInfoStoreConfig};
+use i2pr_netdb::{LookupPolicy, RouterHash, RouterInfoStoreConfig};
 use i2pr_proto::{Date, Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE, RouterInfo};
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
 use i2pr_transport::{Deadline, PeerId};
@@ -640,12 +642,56 @@ async fn destination_message_plane_against_i2pd() {
         DestinationOutboundRole::from_role(gateway_role, wall_ms() + 600_000);
 
     // Remote Standard LeaseSet2 lookup through the real tunnel path.
+    // Plan 190: derive the reply path from the typed inbound-gateway
+    // route the registry retains. The local receive id (receive_ids[0])
+    // is used only as a registry selector; the encoded DatabaseLookup
+    // advertises the remote gateway receive id (IBGW_RECEIVE), never
+    // the local endpoint id.
     let routing_key = i2pr_netdb::router_hash_from_destination(reference_hash);
-    let reply_path = ReplyPath::new(
-        RouterHash::from_bytes(*i2pd_hash.as_bytes()),
-        receive_ids[0].get(),
-    )
-    .expect("reply path");
+    let local_receive_for_lookup = receive_ids[0];
+    let reply_path = reply_path_for_inbound_route(coord.registry(), local_receive_for_lookup)
+        .expect("typed inbound gateway route");
+    // Privacy-safe evidence: only public routing metadata and counts;
+    // never secrets, raw RouterHash is acceptable (it is the reference
+    // RouterHash already exposed in bootstrap evidence).
+    let inbound_route = coord
+        .registry()
+        .inbound_gateway_route(local_receive_for_lookup)
+        .expect("inbound route exists");
+    assert_eq!(inbound_route.gateway_router, i2pd_hash);
+    assert_eq!(
+        inbound_route.gateway_receive_tunnel.get(),
+        IBGW_RECEIVE,
+        "typed route must expose the remote gateway receive id (0x9601), not the local endpoint id"
+    );
+    assert_eq!(
+        inbound_route.local_receive_tunnel.get(),
+        IBGW_NEXT,
+        "typed route must keep the local endpoint id separate (0x9602)"
+    );
+    assert_ne!(
+        inbound_route.gateway_receive_tunnel, inbound_route.local_receive_tunnel,
+        "Plan 190 requires the two ids to be distinct"
+    );
+    assert_eq!(
+        reply_path.tunnel_id(),
+        IBGW_RECEIVE,
+        "encoded reply path must carry the gateway receive id, not the local id"
+    );
+    assert_ne!(
+        reply_path.tunnel_id(),
+        IBGW_NEXT,
+        "encoded reply path must not be the local endpoint id"
+    );
+    append_evidence(
+        &evidence_dir,
+        "inbound-reply-path",
+        &format!(
+            "gateway_matches_reference=true gateway_tunnel={} local_receive={} ids_distinct=true",
+            inbound_route.gateway_receive_tunnel.get(),
+            inbound_route.local_receive_tunnel.get(),
+        ),
+    );
     let (lookup_id, action) = dest
         .begin_lease_lookup(reference_hash, &routing_key, reply_path)
         .expect("lease lookup send");

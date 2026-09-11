@@ -1,4 +1,6 @@
-//! Plan 187 daemon-owned destination LeaseSet2 and Garlic routing coordinator.
+//! Plan 187 daemon-owned destination LeaseSet2 and Garlic routing
+//! coordinator (extended by Plan 190 with the typed inbound-gateway
+//! route adapter).
 //!
 //! The coordinator connects the existing destination message plane to
 //! the live Plan 185/186 tunnel and NetDB substrate:
@@ -9,6 +11,9 @@
 //!  -> real exploratory outbound tunnel (existing composition)
 //!  -> reference floodfill
 //!  -> reply via real exploratory inbound tunnel
+//!     (Plan 190: reply path derives from typed InboundGatewayRoute
+//!      so the encoded DatabaseLookup advertises the remote gateway
+//!      receive id, not the local endpoint id)
 //!  -> signed Standard LeaseSet2 validation (existing validators)
 //!  -> LeaseSet2Store/cache
 //!  -> destination routing retry over real destination tunnels
@@ -43,6 +48,13 @@
 //! - destination tunnel material is verified remote: counted rows
 //!   reject `LocalZeroHop` registrations and require usable real
 //!   inbound lease sources plus a real outbound route;
+//! - the `reply_path_for_inbound_route` adapter (Plan 190) is the only
+//!   place production code constructs a tunneled-reply `ReplyPath`:
+//!   it derives the path from the typed
+//!   [`i2pr_tunnel::data_plane_registry::InboundGatewayRoute`] so the
+//!   local creator endpoint receive tunnel id is impossible to copy
+//!   into `DatabaseLookup.reply_tunnelId`. Missing / zero / local-id-as-
+//!   reply-id all fail closed with typed `ReplyPathDerivationError`.
 //! - concurrent lookups/publications, retained reply paths, store
 //!   entries/bytes, and retries/deadlines are all bounded;
 //! - tunnel loss returns a typed retry/failure and never silently
@@ -62,12 +74,12 @@ use std::collections::BTreeMap;
 use i2pr_client::DestinationTunnelPool;
 use i2pr_netdb::{
     DestinationHash, LeaseSet2Store, LookupAction, LookupId, LookupPolicy, ReplyPath,
-    ResponseOutcome, RouterHash, RouterInfoStore, RouterInfoStoreConfig,
+    ReplyPathError, ResponseOutcome, RouterHash, RouterInfoStore, RouterInfoStoreConfig,
     router_hash_from_destination, select_floodfill_candidates,
 };
 use i2pr_proto::{Hash, I2npBody, I2npMessage, MAX_COMMON_STRUCTURE_SIZE, MAX_I2NP_PAYLOAD_SIZE};
 use i2pr_transport::Deadline;
-use i2pr_tunnel::data_plane_registry::DataPlaneRegistry;
+use i2pr_tunnel::data_plane_registry::{DataPlaneRegistry, InboundGatewayRoute};
 use i2pr_tunnel::roles::OutboundGatewayRole;
 use rand_core::{CryptoRng, RngCore};
 use thiserror::Error;
@@ -312,6 +324,87 @@ impl i2pr_netdb::ReplyPathProvider for LeaseReplyProvider {
     fn provide_reply_path(&self) -> Option<ReplyPath> {
         Some(self.path)
     }
+}
+
+/// Failures for [`reply_path_for_inbound_route`] (Plan 190 §5.2).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplyPathDerivationError {
+    /// The supplied local receive tunnel id does not map to an
+    /// activated inbound exploratory role. Missing metadata is
+    /// fail-closed: the caller must re-register the tunnel rather
+    /// than synthesize a path.
+    MissingRoute,
+    /// The derived path's tunnel id was zero. The registry never
+    /// retains zero tunnel ids, but the failure is preserved as a
+    /// typed boundary so test/lint harnesses can prove it never
+    /// happens.
+    ZeroTunnelId,
+    /// The derived path's tunnel id was *equal* to the local
+    /// receive tunnel id. That is the exact defect Plan 190 fixes
+    /// and is preserved as a typed boundary so callers cannot
+    /// silently regress.
+    LocalIdUsedAsReplyTunnel,
+}
+
+impl std::fmt::Display for ReplyPathDerivationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingRoute => formatter.write_str(
+                "no inbound gateway route registered for the local receive tunnel id",
+            ),
+            Self::ZeroTunnelId => formatter.write_str("reply path tunnel id must be nonzero"),
+            Self::LocalIdUsedAsReplyTunnel => formatter.write_str(
+                "reply path tunnel id must be the remote gateway receive id, not the local endpoint id",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ReplyPathDerivationError {}
+
+/// Plan 190 §5.2 daemon-owned adapter that converts one registered
+/// inbound exploratory route into an `i2pr_netdb::ReplyPath`.
+///
+/// The adapter is the **only** place production code constructs a
+/// tunneled-reply `ReplyPath`. It deliberately uses
+/// `(gateway_router, gateway_receive_tunnel)` and **never** the
+/// `local_receive_tunnel`, because the I2NP contract for a tunneled
+/// `DatabaseLookup` requires the receive id on the remote inbound
+/// gateway.
+///
+/// Missing / zero / local-id-as-reply-id all fail closed; there is
+/// no direct-transport fallback, no `LocalZeroHop` path, and no
+/// silent substitution. Test harnesses that previously built
+/// `ReplyPath` from the local receive id should call this helper
+/// instead.
+pub fn reply_path_for_inbound_route(
+    registry: &DataPlaneRegistry,
+    local_receive: i2pr_tunnel::identity::TunnelId,
+) -> Result<ReplyPath, ReplyPathDerivationError> {
+    let route = registry
+        .inbound_gateway_route(local_receive)
+        .ok_or(ReplyPathDerivationError::MissingRoute)?;
+    let path = reply_path_for_route(route)?;
+    if path.tunnel_id() == local_receive.get() {
+        return Err(ReplyPathDerivationError::LocalIdUsedAsReplyTunnel);
+    }
+    Ok(path)
+}
+
+/// Internal mapping from the typed [`InboundGatewayRoute`] to an
+/// `i2pr_netdb::ReplyPath`. The function is small and private so
+/// callers cannot bypass the typed route input.
+fn reply_path_for_route(route: InboundGatewayRoute) -> Result<ReplyPath, ReplyPathDerivationError> {
+    if route.gateway_receive_tunnel.get() == 0 {
+        return Err(ReplyPathDerivationError::ZeroTunnelId);
+    }
+    ReplyPath::new(
+        RouterHash::from_bytes(*route.gateway_router.as_bytes()),
+        route.gateway_receive_tunnel.get(),
+    )
+    .map_err(|error: ReplyPathError| match error {
+        ReplyPathError::ZeroTunnelId => ReplyPathDerivationError::ZeroTunnelId,
+    })
 }
 
 /// Daemon-owned destination LeaseSet2/Garlic-over-tunnels coordinator.

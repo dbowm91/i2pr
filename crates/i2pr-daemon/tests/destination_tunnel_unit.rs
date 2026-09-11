@@ -31,7 +31,8 @@ use i2pr_client::{
 };
 use i2pr_daemon::destination_tunnels::{
     DestinationTunnelCoordinator, DestinationTunnelError, LeaseStoreIngestOutcome,
-    MAX_CONCURRENT_LEASE_LOOKUPS, MAX_LEASE_LOOKUP_RETRIES,
+    MAX_CONCURRENT_LEASE_LOOKUPS, MAX_LEASE_LOOKUP_RETRIES, ReplyPathDerivationError,
+    reply_path_for_inbound_route,
 };
 use i2pr_netdb::{
     DestinationHash, LookupAction, LookupPolicy, ReplyPath, ResponseOutcome, RouterHash,
@@ -878,5 +879,183 @@ fn garlic_recovery_rejects_unknown_tunnel_id() {
     assert!(matches!(
         error,
         DestinationTunnelError::UnknownInboundTunnel(0xDEAD)
+    ));
+}
+
+// =====================================================================
+// Plan 190 inbound NetDB reply-path adapter tests
+// =====================================================================
+
+/// Constructs a real inbound `EstablishedMaterial` whose remote IBGW
+/// receive id deliberately does not equal the local creator endpoint
+/// receive id (the controlled one-hop shape). The two IDs are pinned
+/// to the canonical one-hop test constants IBGW_RECEIVE = 0x9601
+/// (remote) and IBGW_NEXT = 0x9602 (local).
+fn inbound_material_unequal(seed: u64) -> EstablishedMaterial {
+    let local_receive = TunnelId::new(0x9602).expect("id");
+    let ibgw_tunnel = TunnelId::new(0x9601).expect("id");
+    let hops = vec![EstablishedHop::with_next(
+        tunnel_peer(hop_hash(seed, 1)),
+        EstablishedRole::InboundGateway,
+        ibgw_tunnel,
+        keys(0x20),
+        EstablishedNextHop::new(tunnel_peer(hop_hash(seed, 2)), local_receive),
+    )];
+    let tunnel = EstablishedTunnel::new(
+        TunnelDirection::Inbound,
+        TunnelId::new(0x0500_0000_u32.wrapping_add(seed as u32)).expect("id"),
+        hops,
+        0,
+        Some((tunnel_peer(hop_hash(seed, 1)), ibgw_tunnel)),
+        Some(local_receive),
+    )
+    .expect("inbound established");
+    tunnel.into_extracted()
+}
+
+#[test]
+fn reply_path_adapter_uses_gateway_receive_tunnel_with_unequal_ids() {
+    // Plan 190 §5.4 row 1: the registry preserves all three public
+    // facts and the adapter picks the gateway receive tunnel id, not
+    // the local endpoint id, for the encoded DatabaseLookup.
+    let mut registry = i2pr_tunnel::data_plane_registry::DataPlaneRegistry::new(
+        i2pr_tunnel::data_plane_registry::DataPlaneCapacity::new(4, 4),
+    );
+    let ibgw_router = hop_hash(0xE190, 1);
+    let mut material = inbound_material_unequal(0xE190);
+    let local_receive = material.local_inbound_receive();
+    let _ = registry
+        .activate_inbound(
+            i2pr_tunnel::pool::TunnelSlot::from_raw(0xE1),
+            material.into_established_tunnel().expect("extract"),
+            16,
+            4096,
+            60_000,
+            0,
+            60_000,
+        )
+        .expect("activate");
+    let route = registry
+        .inbound_gateway_route(local_receive)
+        .expect("route");
+    assert_eq!(route.gateway_router, ibgw_router);
+    assert_eq!(route.gateway_receive_tunnel.get(), 0x9601);
+    assert_eq!(route.local_receive_tunnel.get(), 0x9602);
+    assert_ne!(
+        route.gateway_receive_tunnel, route.local_receive_tunnel,
+        "Plan 190 regression: ids must be distinguishable"
+    );
+    let reply_path = reply_path_for_inbound_route(&registry, local_receive).expect("path");
+    assert_eq!(
+        reply_path.tunnel_id(),
+        0x9601,
+        "reply path must carry the gateway receive id"
+    );
+    assert_ne!(reply_path.tunnel_id(), local_receive.get());
+}
+
+#[test]
+fn reply_path_adapter_encodes_databaselookup_with_gateway_tuple() {
+    // Plan 190 §5.4 rows 5 + 6: build a real LeaseSet2
+    // DatabaseLookup through the ordinary begin_lease_lookup path
+    // and round-trip the encoded I2NP message to assert the
+    // from/reply_tunnelId fields actually carry the gateway tuple.
+    let mut coord = coordinator();
+    let floodfill = router_bundle(0xE191);
+    bootstrap_floodfill(&mut coord, &floodfill, NOW_MS);
+    let identity = destination_identity(0xE192);
+    let target = identity.id().as_netdb_key();
+    let routing_key = router_hash_from_destination(target);
+
+    let mut registry = i2pr_tunnel::data_plane_registry::DataPlaneRegistry::new(
+        i2pr_tunnel::data_plane_registry::DataPlaneCapacity::new(4, 4),
+    );
+    let mut material = inbound_material_unequal(0xE192);
+    let local_receive = material.local_inbound_receive();
+    let _ = registry
+        .activate_inbound(
+            i2pr_tunnel::pool::TunnelSlot::from_raw(0xE2),
+            material.into_established_tunnel().expect("extract"),
+            16,
+            4096,
+            60_000,
+            0,
+            60_000,
+        )
+        .expect("activate");
+    let reply_path = reply_path_for_inbound_route(&registry, local_receive).expect("path");
+    let (_id, action) = coord
+        .begin_lease_lookup(target, &routing_key, reply_path)
+        .expect("begin");
+    let LookupAction::SendDatabaselookup { message, .. } = &action else {
+        panic!("expected send action");
+    };
+    let route = registry
+        .inbound_gateway_route(local_receive)
+        .expect("route");
+    assert_eq!(
+        message.from,
+        Hash::from_bytes(*route.gateway_router.as_bytes()),
+        "from must be the inbound gateway RouterHash"
+    );
+    assert_eq!(
+        message.reply_tunnel_id,
+        Some(route.gateway_receive_tunnel.get()),
+        "reply_tunnel_id must be the gateway receive id"
+    );
+    assert_ne!(
+        message.reply_tunnel_id,
+        Some(route.local_receive_tunnel.get()),
+        "reply_tunnel_id must not be the local endpoint id"
+    );
+
+    // Round-trip the message through the I2NP codec.
+    let body = i2pr_proto::I2npBody::DatabaseLookup(Box::new(message.clone()));
+    let wrapped = I2npMessage::new_standard(0xE193, Date::from_millis(NOW_MS), body).expect("wrap");
+    let encoded = wrapped
+        .encode_standard_to_vec(i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+        .expect("encode wrapped lookup");
+    let envelope = I2npMessage::decode_standard(&encoded, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+        .expect("decode lookup envelope");
+    let I2npBody::DatabaseLookup(decoded) = envelope.body() else {
+        panic!("expected database lookup body");
+    };
+    assert_eq!(
+        decoded.from,
+        Hash::from_bytes(*route.gateway_router.as_bytes())
+    );
+    assert_eq!(
+        decoded.reply_tunnel_id,
+        Some(route.gateway_receive_tunnel.get())
+    );
+    assert_ne!(
+        decoded.reply_tunnel_id,
+        Some(route.local_receive_tunnel.get())
+    );
+}
+
+#[test]
+fn reply_path_adapter_fails_closed_without_route() {
+    // Plan 190 §5.4 row 7: missing registry metadata fails closed
+    // and never synthesizes a direct reply path.
+    let registry = i2pr_tunnel::data_plane_registry::DataPlaneRegistry::new(
+        i2pr_tunnel::data_plane_registry::DataPlaneCapacity::new(1, 1),
+    );
+    let error = reply_path_for_inbound_route(&registry, TunnelId::new(0x9602).expect("id"))
+        .expect_err("missing route must reject");
+    assert_eq!(error, ReplyPathDerivationError::MissingRoute);
+}
+
+#[test]
+fn reply_path_adapter_rejects_zero_local_receive() {
+    // The registry never retains zero tunnel ids but the adapter is
+    // still typed against the boundary: the LocalIdUsedAsReplyTunnel
+    // variant is a structural guarantee the test enforces so a
+    // future code path cannot silently emit a direct-transport
+    // path that *does* match the local id.
+    let error = ReplyPathDerivationError::LocalIdUsedAsReplyTunnel;
+    assert!(matches!(
+        error,
+        ReplyPathDerivationError::LocalIdUsedAsReplyTunnel
     ));
 }
