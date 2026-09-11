@@ -664,7 +664,7 @@ and inbound return stages are not claimed. Plan 119 closed as
   existing parsing/layout types;
 - ElGamal/ECIES mixed-router construction.
 
-## Plan 185 - live one-hop exploratory tunnels (passed; no tunnel claim)
+## Plan 185 - live one-hop exploratory tunnels (passed; no NetDB claim)
 
 The Plan 185 daemon-owned
 [`ExploratoryBuildCoordinator`](../../crates/i2pr-daemon/src/exploratory_build.rs)
@@ -684,8 +684,25 @@ the Plan 184 central `router_i2np` dispatcher:
   the two-minute idle deletion boundary, bounded failure threshold
   removes the affected pair and asks the coordinator to rebuild);
 - no per-tunnel task or per-tunnel timer; no multi-hop build; no
-  destination LeaseSet2 / Streaming claim; Plan 186 owns the live
-  mixed-router NetDB lookup / publication program.
+  destination LeaseSet2 / Streaming claim.
+
+## Plan 186 - NetDB lookup/publication over exploratory tunnels (passed)
+
+The Plan 186 daemon-owned
+[`NetDbTunnelCoordinator`](../../crates/i2pr-daemon/src/netdb_tunnels.rs)
+drives the existing NetDB lookup/publication state machines over the
+Plan 185 pair through the authoritative bounded store:
+
+- reference RouterInfo bootstrapped through the ordinary
+  parser/signature/freshness path; floodfill capability verified
+  before dispatch (`notransit=false,floodfill=true`);
+- `DatabaseLookup` composes through `outbound_lookup` to TunnelData
+  cells (first-hop + floodfill proof); the reply recovers through
+  `inbound_dispatch` to signed validation + ordinary install;
+- publication composes through the same seam with
+  protocol-derived `DeliveryStatus` correlation;
+- direct SSU2 NetDB delivery is always rejected as a counted path;
+  tunnel loss is typed without fallback.
 
 The cross-crate surface used by the Plan 185 daemon-owned
 coordinator is unchanged: `ShortBuildStateMachine`,

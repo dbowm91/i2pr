@@ -18,10 +18,12 @@ Plan 185 adds the daemon-owned exploratory build coordinator
 (`crates/i2pr-daemon/src/exploratory_build.rs`) and the bounded
 creator-side tunnel liveness scheduler
 (`crates/i2pr-daemon/src/tunnel_liveness.rs`); both route the
-existing Plan 184 central dispatcher. No public advertisement,
-NetDB lookup / publication, destination LeaseSet2, Streaming, or
-M10 remote-service claim follows from it; Plan 186 owns the
-live mixed-router NetDB lookup / publication program.
+existing Plan 184 central dispatcher. Plan 186 adds the daemon-owned
+NetDB-over-tunnels coordinator
+(`crates/i2pr-daemon/src/netdb_tunnels.rs`) over the Plan 185 pair
+through the authoritative bounded store. No public advertisement,
+destination LeaseSet2, Streaming, or M10 remote-service claim follows
+from it; Plan 187 owns the destination program.
 
 ## Purpose
 
@@ -315,6 +317,7 @@ which undercounted `netdb_seam`, `outbound_lookup`, and
 | `src/router_i2np.rs` | Plan 184 central authenticated router-I2NP dispatcher, narrow delivery, and daemon-owned SSU2 service | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `verify_reference_router_info` |
 | `src/exploratory_build.rs` | Plan 185 daemon-owned exploratory build coordinator (bounded pending table, monotonic attempt / creator tunnel ids, single central scheduler, strict OTBRM extraction, `register_*_with_material` installs through `ExploratoryPool` then activates once into `DataPlaneRegistry`) | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
 | `src/tunnel_liveness.rs` | Plan 185 bounded creator-side tunnel liveness scheduler (first-test / repeat / response-timeout / failure-threshold policy well below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer) | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
+| `src/netdb_tunnels.rs` | Plan 186 daemon-owned NetDB-over-tunnels coordinator (authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel-loss) | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
 | `src/sam.rs` | Plans 137–149 supervised SAM 3.1 listener and composition root | `SamServiceState`, `execute_session_create` (self-composes bridge + driver), `execute_stream_connect`, `execute_stream_accept`, byte-exact `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw transition, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP` |
 | `src/i2cp.rs` | Plan 167 supervised loopback I2CP v0.9.67 listener and composition root extended by Plan 168 with the bounded per-session message/data-plane surface, by Plan 169 with the reconfigure transaction handler, the atomic reconfigure baseline in `I2cpSessionState::last_options`, and the synchronous `handle_destroy_session` data-plane drain, by Plan 171 with the explicit `stream.shutdown()` on the common per-connection terminal path, and by Plan 170 with the `ReplyAndFollowup` `RequestVariableLeaseSet` after `CreateSession` | `I2cpServiceState`, `I2cpSessionState`, `bind`, `serve`, `handle_connection`, `install_client_lease_set2`, `reserve_client_destination`, `handle_send_message`, `handle_send_message_expires`, `handle_dest_lookup`, `derive_bandwidth_reply`, `handle_reconfigure_session`, `handle_destroy_session`, `apply_reconfigure`, `ReconfigurationOutcome`, `teardown_connection`, `I2cpServiceSnapshot` |
 | `src/sam/fabric.rs` | Plan 149 localhost product fabric (OS-CSPRNG tunnel material, signed LeaseSet2, per-destination runtime-driver factory, typed `DeliverySweepCounters`) | `SamLocalProductFabric`, `LocalDestinationProduct`, `LocalhostInboundTunnelFactory`, `DeliverySweepCounters`, `LocalDeliveryDegradation` |
@@ -332,6 +335,7 @@ There are no subdirectories.
 - `pub mod i2cp;`
 - `pub mod inbound_dispatch;`
 - `pub mod netdb_seam;`
+- `pub mod netdb_tunnels;`
 - `pub mod outbound_lookup;`
 - `pub use error::DaemonError;`
 - `enum CommandOutcome`:

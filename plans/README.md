@@ -105,6 +105,7 @@ plan_182 = passed-m10-local-delivery-corrective
 plan_183 = registered-m6-mixed-router-streaming-interop-program
 plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
+plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
@@ -151,11 +152,12 @@ milestone10_final_acceptance = not-yet-closed
 m6_mixed_router_program = registered-via-plan183
 m6_authenticated_i2np_preflight = passed-via-plan184
 m6_exploratory_one_hop_tunnels = passed-via-plan185
-next_product_layer = m6-mixed-router-netdb
-next_executable_plan = 186
+m6_netdb_lookup_publication = passed-via-plan186
+next_product_layer = m6-mixed-router-leaseset2
+next_executable_plan = 187
 m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172
 m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181(blocked) -> 183
-m6_sequence = 183(registered) -> 184(passed) -> 185(passed) -> 186(next)
+m6_sequence = 183(registered) -> 184(passed) -> 185(passed) -> 186(passed) -> 187(next)
 ```
 
 ## Current handoff sequence
@@ -292,7 +294,7 @@ Plan 152 is a later M6 robustness correction discovered by the Plan 151 final SA
 - SSU2 v2 local protocol/runtime/reachability product and independent direct IPv4 i2pd interop; M8 closed via Plan 161.
 - M9 I2CP implementation plans are registered; the Plan 164 wire/profile foundation, Plan 165 connection/session/options state machines, Plan 166 client-owned destination + LeaseSet2 bridge, Plan 167 loopback server runtime, Plan 168 message data plane, and Plan 169 self-composed local product are landed, with the Plan 171 invalid-preamble close corrective retained on the common terminal path. Plan 170 wire/data-plane evidence is retained-passed (exact-pinned Java I2P 2.13.0 + go-i2cp, digest-matched payloads both directions, fail-closed 9-row lane); its final-acceptance interpretation is superseded by Plan 172. Plan 172 passed the independent LeaseSet2 lifecycle corrective (high-level Java connect + public Go lifecycle, non-empty zero-hop requests, client-signed LS2 installs, post-LS2 bidirectional digests, 24 fail-closed rows). No `HostLookup`/`HostReply` resolution; Milestone 9 final acceptance is closed via Plan 172 (experimental, loopback-only).
 - M10 service-tunnel foundation is landed via Plan 174 (runtime-neutral `i2pr-service-tunnels` crate, strict `[service_tunnels]` surface, shared Streaming pump reused by SAM) plus the Plan 175 generic client/server tunnels, Plan 176 HTTP proxy, Plan 177 SOCKS5 proxy, Plan 178 IRC client profile, Plan 179 IRC server profile, Plan 180 composition/reconcile/hardening, and Plan 182 local-delivery corrective. Local product + byte round-trip are passed via Plans 180-and-182 (9 round-trip + 6 wire-surface tests); Plan 181 local independent-application-client rows pass with remote rows blocked.
-- M6 mixed-router program is registered via Plan 183; Plan 184 passed the authenticated I2NP runtime and reference preflight (strict daemon SSU2 activation, central dispatcher, narrow delivery, exact-pinned i2pd bidirectional control, 10 fail-closed rows). Plan 185 passed the live one-hop exploratory tunnel lane: the bounded Plan 185 exploratory build coordinator + the bounded creator-side liveness scheduler drive the existing `i2pr-tunnel::short::ShortBuildStateMachine` and `i2pr-tunnel::pool::ExploratoryPool` / `i2pr-tunnel::data_plane_registry::DataPlaneRegistry` seams end-to-end, with one real outbound and one real inbound one-hop build accepted by the exact-pinned i2pd 2.61.0 reference (`TransitTunnel: endpoint N created` and `TransitTunnel: gateway N created` log evidence). Plan 186 owns the live mixed-router NetDB lookup / publication program.
+- M6 mixed-router program is registered via Plan 183; Plan 184 passed the authenticated I2NP runtime and reference preflight (strict daemon SSU2 activation, central dispatcher, narrow delivery, exact-pinned i2pd bidirectional control, 10 fail-closed rows). Plan 185 passed the live one-hop exploratory tunnel lane: the bounded Plan 185 exploratory build coordinator + the bounded creator-side liveness scheduler drive the existing `i2pr-tunnel::short::ShortBuildStateMachine` and `i2pr-tunnel::pool::ExploratoryPool` / `i2pr-tunnel::data_plane_registry::DataPlaneRegistry` seams end-to-end, with one real outbound and one real inbound one-hop build accepted by the exact-pinned i2pd 2.61.0 reference (`TransitTunnel: endpoint N created` and `TransitTunnel: gateway N created` log evidence). Plan 186 passed the live mixed-router NetDB lookup / publication program: the daemon-owned `NetDbTunnelCoordinator` drives the existing lookup/publication state machines over the Plan 185 pair through the ordinary authoritative store (exact-pinned i2pd floodfill, 12-row lane).
 
 ## What's not yet accepted
 
@@ -348,5 +350,7 @@ Milestone 10 independent application clients = local-rows-passed-plan181-not-clo
 Milestone 10 remote service interop = not-yet-passed
 Milestone 10 final acceptance = not-yet-closed
 M6 authenticated I2NP preflight = passed-via-plan184
-next_executable_plan = 185
+M6 exploratory one-hop tunnels = passed-via-plan185
+M6 NetDB lookup/publication = passed-via-plan186
+next_executable_plan = 187
 ```

@@ -15,6 +15,7 @@ pub mod exploratory_build;
 pub mod i2cp;
 pub mod inbound_dispatch;
 pub mod netdb_seam;
+pub mod netdb_tunnels;
 pub mod outbound_lookup;
 pub mod router_i2np;
 pub mod sam;
