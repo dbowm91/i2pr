@@ -680,6 +680,28 @@ impl<C: BuildCryptography> ShortBuildStateMachine<C> {
         self.deadline_ms
     }
 
+    /// Returns the OBEP `RGarlicKeyAndTag` material when this build
+    /// carries an outbound endpoint hop.
+    ///
+    /// Plan 188 narrow seam: exact-pinned i2pd garlic-wraps one-hop
+    /// outbound endpoint replies under this key/tag. The caller
+    /// retains the copy for inbound `TunnelGateway` + Garlic
+    /// correlation; the state machine retains its own copy for the
+    /// reply postprocessor. No secret material leaves through
+    /// `Debug`; the returned arrays are copies the caller must not
+    /// log.
+    pub fn obep_garlic_material(&self) -> Option<([u8; 32], [u8; 8])> {
+        for context in &self.contexts {
+            if let (Some(key), Some(tag)) = (
+                context.layer_keys().garlic_reply_key(),
+                context.layer_keys().garlic_reply_tag(),
+            ) {
+                return Some((*key, *tag));
+            }
+        }
+        None
+    }
+
     /// Returns the preprocessed STBM payload the most recent
     /// `prepare` produced. The accessor is intended for strict
     /// trajectory tests that need to drive each real hop through

@@ -253,7 +253,7 @@ work is scoped to:
   via `tests/integration/m6-interop/run-preflight.sh`. See
   [`plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md`](../../plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md).
 - **Exploratory build coordinator + tunnel liveness scheduler**
-  (Plan 185): the daemon-owned
+  (Plans 185/188): the daemon-owned
   [`ExploratoryBuildCoordinator`](../../crates/i2pr-daemon/src/exploratory_build.rs)
   drives the existing `i2pr_tunnel::short::ShortBuildStateMachine`
   end-to-end through the Plan 184 central dispatcher with one
@@ -263,7 +263,11 @@ work is scoped to:
   installs through the existing `i2pr_tunnel::pool::ExploratoryPool`
   then activates once into the existing
   `i2pr_tunnel::data_plane_registry::DataPlaneRegistry` (no
-  synthetic insertion). The bounded creator-side
+  synthetic insertion). Plan 188 adds consumed-reference installs:
+  forwarded `ShortTunnelBuild` for pending inbound `(peer,
+  message_id)` plus `TunnelGateway` Garlic unwrap (OBEP
+  `RGarlicKeyAndTag` by `(peer, next_tunnel)` + inner `message_id`)
+  through `i2pr_tunnel::garlic_reply`. The bounded creator-side
   [`TunnelLivenessScheduler`](../../crates/i2pr-daemon/src/tunnel_liveness.rs)
   owns every active pair with one central scheduler (no per-tunnel
   task or per-tunnel timer); the first test is scheduled
@@ -323,7 +327,7 @@ filesystem):
 | `src/outbound_lookup.rs` | Plan 117 §8/§10 outbound exploratory data-plane composition, extended by Plan 187 with `deliver_outbound_cells` for client-composed Garlic cells | `compose_outbound_lookup`, `compose_outbound_publication`, `deliver_outbound_cells`, `OutboundLookupDispatch`, `MAX_OUTBOUND_LOOKUP_CELLS`, `MAX_OUTBOUND_PUBLICATION_CELLS` |
 | `src/inbound_dispatch.rs` | Plan 117 §9 inbound exploratory `TunnelData` dispatch (unchanged by Plan 184; the new router dispatcher sits above it), extended by Plan 187 with the `GarlicComplete` outcome for destination carriers | `dispatch_inbound_tunnel_data`, `route_databasestore`, `route_database_search_reply`, `InboundDispatchOutcome`, `InboundResponseKind`, `InboundDispatchError`, `MAX_RECOVERED_ENVELOPE` |
 | `src/router_i2np.rs` | Plan 184 central authenticated router-I2NP dispatcher, narrow delivery, and daemon-owned SSU2 service | `dispatch_router_i2np`, `RouterI2npOutcome`, `RouterDeliveryService`, `Ssu2DaemonService`, `Ssu2DaemonHandle`, `generate_controlled_identity`, `verify_reference_router_info` |
-| `src/exploratory_build.rs` | Plan 185 daemon-owned exploratory build coordinator (bounded pending table, monotonic attempt / creator tunnel ids, single central scheduler, strict OTBRM extraction, `register_*_with_material` installs through `ExploratoryPool` then activates once into `DataPlaneRegistry`) | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
+| `src/exploratory_build.rs` | Plans 185/188 daemon-owned exploratory build coordinator (bounded pending table, monotonic attempt / creator tunnel ids, single central scheduler, strict OTBRM extraction + forwarded-STBM + TunnelGateway Garlic paths, `register_*_with_material` installs through `ExploratoryPool` then activates once into `DataPlaneRegistry`) | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
 | `src/tunnel_liveness.rs` | Plan 185 bounded creator-side tunnel liveness scheduler (first-test / repeat / response-timeout / failure-threshold policy well below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer) | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
 | `src/netdb_tunnels.rs` | Plan 186 daemon-owned NetDB-over-tunnels coordinator (authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel-loss) | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
 | `src/destination_tunnels.rs` | Plan 187 daemon-owned destination LeaseSet2/Garlic-over-tunnels coordinator (authoritative RouterInfo store + store-parameter LeaseSet2 lookup, authoritative LeaseSet2 cache, real-material proofs rejecting `LocalZeroHop`, bounded local-LS2 publication with protocol-derived ack, registry-backed Garlic recovery, typed tunnel-loss; local product passed, remote rows blocked on the build-reply gap pending Plan 188) | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome` |

@@ -282,9 +282,9 @@ on `i2pr-proto`, `i2pr-crypto`, `i2pr-core`, and `i2pr-netdb`.
 
 ## Module layout
 
-The crate ships **21 modules** at the crate root. Previous revisions
+The crate ships **22 modules** at the crate root. Previous revisions
 of this doc listed 12; the 9 added through the Plan 112–117 sequence
-are noted in the table.
+plus `garlic_reply` (Plan 188) are noted in the table.
 
 | Module | Purpose |
 | --- | --- |
@@ -301,7 +301,8 @@ are noted in the table.
 | `conformance_fixtures` | Plan 109 single-record conformance fixtures with independent reference Noise-N and SMTunnel KDF derivation |
 | `provider` | `ExploratoryPoolReplyPathProvider` that turns the pool into a `ReplyPathProvider` |
 | `bridge` | Plan 115 `ShortBuildI2npBridge` — the canonical production seam from `ShortBuildAction::Deliver` to a complete I2NP type-25 message; no double-prefix, round-trip body equality |
-| `multirecord` | `ShortBuildRecordSet`, `OriginatorFake`, `MessageHopProcessor`, `CreatorReplyPostprocessor`, `assign_record_slots`, `chacha20_transform`, `validate_routing_chain`, `prepare_short_build_message`, and the Plan 112 count-prefixed STBM/OTBRM contract helpers |
+| `multirecord` | `ShortBuildRecordSet`, `OriginatorFake`, `MessageHopProcessor`, `CreatorReplyPostprocessor`, `assign_record_slots`, `chacha20_transform`, `validate_routing_chain`, `prepare_short_build_message`, and the Plan 112 count-prefixed STBM/OTBRM contract helpers; Plan 188 ignores originator-fake bytes on the reply path (shape still enforced) while real-hop AEAD authenticates |
+| `garlic_reply` | Plan 188 bounded OBEP Garlic unwrap (`decrypt_build_reply_garlic`): tag-gated ChaCha20-Poly1305 decrypt plus local ShortTunnelBuildReply clove parse; typed `GarlicReplyError` |
 | `fixed_vectors` | Frozen Noise-N conformance constants |
 | `established` | `EstablishedTunnel`, `EstablishedHop`, `EstablishedMaterial` (secret-bearing companion; one-shot `into_established_tunnel`), `EstablishedRole`, `EstablishedNextHop` |
 | `data_plane_registry` | `DataPlaneRegistry`, `DataPlaneCapacity`, `RegistryRemoval`, `RegistryError` — Plan 117 bounded activation state for local roles |

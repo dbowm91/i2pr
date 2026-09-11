@@ -106,8 +106,8 @@ plan_183 = registered-m6-mixed-router-streaming-interop-program
 plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
-plan_187 = blocked-by-m6-build-reply-interop-gap
-plan_188 = registered-m6-short-build-reply-interop-corrective
+plan_187 = blocked-by-m6-build-reply-interop-gap (2/7 flipped via plan188 installs)
+plan_188 = in-progress-m6-short-build-reply-installs-proven
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
@@ -156,12 +156,12 @@ m6_authenticated_i2np_preflight = passed-via-plan184
 m6_exploratory_one_hop_tunnels = passed-via-plan185
 m6_netdb_lookup_publication = passed-via-plan186
 m6_destination_local_product = passed-via-plan187
-m6_destination_remote_interop = blocked-pending-plan188
+m6_destination_remote_interop = installs-proven-lookup-pending-plan188
 next_product_layer = m6-mixed-router-leaseset2
 next_executable_plan = 188
 m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172
 m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181(blocked) -> 183
-m6_sequence = 183(registered) -> 184(passed) -> 185(passed) -> 186(passed) -> 187(blocked-local-passed) -> 188(next)
+m6_sequence = 183(registered) -> 184(passed) -> 185(passed) -> 186(passed) -> 187(blocked-local-passed-2/7-flipped) -> 188(in-progress)
 ```
 
 ## Current handoff sequence
@@ -207,8 +207,8 @@ m6_sequence = 183(registered) -> 184(passed) -> 185(passed) -> 186(passed) -> 18
 - [`184-m6-authenticated-i2np-runtime-and-reference-preflight.md`](184-m6-authenticated-i2np-runtime-and-reference-preflight.md) — **passed** the first executable Plan 183 pass: strict loopback/non-advertised daemon SSU2 activation, central authenticated router-I2NP dispatcher, narrow outbound delivery over existing `send_i2np`, exact-pinned i2pd 2.61.0 bidirectional control with fail-closed 10-row lane. No tunnel/NetDB/Streaming claim; Plan 185 owns the first Short Tunnel Build.
 - [`185-m6-live-one-hop-exploratory-tunnels-and-liveness.md`](185-m6-live-one-hop-exploratory-tunnels-and-liveness.md) — **passed** the live one-hop exploratory tunnel lane: daemon-owned `ExploratoryBuildCoordinator` + `TunnelLivenessScheduler` route the existing `ShortBuildStateMachine` / `ExploratoryPool` / `DataPlaneRegistry` seams end-to-end through the Plan 184 central dispatcher; one-hop outbound (i2pr OBGW → i2pd OBEP) and one-hop inbound (i2pd IBGW → i2pr endpoint) builds accepted by the exact-pinned i2pd 2.61.0 reference with `notransit=false`; bounded first-test / repeat / response-timeout / failure-threshold liveness policy. Local 15-row unit + 9-row two-daemon-pair suite + 12-row external lane plus `scripts/check-exploratory-tunnel-evidence.sh`. No multi-hop, no destination LeaseSet2 / Streaming claim; Plan 186 owns the live NetDB lookup / publication program.
 - [`186-m6-mixed-router-netdb-lookup-and-publication.md`](186-m6-mixed-router-netdb-lookup-and-publication.md) — **passed** the live mixed-router NetDB lookup / publication program: the daemon-owned `NetDbTunnelCoordinator` drives the existing lookup/publication state machines over the Plan 185 pair through the ordinary authoritative store (exact-pinned i2pd floodfill, 12-row lane plus `scripts/check-netdb-tunnel-evidence.sh`). No destination LeaseSet2 / Streaming claim; Plan 187 landed the destination program (local rows passed, remote gate pending Plan 188).
-- [`187-m6-remote-leaseset2-and-destination-garlic-routing.md`](187-m6-remote-leaseset2-and-destination-garlic-routing.md) — **blocked** by the `m6-build-reply-interop-gap`: the daemon-owned `DestinationTunnelCoordinator` with the full local destination message plane is landed (27 unit + 9 live two-role rows, including the bidirectional ECIES/Garlic round-trip with sibling isolation over real TunnelData cells), and the external lane proves session, reference build acceptance both directions, SAM DATAGRAM destination, and reference LS2 publication; but exact-pinned i2pd emits no consumable ShortTunnelBuildReply so no tunnel material installs and 7 install-dependent rows are recorded `blocked` with multi-run diagnosis (21-row lane plus `scripts/check-destination-tunnel-evidence.sh`). No LeaseSet2/Streaming interop claim.
-- [`188-m6-short-build-reply-interop-corrective.md`](188-m6-short-build-reply-interop-corrective.md) — **registered** narrow corrective: consume reference short-build replies (record-count, correlation, addressing, timing hypotheses in order) and flip the seven blocked Plan 187 rows to passed.
+- [`187-m6-remote-leaseset2-and-destination-garlic-routing.md`](187-m6-remote-leaseset2-and-destination-garlic-routing.md) — **blocked** by the `m6-build-reply-interop-gap` (2/7 flipped via Plan 188 installs; 5/7 still blocked on lookup): the daemon-owned `DestinationTunnelCoordinator` with the full local destination message plane is landed (27 unit + 9 live two-role rows, including the bidirectional ECIES/Garlic round-trip with sibling isolation over real TunnelData cells), and the external lane proves session, reference build acceptance both directions, SAM DATAGRAM destination, and reference LS2 publication; installs now complete through consumed reference replies (garlic-wrapped endpoint + forwarded gateway) with 2/7 rows passed (21-row lane plus `scripts/check-destination-tunnel-evidence.sh`). No LeaseSet2/Streaming interop claim yet.
+- [`188-m6-short-build-reply-interop-corrective.md`](188-m6-short-build-reply-interop-corrective.md) — **in-progress** narrow corrective (see [`188-status.md`](188-status.md)): outbound garlic-unwrap + inbound forwarded-STBM consumption landed with 2/7 rows flipped to passed (`installed_ob=1 installed_ib=1` via consumed replies, no synthesis); 5/7 remain blocked on the destination LeaseSet2-lookup gap. The deferred `188-m6-mixed-router-streaming-with-i2pd.md` Streaming pass stays blocked until all seven pass (to be renumbered to 189).
 
 Milestone 9 architecture is deliberately constrained:
 
@@ -360,8 +360,8 @@ M6 authenticated I2NP preflight = passed-via-plan184
 M6 exploratory one-hop tunnels = passed-via-plan185
 M6 NetDB lookup/publication = passed-via-plan186
 M6 destination local product = passed-via-plan187
-M6 destination remote interop = blocked-pending-plan188
-Plan 187 = blocked-by-m6-build-reply-interop-gap (local rows passed; remote gate pending plan188)
-Plan 188 = registered-m6-short-build-reply-interop-corrective (next)
+M6 destination remote interop = installs-proven-lookup-pending-plan188
+Plan 187 = blocked-by-m6-build-reply-interop-gap (local rows passed; 2/7 flipped via plan188 installs)
+Plan 188 = in-progress-m6-short-build-reply-installs-proven (lookup/publication rows pending)
 next_executable_plan = 188
 ```

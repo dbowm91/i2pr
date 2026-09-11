@@ -75,6 +75,7 @@ pub mod data_plane_registry;
 pub mod established;
 pub mod fixed_vectors;
 pub mod fragment;
+pub mod garlic_reply;
 pub mod identity;
 pub mod layer;
 pub mod multirecord;

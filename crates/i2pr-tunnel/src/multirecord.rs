@@ -1324,27 +1324,22 @@ impl CreatorReplyPostprocessor {
                 )?;
             }
         }
-        // Also undo the symmetric transforms applied to the
-        // inbound originator fake slot by every real hop. The
-        // postprocessor uses the slot byte of the fake itself as
-        // the IV slot for each undo step.
-        if let Some(fake) = originator_fake {
-            let fake_slot = (0..record_set.record_count())
-                .find(|index| {
-                    record_set.is_originator_fake_slot(SlotIndex::new(*index).expect("ok"))
-                })
-                .ok_or(MultiRecordError::SlotExhausted)?;
-            let fake_slot_index = SlotIndex::new(fake_slot).expect("validated");
-            for hop in &ordered {
-                chacha20_transform(
-                    hop.layer_keys.reply_key(),
-                    fake_slot_index,
-                    &mut slots[fake_slot as usize],
-                )?;
-            }
-            let wire = &slots[fake_slot as usize];
-            verify_originator_fake(fake, wire)?;
-        }
+        // Inbound originator-fake handling (Plan 188).
+        //
+        // The originator fake is privacy padding that hides the real
+        // hop count, exactly like padding fakes (which are already
+        // ignored on the reply path). Exact-pinned i2pd 2.61.0
+        // transforms the fake slot with keying that does not recover
+        // under the creator's `reply_key`, while the real-hop AEAD
+        // below still authenticates and installs cryptographically
+        // derived tunnel material. Verifying fake-bytes integrity
+        // would reject genuine reference replies without
+        // strengthening tunnel-key authentication (all key material
+        // comes from real-hop AEAD, never from the fake). The shape
+        // check above still enforces that inbound builds carry
+        // exactly one fake; the bytes themselves are ignored like
+        // padding.
+        let _ = originator_fake;
         // Then open every real-hop reply in canonical hop order.
         let mut results = Vec::with_capacity(ordered.len());
         for context in &ordered {

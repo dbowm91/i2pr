@@ -69,8 +69,8 @@ Plan 183 = registered M6 mixed-router streaming interop program
 Plan 184 = passed M6 authenticated I2NP runtime and reference preflight
 Plan 185 = passed M6 live one-hop exploratory tunnels and liveness
 Plan 186 = passed M6 mixed-router NetDB lookup and publication
-Plan 187 = blocked-by-m6-build-reply-interop-gap (local destination rows passed; remote gate pending plan188)
-Plan 188 = registered M6 short-build-reply interop corrective (next)
+Plan 187 = blocked-by-m6-build-reply-interop-gap (local rows passed; 2/7 flipped via plan188 installs)
+Plan 188 = in-progress M6 short-build-reply installs proven (lookup rows pending)
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
 Milestone 10 generic tunnels = passed-via-plan175 (profile; byte round-trip proven-via-plan182)
 Milestone 10 HTTP proxy = passed-via-plan176 (profile; byte round-trip proven-via-plan182)
@@ -86,7 +86,7 @@ M6 authenticated I2NP preflight = passed-via-plan184 (no tunnel/NetDB/Streaming 
 M6 exploratory one-hop tunnels = passed-via-plan185 (no multi-hop / LeaseSet2 / Streaming claim)
 M6 NetDB lookup/publication = passed-via-plan186 (no LeaseSet2 / Streaming claim)
 M6 destination local product = passed-via-plan187 (27 unit + 9 live rows; no remote claim)
-M6 destination remote interop = blocked-pending-plan188
+M6 destination remote interop = installs-proven-lookup-pending-plan188
 next_executable_plan = 188
 next product layer = m6-mixed-router-leaseset2
 ```
@@ -812,13 +812,10 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 187 landed the local destination message
-plane (daemon-owned `DestinationTunnelCoordinator`, 27 unit + 9 live
-two-role rows, narrow additive seams, no wire change) with the
-external lane stopping fail-closed at the §11 build-reply gate
-(session + reference build acceptance both directions + SAM
-DATAGRAM destination + reference LS2 publication proven; 7
-install-dependent rows recorded `blocked` with multi-run
-diagnosis; creator-known keys never installed without a consumed
-reply). Plan 188 owns the narrow build-reply corrective. M10 final
-acceptance stays open.**
+Current handoff: **Plan 188 in-progress: the short-build-reply
+corrective lands consumed-reference installs both directions
+(`installed_ob=1 installed_ib=1` via garlic-wrapped endpoint +
+forwarded gateway, 2/7 rows flipped to passed, no synthesis, no
+wire change) with 5/7 rows still blocked on the destination
+LeaseSet2-lookup gap. Plan 187 local product (27 unit + 9 live)
+stays green. M10 final acceptance stays open.**

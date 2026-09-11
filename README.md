@@ -55,8 +55,8 @@ plan_183 = registered-m6-mixed-router-streaming-interop-program
 plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
-plan_187 = blocked-by-m6-build-reply-interop-gap
-plan_188 = registered-m6-short-build-reply-interop-corrective
+plan_187 = blocked-by-m6-build-reply-interop-gap (2/7 flipped via plan188 installs)
+plan_188 = in-progress-m6-short-build-reply-installs-proven
 
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
@@ -96,7 +96,7 @@ m6_authenticated_i2np_preflight = passed-via-plan184
 m6_exploratory_one_hop_tunnels = passed-via-plan185
 m6_netdb_lookup_publication = passed-via-plan186
 m6_destination_local_product = passed-via-plan187
-m6_destination_remote_interop = blocked-pending-plan188
+m6_destination_remote_interop = installs-proven-lookup-pending-plan188
 next_product_layer = m6-mixed-router-leaseset2
 next_executable_plan = 188
 ```

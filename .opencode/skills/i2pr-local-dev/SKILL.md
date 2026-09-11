@@ -110,7 +110,7 @@ milestone10_final_acceptance = not-yet-closed
 next_product_layer = m6-mixed-router-leaseset2
 next_executable_plan = 188
 m6_destination_local_product = passed-via-plan187
-m6_destination_remote_interop = blocked-pending-plan188
+m6_destination_remote_interop = installs-proven-lookup-pending-plan188
 ```
 
 Read in order for current SSU2 work:
@@ -628,18 +628,16 @@ bash scripts/check-ssu2-acceptance-evidence.sh
 - Plan 181 ran its full external lane to the §6.3 stop condition: 29 local independent-application-client rows pass (unmodified curl HTTP/SOCKS, nc, stdlib generic driver, exact-pinned jaraco/irc through the real manager; restart stability; resource baselines; unsupported-profile ledger) while the two remote rows are recorded `blocked` with genuine exact-pinned i2pd 2.61.0 qualification provenance (`unknown_peer>0`, `delivered=0`, no establishment). Self-composed rows are never substituted for interop. Milestone 10 final acceptance stays open.
 - Plan 183 registered the M6 mixed-router destination/Streaming interop program Plan 181 §6.3 requires (registration only); Plan 181 resumes after it produces passing remote rows.
 - Plan 184 passed the M6 authenticated I2NP preflight with no tunnel/NetDB/Streaming claim; Plan 185 passed the live one-hop exploratory tunnels + liveness lane; Plan 186 passed the mixed-router NetDB lookup/publication lane with no LeaseSet2/Streaming claim.
-- Plan 187 landed the local destination message plane (daemon-owned `DestinationTunnelCoordinator`, 27 unit + 9 live two-role rows including the bidirectional ECIES/Garlic round-trip with sibling isolation, narrow additive seams, no wire change) with the external lane stopping fail-closed at the §11 build-reply gate (session + reference build acceptance both directions + SAM DATAGRAM destination + reference LS2 publication proven; 7 install-dependent rows blocked with multi-run diagnosis; creator-known keys never installed without a consumed reply). Plan 188 owns the narrow build-reply corrective; no LeaseSet2/Streaming interop is claimed.
+- Plan 187 landed the local destination message plane (daemon-owned `DestinationTunnelCoordinator`, 27 unit + 9 live two-role rows including the bidirectional ECIES/Garlic round-trip with sibling isolation, narrow additive seams, no wire change) with 2/7 remote rows now flipped via Plan 188 installs (see below); 5/7 remain blocked on the lookup gap.
+- Plan 188 in-progress: garlic-wrapped endpoint + forwarded gateway installs proven both directions (`installed_ob=1 installed_ib=1`, no synthesis, no wire change) with 2/7 rows passed; lookup/publication/messaging rows pending. No LeaseSet2/Streaming interop claimed yet.
  - `milestone6_interoperable = not-yet-claimed` remains unchanged.
 - SSU2 public-network participation, broad router interoperability, IPv6 external interop, PQ v3/v4, and SSU1 remain unclaimed/deferred as documented.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
 
-Current handoff: **Plan 187 landed the local destination message
-plane (daemon-owned `DestinationTunnelCoordinator`, 27 unit + 9 live
-two-role rows including the bidirectional ECIES/Garlic round-trip
-with sibling isolation, narrow additive seams, no wire change) with
-the external lane stopping fail-closed at the §11 build-reply gate
-(session + reference build acceptance both directions + SAM DATAGRAM
-destination + reference LS2 publication proven; 7 install-dependent
-rows recorded `blocked` with multi-run diagnosis; creator-known keys
-never installed without a consumed reply). Plan 188 owns the narrow
-build-reply corrective. M10 final acceptance stays open.**
+Current handoff: **Plan 188 in-progress: the short-build-reply
+corrective lands consumed-reference installs both directions
+(`installed_ob=1 installed_ib=1` via garlic-wrapped endpoint +
+forwarded gateway, 2/7 rows flipped to passed, no synthesis, no
+wire change) with 5/7 rows still blocked on the destination
+LeaseSet2-lookup gap. Plan 187 local product (27 unit + 9 live)
+stays green. M10 final acceptance stays open.**

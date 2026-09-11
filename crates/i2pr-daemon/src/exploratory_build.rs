@@ -70,8 +70,10 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 use i2pr_tunnel::bridge::{BridgeHeader, ShortBuildI2npBridge};
+use i2pr_tunnel::build_crypto::GARLIC_REPLY_TAG_LEN;
 use i2pr_tunnel::config::ExploratoryPoolConfig;
 use i2pr_tunnel::data_plane_registry::{DataPlaneCapacity, DataPlaneRegistry};
+use i2pr_tunnel::garlic_reply::decrypt_build_reply_garlic;
 use i2pr_tunnel::identity::{TunnelDirection, TunnelId, TunnelLifetime, TunnelState};
 use i2pr_tunnel::multirecord::decode_outbound_tunnel_build_reply;
 use i2pr_tunnel::pool::{
@@ -391,6 +393,15 @@ struct PendingBuild {
     deadline_ms: u64,
     /// Per-attempt message id the I2NP header carried.
     message_id: u32,
+    /// Creator-supplied `next_tunnel` the reference echoes in its
+    /// `TunnelGateway` reply for outbound endpoint builds.
+    /// Plan 188 correlation seam for garlic-wrapped replies.
+    next_tunnel: TunnelId,
+    /// OBEP `RGarlicKeyAndTag` key for garlic-wrapped endpoint
+    /// replies (`None` for inbound builds, which never garlic-wrap).
+    garlic_key: Option<Zeroizing<[u8; 32]>>,
+    /// OBEP garlic reply tag (8 bytes) paired with `garlic_key`.
+    garlic_tag: Option<[u8; GARLIC_REPLY_TAG_LEN]>,
     /// Live state machine. The coordinator never spawns a task
     /// per attempt; the daemon-owned pump drives every attempt.
     state: ShortBuildStateMachine,
@@ -689,12 +700,23 @@ impl ExploratoryBuildCoordinator {
         }
         state.mark_dispatched().map_err(map_construction_error)?;
         let target_peer = PeerId::from_hash(request.peer.router_hash);
+        // Plan 188: retain the OBEP Garlic material for garlic-wrapped
+        // endpoint replies. The state machine owns the authoritative
+        // copy; this is the coordinator's correlation copy for
+        // TunnelGateway unwrapping. Inbound builds never garlic-wrap.
+        let (garlic_key, garlic_tag) = match state.obep_garlic_material() {
+            Some((key, tag)) => (Some(Zeroizing::new(key)), Some(tag)),
+            None => (None, None),
+        };
         let pending = PendingBuild {
             direction,
             peer: request.peer.clone(),
             target_peer,
             deadline_ms,
             message_id: request.message_id,
+            next_tunnel: request.peer.next_tunnel,
+            garlic_key,
+            garlic_tag,
             state,
         };
         let _ = self.pending.insert(attempt_id, pending);
@@ -709,6 +731,17 @@ impl ExploratoryBuildCoordinator {
     /// coordinator's pending table. The function preserves the
     /// typed dispatcher outcomes for non-build replies so the
     /// caller can drive NetDB / control surfaces in later plans.
+    ///
+    /// Plan 188 extends the build pipeline beyond direct
+    /// `OutboundTunnelBuildReply`:
+    /// - `ShortTunnelBuild` with a matching `(peer, message_id)` for
+    ///   a pending inbound attempt is the reference-forwarded
+    ///   inbound build (i2pd gateway forwards the same
+    ///   `1 + count*218` records after sealing its own reply);
+    /// - `TunnelGateway` (dispatcher `Unsupported` type 19) addressed
+    ///   to a pending outbound `next_tunnel` carries the
+    ///   garlic-wrapped endpoint reply; the OBEP
+    ///   `RGarlicKeyAndTag` unwraps it to the inner OTBRM.
     pub fn route_inbound_i2np(
         &mut self,
         inbound: &Ssu2InboundI2np,
@@ -722,6 +755,11 @@ impl ExploratoryBuildCoordinator {
                 peer,
                 ..
             } => self.route_build_outcome(kind, message_id, peer, inbound.bytes.as_slice()),
+            RouterI2npOutcome::Unsupported {
+                type_byte: 19,
+                peer,
+                ..
+            } => self.route_tunnel_gateway_reply(peer, inbound.bytes.as_slice()),
             _ => Vec::new(),
         };
         Ok(InboundRouteOutcome {
@@ -737,10 +775,29 @@ impl ExploratoryBuildCoordinator {
         peer: PeerId,
         raw_bytes: &[u8],
     ) -> Vec<BuildCoordinatorOutcome> {
-        if !matches!(kind, RouterI2npKind::OutboundTunnelBuildReply) {
-            self.counters.invalid_replies = self.counters.invalid_replies.saturating_add(1);
-            return Vec::new();
+        match kind {
+            RouterI2npKind::OutboundTunnelBuildReply => {
+                self.route_direct_reply(peer, message_id, raw_bytes)
+            }
+            RouterI2npKind::ShortTunnelBuild => {
+                self.route_forwarded_inbound_build(peer, message_id, raw_bytes)
+            }
+            _ => {
+                self.counters.invalid_replies = self.counters.invalid_replies.saturating_add(1);
+                Vec::new()
+            }
         }
+    }
+
+    /// Direct `OutboundTunnelBuildReply` path (synthetic responder
+    /// and any future direct reference reply). Preserves the Plan
+    /// 185 strict decoder and `(peer, message_id)` correlation.
+    fn route_direct_reply(
+        &mut self,
+        peer: PeerId,
+        message_id: u32,
+        raw_bytes: &[u8],
+    ) -> Vec<BuildCoordinatorOutcome> {
         let attempt_id = self.pending.iter().find_map(|(id, attempt)| {
             if attempt.target_peer == peer && attempt.message_id == message_id {
                 Some(*id)
@@ -763,6 +820,144 @@ impl ExploratoryBuildCoordinator {
                 return Vec::new();
             }
         };
+        self.drive_attempt_to_terminal(attempt_id, reply_payload)
+    }
+
+    /// Forwarded inbound build path: i2pd IBGW seals its own reply
+    /// in place and forwards the same `ShortTunnelBuild` records to
+    /// the creator (`next_router` = us). The payload shape is
+    /// identical to OTBRM (`1 + count*218`), so the existing state
+    /// machine postprocessor authenticates it unchanged.
+    ///
+    /// Only pending inbound attempts with matching `(peer,
+    /// message_id)` are eligible. Unmatched `ShortTunnelBuild`
+    /// arrivals are the reference's own builds through us (its only
+    /// peer); they are counted as orphans, never as invalid
+    /// replies, and never install.
+    fn route_forwarded_inbound_build(
+        &mut self,
+        peer: PeerId,
+        message_id: u32,
+        raw_bytes: &[u8],
+    ) -> Vec<BuildCoordinatorOutcome> {
+        let attempt_id = self.pending.iter().find_map(|(id, attempt)| {
+            if matches!(attempt.direction, BuildDirection::Inbound)
+                && attempt.target_peer == peer
+                && attempt.message_id == message_id
+            {
+                Some(*id)
+            } else {
+                None
+            }
+        });
+        let Some(attempt_id) = attempt_id else {
+            self.counters.inbound_orphans = self.counters.inbound_orphans.saturating_add(1);
+            return Vec::new();
+        };
+        let reply_payload = match extract_forwarded_build_payload(raw_bytes) {
+            Ok(payload) => payload,
+            Err(reason) => {
+                self.counters.invalid_replies = self.counters.invalid_replies.saturating_add(1);
+                let direction = self.pending.get(&attempt_id).map(|p| p.direction);
+                if let Some(direction) = direction {
+                    return vec![BuildCoordinatorOutcome::InvalidReply { direction, reason }];
+                }
+                return Vec::new();
+            }
+        };
+        self.drive_attempt_to_terminal(attempt_id, reply_payload)
+    }
+
+    /// Garlic-wrapped outbound endpoint reply path: i2pd OBEP sends
+    /// `TunnelGateway(next_tunnel, Garlic(RGarlicKeyAndTag(
+    /// ShortTunnelBuildReply)))` directly to the creator. The outer
+    /// `TunnelGateway` header message id is unrelated to the build;
+    /// correlation is by `(peer, tunnel_id == next_tunnel)` plus the
+    /// inner reply `message_id` after unwrap.
+    fn route_tunnel_gateway_reply(
+        &mut self,
+        peer: PeerId,
+        raw_bytes: &[u8],
+    ) -> Vec<BuildCoordinatorOutcome> {
+        let (tunnel_id, garlic_opaque) = match extract_tunnel_gateway_garlic(raw_bytes) {
+            Some(value) => value,
+            None => {
+                self.counters.inbound_orphans = self.counters.inbound_orphans.saturating_add(1);
+                return Vec::new();
+            }
+        };
+        // Find the pending outbound attempt bound to this tunnel.
+        // At most `MAX_PENDING_BUILDS` entries; linear scan is
+        // bounded and avoids a second index.
+        let attempt_id = self.pending.iter().find_map(|(id, attempt)| {
+            if matches!(attempt.direction, BuildDirection::Outbound)
+                && attempt.target_peer == peer
+                && attempt.next_tunnel.get() == tunnel_id
+                && attempt.garlic_key.is_some()
+                && attempt.garlic_tag.is_some()
+            {
+                Some(*id)
+            } else {
+                None
+            }
+        });
+        let Some(attempt_id) = attempt_id else {
+            self.counters.inbound_orphans = self.counters.inbound_orphans.saturating_add(1);
+            return Vec::new();
+        };
+        let (key, tag) = match self
+            .pending
+            .get(&attempt_id)
+            .and_then(|p| p.garlic_key.as_ref().map(|k| (**k, p.garlic_tag)))
+        {
+            Some((key, Some(tag))) => (key, tag),
+            _ => {
+                self.counters.inbound_orphans = self.counters.inbound_orphans.saturating_add(1);
+                return Vec::new();
+            }
+        };
+        let decrypted = match decrypt_build_reply_garlic(&key, &tag, &garlic_opaque) {
+            Ok(value) => value,
+            Err(_) => {
+                // Tag mismatch means this Gateway is not for the
+                // matched attempt (or is unrelated Garlic); keep the
+                // attempt for its deadline rather than failing it.
+                // Authentication failure on a tunnel-matched Gateway
+                // is a real reply failure: report InvalidReply but
+                // retain the pending entry for timeout accounting,
+                // mirroring the direct-reply extract-failure path.
+                self.counters.invalid_replies = self.counters.invalid_replies.saturating_add(1);
+                let direction = self.pending.get(&attempt_id).map(|p| p.direction);
+                if let Some(direction) = direction {
+                    return vec![BuildCoordinatorOutcome::InvalidReply {
+                        direction,
+                        reason: "garlic build-reply unwrap failed",
+                    }];
+                }
+                return Vec::new();
+            }
+        };
+        // Inner message-id must equal the attempt's SEND_MSG_ID;
+        // otherwise this Gateway is not the reply to this build.
+        let expected = self
+            .pending
+            .get(&attempt_id)
+            .map(|p| p.message_id)
+            .unwrap_or(0);
+        if decrypted.inner_message_id != expected {
+            self.counters.inbound_orphans = self.counters.inbound_orphans.saturating_add(1);
+            return Vec::new();
+        }
+        self.drive_attempt_to_terminal(attempt_id, decrypted.reply_payload)
+    }
+
+    /// Removes the pending attempt and drives its state machine with
+    /// the recovered reply payload to a terminal outcome.
+    fn drive_attempt_to_terminal(
+        &mut self,
+        attempt_id: BuildAttemptId,
+        reply_payload: Vec<u8>,
+    ) -> Vec<BuildCoordinatorOutcome> {
         self.counters.inbound_routed = self.counters.inbound_routed.saturating_add(1);
         let pending = match self.pending.remove(&attempt_id) {
             Some(value) => value,
@@ -1080,8 +1275,7 @@ pub struct InboundRouteOutcome {
 /// reply is rejected with a stable reason. The decoder never
 /// weakens the canonical tunnel-build codec.
 fn extract_reply_payload(raw_bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
-    let message = I2npMessage::decode_short_transport(raw_bytes, MAX_I2NP_MESSAGE_BYTES)
-        .map_err(|_| "short-transport decode failed")?;
+    let message = decode_inbound_build_message(raw_bytes)?;
     let body = match message.body() {
         I2npBody::OutboundTunnelBuildReply(records) => records,
         _ => return Err("inbound build reply is not OutboundTunnelBuildReply"),
@@ -1102,6 +1296,73 @@ fn extract_reply_payload(raw_bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
     let (_count, _records) =
         decode_outbound_tunnel_build_reply(&out).map_err(|_| "OTBRM count/records invalid")?;
     Ok(out)
+}
+
+/// Decodes one inbound build message, trying short-transport first
+/// (the controlled SSU2 path) then standard. Mirrors the central
+/// dispatcher order in reverse for the narrow build seam: the
+/// reference may emit either framing on the direct link.
+fn decode_inbound_build_message(raw_bytes: &[u8]) -> Result<I2npMessage, &'static str> {
+    if let Ok(message) = I2npMessage::decode_short_transport(raw_bytes, MAX_I2NP_MESSAGE_BYTES) {
+        return Ok(message);
+    }
+    I2npMessage::decode_standard(raw_bytes, MAX_I2NP_MESSAGE_BYTES)
+        .map_err(|_| "short-transport decode failed")
+}
+
+/// Extracts the forwarded inbound build payload from a
+/// `ShortTunnelBuild` the reference gateway forwards to the
+/// creator. The records already carry the gateway's sealed reply;
+/// the shape is identical to OTBRM, so the state machine
+/// postprocessor authenticates it unchanged.
+fn extract_forwarded_build_payload(raw_bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let message = decode_inbound_build_message(raw_bytes)?;
+    let body = match message.body() {
+        I2npBody::ShortTunnelBuild(records) => records,
+        _ => return Err("forwarded inbound build is not ShortTunnelBuild"),
+    };
+    let expected = usize::from(body.count()).saturating_mul(usize::from(body.record_size()));
+    if body.records().len() != expected {
+        return Err("forwarded STBM record length mismatch");
+    }
+    let mut out = Vec::with_capacity(1 + expected);
+    out.push(body.count());
+    out.extend_from_slice(body.records());
+    let (_count, _records) =
+        decode_outbound_tunnel_build_reply(&out).map_err(|_| "forwarded STBM count invalid")?;
+    Ok(out)
+}
+
+/// Extracts `(tunnel_id, garlic_opaque)` from a `TunnelGateway`
+/// frame. Tries short-transport then standard framing, mirroring
+/// the central dispatcher. Returns `None` when the bytes are not a
+/// decodable `TunnelGateway` carrying a Garlic inner message.
+fn extract_tunnel_gateway_garlic(raw_bytes: &[u8]) -> Option<(u32, Vec<u8>)> {
+    // The reference sends the Gateway directly over the
+    // authenticated link; either header variant is accepted, and
+    // only a Garlic inner is eligible for build-reply unwrap.
+    for message in [
+        I2npMessage::decode_short_transport(raw_bytes, MAX_I2NP_MESSAGE_BYTES).ok(),
+        I2npMessage::decode_standard(raw_bytes, MAX_I2NP_MESSAGE_BYTES).ok(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let I2npBody::TunnelGateway(gateway) = message.body() {
+            let tunnel_id = gateway.tunnel_id;
+            if tunnel_id == 0 {
+                continue;
+            }
+            if let I2npBody::Garlic(opaque) = gateway.message.body() {
+                let bytes = opaque.payload.as_bytes().to_vec();
+                if bytes.is_empty() {
+                    continue;
+                }
+                return Some((tunnel_id, bytes));
+            }
+        }
+    }
+    None
 }
 
 fn map_construction_error(error: ShortBuildConstructionError) -> BuildCoordinatorError {
