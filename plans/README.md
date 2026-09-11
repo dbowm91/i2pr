@@ -108,6 +108,7 @@ plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
 plan_187 = blocked-by-m6-build-reply-interop-gap (2/7 flipped via plan188 installs)
 plan_188 = in-progress-m6-short-build-reply-installs-proven
+plan_189 = registered-m6-java-second-family-qualification-and-closure (blocked-by-plan188)
 
 milestone7_local_product = passed-via-plan149
 milestone7_sam_localhost = passed-via-plan151
@@ -157,6 +158,7 @@ m6_exploratory_one_hop_tunnels = passed-via-plan185
 m6_netdb_lookup_publication = passed-via-plan186
 m6_destination_local_product = passed-via-plan187
 m6_destination_remote_interop = installs-proven-lookup-pending-plan188
+m6_mixed_router_cross_family_ledger = landed-via-plan189 (i2pd-only-runs; java-second-family-deferred)
 next_product_layer = m6-mixed-router-leaseset2
 next_executable_plan = 188
 m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172
@@ -209,6 +211,7 @@ m6_sequence = 183(registered) -> 184(passed) -> 185(passed) -> 186(passed) -> 18
 - [`186-m6-mixed-router-netdb-lookup-and-publication.md`](186-m6-mixed-router-netdb-lookup-and-publication.md) — **passed** the live mixed-router NetDB lookup / publication program: the daemon-owned `NetDbTunnelCoordinator` drives the existing lookup/publication state machines over the Plan 185 pair through the ordinary authoritative store (exact-pinned i2pd floodfill, 12-row lane plus `scripts/check-netdb-tunnel-evidence.sh`). No destination LeaseSet2 / Streaming claim; Plan 187 landed the destination program (local rows passed, remote gate pending Plan 188).
 - [`187-m6-remote-leaseset2-and-destination-garlic-routing.md`](187-m6-remote-leaseset2-and-destination-garlic-routing.md) — **blocked** by the `m6-build-reply-interop-gap` (2/7 flipped via Plan 188 installs; 5/7 still blocked on lookup): the daemon-owned `DestinationTunnelCoordinator` with the full local destination message plane is landed (27 unit + 9 live two-role rows, including the bidirectional ECIES/Garlic round-trip with sibling isolation over real TunnelData cells), and the external lane proves session, reference build acceptance both directions, SAM DATAGRAM destination, and reference LS2 publication; installs now complete through consumed reference replies (garlic-wrapped endpoint + forwarded gateway) with 2/7 rows passed (21-row lane plus `scripts/check-destination-tunnel-evidence.sh`). No LeaseSet2/Streaming interop claim yet.
 - [`188-m6-short-build-reply-interop-corrective.md`](188-m6-short-build-reply-interop-corrective.md) — **in-progress** narrow corrective (see [`188-status.md`](188-status.md)): outbound garlic-unwrap + inbound forwarded-STBM consumption landed with 2/7 rows flipped to passed (`installed_ob=1 installed_ib=1` via consumed replies, no synthesis); 5/7 remain blocked on the destination LeaseSet2-lookup gap. The deferred `188-m6-mixed-router-streaming-with-i2pd.md` Streaming pass stays blocked until all seven pass (to be renumbered to 189).
+- [`189-m6-java-i2p-second-family-qualification-and-closure.md`](189-m6-java-i2p-second-family-qualification-and-closure.md) — **registered** M6 Java I2P second-family qualification and mixed-router closure plan (see [`189-status.md`](189-status.md)): blocked-by-plan188. Plan 189 §8 lands the fail-closed M6 mixed-router cross-family ledger/checker/workflow scaffold: `scripts/check-m6-mixed-router-acceptance-evidence.sh` (structural checker that pins both i2pd 2.61.0 and Java I2P 2.13.0), `tests/integration/m6-interop/run-m6-mixed-router.sh` (cross-family aggregator that reuses the four per-layer harnesses and binds every guarded row to a family + a per-layer exit code), and `.github/workflows/m6-mixed-router-external.yml` (manual `workflow_dispatch` lane). The second-family Java rows are recorded `failed` with stop provenance until a follow-up plan lands the Java qualification harness under `tests/integration/m6-interop/run-java.sh`; no M6 wire change; no `milestone6_interoperable = passed-via-plan189` claim.
 
 Milestone 9 architecture is deliberately constrained:
 
@@ -308,7 +311,7 @@ Plan 152 is a later M6 robustness correction discovered by the Plan 151 final SA
 - Non-loopback/remote I2CP, TLS/authentication, or broad historical I2CP feature compliance.
 - Live/public NTCP2 or SSU2 router transport activation and broad mixed-router interoperability.
 - Public I2P participation and network-transport-bound NetDB/public router behavior.
-- Milestone 6 independent-router destination/Streaming/tunnel interoperability (Plan 183 program registered, Plan 184 preflight passed with no tunnel/NetDB/Streaming claim; Plan 185 one-hop builds accepted with reply consumption unproven; Plan 186 NetDB rows passed; Plan 187 local destination rows passed with 7 remote rows blocked on the build-reply gap pending Plan 188; Plan 181 remote rows blocked on the remaining debt).
+- Milestone 6 independent-router destination/Streaming/tunnel interoperability (Plan 183 program registered, Plan 184 preflight passed with no tunnel/NetDB/Streaming claim; Plan 185 one-hop builds accepted with reply consumption unproven; Plan 186 NetDB rows passed; Plan 187 local destination rows passed with 7 remote rows blocked on the build-reply gap pending Plan 188; Plan 188 short-build-reply corrective in-progress with 2/7 destination rows flipped via consumed-reference installs and 5/7 still blocked on the LeaseSet2-lookup gap; Plan 189 Java second-family qualification registered but blocked-by-plan188 with the §8 cross-family ledger/checker/workflow landed and second-family Java rows recorded `failed`); Plan 181 remote rows blocked on the remaining debt.
 - Milestone 10 remote service interop / final acceptance (local rows passed via Plan 181; remote HTTP/IRC rows not-yet-passed).
 - SSU2 IPv6 external interop, PQ SSU2, SSU1, encrypted/meta LeaseSets, or PQ destination encryption unless separately closed later.
 
@@ -345,6 +348,11 @@ Plan 181 = blocked-by-m6-mixed-router-streaming-blocker (local rows passed; remo
 Plan 182 = passed M10 local-delivery corrective
 Plan 183 = registered M6 mixed-router streaming interop program
 Plan 184 = passed M6 authenticated I2NP runtime and reference preflight
+Plan 185 = passed M6 live one-hop exploratory tunnels and liveness
+Plan 186 = passed M6 mixed-router NetDB lookup and publication
+Plan 187 = blocked-by-m6-build-reply-interop-gap (local rows passed; 2/7 flipped via plan188 installs)
+Plan 188 = in-progress-m6-short-build-reply-installs-proven (lookup/publication rows pending)
+Plan 189 = registered-m6-java-second-family-qualification-and-closure (blocked-by-plan188; §8 cross-family ledger/checker/workflow landed)
 Milestone 10 foundation = passed-via-plan174
 Milestone 10 generic tunnels = passed-via-plan175
 Milestone 10 HTTP proxy = passed-via-plan176
@@ -361,7 +369,9 @@ M6 exploratory one-hop tunnels = passed-via-plan185
 M6 NetDB lookup/publication = passed-via-plan186
 M6 destination local product = passed-via-plan187
 M6 destination remote interop = installs-proven-lookup-pending-plan188
+M6 mixed-router cross-family ledger = landed-via-plan189 (i2pd-only-runs; java-second-family-deferred)
 Plan 187 = blocked-by-m6-build-reply-interop-gap (local rows passed; 2/7 flipped via plan188 installs)
 Plan 188 = in-progress-m6-short-build-reply-installs-proven (lookup/publication rows pending)
+Plan 189 = registered-m6-java-second-family-qualification-and-closure (blocked-by-plan188; §8 cross-family ledger/checker/workflow landed)
 next_executable_plan = 188
 ```

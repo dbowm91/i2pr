@@ -1,0 +1,151 @@
+# Plan 189 status — M6 Java I2P second-family qualification and mixed-router closure
+
+Status: **`registered-blocked-by-plan188-lookup-gap`** (the i2pd
+first-family destination lookup row is still blocked; no Java
+second-family qualification has started yet; the cross-family
+ledger/checker/workflow scaffold is landed and routed through the
+existing per-layer evidence scripts).
+
+Plan of record:
+[`plans/189-m6-java-i2p-second-family-qualification-and-closure.md`](189-m6-java-i2p-second-family-qualification-and-closure.md).
+
+> Numbering note. The deferred `plans/188-m6-mixed-router-streaming-with-i2pd.md`
+> is the Streaming pass that Plan 188 §11 names as the next executable
+> after the i2pd destination rows go green; the docs prune that swaps
+> 188-streaming → 189 and the present file → 190 is deferred until the
+> i2pd rows actually pass. The file under `plans/189-` stays blocked
+> on Plan 188 in the meantime so the current numbering does not
+> imply a closure that has not been earned.
+
+## Current authority
+
+```text
+plan_189 = registered-blocked-by-plan188-lookup-gap
+plan_188 = in-progress-m6-short-build-reply-installs-proven
+plan_187 = blocked-by-m6-build-reply-interop-gap (2/7 flipped via plan188 installs)
+plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
+plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
+plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
+plan_183 = registered-m6-mixed-router-streaming-interop-program
+m6_destination_local_product = passed-via-plan187
+m6_destination_remote_interop = installs-proven-lookup-pending-plan188
+milestone6_interoperable = not-yet-claimed
+milestone10_remote_service_interop = not-yet-passed
+milestone10_final_acceptance = not-yet-closed
+next_executable_plan = 188 (resolve the destination LeaseSet2-lookup gap)
+m6_second_family_java = not-yet-started
+```
+
+## What landed
+
+Plan 189 §8 fail-closed M6 mixed-router evidence checker/ledger
+infrastructure only. No M6 wire change, no daemon code change,
+no runtime change, no interop qualification executed. The
+scaffold reuses the four existing per-layer harnesses
+(`run-preflight.sh`, `run-tunnels.sh`, `run-netdb.sh`,
+`run-destination.sh`) plus their dedicated static evidence
+checkers; Plan 189 adds the cross-family aggregator that the
+two-family claim requires.
+
+```text
+scripts/check-m6-mixed-router-acceptance-evidence.sh (new)
+  Plan 189 §8 fail-closed structural checker. Walks the four
+  per-layer harnesses plus their static checkers, enforces that
+  the i2pd pin (`635b013a...`) and the Java I2P pin
+  (`9134f808...`) are referenced by every per-layer static
+  checker, enforces that the cross-family aggregator harness
+  exists and references both pins through the existing
+  record_guarded / m6_row / ref_row / blocked_row helpers, and
+  rejects hard-coded `passed` records for the two-family
+  guards. No required row is recorded `passed` except via a
+  command/test exit code.
+
+tests/integration/m6-interop/run-m6-mixed-router.sh (new)
+  Plan 189 §8 cross-family harness scaffolding. Loops over the
+  per-layer harnesses in the same order the four Plans 184–188
+  ran them, captures each layer's `results.tsv` and `evidence.json`
+  into a unified cross-family `evidence.json` written only when
+  every per-layer exit code is zero. Fails closed (exit 1) if any
+  required per-layer harness is missing or fails, or if the Java
+  I2P pin is not recorded in any per-layer run. Does not start a
+  Java router; the second-family Java qualification harness
+  belongs to a follow-up plan after Plan 188 closes.
+
+.github/workflows/m6-mixed-router-external.yml (new)
+  Plan 189 §8 manual external lane (workflow_dispatch only,
+  Ubuntu, timeout 60 min). Installs the build dependencies the
+  Java I2P reference build needs (ant, default-jdk-headless,
+  gettext-base) alongside the existing i2pd Boost/OpenSSL
+  stack. Steps run the structural checker, the i2pd-only
+  per-layer harnesses (matching the Plan 187 lane), and the
+  cross-family aggregator, then upload sanitized evidence.
+  The Java router is **not** started by this workflow yet —
+  the lane is intentionally fail-closed until the Java
+  qualification harness lands.
+```
+
+The existing Plan 161/162/184/185/186/187 evidence scripts are
+unchanged; Plan 189 only reuses them and adds the cross-family
+aggregator. No `crates/` or `Cargo.lock` changes.
+
+## Evidence
+
+Local lane (no external process):
+
+```text
+bash scripts/check-m6-mixed-router-acceptance-evidence.sh
+# exit 0; per-layer static checkers and the cross-family
+# aggregator scaffolding are wired to both pins
+
+bash tests/integration/m6-interop/run-m6-mixed-router.sh
+# exit 0; per-layer runs reuse the Plan 184–187 evidence
+# directories, and the cross-family evidence.json is emitted
+# under target/interop/m6-mixed-router-evidence/
+```
+
+External lane (manual workflow, exact-pinned i2pd only):
+
+```text
+# Workflow .github/workflows/m6-mixed-router-external.yml is
+# added in this plan; the Java second-family invocation is
+# registered as a follow-up after Plan 188 closes.
+```
+
+## Stop conditions
+
+This status keeps `milestone6_interoperable = not-yet-claimed`
+because Plan 189 cannot pass until Plan 188's five blocked
+destination rows flip to passed and the deferred
+`188-m6-mixed-router-streaming-with-i2pd.md` Streaming pass
+also lands. Per the plan §11 stop rule, the Java second-family
+qualification is never marked `passed` from static source
+inspection or from a self-composed substitute; if the exact-pinned
+Java I2P lane cannot be orchestrated on this host, the precise
+blocker is captured and a follow-up corrective plan is registered
+without flipping any second-family row.
+
+## Handoff
+
+Plan 189 waits for:
+
+1. Plan 188's five blocked destination rows to flip to passed
+   through the existing per-layer harness (the cross-family
+   aggregator is already wired to surface them);
+2. the deferred `188-m6-mixed-router-streaming-with-i2pd.md`
+   Streaming pass to land (still blocked on the same
+   destination/lookup/Streaming gap);
+3. a follow-up plan that lands the second-family Java I2P
+   qualification harness under
+   `tests/integration/m6-interop/run-java.sh`, registers the
+   exact Java pin through `scripts/interop/fetch-m6-java.sh`
+   (reusing the Plan 170 `fetch-i2cp-clients.sh` Java I2P
+   fetch), and reruns the cross-family aggregator to bind the
+   two families to the same `evidence.json`.
+
+Until then:
+
+```text
+plan_189 = registered-blocked-by-plan188-lookup-gap
+m6_second_family_java = not-yet-started
+next_executable_plan = 188 (resolve the destination LeaseSet2-lookup gap)
+```

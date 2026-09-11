@@ -57,6 +57,7 @@ plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
 plan_187 = blocked-by-m6-build-reply-interop-gap (2/7 flipped via plan188 installs)
 plan_188 = in-progress-m6-short-build-reply-installs-proven
+plan_189 = registered-m6-java-second-family-qualification-and-closure (blocked-by-plan188)
 
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
@@ -97,6 +98,7 @@ m6_exploratory_one_hop_tunnels = passed-via-plan185
 m6_netdb_lookup_publication = passed-via-plan186
 m6_destination_local_product = passed-via-plan187
 m6_destination_remote_interop = installs-proven-lookup-pending-plan188
+m6_mixed_router_cross_family_ledger = landed-via-plan189 (i2pd-only-runs; java-second-family-deferred)
 next_product_layer = m6-mixed-router-leaseset2
 next_executable_plan = 188
 ```

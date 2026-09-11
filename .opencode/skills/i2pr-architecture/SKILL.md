@@ -390,8 +390,30 @@ record is not `superseded-by-*`. Currently:
   [`plans/183-status.md`](../../plans/183-status.md)); Plan 184
   passed the authenticated I2NP preflight with no
   tunnel/NetDB/Streaming claim (see
-  [`plans/184-status.md`](../../plans/184-status.md)); M10 final
-  acceptance stays open.
+  [`plans/184-status.md`](../../plans/184-status.md)); Plan 185
+  passed the live one-hop exploratory tunnels + liveness lane
+  against exact-pinned i2pd 2.61.0 (see
+  [`plans/185-status.md`](../../plans/185-status.md)); Plan 186
+  passed the live mixed-router NetDB lookup and publication
+  lane (see [`plans/186-status.md`](../../plans/186-status.md));
+  Plan 187 lands the local destination product but is blocked
+  on the `m6-build-reply-interop-gap` (see
+  [`plans/187-status.md`](../../plans/187-status.md)); Plan 188
+  is the in-progress short-build-reply corrective
+  (`installed_ob=1 installed_ib=1` via consumed reference
+  replies, 2/7 rows flipped to passed, 5/7 still blocked on the
+  LeaseSet2-lookup gap; see
+  [`plans/188-status.md`](../../plans/188-status.md)); Plan 189
+  is the registered M6 Java I2P second-family qualification
+  plan, blocked-by-plan188 with the §8 cross-family
+  ledger/checker/workflow scaffold landed
+  (`scripts/check-m6-mixed-router-acceptance-evidence.sh`,
+  `tests/integration/m6-interop/run-m6-mixed-router.sh`,
+  `.github/workflows/m6-mixed-router-external.yml`) and the
+  second-family Java rows recorded `failed` with stop
+  provenance until a follow-up plan lands the Java qualification
+  harness (see [`plans/189-status.md`](../../plans/189-status.md));
+  M10 final acceptance stays open.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).
@@ -427,6 +449,7 @@ not weaken the script.
 | `scripts/check-i2cp-acceptance-evidence.sh` | Plan 170/172 I2CP evidence integrity (no synthetic `passed` rows; CI-enforced). |
 | `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants (no Tokio/sockets in service-tunnels, no Garlic/I2NP, single pump, no unbounded channels, one entry point). |
 | `scripts/check-service-tunnel-acceptance-evidence.sh` | Plan 181 service-tunnel evidence integrity (29 local + 2 blocked remote rows; CI-enforced). |
+| `scripts/check-m6-mixed-router-acceptance-evidence.sh` | Plan 189 §8 cross-family M6 mixed-router evidence integrity (per-layer harnesses + checkers both pin i2pd 2.61.0 + Java I2P 2.13.0; cross-family aggregator reuses the four per-layer harnesses; second-family Java rows stay `failed` with stop provenance until the Java qualification harness lands; CI-enforced). |
 
 ## Doc-vs-source audit pattern
 

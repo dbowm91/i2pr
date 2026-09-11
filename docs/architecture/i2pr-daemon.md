@@ -29,7 +29,19 @@ the external lane stops fail-closed at the §11 build-reply gate
 (reference accepts builds but emits no consumable reply; 7
 install-dependent rows blocked, Plan 188 owns the corrective). No
 public advertisement, Streaming, or M10 remote-service claim
-follows from any of it.
+follows from any of it. Plan 188 is the in-progress short-build-reply
+corrective (outbound garlic-unwrap + inbound forwarded-STBM
+consumption in `ExploratoryBuildCoordinator`; 2/7 destination rows
+flipped to passed via consumed reference replies, 5/7 still blocked
+on the LeaseSet2-lookup gap, no synthesis, no wire change); the
+deferred `plans/188-m6-mixed-router-streaming-with-i2pd.md` Streaming
+pass stays blocked until all seven destination rows pass. Plan 189
+is the registered M6 Java I2P second-family qualification plan; it
+lands the fail-closed M6 mixed-router cross-family
+ledger/checker/workflow scaffold (`scripts/check-m6-mixed-router-acceptance-evidence.sh`,
+`tests/integration/m6-interop/run-m6-mixed-router.sh`,
+`.github/workflows/m6-mixed-router-external.yml`) but no second-family
+Java row until Plan 188 closes.
 
 ## Purpose
 
@@ -267,7 +279,15 @@ work is scoped to:
   forwarded `ShortTunnelBuild` for pending inbound `(peer,
   message_id)` plus `TunnelGateway` Garlic unwrap (OBEP
   `RGarlicKeyAndTag` by `(peer, next_tunnel)` + inner `message_id`)
-  through `i2pr_tunnel::garlic_reply`. The bounded creator-side
+  through `i2pr_tunnel::garlic_reply`. Plan 189 §8 adds the
+  fail-closed M6 mixed-router cross-family ledger/checker/workflow
+  scaffold that reuses the four per-layer harnesses
+  (`run-preflight.sh`, `run-tunnels.sh`, `run-netdb.sh`,
+  `run-destination.sh`) through
+  [`tests/integration/m6-interop/run-m6-mixed-router.sh`](../../tests/integration/m6-interop/run-m6-mixed-router.sh)
+  without changing the per-layer evidence semantics; no second-family
+  Java row exists until a follow-up plan lands the Java qualification
+  harness. The bounded creator-side
   [`TunnelLivenessScheduler`](../../crates/i2pr-daemon/src/tunnel_liveness.rs)
   owns every active pair with one central scheduler (no per-tunnel
   task or per-tunnel timer); the first test is scheduled
@@ -330,7 +350,8 @@ filesystem):
 | `src/exploratory_build.rs` | Plans 185/188 daemon-owned exploratory build coordinator (bounded pending table, monotonic attempt / creator tunnel ids, single central scheduler, strict OTBRM extraction + forwarded-STBM + TunnelGateway Garlic paths, `register_*_with_material` installs through `ExploratoryPool` then activates once into `DataPlaneRegistry`) | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
 | `src/tunnel_liveness.rs` | Plan 185 bounded creator-side tunnel liveness scheduler (first-test / repeat / response-timeout / failure-threshold policy well below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer) | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
 | `src/netdb_tunnels.rs` | Plan 186 daemon-owned NetDB-over-tunnels coordinator (authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel-loss) | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
-| `src/destination_tunnels.rs` | Plan 187 daemon-owned destination LeaseSet2/Garlic-over-tunnels coordinator (authoritative RouterInfo store + store-parameter LeaseSet2 lookup, authoritative LeaseSet2 cache, real-material proofs rejecting `LocalZeroHop`, bounded local-LS2 publication with protocol-derived ack, registry-backed Garlic recovery, typed tunnel-loss; local product passed, remote rows blocked on the build-reply gap pending Plan 188) | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome` |
+| `src/destination_tunnels.rs` | Plan 187 daemon-owned destination LeaseSet2/Garlic-over-tunnels coordinator (authoritative RouterInfo store + store-parameter LeaseSet2 lookup, authoritative LeaseSet2 cache, real-material proofs rejecting `LocalZeroHop`, bounded local-LS2 publication with protocol-derived ack, registry-backed Garlic recovery, typed tunnel-loss; local product passed, remote rows blocked on the build-reply gap pending Plan 188; Plan 188 lands consumed-reference installs both directions) | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome` |
+| `tests/integration/m6-interop/run-m6-mixed-router.sh` | Plan 189 §8 cross-family M6 mixed-router evidence aggregator (reuses the four per-layer harnesses, binds every Plan 189 §8 guarded row to a family + a per-layer command exit code) | `cross_family_row`, `record`, `run_per_layer` |
 | `src/sam.rs` | Plans 137–149 supervised SAM 3.1 listener and composition root | `SamServiceState`, `execute_session_create` (self-composes bridge + driver), `execute_stream_connect`, `execute_stream_accept`, byte-exact `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw transition, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP` |
 | `src/i2cp.rs` | Plan 167 supervised loopback I2CP v0.9.67 listener and composition root extended by Plan 168 with the bounded per-session message/data-plane surface, by Plan 169 with the reconfigure transaction handler, the atomic reconfigure baseline in `I2cpSessionState::last_options`, and the synchronous `handle_destroy_session` data-plane drain, by Plan 171 with the explicit `stream.shutdown()` on the common per-connection terminal path, and by Plan 170 with the `ReplyAndFollowup` `RequestVariableLeaseSet` after `CreateSession` | `I2cpServiceState`, `I2cpSessionState`, `bind`, `serve`, `handle_connection`, `install_client_lease_set2`, `reserve_client_destination`, `handle_send_message`, `handle_send_message_expires`, `handle_dest_lookup`, `derive_bandwidth_reply`, `handle_reconfigure_session`, `handle_destroy_session`, `apply_reconfigure`, `ReconfigurationOutcome`, `teardown_connection`, `I2cpServiceSnapshot` |
 | `src/sam/fabric.rs` | Plan 149 localhost product fabric (OS-CSPRNG tunnel material, signed LeaseSet2, per-destination runtime-driver factory, typed `DeliverySweepCounters`) | `SamLocalProductFabric`, `LocalDestinationProduct`, `LocalhostInboundTunnelFactory`, `DeliverySweepCounters`, `LocalDeliveryDegradation` |

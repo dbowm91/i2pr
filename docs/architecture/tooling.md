@@ -26,6 +26,7 @@ Paths are relative to the workspace root.
 | `scripts/check-i2cp-acceptance-evidence.sh` | Plan 170/172 I2CP evidence integrity (Plan 170 9-row lane retained; Plan 172 adds lifecycle rows, raw-driver substitution rejection, zero-lease rejection, and LeaseSet2-install gating): no literal unconditional `passed` rows; every required row flows through the exit-code-gated `record_guarded` helper with digest-equality + strong-parse-path gates and explicit Java/Go pins (CI-enforced). |
 | `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants: no Tokio/sockets in `i2pr-service-tunnels`, no Garlic/I2NP construction, single shared `run_stream_pump`, no unbounded Tokio channels, exactly one `register_service_tunnel_manager` entry point. |
 | `scripts/check-service-tunnel-acceptance-evidence.sh` | Plan 181 service-tunnel evidence integrity: 29 command-derived local rows plus 2 blocked-only remote rows; no literal passes; pin/head/cleanliness and curl/SOCKS/jaraco gates (CI-enforced). |
+| `scripts/check-m6-mixed-router-acceptance-evidence.sh` | Plan 189 §8 cross-family M6 mixed-router evidence integrity: per-layer harnesses + static checkers both pin i2pd 2.61.0 and Java I2P 2.13.0; the cross-family aggregator reuses the four per-layer harnesses and binds every guarded row to a family + a per-layer exit code; second-family Java rows are recorded `failed` with stop provenance until a follow-up plan lands the Java qualification harness; no literal unconditional `passed` rows (CI-enforced). |
 | `scripts/fuzz-smoke.sh` | Opt-in smoke run of all 22 fuzz targets for 32 iterations each at seed=1 (`-runs=32 -seed=1`). Requires `cargo-fuzz` + nightly. Disables LeakSanitizer (`LSAN_OPTIONS=detect_leaks=0`) for managed environments. |
 
 **How they work**: `check-dependency-direction.sh` uses
@@ -393,6 +394,24 @@ Triggers: `on: push`, `on: pull_request` (all branches).
   upload sanitized evidence even on failure. Bounded 45-minute timeout;
   loopback-only, no public-I2P participation beyond the GitHub/Maven
   source fetch.
+
+### `.github/workflows/m6-mixed-router-external.yml` (manual lane)
+
+- `workflow_dispatch`-only Ubuntu 24.04 lane for Plan 189 §8: install
+  i2pd build deps + ant/JDK/gettext-base → fetch/verify the exact i2pd
+  2.61.0 reference (the lane does NOT start a Java router yet — the
+  second-family Java qualification harness is a follow-up plan) → run
+  the cross-family evidence-integrity checker
+  (`scripts/check-m6-mixed-router-acceptance-evidence.sh`) plus the
+  three per-layer static checkers → run
+  `tests/integration/m6-interop/run-m6-mixed-router.sh` (cross-family
+  aggregator that reuses the four per-layer harnesses and binds every
+  Plan 189 §8 guarded row to a family + a per-layer exit code) →
+  upload sanitized evidence even on failure. Records `failed` for the
+  Java family with stop provenance until the Java qualification harness
+  lands; i2pd family rows are bound to the per-layer exit codes
+  directly. Bounded 60-minute timeout; loopback-only, no public-I2P
+  participation beyond the GitHub source fetch.
 
 ### `.github/dependabot.yml`
 

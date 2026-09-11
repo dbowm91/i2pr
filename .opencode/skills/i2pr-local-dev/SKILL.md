@@ -94,6 +94,11 @@ plan_181 = blocked-by-m6-mixed-router-streaming-blocker
 plan_182 = passed-m10-local-delivery-corrective
 plan_183 = registered-m6-mixed-router-streaming-interop-program
 plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
+plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
+plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
+plan_187 = blocked-by-m6-build-reply-interop-gap (2/7 flipped via plan188 installs)
+plan_188 = in-progress-m6-short-build-reply-installs-proven
+plan_189 = registered-blocked-by-plan188-lookup-gap (cross-family ledger/checker/workflow landed, second-family Java deferred)
 milestone10_planning_authority = plan173
 milestone10_foundation = passed-via-plan174
 milestone10_generic_tunnels = passed-via-plan175
@@ -111,6 +116,7 @@ next_product_layer = m6-mixed-router-leaseset2
 next_executable_plan = 188
 m6_destination_local_product = passed-via-plan187
 m6_destination_remote_interop = installs-proven-lookup-pending-plan188
+m6_mixed_router_cross_family_ledger = landed-via-plan189 (i2pd-only-runs; java-second-family-deferred)
 ```
 
 Read in order for current SSU2 work:

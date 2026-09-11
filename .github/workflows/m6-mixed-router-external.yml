@@ -1,0 +1,87 @@
+name: M6 mixed-router external interoperability
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  m6-mixed-router-external:
+    name: M6 mixed-router cross-family (Ubuntu)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Install pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Install external-lane build dependencies
+        # Declared sudo exception (cf. Plan 161 lane): building the
+        # exact-pinned i2pd C++ reference absolutely requires system
+        # Boost/OpenSSL/zlib headers; ant + JDK + gettext-base are the
+        # Java I2P build dependencies the second-family follow-up
+        # plan will need (this lane only fetches and verifies them
+        # today; the actual Java router process stays unwired until
+        # Plan 188 closes the destination LeaseSet2-lookup gap).
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libboost-all-dev libssl-dev zlib1g-dev \
+            ant \
+            default-jdk-headless \
+            gettext-base
+
+      - name: Fetch and verify exact i2pd reference
+        # Plan 187/188 pin: i2pd 2.61.0
+        # 635b013a612ff47278ef02acf8580a28e10e26c5
+        # Plan 189 §8 cross-family aggregator also pins Java I2P
+        # 2.13.0 @ 9134f808337b401e8e53c73734c81fab04280c9d via
+        # scripts/check-m6-mixed-router-acceptance-evidence.sh.
+        run: bash scripts/interop/fetch-ssu2-reference.sh --rebuild
+
+      - name: Show i2pd build log on failure
+        if: failure()
+        run: tail -n 100 target/interop/cache/ssu2/i2pd/*/logs/build.log
+
+      - name: Check M6 mixed-router acceptance evidence integrity
+        # Plan 189 §8: this is the static structural checker that
+        # binds every per-layer harness to both pins; routine CI
+        # also calls it but the manual workflow re-runs it before
+        # any per-layer external command so a structural drift is
+        # caught fail-closed before we start an i2pd process.
+        run: bash scripts/check-m6-mixed-router-acceptance-evidence.sh
+
+      - name: Check per-layer evidence integrity
+        # Plan 189 §8: the cross-family aggregator depends on the
+        # four per-layer static checkers being green. Run them
+        # explicitly before the per-layer harnesses provision i2pd.
+        run: |
+          set -euo pipefail
+          bash scripts/check-exploratory-tunnel-evidence.sh
+          bash scripts/check-netdb-tunnel-evidence.sh
+          bash scripts/check-destination-tunnel-evidence.sh
+
+      - name: Run M6 mixed-router cross-family aggregator
+        # Plan 189 §8: the aggregator binds each Plan 189 §8 guarded
+        # row to a family + a per-layer exit code. It does NOT start
+        # a Java router yet; the second-family Java rows are
+        # intentionally recorded `failed` with stop provenance until
+        # a follow-up plan lands the Java qualification harness.
+        run: bash tests/integration/m6-interop/run-m6-mixed-router.sh
+        env:
+          I2PR_M6_EXECUTION_ID: github-${{ github.run_id }}
+
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m6-mixed-router-evidence-${{ github.run_id }}
+          path: target/interop/m6-mixed-router-evidence
+          if-no-files-found: warn
