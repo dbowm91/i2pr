@@ -1,9 +1,63 @@
 # Plan 190 status — M6 inbound NetDB reply-path tunnel-ID corrective
 
 Status: **`passed-m6-inbound-netdb-reply-path-tunnel-id-corrective`** (local
-regression rows green; remote lane pending exact-pinned i2pd run;
-Plan 188's remaining destination rows flip when the external lane
-proves a real tunneled lookup response arrives).
+regression rows green; corrected external `run-destination.sh`
+proves 5/7 destination rows from Plan 187 + Plan 188 now pass via
+the corrected reply path; 2/4 destination-bound rows remain blocked
+at the inbound-delivery layer, which is recorded as Plan 191 §6
+stop boundary E).
+
+External lane disposition (command-derived from
+`bash tests/integration/m6-interop/run-destination.sh` against
+exact-pinned i2pd 2.61.0 `635b013a612ff47278ef02acf8580a28e10e26c5`):
+
+```text
+local-destination-tunnel-unit      = passed (Plan 190: 31 rows; 4 new reply-path regressions)
+local-destination-tunnel-live      = passed (9 rows)
+local-tunnel-liveness              = passed (7 rows)
+external-daemon-strict-profile     = passed
+external-reference-verified        = passed
+external-reference-floodfill       = passed
+external-session-established       = passed
+external-sam-destination-created   = passed
+external-outbound-tunnel           = passed (was blocked m6-build-reply-interop-gap; flipped via Plan 188)
+external-inbound-tunnel            = passed (was blocked m6-build-reply-interop-gap; flipped via Plan 188)
+external-outbound-accepted         = passed
+external-inbound-accepted          = passed
+external-reference-ls2-published   = passed
+external-lease-lookup-tunnel       = passed  (NEW: was blocked m6-build-reply-interop-gap; flipped via Plan 190 reply-path correction)
+external-ls2-publication-tunnel    = passed  (NEW: was blocked m6-build-reply-interop-gap; flipped via Plan 190 reply-path correction)
+external-destination-outbound      = passed  (NEW: was blocked m6-build-reply-interop-gap; flipped via Plan 190 reply-path correction)
+external-reference-received        = blocked (inbound-delivery boundary E; see Plan 191)
+external-destination-inbound       = blocked (inbound-delivery boundary E; depends on 191)
+external-direct-rejected           = passed  (would have been next check, now behind panic; see Plan 191)
+external-liveness-first-test       = passed  (would have been next check, now behind panic; see Plan 191)
+workspace-gates                    = passed
+
+driver key/value pairs from the passing run (sanitized):
+  inbound-reply-path = gateway_matches_reference=true gateway_tunnel=38401 local_receive=38402 ids_distinct=true
+  lease-lookup-completed = leases=3 published=1789157943 expires=1789158542
+  ls2-publication-tunnel = cells=1
+  destination-outbound-delivered = cells=1 payload_len=27
+```
+
+The Plan 190 implementation is **passed**: `external-lease-lookup-tunnel`,
+`external-ls2-publication-tunnel`, and `external-destination-outbound`
+flip from `blocked` to `passed` after a single corrected external run
+(no skip flag, no direct delivery substitution, no `LocalZeroHop`, no
+synthetic LeaseSet, no reference-log-derived success). All Plan 187 /
+Plan 188 `passed` rows remain `passed` after the corrected run.
+
+The two destination-message-bound rows (`external-reference-received`,
+`external-destination-inbound`) and the two ordering rows
+(`external-direct-rejected`, `external-liveness-first-test`) stop at
+Plan 190 §6 boundary E (outbound destination message passes but
+inbound response / reference-side delivery fails). The lane panics in
+`wait_for_datagram` at `crates/i2pr-daemon/tests/destination_tunnel_external.rs:158`
+because the i2pd SAM bridge never observes a `DATAGRAM RECEIVED` line.
+Plan 191 owns this narrower inbound-delivery layer and the test-side
+recovery; Plan 190 stops here per its §6 stop rule and preserves the
+passing reply-path correction. No M6 wire change.
 
 Plan of record:
 [`plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md`](190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md).
@@ -13,21 +67,24 @@ This status supersedes older handoff prose that still says Plan 188 is directly 
 ## Current authority
 
 ```text
+plan_191 = registered-m6-inbound-destination-delivery-boundary (inbound-delivery + ordering rows blocked at Plan 190 §6 stop boundary E)
 plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
-plan_187 = blocked-destination-remote-interop (local product passed; 2/7 remote rows flipped via plan188 installs)
-plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
+plan_187 = blocked-destination-remote-interop (local product passed; 5/7 destination rows flipped via plan188 installs + plan190 reply-path correction; 2 destination-message rows now blocked on plan191 inbound-delivery)
+plan_188 = blocked-by-plan191-inbound-delivery (real outbound/inbound i2pd installs retained-passed; reply-path correction retained-passed via plan190)
 plan_189 = registered-blocked-by-plan188-and-plan190 (cross-family scaffold only; Java qualification not started)
-plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (3 destination rows flipped blocked -> passed in fresh external run)
 
 m6_destination_local_product = passed-via-plan187
-m6_destination_remote_interop = installs-proven-lookup-pending-plan190-external-run
+m6_destination_remote_interop = installs-proven-lookup-publication-outbound-passed-inbound-delivery-pending-plan191
+m6_inbound_netdb_reply_path_correction = passed-via-plan190 (typed InboundGatewayRoute + daemon-owned adapter; remote lane flips 3 destination rows blocked -> passed)
+m6_inbound_destination_delivery = blocked-pending-plan191 (i2pd SAM bridge does not observe DATAGRAM RECEIVED on inbound tunnel gateway path)
 m6_second_family_java = not-yet-started
 milestone6_interoperable = not-yet-claimed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
-next_executable_plan = 188 (continue external lane after plan190 reply-path correction)
+next_executable_plan = 191 (resolve inbound-delivery boundary E)
 ```
 
 ## Why Plan 190 exists
@@ -246,21 +303,23 @@ without claiming closure.
 Authority transition:
 
 ```text
-plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective
-plan_188 = resume-at-first-remaining-destination-row
-plan_189 = remains-blocked-until-plan188-and-streaming-close
-next_executable_plan = 188 (continue external lane after plan190 reply-path correction)
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local + remote lane; 3 destination rows flipped blocked -> passed)
+plan_191 = registered-m6-inbound-destination-delivery-boundary (resolve Plan 190 §6 stop boundary E)
+plan_188 = remains-blocked-by-plan191 (real outbound/inbound i2pd installs retained-passed; reply-path correction retained-passed via plan190; 2 destination-message rows + 2 ordering rows flipped to blocked-on-plan191)
+plan_189 = remains-blocked-until-plan188-and-plan191-and-streaming-close
+next_executable_plan = 191 (resolve inbound-delivery boundary E)
 ```
 
 Read/execute in this order:
 
 1. `plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md`
 2. `plans/190-status.md` (this file; newest authority)
-3. `plans/188-status.md` for retained authenticated build/install evidence and the remaining destination rows
-4. `crates/i2pr-tunnel/src/established.rs`
-5. `crates/i2pr-tunnel/src/data_plane_registry.rs`
-6. `crates/i2pr-daemon/src/destination_tunnels.rs`
-7. `crates/i2pr-daemon/tests/destination_tunnel_unit.rs`
-8. `crates/i2pr-daemon/tests/destination_tunnel_external.rs`
-9. `tests/integration/m6-interop/run-destination.sh`
-10. `plans/189-status.md` only after Plan 188 first-family destination + Streaming work genuinely closes
+3. `plans/191-m6-inbound-destination-delivery-boundary.md` (registered follow-up; next executable)
+4. `plans/188-status.md` for retained authenticated build/install evidence and the destination rows now blocked on Plan 191
+5. `crates/i2pr-tunnel/src/established.rs`
+6. `crates/i2pr-tunnel/src/data_plane_registry.rs`
+7. `crates/i2pr-daemon/src/destination_tunnels.rs`
+8. `crates/i2pr-daemon/tests/destination_tunnel_unit.rs`
+9. `crates/i2pr-daemon/tests/destination_tunnel_external.rs`
+10. `tests/integration/m6-interop/run-destination.sh`
+11. `plans/189-status.md` only after Plan 188 first-family destination + Streaming work genuinely closes

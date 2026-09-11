@@ -25,34 +25,50 @@ through the authoritative bounded store. Plan 187 adds the
 daemon-owned destination LeaseSet2/Garlic-over-tunnels coordinator
 (`crates/i2pr-daemon/src/destination_tunnels.rs`) with the full
 local destination message plane (27 unit + 9 live two-role rows);
-the external lane stops fail-closed at the §11 build-reply gate
-(reference accepts builds but emits no consumable reply; 7
-install-dependent rows blocked, Plan 188 owns the corrective). No
+the external lane stops fail-closed at Plan 190 §6 boundary E (the
+reference-side inbound delivery of the destination message to the
+i2pd-owned SAM bridge plus the destination-side ordering rows). No
 public advertisement, Streaming, or M10 remote-service claim
-follows from any of it. Plan 188 is the in-progress short-build-reply
+follows from any of it. Plan 188 is the short-build-reply
 corrective (outbound garlic-unwrap + inbound forwarded-STBM
-consumption in `ExploratoryBuildCoordinator`; 2/7 destination rows
-flipped to passed via consumed reference replies, 5/7 were blocked
-on the LeaseSet2-lookup gap, no synthesis, no wire change); the
-deferred `plans/188-m6-mixed-router-streaming-with-i2pd.md` Streaming
-pass stays blocked until all seven destination rows pass. Plan 190
-isolates and corrects the inbound NetDB reply-path metadata defect
-that left 5/7 destination rows blocked after the Plan 188 installs
-(typed public `InboundGatewayRoute` in `i2pr-tunnel::DataPlaneRegistry`;
+consumption in `ExploratoryBuildCoordinator`; 5/7 destination rows
+flipped to passed via consumed reference replies; `installed_ob=1
+installed_ib=1`, no synthesis, no wire change); the deferred
+`plans/188-m6-mixed-router-streaming-with-i2pd.md` Streaming pass
+stays blocked until all seven destination rows plus the inbound-
+delivery rows pass. Plan 190 isolates and corrects the inbound
+NetDB reply-path metadata defect that left 5/7 destination rows
+blocked after the Plan 188 installs (typed public
+`InboundGatewayRoute` in `i2pr-tunnel::DataPlaneRegistry`;
 daemon-owned `reply_path_for_inbound_route` adapter in
-`crates/i2pr-daemon/src/destination_tunnels.rs` derives `i2pr_netdb::ReplyPath`
-only from `(gateway_router, gateway_receive_tunnel)`; local regression
-rows with unequal IDs `0x9601` vs `0x9602` prove the encoded
-`DatabaseLookup` advertises the gateway tuple and never the local
-endpoint id; `destination_tunnel_unit` 31 passed; remote lane
-pending i2pd run, no M6 wire change, no `milestone6_interoperable
-= passed-via-plan190` claim). Plan 189 is the registered M6 Java I2P
-second-family qualification plan; it
+`crates/i2pr-daemon/src/destination_tunnels.rs` derives
+`i2pr_netdb::ReplyPath` only from `(gateway_router,
+gateway_receive_tunnel)`; local regression rows with unequal IDs
+`0x9601` vs `0x9602` prove the encoded `DatabaseLookup`
+advertises the gateway tuple and never the local endpoint id;
+`destination_tunnel_unit` 31 passed; the corrected external
+`run-destination.sh` against exact-pinned i2pd 2.61.0 flips three
+destination rows from `blocked` to `passed`
+(`external-lease-lookup-tunnel`, `external-ls2-publication-tunnel`,
+`external-destination-outbound`); the corrected lane stops at
+Plan 190 §6 boundary E because the i2pd SAM bridge never observes
+`DATAGRAM RECEIVED`, so `external-reference-received` and
+`external-destination-inbound` stay `blocked` and the panic in
+`wait_for_datagram` at
+`crates/i2pr-daemon/tests/destination_tunnel_external.rs:158`
+occludes the `external-direct-rejected` and
+`external-liveness-first-test` assertions; no M6 wire change, no
+`milestone6_interoperable = passed-via-plan190` claim). Plan 191
+is the registered follow-up that owns Plan 190 §6 stop boundary E
+(inbound-delivery layer plus destination-side ordering rows); no
+code change yet, the next executable plan. Plan 189 is the
+registered M6 Java I2P second-family qualification plan; it
 lands the fail-closed M6 mixed-router cross-family
 ledger/checker/workflow scaffold (`scripts/check-m6-mixed-router-acceptance-evidence.sh`,
 `tests/integration/m6-interop/run-m6-mixed-router.sh`,
 `.github/workflows/m6-mixed-router-external.yml`) but no second-family
-Java row until Plan 188 closes.
+Java row until Plan 188 + Plan 191 + the deferred Streaming pass
+all close.
 
 ## Purpose
 

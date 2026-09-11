@@ -713,7 +713,7 @@ the same. See
 [`plans/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md`](../../plans/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md)
 and [`plans/185-status.md`](../../plans/185-status.md).
 
-## Plan 190 - typed inbound-gateway route in `DataPlaneRegistry` (passed; local rows)
+## Plan 190 - typed inbound-gateway route in `DataPlaneRegistry` (passed; local + remote rows)
 
 Plan 190 keeps the registry non-secret by extending it with a
 single typed struct:
@@ -736,8 +736,19 @@ do not need the gateway receive id. `remove_inbound` and
 `remove_slot` clean the new metadata atomically; `ReplyPath`
 construction stays out of `i2pr-tunnel` and lives in the daemon
 composition layer (`reply_path_for_inbound_route` in
-`crates/i2pr-daemon/src/destination_tunnels.rs`). See
-[`plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md`](../../plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md)
+`crates/i2pr-daemon/src/destination_tunnels.rs`). Plan 190 passed
+the corrected external `run-destination.sh` against exact-pinned
+i2pd 2.61.0: three destination rows
+(`external-lease-lookup-tunnel`, `external-ls2-publication-tunnel`,
+`external-destination-outbound`) flip from `blocked` to `passed`,
+all Plan 187/188 `passed` rows remain `passed`. The corrected lane
+stops at Plan 190 §6 boundary E (the reference-side inbound
+delivery of the destination message to the i2pd-owned SAM bridge);
+Plan 191 owns that narrower inbound-delivery layer plus the
+destination-side ordering rows the panic currently occludes. See
+[`plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md`](../../plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md),
+[`plans/190-status.md`](../../plans/190-status.md), and
+[`plans/191-m6-inbound-destination-delivery-boundary.md`](../../plans/191-m6-inbound-destination-delivery-boundary.md).
 and [`plans/190-status.md`](../../plans/190-status.md).
 
 ## Cross-references

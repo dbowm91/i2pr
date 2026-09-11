@@ -1,15 +1,17 @@
 # Plan 188 status — M6 short-build-reply interop corrective
 
-Status: **`blocked-by-plan190-reply-path-corrective`** (2/7 rows
-flipped to passed via consumed reference replies;
-real outbound and inbound i2pd one-hop installs are
-retained-passed; 5/7 destination rows remain blocked on the
-LeaseSet2-lookup gap that Plan 190 isolates and corrects; no
-Streaming claim). Plan 190 has been passed locally with the
-corrected reply path; this status reopens at the first remaining
-destination row after the corrected external
-`run-destination.sh` proves a real tunneled lookup response. See
-[`plans/190-status.md`](190-status.md).
+Status: **`blocked-by-plan191-inbound-destination-delivery-boundary`**
+(real outbound and inbound i2pd one-hop installs retained-passed;
+Plan 188 consumed-reference installs and 2/7 destination rows
+retained-passed; Plan 190 reply-path correction landed and flipped
+3/5 remaining destination rows `external-lease-lookup-tunnel`,
+`external-ls2-publication-tunnel`, `external-destination-outbound`
+from `blocked` to `passed`; 2/4 destination-message-bound rows
++ 2 ordering rows still blocked on Plan 191, the Plan 190 §6 stop
+boundary E inbound-delivery layer; no Streaming claim). See
+[`plans/190-status.md`](190-status.md) for the closed reply-path
+corrective and [`plans/191-m6-inbound-destination-delivery-boundary.md`](191-m6-inbound-destination-delivery-boundary.md)
+for the registered follow-up.
 
 Plan of record:
 [`plans/188-m6-short-build-reply-interop-corrective.md`](188-m6-short-build-reply-interop-corrective.md).
