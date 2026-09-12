@@ -313,6 +313,15 @@ impl ValidatedLeaseSet2 {
     pub fn encoded(&self, maximum: usize) -> Result<Vec<u8>, i2pr_proto::CodecError> {
         self.lease_set2.encode_to_vec(maximum)
     }
+
+    /// Returns the typed encryption keys carried by the wrapped
+    /// `LeaseSet2` (Plan 119 §7 / Plan 127 §2). The accessor stays
+    /// narrow: callers never receive the wrapped record and cannot
+    /// bypass the validation gate, but they can read the public
+    /// encryption-key sections the LS2 publishes.
+    pub fn encryption_keys(&self) -> &[i2pr_proto::LeaseSet2EncryptionKey] {
+        self.lease_set2.encryption_keys()
+    }
 }
 
 /// Configuration for [`LeaseSet2Store::with_config`].

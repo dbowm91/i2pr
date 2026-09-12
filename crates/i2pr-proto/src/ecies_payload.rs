@@ -18,17 +18,27 @@
 //! body      := <length> bytes
 //! ```
 //!
-//! Required blocks (per Plan 121 §4):
+//! Required blocks per the I2P ECIES specification
+//! (`geti2p.net/spec/ecies#blocks`):
 //!
 //! - `DateTime` (block type `0`): 4-byte big-endian Unix seconds.
 //!   Must be the first block in a New Session payload.
-//! - `Garlic Clove` (block type `1`): ECIES-flavored Garlic Clove
+//! - `Garlic Clove` (block type `11`): ECIES-flavored Garlic Clove
 //!   with delivery instructions + short-form I2NP message.
 //! - `Padding` (block type `254`): bounded opaque padding that must
 //!   be last when present.
-//! - `Options` (block type `2`) is parsed but its body is rejected
-//!   unless the caller explicitly accepts it (Plan 121 §4 forbids
-//!   silently defaulting unsupported options).
+//! - `Options` (block type `5`) is parsed but its body is rejected
+//!   unless the caller explicitly accepts it; Plan 121 §4 forbids
+//!   silently defaulting unsupported options.
+//!
+//! Plan 193 note: the original Plan 121 codec used block type `1`
+//! for `Garlic Clove` (and `2` for `Options`), which matched an
+//! early implementation draft but does not match the published I2P
+//! ECIES specification. exact-pinned i2pd 2.61.0 rejects block type
+//! `1` as `Unknown block type` (it uses `1` for `Session ID`),
+//! leaving every outbound Garlic Clove opaque to the reference.
+//! The block types below follow the published specification and
+//! `i2pd-src/libi2pd/ECIESX25519AEADRatchetSession.h:123-134`.
 
 #![forbid(unsafe_code)]
 
@@ -54,10 +64,12 @@ pub const MAX_PADDING_BODY: usize = 60_000;
 
 /// The `DateTime` ECIES payload block type.
 pub const BLOCK_TYPE_DATETIME: u8 = 0;
-/// The `Garlic Clove` ECIES payload block type.
-pub const BLOCK_TYPE_GARLIC_CLOVE: u8 = 1;
-/// The `Options` ECIES payload block type.
-pub const BLOCK_TYPE_OPTIONS: u8 = 2;
+/// The `Garlic Clove` ECIES payload block type (`11`, per
+/// `geti2p.net/spec/ecies#blocks` and exact-pinned i2pd 2.61.0).
+pub const BLOCK_TYPE_GARLIC_CLOVE: u8 = 11;
+/// The `Options` ECIES payload block type (`5`, per
+/// `geti2p.net/spec/ecies#blocks` and exact-pinned i2pd 2.61.0).
+pub const BLOCK_TYPE_OPTIONS: u8 = 5;
 /// The `Termination` block type reserved by the I2P ECIES
 /// specification. Plan 121 does not implement it; the codec rejects
 /// any received block.
@@ -114,10 +126,21 @@ pub enum GarlicDelivery {
 
 impl GarlicDelivery {
     /// The on-wire delivery-flag byte.
+    ///
+    /// Per `geti2p.net/spec/ecies#structure` and exact-pinned i2pd
+    /// 2.61.0 (`libi2pd/Garlic.cpp:299`), the four delivery types
+    /// encode as the top two bits of the flag byte:
+    ///
+    /// - Local:      `0 << 5 = 0x00`
+    /// - Destination: `1 << 5 = 0x20`
+    /// - Router:     `2 << 5 = 0x40`
+    /// - Tunnel:     `3 << 5 = 0x60`
+    ///
+    /// The low five bits carry flags (e.g. `Delay`).
     pub const fn flag(self) -> u8 {
         match self {
-            Self::Local => 0,
-            Self::Destination(_) => 2,
+            Self::Local => 0x00,
+            Self::Destination(_) => 0x20,
         }
     }
 
@@ -133,9 +156,9 @@ impl GarlicDelivery {
     /// Decode the delivery instructions starting at `cursor`. The
     /// caller is responsible for reading the flag byte first.
     pub fn decode_from(flag: u8, cursor: &mut DecodeCursor<'_>) -> Result<Self, CodecError> {
-        match flag {
-            0 => Ok(Self::Local),
-            2 => {
+        match flag & 0xE0 {
+            0x00 => Ok(Self::Local),
+            0x20 => {
                 let bytes = cursor.take(32)?;
                 let mut hash = [0_u8; 32];
                 hash.copy_from_slice(bytes);

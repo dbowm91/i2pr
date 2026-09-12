@@ -747,12 +747,24 @@ fn decode_cloves(plaintext: &[u8]) -> Result<DecryptedCloves, InboundDispatchErr
         .map_err(EciesPayloadError::Codec)
         .map_err(InboundDispatchError::Payload)?;
     let mut application_clove: Option<GarlicCloveBlock> = None;
+    let mut first_clove: Option<GarlicCloveBlock> = None;
     let mut clove_count = 0_usize;
     let mut sender_lease_set2s = Vec::new();
     for block in sequence.blocks() {
         if let EciesPayloadBlock::GarlicClove(clove) = block {
             clove_count += 1;
-            if application_clove.is_none() {
+            if first_clove.is_none() {
+                first_clove = Some(clove.clone());
+            }
+            // Plan 193: the application clove is the first NON-LS2
+            // clove. i2pd sends DatabaseStore(LS2) before the SYN
+            // (`HandleECIESPayload` processes in order and the
+            // Streaming SYN needs the LS2 cached first), so taking
+            // the raw first clove would route the DatabaseStore into
+            // the Streaming adapter (`NotI2npData`). Skipping LS2
+            // cloves keeps both orders working (LS2-first for i2pd,
+            // data-first for older local captures).
+            if application_clove.is_none() && extract_lease_set2_from_clove(clove).is_none() {
                 application_clove = Some(clove.clone());
             }
             if let Some(ls2) = extract_lease_set2_from_clove(clove) {
@@ -760,6 +772,10 @@ fn decode_cloves(plaintext: &[u8]) -> Result<DecryptedCloves, InboundDispatchErr
             }
         }
     }
+    // Fallback: payload carried only LS2 cloves (or undecodable
+    // bodies). Route the first clove so the downstream adapter
+    // reports the typed body mismatch instead of a bare `NoClove`.
+    let application_clove = application_clove.or(first_clove);
     let application_clove =
         application_clove.ok_or(InboundDispatchError::Payload(EciesPayloadError::NoClove))?;
     Ok(DecryptedCloves {

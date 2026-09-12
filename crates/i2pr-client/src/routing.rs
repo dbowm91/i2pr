@@ -1136,14 +1136,23 @@ fn encode_two_clove_new_session(
     sequence
         .push(i2pr_proto::EciesPayloadBlock::DateTime(now_seconds))
         .map_err(EciesPayloadError::Codec)?;
+    // Plan 193 fix: the DatabaseStore clove that bundles the local
+    // Standard LeaseSet2 must reach i2pd's `m_RemoteLeaseSets` cache
+    // BEFORE the streaming SYN reaches the StreamingDestination. i2pd
+    // processes Garlic cloves in order inside `HandleECIESPayload`,
+    // and `StreamingDestination::HandleNextPacket` only finds the
+    // remote LeaseSet via `FindLeaseSet` on the destination's cache —
+    // it never falls back to a NetDb lookup or calls
+    // `RequestDestination`. Sending the DatabaseStore clove first
+    // populates the cache, then the SYN sees it.
     sequence
         .push(i2pr_proto::EciesPayloadBlock::GarlicClove(
-            data_clove.clone(),
+            database_store_clove.clone(),
         ))
         .map_err(EciesPayloadError::Codec)?;
     sequence
         .push(i2pr_proto::EciesPayloadBlock::GarlicClove(
-            database_store_clove.clone(),
+            data_clove.clone(),
         ))
         .map_err(EciesPayloadError::Codec)?;
     sequence
