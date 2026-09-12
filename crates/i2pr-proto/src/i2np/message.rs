@@ -230,6 +230,18 @@ impl I2npMessage {
     }
 
     /// Decodes a complete NTCP2/SSU2 nine-byte short-header message.
+    ///
+    /// Plan 193: opaque `Data` / `Garlic` bodies travel **raw** in this
+    /// form (no `u32` length framing). Exact-pinned i2pd 2.61.0 parses
+    /// the 9-byte header inside ECIES cloves and then hands the
+    /// remaining bytes directly to the content parser
+    /// (`Garlic.cpp:1016-1028` ->
+    /// `Destination.cpp:1192-1236`): an extra `u32` shifts the I2CP
+    /// Data body by four bytes, so i2pd reads the source-port low
+    /// byte as the protocol and drops the message with
+    /// `Destination: Data: Unexpected protocol`. The `u32` framing in
+    /// [`I2npBody::encode_into`] stays correct for the
+    /// standard-transport form only.
     pub fn decode_short_transport(input: &[u8], maximum: usize) -> Result<Self, CodecError> {
         let mut cursor = DecodeCursor::new(input, maximum)?;
         let message_type = read_message_type(&mut cursor)?;
@@ -237,7 +249,15 @@ impl I2npMessage {
         let expiration_seconds = cursor.read_u32()?;
         let payload = cursor.take(cursor.remaining())?;
         cursor.finish()?;
-        let body = decode_body(message_type, payload, maximum)?;
+        let body = match message_type {
+            MessageType::Data => I2npBody::Data(OpaqueMessageBody {
+                payload: DeferredPayload::new(payload.to_vec(), maximum)?,
+            }),
+            MessageType::Garlic => I2npBody::Garlic(OpaqueMessageBody {
+                payload: DeferredPayload::new(payload.to_vec(), maximum)?,
+            }),
+            _ => decode_body(message_type, payload, maximum)?,
+        };
         Ok(Self {
             header: I2npHeader::ShortTransport {
                 message_type,
@@ -313,6 +333,12 @@ impl I2npMessage {
     }
 
     /// Encodes this message using the NTCP2/SSU2 short header.
+    ///
+    /// Plan 193: opaque `Data` / `Garlic` bodies are emitted **raw**
+    /// (no `u32` length framing) in this form; see
+    /// [`Self::decode_short_transport`] for the i2pd interop
+    /// requirement. All typed bodies encode exactly as they do under
+    /// the standard header.
     pub fn encode_short_transport_to_vec(&self, maximum: usize) -> Result<Vec<u8>, CodecError> {
         let I2npHeader::ShortTransport {
             message_type,
@@ -331,17 +357,41 @@ impl I2npMessage {
                 context: "I2NP message type/body",
             });
         }
-        encode_message(
-            maximum,
-            SHORT_TRANSPORT_HEADER_SIZE,
-            |encoder, body| {
-                encoder.write_u8(message_type.code())?;
-                encoder.write_u32(message_id)?;
-                encoder.write_u32(expiration_seconds)?;
-                encoder.write_raw(body)
-            },
-            &self.body,
-        )
+        // Opaque clove content bypasses the `u32`-framed
+        // [`I2npBody::encode_into`] path; every other body encodes
+        // exactly as it does under the standard header.
+        let body_bytes = match &self.body {
+            I2npBody::Data(value) | I2npBody::Garlic(value) => value.payload.as_bytes().to_vec(),
+            body => body.encode_to_vec(MAX_I2NP_PAYLOAD_SIZE)?,
+        };
+        if body_bytes.len() > MAX_I2NP_PAYLOAD_SIZE {
+            return Err(CodecError::LengthExceeded {
+                offset: SHORT_TRANSPORT_HEADER_SIZE,
+                declared: body_bytes.len(),
+                maximum: MAX_I2NP_PAYLOAD_SIZE,
+                context: "I2NP payload",
+            });
+        }
+        let total = SHORT_TRANSPORT_HEADER_SIZE
+            .checked_add(body_bytes.len())
+            .ok_or(CodecError::ArithmeticOverflow {
+                offset: SHORT_TRANSPORT_HEADER_SIZE,
+                context: "I2NP message length",
+            })?;
+        if total > maximum {
+            return Err(CodecError::LengthExceeded {
+                offset: 0,
+                declared: total,
+                maximum,
+                context: "I2NP message",
+            });
+        }
+        encode_to_vec(maximum, |encoder| {
+            encoder.write_u8(message_type.code())?;
+            encoder.write_u32(message_id)?;
+            encoder.write_u32(expiration_seconds)?;
+            encoder.write_raw(&body_bytes)
+        })
     }
 
     /// Returns the parsed header.

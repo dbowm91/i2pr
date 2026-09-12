@@ -978,12 +978,22 @@ pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
     let garlic_i2np_bytes = garlic_envelope
         .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
         .map_err(SendError::DataCodec)?;
+    // Plan 193: every composed delivery takes a fresh random
+    // nonzero tunnel message id. The id keys TunnelData fragment
+    // reassembly at the receiver (exact-pinned i2pd 2.61.0 tracks
+    // one in-progress `m_CurrentMsgID` per endpoint plus an
+    // out-of-sequence table keyed by id): a hardcoded id completes
+    // sequential traffic but interleaves concurrent bursts, so only
+    // the first message of a burst reassembles and the rest stall.
+    // `next_u32` cannot fail; `.max(1)` keeps the nonzero invariant
+    // follow-on fragments require.
+    let tunnel_message_id = rng.next_u32().max(1);
     let header = TunnelPayloadHeader {
         delivery: DeliveryInstruction::Tunnel {
             tunnel_id: selected.tunnel_id,
             gateway: selected.gateway_router_hash,
         },
-        message_id: 1,
+        message_id: tunnel_message_id,
         expiration_ms: now_ms,
     };
     let cells = outbound

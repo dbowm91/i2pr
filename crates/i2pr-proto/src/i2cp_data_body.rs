@@ -16,17 +16,11 @@
 //! "Data body" i2pd's `HandleDataMessage` parses as an I2CP payload:
 //!
 //! ```text
-//! offset 0..4    length (BE u32)  — bytes from offset 4 onwards
-//!                                 (i2pd's writer writes the gzip
-//!                                 member size here).
-//! offset 4..8    reserved/garbage — i2pd writes the gzip magic
-//!                                 (0x1f 0x8b) + deflate method
-//!                                 (0x08) + FLG (0x00) here when it
-//!                                 patches the trailing fields via
-//!                                 the "patch the gzip header" trick
-//!                                 (Destination.cpp reader at +8,
-//!                                 writer at `+4` on a pre-bumped
-//!                                 buffer).
+//! offset 0..4    length (BE u32)  — gzip member size: the bytes
+//!                                 from offset 4 onwards.
+//! offset 4..6    gzip magic (0x1f 0x8b).
+//! offset 6       deflate method (0x08).
+//! offset 7       FLG (0x00) — no optional headers.
 //! offset 8..10   fromPort (BE u16) — i2pd's `CreateDataMessage`
 //!                                 writes these into the gzip MTIME
 //!                                 field; the inflater ignores them
@@ -38,19 +32,22 @@
 //!                                 I2CP "padding" byte.
 //! offset 13      protocol (1 byte) — gzip OS; i2pd overwrites it
 //!                                 with one of PROTOCOL_TYPE_*.
-//! offset 14      0x01 (BFINAL=1 + BTYPE=00 + 5 padding bits =
-//!                                 the start of the RFC 1951 stored
-//!                                 deflate block — i2pd bundles
-//!                                 this byte into its 11-byte gzip
-//!                                 header constant).
-//! offset 15..17  LEN (LE u16)      — inner payload length
-//!                                 (i.e. application payload size).
-//! offset 17..19  NLEN (LE u16)     — bitwise complement of LEN.
-//! offset 19..    gzip-no-compression-wrapped application payload
-//!                                 = inner payload (LEN bytes)
-//!                                 + CRC32 (LE u32)
-//!                                 + ISIZE (LE u32)
+//! offset 14..    deflate stream     — i2pd writes either a real
+//!                                 deflate stream
+//!                                 (`StreamingDestination::CreateDataMessage`
+//!                                 with gzip enabled) or a stored
+//!                                 no-compression block
+//!                                 (`GzipNoCompression`); the decoder
+//!                                 inflates either form with `flate2`
+//!                                 and then verifies the trailer.
+//! trailer        CRC32 (LE u32) + ISIZE (LE u32) closing the gzip
+//!                                 member.
 //! ```
+//!
+//! The encoder emits the stored no-compression form (deterministic,
+//! `I2CP_DATA_BODY_TOTAL_OVERHEAD + N` bytes); the decoder accepts
+//! any valid deflate stream because i2pd's streaming path compresses
+//! small payloads with real deflate.
 //!
 //! The total encoded length is `I2CP_DATA_BODY_TOTAL_OVERHEAD + N`
 //! (= 27 + N bytes); the I2CP length prefix carries `23 + N` because
@@ -60,6 +57,8 @@
 //! logs payload bytes.
 
 #![forbid(unsafe_code)]
+
+use std::io::Read as _;
 
 use crate::codec::{CodecError, DecodeCursor};
 
@@ -206,6 +205,12 @@ pub enum I2cpDataBodyDecodeError {
     },
     /// The stored-block LEN header does not match the inner payload
     /// length derived from the gzip trailer.
+    ///
+    /// Retained for API compatibility; the current decoder inflates
+    /// general deflate streams with `flate2` (Plan 193: i2pd's
+    /// streaming path compresses with real deflate) instead of
+    /// parsing stored-block headers, so this variant is no longer
+    /// produced on the decode path.
     StoredBlockLengthMismatch {
         /// LEN from the stored-block header.
         declared: u16,
@@ -214,10 +219,16 @@ pub enum I2cpDataBodyDecodeError {
     },
     /// The stored-block BFINAL/BTYPE byte is not the canonical
     /// "last stored block" marker.
+    ///
+    /// Retained for API compatibility; see
+    /// [`Self::StoredBlockLengthMismatch`].
     BadStoredBlockHeader {
         /// Observed header byte.
         observed: u8,
     },
+    /// The deflate stream failed to decompress (malformed or
+    /// truncated deflate data as reported by the inflater).
+    DecompressionFailed(String),
     /// A codec error from the underlying length/structure codec.
     Codec(CodecError),
 }
@@ -269,6 +280,9 @@ impl core::fmt::Display for I2cpDataBodyDecodeError {
                 formatter,
                 "I2CP Data body stored-block header byte {observed:#04x} is not 0x01"
             ),
+            Self::DecompressionFailed(detail) => {
+                write!(formatter, "I2CP Data body deflate error: {detail}")
+            }
             Self::Codec(error) => write!(formatter, "I2CP Data body codec: {error}"),
         }
     }
@@ -388,10 +402,14 @@ pub fn encode_i2cp_data_body(
 
 /// Decodes one i2pd-compatible I2CP Data body into its typed
 /// fields. The function validates the gzip magic, rejects any
-/// gzip FLG bits set (i2pd's writer always sets FLG = 0x00), parses
-/// the stored-block header, and verifies the CRC32 + ISIZE trailer.
+/// gzip FLG bits set (i2pd's writer always sets FLG = 0x00), inflates
+/// the deflate stream with `flate2` (accepting both i2pd's real
+/// deflate output and the stored no-compression form this codec's
+/// encoder emits), and verifies the CRC32 + ISIZE trailer.
 /// Unknown protocol bytes are rejected because i2pd's reader's
 /// switch statement only handles the five documented constants.
+/// Decompressed output is bounded by [`MAX_I2CP_DATA_BODY_PAYLOAD`];
+/// anything larger fails closed as `PayloadTooLarge`.
 pub fn decode_i2cp_data_body(input: &[u8]) -> Result<I2cpDataBody, I2cpDataBodyDecodeError> {
     if input.len() < I2CP_DATA_BODY_HEADER_OVERHEAD {
         return Err(I2cpDataBodyDecodeError::Truncated);
@@ -406,12 +424,29 @@ pub fn decode_i2cp_data_body(input: &[u8]) -> Result<I2cpDataBody, I2cpDataBodyD
             available,
         });
     }
-    // length encodes the gzip member starting at offset 4; the gzip
-    // member is `length` bytes long. The trailing `input.len() - 4 -
-    // length` bytes (if any) are i2pd's "reserved" padding tail and
-    // must be zero on the wire; we accept trailing zeros but reject
-    // any nonzero trailing byte because the i2pd writer always
-    // produces exactly `4 + length` bytes.
+    // The gzip member is exactly `length` bytes starting at offset 4.
+    // A member longer than any decodable payload under the local
+    // ceiling fails closed before touching the inflater. Any valid
+    // deflate stream needs at least as many member bytes as output
+    // bytes modulo framing (stored form: member = 23 + N exactly),
+    // so a member with `length - 23 > MAX` must decode past the
+    // ceiling; the bounded output read below is the second layer.
+    if length < (I2CP_DATA_BODY_HEADER_OVERHEAD - 4) + I2CP_DATA_BODY_TRAILER_OVERHEAD {
+        return Err(I2cpDataBodyDecodeError::Truncated);
+    }
+    let declared_payload =
+        length - ((I2CP_DATA_BODY_HEADER_OVERHEAD - 4) + I2CP_DATA_BODY_TRAILER_OVERHEAD);
+    if declared_payload > MAX_I2CP_DATA_BODY_PAYLOAD {
+        return Err(I2cpDataBodyDecodeError::PayloadTooLarge {
+            declared: declared_payload,
+            maximum: MAX_I2CP_DATA_BODY_PAYLOAD,
+        });
+    }
+    // The trailing `input.len() - 4 - length` bytes (if any) are
+    // i2pd's "reserved" padding tail and must be zero on the wire; we
+    // accept trailing zeros but reject any nonzero trailing byte
+    // because the i2pd writer always produces exactly `4 + length`
+    // bytes.
     let gzip_member_end = 4 + length;
     if input.len() > gzip_member_end {
         for byte in &input[gzip_member_end..] {
@@ -423,18 +458,9 @@ pub fn decode_i2cp_data_body(input: &[u8]) -> Result<I2cpDataBody, I2cpDataBodyD
             }
         }
     }
-    if length < I2CP_DATA_BODY_HEADER_OVERHEAD - 4 + I2CP_DATA_BODY_TRAILER_OVERHEAD {
-        return Err(I2cpDataBodyDecodeError::Truncated);
-    }
-    let payload_length = length
-        .checked_sub((I2CP_DATA_BODY_HEADER_OVERHEAD - 4) + I2CP_DATA_BODY_TRAILER_OVERHEAD)
-        .ok_or(I2cpDataBodyDecodeError::Truncated)?;
-    if payload_length > MAX_I2CP_DATA_BODY_PAYLOAD {
-        return Err(I2cpDataBodyDecodeError::PayloadTooLarge {
-            declared: payload_length,
-            maximum: MAX_I2CP_DATA_BODY_PAYLOAD,
-        });
-    }
+    // A gzip member needs at least the 10-byte header plus a
+    // deflate stream plus the 8-byte trailer; the bound above
+    // already rejects anything shorter than a minimal member.
     let gzip_start = 4_usize;
     if input[gzip_start] != 0x1f || input[gzip_start + 1] != 0x8b {
         return Err(I2cpDataBodyDecodeError::BadGzipMagic);
@@ -465,7 +491,6 @@ pub fn decode_i2cp_data_body(input: &[u8]) -> Result<I2cpDataBody, I2cpDataBodyD
     }
     let from_port = u16::from_be_bytes([input[gzip_start + 4], input[gzip_start + 5]]);
     let to_port = u16::from_be_bytes([input[gzip_start + 6], input[gzip_start + 7]]);
-    let _padding = input[gzip_start + 8];
     let protocol = input[gzip_start + 9];
     match protocol {
         PROTOCOL_TYPE_STREAMING
@@ -477,45 +502,49 @@ pub fn decode_i2cp_data_body(input: &[u8]) -> Result<I2cpDataBody, I2cpDataBodyD
             return Err(I2cpDataBodyDecodeError::UnknownProtocol { observed: other });
         }
     }
-    let stored_header = input[gzip_start + 10];
-    if stored_header != 0x01 {
-        return Err(I2cpDataBodyDecodeError::BadStoredBlockHeader {
-            observed: stored_header,
-        });
+    // Inflate the general deflate stream (stored no-compression
+    // members produced by [`encode_i2cp_data_body`] decode here
+    // transparently). The stream is self-terminating; `total_in`
+    // reports the exact deflate body length so the 8-byte trailer
+    // can be located without trusting any inner header.
+    let member = &input[gzip_start..gzip_member_end];
+    let mut slice: &[u8] = &member[10..];
+    let mut decoder = flate2::read::DeflateDecoder::new(&mut slice);
+    let mut payload = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        match decoder.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                if payload.len() + n > MAX_I2CP_DATA_BODY_PAYLOAD {
+                    return Err(I2cpDataBodyDecodeError::PayloadTooLarge {
+                        declared: payload.len() + n,
+                        maximum: MAX_I2CP_DATA_BODY_PAYLOAD,
+                    });
+                }
+                payload.extend_from_slice(&chunk[..n]);
+            }
+            Err(error) => {
+                if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                    return Err(I2cpDataBodyDecodeError::Truncated);
+                }
+                return Err(I2cpDataBodyDecodeError::DecompressionFailed(format!(
+                    "{error:?}"
+                )));
+            }
+        }
     }
-    let stored_len = u16::from_le_bytes([input[gzip_start + 11], input[gzip_start + 12]]);
-    let stored_nlen = u16::from_le_bytes([input[gzip_start + 13], input[gzip_start + 14]]);
-    if u16::wrapping_sub(0xffff, stored_len) != stored_nlen {
-        return Err(I2cpDataBodyDecodeError::StoredBlockLengthMismatch {
-            declared: stored_len,
-            actual: payload_length,
-        });
+    let body_consumed = decoder.total_in() as usize;
+    if body_consumed + 8 > member.len() - 10 {
+        return Err(I2cpDataBodyDecodeError::Truncated);
     }
-    if stored_len as usize != payload_length {
-        return Err(I2cpDataBodyDecodeError::StoredBlockLengthMismatch {
-            declared: stored_len,
-            actual: payload_length,
-        });
-    }
-    let payload_start = gzip_start + 15;
-    let payload_end = payload_start + payload_length;
-    let payload = input[payload_start..payload_end].to_vec();
-    let trailer_crc = u32::from_le_bytes([
-        input[payload_end],
-        input[payload_end + 1],
-        input[payload_end + 2],
-        input[payload_end + 3],
-    ]);
-    let trailer_isize = u32::from_le_bytes([
-        input[payload_end + 4],
-        input[payload_end + 5],
-        input[payload_end + 6],
-        input[payload_end + 7],
-    ]);
-    if trailer_isize != payload_length as u32 {
+    let trailer = &member[10 + body_consumed..10 + body_consumed + 8];
+    let trailer_crc = u32::from_le_bytes([trailer[0], trailer[1], trailer[2], trailer[3]]);
+    let trailer_isize = u32::from_le_bytes([trailer[4], trailer[5], trailer[6], trailer[7]]);
+    if trailer_isize != payload.len() as u32 {
         return Err(I2cpDataBodyDecodeError::IsizeMismatch {
             declared: trailer_isize,
-            actual: payload_length,
+            actual: payload.len(),
         });
     }
     let computed_crc = crc32(&payload);
@@ -524,6 +553,12 @@ pub fn decode_i2cp_data_body(input: &[u8]) -> Result<I2cpDataBody, I2cpDataBodyD
             declared: trailer_crc,
             actual: computed_crc,
         });
+    }
+    if 10 + body_consumed + 8 != member.len() {
+        return Err(I2cpDataBodyDecodeError::Codec(CodecError::TrailingBytes {
+            offset: gzip_start + 10 + body_consumed + 8,
+            remaining: member.len() - 10 - body_consumed - 8,
+        }));
     }
     Ok(I2cpDataBody {
         from_port,
@@ -802,5 +837,86 @@ mod tests {
             crate::I2npMessage::decode_short_transport(&encoded, crate::MAX_I2NP_PAYLOAD_SIZE)
                 .expect("decode short transport");
         assert!(matches!(decoded.body(), crate::I2npBody::Data(_)));
+    }
+
+    #[test]
+    fn short_transport_data_body_has_no_u32_prefix() {
+        // Plan 193: inside ECIES cloves i2pd parses the 9-byte
+        // short-transport header and then the I2CP body directly.
+        // An extra `u32` shifts the body by four bytes so i2pd reads
+        // the source-port low byte as the protocol (`Unexpected
+        // protocol`). The I2CP length prefix must sit at bytes 9..13.
+        let envelope =
+            encode_destination_data_envelope(0x1122, 0x3344, PROTOCOL_TYPE_STREAMING, 7, 60, b"x")
+                .expect("envelope");
+        let encoded = envelope
+            .encode_short_transport_to_vec(crate::MAX_I2NP_PAYLOAD_SIZE)
+            .expect("encode short transport");
+        assert_eq!(encoded[0], 0x14);
+        // Bytes 9..13 carry the I2CP length prefix; the gzip magic
+        // must follow it directly (no extra `u32` in between).
+        assert_eq!(
+            u32::from_be_bytes([encoded[9], encoded[10], encoded[11], encoded[12]]),
+            (I2CP_DATA_BODY_TOTAL_OVERHEAD - 4 + b"x".len()) as u32
+        );
+        assert_eq!(
+            encoded[13], 0x1f,
+            "gzip magic must follow the length directly"
+        );
+        assert_eq!(encoded[14], 0x8b);
+        assert_eq!(encoded[17], 0x11, "fromPort high byte at body offset 8");
+        assert_eq!(
+            encoded[22], PROTOCOL_TYPE_STREAMING,
+            "protocol at body offset 13"
+        );
+        let decoded =
+            crate::I2npMessage::decode_short_transport(&encoded, crate::MAX_I2NP_PAYLOAD_SIZE)
+                .expect("decode short transport");
+        let crate::I2npBody::Data(body) = decoded.body() else {
+            panic!("expected Data body");
+        };
+        let inner = decode_i2cp_data_body(body.payload.as_bytes()).expect("decode i2cp body");
+        assert_eq!(inner.protocol, PROTOCOL_TYPE_STREAMING);
+        assert_eq!(inner.from_port, 0x1122);
+        assert_eq!(inner.to_port, 0x3344);
+        assert_eq!(inner.payload, b"x");
+    }
+
+    #[test]
+    fn real_deflate_member_decodes() {
+        // Plan 193: i2pd's `StreamingDestination::CreateDataMessage`
+        // compresses with real deflate when its gzip flag is set, so
+        // the member is a fixed/dynamic Huffman stream rather than
+        // the stored no-compression block this codec's encoder
+        // emits. Mirror i2pd's writer (gzip-compress, then patch the
+        // MTIME ports + OS protocol bytes) and prove the decoder
+        // recovers the fields and payload.
+        use std::io::Write as _;
+        let payload = b"plan193-i2pd-deflate-member-payload-with-repetition-repetition-repetition";
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(payload).expect("gzip write");
+        let mut member = encoder.finish().expect("gzip finish");
+        assert!(member.len() > 18, "member must carry header + trailer");
+        // Lock in the regression coverage: the reference compresses
+        // with real deflate here, so the first deflate byte must NOT
+        // be the stored-block marker the encoder emits.
+        assert_ne!(
+            member[10], 0x01,
+            "test payload must exercise a non-stored deflate block"
+        );
+        member[4] = 0x27;
+        member[5] = 0x96;
+        member[6] = 0x4e;
+        member[7] = 0xa6;
+        member[8] = I2CP_DATA_BODY_PADDING;
+        member[9] = PROTOCOL_TYPE_STREAMING;
+        let member_len = u32::try_from(member.len()).expect("member fits in u32");
+        let mut input = member_len.to_be_bytes().to_vec();
+        input.extend_from_slice(&member);
+        let decoded = decode_i2cp_data_body(&input).expect("decode deflate member");
+        assert_eq!(decoded.protocol, PROTOCOL_TYPE_STREAMING);
+        assert_eq!(decoded.from_port, 0x2796);
+        assert_eq!(decoded.to_port, 0x4ea6);
+        assert_eq!(decoded.payload, payload);
     }
 }

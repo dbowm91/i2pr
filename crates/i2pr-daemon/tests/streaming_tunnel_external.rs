@@ -101,8 +101,21 @@ const OBEP_NEXT: u32 = 0x9502;
 const IBGW_RECEIVE: u32 = 0x9601;
 const IBGW_NEXT: u32 = 0x9602;
 
-const LOCAL_STREAM_PORT: u16 = 10_134;
-const REMOTE_STREAM_PORT: u16 = 20_134;
+const LOCAL_STREAM_PORT: u16 = 0;
+const REMOTE_STREAM_PORT: u16 = 0;
+// Plan 193 interop note: the external lane addresses the reference
+// SAM STREAM destination on the default-port tuple (0, 0).
+// Exact-pinned i2pd 2.61.0 answers SYN packets from its default
+// `StreamingDestination` (`m_LocalPort = 0`) and addresses every
+// reply with the inbound stream's port (`Stream::m_Port`, always 0
+// for responder-side streams: `Streaming.cpp` inbound constructor),
+// so its SYN-ACK I2CP envelope is (fromPort = 0, toPort = 0). A
+// nonzero requested tuple can never match the reference reply, and
+// the originator-side exact-tuple check (Plan 131 §7 D2) would
+// discard it. Nonzero-port streaming stays proven by the local
+// suites (`streaming_tunnel_unit`, `streaming_tunnel_live`); the
+// external lane proves wire interop in the reference's
+// default-port dialect.
 
 fn wall_ms() -> u64 {
     SystemTime::now()
@@ -743,6 +756,15 @@ async fn streaming_through_i2pd() {
     let mut syn_queue = streaming.drain_outbound();
     assert_eq!(syn_queue.len(), 1, "connect must emit exactly one SYN");
     let syn_request = syn_queue.remove(0);
+    // Plan 193 interop note: one RNG instance serves every transport
+    // send in this lane. Reseeding per call with second-resolution
+    // wall time hands every send inside the same second the identical
+    // stream, so rapid-fire messages (the multipacket burst) would
+    // reuse tunnel message ids and cell IVs; i2pd keys TunnelData
+    // reassembly by message id and only the first same-id message
+    // completes. A single advancing instance keeps every id/IV
+    // distinct.
+    let mut send_rng = ChaCha8Rng::seed_from_u64(wall_ms().wrapping_add(11));
     send_transport_request(
         &syn_request,
         &routing,
@@ -751,6 +773,7 @@ async fn streaming_through_i2pd() {
         &local_identity,
         &local_ls2,
         &delivery,
+        &mut send_rng,
     )
     .await;
     append_evidence(&evidence_dir, "streaming-syn-sent", "true");
@@ -836,6 +859,7 @@ async fn streaming_through_i2pd() {
                 &local_identity,
                 &local_ls2,
                 &delivery,
+                &mut send_rng,
             )
             .await;
         }
@@ -877,13 +901,29 @@ async fn streaming_through_i2pd() {
         &local_identity,
         &local_ls2,
         &delivery,
+        &mut send_rng,
     )
     .await;
 
     // The reference ACCEPT socket receives exactly our bytes. Issue
     // STREAM ACCEPT after the data is in flight so the reference
     // delivers the buffered stream without a concurrent-accept race.
-    let accept_reply = sam
+    // Plan 193 interop note: STREAM ACCEPT must arrive over a FRESH
+    // SAM socket. The session-creation socket is already bound to the
+    // STREAM session (`m_SocketType != Unknown`), so exact-pinned
+    // i2pd 2.61.0 rejects ACCEPT on it with `Socket already in use`
+    // (`SAM.cpp::ProcessStreamAccept`). A dedicated acceptor socket
+    // carries the ACCEPT handshake plus the raw stream bytes.
+    let mut accept_sam = SamClient::connect(sam_endpoint).await;
+    let accept_hello = accept_sam
+        .transact("HELLO VERSION MIN=3.1 MAX=3.1\n")
+        .await
+        .expect("SAM acceptor hello read");
+    assert!(
+        accept_hello.contains("RESULT=OK"),
+        "SAM acceptor hello failed"
+    );
+    let accept_reply = accept_sam
         .transact(&format!("STREAM ACCEPT ID={session_id} SILENT=false\n"))
         .await;
     let accept_ok = accept_reply
@@ -899,10 +939,10 @@ async fn streaming_through_i2pd() {
         panic!("Plan 193 streaming stop: reference STREAM ACCEPT failed");
     }
     // After RESULT=OK the bridge sends the peer destination line,
-    // then raw stream bytes follow on the same socket.
-    let peer_line = sam.read_line().await.unwrap_or_default();
+    // then raw stream bytes follow on the same acceptor socket.
+    let peer_line = accept_sam.read_line().await.unwrap_or_default();
     let peer_len = peer_line.len();
-    let observed = sam
+    let observed = accept_sam
         .read_exact_bytes(app_small.len(), STREAM_WAIT)
         .await
         .unwrap_or_default();
@@ -960,12 +1000,13 @@ async fn streaming_through_i2pd() {
             &local_identity,
             &local_ls2,
             &delivery,
+            &mut send_rng,
         )
         .await;
         offset = end;
         fragments += 1;
     }
-    let observed_multi = sam
+    let observed_multi = accept_sam
         .read_exact_bytes(app_multi.len(), STREAM_WAIT)
         .await
         .unwrap_or_default();
@@ -1020,6 +1061,7 @@ async fn streaming_through_i2pd() {
     let _ = PeerId::from_hash(i2pd_hash);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_transport_request(
     request: &TransportSendRequest,
     routing: &DestinationRouting,
@@ -1028,8 +1070,8 @@ async fn send_transport_request(
     local_identity: &DestinationIdentity,
     local_ls2: &i2pr_proto::LeaseSet2,
     delivery: &i2pr_daemon::router_i2np::RouterDeliveryService,
+    rng: &mut ChaCha8Rng,
 ) {
-    let mut send_rng = ChaCha8Rng::seed_from_u64(wall_secs().wrapping_add(11));
     let plan = StreamingDestinationAdapter::send(
         request,
         routing,
@@ -1040,14 +1082,14 @@ async fn send_transport_request(
         local_ls2,
         u32::try_from(wall_secs()).unwrap_or(u32::MAX),
         wall_ms(),
-        &mut send_rng,
+        rng,
     )
     .expect("adapter send");
     let cell_dispatch = i2pr_daemon::outbound_lookup::deliver_outbound_cells(
         &plan.cells,
         wall_ms() + 60_000,
         Deadline::new(Duration::from_secs(60)).expect("deadline"),
-        &mut send_rng,
+        rng,
     )
     .expect("encode streaming cells");
     for cell_delivery in &cell_dispatch.deliveries {
