@@ -81,6 +81,8 @@ pub enum StreamingAdapterError {
     NotI2npData,
     /// The inbound client payload failed to decode.
     ClientPayload(ClientPayloadDecodeError),
+    /// The inbound i2pd-compatible I2CP Data body failed to decode.
+    I2cpDataBody(i2pr_proto::I2cpDataBodyDecodeError),
     /// The owning streaming manager rejected the decoded packet.
     Streaming(StreamingManagerError),
 }
@@ -105,6 +107,9 @@ impl core::fmt::Display for StreamingAdapterError {
             }
             Self::ClientPayload(error) => {
                 write!(formatter, "streaming adapter client payload: {error}")
+            }
+            Self::I2cpDataBody(error) => {
+                write!(formatter, "streaming adapter I2CP Data body: {error}")
             }
             Self::Streaming(error) => write!(formatter, "streaming manager: {error}"),
         }
@@ -205,9 +210,27 @@ impl StreamingDestinationAdapter {
         }
         let remote_hash =
             DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(request.destination_hash));
-        let outbound_request = crate::routing::OutboundRequest::new(
-            i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
+        // Plan 192: the streaming manager already produced an
+        // I2P-style gzip-wrapped client payload (with the negotiated
+        // local/remote Streaming ports and the protocol byte embedded
+        // in the gzip `MTIME` / `XFL` / `OS` fields). i2pd's
+        // `StreamingDestination::CreateDataMessage` writes that gzip
+        // wrapper verbatim around the raw streaming packet bytes and
+        // then patches the same fields with the same values, so the
+        // adapter unwraps the streaming-manager gzip once, extracts
+        // the negotiated ports + protocol, and feeds the raw packet
+        // bytes to `OutboundRequest::new` so the i2pd-compatible
+        // I2CP body wraps exactly one gzip member.
+        let streaming_envelope = i2pr_proto::streaming::decode_client_payload(
             &request.application_payload,
+            MAX_STREAMING_ADAPTER_PAYLOAD_BYTES,
+        )
+        .map_err(StreamingAdapterError::ClientPayload)?;
+        let outbound_request = crate::routing::OutboundRequest::new(
+            streaming_envelope.protocol,
+            streaming_envelope.source_port,
+            streaming_envelope.destination_port,
+            &streaming_envelope.payload,
             now_ms,
             Some(local_lease_set2.clone()),
         )
@@ -248,18 +271,23 @@ impl StreamingDestinationAdapter {
         from_destination_hash: &[u8; 32],
         now_ms: u64,
     ) -> Result<InboundStreamingOutcome, StreamingAdapterError> {
-        let message = I2npMessage::decode_standard(recovered_i2np_bytes, MAX_I2NP_PAYLOAD_SIZE)
-            .map_err(StreamingAdapterError::DataCodec)?;
+        // Plan 192: the inner I2NP message is the i2pd-compatible
+        // 9-byte short-transport form, and the `Data` body carries
+        // the i2pd-compatible I2CP-style Data wire shape (length +
+        // reserved + ports + padding + protocol + gzip-no-compressed
+        // application payload). Decode the short-transport header
+        // first, then unwrap the I2CP body to recover the streaming
+        // packet bytes.
+        let message =
+            I2npMessage::decode_short_transport(recovered_i2np_bytes, MAX_I2NP_PAYLOAD_SIZE)
+                .map_err(StreamingAdapterError::DataCodec)?;
         let data_payload = match message.body() {
             I2npBody::Data(body) => body.payload.as_bytes().to_vec(),
             _ => return Err(StreamingAdapterError::NotI2npData),
         };
-        let envelope = i2pr_proto::streaming::decode_client_payload(
-            &data_payload,
-            MAX_STREAMING_ADAPTER_PAYLOAD_BYTES,
-        )
-        .map_err(StreamingAdapterError::ClientPayload)?;
-        if envelope.protocol != i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER {
+        let envelope = i2pr_proto::decode_i2cp_data_body(&data_payload)
+            .map_err(StreamingAdapterError::I2cpDataBody)?;
+        if envelope.protocol != i2pr_proto::PROTOCOL_TYPE_STREAMING {
             return Ok(InboundStreamingOutcome::UnsupportedProtocol {
                 protocol: envelope.protocol,
             });
@@ -269,14 +297,14 @@ impl StreamingDestinationAdapter {
                 &envelope.payload,
                 from_destination_hash,
                 owning_destination,
-                envelope.source_port,
-                envelope.destination_port,
+                envelope.from_port,
+                envelope.to_port,
                 now_ms,
             )
             .map_err(StreamingAdapterError::Streaming)?;
         Ok(InboundStreamingOutcome::StreamingDispatched {
-            source_port: envelope.source_port,
-            destination_port: envelope.destination_port,
+            source_port: envelope.from_port,
+            destination_port: envelope.to_port,
             observation,
         })
     }

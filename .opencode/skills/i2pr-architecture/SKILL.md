@@ -426,14 +426,14 @@ record is not `superseded-by-*`. Currently:
   no longer panics, the 2 ordering rows flip `blocked` →
   `passed`, the 2 inbound-delivery rows stay `blocked` with
   stop provenance; see [`plans/191-status.md`](../../plans/191-status.md));
-  Plan 192 is the registered narrower follow-up that owns the
-  9-byte short-transport inner envelope, the I2CP-style Data
-  body, the gzip-no-compression wrapper, and the
-  `STYLE=RAW` / `STYLE=DATAGRAM VERSION=3` SAM session switch
+  Plan 192 closed the inbound-delivery layer: 9-byte short-transport
+  inner envelope + i2cp I2CP-style Data body + gzip-no-compression
+  wrapper + `STYLE=RAW` SAM session switch, with the 2 inbound-delivery
+  rows flipping `blocked` → `passed` against exact-pinned i2pd 2.61.0
   (see [`plans/192-status.md`](../../plans/192-status.md));
   Plan 189 is the registered M6 Java I2P second-family
-  qualification plan, blocked-by-plan188 (and Plan 190, Plan
-  191, Plan 192) with the §8 cross-family
+  qualification plan, blocked-by-plan188 + plan190 + plan191 + plan192
+  + the deferred Streaming pass with the §8 cross-family
   ledger/checker/workflow scaffold landed
   (`scripts/check-m6-mixed-router-acceptance-evidence.sh`,
   `tests/integration/m6-interop/run-m6-mixed-router.sh`,

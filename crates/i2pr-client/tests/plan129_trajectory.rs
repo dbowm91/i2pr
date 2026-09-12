@@ -1350,6 +1350,13 @@ fn plan_129_bad_gzip_crc_rejected_before_streaming_processing() {
 
     // Corrupt the gzip CRC trailer (last 8 bytes: CRC32 LE || ISIZE
     // LE), then encrypt/tunnel the malformed payload normally.
+    //
+    // Plan 192: the streaming adapter unwraps the streaming-manager
+    // gzip wrapper once (to lift the negotiated ports + protocol
+    // into the i2pd-compatible I2CP body). The CRC check therefore
+    // fails at the sender boundary, not at the receiver, which is
+    // strictly tighter than the previous behavior: no corrupted
+    // gzip trailer can ever leave the local router.
     let mut malformed = syn[0].application_payload.clone();
     let crc_byte = malformed.len() - 6;
     malformed[crc_byte] ^= 0x80;
@@ -1357,16 +1364,9 @@ fn plan_129_bad_gzip_crc_rejected_before_streaming_processing() {
         application_payload: malformed,
         ..syn[0].clone()
     };
-
-    let plan = side_a
+    let error = side_a
         .send_via_adapter(&corrupted_request, 0x1290_5100, clock)
-        .expect("ECIES succeeds over arbitrary bounded bytes");
-    let actions = obep_actions(&side_a, &plan);
-    let recovered = feed_action(&mut side_b, &actions[0]);
-    expect_processed_ok(side_b.dispatch(&recovered_envelope(recovered)));
-    let error = side_b
-        .receive_next_payload(&side_a.hash_bytes(), clock)
-        .expect_err("gzip CRC mismatch must fail typed");
+        .expect_err("gzip CRC mismatch must fail at the sender boundary");
     match error {
         StreamingAdapterError::ClientPayload(
             i2pr_proto::streaming::ClientPayloadDecodeError::InvalidCrc { .. },

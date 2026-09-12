@@ -196,8 +196,8 @@ against the client-payload/I2NP limit
 the negotiated payload MTU) and builds no redundant inner I2NP Data
 envelope (`OutboundRequest::new` inside the routing composer is the
 single canonical Data-envelope owner); the inbound adapter decodes
-standard I2NP -> requires `I2npBody::Data` -> decodes the canonical
-protocol-6 gzip client payload -> requires protocol 6 (typed
+short-transport I2NP -> requires `I2npBody::Data` -> decodes the i2cp
+I2CP-style Data body (Plan 192 §1) -> requires protocol 6 (typed
 `UnsupportedProtocol` outcome for future datagram/I2CP layers) ->
 reads I2P source/destination ports -> passes only decoded Streaming
 packet bytes to the owning local destination's `StreamingManager`.

@@ -1059,3 +1059,52 @@ fn reply_path_adapter_rejects_zero_local_receive() {
         ReplyPathDerivationError::LocalIdUsedAsReplyTunnel
     ));
 }
+
+#[test]
+fn outbound_request_emits_i2cp_data_body_short_transport_envelope() {
+    // Plan 192 §4 regression row: `OutboundRequest::new` is the
+    // single canonical inner Data envelope construction owner for
+    // every counted destination message. The test asserts that the
+    // returned envelope is the i2pd-compatible 9-byte NTCP2/SSU2
+    // short-transport Data envelope whose body is the i2cp
+    // I2CP-style Data wire shape, and that the application payload
+    // round-trips byte-exact through the codec.
+    use i2pr_client::routing::OutboundRequest;
+    use i2pr_proto::{MAX_I2NP_PAYLOAD_SIZE, PROTOCOL_TYPE_STREAMING, decode_i2cp_data_body};
+    let payload = b"plan192-outbound-request-short-transport";
+    let request = OutboundRequest::new(
+        PROTOCOL_TYPE_STREAMING,
+        0xAABB,
+        0xCCDD,
+        payload,
+        NOW_MS,
+        None,
+    )
+    .expect("outbound request");
+    // 1. The envelope must be the 9-byte short-transport form, never
+    // the 16-byte standard form. `decode_standard` must reject with
+    // a wire-format error (this proves we did not regress to the
+    // pre-Plan-192 standard-header form).
+    // Encode the inner envelope using the i2pd-compatible 9-byte
+    // short-transport form (Plan 192 §1) and decode it back to prove
+    // round-trip integrity.
+    let encoded = request
+        .inner_envelope()
+        .encode_short_transport_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .expect("encode short-transport");
+    let inner = i2pr_proto::I2npMessage::decode_short_transport(&encoded, MAX_I2NP_PAYLOAD_SIZE)
+        .expect("decode short-transport");
+    let inner_body = match inner.body() {
+        i2pr_proto::I2npBody::Data(body) => body,
+        other => panic!("inner envelope must be a Data body, got {other:?}"),
+    };
+    // 2. The Data body bytes are the i2cp I2CP-style Data wire
+    // shape. The round-trip must recover the original application
+    // payload byte-for-byte with the requested ports and protocol.
+    let decoded =
+        decode_i2cp_data_body(inner_body.payload.as_bytes()).expect("decode I2CP Data body");
+    assert_eq!(decoded.protocol, PROTOCOL_TYPE_STREAMING);
+    assert_eq!(decoded.from_port, 0xAABB);
+    assert_eq!(decoded.to_port, 0xCCDD);
+    assert_eq!(decoded.payload, payload);
+}

@@ -385,6 +385,8 @@ fn plan_124_phase_a_b_compose_emits_garlic_through_obep() {
     let mut session = EciesSessionManager::new(EciesSessionConfig::balanced());
     let request = OutboundRequest::new(
         6,
+        0,
+        0,
         APPLICATION_PAYLOAD,
         NOW_MS,
         Some(build_signed_ls2(&identity_a, A_SEED)),
@@ -491,6 +493,8 @@ fn plan_124_trajectory_a_to_b_carries_garlic_through_obep() {
     let mut session_a = EciesSessionManager::new(EciesSessionConfig::balanced());
     let request = OutboundRequest::new(
         6,
+        0,
+        0,
         APPLICATION_PAYLOAD,
         NOW_MS,
         Some(build_signed_ls2(&identity_a, A_SEED)),
@@ -576,14 +580,20 @@ fn plan_124_trajectory_a_to_b_carries_garlic_through_obep() {
         .dispatcher
         .pop_payload(identity_b.id())
         .expect("B application queue must contain the recovered payload");
-    // The dispatcher queues the raw Garlic Clove message bytes, which
-    // for an ordinary outbound Data envelope include the I2NP standard
-    // header. Decode the queued message and verify the inner Data body
-    // matches the original application payload.
-    let queued_message = I2npMessage::decode_standard(payload.bytes(), MAX_I2NP_PAYLOAD_SIZE)
-        .expect("decode queued message");
+    // Plan 192: the queued Garlic Clove bytes are now an i2np
+    // 9-byte short-transport Data envelope whose body is the
+    // i2pd-compatible I2CP-style Data wire shape. The dispatcher
+    // surfaces the inner Data body bytes verbatim; the application
+    // payload is recovered by parsing the I2CP Data body wrapper.
+    let queued_message =
+        I2npMessage::decode_short_transport(payload.bytes(), MAX_I2NP_PAYLOAD_SIZE)
+            .expect("decode queued message");
     match queued_message.body() {
-        I2npBody::Data(body) => assert_eq!(body.payload.as_bytes(), APPLICATION_PAYLOAD),
+        I2npBody::Data(body) => {
+            let decoded = i2pr_proto::decode_i2cp_data_body(body.payload.as_bytes())
+                .expect("decode I2CP Data body");
+            assert_eq!(decoded.payload, APPLICATION_PAYLOAD);
+        }
         other => panic!("queued payload must be a Data envelope, got {other:?}"),
     }
 }
@@ -611,6 +621,8 @@ fn plan_124_phase_b_obep_does_not_carry_plaintext_data() {
     let mut session = EciesSessionManager::new(EciesSessionConfig::balanced());
     let request = OutboundRequest::new(
         6,
+        0,
+        0,
         APPLICATION_PAYLOAD,
         NOW_MS,
         Some(build_signed_ls2(&identity_a, A_SEED)),
@@ -631,7 +643,7 @@ fn plan_124_phase_b_obep_does_not_carry_plaintext_data() {
     .expect("compose_outbound_delivery");
 
     let plaintext_envelope =
-        I2npMessage::decode_standard(&plan.inner_envelope_bytes, MAX_I2NP_PAYLOAD_SIZE)
+        I2npMessage::decode_short_transport(&plan.inner_envelope_bytes, MAX_I2NP_PAYLOAD_SIZE)
             .expect("decode plaintext");
     assert!(
         matches!(plaintext_envelope.body(), I2npBody::Data(_)),
@@ -681,6 +693,8 @@ fn plan_124_phase_e_inbound_ciphertext_isolated_to_owner() {
     let mut session_a = EciesSessionManager::new(EciesSessionConfig::balanced());
     let request = OutboundRequest::new(
         6,
+        0,
+        0,
         APPLICATION_PAYLOAD,
         NOW_MS,
         Some(build_signed_ls2(&identity_a, A_SEED)),
@@ -784,6 +798,8 @@ fn plan_124_phase_f_expired_lease_blocks_send() {
     let mut session = EciesSessionManager::new(EciesSessionConfig::balanced());
     let request = OutboundRequest::new(
         6,
+        0,
+        0,
         APPLICATION_PAYLOAD,
         NOW_MS,
         Some(build_signed_ls2(&identity_a, A_SEED)),
@@ -997,6 +1013,8 @@ fn plan_124_phase_b_existing_session_carries_garlic_through_obep() {
 
     let first_request = OutboundRequest::new(
         6,
+        0,
+        0,
         b"first",
         NOW_MS,
         Some(build_signed_ls2(&identity_a, A_SEED)),
@@ -1018,6 +1036,8 @@ fn plan_124_phase_b_existing_session_carries_garlic_through_obep() {
 
     let second_request = OutboundRequest::new(
         6,
+        0,
+        0,
         b"second",
         NOW_MS,
         Some(build_signed_ls2(&identity_a, A_SEED)),
@@ -1084,6 +1104,8 @@ fn plan_124_phase_b_obep_target_router_matches_selected_lease() {
     let mut session = EciesSessionManager::new(EciesSessionConfig::balanced());
     let request = OutboundRequest::new(
         6,
+        0,
+        0,
         APPLICATION_PAYLOAD,
         NOW_MS,
         Some(build_signed_ls2(&identity_a, A_SEED)),

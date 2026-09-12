@@ -313,29 +313,25 @@ STOP_FIRED=0
 if [[ -f "${DRIVER_TSV}" ]] && grep -Fq "build-reply-gap-stop" "${DRIVER_TSV}"; then
   STOP_FIRED=1
 fi
-# Plan 191 inbound-delivery boundary E stop provenance: when the
-# driver records its Plan 191 stop key, the four inbound-delivery
-# rows are recorded `blocked` (never `passed`, never silently
-# skipped); otherwise they fail without provenance.
-PLAN_191_STOP_FIRED=0
+# Plan 192 stop provenance: when the driver records its Plan 192
+# stop key (the i2cp-wire-format-corrective stop), the
+# inbound-delivery rows are recorded `blocked` (never `passed`,
+# never silently skipped); otherwise they fail without provenance.
+PLAN_192_STOP_FIRED=0
 if [[ -f "${DRIVER_TSV}" ]] && grep -Fq "inbound-delivery-boundary-E-stop" "${DRIVER_TSV}"; then
-  PLAN_191_STOP_FIRED=1
+  PLAN_192_STOP_FIRED=1
 fi
 blocked_row() {
   local label="$1"
   local key="$2"
   local detail="$3"
-  # Plan 191: the inbound-delivery boundary E uses distinct
-  # `reference-received-timeout` / `destination-inbound-send-failed`
-  # keys so substring matching does not silently promote a failed
-  # row to passed.
   if [[ -f "${DRIVER_TSV}" ]] && awk -v k="${key}" -F'\t' '$1 == k {found=1} END{exit !found}' "${DRIVER_TSV}"; then
     record "${label}" passed "${detail}"
   elif [[ "${STOP_FIRED}" -eq 1 ]]; then
     record "${label}" blocked "${detail} (m6-build-reply-interop-gap; see install-pump-summary)"
-  elif [[ "${PLAN_191_STOP_FIRED}" -eq 1 ]] && \
+  elif [[ "${PLAN_192_STOP_FIRED}" -eq 1 ]] && \
        [[ "${label}" == "external-reference-received" || "${label}" == "external-destination-inbound" ]]; then
-    record "${label}" blocked "${detail} (m6-inbound-delivery-boundary-E; see Plan 191 §6 stop provenance)"
+    record "${label}" blocked "${detail} (m6-i2cp-wire-format-corrective; see Plan 192 §1 stop provenance)"
   else
     record "${label}" failed "${detail} (no evidence key, no stop provenance)"
   fi

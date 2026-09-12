@@ -272,7 +272,8 @@ impl Side {
         bundled: Option<i2pr_proto::LeaseSet2>,
         rng_seed: u64,
     ) -> Result<OutboundDeliveryPlan, SendError> {
-        let request = OutboundRequest::new(6, payload, NOW_MS, bundled).expect("outbound request");
+        let request =
+            OutboundRequest::new(6, 0, 0, payload, NOW_MS, bundled).expect("outbound request");
         let Side {
             routing,
             session,
@@ -639,10 +640,14 @@ fn plan_127_master_trajectory_ns_nsr_es_bidirectional_exact_once() {
         .dispatcher
         .pop_payload(side_b.identity.id())
         .expect("B application payload");
-    let queued_message = I2npMessage::decode_standard(queued.bytes(), MAX_I2NP_PAYLOAD_SIZE)
+    let queued_message = I2npMessage::decode_short_transport(queued.bytes(), MAX_I2NP_PAYLOAD_SIZE)
         .expect("decode queued message");
     match queued_message.body() {
-        I2npBody::Data(body) => assert_eq!(body.payload.as_bytes(), app_a1),
+        I2npBody::Data(body) => {
+            let decoded = i2pr_proto::decode_i2cp_data_body(body.payload.as_bytes())
+                .expect("decode I2CP Data body");
+            assert_eq!(decoded.payload, app_a1);
+        }
         other => panic!("queued payload must be Data, got {other:?}"),
     }
     assert!(
@@ -731,9 +736,14 @@ fn plan_127_master_trajectory_ns_nsr_es_bidirectional_exact_once() {
         .pop_payload(side_a.identity.id())
         .expect("A application payload from NSR");
     let queued_b_message =
-        I2npMessage::decode_standard(queued_b.bytes(), MAX_I2NP_PAYLOAD_SIZE).expect("decode");
+        I2npMessage::decode_short_transport(queued_b.bytes(), MAX_I2NP_PAYLOAD_SIZE)
+            .expect("decode");
     match queued_b_message.body() {
-        I2npBody::Data(body) => assert_eq!(body.payload.as_bytes(), app_b1),
+        I2npBody::Data(body) => {
+            let decoded = i2pr_proto::decode_i2cp_data_body(body.payload.as_bytes())
+                .expect("decode I2CP Data body");
+            assert_eq!(decoded.payload, app_b1);
+        }
         other => panic!("queued NSR payload must be Data, got {other:?}"),
     }
 
@@ -782,9 +792,14 @@ fn plan_127_master_trajectory_ns_nsr_es_bidirectional_exact_once() {
             .pop_payload(receiver_ref.identity.id())
             .expect("ES application payload");
         let es_message =
-            I2npMessage::decode_standard(queued_es.bytes(), MAX_I2NP_PAYLOAD_SIZE).expect("decode");
+            I2npMessage::decode_short_transport(queued_es.bytes(), MAX_I2NP_PAYLOAD_SIZE)
+                .expect("decode");
         match es_message.body() {
-            I2npBody::Data(body) => assert_eq!(body.payload.as_bytes(), payload_marker),
+            I2npBody::Data(body) => {
+                let decoded = i2pr_proto::decode_i2cp_data_body(body.payload.as_bytes())
+                    .expect("decode I2CP Data body");
+                assert_eq!(decoded.payload, payload_marker);
+            }
             other => panic!("ES payload must be Data, got {other:?}"),
         }
         assert!(
@@ -1466,9 +1481,14 @@ fn plan_127_malformed_remote_does_not_poison_valid_session() {
         .dispatcher
         .pop_payload(side_b.identity.id())
         .expect("payload after malformed input");
-    let message = I2npMessage::decode_standard(queued.bytes(), MAX_I2NP_PAYLOAD_SIZE).expect("dec");
+    let message =
+        I2npMessage::decode_short_transport(queued.bytes(), MAX_I2NP_PAYLOAD_SIZE).expect("dec");
     match message.body() {
-        I2npBody::Data(body) => assert_eq!(body.payload.as_bytes(), b"still-alive"),
+        I2npBody::Data(body) => {
+            let decoded = i2pr_proto::decode_i2cp_data_body(body.payload.as_bytes())
+                .expect("decode I2CP Data body");
+            assert_eq!(decoded.payload, b"still-alive");
+        }
         other => panic!("payload must be Data, got {other:?}"),
     }
 }

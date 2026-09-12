@@ -15,8 +15,15 @@ Plan 190 isolates and corrects the inbound NetDB reply-path metadata
 defect that left 5/7 destination rows blocked after the Plan 188
 installs; the corrected reply path is the next external lane run.
 Plan 191 ran the inbound-delivery layer and stopped at boundary E
-(i2pd-compatible I2CP-style Data body wire-format defect); the
-narrower follow-up is Plan 192 (next executable).
+(i2pd-compatible I2CP-style Data body wire-format defect);
+Plan 192 is the narrower follow-up that landed the i2pd-compatible
+9-byte short-transport inner envelope + i2cp I2CP-style Data body
++ STYLE=RAW SAM session + RAW RECEIVED SIZE=N digest equality
+corrective. The inbound-delivery layer is now closed for
+exact-pinned i2pd 2.61.0; the deferred
+`plans/188-m6-mixed-router-streaming-with-i2pd.md` Streaming pass
+is the next executable plan, followed by Plan 189 (Java I2P
+second-family qualification).
 
 ## Read first
 
@@ -79,8 +86,8 @@ Plan 187 = blocked-by-m6-build-reply-interop-gap (local rows passed; 5/7 flipped
 Plan 188 = blocked-by-plan191-and-plan192 (real outbound/inbound i2pd installs retained-passed; reply-path correction retained-passed via plan190; 5/7 destination rows flipped; 2 inbound-delivery rows blocked on plan192; 2 ordering rows passed)
 Plan 189 = registered M6 Java second-family qualification and mixed-router closure (blocked-by-plan188-plan190-plan191-plan192; §8 cross-family ledger/checker/workflow landed, no second-family Java row yet)
 Plan 190 = passed M6 inbound NetDB reply-path tunnel-ID corrective (local rows passed; 3 destination rows flipped blocked -> passed in fresh external run)
-Plan 191 = stopped-by-inbound-delivery-boundary-E (4 inbound-delivery rows documented; 2 rows recorded blocked; 2 ordering rows flipped passed; narrower follow-up registered)
-Plan 192 = registered M6 i2pd-compatible I2CP-style Data body wire-format corrective (next executable; 9-byte short-transport inner envelope + I2CP-style Data body + STYLE=RAW / DATAGRAM VERSION=3 SAM session)
+Plan 191 = stopped-by-inbound-delivery-boundary-E (retained-passed via plan192; narrower follow-up registered + closed)
+Plan 192 = passed M6 i2pd-compatible I2CP-style Data body wire-format corrective (9-byte short-transport inner envelope + i2cp I2CP-style Data body + STYLE=RAW SAM session + RAW RECEIVED SIZE=N digest equality; 2 inbound-delivery rows flipped blocked -> passed; inbound-delivery layer closed for i2pd 2.61.0)
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
 Milestone 10 generic tunnels = passed-via-plan175 (profile; byte round-trip proven-via-plan182)
 Milestone 10 HTTP proxy = passed-via-plan176 (profile; byte round-trip proven-via-plan182)
@@ -96,13 +103,13 @@ M6 authenticated I2NP preflight = passed-via-plan184 (no tunnel/NetDB/Streaming 
 M6 exploratory one-hop tunnels = passed-via-plan185 (no multi-hop / LeaseSet2 / Streaming claim)
 M6 NetDB lookup/publication = passed-via-plan186 (no LeaseSet2 / Streaming claim)
 M6 destination local product = passed-via-plan187 (27 unit + 9 live rows; no remote claim)
-M6 destination remote interop = installs-proven-lookup-publication-outbound-passed-inbound-delivery-blocked-plan191-then-plan192
+M6 destination remote interop = installs-proven-lookup-publication-outbound-passed-inbound-delivery-passed-via-plan192 (i2pd only; Java second family + Streaming not yet run)
 M6 inbound NetDB reply-path correction = passed-via-plan190 (typed route + adapter; 3 destination rows flipped blocked -> passed in fresh external run)
-M6 inbound destination delivery boundary E = stopped-pending-plan192 (i2pd-compatible I2CP-style Data body wire-format)
-M6 inbound destination delivery = blocked-pending-plan192
-M6 mixed-router cross-family ledger = landed-via-plan189 (i2pd-only-runs; java-second-family-deferred-until-plan188-plan192-closes)
-next_executable_plan = 192 (resolve inbound-delivery boundary E wire-format)
-next product layer = m6-mixed-router-leaseset2
+M6 inbound destination delivery boundary E = closed-via-plan192 (i2pd-compatible I2CP-style Data wire-format)
+M6 inbound destination delivery = passed-via-plan192 (i2cp-compatible I2CP-style Data wire-format; STYLE=RAW SAM session; 9-byte short-transport inner envelope)
+M6 mixed-router cross-family ledger = landed-via-plan189 (i2pd-only-runs; java-second-family-deferred-until-plan188-streaming-passes)
+next_executable_plan = 188-deferred-streaming-pass (then Plan 189 Java I2P second-family qualification)
+next product layer = m6-mixed-router-streaming-with-i2pd
 ```
 
 For current SSU2 interop work, read in this order:
@@ -604,10 +611,10 @@ cargo test --locked -p i2pr-daemon --test destination_tunnel_external \
 # lane now advertises the corrected (gateway router, gateway receive id)
 # reply path (Plan 190); the lease-lookup row flips from blocked to passed
 # only when a real tunneled lookup response arrives within the bounded
-# wait; the inbound-delivery rows flip from blocked to passed only after
-# Plan 192 lands the i2pd-compatible I2CP-style Data body + 9-byte
-# short-transport inner envelope + STYLE=RAW / DATAGRAM VERSION=3 SAM
-# session (Plan 191 §6 stop provenance; see plans/191-status.md)
+# wait; the inbound-delivery rows flip from blocked to passed via the
+# Plan 192 i2pd-compatible I2CP-style Data body + 9-byte short-transport
+# inner envelope + STYLE=RAW SAM session (Plan 191 §6 stop provenance;
+# see plans/192-status.md)
 bash tests/integration/m6-interop/run-destination.sh
 bash scripts/check-destination-tunnel-evidence.sh
 ```
@@ -841,9 +848,9 @@ closed.
 - Plan 187 is blocked by the `m6-build-reply-interop-gap` (see `plans/187-m6-remote-leaseset2-and-destination-garlic-routing.md` and `plans/187-status.md`): the daemon-owned `DestinationTunnelCoordinator` with the full local destination message plane is landed (27 unit + 9 live two-role rows including the bidirectional ECIES/Garlic round-trip with sibling isolation over real TunnelData cells; narrow additive seams on the NetDB seam/inbound-dispatch/outbound-lookup/registry, no wire change), and the 21-row external lane proves session, reference build acceptance both directions, SAM DATAGRAM destination, reference LS2 publication, direct rejection, and liveness — but exact-pinned i2pd 2.61.0 emits no consumable ShortTunnelBuildReply (multi-run diagnosis: lossless session, `kind_reply=0`, reference transit acceptance logged), so no tunnel material installs and 7 install-dependent rows are recorded `blocked` with stop provenance. Creator-known keys are never installed without a consumed reply. Plan 188 owns the narrow build-reply corrective; no LeaseSet2/Streaming interop is claimed.
 - Plan 188 is the short-build-reply corrective (see `plans/188-m6-short-build-reply-interop-corrective.md` and `plans/188-status.md`): outbound garlic-unwrap (TunnelGateway + Garlic with OBEP `RGarlicKeyAndTag`) plus inbound forwarded-ShortTunnelBuild consumption in `ExploratoryBuildCoordinator` land consumed-reference installs both directions (`installed_ob=1 installed_ib=1`); 5/7 destination rows flipped to passed and 2/4 destination-message-bound rows + 2 ordering rows were blocked on the inbound delivery layer that Plan 191 owns; no synthesis, no wire change. The deferred `plans/188-m6-mixed-router-streaming-with-i2pd.md` Streaming pass stays blocked until all seven destination rows plus the inbound-delivery rows pass.
 - Plan 190 is the inbound NetDB reply-path tunnel-ID corrective (see `plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md` and `plans/190-status.md`): typed public `InboundGatewayRoute` (`gateway_router`, `gateway_receive_tunnel`, `local_receive_tunnel`) retained by `i2pr_tunnel::data_plane_registry::DataPlaneRegistry`; daemon-owned `reply_path_for_inbound_route` adapter derives `i2pr_netdb::ReplyPath` only from `(gateway_router, gateway_receive_tunnel)` so the local creator endpoint receive tunnel id is impossible to copy into the encoded `DatabaseLookup.reply_tunnelId`; `i2pr-netdb::ReplyPath`/`build_databaselookup` semantics unchanged. Regression rows in `crates/i2pr-tunnel/src/data_plane_registry.rs` and `crates/i2pr-daemon/tests/destination_tunnel_unit.rs` prove unequal IDs (`0x9601` vs `0x9602`) round-trip through the I2NP codec with the gateway tuple on the wire, and that lifecycle removal cleans the typed route atomically. Local Plan 187/188 suites remain green (`destination_tunnel_unit` 31 passed, `destination_tunnel_live` 9 passed, `exploratory_build_live` 11 passed). A fresh exact-pinned i2pd 2.61.0 external `run-destination.sh` proves 3 destination rows flip `blocked` → `passed`; the corrected lane stops at Plan 190 §6 boundary E (inbound delivery). No M6 wire change; no `milestone6_interoperable = passed-via-plan190` claim.
-- Plan 191 is the inbound destination delivery boundary (see `plans/191-m6-inbound-destination-delivery-boundary.md` and `plans/191-status.md`): Plan 191 ran the inbound-delivery layer and stopped at boundary E per §6. The corrected `run-destination.sh` reached `destination-outbound-delivered cells=1 payload_len=27` then the i2pd SAM bridge never observed a `DATAGRAM RECEIVED` line because i2pd's `ClientDestination::HandleDataMessage` parses an I2CP-style Data header + gzip-wrapped datagram payload but i2pr emits a raw 16-byte-standard I2NP Data body whose first four bytes are misread as the length field and overflow the available buffer. The test driver no longer panics; `read_line`/`wait_for_datagram` return `Option<...>` and record distinct evidence keys (`reference-received-timeout`, `destination-inbound-send-failed`, `inbound-delivery-boundary-E-stop`). The 2 ordering rows `external-direct-rejected` / `external-liveness-first-test` flip to `passed`. The 2 inbound-delivery rows `external-reference-received` / `external-destination-inbound` stay `blocked` with stop provenance. No `milestone6_interoperable = passed-via-plan191` claim; the narrower follow-up is Plan 192.
-- Plan 192 is the M6 i2pd-compatible I2CP-style Data body wire-format corrective (see `plans/192-m6-i2cp-wire-format-corrective.md` and `plans/192-status.md`): registered follow-up that owns the Plan 191 §6 stop. The fix is narrow: switch the inner I2NP envelope inside the ECIES-X25519 Garlic clove from the 16-byte standard form to the 9-byte short-transport form i2pd parses (`Garlic.cpp:1023-1028`); wrap the application payload in the I2CP-style Data body i2pd expects (`length[4 BE] + fromPort[2 BE] + toPort[2 BE] + padding[1] + protocol[1] + gzip-no-compression-wrapped payload`; `Destination.cpp:1192-1236`); and switch the test SAM session from `STYLE=DATAGRAM` (which needs a 384-byte ElGamal/DSA `from` Identity our ECIES-only i2pr does not have) to either `STYLE=RAW` or `STYLE=DATAGRAM VERSION=3` (which uses the inbound destination hash instead of an ElGamal/DSA identity; `SAM.cpp:377-379`). No M6 wire change beyond the destination message-plane seam; no `LocalZeroHop` substitution; no authentication weakening; no fake LeaseSet.
-- Plan 189 is registered as the M6 Java I2P second-family qualification and mixed-router closure plan (see `plans/189-m6-java-i2p-second-family-qualification-and-closure.md` and `plans/189-status.md`): blocked until Plan 188 first-family destination + Plan 192 inbound-delivery + the deferred 188-streaming pass all close. Plan 189 §8 lands the fail-closed M6 mixed-router cross-family ledger/checker/workflow scaffold: `scripts/check-m6-mixed-router-acceptance-evidence.sh` (structural checker that verifies both pins are referenced by every per-layer static checker), `tests/integration/m6-interop/run-m6-mixed-router.sh` (cross-family aggregator that reuses the four per-layer harnesses), and `.github/workflows/m6-mixed-router-external.yml` (manual `workflow_dispatch` lane that fetches i2pd + Java deps and runs the structural checker + per-layer checkers + cross-family aggregator). The cross-family aggregator binds each guarded row to a family (`-i2pd` / `-java`) plus an executed per-layer command exit code; the Java rows are recorded `failed` with stop provenance until a follow-up plan lands the second-family Java qualification harness under `tests/integration/m6-interop/run-java.sh`. No M6 wire change; no claim that the i2pd first family has passed (the Plan 188 lookup gap closed via Plan 190; the inbound-delivery gap closes only via Plan 192).
+- Plan 191 is the inbound destination delivery boundary (see `plans/191-m6-inbound-destination-delivery-boundary.md` and `plans/191-status.md`): Plan 191 ran the inbound-delivery layer and stopped at boundary E per §6; Plan 192 retained-passed the defect. The corrected `run-destination.sh` reached `destination-outbound-delivered cells=1 payload_len=27` then the i2pd SAM bridge never observed a `DATAGRAM RECEIVED` line because i2pd's `ClientDestination::HandleDataMessage` parses an I2CP-style Data header + gzip-wrapped datagram payload but i2pr emitted a raw 16-byte-standard I2NP Data body whose first four bytes were misread as the length field and overflow the available buffer. The test driver no longer panics; `read_line`/`wait_for_datagram` return `Option<...>` and record distinct evidence keys (`reference-received-timeout`, `destination-inbound-send-failed`, `inbound-delivery-boundary-E-stop`). The 2 ordering rows `external-direct-rejected` / `external-liveness-first-test` flip to `passed`. The 2 inbound-delivery rows `external-reference-received` / `external-destination-inbound` stay `blocked` with stop provenance in Plan 191 and flip to `passed` in Plan 192.
+- Plan 192 is the M6 i2pd-compatible I2CP-style Data body wire-format corrective (see `plans/192-m6-i2cp-wire-format-corrective.md` and `plans/192-status.md`): passed. The fix is narrow: switch the inner I2NP envelope inside the ECIES-X25519 Garlic clove from the 16-byte standard form to the 9-byte short-transport form i2pd parses (`Garlic.cpp:1023-1028`); wrap the application payload in the I2CP-style Data body i2pd expects (`length[4 BE] + reserved[4] + fromPort[2 BE] + toPort[2 BE] + padding[1] + protocol[1] + gzip-no-compression-wrapped payload`; `Destination.cpp:1192-1236`); and switch the test SAM session from `STYLE=DATAGRAM` (which needs a 384-byte ElGamal/DSA `from` Identity our ECIES-only i2pr does not have) to `STYLE=RAW` (which uses the inbound destination hash instead of an ElGamal/DSA identity). No M6 wire change beyond the destination message-plane seam; no `LocalZeroHop` substitution; no authentication weakening; no fake LeaseSet. Inbound-delivery layer closed for exact-pinned i2pd 2.61.0; Java second family + Streaming not yet run.
+- Plan 189 is registered as the M6 Java I2P second-family qualification and mixed-router closure plan (see `plans/189-m6-java-i2p-second-family-qualification-and-closure.md` and `plans/189-status.md`): blocked until the deferred `plans/188-m6-mixed-router-streaming-with-i2pd.md` Streaming pass closes. Plan 189 §8 lands the fail-closed M6 mixed-router cross-family ledger/checker/workflow scaffold: `scripts/check-m6-mixed-router-acceptance-evidence.sh` (structural checker that verifies both pins are referenced by every per-layer static checker), `tests/integration/m6-interop/run-m6-mixed-router.sh` (cross-family aggregator that reuses the four per-layer harnesses), and `.github/workflows/m6-mixed-router-external.yml` (manual `workflow_dispatch` lane that fetches i2pd + Java deps and runs the structural checker + per-layer checkers + cross-family aggregator). The cross-family aggregator binds each guarded row to a family (`-i2pd` / `-java`) plus an executed per-layer command exit code; the Java rows are recorded `failed` with stop provenance until a follow-up plan lands the second-family Java qualification harness under `tests/integration/m6-interop/run-java.sh`. No M6 wire change; no claim that the i2pd first family has passed (the Plan 188 lookup gap closed via Plan 190; the inbound-delivery gap closed via Plan 192).
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
 - No Plan 161 direction-A evidence implies Milestone 6 destination/Streaming/tunnel interoperability or broad router interoperability.
@@ -861,33 +868,37 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 191 stopped at the inbound-delivery
-boundary E (see `plans/191-status.md`): the corrected
-`run-destination.sh` reached `destination-outbound-delivered
-cells=1 payload_len=27`, then the i2pd SAM bridge never observed
-a `DATAGRAM RECEIVED` line because i2pd's
-`ClientDestination::HandleDataMessage` parses an I2CP-style Data
-header + gzip-wrapped datagram payload, but i2pr emits a raw
-16-byte-standard I2NP Data body whose first four bytes are
-misread as the length field and overflow the available buffer.
-The test driver no longer panics (`SamClient::read_line` and
-`wait_for_datagram` return `Option<...>`); distinct evidence
-keys (`reference-received-timeout`, `destination-inbound-send-failed`,
-`inbound-delivery-boundary-E-stop`) record the boundary E stop
-provenance, and `run-destination.sh` records
-`external-reference-received` and `external-destination-inbound`
-as `blocked` rather than `failed`. The 2 ordering rows
-`external-direct-rejected` and `external-liveness-first-test`
-flip to `passed` (no longer occluded by the panic). Local
-Plan 187/188/190 suites remain green (`destination_tunnel_unit`
-31 passed, `destination_tunnel_live` 9 passed, `tunnel_liveness`
-7 passed, `exploratory_build_live` 11 passed). Plan 192 is the
-narrower registered follow-up that owns the 9-byte short-transport
-inner envelope, the I2CP-style Data body + gzip-no-compression
-wrapper, and the `STYLE=RAW` / `STYLE=DATAGRAM VERSION=3`
-SAM session switch. Plan 188 keeps the
+Current handoff: **Plan 192 passed the M6 i2pd-compatible I2CP-style
+Data body wire-format corrective (see `plans/192-status.md`):
+the i2pd-compatible 9-byte NTCP2/SSU2 short-transport inner
+envelope + i2cp I2CP-style Data body
+(`length[4 BE] + reserved[4] + fromPort[2 BE] + toPort[2 BE] +
+padding[1] + protocol[1] + gzip-no-compression-wrapped payload`)
+landed in `OutboundRequest::new` +
+`compose_outbound_delivery` +
+`StreamingDestinationAdapter::send` /
+`StreamingDestinationAdapter::receive` /
+`crates/i2pr-proto/src/i2cp_data_body.rs`; the test driver
+switched to `STYLE=RAW` (no ElGamal/DSA `from` Identity
+required), waits for `RAW RECEIVED SIZE=N\n<payload>` on
+the loopback SAM socket, asserts digest equality, sends the
+reply as `RAW SEND ID=... DESTINATION=... SIZE=N\n<payload>`,
+and unwraps the i2cp I2CP-style Data body via
+`decode_i2cp_data_body` before recovering the application
+payload. The 2 inbound-delivery rows
+`external-reference-received` and
+`external-destination-inbound` flip from `blocked` to
+`passed` in a fresh `run-destination.sh` against the
+exact-pinned i2pd 2.61.0. Local Plan 187/188/190/191 suites
+remain green (`destination_tunnel_unit` 32 passed,
+`destination_tunnel_live` 9 passed, `tunnel_liveness` 7
+passed, `exploratory_build_live` 11 passed). Plan 191
+retained-stopped; Plan 188 retains its
 `installed_ob/installed_ib` retention-passed status and the
-corrected reply-path rows retained-passed via Plan 190; its
-remaining destination rows are now blocked on Plan 192.
-Plan 189 stays blocked until Plan 188 + Plan 192 + the deferred
-Streaming pass all close. M10 final acceptance stays open.**
+corrected reply-path rows retained-passed via Plan 190; the
+deferred
+`plans/188-m6-mixed-router-streaming-with-i2pd.md`
+Streaming pass is the next executable plan. Plan 189 (Java
+I2P second-family qualification) depends on Plan 188 +
+Plan 192 + Streaming closing first. M10 final acceptance
+stays open.**

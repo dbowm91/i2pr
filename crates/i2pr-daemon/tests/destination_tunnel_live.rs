@@ -357,7 +357,7 @@ impl Side {
         payload: &[u8],
         rng_seed: u64,
     ) -> OutboundDeliveryPlan {
-        let request = OutboundRequest::new(6, payload, NOW_MS, Some(self.lease_set2.clone()))
+        let request = OutboundRequest::new(6, 0, 0, payload, NOW_MS, Some(self.lease_set2.clone()))
             .expect("outbound request");
         let Side {
             routing,
@@ -406,10 +406,20 @@ impl Side {
             .dispatcher
             .pop_payload(self.identity.id())
             .expect("application payload");
-        let message = I2npMessage::decode_standard(queued.bytes(), MAX_I2NP_PAYLOAD_SIZE)
+        // Plan 192: the queued Garlic Clove bytes are now the
+        // i2pd-compatible 9-byte short-transport Data envelope whose
+        // body is the i2pd-compatible I2CP-style Data wire shape.
+        // The dispatcher surfaces the inner Data body bytes verbatim;
+        // the application payload is recovered by parsing the I2CP
+        // Data body wrapper.
+        let message = I2npMessage::decode_short_transport(queued.bytes(), MAX_I2NP_PAYLOAD_SIZE)
             .expect("decode queued message");
         match message.body() {
-            I2npBody::Data(body) => assert_eq!(body.payload.as_bytes(), expected),
+            I2npBody::Data(body) => {
+                let decoded = i2pr_proto::decode_i2cp_data_body(body.payload.as_bytes())
+                    .expect("decode I2CP Data body");
+                assert_eq!(decoded.payload, expected);
+            }
             other => panic!("queued payload must be Data, got {other:?}"),
         }
     }

@@ -10,12 +10,14 @@
 mod codec;
 mod common;
 mod ecies_payload;
+mod i2cp_data_body;
 mod i2np;
 pub mod streaming;
 
 pub use codec::{CodecError, DecodeCursor, EncodeBuffer, decode_exact, encode_to_vec};
 pub use common::*;
 pub use ecies_payload::*;
+pub use i2cp_data_body::*;
 pub use i2np::*;
 pub use streaming::*;
 

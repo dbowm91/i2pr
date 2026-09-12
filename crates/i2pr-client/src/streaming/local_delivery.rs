@@ -280,9 +280,28 @@ pub fn deliver<R: CryptoRng + RngCore>(
     // 1. Compose the outbound delivery plan via the canonical
     //    Plan 129 adapter. The fresh bound NS / NSR / ES form is
     //    selected by the routing pipeline.
-    let outbound_request = OutboundRequest::new(
-        i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
+    //
+    // Plan 192: the streaming manager already produced an
+    // I2P-style gzip-wrapped client payload (with the negotiated
+    // local/remote Streaming ports and the protocol byte embedded
+    // in the gzip `MTIME` / `XFL` / `OS` fields). i2pd's
+    // `StreamingDestination::CreateDataMessage` writes that gzip
+    // wrapper verbatim around the raw streaming packet bytes and
+    // then patches the same fields with the same values, so the
+    // adapter unwraps the streaming-manager gzip once, extracts the
+    // negotiated ports + protocol, and feeds the raw packet bytes
+    // to `OutboundRequest::new` so the i2pd-compatible I2CP body
+    // wraps exactly one gzip member.
+    let streaming_envelope = i2pr_proto::streaming::decode_client_payload(
         &request.application_payload,
+        MAX_STREAMING_ADAPTER_PAYLOAD_BYTES,
+    )
+    .map_err(|error| LocalDeliveryError::Adapter(StreamingAdapterError::ClientPayload(error)))?;
+    let outbound_request = OutboundRequest::new(
+        streaming_envelope.protocol,
+        streaming_envelope.source_port,
+        streaming_envelope.destination_port,
+        &streaming_envelope.payload,
         sender.now_ms,
         Some(sender.local_lease_set2.clone()),
     )?;
@@ -391,19 +410,20 @@ pub fn deliver<R: CryptoRng + RngCore>(
     // the receiver-side mirror. Other traffic (inbound SYN, data
     // on the receiver, etc.) stays on the mirror.
     //
-    // The dispatcher payload is an I2NP envelope carrying a
-    // gzip-encoded protocol-6 client payload; unwrap both layers
-    // before peeking the *streaming* header.
+    // The dispatcher payload is an i2pd-compatible I2NP envelope
+    // (Plan 192 9-byte short-transport form) carrying the i2cp
+    // I2CP-style Data body around a gzip-encoded protocol-6 client
+    // payload; unwrap both layers before peeking the *streaming*
+    // header.
     let peek_for_routing = (|| -> Option<i2pr_proto::streaming::StreamingHeaderPeek> {
         let msg =
-            i2pr_proto::I2npMessage::decode_standard(&payload_bytes, MAX_I2NP_PAYLOAD_SIZE).ok()?;
+            i2pr_proto::I2npMessage::decode_short_transport(&payload_bytes, MAX_I2NP_PAYLOAD_SIZE)
+                .ok()?;
         let body = match msg.body() {
             i2pr_proto::I2npBody::Data(body) => body.payload.as_bytes(),
             _ => return None,
         };
-        let envelope =
-            i2pr_proto::streaming::decode_client_payload(body, MAX_STREAMING_ADAPTER_PAYLOAD_BYTES)
-                .ok()?;
+        let envelope = i2pr_proto::decode_i2cp_data_body(body).ok()?;
         i2pr_proto::streaming::peek_streaming_header(&envelope.payload).ok()
     })();
     let target_streaming: &mut StreamingManager = match (

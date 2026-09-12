@@ -750,11 +750,13 @@ emits a raw 16-byte-standard I2NP Data body whose first four
 bytes are misread as the length field); the test driver no
 longer panics, the 2 ordering rows flip `blocked` → `passed`,
 and the 2 inbound-delivery rows stay `blocked` with stop
-provenance. Plan 192 is the registered narrower follow-up that
-owns the 9-byte short-transport inner envelope, the I2CP-style
-Data body, the gzip-no-compression wrapper, and the
-`STYLE=RAW` / `STYLE=DATAGRAM VERSION=3` SAM session switch.
-See
+provenance in Plan 191 and flip to `passed` in Plan 192. Plan 192
+closed the inbound-delivery layer: the i2pd-compatible 9-byte
+NTCP2/SSU2 short-transport inner envelope + i2cp I2CP-style
+Data body + gzip-no-compression wrapper + `STYLE=RAW` SAM session
++ `RAW RECEIVED SIZE=N` digest equality + `RAW SEND` reply
+direction. Inbound-delivery layer closed for exact-pinned i2pd
+2.61.0; Java second family + Streaming not yet run. See
 [`plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md`](../../plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md),
 [`plans/190-status.md`](../../plans/190-status.md),
 [`plans/191-m6-inbound-destination-delivery-boundary.md`](../../plans/191-m6-inbound-destination-delivery-boundary.md),

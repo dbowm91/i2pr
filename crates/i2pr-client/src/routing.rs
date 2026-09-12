@@ -41,6 +41,7 @@ use i2pr_netdb::{
 use i2pr_proto::{
     CodecError, Date, DeferredPayload, GarlicCloveBlock, GarlicDelivery, Hash, I2npBody,
     I2npMessage, LeaseSet2, MAX_I2NP_PAYLOAD_SIZE, OpaqueMessageBody, TunnelDataMessage,
+    encode_destination_data_envelope,
 };
 use i2pr_tunnel::{
     DeliveryInstruction, EciesX25519BuildCryptography, EstablishedTunnel, LayerKeys,
@@ -794,11 +795,41 @@ pub struct OutboundRequest {
 
 impl OutboundRequest {
     /// Builds a request from a `DestinationPayload`, wrapping the
-    /// application bytes in an I2NP `Data` envelope (type 20). The
-    /// request may optionally bundle a [`LeaseSet2`] DatabaseStore
-    /// clove the New Session will carry.
+    /// application bytes in an i2pd-compatible I2NP `Data` envelope
+    /// (type 20, 9-byte NTCP2/SSU2 short-transport header) whose
+    /// body is the I2CP-style Data wire shape i2pd's
+    /// `ClientDestination::HandleDataMessage` parses
+    /// (`/tmp/i2pd-src/libi2pd/Destination.cpp:1192-1236`).
+    ///
+    /// `from_port` and `to_port` are preserved verbatim in the
+    /// i2pd-style I2CP Data header (i2pd's `CreateDataMessage` writes
+    /// them into the gzip `MTIME` field). The streaming adapter
+    /// passes the negotiated local/remote Streaming port tuple here;
+    /// the M6 destination test driver passes `0, 0` because
+    /// `STYLE=RAW` SAM sessions do not expose the ports.
+    ///
+    /// `protocol_byte` selects the i2pd I2CP protocol constant
+    /// (`PROTOCOL_TYPE_STREAMING` / `PROTOCOL_TYPE_RAW` / etc.).
+    /// The default for the Streaming adapter is
+    /// `PROTOCOL_TYPE_STREAMING`; the M6 destination test driver
+    /// uses `PROTOCOL_TYPE_RAW` so i2pd's `STYLE=RAW` SAM bridge
+    /// observes the inbound datagram as `RAW RECEIVED SIZE=N` and
+    /// does not require an ElGamal/DSA sender identity.
+    ///
+    /// Plan 192 §1 owns this switch: i2pd parses a 9-byte
+    /// short-transport header inside ECIES-X25519 Garlic cloves and
+    /// the I2CP-style Data header + gzip-no-compression-wrapped
+    /// payload inside the `Data` body. The previous 16-byte standard
+    /// I2NP envelope + raw application payload produced
+    /// "Data message length ... exceeds buffer length ..." failures
+    /// on the receiver.
+    ///
+    /// The request may optionally bundle a [`LeaseSet2`]
+    /// DatabaseStore clove the New Session will carry.
     pub fn new(
         protocol_byte: u8,
+        from_port: u16,
+        to_port: u16,
         payload: &[u8],
         now_ms: u64,
         bundled_lease_set2: Option<LeaseSet2>,
@@ -809,13 +840,16 @@ impl OutboundRequest {
                 context: "application payload body",
             }));
         }
-        let i2np_body = i2pr_proto::I2npBody::Data(OpaqueMessageBody {
-            payload: DeferredPayload::new(payload.to_vec(), MAX_I2NP_PAYLOAD_SIZE)
-                .map_err(SendError::DataCodec)?,
-        });
-        let _ = protocol_byte;
-        let inner_envelope = I2npMessage::new_standard(0, Date::from_millis(now_ms), i2np_body)
-            .map_err(SendError::DataCodec)?;
+        let expiration_seconds = u32::try_from(now_ms / 1000).unwrap_or(u32::MAX);
+        let inner_envelope = encode_destination_data_envelope(
+            from_port,
+            to_port,
+            protocol_byte,
+            0,
+            expiration_seconds,
+            payload,
+        )
+        .map_err(map_i2cp_data_body_encode_error)?;
         Ok(Self {
             inner_envelope,
             bundled_lease_set2,
@@ -878,9 +912,14 @@ pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
 ) -> Result<OutboundDeliveryPlan, SendError> {
     let remote_static = routing.remote_static_public_key(remote_hash)?;
     let selected = routing.select_lease(remote_hash, now_seconds, rng)?;
+    // Plan 192: the inner envelope is the 9-byte NTCP2/SSU2
+    // short-transport form i2pd's `HandleECIESX25519GarlicClove`
+    // parses inside ECIES cloves (`Garlic.cpp:1023-1028`). The
+    // 16-byte standard header would be misread as part of the inner
+    // Data body and overflow `HandleDataMessage`'s length check.
     let inner_envelope_bytes = request
         .inner_envelope
-        .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .encode_short_transport_to_vec(MAX_I2NP_PAYLOAD_SIZE)
         .map_err(SendError::DataCodec)?;
     let data_clove = GarlicCloveBlock {
         delivery: GarlicDelivery::Destination(*remote_hash.as_bytes()),
@@ -1018,6 +1057,25 @@ fn map_session_error(error: crate::session::EciesSessionError) -> SendError {
 
 fn map_role_error(error: i2pr_tunnel::TunnelRoleError) -> SendError {
     SendError::TunnelRole(error)
+}
+
+fn map_i2cp_data_body_encode_error(error: i2pr_proto::I2cpDataBodyEncodeError) -> SendError {
+    match error {
+        i2pr_proto::I2cpDataBodyEncodeError::PayloadTooLarge { actual, maximum } => {
+            SendError::DataCodec(CodecError::LengthExceeded {
+                offset: 0,
+                declared: actual,
+                maximum,
+                context: "I2CP Data body payload",
+            })
+        }
+        i2pr_proto::I2cpDataBodyEncodeError::UnknownProtocol { observed: _ } => {
+            SendError::DataCodec(CodecError::InvalidFieldValue {
+                offset: 0,
+                context: "I2CP Data body protocol byte",
+            })
+        }
+    }
 }
 
 fn encode_encrypted_outbound(message: &mut EciesOutboundMessage) -> EncryptedOutbound {

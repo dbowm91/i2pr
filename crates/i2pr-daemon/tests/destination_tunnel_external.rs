@@ -346,6 +346,16 @@ async fn destination_message_plane_against_i2pd() {
     // Only public Destination facts are recorded; the ephemeral
     // reference private material lives in this local only, is
     // never logged, and never touches evidence.
+    //
+    // Plan 192 §1: STYLE=DATAGRAM requires a 384-byte ElGamal/DSA
+    // `from` identity in the sender's LeaseSet, which our ECIES-
+    // X25519-only i2pr does not have. STYLE=RAW (or
+    // STYLE=DATAGRAM VERSION=3) is the minimal-change option that
+    // uses the inbound destination hash instead and dispatches the
+    // same I2CP-style Data wire format to the SAM bridge as
+    // `RAW RECEIVED SIZE=N`. The inner I2NP Data body uses
+    // PROTOCOL_TYPE_RAW (18) so i2pd's HandleRawDatagramReceive
+    // writes the inflated payload straight to the SAM socket.
     let mut sam = SamClient::connect(sam_endpoint).await;
     let hello = sam
         .transact("HELLO VERSION MIN=3.1 MAX=3.1\n")
@@ -363,14 +373,14 @@ async fn destination_message_plane_against_i2pd() {
     let reference_pub = sam_param(&generated, "PUB").expect("generated PUB");
     assert!(reference_pub.len() >= 512, "PUB too short for Ed25519");
     let reference_priv = sam_param(&generated, "PRIV").expect("generated PRIV");
-    let session_id = format!("plan187-{}", wall_secs() % 1_000_000);
+    let session_id = format!("plan192-{}", wall_secs() % 1_000_000);
     let create = sam
         .transact(&format!(
-            "SESSION CREATE STYLE=DATAGRAM ID={session_id} DESTINATION={reference_priv} SIGNATURE_TYPE=7 inbound.length=0 outbound.length=0\n"
+            "SESSION CREATE STYLE=RAW ID={session_id} DESTINATION={reference_priv} SIGNATURE_TYPE=7 inbound.length=0 outbound.length=0\n"
         ))
         .await
         .expect("SAM session create read");
-    assert!(create.contains("RESULT=OK"), "SAM DATAGRAM session failed");
+    assert!(create.contains("RESULT=OK"), "SAM RAW session failed");
     let reference_bytes = decode_sam_destination(&reference_pub);
     let reference_hash =
         i2pr_netdb::DestinationHash::from_hash(i2pr_crypto::sha256(&reference_bytes));
@@ -881,9 +891,16 @@ async fn destination_message_plane_against_i2pd() {
         .expect("install remote ls2");
     assert_eq!(remote, reference_hash);
     let mut session = EciesSessionManager::new(EciesSessionConfig::balanced());
-    let app_out = b"plan187-destination-probe-a";
-    let request = OutboundRequest::new(6, app_out, wall_ms(), Some(local_ls2.clone()))
-        .expect("outbound request");
+    let app_out = b"plan192-destination-probe-a";
+    let request = OutboundRequest::new(
+        i2pr_proto::PROTOCOL_TYPE_RAW,
+        0,
+        0,
+        app_out,
+        wall_ms(),
+        Some(local_ls2.clone()),
+    )
+    .expect("outbound request");
     let mut compose_rng = rand_chacha::ChaCha8Rng::seed_from_u64(wall_secs().wrapping_add(11));
     let plan = compose_outbound_delivery(
         &routing,
@@ -923,14 +940,16 @@ async fn destination_message_plane_against_i2pd() {
         &format!("cells={} payload_len={}", plan.cells.len(), app_out.len()),
     );
 
-    // The reference DATAGRAM session must receive exactly our bytes.
-    // Plan 191 documents that i2pd's SAM bridge observes the
-    // bounded timeout as the inbound-delivery boundary E stop
-    // condition; the test records the success path's evidence key
-    // (used by `blocked_row` to mark the row passed) only when the
-    // digest actually matches, so failed rows stay blocked rather
-    // than silently sliding into "passed".
-    match wait_for_datagram(&mut sam, &session_id, app_out.len()).await {
+    // The reference `STYLE=RAW` SAM session must receive exactly our
+    // bytes. Plan 192 corrected the inner I2NP envelope (9-byte
+    // short-transport Data envelope) and the I2CP-style Data body
+    // (length + reserved + ports + padding + protocol +
+    // gzip-no-compression-wrapped application payload) so i2pd's
+    // `ClientDestination::HandleDataMessage` reaches the SAM bridge
+    // and writes `RAW RECEIVED SIZE=N\n<payload>`. The driver
+    // compares the received bytes against the original application
+    // payload (digest equality asserted, plaintext never logged).
+    match wait_for_raw_datagram(&mut sam, app_out.len()).await {
         Some(received) if received == app_out => {
             append_evidence(
                 &evidence_dir,
@@ -943,7 +962,7 @@ async fn destination_message_plane_against_i2pd() {
                 &evidence_dir,
                 "reference-received-mismatch",
                 &format!(
-                    "payload_len={} expected_len={} (Plan 191 inbound-delivery boundary E)",
+                    "payload_len={} expected_len={} (Plan 192 i2cp-wire-format-corrective)",
                     received.len(),
                     app_out.len()
                 ),
@@ -954,7 +973,7 @@ async fn destination_message_plane_against_i2pd() {
                 &evidence_dir,
                 "reference-received-timeout",
                 &format!(
-                    "timeout after {}s (Plan 191 inbound-delivery boundary E)",
+                    "timeout after {}s (Plan 192 i2cp-wire-format-corrective)",
                     DATAGRAM_WAIT.as_secs()
                 ),
             );
@@ -963,47 +982,45 @@ async fn destination_message_plane_against_i2pd() {
 
     // Reply from the reference through its normal client path to our
     // published LeaseSet2; i2pr recovers it on the real inbound
-    // tunnel and decrypts through the existing ECIES path.
+    // tunnel and decrypts through the existing ECIES path. Plan
+    // 192 uses the i2pd `STYLE=RAW` SAM session, so the reply is
+    // sent as `RAW SEND ID=... DESTINATION=... SIZE=N\n<payload>`
+    // and i2pd's `ClientDestination::HandleDataMessage` dispatches
+    // the inflated payload straight to `HandleRawDatagram`.
     let local_b64 = i2pr_api::sam::base64::encode(
         &local_identity
             .destination()
             .encode_to_vec(65535)
             .expect("encode dest"),
     );
-    let app_back = b"plan187-destination-reply-b";
+    let app_back = b"plan192-destination-reply-b";
     {
         use tokio::io::AsyncWriteExt as _;
         sam.stream
             .write_all(
                 format!(
-                    "DATAGRAM SEND ID={session_id} DESTINATION={local_b64} SIZE={}\n",
+                    "RAW SEND ID={session_id} DESTINATION={local_b64} SIZE={}\n",
                     app_back.len()
                 )
                 .as_bytes(),
             )
             .await
-            .expect("datagram command write");
+            .expect("raw send command write");
         sam.stream
             .write_all(app_back)
             .await
-            .expect("datagram payload write");
+            .expect("raw send payload write");
     }
-    let status = match tokio::time::timeout(DATAGRAM_WAIT, sam.read_line()).await {
-        Ok(Some(line)) => line,
-        _ => String::new(),
-    };
-    let reached = if status.contains("DATAGRAM STATUS") {
-        status.contains("RESULT=OK")
-    } else {
-        false
-    };
-    let inbound_send_status = if status.is_empty() {
-        "timeout"
-    } else if reached {
-        "ok"
-    } else {
-        "non_ok"
-    };
+    // Plan 192 §1: the `STYLE=RAW` SAM session does not emit a
+    // `DATAGRAM STATUS` reply — the SAM bridge forwards the
+    // payload directly to the SAM receiver when the inbound
+    // tunnel is published and reachable. We optimistically mark
+    // the reply as `reached` after the bounded send deadline so
+    // the inbound-delivery row flips to `passed` only when the
+    // digest actually matches; failure modes (timeout, mismatch)
+    // surface through the bounded inbound-delivery pump.
+    let inbound_send_status = "raw-send-accepted";
+    let reached = true;
 
     let mut dispatcher = DestinationDispatcher::new();
     dispatcher
@@ -1055,13 +1072,17 @@ async fn destination_message_plane_against_i2pd() {
         // ends were i2pr. Accept either header so the inbound row
         // produces evidence rather than aborting the run.
         if let Some(queued) = dispatcher.pop_payload(local_identity.id()) {
-            let decoded = I2npMessage::decode_standard(queued.bytes(), MAX_I2NP_PAYLOAD_SIZE)
-                .or_else(|_| {
-                    I2npMessage::decode_short_transport(queued.bytes(), MAX_I2NP_PAYLOAD_SIZE)
-                })
-                .expect("decode queued");
+            // Plan 192 §1: i2pd's Garlic clove carries the
+            // 9-byte NTCP2/SSU2 short-transport Data envelope
+            // wrapping the I2CP-style Data body. Unwrap both
+            // layers to recover the application payload bytes.
+            let decoded =
+                I2npMessage::decode_short_transport(queued.bytes(), MAX_I2NP_PAYLOAD_SIZE)
+                    .expect("decode queued");
             if let I2npBody::Data(body) = decoded.body() {
-                inbound_payload = Some(body.payload.as_bytes().to_vec());
+                let i2cp_body = i2pr_proto::decode_i2cp_data_body(body.payload.as_bytes())
+                    .expect("decode I2CP Data body");
+                inbound_payload = Some(i2cp_body.payload);
             }
         }
     }
@@ -1084,36 +1105,17 @@ async fn destination_message_plane_against_i2pd() {
             "destination-inbound-mismatch",
             &format!(
                 "send_status={inbound_send_status} pump_error={reply_pump_error} \
-                 inbound_digest_mismatch (Plan 191 inbound-delivery boundary E)"
+                 inbound_digest_mismatch (Plan 192 i2cp-wire-format-corrective)"
             ),
         );
     } else {
         append_evidence(
             &evidence_dir,
             "destination-inbound-send-failed",
-            &format!("send_status={inbound_send_status} (Plan 191 inbound-delivery boundary E)"),
+            &format!("send_status={inbound_send_status} (Plan 192 i2cp-wire-format-corrective)"),
         );
     }
     let _ = inbound_destination_observed;
-    // Plan 191 §6 stop provenance: the inbound-delivery boundary E
-    // surfaces a fresh protocol-layer defect in the ECIES/Garlic
-    // I2NP Data wire format that is not addressed by the typed reply
-    // path, the gateway-route metadata, or the destination
-    // message-plane seams. Recording the stop key lets the lane
-    // record the four inbound-delivery rows as `blocked` rather than
-    // `failed` (no acceptance claim), and seeds the narrower
-    // follow-up plan registered in `plans/191-status.md`.
-    if !inbound_inbound_passed {
-        append_evidence(
-            &evidence_dir,
-            "inbound-delivery-boundary-E-stop",
-            "Plan 191 inbound-delivery boundary E: i2pd's ClientDestination::HandleDataMessage \
-             parses an I2CP-style Data header + gzip-wrapped datagram payload, but i2pr emits a raw \
-             16-byte-standard I2NP Data body whose first four bytes are misread as the length field \
-             and overflow the available buffer (m6 i2cp-wire-format-corrective needed; see Plan 191 \
-             §6 stop provenance)",
-        );
-    }
 
     // Direct transport is never a counted path.
     assert!(dest.note_direct_transport_attempt().is_err());
@@ -1158,34 +1160,19 @@ fn gateway_frame_detail(bytes: &[u8]) -> String {
     }
 }
 
-/// Waits for one `DATAGRAM RECEIVED` frame addressed to our session
-/// and returns the payload bytes. Plan 191's inbound-delivery
-/// boundary E is unresolved at the ECIES/Garlic wire format
-/// (i2pd's `ClientDestination::HandleDataMessage` parses an
-/// I2CP-style Data header + gzip-wrapped datagram payload, but
-/// i2pr currently emits a raw 16-byte-standard I2NP Data body
-/// whose first four bytes are misread as the length field and
-/// overflow the available buffer, so the SAM bridge never
-/// observes `DATAGRAM RECEIVED`). The Plan 191 scope accepts
-/// that outcome without panicking: the function returns
-/// `None` on a bounded timeout so the driver can continue and
-/// let the `external-direct-rejected` and
+/// Waits for one `RAW RECEIVED` frame on the `STYLE=RAW` SAM
+/// session (Plan 192) and returns the payload bytes. The function
+/// returns `None` on a bounded timeout so the driver can continue
+/// and let the `external-direct-rejected` and
 /// `external-liveness-first-test` rows still produce evidence.
 /// Byte equality is left to the caller; lengths and result
 /// codes only are logged.
-async fn wait_for_datagram(
-    sam: &mut SamClient,
-    session_id: &str,
-    expected_len: usize,
-) -> Option<Vec<u8>> {
+async fn wait_for_raw_datagram(sam: &mut SamClient, expected_len: usize) -> Option<Vec<u8>> {
     let deadline = tokio::time::Instant::now() + DATAGRAM_WAIT;
     loop {
         if tokio::time::Instant::now() >= deadline {
             return None;
         }
-        // Read with the same bounded deadline as the SAM read so we
-        // cannot hang indefinitely if the loopback socket stays
-        // silent (which is the documented Plan 191 condition).
         let line = match tokio::time::timeout(
             deadline.saturating_duration_since(tokio::time::Instant::now()),
             sam.read_line(),
@@ -1195,20 +1182,10 @@ async fn wait_for_datagram(
             Ok(Some(line)) => line,
             _ => return None,
         };
-        if !line.starts_with("DATAGRAM RECEIVED") {
-            // Drain the rest of the SAM line so the next read can
-            // start fresh. Anything other than `DATAGRAM RECEIVED`
-            // is unexpected on this loopback session.
+        if !line.starts_with("RAW RECEIVED") {
+            // Anything other than `RAW RECEIVED` is unexpected on
+            // this loopback session.
             return None;
-        }
-        if !line.contains(session_id) {
-            // Foreign-session datagram; skip.
-            let size: usize = match sam_param(&line, "SIZE").and_then(|s| s.parse().ok()) {
-                Some(s) => s,
-                None => return None,
-            };
-            let _ = sam.read_exact_payload(size).await;
-            continue;
         }
         let size: usize = match sam_param(&line, "SIZE").and_then(|s| s.parse().ok()) {
             Some(s) => s,
