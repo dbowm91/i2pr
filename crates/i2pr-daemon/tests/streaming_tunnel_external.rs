@@ -478,6 +478,7 @@ async fn pump_until_streaming<F>(
 #[tokio::test]
 #[ignore = "Plan 193 M6 i2pd mixed-router Streaming qualification: requires exact-pinned external i2pd environment"]
 async fn streaming_through_i2pd() {
+    eprintln!("MARKER test-body-enter");
     let i2pd_ri_path = env_path("I2PD_ROUTER_INFO");
     let i2pd_endpoint: SocketAddr = env_value("I2PD_SSU2_ENDPOINT").parse().expect("endpoint");
     let bind: SocketAddr = env_value("I2PR_SSU2_BIND").parse().expect("bind");
@@ -499,9 +500,11 @@ async fn streaming_through_i2pd() {
         "schema_version = 1\n[router]\ndata_dir = \"./state\"\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = {bind_port}\n"
     );
     let config = Config::parse(&config_text).expect("strict controlled profile");
+    eprintln!("MARKER config-parsed");
     assert!(config.ssu2.enabled);
     assert!(!config.ssu2.advertise);
     append_evidence(&evidence_dir, "daemon-strict-profile", "true");
+    eprintln!("MARKER strict-profile-written");
 
     let i2pd_ri_bytes = std::fs::read(&i2pd_ri_path).expect("read i2pd router.info");
     let (i2pd_hash, i2pd_ssu2) =
@@ -561,8 +564,10 @@ async fn streaming_through_i2pd() {
         .expect("daemon bind");
     assert_eq!(handle.local_v4().expect("bound v4"), bind);
 
-    let _established = handle
-        .dial(target, DIAL_TIMEOUT, &CancellationToken::new())
+    // Box the dial future: the SSU2 handshake future tree is the
+    // largest single state in this driver (debug builds hold ~MBs
+    // of handshake state); boxing keeps the test-thread frame bounded.
+    let _established = Box::pin(handle.dial(target, DIAL_TIMEOUT, &CancellationToken::new()))
         .await
         .expect("authenticated session establishes");
     let deadline_active = tokio::time::Instant::now() + WAIT_TIMEOUT;
@@ -2074,6 +2079,16 @@ fn record_stop_and_baseline(dir: &Path) {    let mut coordinator = DestinationTu
 
 #[test]
 fn temp_size_probe() {
+    eprintln!("MARKER runtime-probe-enter");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    eprintln!("MARKER runtime-built");
+    rt.block_on(async {
+        eprintln!("MARKER empty-body-polled");
+    });
+    eprintln!("MARKER runtime-probe-done");
     println!("StreamingManager={}", std::mem::size_of::<StreamingManager>());
     println!(
         "DestinationRouting={}",
@@ -2127,7 +2142,4 @@ fn temp_size_probe() {
         std::mem::size_of::<DestinationIdentity>()
     );
     // Size of the whole test future (construction runs no code).
-    let fut = streaming_through_i2pd();
-    println!("outer-test-future={}", std::mem::size_of_val(&fut));
-    std::mem::forget(fut);
 }
