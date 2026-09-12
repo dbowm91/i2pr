@@ -271,7 +271,7 @@ REFERENCE_FACTS="${EVIDENCE_DIR}/reference-facts.tsv"
   printf 'reference-leaseset-updated\t%s\n' "$(grep -c 'NetDb: LeaseSet2 updated' "${I2PD_LOG}" 2>/dev/null || true)"
   printf 'reference-tunnel-test-ok\t%s\n' "$(grep -c 'Tunnels: Test of .* successful' "${I2PD_LOG}" 2>/dev/null || true)"
   printf 'reference-sam-bridge-up\t%s\n' "$(grep -c 'Starting SAM bridge' "${I2PD_LOG}" 2>/dev/null || true)"
-  printf 'reference-streaming-accepted\t%s\n' "$(grep -c 'StreamingDestination: connection accepted' "${I2PD_LOG}" 2>/dev/null || true)"
+  printf 'reference-streaming-accepted\t%s\n' "$(grep -c 'Streaming: Incoming stream from ' "${I2PD_LOG}" 2>/dev/null || true)"
 } >> "${REFERENCE_FACTS}"
 ref_row() {
   local label="$1"
