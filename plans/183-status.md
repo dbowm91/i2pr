@@ -8,11 +8,13 @@ Plan of record:
 ## Current authority
 
 ```text
-plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending exact-pinned i2pd run)
-plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
+plan_192 = registered-m6-i2cp-wire-format-corrective (next executable; inbound-delivery boundary E I2CP-style Data body)
+plan_191 = stopped-by-inbound-delivery-boundary-E (4 inbound-delivery rows documented; 2 rows recorded blocked; 2 ordering rows flipped passed)
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane proves 3 destination rows flipped blocked -> passed)
+plan_188 = blocked-by-plan191-and-plan192 (real outbound/inbound i2pd installs retained-passed; 5/7 destination rows flipped via plan188 installs + plan190 reply-path correction; 2 inbound-delivery rows blocked on plan192; 2 ordering rows passed)
 plan_183 = registered-m6-mixed-router-streaming-interop-program
 milestone10_final_acceptance = not-yet-closed
-next_executable_plan = 188 (continue external lane with plan190 reply-path correction; plan 183 scopes M10 remote-Streaming work)
+next_executable_plan = 192 (resolve inbound-delivery boundary E wire-format; plan 183 scopes M10 remote-Streaming work)
 ```
 
 ## What landed

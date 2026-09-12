@@ -67,24 +67,26 @@ This status supersedes older handoff prose that still says Plan 188 is directly 
 ## Current authority
 
 ```text
-plan_191 = registered-m6-inbound-destination-delivery-boundary (inbound-delivery + ordering rows blocked at Plan 190 §6 stop boundary E)
+plan_192 = registered-m6-i2cp-wire-format-corrective (next executable; inbound-delivery boundary E I2CP-style Data body)
+plan_191 = stopped-by-inbound-delivery-boundary-E (4 inbound-delivery rows documented; 2 rows recorded blocked; ordering rows flipped passed)
 plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
-plan_187 = blocked-destination-remote-interop (local product passed; 5/7 destination rows flipped via plan188 installs + plan190 reply-path correction; 2 destination-message rows now blocked on plan191 inbound-delivery)
-plan_188 = blocked-by-plan191-inbound-delivery (real outbound/inbound i2pd installs retained-passed; reply-path correction retained-passed via plan190)
-plan_189 = registered-blocked-by-plan188-and-plan190 (cross-family scaffold only; Java qualification not started)
+plan_187 = blocked-destination-remote-interop (local product passed; 5/7 destination rows flipped via plan188 installs + plan190 reply-path correction; 2 destination-message rows blocked on plan191; full inbound-delivery layer blocked on plan192)
+plan_188 = blocked-by-plan191-and-plan192 (real outbound/inbound i2pd installs retained-passed; reply-path correction retained-passed via plan190)
+plan_189 = registered-blocked-by-plan188-and-plan190-and-plan191-and-plan192 (cross-family scaffold only; Java qualification not started)
 plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (3 destination rows flipped blocked -> passed in fresh external run)
 
 m6_destination_local_product = passed-via-plan187
-m6_destination_remote_interop = installs-proven-lookup-publication-outbound-passed-inbound-delivery-pending-plan191
+m6_destination_remote_interop = installs-proven-lookup-publication-outbound-passed-inbound-delivery-blocked-plan191-then-plan192
 m6_inbound_netdb_reply_path_correction = passed-via-plan190 (typed InboundGatewayRoute + daemon-owned adapter; remote lane flips 3 destination rows blocked -> passed)
-m6_inbound_destination_delivery = blocked-pending-plan191 (i2pd SAM bridge does not observe DATAGRAM RECEIVED on inbound tunnel gateway path)
+m6_inbound_destination_delivery_boundary_E = stopped-pending-plan192 (i2pd-compatible I2CP-style Data body wire-format)
+m6_inbound_destination_delivery = blocked-pending-plan192
 m6_second_family_java = not-yet-started
 milestone6_interoperable = not-yet-claimed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
-next_executable_plan = 191 (resolve inbound-delivery boundary E)
+next_executable_plan = 192 (resolve inbound-delivery boundary E wire-format)
 ```
 
 ## Why Plan 190 exists
@@ -304,22 +306,27 @@ Authority transition:
 
 ```text
 plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local + remote lane; 3 destination rows flipped blocked -> passed)
-plan_191 = registered-m6-inbound-destination-delivery-boundary (resolve Plan 190 §6 stop boundary E)
-plan_188 = remains-blocked-by-plan191 (real outbound/inbound i2pd installs retained-passed; reply-path correction retained-passed via plan190; 2 destination-message rows + 2 ordering rows flipped to blocked-on-plan191)
-plan_189 = remains-blocked-until-plan188-and-plan191-and-streaming-close
-next_executable_plan = 191 (resolve inbound-delivery boundary E)
+plan_191 = stopped-by-inbound-delivery-boundary-E (inbound-delivery rows documented; 4 rows flipped blocked; 2 ordering rows flipped passed; narrower follow-up registered)
+plan_192 = registered-m6-i2cp-wire-format-corrective (resolve Plan 191 §6 stop; I2CP-style Data body + 9-byte short-transport inner envelope + STYLE=RAW / DATAGRAM VERSION=3 SAM session)
+plan_188 = remains-blocked-by-plan191-and-plan192 (real outbound/inbound i2pd installs retained-passed; reply-path correction retained-passed via plan190; 2 destination-message rows + 2 ordering rows flipped; ordering rows now passed)
+plan_189 = remains-blocked-until-plan188-and-plan191-and-plan192-and-streaming-close
+next_executable_plan = 192 (resolve inbound-delivery boundary E wire-format)
 ```
 
 Read/execute in this order:
 
 1. `plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md`
 2. `plans/190-status.md` (this file; newest authority)
-3. `plans/191-m6-inbound-destination-delivery-boundary.md` (registered follow-up; next executable)
-4. `plans/188-status.md` for retained authenticated build/install evidence and the destination rows now blocked on Plan 191
-5. `crates/i2pr-tunnel/src/established.rs`
-6. `crates/i2pr-tunnel/src/data_plane_registry.rs`
-7. `crates/i2pr-daemon/src/destination_tunnels.rs`
-8. `crates/i2pr-daemon/tests/destination_tunnel_unit.rs`
+3. `plans/191-status.md` (Plan 191 stopped at boundary E; documented defect)
+4. `plans/191-m6-inbound-destination-delivery-boundary.md` (boundary-E plan)
+5. `plans/192-status.md` (registered follow-up; next executable)
+6. `plans/192-m6-i2cp-wire-format-corrective.md` (the I2CP-style Data body wire-format corrective)
+7. `plans/188-status.md` for retained authenticated build/install evidence and the destination rows now blocked on Plan 192
+8. `crates/i2pr-tunnel/src/established.rs`
+9. `crates/i2pr-tunnel/src/data_plane_registry.rs`
+10. `crates/i2pr-daemon/src/destination_tunnels.rs`
+11. `crates/i2pr-client/src/routing.rs::compose_outbound_delivery` (the 9-byte short-transport + I2CP-style Data body seam)
+12. `crates/i2pr-daemon/tests/destination_tunnel_unit.rs`
 9. `crates/i2pr-daemon/tests/destination_tunnel_external.rs`
 10. `tests/integration/m6-interop/run-destination.sh`
 11. `plans/189-status.md` only after Plan 188 first-family destination + Streaming work genuinely closes

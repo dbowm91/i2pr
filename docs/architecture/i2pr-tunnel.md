@@ -741,15 +741,26 @@ the corrected external `run-destination.sh` against exact-pinned
 i2pd 2.61.0: three destination rows
 (`external-lease-lookup-tunnel`, `external-ls2-publication-tunnel`,
 `external-destination-outbound`) flip from `blocked` to `passed`,
-all Plan 187/188 `passed` rows remain `passed`. The corrected lane
-stops at Plan 190 §6 boundary E (the reference-side inbound
-delivery of the destination message to the i2pd-owned SAM bridge);
-Plan 191 owns that narrower inbound-delivery layer plus the
-destination-side ordering rows the panic currently occludes. See
+all Plan 187/188 `passed` rows remain `passed`. Plan 191 then ran
+the inbound-delivery layer and stopped at the i2pd-compatible
+I2CP-style Data body wire-format defect
+(i2pd's `ClientDestination::HandleDataMessage` parses an
+I2CP-style Data header + gzip-wrapped datagram payload, but i2pr
+emits a raw 16-byte-standard I2NP Data body whose first four
+bytes are misread as the length field); the test driver no
+longer panics, the 2 ordering rows flip `blocked` → `passed`,
+and the 2 inbound-delivery rows stay `blocked` with stop
+provenance. Plan 192 is the registered narrower follow-up that
+owns the 9-byte short-transport inner envelope, the I2CP-style
+Data body, the gzip-no-compression wrapper, and the
+`STYLE=RAW` / `STYLE=DATAGRAM VERSION=3` SAM session switch.
+See
 [`plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md`](../../plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md),
-[`plans/190-status.md`](../../plans/190-status.md), and
-[`plans/191-m6-inbound-destination-delivery-boundary.md`](../../plans/191-m6-inbound-destination-delivery-boundary.md).
-and [`plans/190-status.md`](../../plans/190-status.md).
+[`plans/190-status.md`](../../plans/190-status.md),
+[`plans/191-m6-inbound-destination-delivery-boundary.md`](../../plans/191-m6-inbound-destination-delivery-boundary.md),
+[`plans/191-status.md`](../../plans/191-status.md),
+[`plans/192-m6-i2cp-wire-format-corrective.md`](../../plans/192-m6-i2cp-wire-format-corrective.md),
+and [`plans/192-status.md`](../../plans/192-status.md).
 
 ## Cross-references
 

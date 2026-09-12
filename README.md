@@ -55,11 +55,12 @@ plan_183 = registered-m6-mixed-router-streaming-interop-program
 plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
-plan_187 = blocked-by-m6-build-reply-interop-gap (2/7 flipped via plan188 installs)
-plan_188 = blocked-by-plan191-inbound-destination-delivery (real outbound/inbound i2pd installs retained-passed; reply-path correction retained-passed via plan190)
-plan_189 = registered-m6-java-second-family-qualification-and-closure (blocked-by-plan188-plan190-plan191)
+plan_187 = blocked-by-m6-build-reply-interop-gap (5/7 flipped via plan188 installs + plan190 reply-path correction; 2 destination-message rows blocked on plan191; full inbound-delivery layer blocked on plan192)
+plan_188 = blocked-by-plan191-and-plan192 (real outbound/inbound i2pd installs retained-passed; reply-path correction retained-passed via plan190; 2 inbound-delivery rows blocked on plan192; 2 ordering rows passed)
+plan_189 = registered-m6-java-second-family-qualification-and-closure (blocked-by-plan188-plan190-plan191-plan192)
 plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; 3 destination rows flipped blocked -> passed in fresh external run)
-plan_191 = registered-m6-inbound-destination-delivery-boundary (Plan 190 §6 stop boundary E; next executable)
+plan_191 = stopped-by-inbound-delivery-boundary-E (4 inbound-delivery rows documented; 2 rows recorded blocked; 2 ordering rows flipped passed; narrower follow-up registered)
+plan_192 = registered-m6-i2cp-wire-format-corrective (next executable; inbound-delivery boundary E I2CP-style Data body)
 
 milestone7_local_product = passed-via-plan149
 plan150_external_core_evidence = retained-passed
@@ -99,12 +100,13 @@ m6_authenticated_i2np_preflight = passed-via-plan184
 m6_exploratory_one_hop_tunnels = passed-via-plan185
 m6_netdb_lookup_publication = passed-via-plan186
 m6_destination_local_product = passed-via-plan187
-m6_destination_remote_interop = installs-proven-lookup-publication-outbound-passed-inbound-delivery-pending-plan191
+m6_destination_remote_interop = installs-proven-lookup-publication-outbound-passed-inbound-delivery-blocked-plan191-then-plan192
 m6_inbound_netdb_reply_path_correction = passed-via-plan190 (typed route + adapter; 3 destination rows flipped blocked -> passed in remote run)
-m6_inbound_destination_delivery = blocked-pending-plan191 (Plan 190 §6 stop boundary E)
+m6_inbound_destination_delivery_boundary_E = stopped-pending-plan192 (i2pd-compatible I2CP-style Data body wire-format)
+m6_inbound_destination_delivery = blocked-pending-plan192
 m6_mixed_router_cross_family_ledger = landed-via-plan189 (i2pd-only-runs; java-second-family-deferred)
 next_product_layer = m6-mixed-router-leaseset2
-next_executable_plan = 188 (continue external lane with plan190 reply-path correction)
+next_executable_plan = 192 (resolve inbound-delivery boundary E wire-format)
 ```
 
 Milestone 8 is **closed** via [**Plan 161**](plans/161-status.md) within its bounded direct-interop scope. Directions A and B are genuinely proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real loopback UDP, including authenticated session establishment, small and fragmented I2NP/DatabaseStore exchange with return DeliveryStatus traffic, cached-token behavior, malformed/resource rows, and the fail-closed external evidence lane. [**Plan 162**](plans/162-status.md) passed the narrow external-test lane correction. Public-network, NetDB/tunnel/destination, IPv6-external, PQ, SSU1, and Milestone 6 mixed-router interoperability remain outside that claim.

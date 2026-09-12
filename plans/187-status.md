@@ -13,19 +13,25 @@ Plan of record:
 ## Current authority
 
 ```text
-plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending exact-pinned i2pd run)
-plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
-plan_187 = blocked-by-m6-build-reply-interop-gap (local rows passed; 2/7 flipped via plan188 installs; 5/7 reply-path gap isolated by plan190)
+plan_192 = registered-m6-i2cp-wire-format-corrective (next executable; inbound-delivery boundary E I2CP-style Data body)
+plan_191 = stopped-by-inbound-delivery-boundary-E (4 inbound-delivery rows documented; 2 rows recorded blocked; 2 ordering rows flipped passed)
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane proves 3 destination rows flipped blocked -> passed)
+plan_188 = blocked-by-plan191-and-plan192 (real outbound/inbound i2pd installs retained-passed; 5/7 destination rows flipped via plan188 installs + plan190 reply-path correction; 2 inbound-delivery rows blocked on plan192; 2 ordering rows passed)
+plan_187 = blocked-by-m6-build-reply-interop-gap (5/7 destination rows flipped via plan188 installs + plan190 reply-path correction; 2 destination-message rows blocked on plan191; full inbound-delivery layer blocked on plan192)
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
 plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 plan_183 = registered-m6-mixed-router-streaming-interop-program
 m6_destination_local_product = passed-via-plan187
-m6_destination_remote_interop = installs-proven-lookup-pending-plan190-external-run
+m6_destination_remote_interop = installs-proven-lookup-publication-outbound-passed-inbound-delivery-blocked-plan191-then-plan192
+m6_inbound_netdb_reply_path_correction = passed-via-plan190 (typed InboundGatewayRoute + daemon-owned adapter; remote lane flips 3 destination rows blocked -> passed)
+m6_inbound_destination_delivery_boundary_E = stopped-pending-plan192 (i2pd-compatible I2CP-style Data body wire-format)
+m6_inbound_destination_delivery = blocked-pending-plan192
+m6_second_family_java = not-yet-started
 milestone6_interoperable = not-yet-claimed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
-next_executable_plan = 188 (continue external lane with plan190 reply-path correction)
+next_executable_plan = 192
 ```
 
 ## What landed
@@ -371,10 +377,13 @@ without weakening authentication, acceptance correlation, or
 evidence hygiene.
 
 ```text
-plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending)
-plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
-plan_187 = blocked-by-m6-build-reply-interop-gap (local rows passed; 2/7 flipped via plan188 installs)
+plan_192 = registered-m6-i2cp-wire-format-corrective (next executable; inbound-delivery boundary E I2CP-style Data body)
+plan_191 = stopped-by-inbound-delivery-boundary-E (4 inbound-delivery rows documented; 2 rows recorded blocked; 2 ordering rows flipped passed)
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (retained)
+plan_188 = blocked-by-plan191-and-plan192 (real outbound/inbound i2pd installs retained-passed; 5/7 destination rows flipped via plan188 installs + plan190 reply-path correction; 2 inbound-delivery rows blocked on plan192; 2 ordering rows passed)
+plan_187 = blocked-by-m6-build-reply-interop-gap (5/7 destination rows flipped via plan188 installs + plan190 reply-path correction; 2 destination-message rows blocked on plan191; full inbound-delivery layer blocked on plan192)
 m6_destination_local_product = passed-via-plan187
-m6_destination_remote_interop = installs-proven-lookup-pending-plan190-external-run
-next_executable_plan = 188 (continue external lane with plan190 reply-path correction)
+m6_destination_remote_interop = installs-proven-lookup-publication-outbound-passed-inbound-delivery-blocked-plan191-then-plan192
+m6_inbound_destination_delivery_boundary_E = stopped-pending-plan192
+next_executable_plan = 192 (resolve inbound-delivery boundary E wire-format)
 ```

@@ -50,25 +50,33 @@ advertises the gateway tuple and never the local endpoint id;
 `run-destination.sh` against exact-pinned i2pd 2.61.0 flips three
 destination rows from `blocked` to `passed`
 (`external-lease-lookup-tunnel`, `external-ls2-publication-tunnel`,
-`external-destination-outbound`); the corrected lane stops at
-Plan 190 §6 boundary E because the i2pd SAM bridge never observes
-`DATAGRAM RECEIVED`, so `external-reference-received` and
-`external-destination-inbound` stay `blocked` and the panic in
-`wait_for_datagram` at
-`crates/i2pr-daemon/tests/destination_tunnel_external.rs:158`
-occludes the `external-direct-rejected` and
-`external-liveness-first-test` assertions; no M6 wire change, no
-`milestone6_interoperable = passed-via-plan190` claim). Plan 191
-is the registered follow-up that owns Plan 190 §6 stop boundary E
-(inbound-delivery layer plus destination-side ordering rows); no
-code change yet, the next executable plan. Plan 189 is the
-registered M6 Java I2P second-family qualification plan; it
-lands the fail-closed M6 mixed-router cross-family
-ledger/checker/workflow scaffold (`scripts/check-m6-mixed-router-acceptance-evidence.sh`,
+`external-destination-outbound`); Plan 191 then ran the inbound-delivery
+layer and stopped at the i2pd-compatible I2CP-style Data body
+wire-format defect — i2pd's `ClientDestination::HandleDataMessage`
+parses an I2CP-style Data header + gzip-wrapped datagram payload,
+but i2pr emits a raw 16-byte-standard I2NP Data body whose first
+four bytes are misread as the length field. The test driver no
+longer panics; `read_line`/`wait_for_datagram` return
+`Option<...>` and record distinct evidence keys
+(`reference-received-timeout`, `destination-inbound-send-failed`,
+`inbound-delivery-boundary-E-stop`). The 2 ordering rows
+`external-direct-rejected` and `external-liveness-first-test`
+flip `blocked` → `passed`. The 2 inbound-delivery rows
+`external-reference-received` and `external-destination-inbound`
+stay `blocked` with stop provenance; no M6 wire change, no
+`milestone6_interoperable = passed-via-plan191` claim). Plan 192
+is the registered narrower follow-up that owns the 9-byte
+short-transport inner envelope, the I2CP-style Data body, the
+gzip-no-compression wrapper, and the `STYLE=RAW` /
+`STYLE=DATAGRAM VERSION=3` SAM session switch; the next
+executable plan. Plan 189 is the registered M6 Java I2P
+second-family qualification plan; it lands the fail-closed M6
+mixed-router cross-family ledger/checker/workflow scaffold
+(`scripts/check-m6-mixed-router-acceptance-evidence.sh`,
 `tests/integration/m6-interop/run-m6-mixed-router.sh`,
-`.github/workflows/m6-mixed-router-external.yml`) but no second-family
-Java row until Plan 188 + Plan 191 + the deferred Streaming pass
-all close.
+`.github/workflows/m6-mixed-router-external.yml`) but no
+second-family Java row until Plan 188 + Plan 192 + the deferred
+Streaming pass all close.
 
 ## Purpose
 

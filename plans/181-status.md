@@ -9,15 +9,17 @@ Plan of record:
 ## Current authority
 
 ```text
-plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane pending exact-pinned i2pd run)
-plan_188 = blocked-by-plan190-reply-path-corrective (real outbound/inbound i2pd installs retained-passed)
-plan_187 = blocked-by-m6-build-reply-interop-gap (local rows passed; 2/7 flipped via plan188 installs; 5/7 reply-path gap isolated by plan190)
+plan_192 = registered-m6-i2cp-wire-format-corrective (next executable; inbound-delivery boundary E I2CP-style Data body)
+plan_191 = stopped-by-inbound-delivery-boundary-E (4 inbound-delivery rows documented; 2 rows recorded blocked; 2 ordering rows flipped passed)
+plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective (local rows passed; remote lane proves 3 destination rows flipped blocked -> passed)
+plan_188 = blocked-by-plan191-and-plan192 (real outbound/inbound i2pd installs retained-passed; 5/7 destination rows flipped via plan188 installs + plan190 reply-path correction; 2 inbound-delivery rows blocked on plan192; 2 ordering rows passed)
+plan_187 = blocked-by-m6-build-reply-interop-gap (5/7 destination rows flipped via plan188 installs + plan190 reply-path correction; 2 destination-message rows blocked on plan191; full inbound-delivery layer blocked on plan192)
 plan_186 = passed-m6-mixed-router-netdb-lookup-and-publication
 plan_185 = passed-m6-live-one-hop-exploratory-tunnels-and-liveness
 plan_184 = passed-m6-authenticated-i2np-runtime-and-reference-preflight
 plan_183 = registered-m6-mixed-router-streaming-interop-program
 plan_182 = passed-m10-local-delivery-corrective
-plan_181 = blocked-by-m6-mixed-router-streaming-blocker
+plan_181 = blocked-by-m6-mixed-router-streaming-blocker (the M10 independent-application-client remote rows are blocked on the same Plan 191 + Plan 192 inbound-delivery defect that the M6 destination row is)
 plan_180 = passed-m10-service-tunnel-composition-reconcile-and-hardening
 plan_179 = passed-m10-irc-server-profile-and-authenticated-peer-hostname
 plan_178 = passed-m10-irc-client-profile-and-privacy-filtering

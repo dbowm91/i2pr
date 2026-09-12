@@ -413,12 +413,28 @@ record is not `superseded-by-*`. Currently:
   gateway_receive_tunnel)`; local regression rows with unequal
   IDs `0x9601` vs `0x9602` prove the encoded `DatabaseLookup`
   advertises the gateway tuple; `destination_tunnel_unit` 31
-  passed; remote lane pending i2pd run; no M6 wire change; no
-  `milestone6_interoperable = passed-via-plan190` claim; see
-  [`plans/190-status.md`](../../plans/190-status.md)); Plan 189
-  is the registered M6 Java I2P second-family qualification
-  plan, blocked-by-plan188 (and Plan 190) with the §8
-  cross-family ledger/checker/workflow scaffold landed
+  passed; remote lane proves 3 destination rows flip `blocked`
+  → `passed` in fresh external `run-destination.sh`; no M6 wire
+  change; no `milestone6_interoperable = passed-via-plan190`
+  claim; see [`plans/190-status.md`](../../plans/190-status.md));
+  Plan 191 ran the inbound-delivery layer and stopped at the
+  i2pd-compatible I2CP-style Data body wire-format defect
+  (i2pd's `ClientDestination::HandleDataMessage` parses an
+  I2CP-style Data header + gzip-wrapped datagram payload, but
+  i2pr emits a raw 16-byte-standard I2NP Data body whose first
+  four bytes are misread as the length field); the test driver
+  no longer panics, the 2 ordering rows flip `blocked` →
+  `passed`, the 2 inbound-delivery rows stay `blocked` with
+  stop provenance; see [`plans/191-status.md`](../../plans/191-status.md));
+  Plan 192 is the registered narrower follow-up that owns the
+  9-byte short-transport inner envelope, the I2CP-style Data
+  body, the gzip-no-compression wrapper, and the
+  `STYLE=RAW` / `STYLE=DATAGRAM VERSION=3` SAM session switch
+  (see [`plans/192-status.md`](../../plans/192-status.md));
+  Plan 189 is the registered M6 Java I2P second-family
+  qualification plan, blocked-by-plan188 (and Plan 190, Plan
+  191, Plan 192) with the §8 cross-family
+  ledger/checker/workflow scaffold landed
   (`scripts/check-m6-mixed-router-acceptance-evidence.sh`,
   `tests/integration/m6-interop/run-m6-mixed-router.sh`,
   `.github/workflows/m6-mixed-router-external.yml`) and the
