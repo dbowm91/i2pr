@@ -366,6 +366,28 @@ blocked_row "external-streaming-data-digest" "streaming-data-digest" \
   "Streaming application data round-trips byte-exact through the destination path"
 blocked_row "external-streaming-multipacket-digest" "streaming-multipacket-digest" \
   "Streaming multi-packet payload digest matches through the destination path"
+blocked_row "external-streaming-reverse-data-digest" "streaming-reverse-data-digest" \
+  "reference-to-i2pr application data digest matches over the established stream"
+blocked_row "external-streaming-reverse-multipacket-digest" "streaming-reverse-multipacket-digest" \
+  "reference-to-i2pr multi-packet digest matches over the established stream"
+blocked_row "external-streaming-sibling-established" "streaming-sibling-established" \
+  "second sibling stream establishes over the same real path"
+blocked_row "external-streaming-sibling-data-digest" "streaming-sibling-data-digest" \
+  "sibling stream application data arrives on its own ACCEPT socket"
+blocked_row "external-streaming-close" "streaming-close" \
+  "orderly full close reaches Closed with reference socket EOF"
+blocked_row "external-streaming-sibling-isolated" "streaming-sibling-isolated" \
+  "sibling stream still delivers after the first connection closes"
+blocked_row "external-streaming-b-established" "streaming-b-established" \
+  "reference-initiated stream establishes through the normal listener/accept path"
+blocked_row "external-streaming-b-data-digest" "streaming-b-data-digest" \
+  "reference-to-i2pr Direction B payload digest matches"
+blocked_row "external-streaming-b-reverse-data-digest" "streaming-b-reverse-data-digest" \
+  "i2pr-to-reference Direction B payload digest matches"
+blocked_row "external-streaming-b-close" "streaming-b-close" \
+  "Direction B stream closes orderly with reference socket EOF"
+blocked_row "external-manager-cleanup" "manager-cleanup" \
+  "no queued transport or undrained bytes after every stream closed"
 ref_row "external-streaming-reference-accepted" "reference-streaming-accepted" \
   "reference StreamingDestination log proves the SYN was accepted"
 m6_key_row "external-direct-rejected" "direct-rejected" \

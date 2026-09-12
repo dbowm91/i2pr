@@ -20,7 +20,7 @@ LANE_SCRIPT="${REPO_ROOT}/tests/integration/m6-interop/run-streaming.sh"
 MIXED_ROUTER_SCRIPT="${REPO_ROOT}/tests/integration/m6-interop/run-m6-mixed-router.sh"
 MIXED_ROUTER_CHECKER="${REPO_ROOT}/scripts/check-m6-mixed-router-acceptance-evidence.sh"
 
-# 22 guarded labels (3 local + 18 external + workspace-gates).
+# 33 guarded labels (3 local + 29 external + workspace-gates).
 GUARDED_LABELS=(
   local-streaming-tunnel-unit
   local-streaming-tunnel-live
@@ -40,6 +40,17 @@ GUARDED_LABELS=(
   external-streaming-established
   external-streaming-data-digest
   external-streaming-multipacket-digest
+  external-streaming-reverse-data-digest
+  external-streaming-reverse-multipacket-digest
+  external-streaming-sibling-established
+  external-streaming-sibling-data-digest
+  external-streaming-close
+  external-streaming-sibling-isolated
+  external-streaming-b-established
+  external-streaming-b-data-digest
+  external-streaming-b-reverse-data-digest
+  external-streaming-b-close
+  external-manager-cleanup
   external-streaming-reference-accepted
   external-direct-rejected
   external-liveness-first-test

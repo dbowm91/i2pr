@@ -50,8 +50,10 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use i2pr_client::streaming::connection::ConnectionState;
 use i2pr_client::streaming::manager::{
-    ConnectOutcome, DEFAULT_ADVERTISED_MAX_PAYLOAD, RemoteDestination, StreamingManager,
+    ConnectOutcome, DEFAULT_ADVERTISED_MAX_PAYLOAD, ListenerOutcome, RemoteDestination,
+    StreamingManager,
 };
 use i2pr_client::streaming::{StreamingConfig, transport::TransportSendRequest};
 use i2pr_client::{
@@ -235,6 +237,89 @@ impl SamClient {
         }
         Some(self.buffer.drain(..size).collect())
     }
+
+    async fn write_bytes(&mut self, data: &[u8]) {
+        use tokio::io::AsyncWriteExt as _;
+        self.stream
+            .write_all(data)
+            .await
+            .expect("SAM stream write");
+    }
+
+    /// Non-blocking reply-line poll for interleaving SAM control reads
+    /// with the inbound tunnel pump (Direction B CONNECT): returns a
+    /// complete line if one is already buffered or arrives within a
+    /// short grace window, without stalling packet handling.
+    async fn poll_line(&mut self) -> Option<String> {
+        if let Some(position) = self.buffer.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.buffer.drain(..=position).collect();
+            return Some(String::from_utf8_lossy(&line).trim_end().to_owned());
+        }
+        let mut chunk = [0u8; 4096];
+        match self.stream.try_read(&mut chunk) {
+            Ok(0) => None,
+            Ok(read) => {
+                self.buffer.extend_from_slice(&chunk[..read]);
+                if let Some(position) = self.buffer.iter().position(|b| *b == b'\n') {
+                    let line: Vec<u8> = self.buffer.drain(..=position).collect();
+                    return Some(String::from_utf8_lossy(&line).trim_end().to_owned());
+                }
+                None
+            }
+            Err(_) => None,
+        }
+    }
+
+    async fn read_line_timeout(&mut self, timeout: Duration) -> Option<String> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if let Some(position) = self.buffer.iter().position(|b| *b == b'\n') {
+                let line: Vec<u8> = self.buffer.drain(..=position).collect();
+                return Some(String::from_utf8_lossy(&line).trim_end().to_owned());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return None;
+            }
+            let mut chunk = [0u8; 4096];
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let read = tokio::time::timeout(remaining, async {
+                use tokio::io::AsyncReadExt as _;
+                self.stream.read(&mut chunk).await
+            })
+            .await
+            .ok()?
+            .ok()?;
+            if read == 0 {
+                return None;
+            }
+            self.buffer.extend_from_slice(&chunk[..read]);
+        }
+    }
+
+    /// Reads until the peer closes the stream or the timeout expires.
+    /// Returns true only when an EOF (zero-byte read) is observed, so
+    /// callers can distinguish an orderly reference-side close from a
+    /// silent stall. Any post-close stream bytes are discarded.
+    async fn read_until_eof(&mut self, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            let mut chunk = [0u8; 65536];
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let read = tokio::time::timeout(remaining, async {
+                use tokio::io::AsyncReadExt as _;
+                self.stream.read(&mut chunk).await
+            })
+            .await;
+            match read {
+                Ok(Ok(0)) => return true,
+                Ok(Ok(_)) => continue,
+                _ => return false,
+            }
+        }
+    }
 }
 
 fn decode_sam_destination(token: &str) -> Vec<u8> {
@@ -250,6 +335,144 @@ fn sam_param(line: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Pumps one inbound SSU2 batch through the real inbound tunnel chain
+/// (TunnelData recovery -> Garlic decrypt -> dispatcher -> adapter ->
+/// owning StreamingManager) and drains any manager-triggered outbound
+/// (ACKs/CLOSE responses) back through the real outbound tunnel.
+/// Returns true when at least one packet reached the manager.
+#[allow(clippy::too_many_arguments)]
+async fn pump_one_streaming_inbound(
+    handle: &mut i2pr_daemon::router_i2np::Ssu2DaemonHandle,
+    coord: &mut ExploratoryBuildCoordinator,
+    dest: &mut DestinationTunnelCoordinator,
+    dispatcher: &mut DestinationDispatcher,
+    session: &mut EciesSessionManager,
+    routing: &mut DestinationRouting,
+    streaming: &mut StreamingManager,
+    outbound: &DestinationOutboundRole,
+    local_identity: &DestinationIdentity,
+    local_ls2: &i2pr_proto::LeaseSet2,
+    delivery: &i2pr_daemon::router_i2np::RouterDeliveryService,
+    rng: &mut ChaCha8Rng,
+    from_hash: &[u8; 32],
+    errors: &mut u64,
+) -> bool {
+    let next = tokio::time::timeout(POLL_INTERVAL, handle.next_inbound()).await;
+    let Ok(Some(inbound)) = next else {
+        return false;
+    };
+    let message =
+        match I2npMessage::decode_short_transport(&inbound.bytes, MAX_I2NP_PAYLOAD_SIZE) {
+            Ok(message) => message,
+            Err(_) => {
+                *errors += 1;
+                return false;
+            }
+        };
+    let cell = match message.body() {
+        I2npBody::TunnelData(cell) => cell.clone(),
+        _ => return false,
+    };
+    let bytes = match dest.recover_garlic_bytes(coord.registry_mut(), &cell, wall_ms()) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+    let now_secs = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
+    dispatcher.dispatch_garlic_envelope(
+        session,
+        local_identity.id(),
+        local_identity.static_secret_bytes(),
+        &local_identity.static_public_bytes(),
+        now_secs,
+        &I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE).expect("decode garlic"),
+        routing.lease_set2_store_mut(),
+    );
+    let Some(queued) = dispatcher.pop_payload(local_identity.id()) else {
+        return false;
+    };
+    match StreamingDestinationAdapter::receive(
+        queued.bytes(),
+        local_identity,
+        streaming,
+        from_hash,
+        wall_ms(),
+    ) {
+        Ok(_) => {}
+        Err(_) => {
+            *errors += 1;
+            return false;
+        }
+    }
+    let pending = streaming.drain_outbound();
+    for request in &pending {
+        send_transport_request(
+            request, routing, session, outbound, local_identity, local_ls2, delivery, rng,
+        )
+        .await;
+    }
+    true
+}
+
+/// Runs the inbound pump until `satisfied` observes the wanted manager
+/// state, or records a fail-closed `streaming-stop` with phase
+/// provenance and panics. `satisfied` may drain delivered bytes for
+/// digest matching.
+#[allow(clippy::too_many_arguments)]
+async fn pump_until_streaming<F>(
+    handle: &mut i2pr_daemon::router_i2np::Ssu2DaemonHandle,
+    coord: &mut ExploratoryBuildCoordinator,
+    dest: &mut DestinationTunnelCoordinator,
+    dispatcher: &mut DestinationDispatcher,
+    session: &mut EciesSessionManager,
+    routing: &mut DestinationRouting,
+    streaming: &mut StreamingManager,
+    outbound: &DestinationOutboundRole,
+    local_identity: &DestinationIdentity,
+    local_ls2: &i2pr_proto::LeaseSet2,
+    delivery: &i2pr_daemon::router_i2np::RouterDeliveryService,
+    rng: &mut ChaCha8Rng,
+    from_hash: &[u8; 32],
+    evidence_dir: &Path,
+    deadline: tokio::time::Instant,
+    phase: &str,
+    mut satisfied: F,
+) where
+    F: FnMut(&mut StreamingManager) -> bool,
+{
+    let mut errors = 0u64;
+    loop {
+        if satisfied(streaming) {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            record_stop_and_baseline(evidence_dir);
+            append_evidence(
+                evidence_dir,
+                "streaming-stop",
+                &format!("phase={phase} pump_errors={errors}"),
+            );
+            panic!("Plan 193 streaming stop: {phase}");
+        }
+        pump_one_streaming_inbound(
+            handle,
+            coord,
+            dest,
+            dispatcher,
+            session,
+            routing,
+            streaming,
+            outbound,
+            local_identity,
+            local_ls2,
+            delivery,
+            rng,
+            from_hash,
+            &mut errors,
+        )
+        .await;
+    }
 }
 
 #[tokio::test]
@@ -548,7 +771,7 @@ async fn streaming_through_i2pd() {
         .remove_outbound(outbound_slot)
         .expect("real outbound role");
     let destination_outbound =
-        DestinationOutboundRole::from_role(gateway_role, wall_ms() + 600_000);
+        DestinationOutboundRole::from_role(gateway_role, wall_ms() + 1_800_000);
 
     // Remote Standard LeaseSet2 lookup through the real tunnel path.
     let routing_key = i2pr_netdb::router_hash_from_destination(reference_hash);
@@ -662,7 +885,7 @@ async fn streaming_through_i2pd() {
         tunnel_expires.saturating_sub(60),
     );
     let published = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
-    let local_ls2 =
+    let mut local_ls2 =
         build_signed_lease_set2(&local_identity, &[lease_source], published).expect("local ls2");
     let local_dest_hash = local_identity.id().as_netdb_key();
 
@@ -1034,6 +1257,730 @@ async fn streaming_through_i2pd() {
         panic!("Plan 193 streaming stop: multipacket digest mismatch");
     }
 
+    // ---- Phase R: reverse data i2pd -> i2pr over the established stream ----
+    // The reference writes to its SAM STREAM ACCEPT socket; i2pd emits
+    // STREAM data packets that return via the real inbound tunnel. The
+    // pump feeds them into the originator manager, drains ACKs back
+    // through the real outbound tunnel, and digest-matches delivery.
+    let app_rev_small = b"plan193-reverse-probe-b";
+    accept_sam.write_bytes(app_rev_small).await;
+    let mut rev_collected = Vec::new();
+    pump_until_streaming(
+        &mut handle,
+        &mut coord,
+        &mut dest,
+        &mut dispatcher,
+        &mut session,
+        &mut routing,
+        &mut streaming,
+        &destination_outbound,
+        &local_identity,
+        &local_ls2,
+        &delivery,
+        &mut send_rng,
+        reference_hash.as_bytes(),
+        &evidence_dir,
+        tokio::time::Instant::now() + STREAM_WAIT,
+        "streaming-reverse",
+        |manager| {
+            for delivered in manager.drain_delivered_for(connection_id) {
+                rev_collected.extend_from_slice(&delivered.bytes);
+            }
+            rev_collected.as_slice() == app_rev_small.as_slice()
+        },
+    )
+    .await;
+    append_evidence(
+        &evidence_dir,
+        "streaming-reverse-data-digest",
+        &format!(
+            "payload_len={} digest={} match=true",
+            rev_collected.len(),
+            sha256_hex(&rev_collected),
+        ),
+    );
+
+    let mut app_rev_multi = Vec::with_capacity(4096);
+    for index in 0..4096 {
+        app_rev_multi.push((index % 233) as u8);
+    }
+    accept_sam.write_bytes(&app_rev_multi).await;
+    let mut rev_multi_collected = Vec::new();
+    pump_until_streaming(
+        &mut handle,
+        &mut coord,
+        &mut dest,
+        &mut dispatcher,
+        &mut session,
+        &mut routing,
+        &mut streaming,
+        &destination_outbound,
+        &local_identity,
+        &local_ls2,
+        &delivery,
+        &mut send_rng,
+        reference_hash.as_bytes(),
+        &evidence_dir,
+        tokio::time::Instant::now() + STREAM_WAIT,
+        "streaming-reverse-multipacket",
+        |manager| {
+            for delivered in manager.drain_delivered_for(connection_id) {
+                rev_multi_collected.extend_from_slice(&delivered.bytes);
+            }
+            rev_multi_collected.len() >= app_rev_multi.len()
+        },
+    )
+    .await;
+    if rev_multi_collected != app_rev_multi {
+        record_stop_and_baseline(&evidence_dir);
+        append_evidence(
+            &evidence_dir,
+            "streaming-stop",
+            &format!(
+                "phase=streaming-reverse-multipacket expected_len={} observed_len={}",
+                app_rev_multi.len(),
+                rev_multi_collected.len(),
+            ),
+        );
+        panic!("Plan 193 streaming stop: reverse multipacket digest mismatch");
+    }
+    append_evidence(
+        &evidence_dir,
+        "streaming-reverse-multipacket-digest",
+        &format!(
+            "payload_len={} digest={} match=true",
+            rev_multi_collected.len(),
+            sha256_hex(&rev_multi_collected),
+        ),
+    );
+
+    // ---- Phase S: sibling connection, orderly close, isolation ----
+    // A second stream from the same manager to the same reference
+    // destination exercises sibling multiplexing over the real path.
+    let sibling_outcome = streaming
+        .connect(
+            &local_identity,
+            &remote_desc,
+            LOCAL_STREAM_PORT,
+            REMOTE_STREAM_PORT,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
+            wall_ms(),
+            &mut send_rng,
+        )
+        .expect("sibling connect");
+    let ConnectOutcome::SynSent {
+        connection_id: sibling_id,
+        ..
+    } = sibling_outcome
+    else {
+        panic!("expected sibling SynSent");
+    };
+    assert_ne!(sibling_id, connection_id, "siblings need distinct ids");
+    let mut sibling_queue = streaming.drain_outbound();
+    assert_eq!(sibling_queue.len(), 1, "sibling SYN is one request");
+    send_transport_request(
+        &sibling_queue.remove(0),
+        &routing,
+        &mut session,
+        &destination_outbound,
+        &local_identity,
+        &local_ls2,
+        &delivery,
+        &mut send_rng,
+    )
+    .await;
+    pump_until_streaming(
+        &mut handle,
+        &mut coord,
+        &mut dest,
+        &mut dispatcher,
+        &mut session,
+        &mut routing,
+        &mut streaming,
+        &destination_outbound,
+        &local_identity,
+        &local_ls2,
+        &delivery,
+        &mut send_rng,
+        reference_hash.as_bytes(),
+        &evidence_dir,
+        tokio::time::Instant::now() + SYN_ACK_WAIT,
+        "streaming-sibling-establish",
+        |manager| {
+            manager
+                .get_connection(sibling_id)
+                .is_some_and(|conn| conn.state() == ConnectionState::Established)
+        },
+    )
+    .await;
+    append_evidence(&evidence_dir, "streaming-sibling-established", "true");
+
+    // Sibling application bytes arrive on their own ACCEPT socket.
+    let app_sibling = b"plan193-sibling-probe-c";
+    let sibling_data = streaming
+        .send_data(
+            sibling_id,
+            &local_identity,
+            &remote_desc,
+            LOCAL_STREAM_PORT,
+            REMOTE_STREAM_PORT,
+            app_sibling,
+            wall_ms(),
+        )
+        .expect("send sibling data");
+    send_transport_request(
+        &sibling_data,
+        &routing,
+        &mut session,
+        &destination_outbound,
+        &local_identity,
+        &local_ls2,
+        &delivery,
+        &mut send_rng,
+    )
+    .await;
+    let mut accept_sam2 = SamClient::connect(sam_endpoint).await;
+    let accept2_hello = accept_sam2
+        .transact("HELLO VERSION MIN=3.1 MAX=3.1\n")
+        .await
+        .expect("SAM sibling acceptor hello read");
+    assert!(
+        accept2_hello.contains("RESULT=OK"),
+        "SAM sibling acceptor hello failed"
+    );
+    let accept2_reply = accept_sam2
+        .transact(&format!("STREAM ACCEPT ID={session_id} SILENT=false\n"))
+        .await;
+    assert!(
+        accept2_reply
+            .as_deref()
+            .is_some_and(|line| line.contains("RESULT=OK")),
+        "sibling STREAM ACCEPT failed"
+    );
+    let peer2_line = accept_sam2.read_line().await.unwrap_or_default();
+    let observed_sibling = accept_sam2
+        .read_exact_bytes(app_sibling.len(), STREAM_WAIT)
+        .await
+        .unwrap_or_default();
+    if observed_sibling.as_slice() != app_sibling.as_slice() {
+        record_stop_and_baseline(&evidence_dir);
+        append_evidence(
+            &evidence_dir,
+            "streaming-stop",
+            &format!(
+                "phase=streaming-sibling-data expected_len={} observed_len={} peer_line_len={}",
+                app_sibling.len(),
+                observed_sibling.len(),
+                peer2_line.len(),
+            ),
+        );
+        panic!("Plan 193 streaming stop: sibling data digest mismatch");
+    }
+    append_evidence(
+        &evidence_dir,
+        "streaming-sibling-data-digest",
+        &format!(
+            "payload_len={} digest={} peer_line_len={} match=true",
+            observed_sibling.len(),
+            sha256_hex(&observed_sibling),
+            peer2_line.len(),
+        ),
+    );
+
+    // Orderly full close of the first connection, initiated from i2pr:
+    // CLOSE traverses the real outbound tunnel, the reference answers
+    // with CLOSE through the real inbound tunnel, and its ACCEPT
+    // socket reaches EOF.
+    let close_request = streaming
+        .send_close(
+            connection_id,
+            &local_identity,
+            &remote_desc,
+            LOCAL_STREAM_PORT,
+            REMOTE_STREAM_PORT,
+            wall_ms(),
+        )
+        .expect("send close");
+    send_transport_request(
+        &close_request,
+        &routing,
+        &mut session,
+        &destination_outbound,
+        &local_identity,
+        &local_ls2,
+        &delivery,
+        &mut send_rng,
+    )
+    .await;
+    pump_until_streaming(
+        &mut handle,
+        &mut coord,
+        &mut dest,
+        &mut dispatcher,
+        &mut session,
+        &mut routing,
+        &mut streaming,
+        &destination_outbound,
+        &local_identity,
+        &local_ls2,
+        &delivery,
+        &mut send_rng,
+        reference_hash.as_bytes(),
+        &evidence_dir,
+        tokio::time::Instant::now() + Duration::from_secs(30),
+        "streaming-close",
+        |manager| {
+            manager
+                .get_connection(connection_id)
+                .is_some_and(|conn| conn.state() == ConnectionState::Closed)
+        },
+    )
+    .await;
+    let close_eof = accept_sam
+        .read_until_eof(Duration::from_secs(15))
+        .await;
+    if !close_eof {
+        record_stop_and_baseline(&evidence_dir);
+        append_evidence(
+            &evidence_dir,
+            "streaming-stop",
+            "phase=streaming-close local state Closed but reference socket never reached EOF",
+        );
+        panic!("Plan 193 streaming stop: reference close EOF missing");
+    }
+    append_evidence(&evidence_dir, "streaming-close", "state=Closed eof=true");
+
+    // The sibling survives the first connection's close untouched.
+    let app_sibling2 = b"plan193-sibling-alive-d";
+    let sibling_data2 = streaming
+        .send_data(
+            sibling_id,
+            &local_identity,
+            &remote_desc,
+            LOCAL_STREAM_PORT,
+            REMOTE_STREAM_PORT,
+            app_sibling2,
+            wall_ms(),
+        )
+        .expect("send sibling data after close");
+    send_transport_request(
+        &sibling_data2,
+        &routing,
+        &mut session,
+        &destination_outbound,
+        &local_identity,
+        &local_ls2,
+        &delivery,
+        &mut send_rng,
+    )
+    .await;
+    let observed_sibling2 = accept_sam2
+        .read_exact_bytes(app_sibling2.len(), STREAM_WAIT)
+        .await
+        .unwrap_or_default();
+    if observed_sibling2.as_slice() != app_sibling2.as_slice() {
+        record_stop_and_baseline(&evidence_dir);
+        append_evidence(
+            &evidence_dir,
+            "streaming-stop",
+            &format!(
+                "phase=streaming-sibling-isolated expected_len={} observed_len={}",
+                app_sibling2.len(),
+                observed_sibling2.len(),
+            ),
+        );
+        panic!("Plan 193 streaming stop: sibling isolation digest mismatch");
+    }
+    append_evidence(
+        &evidence_dir,
+        "streaming-sibling-isolated",
+        &format!(
+            "payload_len={} digest={} match=true",
+            observed_sibling2.len(),
+            sha256_hex(&observed_sibling2),
+        ),
+    );
+
+    // ---- Phase B: i2pd initiates to i2pr through the normal listener ----
+    // Refresh our published LeaseSet2 with a long lease so the
+    // reference floodfill holds a valid inbound route for CONNECT.
+    let fresh_expires = wall_secs() + 1800;
+    let fresh_published = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
+    let fresh_registrations = coord.registrations(TunnelDirection::Inbound);
+    let fresh_lease = InboundLeaseSource::from_parts(
+        fresh_registrations[0].slot(),
+        Hash::from_bytes(*i2pd_hash.as_bytes()),
+        IBGW_RECEIVE,
+        fresh_expires,
+        fresh_expires.saturating_sub(60),
+    );
+    local_ls2 =
+        build_signed_lease_set2(&local_identity, &[fresh_lease], fresh_published).expect("fresh ls2");
+    let fresh_store = i2pr_proto::DatabaseStoreMessage {
+        key: local_ls2.key_hash().expect("key hash"),
+        reply_token: 0,
+        reply_tunnel_id: None,
+        reply_gateway: None,
+        data: i2pr_proto::DatabaseStoreData::LeaseSet2(Box::new(local_ls2.clone())),
+    };
+    let fresh_publication = dest
+        .begin_ls2_publication(fresh_store, RouterHash::from_bytes(*i2pd_hash.as_bytes()))
+        .expect("begin republication");
+    let (fresh_dispatch, fresh_proof) = dest
+        .compose_ls2_publication_via_tunnel(
+            fresh_publication,
+            Hash::from_bytes(*i2pd_hash.as_bytes()),
+            destination_outbound.role(),
+            0x51A7_6201,
+            wall_ms() + 60_000,
+            Deadline::new(Duration::from_secs(60)).expect("deadline"),
+            &mut tunnel_rng,
+            0,
+        )
+        .expect("compose republication");
+    assert!(fresh_proof.via_tunnel);
+    for cell_delivery in &fresh_dispatch.deliveries {
+        let request = RouterDeliveryRequest::new(
+            cell_delivery.target(),
+            cell_delivery.message_bytes().to_vec(),
+            DELIVERY_TIMEOUT,
+        )
+        .expect("delivery request");
+        assert_eq!(
+            delivery.deliver(request, &CancellationToken::new()),
+            RouterDeliveryOutcome::Accepted
+        );
+    }
+    append_evidence(
+        &evidence_dir,
+        "ls2-republication-tunnel",
+        &format!("cells={}", fresh_proof.cell_count),
+    );
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // Wildcard listener catches the reference SYN on any port; no
+    // listener or accept state is injected, only the normal bind.
+    assert!(
+        matches!(
+            streaming.listen(0).expect("listen"),
+            ListenerOutcome::Listening { .. }
+        ),
+        "wildcard listener must bind"
+    );
+    let local_b64 = i2pr_api::sam::base64::encode(
+        &local_identity
+            .destination()
+            .encode_to_vec(65535)
+            .expect("encode local destination"),
+    );
+    let mut connect_attempts = 0u32;
+    let mut b_connection: Option<i2pr_client::streaming::connection::ConnectionId> = None;
+    for _ in 0..2 {
+        connect_attempts += 1;
+        sam.write_bytes(
+            format!("STREAM CONNECT ID={session_id} DESTINATION={local_b64}\n").as_bytes(),
+        )
+        .await;
+        let connect_deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        let mut status: Option<String> = None;
+        let mut pump_errors = 0u64;
+        while tokio::time::Instant::now() < connect_deadline && status.is_none() {
+            pump_one_streaming_inbound(
+                &mut handle,
+                &mut coord,
+                &mut dest,
+                &mut dispatcher,
+                &mut session,
+                &mut routing,
+                &mut streaming,
+                &destination_outbound,
+                &local_identity,
+                &local_ls2,
+                &delivery,
+                &mut send_rng,
+                reference_hash.as_bytes(),
+                &mut pump_errors,
+            )
+            .await;
+            // Accept the inbound SYN through the normal backlog as
+            // soon as it arrives; the SYN response returns through
+            // the real outbound tunnel while CONNECT is still pending.
+            if b_connection.is_none() && streaming.listener_backlog(0) >= 1 {
+                let inbound_id = streaming.accept(0).expect("accept inbound SYN");
+                let (peer_bytes, peer_key, inbound_local, inbound_remote) = {
+                    let inbound = streaming
+                        .get_connection(inbound_id)
+                        .expect("inbound connection");
+                    (
+                        inbound
+                            .peer_destination()
+                            .cloned()
+                            .expect("peer destination retained")
+                            .encode_to_vec(65535)
+                            .expect("encode peer destination"),
+                        inbound.peer_signing_key().clone(),
+                        inbound.local_port(),
+                        inbound.remote_port(),
+                    )
+                };
+                let peer_hash = *i2pr_crypto::sha256(&peer_bytes).as_bytes();
+                let inbound_remote_desc = RemoteDestination {
+                    destination_hash: peer_hash,
+                    signing_public_key: peer_key,
+                    static_public_key: [0u8; 32],
+                };
+                let syn_response = streaming
+                    .accept_inbound_syn(
+                        &local_identity,
+                        &inbound_remote_desc,
+                        inbound_id,
+                        inbound_local,
+                        inbound_remote,
+                        DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                        wall_ms(),
+                        &mut send_rng,
+                    )
+                    .expect("SYN response");
+                send_transport_request(
+                    &syn_response,
+                    &routing,
+                    &mut session,
+                    &destination_outbound,
+                    &local_identity,
+                    &local_ls2,
+                    &delivery,
+                    &mut send_rng,
+                )
+                .await;
+                b_connection = Some(inbound_id);
+            }
+            if let Some(line) = sam.poll_line().await
+                && line.starts_with("STREAM STATUS")
+            {
+                status = Some(line);
+            }
+        }
+        match &status {
+            Some(line) if line.contains("RESULT=OK") => break,
+            _ => {
+                if connect_attempts >= 2 {
+                    record_stop_and_baseline(&evidence_dir);
+                    append_evidence(
+                        &evidence_dir,
+                        "streaming-stop",
+                        &format!(
+                            "phase=streaming-b-connect attempts={connect_attempts} status={} pump_errors={pump_errors}",
+                            status.as_deref().unwrap_or("none"),
+                        ),
+                    );
+                    panic!("Plan 193 streaming stop: reference STREAM CONNECT never returned OK");
+                }
+            }
+        }
+    }
+    let b_id = b_connection.expect("inbound connection accepted");
+    assert!(
+        streaming
+            .get_connection(b_id)
+            .is_some_and(|conn| conn.state() == ConnectionState::Established),
+        "inbound connection must be Established after accept"
+    );
+    append_evidence(
+        &evidence_dir,
+        "streaming-b-established",
+        &format!("attempts={connect_attempts}"),
+    );
+    // An optional peer-destination line may follow STATUS; consume it
+    // within a short bound so stream bytes start at a known offset.
+    let b_peer_line = sam.read_line_timeout(Duration::from_secs(3)).await;
+    let b_peer_len = b_peer_line.map(|line| line.len()).unwrap_or(0);
+
+    // Direction B small payload i2pd -> i2pr.
+    let app_b_small = b"plan193-b-probe-e";
+    sam.write_bytes(app_b_small).await;
+    let mut b_collected = Vec::new();
+    pump_until_streaming(
+        &mut handle,
+        &mut coord,
+        &mut dest,
+        &mut dispatcher,
+        &mut session,
+        &mut routing,
+        &mut streaming,
+        &destination_outbound,
+        &local_identity,
+        &local_ls2,
+        &delivery,
+        &mut send_rng,
+        reference_hash.as_bytes(),
+        &evidence_dir,
+        tokio::time::Instant::now() + STREAM_WAIT,
+        "streaming-b-data",
+        |manager| {
+            for delivered in manager.drain_delivered_for(b_id) {
+                b_collected.extend_from_slice(&delivered.bytes);
+            }
+            b_collected.as_slice() == app_b_small.as_slice()
+        },
+    )
+    .await;
+    append_evidence(
+        &evidence_dir,
+        "streaming-b-data-digest",
+        &format!(
+            "payload_len={} digest={} peer_line_len={b_peer_len} match=true",
+            b_collected.len(),
+            sha256_hex(&b_collected),
+        ),
+    );
+
+    // Direction B reverse payload i2pr -> i2pd over the accepted stream.
+    let (b_local_port, b_remote_port) = {
+        let inbound = streaming.get_connection(b_id).expect("inbound connection");
+        (inbound.local_port(), inbound.remote_port())
+    };
+    let mut app_b_rev = Vec::with_capacity(2048);
+    for index in 0..2048 {
+        app_b_rev.push((index % 199) as u8);
+    }
+    // The SYN-response routing descriptor is rebuilt from the live
+    // connection state so the reply targets the true peer hash.
+    let b_reply_desc = {
+        let inbound = streaming.get_connection(b_id).expect("inbound connection");
+        let peer_bytes = inbound
+            .peer_destination()
+            .cloned()
+            .expect("peer destination retained")
+            .encode_to_vec(65535)
+            .expect("encode peer destination");
+        RemoteDestination {
+            destination_hash: *i2pr_crypto::sha256(&peer_bytes).as_bytes(),
+            signing_public_key: inbound.peer_signing_key().clone(),
+            static_public_key: [0u8; 32],
+        }
+    };
+    let b_rev_request = streaming
+        .send_data(
+            b_id,
+            &local_identity,
+            &b_reply_desc,
+            b_local_port,
+            b_remote_port,
+            &app_b_rev,
+            wall_ms(),
+        )
+        .expect("send B reverse data");
+    send_transport_request(
+        &b_rev_request,
+        &routing,
+        &mut session,
+        &destination_outbound,
+        &local_identity,
+        &local_ls2,
+        &delivery,
+        &mut send_rng,
+    )
+    .await;
+    let observed_b_rev = sam
+        .read_exact_bytes(app_b_rev.len(), STREAM_WAIT)
+        .await
+        .unwrap_or_default();
+    if observed_b_rev != app_b_rev {
+        record_stop_and_baseline(&evidence_dir);
+        append_evidence(
+            &evidence_dir,
+            "streaming-stop",
+            &format!(
+                "phase=streaming-b-reverse expected_len={} observed_len={}",
+                app_b_rev.len(),
+                observed_b_rev.len(),
+            ),
+        );
+        panic!("Plan 193 streaming stop: B reverse digest mismatch");
+    }
+    append_evidence(
+        &evidence_dir,
+        "streaming-b-reverse-data-digest",
+        &format!(
+            "payload_len={} digest={} match=true",
+            observed_b_rev.len(),
+            sha256_hex(&observed_b_rev),
+        ),
+    );
+
+    // Orderly close of the Direction B stream, initiated from i2pr.
+    let b_close_request = streaming
+        .send_close(
+            b_id,
+            &local_identity,
+            &b_reply_desc,
+            b_local_port,
+            b_remote_port,
+            wall_ms(),
+        )
+        .expect("send B close");
+    send_transport_request(
+        &b_close_request,
+        &routing,
+        &mut session,
+        &destination_outbound,
+        &local_identity,
+        &local_ls2,
+        &delivery,
+        &mut send_rng,
+    )
+    .await;
+    pump_until_streaming(
+        &mut handle,
+        &mut coord,
+        &mut dest,
+        &mut dispatcher,
+        &mut session,
+        &mut routing,
+        &mut streaming,
+        &destination_outbound,
+        &local_identity,
+        &local_ls2,
+        &delivery,
+        &mut send_rng,
+        reference_hash.as_bytes(),
+        &evidence_dir,
+        tokio::time::Instant::now() + Duration::from_secs(30),
+        "streaming-b-close",
+        |manager| {
+            manager
+                .get_connection(b_id)
+                .is_some_and(|conn| conn.state() == ConnectionState::Closed)
+        },
+    )
+    .await;
+    let b_close_eof = sam.read_until_eof(Duration::from_secs(15)).await;
+    if !b_close_eof {
+        record_stop_and_baseline(&evidence_dir);
+        append_evidence(
+            &evidence_dir,
+            "streaming-stop",
+            "phase=streaming-b-close local state Closed but reference socket never reached EOF",
+        );
+        panic!("Plan 193 streaming stop: B reference close EOF missing");
+    }
+    append_evidence(&evidence_dir, "streaming-b-close", "state=Closed eof=true");
+
+    // Manager-level cleanup accounting: no queued transport, no
+    // undrained application bytes after every stream closed.
+    let cleanup_connections = streaming.connection_count();
+    let cleanup_queued = streaming.outbound_queue_len();
+    let cleanup_delivered = streaming.pending_delivered_bytes();
+    assert_eq!(cleanup_queued, 0, "no queued transport after close");
+    assert_eq!(cleanup_delivered, 0, "no undrained bytes after close");
+    append_evidence(
+        &evidence_dir,
+        "manager-cleanup",
+        &format!(
+            "connections={cleanup_connections} queued={cleanup_queued} delivered={cleanup_delivered}"
+        ),
+    );
+
     // Direct transport is never a counted path.
     assert!(dest.note_direct_transport_attempt().is_err());
     append_evidence(&evidence_dir, "direct-rejected", "true");
@@ -1106,15 +2053,13 @@ async fn send_transport_request(
     }
 }
 
-fn record_stop_and_baseline(dir: &Path) {
-    let mut coordinator = DestinationTunnelCoordinator::new(
+fn record_stop_and_baseline(dir: &Path) {    let mut coordinator = DestinationTunnelCoordinator::new(
         LookupPolicy::default(),
         RouterInfoStoreConfig::default(),
     );
     assert!(coordinator.note_direct_transport_attempt().is_err());
     append_evidence(dir, "direct-rejected", "true");
-    let mut scheduler = TunnelLivenessScheduler::new(LivenessConfig::plan_185_defaults());
-    scheduler.advance_time(wall_ms());
+    let mut scheduler = TunnelLivenessScheduler::new(LivenessConfig::plan_185_defaults());    scheduler.advance_time(wall_ms());
     scheduler
         .register_pair(
             i2pr_tunnel::pool::TunnelSlot::from_raw(1),
@@ -1125,4 +2070,64 @@ fn record_stop_and_baseline(dir: &Path) {
     let action = scheduler.drive();
     assert!(matches!(action, LivenessAction::SendTest { .. }));
     append_evidence(dir, "liveness-first-test", "passed");
+}
+
+#[test]
+fn temp_size_probe() {
+    println!("StreamingManager={}", std::mem::size_of::<StreamingManager>());
+    println!(
+        "DestinationRouting={}",
+        std::mem::size_of::<DestinationRouting>()
+    );
+    println!(
+        "EciesSessionManager={}",
+        std::mem::size_of::<EciesSessionManager>()
+    );
+    println!(
+        "DestinationDispatcher={}",
+        std::mem::size_of::<DestinationDispatcher>()
+    );
+    println!(
+        "DestinationTunnelCoordinator={}",
+        std::mem::size_of::<DestinationTunnelCoordinator>()
+    );
+    println!(
+        "ExploratoryBuildCoordinator={}",
+        std::mem::size_of::<ExploratoryBuildCoordinator>()
+    );
+    println!(
+        "Ssu2DaemonHandle={}",
+        std::mem::size_of::<i2pr_daemon::router_i2np::Ssu2DaemonHandle>()
+    );
+    println!(
+        "RouterDeliveryService={}",
+        std::mem::size_of::<i2pr_daemon::router_i2np::RouterDeliveryService>()
+    );
+    println!("ChaCha8Rng={}", std::mem::size_of::<ChaCha8Rng>());
+    println!("SamClient={}", std::mem::size_of::<SamClient>());
+    println!("I2npMessage={}", std::mem::size_of::<I2npMessage>());
+    println!(
+        "StreamingConfig={}",
+        std::mem::size_of::<StreamingConfig>()
+    );
+    println!(
+        "TransportSendRequest={}",
+        std::mem::size_of::<TransportSendRequest>()
+    );
+    println!(
+        "RemoteDestination={}",
+        std::mem::size_of::<RemoteDestination>()
+    );
+    println!(
+        "TunnelDataMessage={}",
+        std::mem::size_of::<i2pr_proto::TunnelDataMessage>()
+    );
+    println!(
+        "DestinationIdentity={}",
+        std::mem::size_of::<DestinationIdentity>()
+    );
+    // Size of the whole test future (construction runs no code).
+    let fut = streaming_through_i2pd();
+    println!("outer-test-future={}", std::mem::size_of_val(&fut));
+    std::mem::forget(fut);
 }
