@@ -74,21 +74,36 @@ payload`) + `STYLE=RAW` SAM session + `RAW RECEIVED SIZE=N`
 digest equality + `RAW SEND` reply direction. No M6 wire change
 beyond the destination message-plane seam; no `LocalZeroHop`
 substitution; no authentication weakening; inbound-delivery
-layer closed for exact-pinned i2pd 2.61.0. Plan 193 is the
-current executable M6 i2pd mixed-router Streaming qualification
-plan: local rows pass (`streaming_tunnel_unit` 15 +
-`streaming_tunnel_live` 11); one fail-closed external driver
+layer closed for exact-pinned i2pd 2.61.0. Plan 193 closed
+the M6 i2pd mixed-router Streaming qualification: local
+rows pass (`streaming_tunnel_unit` 15 + `streaming_tunnel_live`
+11); one fail-closed external driver
 (`streaming_tunnel_external::streaming_through_i2pd`,
 `#[ignore]`-gated) plus `tests/integration/m6-interop/run-streaming.sh`
-plus `scripts/check-streaming-tunnel-evidence.sh` are landed; the
-external lane is not yet run. Plan 189 is the registered M6 Java
-I2P second-family qualification plan; it lands the fail-closed M6
-mixed-router cross-family ledger/checker/workflow scaffold
+plus `scripts/check-streaming-tunnel-evidence.sh` (33 guarded
+labels, wired into routine CI) all pass; full Direction A
+(i2pr→i2pd STREAM SYN/Established + 25 B + 8192 B digests +
+reverse 23 B + 4096 B digests with live NACK/retransmit
+loss-recovery + sibling + close/EOF + isolation) and Direction B
+(i2pd→i2pr CONNECT/Established + 17 B + 2048 B digests +
+close/EOF) external matrix passes twice on exact head
+`3687189` against exact-pinned i2pd 2.61.0
+(`635b013a612ff47278ef02acf8580a28e10e26c5`). Narrow
+correctives landed inside the plan (no new plan needed; no
+M6 wire change beyond the destination message-plane seam):
+per-turn `poll_acks`/`poll_retransmits` pump drain, fresh SAM
+sockets for ACCEPT/CONNECT, `StreamingReceiveLimit::
+destination_path()` receive bound (reference emits 1812 B
+payloads above our 1730 send advertisement; send path
+unchanged), per-delivery RNG, and 4 KiB SAM read chunks.
+Plan 189 is the registered M6 Java I2P second-family
+qualification plan; it lands the fail-closed M6 mixed-router
+cross-family ledger/checker/workflow scaffold
 (`scripts/check-m6-mixed-router-acceptance-evidence.sh`,
 `tests/integration/m6-interop/run-m6-mixed-router.sh`,
-`.github/workflows/m6-mixed-router-external.yml`) but no
-second-family Java row until Plan 193 closes (Plan 194 owns the
-Java qualification follow-up).
+`.github/workflows/m6-mixed-router-external.yml`). Plan 194
+now owns the Java qualification follow-up (unblocked by
+Plan 193).
 
 ## Purpose
 
@@ -358,12 +373,14 @@ What it **does not** do yet:
 
 - Open NTCP2 listeners (disabled under current authority).
 - Run `Ntcp2RuntimeService` or register `ntcp2-transport`.
-- Claim mixed-router destination/Streaming interop: one-hop
-  builds are accepted by exact-pinned i2pd (Plans 185–186) and
-  the local destination plane passes (Plan 187: 27 unit + 9
-  live rows), but no consumable reference build reply has been
-  observed, so 7 install-dependent rows are blocked pending the
-  Plan 188 narrow corrective.
+- Claim Milestone 6 mixed-router interop: one-hop builds are
+  accepted by exact-pinned i2pd (Plans 185–186), the local
+  destination plane passes (Plan 187: 27 unit + 9 live rows),
+  the inbound-delivery layer is closed for i2pd 2.61.0
+  (Plan 192), and Plan 193 closed the i2pd-family mixed-router
+  Streaming qualification (33/33 external rows twice on exact
+  head 3687189). The cross-family gate still pending is Plan
+  194 (Java I2P second-family qualification).
 - Apply live configuration changes.
 - Drive a live exploratory tunnel build (Plan 107 lands the
   substrate; Plan 108 landed the local architecture but its
