@@ -8,12 +8,12 @@ Plan of record:
 Plan 195 resumes only the two remote service rows left blocked by Plan 181 after the local M10 product and independent local client matrix passed. It must not execute until Plan 194 closes M6 mixed-router interoperability.
 
 ```text
-plan_193 = registered-executable-m6-i2pd-mixed-router-streaming
-plan_194 = registered-blocked-by-plan193
+plan_193 = passed-m6-i2pd-mixed-router-streaming
+plan_194 = registered-executable
 plan_195 = registered-blocked-by-plan194
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
-next_executable_plan = 193
+next_executable_plan = 194
 ```
 
 On Plan 194 pass, Plan 195 becomes executable. On Plan 195 pass:

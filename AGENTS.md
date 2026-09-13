@@ -20,14 +20,15 @@ Plan 192 is the narrower follow-up that landed the i2pd-compatible
 9-byte short-transport inner envelope + i2cp I2CP-style Data body
 + STYLE=RAW SAM session + RAW RECEIVED SIZE=N digest equality
 corrective. The inbound-delivery layer is now closed for
-exact-pinned i2pd 2.61.0. Plan 193 is the current
-executable M6 i2pd mixed-router Streaming qualification plan
-(local rows + external scaffold landed; external lane not yet
-run; the historical `plans/188-m6-mixed-router-streaming-with-i2pd.md`
+exact-pinned i2pd 2.61.0. Plan 193 closed the M6 i2pd
+mixed-router Streaming qualification (full Direction A +
+Direction B external matrix passed twice on exact head
+`3687189`; the historical
+`plans/188-m6-mixed-router-streaming-with-i2pd.md`
 Streaming file remains historical context only and is superseded
 by [`plans/193-m6-i2pd-mixed-router-streaming-qualification.md`](plans/193-m6-i2pd-mixed-router-streaming-qualification.md)).
-Plan 194 (Java I2P second-family qualification) is the next
-executable plan after Plan 193 closes.
+Plan 194 (Java I2P second-family qualification) is the current
+executable plan.
 
 ## Read first
 
@@ -92,9 +93,9 @@ Plan 189 = registered M6 Java second-family qualification and mixed-router closu
 Plan 190 = passed M6 inbound NetDB reply-path tunnel-ID corrective (local rows passed; 3 destination rows flipped blocked -> passed in fresh external run)
 Plan 191 = stopped-by-inbound-delivery-boundary-E (retained-passed via plan192; narrower follow-up registered + closed)
 Plan 192 = passed M6 i2pd-compatible I2CP-style Data body wire-format corrective (9-byte short-transport inner envelope + i2cp I2CP-style Data body + STYLE=RAW SAM session + RAW RECEIVED SIZE=N digest equality; 2 inbound-delivery rows flipped blocked -> passed; inbound-delivery layer closed for i2pd 2.61.0)
-Plan 193 = in-progress M6 i2pd mixed-router Streaming qualification (local rows passed; external scaffold landed; external lane not yet run; static checker wired into CI floor)
-Plan 194 = registered-blocked-by-plan193 M6 Java I2P second-family qualification
-next_executable_plan = 193 (then Plan 194 Java I2P second-family qualification)
+Plan 193 = passed M6 i2pd mixed-router Streaming qualification (local rows passed; full Direction A + Direction B external matrix passed twice on exact head; static checker wired into CI floor)
+Plan 194 = registered-executable M6 Java I2P second-family qualification (unblocked by Plan 193)
+next_executable_plan = 194 (Plan 193 closed; Plan 194 Java I2P second-family qualification)
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
 Milestone 10 generic tunnels = passed-via-plan175 (profile; byte round-trip proven-via-plan182)
 Milestone 10 HTTP proxy = passed-via-plan176 (profile; byte round-trip proven-via-plan182)
@@ -110,13 +111,13 @@ M6 authenticated I2NP preflight = passed-via-plan184 (no tunnel/NetDB/Streaming 
 M6 exploratory one-hop tunnels = passed-via-plan185 (no multi-hop / LeaseSet2 / Streaming claim)
 M6 NetDB lookup/publication = passed-via-plan186 (no LeaseSet2 / Streaming claim)
 M6 destination local product = passed-via-plan187 (27 unit + 9 live rows; no remote claim)
-M6 destination remote interop = installs-proven-lookup-publication-outbound-passed-inbound-delivery-passed-via-plan192 (i2pd only; Java second family + Streaming not yet run)
+M6 destination remote interop = installs-proven-lookup-publication-outbound-passed-inbound-delivery-passed-via-plan192 (i2pd only; Java second family not yet run; Streaming passed-via-plan193)
 M6 inbound NetDB reply-path correction = passed-via-plan190 (typed route + adapter; 3 destination rows flipped blocked -> passed in fresh external run)
 M6 inbound destination delivery boundary E = closed-via-plan192 (i2pd-compatible I2CP-style Data wire-format)
 M6 inbound destination delivery = passed-via-plan192 (i2cp-compatible I2CP-style Data wire-format; STYLE=RAW SAM session; 9-byte short-transport inner envelope)
-M6 i2pd mixed-router Streaming qualification = in-progress-via-plan193 (local rows passed; external scaffold landed; external lane not yet run; static checker wired)
-M6 mixed-router cross-family ledger = landed-via-plan189 (i2pd-only-runs; java-second-family-deferred-until-plan193-streaming-passes)
-next_executable_plan = 193 (then Plan 194 Java I2P second-family qualification)
+M6 i2pd mixed-router Streaming qualification = passed-via-plan193 (full Direction A + Direction B matrix, two exact-head passes; static checker wired)
+M6 mixed-router cross-family ledger = landed-via-plan189 (i2pd-family-passed; java-second-family-now-executable-via-plan194)
+next_executable_plan = 194 (Plan 194 Java I2P second-family qualification)
 next product layer = m6-mixed-router-streaming-with-i2pd
 ```
 
@@ -161,12 +162,12 @@ Read in this order for Milestone 9 I2CP work:
 
 Read in this order for M6 mixed-router Streaming work:
 
-1. [`plans/193-status.md`](plans/193-status.md) — current executable authority (M6 i2pd mixed-router Streaming qualification; local rows passed, external scaffold landed, external lane not yet run)
+1. [`plans/193-status.md`](plans/193-status.md) — closed authority (M6 i2pd mixed-router Streaming qualification; local rows passed, full Direction A + Direction B external matrix passed twice on exact head)
 2. [`plans/193-m6-i2pd-mixed-router-streaming-qualification.md`](plans/193-m6-i2pd-mixed-router-streaming-qualification.md) — Plan of record
 3. [`plans/193-streaming-status.md`](plans/193-streaming-status.md) — M6 i2pd mixed-router Streaming execution status
 4. [`plans/192-status.md`](plans/192-status.md) — Plan 192 i2pd-compatible I2CP-style Data body wire-format corrective (i2pd inbound-delivery layer closed)
 5. [`plans/192-m6-i2cp-wire-format-corrective.md`](plans/192-m6-i2cp-wire-format-corrective.md)
-6. [`plans/194-status.md`](plans/194-status.md) — Java second-family qualification (blocked-by-plan193)
+6. [`plans/194-status.md`](plans/194-status.md) — Java second-family qualification (now executable; unblocked by Plan 193)
 7. The historical `plans/188-m6-mixed-router-streaming-with-i2pd.md` Streaming file is superseded by Plan 193; do not execute it as a numbered plan.
 
 Read in this order for Milestone 10 service-tunnel work:
@@ -195,9 +196,9 @@ Read in this order for Milestone 10 service-tunnel work:
 22. [`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`](plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md)
 23. Do not claim M10 final closure or independent router interop:
     Plan 181 is blocked by the retained M6 mixed-router Streaming
-    debt (`m6-mixed-router-streaming-blocker`); Plan 193 owns the
-    corrective program and Plan 181 resumes only after it produces
-    passing remote rows.
+    debt (`m6-mixed-router-streaming-blocker`); Plan 193 closed the
+    i2pd first-family program with passing remote rows, and Plan 181
+    resumes only after Plan 194 qualifies the Java second family.
 
 Plan 171 corrective (retained): every terminal pre-session I2CP
 rejection terminates TCP explicitly on the common per-connection
@@ -638,9 +639,9 @@ bash tests/integration/m6-interop/run-destination.sh
 bash scripts/check-destination-tunnel-evidence.sh
 ```
 
-Focused M6 mixed-router Streaming seams (Plan 193, current
-executable; local rows passed, external scaffold landed, external
-lane not yet run):
+Focused M6 mixed-router Streaming seams (Plan 193, closed
+`passed-m6-i2pd-mixed-router-streaming`; 33/33 rows green twice on
+exact head `3687189`):
 
 ```text
 cargo test --locked -p i2pr-daemon --test streaming_tunnel_unit -- --test-threads=1
@@ -652,19 +653,18 @@ cargo test --locked -p i2pr-daemon --test streaming_tunnel_external -- --test-th
 cargo test --locked -p i2pr-daemon --test streaming_tunnel_external \
   streaming_through_i2pd -- --ignored --exact --test-threads=1
 # without lane env: fail-closed (missing required env); with lane env:
-# the Streaming SYN/SYN-ACK/data/multipacket rows flip from blocked to
-# passed only when real mixed-router Streaming traffic reaches the
-# reference SAM STREAM ACCEPT socket with digest equality; direct
-# transport is rejected as a counted path; liveness-first-test stays
-# green alongside Streaming activity
+# full Direction A + Direction B matrix passes with digest equality
+# (SYN/Established, 25 B + 8192 B, reverse 23 B + 4096 B, sibling,
+# close/EOF + isolation, B CONNECT/Established + 17 B + 2048 B +
+# close/EOF); direct transport is rejected as a counted path;
+# liveness-first-test stays green alongside Streaming activity
 bash tests/integration/m6-interop/run-streaming.sh
 bash scripts/check-streaming-tunnel-evidence.sh
 ```
 
 Focused M6 mixed-router cross-family seams (Plan 189 §8
-ledger/checker/workflow scaffold; i2pd-only rows run today,
-Java second-family rows blocked until Plan 193 first-family
-Streaming gate is green):
+ledger/checker/workflow scaffold; i2pd first-family passed via
+Plan 193, Java second-family rows now executable via Plan 194):
 
 ```text
 bash scripts/check-m6-mixed-router-acceptance-evidence.sh
@@ -889,11 +889,11 @@ closed.
 - Plan 186 passed the M6 mixed-router NetDB lookup and publication lane (see `plans/186-m6-mixed-router-netdb-lookup-and-publication.md` and `plans/186-status.md`): daemon-owned `NetDbTunnelCoordinator` drives the existing lookup/publication state machines over the Plan 185 pair through the authoritative bounded store (ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded matrices, typed tunnel-loss); exact-pinned i2pd 2.61.0 with `notransit=false,floodfill=true`; 22 unit + 9 live + 12-row external lane + `scripts/check-netdb-tunnel-evidence.sh`. No multi-hop, no destination LeaseSet2 / Streaming claim; Plan 187 landed the destination program (local rows passed, remote gate pending Plan 188).
 - Plan 187 is blocked by the `m6-build-reply-interop-gap` (see `plans/187-m6-remote-leaseset2-and-destination-garlic-routing.md` and `plans/187-status.md`): the daemon-owned `DestinationTunnelCoordinator` with the full local destination message plane is landed (27 unit + 9 live two-role rows including the bidirectional ECIES/Garlic round-trip with sibling isolation over real TunnelData cells; narrow additive seams on the NetDB seam/inbound-dispatch/outbound-lookup/registry, no wire change), and the 21-row external lane proves session, reference build acceptance both directions, SAM DATAGRAM destination, reference LS2 publication, direct rejection, and liveness — but exact-pinned i2pd 2.61.0 emits no consumable ShortTunnelBuildReply (multi-run diagnosis: lossless session, `kind_reply=0`, reference transit acceptance logged), so no tunnel material installs and 7 install-dependent rows are recorded `blocked` with stop provenance. Creator-known keys are never installed without a consumed reply. Plan 188 owns the narrow build-reply corrective; no LeaseSet2/Streaming interop is claimed.
 - Plan 188 is the short-build-reply corrective (see `plans/188-m6-short-build-reply-interop-corrective.md` and `plans/188-status.md`): outbound garlic-unwrap (TunnelGateway + Garlic with OBEP `RGarlicKeyAndTag`) plus inbound forwarded-ShortTunnelBuild consumption in `ExploratoryBuildCoordinator` land consumed-reference installs both directions (`installed_ob=1 installed_ib=1`); 5/7 destination rows flipped to passed and 2/4 destination-message-bound rows + 2 ordering rows were blocked on the inbound delivery layer that Plan 191 owned; no synthesis, no wire change.
-- Plan 193 is the M6 i2pd mixed-router Streaming qualification plan (see `plans/193-m6-i2pd-mixed-router-streaming-qualification.md`, `plans/193-status.md`, and `plans/193-streaming-status.md`): in-progress. Plan 193 supersedes the historical `plans/188-m6-mixed-router-streaming-with-i2pd.md` Streaming file (which remains historical context only). The local rows (`streaming_tunnel_unit` 15 + `streaming_tunnel_live` 11) pass; the fail-closed external driver (`streaming_tunnel_external::streaming_through_i2pd`, `#[ignore]`-gated) plus `tests/integration/m6-interop/run-streaming.sh` plus `scripts/check-streaming-tunnel-evidence.sh` are landed; the external lane is not yet run. No `milestone6_i2pd_streaming_interop = passed-via-plan193` claim. Plan 194 (Java I2P second-family qualification) is blocked-by-plan193 and resumes only after Plan 193 closes.
+- Plan 193 is the M6 i2pd mixed-router Streaming qualification plan (see `plans/193-m6-i2pd-mixed-router-streaming-qualification.md`, `plans/193-status.md`, and `plans/193-streaming-status.md`): closed (`passed-m6-i2pd-mixed-router-streaming`; full Direction A + Direction B external matrix passed twice on exact head `3687189`, 33/33 rows, evidence `passed-via-i2pd-2.61.0`). Plan 193 supersedes the historical `plans/188-m6-mixed-router-streaming-with-i2pd.md` Streaming file (which remains historical context only). Plan 194 (Java I2P second-family qualification) is now executable.
 - Plan 190 is the inbound NetDB reply-path tunnel-ID corrective (see `plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md` and `plans/190-status.md`): typed public `InboundGatewayRoute` (`gateway_router`, `gateway_receive_tunnel`, `local_receive_tunnel`) retained by `i2pr_tunnel::data_plane_registry::DataPlaneRegistry`; daemon-owned `reply_path_for_inbound_route` adapter derives `i2pr_netdb::ReplyPath` only from `(gateway_router, gateway_receive_tunnel)` so the local creator endpoint receive tunnel id is impossible to copy into the encoded `DatabaseLookup.reply_tunnelId`; `i2pr-netdb::ReplyPath`/`build_databaselookup` semantics unchanged. Regression rows in `crates/i2pr-tunnel/src/data_plane_registry.rs` and `crates/i2pr-daemon/tests/destination_tunnel_unit.rs` prove unequal IDs (`0x9601` vs `0x9602`) round-trip through the I2NP codec with the gateway tuple on the wire, and that lifecycle removal cleans the typed route atomically. Local Plan 187/188 suites remain green (`destination_tunnel_unit` 31 passed, `destination_tunnel_live` 9 passed, `exploratory_build_live` 11 passed). A fresh exact-pinned i2pd 2.61.0 external `run-destination.sh` proves 3 destination rows flip `blocked` → `passed`; the corrected lane stops at Plan 190 §6 boundary E (inbound delivery). No M6 wire change; no `milestone6_interoperable = passed-via-plan190` claim.
 - Plan 191 is the inbound destination delivery boundary (see `plans/191-m6-inbound-destination-delivery-boundary.md` and `plans/191-status.md`): Plan 191 ran the inbound-delivery layer and stopped at boundary E per §6; Plan 192 retained-passed the defect. The corrected `run-destination.sh` reached `destination-outbound-delivered cells=1 payload_len=27` then the i2pd SAM bridge never observed a `DATAGRAM RECEIVED` line because i2pd's `ClientDestination::HandleDataMessage` parses an I2CP-style Data header + gzip-wrapped datagram payload but i2pr emitted a raw 16-byte-standard I2NP Data body whose first four bytes were misread as the length field and overflow the available buffer. The test driver no longer panics; `read_line`/`wait_for_datagram` return `Option<...>` and record distinct evidence keys (`reference-received-timeout`, `destination-inbound-send-failed`, `inbound-delivery-boundary-E-stop`). The 2 ordering rows `external-direct-rejected` / `external-liveness-first-test` flip to `passed`. The 2 inbound-delivery rows `external-reference-received` / `external-destination-inbound` stay `blocked` with stop provenance in Plan 191 and flip to `passed` in Plan 192.
 - Plan 192 is the M6 i2pd-compatible I2CP-style Data body wire-format corrective (see `plans/192-m6-i2cp-wire-format-corrective.md` and `plans/192-status.md`): passed. The fix is narrow: switch the inner I2NP envelope inside the ECIES-X25519 Garlic clove from the 16-byte standard form to the 9-byte short-transport form i2pd parses (`Garlic.cpp:1023-1028`); wrap the application payload in the I2CP-style Data body i2pd expects (`length[4 BE] + reserved[4] + fromPort[2 BE] + toPort[2 BE] + padding[1] + protocol[1] + gzip-no-compression-wrapped payload`; `Destination.cpp:1192-1236`); and switch the test SAM session from `STYLE=DATAGRAM` (which needs a 384-byte ElGamal/DSA `from` Identity our ECIES-only i2pr does not have) to `STYLE=RAW` (which uses the inbound destination hash instead of an ElGamal/DSA identity). No M6 wire change beyond the destination message-plane seam; no `LocalZeroHop` substitution; no authentication weakening; no fake LeaseSet. Inbound-delivery layer closed for exact-pinned i2pd 2.61.0; Java second family still pending Plan 194; Plan 193 owns the first-family Streaming qualification.
-- Plan 189 is registered as the M6 Java I2P second-family qualification and mixed-router closure plan (see `plans/189-m6-java-i2p-second-family-qualification-and-closure.md` and `plans/189-status.md`): blocked until Plan 193 (current first-family Streaming qualification) closes. Plan 189 §8 lands the fail-closed M6 mixed-router cross-family ledger/checker/workflow scaffold: `scripts/check-m6-mixed-router-acceptance-evidence.sh` (structural checker that verifies both pins are referenced by every per-layer static checker), `tests/integration/m6-interop/run-m6-mixed-router.sh` (cross-family aggregator that reuses the four per-layer harnesses), and `.github/workflows/m6-mixed-router-external.yml` (manual `workflow_dispatch` lane that fetches i2pd + Java deps and runs the structural checker + per-layer checkers + cross-family aggregator). The cross-family aggregator binds each guarded row to a family (`-i2pd` / `-java`) plus an executed per-layer command exit code; the Java rows are recorded `failed` with stop provenance until a follow-up plan lands the second-family Java qualification harness under `tests/integration/m6-interop/run-java.sh`. No M6 wire change; no claim that the i2pd first family has passed (the Plan 188 lookup gap closed via Plan 190; the inbound-delivery gap closed via Plan 192).
+- Plan 189 is registered as the M6 Java I2P second-family qualification and mixed-router closure plan (see `plans/189-m6-java-i2p-second-family-qualification-and-closure.md` and `plans/189-status.md`): now executable after Plan 193 closed the first-family gate. Plan 189 §8 lands the fail-closed M6 mixed-router cross-family ledger/checker/workflow scaffold: `scripts/check-m6-mixed-router-acceptance-evidence.sh` (structural checker that verifies both pins are referenced by every per-layer static checker), `tests/integration/m6-interop/run-m6-mixed-router.sh` (cross-family aggregator that reuses the four per-layer harnesses), and `.github/workflows/m6-mixed-router-external.yml` (manual `workflow_dispatch` lane that fetches i2pd + Java deps and runs the structural checker + per-layer checkers + cross-family aggregator). The cross-family aggregator binds each guarded row to a family (`-i2pd` / `-java`) plus an executed per-layer command exit code; the Java rows are recorded `failed` with stop provenance until a follow-up plan lands the second-family Java qualification harness under `tests/integration/m6-interop/run-java.sh`. No M6 wire change; no claim that the i2pd first family has passed (the Plan 188 lookup gap closed via Plan 190; the inbound-delivery gap closed via Plan 192).
 - SAM stays experimental, loopback-only, disabled by default, and non-advertised.
 - SSU2 public advertisement/public-network participation is not claimed.
 - No Plan 161 direction-A evidence implies Milestone 6 destination/Streaming/tunnel interoperability or broad router interoperability.
@@ -911,34 +911,24 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plan 193 is the current executable M6 i2pd
-mixed-router Streaming qualification plan
-(see `plans/193-status.md` and `plans/193-streaming-status.md`):
-incremental scaffolding landed — 15 unit + 11 live two-role
-rows in
-`crates/i2pr-daemon/tests/streaming_tunnel_unit.rs` +
-`crates/i2pr-daemon/tests/streaming_tunnel_live.rs`; one
-fail-closed external driver
-`crates/i2pr-daemon/tests/streaming_tunnel_external.rs::streaming_through_i2pd`
-with `#[ignore]` gating; one runner
-`tests/integration/m6-interop/run-streaming.sh`; one static
-evidence checker `scripts/check-streaming-tunnel-evidence.sh`
-(22 guarded labels wired through `m6_row` / `m6_key_row` /
-`ref_row` / `blocked_row` / `record_guarded` only, rejects
-literal pass records); `scripts/check-streaming-tunnel-evidence.sh`
-is wired into the static build/test floor; `plan_193_streaming_checker_passed`.
-The Plan 189 §8 cross-family aggregator
-(`run-m6-mixed-router.sh`) binds every Plan 189 §8 guarded row
-to a family (`-i2pd` / `-java`) plus an executed per-layer
-command exit code. Local Plan 187/188/190/191/192 suites remain
-green (`destination_tunnel_unit` 32 passed,
-`destination_tunnel_live` 9 passed, `tunnel_liveness` 7
-passed, `exploratory_build_live` 11 passed,
-`streaming_tunnel_unit` 15 passed, `streaming_tunnel_live`
-11 passed). Plan 192 closed the inbound-delivery layer for
-i2pd 2.61.0. Plan 194 (Java I2P second-family qualification) is
-blocked-by-plan193 and resumes only after the i2pd first-family
-Streaming gate is green. The historical
-`plans/188-m6-mixed-router-streaming-with-i2pd.md` Streaming
-file remains historical context only and is superseded by Plan
-193. M10 final acceptance stays open.**
+Current handoff: **Plan 193 is closed
+(`passed-m6-i2pd-mixed-router-streaming`; see `plans/193-status.md`
+and `plans/193-streaming-status.md`): full Direction A +
+Direction B external matrix passed twice on exact head `3687189`
+(33/33 rows, evidence `passed-via-i2pd-2.61.0`) — Direction A
+SYN/Established + 25 B + 8192 B digests + reverse 23 B + 4096 B
+digests (with live NACK/retransmit loss-recovery) + sibling +
+close/EOF + isolation; Direction B CONNECT/Established + 17 B +
+2048 B digests + close/EOF; manager cleanup + SSU2 baselines zero.
+Narrow correctives landed inside the plan: per-turn
+`poll_acks`/`poll_retransmits` pump drain, fresh SAM sockets for
+ACCEPT/CONNECT, `StreamingReceiveLimit::destination_path()`
+receive bound (reference emits 1812 B payloads; send path
+unchanged), per-delivery RNG, 4 KiB SAM reads. Static checker
+`scripts/check-streaming-tunnel-evidence.sh` guards 33 labels and
+is wired into the floor. Workspace floor green on the closing
+head (fmt/check/2312-test/clippy/doc/static/deny). Plan 194 (Java
+I2P second-family qualification) is now executable. The
+historical `plans/188-m6-mixed-router-streaming-with-i2pd.md`
+Streaming file remains historical context only. M10 final
+acceptance stays open.**

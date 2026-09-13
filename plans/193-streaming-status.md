@@ -1,8 +1,9 @@
 # Plan 193 status — M6 i2pd mixed-router Streaming qualification (execution log)
 
-Status: **direction-A-qualified** (local rows passed; Direction A
-external lane passed end-to-end on exact-head `2f3e510`; Direction
-B / close / siblings / reverse-data external rows not yet run).
+Status: **passed-m6-i2pd-mixed-router-streaming** (local rows
+passed; full Direction A + Direction B external matrix passed
+end-to-end on exact-head `3687189`, two complete passes; §14.9
+robustness disposition recorded below).
 
 Plan of record:
 [`plans/193-m6-i2pd-mixed-router-streaming-qualification.md`](193-m6-i2pd-mixed-router-streaming-qualification.md).
@@ -18,23 +19,21 @@ plan number registered in `plans/193-status.md`.
 ```text
 streaming_local_unit = passed (15 rows, streaming_tunnel_unit)
 streaming_local_live = passed (11 rows, streaming_tunnel_live)
-streaming_external_driver = passed-direction-A
+streaming_external_driver = passed-full-matrix
   (streaming_tunnel_external::streaming_through_i2pd, ignored-gated;
-  exact-head 2f3e510 lane green: SYN-accepted + Established +
-  25 B digest + 8192 B digest, i2pr -> i2pd)
-streaming_external_lane = direction-A-passed
-  (run-streaming.sh 22/22 rows green incl. workspace-gates slice;
-  evidence.json m6_streaming = passed-via-i2pd-2.61.0 on 2f3e510)
-streaming_external_remaining = direction-B-establish,
-  reverse-data-digest, close-half-close, siblings
-  (not yet executed; driver ends after multipacket + baselines)
-m6_streaming_i2pd = direction-A-qualified (NOT passed-via-plan193;
-  full §14 matrix requires the remaining rows)
-m6_second_family_java = not-yet-started (Plan 194, blocked until this pass closes)
+  exact-head 3687189 lane green twice: Direction A SYN + Established
+  + 25 B + 8192 B digests + reverse 23 B + 4096 B digests + sibling
+  + close/EOF + isolation; Direction B CONNECT + Established + 17 B
+  + 2048 B digests + close/EOF; manager cleanup queued=0 delivered=0)
+streaming_external_lane = passed
+  (run-streaming.sh 33/33 rows green incl. workspace-gates slice;
+  evidence.json m6_streaming = passed-via-i2pd-2.61.0 on 3687189,
+  two complete passes)
+streaming_external_remaining = none
+m6_streaming_i2pd = passed-via-plan193
+m6_second_family_java = not-yet-started (Plan 194, now executable)
 milestone6_interoperable = not-yet-claimed
-next_step = extend the external driver (Direction B / reverse data /
-  close / siblings) or record explicit §14.9 justification, then
-  re-run the lane for the full matrix
+next_step = Plan 194 Java I2P second-family qualification
 ```
 
 ## Source floor
@@ -54,7 +53,12 @@ corrective. The Direction A qualification additionally landed narrow
 wire-compatibility correctives (ECIES block types/flags, clove
 order + inbound selection, short-transport opaque framing,
 general-deflate I2CP decode, per-delivery tunnel message ids);
-see Stop provenance below. No SSU2/tunnel/NetDB/LeaseSet2 wire change.
+the full-matrix closure additionally landed the per-turn
+ACK/retransmit pump drain, fresh SAM sockets for ACCEPT/CONNECT,
+the `destination_path()` receive bound, and the 4 KiB SAM read
+hygiene (see Stop provenance items 9-15). No SSU2/tunnel/NetDB/
+LeaseSet2 wire change; the only production-semantic change is the
+receive-side acceptance bound (send path unchanged).
 
 ## What landed
 
@@ -104,13 +108,13 @@ already binds the i2pd first-family streaming rows through
 recorded `failed` with stop provenance until a follow-up plan
 lands the Java qualification harness. No M6 wire change.
 
-## Executed evidence (exact-head 2f3e510)
+## Executed evidence (exact-head 3687189, two complete passes)
 
 ```text
-bash tests/integration/m6-interop/run-streaming.sh
-# LANE_EXIT=0; evidence.json m6_streaming = passed-via-i2pd-2.61.0
-# 22/22 rows passed (local suites + Direction A external matrix +
-# workspace-gates slice); evidence bound to 2f3e510
+bash tests/integration/m6-interop/run-streaming.sh  # PASS1=0
+bash tests/integration/m6-interop/run-streaming.sh  # PASS2=0
+# evidence.json m6_streaming = passed-via-i2pd-2.61.0, 33/33 rows
+# passed, evidence bound to 3687189
 cargo test --locked -p i2pr-daemon --test streaming_tunnel_unit -- --test-threads=1
 # 15 passed
 cargo test --locked -p i2pr-daemon --test streaming_tunnel_live -- --test-threads=1
@@ -125,42 +129,71 @@ cargo test --locked -p i2pr-daemon --test netdb_tunnel_unit -- --test-threads=1
 # 22 passed
 cargo test --locked -p i2pr-daemon --test netdb_tunnel_live -- --test-threads=1
 # 9 passed
+cargo test --locked -p i2pr-daemon --test exploratory_build_unit -- --test-threads=1
+# 15 passed
 cargo test --locked -p i2pr-daemon --test exploratory_build_live -- --test-threads=1
 # 11 passed
 cargo test --locked -p i2pr-daemon --lib tunnel_liveness -- --test-threads=1
 # 7 passed
-cargo test --locked -p i2pr-daemon --test destination_tunnel_external \
-  destination_message_plane_against_i2pd -- --ignored --exact --test-threads=1
-# ok (Plan 192 destination lane re-verified against the same fixes)
+cargo test --locked --workspace --all-targets -- --test-threads=1
+# 95 suites, 2312 passed, 0 failed, 7 ignored
 cargo fmt --all --check
 # clean
-cargo clippy --locked -p i2pr-proto --all-targets -- -D warnings
+cargo check --locked --workspace --all-targets
+# 0 errors
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 # clean
-cargo clippy --locked -p i2pr-client --all-targets -- -D warnings
-# clean
-cargo clippy --locked -p i2pr-daemon --test streaming_tunnel_external \
-  --test destination_tunnel_external -- -D warnings
-# clean
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
+# clean (one private intra-doc link from the Direction A commit fixed)
+cargo test --locked --workspace --doc
+# ok
 bash scripts/check-streaming-tunnel-evidence.sh
-# passed (22 guarded labels, helpers wired)
+# passed (33 guarded labels, helpers wired)
 bash scripts/check-m6-mixed-router-acceptance-evidence.sh
 # passed (11 guarded labels, two-family pins verified)
-bash scripts/check-destination-tunnel-evidence.sh
-# passed (21 guarded labels)
+bash scripts/check-destination-tunnel-evidence.sh + check-netdb-tunnel-evidence.sh
+# passed
 bash scripts/check-dependency-direction.sh + check-runtime-boundaries.sh
++ check-service-tunnel-boundaries.sh + check-fixture-manifest.sh
++ check-{ntcp2,ssu2,i2cp}-vectors.sh + check-ntcp2-interoperability.sh
++ check-constrained-host-lane-boundary.sh + check-sam-acceptance-evidence.sh
++ check-ssu2-acceptance-evidence.sh + check-i2cp-acceptance-evidence.sh
++ check-service-tunnel-acceptance-evidence.sh
 # ok
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
+# ok
+cargo deny check advisories bans sources
+# advisories ok, bans ok, sources ok
 ```
 
-Direction A external rows proven (exact-pinned i2pd 2.61.0
+External matrix proven (exact-pinned i2pd 2.61.0
 `635b013a612ff47278ef02acf8580a28e10e26c5`, loopback-only):
-SYN-accepted + Established + 25 B digest (`6f574c...c60d68`)
-+ 8192 B / 8-fragment digest (`25df24...dacb2f80`) i2pr -> i2pd
-through real one-hop tunnels, with the reference `Incoming
-stream` + SYN-ACK + QuickAck + SAM ACCEPT delivery on its side.
-No `external-*` row beyond Direction A is claimed (passed,
-blocked, or otherwise) in this status.
+
+```text
+Direction A i2pr -> i2pd (real one-hop tunnels both ways):
+  SYN-accepted + Established
+  25 B digest 6f574c...c60d68 (peer_line_len=524)
+  8192 B / 8-fragment digest 25df24...dacb2f80
+  reverse 23 B digest 79bb58...172c763e
+  reverse 4096 B digest b88349...e467b27a7 (live loss-recovery, see §14.9)
+  sibling established + 23 B digest 7bc5bc...034ed (own ACCEPT socket)
+  close state=Closed eof=true
+  sibling-isolated 23 B digest 2d5103...0530b13c
+Direction B i2pd -> i2pr (normal wildcard-0 listener/accept):
+  established attempts=1
+  17 B digest 6f28af...1429a5b139
+  reverse 2048 B / 2-fragment digest 3b5bfe...2f83e
+  close state=Closed eof=true
+Reference-side: transit endpoint + gateway created, LS2 stored x2,
+  8 tunnel tests ok, 2 Incoming-stream acceptances
+Cleanup: manager connections=3(Closed) queued=0 delivered=0,
+  SSU2 pending/active zero, liveness first-test green
+```
 
 ## Stop provenance (all hit and corrected during this lane)
+
+Direction A stops (retained-passed via commits `7dcfb0b`,
+`7abb5c7`, `2f3e510`; see prior handoff):
 
 1. `SYN-ACK never established` with `dispatch_outcome =
    Rejected(Session(Ecies(AuthenticationFailed)))` on early runs:
@@ -202,17 +235,65 @@ blocked, or otherwise) in this status.
    2.61.0. Corrected `run-streaming.sh` to count the emitted
    `Streaming: Incoming stream from ` line.
 
+Full-matrix stops (corrected in closing commit `c4aa5f1`):
+
+9. Test-thread stack overflow at first poll: the 64 KiB
+   `SamClient` stack read arrays inflated every enclosing future
+   state past the 2 MiB test-thread stack (the old driver sat
+   just under the limit). Driver hygiene fix: 4 KiB stack reads
+   (loopback SAM replays the same bytes with more syscalls; zero
+   semantic change).
+10. Reverse-multipacket stall (`next_expected=2, highest=4`):
+    the external pump never called `poll_acks` /
+    `poll_retransmits`, and polled them only after inbound
+    arrivals — a quiet reference awaiting our delayed ACK
+    deadlocked a pump awaiting its next message. Driver runtime
+    fix: `drain_streaming_timers` on every pump turn (commit
+    message in `c4aa5f1`; no production change — the manager API
+    already owned both polls).
+11. `Codec/PayloadOverflow(1812>1730)` x8: the reference emits
+    streaming data payloads larger than our 1730-byte
+    advertisement. Narrow product corrective (Plan 193 §13, no
+    new plan: no wire bytes change, acceptance bound only):
+    `StreamingReceiveLimit::destination_path()` bounds receives
+    by the I2CP Data body ungzipped-output ceiling (61,440;
+    anything bigger cannot physically arrive); send path still
+    advertises and enforces 1730. Pinned by
+    `destination_path_accepts_reference_sized_payloads`; the
+    `default()` bound and all its assertions are unchanged.
+12. `SESSION STATUS` (first_token=SESSION) answering `STREAM
+    CONNECT`: `SAM.cpp::ProcessStreamConnect` rejects CONNECT on
+    the bound session socket. Driver fix: dedicated fresh SAM
+    socket for CONNECT (same reason as ACCEPT).
+13. STATUS OK racing SYN arrival: i2pd answers CONNECT before the
+    SYN traverses the tunnel. Driver fix: bounded post-STATUS
+    accept-drain reusing the normal backlog path (no injection).
+14. `send B reverse data: PayloadTooLarge (2048 > 1730)`: driver
+    bug (correct manager rejection of one oversized send).
+    Driver fix: 2x1024 chunks like the forward path.
+15. `cargo doc` failure (private intra-doc link from the
+    Direction A commit): one-word doc fix in `i2np/message.rs`.
+
+## §14.9 robustness disposition
+
+`drop-data-retransmit`, `reorder-two-packets`, and
+`duplicate-packet` were exercised LIVE against the reference:
+the 4096 B reverse transfer lost sequence 2 in transit; the
+pump's NACK + `poll_retransmits` path recovered it with
+byte-exact digest equality; reordered 3,4 buffered then
+delivered in order; reference retransmits deduplicated (Plan 152
+D2 immediate-ACK path). `reference-disconnect-bounded` is proven
+by the both-direction close rows (`Closed` + reference socket
+EOF within 15 s). `stalled-reader-bounded` stays covered by the
+retained local deterministic suites (Plan 152 over-cap snooze +
+`poll_acks` gating rows in `streaming/manager.rs`,
+`recv_window.rs`). `clean-resource-baseline` is proven by the
+`manager-cleanup` (`queued=0 delivered=0`) + `shutdown-baseline`
++ `liveness-first-test` rows. No packet-manipulating harness was
+built and no reference was patched, per §8.
+
 ## Next
 
-1. Extend the external driver with Direction B (i2pd initiator ->
-   i2pr wildcard-0 listener/accept), reverse-direction data, and
-   close/half-close + sibling rows for the full §8 matrix (or
-   record the explicit §14.9 justification for retained local
-   equivalents).
-2. Re-run `bash tests/integration/m6-interop/run-streaming.sh`
-   for the full matrix on the new head.
-3. On green i2pd family: close Plan 193 per `plans/193-status.md`
-   (`plan_193 = passed-m6-i2pd-mixed-router-streaming`,
-   `next_executable_plan = 194`) and unblock Plan 194 (Java
-   second-family qualification); M10 remote service interop
-   stays open until then.
+Plan 193 is closed. Plan 194 (Java I2P second-family
+qualification) is executable; M10 remote service interop stays
+open until then.
