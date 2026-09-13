@@ -263,6 +263,28 @@ impl Default for StreamingReceiveLimit {
     }
 }
 
+impl StreamingReceiveLimit {
+    /// Receive bound for packets arriving through the destination
+    /// path (Plan 193 §13 narrow wire-compatibility corrective).
+    /// Exact-pinned i2pd 2.61.0 emits streaming data payloads larger
+    /// than our 1730-byte advertisement (observed 1812 bytes on the
+    /// mixed-router lane); the reference packetizes by its own path
+    /// MTU and Java-heritage peers accept full-message-sized
+    /// packets. The destination path physically bounds every packet
+    /// by the I2CP Data body ungzipped-output ceiling, so this bound
+    /// accepts anything that can arrive while staying finite. The
+    /// send path is unchanged: we still advertise and emit at most
+    /// 1730 bytes per packet.
+    pub const fn destination_path() -> Self {
+        Self {
+            max_packet_bytes: crate::MAX_I2CP_DATA_BODY_PAYLOAD,
+            max_option_bytes: MAX_STREAMING_OPTION_BYTES,
+            max_nack_count: MAX_STREAMING_NACK_COUNT,
+            max_payload_bytes: crate::MAX_I2CP_DATA_BODY_PAYLOAD,
+        }
+    }
+}
+
 /// Caller-supplied encoder limits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamingSendLimit {
@@ -1263,6 +1285,64 @@ mod tests {
         let error = decode_streaming_packet(
             &bytes,
             StreamingReceiveLimit::default(),
+            StreamingOptionDecodeContext::anonymous(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            StreamingPacketError::PayloadOverflow { .. }
+        ));
+    }
+
+    #[test]
+    fn destination_path_accepts_reference_sized_payloads() {
+        // Plan 193 §13: exact-pinned i2pd 2.61.0 emits streaming data
+        // payloads larger than our 1730-byte advertisement (observed
+        // 1812 bytes). The destination-path bound accepts them while
+        // the default bound keeps rejecting, and anything above the
+        // I2CP Data body ceiling stays rejected.
+        let builder = StreamingPacketBuilder {
+            send_stream_id: 7,
+            receive_stream_id: 9,
+            sequence_num: 2,
+            ack_through: 1,
+            nacks: Vec::new(),
+            resend_delay: 0,
+            flags: StreamingFlags::empty(),
+            option_bytes: Vec::new(),
+            payload: vec![0xA5u8; 1812],
+        };
+        let encoded = encode_streaming_packet(
+            &builder,
+            StreamingSendLimit {
+                max_packet_bytes: crate::MAX_I2CP_DATA_BODY_PAYLOAD,
+                max_option_bytes: MAX_STREAMING_OPTION_BYTES,
+                max_nack_count: MAX_STREAMING_NACK_COUNT,
+                max_payload_bytes: crate::MAX_I2CP_DATA_BODY_PAYLOAD,
+            },
+        )
+        .unwrap();
+        assert!(
+            decode_streaming_packet(
+                &encoded,
+                StreamingReceiveLimit::default(),
+                StreamingOptionDecodeContext::anonymous(),
+            )
+            .is_err(),
+            "default bound still rejects above-advertisement payloads"
+        );
+        let (packet, _) = decode_streaming_packet(
+            &encoded,
+            StreamingReceiveLimit::destination_path(),
+            StreamingOptionDecodeContext::anonymous(),
+        )
+        .unwrap();
+        assert_eq!(packet.payload.len(), 1812);
+        assert_eq!(packet.sequence_num, 2);
+        let huge = vec![0_u8; crate::MAX_I2CP_DATA_BODY_PAYLOAD + 1];
+        let error = decode_streaming_packet(
+            &huge,
+            StreamingReceiveLimit::destination_path(),
             StreamingOptionDecodeContext::anonymous(),
         )
         .unwrap_err();

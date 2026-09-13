@@ -190,7 +190,10 @@ impl SamClient {
             if tokio::time::Instant::now() >= deadline {
                 return None;
             }
-            let mut chunk = [0u8; 65536];
+            // 4 KiB stack reads: the 64 KiB form put 64 KiB into every
+            // enclosing future state (clippy::large_futures). Loopback
+            // SAM traffic replays the same bytes with more syscalls.
+            let mut chunk = [0u8; 4096];
             let read = tokio::time::timeout(deadline - tokio::time::Instant::now(), async {
                 use tokio::io::AsyncReadExt as _;
                 self.stream.read(&mut chunk).await
@@ -221,7 +224,8 @@ impl SamClient {
             if tokio::time::Instant::now() >= deadline {
                 return None;
             }
-            let mut chunk = [0u8; 65536];
+            // 4 KiB stack reads (see read_line).
+            let mut chunk = [0u8; 4096];
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let read = tokio::time::timeout(remaining, async {
                 use tokio::io::AsyncReadExt as _;
@@ -240,10 +244,7 @@ impl SamClient {
 
     async fn write_bytes(&mut self, data: &[u8]) {
         use tokio::io::AsyncWriteExt as _;
-        self.stream
-            .write_all(data)
-            .await
-            .expect("SAM stream write");
+        self.stream.write_all(data).await.expect("SAM stream write");
     }
 
     /// Non-blocking reply-line poll for interleaving SAM control reads
@@ -306,7 +307,8 @@ impl SamClient {
             if tokio::time::Instant::now() >= deadline {
                 return false;
             }
-            let mut chunk = [0u8; 65536];
+            // 4 KiB stack reads (see read_line).
+            let mut chunk = [0u8; 4096];
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let read = tokio::time::timeout(remaining, async {
                 use tokio::io::AsyncReadExt as _;
@@ -319,6 +321,123 @@ impl SamClient {
                 _ => return false,
             }
         }
+    }
+}
+
+fn adapter_error_name(error: &i2pr_client::StreamingAdapterError) -> String {
+    match error {
+        i2pr_client::StreamingAdapterError::PayloadTooLarge { .. } => "PayloadTooLarge".to_owned(),
+        i2pr_client::StreamingAdapterError::EmptyPayload => "EmptyPayload".to_owned(),
+        i2pr_client::StreamingAdapterError::DataCodec(_) => "DataCodec".to_owned(),
+        i2pr_client::StreamingAdapterError::Send(_) => "Send".to_owned(),
+        i2pr_client::StreamingAdapterError::Tunnel(_) => "Tunnel".to_owned(),
+        i2pr_client::StreamingAdapterError::UnknownDestination(_) => {
+            "UnknownDestination".to_owned()
+        }
+        i2pr_client::StreamingAdapterError::NotI2npData => "NotI2npData".to_owned(),
+        i2pr_client::StreamingAdapterError::ClientPayload(_) => "ClientPayload".to_owned(),
+        i2pr_client::StreamingAdapterError::I2cpDataBody(_) => "I2cpDataBody".to_owned(),
+        i2pr_client::StreamingAdapterError::Streaming(inner) => match inner {
+            i2pr_client::streaming::StreamingManagerError::Codec(codec) => match codec {
+                i2pr_proto::streaming::StreamingPacketError::TrailingBytes => {
+                    "Codec/TrailingBytes".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::Truncated => {
+                    "Codec/Truncated".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::OptionOverflow { .. } => {
+                    "Codec/OptionOverflow".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::NackOverflow { .. } => {
+                    "Codec/NackOverflow".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::LengthExceeded { .. } => {
+                    "Codec/LengthExceeded".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::SynMissingFrom => {
+                    "Codec/SynMissingFrom".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::SynMissingSignature => {
+                    "Codec/SynMissingSignature".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::SynMissingMaxPacketSize => {
+                    "Codec/SynMissingMaxPacketSize".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::SynMissingReplayBinding => {
+                    "Codec/SynMissingReplayBinding".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::ReservedFlagBits(_) => {
+                    "Codec/ReservedFlagBits".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::SignatureLengthMismatch { .. } => {
+                    "Codec/SignatureLengthMismatch".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::SynReplayNackCountMismatch {
+                    ..
+                } => "Codec/SynReplayNackCountMismatch".to_owned(),
+                i2pr_proto::streaming::StreamingPacketError::ArithmeticOverflow => {
+                    "Codec/ArithmeticOverflow".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::SignatureMissing => {
+                    "Codec/SignatureMissing".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::SignatureInvalid => {
+                    "Codec/SignatureInvalid".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::SignatureContextUnavailable => {
+                    "Codec/SignatureContextUnavailable".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::UnsupportedOfflineSignature => {
+                    "Codec/UnsupportedOfflineSignature".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::CloseMissingSignature => {
+                    "Codec/CloseMissingSignature".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::ResetMissingSignature => {
+                    "Codec/ResetMissingSignature".to_owned()
+                }
+                i2pr_proto::streaming::StreamingPacketError::PayloadOverflow {
+                    declared,
+                    maximum,
+                } => {
+                    format!("Codec/PayloadOverflow({declared}>{maximum})")
+                }
+            },
+            i2pr_client::streaming::StreamingManagerError::Config(_) => {
+                "Streaming/Config".to_owned()
+            }
+            i2pr_client::streaming::StreamingManagerError::ConnectionTableFull => {
+                "Streaming/ConnectionTableFull".to_owned()
+            }
+            i2pr_client::streaming::StreamingManagerError::ListenerBacklogFull => {
+                "Streaming/ListenerBacklogFull".to_owned()
+            }
+            i2pr_client::streaming::StreamingManagerError::PortAlreadyInUse => {
+                "Streaming/PortAlreadyInUse".to_owned()
+            }
+            i2pr_client::streaming::StreamingManagerError::UnknownConnection => {
+                "Streaming/UnknownConnection".to_owned()
+            }
+            i2pr_client::streaming::StreamingManagerError::InvalidConnectionState => {
+                "Streaming/InvalidConnectionState".to_owned()
+            }
+            i2pr_client::streaming::StreamingManagerError::NoMatchingListener { .. } => {
+                "Streaming/NoMatchingListener".to_owned()
+            }
+            i2pr_client::streaming::StreamingManagerError::PortTupleMismatch { .. } => {
+                "Streaming/PortTupleMismatch".to_owned()
+            }
+            i2pr_client::streaming::StreamingManagerError::Streaming(_) => {
+                "Streaming/Streaming".to_owned()
+            }
+            i2pr_client::streaming::StreamingManagerError::I2npCodec(_) => {
+                "Streaming/I2npCodec".to_owned()
+            }
+            i2pr_client::streaming::StreamingManagerError::RandomnessUnavailable => {
+                "Streaming/RandomnessUnavailable".to_owned()
+            }
+            _ => "Streaming/Other".to_owned(),
+        },
     }
 }
 
@@ -358,19 +477,19 @@ async fn pump_one_streaming_inbound(
     rng: &mut ChaCha8Rng,
     from_hash: &[u8; 32],
     errors: &mut u64,
+    pump_evidence_dir: &Path,
 ) -> bool {
     let next = tokio::time::timeout(POLL_INTERVAL, handle.next_inbound()).await;
     let Ok(Some(inbound)) = next else {
         return false;
     };
-    let message =
-        match I2npMessage::decode_short_transport(&inbound.bytes, MAX_I2NP_PAYLOAD_SIZE) {
-            Ok(message) => message,
-            Err(_) => {
-                *errors += 1;
-                return false;
-            }
-        };
+    let message = match I2npMessage::decode_short_transport(&inbound.bytes, MAX_I2NP_PAYLOAD_SIZE) {
+        Ok(message) => message,
+        Err(_) => {
+            *errors += 1;
+            return false;
+        }
+    };
     let cell = match message.body() {
         I2npBody::TunnelData(cell) => cell.clone(),
         _ => return false,
@@ -400,19 +519,173 @@ async fn pump_one_streaming_inbound(
         wall_ms(),
     ) {
         Ok(_) => {}
-        Err(_) => {
+        Err(error) => {
             *errors += 1;
+            // Variant name only (never contents): counts/diagnostics
+            // are §10-allowed; hashes/payloads never reach evidence.
+            append_evidence(
+                pump_evidence_dir,
+                "pump-adapter-error",
+                &adapter_error_name(&error),
+            );
             return false;
         }
     }
     let pending = streaming.drain_outbound();
     for request in &pending {
         send_transport_request(
-            request, routing, session, outbound, local_identity, local_ls2, delivery, rng,
+            request,
+            routing,
+            session,
+            outbound,
+            local_identity,
+            local_ls2,
+            delivery,
+            rng,
         )
         .await;
     }
+    drain_streaming_timers(
+        streaming,
+        routing,
+        session,
+        outbound,
+        local_identity,
+        local_ls2,
+        delivery,
+        rng,
+        pump_evidence_dir,
+    )
+    .await;
     true
+}
+
+/// Drains manager timer outputs (coalesced standalone ACKs behind
+/// their delayed deadline, RTO-gated retransmits) through the real
+/// outbound tunnel. Must run on EVERY pump turn — including turns
+/// with no inbound arrival — or a quiet peer waiting for our ACK
+/// deadlocks against a pump waiting for the peer's next message.
+#[allow(clippy::too_many_arguments)]
+async fn drain_streaming_timers(
+    streaming: &mut StreamingManager,
+    routing: &mut DestinationRouting,
+    session: &mut EciesSessionManager,
+    outbound: &DestinationOutboundRole,
+    local_identity: &DestinationIdentity,
+    local_ls2: &i2pr_proto::LeaseSet2,
+    delivery: &i2pr_daemon::router_i2np::RouterDeliveryService,
+    rng: &mut ChaCha8Rng,
+    pump_evidence_dir: &Path,
+) {
+    // The manager coalesces data-triggered standalone ACKs behind a
+    // delayed deadline and RTO-gates retransmits; neither emits by
+    // itself. A faithful runtime drains both on every pump turn so
+    // the reference's send window advances (without this, one-way
+    // bulk reference -> i2pr stalls after the initial window).
+    let now_ms = wall_ms();
+    let mut acks_sent = 0u64;
+    for request in streaming.poll_acks(now_ms) {
+        acks_sent += 1;
+        send_transport_request(
+            &request,
+            routing,
+            session,
+            outbound,
+            local_identity,
+            local_ls2,
+            delivery,
+            rng,
+        )
+        .await;
+    }
+    if acks_sent > 0 {
+        append_evidence(
+            pump_evidence_dir,
+            "pump-acks-sent",
+            &format!("count={acks_sent}"),
+        );
+    }
+    for request in streaming.poll_retransmits(now_ms) {
+        send_transport_request(
+            &request,
+            routing,
+            session,
+            outbound,
+            local_identity,
+            local_ls2,
+            delivery,
+            rng,
+        )
+        .await;
+    }
+}
+
+/// Accepts one inbound SYN from the wildcard listener backlog (if
+/// present) through the normal accept path and returns the SYN
+/// response through the real outbound tunnel. Returns the accepted
+/// connection id, or `None` when the backlog is empty. No listener or
+/// accept state is injected; the caller must have bound the listener.
+#[allow(clippy::too_many_arguments)]
+async fn accept_inbound_syn_response(
+    streaming: &mut StreamingManager,
+    local_identity: &DestinationIdentity,
+    routing: &DestinationRouting,
+    session: &mut EciesSessionManager,
+    outbound: &DestinationOutboundRole,
+    local_ls2: &i2pr_proto::LeaseSet2,
+    delivery: &i2pr_daemon::router_i2np::RouterDeliveryService,
+    rng: &mut ChaCha8Rng,
+) -> Option<i2pr_client::streaming::connection::ConnectionId> {
+    if streaming.listener_backlog(0) < 1 {
+        return None;
+    }
+    let inbound_id = streaming.accept(0).expect("accept inbound SYN");
+    let (peer_bytes, peer_key, inbound_local, inbound_remote) = {
+        let inbound = streaming
+            .get_connection(inbound_id)
+            .expect("inbound connection");
+        (
+            inbound
+                .peer_destination()
+                .cloned()
+                .expect("peer destination retained")
+                .encode_to_vec(65535)
+                .expect("encode peer destination"),
+            inbound.peer_signing_key().clone(),
+            inbound.local_port(),
+            inbound.remote_port(),
+        )
+    };
+    let peer_hash = *i2pr_crypto::sha256(&peer_bytes).as_bytes();
+    let inbound_remote_desc = RemoteDestination {
+        destination_hash: peer_hash,
+        signing_public_key: peer_key,
+        static_public_key: [0u8; 32],
+    };
+    let syn_response = streaming
+        .accept_inbound_syn(
+            local_identity,
+            &inbound_remote_desc,
+            inbound_id,
+            inbound_local,
+            inbound_remote,
+            DEFAULT_ADVERTISED_MAX_PAYLOAD,
+            wall_ms(),
+            rng,
+        )
+        .expect("SYN response");
+    send_transport_request(
+        &syn_response,
+        routing,
+        session,
+        outbound,
+        local_identity,
+        local_ls2,
+        delivery,
+        rng,
+    )
+    .await;
+    Some(inbound_id)
 }
 
 /// Runs the inbound pump until `satisfied` observes the wanted manager
@@ -437,6 +710,56 @@ async fn pump_until_streaming<F>(
     evidence_dir: &Path,
     deadline: tokio::time::Instant,
     phase: &str,
+    satisfied: F,
+) where
+    F: FnMut(&mut StreamingManager) -> bool,
+{
+    pump_until_streaming_with_state(
+        handle,
+        coord,
+        dest,
+        dispatcher,
+        session,
+        routing,
+        streaming,
+        outbound,
+        local_identity,
+        local_ls2,
+        delivery,
+        rng,
+        from_hash,
+        evidence_dir,
+        deadline,
+        phase,
+        None,
+        satisfied,
+    )
+    .await;
+}
+
+/// Pump variant that appends one live receiver-state snapshot
+/// (`next_expected`, highest received, delivered count) for
+/// `state_connection` to the stop detail. Counts/sequence numbers
+/// only — never payloads.
+#[allow(clippy::too_many_arguments)]
+async fn pump_until_streaming_with_state<F>(
+    handle: &mut i2pr_daemon::router_i2np::Ssu2DaemonHandle,
+    coord: &mut ExploratoryBuildCoordinator,
+    dest: &mut DestinationTunnelCoordinator,
+    dispatcher: &mut DestinationDispatcher,
+    session: &mut EciesSessionManager,
+    routing: &mut DestinationRouting,
+    streaming: &mut StreamingManager,
+    outbound: &DestinationOutboundRole,
+    local_identity: &DestinationIdentity,
+    local_ls2: &i2pr_proto::LeaseSet2,
+    delivery: &i2pr_daemon::router_i2np::RouterDeliveryService,
+    rng: &mut ChaCha8Rng,
+    from_hash: &[u8; 32],
+    evidence_dir: &Path,
+    deadline: tokio::time::Instant,
+    phase: &str,
+    state_connection: Option<i2pr_client::streaming::connection::ConnectionId>,
     mut satisfied: F,
 ) where
     F: FnMut(&mut StreamingManager) -> bool,
@@ -448,10 +771,23 @@ async fn pump_until_streaming<F>(
         }
         if tokio::time::Instant::now() >= deadline {
             record_stop_and_baseline(evidence_dir);
+            let state = state_connection
+                .and_then(|id| streaming.get_connection(id))
+                .map(|conn| {
+                    format!(
+                        " next_expected={} highest={:?} delivered_count={} ack_through={}",
+                        conn.recv_window().next_expected(),
+                        conn.recv_window().highest_received(),
+                        conn.recv_window().delivered_count(),
+                        conn.recv_window().ack_view().0,
+                    )
+                })
+                .unwrap_or_default();
+            let pending = streaming.pending_ack_count();
             append_evidence(
                 evidence_dir,
                 "streaming-stop",
-                &format!("phase={phase} pump_errors={errors}"),
+                &format!("phase={phase} pump_errors={errors}{state} pending_acks={pending}"),
             );
             panic!("Plan 193 streaming stop: {phase}");
         }
@@ -470,6 +806,21 @@ async fn pump_until_streaming<F>(
             rng,
             from_hash,
             &mut errors,
+            evidence_dir,
+        )
+        .await;
+        // Timer drain on every turn, even with no arrival: a quiet
+        // peer awaiting our delayed ACK must still observe it.
+        drain_streaming_timers(
+            streaming,
+            routing,
+            session,
+            outbound,
+            local_identity,
+            local_ls2,
+            delivery,
+            rng,
+            evidence_dir,
         )
         .await;
     }
@@ -478,7 +829,6 @@ async fn pump_until_streaming<F>(
 #[tokio::test]
 #[ignore = "Plan 193 M6 i2pd mixed-router Streaming qualification: requires exact-pinned external i2pd environment"]
 async fn streaming_through_i2pd() {
-    eprintln!("MARKER test-body-enter");
     let i2pd_ri_path = env_path("I2PD_ROUTER_INFO");
     let i2pd_endpoint: SocketAddr = env_value("I2PD_SSU2_ENDPOINT").parse().expect("endpoint");
     let bind: SocketAddr = env_value("I2PR_SSU2_BIND").parse().expect("bind");
@@ -500,11 +850,9 @@ async fn streaming_through_i2pd() {
         "schema_version = 1\n[router]\ndata_dir = \"./state\"\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = {bind_port}\n"
     );
     let config = Config::parse(&config_text).expect("strict controlled profile");
-    eprintln!("MARKER config-parsed");
     assert!(config.ssu2.enabled);
     assert!(!config.ssu2.advertise);
     append_evidence(&evidence_dir, "daemon-strict-profile", "true");
-    eprintln!("MARKER strict-profile-written");
 
     let i2pd_ri_bytes = std::fs::read(&i2pd_ri_path).expect("read i2pd router.info");
     let (i2pd_hash, i2pd_ssu2) =
@@ -1311,7 +1659,7 @@ async fn streaming_through_i2pd() {
     }
     accept_sam.write_bytes(&app_rev_multi).await;
     let mut rev_multi_collected = Vec::new();
-    pump_until_streaming(
+    pump_until_streaming_with_state(
         &mut handle,
         &mut coord,
         &mut dest,
@@ -1328,6 +1676,7 @@ async fn streaming_through_i2pd() {
         &evidence_dir,
         tokio::time::Instant::now() + STREAM_WAIT,
         "streaming-reverse-multipacket",
+        Some(connection_id),
         |manager| {
             for delivered in manager.drain_delivered_for(connection_id) {
                 rev_multi_collected.extend_from_slice(&delivered.bytes);
@@ -1541,9 +1890,7 @@ async fn streaming_through_i2pd() {
         },
     )
     .await;
-    let close_eof = accept_sam
-        .read_until_eof(Duration::from_secs(15))
-        .await;
+    let close_eof = accept_sam.read_until_eof(Duration::from_secs(15)).await;
     if !close_eof {
         record_stop_and_baseline(&evidence_dir);
         append_evidence(
@@ -1619,8 +1966,8 @@ async fn streaming_through_i2pd() {
         fresh_expires,
         fresh_expires.saturating_sub(60),
     );
-    local_ls2 =
-        build_signed_lease_set2(&local_identity, &[fresh_lease], fresh_published).expect("fresh ls2");
+    local_ls2 = build_signed_lease_set2(&local_identity, &[fresh_lease], fresh_published)
+        .expect("fresh ls2");
     let fresh_store = i2pr_proto::DatabaseStoreMessage {
         key: local_ls2.key_hash().expect("key hash"),
         reply_token: 0,
@@ -1680,12 +2027,32 @@ async fn streaming_through_i2pd() {
     );
     let mut connect_attempts = 0u32;
     let mut b_connection: Option<i2pr_client::streaming::connection::ConnectionId> = None;
+    // Direction B CONNECT arrives over a FRESH SAM socket: the
+    // session-creation socket is already bound to the STREAM session,
+    // so exact-pinned i2pd 2.61.0 rejects CONNECT on it with
+    // `Socket already in use` (`SAM.cpp::ProcessStreamConnect`), the
+    // same reason STREAM ACCEPT needed a dedicated socket.
+    let mut connect_sam = SamClient::connect(sam_endpoint).await;
+    let connect_hello = connect_sam
+        .transact("HELLO VERSION MIN=3.1 MAX=3.1\n")
+        .await
+        .expect("SAM connect hello read");
+    assert!(
+        connect_hello.contains("RESULT=OK"),
+        "SAM connect hello failed"
+    );
+    // Diagnostic counters only (counts + RESULT tokens; never peer
+    // bytes or key material).
+    let mut b_sam_lines = 0u64;
+    let mut b_last_result = "none".to_owned();
+    let mut b_first_token = "none".to_owned();
     for _ in 0..2 {
         connect_attempts += 1;
-        sam.write_bytes(
-            format!("STREAM CONNECT ID={session_id} DESTINATION={local_b64}\n").as_bytes(),
-        )
-        .await;
+        connect_sam
+            .write_bytes(
+                format!("STREAM CONNECT ID={session_id} DESTINATION={local_b64}\n").as_bytes(),
+            )
+            .await;
         let connect_deadline = tokio::time::Instant::now() + Duration::from_secs(120);
         let mut status: Option<String> = None;
         let mut pump_errors = 0u64;
@@ -1705,77 +2072,88 @@ async fn streaming_through_i2pd() {
                 &mut send_rng,
                 reference_hash.as_bytes(),
                 &mut pump_errors,
+                &evidence_dir,
+            )
+            .await;
+            // Timer drain on every CONNECT wait turn: the inbound SYN
+            // may arrive while the reference still awaits our ACKs.
+            drain_streaming_timers(
+                &mut streaming,
+                &mut routing,
+                &mut session,
+                &destination_outbound,
+                &local_identity,
+                &local_ls2,
+                &delivery,
+                &mut send_rng,
+                &evidence_dir,
             )
             .await;
             // Accept the inbound SYN through the normal backlog as
             // soon as it arrives; the SYN response returns through
             // the real outbound tunnel while CONNECT is still pending.
-            if b_connection.is_none() && streaming.listener_backlog(0) >= 1 {
-                let inbound_id = streaming.accept(0).expect("accept inbound SYN");
-                let (peer_bytes, peer_key, inbound_local, inbound_remote) = {
-                    let inbound = streaming
-                        .get_connection(inbound_id)
-                        .expect("inbound connection");
-                    (
-                        inbound
-                            .peer_destination()
-                            .cloned()
-                            .expect("peer destination retained")
-                            .encode_to_vec(65535)
-                            .expect("encode peer destination"),
-                        inbound.peer_signing_key().clone(),
-                        inbound.local_port(),
-                        inbound.remote_port(),
-                    )
-                };
-                let peer_hash = *i2pr_crypto::sha256(&peer_bytes).as_bytes();
-                let inbound_remote_desc = RemoteDestination {
-                    destination_hash: peer_hash,
-                    signing_public_key: peer_key,
-                    static_public_key: [0u8; 32],
-                };
-                let syn_response = streaming
-                    .accept_inbound_syn(
-                        &local_identity,
-                        &inbound_remote_desc,
-                        inbound_id,
-                        inbound_local,
-                        inbound_remote,
-                        DEFAULT_ADVERTISED_MAX_PAYLOAD,
-                        wall_ms(),
-                        &mut send_rng,
-                    )
-                    .expect("SYN response");
-                send_transport_request(
-                    &syn_response,
+            // Factored as a helper: the STATUS OK reply races SYN
+            // arrival (i2pd answers CONNECT before the SYN traverses
+            // the tunnel), so the post-STATUS drain below reuses it.
+            if b_connection.is_none() {
+                b_connection = accept_inbound_syn_response(
+                    &mut streaming,
+                    &local_identity,
                     &routing,
                     &mut session,
                     &destination_outbound,
-                    &local_identity,
                     &local_ls2,
                     &delivery,
                     &mut send_rng,
                 )
                 .await;
-                b_connection = Some(inbound_id);
             }
-            if let Some(line) = sam.poll_line().await
-                && line.starts_with("STREAM STATUS")
-            {
-                status = Some(line);
+            if let Some(line) = connect_sam.poll_line().await {
+                b_sam_lines += 1;
+                // First command token only (truncated): distinguishes
+                // STATUS/HELLO/PING-style replies without recording
+                // peer bytes or key material.
+                if b_first_token == "none" {
+                    b_first_token = line
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("empty")
+                        .chars()
+                        .take(16)
+                        .collect();
+                }
+                if line.starts_with("STREAM STATUS") {
+                    // Record only the RESULT token (protocol metadata,
+                    // never peer bytes or key material).
+                    b_last_result = line
+                        .split_whitespace()
+                        .find_map(|token| token.strip_prefix("RESULT="))
+                        .unwrap_or("missing")
+                        .to_owned();
+                    status = Some(line);
+                }
             }
         }
         match &status {
             Some(line) if line.contains("RESULT=OK") => break,
             _ => {
+                append_evidence(
+                    &evidence_dir,
+                    "streaming-b-connect-debug",
+                    &format!(
+                        "attempt={connect_attempts} syn_arrived={} backlog={} sam_lines={b_sam_lines} first_token={b_first_token} result={b_last_result} pump_errors={pump_errors}",
+                        b_connection.is_some(),
+                        streaming.listener_backlog(0),
+                    ),
+                );
                 if connect_attempts >= 2 {
                     record_stop_and_baseline(&evidence_dir);
                     append_evidence(
                         &evidence_dir,
                         "streaming-stop",
                         &format!(
-                            "phase=streaming-b-connect attempts={connect_attempts} status={} pump_errors={pump_errors}",
-                            status.as_deref().unwrap_or("none"),
+                            "phase=streaming-b-connect attempts={connect_attempts} syn_arrived={} result={b_last_result} pump_errors={pump_errors}",
+                            b_connection.is_some(),
                         ),
                     );
                     panic!("Plan 193 streaming stop: reference STREAM CONNECT never returned OK");
@@ -1783,7 +2161,68 @@ async fn streaming_through_i2pd() {
             }
         }
     }
-    let b_id = b_connection.expect("inbound connection accepted");
+    // STATUS OK races SYN arrival: keep pumping (bounded) until the
+    // inbound SYN reaches the backlog, then accept through the normal
+    // path. No listener or accept state is injected.
+    if b_connection.is_none() {
+        let accept_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut accept_errors = 0u64;
+        while tokio::time::Instant::now() < accept_deadline && b_connection.is_none() {
+            pump_one_streaming_inbound(
+                &mut handle,
+                &mut coord,
+                &mut dest,
+                &mut dispatcher,
+                &mut session,
+                &mut routing,
+                &mut streaming,
+                &destination_outbound,
+                &local_identity,
+                &local_ls2,
+                &delivery,
+                &mut send_rng,
+                reference_hash.as_bytes(),
+                &mut accept_errors,
+                &evidence_dir,
+            )
+            .await;
+            drain_streaming_timers(
+                &mut streaming,
+                &mut routing,
+                &mut session,
+                &destination_outbound,
+                &local_identity,
+                &local_ls2,
+                &delivery,
+                &mut send_rng,
+                &evidence_dir,
+            )
+            .await;
+            b_connection = accept_inbound_syn_response(
+                &mut streaming,
+                &local_identity,
+                &routing,
+                &mut session,
+                &destination_outbound,
+                &local_ls2,
+                &delivery,
+                &mut send_rng,
+            )
+            .await;
+        }
+    }
+    let b_id = match b_connection {
+        Some(id) => id,
+        None => {
+            record_stop_and_baseline(&evidence_dir);
+            append_evidence(
+                &evidence_dir,
+                "streaming-stop",
+                "phase=streaming-b-accept STATUS OK but inbound SYN never reached the backlog",
+            );
+            panic!("Plan 193 streaming stop: inbound SYN never arrived after STATUS OK");
+        }
+    };
     assert!(
         streaming
             .get_connection(b_id)
@@ -1797,12 +2236,12 @@ async fn streaming_through_i2pd() {
     );
     // An optional peer-destination line may follow STATUS; consume it
     // within a short bound so stream bytes start at a known offset.
-    let b_peer_line = sam.read_line_timeout(Duration::from_secs(3)).await;
+    let b_peer_line = connect_sam.read_line_timeout(Duration::from_secs(3)).await;
     let b_peer_len = b_peer_line.map(|line| line.len()).unwrap_or(0);
 
     // Direction B small payload i2pd -> i2pr.
     let app_b_small = b"plan193-b-probe-e";
-    sam.write_bytes(app_b_small).await;
+    connect_sam.write_bytes(app_b_small).await;
     let mut b_collected = Vec::new();
     pump_until_streaming(
         &mut handle,
@@ -1839,7 +2278,9 @@ async fn streaming_through_i2pd() {
         ),
     );
 
-    // Direction B reverse payload i2pr -> i2pd over the accepted stream.
+    // Direction B reverse payload i2pr -> i2pd over the accepted
+    // stream, chunked at the negotiated per-packet ceiling (a single
+    // oversized send_data is correctly rejected with PayloadTooLarge).
     let (b_local_port, b_remote_port) = {
         let inbound = streaming.get_connection(b_id).expect("inbound connection");
         (inbound.local_port(), inbound.remote_port())
@@ -1864,29 +2305,36 @@ async fn streaming_through_i2pd() {
             static_public_key: [0u8; 32],
         }
     };
-    let b_rev_request = streaming
-        .send_data(
-            b_id,
+    let mut b_rev_offset = 0;
+    let mut b_rev_fragments = 0u64;
+    while b_rev_offset < app_b_rev.len() {
+        let end = (b_rev_offset + 1024).min(app_b_rev.len());
+        let fragment = streaming
+            .send_data(
+                b_id,
+                &local_identity,
+                &b_reply_desc,
+                b_local_port,
+                b_remote_port,
+                &app_b_rev[b_rev_offset..end],
+                wall_ms(),
+            )
+            .expect("send B reverse fragment");
+        send_transport_request(
+            &fragment,
+            &routing,
+            &mut session,
+            &destination_outbound,
             &local_identity,
-            &b_reply_desc,
-            b_local_port,
-            b_remote_port,
-            &app_b_rev,
-            wall_ms(),
+            &local_ls2,
+            &delivery,
+            &mut send_rng,
         )
-        .expect("send B reverse data");
-    send_transport_request(
-        &b_rev_request,
-        &routing,
-        &mut session,
-        &destination_outbound,
-        &local_identity,
-        &local_ls2,
-        &delivery,
-        &mut send_rng,
-    )
-    .await;
-    let observed_b_rev = sam
+        .await;
+        b_rev_offset = end;
+        b_rev_fragments += 1;
+    }
+    let observed_b_rev = connect_sam
         .read_exact_bytes(app_b_rev.len(), STREAM_WAIT)
         .await
         .unwrap_or_default();
@@ -1907,7 +2355,7 @@ async fn streaming_through_i2pd() {
         &evidence_dir,
         "streaming-b-reverse-data-digest",
         &format!(
-            "payload_len={} digest={} match=true",
+            "payload_len={} fragments={b_rev_fragments} digest={} match=true",
             observed_b_rev.len(),
             sha256_hex(&observed_b_rev),
         ),
@@ -1959,7 +2407,7 @@ async fn streaming_through_i2pd() {
         },
     )
     .await;
-    let b_close_eof = sam.read_until_eof(Duration::from_secs(15)).await;
+    let b_close_eof = connect_sam.read_until_eof(Duration::from_secs(15)).await;
     if !b_close_eof {
         record_stop_and_baseline(&evidence_dir);
         append_evidence(
@@ -2058,13 +2506,15 @@ async fn send_transport_request(
     }
 }
 
-fn record_stop_and_baseline(dir: &Path) {    let mut coordinator = DestinationTunnelCoordinator::new(
+fn record_stop_and_baseline(dir: &Path) {
+    let mut coordinator = DestinationTunnelCoordinator::new(
         LookupPolicy::default(),
         RouterInfoStoreConfig::default(),
     );
     assert!(coordinator.note_direct_transport_attempt().is_err());
     append_evidence(dir, "direct-rejected", "true");
-    let mut scheduler = TunnelLivenessScheduler::new(LivenessConfig::plan_185_defaults());    scheduler.advance_time(wall_ms());
+    let mut scheduler = TunnelLivenessScheduler::new(LivenessConfig::plan_185_defaults());
+    scheduler.advance_time(wall_ms());
     scheduler
         .register_pair(
             i2pr_tunnel::pool::TunnelSlot::from_raw(1),
@@ -2075,71 +2525,4 @@ fn record_stop_and_baseline(dir: &Path) {    let mut coordinator = DestinationTu
     let action = scheduler.drive();
     assert!(matches!(action, LivenessAction::SendTest { .. }));
     append_evidence(dir, "liveness-first-test", "passed");
-}
-
-#[test]
-fn temp_size_probe() {
-    eprintln!("MARKER runtime-probe-enter");
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    eprintln!("MARKER runtime-built");
-    rt.block_on(async {
-        eprintln!("MARKER empty-body-polled");
-    });
-    eprintln!("MARKER runtime-probe-done");
-    println!("StreamingManager={}", std::mem::size_of::<StreamingManager>());
-    println!(
-        "DestinationRouting={}",
-        std::mem::size_of::<DestinationRouting>()
-    );
-    println!(
-        "EciesSessionManager={}",
-        std::mem::size_of::<EciesSessionManager>()
-    );
-    println!(
-        "DestinationDispatcher={}",
-        std::mem::size_of::<DestinationDispatcher>()
-    );
-    println!(
-        "DestinationTunnelCoordinator={}",
-        std::mem::size_of::<DestinationTunnelCoordinator>()
-    );
-    println!(
-        "ExploratoryBuildCoordinator={}",
-        std::mem::size_of::<ExploratoryBuildCoordinator>()
-    );
-    println!(
-        "Ssu2DaemonHandle={}",
-        std::mem::size_of::<i2pr_daemon::router_i2np::Ssu2DaemonHandle>()
-    );
-    println!(
-        "RouterDeliveryService={}",
-        std::mem::size_of::<i2pr_daemon::router_i2np::RouterDeliveryService>()
-    );
-    println!("ChaCha8Rng={}", std::mem::size_of::<ChaCha8Rng>());
-    println!("SamClient={}", std::mem::size_of::<SamClient>());
-    println!("I2npMessage={}", std::mem::size_of::<I2npMessage>());
-    println!(
-        "StreamingConfig={}",
-        std::mem::size_of::<StreamingConfig>()
-    );
-    println!(
-        "TransportSendRequest={}",
-        std::mem::size_of::<TransportSendRequest>()
-    );
-    println!(
-        "RemoteDestination={}",
-        std::mem::size_of::<RemoteDestination>()
-    );
-    println!(
-        "TunnelDataMessage={}",
-        std::mem::size_of::<i2pr_proto::TunnelDataMessage>()
-    );
-    println!(
-        "DestinationIdentity={}",
-        std::mem::size_of::<DestinationIdentity>()
-    );
-    // Size of the whole test future (construction runs no code).
 }

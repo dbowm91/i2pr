@@ -715,7 +715,7 @@ impl StreamingManager {
             && peek.send_stream_id == 0
             && peek.receive_stream_id != 0
         {
-            let limit = StreamingReceiveLimit::default();
+            let limit = StreamingReceiveLimit::destination_path();
             let (packet, signature_location) = decode_streaming_packet(
                 wire_bytes,
                 limit,
@@ -764,7 +764,7 @@ impl StreamingManager {
                     actual_destination: destination_port,
                 });
             }
-            let limit = StreamingReceiveLimit::default();
+            let limit = StreamingReceiveLimit::destination_path();
             let (packet, signature_location) = decode_streaming_packet(
                 wire_bytes,
                 limit,
@@ -820,7 +820,7 @@ impl StreamingManager {
             .ok_or(StreamingManagerError::UnknownConnection)?
             .peer_signing_key()
             .clone();
-        let limit = StreamingReceiveLimit::default();
+        let limit = StreamingReceiveLimit::destination_path();
         let (packet, signature_location) = decode_streaming_packet(
             wire_bytes,
             limit,
