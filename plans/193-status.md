@@ -8,7 +8,9 @@ Plan of record:
 Execution log:
 [`plans/193-streaming-status.md`](193-streaming-status.md).
 
-This status is the newest handoff authority for the retained M6/M10 blocker line. It intentionally resolves the duplicate-numbering defect created when both the short-build corrective and the deferred Streaming pass were left under Plan 188. Historical files remain in place for evidence provenance, but their execution roles are superseded as follows:
+Plan 193 is the retained **first-family i2pd closure authority**, not the current execution handoff. The current handoff authority is [`plans/196-status.md`](196-status.md), which owns the narrow Java controlled-first-run-topology corrective before Plan 194 resumes.
+
+Historical files remain in place for evidence provenance, but their execution roles are superseded as follows:
 
 ```text
 historical plans/188-m6-mixed-router-streaming-with-i2pd.md -> superseded-by-plan193
@@ -28,12 +30,13 @@ plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective
 plan_191 = stopped-boundary-diagnosis-retained
 plan_192 = passed-m6-i2cp-wire-format-corrective
 plan_193 = passed-m6-i2pd-mixed-router-streaming
-plan_194 = registered-executable (unblocked by this pass)
+plan_194 = in-progress-scaffolding-landed-blocked-by-plan196-topology-corrective
+plan_196 = registered-executable-m6-java-controlled-first-run-topology-corrective
 plan_195 = registered-blocked-by-plan194
 
 m6_destination_remote_interop_i2pd = passed-through-raw-destination-message-plane-via-plan192
 milestone6_i2pd_streaming_interop = passed-via-plan193
-m6_second_family_java = not-yet-started
+m6_second_family_java = topology-corrective-pending-plan196
 milestone6_interoperable = not-yet-claimed
 
 milestone10_local_product = passed-via-plan180-and-plan182
@@ -41,13 +44,14 @@ milestone10_independent_application_clients = local-rows-passed-plan181-not-clos
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 
-next_executable_plan = 194
-remaining_sequence = 194 -> 195
+next_executable_plan = 196
+resume_after_plan196 = 194
+remaining_sequence = 196 -> resume-194 -> 195
 ```
 
 ## Source floor
 
-Registration source floor:
+Registration source floor for Plan 193:
 
 ```text
 i2pr main = 05d6d52870a81eda8891dc492d43c6d4b79bbae8
@@ -56,13 +60,11 @@ routine CI = 34668461179 (success)
 workspace = 2283 passed, 6 ignored
 ```
 
-Plan 192 proved the complete i2pd destination message plane through real SSU2, real one-hop tunnels, live NetDB, Standard LeaseSet2, ECIES/Garlic, and the corrected short-transport/I2CP-style Data envelope in both directions. Streaming and Java second-family qualification were explicitly not yet run.
+Plan 192 proved the complete i2pd destination message plane through real SSU2, real one-hop tunnels, live NetDB, Standard LeaseSet2, ECIES/Garlic, and the corrected short-transport/I2CP-style Data envelope in both directions. Plan 193 then qualified Streaming on top of that stack.
 
 ## Handoff rule
 
-Plan 193 is closed. Plan 194 (Java I2P second-family qualification)
-is the current executable plan; do not begin Plan 195 until Plan 194
-closes the two-family M6 criterion.
+Plan 193 is closed and its evidence is retained. Do not reopen its i2pd qualification merely because Java-family work is incomplete. Execute Plan 196 next; after Plan 196 passes, resume Plan 194. Plan 195 remains blocked until Plan 194 closes the two-family M6 criterion.
 
 ## Closure evidence (exact-head 3687189)
 
