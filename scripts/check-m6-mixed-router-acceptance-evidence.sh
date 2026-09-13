@@ -20,6 +20,11 @@
 # aggregator fails this check. `failed`/`blocked` literals are
 # fail-closed and permitted.
 #
+# Plan 194 extends the Plan 189 §8 scaffolding with:
+#   tests/integration/m6-interop/run-streaming.sh (Plan 193 first-family)
+#   tests/integration/m6-interop/run-java.sh (Plan 194 second-family)
+#   scripts/interop/fetch-m6-java.sh (Plan 194 second-family fetch)
+#
 # Guarded cross-family labels (Plan 189 §8 mandatory row set):
 #   external-daemon-strict-profile
 #   external-reference-verified-i2pd
@@ -67,6 +72,10 @@ NETDB_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-netdb.sh"
 NETDB_CHECK="${REPO_ROOT}/scripts/check-netdb-tunnel-evidence.sh"
 DESTINATION_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-destination.sh"
 DESTINATION_CHECK="${REPO_ROOT}/scripts/check-destination-tunnel-evidence.sh"
+STREAMING_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-streaming.sh"
+STREAMING_CHECK="${REPO_ROOT}/scripts/check-streaming-tunnel-evidence.sh"
+JAVA_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-java.sh"
+JAVA_FETCH="${REPO_ROOT}/scripts/interop/fetch-m6-java.sh"
 CROSSFAMILY_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-m6-mixed-router.sh"
 
 GUARDED=(
@@ -91,6 +100,8 @@ for required in \
   "${TUNNELS_HARNESS}" "${TUNNELS_CHECK}" \
   "${NETDB_HARNESS}" "${NETDB_CHECK}" \
   "${DESTINATION_HARNESS}" "${DESTINATION_CHECK}" \
+  "${STREAMING_HARNESS}" "${STREAMING_CHECK}" \
+  "${JAVA_HARNESS}" "${JAVA_FETCH}" \
   "${CROSSFAMILY_HARNESS}"; do
   if [[ ! -f "${required}" ]]; then
     echo "m6 mixed-router evidence check failed: missing required artifact: ${required}" >&2
@@ -131,7 +142,7 @@ if [[ -f "${CROSSFAMILY_HARNESS}" ]]; then
 fi
 
 # ---- 3. No literal unconditional pass records for guarded rows. ---------
-HARNESSES=("${PREFLIGHT_HARNESS}" "${TUNNELS_HARNESS}" "${NETDB_HARNESS}" "${DESTINATION_HARNESS}" "${CROSSFAMILY_HARNESS}")
+HARNESSES=("${PREFLIGHT_HARNESS}" "${TUNNELS_HARNESS}" "${NETDB_HARNESS}" "${DESTINATION_HARNESS}" "${STREAMING_HARNESS}" "${JAVA_HARNESS}" "${CROSSFAMILY_HARNESS}")
 for label in "${GUARDED[@]}"; do
   for harness in "${HARNESSES[@]}"; do
     if [[ ! -f "${harness}" ]]; then

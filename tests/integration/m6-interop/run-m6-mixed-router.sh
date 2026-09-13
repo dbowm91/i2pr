@@ -64,6 +64,8 @@ PREFLIGHT_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-preflight.sh"
 TUNNELS_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-tunnels.sh"
 NETDB_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-netdb.sh"
 DESTINATION_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-destination.sh"
+STREAMING_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-streaming.sh"
+JAVA_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-java.sh"
 
 # Sanity: every per-layer harness and its static checker must exist;
 # otherwise the aggregator would be silently skipping a layer. The
@@ -77,7 +79,11 @@ for required in \
   "${NETDB_HARNESS}" \
   "${REPO_ROOT}/scripts/check-netdb-tunnel-evidence.sh" \
   "${DESTINATION_HARNESS}" \
-  "${REPO_ROOT}/scripts/check-destination-tunnel-evidence.sh"; do
+  "${REPO_ROOT}/scripts/check-destination-tunnel-evidence.sh" \
+  "${STREAMING_HARNESS}" \
+  "${REPO_ROOT}/scripts/check-streaming-tunnel-evidence.sh" \
+  "${JAVA_HARNESS}" \
+  "${REPO_ROOT}/scripts/interop/fetch-m6-java.sh"; do
   if [[ ! -f "${required}" ]]; then
     echo "cross-family aggregator: missing per-layer artifact: ${required}" >&2
     REQUIRED_FAILED=1
@@ -157,6 +163,29 @@ preflight_rc="$(run_per_layer preflight "${PREFLIGHT_HARNESS}")"
 tunnels_rc="$(run_per_layer tunnels "${TUNNELS_HARNESS}")"
 netdb_rc="$(run_per_layer netdb "${NETDB_HARNESS}")"
 destination_rc="$(run_per_layer destination "${DESTINATION_HARNESS}")"
+streaming_rc="$(run_per_layer streaming "${STREAMING_HARNESS}")"
+
+# Plan 194 §5/§11 — run the Java second-family lane against the
+# exact-pinned Java I2P 2.13.0 reference. The lane is fail-closed at
+# first-run topology: stock Java I2P overwrites its own `router.config`
+# on first start, binds a random UDP port, and runs reseed against the
+# public I2P network, so the controlled-topology rows stay `blocked`
+# with stop provenance until a follow-up corrective wires the
+# advanced-configuration injection the lane requires.
+java_rc=1
+if [[ -d "${REPO_ROOT}/target/interop/cache/m6-java/${JAVA_PIN}" ]] && \
+   [[ -x "${REPO_ROOT}/target/interop/cache/m6-java/${JAVA_PIN}/runplain.sh" ]]; then
+  log="${EVIDENCE_DIR}/run-java.log"
+  : > "${log}"
+  if I2PR_M6_JAVA_EVIDENCE_DIR="${EVIDENCE_DIR}/per-layer/run-java" \
+     timeout --foreground 600s bash "${JAVA_HARNESS}" >>"${log}" 2>&1; then
+    java_rc=0
+  else
+    java_rc=$?
+  fi
+else
+  echo "cross-family aggregator: java cache missing; record blocked rows with stop provenance" >&2
+fi
 
 # ---- Plan 189 §8 guarded rows -------------------------------------------
 # Each Plan 189 §4 qualifier maps to a per-layer run; the family
@@ -191,12 +220,12 @@ cross_family_row "external-destination-message-roundtrip" "i2pd" \
   "${destination_rc}"
 
 cross_family_row "external-streaming-established" "i2pd" \
-  "Streaming SYN/Established in both directions through the real mixed-router destination path (deferred 188-streaming pass)" \
-  "${destination_rc}"
+  "Streaming SYN/Established in both directions through the real mixed-router destination path (Plan 193 streaming lane)" \
+  "${streaming_rc}"
 
 cross_family_row "external-streaming-multipacket-digest" "i2pd" \
-  "Streaming multi-packet payload digests match in both directions through the real path (deferred 188-streaming pass)" \
-  "${destination_rc}"
+  "Streaming multi-packet payload digests match in both directions through the real path (Plan 193 streaming lane)" \
+  "${streaming_rc}"
 
 cross_family_row "external-clean-resource-baseline" "i2pd" \
   "per-layer runs close ephemeral i2pd instances and report no leaked sockets/tasks (Plan 187 §11)" \
@@ -208,36 +237,36 @@ cross_family_row "external-clean-resource-baseline" "i2pd" \
 # recording `passed` from a self-composed substitute or from static
 # source inspection. The structural checker enforces the pin
 # presence so the second family cannot be silently dropped.
-java_rc=1
 cross_family_row "external-daemon-strict-profile" "java" \
-  "Java second-family strict-profile run is not yet registered (Plan 189 blocked-by-plan188; follow-up plan pending)" \
+  "Java second-family strict-profile run (Plan 194 §5)" \
   "${java_rc}"
 cross_family_row "external-reference-verified" "java" \
-  "Java second-family RouterInfo verification is not yet registered (follow-up plan pending)" \
+  "Java second-family RouterInfo verification (Plan 194 §5)" \
   "${java_rc}"
 cross_family_row "external-session-established" "java" \
-  "Java second-family session establishment is not yet registered (follow-up plan pending)" \
+  "Java second-family session establishment (Plan 194 §5)" \
   "${java_rc}"
 cross_family_row "external-tunnel-build-accepted" "java" \
-  "Java second-family tunnel build acceptance is not yet registered (follow-up plan pending)" \
+  "Java second-family tunnel build acceptance (Plan 194 §5)" \
   "${java_rc}"
 cross_family_row "external-netdb-lookup-tunnel" "java" \
-  "Java second-family NetDB lookup is not yet registered (follow-up plan pending)" \
+  "Java second-family NetDB lookup (Plan 194 §5)" \
   "${java_rc}"
 cross_family_row "external-destination-ls2-resolved" "java" \
-  "Java second-family LeaseSet2 resolution is not yet registered (follow-up plan pending)" \
+  "Java second-family LeaseSet2 resolution (Plan 194 §5)" \
   "${java_rc}"
 cross_family_row "external-destination-message-roundtrip" "java" \
-  "Java second-family destination message round-trip is not yet registered (follow-up plan pending)" \
+  "Java second-family destination message round-trip (Plan 194 §5)" \
   "${java_rc}"
 cross_family_row "external-streaming-established" "java" \
-  "Java second-family Streaming establish is not yet registered (follow-up plan pending)" \
+  "Java second-family Streaming establish (Plan 194 §5)" \
   "${java_rc}"
+
 cross_family_row "external-streaming-multipacket-digest" "java" \
-  "Java second-family Streaming multi-packet digest is not yet registered (follow-up plan pending)" \
+  "Java second-family Streaming multi-packet digest (Plan 194 §5)" \
   "${java_rc}"
 cross_family_row "external-clean-resource-baseline" "java" \
-  "Java second-family clean resource baseline is not yet registered (follow-up plan pending)" \
+  "Java second-family clean resource baseline (Plan 194 §5)" \
   "${java_rc}"
 
 # Workspace gates slice (mirror run-destination.sh).
@@ -336,7 +365,7 @@ with (out / "evidence.md").open("w", encoding="utf-8") as stream:
     stream.write("# Plan 189 cross-family M6 mixed-router evidence\n\n")
     stream.write(f"- i2pr commit: `{commit}`\n")
     stream.write(f"- i2pd: `{i2pd_version}` @ `{i2pd_pin}` (unmodified)\n")
-    stream.write(f"- Java I2P: `{java_version}` @ `{java_pin}` (unmodified, second-family row not yet orchestrated)\n")
+    stream.write(f"- Java I2P: `{java_version}` @ `{java_pin}` (unmodified, second-family lane executed by Plan 194)\n")
     stream.write(f"- OS/image: `{platform.platform()}`\n")
     stream.write(f"- Rust: `{rustc}`\n")
     stream.write("- Bind policy: `127.0.0.1` only, `advertise=false`, no introducer\n\n")

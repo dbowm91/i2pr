@@ -48,9 +48,21 @@ jobs:
         # scripts/check-m6-mixed-router-acceptance-evidence.sh.
         run: bash scripts/interop/fetch-ssu2-reference.sh --rebuild
 
+      - name: Fetch and verify exact Java I2P second-family reference
+        # Plan 194 §3 pin: Java I2P 2.13.0
+        # 9134f808337b401e8e53c73734c81fab04280c9d
+        # Built without IzPack via `ant updater preppkg`; the staged
+        # pkg-temp/ IS the install dir. The fetch script is fail-closed
+        # at the cache key + pin + remote verification step.
+        run: bash scripts/interop/fetch-m6-java.sh --rebuild
+
       - name: Show i2pd build log on failure
         if: failure()
         run: tail -n 100 target/interop/cache/ssu2/i2pd/*/logs/build.log
+
+      - name: Show Java I2P build log on failure
+        if: failure()
+        run: tail -n 100 target/interop/cache/m6-java/*/logs/ant.log
 
       - name: Check M6 mixed-router acceptance evidence integrity
         # Plan 189 §8: this is the static structural checker that
@@ -69,13 +81,16 @@ jobs:
           bash scripts/check-exploratory-tunnel-evidence.sh
           bash scripts/check-netdb-tunnel-evidence.sh
           bash scripts/check-destination-tunnel-evidence.sh
+          bash scripts/check-streaming-tunnel-evidence.sh
 
       - name: Run M6 mixed-router cross-family aggregator
         # Plan 189 §8: the aggregator binds each Plan 189 §8 guarded
-        # row to a family + a per-layer exit code. It does NOT start
-        # a Java router yet; the second-family Java rows are
-        # intentionally recorded `failed` with stop provenance until
-        # a follow-up plan lands the Java qualification harness.
+        # row to a family + a per-layer exit code. Plan 194 wires the
+        # Java second-family lane (run-java.sh) into the same
+        # evidence.json so the two families share the cross-family
+        # ledger. The Java rows stay bound to the actual run-java
+        # exit code; the static checker enforces the second-family
+        # scaffolding can never be silently dropped.
         run: bash tests/integration/m6-interop/run-m6-mixed-router.sh
         env:
           I2PR_M6_EXECUTION_ID: github-${{ github.run_id }}

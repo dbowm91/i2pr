@@ -102,8 +102,30 @@ cross-family ledger/checker/workflow scaffold
 (`scripts/check-m6-mixed-router-acceptance-evidence.sh`,
 `tests/integration/m6-interop/run-m6-mixed-router.sh`,
 `.github/workflows/m6-mixed-router-external.yml`). Plan 194
-now owns the Java qualification follow-up (unblocked by
-Plan 193).
+owns the Java qualification follow-up and lands the §3 fetch
+script (`scripts/interop/fetch-m6-java.sh`; exact-pinned Java
+I2P 2.13.0 @ `9134f808337b401e8e53c73734c81fab04280c9d`
+built via `ant updater preppkg`, no IzPack 5 GUI installer),
+the §5 second-family harness
+(`tests/integration/m6-interop/run-java.sh`; fresh disposable
+datadir, no reseed, SAM loopback), the §5.1/§5.4(a) external
+driver (`crates/i2pr-daemon/tests/java_tunnel_external.rs::
+destination_message_plane_against_java`), the cross-family
+aggregator wiring (`run-m6-mixed-router.sh` binds every Plan
+189 §8 guarded row to a family + the actual `run-java.sh`
+exit code), the static structural checker extension
+(`scripts/check-m6-mixed-router-acceptance-evidence.sh` adds
+`run-streaming.sh` + `check-streaming-tunnel-evidence.sh` +
+`run-java.sh` + `fetch-m6-java.sh` to the required-artifacts
+list), and the hosted-workflow extension
+(`.github/workflows/m6-mixed-router-external.yml` runs the
+Java fetch + build log tail). Plan 194 stops fail-closed at
+the §11 first-run topology blocker (stock Java I2P overwrites
+its own `router.config`, binds a random UDP port, and runs
+reseed against the public I2P network); the second-family
+Java rows stay `failed` with `plan194-java-stop` stop
+provenance until a follow-up corrective plan lands the
+controlled-topology configuration injection.
 
 ## Purpose
 
