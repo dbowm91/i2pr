@@ -23,6 +23,12 @@ jobs:
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
+      - name: Install ripgrep (Linux)
+        # Plan 189-194 static evidence checkers use `rg` to verify
+        # guarded labels. The default ubuntu-latest image does not
+        # ship ripgrep, so install it before any check that needs it.
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ripgrep
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
       - name: Check formatting
