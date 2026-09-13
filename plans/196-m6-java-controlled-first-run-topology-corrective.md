@@ -20,12 +20,14 @@ Starting repository authority:
 plan_193 = passed-m6-i2pd-mixed-router-streaming
 plan_194 = in-progress-scaffolding-landed-blocked-at-java-first-run-topology
 plan_195 = registered-blocked-by-plan194
+plan_197 = implementation-landed-parser-tolerance-static-floor-green-pending-plan196-external-re-run (parser-only tolerance of the SSU2 `pq` option Java I2P 2.13.0 unconditionally publishes; typed Ssu2PqKem/PqCapabilities surface with bounded MAX_SSU2_PQ_SCHEMES = 8; i2pr session layer remains classical X25519 only; i2pr publication path stays pq-free; ML-KEM not implemented, claimed, or silently enabled; 21 required test rows green locally)
 milestone6_i2pd_streaming_interop = passed-via-plan193
-m6_second_family_java = structurally-wired-topology-blocker-recorded
+m6_second_family_java = topology-corrective-landed-and-pq-parser-tolerance-landed-pending-external-execution
+m6_ssu2_pq_option_tolerance = landed-via-plan197-typed-parser-surface
 milestone6_interoperable = not-yet-claimed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
-next_executable_plan = 196
+next_executable_plan = 196 (re-run external lane; session-established-java row must flip on the exact-pinned Java 2.13.0 cache; the Plan 197 parser tolerance is already in place)
 ```
 
 Reference remains exactly:
@@ -358,15 +360,18 @@ This is the intended Plan 196 closure. Do not continue implementing tunnels/NetD
 
 ## 11. Handoff after pass
 
-On success:
+On success (combined with the registered Plan 197 PQ SSU2 option
+support corrective; see
+[`plans/197-m6-pq-ssu2-option-support-corrective.md`](197-m6-pq-ssu2-option-support-corrective.md)):
 
 ```text
 plan_193 = passed-m6-i2pd-mixed-router-streaming
+plan_197 = passed-m6-pq-ssu2-option-support-corrective
 plan_196 = passed-m6-java-controlled-first-run-topology-corrective
 plan_194 = in-progress-resume-java-second-family-qualification
 plan_195 = registered-blocked-by-plan194
 
-m6_second_family_java = topology-and-authenticated-ssu2-preflight-passed-via-plan196
+m6_second_family_java = topology-and-authenticated-ssu2-preflight-passed-via-plan196-and-197
 milestone6_interoperable = not-yet-claimed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed

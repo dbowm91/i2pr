@@ -25,12 +25,14 @@ active sequence remains monotonic and unambiguous.
 ```text
 plan_193 = passed-m6-i2pd-mixed-router-streaming
 plan_194 = in-progress-scaffolding-landed-blocked-by-plan196-topology-corrective
-plan_196 = in-progress-corrective-implementation-landed-static-checks-green
+plan_196 = in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection-pq-parser-tolerance-landed-via-plan197-pending-external-re-run
 plan_195 = registered-blocked-by-plan194
-m6_second_family_java = controlled-launcher-landed-pending-external-execution
+plan_197 = implementation-landed-parser-tolerance-static-floor-green-pending-plan196-external-re-run (parser-only tolerance of the SSU2 `pq` option Java I2P 2.13.0 unconditionally publishes; typed Ssu2PqKem/PqCapabilities surface with bounded MAX_SSU2_PQ_SCHEMES = 8; i2pr session layer remains classical X25519 only; i2pr publication path stays pq-free; ML-KEM not implemented, claimed, or silently enabled; 21 required test rows green locally)
+m6_second_family_java = topology-corrective-landed-and-pq-parser-tolerance-landed-pending-external-execution
+m6_ssu2_pq_option_tolerance = landed-via-plan197-typed-parser-surface
 milestone6_interoperable = not-yet-claimed
-next_executable_plan = 196 (external-execution-of-landed-corrective)
-resume_after_plan196 = 194
+next_executable_plan = 196 (re-run external lane; session-established-java row must flip on the exact-pinned Java 2.13.0 cache; the Plan 197 parser tolerance is already in place)
+resume_after_plan196_external = 194 (resume Java second-family qualification)
 remaining_sequence = 196-execute -> resume-194 -> 195
 ```
 
@@ -208,12 +210,12 @@ to `passed-m6-java-controlled-first-run-topology-corrective`. Plan
 196 must not implement Plan 194's remaining
 tunnel/NetDB/Destination/Streaming acceptance rows.
 
-Until Plan 196 external-execution passes:
+Until Plan 196 external-execution re-run passes (Plan 197 parser tolerance already landed):
 
 ```text
-milestone6_java_mixed_router_interop = blocked-by-plan196-controlled-topology-execution
+milestone6_java_mixed_router_interop = blocked-by-plan196-external-execution-of-landed-pq-parser-tolerance
 milestone6_interoperable = not-yet-claimed
-next_executable_plan = 196 (external-execution-of-landed-corrective)
+next_executable_plan = 196 (re-run external lane; session-established-java row must flip on the exact-pinned Java 2.13.0 cache)
 ```
 
 ## Handoff
@@ -226,10 +228,12 @@ allowed to close the retained two-family Milestone 6 criterion.
 Expected post-Plan-196 authority:
 
 ```text
+plan_197 = passed-m6-pq-ssu2-option-support-corrective
 plan_196 = passed-m6-java-controlled-first-run-topology-corrective
 plan_194 = in-progress-resume-java-second-family-qualification
 plan_195 = registered-blocked-by-plan194
-m6_second_family_java = topology-and-authenticated-ssu2-preflight-passed-via-plan196
+m6_second_family_java = topology-and-authenticated-ssu2-preflight-passed-via-plan196-and-197
+m6_ssu2_pq_option_tolerance = landed-via-plan197-typed-parser-surface
 milestone6_interoperable = not-yet-claimed
 next_executable_plan = 194
 remaining_sequence = resume-194 -> 195

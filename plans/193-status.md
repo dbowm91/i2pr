@@ -44,9 +44,10 @@ milestone10_independent_application_clients = local-rows-passed-plan181-not-clos
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 
-next_executable_plan = 196
-resume_after_plan196 = 194
-remaining_sequence = 196 -> resume-194 -> 195
+next_executable_plan = 196 (re-run external lane; session-established-java row must flip on the exact-pinned Java 2.13.0 cache; the Plan 197 parser tolerance is already in place)
+resume_after_plan197 = 196 (re-run external-execution; session-established-java row must flip)
+resume_after_plan196_external = 194 (resume Java second-family qualification)
+remaining_sequence = 197 -> 196-execute -> resume-194 -> 195
 ```
 
 ## Source floor

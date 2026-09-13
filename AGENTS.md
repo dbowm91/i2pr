@@ -27,14 +27,25 @@ Direction B external matrix passed twice on exact head
 `plans/188-m6-mixed-router-streaming-with-i2pd.md`
 Streaming file remains historical context only and is superseded
 by [`plans/193-m6-i2pd-mixed-router-streaming-qualification.md`](plans/193-m6-i2pd-mixed-router-streaming-qualification.md)).
-Plan 196 (M6 Java I2P controlled first-run topology corrective) is
-the current executable plan: out-of-tree
-`tests/integration/m6-interop/java/ControlledRouter.java` test-only
-launcher + rewritten `tests/integration/m6-interop/run-java.sh` +
-extended `scripts/check-m6-mixed-router-acceptance-evidence.sh`
-static checker. Plan 194 (Java I2P second-family qualification)
-resumes at §5.2 once Plan 196 proves the controlled topology plus
-authenticated SSU2 preflight.
+Plan 197 (M6 PQ SSU2 option support corrective — tolerant parse only)
+has landed its parser-only tolerance: the exact-pinned Java I2P
+2.13.0 `UDPTransport.addSSU2Options` unconditionally publishes
+`pq=4,3` (ML-KEM-768 + ML-KEM-512) on every SSU2 RouterAddress,
+and the Plan 196 first counted external run failed at
+`crates/i2pr-transport-ssu2/src/address.rs:885` with
+`Ssu2AddressError::UnknownOption`. Plan 197 added a typed
+`Ssu2PqKem`/`PqCapabilities` parser tolerance with bounded
+`MAX_SSU2_PQ_SCHEMES = 8`, kept the i2pr session layer classical
+X25519 only, kept the i2pr publication path pq-free, and never
+implemented, claimed, or silently enabled ML-KEM. The current
+executable plan is now Plan 196 (re-run external lane): the
+existing Plan 196 `destination_message_plane_against_java`
+driver must record `session-established` against the exact-pinned
+Java cache and flip Plan 196 to
+`passed-m6-java-controlled-first-run-topology-corrective`. Plan
+194 (Java I2P second-family qualification) then resumes at §5.2
+on the proven controlled topology plus authenticated SSU2
+preflight.
 
 ## Read first
 
@@ -101,8 +112,9 @@ Plan 191 = stopped-by-inbound-delivery-boundary-E (retained-passed via plan192; 
 Plan 192 = passed M6 i2pd-compatible I2CP-style Data body wire-format corrective (9-byte short-transport inner envelope + i2cp I2CP-style Data body + STYLE=RAW SAM session + RAW RECEIVED SIZE=N digest equality; 2 inbound-delivery rows flipped blocked -> passed; inbound-delivery layer closed for i2pd 2.61.0)
 Plan 193 = passed M6 i2pd mixed-router Streaming qualification (local rows passed; full Direction A + Direction B external matrix passed twice on exact head; static checker wired into CI floor)
  Plan 194 = in-progress-scaffolding-landed-blocked-by-plan196-topology-corrective (Java fetch script + second-family harness + external driver + cross-family aggregator wiring + static checker + hosted workflow all landed; the second-family qualification itself stops fail-closed at the Plan 194 §3 controlled-topology boundary: stock Java I2P 2.13.0 overwrites its own router.config on first start, binds a random UDP port, and runs reseed against the public I2P network; Plan 196 owns the corrective)
- Plan 196 = in-progress-corrective-implementation-landed-static-checks-green (out-of-tree ControlledRouter.java test-only launcher + rewritten run-java.sh + extended static checker; flips Plan 194 §11 first-run topology blocker; the next external Java run against the exact-pinned cache proves the controlled topology + authenticated SSU2 preflight and promotes Plan 196 to passed)
- next_executable_plan = 196 (external-execution-of-landed-corrective)
+ Plan 196 = in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection (out-of-tree ControlledRouter.java test-only launcher + rewritten run-java.sh + extended static checker; flips Plan 194 §11 first-run topology blocker; controlled Java topology proven end-to-end; the first authenticated SSU2 preflight failed at Ssu2RouterAddress::parse rejecting the Java `pq=4,3` option; Plan 197 owns the narrow PQ option tolerance corrective)
+Plan 197 = implementation-landed-parser-tolerance-static-floor-green-pending-plan196-external-re-run (parser-only tolerance of the SSU2 `pq` KEM-scheme option Java I2P 2.13.0 unconditionally publishes; typed Ssu2PqKem/PqCapabilities surface with bounded MAX_SSU2_PQ_SCHEMES = 8; i2pr session layer remains classical X25519 only; i2pr publication path stays pq-free; ML-KEM not implemented, claimed, or silently enabled; 21 required test rows green locally; the Plan 196 external Java re-run is the operational follow-up that flips external-session-established-java from failed to passed)
+next_executable_plan = 196 (re-run external lane; session-established-java row must flip on the exact-pinned Java 2.13.0 cache; the Plan 197 parser tolerance is already in place)
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
 Milestone 10 generic tunnels = passed-via-plan175 (profile; byte round-trip proven-via-plan182)
 Milestone 10 HTTP proxy = passed-via-plan176 (profile; byte round-trip proven-via-plan182)
@@ -124,8 +136,9 @@ M6 inbound destination delivery boundary E = closed-via-plan192 (i2pd-compatible
 M6 inbound destination delivery = passed-via-plan192 (i2cp-compatible I2CP-style Data wire-format; STYLE=RAW SAM session; 9-byte short-transport inner envelope)
 M6 i2pd mixed-router Streaming qualification = passed-via-plan193 (full Direction A + Direction B matrix, two exact-head passes; static checker wired)
 M6 mixed-router cross-family ledger = landed-via-plan189 (i2pd-family-passed; java-second-family-controlled-launcher-landed-via-plan196)
-M6 java second-family qualification = controlled-launcher-landed-pending-external-execution (Plan 196 corrective implementation landed; static checks green; next external run against the exact-pinned Java cache proves the controlled topology + authenticated SSU2 preflight)
-next_executable_plan = 196 (external-execution-of-landed-corrective)
+M6 java second-family qualification = controlled-launcher-landed-and-pq-parser-tolerance-landed-pending-external-execution (Plan 196 implementation landed; Plan 197 parser tolerance landed; the existing Plan 196 external Java re-run is the operational follow-up that flips external-session-established-java from failed to passed)
+M6 ssu2 pq option tolerance = landed-via-plan197-typed-parser-surface (Ssu2RouterAddress::parse accepts Java `pq=4,3`; typed PqCapabilities surfaced on every parsed address via `pq_capabilities()` accessor; first-family i2pd 2.61.0 lane stays green because i2pd does not publish pq)
+next_executable_plan = 196 (re-run external lane; session-established-java row must flip on the exact-pinned Java 2.13.0 cache; the Plan 197 parser tolerance is already in place)
 next product layer = m6-mixed-router-streaming-with-i2pd
 ```
 
@@ -982,7 +995,20 @@ network). Plan 196 owns the corrective and lands the
 implementation: out-of-tree `tests/integration/m6-interop/java/ControlledRouter.java`
 test-only launcher + rewritten `tests/integration/m6-interop/run-java.sh`
 + extended `scripts/check-m6-mixed-router-acceptance-evidence.sh`
-static checker. See `plans/194-status.md` and `plans/196-status.md`.
-The historical `plans/188-m6-mixed-router-streaming-with-i2pd.md`
-Streaming file remains historical context only. M10 final
+static checker. The first counted external run proved the
+controlled topology end-to-end and then stopped at the Plan 196
+§10.B PQ option rejection (Java's `pq=4,3` is not parseable by
+`Ssu2RouterAddress::parse`). Plan 197 has landed its narrow PQ
+SSU2 option support corrective: parser-only tolerance of the `pq`
+KEM-scheme option Java I2P 2.13.0 unconditionally publishes, typed
+`Ssu2PqKem`/`PqCapabilities` surface, bounded
+`MAX_SSU2_PQ_SCHEMES = 8`, i2pr session layer stays classical
+X25519 only, i2pr publication path stays pq-free, ML-KEM not
+implemented. The current executable plan is now Plan 196
+(re-run external lane): the Plan 196 external lane re-runs and
+the `external-session-established-java` row flips `failed` →
+`passed`. See `plans/194-status.md`, `plans/196-status.md`, and
+`plans/197-status.md`. The historical
+`plans/188-m6-mixed-router-streaming-with-i2pd.md` Streaming file
+remains historical context only. M10 final
 acceptance stays open.**

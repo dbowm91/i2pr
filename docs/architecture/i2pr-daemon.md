@@ -138,11 +138,26 @@ checker extension that rejects `i2p.vmCommSystem=true`, the
 obsolete Plan 194 keys (`i2np.reseed.enable`, `router.isFloodfill`,
 `i2np.ntcp2.enabled`), mutation of the verified Java cache's
 `clients.config` / `clients.config.d`, non-loopback reseed URLs,
-and `|| true` forgiveness in the lane. The next external Java
-run against the exact-pinned cache proves the controlled topology
-+ authenticated SSU2 preflight and flips Plan 196 from
-`in-progress-corrective-implementation-landed-static-checks-green`
-to `passed-m6-java-controlled-first-run-topology-corrective`;
+and `|| true` forgiveness in the lane. The first counted external
+Java run proved the controlled topology end-to-end and then
+stopped at the Plan 196 §10.B PQ option rejection (Java's `pq=4,3`
+is not parseable by `Ssu2RouterAddress::parse`). Plan 197 has
+landed the narrow PQ SSU2 option support corrective: parser-only
+tolerance of the `pq` KEM-scheme option Java I2P 2.13.0
+unconditionally publishes (`UDPTransport.addSSU2Options` at the
+exact-pinned `9134f808337b401e8e53c73734c81fab04280c9d` commit,
+`PQ_VERSION = "4,3"`), typed `Ssu2PqKem`/`PqCapabilities`
+surface with bounded `MAX_SSU2_PQ_SCHEMES = 8`, the i2pr
+session layer stays classical X25519 only by the Plan 156/160/161
+establishment contract, the i2pr publication path stays pq-free
+(Plan 197 adds a `publication_never_emits_pq` regression), and
+no ML-KEM implementation is added, depended on, advertised, or
+claimed at any layer. The Plan 196 external lane now re-runs
+against the same exact-pinned Java cache and the
+`external-session-established-java` row flips from `failed` to
+`passed`; Plan 196 then flips from
+`in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection-pq-parser-tolerance-landed-via-plan197-pending-external-re-run`
+to `passed-m6-java-controlled-first-run-topology-corrective` and
 Plan 194 §5.2 / §5.3 / §5.4(b/c) / §5.5 resume only after Plan
 196 passes.
 

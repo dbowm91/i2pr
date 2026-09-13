@@ -447,8 +447,22 @@ record is not `superseded-by-*`. Currently:
   (out-of-tree `tests/integration/m6-interop/java/ControlledRouter.java`
   test-only launcher + rewritten `tests/integration/m6-interop/run-java.sh`
   + extended `scripts/check-m6-mixed-router-acceptance-evidence.sh`
-  static checker; see [`plans/194-status.md`](../../plans/194-status.md)
+  static checker; the first counted external Java run proved the
+  controlled topology end-to-end and stopped at the Plan 196 §10.B
+  PQ option rejection; see [`plans/194-status.md`](../../plans/194-status.md)
   and [`plans/196-status.md`](../../plans/196-status.md));
+  Plan 197 has landed the narrow PQ SSU2 option support corrective
+  (parser-only tolerance of the SSU2 `pq` KEM-scheme option Java
+  I2P 2.13.0 unconditionally publishes; typed `Ssu2PqKem`/
+  `PqCapabilities` surface with bounded `MAX_SSU2_PQ_SCHEMES = 8`;
+  i2pr session layer stays classical X25519 only; i2pr
+  publication path stays pq-free; ML-KEM not implemented, claimed,
+  or silently enabled; 21 required test rows green locally; the
+  Plan 196 external Java re-run is the operational follow-up that
+  flips `external-session-established-java` from `failed` to
+  `passed`; see
+  [`plans/197-m6-pq-ssu2-option-support-corrective.md`](../../plans/197-m6-pq-ssu2-option-support-corrective.md)
+  and [`plans/197-status.md`](../../plans/197-status.md));
   M10 final acceptance stays open.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
@@ -485,7 +499,7 @@ not weaken the script.
 | `scripts/check-i2cp-acceptance-evidence.sh` | Plan 170/172 I2CP evidence integrity (no synthetic `passed` rows; CI-enforced). |
 | `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants (no Tokio/sockets in service-tunnels, no Garlic/I2NP, single pump, no unbounded channels, one entry point). |
 | `scripts/check-service-tunnel-acceptance-evidence.sh` | Plan 181 service-tunnel evidence integrity (29 local + 2 blocked remote rows; CI-enforced). |
-| `scripts/check-m6-mixed-router-acceptance-evidence.sh` | Plan 189 §8 / Plan 194 / Plan 196 cross-family M6 mixed-router evidence integrity (per-layer harnesses + checkers both pin i2pd 2.61.0 + Java I2P 2.13.0; cross-family aggregator reuses the four per-layer harnesses; second-family Java rows stay `failed` with stop provenance until the Plan 196 controlled Java topology + authenticated SSU2 preflight passes; Plan 196 extends the checker to reject `i2p.vmCommSystem=true`, the obsolete Plan 194 keys (`i2np.reseed.enable`, `router.isFloodfill`, `i2np.ntcp2.enabled`), mutation of the verified Java cache's `clients.config` / `clients.config.d`, non-loopback reseed URLs, and `|| true` forgiveness in the lane; CI-enforced). |
+| `scripts/check-m6-mixed-router-acceptance-evidence.sh` | Plan 189 §8 / Plan 194 / Plan 196 / Plan 197 cross-family M6 mixed-router evidence integrity (per-layer harnesses + checkers both pin i2pd 2.61.0 + Java I2P 2.13.0; cross-family aggregator reuses the four per-layer harnesses; second-family Java rows stay `failed` with stop provenance until the Plan 196 controlled Java topology + authenticated SSU2 preflight passes; Plan 196 extends the checker to reject `i2p.vmCommSystem=true`, the obsolete Plan 194 keys (`i2np.reseed.enable`, `router.isFloodfill`, `i2np.ntcp2.enabled`), mutation of the verified Java cache's `clients.config` / `clients.config.d`, non-loopback reseed URLs, and `|| true` forgiveness in the lane; Plan 197 extends the checker to require that `Ssu2RouterAddress::parse` accepts `pq=4,3` (positive `parses_java_high_mtu_pq_options`/`parses_java_low_mtu_pq_option` regression present), that `Ssu2RouterAddress` surfaces a `pq_capabilities()` accessor, that `crates/i2pr-transport-ssu2/src/lib.rs` re-exports `Ssu2PqKem`/`PqCapabilities`/`MAX_SSU2_PQ_SCHEMES`, and that `crates/i2pr-transport-ssu2/src/publication.rs` contains no `pq` key in any `props.setProperty(...)`-style push or matching branch; CI-enforced). |
 
 ## Doc-vs-source audit pattern
 
