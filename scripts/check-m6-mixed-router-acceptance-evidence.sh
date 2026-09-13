@@ -306,7 +306,7 @@ else
     failures=$((failures + 1))
   fi
   if ! grep -q -F "${JAVA_PIN}" "${WORKFLOW}"; then
-    echo "m6 mixed-router evidence check failed: external workflow never references the Java I2P pin ${JAVA_PIN}" >&2
+    echo "m6 mixed-router evidence check failed: external workflow never references the Java pin ${JAVA_PIN}" >&2
     failures=$((failures + 1))
   fi
   if ! grep -q -F 'workflow_dispatch' "${WORKFLOW}"; then
@@ -315,8 +315,63 @@ else
   fi
 fi
 
+# ---- 9. Plan 197 PQ SSU2 option tolerance invariants. -------------------
+# The exact-pinned Java I2P 2.13.0 reference publishes `pq=4,3` for
+# every SSU2 RouterAddress via `UDPTransport.addSSU2Options`. Plan 197
+# adds typed parser tolerance so the M6 second-family lane stops at
+# §10.B and flips the external-session-established-java row from
+# failed to passed. These guards ensure the parser tolerance is
+# permanent and the i2pr publication path remains pq-free.
+SSU2_ADDRESS="${REPO_ROOT}/crates/i2pr-transport-ssu2/src/address.rs"
+SSU2_PUBLICATION="${REPO_ROOT}/crates/i2pr-transport-ssu2/src/publication.rs"
+SSU2_LIB="${REPO_ROOT}/crates/i2pr-transport-ssu2/src/lib.rs"
+if [[ ! -f "${SSU2_ADDRESS}" ]]; then
+  echo "m6 mixed-router evidence check failed: ${SSU2_ADDRESS} missing (Plan 197 §8)" >&2
+  failures=$((failures + 1))
+elif [[ ! -f "${SSU2_PUBLICATION}" ]]; then
+  echo "m6 mixed-router evidence check failed: ${SSU2_PUBLICATION} missing (Plan 197 §8)" >&2
+  failures=$((failures + 1))
+elif [[ ! -f "${SSU2_LIB}" ]]; then
+  echo "m6 mixed-router evidence check failed: ${SSU2_LIB} missing (Plan 197 §8)" >&2
+  failures=$((failures + 1))
+else
+  # 9a. The PQ_OPTION parser arm must be present and must NOT fall
+  # through to the unknown-option default; a positive parse of
+  # `pq=4,3` is required via an in-tree unit test.
+  if ! grep -q 'PQ_OPTION\s*=>\s*store' "${SSU2_ADDRESS}"; then
+    echo "m6 mixed-router evidence check failed: ${SSU2_ADDRESS} lacks the PQ_OPTION parser arm (Plan 197 §5.2)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'parses_java_high_mtu_pq_options\|parses_java_low_mtu_pq_option' "${SSU2_ADDRESS}"; then
+    echo "m6 mixed-router evidence check failed: ${SSU2_ADDRESS} lacks the positive pq=4,3 unit-test row (Plan 197 §5.5)" >&2
+    failures=$((failures + 1))
+  fi
+  # 9b. The Ssu2RouterAddress must surface a typed `pq_capabilities()`
+  # accessor; the field is required for evidence logging.
+  if ! grep -q 'fn pq_capabilities' "${SSU2_ADDRESS}"; then
+    echo "m6 mixed-router evidence check failed: ${SSU2_ADDRESS} lacks the pq_capabilities() accessor (Plan 197 §5.3)" >&2
+    failures=$((failures + 1))
+  fi
+  # 9c. The publication path must remain pq-free. We reject only the
+  # wire-emit form (setProperty("pq",...) or key == "pq" branch).
+  # Comments referencing the policy are allowed; the literal
+  # `publication_never_emits_pq` regression test name is allowed.
+  if grep -n -E '^[[:space:]]*([^/].*setProperty\([^)]*"pq"[^)]*|key[[:space:]]*==[[:space:]]*"pq")' "${SSU2_PUBLICATION}" >/dev/null 2>&1; then
+    echo "m6 mixed-router evidence check failed: ${SSU2_PUBLICATION} emits a pq key (Plan 197 §5.4 / §11 ruled-out work)" >&2
+    failures=$((failures + 1))
+  fi
+  # 9d. The lib.rs re-export must include Ssu2PqKem and PqCapabilities
+  # (and the typed bound MAX_SSU2_PQ_SCHEMES).
+  for reexport in "Ssu2PqKem" "PqCapabilities" "MAX_SSU2_PQ_SCHEMES"; do
+    if ! grep -q "${reexport}" "${SSU2_LIB}"; then
+      echo "m6 mixed-router evidence check failed: ${SSU2_LIB} does not re-export ${reexport} (Plan 197 §5.1)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants)"

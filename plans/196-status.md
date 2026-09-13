@@ -1,9 +1,26 @@
 # Plan 196 status — M6 Java I2P controlled first-run topology corrective
 
-Status: **`in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection`**.
+Status: **`in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection-pq-parser-tolerance-landed-via-plan197-pending-external-re-run`**.
 
 Plan of record:
 [`plans/196-m6-java-controlled-first-run-topology-corrective.md`](196-m6-java-controlled-first-run-topology-corrective.md).
+
+Plan 197 has landed the narrow PQ SSU2 option parser tolerance
+that Plan 196 §10.B blocked on. The
+`Ssu2RouterAddress::parse` parser now accepts the exact-pinned
+Java I2P 2.13.0 `pq=4,3` KEM-scheme option and surfaces it as a
+typed `Ssu2PqKem`/`PqCapabilities` value via the new
+`pq_capabilities()` accessor. i2pr's SSU2 v2 session layer
+remains classical X25519 only by the Plan 156/160/161 contract;
+i2pr's publication path stays `pq`-free. The 21 required test
+rows pass locally and the workspace floor is green. Plan 196
+now waits for the existing
+`tests/integration/m6-interop/run-java.sh` external lane to be
+re-executed against the exact-pinned Java cache; the
+`external-session-established-java` row flips from `failed` to
+`passed` only when
+`destination_message_plane_against_java` records
+`session-established`.
 
 The Plan 196 implementation has landed on the working branch: the
 out-of-tree `ControlledRouter` Java launcher compiles against the
@@ -60,12 +77,13 @@ plan_191 = stopped-boundary-diagnosis-retained
 plan_192 = passed-m6-i2cp-wire-format-corrective
 plan_193 = passed-m6-i2pd-mixed-router-streaming
 plan_194 = in-progress-scaffolding-landed-blocked-by-plan196-topology-corrective
-plan_196 = in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection
+plan_196 = in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection-pq-parser-tolerance-landed-via-plan197-pending-external-re-run
 plan_195 = registered-blocked-by-plan194
-plan_197_followup = registered-m6-pq-ssu2-option-support-corrective (proposed; pending)
+plan_197 = implementation-landed-parser-tolerance-static-floor-green-pending-plan196-external-re-run (parser-only tolerance of the SSU2 `pq` option Java I2P 2.13.0 unconditionally publishes; typed Ssu2PqKem/PqCapabilities surface; i2pr session layer remains classical X25519 only; i2pr publication path stays pq-free; ML-KEM not implemented, claimed, or silently enabled; 21 required test rows green locally)
 
 milestone6_i2pd_streaming_interop = passed-via-plan193
-m6_second_family_java = controlled-launcher-landed-pending-pq-ssu2-corrective
+m6_ssu2_pq_option_tolerance = landed-via-plan197-typed-parser-surface
+m6_second_family_java = topology-corrective-landed-and-pq-parser-tolerance-landed-pending-external-execution
 milestone6_interoperable = not-yet-claimed
 
 milestone10_local_product = passed-via-plan180-and-plan182
@@ -73,10 +91,9 @@ milestone10_independent_application_clients = local-rows-passed-plan181-not-clos
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 
-next_executable_plan = 197 (narrow PQ SSU2 option support corrective; not yet committed)
-resume_after_plan197 = 196 (re-run external-execution; authenticated SSU2 preflight expected to pass)
+next_executable_plan = 196 (re-run external lane; session-established-java row must flip)
 resume_after_plan196_external = 194 (resume Java second-family qualification)
-remaining_sequence = 197 -> 196-execute -> resume-194 -> 195
+remaining_sequence = 196-execute -> resume-194 -> 195
 ```
 
 ## Why Plan 196 exists
@@ -277,18 +294,24 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'  
 ## Handoff rule
 
 After the Plan 196 implementation lands on the working branch and
-the static checker is green, register Plan 197 (narrow PQ SSU2
-option support corrective) and execute it against the existing
-exact-pinned Java I2P 2.13.0 cache. The Plan 197 lane must prove
-every `Ssu2RouterAddress::parse` step on the `pq=4,3` Java
-RouterInfo, including the `s`, `i`, `v`, `host`, `port`, `caps`,
-`mtu`, and `pq` options; the bounded i2pr support is
-type-safe (`PqScheme` enum with at least `MlKem512`, `MlKem768`,
-and a sentinel for unknown PQ schemes), bounds-checked (fixed
-ML-KEM-512 / ML-KEM-768 public-key lengths), and never re-derives
-the canonical wire bytes. After Plan 197, re-execute the Plan 196
-external lane; the `external-session-established-java` row flips
-from `failed` to `passed` only when the existing
+the static checker is green, execute Plan 197 (narrow PQ SSU2
+option support corrective; now landed — see
+[`plans/197-m6-pq-ssu2-option-support-corrective.md`](197-m6-pq-ssu2-option-support-corrective.md)
+and [`plans/197-status.md`](197-status.md))
+against the existing exact-pinned Java I2P 2.13.0 cache. Plan
+197 has landed the parser-only tolerance (typed
+`Ssu2PqKem`/`PqCapabilities` surface, bounded
+`MAX_SSU2_PQ_SCHEMES = 8`, no ML-KEM implementation, the i2pr
+session layer stays classical X25519 only by the Plan 156/160/161
+contract); the existing exact-pinned Java 2.13.0 `pq=4,3`
+RouterInfo now round-trips through
+`Ssu2RouterAddress::parse` with the typed schemes surfaced. The
+21 required local test rows are green and the workspace floor is
+recorded in `plans/197-status.md`.
+
+Re-execute the Plan 196 external lane; the
+`external-session-established-java` row flips from `failed` to
+`passed` only when the existing
 `crates/i2pr-daemon/tests/java_tunnel_external.rs::destination_message_plane_against_java`
 driver records `session-established` against the controlled
 Java reference.

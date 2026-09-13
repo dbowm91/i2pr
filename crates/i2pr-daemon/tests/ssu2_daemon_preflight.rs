@@ -498,6 +498,62 @@ fn write_file(dir: &Path, name: &str, bytes: &[u8]) {
     std::fs::write(dir.join(name), bytes).unwrap_or_else(|_| panic!("write {name}"));
 }
 
+/// Plan 197 — CI-fast regression proving the daemon-owned
+/// `verify_reference_router_info` path surfaces empty `pq`
+/// capabilities for a reference RouterInfo that does not carry a
+/// `pq` option. This is the i2pd 2.61.0 first-family shape; the
+/// in-tree fixture is built from the production codec via
+/// `Mapping::from_entries`, so it does not depend on a live
+/// reference router.
+#[test]
+fn reference_i2pd_routerinfo_has_no_pq_capabilities() {
+    let static_bytes: [u8; 32] = [0x42; 32];
+    let intro_bytes: [u8; 32] = [0x24; 32];
+    let static_pub: [u8; 32] = [0xa1; 32];
+    let options = Mapping::from_entries(vec![
+        ("host".to_string(), "127.0.0.1".to_string()),
+        ("port".to_string(), "44001".to_string()),
+        ("v".to_string(), "2".to_string()),
+        ("s".to_string(), i2p_b64_encode(&static_pub)),
+        ("i".to_string(), i2p_b64_encode(&intro_bytes)),
+        ("caps".to_string(), "46BC".to_string()),
+        ("mtu".to_string(), "1280".to_string()),
+    ])
+    .expect("options");
+    let bundle = RouterIdentityBundle::generate(&mut OsRng).expect("identity");
+    let address = RouterAddress::new(
+        10,
+        Date::from_millis(9_999_999_999_999),
+        "SSU2".to_string(),
+        options,
+    )
+    .expect("address");
+    let ri_options = Mapping::from_entries(vec![
+        ("router.version".to_string(), "0.9.58".to_string()),
+        ("netId".to_string(), "2".to_string()),
+    ])
+    .expect("ri options");
+    let info = bundle
+        .sign_router_info(
+            Date::from_millis(wall_secs().saturating_mul(1000)),
+            vec![address],
+            Vec::new(),
+            ri_options,
+        )
+        .expect("sign");
+    let router_info = info
+        .encode_to_vec(i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+        .expect("encode");
+
+    let (_hash, ssu2) = verify_reference_router_info(&router_info).expect("verify i2pd-style");
+    assert!(ssu2.pq_capabilities().schemes().is_empty());
+    assert_eq!(ssu2.pq_capabilities().as_wire(), "");
+    assert!(!ssu2.pq_capabilities().is_supported());
+    // Suppress unused warnings for the constructed bytes (they only
+    // matter through the codec chain, not via direct reads).
+    let _ = (static_bytes, intro_bytes);
+}
+
 #[tokio::test]
 #[ignore = "Plan 184: requires exact-pinned external i2pd environment"]
 async fn ssu2_daemon_preflight_against_i2pd() {

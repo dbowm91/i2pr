@@ -99,8 +99,13 @@ pub use ssu2_runtime::{
 };
 // Plan 184 daemon-owned SSU2 re-exports: the daemon composes the
 // controlled SSU2 identity/address surface through the runtime so it
-// never depends on `i2pr-transport-ssu2` directly.
-pub use i2pr_transport_ssu2::{IntroKey, Ssu2PublicKey, Ssu2RouterAddress, constants};
+// never depends on `i2pr-transport-ssu2` directly. Plan 197 extends
+// the surface with the typed `pq` KEM-scheme metadata so the daemon
+// can inspect/evidenced-log the parsed schemes without pulling in the
+// transport crate directly.
+pub use i2pr_transport_ssu2::{
+    IntroKey, PqCapabilities, Ssu2PqKem, Ssu2PublicKey, Ssu2RouterAddress, constants,
+};
 pub use supervisor::{
     MAX_SHUTDOWN_DEADLINE, ShutdownOutcome, ShutdownReport, Supervisor, SupervisorConfigError,
     SupervisorError, SupervisorHandle,

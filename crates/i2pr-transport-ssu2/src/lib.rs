@@ -41,9 +41,9 @@ pub mod state_machine;
 pub mod token;
 
 pub use address::{
-    ConfiguredListenAddress, ResolvedDialTarget, Ssu2AddressClass, Ssu2AddressError,
-    Ssu2AddressMaterial, Ssu2Capabilities, Ssu2Endpoint, Ssu2Introducer, Ssu2RouterAddress,
-    Ssu2TransportStyle,
+    ConfiguredListenAddress, MAX_SSU2_PQ_SCHEMES, PqCapabilities, ResolvedDialTarget,
+    Ssu2AddressClass, Ssu2AddressError, Ssu2AddressMaterial, Ssu2Capabilities, Ssu2Endpoint,
+    Ssu2Introducer, Ssu2PqKem, Ssu2RouterAddress, Ssu2TransportStyle,
 };
 pub use block::{
     AckBlock, AddressBlock, Block, BlockError, CongestionBlock, DecodedBlock, FirstFragmentBlock,

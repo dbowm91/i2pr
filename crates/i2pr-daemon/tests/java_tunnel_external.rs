@@ -34,8 +34,8 @@ use i2pr_daemon::router_i2np::{
     verify_reference_router_info,
 };
 use i2pr_netdb::RouterHash;
-use i2pr_proto::{Hash, RouterInfo};
-use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
+use i2pr_proto::{Date, Hash, Mapping, RouterAddress, RouterInfo};
+use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope, Ssu2PqKem};
 use i2pr_tunnel::identity::TunnelId;
 
 const DIAL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -356,4 +356,93 @@ async fn destination_message_plane_against_java() {
 
     let _ = (sam, java_router_info, reference_hash);
     let _ = &evidence_dir;
+}
+
+/// Plan 197 — CI-fast regression proving the daemon-owned
+/// `verify_reference_router_info` path surfaces the typed
+/// `pq_capabilities()` for a Java I2P 2.13.0 SSU2 address that
+/// carries `pq=4,3`. The in-tree fixture is built from the
+/// production codec via `Mapping::from_entries`, so it does not
+/// depend on a live Java runtime. The exact-pinned Java router
+/// publishes `pq=4,3` unconditionally via
+/// `UDPTransport.addSSU2Options` (`router/java/src/net/i2p/router/
+/// transport/udp/UDPTransport.java:148-153,1011-1021`); this
+/// regression is the parser-only counterpart to that wire form.
+#[test]
+fn java_pq_capabilities_surfaced() {
+    let static_pub: [u8; 32] = [0xa1; 32];
+    let intro_bytes: [u8; 32] = [0x24; 32];
+    let options = Mapping::from_entries(vec![
+        ("host".to_string(), "127.0.0.1".to_string()),
+        ("port".to_string(), "44002".to_string()),
+        ("v".to_string(), "2".to_string()),
+        ("s".to_string(), i2p_b64_encode(&static_pub)),
+        ("i".to_string(), i2p_b64_encode(&intro_bytes)),
+        ("caps".to_string(), "46BC".to_string()),
+        ("mtu".to_string(), "1280".to_string()),
+        // The exact-pinned Java 2.13.0 RouterInfo carries this
+        // option unconditionally for the high-MTU publish form.
+        ("pq".to_string(), "4,3".to_string()),
+    ])
+    .expect("options");
+    let bundle =
+        i2pr_crypto::RouterIdentityBundle::generate(&mut rand_core::OsRng).expect("identity");
+    let address = RouterAddress::new(
+        10,
+        Date::from_millis(9_999_999_999_999),
+        "SSU2".to_string(),
+        options,
+    )
+    .expect("address");
+    let ri_options = Mapping::from_entries(vec![
+        ("router.version".to_string(), "0.9.66".to_string()),
+        ("netId".to_string(), "2".to_string()),
+    ])
+    .expect("ri options");
+    let info = bundle
+        .sign_router_info(
+            Date::from_millis(wall_secs().saturating_mul(1000)),
+            vec![address],
+            Vec::new(),
+            ri_options,
+        )
+        .expect("sign");
+    let router_info = info
+        .encode_to_vec(i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+        .expect("encode");
+
+    let (_hash, ssu2) = verify_reference_router_info(&router_info).expect("verify java-style");
+    assert_eq!(
+        ssu2.pq_capabilities().schemes(),
+        &[Ssu2PqKem::MlKem768, Ssu2PqKem::MlKem512]
+    );
+    assert_eq!(ssu2.pq_capabilities().as_wire(), "4,3");
+    assert!(ssu2.pq_capabilities().is_supported());
+}
+
+/// Local alphabet-only I2P base64 helper, mirroring the existing
+/// `i2p_b64_encode` in `ssu2_daemon_preflight.rs` without pulling in
+/// that test's private helper.
+fn i2p_b64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~";
+    let mut output = String::new();
+    for chunk in bytes.chunks(3) {
+        let mut n: u32 = 0;
+        for byte in chunk {
+            n = (n << 8) | u32::from(*byte);
+        }
+        n <<= 8 * (3 - chunk.len());
+        let digits = match chunk.len() {
+            1 => 2,
+            2 => 3,
+            _ => 4,
+        };
+        for index in 0..digits {
+            output.push(ALPHABET[((n >> (18 - 6 * index)) & 0x3f) as usize] as char);
+        }
+        for _ in digits..4 {
+            output.push('=');
+        }
+    }
+    output
 }

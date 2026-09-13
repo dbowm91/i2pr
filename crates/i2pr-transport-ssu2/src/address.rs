@@ -48,6 +48,13 @@ const PORT_OPTION: &str = "port";
 const VERSION_OPTION: &str = "v";
 const CAPS_OPTION: &str = "caps";
 const MTU_OPTION: &str = "mtu";
+const PQ_OPTION: &str = "pq";
+
+/// Maximum number of PQ KEM-scheme identifiers accepted from one
+/// `pq` option. The pinned Java 2.13.0 router publishes two (`"4,3"`).
+/// Eight covers any plausible production variant without unbounded
+/// parser allocation.
+pub const MAX_SSU2_PQ_SCHEMES: usize = 8;
 
 /// A bounded failure while parsing or constructing SSU2 address data.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -153,6 +160,90 @@ impl Ssu2TransportStyle {
         match self {
             Self::Ssu2 => "SSU2",
         }
+    }
+}
+
+/// A KEM-scheme identifier carried by the SSU2 `pq` option.
+///
+/// Java I2P 2.13.0 publishes identifiers drawn from the
+/// `UDPTransport.java` PQ-id space (`3` = ML-KEM-512, `4` = ML-KEM-768,
+/// document comment: "preferred enctypes 6/5"). The identifier space
+/// is intentionally separate from `i2pr_proto::CryptoKeyType` (which
+/// uses 5/6/7 for the ML-KEM-*+X25519 hybrids) because Java's value
+/// does not imply the X25519 hybrid. Future revisions of the pinned
+/// reference may widen the id space; unknown identifiers are
+/// retained as `Unknown(u8)` for forward compatibility without a
+/// hidden ML-KEM implementation. i2pr does not implement any KEM
+/// listed here; the value is purely diagnostic.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Ssu2PqKem {
+    /// ML-KEM-512 (Java's PQ id `3`).
+    MlKem512,
+    /// ML-KEM-768 (Java's PQ id `4`).
+    MlKem768,
+    /// Any other PQ id the parser encountered. i2pr does not
+    /// understand the KEM; the value is retained for diagnostic
+    /// parity with the wire.
+    Unknown(u8),
+}
+
+impl Ssu2PqKem {
+    /// Parses one scheme identifier from a numeric byte.
+    pub const fn from_code(value: u8) -> Self {
+        match value {
+            3 => Self::MlKem512,
+            4 => Self::MlKem768,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+/// Bounded KEM-scheme list extracted from the SSU2 `pq` option.
+///
+/// Empty list = `pq` option absent or `pq=` value. The byte string
+/// is never re-derived; callers may inspect `as_wire()` to log the
+/// canonical form. The list order follows the wire order.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct PqCapabilities {
+    schemes: Vec<Ssu2PqKem>,
+    wire: String,
+}
+
+impl PqCapabilities {
+    /// Empty capabilities (option absent or empty).
+    pub const fn empty() -> Self {
+        Self {
+            schemes: Vec::new(),
+            wire: String::new(),
+        }
+    }
+
+    /// Builds from a parsed scheme vector and the canonical wire
+    /// string. The wire string is retained for diagnostics; it is
+    /// never re-derived from the schemes.
+    pub fn from_parts(schemes: Vec<Ssu2PqKem>, wire: String) -> Self {
+        Self { schemes, wire }
+    }
+
+    /// Returns the parsed scheme list. Empty when the option is
+    /// absent or empty.
+    pub fn schemes(&self) -> &[Ssu2PqKem] {
+        &self.schemes
+    }
+
+    /// Returns the canonical wire string verbatim. Empty when the
+    /// option is absent. Non-empty when the value carried a list.
+    pub fn as_wire(&self) -> &str {
+        &self.wire
+    }
+
+    /// Returns whether any scheme is recognised by the i2pr-side
+    /// enumeration. This is purely a diagnostic flag and is not
+    /// branched on by any production code path.
+    pub fn is_supported(&self) -> bool {
+        self.schemes
+            .iter()
+            .any(|scheme| matches!(scheme, Ssu2PqKem::MlKem512 | Ssu2PqKem::MlKem768))
     }
 }
 
@@ -464,6 +555,7 @@ pub struct Ssu2RouterAddress {
     mtu: Option<u16>,
     capabilities: Ssu2Capabilities,
     introducers: Vec<Ssu2Introducer>,
+    pq_capabilities: PqCapabilities,
 }
 
 impl Ssu2RouterAddress {
@@ -562,6 +654,16 @@ impl Ssu2RouterAddress {
     /// Returns the validated capability flags.
     pub fn capabilities(&self) -> &Ssu2Capabilities {
         &self.capabilities
+    }
+
+    /// Returns the typed `pq` KEM-scheme capabilities surfaced from
+    /// the `pq` option. Empty when the option is absent or empty
+    /// (the i2pd 2.61.0 first-family path). The list is purely
+    /// diagnostic and is never branched on by i2pr's session layer
+    /// (Plan 197; the i2pr session layer remains classical X25519
+    /// only by the Plan 156/160/161 contract).
+    pub fn pq_capabilities(&self) -> &PqCapabilities {
+        &self.pq_capabilities
     }
 
     /// Returns the bounded introducer groups.
@@ -666,6 +768,10 @@ impl Ssu2RouterAddress {
             .map(parse_capabilities)
             .transpose()?
             .unwrap_or_else(Ssu2Capabilities::empty);
+        let pq_capabilities = match options.pq {
+            Some(value) => parse_pq_capabilities(value)?,
+            None => PqCapabilities::empty(),
+        };
 
         Ok(Self {
             cost,
@@ -677,6 +783,7 @@ impl Ssu2RouterAddress {
             mtu,
             capabilities,
             introducers,
+            pq_capabilities,
         })
     }
 }
@@ -850,6 +957,7 @@ struct ParsedOptions<'a> {
     capabilities: Option<&'a str>,
     mtu: Option<&'a str>,
     introducer_fields: IntroducerFields<'a>,
+    pq: Option<&'a str>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -882,6 +990,7 @@ impl<'a> ParsedOptions<'a> {
                 VERSION_OPTION => store(&mut parsed.version, value, VERSION_OPTION)?,
                 CAPS_OPTION => store(&mut parsed.capabilities, value, CAPS_OPTION)?,
                 MTU_OPTION => store(&mut parsed.mtu, value, MTU_OPTION)?,
+                PQ_OPTION => store(&mut parsed.pq, value, PQ_OPTION)?,
                 _ => return Err(Ssu2AddressError::UnknownOption),
             }
         }
@@ -1191,6 +1300,34 @@ fn parse_capabilities(value: &str) -> Result<Ssu2Capabilities, Ssu2AddressError>
         raw: value.to_owned(),
         bits,
     })
+}
+
+fn parse_pq_capabilities(value: &str) -> Result<PqCapabilities, Ssu2AddressError> {
+    let invalid = || Ssu2AddressError::InvalidOptionValue { option: PQ_OPTION };
+    if value.is_empty() {
+        return Ok(PqCapabilities::empty());
+    }
+    if value.len() > MAX_SSU2_PQ_SCHEMES * 4 {
+        // Each scheme id is at most 3 ASCII digits plus the optional
+        // comma separator; bound the wire string so the parser
+        // cannot be made to allocate unbounded memory.
+        return Err(invalid());
+    }
+    let mut schemes = Vec::new();
+    for chunk in value.split(',') {
+        if chunk.is_empty() || !chunk.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        if chunk.len() > 3 {
+            return Err(invalid());
+        }
+        let parsed = chunk.parse::<u8>().map_err(|_| invalid())?;
+        schemes.push(Ssu2PqKem::from_code(parsed));
+        if schemes.len() > MAX_SSU2_PQ_SCHEMES {
+            return Err(invalid());
+        }
+    }
+    Ok(PqCapabilities::from_parts(schemes, value.to_owned()))
 }
 
 #[cfg(test)]
@@ -1527,5 +1664,205 @@ mod tests {
             )
             .contains("12345")
         );
+    }
+
+    fn parse_with_pq(pq: &str) -> Result<Ssu2RouterAddress, Ssu2AddressError> {
+        let mut entries = direct_entries();
+        entries.push((PQ_OPTION, pq.to_owned()));
+        parse(&entries)
+    }
+
+    #[test]
+    fn parses_java_high_mtu_pq_options() {
+        let parsed = parse_with_pq("4,3").expect("java high mtu");
+        assert_eq!(
+            parsed.pq_capabilities().schemes(),
+            &[Ssu2PqKem::MlKem768, Ssu2PqKem::MlKem512]
+        );
+        assert_eq!(parsed.pq_capabilities().as_wire(), "4,3");
+        assert!(parsed.pq_capabilities().is_supported());
+    }
+
+    #[test]
+    fn parses_java_low_mtu_pq_option() {
+        let parsed = parse_with_pq("3").expect("java low mtu");
+        assert_eq!(parsed.pq_capabilities().schemes(), &[Ssu2PqKem::MlKem512]);
+        assert_eq!(parsed.pq_capabilities().as_wire(), "3");
+        assert!(parsed.pq_capabilities().is_supported());
+    }
+
+    #[test]
+    fn parses_mlkem768_only_pq_option() {
+        let parsed = parse_with_pq("4").expect("mlkem768 only");
+        assert_eq!(parsed.pq_capabilities().schemes(), &[Ssu2PqKem::MlKem768]);
+        assert!(parsed.pq_capabilities().is_supported());
+    }
+
+    #[test]
+    fn parses_empty_pq_option_as_empty_capabilities() {
+        let parsed = parse_with_pq("").expect("empty pq");
+        assert!(parsed.pq_capabilities().schemes().is_empty());
+        assert_eq!(parsed.pq_capabilities().as_wire(), "");
+        assert!(!parsed.pq_capabilities().is_supported());
+    }
+
+    #[test]
+    fn parses_absent_pq_option_as_empty_capabilities() {
+        let entries = direct_entries();
+        let parsed = parse(&entries).expect("no pq");
+        assert!(parsed.pq_capabilities().schemes().is_empty());
+        assert_eq!(parsed.pq_capabilities().as_wire(), "");
+        assert!(!parsed.pq_capabilities().is_supported());
+    }
+
+    #[test]
+    fn parses_unknown_pq_scheme_as_unknown() {
+        let parsed = parse_with_pq("199").expect("unknown");
+        assert_eq!(
+            parsed.pq_capabilities().schemes(),
+            &[Ssu2PqKem::Unknown(199)]
+        );
+        assert_eq!(parsed.pq_capabilities().as_wire(), "199");
+        assert!(!parsed.pq_capabilities().is_supported());
+    }
+
+    #[test]
+    fn parses_mixed_known_and_unknown_pq_schemes() {
+        let parsed = parse_with_pq("4,99,3").expect("mixed");
+        assert_eq!(
+            parsed.pq_capabilities().schemes(),
+            &[
+                Ssu2PqKem::MlKem768,
+                Ssu2PqKem::Unknown(99),
+                Ssu2PqKem::MlKem512
+            ]
+        );
+        assert_eq!(parsed.pq_capabilities().as_wire(), "4,99,3");
+        assert!(parsed.pq_capabilities().is_supported());
+    }
+
+    #[test]
+    fn rejects_too_many_pq_schemes() {
+        let value = "1,2,3,4,5,6,7,8,9";
+        assert_eq!(
+            parse_with_pq(value),
+            Err(Ssu2AddressError::InvalidOptionValue { option: PQ_OPTION })
+        );
+    }
+
+    #[test]
+    fn rejects_pq_option_with_leading_comma() {
+        assert_eq!(
+            parse_with_pq(",4"),
+            Err(Ssu2AddressError::InvalidOptionValue { option: PQ_OPTION })
+        );
+    }
+
+    #[test]
+    fn rejects_pq_option_with_trailing_comma() {
+        assert_eq!(
+            parse_with_pq("4,"),
+            Err(Ssu2AddressError::InvalidOptionValue { option: PQ_OPTION })
+        );
+    }
+
+    #[test]
+    fn rejects_pq_option_with_whitespace() {
+        assert_eq!(
+            parse_with_pq(" 4"),
+            Err(Ssu2AddressError::InvalidOptionValue { option: PQ_OPTION })
+        );
+        assert_eq!(
+            parse_with_pq("4, 3"),
+            Err(Ssu2AddressError::InvalidOptionValue { option: PQ_OPTION })
+        );
+    }
+
+    #[test]
+    fn rejects_pq_option_with_non_digit_chars() {
+        assert_eq!(
+            parse_with_pq("4x"),
+            Err(Ssu2AddressError::InvalidOptionValue { option: PQ_OPTION })
+        );
+        assert_eq!(
+            parse_with_pq("4,3a"),
+            Err(Ssu2AddressError::InvalidOptionValue { option: PQ_OPTION })
+        );
+    }
+
+    #[test]
+    fn rejects_pq_option_with_negative_sign() {
+        assert_eq!(
+            parse_with_pq("-4"),
+            Err(Ssu2AddressError::InvalidOptionValue { option: PQ_OPTION })
+        );
+    }
+
+    #[test]
+    fn rejects_pq_option_with_decimal_point() {
+        assert_eq!(
+            parse_with_pq("4.0"),
+            Err(Ssu2AddressError::InvalidOptionValue { option: PQ_OPTION })
+        );
+    }
+
+    #[test]
+    fn parses_pq_alongside_full_direct_options() {
+        let mut entries = direct_entries();
+        entries.push((PQ_OPTION, "4,3".to_owned()));
+        let parsed = parse(&entries).expect("full direct + pq");
+        assert_eq!(parsed.address_class(), Ssu2AddressClass::Direct);
+        assert_eq!(
+            parsed.pq_capabilities().schemes(),
+            &[Ssu2PqKem::MlKem768, Ssu2PqKem::MlKem512]
+        );
+        assert_eq!(parsed.pq_capabilities().as_wire(), "4,3");
+        assert!(parsed.capabilities().supports_ipv4());
+        assert_eq!(parsed.mtu(), Some(1280));
+    }
+
+    #[test]
+    fn rejects_duplicate_pq_option() {
+        let entries = [
+            (HOST_OPTION, "192.0.2.1".to_owned()),
+            (PORT_OPTION, "12345".to_owned()),
+            (STATIC_KEY_OPTION, encode_i2p_base64(&TEST_STATIC_KEY)),
+            (INTRO_KEY_OPTION, encode_i2p_base64(&TEST_INTRO_KEY)),
+            (VERSION_OPTION, "2".to_owned()),
+            (PQ_OPTION, "4,3".to_owned()),
+            (PQ_OPTION, "3".to_owned()),
+        ];
+        let borrowed: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect();
+        assert_eq!(
+            Ssu2RouterAddress::from_option_entries("SSU2", &borrowed),
+            Err(Ssu2AddressError::DuplicateOption { option: PQ_OPTION })
+        );
+    }
+
+    #[test]
+    fn i2pd_style_address_without_pq_parses_to_empty_caps() {
+        let entries = direct_entries();
+        let parsed = parse(&entries).expect("i2pd-style");
+        assert!(parsed.pq_capabilities().schemes().is_empty());
+        assert_eq!(parsed.pq_capabilities().as_wire(), "");
+        assert!(!parsed.pq_capabilities().is_supported());
+    }
+
+    #[test]
+    fn pq_capabilities_canonical_field_never_re_derived() {
+        let parsed = parse_with_pq("4,3").expect("java high mtu");
+        let value = PqCapabilities::from_parts(
+            vec![Ssu2PqKem::MlKem512, Ssu2PqKem::MlKem768],
+            "999,998".to_owned(),
+        );
+        assert_eq!(value.as_wire(), "999,998");
+        assert_eq!(value.schemes(), &[Ssu2PqKem::MlKem512, Ssu2PqKem::MlKem768]);
+        // The accessor returns the canonical field verbatim, never
+        // a re-derived wire form. Confirms the round-trip is purely
+        // diagnostic and never re-encodes the parsed schemes.
+        assert_ne!(parsed.pq_capabilities().as_wire(), value.as_wire());
     }
 }

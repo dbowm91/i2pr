@@ -555,4 +555,40 @@ mod tests {
         assert!(!rendered.contains("private"));
         assert!(!rendered.contains("secret"));
     }
+
+    /// Plan 197 — the i2pr publication path must never emit a `pq`
+    /// option. ML-KEM key exchange is not implemented and not
+    /// silently enabled by this corrective. i2pd 2.61.0 does not
+    /// publish `pq`; Java I2P 2.13.0 does, but i2pr is the policy
+    /// authority for its own publication path.
+    #[test]
+    fn publication_never_emits_pq() {
+        let PublicationOutcome::Direct(direct_snapshot) = build(
+            PublicationPolicy::new(true, false),
+            reachable_snapshot(),
+            Some(endpoint()),
+            100,
+            3600,
+        )
+        .expect("direct build") else {
+            panic!("expected direct");
+        };
+        for (key, _value) in direct_snapshot.option_entries() {
+            assert_ne!(key, "pq", "i2pr must never publish pq");
+        }
+
+        let PublicationOutcome::Firewalled(firewalled_snapshot) = build(
+            PublicationPolicy::default(),
+            reachable_snapshot(),
+            Some(endpoint()),
+            100,
+            3600,
+        )
+        .expect("firewalled build") else {
+            panic!("expected firewalled");
+        };
+        for (key, _value) in firewalled_snapshot.option_entries() {
+            assert_ne!(key, "pq", "i2pr must never publish pq");
+        }
+    }
 }
