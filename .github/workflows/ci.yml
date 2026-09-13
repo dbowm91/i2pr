@@ -91,6 +91,21 @@ jobs:
       - name: Check service-tunnel acceptance evidence integrity
         if: runner.os == 'Linux'
         run: bash scripts/check-service-tunnel-acceptance-evidence.sh
+      - name: Check exploratory tunnel evidence integrity
+        if: runner.os == 'Linux'
+        run: bash scripts/check-exploratory-tunnel-evidence.sh
+      - name: Check NetDB tunnel evidence integrity
+        if: runner.os == 'Linux'
+        run: bash scripts/check-netdb-tunnel-evidence.sh
+      - name: Check destination tunnel evidence integrity
+        if: runner.os == 'Linux'
+        run: bash scripts/check-destination-tunnel-evidence.sh
+      - name: Check streaming tunnel evidence integrity
+        if: runner.os == 'Linux'
+        run: bash scripts/check-streaming-tunnel-evidence.sh
+      - name: Check M6 mixed-router acceptance evidence integrity
+        if: runner.os == 'Linux'
+        run: bash scripts/check-m6-mixed-router-acceptance-evidence.sh
       - name: Test constrained-host lane contracts
         if: runner.os == 'Linux'
         run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'
