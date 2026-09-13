@@ -240,7 +240,7 @@ impl I2npMessage {
     /// Data body by four bytes, so i2pd reads the source-port low
     /// byte as the protocol and drops the message with
     /// `Destination: Data: Unexpected protocol`. The `u32` framing in
-    /// [`I2npBody::encode_into`] stays correct for the
+    /// `I2npBody::encode_into` stays correct for the
     /// standard-transport form only.
     pub fn decode_short_transport(input: &[u8], maximum: usize) -> Result<Self, CodecError> {
         let mut cursor = DecodeCursor::new(input, maximum)?;
