@@ -441,6 +441,14 @@ record is not `superseded-by-*`. Currently:
   second-family Java rows recorded `failed` with stop
   provenance until a follow-up plan lands the Java qualification
   harness (see [`plans/189-status.md`](../../plans/189-status.md));
+  Plan 194 owns the Java second-family qualification
+  scaffolding and is `in-progress-scaffolding-landed-blocked-by-plan196-topology-corrective`;
+  Plan 196 owns the corrective and lands the implementation
+  (out-of-tree `tests/integration/m6-interop/java/ControlledRouter.java`
+  test-only launcher + rewritten `tests/integration/m6-interop/run-java.sh`
+  + extended `scripts/check-m6-mixed-router-acceptance-evidence.sh`
+  static checker; see [`plans/194-status.md`](../../plans/194-status.md)
+  and [`plans/196-status.md`](../../plans/196-status.md));
   M10 final acceptance stays open.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
@@ -477,7 +485,7 @@ not weaken the script.
 | `scripts/check-i2cp-acceptance-evidence.sh` | Plan 170/172 I2CP evidence integrity (no synthetic `passed` rows; CI-enforced). |
 | `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants (no Tokio/sockets in service-tunnels, no Garlic/I2NP, single pump, no unbounded channels, one entry point). |
 | `scripts/check-service-tunnel-acceptance-evidence.sh` | Plan 181 service-tunnel evidence integrity (29 local + 2 blocked remote rows; CI-enforced). |
-| `scripts/check-m6-mixed-router-acceptance-evidence.sh` | Plan 189 §8 cross-family M6 mixed-router evidence integrity (per-layer harnesses + checkers both pin i2pd 2.61.0 + Java I2P 2.13.0; cross-family aggregator reuses the four per-layer harnesses; second-family Java rows stay `failed` with stop provenance until the Java qualification harness lands; CI-enforced). |
+| `scripts/check-m6-mixed-router-acceptance-evidence.sh` | Plan 189 §8 / Plan 194 / Plan 196 cross-family M6 mixed-router evidence integrity (per-layer harnesses + checkers both pin i2pd 2.61.0 + Java I2P 2.13.0; cross-family aggregator reuses the four per-layer harnesses; second-family Java rows stay `failed` with stop provenance until the Plan 196 controlled Java topology + authenticated SSU2 preflight passes; Plan 196 extends the checker to reject `i2p.vmCommSystem=true`, the obsolete Plan 194 keys (`i2np.reseed.enable`, `router.isFloodfill`, `i2np.ntcp2.enabled`), mutation of the verified Java cache's `clients.config` / `clients.config.d`, non-loopback reseed URLs, and `|| true` forgiveness in the lane; CI-enforced). |
 
 ## Doc-vs-source audit pattern
 

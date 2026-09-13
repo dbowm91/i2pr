@@ -97,7 +97,7 @@ destination_path()` receive bound (reference emits 1812 B
 payloads above our 1730 send advertisement; send path
 unchanged), per-delivery RNG, and 4 KiB SAM read chunks.
 Plan 189 is the registered M6 Java I2P second-family
-qualification plan; it lands the fail-closed M6 mixed-router
+ qualification plan; it lands the fail-closed M6 mixed-router
 cross-family ledger/checker/workflow scaffold
 (`scripts/check-m6-mixed-router-acceptance-evidence.sh`,
 `tests/integration/m6-interop/run-m6-mixed-router.sh`,
@@ -119,13 +119,32 @@ exit code), the static structural checker extension
 `run-java.sh` + `fetch-m6-java.sh` to the required-artifacts
 list), and the hosted-workflow extension
 (`.github/workflows/m6-mixed-router-external.yml` runs the
-Java fetch + build log tail). Plan 194 stops fail-closed at
-the §11 first-run topology blocker (stock Java I2P overwrites
-its own `router.config`, binds a random UDP port, and runs
-reseed against the public I2P network); the second-family
-Java rows stay `failed` with `plan194-java-stop` stop
-provenance until a follow-up corrective plan lands the
-controlled-topology configuration injection.
+Java fetch + build log tail). Plan 196 owns the controlled
+first-run topology corrective and lands the implementation:
+out-of-tree `tests/integration/m6-interop/java/ControlledRouter.java`
+test-only launcher that compiles against the staged Java I2P
+`lib/` jars and invokes the stock public
+`net.i2p.router.Router(Properties)` + `setKillVMOnEnd(false)`
++ `runRouter()` lifecycle (the exact-pinned upstream `MultiRouter`
+precedent); rewritten `tests/integration/m6-interop/run-java.sh`
+at the topology/startup boundary (reserves fixed loopback Java
+SSU2 / SAM / I2CP ports before startup, drives the controlled
+`Properties` set with exact-pinned upstream names, writes a
+disposable `clients.config` containing only the SAM bridge,
+never mutates `${JAVA_CACHE}/clients.config`, passes actual
+selected endpoints to `java_tunnel_external.rs`, asserts every
+controlled-topology invariant); and the Plan 196 §7 static
+checker extension that rejects `i2p.vmCommSystem=true`, the
+obsolete Plan 194 keys (`i2np.reseed.enable`, `router.isFloodfill`,
+`i2np.ntcp2.enabled`), mutation of the verified Java cache's
+`clients.config` / `clients.config.d`, non-loopback reseed URLs,
+and `|| true` forgiveness in the lane. The next external Java
+run against the exact-pinned cache proves the controlled topology
++ authenticated SSU2 preflight and flips Plan 196 from
+`in-progress-corrective-implementation-landed-static-checks-green`
+to `passed-m6-java-controlled-first-run-topology-corrective`;
+Plan 194 §5.2 / §5.3 / §5.4(b/c) / §5.5 resume only after Plan
+196 passes.
 
 ## Purpose
 

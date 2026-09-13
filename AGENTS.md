@@ -27,8 +27,14 @@ Direction B external matrix passed twice on exact head
 `plans/188-m6-mixed-router-streaming-with-i2pd.md`
 Streaming file remains historical context only and is superseded
 by [`plans/193-m6-i2pd-mixed-router-streaming-qualification.md`](plans/193-m6-i2pd-mixed-router-streaming-qualification.md)).
-Plan 194 (Java I2P second-family qualification) is the current
-executable plan.
+Plan 196 (M6 Java I2P controlled first-run topology corrective) is
+the current executable plan: out-of-tree
+`tests/integration/m6-interop/java/ControlledRouter.java` test-only
+launcher + rewritten `tests/integration/m6-interop/run-java.sh` +
+extended `scripts/check-m6-mixed-router-acceptance-evidence.sh`
+static checker. Plan 194 (Java I2P second-family qualification)
+resumes at §5.2 once Plan 196 proves the controlled topology plus
+authenticated SSU2 preflight.
 
 ## Read first
 
@@ -94,8 +100,9 @@ Plan 190 = passed M6 inbound NetDB reply-path tunnel-ID corrective (local rows p
 Plan 191 = stopped-by-inbound-delivery-boundary-E (retained-passed via plan192; narrower follow-up registered + closed)
 Plan 192 = passed M6 i2pd-compatible I2CP-style Data body wire-format corrective (9-byte short-transport inner envelope + i2cp I2CP-style Data body + STYLE=RAW SAM session + RAW RECEIVED SIZE=N digest equality; 2 inbound-delivery rows flipped blocked -> passed; inbound-delivery layer closed for i2pd 2.61.0)
 Plan 193 = passed M6 i2pd mixed-router Streaming qualification (local rows passed; full Direction A + Direction B external matrix passed twice on exact head; static checker wired into CI floor)
-Plan 194 = in-progress-scaffolding-landed-blocked-at-java-first-run-topology (Java fetch script + second-family harness + external driver + cross-family aggregator wiring + static checker + hosted workflow all landed; the second-family qualification itself stops fail-closed at the Plan 194 §3 controlled-topology boundary: stock Java I2P 2.13.0 overwrites its own router.config on first start, binds a random UDP port, and runs reseed against the public I2P network; a follow-up corrective plan is required to inject the controlled-topology settings)
-next_executable_plan = 194-followup-topology-corrective (to be registered)
+ Plan 194 = in-progress-scaffolding-landed-blocked-by-plan196-topology-corrective (Java fetch script + second-family harness + external driver + cross-family aggregator wiring + static checker + hosted workflow all landed; the second-family qualification itself stops fail-closed at the Plan 194 §3 controlled-topology boundary: stock Java I2P 2.13.0 overwrites its own router.config on first start, binds a random UDP port, and runs reseed against the public I2P network; Plan 196 owns the corrective)
+ Plan 196 = in-progress-corrective-implementation-landed-static-checks-green (out-of-tree ControlledRouter.java test-only launcher + rewritten run-java.sh + extended static checker; flips Plan 194 §11 first-run topology blocker; the next external Java run against the exact-pinned cache proves the controlled topology + authenticated SSU2 preflight and promotes Plan 196 to passed)
+ next_executable_plan = 196 (external-execution-of-landed-corrective)
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
 Milestone 10 generic tunnels = passed-via-plan175 (profile; byte round-trip proven-via-plan182)
 Milestone 10 HTTP proxy = passed-via-plan176 (profile; byte round-trip proven-via-plan182)
@@ -116,9 +123,9 @@ M6 inbound NetDB reply-path correction = passed-via-plan190 (typed route + adapt
 M6 inbound destination delivery boundary E = closed-via-plan192 (i2pd-compatible I2CP-style Data wire-format)
 M6 inbound destination delivery = passed-via-plan192 (i2cp-compatible I2CP-style Data wire-format; STYLE=RAW SAM session; 9-byte short-transport inner envelope)
 M6 i2pd mixed-router Streaming qualification = passed-via-plan193 (full Direction A + Direction B matrix, two exact-head passes; static checker wired)
-M6 mixed-router cross-family ledger = landed-via-plan189 (i2pd-family-passed; java-second-family-scaffolding-landed-via-plan194)
-M6 java second-family qualification = in-progress-via-plan194 (scaffolding + topology blocker recorded; follow-up corrective required for the actual qualification)
-next_executable_plan = 194-followup-topology-corrective (to be registered)
+M6 mixed-router cross-family ledger = landed-via-plan189 (i2pd-family-passed; java-second-family-controlled-launcher-landed-via-plan196)
+M6 java second-family qualification = controlled-launcher-landed-pending-external-execution (Plan 196 corrective implementation landed; static checks green; next external run against the exact-pinned Java cache proves the controlled topology + authenticated SSU2 preflight)
+next_executable_plan = 196 (external-execution-of-landed-corrective)
 next product layer = m6-mixed-router-streaming-with-i2pd
 ```
 
@@ -676,14 +683,15 @@ bash scripts/check-m6-mixed-router-acceptance-evidence.sh
 # + run-java.sh / fetch-m6-java.sh to the required-artifacts list
 # so both families stay fail-closed.
 
-bash tests/integration/m6-interop/run-m6-mixed-router.sh
+ bash tests/integration/m6-interop/run-m6-mixed-router.sh
 # cross-family aggregator: reuses the four per-layer harnesses
 # + run-streaming.sh + run-java.sh and binds every Plan 189 §8
 # guarded row to a family + the actual per-layer exit code. The
 # Java rows stay bound to the same evidence.json; the second-
 # family rows are recorded `failed` with stop provenance until
-# the 194-followup-topology-corrective plan lands the Java
-# advanced-configuration injection the lane requires.
+# Plan 196's external run against the exact-pinned Java cache
+# proves the ControlledRouter-driven controlled topology plus
+# authenticated SSU2 preflight.
 ```
 
 Focused M6 Java second-family seams (Plan 194 §3/§5/§11
@@ -970,8 +978,11 @@ aggregator wiring + static checker + hosted workflow wiring and
 stops fail-closed at the §3 controlled-topology boundary (stock
 Java I2P 2.13.0 overwrites its own router.config on first start,
 binds a random UDP port, and runs reseed against the public I2P
-network; a follow-up corrective plan is required to inject the
-controlled-topology settings). See `plans/194-status.md`. The
-historical `plans/188-m6-mixed-router-streaming-with-i2pd.md`
+network). Plan 196 owns the corrective and lands the
+implementation: out-of-tree `tests/integration/m6-interop/java/ControlledRouter.java`
+test-only launcher + rewritten `tests/integration/m6-interop/run-java.sh`
++ extended `scripts/check-m6-mixed-router-acceptance-evidence.sh`
+static checker. See `plans/194-status.md` and `plans/196-status.md`.
+The historical `plans/188-m6-mixed-router-streaming-with-i2pd.md`
 Streaming file remains historical context only. M10 final
 acceptance stays open.**

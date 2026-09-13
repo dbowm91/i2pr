@@ -64,6 +64,29 @@ I2PD_VERSION="2.61.0"
 JAVA_PIN="9134f808337b401e8e53c73734c81fab04280c9d"
 JAVA_VERSION="2.13.0"
 
+# Plan 196 §7 — exhaustive list of forbidden short-cuts in the
+# controlled-topology lane. The list is intentionally duplicated here
+# so a regression that re-introduces any of these fails the static
+# check before the runner even starts.
+FORBIDDEN_VMCOMM_KEYS=(
+  "i2p.vmCommSystem"
+)
+# Plan 196 §3.3 — obsolete Plan 194 keys that are NOT canonical Java
+# I2P property names. The run-java.sh + ControlledRouter.java must
+# use exact-pinned upstream names; i2pd-flavored aliases are
+# forbidden. Each entry is the bare key; assignments of any value
+# (including `=false`, `=true`) are caught by the regex.
+OBSOLETE_TOPOLOGY_KEYS=(
+  "i2np.reseed.enable"
+  "router.isFloodfill"
+  "i2np.ntcp2.enabled"
+)
+# Plan 196 §3.4 — the exact-pinned Java cache/build is reference
+# material and must remain immutable across a counted run.
+FORBIDDEN_CACHE_FILES=(
+  "clients.config"
+)
+
 PREFLIGHT_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-preflight.sh"
 PREFLIGHT_CHECK="${REPO_ROOT}/scripts/check-exploratory-tunnel-evidence.sh"
 TUNNELS_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-tunnels.sh"
@@ -76,6 +99,7 @@ STREAMING_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-streaming.sh"
 STREAMING_CHECK="${REPO_ROOT}/scripts/check-streaming-tunnel-evidence.sh"
 JAVA_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-java.sh"
 JAVA_FETCH="${REPO_ROOT}/scripts/interop/fetch-m6-java.sh"
+JAVA_LAUNCHER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ControlledRouter.java"
 CROSSFAMILY_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-m6-mixed-router.sh"
 
 GUARDED=(
@@ -102,6 +126,7 @@ for required in \
   "${DESTINATION_HARNESS}" "${DESTINATION_CHECK}" \
   "${STREAMING_HARNESS}" "${STREAMING_CHECK}" \
   "${JAVA_HARNESS}" "${JAVA_FETCH}" \
+  "${JAVA_LAUNCHER_SRC}" \
   "${CROSSFAMILY_HARNESS}"; do
   if [[ ! -f "${required}" ]]; then
     echo "m6 mixed-router evidence check failed: missing required artifact: ${required}" >&2
@@ -191,7 +216,86 @@ if [[ -f "${CROSSFAMILY_HARNESS}" ]]; then
   fi
 fi
 
-# ---- 7. The manual external lane must reference both pins too. ----------
+# ---- 7. Plan 196 controlled-topology invariants. -------------------------
+# The Java second-family lane must not silently forgive failures, must
+# never enable VMCommSystem, must never use obsolete i2pd-flavored
+# property aliases, must never mutate the verified Java cache, and
+# must drive the router through the public stock `Router(Properties)`
+# lifecycle via the test-only launcher.
+if [[ -f "${JAVA_HARNESS}" ]]; then
+  # 7a. No `|| true` / `||:` forgiveness for required commands.
+  if grep -n -E '^[^#]*(cargo test|cargo fmt|cargo check|bash \[\[ .* \]\]|javac -cp|java -D).*\|\| true' "${JAVA_HARNESS}" >/dev/null 2>&1; then
+    echo "m6 mixed-router evidence check failed: run-java.sh forgives a required command via '|| true' (Plan 196 §7)" >&2
+    failures=$((failures + 1))
+  fi
+  # 7b. The launcher must invoke the stock public Router(Properties)
+  # lifecycle; an absent or off-pattern launcher re-introduces the
+  # Plan 194 §11 first-run topology race.
+  if ! grep -q 'new Router(props)\|new Router(.*)' "${JAVA_LAUNCHER_SRC}" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: ControlledRouter.java does not construct net.i2p.router.Router(Properties) (Plan 196 §5.1)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'setKillVMOnEnd' "${JAVA_LAUNCHER_SRC}" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: ControlledRouter.java does not call Router.setKillVMOnEnd (Plan 196 §5.1)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'runRouter()' "${JAVA_LAUNCHER_SRC}" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: ControlledRouter.java does not call Router.runRouter() (Plan 196 §5.1)" >&2
+    failures=$((failures + 1))
+  fi
+  # 7c. Forbidden JVM property keys. We reject only the assignment
+  # form `<key>=<value>` where the value resolves to true/1. The
+  # list of keys is permitted (e.g. as comments or in the
+  # forbidden-list array) so the runner can document them.
+  for forbidden in "${FORBIDDEN_VMCOMM_KEYS[@]}"; do
+    # Match Java setProperty("key", "true") and properties-file
+    # style `key=true`. Skip pure Java comments (lines starting with
+    # `//`) and pure shell comments (lines starting with `#`).
+    if grep -n -E "^[[:space:]]*([^/#].*setProperty\([^)]*\"${forbidden}\"[^)]*\"(true|1)\"|[^/#].*${forbidden}[[:space:]]*[:=][[:space:]]*(true|1)\b)" "${JAVA_LAUNCHER_SRC}" "${JAVA_HARNESS}" 2>/dev/null >/dev/null; then
+      echo "m6 mixed-router evidence check failed: VMCommSystem property ${forbidden} is enabled (Plan 196 §4 forbidden)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 7d. Obsolete Plan 194 topology keys. We reject only the
+  # assignment form `<key>=<value>` (or `<key>:<space> value`); the
+  # bare key as a string is allowed in explanatory comments and in
+  # the forbidden-list array.
+  for obsolete in "${OBSOLETE_TOPOLOGY_KEYS[@]}"; do
+    # Strip the `=<value>` suffix so we match the bare key form.
+    local_key="${obsolete%%=*}"
+    # Look for the bare key followed by an `=` and a non-blank
+    # value (real assignment, not a comment), skipping Java/shell
+    # comments and the forbidden-list array itself. The pattern
+    # explicitly excludes the `="value"` form when the line is the
+    # forbidden-list declaration (`OBSOLETE_TOPOLOGY_KEYS=` block).
+    if grep -n -E "^[[:space:]]*([^/#].*setProperty\([^)]*\"${local_key}\"[^)]*\"|[^/#].*${local_key}[[:space:]]*[:=][[:space:]]*[^[:space:]]+)" "${JAVA_LAUNCHER_SRC}" "${JAVA_HARNESS}" 2>/dev/null \
+       | grep -v "OBSOLETE_TOPOLOGY_KEYS=" \
+       | grep -v "FORBIDDEN_VMCOMM_KEYS=" \
+       | grep -v "^[[:space:]]*//" \
+       >/dev/null; then
+      echo "m6 mixed-router evidence check failed: obsolete Plan 194 topology key '${obsolete}' assigned (Plan 196 §3.3)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 7e. The harness must never `sed` the exact-pinned Java cache's
+  # clients.config / clients.config.d. The precomputed patterns
+  # reject every common mutation path.
+  if grep -n -E '^[^#]*sed[[:space:]]+-[iIn]?[[:space:]].*JAVA_CACHE.*clients\.config' "${JAVA_HARNESS}" 2>/dev/null >/dev/null; then
+    echo "m6 mixed-router evidence check failed: run-java.sh mutates the exact-pinned Java cache clients.config (Plan 196 §3.4)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -n -E '^[^#]*sed[[:space:]]+-[iIn]?[[:space:]].*clients\.config\.d' "${JAVA_HARNESS}" 2>/dev/null >/dev/null; then
+    echo "m6 mixed-router evidence check failed: run-java.sh mutates clients.config.d (Plan 196 §3.4)" >&2
+    failures=$((failures + 1))
+  fi
+  # 7f. Reseed URLs must remain loopback-only or absent.
+  if grep -n -E 'i2p\.reseedURL[[:space:]]*=[[:space:]]*https?://(?!127\.|localhost)' "${JAVA_LAUNCHER_SRC}" "${JAVA_HARNESS}" 2>/dev/null >/dev/null; then
+    echo "m6 mixed-router evidence check failed: non-loopback reseed URL present (Plan 196 §3.2)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
+# ---- 8. The manual external lane must reference both pins too. ----------
 WORKFLOW="${REPO_ROOT}/.github/workflows/m6-mixed-router-external.yml"
 if [[ ! -f "${WORKFLOW}" ]]; then
   echo "m6 mixed-router evidence check failed: external workflow missing: ${WORKFLOW}" >&2

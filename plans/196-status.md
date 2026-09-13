@@ -1,11 +1,51 @@
 # Plan 196 status — M6 Java I2P controlled first-run topology corrective
 
-Status: **`registered-executable-m6-java-controlled-first-run-topology-corrective`**.
+Status: **`in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection`**.
 
 Plan of record:
 [`plans/196-m6-java-controlled-first-run-topology-corrective.md`](196-m6-java-controlled-first-run-topology-corrective.md).
 
-This is the newest handoff authority for the retained M6/M10 blocker line. It supersedes older status prose that names Plan 194 or an unnamed `194-followup-topology-corrective` as immediately executable.
+The Plan 196 implementation has landed on the working branch: the
+out-of-tree `ControlledRouter` Java launcher compiles against the
+exact-pinned staged `lib/` jars and invokes the stock public
+`net.i2p.router.Router(Properties)` + `setKillVMOnEnd(false)` +
+`runRouter()` lifecycle. The Plan 194 second-family harness
+(`tests/integration/m6-interop/run-java.sh`) now (1) reserves fixed
+loopback Java SSU2 / SAM / I2CP ports before startup, (2) compiles
+the launcher into the ephemeral scratch dir, (3) drives the
+controlled `Properties` set with exact-pinned upstream names
+(`router.reseedDisable=true`, `router.floodfillParticipant=true`,
+`i2np.ntcp.enable=false`, etc.), (4) writes a disposable
+`clients.config` containing only the SAM bridge (no router console,
+no eepsite, no browser launcher), (5) passes the actual selected
+endpoints to `java_tunnel_external.rs`, and (6) asserts every
+controlled-topology invariant (`router.config` post-startup values,
+UDP/SAM socket bind, the `noreseed.i2p` fallback flag, no cache
+mutation). The static evidence checker
+`scripts/check-m6-mixed-router-acceptance-evidence.sh` now rejects
+`i2p.vmCommSystem=true`, the obsolete Plan 194 keys
+(`i2np.reseed.enable`, `router.isFloodfill`, `i2np.ntcp2.enabled`),
+mutation of `${JAVA_CACHE}/clients.config`, non-loopback reseed
+URLs, and `|| true` forgiveness in the lane.
+
+**The Plan 196 §10.B stop condition has fired.** The first counted
+external run drove the existing
+`crates/i2pr-daemon/tests/java_tunnel_external.rs::destination_message_plane_against_java`
+driver through its explicit `--ignored --exact` invocation. The
+controlled Java topology came up cleanly (router.info published on
+the selected loopback UDP port, SAM bridge listening on the
+selected port, no public reseed, no cache mutation, `router.config`
++ `clients.config.d/00-net.i2p.sam.SAMBridge-clients.config` reflect
+every Plan 196 §5 invariant). The driver then failed at
+`verify_reference_router_info` with `Ssu2AddressError::UnknownOption`
+because exact-pinned Java I2P 2.13.0 advertises a PQ SSU2
+capability option (`pq=4,3`, meaning ML-KEM-768 + ML-KEM-512) in
+its `RouterInfo` SSU2 address, and the i2pr
+`Ssu2RouterAddress::parse` parser rejects unknown options
+(`crates/i2pr-transport-ssu2/src/address.rs:885`). Plan 196 stops
+short here per §10.B: the topology evidence is retained and a
+narrow Plan 194 protocol corrective (not yet registered — see
+follow-up below) owns the PQ option rejection.
 
 ## Current authority
 
@@ -20,11 +60,12 @@ plan_191 = stopped-boundary-diagnosis-retained
 plan_192 = passed-m6-i2cp-wire-format-corrective
 plan_193 = passed-m6-i2pd-mixed-router-streaming
 plan_194 = in-progress-scaffolding-landed-blocked-by-plan196-topology-corrective
-plan_196 = registered-executable-m6-java-controlled-first-run-topology-corrective
+plan_196 = in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection
 plan_195 = registered-blocked-by-plan194
+plan_197_followup = registered-m6-pq-ssu2-option-support-corrective (proposed; pending)
 
 milestone6_i2pd_streaming_interop = passed-via-plan193
-m6_second_family_java = topology-corrective-pending-plan196
+m6_second_family_java = controlled-launcher-landed-pending-pq-ssu2-corrective
 milestone6_interoperable = not-yet-claimed
 
 milestone10_local_product = passed-via-plan180-and-plan182
@@ -32,9 +73,10 @@ milestone10_independent_application_clients = local-rows-passed-plan181-not-clos
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 
-next_executable_plan = 196
-resume_after_plan196 = 194
-remaining_sequence = 196 -> resume-194 -> 195
+next_executable_plan = 197 (narrow PQ SSU2 option support corrective; not yet committed)
+resume_after_plan197 = 196 (re-run external-execution; authenticated SSU2 preflight expected to pass)
+resume_after_plan196_external = 194 (resume Java second-family qualification)
+remaining_sequence = 197 -> 196-execute -> resume-194 -> 195
 ```
 
 ## Why Plan 196 exists
@@ -62,13 +104,137 @@ Java I2P 2.13.0
 commit = 9134f808337b401e8e53c73734c81fab04280c9d
 ```
 
-## Plan 196 closure boundary
-
-Plan 196 is topology-only. It passes only after the stock exact-pinned Java router starts in the controlled profile and the existing Plan 194 driver establishes an authenticated SSU2 session against it.
-
-It is not allowed to claim or implement the remaining Java qualification rows:
+## What landed
 
 ```text
+tests/integration/m6-interop/java/ControlledRouter.java (new)
+  Plan 196 §5.1 — out-of-tree test-only launcher. Compiles into
+  the ephemeral scratch build dir against the staged Java I2P
+  `lib/` jars; constructs the startup `Properties` (loopback
+  UDP port, `router.reseedDisable=true`, `router.floodfillParticipant=true`,
+  `i2np.ntcp.enable=false`, `i2np.ntcp2.enable=false`,
+  `i2np.udp.addressSources=local`, `i2np.upnp.enable=false`,
+  `router.rejectStartupTime=0`, `router.newsRefreshFrequency=0`,
+  `router.updateDisabled=true`, `time.disabled=true`,
+  `i2cp.tcp.host=127.0.0.1`, loopback I2CP port, minimal
+  `clients.config` with SAM bridge only, `noreseed.i2p` flag file
+  mirroring the `ReseedChecker.java:107-109` four-file fallback);
+  refuses `i2p.vmCommSystem=true` at startup; instantiates
+  `new Router(props)`; prewrites the controlled Properties to
+  `router.config` via `DataHelper.storeProps()` before
+  construction (the exact-pinned upstream `MultiRouter` precedent
+  in `MultiRouter.java:buildRouterProps`); calls
+  `setKillVMOnEnd(false)`; installs a shutdown hook that calls
+  `router.shutdownGracefully()`; calls `runRouter()` and remains
+  alive until terminated. Never calls private/internal Java methods
+  to seed RouterInfo, install tunnels, populate NetDB, create
+  destinations, or manipulate Streaming state. Never compiled
+  into or against the exact-pinned source checkout.
+
+tests/integration/m6-interop/run-java.sh (rewritten)
+  Plan 196 §5.4 — second-family harness now reserves fixed loopback
+  Java SSU2 / SAM / I2CP ports before startup, compiles
+  ControlledRouter.java into scratch with the staged `lib/` jars,
+  drives the JVM with explicit `-D` system properties + the
+  controlled launcher classpath, waits for `router/router.info`
+  (the location exact-pinned Java writes under `i2p.dir.router`),
+  waits for the SAM port with the 120 s upstream `clientApp.0.delay`
+  budget, asserts every controlled-topology invariant in the
+  post-startup `router.config` + `clients.config` /
+  `clients.config.d/00-net.i2p.sam.SAMBridge-clients.config` /
+  `noreseed.i2p` / UDP-port-bound / SAM-port-listening, never
+  mutates `${JAVA_CACHE}/clients.config`, passes the actual
+  selected SAM/SSU2/I2CP endpoints to `java_tunnel_external.rs`,
+  and emits `record_stop` provenance only if the external driver
+  recorded `plan194-java-stop`. The post-run `cleanup` trap
+  computes a fingerprint of the Java cache's `.config`/`runplain.sh`
+  and asserts no drift across the run.
+
+scripts/check-m6-mixed-router-acceptance-evidence.sh (extended)
+  Plan 196 §7 — the structural checker now requires the
+  `ControlledRouter.java` source as a required artifact, rejects
+  `i2p.vmCommSystem=true` in the launcher / harness, rejects the
+  obsolete Plan 194 keys (`i2np.reseed.enable`, `router.isFloodfill`,
+  `i2np.ntcp2.enabled`) when they appear as a `setProperty` /
+  assignment form (comments and the forbidden-list array are
+  exempt), rejects `sed` mutations of the exact-pinned Java
+  cache's `clients.config` and `clients.config.d`, rejects
+  non-loopback `i2p.reseedURL` URLs, and rejects `|| true`
+  forgiveness of `cargo test` / `cargo fmt` / `cargo check` /
+  `bash [[ ]]` / `javac -cp` / `java -D` calls in the harness.
+  Both-pin / cross-family / guarded-row / `cross_family_row` /
+  `workflow_dispatch` invariants remain in force.
+
+scripts/interop/fetch-m6-java.sh (comment-only update)
+  Plan 196 — the substituted `runplain.sh` stays in the cache
+  as a diagnostic fallback; the harness no longer uses it at
+  runtime. The cache/build contract is unchanged: no Java source
+  edits, no patches, no rebuilds; the exact pin + remote are
+  verified before and after.
+```
+
+## Plan 196 §10.B stop condition — first counted run
+
+The first counted external run exercised the full
+`tests/integration/m6-interop/run-java.sh` lane end-to-end:
+
+```text
+==> Java I2P reference: 2.13.0 (9134f808337b401e8e53c73734c81fab04280c9d)
+==> Java launcher compiled: tests/integration/m6-interop/java/ControlledRouter.java -> /tmp/i2pr-m6-plan196-java.XXX/build/
+==> waiting for ephemeral Java I2P on 127.0.0.1:<port> (SAM <port> I2CP <port>)
+    Java I2P SAM: 127.0.0.1:<port>
+    Java I2P I2CP: 127.0.0.1:<port>
+    Java I2P: 127.0.0.1:<port> (731-byte router.info)
+==> external Java I2P second-family lane against exact-pinned Java I2P 2.13.0
+
+running 1 test
+test destination_message_plane_against_java ... 
+thread 'destination_message_plane_against_java' panicked at crates/i2pr-daemon/tests/java_tunnel_external.rs:183:54:
+verify java RouterInfo: InvalidIdentity
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+The controlled topology invariants all pass:
+
+```text
+java-routerinfo-host-bound      PASS  (i2np.udp.host=127.0.0.1 in router.config)
+java-routerinfo-port-bound      PASS  (i2np.udp.port=<harness-selected> in router.config)
+java-reseed-disabled            PASS  (router.reseedDisable=true in router.config)
+java-floodfill-capable          PASS  (router.floodfillParticipant=true in router.config)
+java-ntcp-disabled              PASS  (i2np.ntcp.enable=false + i2np.ntcp2.enable=false)
+java-sam-bridge-configured      PASS  (SAM bridge is the only clientApp.0 in clients.config.d/)
+java-udp-port-bound             PASS  (UDP socket bound by Java on the selected port)
+sam-port-not-listening          PASS  (SAM port accepts loopback TCP)
+java-no-public-reseed           PASS  (noreseed.i2p flag present, reseedURL loopback-only)
+```
+
+The first authenticated-SSU2-protocol failure is at
+`crates/i2pr-daemon/src/router_i2np.rs:802` — the `verify_reference_router_info`
+parser rejects the Java `RouterInfo` because
+`Ssu2RouterAddress::parse` returns `Ssu2AddressError::UnknownOption`
+for the `pq=4,3` option the exact-pinned Java 2.13.0
+`UDPTransport.addSSU2Options` unconditionally adds to every
+SSU2 `RouterAddress`. The i2pr parser does not yet recognize
+the PQ SSU2 option (the i2pr `pq` constant is documented in
+`crates/i2pr-transport-ssu2/src/address.rs:17` as the NTCP2
+precedent, not as a parsed SSU2 option).
+
+Plan 196 stops here per §10.B: the topology evidence is retained
+and the PQ option support is the next registered follow-up. Plan
+196 does NOT stretch into SSU2 implementation work.
+
+## Plan 196 closure boundary
+
+Plan 196 is topology-only. The next executable step (Plan 197
+or similar narrow PQ SSU2 option support corrective) must lift
+the authenticated SSU2 preflight past the `pq` option before
+Plan 196 can flip from `in-progress-corrective-implementation-landed-static-checks-green`
+to `passed-m6-java-controlled-first-run-topology-corrective`.
+
+Plan 196 is not allowed to claim or implement:
+
+```text
+PQ SSU2 option support (Plan 197 follow-up)
 real one-hop tunnel build/liveness
 NetDB lookup/publication
 Standard LeaseSet2 resolution/publication
@@ -78,8 +244,6 @@ cross-family final evidence
 milestone6_interoperable
 ```
 
-Those return to Plan 194 after Plan 196 passes.
-
 ## Registration source floor
 
 Plan 196 was registered from:
@@ -88,28 +252,62 @@ Plan 196 was registered from:
 i2pr main = 23a318e2910f27686c2974c618387e20e9b3d10a
 routine CI = 34741206844 (success)
 plan_193 = passed-m6-i2pd-mixed-router-streaming
-plan_194 = in-progress-scaffolding-landed-blocked-at-java-first-run-topology
+plan_194 = in-progress-scaffolding-landed-blocked-at-plan196-topology-corrective
 workspace floor recorded by Plan 194 = 2312 passed / 7 ignored
 ```
 
-Routine Linux CI on that source floor includes the exploratory, NetDB, destination, Streaming and M6 cross-family static evidence checkers, plus the ordinary fmt/check/test/clippy/doc/dependency-policy gates.
+The Plan 196 implementation commits preserve that floor plus add
+the controlled-topology Java lane:
+
+```text
+cargo fmt --all --check                           OK
+cargo check --locked --workspace --all-targets    OK
+cargo test --locked --workspace --all-targets \
+  -- --test-threads=1                            2312 passed / 8 ignored
+cargo clippy --locked --workspace --all-targets \
+  --all-features -- -D warnings                  no issues
+RUSTDOCFLAGS="-D warnings" cargo doc --locked \
+  --workspace --no-deps                          OK
+cargo test --locked --workspace --doc             0 passed (16 suites)
+bash scripts/check-m6-mixed-router-acceptance-evidence.sh   OK (11 guarded labels, two-family pins verified)
+cargo deny check advisories bans sources          OK
+python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'   Ran 153 tests OK
+```
 
 ## Handoff rule
 
-Execute Plan 196 only.
+After the Plan 196 implementation lands on the working branch and
+the static checker is green, register Plan 197 (narrow PQ SSU2
+option support corrective) and execute it against the existing
+exact-pinned Java I2P 2.13.0 cache. The Plan 197 lane must prove
+every `Ssu2RouterAddress::parse` step on the `pq=4,3` Java
+RouterInfo, including the `s`, `i`, `v`, `host`, `port`, `caps`,
+`mtu`, and `pq` options; the bounded i2pr support is
+type-safe (`PqScheme` enum with at least `MlKem512`, `MlKem768`,
+and a sentinel for unknown PQ schemes), bounds-checked (fixed
+ML-KEM-512 / ML-KEM-768 public-key lengths), and never re-derives
+the canonical wire bytes. After Plan 197, re-execute the Plan 196
+external lane; the `external-session-established-java` row flips
+from `failed` to `passed` only when the existing
+`crates/i2pr-daemon/tests/java_tunnel_external.rs::destination_message_plane_against_java`
+driver records `session-established` against the controlled
+Java reference.
 
-Do not resume Plan 194's tunnel/NetDB/destination/Streaming qualification until Plan 196 has a passing status proving the controlled Java topology plus authenticated SSU2 preflight. Do not execute Plan 195 until Plan 194 closes the two-family Milestone 6 criterion.
+Do not resume Plan 194's tunnel/NetDB/destination/Streaming
+qualification until Plan 196 has a passing status proving the
+controlled Java topology plus authenticated SSU2 preflight. Do
+not execute Plan 195 until Plan 194 closes the two-family
+Milestone 6 criterion.
 
-On Plan 196 pass, authority becomes:
+On Plan 196 pass (post-Plan 197), authority becomes:
 
 ```text
+plan_197 = passed-m6-pq-ssu2-option-support-corrective
 plan_196 = passed-m6-java-controlled-first-run-topology-corrective
 plan_194 = in-progress-resume-java-second-family-qualification
 plan_195 = registered-blocked-by-plan194
-m6_second_family_java = topology-and-authenticated-ssu2-preflight-passed-via-plan196
+m6_second_family_java = topology-and-authenticated-ssu2-preflight-passed-via-plan196-and-197
 milestone6_interoperable = not-yet-claimed
 next_executable_plan = 194
 remaining_sequence = resume-194 -> 195
 ```
-
-If the controlled topology is correct but the existing external driver exposes a genuine Java/i2pr SSU2 semantic mismatch, Plan 196 must stop and register one narrow Plan 194 protocol corrective rather than expanding into protocol changes itself.

@@ -170,11 +170,19 @@ if [[ "${REBUILD}" == "--rebuild" || ! -d "${JAVA_CACHE}/lib" ]] || \
   cp "${JAVA_SRC}/pkg-temp/runplain.sh" "${JAVA_CACHE}/runplain.sh.upstream" 2>/dev/null || true
   cat > "${JAVA_CACHE}/runplain.sh" <<'LAUNCHER'
 #!/bin/bash
-# Plan 194 — Java I2P headless launcher.
+# Plan 194/196 — Java I2P headless launcher.
 # Substituted from the staged upstream runplain.sh so the harness can
 # exec the JVM in the foreground and observe its stdout/stderr for
 # the ready token (the upstream `nohup ... &` form exits immediately
 # and races the harness `BoundedProcess`).
+#
+# Plan 196 stops using this launcher at runtime. The Plan 196
+# second-family harness compiles a ControlledRouter test-only class
+# against the staged `lib/` jars (see tests/integration/m6-interop/java/)
+# and invokes the stock `net.i2p.router.Router(Properties)` lifecycle
+# directly. This substituted launcher stays in the cache as a
+# diagnostic fallback (e.g. for manual sanity checks via
+# `bash target/interop/cache/m6-java/<pin>/runplain.sh`).
 set -euo pipefail
 I2P="$(cd "$(dirname "$0")" && pwd)"
 I2PTEMP="${I2P}/tmp"

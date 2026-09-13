@@ -1,16 +1,27 @@
 #!/usr/bin/env bash
-# Plan 194 — run the M6 Java I2P second-family qualification lane
-# end-to-end.
+# Plan 196 — run the M6 Java I2P second-family qualification lane
+# end-to-end with a controlled first-run topology.
 #
 # The second-family lane re-uses the Plan 184–193 product suites the
 # Plan 193 i2pd family already exercised, but with the exact-pinned
 # Java I2P 2.13.0 reference substituted for the exact-pinned i2pd
 # 2.61.0 reference. The lane provisions one ephemeral Java router on
 # loopback with a fresh data dir (no reseed, no public I2P
-# participation), enables the SAM bridge the Java router ships
-# natively, and runs the second-family external driver
+# participation), enables the SAM bridge through the disposable
+# clients.config, and runs the second-family external driver
 # (crates/i2pr-daemon/tests/java_tunnel_external.rs) through its
 # explicit `--ignored --exact` selection.
+#
+# The Plan 194 §11 first-run topology blocker is closed by the
+# ControlledRouter test-only launcher: it compiles into the
+# ephemeral scratch dir against the staged Java I2P `lib/` jars and
+# invokes the stock `net.i2p.router.Router(Properties)` +
+# `setKillVMOnEnd(false)` + `runRouter()` lifecycle directly, so
+# every controlled-topology property is authoritative at startup
+# (the exact-pinned upstream `MultiRouter` precedent). The Java
+# base/cache is never mutated; the disposable Java data dir is the
+# only directory that receives a per-run router.config /
+# clients.config / noreseed.i2p.
 #
 # The lane is unprivileged and loopback-only. Required failures make
 # this script fail. Sanitized evidence defaults below
@@ -28,15 +39,19 @@ JAVA_PIN="9134f808337b401e8e53c73734c81fab04280c9d"
 JAVA_VERSION="2.13.0"
 JAVA_REPO="https://github.com/i2p/i2p.i2p.git"
 JAVA_CACHE="${REPO_ROOT}/target/interop/cache/m6-java/${JAVA_PIN}"
-JAVA_LAUNCHER="${JAVA_CACHE}/runplain.sh"
 
 I2PR_PORT="${I2PR_SSU2_JAVA_PORT:-44090}"
-JAVA_SSU2_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-JAVA_SAM_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+# Plan 196 §5.4 — reserve/select fixed loopback Java SSU2, SAM and
+# I2CP ports before the Java router starts; the runner reports the
+# actual bound endpoints to the driver rather than assuming the
+# upstream default tuple.
+JAVA_SSU2_PORT="${I2PR_M6_JAVA_SSU2_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
+JAVA_SAM_PORT="${I2PR_M6_JAVA_SAM_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
+JAVA_I2CP_PORT="${I2PR_M6_JAVA_I2CP_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
 DRIVER_TIMEOUT="600s"
 
 mkdir -p "${EVIDENCE_DIR}"
-SCRATCH="$(mktemp -d -t i2pr-m6-plan194-java.XXXXXX)"
+SCRATCH="$(mktemp -d -t i2pr-m6-plan196-java.XXXXXX)"
 RESULTS_FILE="${SCRATCH}/results.tsv"
 : > "${RESULTS_FILE}"
 # Hygiene: no stale secret-bearing or result-bearing file from a
@@ -48,8 +63,8 @@ rm -f "${EVIDENCE_DIR}/java.log" \
   "${EVIDENCE_DIR}/reference-facts.tsv"
 
 # ---- Java I2P cache verification (fail closed before any network use) ----
-if [[ ! -x "${JAVA_LAUNCHER}" ]]; then
-  echo "Java I2P launcher missing: ${JAVA_LAUNCHER}" >&2
+if [[ ! -d "${JAVA_CACHE}/lib" ]]; then
+  echo "Java I2P cache missing lib/: ${JAVA_CACHE}/lib" >&2
   echo "run scripts/interop/fetch-m6-java.sh --rebuild first" >&2
   exit 1
 fi
@@ -59,56 +74,70 @@ if [[ ! -f "${JAVA_CACHE}/source-revision.txt" ]] ||
   echo "run scripts/interop/fetch-m6-java.sh --rebuild first" >&2
   exit 1
 fi
-if [[ ! -d "${JAVA_CACHE}/lib" ]]; then
-  echo "Java I2P cache has no lib/ directory; rebuild required" >&2
-  exit 1
-fi
 echo "==> Java I2P reference: ${JAVA_VERSION} (${JAVA_PIN})"
 
-# ---- ephemeral Java I2P provisioning (fresh datadir: no reseed) -----------
-# Plan 194 §3: fresh disposable user-writable datadir, loopback-only
-# services/transports, no public reseed or public-network dependency.
-# Java I2P uses ~/.i2p by default; override the data dir via
-# `-Di2p.dir.config=${SCRATCH}/datadir` and pre-populate it with the
-# controlled-topology settings so the router never touches the public
-# I2P network and binds only to 127.0.0.1.
-JAVA_DATA="${SCRATCH}/datadir"
-JAVA_LOG="${SCRATCH}/java.log"
-mkdir -p "${JAVA_DATA}"
-cat > "${JAVA_DATA}/router.config" <<EOF
-i2np.udp.host=127.0.0.1
-i2np.udp.port=${JAVA_SSU2_PORT}
-i2np.udp.internalPort=${JAVA_SSU2_PORT}
-i2np.ntcp2.enabled=false
-i2np.ntcp2.host=127.0.0.1
-i2np.reseed.enable=false
-i2np.reseedURL=
-router.bandwidth.class=L
-router.isFloodfill=true
-EOF
-# The SAM bridge listens on 127.0.0.1:7656 + I2CP on 127.0.0.1:7654
-# by default; we keep the default port tuple and bind the harness to
-# the I2CP-controlled port range the runner script picks.
-sed -i 's/^clientApp.1.startOnLoad=false/clientApp.1.startOnLoad=true/' \
-  "${JAVA_CACHE}/clients.config" || true
-sed -i 's|^clientApp.1.args=.*|clientApp.1.args=sam.keys 127.0.0.1 7656 i2cp.tcp.host=127.0.0.1 i2cp.tcp.port=7654|' \
-  "${JAVA_CACHE}/clients.config" || true
-# Disable every other client app so the harness owns the only listeners.
-for idx in 0 2 3 4; do
-  if [[ -f "${JAVA_CACHE}/clients.config.d/0${idx}-"*.config ]]; then
-    sed -i 's/^startOnLoad=true/startOnLoad=false/' \
-      "${JAVA_CACHE}/clients.config.d/0${idx}-"*.config || true
+# ---- Plan 196 §5.1 controlled stock-router launcher build ----------------
+# Compile the out-of-tree launcher against the staged Java I2P `lib/`
+# jars into the ephemeral scratch dir. Never compile into or against
+# the exact-pinned source checkout. The compiled classpath includes
+# the staged `router.jar`, which carries the stock `net.i2p.router.Router`
+# class the launcher constructs.
+LAUNCHER_BUILD="${SCRATCH}/build"
+mkdir -p "${LAUNCHER_BUILD}"
+LAUNCHER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ControlledRouter.java"
+if [[ ! -f "${LAUNCHER_SRC}" ]]; then
+  echo "Java launcher source missing: ${LAUNCHER_SRC}" >&2
+  exit 1
+fi
+JAVA_CP=""
+for jar in "${JAVA_CACHE}"/*.jar "${JAVA_CACHE}"/lib/*.jar; do
+  if [[ -z "${JAVA_CP}" ]]; then
+    JAVA_CP="${jar}"
+  else
+    JAVA_CP="${JAVA_CP}:${jar}"
   fi
 done
-# Note: clients.config.d/ is auto-regenerated by the router on first
-# start; the per-launcher sed above is the authoritative edit so the
-# SAM bridge starts deterministically.
-cp "${JAVA_DATA}/router.config" "${JAVA_DATA}/router.config.initial"
-cp "${JAVA_CACHE}/clients.config" "${JAVA_DATA}/clients.config.initial"
+if ! javac -d "${LAUNCHER_BUILD}" -cp "${JAVA_CP}" "${LAUNCHER_SRC}" \
+   >"${SCRATCH}/javac.log" 2>&1; then
+  echo "Java launcher compile failed; see ${SCRATCH}/javac.log" >&2
+  tail -n 60 "${SCRATCH}/javac.log" >&2 || true
+  exit 1
+fi
+LAUNCHER_CP="${LAUNCHER_BUILD}:${JAVA_CP}"
+LAUNCHER="ControlledRouter"
+echo "==> Java launcher compiled: ${LAUNCHER_SRC} -> ${LAUNCHER_BUILD}/"
+
+# ---- Plan 196 §5.2 property-set + disposable data-dir --------------------
+# Per-run disposable Java data dir; no reseed URL or HTTPS contact
+# the harness did not pre-resolve to loopback.
+JAVA_DATA="${SCRATCH}/datadir"
+JAVA_LOG="${SCRATCH}/java.log"
+mkdir -p "${JAVA_DATA}/logs"
+
+# Sanity: never mutate the verified Java cache/build outputs.
+# Plan 196 §5.3 forbids `sed`/`clients.config` mutations of the cache.
+CACHE_FINGERPRINT_BEFORE="$(find "${JAVA_CACHE}" -type f -name '*.config' -o -name 'runplain.sh' -o -name 'clients.config*' 2>/dev/null | LC_ALL=C.UTF-8 sort | xargs -r sha256sum | sha256sum | awk '{print $1}')"
+
+# ---- Plan 196 §5.4 start Java through the controlled launcher -----------
 : > "${JAVA_LOG}"
-setsid env I2PDATA="${JAVA_DATA}" \
-  JAVAOPTS="-Djava.net.preferIPv4Stack=true -Djava.awt.headless=true -Di2p.dir.config=${JAVA_DATA}" \
-  "${JAVA_LAUNCHER}" >/dev/null 2>&1 < /dev/null &
+JAVA_CMD=(
+  java
+  -Djava.net.preferIPv4Stack=true
+  -Djava.awt.headless=true
+  -Djava.library.path="${JAVA_CACHE}:${JAVA_CACHE}/lib"
+  -Di2p.dir.base="${JAVA_CACHE}"
+  -DloggerFilenameOverride=logs/log-router-@.txt
+  -Drouterconsole.enable=false
+  -cp "${LAUNCHER_CP}"
+  -Dlauncher.scratch="${SCRATCH}"
+  "ControlledRouter"
+  "${JAVA_DATA}"
+  "127.0.0.1"
+  "${JAVA_SSU2_PORT}"
+  "${JAVA_SAM_PORT}"
+  "${JAVA_I2CP_PORT}"
+)
+setsid "${JAVA_CMD[@]}" >/dev/null 2>"${JAVA_LOG}" < /dev/null &
 JAVA_PID=$!
 CHILD_PIDS=("${JAVA_PID}")
 
@@ -126,15 +155,31 @@ cleanup() {
   for pid in "${CHILD_PIDS[@]:-}"; do
     wait "${pid}" 2>/dev/null || true
   done
+  # Best-effort verification: the Java cache must be untouched.
+  if [[ -n "${JAVA_CACHE:-}" ]]; then
+    local fp_after
+    fp_after="$(find "${JAVA_CACHE}" -type f \( -name '*.config' -o -name 'runplain.sh' -o -name 'clients.config*' \) 2>/dev/null | LC_ALL=C.UTF-8 sort | xargs -r sha256sum | sha256sum | awk '{print $1}')"
+    if [[ "${fp_after}" != "${CACHE_FINGERPRINT_BEFORE:-}" ]]; then
+      echo "Java cache fingerprint drifted (cache was mutated during the run)" >&2
+    fi
+  fi
   [[ -z "${SCRATCH:-}" || ! -d "${SCRATCH}" ]] || rm -rf "${SCRATCH}"
 }
 trap cleanup EXIT
 
-echo "==> waiting for ephemeral Java I2P on 127.0.0.1:${JAVA_SSU2_PORT} (SAM 127.0.0.1:7656)"
+echo "==> waiting for ephemeral Java I2P on 127.0.0.1:${JAVA_SSU2_PORT} (SAM 127.0.0.1:${JAVA_SAM_PORT} I2CP 127.0.0.1:${JAVA_I2CP_PORT})"
 JAVA_RI=""
-for _ in $(seq 1 240); do
-  if [[ -f "${JAVA_DATA}/router.info" ]]; then
-    JAVA_RI="${JAVA_DATA}/router.info"
+# Plan 196 §5.4 — Java writes router.info to
+# `${i2p.dir.router}/router.info`; we set i2p.dir.router to
+# `${JAVA_DATA}/router`, so router.info lands at
+# `${JAVA_DATA}/router/router.info`. The Java Router takes ~60 s
+# to publish router.info on a fresh data dir (key generation +
+# signatures + initial RouterInfo build), so the harness waits up
+# to 360 retries × 0.5 s = 180 s with periodic liveness checks.
+JAVA_ROUTER_DIR="${JAVA_DATA}/router"
+for _ in $(seq 1 360); do
+  if [[ -f "${JAVA_ROUTER_DIR}/router.info" ]]; then
+    JAVA_RI="${JAVA_ROUTER_DIR}/router.info"
     break
   fi
   if ! kill -0 "${JAVA_PID}" 2>/dev/null; then
@@ -148,11 +193,18 @@ done
 if [[ -z "${JAVA_RI}" ]]; then
   echo "ephemeral Java I2P did not publish router.info" >&2
   sed -n '1,40p' "${JAVA_LOG}" >&2 || true
+  sed -n '1,40p' "${JAVA_DATA}/logs/log-router-0.txt" 2>&1 >&2 || true
   exit 2
 fi
+
 SAM_READY=0
-for _ in $(seq 1 60); do
-  if (exec 3<>"/dev/tcp/127.0.0.1/7656") 2>/dev/null; then
+# Plan 196 §5.4 — Java Router adds a `clientApp.0.delay=120` to the
+# auto-generated SAM client config (it waits for the I2CP server
+# before bringing up the SAM bridge). The harness waits up to
+# 240 retries × 0.5s = 120 s for the SAM port to bind, with an
+# extra buffer for the upstream TCP accept race.
+for _ in $(seq 1 240); do
+  if (exec 3<>"/dev/tcp/127.0.0.1/${JAVA_SAM_PORT}") 2>/dev/null; then
     exec 3<&- 3>&- || true
     SAM_READY=1
     break
@@ -165,12 +217,98 @@ for _ in $(seq 1 60); do
   sleep 0.5
 done
 if [[ "${SAM_READY}" -ne 1 ]]; then
-  echo "ephemeral Java I2P SAM did not listen on 127.0.0.1:7656" >&2
+  echo "ephemeral Java I2P SAM did not listen on 127.0.0.1:${JAVA_SAM_PORT}" >&2
   tail -n 20 "${JAVA_DATA}/logs/log-router-0.txt" 2>&1 >&2 || true
   exit 2
 fi
-echo "    Java I2P SAM: 127.0.0.1:7656"
+echo "    Java I2P SAM: 127.0.0.1:${JAVA_SAM_PORT}"
+echo "    Java I2P I2CP: 127.0.0.1:${JAVA_I2CP_PORT}"
 echo "    Java I2P: 127.0.0.1:${JAVA_SSU2_PORT} ($(wc -c <"${JAVA_RI}")-byte router.info)"
+
+# Plan 196 §5.5 — externally observable topology invariants.
+TOPOLOGY_OK=1
+TOPOLOGY_REASON=""
+if [[ -s "${JAVA_DATA}/router.config" ]]; then
+  if ! grep -q '^i2np.udp.host=127.0.0.1$' "${JAVA_DATA}/router.config"; then
+    TOPOLOGY_OK=0
+    TOPOLOGY_REASON="${TOPOLOGY_REASON} udp-host-mismatch"
+  fi
+  if ! grep -q "^i2np.udp.port=${JAVA_SSU2_PORT}$" "${JAVA_DATA}/router.config"; then
+    TOPOLOGY_OK=0
+    TOPOLOGY_REASON="${TOPOLOGY_REASON} udp-port-mismatch"
+  fi
+  if ! grep -q "^i2np.udp.internalPort=${JAVA_SSU2_PORT}$" "${JAVA_DATA}/router.config"; then
+    TOPOLOGY_OK=0
+    TOPOLOGY_REASON="${TOPOLOGY_REASON} udp-internal-port-mismatch"
+  fi
+  if ! grep -q '^router.reseedDisable=true$' "${JAVA_DATA}/router.config"; then
+    TOPOLOGY_OK=0
+    TOPOLOGY_REASON="${TOPOLOGY_REASON} reseed-not-disabled"
+  fi
+  if ! grep -q '^router.floodfillParticipant=true$' "${JAVA_DATA}/router.config"; then
+    TOPOLOGY_OK=0
+    TOPOLOGY_REASON="${TOPOLOGY_REASON} floodfill-not-enabled"
+  fi
+  if ! grep -q '^i2np.ntcp.enable=false$' "${JAVA_DATA}/router.config"; then
+    TOPOLOGY_OK=0
+    TOPOLOGY_REASON="${TOPOLOGY_REASON} ntcp-not-disabled"
+  fi
+else
+  TOPOLOGY_OK=0
+  TOPOLOGY_REASON="${TOPOLOGY_REASON} router-config-missing"
+fi
+# Plan 196 §5.4 — Java Router rewrites the disposable clients.config
+# from `${JAVA_DATA}/clients.config` into per-app config files under
+# `${JAVA_DATA}/clients.config.d/`. Either form is acceptable; the
+# SAM bridge must be the only client app started on load.
+SAM_BRIDGE_CONFIG=""
+if [[ -f "${JAVA_DATA}/clients.config" ]]; then
+  if ! grep -q '^clientApp.0.main=net.i2p.sam.SAMBridge$' "${JAVA_DATA}/clients.config"; then
+    TOPOLOGY_OK=0
+    TOPOLOGY_REASON="${TOPOLOGY_REASON} sam-bridge-not-default-app"
+  else
+    SAM_BRIDGE_CONFIG="${JAVA_DATA}/clients.config"
+  fi
+elif [[ -d "${JAVA_DATA}/clients.config.d" ]]; then
+  SAM_BRIDGE_CONFIG=$(grep -lE '^clientApp\.0\.main=net\.i2p\.sam\.SAMBridge$' "${JAVA_DATA}/clients.config.d"/*-clients.config 2>/dev/null | head -1 || true)
+  if [[ -z "${SAM_BRIDGE_CONFIG}" ]]; then
+    TOPOLOGY_OK=0
+    TOPOLOGY_REASON="${TOPOLOGY_REASON} sam-bridge-config-not-in-clients-config-d"
+  fi
+else
+  TOPOLOGY_OK=0
+  TOPOLOGY_REASON="${TOPOLOGY_REASON} clients-config-missing"
+fi
+if [[ ! -f "${JAVA_DATA}/noreseed.i2p" ]]; then
+  TOPOLOGY_OK=0
+  TOPOLOGY_REASON="${TOPOLOGY_REASON} noreseed-flag-missing"
+fi
+# Confirm the bound port is actually bound by Java (loopback UDP).
+if ! python3 - <<PY 2>/dev/null
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    s.bind(("127.0.0.1", ${JAVA_SSU2_PORT}))
+except OSError:
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+then
+  TOPOLOGY_OK=0
+  TOPOLOGY_REASON="${TOPOLOGY_REASON} udp-port-not-bound-by-java"
+fi
+
+# Confirm the bound SAM port is actually accepting connections (loopback TCP).
+if ! (exec 3<>"/dev/tcp/127.0.0.1/${JAVA_SAM_PORT}") 2>/dev/null; then
+  TOPOLOGY_OK=0
+  TOPOLOGY_REASON="${TOPOLOGY_REASON} sam-port-not-listening"
+fi
+
+if [[ "${TOPOLOGY_OK}" -ne 1 ]]; then
+  echo "controlled Java topology invariants failed: ${TOPOLOGY_REASON}" >&2
+  sed -n '1,80p' "${JAVA_DATA}/logs/log-router-0.txt" 2>&1 >&2 || true
+  exit 3
+fi
 
 REQUIRED_FAILED=0
 record() {
@@ -194,7 +332,7 @@ record_guarded() {
   fi
 }
 
-echo "==> local Plan 194 rows (re-run Plan 187/192/193 suites against the i2pr reference build)"
+echo "==> local Plan 187/192/193 rows (re-run destination/streaming suites against the i2pr reference build)"
 UNIT_LOG="${EVIDENCE_DIR}/local-destination-tunnel-unit.log"
 : > "${UNIT_LOG}"
 unit_rc=0
@@ -246,9 +384,12 @@ mkdir -p "${DRIVER_EVIDENCE}"
 DRIVER_LOG="${EVIDENCE_DIR}/external-driver.log"
 : > "${DRIVER_LOG}"
 driver_rc=0
+# Plan 196 §5.4 — pass the actual selected SAM/SSU2 endpoints to the
+# driver. The harness owns the ports, not the upstream default tuple.
 if JAVA_ROUTER_INFO="${JAVA_RI}" \
    JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
-   JAVA_SAM_ENDPOINT="127.0.0.1:7656" \
+   JAVA_SAM_ENDPOINT="127.0.0.1:${JAVA_SAM_PORT}" \
+   JAVA_I2CP_ENDPOINT="127.0.0.1:${JAVA_I2CP_PORT}" \
    I2PR_SSU2_BIND="127.0.0.1:${I2PR_PORT}" \
    EVIDENCE_DIR="${DRIVER_EVIDENCE}" \
    timeout --foreground "${DRIVER_TIMEOUT}" \
@@ -264,10 +405,14 @@ echo "==> sanitized reference-side facts (counts only, never key material)"
 REFERENCE_FACTS="${EVIDENCE_DIR}/reference-facts.tsv"
 : > "${REFERENCE_FACTS}"
 {
-  printf 'java-udp-listening\t%s\n' "$(grep -c 'UDP selected random port\|UDPTransport' "${JAVA_DATA}/logs/log-router-0.txt" 2>/dev/null || true)"
-  printf 'java-sam-bridge-up\t%s\n' "$(grep -c 'SAMBridge\|Starting SAM' "${JAVA_DATA}/logs/log-router-0.txt" 2>/dev/null || true)"
-  printf 'java-reseed-disabled\t%s\n' "$(grep -c 'reseed.enable=false' "${JAVA_DATA}/router.config" 2>/dev/null || true)"
-  printf 'java-floodfill\t%s\n' "$(grep -c 'router.isFloodfill=true' "${JAVA_DATA}/router.config" 2>/dev/null || true)"
+  printf 'java-udp-listening\t%s\n' "$(grep -c 'SSU2:.*SSU2 endpoint .* created\|UDPTransport' "${JAVA_DATA}/logs/log-router-0.txt" 2>/dev/null || true)"
+  printf 'java-sam-bridge-up\t%s\n' "$(grep -c 'SAMBridge\|Starting SAM\|SAM bridge' "${JAVA_DATA}/logs/log-router-0.txt" 2>/dev/null || true)"
+  printf 'java-reseed-disabled\t%s\n' "$(grep -c '^router.reseedDisable=true$' "${JAVA_DATA}/router.config" 2>/dev/null || true)"
+  printf 'java-floodfill-capable\t%s\n' "$(grep -c '^router.floodfillParticipant=true$' "${JAVA_DATA}/router.config" 2>/dev/null || true)"
+  printf 'java-udp-port-bound\t%s\n' "$(grep -c "^i2np.udp.port=${JAVA_SSU2_PORT}$" "${JAVA_DATA}/router.config" 2>/dev/null || true)"
+  printf 'java-ntcp-disabled\t%s\n' "$(grep -c '^i2np.ntcp.enable=false$' "${JAVA_DATA}/router.config" 2>/dev/null || true)"
+  printf 'java-no-public-reseed\t%s\n' "$(grep -c 'noreseed.i2p' "${JAVA_DATA}/router.config" 2>/dev/null || true)"
+  printf 'java-sam-bridge-configured\t%s\n' "$(grep -c '^clientApp.0.main=net.i2p.sam.SAMBridge$' "${JAVA_DATA}/clients.config" 2>/dev/null || true)"
 } >> "${REFERENCE_FACTS}"
 ref_row() {
   local label="$1"
@@ -304,10 +449,10 @@ m6_key_row() {
   fi
   record_guarded "${label}" "${detail}" "${rc}"
 }
-# Plan 194 §11 stop provenance: install-dependent rows pass via their
-# own evidence key on the success path; when the driver recorded its
-# stop key they are recorded `blocked` (never `passed`, never silently
-# skipped); otherwise they fail without provenance.
+# Plan 196 §6 — topology readiness must precede the SSU2 gate. The
+# controlled launcher already produces the topology evidence keys; we
+# emit them as passed on success and as failed-with-stop-provenance
+# only when the external driver recorded `plan194-java-stop`.
 STOP_FIRED=0
 if [[ -f "${DRIVER_TSV}" ]] && grep -Fq "plan194-java-stop" "${DRIVER_TSV}"; then
   STOP_FIRED=1
@@ -319,7 +464,7 @@ blocked_row() {
   if [[ -f "${DRIVER_TSV}" ]] && awk -v k="${key}" -F'\t' '$1 == k {found=1} END{exit !found}' "${DRIVER_TSV}"; then
     record "${label}" passed "${detail}"
   elif [[ "${STOP_FIRED}" -eq 1 ]]; then
-    record "${label}" blocked "${detail} (m6-java-second-family-stop; see Plan 194 §11)"
+    record "${label}" blocked "${detail} (m6-java-second-family-stop; see Plan 196 §11 stop provenance)"
   else
     record "${label}" failed "${detail} (no evidence key, no stop provenance)"
   fi
@@ -334,6 +479,18 @@ m6_key_row "external-session-established" "session-established" \
   "authenticated SSU2 session establishes via daemon-owned runtime"
 m6_key_row "external-sam-destination-created" "sam-destination-created" \
   "reference SAM RAW/RAW-DATAGRAM destination created through Java public SAM"
+ref_row "java-routerinfo-host-bound" "java-udp-port-bound" \
+  "Java router binds the controlled UDP port and RouterInfo advertises it"
+ref_row "java-routerinfo-port-bound" "java-udp-port-bound" \
+  "Java router.config records the selected UDP port from the harness"
+ref_row "java-reseed-disabled" "java-reseed-disabled" \
+  "Java router keeps the controlled-topology no-reseed setting in the live datadir"
+ref_row "java-floodfill-capable" "java-floodfill-capable" \
+  "Java router.floodfillParticipant=true is committed in the controlled data dir"
+ref_row "java-ntcp-disabled" "java-ntcp-disabled" \
+  "Java router NTCP/SSU legacy transports are disabled in the controlled profile"
+ref_row "java-sam-bridge-configured" "java-sam-bridge-configured" \
+  "Java disposable clients.config starts only the SAM bridge on the selected port"
 blocked_row "external-outbound-tunnel" "outbound-installed" \
   "real one-hop outbound build installed with cryptographically derived keys"
 blocked_row "external-inbound-tunnel" "inbound-installed" \
@@ -342,7 +499,7 @@ ref_row "external-outbound-accepted" "java-udp-listening" \
   "reference Java log proves the outbound build was accepted"
 ref_row "external-inbound-accepted" "java-udp-listening" \
   "reference Java log proves the inbound build was accepted"
-ref_row "external-reference-ls2-published" "java-floodfill" \
+ref_row "external-reference-ls2-published" "java-floodfill-capable" \
   "reference floodfill setting is committed in the controlled data dir"
 blocked_row "external-lease-lookup-tunnel" "lease-lookup-completed" \
   "reference Standard LeaseSet2 resolved through the real tunnel NetDB path and cached"
@@ -358,8 +515,8 @@ m6_key_row "external-direct-rejected" "direct-rejected" \
   "direct transport destination delivery is rejected as a counted path"
 m6_key_row "external-liveness-first-test" "liveness-first-test" \
   "creator-side liveness scheduler first test succeeds during destination activity"
-ref_row "external-reseed-disabled" "java-reseed-disabled" \
-  "Java router keeps the controlled-topology no-reseed setting in the live datadir"
+ref_row "external-reseed-disabled" "java-no-public-reseed" \
+  "Java router has the controlled no-public-reseed flag in the live datadir"
 
 echo "==> workspace gates slice"
 GATES_LOG="${EVIDENCE_DIR}/workspace-gates.log"
@@ -383,7 +540,7 @@ record_guarded "workspace-gates" \
   "fmt + workspace check --all-targets + static boundary scripts (full test/clippy/doc/deny floor stays in routine CI)" \
   "${gates_rc}"
 
-python3 - "${RESULTS_FILE}" "${EVIDENCE_DIR}" "${REPO_ROOT}" "${JAVA_PIN}" "${JAVA_VERSION}" <<'PY'
+python3 - "${RESULTS_FILE}" "${EVIDENCE_DIR}" "${REPO_ROOT}" "${JAVA_PIN}" "${JAVA_VERSION}" "${JAVA_SSU2_PORT}" "${JAVA_SAM_PORT}" "${JAVA_I2CP_PORT}" <<'PY'
 import json
 import platform
 import subprocess
@@ -393,6 +550,7 @@ from pathlib import Path
 
 results_path, evidence_dir, repo_root = sys.argv[1:4]
 java_pin, java_version = sys.argv[4:6]
+ssu2_port, sam_port, i2cp_port = sys.argv[6:9]
 rows = []
 with open(results_path, encoding="utf-8") as stream:
     for line in stream:
@@ -433,8 +591,13 @@ evidence = {
         "revision": java_pin,
         "version": java_version,
         "role": "mandatory second-family mixed-router reference, unmodified",
-        "transit": "loopback-only, no public reseed, SAM loopback (Plan 194 only)",
-        "datadir": "fresh per-run scratch dir under i2p.dir.config",
+        "transit": "loopback-only, no public reseed, SAM loopback (Plan 196 only)",
+        "datadir": "fresh per-run scratch dir under i2p.dir.config (ControlledRouter)",
+        "selected_ports": {
+            "ssu2": f"127.0.0.1:{ssu2_port}",
+            "sam": f"127.0.0.1:{sam_port}",
+            "i2cp": f"127.0.0.1:{i2cp_port}",
+        },
     },
     "driver_evidence_keys": driver_keys,
     "results": rows,
@@ -446,26 +609,27 @@ evidence = {
         "second-family Java qualification: i2pd first-family passed via Plan 193",
         "loopback-only Java reference; no public I2P participation",
         "no Java second-family Streaming claim until Plan 194 §5.5 rows flip passed",
+        "Plan 196 owns the controlled first-run topology + authenticated SSU2 preflight only",
     ],
 }
 out = Path(evidence_dir)
 out.mkdir(parents=True, exist_ok=True)
 (out / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 with (out / "evidence.md").open("w", encoding="utf-8") as stream:
-    stream.write("# Plan 194 M6 Java I2P second-family qualification evidence\n\n")
+    stream.write("# Plan 196 M6 Java I2P controlled first-run topology evidence\n\n")
     stream.write(f"- i2pr commit: `{commit}`\n")
     stream.write(f"- Java I2P: `{java_version}` @ `{java_pin}` (unmodified)\n")
     stream.write(f"- OS/image: `{platform.platform()}`\n")
     stream.write(f"- Rust: `{rustc}`\n")
     stream.write("- Bind policy: `127.0.0.1` only, `advertise=false`, no introducer\n")
-    stream.write("- Java profile: `i2p.dir.config=scratch`, `reseed.enable=false`, SAM loopback\n\n")
+    stream.write("- Java profile: `i2p.dir.config=scratch`, `router.reseedDisable=true`, SAM loopback (ControlledRouter)\n\n")
     stream.write("| Result | Status | Detail |\n| --- | --- | --- |\n")
     for row in rows:
         stream.write(f"| {row['label']} | {row['status']} | {row['detail']} |\n")
 PY
 
 if [[ "${REQUIRED_FAILED}" -ne 0 ]]; then
-  echo "Plan 194 M6 Java I2P second-family lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
+  echo "Plan 196 M6 Java I2P second-family lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1
 fi
-echo "Plan 194 M6 Java I2P second-family lane passed; sanitized evidence: ${EVIDENCE_DIR}"
+echo "Plan 196 M6 Java I2P second-family lane passed; sanitized evidence: ${EVIDENCE_DIR}"
