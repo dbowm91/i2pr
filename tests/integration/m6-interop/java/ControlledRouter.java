@@ -138,10 +138,18 @@ public final class ControlledRouter {
         props.setProperty("router.newsRefreshFrequency", "0");
         props.setProperty("router.updateDisabled", "true");
         props.setProperty("time.disabled", "true");
+        // The exact-pinned upstream `blocklist.txt` includes the
+        // Team Cymru bogon list (which covers 127.0.0.0/8); for the
+        // controlled loopback topology we MUST disable the blocklist
+        // so Java accepts SessionRequest/TokenRequest from 127.0.0.1.
+        // The Plan 196 controlled-launcher does not talk to public
+        // peers, so this is fail-closed at the daemon boundary.
+        props.setProperty("router.blocklist.enable", "false");
 
         // Loopback-only UDP transport. NTCP/SSU are disabled because
         // the lane only counts SSU2; disabling the legacy transports
         // keeps the controlled profile self-consistent.
+        props.setProperty("logger.defaultLevel", "DEBUG");
         props.setProperty("i2np.udp.host", ssu2Host);
         props.setProperty("i2np.udp.port", ssu2Port);
         props.setProperty("i2np.udp.internalPort", ssu2Port);

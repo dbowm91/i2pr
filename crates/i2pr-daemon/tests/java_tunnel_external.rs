@@ -282,10 +282,17 @@ async fn destination_message_plane_against_java() {
     );
     let reference_pub = sam_param(&generated, "PUB").expect("generated PUB");
     assert!(reference_pub.len() >= 512, "PUB too short for Ed25519");
+    // Java SAM v3 SESSION CREATE requires the full PRIV token
+    // (destination + signing private + encryption private, >= 663
+    // bytes decoded). i2pd's SAM bridge accepts the public PUB but
+    // Java strictly rejects shorter values with INVALID_KEY. The
+    // Plan 192 i2pd-direction wire is therefore a strict subset;
+    // the Java-direction needs the PRIV form for the session create.
+    let reference_priv = sam_param(&generated, "PRIV").expect("generated PRIV");
     let session_id = format!("plan194-{}", wall_secs() % 1_000_000);
     let create = sam
         .transact(&format!(
-            "SESSION CREATE STYLE=RAW ID={session_id} DESTINATION={reference_pub} SIGNATURE_TYPE=7 inbound.length=0 outbound.length=0\n"
+            "SESSION CREATE STYLE=RAW ID={session_id} DESTINATION={reference_priv} SIGNATURE_TYPE=7 inbound.length=0 outbound.length=0\n"
         ))
         .await
         .expect("SAM session create read");

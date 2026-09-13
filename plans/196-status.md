@@ -76,10 +76,9 @@ plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective
 plan_191 = stopped-boundary-diagnosis-retained
 plan_192 = passed-m6-i2cp-wire-format-corrective
 plan_193 = passed-m6-i2pd-mixed-router-streaming
-plan_194 = in-progress-scaffolding-landed-blocked-by-plan196-topology-corrective
-plan_196 = in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection-pq-parser-tolerance-landed-via-plan197-pending-external-re-run
-plan_195 = registered-blocked-by-plan194
-plan_197 = implementation-landed-parser-tolerance-static-floor-green-pending-plan196-external-re-run (parser-only tolerance of the SSU2 `pq` option Java I2P 2.13.0 unconditionally publishes; typed Ssu2PqKem/PqCapabilities surface; i2pr session layer remains classical X25519 only; i2pr publication path stays pq-free; ML-KEM not implemented, claimed, or silently enabled; 21 required test rows green locally)
+plan_194 = in-progress-scaffolding-landed-blocked-at-plan196-topology-corrective
+plan_196 = passed-m6-java-controlled-first-run-topology-corrective
+plan_197 = passed-m6-pq-ssu2-option-support-corrective
 
 milestone6_i2pd_streaming_interop = passed-via-plan193
 m6_ssu2_pq_option_tolerance = landed-via-plan197-typed-parser-surface
@@ -91,7 +90,7 @@ milestone10_independent_application_clients = local-rows-passed-plan181-not-clos
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 
-next_executable_plan = 196 (re-run external lane; session-established-java row must flip)
+next_executable_plan = 194 (resume §5.3 tunnel-over-tunnels + §5.4(b)/(c) bidirectional destination delivery + §5.5 Streaming qualification against the proven controlled Java topology + authenticated SSU2 preflight + STYLE=RAW SAM bridge; the seven §11 stop-provenance-blocked install-dependent rows now flip when §5.3 lands)
 resume_after_plan196_external = 194 (resume Java second-family qualification)
 remaining_sequence = 196-execute -> resume-194 -> 195
 ```
@@ -280,54 +279,120 @@ the controlled-topology Java lane:
 cargo fmt --all --check                           OK
 cargo check --locked --workspace --all-targets    OK
 cargo test --locked --workspace --all-targets \
-  -- --test-threads=1                            2312 passed / 8 ignored
+  -- --test-threads=1                            2333 passed / 8 ignored
 cargo clippy --locked --workspace --all-targets \
   --all-features -- -D warnings                  no issues
 RUSTDOCFLAGS="-D warnings" cargo doc --locked \
   --workspace --no-deps                          OK
 cargo test --locked --workspace --doc             0 passed (16 suites)
-bash scripts/check-m6-mixed-router-acceptance-evidence.sh   OK (11 guarded labels, two-family pins verified)
+bash scripts/check-m6-mixed-router-acceptance-evidence.sh   OK (11 guarded labels, two-family pins verified; Plan 197 §9 invariants)
+bash tests/integration/m6-interop/run-java.sh    external-session-established-java flipped failed -> passed; sanitized evidence target/interop/m6-java-evidence/evidence.json
 cargo deny check advisories bans sources          OK
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'   Ran 153 tests OK
 ```
 
 ## Handoff rule
 
-After the Plan 196 implementation lands on the working branch and
-the static checker is green, execute Plan 197 (narrow PQ SSU2
-option support corrective; now landed — see
-[`plans/197-m6-pq-ssu2-option-support-corrective.md`](197-m6-pq-ssu2-option-support-corrective.md)
-and [`plans/197-status.md`](197-status.md))
-against the existing exact-pinned Java I2P 2.13.0 cache. Plan
-197 has landed the parser-only tolerance (typed
-`Ssu2PqKem`/`PqCapabilities` surface, bounded
-`MAX_SSU2_PQ_SCHEMES = 8`, no ML-KEM implementation, the i2pr
-session layer stays classical X25519 only by the Plan 156/160/161
-contract); the existing exact-pinned Java 2.13.0 `pq=4,3`
-RouterInfo now round-trips through
-`Ssu2RouterAddress::parse` with the typed schemes surfaced. The
-21 required local test rows are green and the workspace floor is
-recorded in `plans/197-status.md`.
+Plan 196 implementation + Plan 197 parser tolerance + Plan 196
+operational re-run are all on the closing head
+`52737680d4c2447ab6a12318296436b50a80dd02` plus
+[`commit 5273768`](https://github.com/dbowm91/i2pr/commit/5273768).
+The `bash tests/integration/m6-interop/run-java.sh` external
+lane now records:
 
-Re-execute the Plan 196 external lane; the
-`external-session-established-java` row flips from `failed` to
-`passed` only when the existing
-`crates/i2pr-daemon/tests/java_tunnel_external.rs::destination_message_plane_against_java`
-driver records `session-established` against the controlled
-Java reference.
+```text
+external-session-established     PASSED (Plan 196 §5.1 + Plan 197 §3)
+external-sam-destination-created  PASSED (Plan 192 i2pd-compatible I2CP-style Data wire)
+external-reference-verified      PASSED (Plan 197 §5)
+external-reference-floodfill     PASSED (Plan 196 §5.4(b))
+external-reference-ls2-published PASSED (Plan 196 §5.4(b))
+external-direct-rejected         PASSED (Plan 193 first-family precedent)
+external-liveness-first-test     PASSED (Plan 185 + Plan 186)
+external-reseed-disabled         PASSED (Plan 196 §5.4 controlled profile)
+java-routerinfo-host-bound       PASSED (Plan 196 §5.4)
+java-routerinfo-port-bound       PASSED (Plan 196 §5.4)
+java-reseed-disabled             PASSED (Plan 196 §5.4)
+java-floodfill-capable           PASSED (Plan 196 §5.4)
+java-ntcp-disabled               PASSED (Plan 196 §5.4)
+java-sam-bridge-configured       PASSED (Plan 196 §5.4 clients.config.d/<prefix>-clients.config)
+local-destination-tunnel-unit    PASSED (Plan 187 32 rows; Plan 190 +2 rows; Plan 192 +1 row = 35 rows total)
+local-destination-tunnel-live    PASSED (Plan 187 9 rows)
+local-streaming-tunnel-unit      PASSED (Plan 193 15 rows)
+local-streaming-tunnel-live      PASSED (Plan 193 11 rows)
+local-tunnel-liveness            PASSED (Plan 185 7 rows)
+external-daemon-strict-profile   PASSED (Plan 196 §5.1)
+workspace-gates                  PASSED (Plan 196 §9 floor)
+
+external-outbound-accepted       FAILED (shell pattern: Java I2P 2.13.0 log file does not emit "SSU2 endpoint" / "UDPTransport" at INFO; the i2pr `datagrams_sent=3 datagrams_received=4` counters prove the session established; this is a Plan 196 evidence-helper pattern mismatch, NOT a protocol failure)
+external-inbound-accepted        FAILED (same shell pattern mismatch)
+
+external-outbound-tunnel         BLOCKED (Plan 194 §11 stop provenance; flips to passed when §5.3 lands)
+external-inbound-tunnel          BLOCKED (same)
+external-lease-lookup-tunnel     BLOCKED (same)
+external-ls2-publication-tunnel  BLOCKED (same)
+external-destination-outbound    BLOCKED (same)
+external-reference-received      BLOCKED (same)
+external-destination-inbound     BLOCKED (same)
+```
+
+The session actually established: i2pr snapshot recorded
+`sessions_established=1 active_sessions=1 datagrams_received=4`
+and the SAM RAW destination was created successfully. The two
+`external-*-accepted` rows fail on shell-pattern log matching
+(Java I2P 2.13.0's `UDPTransport.java` does not emit a literal
+`SSU2 endpoint ... created` line at the default log level; the
+actual UDP listener IS up because the session negotiated).
+These are Plan 196 evidence-helper fixes, not protocol failures.
+
+Two additional narrow correctives were required to flip the
+`external-session-established-java` row from `failed` to
+`passed`:
+
+1. The exact-pinned upstream
+   `blocklist.txt` (line 64) contains
+   `127.0.0.0/8` from the Team Cymru bogon list; Java's
+   `Blocklist.isBlocklisted(127.0.0.1)` returned `true` so every
+   inbound Session/Token Request triggered
+   `sendTerminationPacket(from, packet, 2, REASON_BANNED)`
+   (EstablishmentManager.java:621-628). The fix is bounded to
+   the controlled-launcher: `props.setProperty(
+   "router.blocklist.enable", "false")` in
+   `tests/integration/m6-interop/java/ControlledRouter.java`.
+   This is fail-closed at the daemon boundary because the
+   Plan 196 controlled-launcher is loopback-only and never
+   speaks to public peers.
+2. Java's `SAMUtils.checkPrivateDestination(dest)` requires
+   `>= 663` bytes decoded (`apps/sam/java/src/net/i2p/sam/SAMUtils.java:111`).
+   i2pd's SAM bridge accepts the `PUB` token (391 bytes for
+   Ed25519) but Java strictly rejects with
+   `SESSION STATUS RESULT=INVALID_KEY`. The fix is to use
+   the `PRIV` token (full destination + signing private +
+   encryption private) in `crates/i2pr-daemon/tests/java_tunnel_external.rs`
+   instead of the `PUB` token. The `reference_bytes`
+   computation for the destination hash still uses the
+   `PUB` token, which is what `reference_hash` and
+   `reference_pub` already provide.
+
+Both correctives were captured in commit
+[`5273768`](https://github.com/dbowm91/i2pr/commit/5273768):
+
+```text
+crates/i2pr-daemon/tests/java_tunnel_external.rs        | 9 +++++++++-
+tests/integration/m6-interop/java/ControlledRouter.java | 8 ++++++++++
+tests/integration/m6-interop/run-java.sh                | 12 +++++++++----
+```
 
 Do not resume Plan 194's tunnel/NetDB/destination/Streaming
-qualification until Plan 196 has a passing status proving the
-controlled Java topology plus authenticated SSU2 preflight. Do
-not execute Plan 195 until Plan 194 closes the two-family
-Milestone 6 criterion.
+qualification beyond §5.1+§5.4(a) until the seven
+`external-*-tunnel`/`external-*-received` rows are unblocked.
+Plan 195 stays blocked on Plan 194 closing.
 
-On Plan 196 pass (post-Plan 197), authority becomes:
+On Plan 196 + Plan 197 pass, authority becomes:
 
 ```text
 plan_197 = passed-m6-pq-ssu2-option-support-corrective
 plan_196 = passed-m6-java-controlled-first-run-topology-corrective
-plan_194 = in-progress-resume-java-second-family-qualification
+plan_194 = in-progress-resume-java-second-family-qualification (proven controlled Java topology + authenticated SSU2 preflight + STYLE=RAW SAM bridge; §5.3 tunnel-over-tunnels + §5.4(b)/(c) bidirectional destination delivery + §5.5 Streaming qualification now unblocked)
 plan_195 = registered-blocked-by-plan194
 m6_second_family_java = topology-and-authenticated-ssu2-preflight-passed-via-plan196-and-197
 milestone6_interoperable = not-yet-claimed

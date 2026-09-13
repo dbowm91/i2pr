@@ -405,14 +405,18 @@ echo "==> sanitized reference-side facts (counts only, never key material)"
 REFERENCE_FACTS="${EVIDENCE_DIR}/reference-facts.tsv"
 : > "${REFERENCE_FACTS}"
 {
-  printf 'java-udp-listening\t%s\n' "$(grep -c 'SSU2:.*SSU2 endpoint .* created\|UDPTransport' "${JAVA_DATA}/logs/log-router-0.txt" 2>/dev/null || true)"
-  printf 'java-sam-bridge-up\t%s\n' "$(grep -c 'SAMBridge\|Starting SAM\|SAM bridge' "${JAVA_DATA}/logs/log-router-0.txt" 2>/dev/null || true)"
+  printf 'java-udp-listening\t%s\n' "$(grep -c 'SSU2 endpoint\|UDPTransport\|Started UDPTransport\|UDP transport started' "${JAVA_DATA}/logs/log-router-0.txt" 2>/dev/null || true)"
+  printf 'java-sam-bridge-up\t%s\n' "$(grep -c 'SAM bridge started\|SAMBridge\|Starting SAM' "${JAVA_DATA}/logs/log-router-0.txt" 2>/dev/null || true)"
   printf 'java-reseed-disabled\t%s\n' "$(grep -c '^router.reseedDisable=true$' "${JAVA_DATA}/router.config" 2>/dev/null || true)"
   printf 'java-floodfill-capable\t%s\n' "$(grep -c '^router.floodfillParticipant=true$' "${JAVA_DATA}/router.config" 2>/dev/null || true)"
   printf 'java-udp-port-bound\t%s\n' "$(grep -c "^i2np.udp.port=${JAVA_SSU2_PORT}$" "${JAVA_DATA}/router.config" 2>/dev/null || true)"
   printf 'java-ntcp-disabled\t%s\n' "$(grep -c '^i2np.ntcp.enable=false$' "${JAVA_DATA}/router.config" 2>/dev/null || true)"
-  printf 'java-no-public-reseed\t%s\n' "$(grep -c 'noreseed.i2p' "${JAVA_DATA}/router.config" 2>/dev/null || true)"
-  printf 'java-sam-bridge-configured\t%s\n' "$(grep -c '^clientApp.0.main=net.i2p.sam.SAMBridge$' "${JAVA_DATA}/clients.config" 2>/dev/null || true)"
+  # Java writes the SAM bridge to `clients.config.d/<prefix>-clients.config`,
+  # not the legacy monolithic `clients.config`. The shell harness must
+  # consult the d/ directory (the upstream Java 2.13.0 default layout)
+  # before the older `clients.config` form. Plan 196 §5.4 captures this.
+  printf 'java-no-public-reseed\t%s\n' "$(test -f "${JAVA_DATA}/noreseed.i2p" && echo 1 || echo 0)"
+  printf 'java-sam-bridge-configured\t%s\n' "$(grep -rcl '^clientApp.0.main=net.i2p.sam.SAMBridge$' "${JAVA_DATA}/clients.config.d" 2>/dev/null | head -1 | wc -l)"
 } >> "${REFERENCE_FACTS}"
 ref_row() {
   local label="$1"

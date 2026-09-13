@@ -1,6 +1,6 @@
 # Plan 194 status — M6 Java I2P second-family qualification and final mixed-router closure
 
-Status: **`in-progress-scaffolding-landed-blocked-by-plan196-topology-corrective`**:
+Status: **`in-progress-resume-java-second-family-qualification`**:
 the §8 cross-family ledger/checker/workflow scaffold landed in Plan
 189 and the Plan 194 second-family lane wiring sits on top of it,
 but the first counted Java run stopped fail-closed at the §11
@@ -24,14 +24,15 @@ active sequence remains monotonic and unambiguous.
 
 ```text
 plan_193 = passed-m6-i2pd-mixed-router-streaming
-plan_194 = in-progress-scaffolding-landed-blocked-by-plan196-topology-corrective
-plan_196 = in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection-pq-parser-tolerance-landed-via-plan197-pending-external-re-run
+plan_194 = in-progress-resume-java-second-family-qualification
+plan_196 = passed-m6-java-controlled-first-run-topology-corrective
 plan_195 = registered-blocked-by-plan194
-plan_197 = implementation-landed-parser-tolerance-static-floor-green-pending-plan196-external-re-run (parser-only tolerance of the SSU2 `pq` option Java I2P 2.13.0 unconditionally publishes; typed Ssu2PqKem/PqCapabilities surface with bounded MAX_SSU2_PQ_SCHEMES = 8; i2pr session layer remains classical X25519 only; i2pr publication path stays pq-free; ML-KEM not implemented, claimed, or silently enabled; 21 required test rows green locally)
-m6_second_family_java = topology-corrective-landed-and-pq-parser-tolerance-landed-pending-external-execution
+plan_197 = passed-m6-pq-ssu2-option-support-corrective
+m6_second_family_java = topology-and-authenticated-ssu2-preflight-passed-via-plan196-and-197
 m6_ssu2_pq_option_tolerance = landed-via-plan197-typed-parser-surface
+milestone6_java_mixed_router_interop = in-progress-resume-194 (Plan 196 external-session-established-java flipped failed -> passed; seven §11 stop-provenance install-dependent rows are the next unblocked work)
 milestone6_interoperable = not-yet-claimed
-next_executable_plan = 196 (re-run external lane; session-established-java row must flip on the exact-pinned Java 2.13.0 cache; the Plan 197 parser tolerance is already in place)
+next_executable_plan = 194 (resume §5.3 tunnel-over-tunnels + §5.4(b)/(c) bidirectional destination delivery + §5.5 Streaming qualification against the proven controlled Java topology + authenticated SSU2 preflight + STYLE=RAW SAM bridge)
 resume_after_plan196_external = 194 (resume Java second-family qualification)
 remaining_sequence = 196-execute -> resume-194 -> 195
 ```

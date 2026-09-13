@@ -9,16 +9,16 @@ Plan 195 resumes only the two remote service rows left blocked by Plan 181 after
 
 ```text
 plan_193 = passed-m6-i2pd-mixed-router-streaming
-plan_194 = in-progress-scaffolding-landed-blocked-by-plan196-topology-corrective
-plan_196 = in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection-pq-parser-tolerance-landed-via-plan197-pending-external-re-run
-plan_197 = implementation-landed-parser-tolerance-static-floor-green-pending-plan196-external-re-run
+plan_194 = in-progress-resume-java-second-family-qualification
+plan_196 = passed-m6-java-controlled-first-run-topology-corrective
+plan_197 = passed-m6-pq-ssu2-option-support-corrective
 plan_195 = registered-blocked-by-plan194
 milestone6_interoperable = not-yet-claimed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
-next_executable_plan = 196 (re-run external lane; session-established-java row must flip on the exact-pinned Java 2.13.0 cache; the Plan 197 parser tolerance is already in place)
+next_executable_plan = 194 (resume §5.3 tunnel-over-tunnels + §5.4(b)/(c) bidirectional destination delivery + §5.5 Streaming qualification against the proven controlled Java topology + authenticated SSU2 preflight + STYLE=RAW SAM bridge)
 resume_after_plan196_external = 194 (resume Java second-family qualification)
-remaining_sequence = 196-execute -> resume-194 -> 195
+remaining_sequence = resume-194 -> 195
 ```
 
 On Plan 196 external re-run pass, Plan 194 resumes the actual Java second-family tunnel/NetDB/destination/Streaming qualification. On Plan 194 pass, Plan 195 becomes executable. On Plan 195 pass:

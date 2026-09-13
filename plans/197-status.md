@@ -30,21 +30,22 @@ plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective
 plan_191 = stopped-boundary-diagnosis-retained
 plan_192 = passed-m6-i2cp-wire-format-corrective
 plan_193 = passed-m6-i2pd-mixed-router-streaming
-plan_194 = in-progress-scaffolding-landed-blocked-by-plan196-topology-corrective
+plan_194 = in-progress-resume-java-second-family-qualification
 plan_195 = registered-blocked-by-plan194
-plan_196 = in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection
-plan_197 = implementation-landed-parser-tolerance-static-floor-green-pending-plan196-external-re-run
+plan_196 = passed-m6-java-controlled-first-run-topology-corrective
+plan_197 = passed-m6-pq-ssu2-option-support-corrective
 
-m6_second_family_java              = topology-corrective-landed-and-pq-parser-tolerance-landed-pending-external-execution
+m6_second_family_java              = topology-and-authenticated-ssu2-preflight-passed-via-plan196-and-197
 m6_ssu2_pq_option_tolerance        = landed-via-plan197-typed-parser-surface
 milestone6_i2pd_streaming_interop  = passed-via-plan193
+milestone6_java_mixed_router_interop = in-progress-resume-194
 milestone6_interoperable           = not-yet-claimed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance       = not-yet-closed
 
-next_executable_plan    = 196 (re-run external lane; session-established-java row must flip)
+next_executable_plan    = 194 (resume §5.3 tunnel-over-tunnels + §5.4(b)/(c) bidirectional destination delivery + §5.5 Streaming qualification against the proven controlled Java topology + authenticated SSU2 preflight + STYLE=RAW SAM bridge)
 resume_after_plan196   = 194 (Java second-family qualification) -> 195
-remaining_sequence      = 196-execute -> resume-194 -> 195
+remaining_sequence      = resume-194 -> 195
 ```
 
 ## Current authority
@@ -59,20 +60,21 @@ plan_190 = passed-m6-inbound-netdb-reply-path-tunnel-id-corrective
 plan_191 = stopped-boundary-diagnosis-retained
 plan_192 = passed-m6-i2cp-wire-format-corrective
 plan_193 = passed-m6-i2pd-mixed-router-streaming
-plan_194 = in-progress-scaffolding-landed-blocked-by-plan196-topology-corrective
+plan_194 = in-progress-resume-java-second-family-qualification
 plan_195 = registered-blocked-by-plan194
-plan_196 = in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection
-plan_197 = registered-m6-pq-ssu2-option-support-corrective
+plan_196 = passed-m6-java-controlled-first-run-topology-corrective
+plan_197 = passed-m6-pq-ssu2-option-support-corrective
 
-m6_second_family_java              = controlled-launcher-landed-pending-pq-ssu2-corrective
+m6_second_family_java              = topology-and-authenticated-ssu2-preflight-passed-via-plan196-and-197
 milestone6_i2pd_streaming_interop  = passed-via-plan193
+milestone6_java_mixed_router_interop = in-progress-resume-194
 milestone6_interoperable           = not-yet-claimed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance       = not-yet-closed
 
-next_executable_plan    = 197
+next_executable_plan    = 194 (resume §5.3 tunnel-over-tunnels + §5.4(b)/(c) bidirectional destination delivery + §5.5 Streaming qualification against the proven controlled Java topology + authenticated SSU2 preflight + STYLE=RAW SAM bridge)
 resume_after_plan197   = 196 (re-run external lane; session-established-java row must flip)
-remaining_sequence      = 197 -> 196-execute -> resume-194 -> 195
+remaining_sequence      = 196-execute -> resume-194 -> 195
 ```
 
 ## Why Plan 197 exists
