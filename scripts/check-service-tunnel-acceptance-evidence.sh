@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Plan 199 / Plan 181 — static evidence-integrity check for the M10
-# service-tunnel external lane.
+# Plan 199 / Plan 181 / Plan 202 — static evidence-integrity check
+# for the M10 service-tunnel external lane.
 #
 # Rejects known dangerous bookkeeping in
 # tests/integration/service-tunnels/run-independent.sh: required
@@ -36,8 +36,14 @@
 #   irc-user-hostname-authenticated-destination, irc-ctcp-policy-local,
 #   external-clean-resource-baseline, unsupported-profile-ledger.
 #
-# Blocked labels (Plan 199 execution stop condition):
-#   remote-independent-http-eepsite, remote-independent-irc-service.
+# Blocked labels (Plan 199 / Plan 202 execution stop condition):
+#   remote-independent-http-eepsite, remote-independent-irc-service,
+#   m10-remote-destination-streaming-composition.
+#
+# Plan 202 invariant: the positive M10 remote destination/Streaming
+# composition driver must exist, must fail closed when the exact-
+# pinned i2pd environment is absent, must never log peer key
+# material, and must not auto-pass via a literal record call site.
 #
 # Usage: bash scripts/check-service-tunnel-acceptance-evidence.sh
 
@@ -49,6 +55,7 @@ FETCH="${REPO_ROOT}/scripts/interop/fetch-service-tunnel-clients.sh"
 JARACO_PIN="90e10e690da2c7bf60de21be4e36d24c9ffd7474"
 I2PD_PIN="635b013a612ff47278ef02acf8580a28e10e26c5"
 REMOTE_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_remote_qualification.rs"
+PLAN202_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_remote_transport_qualification.rs"
 
 GUARDED=(
   m10-prerequisite-plans
@@ -85,6 +92,17 @@ GUARDED=(
 BLOCKED=(
   remote-independent-http-eepsite
   remote-independent-irc-service
+)
+
+# Plan 202 — positive Direction A row. The lane records `blocked`
+# when the full SSU2 endpoint/bind tuple is absent (this M10 lane)
+# and `passed` through `record_guarded` when the exact-pinned M6
+# interop lane provisions the environment. The static checker
+# must allow either path; literal `record "... passed"` lines
+# are still rejected (the positive row must flow through
+# `record_guarded`).
+PLAN202_TRANSITIONAL=(
+  m10-remote-destination-streaming-composition
 )
 
 failures=0
@@ -154,10 +172,29 @@ for label in "${BLOCKED[@]}"; do
     failures=$((failures + 1))
   fi
 done
+# Plan 202 — positive Direction A row may use either the blocked
+# path (when the SSU2 lane env is absent) or the guarded path (when
+# the exact-pinned i2pd cache provisions the SSU2 endpoint + bind
+# tuple). Literal `record "...passed"` lines remain forbidden so
+# the positive row must flow through `record_guarded`.
+for label in "${PLAN202_TRANSITIONAL[@]}"; do
+  if grep -n -E "^[[:space:]]*record \"${label}\" passed" "${HARNESS}"; then
+    echo "evidence check failed: Plan 202 row '${label}' claims passed literally (must flow through record_guarded)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -E "record_blocked \"${label}\"" "${HARNESS}"; then
+    echo "evidence check failed: Plan 202 row '${label}' has no record_blocked call site" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -E "record_guarded \"${label}\"" "${HARNESS}"; then
+    echo "evidence check failed: Plan 202 row '${label}' has no record_guarded call site" >&2
+    failures=$((failures + 1))
+  fi
+done
 # No other row may use the blocked path (no skipping local rows).
 if grep -n -E '^[[:space:]]*record_blocked "' "${HARNESS}" |
-   grep -v -E 'record_blocked "remote-independent-(http-eepsite|irc-service)"'; then
-  echo "evidence check failed: record_blocked used outside the two remote rows" >&2
+   grep -v -E 'record_blocked "remote-independent-(http-eepsite|irc-service)"|record_blocked "m10-remote-destination-streaming-composition"'; then
+  echo "evidence check failed: record_blocked used outside the remote rows" >&2
   failures=$((failures + 1))
 fi
 
@@ -284,4 +321,65 @@ if [[ "${failures}" -ne 0 ]]; then
   echo "evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "service-tunnel acceptance evidence integrity: ${#GUARDED[@]} rows command-derived, ${#BLOCKED[@]} rows blocked, no literal pass records"
+
+# 12. Plan 202 — positive M10 remote destination/Streaming composition
+# driver exists, is gated as `#[ignore]`, fails closed when the
+# exact-pinned i2pd environment is absent, and never logs peer key
+# material. The driver is the structural foundation for the M10
+# production remote composition path; it executes through the
+# explicit `--ignored --exact` selection in the external lane and
+# advances the typed `RemoteDeliveryCounters` for positive
+# observations (Plan 202 §13).
+if [[ ! -f "${PLAN202_DRIVER}" ]]; then
+  echo "evidence check failed: Plan 202 remote composition driver missing: ${PLAN202_DRIVER}" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F '#[ignore = "Plan 202' "${PLAN202_DRIVER}"; then
+  echo "evidence check failed: Plan 202 driver lost its #[ignore] gate" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'm10_remote_destination_streaming_composition_through_manager' "${PLAN202_DRIVER}"; then
+  echo "evidence check failed: Plan 202 driver lost its Direction A test name" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'RemoteDeliveryCounters' "${PLAN202_DRIVER}"; then
+  echo "evidence check failed: Plan 202 driver lost its typed remote delivery counters" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'install_router_delivery_handle' "${PLAN202_DRIVER}"; then
+  echo "evidence check failed: Plan 202 driver lost its install_router_delivery_handle wiring" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'routing_decision_for' "${PLAN202_DRIVER}"; then
+  echo "evidence check failed: Plan 202 driver lost its routing_decision_for assertions" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'RoutingDecision::RemoteRouter' "${PLAN202_DRIVER}"; then
+  echo "evidence check failed: Plan 202 driver lost its RemoteRouter classification assertion" >&2
+  failures=$((failures + 1))
+fi
+if grep -n -E '(println!|print!|eprintln!)[^;]*(peer_pub_b64|PUB_B64|PUB=)' "${PLAN202_DRIVER}"; then
+  echo "evidence check failed: Plan 202 driver may log peer key material" >&2
+  failures=$((failures + 1))
+fi
+# The manager-level routing-decision / router-delivery seams must
+# also be exercised through the daemon's own unit tests so the
+# structural shape is verified independent of any external peer.
+if ! grep -q -F 'install_router_delivery' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: ServiceTunnelManager lost install_router_delivery" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'routing_decision_for' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: ServiceTunnelManager lost routing_decision_for" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'co_owned_destination_hashes' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: ServiceTunnelManager lost co_owned_destination_hashes" >&2
+  failures=$((failures + 1))
+fi
+
+if [[ "${failures}" -ne 0 ]]; then
+  echo "evidence check failed: ${failures} violation(s)" >&2
+  exit 1
+fi
+echo "service-tunnel acceptance evidence integrity: ${#GUARDED[@]} rows command-derived, ${#BLOCKED[@]} rows blocked, no literal pass records, Plan 202 driver present and gated"

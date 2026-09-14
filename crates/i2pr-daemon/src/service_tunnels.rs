@@ -221,6 +221,15 @@ pub struct ServiceTunnelManager {
     /// Plan 182 per-destination delivery-driver cancellation tokens.
     /// One entry per live driver; removed when the driver exits.
     destination_drivers: Mutex<HashMap<DestinationId, CancellationToken>>,
+    /// Plan 202 M10 remote Destination/Streaming delivery backend.
+    /// `Some` when the daemon-owned router stack is wired into the
+    /// manager; `None` for the default local-only configuration
+    /// (every non-co-owned destination resolves as
+    /// `RemoteUnresolved` and the connect attempt terminates with a
+    /// typed failure rather than silently falling back to the local
+    /// bridge). The capability is shared across every service the
+    /// manager owns; no per-service router/SSU2 stack is created.
+    router_delivery: Mutex<Option<crate::service_delivery::ServiceDestinationDelivery>>,
 }
 
 impl std::fmt::Debug for ServiceTunnelManager {
@@ -265,6 +274,7 @@ impl ServiceTunnelManager {
             outbound_signals: Mutex::new(HashMap::new()),
             delivery_counters: Mutex::new(HashMap::new()),
             destination_drivers: Mutex::new(HashMap::new()),
+            router_delivery: Mutex::new(None),
         })
     }
 
@@ -944,6 +954,99 @@ impl ServiceTunnelManager {
         runtimes.get(service_id).map(|r| r.destination_id)
     }
 
+    /// Plan 202 §5 — installs the shared router-owned remote
+    /// delivery capability. The capability is wired once per
+    /// daemon-wide owner (never per service) so every service the
+    /// manager owns reuses the same `DestinationTunnelCoordinator`,
+    /// exploratory build pool, router delivery service, and
+    /// Streaming adapter. The method is idempotent; the last
+    /// installed capability wins so the daemon can rotate handles
+    /// without restarting the manager. Returns the previous
+    /// capability (if any) so the caller can drain its counters.
+    pub fn install_router_delivery(
+        &self,
+        capability: crate::service_delivery::ServiceDestinationDelivery,
+    ) -> Option<crate::service_delivery::ServiceDestinationDelivery> {
+        let mut guard = self
+            .router_delivery
+            .lock()
+            .expect("router delivery poisoned");
+        guard.replace(capability)
+    }
+
+    /// Plan 202 §5 — drops the router-owned delivery capability.
+    /// After this call every non-co-owned destination resolves as
+    /// `RemoteUnresolved` and the connect attempt terminates with a
+    /// typed failure rather than silently falling back to the local
+    /// bridge. The method is a no-op when no capability was
+    /// installed; it returns the previously installed capability so
+    /// the caller can continue draining counters in its own task.
+    pub fn uninstall_router_delivery(
+        &self,
+    ) -> Option<crate::service_delivery::ServiceDestinationDelivery> {
+        let mut guard = self
+            .router_delivery
+            .lock()
+            .expect("router delivery poisoned");
+        guard.take()
+    }
+
+    /// Returns `true` when a router-owned remote delivery capability
+    /// is currently installed. Used by the resolve path (Plan 202
+    /// §6) and the external test driver.
+    pub fn has_router_delivery(&self) -> bool {
+        self.router_delivery
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Returns a clone of the currently installed delivery
+    /// capability, if any. Callers that need to consume counters
+    /// or pending resolution state must hold the returned
+    /// `Arc<…>`-shared handle for the duration of their work; the
+    /// manager never replaces the capability without going through
+    /// [`Self::install_router_delivery`], so a stable clone sees a
+    /// consistent counter sequence.
+    pub fn router_delivery(&self) -> Option<crate::service_delivery::ServiceDestinationDelivery> {
+        self.router_delivery
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    /// Plan 202 §10 — classifies the supplied destination hash
+    /// against the manager's authoritative runtime. The function
+    /// is intentionally pure and synchronous: it never reads the
+    /// remote router backend, never reaches into the coordinator,
+    /// and never retains the hash beyond the return. External
+    /// drivers consume the decision through the public API.
+    pub fn routing_decision_for(
+        &self,
+        hash: &[u8; 32],
+    ) -> crate::service_delivery::RoutingDecision {
+        let co_owned = self.co_owned_destination_hashes();
+        let has_router = self.has_router_delivery();
+        crate::service_delivery::classify_destination(hash, &co_owned, has_router)
+    }
+
+    /// Returns the set of destination hashes co-owned by the
+    /// manager's currently committed services. The set is computed
+    /// from the runtime handles (one entry per service spec) and
+    /// is bounded by the configured per-generation service count;
+    /// the caller may use the result to drive a routing decision
+    /// without holding the runtime mutex.
+    pub fn co_owned_destination_hashes(&self) -> Vec<[u8; 32]> {
+        let runtimes = match self.runtimes.lock() {
+            Ok(guard) => guard,
+            Err(_) => return Vec::new(),
+        };
+        runtimes
+            .values()
+            .map(|runtime| *runtime.destination_id.as_hash().as_bytes())
+            .collect()
+    }
+
     /// Returns the active per-service connection count for one service.
     pub fn active_connections(&self, service_id: &str) -> usize {
         self.runtimes
@@ -1533,6 +1636,56 @@ impl ServiceTunnelManager {
             .as_ref()
             .ok_or(DestinationFailure::Missing)?;
         self.resolve_reference(reference)
+    }
+
+    /// Plan 202 §6/§10 — resolves the supplied client tunnel spec
+    /// and returns the [`crate::service_delivery::RoutingDecision`]
+    /// alongside the [`ClientTarget`] when a target was found. The
+    /// decision captures the routing dispatch (`LocalCoOwned`,
+    /// `RemoteRouter`, or `RemoteUnresolved`) so callers and tests
+    /// can assert the path the manager would take without forcing a
+    /// `Result<ClientTarget, DestinationFailure>` probe.
+    pub fn resolve_client_destination_with_decision(
+        &self,
+        spec: &i2pr_service_tunnels::ServiceTunnelSpec,
+    ) -> (
+        Result<ClientTarget, DestinationFailure>,
+        crate::service_delivery::RoutingDecision,
+    ) {
+        let reference = match spec.destination.as_ref() {
+            Some(reference) => reference,
+            None => {
+                return (
+                    Err(DestinationFailure::Missing),
+                    crate::service_delivery::RoutingDecision::RemoteUnresolved,
+                );
+            }
+        };
+        match self.resolve_reference(reference) {
+            Ok(target) => {
+                let decision = self.routing_decision_for(&target.remote.destination_hash);
+                (Ok(target), decision)
+            }
+            Err(error) => {
+                let hash_opt = match reference {
+                    DestinationRef::Base32Hash { hash, .. } => Some(*hash),
+                    DestinationRef::ConfiguredDestination(material) => {
+                        i2pr_api::sam::base64::decode(material, 4096)
+                            .ok()
+                            .and_then(|bytes| Destination::decode(&bytes, 4096).ok())
+                            .and_then(|destination| {
+                                destination.hash().ok().map(|hash| *hash.as_bytes())
+                            })
+                    }
+                    DestinationRef::StaticAlias(_) => None,
+                };
+                let decision = match hash_opt {
+                    Some(hash) => self.routing_decision_for(&hash),
+                    None => crate::service_delivery::RoutingDecision::RemoteUnresolved,
+                };
+                (Err(error), decision)
+            }
+        }
     }
 
     pub fn resolve_reference(
@@ -2578,6 +2731,26 @@ impl StreamPumpEndpoint for ServicePumpEndpoint {
     }
 }
 
+/// Plan 202 §5 — installs a shared router-owned delivery
+/// capability into the supplied manager. The function is the
+/// single entry point the daemon's composition root uses to wire
+/// the router stack (Plan 184–193) into a normal
+/// `ServiceTunnelManager` so its services can route non-local
+/// destinations through the existing tunnel/NetDB/Streaming
+/// machinery.
+///
+/// The helper exists as a free function (rather than a method on
+/// `ServiceTunnelManager`) so external test drivers can install
+/// the capability without owning a `&Arc<ServiceTunnelManager>`
+/// graph; the typed install path remains
+/// [`ServiceTunnelManager::install_router_delivery`].
+pub fn install_router_delivery_handle(
+    manager: &Arc<ServiceTunnelManager>,
+    capability: crate::service_delivery::ServiceDestinationDelivery,
+) -> Option<crate::service_delivery::ServiceDestinationDelivery> {
+    manager.install_router_delivery(capability)
+}
+
 /// Registers the service tunnel manager as a supervised service.
 pub fn register_service_tunnel_manager(
     builder: &mut i2pr_runtime::ServiceGraphBuilder,
@@ -2650,4 +2823,240 @@ pub fn register_service_tunnel_manager(
             ))
         })?;
     Ok(manager_arc)
+}
+
+#[cfg(test)]
+mod plan202_routing_tests {
+    use super::*;
+    use i2pr_service_tunnels::{
+        DestinationPolicy, DestinationRef, LocalListenerSpec, ServerTarget, ServiceTimeouts,
+        ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec, StaticAliasTable,
+    };
+
+    fn temp_data_dir(name: &str) -> tempfile::TempDir {
+        let directory = tempfile::Builder::new()
+            .prefix(name)
+            .tempdir()
+            .expect("tempdir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("set tempdir permissions");
+        }
+        directory
+    }
+
+    fn peer_hash(byte: u8) -> [u8; 32] {
+        let mut out = [0_u8; 32];
+        for (index, item) in out.iter_mut().enumerate() {
+            *item = byte.wrapping_add(index as u8);
+        }
+        out
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn routing_decision_starts_as_remote_unresolved() {
+        let directory = temp_data_dir("plan202-routing");
+        let manager = ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+            data_dir: directory.path().to_path_buf(),
+            aggregate_connection_ceiling: 4,
+            per_service_connection_ceiling: 2,
+            specs: Arc::new(ServiceTunnelSet {
+                tunnels: Vec::new(),
+            }),
+            aliases: Arc::new(StaticAliasTable::new()),
+        })
+        .expect("manager builds");
+        // Without a router backend, every non-co-owned destination
+        // must resolve as `RemoteUnresolved` (Plan 202 §10). The
+        // test fails closed if the manager silently routes through
+        // the local bridge or returns an untyped error.
+        let decision = manager.routing_decision_for(&peer_hash(0xAA));
+        assert_eq!(
+            decision,
+            crate::service_delivery::RoutingDecision::RemoteUnresolved
+        );
+        assert!(!manager.has_router_delivery());
+        assert!(manager.uninstall_router_delivery().is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn routing_decision_switches_to_remote_router() {
+        let directory = temp_data_dir("plan202-routing-installed");
+        let manager = ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+            data_dir: directory.path().to_path_buf(),
+            aggregate_connection_ceiling: 4,
+            per_service_connection_ceiling: 2,
+            specs: Arc::new(ServiceTunnelSet {
+                tunnels: Vec::new(),
+            }),
+            aliases: Arc::new(StaticAliasTable::new()),
+        })
+        .expect("manager builds");
+        let capability = crate::service_delivery::ServiceDestinationDelivery::new();
+        let previous = manager.install_router_delivery(capability);
+        assert!(previous.is_none(), "first install replaces nothing");
+        assert!(manager.has_router_delivery());
+
+        // The non-co-owned destination now classifies as `RemoteRouter`.
+        // Plan 202 §10: `unknown_peer` must no longer be the expected
+        // success condition for a valid reachable independent destination.
+        let decision = manager.routing_decision_for(&peer_hash(0xAA));
+        assert_eq!(
+            decision,
+            crate::service_delivery::RoutingDecision::RemoteRouter
+        );
+
+        // Uninstall returns the previously installed capability and
+        // restores the resolved outcome.
+        let previous = manager
+            .uninstall_router_delivery()
+            .expect("previously installed capability");
+        assert!(!manager.has_router_delivery());
+        let decision_after = manager.routing_decision_for(&peer_hash(0xAA));
+        assert_eq!(
+            decision_after,
+            crate::service_delivery::RoutingDecision::RemoteUnresolved
+        );
+        drop(previous);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_client_destination_with_decision_reports_remote_unresolved() {
+        let directory = temp_data_dir("plan202-resolve");
+        let manager = ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+            data_dir: directory.path().to_path_buf(),
+            aggregate_connection_ceiling: 4,
+            per_service_connection_ceiling: 2,
+            specs: Arc::new(ServiceTunnelSet {
+                tunnels: Vec::new(),
+            }),
+            aliases: Arc::new(StaticAliasTable::new()),
+        })
+        .expect("manager builds");
+        let spec = ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("plan202-test").expect("id"),
+            kind: ServiceTunnelKind::GenericClient,
+            enabled: true,
+            listener: Some(LocalListenerSpec::parse_socket("127.0.0.1:0").expect("listener")),
+            target: None,
+            targets: Vec::new(),
+            destination: Some(
+                DestinationRef::parse(&format!("{}{}.b32.i2p", "a".repeat(52), ""))
+                    .expect("destination"),
+            ),
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 2,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+        };
+        let (target_result, decision) = manager.resolve_client_destination_with_decision(&spec);
+        assert!(
+            target_result.is_err(),
+            "unresolvable base32 destination must fail"
+        );
+        assert_eq!(
+            decision,
+            crate::service_delivery::RoutingDecision::RemoteUnresolved,
+            "default manager without router backend resolves unknown destinations as RemoteUnresolved"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_client_destination_with_decision_switches_after_install() {
+        let directory = temp_data_dir("plan202-resolve-installed");
+        let manager = ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+            data_dir: directory.path().to_path_buf(),
+            aggregate_connection_ceiling: 4,
+            per_service_connection_ceiling: 2,
+            specs: Arc::new(ServiceTunnelSet {
+                tunnels: Vec::new(),
+            }),
+            aliases: Arc::new(StaticAliasTable::new()),
+        })
+        .expect("manager builds");
+        let capability = crate::service_delivery::ServiceDestinationDelivery::new();
+        manager.install_router_delivery(capability);
+        let spec = ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("plan202-test").expect("id"),
+            kind: ServiceTunnelKind::GenericClient,
+            enabled: true,
+            listener: Some(LocalListenerSpec::parse_socket("127.0.0.1:0").expect("listener")),
+            target: None,
+            targets: Vec::new(),
+            destination: Some(
+                DestinationRef::parse(&format!("{}{}.b32.i2p", "a".repeat(52), ""))
+                    .expect("destination"),
+            ),
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 2,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+        };
+        let (target_result, decision) = manager.resolve_client_destination_with_decision(&spec);
+        assert!(target_result.is_err(), "destination decode still fails");
+        assert_eq!(
+            decision,
+            crate::service_delivery::RoutingDecision::RemoteRouter,
+            "with the router backend installed, an unknown destination is classified as RemoteRouter"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn co_owned_hashes_track_committed_services() {
+        let directory = temp_data_dir("plan202-co-owned");
+        let target_socket: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let specs = vec![ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("plan202-server").expect("id"),
+            kind: ServiceTunnelKind::GenericServer,
+            enabled: true,
+            listener: None,
+            target: Some(ServerTarget::LoopbackTcp(target_socket)),
+            targets: Vec::new(),
+            destination: None,
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 2,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+        }];
+        let manager = Arc::new(
+            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                data_dir: directory.path().to_path_buf(),
+                aggregate_connection_ceiling: 4,
+                per_service_connection_ceiling: 2,
+                specs: Arc::new(ServiceTunnelSet { tunnels: specs }),
+                aliases: Arc::new(StaticAliasTable::new()),
+            })
+            .expect("manager builds"),
+        );
+        // Before `prepare`, the manager owns no committed runtimes,
+        // so the co-owned hash set must be empty (Plan 202 §10:
+        // nothing is co-owned until the manager commits a runtime).
+        assert!(manager.co_owned_destination_hashes().is_empty());
+
+        let _runtimes = manager.prepare().await.expect("prepare");
+        let hashes = manager.co_owned_destination_hashes();
+        assert_eq!(
+            hashes.len(),
+            1,
+            "one prepared server runtime owns exactly one destination hash"
+        );
+        let prepared_hash = hashes[0];
+        let decision = manager.routing_decision_for(&prepared_hash);
+        assert_eq!(
+            decision,
+            crate::service_delivery::RoutingDecision::LocalCoOwned,
+            "the prepared server destination is co-owned and must route through the local bridge"
+        );
+    }
 }

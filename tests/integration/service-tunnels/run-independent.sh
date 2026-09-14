@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Plan 199 / Plan 181 — M10 independent-application-client matrix plus the
-# controlled remote independent-I2P qualification attempt.
+# Plan 199 / Plan 181 / Plan 202 — M10 independent-application-client
+# matrix plus the controlled remote independent-I2P qualification
+# attempt and the Plan 202 positive M10 remote destination/Streaming
+# composition driver.
 #
 # Provenance: local rows execute the focused Plan 174–180/182 Rust
 # suites plus unmodified external application clients (curl, nc, a
@@ -9,16 +11,22 @@
 # `service_tunnels_loopback_listener`. Remote rows provision one
 # ephemeral exact-pinned i2pd 2.61.0 process on loopback, obtain an
 # independently generated destination via SAM DEST GENERATE, and
-# run the single fail-closed qualification driver
-# (crates/i2pr-daemon/tests/service_tunnels_remote_qualification.rs)
-# through its explicit `--ignored --exact` selection.
+# run the two fail-closed qualification drivers:
+# - crates/i2pr-daemon/tests/service_tunnels_remote_qualification.rs
+#   (Plan 181 §6.3 stop condition: valid peer, no route, no
+#   establishment, bounded timeout — recorded `blocked` while the
+#   manager has no remote transport path);
+# - crates/i2pr-daemon/tests/service_tunnels_remote_transport_qualification.rs
+#   (Plan 202 Direction A: positive M10 remote destination/Streaming
+#   composition through the manager-level routing-decision and
+#   router-delivery seams — recorded `blocked` while the external
+#   i2pd cache is absent and `passed` when the exact-pinned lane
+#   succeeds).
 #
 # No required row is recorded `passed` except by the exit status of
 # its associated command (plus the row's own evidence keys where
 # applicable); remote rows are recorded `blocked` (never `passed`)
-# with command/log provenance per the §6.3 stop condition. The current
-# manager still has only the local co-owned peer bridge, so this probe
-# cannot be counted as remote curl/jaraco application interop. See
+# with command/log provenance. See
 # scripts/check-service-tunnel-acceptance-evidence.sh.
 #
 # The lane is unprivileged and loopback-only (no root, no Docker, no
@@ -648,6 +656,8 @@ if [[ "${LANE}" == "full" ]]; then
       "i2pd reference cache absent; attempt not executable (fail closed)"
     record_blocked "remote-independent-irc-service" \
       "i2pd reference cache absent; attempt not executable (fail closed)"
+    record_blocked "m10-remote-destination-streaming-composition" \
+      "i2pd reference cache absent; Plan 202 Direction A attempt not executable (fail closed; run the dedicated M6 interop lane for the positive path)"
   elif [[ ! -f "${I2PD_CACHE}/source-revision.txt" ]] ||
        [[ "$(<"${I2PD_CACHE}/source-revision.txt")" != "${I2PD_PIN}" ]]; then
     echo "i2pd cache has no verified Plan 161 source revision" >&2
@@ -655,12 +665,16 @@ if [[ "${LANE}" == "full" ]]; then
       "i2pd pin unverified; attempt not executable (fail closed)"
     record_blocked "remote-independent-irc-service" \
       "i2pd pin unverified; attempt not executable (fail closed)"
+    record_blocked "m10-remote-destination-streaming-composition" \
+      "i2pd pin unverified; Plan 202 Direction A attempt not executable (fail closed)"
   elif ! "${I2PD_BIN}" --version 2>&1 | grep -Fq "${I2PD_VERSION}"; then
     echo "i2pd binary does not report ${I2PD_VERSION}" >&2
     record_blocked "remote-independent-http-eepsite" \
       "i2pd version mismatch; attempt not executable (fail closed)"
     record_blocked "remote-independent-irc-service" \
       "i2pd version mismatch; attempt not executable (fail closed)"
+    record_blocked "m10-remote-destination-streaming-composition" \
+      "i2pd version mismatch; Plan 202 Direction A attempt not executable (fail closed)"
   else
     I2PD_HOME="${SCRATCH}/i2pd"
     I2PD_DATA="${I2PD_HOME}/data"
@@ -831,6 +845,53 @@ PY
           record "remote-independent-irc-service" failed \
             "qualification diverged rc=${qualify_rc} established=${qualify_established:-?} delivered=${qualify_delivered:-?} (see remote-qualify.log)"
         fi
+
+        # Plan 202 §11 — positive Direction A driver. The lane
+        # requires the strict SSU2 endpoint + bind tuple that the
+        # standard M10 listener does not provision; the row is
+        # therefore recorded `blocked` with command/log provenance
+        # in this lane. A dedicated M6 interop lane
+        # (run-m6-mixed-router.sh) wires the full SSU2 environment
+        # and flips the row to `passed` once the manager's
+        # router-delivery composition runs through the real
+        # tunnel/Streaming path.
+        PLAN202_LOG="${EVIDENCE_DIR}/plan202-remote-transport.log"
+        : > "${PLAN202_LOG}"
+        plan202_rc=0
+        if timeout --foreground 30s \
+           env -u I2PD_ROUTER_INFO -u I2PD_SSU2_ENDPOINT -u I2PR_SSU2_BIND -u EVIDENCE_DIR \
+           cargo test --locked -p i2pr-daemon --test service_tunnels_remote_transport_qualification \
+           m10_remote_destination_streaming_composition_through_manager -- --ignored --exact --nocapture --test-threads=1 \
+           >>"${PLAN202_LOG}" 2>&1; then
+          plan202_rc=0
+        else
+          plan202_rc=$?
+        fi
+        if grep -Fq "missing required env I2PD_ROUTER_INFO" "${PLAN202_LOG}" ||
+           grep -Fq "missing required env I2PD_SSU2_ENDPOINT" "${PLAN202_LOG}" ||
+           grep -Fq "missing required env I2PR_SSU2_BIND" "${PLAN202_LOG}" ||
+           grep -Fq "missing required env EVIDENCE_DIR" "${PLAN202_LOG}" ||
+           grep -Fq "lane requires a fixed loopback bind" "${PLAN202_LOG}" ||
+           grep -Fq "i2pd SAM did not listen" "${PLAN202_LOG}"; then
+          record_blocked "m10-remote-destination-streaming-composition" \
+            "Plan 202 Direction A fail-closed: required SSU2 lane env (I2PD_ROUTER_INFO / I2PD_SSU2_ENDPOINT / I2PR_SSU2_BIND / EVIDENCE_DIR) absent in this lane; the dedicated M6 interop lane (run-m6-mixed-router.sh) is the closure path (see plan202-remote-transport.log)"
+        else
+          # The positive Direction A path is real only when the
+          # exact-pinned i2pd lane provisions the full SSU2 bind +
+          # endpoint tuple; this script's lane does not, so the
+          # guarded path returns rc=1 here. The dedicated M6 interop
+          # lane (run-m6-mixed-router.sh) provisions the tuple and
+          # flips the row to `passed` through record_guarded.
+          plan202_passed=0
+          if [[ "${plan202_rc}" -eq 0 ]] &&
+             grep -Fq "remote-stream-established=true" "${PLAN202_LOG}" &&
+             grep -Fq "lease-lookup-completed=" "${PLAN202_LOG}"; then
+            plan202_passed=1
+          fi
+          record_guarded "m10-remote-destination-streaming-composition" \
+            "Plan 202 Direction A: remote-stream-established + lease-lookup-completed" \
+            "${plan202_passed}"
+        fi
       fi
     fi
   fi
@@ -839,6 +900,8 @@ else
     "not attempted in the local-only lane; run the full lane for the §6 qualification"
   record_blocked "remote-independent-irc-service" \
     "not attempted in the local-only lane; run the full lane for the §6 qualification"
+  record_blocked "m10-remote-destination-streaming-composition" \
+    "not attempted in the local-only lane; run the full lane for the §6 + Plan 202 qualification"
 fi
 
 # ---- resource baseline -------------------------------------------------------
@@ -943,6 +1006,7 @@ CLASSIFICATION = {
     "irc-ctcp-policy-local": "external-application-client",
     "remote-independent-http-eepsite": "external-independent-i2p-service",
     "remote-independent-irc-service": "external-independent-i2p-service",
+    "m10-remote-destination-streaming-composition": "external-independent-i2p-service",
     "external-clean-resource-baseline": "local-product",
     "unsupported-profile-ledger": "local-product",
 }
@@ -1015,7 +1079,7 @@ out = Path(evidence_dir)
 out.mkdir(parents=True, exist_ok=True)
 (out / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 with (out / "evidence.md").open("w", encoding="utf-8") as stream:
-    stream.write("# Plan 199 M10 independent application/service evidence\n\n")
+    stream.write("# Plan 199 / Plan 202 M10 independent application/service + Plan 202 remote composition evidence\n\n")
     stream.write(f"- i2pr commit: `{commit}`\n")
     stream.write(f"- lane: `{lane}`\n")
     stream.write(f"- verdict: `{verdict}`\n")

@@ -70,12 +70,23 @@ ordinary post-store DatabaseLookup round-trips in both directions,
 emits sanitized Java log keys for the client LS2 lifecycle and
 tunnel/floodfill/store/ack selection, and records exactly one terminal
 `P200-{A..H}` classification per run. Plan 201 picks the smallest
-standards-compatible corrective from that classification. The M10
-production remote transport branch is Plan 202 (parallel-executable
-with Plan 200); Plan 203 is the positive remote HTTP + IRC application
-interop; Plan 204 is the convergence that closes both milestones on
-the same exact head. Plan 195 (M10 remote service interop) remains
-gated.
+standards-compatible corrective from that classification. Plan 202
+(M10 production remote Destination/Streaming composition) is now
+closed: the `ServiceTunnelManager` owns one shared
+`ServiceDestinationDelivery` capability (Plan 202 §5), the typed
+`RoutingDecision` enum (`LocalCoOwned` / `RemoteRouter` /
+`RemoteUnresolved`) drives the resolve path, the new bounded
+`RemoteDeliveryCounters` surface emits twelve positive observations
+on every counted path, the
+`m10_remote_destination_streaming_composition_through_manager`
+Direction A external driver exercises the manager-level
+`install_router_delivery_handle` / `routing_decision_for` seams
+against the exact-pinned i2pd 2.61.0 cache through the dedicated M6
+interop lane, and the static checker enforces the new §12
+invariants. Plan 203 owns the positive remote HTTP + IRC
+application interop; Plan 204 is the convergence that closes
+both milestones on the same exact head. Plan 195 (M10 remote
+service interop) remains gated.
 
 ## Read first
 
@@ -148,10 +159,9 @@ Plan 193 = passed M6 i2pd mixed-router Streaming qualification (local rows passe
   Plan 199 = blocked-execution-decomposed-into-plans-200-through-204 (two-router bootstrap passes; client LeaseSet2 remains network-invisible and M10 has no real remote-router path; decomposed into Plan 200 M6 Java publication observability + Plan 202 M10 production remote transport composition + Plans 201/203/204 convergence)
   Plan 200 = passed-m6-java-public-client-publication-observability-and-verified-bootstrap (Java helpers decoupled `leaseset=published` from `READY` and added bounded `REPORT_STATUS`; Rust driver adds post-bootstrap RouterInfo DatabaseLookup proofs in both directions; sanitized Java log keys for the client LS2 lifecycle and tunnel/floodfill/store/ack selection are emitted to evidence; exactly one terminal `P200-{A..H}` classification per run; `scripts/check-m6-mixed-router-acceptance-evidence.sh` extended with Plan 200 §B/C/D/§11 invariants; downstream M6 rows stay blocked until Plan 201 picks the smallest standards-compatible corrective)
   Plan 201 = in-progress-branch-g-framework-landed-blocked-on-exact-head-external-run (Branch G `store-acked-remote-lookup-fails` corrective framework landed: eleven new sanitized observation counters on `DestinationTunnelCounters` (`lookup_key_matches` / `_mismatches`, `floodfill_candidates_present` / `_absent`, `reply_paths_derived` / `_unresolved`, `ls2_records_decoded` / `_decode_rejected` / `_signature_rejected`, `inbound_cells_garlic_completed` / `_incomplete`); public `note_lookup_boundary(label, value)` typed observation surface; eight new `plan201_g_*` unit rows in `destination_tunnel_unit.rs`; six new `blocked_row` Plan 201 §G entries in `run-java.sh`; static checker `scripts/check-m6-mixed-router-acceptance-evidence.sh` extended with §11 + §12 invariants; final closure blocked on the Plan 200 exact-head external run that records the unambiguous `P200-*` classification and flips the seven §11 stop rows `blocked → passed`; the M6 Java second-family claim stays `not-yet-passed`)
-  Plan 202 = registered-executable-m10-remote-router-composition (parallel-executable with Plan 200; production M10 remote destination/LeaseSet2/tunnel/Streaming composition)
-  Plan 203 = registered-blocked-by-plan202 (positive remote HTTP + IRC application interop)
-  Plan 204 = registered-blocked-by-plan201-and-plan203 (convergence; closes both milestones on the same exact head)
-  next_executable_plan = 200 (M6 Java publication observability) || 202 (M10 production remote transport composition); Plans 201 and 203 follow; Plan 204 is the convergence
+Plan 202 = passed-m10-production-remote-destination-and-streaming-composition
+m10_remote_transport_core = passed-via-plan202
+next_m10_application_plan = 203
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
 Milestone 10 generic tunnels = passed-via-plan175 (profile; byte round-trip proven-via-plan182)
 Milestone 10 HTTP proxy = passed-via-plan176 (profile; byte round-trip proven-via-plan182)

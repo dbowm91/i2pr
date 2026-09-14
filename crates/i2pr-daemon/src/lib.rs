@@ -20,6 +20,7 @@ pub mod netdb_tunnels;
 pub mod outbound_lookup;
 pub mod router_i2np;
 pub mod sam;
+pub mod service_delivery;
 pub mod service_generation;
 pub mod service_tunnels;
 pub mod service_tunnels_http;
