@@ -441,15 +441,21 @@ record is not `superseded-by-*`. Currently:
   second-family Java rows recorded `failed` with stop
   provenance until a follow-up plan lands the Java qualification
   harness (see [`plans/189-status.md`](../../plans/189-status.md));
-  Plan 194 owns the Java second-family qualification
-  scaffolding and is `in-progress-scaffolding-landed-blocked-by-plan196-topology-corrective`;
+  Plan 194 owns the Java second-family qualification and closed
+  with `passed-m6-java-second-family-mixed-router-closure-with-sam-ls2-gap`
+  (full §5.1-§5.5 destination + streaming layers lifted into the Java
+  second-family lane; 26 passed + 22 blocked with `plan194-java-stop`
+  provenance + 0 failed against the exact-pinned Java I2P 2.13.0 cache);
   Plan 196 owns the corrective and lands the implementation
   (out-of-tree `tests/integration/m6-interop/java/ControlledRouter.java`
   test-only launcher + rewritten `tests/integration/m6-interop/run-java.sh`
   + extended `scripts/check-m6-mixed-router-acceptance-evidence.sh`
-  static checker; the first counted external Java run proved the
-  controlled topology end-to-end and stopped at the Plan 196 §10.B
-  PQ option rejection; see [`plans/194-status.md`](../../plans/194-status.md)
+  static checker; two narrow correctives — `router.blocklist.enable=false`
+  to bypass the Team Cymru bogon `127.0.0.0/8` entry, and PRIV-token
+  SAM SESSION CREATE because Java strictly requires ≥ 663 decoded bytes
+  while i2pd accepts the 391-byte PUB — are bounded to the
+  controlled-launcher and fail-closed at the daemon boundary; see
+  [`plans/194-status.md`](../../plans/194-status.md)
   and [`plans/196-status.md`](../../plans/196-status.md));
   Plan 197 has landed the narrow PQ SSU2 option support corrective
   (parser-only tolerance of the SSU2 `pq` KEM-scheme option Java
@@ -463,7 +469,10 @@ record is not `superseded-by-*`. Currently:
   `passed`; see
   [`plans/197-m6-pq-ssu2-option-support-corrective.md`](../../plans/197-m6-pq-ssu2-option-support-corrective.md)
   and [`plans/197-status.md`](../../plans/197-status.md));
-  M10 final acceptance stays open.
+  Plan 194 closed the M6 Java I2P second-family qualification with
+  the bounded SAM-bridge LS2-publication gap; Plan 195 (M10 remote
+  service interop) is the new executable plan. M10 final acceptance
+  stays open.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).

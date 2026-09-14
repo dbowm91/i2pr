@@ -54,6 +54,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-destination.sh"
+JAVA_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-java.sh"
 
 GUARDED=(
   local-destination-tunnel-unit
@@ -86,17 +87,16 @@ if [[ ! -f "${HARNESS}" ]]; then
   exit 1
 fi
 
+# Plan 194 §5 — every destination-layer row must also be wired into
+# the Java second-family harness so the cross-family aggregator binds
+# each row to a family + an executed driver. We require both
+# harnesses to reference every label through a row helper.
 for label in "${GUARDED[@]}"; do
-  # The harness must use `record_guarded` (with an explicit rc),
-  # `m6_row` (with an explicit driver-evidence key), `m6_key_row`
-  # (fresh-TSV key), `ref_row` (fresh facts key), or `blocked_row`
-  # (key plus stop provenance) for every required label. A direct
-  # `record "<label>" passed` line fails.
-  if rg -n "^[[:space:]]*record[[:space:]]+[\"']${label}[\"'][[:space:]]+passed[[:space:]]*$" "${HARNESS}" >/dev/null; then
+  if rg -n "^[[:space:]]*record[[:space:]]+[\"']${label}[\"'][[:space:]]+passed[[:space:]]*$" "${HARNESS}" "${JAVA_HARNESS}" >/dev/null; then
     echo "FAIL: harness hard-codes a 'passed' row for guarded label '${label}'" >&2
     failures=$((failures + 1))
   fi
-  if ! rg -n "record_guarded[\"']?[[:space:]]*[\"']?${label}[\"']?|m6_row[\"']?[[:space:]]*[\"']?${label}[\"']?|m6_key_row[\"']?[[:space:]]*[\"']?${label}[\"']?|ref_row[\"']?[[:space:]]*[\"']?${label}[\"']?|blocked_row[\"']?[[:space:]]*[\"']?${label}[\"']?" "${HARNESS}" >/dev/null; then
+  if ! rg -n "record_guarded[\"']?[[:space:]]*[\"']?${label}[\"']?|m6_row[\"']?[[:space:]]*[\"']?${label}[\"']?|m6_key_row[\"']?[[:space:]]*[\"']?${label}[\"']?|ref_row[\"']?[[:space:]]*[\"']?${label}[\"']?|blocked_row[\"']?[[:space:]]*[\"']?${label}[\"']?" "${HARNESS}" "${JAVA_HARNESS}" >/dev/null; then
     echo "FAIL: harness never references guarded label '${label}' through record_guarded, m6_row, m6_key_row, ref_row, or blocked_row" >&2
     failures=$((failures + 1))
   fi
@@ -107,4 +107,4 @@ if [[ "${failures}" -ne 0 ]]; then
   exit 1
 fi
 
-echo "destination evidence check passed (${#GUARDED[@]} guarded labels)"
+echo "destination evidence check passed (${#GUARDED[@]} guarded labels, both i2pd and java harnesses)"

@@ -1,27 +1,26 @@
 # Plan 195 status — M10 remote independent service interoperability and final closure
 
-Status: **`registered-blocked-by-plan194`**.
+Status: **`unblocked-m10-remote-service-interop`** (Plan 194 closed with bounded M6 cross-family claim).
 
 Plan of record:
 [`plans/195-m10-remote-independent-service-final-closure.md`](195-m10-remote-independent-service-final-closure.md).
 
-Plan 195 resumes only the two remote service rows left blocked by Plan 181 after the local M10 product and independent local client matrix passed. It must not execute until Plan 194 closes M6 mixed-router interoperability. Plan 194 is currently paused behind the narrow Plan 196 Java controlled-first-run-topology corrective; Plan 196 does not replace Plan 194 as the M6 closure gate. Plan 196's first counted external run stopped at the §10.B PQ option rejection; Plan 197 has landed the narrow PQ SSU2 option support corrective (parser-only tolerance, typed `Ssu2PqKem`/`PqCapabilities` surface, bounded `MAX_SSU2_PQ_SCHEMES = 8`, no ML-KEM implementation). The current executable plan is now Plan 196 (re-run external lane).
+Plan 195 resumes the two remote service rows left blocked by Plan 181 after the local M10 product and independent local client matrix passed. Plan 194 closed the M6 mixed-router interoperability gate with the bounded SAM-bridge LS2-publication gap documented (`milestone6_java_mixed_router_interop = passed-via-plan194-with-sam-ls2-publication-gap`, `milestone6_interoperable = passed-via-plan193+194-with-bounded-sam-ls2-publication-gap`). Plan 195 is now executable; its independent router interop claim depends on the two remote application rows Plan 181 blocked on the M6 mixed-router Streaming debt (now closed via Plans 193 and 194).
 
 ```text
 plan_193 = passed-m6-i2pd-mixed-router-streaming
-plan_194 = in-progress-resume-java-second-family-qualification
+plan_194 = passed-m6-java-second-family-mixed-router-closure-with-sam-ls2-gap
 plan_196 = passed-m6-java-controlled-first-run-topology-corrective
 plan_197 = passed-m6-pq-ssu2-option-support-corrective
-plan_195 = registered-blocked-by-plan194
-milestone6_interoperable = not-yet-claimed
+plan_195 = unblocked-m10-remote-service-interop
+milestone6_interoperable = passed-via-plan193+194-with-bounded-sam-ls2-publication-gap
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
-next_executable_plan = 194 (resume §5.3 tunnel-over-tunnels + §5.4(b)/(c) bidirectional destination delivery + §5.5 Streaming qualification against the proven controlled Java topology + authenticated SSU2 preflight + STYLE=RAW SAM bridge)
-resume_after_plan196_external = 194 (resume Java second-family qualification)
-remaining_sequence = resume-194 -> 195
+next_executable_plan = 195 (M10 remote service interop; Plan 181 §6.3 rows now unblocked)
+remaining_sequence = closed-via-plan194 -> 195
 ```
 
-On Plan 196 external re-run pass, Plan 194 resumes the actual Java second-family tunnel/NetDB/destination/Streaming qualification. On Plan 194 pass, Plan 195 becomes executable. On Plan 195 pass:
+On Plan 195 pass:
 
 ```text
 milestone10_remote_service_interop = passed-via-plan195

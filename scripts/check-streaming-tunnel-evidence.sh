@@ -17,6 +17,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LANE_SCRIPT="${REPO_ROOT}/tests/integration/m6-interop/run-streaming.sh"
+JAVA_LANE_SCRIPT="${REPO_ROOT}/tests/integration/m6-interop/run-java.sh"
 MIXED_ROUTER_SCRIPT="${REPO_ROOT}/tests/integration/m6-interop/run-m6-mixed-router.sh"
 MIXED_ROUTER_CHECKER="${REPO_ROOT}/scripts/check-m6-mixed-router-acceptance-evidence.sh"
 
@@ -57,11 +58,11 @@ GUARDED_LABELS=(
   workspace-gates
 )
 
-# Verify each guarded label is referenced from the lane script
-# through one of the four recording helpers (record/record_guarded
-# /m6_row/m6_key_row/ref_row/blocked_row). `record` and
-# `record_guarded` are accepted for non-row kinds (workspace-gates
-# uses `record_guarded`).
+# Verify each guarded label is referenced from the i2pd lane script
+# (run-streaming.sh) and the Java lane script (run-java.sh) through
+# one of the recording helpers. Plan 194 lifted the streaming layer
+# into the Java second-family lane; both harnesses must wire the
+# same set of guarded labels.
 declare -A HELPER_USAGE=()
 for label in "${GUARDED_LABELS[@]}"; do
   HELPER_USAGE["${label}"]=0
@@ -82,8 +83,29 @@ scan_helper() {
   done < "${script}"
 }
 
+# Plan 194: streaming-layer rows must be referenced from BOTH
+# run-streaming.sh (i2pd) AND run-java.sh (Java) — the cross-family
+# aggregator binds each row to a family via the per-lane helper.
 for helper in m6_row m6_key_row ref_row blocked_row record_guarded; do
   scan_helper "${helper}" "${LANE_SCRIPT}"
+done
+declare -A JAVA_HELPER_USAGE=()
+for label in "${GUARDED_LABELS[@]}"; do
+  JAVA_HELPER_USAGE["${label}"]=0
+done
+scan_java() {
+  local helper="$1"
+  local script="$2"
+  while IFS= read -r line; do
+    for label in "${GUARDED_LABELS[@]}"; do
+      if [[ "${line}" == *"${helper} \"${label}\""* ]]; then
+        JAVA_HELPER_USAGE["${label}"]=$((JAVA_HELPER_USAGE["${label}"] + 1))
+      fi
+    done
+  done < "${script}"
+}
+for helper in m6_row m6_key_row ref_row blocked_row record_guarded; do
+  scan_java "${helper}" "${JAVA_LANE_SCRIPT}"
 done
 
 missing=0
@@ -98,8 +120,19 @@ for label in "${GUARDED_LABELS[@]}"; do
     duplicate=$((duplicate + 1))
   fi
 done
+# Plan 194: every streaming-layer label must also be wired into the
+# Java second-family harness so the cross-family aggregator binds
+# each row to a family + an executed driver. Missing Java-side
+# wiring is fail-closed at the streaming evidence check.
+for label in "${GUARDED_LABELS[@]}"; do
+  count="${JAVA_HELPER_USAGE[${label}]}"
+  if [[ "${count}" -eq 0 ]]; then
+    echo "FAIL: guarded label ${label} is not referenced through any helper in run-java.sh (Plan 194)" >&2
+    missing=$((missing + 1))
+  fi
+done
 if [[ "${missing}" -ne 0 || "${duplicate}" -ne 0 ]]; then
-  echo "Plan 193 streaming evidence check failed: ${missing} missing, ${duplicate} duplicate references" >&2
+  echo "Plan 193/Plan 194 streaming evidence check failed: ${missing} missing, ${duplicate} duplicate references" >&2
   exit 1
 fi
 
@@ -110,7 +143,10 @@ for label in "${GUARDED_LABELS[@]}"; do
   if grep -Fq "record \"${label}\" passed" "${LANE_SCRIPT}" \
      || grep -Fq "record '${label}' passed" "${LANE_SCRIPT}" \
      || grep -Fq "record \"${label}\" blocked" "${LANE_SCRIPT}" \
-     || grep -Fq "record \"${label}\" failed" "${LANE_SCRIPT}"; then
+     || grep -Fq "record \"${label}\" failed" "${LANE_SCRIPT}" \
+     || grep -Fq "record \"${label}\" passed" "${JAVA_LANE_SCRIPT}" \
+     || grep -Fq "record \"${label}\" blocked" "${JAVA_LANE_SCRIPT}" \
+     || grep -Fq "record \"${label}\" failed" "${JAVA_LANE_SCRIPT}"; then
     echo "FAIL: literal record call for guarded label ${label} bypasses the fail-closed helper" >&2
     exit 1
   fi

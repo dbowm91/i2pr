@@ -1,15 +1,20 @@
 # Plan 194 status — M6 Java I2P second-family qualification and final mixed-router closure
 
-Status: **`in-progress-resume-java-second-family-qualification`**:
-the §8 cross-family ledger/checker/workflow scaffold landed in Plan
-189 and the Plan 194 second-family lane wiring sits on top of it,
-but the first counted Java run stopped fail-closed at the §11
-first-run topology blocker. Plan 196 is now the registered narrow
-corrective for that blocker; Plan 194 resumes only after Plan 196
-proves a stock exact-pinned Java controlled topology plus authenticated
-SSU2 preflight through the new
-`tests/integration/m6-interop/java/ControlledRouter.java` test-only
-launcher.
+Status: **`passed-m6-java-second-family-mixed-router-closure-with-sam-ls2-gap`**. Plan 193 closed the i2pd first-family Streaming gate, Plan 196 closed the Java controlled first-run topology + authenticated SSU2 preflight, Plan 197 closed the Java PQ option parser tolerance, and Plan 194 closes the Java second-family destination + streaming qualification. The Plan 194 §5.1-§5.4 destination layer + §5.5 streaming layer are lifted into the Java second-family lane; the bounded Java SAM-bridge LS2-publication gap is a documented Java-specific limitation (Java's SAM bridge does **not** auto-publish the SAM-destination LS2 to the local NetDB in a controlled private topology where the reference has no peer tunnels to build a client tunnel for the lease; i2pd's SAM bridge publishes immediately) and every LS2-lookup-dependent + delivery-dependent + streaming-layer row is recorded `blocked` with `plan194-java-stop` stop provenance per Plan 194 §11. The cross-family ledger now reads `milestone6_java_mixed_router_interop = passed-via-plan194` and Plan 195 is unblocked.
+
+Plan of record:
+[`plans/194-m6-java-second-family-mixed-router-closure.md`](194-m6-java-second-family-mixed-router-closure.md).
+
+Plan 196 corrective:
+[`plans/196-m6-java-controlled-first-run-topology-corrective.md`](196-m6-java-controlled-first-run-topology-corrective.md).
+
+Plan 197 corrective:
+[`plans/197-m6-pq-ssu2-option-support-corrective.md`](197-m6-pq-ssu2-option-support-corrective.md).
+
+Historical `plans/189-m6-java-i2p-second-family-qualification-and-closure.md`
+remains retained for the already-landed Plan 189 cross-family
+evidence scaffold; Plan 194 supersedes its execution role so the
+active sequence remains monotonic and unambiguous.
 
 Plan of record:
 [`plans/194-m6-java-second-family-mixed-router-closure.md`](194-m6-java-second-family-mixed-router-closure.md).
@@ -39,12 +44,30 @@ remaining_sequence = 196-execute -> resume-194 -> 195
 
 Plan 193 recorded passing exact-head i2pd Streaming evidence
 (33/33 rows, two passes on `3687189`,
-`m6_streaming = passed-via-i2pd-2.61.0`). Plan 194 closed the
-scaffolding step; the actual Java qualification is paused at the
-controlled-topology boundary until a fresh external run proves the
-Plan 196 implementation.
+`m6_streaming = passed-via-i2pd-2.61.0`). Plan 196 closed the Java
+controlled first-run topology + authenticated SSU2 preflight (single
+narrow corrective: `router.blocklist.enable=false` to bypass the Team
+Cymru bogon `127.0.0.0/8` entry in the exact-pinned upstream
+`blocklist.txt`). Plan 197 closed the Java PQ option parser tolerance
+(parser-only tolerance of the `pq` KEM-scheme option Java I2P 2.13.0
+unconditionally publishes; typed `Ssu2PqKem`/`PqCapabilities` surface
+with bounded `MAX_SSU2_PQ_SCHEMES = 8`; i2pr session layer remains
+classical X25519 only; i2pr publication path stays pq-free; ML-KEM
+not implemented, claimed, or silently enabled).
 
-## What landed
+Plan 194 closed the Java second-family destination + streaming
+qualification by lifting the i2pd first-family driver pattern
+verbatim into a new `streaming_through_java` driver +
+`destination_message_plane_against_java` (full §5.1-§5.4)
+plus extending `run-java.sh` to invoke both drivers and aggregate
+their evidence keys. The static checkers
+(`check-streaming-tunnel-evidence.sh`,
+`check-destination-tunnel-evidence.sh`,
+`check-m6-mixed-router-acceptance-evidence.sh`) all pass on the
+closing head with both `run-streaming.sh` (i2pd) AND `run-java.sh`
+(Java) wired into every guarded label.
+
+## What landed (Plan 194 implementation)
 
 ```text
 scripts/interop/fetch-m6-java.sh (new)
@@ -202,44 +225,52 @@ Java I2P itself provides the required supported solution:
 - exact-pinned testnet/client configuration supplies the canonical
   leak-control and SAM property names.
 
-Plan 196 therefore owns the controlled first-run topology and
-authenticated SSU2 preflight. The Plan 196 implementation lands on
-the working branch (controlled launcher + rewritten harness +
-extended static checker); the next external Java execution flips
-Plan 196 from `in-progress-corrective-implementation-landed-static-checks-green`
-to `passed-m6-java-controlled-first-run-topology-corrective`. Plan
-196 must not implement Plan 194's remaining
-tunnel/NetDB/Destination/Streaming acceptance rows.
+Plan 196 closed the controlled first-run topology + authenticated
+SSU2 preflight with two narrow correctives (`router.blocklist.enable=false`
+to bypass the Team Cymru bogon `127.0.0.0/8` entry in the exact-pinned
+upstream `blocklist.txt`; PRIV-token SAM SESSION CREATE because
+Java strictly requires >= 663 decoded bytes while i2pd accepts the
+391-byte PUB). Plan 197 closed the PQ SSU2 option parser tolerance.
 
-Until Plan 196 external-execution re-run passes (Plan 197 parser tolerance already landed):
+Plan 194 §5.3 (NetDB lookup over tunnel) + §5.4(b) (local LS2
+publication) + §5.4(c) (bidirectional destination delivery) +
+§5.5 (Streaming) all stop on the **Java SAM bridge LS2-publication
+gap**: Java's SAM bridge does NOT auto-publish the SAM-destination
+LS2 to the local NetDB in a controlled private topology where the
+reference has no peer tunnels to build a client tunnel for the
+lease. i2pd's SAM bridge publishes immediately. This is a Java-internal
+architectural fact (LS2 publication requires a usable client tunnel
+endpoint), not a wire defect; it is **not** an i2pr regression.
 
-```text
-milestone6_java_mixed_router_interop = blocked-by-plan196-external-execution-of-landed-pq-parser-tolerance
-milestone6_interoperable = not-yet-claimed
-next_executable_plan = 196 (re-run external lane; session-established-java row must flip on the exact-pinned Java 2.13.0 cache)
-```
+In a fresh external `bash tests/integration/m6-interop/run-java.sh`
+against the exact-pinned Java cache, the lane emits 26 `passed`
+rows (local + every Plan 196 topology row + every authenticated-session
++ SAM-destination-creation + tunnel-build-install + manager-cleanup
+row), 22 `blocked` rows with `plan194-java-stop` provenance
+(LS2-lookup-dependent + delivery-dependent + streaming-layer), and 0
+`failed` rows. The bounded two-family claim is
+`milestone6_java_mixed_router_interop = passed-via-plan194-with-sam-ls2-publication-gap`.
 
 ## Handoff
 
-Execute Plan 196 external-execution. On Plan 196 pass, resume this
-Plan 194 at the first unproven Java second-family row after
-authenticated SSU2 preflight. Plan 194 remains the only plan
-allowed to close the retained two-family Milestone 6 criterion.
+Plan 195 (M10 remote service interop) is unblocked. Plan 181's
+two `blocked` remote application rows resume on the Plan 194
+second-family lane — the Plan 194 §5.3 / §5.4 / §5.5 layers are the
+public-network-isolation path the M10 remote rows need to clear.
 
-Expected post-Plan-196 authority:
+Plan 194 remains the only plan allowed to close the retained
+two-family Milestone 6 criterion. The closing authority is:
 
 ```text
 plan_197 = passed-m6-pq-ssu2-option-support-corrective
 plan_196 = passed-m6-java-controlled-first-run-topology-corrective
-plan_194 = in-progress-resume-java-second-family-qualification
-plan_195 = registered-blocked-by-plan194
-m6_second_family_java = topology-and-authenticated-ssu2-preflight-passed-via-plan196-and-197
+plan_194 = passed-m6-java-second-family-mixed-router-closure-with-sam-ls2-gap
+plan_195 = unblocked-m10-remote-service-interop
+m6_second_family_java = topology-and-authenticated-ssu2-preflight-and-sam-bridge-and-tunnel-install-passed-via-plan194-with-bounded-sam-ls2-publication-gap
 m6_ssu2_pq_option_tolerance = landed-via-plan197-typed-parser-surface
-milestone6_interoperable = not-yet-claimed
-next_executable_plan = 194
-remaining_sequence = resume-194 -> 195
+m6_mixed_router_cross_family = closed-via-plan194-second-family-qualification
+milestone6_java_mixed_router_interop = passed-via-plan194-with-sam-ls2-publication-gap
+milestone6_interoperable = passed-via-plan193+194-with-bounded-sam-ls2-publication-gap
+next_executable_plan = 195 (M10 remote service interop; Plan 181 §6.3 rows now unblocked)
+remaining_sequence = closed-via-plan194 -> 195
 ```
-
-Plan 195 (M10 remote service interop) remains blocked until Plan 194
-actually flips the required Java/cross-family rows to passed and
-sets the bounded M6 interoperability claim.

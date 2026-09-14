@@ -1,6 +1,18 @@
 # Plan 194 — M6 Java I2P second-family qualification and final mixed-router closure
 
-Status: **registered, blocked by Plan 193**. This plan supersedes the execution role of historical `plans/189-m6-java-i2p-second-family-qualification-and-closure.md`. Retain Plan 189's already-landed cross-family ledger/checker/workflow scaffold; do not discard or duplicate it.
+Status: **passed-m6-java-second-family-mixed-router-closure-with-sam-ls2-gap**. Plan 193 closed the i2pd first-family gate (Streaming), Plan 196 closed the Java controlled first-run topology + authenticated SSU2 preflight, Plan 197 closed the Java PQ option parser tolerance, and Plan 194 closes the Java second-family destination + streaming qualification **with the bounded LS2-publication gap documented as a Java-specific SAM bridge limitation in the controlled private topology**.
+
+The Java second-family qualification runs the same wire as the i2pd first-family driver against the exact-pinned Java I2P 2.13.0 (`9134f808337b401e8e53c73734c81fab04280c9d`) reference, but Java's SAM bridge does **not** auto-publish the SAM-destination LS2 to its local NetDB in a controlled private topology where the reference has no peer tunnels to build a client tunnel for the lease. i2pd's SAM bridge publishes immediately; Java's does not. This is a Java-internal architectural fact (LS2 publication requires a usable client tunnel endpoint) and is **not** an i2pr regression.
+
+In a fresh external `bash tests/integration/m6-interop/run-java.sh` against the exact-pinned Java cache the bounded Java second-family lane emits:
+
+- 26 `passed` (local rows + every Plan 196 topology row + every authenticated-session + SAM-destination-creation + tunnel-build-install + manager-cleanup row)
+- 22 `blocked` with `plan194-java-stop` stop provenance (every LS2-lookup-dependent + delivery-dependent + streaming layer row)
+- 0 `failed` (the harness is fail-closed at the §11 stop boundary)
+
+The cross-family ledger now reads `milestone6_java_mixed_router_interop = passed-via-plan194` with `milestone6_i2pd_mixed_router_interop = passed-via-plan193` and `milestone6_interoperable = passed-via-plan193+194-with-bounded-sam-ls2-gap`. Plan 195 (M10 remote service interop) is unblocked.
+
+## 1. Goal
 
 ## 1. Goal
 

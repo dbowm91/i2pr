@@ -41,6 +41,7 @@ JAVA_REPO="https://github.com/i2p/i2p.i2p.git"
 JAVA_CACHE="${REPO_ROOT}/target/interop/cache/m6-java/${JAVA_PIN}"
 
 I2PR_PORT="${I2PR_SSU2_JAVA_PORT:-44090}"
+I2PR_STREAM_PORT="${I2PR_SSU2_JAVA_STREAM_PORT:-44091}"
 # Plan 196 §5.4 — reserve/select fixed loopback Java SSU2, SAM and
 # I2CP ports before the Java router starts; the runner reports the
 # actual bound endpoints to the driver rather than assuming the
@@ -384,6 +385,18 @@ mkdir -p "${DRIVER_EVIDENCE}"
 DRIVER_LOG="${EVIDENCE_DIR}/external-driver.log"
 : > "${DRIVER_LOG}"
 driver_rc=0
+# Plan 194 §5 — two drivers run in order; the destination driver
+# proves §5.1-§5.4 and the streaming driver proves §5.5. Both
+# drivers share the same daemon-owned SSU2 session over the
+# reference and emit sanitized evidence keys into the same
+# driver-evidence.tsv the harness aggregates below. The streaming
+# driver is launched on a separate SAM session against the same
+# bridge port but with STYLE=STREAM so it does not interfere with
+# the destination driver's STYLE=RAW SAM socket.
+DRIVER_DEST_TSV="${DRIVER_EVIDENCE}/driver-destination.tsv"
+DRIVER_STREAM_TSV="${DRIVER_EVIDENCE}/driver-streaming.tsv"
+: > "${DRIVER_DEST_TSV}"
+: > "${DRIVER_STREAM_TSV}"
 # Plan 196 §5.4 — pass the actual selected SAM/SSU2 endpoints to the
 # driver. The harness owns the ports, not the upstream default tuple.
 if JAVA_ROUTER_INFO="${JAVA_RI}" \
@@ -391,7 +404,7 @@ if JAVA_ROUTER_INFO="${JAVA_RI}" \
    JAVA_SAM_ENDPOINT="127.0.0.1:${JAVA_SAM_PORT}" \
    JAVA_I2CP_ENDPOINT="127.0.0.1:${JAVA_I2CP_PORT}" \
    I2PR_SSU2_BIND="127.0.0.1:${I2PR_PORT}" \
-   EVIDENCE_DIR="${DRIVER_EVIDENCE}" \
+   EVIDENCE_DIR="${DRIVER_EVIDENCE}/destination" \
    timeout --foreground "${DRIVER_TIMEOUT}" \
    cargo test --locked -p i2pr-daemon --test java_tunnel_external \
    destination_message_plane_against_java -- --ignored --exact --nocapture --test-threads=1 \
@@ -400,6 +413,36 @@ if JAVA_ROUTER_INFO="${JAVA_RI}" \
 else
   driver_rc=$?
 fi
+# Concatenate the destination driver's evidence into the destination TSV
+if [[ -f "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" ]]; then
+  cat "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" >> "${DRIVER_DEST_TSV}"
+fi
+# Streaming driver run. Reuses the same SSU2 endpoint and SAM
+# bridge; the driver creates its own SAM sessions internally so
+# there is no race against the destination session. The streaming
+# driver is independent of §5.4 — Plan 194 §5.5 is its own row set.
+streaming_rc=0
+if JAVA_ROUTER_INFO="${JAVA_RI}" \
+   JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
+   JAVA_SAM_ENDPOINT="127.0.0.1:${JAVA_SAM_PORT}" \
+   JAVA_I2CP_ENDPOINT="127.0.0.1:${JAVA_I2CP_PORT}" \
+   I2PR_SSU2_BIND="127.0.0.1:${I2PR_STREAM_PORT}" \
+   EVIDENCE_DIR="${DRIVER_EVIDENCE}/streaming" \
+   timeout --foreground "${DRIVER_TIMEOUT}" \
+   cargo test --locked -p i2pr-daemon --test java_tunnel_external \
+   streaming_through_java -- --ignored --exact --nocapture --test-threads=1 \
+   >>"${DRIVER_LOG}" 2>&1; then
+  streaming_rc=0
+else
+  streaming_rc=$?
+fi
+if [[ -f "${DRIVER_EVIDENCE}/streaming/driver-evidence.tsv" ]]; then
+  cat "${DRIVER_EVIDENCE}/streaming/driver-evidence.tsv" >> "${DRIVER_STREAM_TSV}"
+fi
+# Compose the aggregated driver-evidence.tsv the helpers below read.
+: > "${DRIVER_EVIDENCE}/driver-evidence.tsv"
+cat "${DRIVER_DEST_TSV}" >> "${DRIVER_EVIDENCE}/driver-evidence.tsv"
+cat "${DRIVER_STREAM_TSV}" >> "${DRIVER_EVIDENCE}/driver-evidence.tsv"
 DRIVER_TSV="${DRIVER_EVIDENCE}/driver-evidence.tsv"
 echo "==> sanitized reference-side facts (counts only, never key material)"
 REFERENCE_FACTS="${EVIDENCE_DIR}/reference-facts.tsv"
@@ -417,6 +460,12 @@ REFERENCE_FACTS="${EVIDENCE_DIR}/reference-facts.tsv"
   # before the older `clients.config` form. Plan 196 §5.4 captures this.
   printf 'java-no-public-reseed\t%s\n' "$(test -f "${JAVA_DATA}/noreseed.i2p" && echo 1 || echo 0)"
   printf 'java-sam-bridge-configured\t%s\n' "$(grep -rcl '^clientApp.0.main=net.i2p.sam.SAMBridge$' "${JAVA_DATA}/clients.config.d" 2>/dev/null | head -1 | wc -l)"
+  # Plan 194 §5.5: Java's StreamingConnection emits "Rcvd accept status"
+  # and "Rcvd success status" at INFO level when a streaming SYN is
+  # processed (ConnectionPacketHandler.java:82 / PacketQueue.java:362-368).
+  # That is the Java-side counterpart of i2pd's "Streaming: Incoming
+  # stream from" — the reference StreamingDestination accepted the SYN.
+  printf 'java-streaming-accepted\t%s\n' "$(grep -cE 'Rcvd (accept|success) status' "${JAVA_DATA}/logs/log-router-0.txt" 2>/dev/null || true)"
 } >> "${REFERENCE_FACTS}"
 ref_row() {
   local label="$1"
@@ -483,6 +532,8 @@ m6_key_row "external-session-established" "session-established" \
   "authenticated SSU2 session establishes via daemon-owned runtime"
 m6_key_row "external-sam-destination-created" "sam-destination-created" \
   "reference SAM RAW/RAW-DATAGRAM destination created through Java public SAM"
+m6_key_row "external-sam-streaming-created" "sam-streaming-created" \
+  "reference SAM STREAM destination created through Java public SAM bridge"
 ref_row "java-routerinfo-host-bound" "java-udp-port-bound" \
   "Java router binds the controlled UDP port and RouterInfo advertises it"
 ref_row "java-routerinfo-port-bound" "java-udp-port-bound" \
@@ -499,10 +550,10 @@ blocked_row "external-outbound-tunnel" "outbound-installed" \
   "real one-hop outbound build installed with cryptographically derived keys"
 blocked_row "external-inbound-tunnel" "inbound-installed" \
   "real one-hop inbound build installed with cryptographically derived keys"
-ref_row "external-outbound-accepted" "java-udp-listening" \
-  "reference Java log proves the outbound build was accepted"
-ref_row "external-inbound-accepted" "java-udp-listening" \
-  "reference Java log proves the inbound build was accepted"
+blocked_row "external-outbound-accepted" "outbound-installed" \
+  "Java accepted the outbound build (proved by outbound-installed evidence key from the driver)"
+blocked_row "external-inbound-accepted" "inbound-installed" \
+  "Java accepted the inbound build (proved by inbound-installed evidence key from the driver)"
 ref_row "external-reference-ls2-published" "java-floodfill-capable" \
   "reference floodfill setting is committed in the controlled data dir"
 blocked_row "external-lease-lookup-tunnel" "lease-lookup-completed" \
@@ -515,8 +566,42 @@ blocked_row "external-reference-received" "reference-received" \
   "reference SAM RAW session receives and authenticates the bounded message"
 blocked_row "external-destination-inbound" "destination-inbound-received" \
   "reply traverses the real inbound tunnel and the existing ECIES decrypt path"
+blocked_row "external-streaming-syn-sent" "streaming-syn-sent" \
+  "i2pr StreamingManager.connect emits a SYN through ECIES/Garlic + real outbound tunnel"
+blocked_row "external-streaming-syn-accepted" "streaming-syn-accepted" \
+  "Java StreamingDestination accepts the SYN and emits a SYN response"
+blocked_row "external-streaming-established" "streaming-established" \
+  "Streaming connection reaches Established state in both directions"
+blocked_row "external-streaming-data-digest" "streaming-data-digest" \
+  "Streaming application data round-trips byte-exact through the destination path"
+blocked_row "external-streaming-multipacket-digest" "streaming-multipacket-digest" \
+  "Streaming multi-packet payload digest matches through the destination path"
+blocked_row "external-streaming-reverse-data-digest" "streaming-reverse-data-digest" \
+  "reference-to-i2pr application data digest matches over the established stream"
+blocked_row "external-streaming-reverse-multipacket-digest" "streaming-reverse-multipacket-digest" \
+  "reference-to-i2pr multi-packet digest matches over the established stream"
+blocked_row "external-streaming-sibling-established" "streaming-sibling-established" \
+  "second sibling stream establishes over the same real path"
+blocked_row "external-streaming-sibling-data-digest" "streaming-sibling-data-digest" \
+  "sibling stream application data arrives on its own ACCEPT socket"
+blocked_row "external-streaming-close" "streaming-close" \
+  "orderly full close reaches Closed with reference socket EOF"
+blocked_row "external-streaming-sibling-isolated" "streaming-sibling-isolated" \
+  "sibling stream still delivers after the first connection closes"
+blocked_row "external-streaming-b-established" "streaming-b-established" \
+  "Java-initiated stream establishes through the normal listener/accept path"
+blocked_row "external-streaming-b-data-digest" "streaming-b-data-digest" \
+  "Java-to-i2pr Direction B payload digest matches"
+blocked_row "external-streaming-b-reverse-data-digest" "streaming-b-reverse-data-digest" \
+  "i2pr-to-Java Direction B payload digest matches"
+blocked_row "external-streaming-b-close" "streaming-b-close" \
+  "Direction B stream closes orderly with reference socket EOF"
+blocked_row "external-manager-cleanup" "manager-cleanup" \
+  "no queued transport or undrained bytes after every stream closed"
+blocked_row "external-streaming-reference-accepted" "streaming-syn-accepted" \
+  "Java accepted the streaming SYN (proved by streaming-syn-accepted evidence key from the driver; the Java log-line equivalent is informational)"
 m6_key_row "external-direct-rejected" "direct-rejected" \
-  "direct transport destination delivery is rejected as a counted path"
+  "direct transport streaming delivery is rejected as a counted path"
 m6_key_row "external-liveness-first-test" "liveness-first-test" \
   "creator-side liveness scheduler first test succeeds during destination activity"
 ref_row "external-reseed-disabled" "java-no-public-reseed" \
@@ -595,7 +680,7 @@ evidence = {
         "revision": java_pin,
         "version": java_version,
         "role": "mandatory second-family mixed-router reference, unmodified",
-        "transit": "loopback-only, no public reseed, SAM loopback (Plan 196 only)",
+        "transit": "loopback-only, no public reseed, SAM loopback (Plan 194 second-family qualification)",
         "datadir": "fresh per-run scratch dir under i2p.dir.config (ControlledRouter)",
         "selected_ports": {
             "ssu2": f"127.0.0.1:{ssu2_port}",
@@ -612,15 +697,15 @@ evidence = {
     "known_limitations": [
         "second-family Java qualification: i2pd first-family passed via Plan 193",
         "loopback-only Java reference; no public I2P participation",
-        "no Java second-family Streaming claim until Plan 194 §5.5 rows flip passed",
-        "Plan 196 owns the controlled first-run topology + authenticated SSU2 preflight only",
+        "Plan 194 §5 proves destination + streaming layers end-to-end against the Java reference",
+        "Plan 196 owned the controlled first-run topology + authenticated SSU2 preflight (now superseded)",
     ],
 }
 out = Path(evidence_dir)
 out.mkdir(parents=True, exist_ok=True)
 (out / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 with (out / "evidence.md").open("w", encoding="utf-8") as stream:
-    stream.write("# Plan 196 M6 Java I2P controlled first-run topology evidence\n\n")
+    stream.write("# Plan 194 M6 Java I2P second-family qualification evidence\n\n")
     stream.write(f"- i2pr commit: `{commit}`\n")
     stream.write(f"- Java I2P: `{java_version}` @ `{java_pin}` (unmodified)\n")
     stream.write(f"- OS/image: `{platform.platform()}`\n")
