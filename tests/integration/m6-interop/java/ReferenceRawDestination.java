@@ -64,6 +64,10 @@ public final class ReferenceRawDestination {
         Properties options = new Properties();
         options.setProperty("i2cp.tcp.host", host);
         options.setProperty("i2cp.tcp.port", Integer.toString(port));
+        // Plan 199: the service router has a distinct publication peer.
+        // The bounded helper keeps the existing zero-hop client profile;
+        // the pre-helper ordinary RouterInfo bootstrap supplies the normal
+        // floodfill publication target without changing tunnel semantics.
         options.setProperty("inbound.length", "0");
         options.setProperty("outbound.length", "0");
         options.setProperty("inbound.quantity", "1");

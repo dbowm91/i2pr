@@ -158,7 +158,7 @@ against the same exact-pinned Java cache and the
 `passed`; Plan 196 then flips from
 `in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection-pq-parser-tolerance-landed-via-plan197-pending-external-re-run`
 to `passed-m6-java-controlled-first-run-topology-corrective` and
-Plan 198 now owns the public-client final-closure corrective. Its
+Plan 199 now owns the unified final-closure corrective. Its
 out-of-tree `ReferenceRawDestination.java` and
 `ReferenceStreamingService.java` use only public Java client/Streaming
 APIs, while the existing Rust driver continues to own the counted i2pr
@@ -369,7 +369,11 @@ work is scoped to:
   SAM-parity accepts, completed IRC client executor, orderly
   half-close). Plan 181's external lane passes its 29 local
   independent-application-client rows while the two remote rows
-  stay `blocked` on the retained M6 debt. See
+  stay `blocked`. Plan 199 confirmed this is an architecture
+  boundary: the manager routes through its local co-owned peer bridge
+  and has no production remote-router transport/LeaseSet2 lookup
+  path. The remote runner remains a bounded qualification probe
+  until that path exists. See
   [`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`](../../plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md),
   [`plans/175-m10-generic-client-server-service-tunnels.md`](../../plans/175-m10-generic-client-server-service-tunnels.md),
   [`plans/176-m10-http-i2p-proxy-and-connect.md`](../../plans/176-m10-http-i2p-proxy-and-connect.md),

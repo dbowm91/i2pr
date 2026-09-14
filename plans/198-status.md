@@ -15,7 +15,7 @@ sessions connect through the selected I2CP port and the Rust destination and
 Streaming tests themselves return `ok`, but the Java 2.13.0 controlled router
 does not return the published public-client LeaseSet2 to the real i2pr
 DatabaseLookup path. The destination lane therefore stops at
-`plan194-java-stop` after 45 seconds with no lookup reply, and the Streaming
+`client-ls2-local-but-not-network-visible` after the bounded lookup deadline, and the Streaming
 lane stops before outbound build installation. Publication was tested both by
 omitting the option and by explicitly setting
 `i2cp.dontPublishLeaseSet=false`; neither changes the result. The final gate
@@ -85,7 +85,10 @@ remaining_sequence = 198 -> 195
 
 ## Corrective direction
 
-Plan 198 keeps the Java SAM result as diagnostic compatibility evidence but removes it as the counted service-destination gate.
+Plan 198 keeps the Java SAM result as diagnostic compatibility evidence but removes it as the counted service-destination gate. Plan 199
+adds a two-router ordinary-RouterInfo bootstrap attempt; that corrective
+passes its bootstrap row but does not resolve the client-specific LeaseSet2
+publication boundary.
 
 The counted Java reference application must use the exact-pinned router's **public client APIs**, reusing the high-level lifecycle already proven in the repository's Plan 172 Java driver:
 

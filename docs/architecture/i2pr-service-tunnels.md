@@ -74,11 +74,14 @@ It must not own:
 - SAM or I2CP protocol parsing.
 
 The daemon remains the sole M10 socket/task/composition owner.
-Milestone 10 independent acceptance is owned by Plan 181 (29 local
-rows passed; 2 remote rows blocked on the retained M6
-mixed-router Streaming debt; Plan 183 owns the corrective
-program). Plans 180-and-182 jointly close the M10 local product +
-round-trip layer (reconcile model + local-delivery driver).
+Milestone 10 independent acceptance is retained under Plan 181 and
+Plan 199 (29 local rows passed; 2 remote rows remain blocked). The
+current manager's delivery seam is deliberately local and co-owned;
+it is not a remote-router transport or a NetDB/LeaseSet2 lookup
+implementation. The Plan 199 remote qualification attempt therefore
+cannot be promoted to real curl/jaraco remote application evidence.
+Plans 180-and-182 jointly close the M10 local product + round-trip
+layer (reconcile model + local-delivery driver).
 
 ## Module layout
 

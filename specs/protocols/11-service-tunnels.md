@@ -10,9 +10,13 @@ IRC `.i2p` client profile + privacy filter: **Plan 178** (`plans/178-m10-irc-cli
 IRC `.i2p` server profile + authenticated peer hostname: **Plan 179** (`plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`)
 Composition, reconcile, and hardening: **Plan 180** (`plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md`)
 Local-delivery corrective: **Plan 182** (`plans/182-m10-local-delivery-corrective.md`)
-Independent acceptance (blocked): **Plan 181** (`plans/181-m10-independent-application-and-service-interop-final-closure.md`)
-M6 mixed-router program (registered): **Plan 183** (`plans/183-m6-mixed-router-streaming-interop-program.md`)
-Next executable plan: **183** (scoping first; Plan 181 resumes after passing remote rows)
+Independent acceptance (blocked): **Plan 181**, retained and revisited by
+**Plan 199** (`plans/199-m10-unified-final-closure.md`). The local product
+is closed, but the two remote application rows remain blocked because the
+current manager has no remote-router transport/LeaseSet2 lookup path.
+The Java M6 public-client LeaseSet2 publication boundary is blocked by the
+same Plan 199 execution. No M10 remote-interoperability claim follows from
+the local rows or the bounded qualification probe.
 
 > Plan 174 is a refactor/foundation pass. It must not change I2P wire
 > semantics or broaden listener exposure. No generic, HTTP, SOCKS5,

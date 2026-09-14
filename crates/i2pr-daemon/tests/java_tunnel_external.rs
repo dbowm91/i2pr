@@ -1,4 +1,4 @@
-//! Plan 198 — M6 Java I2P public-client second-family closure lane.
+//! Plan 199 Phase A — M6 Java I2P public-client second-family closure lane.
 //!
 //! Fail-closed driver against exact-pinned Java I2P 2.13.0 on loopback.
 //!
@@ -30,25 +30,28 @@
 //! - direct transport explicitly rejected as a counted path;
 //! - creator-side liveness first test green.
 //!
-//! Plan 198 §5.5 — the Streaming surface reuses the same wire: a
+//! Plan 199 §A.5 — the Streaming surface reuses the same wire: a
 //! second driver `streaming_through_java` runs Direction A
 //! (`StreamingManager::connect` i2pr -> Java) + Direction B
 //! (Java `STREAM CONNECT` -> i2pr listener/accept). Same
 //! digest-equality / close / sibling / cleanup rules as the i2pd
-//! first-family driver; only the reference identifier + SAM bridge
+//! first-family driver; only the reference identifier + diagnostic SAM
 //! port differ.
 //!
-//! Plan 198 §11 failure policy: if Java fails where i2pd passes, the
+//! Plan 199 failure policy: if Java fails where i2pd passes, the
 //! driver stops at the first failing protocol boundary and records
-//! `plan194-java-stop` so the harness can mark every install-dependent
+//! `plan199-java-stop` so the harness can mark every install-dependent
 //! row `blocked` (never `passed`, never silently skipped).
 
 #![forbid(unsafe_code)]
 
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use i2pr_client::streaming::connection::ConnectionState;
 use i2pr_client::streaming::manager::{
     ConnectOutcome, DEFAULT_ADVERTISED_MAX_PAYLOAD, ListenerOutcome, RemoteDestination,
@@ -80,10 +83,11 @@ use i2pr_daemon::tunnel_liveness::{
 };
 use i2pr_netdb::{LookupPolicy, RouterHash, RouterInfoStoreConfig};
 use i2pr_proto::{
-    Date, Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE, Mapping, RouterAddress, RouterInfo,
+    DatabaseStoreData, DatabaseStoreMessage, Date, DeferredPayload, Hash, I2npBody, I2npMessage,
+    MAX_I2NP_PAYLOAD_SIZE, Mapping, RouterAddress, RouterInfo,
 };
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope, Ssu2PqKem};
-use i2pr_transport::{Deadline, PeerId};
+use i2pr_transport::{Deadline, MAX_I2NP_MESSAGE_BYTES, PeerId};
 use i2pr_tunnel::bridge::{BridgeHeader, ShortBuildI2npBridge};
 use i2pr_tunnel::config::ExploratoryPoolConfig;
 use i2pr_tunnel::identity::{TunnelDirection, TunnelId};
@@ -153,7 +157,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// Plan 198 helper control channel. The Java helper owns all I2P client and
+/// Plan 199 helper control channel. The Java helper owns all I2P client and
 /// Streaming operations; this channel carries only sanitized coordination
 /// commands and hex-encoded test bytes over loopback.
 struct ReferenceControl {
@@ -251,7 +255,136 @@ fn decode_destination_b64(token: &str) -> Vec<u8> {
 }
 
 fn record_stop(dir: &Path, detail: &str) {
-    append_evidence(dir, "plan194-java-stop", detail);
+    append_evidence(dir, "plan199-java-stop", detail);
+}
+
+fn gzip_member(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(bytes).expect("gzip RouterInfo");
+    encoder.finish().expect("finish RouterInfo gzip")
+}
+
+fn database_store_router_info_wire(key: Hash, router_info: &[u8], message_id: u32) -> Vec<u8> {
+    let payload = DeferredPayload::new(gzip_member(router_info), usize::from(u16::MAX))
+        .expect("deferred RouterInfo payload");
+    let store = DatabaseStoreMessage {
+        key,
+        reply_token: 0,
+        reply_tunnel_id: None,
+        reply_gateway: None,
+        data: DatabaseStoreData::RouterInfoCompressed(payload),
+    };
+    I2npMessage::new_short_transport(
+        message_id,
+        wall_secs().saturating_add(60).min(u64::from(u32::MAX)) as u32,
+        I2npBody::DatabaseStore(Box::new(store)),
+    )
+    .expect("RouterInfo store message")
+    .encode_short_transport_to_vec(MAX_I2NP_MESSAGE_BYTES)
+    .expect("encode RouterInfo store message")
+}
+
+/// Plan 199 §A.2 bootstrap-only probe. It runs before either public Java
+/// helper is started, breaking the otherwise circular dependency where a
+/// one-hop public client waits for the publication router while the router
+/// waits for that client to become ready.
+#[tokio::test]
+#[ignore = "Plan 199: requires the exact-pinned dual Java router environment"]
+async fn bootstrap_java_router_peers() {
+    let publication_ri = std::fs::read(env_path("JAVA_PUBLICATION_ROUTER_INFO"))
+        .expect("read publication RouterInfo");
+    let service_ri =
+        std::fs::read(env_path("JAVA_SERVICE_ROUTER_INFO")).expect("read service RouterInfo");
+    let publication_endpoint: SocketAddr = env_value("JAVA_PUBLICATION_SSU2_ENDPOINT")
+        .parse()
+        .expect("publication endpoint");
+    let service_endpoint: SocketAddr = env_value("JAVA_SERVICE_SSU2_ENDPOINT")
+        .parse()
+        .expect("service endpoint");
+    let bind: SocketAddr = env_value("I2PR_SSU2_BIND").parse().expect("bind");
+    assert!(bind.ip().is_loopback());
+    assert!(publication_endpoint.ip().is_loopback());
+    assert!(service_endpoint.ip().is_loopback());
+    let (publication_hash, publication_ssu2) =
+        verify_reference_router_info(&publication_ri).expect("verify publication RouterInfo");
+    let (service_hash, service_ssu2) =
+        verify_reference_router_info(&service_ri).expect("verify service RouterInfo");
+    let publication_material = publication_ssu2
+        .address_material()
+        .expect("publication keys");
+    let service_material = service_ssu2.address_material().expect("service keys");
+    let publication_target = daemon_dial_target(
+        publication_hash,
+        publication_endpoint,
+        i2pr_runtime::Ssu2PublicKey::new(*publication_material.static_public_key().as_bytes())
+            .expect("publication static key"),
+        i2pr_runtime::IntroKey::new(*publication_material.intro_key().as_bytes()),
+    )
+    .expect("publication target");
+    let service_target = daemon_dial_target(
+        service_hash,
+        service_endpoint,
+        i2pr_runtime::Ssu2PublicKey::new(*service_material.static_public_key().as_bytes())
+            .expect("service static key"),
+        i2pr_runtime::IntroKey::new(*service_material.intro_key().as_bytes()),
+    )
+    .expect("service target");
+    let bundle = i2pr_crypto::RouterIdentityBundle::generate(&mut rand_core::OsRng)
+        .expect("bootstrap identity");
+    let identity = generate_controlled_identity(&bundle, "127.0.0.1", bind.port())
+        .expect("bootstrap identity material");
+    let config_text = format!(
+        "schema_version = 1\n[router]\ndata_dir = \"./state\"\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = {}\n",
+        bind.port()
+    );
+    let config = Config::parse(&config_text).expect("bootstrap profile");
+    let service = Ssu2DaemonService::new(&config.ssu2, identity).expect("bootstrap service");
+    let token = CancellationToken::new();
+    let scope = ChildScope::for_test(&token, ChildFailurePolicy::FailParent);
+    let handle = service
+        .start(&scope, &config.ssu2)
+        .await
+        .expect("bootstrap daemon");
+    handle
+        .dial(publication_target, DIAL_TIMEOUT, &CancellationToken::new())
+        .await
+        .expect("bootstrap publication session");
+    handle
+        .dial(service_target, DIAL_TIMEOUT, &CancellationToken::new())
+        .await
+        .expect("bootstrap service session");
+    let publication_wire = database_store_router_info_wire(
+        Hash::from_bytes(*service_hash.as_bytes()),
+        &service_ri,
+        0x51A7_1201,
+    );
+    let service_wire = database_store_router_info_wire(
+        Hash::from_bytes(*publication_hash.as_bytes()),
+        &publication_ri,
+        0x51A7_1202,
+    );
+    for (peer, wire) in [
+        (PeerId::from_hash(publication_hash), publication_wire),
+        (PeerId::from_hash(service_hash), service_wire),
+    ] {
+        let request = RouterDeliveryRequest::new(peer, wire, DELIVERY_TIMEOUT)
+            .expect("bootstrap delivery request");
+        assert_eq!(
+            handle
+                .delivery()
+                .deliver(request, &CancellationToken::new()),
+            RouterDeliveryOutcome::Accepted
+        );
+    }
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    handle.shutdown();
+    let _ = scope.shutdown().await;
+    assert_eq!(handle.snapshot().active_sessions, 0);
+    append_evidence(
+        &env_path("EVIDENCE_DIR"),
+        "java-router-peer-bootstrap-completed",
+        "ordinary-authenticated-i2np-databasestore-both-directions",
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -610,7 +743,7 @@ async fn pump_until_streaming_with_state<F>(
     }
 }
 
-/// Plan 198 §5.1-§5.4 — full destination message plane against the
+/// Plan 199 §A.3-A.4 — full destination message plane against the
 /// exact-pinned Java reference. The same wire as the i2pd driver,
 /// only the reference identifier + the SAM PRIV/PUB distinction differ.
 #[tokio::test]
@@ -618,6 +751,10 @@ async fn pump_until_streaming_with_state<F>(
 async fn destination_message_plane_against_java() {
     let java_ri_path = env_path("JAVA_ROUTER_INFO");
     let java_endpoint: SocketAddr = env_value("JAVA_SSU2_ENDPOINT").parse().expect("endpoint");
+    let service_ri_path = env_path("JAVA_SERVICE_ROUTER_INFO");
+    let service_endpoint: SocketAddr = env_value("JAVA_SERVICE_SSU2_ENDPOINT")
+        .parse()
+        .expect("service endpoint");
     let bind: SocketAddr = env_value("I2PR_SSU2_BIND").parse().expect("bind");
     let reference_control_endpoint: SocketAddr = env_value("JAVA_RAW_CONTROL_ENDPOINT")
         .parse()
@@ -626,6 +763,10 @@ async fn destination_message_plane_against_java() {
     assert!(
         java_endpoint.ip().is_loopback(),
         "java endpoint must be loopback"
+    );
+    assert!(
+        service_endpoint.ip().is_loopback(),
+        "service endpoint must be loopback"
     );
     assert!(
         reference_control_endpoint.ip().is_loopback(),
@@ -666,7 +807,30 @@ async fn destination_message_plane_against_java() {
         .as_bytes()
         .try_into()
         .expect("32-byte encryption key");
+    let service_ri_bytes = std::fs::read(&service_ri_path).expect("read service router.info");
+    let (service_hash, service_ssu2) =
+        verify_reference_router_info(&service_ri_bytes).expect("verify service RouterInfo");
+    let service_material = service_ssu2
+        .address_material()
+        .expect("service key material");
+    let service_static =
+        i2pr_runtime::Ssu2PublicKey::new(*service_material.static_public_key().as_bytes())
+            .expect("service static key");
+    let service_intro = i2pr_runtime::IntroKey::new(*service_material.intro_key().as_bytes());
+    let service_target = daemon_dial_target(
+        service_hash,
+        service_endpoint,
+        service_static,
+        service_intro,
+    )
+    .expect("service dial target");
+    let service_router_info = RouterInfo::decode(
+        &service_ri_bytes,
+        i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
+    )
+    .expect("decode service RouterInfo");
     append_evidence(&evidence_dir, "reference-routerinfo-verified", "true");
+    append_evidence(&evidence_dir, "java-service-routerinfo-verified", "true");
 
     // Authoritative bootstrap through the ordinary validation path.
     let mut dest = DestinationTunnelCoordinator::new(
@@ -683,6 +847,13 @@ async fn destination_message_plane_against_java() {
         &evidence_dir,
         "reference-bootstrap-store",
         &dest.store_stats().record_count.to_string(),
+    );
+    let service_bootstrapped = dest
+        .bootstrap_reference_router_info(&service_ri_bytes, now)
+        .expect("bootstrap service reference");
+    assert_eq!(
+        service_bootstrapped,
+        RouterHash::from_bytes(*service_hash.as_bytes())
     );
 
     let caps = java_router_info
@@ -725,18 +896,58 @@ async fn destination_message_plane_against_java() {
         .dial(target, DIAL_TIMEOUT, &CancellationToken::new())
         .await
         .expect("authenticated session establishes with Java reference");
+    let _service_established = handle
+        .dial(service_target, DIAL_TIMEOUT, &CancellationToken::new())
+        .await
+        .expect("authenticated session establishes with Java service router");
     let deadline_active = tokio::time::Instant::now() + WAIT_TIMEOUT;
     while tokio::time::Instant::now() < deadline_active {
-        if handle.snapshot().active_sessions >= 1 {
+        if handle.snapshot().active_sessions >= 2 {
             break;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
-    assert!(handle.snapshot().active_sessions >= 1);
+    assert!(handle.snapshot().active_sessions >= 2);
     append_evidence(
         &evidence_dir,
         "session-established",
         &handle.snapshot().sessions_established.to_string(),
+    );
+
+    // Plan 199 §A.2 — give the two stock Java RouterContexts each other's
+    // signed RouterInfo through ordinary authenticated I2NP. This is the
+    // only bootstrap bridge: no Java NetDB insertion, VMComm, reflection,
+    // fabricated files, or public reseed is involved.
+    let publication_peer = PeerId::from_hash(java_hash);
+    let service_peer = PeerId::from_hash(service_hash);
+    let publication_wire = database_store_router_info_wire(
+        Hash::from_bytes(*service_hash.as_bytes()),
+        &service_ri_bytes,
+        0x51A7_1001,
+    );
+    let service_wire = database_store_router_info_wire(
+        Hash::from_bytes(*java_hash.as_bytes()),
+        &java_ri_bytes,
+        0x51A7_1002,
+    );
+    for (peer, wire) in [
+        (publication_peer, publication_wire),
+        (service_peer, service_wire),
+    ] {
+        let request = RouterDeliveryRequest::new(peer, wire, DELIVERY_TIMEOUT)
+            .expect("RouterInfo bootstrap request");
+        assert_eq!(
+            handle
+                .delivery()
+                .deliver(request, &CancellationToken::new()),
+            RouterDeliveryOutcome::Accepted,
+            "ordinary Java RouterInfo bootstrap must be admitted"
+        );
+    }
+    append_evidence(
+        &evidence_dir,
+        "java-router-peer-bootstrap-submitted",
+        "service-to-publication-and-publication-to-service",
     );
 
     let warmup_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -806,8 +1017,13 @@ async fn destination_message_plane_against_java() {
     let inbound_request = BuildRequest {
         direction: BuildDirection::Inbound,
         peer: PeerBuildMaterial {
-            router_hash: java_hash,
-            static_encryption_key: java_encryption_key,
+            router_hash: service_hash,
+            static_encryption_key: service_router_info
+                .router_identity()
+                .public_key()
+                .as_bytes()
+                .try_into()
+                .expect("service encryption key"),
             receive_tunnel: TunnelId::new(IBGW_RECEIVE).expect("receive"),
             next_tunnel: TunnelId::new(IBGW_NEXT).expect("next"),
             role: HopRole::InboundGateway,
@@ -965,7 +1181,7 @@ async fn destination_message_plane_against_java() {
             .hops()
             .iter()
             .any(|hop| hop.hash() == Hash::from_bytes(*java_hash.as_bytes())),
-        "outbound hop must be the reference"
+        "outbound hop must be the publication router"
     );
     let receive_ids = coord.registry().inbound_receive_ids();
     assert_eq!(receive_ids.len(), 1);
@@ -994,7 +1210,7 @@ async fn destination_message_plane_against_java() {
         .registry()
         .inbound_gateway_route(local_receive_for_lookup)
         .expect("inbound route exists");
-    assert_eq!(inbound_route.gateway_router, java_hash);
+    assert_eq!(inbound_route.gateway_router, service_hash);
     assert_eq!(inbound_route.gateway_receive_tunnel.get(), IBGW_RECEIVE);
     assert_eq!(inbound_route.local_receive_tunnel.get(), IBGW_NEXT);
     assert_eq!(reply_path.tunnel_id(), IBGW_RECEIVE);
@@ -1002,7 +1218,7 @@ async fn destination_message_plane_against_java() {
         &evidence_dir,
         "inbound-reply-path",
         &format!(
-            "gateway_matches_reference=true gateway_tunnel={} local_receive={} ids_distinct=true",
+            "gateway_matches_service_router=true gateway_tunnel={} local_receive={} ids_distinct=true",
             inbound_route.gateway_receive_tunnel.get(),
             inbound_route.local_receive_tunnel.get(),
         ),
@@ -1093,18 +1309,13 @@ async fn destination_message_plane_against_java() {
     } else {
         // Plan 194 §11 stop: Java accepted the build, the outbound
         // tunnel sent the DatabaseLookup, but the reference LS2
-        // never resolved on the inbound tunnel. Java's SAM bridge
-        // does NOT auto-publish the SAM-destination LS2 to the local
-        // NetDB in a controlled private topology where the
-        // reference has no peer tunnels to build a client tunnel
-        // for the lease (the destination `inbound.length=0 outbound.length=0`
-        // creates a zero-hop client tunnel but Java does NOT
-        // publish the LS2 until the client tunnel reaches a usable
-        // endpoint, which never happens without peers). i2pd's SAM
-        // bridge does publish immediately. This is a Java-specific
-        // second-family limitation; the harness records every
-        // install-dependent + delivery-dependent row as `blocked`
-        // with this stop provenance.
+        // never resolved on the inbound tunnel. The public Java client
+        // session is ready and its client-specific LS2 is locally present,
+        // but the exact-pinned Java router did not make that LS2 visible in
+        // the distinct publication router's main NetDB. This is the first
+        // Plan 199 publication boundary; the harness records every
+        // install-dependent + delivery-dependent row as `blocked` with
+        // this stop provenance.
         assert!(dest.note_direct_transport_attempt().is_err());
         append_evidence(&evidence_dir, "direct-rejected", "true");
         let mut scheduler = TunnelLivenessScheduler::new(LivenessConfig::plan_185_defaults());
@@ -1122,7 +1333,7 @@ async fn destination_message_plane_against_java() {
         record_stop(
             &evidence_dir,
             &format!(
-                "Plan 194 §11 stop: java SAM bridge does not publish LeaseSet2 in controlled private topology (sent DatabaseLookup, no response within {}s; lookup_pump_error={lookup_pump_error})",
+                "Plan 199 stop: client-ls2-local-but-not-network-visible (sent DatabaseLookup, no response within {}s; lookup_pump_error={lookup_pump_error})",
                 DATAGRAM_WAIT.as_secs()
             ),
         );
@@ -1271,18 +1482,13 @@ async fn destination_message_plane_against_java() {
     } else {
         // Plan 194 §11 stop: Java accepted the build, the outbound
         // tunnel sent the DatabaseLookup, but the reference LS2
-        // never resolved on the inbound tunnel. Java's SAM bridge
-        // does NOT auto-publish the SAM-destination LS2 to the local
-        // NetDB in a controlled private topology where the
-        // reference has no peer tunnels to build a client tunnel
-        // for the lease (the destination `inbound.length=0 outbound.length=0`
-        // creates a zero-hop client tunnel but Java does NOT
-        // publish the LS2 until the client tunnel reaches a usable
-        // endpoint, which never happens without peers). i2pd's SAM
-        // bridge does publish immediately. This is a Java-specific
-        // second-family limitation; the harness records every
-        // install-dependent + delivery-dependent row as `blocked`
-        // with this stop provenance.
+        // never resolved on the inbound tunnel. The public Java client
+        // session is ready and its client-specific LS2 is locally present,
+        // but the exact-pinned Java router did not make that LS2 visible in
+        // the distinct publication router's main NetDB. This is the first
+        // Plan 199 publication boundary; the harness records every
+        // install-dependent + delivery-dependent row as `blocked` with
+        // this stop provenance.
         assert!(dest.note_direct_transport_attempt().is_err());
         append_evidence(&evidence_dir, "direct-rejected", "true");
         let mut scheduler = TunnelLivenessScheduler::new(LivenessConfig::plan_185_defaults());
@@ -1300,7 +1506,7 @@ async fn destination_message_plane_against_java() {
         record_stop(
             &evidence_dir,
             &format!(
-                "Plan 194 §11 stop: java SAM bridge does not publish LeaseSet2 in controlled private topology (sent DatabaseLookup, no response within {}s; lookup_pump_error={lookup_pump_error})",
+                "Plan 199 stop: client-ls2-local-but-not-network-visible (sent DatabaseLookup, no response within {}s; lookup_pump_error={lookup_pump_error})",
                 DATAGRAM_WAIT.as_secs()
             ),
         );
@@ -1604,7 +1810,7 @@ async fn destination_message_plane_against_java() {
     let _ = PeerId::from_hash(java_hash);
 }
 
-/// Plan 198 §5.5 — full Streaming matrix (Direction A + B) against
+/// Plan 199 §A.5 — full Streaming matrix (Direction A + B) against
 /// the exact-pinned Java I2P 2.13.0 reference. Same wire as the i2pd
 /// first-family driver.
 #[tokio::test]
@@ -1612,6 +1818,10 @@ async fn destination_message_plane_against_java() {
 async fn streaming_through_java() {
     let java_ri_path = env_path("JAVA_ROUTER_INFO");
     let java_endpoint: SocketAddr = env_value("JAVA_SSU2_ENDPOINT").parse().expect("endpoint");
+    let service_ri_path = env_path("JAVA_SERVICE_ROUTER_INFO");
+    let service_endpoint: SocketAddr = env_value("JAVA_SERVICE_SSU2_ENDPOINT")
+        .parse()
+        .expect("service endpoint");
     let bind: SocketAddr = env_value("I2PR_SSU2_BIND").parse().expect("bind");
     let reference_control_endpoint: SocketAddr = env_value("JAVA_STREAM_CONTROL_ENDPOINT")
         .parse()
@@ -1620,6 +1830,10 @@ async fn streaming_through_java() {
     assert!(
         java_endpoint.ip().is_loopback(),
         "java endpoint must be loopback"
+    );
+    assert!(
+        service_endpoint.ip().is_loopback(),
+        "service endpoint must be loopback"
     );
     assert!(
         reference_control_endpoint.ip().is_loopback(),
@@ -1659,7 +1873,30 @@ async fn streaming_through_java() {
         .as_bytes()
         .try_into()
         .expect("32-byte encryption key");
+    let service_ri_bytes = std::fs::read(&service_ri_path).expect("read service router.info");
+    let (service_hash, service_ssu2) =
+        verify_reference_router_info(&service_ri_bytes).expect("verify service RouterInfo");
+    let service_material = service_ssu2
+        .address_material()
+        .expect("service key material");
+    let service_static =
+        i2pr_runtime::Ssu2PublicKey::new(*service_material.static_public_key().as_bytes())
+            .expect("service static key");
+    let service_intro = i2pr_runtime::IntroKey::new(*service_material.intro_key().as_bytes());
+    let service_target = daemon_dial_target(
+        service_hash,
+        service_endpoint,
+        service_static,
+        service_intro,
+    )
+    .expect("service dial target");
+    let service_router_info = RouterInfo::decode(
+        &service_ri_bytes,
+        i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
+    )
+    .expect("decode service RouterInfo");
     append_evidence(&evidence_dir, "reference-routerinfo-verified", "true");
+    append_evidence(&evidence_dir, "java-service-routerinfo-verified", "true");
 
     let mut dest = DestinationTunnelCoordinator::new(
         LookupPolicy::default(),
@@ -1675,6 +1912,13 @@ async fn streaming_through_java() {
         &evidence_dir,
         "reference-bootstrap-store",
         &dest.store_stats().record_count.to_string(),
+    );
+    let service_bootstrapped = dest
+        .bootstrap_reference_router_info(&service_ri_bytes, now)
+        .expect("bootstrap service reference");
+    assert_eq!(
+        service_bootstrapped,
+        RouterHash::from_bytes(*service_hash.as_bytes())
     );
     let caps = java_router_info
         .capabilities()
@@ -1712,18 +1956,54 @@ async fn streaming_through_java() {
     let _established = Box::pin(handle.dial(target, DIAL_TIMEOUT, &CancellationToken::new()))
         .await
         .expect("authenticated session establishes");
+    let _service_established =
+        Box::pin(handle.dial(service_target, DIAL_TIMEOUT, &CancellationToken::new()))
+            .await
+            .expect("authenticated session establishes with Java service router");
     let deadline_active = tokio::time::Instant::now() + WAIT_TIMEOUT;
     while tokio::time::Instant::now() < deadline_active {
-        if handle.snapshot().active_sessions >= 1 {
+        if handle.snapshot().active_sessions >= 2 {
             break;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
-    assert!(handle.snapshot().active_sessions >= 1);
+    assert!(handle.snapshot().active_sessions >= 2);
     append_evidence(
         &evidence_dir,
         "session-established",
         &handle.snapshot().sessions_established.to_string(),
+    );
+
+    let publication_peer = PeerId::from_hash(java_hash);
+    let service_peer = PeerId::from_hash(service_hash);
+    let publication_wire = database_store_router_info_wire(
+        Hash::from_bytes(*service_hash.as_bytes()),
+        &service_ri_bytes,
+        0x51A7_1101,
+    );
+    let service_wire = database_store_router_info_wire(
+        Hash::from_bytes(*java_hash.as_bytes()),
+        &java_ri_bytes,
+        0x51A7_1102,
+    );
+    for (peer, wire) in [
+        (publication_peer, publication_wire),
+        (service_peer, service_wire),
+    ] {
+        let request = RouterDeliveryRequest::new(peer, wire, DELIVERY_TIMEOUT)
+            .expect("RouterInfo bootstrap request");
+        assert_eq!(
+            handle
+                .delivery()
+                .deliver(request, &CancellationToken::new()),
+            RouterDeliveryOutcome::Accepted,
+            "ordinary Java RouterInfo bootstrap must be admitted"
+        );
+    }
+    append_evidence(
+        &evidence_dir,
+        "java-router-peer-bootstrap-submitted",
+        "service-to-publication-and-publication-to-service",
     );
 
     let warmup_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -1790,8 +2070,13 @@ async fn streaming_through_java() {
     let inbound_request = BuildRequest {
         direction: BuildDirection::Inbound,
         peer: PeerBuildMaterial {
-            router_hash: java_hash,
-            static_encryption_key: java_encryption_key,
+            router_hash: service_hash,
+            static_encryption_key: service_router_info
+                .router_identity()
+                .public_key()
+                .as_bytes()
+                .try_into()
+                .expect("service encryption key"),
             receive_tunnel: TunnelId::new(IBGW_RECEIVE).expect("receive"),
             next_tunnel: TunnelId::new(IBGW_NEXT).expect("next"),
             role: HopRole::InboundGateway,

@@ -96,7 +96,7 @@ jobs:
           I2PR_M6_EXECUTION_ID: github-${{ github.run_id }}
           I2PR_M6_WORKFLOW_RUN_ID: ${{ github.run_id }}
 
-      - name: Check Plan 198 final all-pass closure evidence
+      - name: Check Plan 199 final all-pass closure evidence
         if: success()
         run: bash scripts/check-m6-final-closure-evidence.sh
         env:

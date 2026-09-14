@@ -59,6 +59,8 @@ public final class ReferenceStreamingService {
         Properties options = new Properties();
         options.setProperty("i2cp.tcp.host", host);
         options.setProperty("i2cp.tcp.port", Integer.toString(port));
+        // Match the public raw destination helper and retain the existing
+        // bounded zero-hop client profile after the RouterInfo bootstrap.
         options.setProperty("inbound.length", "0");
         options.setProperty("outbound.length", "0");
         options.setProperty("inbound.quantity", "1");

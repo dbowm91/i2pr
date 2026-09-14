@@ -1,11 +1,11 @@
 # Plan 195 status — M10 remote independent service interoperability and final closure
 
-Status: **`registered-blocked-by-plan198`**.
+Status: **`registered-blocked-by-plan199`**.
 
 Plan of record:
 [`plans/195-m10-remote-independent-service-final-closure.md`](195-m10-remote-independent-service-final-closure.md).
 
-Plan 195 resumes the two remote service rows left blocked by Plan 181 after the local M10 product and independent local client matrix passed. It must not execute until Plan 198 fully closes the retained M6 two-family mixed-router criterion.
+Plan 195 resumes the two remote service rows left blocked by Plan 181 after the local M10 product and independent local client matrix passed. It is incorporated into Plan 199 and must not execute until the unified M6 and M10 remote-transport criteria pass.
 
 The earlier `unblocked-m10-remote-service-interop` interpretation is superseded. Plan 194's exact-pinned Java lane retained useful passing evidence, but its final run contained 22 mandatory LS2/destination/Streaming rows recorded `blocked`; Plan 194's own final acceptance criteria did not permit those rows to be converted into a bounded final pass. Plan 198 restores the fail-closed criterion and owns the public-Java-client completion path.
 
@@ -14,8 +14,9 @@ plan_193 = passed-m6-i2pd-mixed-router-streaming
 plan_196 = passed-m6-java-controlled-first-run-topology-corrective
 plan_197 = passed-m6-pq-ssu2-option-support-corrective
 plan_194 = retained-partial-java-qualification-sam-ls2-publication-boundary
-plan_198 = registered-executable-m6-java-public-client-final-closure-corrective
-plan_195 = registered-blocked-by-plan198
+plan_198 = blocked-public-java-client-leaseset2-publication
+plan_199 = blocked-java-public-client-leaseset2-and-m10-remote-transport
+plan_195 = registered-blocked-by-plan199
 
 milestone6_i2pd_streaming_interop = passed-via-plan193
 milestone6_java_mixed_router_interop = not-yet-passed
@@ -23,8 +24,8 @@ milestone6_interoperable = not-yet-claimed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 
-next_executable_plan = 198
-remaining_sequence = 198 -> 195
+next_executable_plan = 199
+remaining_sequence = 199 (unified 198 -> 195)
 ```
 
 Plan 195 becomes executable only after Plan 198 records:

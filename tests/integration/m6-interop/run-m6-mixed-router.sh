@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Plan 198 — cross-family M6 mixed-router (i2pd + Java I2P) evidence
+# Plan 199 Phase A — cross-family M6 mixed-router (i2pd + Java I2P) evidence
 # aggregator. Run after every per-layer harness so the two-family claim
 # can bind to a single cross-family evidence.json under
 # target/interop/m6-mixed-router-evidence/. The per-layer static
 # checkers continue to gate their own rows; this script never relaxes
 # a per-layer result.
 #
-# The Java lane uses the Plan 198 public-client helpers. The SAM bridge is
+# The Java lane uses the Plan 199 public-client helpers. The SAM bridge is
 # retained only as diagnostic compatibility evidence, never as a counted
 # service-destination path. The Java pin is referenced up front so the
 # structural checker
@@ -160,7 +160,7 @@ netdb_rc="$(run_per_layer netdb "${NETDB_HARNESS}")"
 destination_rc="$(run_per_layer destination "${DESTINATION_HARNESS}")"
 streaming_rc="$(run_per_layer streaming "${STREAMING_HARNESS}")"
 
-# Plan 198 — run the Java public-client second-family lane against the
+# Plan 199 — run the Java public-client second-family lane against the
 # exact-pinned Java I2P 2.13.0 reference. The lane is fail-closed if the
 # public-client destination cannot be resolved by the real i2pr NetDB path.
 java_rc=1
@@ -227,35 +227,35 @@ cross_family_row "external-clean-resource-baseline" "i2pd" \
 # zero is insufficient; the per-row evidence and final checker must also
 # prove the public destination was resolved and used.
 cross_family_row "external-daemon-strict-profile" "java" \
-  "Java second-family strict-profile run (Plan 198)" \
+  "Java second-family strict-profile run (Plan 199)" \
   "${java_rc}"
 cross_family_row "external-reference-verified" "java" \
-  "Java second-family RouterInfo verification (Plan 198)" \
+  "Java second-family RouterInfo verification (Plan 199)" \
   "${java_rc}"
 cross_family_row "external-session-established" "java" \
-  "Java second-family session establishment (Plan 198)" \
+  "Java second-family session establishment (Plan 199)" \
   "${java_rc}"
 cross_family_row "external-tunnel-build-accepted" "java" \
-  "Java second-family tunnel build acceptance (Plan 198)" \
+  "Java second-family tunnel build acceptance (Plan 199)" \
   "${java_rc}"
 cross_family_row "external-netdb-lookup-tunnel" "java" \
-  "Java second-family NetDB lookup (Plan 198)" \
+  "Java second-family NetDB lookup (Plan 199)" \
   "${java_rc}"
 cross_family_row "external-destination-ls2-resolved" "java" \
-  "Java second-family LeaseSet2 resolution (Plan 198)" \
+  "Java second-family LeaseSet2 resolution (Plan 199)" \
   "${java_rc}"
 cross_family_row "external-destination-message-roundtrip" "java" \
-  "Java second-family destination message round-trip (Plan 198)" \
+  "Java second-family destination message round-trip (Plan 199)" \
   "${java_rc}"
 cross_family_row "external-streaming-established" "java" \
-  "Java second-family Streaming establish (Plan 198)" \
+  "Java second-family Streaming establish (Plan 199)" \
   "${java_rc}"
 
 cross_family_row "external-streaming-multipacket-digest" "java" \
-  "Java second-family Streaming multi-packet digest (Plan 198)" \
+  "Java second-family Streaming multi-packet digest (Plan 199)" \
   "${java_rc}"
 cross_family_row "external-clean-resource-baseline" "java" \
-  "Java second-family clean resource baseline (Plan 198)" \
+  "Java second-family clean resource baseline (Plan 199)" \
   "${java_rc}"
 
 # Workspace gates slice (mirror run-destination.sh).
@@ -278,7 +278,7 @@ cross_family_row "workspace-gates" "i2pd" \
   "fmt + workspace check --all-targets + static boundary scripts (full test/clippy/doc/deny floor stays in routine CI)" \
   "${gates_rc}"
 cross_family_row "workspace-gates" "java" \
-  "fmt + workspace check --all-targets + static boundary scripts (Plan 198)" \
+  "fmt + workspace check --all-targets + static boundary scripts (Plan 199)" \
   "${gates_rc}"
 
 # ---- cross-family evidence.json ----------------------------------------
@@ -354,10 +354,10 @@ out = Path(evidence_dir)
 out.mkdir(parents=True, exist_ok=True)
 (out / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 with (out / "evidence.md").open("w", encoding="utf-8") as stream:
-    stream.write("# Plan 198 cross-family M6 mixed-router evidence\n\n")
+    stream.write("# Plan 199 cross-family M6 mixed-router evidence\n\n")
     stream.write(f"- i2pr commit: `{commit}`\n")
     stream.write(f"- i2pd: `{i2pd_version}` @ `{i2pd_pin}` (unmodified)\n")
-    stream.write(f"- Java I2P: `{java_version}` @ `{java_pin}` (unmodified, public-client second-family lane executed by Plan 198)\n")
+    stream.write(f"- Java I2P: `{java_version}` @ `{java_pin}` (unmodified, public-client second-family lane executed by Plan 199)\n")
     stream.write(f"- OS/image: `{platform.platform()}`\n")
     stream.write(f"- Rust: `{rustc}`\n")
     stream.write("- Bind policy: `127.0.0.1` only, `advertise=false`, no introducer\n\n")
@@ -367,7 +367,7 @@ with (out / "evidence.md").open("w", encoding="utf-8") as stream:
 PY
 
 if [[ "${REQUIRED_FAILED}" -ne 0 ]]; then
-  echo "Plan 198 cross-family M6 mixed-router lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
+  echo "Plan 199 cross-family M6 mixed-router lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1
 fi
-echo "Plan 198 cross-family M6 mixed-router lane passed; sanitized evidence: ${EVIDENCE_DIR}"
+echo "Plan 199 cross-family M6 mixed-router lane passed; sanitized evidence: ${EVIDENCE_DIR}"

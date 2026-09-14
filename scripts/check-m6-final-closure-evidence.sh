@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plan 198 §10 — evidence-consuming M6 final closure gate.
+# Plan 199 Phase A — evidence-consuming M6 final closure gate.
 # This is intentionally separate from the routine structural checker: it is
 # run only after a complete manual two-family external workflow has produced
 # sanitized evidence for the exact candidate head.

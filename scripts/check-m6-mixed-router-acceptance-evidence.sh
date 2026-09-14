@@ -150,11 +150,11 @@ if [[ -f "${CROSSFAMILY_HARNESS}" ]]; then
   fi
   for helper in "${JAVA_RAW_HELPER_SRC}" "${JAVA_STREAM_HELPER_SRC}"; do
     if ! grep -q 'I2PClientFactory\|I2PSocketManagerFactory' "${helper}"; then
-      echo "m6 mixed-router evidence check failed: Plan 198 helper lacks public Java client API use: ${helper}" >&2
+      echo "m6 mixed-router evidence check failed: Plan 199 helper lacks public Java client API use: ${helper}" >&2
       failures=$((failures + 1))
     fi
     if grep -n -E 'net\.i2p\.router|I2CPMessage|SAMBridge|Garlic|StreamingPacket' "${helper}" >/dev/null 2>&1; then
-      echo "m6 mixed-router evidence check failed: Plan 198 helper calls private/router or wire-level APIs: ${helper}" >&2
+      echo "m6 mixed-router evidence check failed: Plan 199 helper calls private/router or wire-level APIs: ${helper}" >&2
       failures=$((failures + 1))
     fi
   done

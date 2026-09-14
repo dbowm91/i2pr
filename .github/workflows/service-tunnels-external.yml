@@ -1,4 +1,4 @@
-name: Service-tunnels external interoperability
+name: Service-tunnels external interoperability (Plan 199)
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   service-tunnels-external:
-    name: M10 independent application clients (Ubuntu)
+    name: M10 independent application clients (Plan 199, Ubuntu)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:

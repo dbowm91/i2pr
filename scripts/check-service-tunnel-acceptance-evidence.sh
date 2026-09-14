@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plan 181 §9 — static evidence-integrity check for the M10
+# Plan 199 / Plan 181 — static evidence-integrity check for the M10
 # service-tunnel external lane.
 #
 # Rejects known dangerous bookkeeping in
@@ -13,8 +13,8 @@
 #   `suite_row "<label>" "<test>" "<detail>"` — records passed only
 #   for suite rc 0 plus the row's own captured `test <name> ... ok`
 #   line (reconcile/resource rows);
-#   `record_blocked "<label>" "<detail>"` — the ONLY sanctioned
-#   path for the two remote rows (blocked, never passed).
+#   `record_blocked "<label>" "<detail>"` — the fail-closed path
+#   for the two remote rows while the real remote transport is absent.
 # A literal `record "<required-label>" passed` line (indented or
 # not) means a row was hard-coded and fails this check. `failed`
 # literals are fail-closed and permitted only outside required
@@ -36,7 +36,7 @@
 #   irc-user-hostname-authenticated-destination, irc-ctcp-policy-local,
 #   external-clean-resource-baseline, unsupported-profile-ledger.
 #
-# Blocked labels (Plan 181 §6.3 stop condition):
+# Blocked labels (Plan 199 execution stop condition):
 #   remote-independent-http-eepsite, remote-independent-irc-service.
 #
 # Usage: bash scripts/check-service-tunnel-acceptance-evidence.sh

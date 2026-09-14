@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plan 181 — M10 independent-application-client matrix plus the
+# Plan 199 / Plan 181 — M10 independent-application-client matrix plus the
 # controlled remote independent-I2P qualification attempt.
 #
 # Provenance: local rows execute the focused Plan 174–180/182 Rust
@@ -16,7 +16,9 @@
 # No required row is recorded `passed` except by the exit status of
 # its associated command (plus the row's own evidence keys where
 # applicable); remote rows are recorded `blocked` (never `passed`)
-# with command/log provenance per the §6.3 stop condition. See
+# with command/log provenance per the §6.3 stop condition. The current
+# manager still has only the local co-owned peer bridge, so this probe
+# cannot be counted as remote curl/jaraco application interop. See
 # scripts/check-service-tunnel-acceptance-evidence.sh.
 #
 # The lane is unprivileged and loopback-only (no root, no Docker, no
@@ -817,9 +819,9 @@ PY
            [[ "${qualify_established}" == "0" ]] &&
            [[ "${qualify_delivered}" == "0" ]]; then
           record_blocked "remote-independent-http-eepsite" \
-            "m6-mixed-router-streaming-blocker: i2pd PUB valid, unknown_peer>0, delivered=0, no establishment (see remote-qualify.log)"
+            "m10-remote-transport-unimplemented: i2pd PUB valid, unknown_peer>0, delivered=0, no establishment (see remote-qualify.log)"
           record_blocked "remote-independent-irc-service" \
-            "m6-mixed-router-streaming-blocker: same qualification attempt covers the IRC service path (see remote-qualify.log)"
+            "m10-remote-transport-unimplemented: same bounded qualification attempt covers the IRC service path (see remote-qualify.log)"
         else
           # Any deviation — including unexpected establishment
           # (blocker lifted: re-count as interop evidence) — fails
@@ -972,7 +974,7 @@ local_failed = [
 if local_failed:
     verdict = "failed"
 elif any(row["status"] == "blocked" for row in remote_rows):
-    verdict = "blocked-by-m6-mixed-router-streaming-blocker"
+    verdict = "blocked-by-m10-remote-transport-unimplemented"
 elif all(row["status"] == "passed" for row in rows):
     verdict = "passed"
 else:
@@ -1004,7 +1006,7 @@ evidence = {
     "results": rows,
     "known_limitations": [
         "M10 local product plus independent-application-client evidence only; no public I2P participation",
-        "remote independent-I2P service rows are recorded blocked under the §6.3 stop condition (m6-mixed-router-streaming-blocker) with command/log provenance",
+        "remote independent-I2P service rows are recorded blocked under the Plan 199 stop condition (m10-remote-transport-unimplemented) with command/log provenance",
         "self-composed i2pr rows are never substituted for the remote rows",
         "no external client/router source is patched; no private keys or raw payloads in evidence",
     ],
@@ -1013,7 +1015,7 @@ out = Path(evidence_dir)
 out.mkdir(parents=True, exist_ok=True)
 (out / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 with (out / "evidence.md").open("w", encoding="utf-8") as stream:
-    stream.write("# Plan 181 M10 independent application/service evidence\n\n")
+    stream.write("# Plan 199 M10 independent application/service evidence\n\n")
     stream.write(f"- i2pr commit: `{commit}`\n")
     stream.write(f"- lane: `{lane}`\n")
     stream.write(f"- verdict: `{verdict}`\n")

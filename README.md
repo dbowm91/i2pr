@@ -111,9 +111,9 @@ m6_inbound_destination_delivery_boundary_E = closed-via-plan192
 m6_inbound_destination_delivery = passed-via-plan192 (i2cp-compatible I2CP-style Data wire-format; STYLE=RAW SAM session; 9-byte short-transport inner envelope)
 m6_mixed_router_cross_family_ledger = landed-via-plan189 (i2pd-family-passed-via-plan193; java-second-family-now-executable-via-plan194)
 m6_i2pd_mixed_router_streaming_qualification = passed-via-plan193 (33/33 external rows twice on exact head 3687189; static checker wired)
-m6_java_mixed_router_interop = not-yet-passed (Plan 198 public-client helpers connect, but the exact-pinned Java 2.13.0 controlled router does not return the public-client LeaseSet2 to the real i2pr DatabaseLookup path; destination/Streaming rows remain blocked with fail-closed provenance)
-next_product_layer = m6-java-public-client-leaseset2-publication-corrective (Plan 198 remains blocked; Plan 195 stays gated)
-next_executable_plan = 198 (resolve the exact-pinned Java public-client LeaseSet2 publication boundary)
+m6_java_mixed_router_interop = not-yet-passed (Plan 199 two-router bootstrap passes, but the exact-pinned Java 2.13.0 controlled routers still do not return the public-client LeaseSet2 to the real i2pr DatabaseLookup path; destination/Streaming rows remain blocked with fail-closed provenance)
+next_product_layer = m10-unified-final-closure-blocked-at-java-public-client-leaseset2-and-remote-transport
+next_executable_plan = 199 (resolve Java public-client LeaseSet2 publication and add the real M10 remote transport path)
 ```
 
 Milestone 8 is **closed** via [**Plan 161**](plans/161-status.md) within its bounded direct-interop scope. Directions A and B are genuinely proven against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over real loopback UDP, including authenticated session establishment, small and fragmented I2NP/DatabaseStore exchange with return DeliveryStatus traffic, cached-token behavior, malformed/resource rows, and the fail-closed external evidence lane. [**Plan 162**](plans/162-status.md) passed the narrow external-test lane correction. Public-network, NetDB/tunnel/destination, IPv6-external, PQ, SSU1, and Milestone 6 mixed-router interoperability remain outside that claim.
@@ -128,10 +128,10 @@ Milestone 10 planning is registered via [**Plan 173**](plans/173-status.md). [**
 
 For the full plan hierarchy, MVP roadmap, and what's implemented vs. not, see [**`plans/README.md`**](plans/README.md).
 
-The Milestone 6 mixed-router interoperability qualification is **not yet closed** (experimental, loopback-only). Plan 193 closed the i2pd first-family matrix; Plan 198 remains the Java second-family closure corrective:
+The Milestone 6 mixed-router interoperability qualification is **not yet closed** (experimental, loopback-only). Plan 193 closed the i2pd first-family matrix; Plan 199 is the unified closure attempt and remains blocked:
 
 - The i2pd 2.61.0 family proves the full Direction A (i2pr→i2pd STREAM SYN/Established + 25 B + 8192 B digests + reverse 23 B + 4096 B digests + sibling + close/EOF + isolation) and Direction B (i2pd→i2pr CONNECT/Established + 17 B + 2048 B digests + close/EOF) external matrix passes twice on exact head `3687189` against exact-pinned i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) over the proven Plan 184–192 real one-hop SSU2/tunnel/NetDB/LeaseSet2/ECIES/Garlic stack plus the Plan 192 i2pd-compatible 9-byte short-transport inner envelope + I2CP-style Data body + `STYLE=RAW` SAM session + `RAW RECEIVED SIZE=N` digest equality layer.
-- The Plan 198 public-client corrective uses public `I2PClient`/`I2PSession` and `I2PSocketManager` APIs. Both Rust driver processes return `ok`, but the exact-pinned Java 2.13.0 controlled router does not return the public-client LeaseSet2 to the real i2pr DatabaseLookup path; mandatory destination and Streaming rows remain blocked with fail-closed `plan194-java-stop` provenance. No Java-family or two-family M6 closure claim is made.
+- The Plan 199 public-client corrective uses public `I2PClient`/`I2PSession` and `I2PSocketManager` APIs, with two disposable Java routers exchanging ordinary RouterInfo first. The bootstrap row passes, but the exact-pinned Java 2.13.0 controlled routers do not return the public-client LeaseSet2 to the real i2pr DatabaseLookup path; mandatory destination and Streaming rows remain blocked with fail-closed `client-ls2-local-but-not-network-visible` provenance. No Java-family or two-family M6 closure claim is made.
 
 Static checkers `scripts/check-streaming-tunnel-evidence.sh` (33 guarded labels, both i2pd + Java harnesses wired), `scripts/check-destination-tunnel-evidence.sh` (21 guarded labels, both i2pd + Java harnesses wired), and `scripts/check-m6-mixed-router-acceptance-evidence.sh` (11 guarded labels, both pins referenced) are wired into the routine Linux CI floor. The evidence-consuming `scripts/check-m6-final-closure-evidence.sh` remains a manual-workflow gate and rejects any blocked, failed, or missing mandatory row. Plan 195 (M10 remote service interop) remains gated on Plan 198.
 

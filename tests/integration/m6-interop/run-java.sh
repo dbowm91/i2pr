@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plan 198 — run the M6 Java I2P public-client second-family closure lane
+# Plan 199 Phase A — run the M6 Java I2P public-client second-family closure lane
 # end-to-end with a controlled first-run topology.
 #
 # The second-family lane re-uses the Plan 184–193 product suites the
@@ -45,15 +45,24 @@ JAVA_CACHE="${REPO_ROOT}/target/interop/cache/m6-java/${JAVA_PIN}"
 
 I2PR_PORT="${I2PR_SSU2_JAVA_PORT:-44090}"
 I2PR_STREAM_PORT="${I2PR_SSU2_JAVA_STREAM_PORT:-44091}"
+reserve_port() {
+  python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+I2PR_BOOTSTRAP_PORT="${I2PR_SSU2_JAVA_BOOTSTRAP_PORT:-$(reserve_port)}"
 # Plan 196 §5.4 — reserve/select fixed loopback Java SSU2, SAM and
 # I2CP ports before the Java router starts; the runner reports the
 # actual bound endpoints to the driver rather than assuming the
 # upstream default tuple.
-JAVA_SSU2_PORT="${I2PR_M6_JAVA_SSU2_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
-JAVA_SAM_PORT="${I2PR_M6_JAVA_SAM_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
-JAVA_I2CP_PORT="${I2PR_M6_JAVA_I2CP_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
+JAVA_SSU2_PORT="${I2PR_M6_JAVA_SSU2_PORT:-$(reserve_port)}"
+JAVA_SAM_PORT="${I2PR_M6_JAVA_SAM_PORT:-$(reserve_port)}"
+JAVA_I2CP_PORT="${I2PR_M6_JAVA_I2CP_PORT:-$(reserve_port)}"
 JAVA_RAW_CONTROL_PORT="${I2PR_M6_JAVA_RAW_CONTROL_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
 JAVA_STREAM_CONTROL_PORT="${I2PR_M6_JAVA_STREAM_CONTROL_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
+# Plan 199 Phase A.1: Router A owns public client destinations; Router B is
+# the distinct publication/floodfill target.
+JAVA_PUBLICATION_SSU2_PORT="${I2PR_M6_JAVA_PUBLICATION_SSU2_PORT:-$(reserve_port)}"
+JAVA_PUBLICATION_SAM_PORT="${I2PR_M6_JAVA_PUBLICATION_SAM_PORT:-$(reserve_port)}"
+JAVA_PUBLICATION_I2CP_PORT="${I2PR_M6_JAVA_PUBLICATION_I2CP_PORT:-$(reserve_port)}"
 DRIVER_TIMEOUT="600s"
 
 mkdir -p "${EVIDENCE_DIR}"
@@ -66,6 +75,8 @@ RESULTS_FILE="${SCRATCH}/results.tsv"
 # extracted below reach evidence.
 rm -f "${EVIDENCE_DIR}/java.log" \
   "${EVIDENCE_DIR}/driver/driver-evidence.tsv" \
+  "${EVIDENCE_DIR}/driver/destination/driver-evidence.tsv" \
+  "${EVIDENCE_DIR}/driver/streaming/driver-evidence.tsv" \
   "${EVIDENCE_DIR}/reference-facts.tsv"
 rm -f "${EVIDENCE_DIR}/reference-raw-destination.tsv" \
   "${EVIDENCE_DIR}/reference-streaming-service.tsv"
@@ -121,9 +132,11 @@ echo "==> Java launcher compiled: ${LAUNCHER_SRC} -> ${LAUNCHER_BUILD}/"
 # ---- Plan 196 §5.2 property-set + disposable data-dir --------------------
 # Per-run disposable Java data dir; no reseed URL or HTTPS contact
 # the harness did not pre-resolve to loopback.
-JAVA_DATA="${SCRATCH}/datadir"
+JAVA_DATA="${SCRATCH}/datadir-service"
+JAVA_PUBLICATION_DATA="${SCRATCH}/datadir-publication"
 JAVA_LOG="${SCRATCH}/java.log"
-mkdir -p "${JAVA_DATA}/logs"
+JAVA_PUBLICATION_LOG="${SCRATCH}/java-publication.log"
+mkdir -p "${JAVA_DATA}/logs" "${JAVA_PUBLICATION_DATA}/logs"
 
 # Sanity: never mutate the verified Java cache/build outputs.
 # Plan 196 §5.3 forbids `sed`/`clients.config` mutations of the cache.
@@ -151,6 +164,27 @@ JAVA_CMD=(
 setsid "${JAVA_CMD[@]}" >/dev/null 2>"${JAVA_LOG}" < /dev/null &
 JAVA_PID=$!
 CHILD_PIDS=("${JAVA_PID}")
+
+JAVA_PUBLICATION_CMD=(
+  java
+  -Djava.net.preferIPv4Stack=true
+  -Djava.awt.headless=true
+  -Djava.library.path="${JAVA_CACHE}:${JAVA_CACHE}/lib"
+  -Di2p.dir.base="${JAVA_CACHE}"
+  -DloggerFilenameOverride=logs/log-router-@.txt
+  -Drouterconsole.enable=false
+  -cp "${LAUNCHER_CP}"
+  -Dlauncher.scratch="${SCRATCH}"
+  "ControlledRouter"
+  "${JAVA_PUBLICATION_DATA}"
+  "127.0.0.1"
+  "${JAVA_PUBLICATION_SSU2_PORT}"
+  "${JAVA_PUBLICATION_SAM_PORT}"
+  "${JAVA_PUBLICATION_I2CP_PORT}"
+)
+setsid "${JAVA_PUBLICATION_CMD[@]}" >/dev/null 2>"${JAVA_PUBLICATION_LOG}" < /dev/null &
+JAVA_PUBLICATION_PID=$!
+CHILD_PIDS+=("${JAVA_PUBLICATION_PID}")
 
 stop_group() {
   local pid="${1:-}"
@@ -196,6 +230,8 @@ JAVA_RI=""
 # signatures + initial RouterInfo build), so the harness waits up
 # to 360 retries × 0.5 s = 180 s with periodic liveness checks.
 JAVA_ROUTER_DIR="${JAVA_DATA}/router"
+JAVA_PUBLICATION_ROUTER_DIR="${JAVA_PUBLICATION_DATA}/router"
+JAVA_PUBLICATION_RI=""
 for _ in $(seq 1 360); do
   if [[ -f "${JAVA_ROUTER_DIR}/router.info" ]]; then
     JAVA_RI="${JAVA_ROUTER_DIR}/router.info"
@@ -213,6 +249,23 @@ if [[ -z "${JAVA_RI}" ]]; then
   echo "ephemeral Java I2P did not publish router.info" >&2
   sed -n '1,40p' "${JAVA_LOG}" >&2 || true
   sed -n '1,40p' "${JAVA_DATA}/logs/log-router-0.txt" 2>&1 >&2 || true
+  exit 2
+fi
+for _ in $(seq 1 360); do
+  if [[ -f "${JAVA_PUBLICATION_ROUTER_DIR}/router.info" ]]; then
+    JAVA_PUBLICATION_RI="${JAVA_PUBLICATION_ROUTER_DIR}/router.info"
+    break
+  fi
+  if ! kill -0 "${JAVA_PUBLICATION_PID}" 2>/dev/null; then
+    echo "ephemeral Java publication router exited during startup" >&2
+    sed -n '1,40p' "${JAVA_PUBLICATION_LOG}" >&2 || true
+    exit 2
+  fi
+  sleep 0.5
+done
+if [[ -z "${JAVA_PUBLICATION_RI}" ]]; then
+  echo "ephemeral Java publication router did not publish router.info" >&2
+  sed -n '1,40p' "${JAVA_PUBLICATION_LOG}" >&2 || true
   exit 2
 fi
 
@@ -240,9 +293,9 @@ if [[ "${SAM_READY}" -ne 1 ]]; then
   tail -n 20 "${JAVA_DATA}/logs/log-router-0.txt" 2>&1 >&2 || true
   exit 2
 fi
-echo "    Java I2P SAM: 127.0.0.1:${JAVA_SAM_PORT}"
-echo "    Java I2P I2CP: 127.0.0.1:${JAVA_I2CP_PORT}"
-echo "    Java I2P: 127.0.0.1:${JAVA_SSU2_PORT} ($(wc -c <"${JAVA_RI}")-byte router.info)"
+echo "    Java service router A: 127.0.0.1:${JAVA_SSU2_PORT} (SAM ${JAVA_SAM_PORT}, I2CP ${JAVA_I2CP_PORT})"
+echo "    Java publication router B: 127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT} (SAM ${JAVA_PUBLICATION_SAM_PORT}, I2CP ${JAVA_PUBLICATION_I2CP_PORT})"
+echo "    Java service RouterInfo: $(wc -c <"${JAVA_RI}") bytes; publication RouterInfo: $(wc -c <"${JAVA_PUBLICATION_RI}") bytes"
 
 # Plan 196 §5.5 — externally observable topology invariants.
 TOPOLOGY_OK=1
@@ -329,7 +382,20 @@ if [[ "${TOPOLOGY_OK}" -ne 1 ]]; then
   exit 3
 fi
 
-# ---- Plan 198 public-client reference helpers ----------------------------
+# Router B is independently checked as the publication/floodfill role. It
+# has a separate RouterContext and disposable state, never a shared VMComm
+# or copied NetDB.
+if ! grep -q '^i2np.udp.host=127.0.0.1$' "${JAVA_PUBLICATION_DATA}/router.config" ||
+   ! grep -q "^i2np.udp.port=${JAVA_PUBLICATION_SSU2_PORT}$" "${JAVA_PUBLICATION_DATA}/router.config" ||
+   ! grep -q '^router.reseedDisable=true$' "${JAVA_PUBLICATION_DATA}/router.config" ||
+   ! grep -q '^router.floodfillParticipant=true$' "${JAVA_PUBLICATION_DATA}/router.config" ||
+   [[ ! -f "${JAVA_PUBLICATION_DATA}/noreseed.i2p" ]]; then
+  echo "controlled Java publication topology invariants failed" >&2
+  sed -n '1,80p' "${JAVA_PUBLICATION_DATA}/logs/log-router-0.txt" >&2 || true
+  exit 3
+fi
+
+# ---- Plan 199 public-client reference helpers ----------------------------
 # These helpers are compiled out-of-tree against the staged public jars. The
 # reference client owns its destination and publishes its Standard LS2 through
 # ordinary I2CP/client behavior; the control socket carries only test commands.
@@ -482,7 +548,26 @@ mkdir -p "${DRIVER_EVIDENCE}"
 DRIVER_LOG="${EVIDENCE_DIR}/external-driver.log"
 : > "${DRIVER_LOG}"
 driver_rc=0
-# Plan 198 §7 — the destination and Streaming drivers run against
+# Plan 199 §A.2: establish the Java A/B NetDB peer relationship before
+# starting public clients, whose one-hop tunnel readiness depends on it.
+BOOTSTRAP_LOG="${DRIVER_EVIDENCE}/bootstrap.log"
+mkdir -p "${DRIVER_EVIDENCE}/bootstrap"
+bootstrap_rc=0
+if ! /usr/bin/env JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
+   JAVA_SERVICE_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
+   JAVA_PUBLICATION_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
+   JAVA_PUBLICATION_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
+   I2PR_SSU2_BIND="127.0.0.1:${I2PR_BOOTSTRAP_PORT}" \
+   EVIDENCE_DIR="${DRIVER_EVIDENCE}/bootstrap" \
+   timeout --foreground "${DRIVER_TIMEOUT}" \
+   cargo test --locked -p i2pr-daemon --test java_tunnel_external \
+   bootstrap_java_router_peers -- --ignored --exact --nocapture --test-threads=1 \
+   >>"${BOOTSTRAP_LOG}" 2>&1; then
+  bootstrap_rc=$?
+  driver_rc=1
+fi
+echo "    Java A/B ordinary RouterInfo bootstrap exit=${bootstrap_rc}" >>"${DRIVER_LOG}"
+# Plan 199 §A.3 — the destination and Streaming drivers run against
 # separate public-client helpers. SAM remains available only for the
 # retained diagnostic compatibility row and is never a counted service
 # destination.
@@ -494,8 +579,12 @@ mkdir -p "${DRIVER_EVIDENCE}/destination" "${DRIVER_EVIDENCE}/streaming"
 start_raw_helper
 RAW_REFERENCE_DESTINATION_B64="$(awk 'NR==1 {print $2}' "${RAW_HELPER_READY}")"
 echo "    public Java raw helper ready; running destination driver" >>"${DRIVER_LOG}"
-if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_RI}" \
-   JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
+if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
+   JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
+   JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
+   JAVA_SERVICE_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
+   JAVA_PUBLICATION_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
+   JAVA_PUBLICATION_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
    JAVA_I2CP_ENDPOINT="127.0.0.1:${JAVA_I2CP_PORT}" \
    JAVA_RAW_CONTROL_ENDPOINT="127.0.0.1:${JAVA_RAW_CONTROL_PORT}" \
    JAVA_RAW_REFERENCE_DESTINATION_B64="${RAW_REFERENCE_DESTINATION_B64}" \
@@ -522,8 +611,12 @@ echo "    public Java streaming helper ready; running streaming driver" >>"${DRI
 # Streaming driver run. Reuses the same SSU2 endpoint and SAM
 # Java public Streaming manager; it is independent of §5.4.
 streaming_rc=0
-if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_RI}" \
-   JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
+if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
+   JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
+   JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
+   JAVA_SERVICE_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
+   JAVA_PUBLICATION_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
+   JAVA_PUBLICATION_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
    JAVA_I2CP_ENDPOINT="127.0.0.1:${JAVA_I2CP_PORT}" \
    JAVA_STREAM_CONTROL_ENDPOINT="127.0.0.1:${JAVA_STREAM_CONTROL_PORT}" \
    JAVA_STREAM_REFERENCE_DESTINATION_B64="${STREAM_REFERENCE_DESTINATION_B64}" \
@@ -615,12 +708,12 @@ m6_key_row() {
   fi
   record_guarded "${label}" "${detail}" "${rc}"
 }
-# Plan 196 §6 — topology readiness must precede the SSU2 gate. The
+# Plan 199 §A.3 — topology readiness must precede the SSU2 gate. The
 # controlled launcher already produces the topology evidence keys; we
 # emit them as passed on success and as failed-with-stop-provenance
-# only when the external driver recorded `plan194-java-stop`.
+# only when the external driver recorded `plan199-java-stop`.
 STOP_FIRED=0
-if [[ -f "${DRIVER_TSV}" ]] && grep -Fq "plan194-java-stop" "${DRIVER_TSV}"; then
+if [[ -f "${DRIVER_TSV}" ]] && grep -Fq "plan199-java-stop" "${DRIVER_TSV}"; then
   STOP_FIRED=1
 fi
 blocked_row() {
@@ -630,7 +723,7 @@ blocked_row() {
   if [[ -f "${DRIVER_TSV}" ]] && awk -v k="${key}" -F'\t' '$1 == k {found=1} END{exit !found}' "${DRIVER_TSV}"; then
     record "${label}" passed "${detail}"
   elif [[ "${STOP_FIRED}" -eq 1 ]]; then
-    record "${label}" blocked "${detail} (m6-java-second-family-stop; see Plan 196 §11 stop provenance)"
+    record "${label}" blocked "${detail} (m6-java-second-family-stop; see Plan 199 stop provenance)"
   else
     record "${label}" failed "${detail} (no evidence key, no stop provenance)"
   fi
@@ -775,7 +868,7 @@ failed = [row["label"] for row in rows if row["status"] == "failed"]
 if failed:
     java_status = "failed"
 elif blocked:
-    java_status = "blocked-pending-plan194-stop"
+    java_status = "blocked-pending-plan199-stop"
 elif passed:
     java_status = "passed-via-java-2.13.0"
 else:
@@ -810,7 +903,7 @@ evidence = {
     "known_limitations": [
         "second-family Java qualification: i2pd first-family passed via Plan 193",
         "loopback-only Java reference; no public I2P participation",
-        "Plan 198 public Java client helpers prove destination + streaming layers end-to-end",
+        "Plan 199 public Java client helpers prove transport/streaming; LS2 publication remains blocked at client-ls2-local-but-not-network-visible",
         "SAM remains diagnostic compatibility evidence and is not a counted service destination",
     ],
 }
@@ -818,7 +911,7 @@ out = Path(evidence_dir)
 out.mkdir(parents=True, exist_ok=True)
 (out / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 with (out / "evidence.md").open("w", encoding="utf-8") as stream:
-    stream.write("# Plan 198 M6 Java public-client second-family closure evidence\n\n")
+    stream.write("# Plan 199 Phase A M6 Java public-client second-family evidence\n\n")
     stream.write(f"- i2pr commit: `{commit}`\n")
     stream.write(f"- Java I2P: `{java_version}` @ `{java_pin}` (unmodified)\n")
     stream.write(f"- OS/image: `{platform.platform()}`\n")
@@ -831,7 +924,7 @@ with (out / "evidence.md").open("w", encoding="utf-8") as stream:
 PY
 
 if [[ "${REQUIRED_FAILED}" -ne 0 ]]; then
-  echo "Plan 198 M6 Java public-client second-family lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
+  echo "Plan 199 Phase A M6 Java lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1
 fi
-echo "Plan 198 M6 Java public-client second-family lane passed; sanitized evidence: ${EVIDENCE_DIR}"
+echo "Plan 199 Phase A M6 Java lane passed; sanitized evidence: ${EVIDENCE_DIR}"

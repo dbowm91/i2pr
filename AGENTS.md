@@ -37,8 +37,9 @@ Direction B external matrix passed twice on exact head
 `plans/188-m6-mixed-router-streaming-with-i2pd.md`
 Streaming file remains historical context only and is superseded
 by [`plans/193-m6-i2pd-mixed-router-streaming-qualification.md`](plans/193-m6-i2pd-mixed-router-streaming-qualification.md)).
-Plan 194 retained the bounded SAM-bridge LS2-publication finding; Plan 198
-reopened final closure with public Java client helpers. Those helpers connect
+Plan 194 retained the bounded SAM-bridge LS2-publication finding; Plan 199
+reopened final closure with public Java client helpers and a two-router
+ordinary-RouterInfo bootstrap. Those helpers connect
 through public I2PClient/I2PSession and I2PSocketManager APIs, but the
 exact-pinned Java 2.13.0 controlled router still does not return the
 public-client LeaseSet2 to the real i2pr DatabaseLookup path. Mandatory
@@ -59,8 +60,8 @@ failed at `crates/i2pr-transport-ssu2/src/address.rs:885` with
 `MAX_SSU2_PQ_SCHEMES = 8`, kept the i2pr session layer classical
 X25519 only, kept the i2pr publication path pq-free, and never
 implemented, claimed, or silently enabled ML-KEM. The current
-executable plan is now Plan 198 (M6 Java public-client LeaseSet2
-publication corrective); Plan 195 remains gated until Plan 198 closes.
+executable plan is now Plan 199 (M10 unified final closure); Plan 195
+remains gated until Plan 199 closes.
 
 ## Read first
 
@@ -129,8 +130,9 @@ Plan 193 = passed M6 i2pd mixed-router Streaming qualification (local rows passe
   Plan 194 = retained-partial-java-qualification-sam-ls2-publication-boundary
   Plan 196 = passed-m6-java-controlled-first-run-topology-corrective (out-of-tree ControlledRouter.java test-only launcher + rewritten run-java.sh + extended static checker + `router.blocklist.enable=false` controlled-launcher fix + PRIV-token SAM SESSION CREATE fix; controlled Java topology + authenticated SSU2 preflight + STYLE=RAW SAM bridge proven on the exact-pinned Java I2P 2.13.0 cache; `external-session-established-java` flipped failed -> passed; the two narrow correctives are bounded to the controlled-launcher and fail-closed at the daemon boundary)
  Plan 197 = passed-m6-pq-ssu2-option-support-corrective (parser-only tolerance of the SSU2 `pq` KEM-scheme option Java I2P 2.13.0 unconditionally publishes; typed Ssu2PqKem/PqCapabilities surface with bounded MAX_SSU2_PQ_SCHEMES = 8; i2pr session layer remains classical X25519 only; i2pr publication path stays pq-free; ML-KEM not implemented, claimed, or silently enabled; 21 required test rows green locally)
- Plan 198 = blocked-public-java-client-leaseset2-publication (public helper processes and Rust drivers pass, but mandatory Java lookup/delivery/Streaming rows remain blocked)
- next_executable_plan = 198 (resolve exact-pinned Java public-client LeaseSet2 publication; Plan 195 remains gated)
+ Plan 198 = blocked-public-java-client-leaseset2-publication (superseded into Plan 199; mandatory rows remain blocked)
+ Plan 199 = blocked-java-public-client-leaseset2-and-m10-remote-transport (two-router bootstrap passes; client LeaseSet2 remains network-invisible and M10 has no real remote-router path)
+ next_executable_plan = 199 (resolve Java public-client LeaseSet2 publication and add the real M10 remote transport path)
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
 Milestone 10 generic tunnels = passed-via-plan175 (profile; byte round-trip proven-via-plan182)
 Milestone 10 HTTP proxy = passed-via-plan176 (profile; byte round-trip proven-via-plan182)
@@ -151,13 +153,13 @@ M6 inbound NetDB reply-path correction = passed-via-plan190 (typed route + adapt
 M6 inbound destination delivery boundary E = closed-via-plan192 (i2pd-compatible I2CP-style Data wire-format)
 M6 inbound destination delivery = passed-via-plan192 (i2cp-compatible I2CP-style Data wire-format; STYLE=RAW SAM session; 9-byte short-transport inner envelope)
 M6 i2pd mixed-router Streaming qualification = passed-via-plan193 (full Direction A + Direction B matrix, two exact-head passes; static checker wired)
-M6 java second-family qualification = public-client-corrective-blocked-at-leaseset2-publication (Plan 198; helpers connect and Rust drivers pass, mandatory lookup/delivery/Streaming rows remain blocked)
-M6 mixed-router cross-family ledger = retained-partial-via-plan193-and-plan194; final closure pending Plan 198
+M6 java second-family qualification = public-client-corrective-blocked-at-leaseset2-publication (Plan 199; two-router bootstrap passes, mandatory lookup/delivery/Streaming rows remain blocked)
+M6 mixed-router cross-family ledger = retained-partial-via-plan193-and-plan194; final closure pending Plan 199
 M6 ssu2 pq option tolerance = landed-via-plan197-typed-parser-surface (Ssu2RouterAddress::parse accepts Java `pq=4,3`; typed PqCapabilities surfaced on every parsed address via `pq_capabilities()` accessor; first-family i2pd 2.61.0 lane stays green because i2pd does not publish pq)
-milestone6_java_mixed_router_interop = not-yet-passed (Plan 198 public-client LeaseSet2 publication boundary)
+milestone6_java_mixed_router_interop = not-yet-passed (Plan 199 two-router bootstrap passes, but public-client LeaseSet2 publication remains network-invisible)
 milestone6_interoperable = not-yet-claimed
- next_executable_plan = 198 (resolve exact-pinned Java public-client LeaseSet2 publication; Plan 195 remains gated)
- next product layer = m6-java-public-client-leaseset2-publication-corrective
+ next_executable_plan = 199 (resolve Java public-client LeaseSet2 publication and add the real M10 remote transport path)
+ next product layer = m10-unified-final-closure-blocked-at-java-public-client-leaseset2-and-remote-transport
 ```
 
 For current SSU2 interop work, read in this order:
@@ -744,7 +746,7 @@ cargo test --locked -p i2pr-daemon --test java_tunnel_external \
 # without lane env: fail-closed (missing required env); with lane env:
 # §5.1 + §5.4(a) green (authenticated SSU2 session + SAM RAW
 # destination creation); §5.2/§5.3/§5.4(b)/(c)/§5.5 record the
-# plan194-java-stop stop provenance and stay blocked pending the
+# plan199-java-stop stop provenance and stay blocked pending the
 # topology corrective plan.
 
 bash tests/integration/m6-interop/run-java.sh

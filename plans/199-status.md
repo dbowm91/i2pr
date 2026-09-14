@@ -1,11 +1,31 @@
 # Plan 199 status — Milestone 10 unified final closure
 
-Status: **`registered-executable-m10-unified-final-closure`**.
+Status: **`blocked-java-public-client-leaseset2-and-m10-remote-transport`**.
 
 Plan of record:
 [`plans/199-m10-unified-final-closure.md`](199-m10-unified-final-closure.md).
 
 Plan 199 is the focal handoff authority for the remaining Milestone 10 work. It incorporates the still-valid closure requirements from Plan 198 (Java-family M6 final qualification) and Plan 195 (the two remaining remote M10 application rows) into one execution program. Earlier plans retain their evidence/provenance and are not rewritten as passed by registration of this plan.
+
+## Execution result at current head
+
+The Plan 199 Phase A corrective was exercised after `git pull --rebase` at
+the current head. The Java lane now starts two disposable stock Java I2P
+2.13.0 routers, verifies loopback SSU2 topology, and submits each router's
+ordinary RouterInfo to the other over the real i2pr authenticated session.
+That bootstrap row passes. The public Java destination and Streaming helpers
+also connect through the public client APIs, but the client-owned LeaseSet2
+still does not become visible to the other router's real DatabaseLookup path.
+The mandatory rows stop fail-closed at
+`client-ls2-local-but-not-network-visible`; no M6 Java-family or two-family
+closure claim is made.
+
+Phase B cannot honestly be promoted by bookkeeping: the current M10 daemon
+manager delivers through the local co-owned peer bridge and has no production
+remote-router transport/LeaseSet2 lookup path. The existing remote runner
+therefore remains a bounded qualification probe, not a real curl/jaraco
+remote application path. Plan 199 remains blocked until both boundaries are
+implemented and rerun with command-derived evidence.
 
 ## Registration floor
 
@@ -57,8 +77,8 @@ The Plan 199 source diagnosis is that Java I2P 2.13.0 places public-client Lease
 ## Handoff
 
 ```text
-next_executable_plan = 199
-next_product_layer = m10-unified-final-closure
+next_executable_plan = 199 (resolve Java client LeaseSet2 publication and add the real M10 remote transport path)
+next_product_layer = m10-unified-final-closure-blocked-at-phase-A-and-phase-B
 ```
 
 Do not execute Plans 198 and 195 as separate roadmap programs. Their still-valid requirements are incorporated into Plan 199 and remain referenced as detailed provenance.
