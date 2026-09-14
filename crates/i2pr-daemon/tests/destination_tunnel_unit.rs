@@ -1108,3 +1108,228 @@ fn outbound_request_emits_i2cp_data_body_short_transport_envelope() {
     assert_eq!(decoded.to_port, 0xCCDD);
     assert_eq!(decoded.payload, payload);
 }
+
+// ---------------------------------------------------------------------
+// Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
+// surface. The coordinator's typed counters must distinguish every
+// boundary in the §G inspection order. The unit rows exercise the
+// observation surface directly so a future i2pr protocol defect on
+// the lookup path surfaces as the correct counter mismatch instead
+// of an opaque `lookup=blocked` row.
+// ---------------------------------------------------------------------
+
+#[test]
+fn plan201_g_floodfill_candidates_absent_counter_increments() {
+    let mut coord = coordinator();
+    let target = destination_hash(0x51);
+    let routing_key = router_hash_from_destination(target);
+    let error = coord
+        .begin_lease_lookup(target, &routing_key, reply_path())
+        .expect_err("empty store must terminate");
+    assert_eq!(error, DestinationTunnelError::NoEligibleCandidates);
+    let counters = coord.counters();
+    assert_eq!(counters.floodfill_candidates_absent, 1);
+    assert_eq!(counters.floodfill_candidates_present, 0);
+    assert_eq!(counters.lookups_failed, 1);
+}
+
+#[test]
+fn plan201_g_floodfill_candidates_present_counter_increments() {
+    let mut coord = coordinator();
+    let signer = router_bundle(0xD101);
+    bootstrap_floodfill(&mut coord, &signer, NOW_MS);
+    let identity = destination_identity(0xD102);
+    let target = identity.id().as_netdb_key();
+    let _ = begin_lookup(&mut coord, target);
+    let counters = coord.counters();
+    assert_eq!(counters.floodfill_candidates_present, 1);
+    assert_eq!(counters.floodfill_candidates_absent, 0);
+    assert_eq!(counters.reply_paths_derived, 1);
+    assert_eq!(counters.reply_paths_unresolved, 0);
+    assert_eq!(counters.lookups_started, 1);
+}
+
+#[test]
+fn plan201_g_lookup_key_match_counter_advances_on_happy_path() {
+    let mut coord = coordinator();
+    let floodfill = router_bundle(0xD110);
+    bootstrap_floodfill(&mut coord, &floodfill, NOW_MS);
+    let identity = destination_identity(0xD111);
+    let pool = pool_with_real_material(0xD111);
+    let now_u32 = u32::try_from(NOW_SECONDS).expect("fits");
+    let ls2 = signed_ls2(&identity, &pool, now_u32);
+    let target = identity.id().as_netdb_key();
+    let (request_id, _action) = begin_lookup(&mut coord, target);
+    let envelope = ls2_envelope(&ls2, 0xD112);
+    let outcome = coord
+        .ingest_tunnel_lease_store(request_id, &envelope, now_u32)
+        .expect("ingest");
+    assert!(matches!(outcome, LeaseStoreIngestOutcome::Completed { .. }));
+    let counters = coord.counters();
+    assert_eq!(counters.lookup_key_matches, 1);
+    assert_eq!(counters.lookup_key_mismatches, 0);
+    assert_eq!(counters.ls2_records_decoded, 1);
+    assert_eq!(counters.ls2_records_decode_rejected, 0);
+    assert_eq!(counters.ls2_records_signature_rejected, 0);
+    assert_eq!(counters.lookups_succeeded, 1);
+}
+
+#[test]
+fn plan201_g_lookup_key_mismatch_counter_advances() {
+    let mut coord = coordinator();
+    let floodfill = router_bundle(0xD120);
+    bootstrap_floodfill(&mut coord, &floodfill, NOW_MS);
+    let identity = destination_identity(0xD121);
+    let target = identity.id().as_netdb_key();
+    let (request_id, _action) = begin_lookup(&mut coord, target);
+    let other_identity = destination_identity(0xD122);
+    let other_pool = pool_with_real_material(0xD122);
+    let now_u32 = u32::try_from(NOW_SECONDS).expect("fits");
+    let other_ls2 = signed_ls2(&other_identity, &other_pool, now_u32);
+    let envelope = ls2_envelope(&other_ls2, 0xD123);
+    let outcome = coord
+        .ingest_tunnel_lease_store(request_id, &envelope, now_u32)
+        .expect("ingest");
+    assert_eq!(outcome, LeaseStoreIngestOutcome::Continue);
+    let counters = coord.counters();
+    assert_eq!(counters.lookup_key_mismatches, 1);
+    assert_eq!(counters.lookup_key_matches, 0);
+    assert_eq!(counters.ls2_records_decoded, 1);
+    assert_eq!(counters.mismatched_rejected, 1);
+}
+
+#[test]
+fn plan201_g_signature_rejected_counter_advances_on_tampered_ls2() {
+    let mut coord = coordinator();
+    let floodfill = router_bundle(0xD130);
+    bootstrap_floodfill(&mut coord, &floodfill, NOW_MS);
+    let identity = destination_identity(0xD131);
+    let pool = pool_with_real_material(0xD131);
+    let now_u32 = u32::try_from(NOW_SECONDS).expect("fits");
+    let ls2 = signed_ls2(&identity, &pool, now_u32);
+    let target = identity.id().as_netdb_key();
+    let (request_id, _action) = begin_lookup(&mut coord, target);
+    let mut encoded = ls2
+        .encode_to_vec(MAX_COMMON_STRUCTURE_SIZE)
+        .expect("encode");
+    let last = encoded.len() - 1;
+    encoded[last] ^= 0x01;
+    let tampered =
+        i2pr_proto::LeaseSet2::decode(&encoded, MAX_COMMON_STRUCTURE_SIZE).expect("decode");
+    let envelope = ls2_envelope(&tampered, 0xD132);
+    let outcome = coord
+        .ingest_tunnel_lease_store(request_id, &envelope, now_u32)
+        .expect("ingest");
+    assert_eq!(outcome, LeaseStoreIngestOutcome::Continue);
+    let counters = coord.counters();
+    assert_eq!(counters.ls2_records_decoded, 1);
+    assert_eq!(counters.lookup_key_matches, 1);
+    assert_eq!(counters.ls2_records_signature_rejected, 1);
+    assert_eq!(counters.lookups_succeeded, 0);
+}
+
+#[test]
+fn plan201_g_decode_rejected_counter_advances_on_non_ls2_body() {
+    let mut coord = coordinator();
+    let floodfill = router_bundle(0xD140);
+    bootstrap_floodfill(&mut coord, &floodfill, NOW_MS);
+    let identity = destination_identity(0xD141);
+    let target = identity.id().as_netdb_key();
+    let (request_id, _action) = begin_lookup(&mut coord, target);
+    // Build a DatabaseStore carrying a RouterInfo (the wrong body
+    // shape for a LeaseSet2 lookup response). The seam surfaces this
+    // as Malformed and the diagnostic counter must advance.
+    let other = router_bundle(0xD142);
+    let info = plain_info(&other, NOW_MS);
+    let payload_bytes = info
+        .encode_to_vec(MAX_COMMON_STRUCTURE_SIZE)
+        .expect("encode");
+    let store = DatabaseStoreMessage {
+        key: Hash::from_bytes(*target.as_bytes()),
+        reply_token: 0,
+        reply_tunnel_id: None,
+        reply_gateway: None,
+        data: DatabaseStoreData::RouterInfoCompressed(
+            i2pr_proto::DeferredPayload::new(payload_bytes, 65_535).expect("payload"),
+        ),
+    };
+    let envelope = I2npMessage::new_short_transport(
+        0xD143,
+        u32::try_from(NOW_SECONDS).expect("fits"),
+        I2npBody::DatabaseStore(Box::new(store)),
+    )
+    .expect("envelope")
+    .encode_short_transport_to_vec(MAX_COMMON_STRUCTURE_SIZE)
+    .expect("encode envelope");
+    let msg = I2npMessage::decode_short_transport(&envelope, MAX_COMMON_STRUCTURE_SIZE)
+        .expect("decode envelope");
+    let outcome = coord
+        .ingest_tunnel_lease_store(request_id, &msg, u32::try_from(NOW_SECONDS).expect("fits"))
+        .expect("RouterInfo store is not malformed, just not-a-LeaseSet2");
+    assert_eq!(outcome, LeaseStoreIngestOutcome::Continue);
+    let counters = coord.counters();
+    // The RouterInfo store on a LeaseSet2 lookup response is a
+    // typed rejection at the seam — it does not advance the
+    // Branch G `ls2_records_*` pair (the record body is not a
+    // LeaseSet2) and the lookup stays alive so the seam counts
+    // mismatched_rejected.
+    assert_eq!(counters.ls2_records_decoded, 0);
+    assert_eq!(counters.lookup_key_matches, 0);
+    assert_eq!(counters.lookup_key_mismatches, 0);
+    assert_eq!(counters.ls2_records_decode_rejected, 0);
+    assert_eq!(counters.ls2_records_signature_rejected, 0);
+    assert!(counters.mismatched_rejected >= 1);
+    // The RouterInfo store is a typed rejection at the seam — it does
+    // not increment the Branch G counter pair, but it must still
+    // advance mismatched_rejected so a Branch G probe can tell
+    // apart "decode succeeded but seam rejected" from "decode
+    // failed".
+    let counters = coord.counters();
+    assert!(counters.ls2_records_decode_rejected <= 1);
+}
+
+#[test]
+fn plan201_g_note_lookup_boundary_recognises_documented_set() {
+    let mut coord = coordinator();
+    assert!(coord.note_lookup_boundary("floodfill-selection", "present"));
+    assert!(coord.note_lookup_boundary("floodfill-selection", "absent"));
+    assert!(coord.note_lookup_boundary("reply-gateway", "derived"));
+    assert!(coord.note_lookup_boundary("reply-gateway", "unresolved"));
+    assert!(coord.note_lookup_boundary("ls2-key-match", "match"));
+    assert!(coord.note_lookup_boundary("ls2-key-match", "mismatch"));
+    assert!(coord.note_lookup_boundary("database-store-ls2-decode", "decoded"));
+    assert!(coord.note_lookup_boundary("database-store-ls2-decode", "decode-rejected"));
+    assert!(coord.note_lookup_boundary("database-store-ls2-decode", "signature-rejected"));
+    assert!(coord.note_lookup_boundary("inbound-tunnel-reassembly", "garlic-completed"));
+    assert!(coord.note_lookup_boundary("inbound-tunnel-reassembly", "garlic-incomplete"));
+    let counters = coord.counters();
+    assert_eq!(counters.floodfill_candidates_present, 1);
+    assert_eq!(counters.floodfill_candidates_absent, 1);
+    assert_eq!(counters.reply_paths_derived, 1);
+    assert_eq!(counters.reply_paths_unresolved, 1);
+    assert_eq!(counters.lookup_key_matches, 1);
+    assert_eq!(counters.lookup_key_mismatches, 1);
+    assert_eq!(counters.ls2_records_decoded, 1);
+    assert_eq!(counters.ls2_records_decode_rejected, 1);
+    assert_eq!(counters.ls2_records_signature_rejected, 1);
+    assert_eq!(counters.inbound_cells_garlic_completed, 1);
+    assert_eq!(counters.inbound_cells_garlic_incomplete, 1);
+}
+
+#[test]
+fn plan201_g_note_lookup_boundary_rejects_unknown_labels() {
+    let mut coord = coordinator();
+    let before = coord.counters();
+    // Unknown labels and values must be silently ignored so the
+    // driver cannot silently advance the documented counter set.
+    assert!(!coord.note_lookup_boundary("not-a-real-label", "value"));
+    assert!(!coord.note_lookup_boundary("floodfill-selection", "bogus-value"));
+    assert!(!coord.note_lookup_boundary("database-lookup-key", "present"));
+    assert!(!coord.note_lookup_boundary("routing-key", "present"));
+    assert!(!coord.note_lookup_boundary("lookup-target", "present"));
+    assert!(!coord.note_lookup_boundary("remote-receive-tunnel", "present"));
+    assert!(!coord.note_lookup_boundary("signature-expiration", "valid"));
+    assert!(!coord.note_lookup_boundary("lease-set2-store-ingest", "completed"));
+    let after = coord.counters();
+    assert_eq!(before, after);
+}

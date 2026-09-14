@@ -1508,6 +1508,35 @@ async fn destination_message_plane_against_java() {
     let (lookup_id, action) = dest
         .begin_lease_lookup(reference_hash, &routing_key, reply_path)
         .expect("lease lookup send");
+    // Plan 201 §G — emit the Branch G observation snapshot the
+    // daemon-owned destination coordinator just advanced during
+    // `begin_lease_lookup`. The recorded counter snapshot lets the
+    // harness attribute any later lookup failure to a specific
+    // Branch G boundary without re-running the diagnostic.
+    let post_lookup_counters = dest.counters();
+    append_evidence(
+        &evidence_dir,
+        "p201-lookup-boundary-floodfill-selection-present",
+        &format!(
+            "floodfill_candidates_present={} floodfill_candidates_absent={} \
+             reply_paths_derived={} reply_paths_unresolved={} \
+             lookup_key_matches={} lookup_key_mismatches={} \
+             ls2_records_decoded={} ls2_records_decode_rejected={} \
+             ls2_records_signature_rejected={} \
+             inbound_cells_garlic_completed={} inbound_cells_garlic_incomplete={}",
+            post_lookup_counters.floodfill_candidates_present,
+            post_lookup_counters.floodfill_candidates_absent,
+            post_lookup_counters.reply_paths_derived,
+            post_lookup_counters.reply_paths_unresolved,
+            post_lookup_counters.lookup_key_matches,
+            post_lookup_counters.lookup_key_mismatches,
+            post_lookup_counters.ls2_records_decoded,
+            post_lookup_counters.ls2_records_decode_rejected,
+            post_lookup_counters.ls2_records_signature_rejected,
+            post_lookup_counters.inbound_cells_garlic_completed,
+            post_lookup_counters.inbound_cells_garlic_incomplete,
+        ),
+    );
     let mut tunnel_rng = ChaCha8Rng::seed_from_u64(wall_secs().wrapping_add(7));
     let (dispatch, proof) = dest
         .compose_lookup_via_tunnel(
@@ -1575,14 +1604,84 @@ async fn destination_message_plane_against_java() {
         let envelope =
             I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE).expect("decode store");
         let now_secs = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
+        let pre_ingest_counters = dest.counters();
         match dest
             .ingest_tunnel_lease_store(lookup_id, &envelope, now_secs)
             .expect("ingest lease store")
         {
             LeaseStoreIngestOutcome::Completed { summary, .. } => {
                 lease_summary = Some(summary);
+                // Plan 201 §G — the LS2 lookup completed cleanly. Emit
+                // the post-ingest Branch G counter snapshot so a
+                // subsequent diagnostic row can prove the lookup
+                // traversed every documented boundary.
+                let post_counters = dest.counters();
+                append_evidence(
+                    &evidence_dir,
+                    "p201-lookup-boundary-ls2-key-match-match",
+                    &format!(
+                        "pre_ls2_decoded={} post_ls2_decoded={} \
+                         pre_lookup_key_matches={} post_lookup_key_matches={} \
+                         pre_signature_rejected={} post_signature_rejected={} \
+                         outcome=completed",
+                        pre_ingest_counters.ls2_records_decoded,
+                        post_counters.ls2_records_decoded,
+                        pre_ingest_counters.lookup_key_matches,
+                        post_counters.lookup_key_matches,
+                        pre_ingest_counters.ls2_records_signature_rejected,
+                        post_counters.ls2_records_signature_rejected,
+                    ),
+                );
+                append_evidence(
+                    &evidence_dir,
+                    "p201-lookup-boundary-database-store-ls2-decode-decoded",
+                    &format!(
+                        "ls2_records_decoded={} ls2_records_decode_rejected={} \
+                         ls2_records_signature_rejected={}",
+                        post_counters.ls2_records_decoded,
+                        post_counters.ls2_records_decode_rejected,
+                        post_counters.ls2_records_signature_rejected,
+                    ),
+                );
+                append_evidence(
+                    &evidence_dir,
+                    "p201-lookup-boundary-reply-gateway-derived",
+                    &format!(
+                        "reply_paths_derived={} reply_paths_unresolved={}",
+                        post_counters.reply_paths_derived, post_counters.reply_paths_unresolved,
+                    ),
+                );
             }
-            LeaseStoreIngestOutcome::Continue | LeaseStoreIngestOutcome::Ignored => {}
+            LeaseStoreIngestOutcome::Continue | LeaseStoreIngestOutcome::Ignored => {
+                let post_counters = dest.counters();
+                let outcome_label = if pre_ingest_counters.lookup_key_mismatches
+                    != post_counters.lookup_key_mismatches
+                {
+                    "ls2-key-mismatch"
+                } else if pre_ingest_counters.ls2_records_decode_rejected
+                    != post_counters.ls2_records_decode_rejected
+                {
+                    "decode-rejected"
+                } else if pre_ingest_counters.ls2_records_signature_rejected
+                    != post_counters.ls2_records_signature_rejected
+                {
+                    "signature-rejected"
+                } else {
+                    "ignored"
+                };
+                append_evidence(
+                    &evidence_dir,
+                    "p201-lookup-boundary-database-store-ls2-decode-decoded",
+                    &format!(
+                        "ls2_records_decoded={} ls2_records_decode_rejected={} \
+                         ls2_records_signature_rejected={} outcome={}",
+                        post_counters.ls2_records_decoded,
+                        post_counters.ls2_records_decode_rejected,
+                        post_counters.ls2_records_signature_rejected,
+                        outcome_label,
+                    ),
+                );
+            }
         }
     }
     #[allow(unused_variables)]
@@ -1749,14 +1848,61 @@ async fn destination_message_plane_against_java() {
         let envelope =
             I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE).expect("decode store");
         let now_secs = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
+        let pre_ingest_counters = dest.counters();
         match dest
             .ingest_tunnel_lease_store(lookup_id, &envelope, now_secs)
             .expect("ingest lease store")
         {
             LeaseStoreIngestOutcome::Completed { summary, .. } => {
                 lease_summary = Some(summary);
+                // Plan 201 §G — emit the Branch G counter snapshot
+                // for the second lookup completion so a single
+                // diagnostic evidence row covers both halves of
+                // the i2pd-style external Lane.
+                let post_counters = dest.counters();
+                append_evidence(
+                    &evidence_dir,
+                    "p201-lookup-boundary-ls2-key-match-match",
+                    &format!(
+                        "pre_ls2_decoded={} post_ls2_decoded={} \
+                         pre_lookup_key_matches={} post_lookup_key_matches={} \
+                         pre_signature_rejected={} post_signature_rejected={} \
+                         outcome=completed lookup_site=reply_direction",
+                        pre_ingest_counters.ls2_records_decoded,
+                        post_counters.ls2_records_decoded,
+                        pre_ingest_counters.lookup_key_matches,
+                        post_counters.lookup_key_matches,
+                        pre_ingest_counters.ls2_records_signature_rejected,
+                        post_counters.ls2_records_signature_rejected,
+                    ),
+                );
+                append_evidence(
+                    &evidence_dir,
+                    "p201-lookup-boundary-database-store-ls2-decode-decoded",
+                    &format!(
+                        "ls2_records_decoded={} ls2_records_decode_rejected={} \
+                         ls2_records_signature_rejected={} lookup_site=reply_direction",
+                        post_counters.ls2_records_decoded,
+                        post_counters.ls2_records_decode_rejected,
+                        post_counters.ls2_records_signature_rejected,
+                    ),
+                );
             }
-            LeaseStoreIngestOutcome::Continue | LeaseStoreIngestOutcome::Ignored => {}
+            LeaseStoreIngestOutcome::Continue | LeaseStoreIngestOutcome::Ignored => {
+                let post_counters = dest.counters();
+                append_evidence(
+                    &evidence_dir,
+                    "p201-lookup-boundary-database-store-ls2-decode-decoded",
+                    &format!(
+                        "ls2_records_decoded={} ls2_records_decode_rejected={} \
+                         ls2_records_signature_rejected={} lookup_site=reply_direction \
+                         outcome=continue_or_ignored",
+                        post_counters.ls2_records_decoded,
+                        post_counters.ls2_records_decode_rejected,
+                        post_counters.ls2_records_signature_rejected,
+                    ),
+                );
+            }
         }
     }
     let summary = if let Some(s) = lease_summary {

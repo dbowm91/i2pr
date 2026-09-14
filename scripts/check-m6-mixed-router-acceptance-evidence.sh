@@ -504,6 +504,89 @@ if [[ -f "${JAVA_RAW_HELPER_SRC}" && -f "${JAVA_STREAM_HELPER_SRC}" ]]; then
   fi
 fi
 
+# ---- 11. Plan 201 Branch G diagnostic observation surface. ----------
+# Plan 201 is the bounded corrective/closure pass for the Java I2P
+# 2.13.0 second-family M6 lane. It may only run after Plan 200 records
+# exactly one terminal `P200-*` classification. The most likely
+# classification given Plan 198/199 evidence (LS2 stored but
+# network-invisible) is `P200-G-store-acked-remote-lookup-fails`.
+#
+# Until Plan 200 actually runs end-to-end against the exact-pinned
+# Java cache, the Plan 201 implementation lands as a defensive
+# observation surface: the runtime exposes a typed
+# `note_lookup_boundary` helper so the external driver can attribute a
+# stuck Branch G lookup to a specific documented boundary without
+# silently advancing a counter. The static checker below rejects
+# unknown boundary labels so the documented set stays exhaustive.
+DESTINATION_TUNNELS_SRC="${REPO_ROOT}/crates/i2pr-daemon/src/destination_tunnels.rs"
+if [[ -f "${DESTINATION_TUNNELS_SRC}" ]]; then
+  # 11a. `note_lookup_boundary` is the public Branch G observation
+  # surface and must exist in the daemon-owned destination coordinator.
+  if ! grep -q 'fn note_lookup_boundary' "${DESTINATION_TUNNELS_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${DESTINATION_TUNNELS_SRC} lacks the Plan 201 §G note_lookup_boundary helper" >&2
+    failures=$((failures + 1))
+  fi
+  # 11b. The Branch G observation surface must cover every documented
+  # boundary label the external driver is allowed to report. Adding a
+  # new documented label requires both the helper implementation and
+  # a parallel grep row in this checker.
+  for label in \
+    floodfill-selection \
+    reply-gateway \
+    ls2-key-match \
+    database-store-ls2-decode \
+    inbound-tunnel-reassembly; do
+    if ! grep -q "\"${label}\"" "${DESTINATION_TUNNELS_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${DESTINATION_TUNNELS_SRC} lacks the Plan 201 §G documented label '${label}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 11c. The Branch G counter surface must include every typed
+  # observation pair. A future expansion of the documented set must
+  # update both this checker and the helper.
+  for counter in \
+    floodfill_candidates_present \
+    floodfill_candidates_absent \
+    reply_paths_derived \
+    reply_paths_unresolved \
+    lookup_key_matches \
+    lookup_key_mismatches \
+    ls2_records_decoded \
+    ls2_records_decode_rejected \
+    ls2_records_signature_rejected \
+    inbound_cells_garlic_completed \
+    inbound_cells_garlic_incomplete; do
+    if ! grep -q "pub ${counter}:" "${DESTINATION_TUNNELS_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${DESTINATION_TUNNELS_SRC} lacks the Plan 201 §G counter '${counter}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
+# ---- 12. Plan 201 Branch G unit coverage. -----------------------------
+# The Branch G observation surface must be covered by unit tests in
+# the destination tunnel unit suite so a future regression cannot
+# silently advance a counter. Each row maps to a documented
+# boundary label; the test body uses the public
+# `note_lookup_boundary` helper.
+DESTINATION_TUNNEL_UNIT_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/destination_tunnel_unit.rs"
+if [[ -f "${DESTINATION_TUNNEL_UNIT_TEST}" ]]; then
+  for row in \
+    plan201_g_floodfill_candidates_absent_counter_increments \
+    plan201_g_floodfill_candidates_present_counter_increments \
+    plan201_g_lookup_key_match_counter_advances_on_happy_path \
+    plan201_g_lookup_key_mismatch_counter_advances \
+    plan201_g_signature_rejected_counter_advances_on_tampered_ls2 \
+    plan201_g_decode_rejected_counter_advances_on_non_ls2_body \
+    plan201_g_note_lookup_boundary_recognises_documented_set \
+    plan201_g_note_lookup_boundary_rejects_unknown_labels; do
+    if ! grep -q "fn ${row}" "${DESTINATION_TUNNEL_UNIT_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${DESTINATION_TUNNEL_UNIT_TEST} lacks the Plan 201 §G unit row '${row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1

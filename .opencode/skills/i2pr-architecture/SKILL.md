@@ -472,21 +472,34 @@ record is not `superseded-by-*`. Currently:
    Plan 194 retains the bounded SAM-bridge LS2-publication finding.
    Plan 198 implements public Java I2PClient/I2PSession and
    I2PSocketManager helpers, but the exact-pinned Java 2.13.0 controlled
-   router still does not return the public-client LeaseSet2 to the real
-   i2pr lookup path; mandatory Java lookup/delivery/Streaming rows remain
-   blocked and Plan 195 stays gated. Plan 199 was the unified M6/M10
-   closure attempt and is decomposed into Plans 200–204.
-   Plan 200 (M6 Java public-client publication observability and
-   verified bootstrap) is the current diagnostic/evidence corrective:
-   Java helpers decouple `leaseset=published` from `READY` and add
-   bounded `REPORT_STATUS`; the Rust driver proves Router A/B main-NetDB
-   bootstrap through ordinary post-store DatabaseLookup round-trips in
-   both directions; sanitized Java log keys for the client LS2 lifecycle
-   and tunnel/floodfill/store/ack selection are emitted to evidence; and
-   exactly one terminal `P200-{A..H}` classification is recorded per
-   run. Plan 201 picks the smallest standards-compatible corrective
-   from that classification. The M10 production remote transport
-   branch is Plan 202 (parallel-executable with Plan 200); Plan 203 is
+    router still does not return the public-client LeaseSet2 to the real
+    i2pr lookup path; mandatory Java lookup/delivery/Streaming rows remain
+    blocked and Plan 195 stays gated. Plan 199 was the unified M6/M10
+    closure attempt and is decomposed into Plans 200–204.
+    Plan 200 (M6 Java public-client publication observability and
+    verified bootstrap) is the current diagnostic/evidence corrective:
+    Java helpers decouple `leaseset=published` from `READY` and add
+    bounded `REPORT_STATUS`; the Rust driver proves Router A/B main-NetDB
+    bootstrap through ordinary post-store DatabaseLookup round-trips in
+    both directions; sanitized Java log keys for the client LS2 lifecycle
+    and tunnel/floodfill/store/ack selection are emitted to evidence; and
+    exactly one terminal `P200-{A..H}` classification is recorded per
+    run. Plan 201 landed the Branch G `store-acked-remote-lookup-fails`
+    corrective framework: eleven new sanitized observation counters on
+    `DestinationTunnelCounters` (`lookup_key_matches`/`_mismatches`,
+    `floodfill_candidates_present`/`_absent`,
+    `reply_paths_derived`/`_unresolved`,
+    `ls2_records_decoded`/`_decode_rejected`/`_signature_rejected`,
+    `inbound_cells_garlic_completed`/`_incomplete`); the public
+    `note_lookup_boundary(label, value)` typed observation surface;
+    eight new `plan201_g_*` unit rows in `destination_tunnel_unit.rs`;
+    six new `blocked_row` Plan 201 §G entries in `run-java.sh`; static
+    checker `scripts/check-m6-mixed-router-acceptance-evidence.sh`
+    extended with §11 + §12 invariants. Final closure of Plan 201 is
+    blocked on the exact-head external run that records the
+    unambiguous `P200-*` classification and flips the seven §11 stop
+    rows `blocked → passed`. The M10 production remote transport
+    branch is Plan 202 (parallel-executable with Plan 200); Plan 203 is
    positive remote HTTP + IRC application interop; Plan 204 is the
    convergence.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is

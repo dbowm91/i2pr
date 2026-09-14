@@ -919,6 +919,27 @@ else
     "Plan 200 §11: terminal classification ${P200_CLASSIFICATION} (downstream rows pending Plan 201 corrective)"
 fi
 
+# Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
+# boundary rows. Each row is `passed` only when the corresponding
+# `p201-lookup-boundary-<label>-<value>` evidence key was emitted
+# by the destination driver on the lookup path. The keys are a
+# pre-registered subset of the documented set (the rest of the
+# set is available through the daemon-owned
+# `note_lookup_boundary` helper, but the harness only requires the
+# ones the JS2-closed Probe can observe end-to-end).
+blocked_row "external-p201-lookup-floodfill-present" "p201-lookup-boundary-floodfill-selection-present" \
+  "Plan 201 §G: i2pr floodfill selection produced at least one candidate for the active Java LS2 lookup"
+blocked_row "external-p201-lookup-reply-gateway-derived" "p201-lookup-boundary-reply-gateway-derived" \
+  "Plan 201 §G: i2pr reply-path derivation succeeded for the active Java LS2 lookup"
+blocked_row "external-p201-lookup-ls2-key-match" "p201-lookup-boundary-ls2-key-match-match" \
+  "Plan 201 §G: i2pr LS2 lookup response key matched the requested destination hash"
+blocked_row "external-p201-lookup-ls2-decoded" "p201-lookup-boundary-database-store-ls2-decode-decoded" \
+  "Plan 201 §G: i2pr decoded the LS2 envelope body on the lookup response"
+blocked_row "external-p201-lookup-ls2-signature-rejected" "p201-lookup-boundary-database-store-ls2-decode-signature-rejected" \
+  "Plan 201 §G: i2pr rejected the LS2 envelope at the signature-validation layer (positive or zero is diagnostic)"
+blocked_row "external-p201-inbound-garlic-completed" "p201-lookup-boundary-inbound-tunnel-reassembly-garlic-completed" \
+  "Plan 201 §G: i2pr recovered a complete Garlic envelope through a real inbound tunnel"
+
 echo "==> workspace gates slice"
 GATES_LOG="${EVIDENCE_DIR}/workspace-gates.log"
 : > "${GATES_LOG}"

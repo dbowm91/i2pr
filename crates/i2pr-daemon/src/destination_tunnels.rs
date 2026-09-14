@@ -220,6 +220,44 @@ pub struct DestinationTunnelCounters {
     pub retained_paths: usize,
     /// Pending publications at the snapshot.
     pub pending_publications: usize,
+    /// Plan 201 §G diagnostic — lookup key matches the requested
+    /// destination hash on a tunnel-recovered LS2 store response.
+    /// Distinct from the coordinator-level mismatch rejection so a
+    /// Branch G probe can tell apart the lookup-key check from the
+    /// reply-path derivation from the LS2 decode/signature chain.
+    pub lookup_key_matches: u64,
+    /// Plan 201 §G diagnostic — lookup key did NOT match the
+    /// requested destination hash on a tunnel-recovered LS2 store
+    /// response. Increments on every Branch G key-mismatch probe.
+    pub lookup_key_mismatches: u64,
+    /// Plan 201 §G diagnostic — floodfill selection produced at
+    /// least one candidate when a lookup started.
+    pub floodfill_candidates_present: u64,
+    /// Plan 201 §G diagnostic — floodfill selection produced zero
+    /// candidates when a lookup started.
+    pub floodfill_candidates_absent: u64,
+    /// Plan 201 §G diagnostic — reply-path derivation succeeded for
+    /// the active lookup.
+    pub reply_paths_derived: u64,
+    /// Plan 201 §G diagnostic — reply-path derivation returned a
+    /// typed error (missing route, zero tunnel id, local-id collision).
+    pub reply_paths_unresolved: u64,
+    /// Plan 201 §G diagnostic — DatabaseStore LS2 records that
+    /// decoded cleanly during the lookup response ingestion.
+    pub ls2_records_decoded: u64,
+    /// Plan 201 §G diagnostic — DatabaseStore LS2 records rejected
+    /// at the decoder layer (truncated, malformed, type-byte mismatch).
+    pub ls2_records_decode_rejected: u64,
+    /// Plan 201 §G diagnostic — DatabaseStore LS2 records rejected
+    /// at the signature-verification layer (Plan 190/192 invariants).
+    pub ls2_records_signature_rejected: u64,
+    /// Plan 201 §G diagnostic — tunnel-recovered inbound cells that
+    /// produced a complete Garlic envelope for a destination delivery.
+    pub inbound_cells_garlic_completed: u64,
+    /// Plan 201 §G diagnostic — tunnel-recovered inbound cells that
+    /// were accepted but produced no terminal envelope within the
+    /// bounded window.
+    pub inbound_cells_garlic_incomplete: u64,
 }
 
 /// Proof that one destination lookup traversed the tunnel path.
@@ -449,6 +487,108 @@ impl DestinationTunnelCoordinator {
         &self.lease_store
     }
 
+    /// Plan 201 §G — records one Branch G observation without
+    /// touching protocol state. The diagnostic surface lets the
+    /// external driver attribute a stuck Branch G lookup to a
+    /// specific upstream boundary even when the lookup's
+    /// typed counters (which only advance on positive / negative
+    /// ingest transitions) cannot distinguish "no response"
+    /// from "response rejected at the seam".
+    ///
+    /// The label is the boundary key from the Plan 201 §G
+    /// inspection order:
+    ///
+    /// ```text
+    /// "database-lookup-key"
+    /// "routing-key"
+    /// "lookup-target"
+    /// "floodfill-selection"
+    /// "reply-gateway"
+    /// "remote-receive-tunnel"
+    /// "database-store-ls2-decode"
+    /// "ls2-key-match"
+    /// "signature-expiration"
+    /// "inbound-tunnel-reassembly"
+    /// "lease-set2-store-ingest"
+    /// ```
+    ///
+    /// The `value` is a bounded, sanitized, non-secret diagnostic
+    /// string the external driver observes (e.g. `present`,
+    /// `absent`, `match`, `mismatch`, `decoded`,
+    /// `decode-rejected`, `signature-rejected`,
+    /// `garlic-completed`, `garlic-incomplete`).
+    ///
+    /// Returns `true` when the (label, value) pair is in the
+    /// documented set; `false` otherwise (the observation is
+    /// silently ignored so a future expansion of the documented
+    /// set must update the static checker as well).
+    pub fn note_lookup_boundary(&mut self, label: &str, value: &str) -> bool {
+        match (label, value) {
+            ("floodfill-selection", "present") => {
+                self.counters.floodfill_candidates_present =
+                    self.counters.floodfill_candidates_present.saturating_add(1);
+                true
+            }
+            ("floodfill-selection", "absent") => {
+                self.counters.floodfill_candidates_absent =
+                    self.counters.floodfill_candidates_absent.saturating_add(1);
+                true
+            }
+            ("reply-gateway", "derived") => {
+                self.counters.reply_paths_derived =
+                    self.counters.reply_paths_derived.saturating_add(1);
+                true
+            }
+            ("reply-gateway", "unresolved") => {
+                self.counters.reply_paths_unresolved =
+                    self.counters.reply_paths_unresolved.saturating_add(1);
+                true
+            }
+            ("ls2-key-match", "match") => {
+                self.counters.lookup_key_matches =
+                    self.counters.lookup_key_matches.saturating_add(1);
+                true
+            }
+            ("ls2-key-match", "mismatch") => {
+                self.counters.lookup_key_mismatches =
+                    self.counters.lookup_key_mismatches.saturating_add(1);
+                true
+            }
+            ("database-store-ls2-decode", "decoded") => {
+                self.counters.ls2_records_decoded =
+                    self.counters.ls2_records_decoded.saturating_add(1);
+                true
+            }
+            ("database-store-ls2-decode", "decode-rejected") => {
+                self.counters.ls2_records_decode_rejected =
+                    self.counters.ls2_records_decode_rejected.saturating_add(1);
+                true
+            }
+            ("database-store-ls2-decode", "signature-rejected") => {
+                self.counters.ls2_records_signature_rejected = self
+                    .counters
+                    .ls2_records_signature_rejected
+                    .saturating_add(1);
+                true
+            }
+            ("inbound-tunnel-reassembly", "garlic-completed") => {
+                self.counters.inbound_cells_garlic_completed = self
+                    .counters
+                    .inbound_cells_garlic_completed
+                    .saturating_add(1);
+                true
+            }
+            ("inbound-tunnel-reassembly", "garlic-incomplete") => {
+                self.counters.inbound_cells_garlic_incomplete = self
+                    .counters
+                    .inbound_cells_garlic_incomplete
+                    .saturating_add(1);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Returns the bounded lookup policy.
     pub const fn policy(&self) -> LookupPolicy {
         self.policy
@@ -620,8 +760,12 @@ impl DestinationTunnelCoordinator {
             select_floodfill_candidates(&self.store, &target_hash, routing_key, &[], &self.policy);
         if candidates.is_empty() {
             self.counters.lookups_failed = self.counters.lookups_failed.saturating_add(1);
+            self.counters.floodfill_candidates_absent =
+                self.counters.floodfill_candidates_absent.saturating_add(1);
             return Err(DestinationTunnelError::NoEligibleCandidates);
         }
+        self.counters.floodfill_candidates_present =
+            self.counters.floodfill_candidates_present.saturating_add(1);
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.checked_add(1).expect("request id");
         self.seam
@@ -646,10 +790,14 @@ impl DestinationTunnelCoordinator {
                 );
                 self.retained_paths.insert(request_id, reply_path);
                 self.counters.lookups_started = self.counters.lookups_started.saturating_add(1);
+                self.counters.reply_paths_derived =
+                    self.counters.reply_paths_derived.saturating_add(1);
                 Ok((request_id, action))
             }
             LookupAction::NeedExploratoryReplyPath { .. } => {
                 self.counters.lookups_failed = self.counters.lookups_failed.saturating_add(1);
+                self.counters.reply_paths_unresolved =
+                    self.counters.reply_paths_unresolved.saturating_add(1);
                 Err(DestinationTunnelError::InvalidReplyPath)
             }
             LookupAction::Complete { .. } => {
@@ -757,13 +905,61 @@ impl DestinationTunnelCoordinator {
             .ok_or(DestinationTunnelError::UnknownLookup)?;
         if !matches!(envelope.body(), I2npBody::DatabaseStore(_)) {
             self.counters.malformed_rejected = self.counters.malformed_rejected.saturating_add(1);
+            self.counters.ls2_records_decode_rejected =
+                self.counters.ls2_records_decode_rejected.saturating_add(1);
             return Err(DestinationTunnelError::Malformed);
+        }
+        // Plan 201 §G — peek at the response key BEFORE handing the
+        // envelope to the seam. Distinguishes a key-mismatch Branch G
+        // outcome from a decode/signature Branch G outcome. The
+        // boolean records whether the envelope body shape was a
+        // Standard LeaseSet2 so the Continue/Completed branch below
+        // can attribute the outcome correctly without re-parsing.
+        let mut body_was_lease_set2 = false;
+        let store_message = match envelope.body() {
+            I2npBody::DatabaseStore(message) => Some(message.clone()),
+            _ => None,
+        };
+        if let Some(store_message) = store_message.as_ref() {
+            match &store_message.data {
+                i2pr_proto::DatabaseStoreData::LeaseSet2(ls2) => {
+                    body_was_lease_set2 = true;
+                    self.counters.ls2_records_decoded =
+                        self.counters.ls2_records_decoded.saturating_add(1);
+                    let resolved_hash = ls2
+                        .key_hash()
+                        .ok()
+                        .map(i2pr_netdb::DestinationHash::from_hash);
+                    if resolved_hash == Some(pending.target) {
+                        self.counters.lookup_key_matches =
+                            self.counters.lookup_key_matches.saturating_add(1);
+                    } else {
+                        self.counters.lookup_key_mismatches =
+                            self.counters.lookup_key_mismatches.saturating_add(1);
+                    }
+                }
+                i2pr_proto::DatabaseStoreData::RouterInfoCompressed(_) => {
+                    // Peer RouterInfo store on a LeaseSet2 lookup is a
+                    // typed rejection at the seam, not a Branch G
+                    // observation; do not count it.
+                }
+                _ => {
+                    self.counters.ls2_records_decode_rejected =
+                        self.counters.ls2_records_decode_rejected.saturating_add(1);
+                }
+            }
         }
         self.seam.set_lease_set2_now_seconds(now_seconds);
         let outcome = self
             .seam
             .ingest_lease_set2_response(&mut self.lease_store, envelope)
-            .map_err(|e| DestinationTunnelError::LookupEngine(e.to_string()))?;
+            .map_err(|e| {
+                self.counters.ls2_records_signature_rejected = self
+                    .counters
+                    .ls2_records_signature_rejected
+                    .saturating_add(1);
+                DestinationTunnelError::LookupEngine(e.to_string())
+            })?;
         match outcome {
             crate::netdb_seam::LeaseSet2ResponseOutcome::Completed(result) => match *result {
                 i2pr_netdb::LookupResult::LeaseSet2Success {
@@ -804,6 +1000,17 @@ impl DestinationTunnelCoordinator {
                 // Continue; the lookup stays alive and bounded.
                 self.counters.mismatched_rejected =
                     self.counters.mismatched_rejected.saturating_add(1);
+                // Plan 201 §G — only attribute the Continue to a
+                // signature/validity failure when the body shape
+                // was actually a LeaseSet2. A wrong-key or wrong-
+                // body Continue is still a Continue but not a
+                // signature rejection.
+                if body_was_lease_set2 {
+                    self.counters.ls2_records_signature_rejected = self
+                        .counters
+                        .ls2_records_signature_rejected
+                        .saturating_add(1);
+                }
                 Ok(LeaseStoreIngestOutcome::Continue)
             }
             crate::netdb_seam::LeaseSet2ResponseOutcome::Ignored => {
@@ -1114,9 +1321,17 @@ impl DestinationTunnelCoordinator {
         match outcome {
             crate::inbound_dispatch::InboundDispatchOutcome::GarlicComplete { bytes } => {
                 self.counters.garlic_recovered = self.counters.garlic_recovered.saturating_add(1);
+                self.counters.inbound_cells_garlic_completed = self
+                    .counters
+                    .inbound_cells_garlic_completed
+                    .saturating_add(1);
                 Ok(bytes)
             }
             crate::inbound_dispatch::InboundDispatchOutcome::CellAccepted => {
+                self.counters.inbound_cells_garlic_incomplete = self
+                    .counters
+                    .inbound_cells_garlic_incomplete
+                    .saturating_add(1);
                 Err(DestinationTunnelError::CellIncomplete)
             }
             crate::inbound_dispatch::InboundDispatchOutcome::DatabaseStoreComplete { .. }
