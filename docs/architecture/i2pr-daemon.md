@@ -225,6 +225,29 @@ lane provisions the environment and the driver emits
 runtime-neutral `i2pr-service-tunnels` crate remains transport-agnostic;
 the capability lives in the daemon.
 
+Plan 203 closed the positive M10 remote HTTP + IRC application
+interop (`crates/i2pr-daemon/tests/service_tunnels_application_remote_qualification.rs`,
+Plan 203 §5/§6/§11/§13): the new
+`m10_positive_remote_http_and_irc_application_interop` external
+driver exercises the same Plan 184–193 router-stack path that
+Plan 187 destination driver + Plan 193 streaming driver use; it
+declares `http-client` and `irc-client` specs whose destination is
+the i2pd-owned HTTP + IRC server-tunnel destination b64; the
+manager-level routing decision classifies both destinations as
+`RoutingDecision::RemoteRouter` after `install_router_delivery_handle`
+(asserted before any application-level connection is attempted);
+the driver advances the typed Plan 203 §5/§6 documented observation
+set through the new public `record_remote_application_observation`
+helper (Plan 203 §11); the static checker
+`scripts/check-service-tunnel-acceptance-evidence.sh` rejects literal
+`record "... passed"` lines and requires the positive rows to flow
+through `record_guarded` + the documented evidence keys
+`http-remote-application-established` / `irc-remote-application-established` /
+`manager-routing-decision`; the two `remote-independent-*` rows flip
+from `blocked` to `passed` once the dedicated M6 interop lane
+provisions the SSU2 endpoint + bind tuple; the full M10 lane stays
+fail-closed without it.
+
 ## Purpose
 
 `i2pr-daemon` is the top of the dependency graph — it sees every

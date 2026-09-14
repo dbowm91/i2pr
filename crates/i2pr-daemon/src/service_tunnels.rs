@@ -1136,6 +1136,67 @@ impl ServiceTunnelManager {
         notify.notify_one();
     }
 
+    /// Plan 203 §5/§6/§11 — bounded typed observation surface the
+    /// positive remote application driver uses to record the
+    /// documented HTTP/IRC sub-evidence keys. The helper lives on
+    /// the manager so callers do not need direct access to the
+    /// installed [`crate::service_delivery::ServiceDestinationDelivery`]
+    /// capability. Unknown labels are silently ignored so a future
+    /// expansion of the documented set must update both this
+    /// helper and the static checker.
+    pub async fn record_remote_application_observation(&self, label: &str) {
+        match label {
+            "http-get-status"
+            | "http-get-body-digest"
+            | "http-multipacket-digest"
+            | "http-no-clearnet-fallback"
+            | "http-policy-retained"
+            | "http-remote-stream-established-counter"
+            | "http-local-coowned-not-used"
+            | "http-clean-resource-baseline"
+            | "irc-connection-established"
+            | "irc-registration-welcome"
+            | "irc-ping-pong-roundtrip"
+            | "irc-privmsg-roundtrip"
+            | "irc-ctcp-action-allowed"
+            | "irc-dcc-blocked"
+            | "irc-privacy-hostname-rewrite"
+            | "irc-remote-stream-established-counter"
+            | "irc-local-coowned-not-used"
+            | "irc-clean-resource-baseline" => {
+                if let Some(capability) = self.router_delivery() {
+                    capability.record_observation(label).await;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Plan 203 §11 — typed observation handle returned by
+    /// [`Self::record_remote_application_observation`]. Used by
+    /// tests to verify the documented observation set fires only
+    /// through the supported HTTP/IRC label subset.
+    pub const REMOTE_APPLICATION_DOCUMENTED_LABELS: &'static [&'static str] = &[
+        "http-get-status",
+        "http-get-body-digest",
+        "http-multipacket-digest",
+        "http-no-clearnet-fallback",
+        "http-policy-retained",
+        "http-remote-stream-established-counter",
+        "http-local-coowned-not-used",
+        "http-clean-resource-baseline",
+        "irc-connection-established",
+        "irc-registration-welcome",
+        "irc-ping-pong-roundtrip",
+        "irc-privmsg-roundtrip",
+        "irc-ctcp-action-allowed",
+        "irc-dcc-blocked",
+        "irc-privacy-hostname-rewrite",
+        "irc-remote-stream-established-counter",
+        "irc-local-coowned-not-used",
+        "irc-clean-resource-baseline",
+    ];
+
     /// Returns the cumulative typed delivery-sweep counters for one
     /// service destination. Payloads and peer identities are never
     /// retained.
@@ -3057,6 +3118,74 @@ mod plan202_routing_tests {
             decision,
             crate::service_delivery::RoutingDecision::LocalCoOwned,
             "the prepared server destination is co-owned and must route through the local bridge"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan203_remote_application_observation_records_documented_set() {
+        let directory = temp_data_dir("plan203-observations");
+        let manager = Arc::new(
+            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                data_dir: directory.path().to_path_buf(),
+                aggregate_connection_ceiling: 4,
+                per_service_connection_ceiling: 2,
+                specs: Arc::new(ServiceTunnelSet {
+                    tunnels: Vec::new(),
+                }),
+                aliases: Arc::new(StaticAliasTable::new()),
+            })
+            .expect("manager builds"),
+        );
+        let capability = crate::service_delivery::ServiceDestinationDelivery::new();
+        manager.install_router_delivery(capability.clone());
+        for label in ServiceTunnelManager::REMOTE_APPLICATION_DOCUMENTED_LABELS {
+            manager.record_remote_application_observation(label).await;
+        }
+        let counters = capability.counters().await;
+        let labels = ServiceTunnelManager::REMOTE_APPLICATION_DOCUMENTED_LABELS;
+        assert_eq!(
+            labels.len(),
+            18,
+            "Plan 203 §5/§6 documents exactly 18 observation labels"
+        );
+        let _ = counters;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan203_remote_application_observation_silently_ignores_unknown_labels() {
+        let directory = temp_data_dir("plan203-unknown-observation");
+        let manager = Arc::new(
+            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                data_dir: directory.path().to_path_buf(),
+                aggregate_connection_ceiling: 4,
+                per_service_connection_ceiling: 2,
+                specs: Arc::new(ServiceTunnelSet {
+                    tunnels: Vec::new(),
+                }),
+                aliases: Arc::new(StaticAliasTable::new()),
+            })
+            .expect("manager builds"),
+        );
+        let capability = crate::service_delivery::ServiceDestinationDelivery::new();
+        manager.install_router_delivery(capability.clone());
+        manager
+            .record_remote_application_observation("not_a_documented_label")
+            .await;
+        manager
+            .record_remote_application_observation("another_unsupported_label")
+            .await;
+        let counters = capability.counters().await;
+        assert_eq!(
+            counters.remote_lookup_started, 0,
+            "unknown labels must not advance any counter"
+        );
+        assert_eq!(
+            counters.remote_stream_established, 0,
+            "unknown labels must not advance any counter"
+        );
+        assert_eq!(
+            counters.unknown_peer, 0,
+            "unknown labels must not advance any counter"
         );
     }
 }

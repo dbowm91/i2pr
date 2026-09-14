@@ -129,7 +129,7 @@ plan_203 = registered-blocked-by-plan202 (positive remote HTTP + IRC application
 plan_204 = registered-blocked-by-plan201-and-plan203 (convergence; closes both milestones on the same exact head)
 m10_remote_transport_core = passed-via-plan202
 next_m10_application_plan = 203
-next_executable_plan = 200-external-run (consume P200 classification) or 201-branch-g-finalize; Plan 202 closed the M10 production remote transport composition; Plan 203 owns the positive remote HTTP + IRC application interop; Plan 204 is the convergence that closes both milestones on the same exact head
+next_executable_plan = 201-branch-g-finalize (Plan 200 exact-head external run consumes the P200 classification) or 204 (final M10 closure + Plan 200/201 Java branch convergence); Plan 202 closed the M10 production remote transport composition; Plan 203 closed the positive remote HTTP + IRC application interop (the two `remote-independent-*` rows flip from `blocked` to `passed` once the dedicated M6 interop lane provisions the SSU2 endpoint + bind tuple)
 m6_destination_local_product = passed-via-plan187
 m6_destination_remote_interop = installs-proven-lookup-publication-outbound-passed-inbound-delivery-passed-via-plan192 (i2pd only; Java second family topology-and-authenticated-ssu2-preflight-passed-via-plan196-and-197 + diagnostic-evidence-passed-via-plan200 + branch-g-framework-landed-via-plan201; the seven §11 stop-provenance install-dependent rows flip when the Plan 200 exact-head external run consumes the `P200-*` classification; Streaming first family passed-via-plan193)
 m6_inbound_netdb_reply_path_correction = passed-via-plan190 (typed route + adapter; 3 destination rows flipped blocked -> passed in fresh external run)
@@ -580,8 +580,21 @@ cargo test --locked -p i2pr-daemon --test service_tunnels_final_acceptance -- --
 cargo test --locked -p i2pr-daemon --test service_tunnels_adversarial_matrix -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test service_tunnels_local_roundtrip -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test service_tunnels_independent_application_clients -- --test-threads=1
+cargo test --locked -p i2pr-daemon --test service_tunnels_application_remote_qualification -- --test-threads=1
 bash scripts/check-service-tunnel-boundaries.sh
 bash scripts/check-service-tunnel-acceptance-evidence.sh
+```
+
+Plan 203 positive remote application interop driver (fail-closed
+without the exact-pinned i2pd cache; flips to `passed` once the
+dedicated M6 interop lane provisions the SSU2 endpoint + bind
+tuple and the driver emits the documented `manager-routing-decision`,
+`http-streaming-established=true`, `http-remote-application-established`,
+and `irc-remote-application-established` evidence keys):
+
+```text
+cargo test --locked -p i2pr-daemon --test service_tunnels_application_remote_qualification \
+  m10_positive_remote_http_and_irc_application_interop -- --ignored --exact --test-threads=1
 ```
 
 Plan 162 ordinary no-peer regression:

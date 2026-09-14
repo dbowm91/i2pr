@@ -56,6 +56,7 @@ JARACO_PIN="90e10e690da2c7bf60de21be4e36d24c9ffd7474"
 I2PD_PIN="635b013a612ff47278ef02acf8580a28e10e26c5"
 REMOTE_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_remote_qualification.rs"
 PLAN202_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_remote_transport_qualification.rs"
+PLAN203_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_application_remote_qualification.rs"
 
 GUARDED=(
   m10-prerequisite-plans
@@ -90,6 +91,18 @@ GUARDED=(
 )
 
 BLOCKED=(
+  remote-independent-http-eepsite
+  remote-independent-irc-service
+)
+
+# Plan 203 — positive remote HTTP + IRC application interop rows.
+# The full lane must flow through `record_guarded` and produce the
+# Plan 203 §5/§6 evidence keys (`http-remote-application-established`
+# and `irc-remote-application-established`). The static checker
+# rejects literal `record "... passed"` lines; the positive rows
+# must flow through `record_guarded` and reference the documented
+# Plan 203 evidence keys.
+PLAN203_POSITIVE=(
   remote-independent-http-eepsite
   remote-independent-irc-service
 )
@@ -156,15 +169,17 @@ if ! grep -q -E 'record_guarded "generic-\$\{mode\}-independent"' "${HARNESS}"; 
   failures=$((failures + 1))
 fi
 
-# 3. Remote rows must be recorded blocked (or failed closed),
-# never passed and never through the pass-capable guarded path.
+# 3. Remote rows must flow through `record_guarded` (positive) or
+# `record_blocked` (fail-closed) — never literal `record "...passed"`
+# and never a pass-capable literal record without `record_guarded`.
+# Plan 203 promotes the two remote rows from Plan 181's
+# `blocked-only` shape to a positive-command-derived shape, so
+# both `record_blocked` and `record_guarded` call sites are
+# required (the row chooses one path based on whether the exact-
+# pinned i2pd environment is provisioned).
 for label in "${BLOCKED[@]}"; do
-  if grep -n -E "^[[:space:]]*record(_guarded)? \"${label}\" passed" "${HARNESS}"; then
+  if grep -n -E "^[[:space:]]*record \"${label}\" passed" "${HARNESS}"; then
     echo "evidence check failed: remote row '${label}' claims passed (self-composed must never stand in for independent interop)" >&2
-    failures=$((failures + 1))
-  fi
-  if grep -n -E "record_guarded \"${label}\"" "${HARNESS}"; then
-    echo "evidence check failed: remote row '${label}' flows through record_guarded (pass-capable; use record_blocked or explicit failed)" >&2
     failures=$((failures + 1))
   fi
   if ! grep -q -E "record_blocked \"${label}\"" "${HARNESS}"; then
@@ -188,6 +203,25 @@ for label in "${PLAN202_TRANSITIONAL[@]}"; do
   fi
   if ! grep -q -E "record_guarded \"${label}\"" "${HARNESS}"; then
     echo "evidence check failed: Plan 202 row '${label}' has no record_guarded call site" >&2
+    failures=$((failures + 1))
+  fi
+done
+# Plan 203 — positive remote HTTP + IRC application interop rows.
+# Both rows must flow through `record_guarded` AND `record_blocked`
+# (one path for the missing-env case, one for the positive case).
+# Literal `record "...passed"` lines remain forbidden; the positive
+# rows must reference the documented Plan 203 §5/§6 evidence keys.
+for label in "${PLAN203_POSITIVE[@]}"; do
+  if grep -n -E "^[[:space:]]*record \"${label}\" passed" "${HARNESS}"; then
+    echo "evidence check failed: Plan 203 row '${label}' claims passed literally (must flow through record_guarded)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -E "record_blocked \"${label}\"" "${HARNESS}"; then
+    echo "evidence check failed: Plan 203 row '${label}' has no record_blocked call site" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -E "record_guarded \"${label}\"|^[[:space:]]*record \"${label}\" passed" "${HARNESS}"; then
+    echo "evidence check failed: Plan 203 row '${label}' has no record_guarded or post-`record` call site" >&2
     failures=$((failures + 1))
   fi
 done
@@ -362,6 +396,87 @@ if grep -n -E '(println!|print!|eprintln!)[^;]*(peer_pub_b64|PUB_B64|PUB=)' "${P
   echo "evidence check failed: Plan 202 driver may log peer key material" >&2
   failures=$((failures + 1))
 fi
+
+# 13. Plan 203 — M10 positive remote HTTP + IRC application interop
+# driver exists, is `#[ignore]`-gated, declares the
+# `m10_positive_remote_http_and_irc_application_interop` Direction
+# A test name, exercises `RemoteDeliveryCounters` +
+# `install_router_delivery_handle` + `routing_decision_for`, and
+# asserts `RoutingDecision::RemoteRouter`. The driver never logs
+# peer key material. The manager exposes
+# `record_remote_application_observation` and the documented
+# 18-label observation set the static checker reads.
+if [[ ! -f "${PLAN203_DRIVER}" ]]; then
+  echo "evidence check failed: Plan 203 positive remote HTTP/IRC driver missing: ${PLAN203_DRIVER}" >&2
+  failures=$((failures + 1))
+else
+  if ! grep -q -F '#[ignore = "Plan 203' "${PLAN203_DRIVER}"; then
+    echo "evidence check failed: Plan 203 driver lost its #[ignore] gate" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'm10_positive_remote_http_and_irc_application_interop' "${PLAN203_DRIVER}"; then
+    echo "evidence check failed: Plan 203 driver lost its Direction A test name" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'RemoteDeliveryCounters' "${PLAN203_DRIVER}" && ! grep -q -F 'install_router_delivery_handle' "${PLAN203_DRIVER}"; then
+    echo "evidence check failed: Plan 203 driver lost its RemoteDeliveryCounters / install_router_delivery_handle wiring" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'RoutingDecision::RemoteRouter' "${PLAN203_DRIVER}"; then
+    echo "evidence check failed: Plan 203 driver lost its RemoteRouter classification assertion" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -n -E '(println!|print!|eprintln!)[^;]*(peer_pub_b64|PUB_B64|PUB=)' "${PLAN203_DRIVER}"; then
+    echo "evidence check failed: Plan 203 driver may log peer key material" >&2
+    failures=$((failures + 1))
+  fi
+  # The Plan 203 §5/§6 documented evidence keys the static checker
+  # gates on must appear in the driver output.
+  for key in \
+    http-remote-application-established \
+    irc-remote-application-established \
+    manager-routing-decision; do
+    if ! grep -q "\"${key}\"" "${PLAN203_DRIVER}"; then
+      echo "evidence check failed: Plan 203 driver missing append_evidence for ${key}" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+# The manager must expose the Plan 203 §11 typed observation
+# surface and the documented 18-label observation set.
+if ! grep -q 'fn record_remote_application_observation' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: ServiceTunnelManager lost record_remote_application_observation" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q 'REMOTE_APPLICATION_DOCUMENTED_LABELS' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: ServiceTunnelManager lost REMOTE_APPLICATION_DOCUMENTED_LABELS" >&2
+  failures=$((failures + 1))
+fi
+for label in \
+  http-get-status \
+  http-get-body-digest \
+  http-multipacket-digest \
+  http-no-clearnet-fallback \
+  http-policy-retained \
+  http-remote-stream-established-counter \
+  http-local-coowned-not-used \
+  http-clean-resource-baseline \
+  irc-connection-established \
+  irc-registration-welcome \
+  irc-ping-pong-roundtrip \
+  irc-privmsg-roundtrip \
+  irc-ctcp-action-allowed \
+  irc-dcc-blocked \
+  irc-privacy-hostname-rewrite \
+  irc-remote-stream-established-counter \
+  irc-local-coowned-not-used \
+  irc-clean-resource-baseline; do
+  if ! grep -q "\"${label}\"" "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+    echo "evidence check failed: ServiceTunnelManager missing REMOTE_APPLICATION_DOCUMENTED_LABELS entry '${label}'" >&2
+    failures=$((failures + 1))
+  fi
+done
+
 # The manager-level routing-decision / router-delivery seams must
 # also be exercised through the daemon's own unit tests so the
 # structural shape is verified independent of any external peer.

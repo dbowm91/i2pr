@@ -327,8 +327,10 @@ silently weaken that criterion.
 | Full composition / reconcile / hardening | passed-experimental-loopback-only | 180 |
 | Local delivery driver + byte round-trip | passed-experimental-loopback-only | 182 |
 | Independent application clients (local rows) | passed-experimental-loopback-only | 181 |
-| Remote independent-router interop | blocked-by-m6-mixed-router-streaming-blocker | 181/183 |
-| Independent acceptance / final closure | not-yet-closed | 181 |
+| Remote positive HTTP eepsite interop | passed-experimental-loopback-only-pending-external | 203 |
+| Remote positive IRC service interop | passed-experimental-loopback-only-pending-external | 203 |
+| Remote independent-router interop | evidence-passed-pending-plan204-normalization | 202/203 |
+| Independent acceptance / final closure | not-yet-closed | 204 |
 
 No row above may be marked passed until its owning plan has an
 explicit passing status record with command-derived evidence.

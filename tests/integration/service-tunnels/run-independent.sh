@@ -892,6 +892,74 @@ PY
             "Plan 202 Direction A: remote-stream-established + lease-lookup-completed" \
             "${plan202_passed}"
         fi
+
+        # Plan 203 — positive remote HTTP + IRC application
+        # interop driver. Same fail-closed shape as the Plan 202
+        # driver: the dedicated M6 interop lane (`run-m6-mixed-router.sh`)
+        # provisions the full SSU2 endpoint / bind tuple, while this
+        # lane records `blocked` when the same env is absent. The
+        # driver consumes the manager-level routing decision
+        # (`RoutingDecision::RemoteRouter`), the typed
+        # Plan 203 §5/§6 observation labels, and the underlying
+        # lease-lookup / Streaming round-trip.
+        PLAN203_LOG="${EVIDENCE_DIR}/plan203-remote-application.log"
+        : > "${PLAN203_LOG}"
+        plan203_rc=0
+        if timeout --foreground 60s \
+           env -u I2PD_ROUTER_INFO -u I2PD_SSU2_ENDPOINT -u I2PR_SSU2_BIND -u EVIDENCE_DIR \
+           cargo test --locked -p i2pr-daemon --test service_tunnels_application_remote_qualification \
+           m10_positive_remote_http_and_irc_application_interop -- --ignored --exact --nocapture --test-threads=1 \
+           >>"${PLAN203_LOG}" 2>&1; then
+          plan203_rc=0
+        else
+          plan203_rc=$?
+        fi
+        if grep -Fq "missing required env" "${PLAN203_LOG}" ||
+           grep -Fq "lane requires a fixed loopback bind" "${PLAN203_LOG}" ||
+           grep -Fq "i2pd SAM did not listen" "${PLAN203_LOG}"; then
+          record_blocked "remote-independent-http-eepsite" \
+            "Plan 203 positive remote HTTP eepsite driver fail-closed: required SSU2 lane env (I2PD_ROUTER_INFO / I2PD_SSU2_ENDPOINT / I2PR_SSU2_BIND / EVIDENCE_DIR / PLAN203_HTTP_TARGET_PORT / PLAN203_IRC_TARGET_PORT) absent in this lane; the dedicated M6 interop lane (run-m6-mixed-router.sh) is the closure path (see plan203-remote-application.log)"
+          record_blocked "remote-independent-irc-service" \
+            "Plan 203 positive remote IRC service driver fail-closed: required SSU2 lane env absent in this lane; the dedicated M6 interop lane (run-m6-mixed-router.sh) is the closure path (see plan203-remote-application.log)"
+        else
+          # The positive path is real only when the dedicated M6
+          # interop lane provisions the full SSU2 endpoint / bind
+          # tuple. This script's lane does not, so the guarded path
+          # returns rc=1 here. The dedicated lane flips the rows to
+          # `passed` through record_guarded once the driver emits the
+          # Plan 203 §5/§6 evidence keys.
+          plan203_http_passed=0
+          plan203_irc_passed=0
+          if [[ "${plan203_rc}" -eq 0 ]] &&
+             grep -Fq "http-remote-application-established" "${PLAN203_LOG}" &&
+             grep -Fq "irc-remote-application-established" "${PLAN203_LOG}" &&
+             grep -Fq "manager-routing-decision" "${PLAN203_LOG}" &&
+             grep -Fq "http-streaming-established=true" "${PLAN203_LOG}"; then
+            plan203_http_passed=1
+          fi
+          if [[ "${plan203_rc}" -eq 0 ]] &&
+             grep -Fq "irc-remote-application-established" "${PLAN203_LOG}" &&
+             grep -Fq "manager-routing-decision" "${PLAN203_LOG}" &&
+             grep -Fq "i2pd-server-tunnels-provisioned" "${PLAN203_LOG}"; then
+            plan203_irc_passed=1
+          fi
+          if [[ "${plan203_http_passed}" -eq 1 ]]; then
+            record_guarded "remote-independent-http-eepsite" \
+              "Plan 203 positive remote HTTP eepsite: manager-routing-decision=RemoteRouter + http-streaming-established=true + http-remote-application-established (see plan203-remote-application.log)" \
+              0
+          else
+            record "remote-independent-http-eepsite" failed \
+              "Plan 203 positive remote HTTP eepsite guard returned rc=${plan203_rc} without the expected evidence keys (see plan203-remote-application.log)"
+          fi
+          if [[ "${plan203_irc_passed}" -eq 1 ]]; then
+            record_guarded "remote-independent-irc-service" \
+              "Plan 203 positive remote IRC service: manager-routing-decision=RemoteRouter + i2pd-server-tunnels-provisioned + irc-remote-application-established (see plan203-remote-application.log)" \
+              0
+          else
+            record "remote-independent-irc-service" failed \
+              "Plan 203 positive remote IRC service guard returned rc=${plan203_rc} without the expected evidence keys (see plan203-remote-application.log)"
+          fi
+        fi
       fi
     fi
   fi
@@ -901,7 +969,7 @@ else
   record_blocked "remote-independent-irc-service" \
     "not attempted in the local-only lane; run the full lane for the §6 qualification"
   record_blocked "m10-remote-destination-streaming-composition" \
-    "not attempted in the local-only lane; run the full lane for the §6 + Plan 202 qualification"
+    "not attempted in the local-only lane; run the full lane for the §6 + Plan 202 + Plan 203 qualification"
 fi
 
 # ---- resource baseline -------------------------------------------------------
@@ -1039,6 +1107,8 @@ if local_failed:
     verdict = "failed"
 elif any(row["status"] == "blocked" for row in remote_rows):
     verdict = "blocked-by-m10-remote-transport-unimplemented"
+elif any(row["status"] == "failed" for row in remote_rows):
+    verdict = "failed"
 elif all(row["status"] == "passed" for row in rows):
     verdict = "passed"
 else:
@@ -1073,6 +1143,7 @@ evidence = {
         "remote independent-I2P service rows are recorded blocked under the Plan 199 stop condition (m10-remote-transport-unimplemented) with command/log provenance",
         "self-composed i2pr rows are never substituted for the remote rows",
         "no external client/router source is patched; no private keys or raw payloads in evidence",
+        "Plan 203 positive remote HTTP/IRC application interop driver is `#[ignore]`-gated and fails closed when the exact-pinned i2pd environment is absent; the typed manager-level routing decision classifies the i2pd-owned destinations as RemoteRouter and the local-co-owned bridge never claims them",
     ],
 }
 out = Path(evidence_dir)

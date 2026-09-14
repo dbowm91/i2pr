@@ -398,10 +398,10 @@ milestone10_irc_server = "passed-via-plan179"
 milestone10_local_product = "passed-via-plan180-and-plan182"
 milestone10_local_roundtrip = "passed-via-plan182"
 milestone10_independent_application_clients = "local-rows-passed-plan181-not-closed"
-milestone10_remote_service_interop = "not-yet-passed"
+milestone10_remote_service_interop = "evidence-passed-pending-plan204-normalization"
 milestone10_final_acceptance = "not-yet-closed"
-next_product_layer = "m10-unified-final-closure-blocked-at-java-public-client-leaseset2-and-remote-transport"
-next_executable_plan = "200-201 (Java branch) || 202 (M10 production remote transport composition branch); Plans 200 and 202 are intentionally parallel; Plan 204 is the convergence"
+next_product_layer = "m10-unified-final-closure-blocked-at-java-public-client-leaseset2-only"
+next_executable_plan = "201-branch-g-finalize (Plan 200 exact-head external run consumes the P200 classification) || 204 (final M10 closure + Plan 200/201 Java branch convergence); Plans 202 and 203 are already passed"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
