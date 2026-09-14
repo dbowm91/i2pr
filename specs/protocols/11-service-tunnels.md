@@ -1,6 +1,18 @@
 # Service tunnels (Milestone 10)
 
-Status: **Local product + round-trip closed via Plans 180–182** (transactional reconcile, generation/draining model, cross-service adversarial matrix, per-destination local-delivery driver with generic/HTTP/SOCKS/IRC byte round-trip; independent-application-client local rows passed via Plan 181 lane; remote independent-router rows blocked on retained M6 debt, final acceptance open)
+Status: **Local product + round-trip closed via Plans 180–182**;
+**M10 production remote Destination/Streaming composition closed
+via Plan 202**; **positive remote HTTP + IRC application interop
+closed via Plan 203**; **M10 final acceptance not yet closed —
+blocked on Plan 201's Java branch corrective**; Plan 204 landed the
+docs/CI/evidence-authority normalization pass on top of Plans
+200/202/203 (transactional reconcile, generation/draining model,
+cross-service adversarial matrix, per-destination local-delivery
+driver with generic/HTTP/SOCKS/IRC byte round-trip;
+independent-application-client local rows passed via Plan 181 lane;
+remote independent-router rows now flip `blocked → passed-on-env`
+through the Plan 203 positive external driver when the dedicated
+M6 interop lane provisions the SSU2 endpoint + bind tuple).
 Planning authority: **Plan 173** (`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`)
 Foundation: **Plan 174** (`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`)
 Generic client/server tunnels: **Plan 175** (`plans/175-m10-generic-client-server-service-tunnels.md`)
@@ -10,13 +22,40 @@ IRC `.i2p` client profile + privacy filter: **Plan 178** (`plans/178-m10-irc-cli
 IRC `.i2p` server profile + authenticated peer hostname: **Plan 179** (`plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`)
 Composition, reconcile, and hardening: **Plan 180** (`plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md`)
 Local-delivery corrective: **Plan 182** (`plans/182-m10-local-delivery-corrective.md`)
-Independent acceptance (blocked): **Plan 181**, retained and revisited by
-**Plan 199** (`plans/199-m10-unified-final-closure.md`). The local product
-is closed, but the two remote application rows remain blocked because the
-current manager has no remote-router transport/LeaseSet2 lookup path.
-The Java M6 public-client LeaseSet2 publication boundary is blocked by the
-same Plan 199 execution. No M10 remote-interoperability claim follows from
-the local rows or the bounded qualification probe.
+Independent acceptance: **Plan 181** (`plans/181-m10-independent-application-and-service-interop-final-closure.md`)
+plus **Plan 203** promotion for the two `remote-independent-*`
+rows.
+Production remote Destination/Streaming composition: **Plan 202**
+(`plans/202-m10-production-remote-destination-and-streaming-composition.md`)
+— the `ServiceTunnelManager` owns one shared
+`ServiceDestinationDelivery` capability (installed once per daemon
+through `install_router_delivery_handle`); the typed
+`RoutingDecision::LocalCoOwned` / `RemoteRouter` / `RemoteUnresolved`
+enum drives the resolve path; the bounded `RemoteDeliveryCounters`
+surface emits twelve positive observations on every counted path;
+the `m10_remote_destination_streaming_composition_through_manager`
+Direction A external driver exercises the manager-level seams
+against the exact-pinned i2pd 2.61.0 cache through the dedicated
+M6 interop lane.
+Positive remote HTTP + IRC application interop: **Plan 203**
+(`plans/203-m10-positive-remote-http-and-irc-application-interop.md`)
+— the `m10_positive_remote_http_and_irc_application_interop`
+Direction A external driver declares `http-client` + `irc-client`
+specs whose destination is the i2pd-owned HTTP + IRC
+server-tunnel destination b64, asserts
+`RoutingDecision::RemoteRouter` after
+`install_router_delivery_handle`, advances the typed Plan 203
+§5/§6 documented observation set through the new public
+`record_remote_application_observation` helper, exercises the
+underlying Plan 184–193 router stack with real one-hop builds +
+lease lookup + Streaming `Established`, and never logs peer key
+material.
+M10 final closure documentation and authority normalization: **Plan 204**
+(`plans/204-m10-final-closure-evidence-authority-and-documentation-normalization.md`)
+— landed the docs/CI normalization pass on top of Plans 200/202/203;
+the M6/M10 closed authority transitions in §7/§12 stay deferred
+until Plan 201 records the terminal `P200-{A..H}` classification
+and lands its narrow corrective.
 
 > Plan 174 is a refactor/foundation pass. It must not change I2P wire
 > semantics or broaden listener exposure. No generic, HTTP, SOCKS5,
@@ -574,7 +613,7 @@ explicit passing status record with command-derived evidence.
 - `plans/182-status.md` (defect provenance, fix list,
   command-derived evidence).
 
-## Evidence (Plan 181, local rows passed, remote rows blocked)
+## Evidence (Plan 181 + Plan 203, local rows passed; remote rows now flip via Plan 203)
 
 - `tests/integration/service-tunnels/run-independent.sh`
   (31 command-derived rows: prerequisite/tool/pin gates, static
@@ -584,18 +623,98 @@ explicit passing status record with command-derived evidence.
   SAM DEST GENERATE qualification with the ignored-driver
   stop-condition assertion, resource baseline,
   unsupported-profile ledger; `record_guarded` is the only pass
-  path, remote rows use `record_blocked` only).
+  path; the two `remote-independent-*` rows now flow through
+  `record_guarded` + Plan 203 §13 invariants and emit the
+  `http-remote-application-established` /
+  `irc-remote-application-established` evidence keys when the
+  dedicated M6 interop lane provisions the SSU2 endpoint + bind
+  tuple).
 - `scripts/interop/fetch-service-tunnel-clients.sh`
   (exact-pin jaraco/irc fetch, clean-checkout enforcement).
 - `scripts/check-service-tunnel-acceptance-evidence.sh`
-  (routine-CI static checker: 29 command-derived rows, 2
-  blocked-only remote rows).
+  (routine-CI static checker: 29 command-derived local rows +
+  Plan 202 §12 + Plan 203 §13 invariants; rejects literal
+  `record "... passed"` lines; requires the positive remote
+  application rows to flow through `record_guarded` with the
+  documented evidence keys).
 - `.github/workflows/service-tunnels-external.yml` (manual
   full/local-only lane).
 - `crates/i2pr-daemon/tests/service_tunnels_remote_qualification.rs`
   (ignored-by-default driver asserting the §6.3 stop condition:
   no establishment, `unknown_peer > 0`, `delivered = 0`,
-  counted failure; fail-closed without `I2PD_PEER_PUB_B64`).
-- `plans/181-status.md` (29 passed local rows, 2 blocked remote
-  rows with i2pd-2.61.0 qualification provenance,
-  `m6-mixed-router-streaming-blocker` classification).
+  counted failure; fail-closed without `I2PD_PEER_PUB_B64`;
+  retained as the legacy fail-closed probe).
+- `crates/i2pr-daemon/tests/service_tunnels_remote_transport_qualification.rs`
+  (Plan 202 ignored-by-default Direction A positive transport
+  driver; exercises the Plan 184–193 real one-hop builds + lease
+  lookup + Streaming path Plan 193 uses; asserts the manager-level
+  routing decision classifies the reference destination as
+  `RoutingDecision::RemoteRouter` after
+  `install_router_delivery_handle`).
+- `crates/i2pr-daemon/tests/service_tunnels_application_remote_qualification.rs`
+  (Plan 203 ignored-by-default Direction A positive external
+  driver; declares `http-client` + `irc-client` specs whose
+  destination is the i2pd-owned HTTP + IRC server-tunnel
+  destination b64; asserts `RoutingDecision::RemoteRouter` after
+  `install_router_delivery_handle`; advances the typed Plan 203
+  §5/§6 documented observation set through the new public
+  `record_remote_application_observation` helper; exercises the
+  underlying Plan 184–193 router stack with real one-hop builds
+  + lease lookup + Streaming `Established`; never logs peer key
+  material).
+- `tests/integration/service-tunnels/clients/{http,irc}_remote_driver.py`
+  (Plan 203 stdlib-only loopback HTTP + IRC client drivers
+  reading a daemon-bundled JSON document and driving one
+  curl-equivalent HTTP/1.1 round trip plus one jaraco/irc
+  -equivalent IRC registration through the i2pr client
+  listeners).
+- `tests/integration/service-tunnels/fixtures/{http,irc}_remote_eepsite.py`
+  (Plan 203 bounded deterministic loopback HTTP + IRC server
+  fixtures mirroring the local co-owned target byte-for-byte).
+- `plans/181-status.md` (Plan 204 docs/CI normalization
+  reclassified Plan 181 to
+  `passed-m10-independent-application-and-service-interop-final-closure-evidence`;
+  the retained local 29-row matrix stays green; the two §6.3
+  remote application rows flip `blocked → passed-on-env` through
+  the Plan 203 positive external driver on the dedicated M6
+  interop lane).
+
+## Evidence (Plan 202, M10 production remote Destination/Streaming composition)
+
+- `crates/i2pr-daemon/src/service_delivery.rs`
+  (typed `ServiceDestinationDelivery` capability with
+  `RoutingDecision` enum, `RemoteDeliveryCounters` bounded
+  counter set, bounded in-flight resolution table, pure
+  `classify_destination` helper, public `record_observation`
+  typed observation surface, and
+  `destination_hash_bytes` / `destination_hash_from_slice`
+  canonical hash conversion helpers).
+- `crates/i2pr-daemon/src/service_tunnels.rs`
+  (`install_router_delivery` / `uninstall_router_delivery` /
+  `router_delivery` / `has_router_delivery` API surface;
+  pure `routing_decision_for(hash) -> RoutingDecision` helper;
+  `co_owned_destination_hashes()` reporting the manager's
+  authoritative co-owned set; richer
+  `resolve_client_destination_with_decision(spec) ->
+  (Result<ClientTarget, DestinationFailure>, RoutingDecision)`
+  surface; the free-function
+  `install_router_delivery_handle(manager, capability)` daemon
+  composition root entry point; `plan202_routing_tests` unit
+  module with five unit rows covering the routing-decision
+  classification).
+- `crates/i2pr-daemon/src/service_tunnels_remote_dispatch.rs`
+  (Plan 203 §11 bounded typed helper
+  `record_remote_application_observation` the manager-level
+  positive driver uses for the HTTP and IRC sub-evidence keys;
+  unknown labels are silently ignored so a future expansion of
+  the documented set must update both the helper and the
+  static checker).
+- `plans/202-status.md` (exact evidence, command-derived proof
+  on the closing head).
+
+## Evidence (Plan 204, docs/CI normalization)
+
+- `plans/204-status.md` (exact evidence, no product bug hidden,
+  no synthetic `passed` evidence introduced; the docs/CI
+  normalization pass landed on top of Plans 200/202/203 and
+  stays blocked on Plan 201's Java branch corrective).

@@ -470,38 +470,41 @@ record is not `superseded-by-*`. Currently:
   [`plans/197-m6-pq-ssu2-option-support-corrective.md`](../../plans/197-m6-pq-ssu2-option-support-corrective.md)
   and [`plans/197-status.md`](../../plans/197-status.md));
    Plan 194 retains the bounded SAM-bridge LS2-publication finding.
-   Plan 198 implements public Java I2PClient/I2PSession and
-   I2PSocketManager helpers, but the exact-pinned Java 2.13.0 controlled
-    router still does not return the public-client LeaseSet2 to the real
-    i2pr lookup path; mandatory Java lookup/delivery/Streaming rows remain
-    blocked and Plan 195 stays gated. Plan 199 was the unified M6/M10
-    closure attempt and is decomposed into Plans 200–204.
-    Plan 200 (M6 Java public-client publication observability and
-    verified bootstrap) is the current diagnostic/evidence corrective:
-    Java helpers decouple `leaseset=published` from `READY` and add
-    bounded `REPORT_STATUS`; the Rust driver proves Router A/B main-NetDB
-    bootstrap through ordinary post-store DatabaseLookup round-trips in
-    both directions; sanitized Java log keys for the client LS2 lifecycle
-    and tunnel/floodfill/store/ack selection are emitted to evidence; and
-    exactly one terminal `P200-{A..H}` classification is recorded per
-    run. Plan 201 landed the Branch G `store-acked-remote-lookup-fails`
-    corrective framework: eleven new sanitized observation counters on
-    `DestinationTunnelCounters` (`lookup_key_matches`/`_mismatches`,
-    `floodfill_candidates_present`/`_absent`,
-    `reply_paths_derived`/`_unresolved`,
-    `ls2_records_decoded`/`_decode_rejected`/`_signature_rejected`,
-    `inbound_cells_garlic_completed`/`_incomplete`); the public
-    `note_lookup_boundary(label, value)` typed observation surface;
-    eight new `plan201_g_*` unit rows in `destination_tunnel_unit.rs`;
-    six new `blocked_row` Plan 201 §G entries in `run-java.sh`; static
-    checker `scripts/check-m6-mixed-router-acceptance-evidence.sh`
-    extended with §11 + §12 invariants. Final closure of Plan 201 is
-    blocked on the exact-head external run that records the
-    unambiguous `P200-*` classification and flips the seven §11 stop
-    rows `blocked → passed`. The M10 production remote transport
-    branch is Plan 202 (parallel-executable with Plan 200); Plan 203 is
-   positive remote HTTP + IRC application interop; Plan 204 is the
-   convergence.
+   Plan 198 and Plan 199 are now both
+   `superseded-execution-decomposed-and-closed-via-plans200-204`; the
+   decomposed convergent graph is Plan 200 + Plan 201 + Plan 202 + Plan
+   203 + Plan 204. Plan 200 (M6 Java public-client publication
+   observability and verified bootstrap) is the closed
+   diagnostic/evidence corrective: Java helpers decouple
+   `leaseset=published` from `READY` and add bounded `REPORT_STATUS`;
+   the Rust driver proves Router A/B main-NetDB bootstrap through
+   ordinary post-store DatabaseLookup round-trips in both directions;
+   sanitized Java log keys for the client LS2 lifecycle and
+   tunnel/floodfill/store/ack selection are emitted to evidence; and
+   exactly one terminal `P200-{A..H}` classification is recorded per
+   run. Plan 201 landed the Branch G `store-acked-remote-lookup-fails`
+   corrective framework: eleven new sanitized observation counters on
+   `DestinationTunnelCounters` (`lookup_key_matches`/`_mismatches`,
+   `floodfill_candidates_present`/`_absent`,
+   `reply_paths_derived`/`_unresolved`,
+   `ls2_records_decoded`/`_decode_rejected`/`_signature_rejected`,
+   `inbound_cells_garlic_completed`/`_incomplete`); the public
+   `note_lookup_boundary(label, value)` typed observation surface;
+   eight new `plan201_g_*` unit rows in `destination_tunnel_unit.rs`;
+   six new `blocked_row` Plan 201 §G entries in `run-java.sh`; static
+   checker `scripts/check-m6-mixed-router-acceptance-evidence.sh`
+   extended with §11 + §12 invariants. Final closure of Plan 201 is
+   blocked on the exact-head external run that records the
+   unambiguous `P200-*` classification and flips the seven §11 stop
+   rows `blocked → passed`. The M10 production remote transport
+   branch is Plan 202 (parallel-executable with Plan 200, now
+   `passed`); Plan 203 (positive remote HTTP + IRC application
+   interop) is also `passed`; Plan 204 landed the docs/CI
+   normalization pass on top of the three passed plans and remains
+   blocked on Plan 201. Plan 195 is reactivated to
+   `evidence-passed-m10-remote-independent-service-final-closure-pending-plan204-normalization`
+   because Plan 203 supplies the positive application evidence Plan 195
+   was originally registered to provide.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).
@@ -538,7 +541,7 @@ not weaken the script.
 | `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants (no Tokio/sockets in service-tunnels, no Garlic/I2NP, single pump, no unbounded channels, one entry point). |
 | `scripts/check-service-tunnel-acceptance-evidence.sh` | Plan 181 service-tunnel evidence integrity (29 local + 2 blocked remote rows; CI-enforced). |
 | `scripts/check-m6-mixed-router-acceptance-evidence.sh` | Plan 189 §8 / Plan 194 / Plan 196 / Plan 197 cross-family M6 mixed-router evidence integrity (per-layer harnesses + checkers both pin i2pd 2.61.0 + Java I2P 2.13.0; cross-family aggregator reuses the four per-layer harnesses; second-family Java rows stay `failed` with stop provenance until the Plan 196 controlled Java topology + authenticated SSU2 preflight passes; Plan 196 extends the checker to reject `i2p.vmCommSystem=true`, the obsolete Plan 194 keys (`i2np.reseed.enable`, `router.isFloodfill`, `i2np.ntcp2.enabled`), mutation of the verified Java cache's `clients.config` / `clients.config.d`, non-loopback reseed URLs, and `|| true` forgiveness in the lane; Plan 197 extends the checker to require that `Ssu2RouterAddress::parse` accepts `pq=4,3` (positive `parses_java_high_mtu_pq_options`/`parses_java_low_mtu_pq_option` regression present), that `Ssu2RouterAddress` surfaces a `pq_capabilities()` accessor, that `crates/i2pr-transport-ssu2/src/lib.rs` re-exports `Ssu2PqKem`/`PqCapabilities`/`MAX_SSU2_PQ_SCHEMES`, and that `crates/i2pr-transport-ssu2/src/publication.rs` contains no `pq` key in any `props.setProperty(...)`-style push or matching branch; CI-enforced). |
-| `scripts/check-m6-final-closure-evidence.sh` | Plan 198 evidence-consuming final gate: exact-head workflow provenance, exact family pins, and no blocked, failed, or missing mandatory Java/i2pd rows. Manual external-workflow only. |
+| `scripts/check-m6-final-closure-evidence.sh` | Plan 198 evidence-consuming final gate, retained by Plan 204 as the convergence authoritative gate: exact-head workflow provenance, exact family pins (i2pd 2.61.0 `635b013a612ff47278ef02acf8580a28e10e26c5` + Java I2P 2.13.0 `9134f808337b401e8e53c73734c81fab04280c9d`), and no blocked, failed, or missing mandatory Java/i2pd rows. Manual external-workflow only; can only go green on a host that provisions the exact-pinned Java I2P 2.13.0 cache plus the dedicated M6 interop lane. |
 
 ## Doc-vs-source audit pattern
 

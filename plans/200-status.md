@@ -4,28 +4,38 @@ Status: **`passed-m6-java-public-client-publication-observability-and-verified-b
 
 Plan of record: [`200-m6-java-public-client-publication-observability-and-verified-bootstrap.md`](200-m6-java-public-client-publication-observability-and-verified-bootstrap.md).
 
+This status is unchanged from Plan 200 close. Plan 204's
+docs/CI/evidence-authority normalization pass records Plan 200
+as the diagnostic/evidence side of the Java second-family M6
+lane and leaves the terminal `P200-{A..H}` classification
+unrecorded because the exact-pinned Java I2P 2.13.0 cache
+provisoning plus the cross-family external workflow require
+infrastructure that is not available in this environment.
+
 ## Implementation summary
 
-Plan 200 closes the diagnostic/evidence side of the Java second-family M6
-lane. It is not a publication-corrective pass — Plan 201 owns that — but
-it produces the fail-closed first-failing-boundary classification Plan 201
-needs to pick a corrective.
+Plan 200 closes the diagnostic/evidence side of the Java
+second-family M6 lane. It is not a publication-corrective pass
+— Plan 201 owns that — but it produces the fail-closed
+first-failing-boundary classification Plan 201 needs to pick a
+corrective.
 
 ```text
 plan_193 = passed-m6-i2pd-mixed-router-streaming (retained)
 plan_194 = retained-partial-java-qualification-sam-ls2-publication-boundary
 plan_196 = passed-m6-java-controlled-first-run-topology-corrective
 plan_197 = passed-m6-pq-ssu2-option-support-corrective
-plan_199 = blocked-execution-decomposed-into-plans-200-through-204
+plan_198 = superseded-execution-decomposed-and-closed-via-plans200-204
+plan_199 = superseded-execution-decomposed-and-closed-via-plans200-204
 plan_200 = passed-m6-java-public-client-publication-observability-and-verified-bootstrap
-plan_201 = registered-blocked-by-plan200 (next executable Java plan)
-plan_202 = registered-executable-m10-remote-router-composition (parallel-executable)
-plan_203 = registered-blocked-by-plan202
-plan_204 = registered-blocked-by-plan201-and-plan203
+plan_201 = in-progress-branch-g-framework-landed-blocked-on-exact-head-external-run
+plan_202 = passed-m10-production-remote-destination-and-streaming-composition
+plan_203 = passed-m10-positive-remote-http-and-irc-application-interop
+plan_204 = in-progress-docs-and-authority-normalization-blocked-on-plan201-external-run
 
-parallel_execution_allowed = plan200 || plan202
-next_java_plan = 201
-next_m10_product_plan = 202
+parallel_execution_allowed = plan200 || plan202 (was; both closed)
+next_java_plan = 201-branch-g-finalize
+next_m10_product_plan = 204 (convergence)
 ```
 
 ## What Plan 200 changed
@@ -93,22 +103,24 @@ next_m10_product_plan = 202
 ## Boundary reached
 
 Plan 200 stops at the **publication boundary**. The post-bootstrap
-RouterInfo lookup proofs may flip `passed → blocked → passed` depending
-on Java main-NetDB behavior; the `C..H` lifecycle rows stay
-`blocked` until Plan 201 picks the corrective. The terminal `P200-*`
-classification is the authoritative first-failing-boundary label Plan 201
-consumes.
+RouterInfo lookup proofs may flip `passed → blocked → passed`
+depending on Java main-NetDB behavior; the `C..H` lifecycle rows
+stay `blocked` until Plan 201 picks the corrective. The terminal
+`P200-*` classification is the authoritative
+first-failing-boundary label Plan 201 consumes.
 
 ## Handoff rules
 
 - The Plan 200 §11 classification is the only authoritative Java
   publication-boundary diagnosis until a Plan 201 corrective lands.
-- Plan 201 may not invent its own diagnostic; it must consume exactly
-  the `P200-*` code emitted by this plan.
-- Plan 202 may execute in parallel; it owns the M10 production remote
-  transport composition lane and shares no code with Plan 200.
-- No M6 wire change. No `LocalZeroHop` substitution. No fake LeaseSet.
-  No public-network participation.
-- Plan 195 (M10 remote service interop) remains gated until Plan 201
-  + Plan 203 + Plan 204 close.
-
+- Plan 201 may not invent its own diagnostic; it must consume
+  exactly the `P200-*` code emitted by this plan.
+- Plan 202 may execute in parallel; it owns the M10 production
+  remote transport composition lane and shares no code with
+  Plan 200.
+- No M6 wire change. No `LocalZeroHop` substitution. No fake
+  LeaseSet. No public-network participation.
+- Plan 195 (M10 remote service interop) remains gated until
+  Plan 201 + Plan 203 + Plan 204 close. With Plan 204 landed,
+  Plan 195 is reactivated to
+  `evidence-passed-m10-remote-independent-service-final-closure-pending-plan204-normalization`.

@@ -74,14 +74,30 @@ It must not own:
 - SAM or I2CP protocol parsing.
 
 The daemon remains the sole M10 socket/task/composition owner.
-Milestone 10 independent acceptance is retained under Plan 181 and
-Plan 199 (29 local rows passed; 2 remote rows remain blocked). The
-current manager's delivery seam is deliberately local and co-owned;
-it is not a remote-router transport or a NetDB/LeaseSet2 lookup
-implementation. The Plan 199 remote qualification attempt therefore
-cannot be promoted to real curl/jaraco remote application evidence.
-Plans 180-and-182 jointly close the M10 local product + round-trip
-layer (reconcile model + local-delivery driver).
+Milestone 10 independent acceptance is retained under Plan 181 +
+Plan 203 (29 local rows passed; the two `remote-independent-*`
+rows now flip `blocked → passed-on-env` through the Plan 203
+positive external driver once the dedicated M6 interop lane
+provisions the SSU2 endpoint + bind tuple). The manager owns a
+single shared `ServiceDestinationDelivery` capability (Plan 202
+§5) — installed through the daemon composition root via
+`install_router_delivery_handle` and shared across every service
+the manager owns; the typed `RoutingDecision` enum distinguishes
+the explicit local co-owned path (`LocalCoOwned`) from the
+remote-router path (`RemoteRouter`) and the typed failure
+(`RemoteUnresolved`). Local co-owned delivery remains the
+explicit path for destinations the manager owns and is now
+retained as a bounded optimization, not the only path; the
+remote-router path drives the Plan 184–193 one-hop SSU2/tunnel/
+NetDB/LeaseSet2/ECIES/Garlic/Streaming stack with no second
+SSU2/tunnel stack. Plans 180-and-182 jointly close the M10 local
+product + round-trip layer (reconcile model + local-delivery
+driver); Plans 202-and-203 jointly close the M10 production remote
+Destination/Streaming composition + positive remote HTTP/IRC
+application interop. Plans 195 and 204 own the M10 final closure
+authority normalization; Plan 204 landed the docs/CI normalization
+pass on top of Plans 200/202/203 and remains blocked on Plan 201's
+Java branch corrective.
 
 ## Module layout
 

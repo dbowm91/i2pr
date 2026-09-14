@@ -4,12 +4,12 @@ Status: **`in-progress-branch-g-framework-landed-blocked-on-exact-head-external-
 
 Plan of record: [`201-m6-java-public-client-publication-corrective-and-second-family-closure.md`](201-m6-java-public-client-publication-corrective-and-second-family-closure.md).
 
-Plan 200 has closed the diagnostic/evidence side of the lane (helper
+Plan 200 closed the diagnostic/evidence side of the lane (helper
 `READY` decoupled from any `leaseset=published` claim; bounded
 `REPORT_STATUS`; post-bootstrap RouterInfo lookup proofs in both
 directions; sanitized Java client LeaseSet lifecycle / tunnel /
 floodfill / store / ack keys; exactly one terminal `P200-{A..H}`
-classification per run). Plan 201 has landed its **Branch G
+classification per run). Plan 201 landed its **Branch G
 (store-acked-remote-lookup-fails) corrective framework** so the
 external driver can attribute a stuck Java second-family LeaseSet2
 publication to a specific lookup-path boundary without weakening
@@ -24,6 +24,14 @@ on the Plan 198/199 evidence — Java stores the LS2 in its client
 subDB but the i2pr NetDB lookup never receives it) only after Plan
 200 records an unambiguous terminal classification on the closing
 exact head.
+
+Plan 204 (M10 final closure documentation and authority
+normalization) recorded that Plan 201 remains the active blocker
+of milestone 6 final closure. Plan 204 does not change Plan 201's
+status and does not claim `milestone6_interoperable =
+passed-via-plan193-and-plan201` until Plan 201 records the
+terminal `P200-*` classification on the closing exact head and
+flips the seven §11 stop rows `blocked → passed`.
 
 ## What Plan 201 changed
 
@@ -123,13 +131,13 @@ plan_193 = passed-m6-i2pd-mixed-router-streaming-qualification
 plan_194 = retained-partial-java-qualification-sam-ls2-publication-boundary
 plan_196 = passed-m6-java-controlled-first-run-topology-corrective
 plan_197 = passed-m6-pq-ssu2-option-support-corrective
-plan_198 = blocked-public-java-client-leaseset2-publication-superseded-into-plan199
-plan_199 = blocked-execution-decomposed-into-plans-200-through-204
+plan_198 = superseded-execution-decomposed-and-closed-via-plans200-204
+plan_199 = superseded-execution-decomposed-and-closed-via-plans200-204
 plan_200 = passed-m6-java-public-client-publication-observability-and-verified-bootstrap
 plan_201 = in-progress-branch-g-framework-landed-blocked-on-exact-head-external-run
-plan_202 = registered-executable-m10-remote-router-composition (parallel-executable-with-plan200)
-plan_203 = registered-blocked-by-plan202
-plan_204 = registered-blocked-by-plan201-and-plan203
+plan_202 = passed-m10-production-remote-destination-and-streaming-composition
+plan_203 = passed-m10-positive-remote-http-and-irc-application-interop
+plan_204 = in-progress-docs-and-authority-normalization-blocked-on-plan201-external-run
 
 milestone6_i2pd_streaming_interop = passed-via-plan193
 milestone6_java_mixed_router_interop = not-yet-passed (diagnostic-frame-landed-via-plan200; Branch-G-framework-landed-via-plan201; final closure blocked-on-exact-head-external-run)
@@ -137,8 +145,8 @@ milestone6_interoperable = not-yet-claimed
 m6_java_publication_observability = landed-via-plan200
 m6_java_publication_branch_g_framework = landed-via-plan201
 
-next_executable_plan = 200-external-run (consume terminal P200 classification) or 202 (M10 remote transport composition; parallel-executable)
-remaining_sequence = 200-external-run -> 201-branch-g-finalize-or-pivot-to-branch-{a..f} -> 204-convergence
+next_executable_plan = 201-branch-g-finalize (Plan 200 exact-head external run consumes the P200 classification)
+remaining_sequence = 201-branch-g-finalize-or-pivot-to-branch-{a..f} -> 204-convergence (after Plan 201 closes)
 ```
 
 ## Required validation
@@ -148,7 +156,7 @@ cargo fmt --all --check                                                OK
 cargo check --locked --workspace --all-targets                         OK
 cargo test --locked -p i2pr-daemon --test destination_tunnel_unit     40 passed (Plan 187 32 + Plan 190 0 reused + Plan 201 8 new)
 cargo test --locked -p i2pr-daemon --test java_tunnel_external        1 passed, 3 ignored (fail-closed ordinary invocation)
-cargo test --locked --workspace --all-targets -- --test-threads=1    2341 passed, 9 ignored (the +8 from Plan 201 §G)
+cargo test --locked --workspace --all-targets -- --test-threads=1    2357 passed, 12 ignored (the +8 from Plan 201 §G and 2357 is the closing-floor workspace count)
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings  OK
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps   OK
 cargo test --locked --workspace --doc                                0 passed (16 suites)
@@ -160,10 +168,11 @@ cargo deny check advisories bans sources                              OK
 ## Handoff rule
 
 Plan 201 must not claim final closure until:
+
 1. Plan 200 records exactly one unambiguous terminal
    `P200-{A..H}` classification against the exact-pinned Java I2P
    2.13.0 cache;
-2. the matching Plan 201 branch land the narrowest corrective for
+2. the matching Plan 201 branch lands the narrowest corrective for
    that classification (Branch G is the most likely candidate;
    Branch G's framework is already landed and only requires the
    exact-head external run to confirm the seven §11 stop rows flip
@@ -183,6 +192,12 @@ On Plan 201 pass, and only then, authority becomes:
 
 ```text
 plan_201 = passed-m6-java-public-client-publication-corrective-and-second-family-closure
+plan_195 = passed-m10-remote-independent-service-final-closure
+plan_181 = passed-m10-independent-application-service-interop-final-closure-evidence
+plan_198 = superseded-execution-decomposed-and-closed-via-plans200-204
+plan_199 = superseded-execution-decomposed-and-closed-via-plans200-204
+milestone6_java_mixed_router_interop = passed-via-plan201
+milestone6_interoperable = passed-via-plan193-and-plan201
 plan_204 = unblocked-convergence
 plan_202 = unblocked-with-plan203
 remaining_sequence = plan204-convergence -> closed-m6-via-plan193-and-plan201

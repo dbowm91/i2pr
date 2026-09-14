@@ -116,7 +116,9 @@ Interoperability tests must run only in an authorized private or controlled mixe
 Bounded M10 application profile (experimental, loopback-only,
 disabled by default; Plans 174–180 local product, Plan 182 local
 round-trip corrective, Plan 181 independent-application-client
-evidence):
+evidence retained, Plan 202 production remote
+Destination/Streaming composition, Plan 203 positive remote HTTP
++ IRC application interop):
 
 - generic TCP client/server tunnels with digest-matched byte
   round-trip (small, >=32 KiB multi-segment, reverse, half-close
@@ -135,7 +137,17 @@ evidence):
   hostname projection (`<52-char base32>.b32.i2p`) and bounded
   registration interception;
 - bounded transactional reconcile with generation/draining
-  lifecycle and unified cross-service resource accounting.
+  lifecycle and unified cross-service resource accounting;
+- a typed `ServiceDestinationDelivery` capability surface owned
+  by the `ServiceTunnelManager` and installed once per daemon
+  via `install_router_delivery_handle`; the typed
+  `RoutingDecision::LocalCoOwned` / `RemoteRouter` /
+  `RemoteUnresolved` enum drives the resolve path; the bounded
+  `RemoteDeliveryCounters` surface emits twelve positive
+  observations on every counted path; positive Direction A
+  external drivers cover the `m10_remote_destination_streaming_composition`
+  transport row and the `m10_positive_remote_http_and_irc_application_interop`
+  application rows against exact-pinned i2pd 2.61.0.
 
 Explicitly unsupported or deferred (fail-closed, never silently
 bridged): clearnet outproxy; SOCKS UDP ASSOCIATE; SOCKS BIND;
@@ -145,10 +157,17 @@ WEBIRC and cloaked-hostname extensions; arbitrary remote admin
 exposure; general address-book/subscription management; transit
 or floodfill router roles (M11/M12); broad public-network
 interoperability beyond exactly demonstrated rows. Remote
-independent-I2P HTTP/IRC service interop is blocked on the
-retained M6 mixed-router destination/Streaming debt
-(`m6-mixed-router-streaming-blocker`, Plan 181 §6.3); see
-`plans/181-status.md`.
+independent-I2P HTTP/IRC service interop is now proven on the
+dedicated M6 interop lane through Plan 203
+(`passed-m10-positive-remote-http-and-irc-application-interop`),
+the two `remote-independent-*` rows flip `blocked → passed-on-env`
+when the lane provisions the SSU2 endpoint + bind tuple and the
+driver emits the `http-remote-application-established` /
+`irc-remote-application-established` evidence keys. M10 final
+acceptance is recorded by Plan 204's §12 authority transition
+once Plan 201 records the terminal `P200-{A..H}` classification
+and lands its narrow corrective. See `plans/204-status.md`,
+`plans/203-status.md`, and `plans/202-status.md`.
 
 ## Fuzzing targets
 
