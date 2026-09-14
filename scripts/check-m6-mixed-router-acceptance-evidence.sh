@@ -100,7 +100,10 @@ STREAMING_CHECK="${REPO_ROOT}/scripts/check-streaming-tunnel-evidence.sh"
 JAVA_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-java.sh"
 JAVA_FETCH="${REPO_ROOT}/scripts/interop/fetch-m6-java.sh"
 JAVA_LAUNCHER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ControlledRouter.java"
+JAVA_RAW_HELPER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceRawDestination.java"
+JAVA_STREAM_HELPER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceStreamingService.java"
 CROSSFAMILY_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-m6-mixed-router.sh"
+FINAL_CLOSURE_CHECK="${REPO_ROOT}/scripts/check-m6-final-closure-evidence.sh"
 
 GUARDED=(
   external-daemon-strict-profile
@@ -127,7 +130,8 @@ for required in \
   "${STREAMING_HARNESS}" "${STREAMING_CHECK}" \
   "${JAVA_HARNESS}" "${JAVA_FETCH}" \
   "${JAVA_LAUNCHER_SRC}" \
-  "${CROSSFAMILY_HARNESS}"; do
+  "${JAVA_RAW_HELPER_SRC}" "${JAVA_STREAM_HELPER_SRC}" \
+  "${CROSSFAMILY_HARNESS}" "${FINAL_CLOSURE_CHECK}"; do
   if [[ ! -f "${required}" ]]; then
     echo "m6 mixed-router evidence check failed: missing required artifact: ${required}" >&2
     failures=$((failures + 1))
@@ -144,6 +148,16 @@ if [[ -f "${CROSSFAMILY_HARNESS}" ]]; then
     echo "m6 mixed-router evidence check failed: cross-family harness never references the Java I2P pin ${JAVA_PIN}" >&2
     failures=$((failures + 1))
   fi
+  for helper in "${JAVA_RAW_HELPER_SRC}" "${JAVA_STREAM_HELPER_SRC}"; do
+    if ! grep -q 'I2PClientFactory\|I2PSocketManagerFactory' "${helper}"; then
+      echo "m6 mixed-router evidence check failed: Plan 198 helper lacks public Java client API use: ${helper}" >&2
+      failures=$((failures + 1))
+    fi
+    if grep -n -E 'net\.i2p\.router|I2CPMessage|SAMBridge|Garlic|StreamingPacket' "${helper}" >/dev/null 2>&1; then
+      echo "m6 mixed-router evidence check failed: Plan 198 helper calls private/router or wire-level APIs: ${helper}" >&2
+      failures=$((failures + 1))
+    fi
+  done
   if ! grep -q -F "${I2PD_VERSION}" "${CROSSFAMILY_HARNESS}"; then
     echo "m6 mixed-router evidence check failed: cross-family harness never references the i2pd version ${I2PD_VERSION}" >&2
     failures=$((failures + 1))

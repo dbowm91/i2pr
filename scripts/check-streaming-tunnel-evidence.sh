@@ -100,6 +100,12 @@ scan_java() {
     for label in "${GUARDED_LABELS[@]}"; do
       if [[ "${line}" == *"${helper} \"${label}\""* ]]; then
         JAVA_HELPER_USAGE["${label}"]=$((JAVA_HELPER_USAGE["${label}"] + 1))
+      elif [[ "${label}" == "external-sam-streaming-created" &&
+              "${line}" == *"${helper} \"external-public-streaming-destination-created\""* ]]; then
+        # Plan 198 replaces the counted Java SAM service with the public
+        # I2PSocketManager service. The i2pd lane retains the historical
+        # SAM label; the Java lane is intentionally public-client-owned.
+        JAVA_HELPER_USAGE["${label}"]=$((JAVA_HELPER_USAGE["${label}"] + 1))
       fi
     done
   done < "${script}"

@@ -441,11 +441,11 @@ record is not `superseded-by-*`. Currently:
   second-family Java rows recorded `failed` with stop
   provenance until a follow-up plan lands the Java qualification
   harness (see [`plans/189-status.md`](../../plans/189-status.md));
-  Plan 194 owns the Java second-family qualification and closed
-  with `passed-m6-java-second-family-mixed-router-closure-with-sam-ls2-gap`
-  (full §5.1-§5.5 destination + streaming layers lifted into the Java
-  second-family lane; 26 passed + 22 blocked with `plan194-java-stop`
-  provenance + 0 failed against the exact-pinned Java I2P 2.13.0 cache);
+  Plan 194 retains the Java second-family topology, authenticated SSU2,
+  and SAM compatibility evidence, but its bounded SAM-bridge finding is
+  not final M6 closure evidence: 26 rows passed and 22 remained blocked
+  with `plan194-java-stop` provenance against the exact-pinned Java I2P
+  2.13.0 cache;
   Plan 196 owns the corrective and lands the implementation
   (out-of-tree `tests/integration/m6-interop/java/ControlledRouter.java`
   test-only launcher + rewritten `tests/integration/m6-interop/run-java.sh`
@@ -469,10 +469,12 @@ record is not `superseded-by-*`. Currently:
   `passed`; see
   [`plans/197-m6-pq-ssu2-option-support-corrective.md`](../../plans/197-m6-pq-ssu2-option-support-corrective.md)
   and [`plans/197-status.md`](../../plans/197-status.md));
-  Plan 194 closed the M6 Java I2P second-family qualification with
-  the bounded SAM-bridge LS2-publication gap; Plan 195 (M10 remote
-  service interop) is the new executable plan. M10 final acceptance
-  stays open.
+  Plan 194 retains the bounded SAM-bridge LS2-publication finding.
+  Plan 198 implements public Java I2PClient/I2PSession and
+  I2PSocketManager helpers, but the exact-pinned Java 2.13.0 controlled
+  router still does not return the public-client LeaseSet2 to the real
+  i2pr lookup path; mandatory Java lookup/delivery/Streaming rows remain
+  blocked and Plan 195 stays gated.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).
@@ -509,6 +511,7 @@ not weaken the script.
 | `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants (no Tokio/sockets in service-tunnels, no Garlic/I2NP, single pump, no unbounded channels, one entry point). |
 | `scripts/check-service-tunnel-acceptance-evidence.sh` | Plan 181 service-tunnel evidence integrity (29 local + 2 blocked remote rows; CI-enforced). |
 | `scripts/check-m6-mixed-router-acceptance-evidence.sh` | Plan 189 §8 / Plan 194 / Plan 196 / Plan 197 cross-family M6 mixed-router evidence integrity (per-layer harnesses + checkers both pin i2pd 2.61.0 + Java I2P 2.13.0; cross-family aggregator reuses the four per-layer harnesses; second-family Java rows stay `failed` with stop provenance until the Plan 196 controlled Java topology + authenticated SSU2 preflight passes; Plan 196 extends the checker to reject `i2p.vmCommSystem=true`, the obsolete Plan 194 keys (`i2np.reseed.enable`, `router.isFloodfill`, `i2np.ntcp2.enabled`), mutation of the verified Java cache's `clients.config` / `clients.config.d`, non-loopback reseed URLs, and `|| true` forgiveness in the lane; Plan 197 extends the checker to require that `Ssu2RouterAddress::parse` accepts `pq=4,3` (positive `parses_java_high_mtu_pq_options`/`parses_java_low_mtu_pq_option` regression present), that `Ssu2RouterAddress` surfaces a `pq_capabilities()` accessor, that `crates/i2pr-transport-ssu2/src/lib.rs` re-exports `Ssu2PqKem`/`PqCapabilities`/`MAX_SSU2_PQ_SCHEMES`, and that `crates/i2pr-transport-ssu2/src/publication.rs` contains no `pq` key in any `props.setProperty(...)`-style push or matching branch; CI-enforced). |
+| `scripts/check-m6-final-closure-evidence.sh` | Plan 198 evidence-consuming final gate: exact-head workflow provenance, exact family pins, and no blocked, failed, or missing mandatory Java/i2pd rows. Manual external-workflow only. |
 
 ## Doc-vs-source audit pattern
 

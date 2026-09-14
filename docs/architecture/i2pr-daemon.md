@@ -158,8 +158,15 @@ against the same exact-pinned Java cache and the
 `passed`; Plan 196 then flips from
 `in-progress-corrective-implementation-landed-static-checks-green-stopped-at-§10B-authenticated-ssu2-pq-option-rejection-pq-parser-tolerance-landed-via-plan197-pending-external-re-run`
 to `passed-m6-java-controlled-first-run-topology-corrective` and
-Plan 194 §5.2 / §5.3 / §5.4(b/c) / §5.5 resume only after Plan
-196 passes.
+Plan 198 now owns the public-client final-closure corrective. Its
+out-of-tree `ReferenceRawDestination.java` and
+`ReferenceStreamingService.java` use only public Java client/Streaming
+APIs, while the existing Rust driver continues to own the counted i2pr
+path. The helpers connect successfully in the exact-pinned Java 2.13.0
+controlled topology, but the Java router has not returned the public-client
+LeaseSet2 to the real i2pr DatabaseLookup path; mandatory Java lookup,
+delivery, and Streaming rows remain blocked and the final evidence gate
+must reject closure until that boundary is resolved.
 
 ## Purpose
 

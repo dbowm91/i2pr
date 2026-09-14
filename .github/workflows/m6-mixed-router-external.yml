@@ -94,6 +94,13 @@ jobs:
         run: bash tests/integration/m6-interop/run-m6-mixed-router.sh
         env:
           I2PR_M6_EXECUTION_ID: github-${{ github.run_id }}
+          I2PR_M6_WORKFLOW_RUN_ID: ${{ github.run_id }}
+
+      - name: Check Plan 198 final all-pass closure evidence
+        if: success()
+        run: bash scripts/check-m6-final-closure-evidence.sh
+        env:
+          I2PR_M6_WORKFLOW_RUN_ID: ${{ github.run_id }}
 
       - name: Upload sanitized evidence
         if: always()

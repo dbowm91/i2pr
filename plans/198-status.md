@@ -1,11 +1,34 @@
 # Plan 198 status — M6 Java public-client final closure corrective
 
-Status: **`registered-executable-m6-java-public-client-final-closure-corrective`**.
+Status: **`blocked-public-java-client-leaseset2-publication`**.
 
 Plan of record:
 [`plans/198-m6-java-public-client-final-closure-corrective.md`](198-m6-java-public-client-final-closure-corrective.md).
 
 This is the newest handoff authority for the retained M6/M10 blocker line. It supersedes the Plan 194 status interpretation that treated the exact-pinned Java SAM LeaseSet2 publication limitation as sufficient for final M6 closure.
+
+## Execution checkpoint
+
+The Plan 198 public-client helpers and Rust driver path are implemented and
+the exact-pinned local lane was exercised repeatedly. Both public Java helper
+sessions connect through the selected I2CP port and the Rust destination and
+Streaming tests themselves return `ok`, but the Java 2.13.0 controlled router
+does not return the published public-client LeaseSet2 to the real i2pr
+DatabaseLookup path. The destination lane therefore stops at
+`plan194-java-stop` after 45 seconds with no lookup reply, and the Streaming
+lane stops before outbound build installation. Publication was tested both by
+omitting the option and by explicitly setting
+`i2cp.dontPublishLeaseSet=false`; neither changes the result. The final gate
+remains fail-closed: Plan 198 is not passed and Milestone 6 remains
+unclaimed.
+
+Latest retained local evidence:
+
+```text
+target/interop/m6-java-evidence-plan198-11
+Java public-client tests: 2 passed, 0 failed at the Rust test-process level
+mandatory Java rows: blocked at public-client LeaseSet2 publication
+```
 
 ## Why M6 is reopened
 
@@ -44,7 +67,7 @@ plan_193 = passed-m6-i2pd-mixed-router-streaming
 plan_196 = passed-m6-java-controlled-first-run-topology-corrective
 plan_197 = passed-m6-pq-ssu2-option-support-corrective
 plan_194 = retained-partial-java-qualification-sam-ls2-publication-boundary
-plan_198 = registered-executable-m6-java-public-client-final-closure-corrective
+plan_198 = blocked-public-java-client-leaseset2-publication
 plan_195 = registered-blocked-by-plan198
 
 milestone6_i2pd_streaming_interop = passed-via-plan193
@@ -56,7 +79,7 @@ milestone10_independent_application_clients = local-rows-passed-plan181-not-clos
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 
-next_executable_plan = 198
+next_executable_plan = 198 (resolve the exact-pinned Java public-client LeaseSet2 publication boundary)
 remaining_sequence = 198 -> 195
 ```
 

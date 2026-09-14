@@ -1,6 +1,6 @@
 # Plan 198 — M6 Java public-client final closure corrective
 
-Status: **registered executable corrective**. This plan supersedes the Plan 194 interpretation that treated the Java SAM LeaseSet2 publication limitation as sufficient for final M6 closure. It does not discard the passing evidence from Plans 193, 196, or 197; it restores the original fail-closed Plan 194 acceptance boundary and supplies a public Java client path capable of exercising the missing LeaseSet2, destination, and Streaming rows.
+Status: **blocked at exact-pinned Java public-client LeaseSet2 publication**. This plan supersedes the Plan 194 interpretation that treated the Java SAM LeaseSet2 publication limitation as sufficient for final M6 closure. It does not discard the passing evidence from Plans 193, 196, or 197; it restores the original fail-closed Plan 194 acceptance boundary and supplies a public Java client path capable of exercising the missing LeaseSet2, destination, and Streaming rows. The public-client implementation is retained, but the exact-pinned Java 2.13.0 controlled-router lane still does not return the public-client LeaseSet2 to the real i2pr DatabaseLookup path, so final closure is not claimed.
 
 ## 1. Goal
 

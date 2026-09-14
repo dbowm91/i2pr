@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plan 196 — run the M6 Java I2P second-family qualification lane
+# Plan 198 — run the M6 Java I2P public-client second-family closure lane
 # end-to-end with a controlled first-run topology.
 #
 # The second-family lane re-uses the Plan 184–193 product suites the
@@ -7,8 +7,8 @@
 # Java I2P 2.13.0 reference substituted for the exact-pinned i2pd
 # 2.61.0 reference. The lane provisions one ephemeral Java router on
 # loopback with a fresh data dir (no reseed, no public I2P
-# participation), enables the SAM bridge through the disposable
-# clients.config, and runs the second-family external driver
+# participation), keeps the SAM bridge only as a diagnostic surface,
+# starts the counted public Java client helpers, and runs the second-family driver
 # (crates/i2pr-daemon/tests/java_tunnel_external.rs) through its
 # explicit `--ignored --exact` selection.
 #
@@ -34,6 +34,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 EVIDENCE_DIR="${I2PR_M6_JAVA_EVIDENCE_DIR:-${REPO_ROOT}/target/interop/m6-java-evidence}"
+if [[ "${EVIDENCE_DIR}" != /* ]]; then
+  EVIDENCE_DIR="${REPO_ROOT}/${EVIDENCE_DIR}"
+fi
 
 JAVA_PIN="9134f808337b401e8e53c73734c81fab04280c9d"
 JAVA_VERSION="2.13.0"
@@ -49,6 +52,8 @@ I2PR_STREAM_PORT="${I2PR_SSU2_JAVA_STREAM_PORT:-44091}"
 JAVA_SSU2_PORT="${I2PR_M6_JAVA_SSU2_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
 JAVA_SAM_PORT="${I2PR_M6_JAVA_SAM_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
 JAVA_I2CP_PORT="${I2PR_M6_JAVA_I2CP_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
+JAVA_RAW_CONTROL_PORT="${I2PR_M6_JAVA_RAW_CONTROL_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
+JAVA_STREAM_CONTROL_PORT="${I2PR_M6_JAVA_STREAM_CONTROL_PORT:-$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
 DRIVER_TIMEOUT="600s"
 
 mkdir -p "${EVIDENCE_DIR}"
@@ -62,6 +67,8 @@ RESULTS_FILE="${SCRATCH}/results.tsv"
 rm -f "${EVIDENCE_DIR}/java.log" \
   "${EVIDENCE_DIR}/driver/driver-evidence.tsv" \
   "${EVIDENCE_DIR}/reference-facts.tsv"
+rm -f "${EVIDENCE_DIR}/reference-raw-destination.tsv" \
+  "${EVIDENCE_DIR}/reference-streaming-service.tsv"
 
 # ---- Java I2P cache verification (fail closed before any network use) ----
 if [[ ! -d "${JAVA_CACHE}/lib" ]]; then
@@ -86,7 +93,9 @@ echo "==> Java I2P reference: ${JAVA_VERSION} (${JAVA_PIN})"
 LAUNCHER_BUILD="${SCRATCH}/build"
 mkdir -p "${LAUNCHER_BUILD}"
 LAUNCHER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ControlledRouter.java"
-if [[ ! -f "${LAUNCHER_SRC}" ]]; then
+RAW_HELPER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceRawDestination.java"
+STREAM_HELPER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceStreamingService.java"
+if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" ]]; then
   echo "Java launcher source missing: ${LAUNCHER_SRC}" >&2
   exit 1
 fi
@@ -98,7 +107,8 @@ for jar in "${JAVA_CACHE}"/*.jar "${JAVA_CACHE}"/lib/*.jar; do
     JAVA_CP="${JAVA_CP}:${jar}"
   fi
 done
-if ! javac -d "${LAUNCHER_BUILD}" -cp "${JAVA_CP}" "${LAUNCHER_SRC}" \
+if ! javac -d "${LAUNCHER_BUILD}" -cp "${JAVA_CP}" \
+   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" \
    >"${SCRATCH}/javac.log" 2>&1; then
   echo "Java launcher compile failed; see ${SCRATCH}/javac.log" >&2
   tail -n 60 "${SCRATCH}/javac.log" >&2 || true
@@ -167,6 +177,14 @@ cleanup() {
   [[ -z "${SCRATCH:-}" || ! -d "${SCRATCH}" ]] || rm -rf "${SCRATCH}"
 }
 trap cleanup EXIT
+
+stop_helper() {
+  local pid="${1:-}"
+  [[ -z "${pid}" ]] && return 0
+  kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
+  wait "${pid}" 2>/dev/null || true
+  CHILD_PIDS=("${CHILD_PIDS[@]/${pid}}")
+}
 
 echo "==> waiting for ephemeral Java I2P on 127.0.0.1:${JAVA_SSU2_PORT} (SAM 127.0.0.1:${JAVA_SAM_PORT} I2CP 127.0.0.1:${JAVA_I2CP_PORT})"
 JAVA_RI=""
@@ -311,6 +329,85 @@ if [[ "${TOPOLOGY_OK}" -ne 1 ]]; then
   exit 3
 fi
 
+# ---- Plan 198 public-client reference helpers ----------------------------
+# These helpers are compiled out-of-tree against the staged public jars. The
+# reference client owns its destination and publishes its Standard LS2 through
+# ordinary I2CP/client behavior; the control socket carries only test commands.
+HELPER_CP="${LAUNCHER_CP}"
+RAW_HELPER_KEY="${SCRATCH}/raw-reference.priv"
+STREAM_HELPER_KEY="${SCRATCH}/stream-reference.priv"
+RAW_HELPER_LOG="${SCRATCH}/reference-raw.log"
+STREAM_HELPER_LOG="${SCRATCH}/reference-stream.log"
+RAW_HELPER_READY="${SCRATCH}/reference-raw.ready"
+STREAM_HELPER_READY="${SCRATCH}/reference-stream.ready"
+
+start_raw_helper() {
+  : > "${RAW_HELPER_LOG}"
+  setsid java -Djava.net.preferIPv4Stack=true -Djava.awt.headless=true \
+    -Djava.library.path="${JAVA_CACHE}:${JAVA_CACHE}/lib" \
+    -Di2p.dir.base="${JAVA_CACHE}" -cp "${HELPER_CP}" \
+    ReferenceRawDestination 127.0.0.1 "${JAVA_I2CP_PORT}" "${JAVA_RAW_CONTROL_PORT}" \
+    "${RAW_HELPER_KEY}" >"${RAW_HELPER_READY}" 2>"${RAW_HELPER_LOG}" < /dev/null &
+  RAW_HELPER_PID=$!
+  CHILD_PIDS+=("${RAW_HELPER_PID}")
+  for _ in $(seq 1 180); do
+    if grep -q '^READY ' "${RAW_HELPER_READY}" 2>/dev/null; then
+      return 0
+    fi
+    if ! kill -0 "${RAW_HELPER_PID}" 2>/dev/null; then
+      cat "${RAW_HELPER_LOG}" >&2 || true
+      return 1
+    fi
+    sleep 0.5
+  done
+  echo "public Java raw helper did not become ready" >&2
+  cat "${RAW_HELPER_LOG}" >&2 || true
+  return 1
+}
+
+start_stream_helper() {
+  : > "${STREAM_HELPER_LOG}"
+  setsid java -Djava.net.preferIPv4Stack=true -Djava.awt.headless=true \
+    -Djava.library.path="${JAVA_CACHE}:${JAVA_CACHE}/lib" \
+    -Di2p.dir.base="${JAVA_CACHE}" -cp "${HELPER_CP}" \
+    ReferenceStreamingService 127.0.0.1 "${JAVA_I2CP_PORT}" "${JAVA_STREAM_CONTROL_PORT}" \
+    "${STREAM_HELPER_KEY}" >"${STREAM_HELPER_READY}" 2>"${STREAM_HELPER_LOG}" < /dev/null &
+  STREAM_HELPER_PID=$!
+  CHILD_PIDS+=("${STREAM_HELPER_PID}")
+  for _ in $(seq 1 240); do
+    if grep -q '^READY ' "${STREAM_HELPER_READY}" 2>/dev/null; then
+      return 0
+    fi
+    if ! kill -0 "${STREAM_HELPER_PID}" 2>/dev/null; then
+      cat "${STREAM_HELPER_LOG}" >&2 || true
+      return 1
+    fi
+    sleep 0.5
+  done
+  echo "public Java streaming helper did not become ready" >&2
+  cat "${STREAM_HELPER_LOG}" >&2 || true
+  return 1
+}
+
+stop_reference_helper() {
+  local pid="${1:-}"
+  local port="${2:-}"
+  [[ -z "${pid}" ]] && return 0
+  if [[ -n "${port}" ]]; then
+    python3 - "${port}" <<'PY' 2>/dev/null || true
+import socket, sys
+try:
+    with socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=2) as sock:
+        sock.sendall(b"STOP\n")
+        sock.recv(128)
+except OSError:
+    pass
+PY
+  fi
+  kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
+  wait "${pid}" 2>/dev/null || true
+}
+
 REQUIRED_FAILED=0
 record() {
   local label="$1"
@@ -385,24 +482,23 @@ mkdir -p "${DRIVER_EVIDENCE}"
 DRIVER_LOG="${EVIDENCE_DIR}/external-driver.log"
 : > "${DRIVER_LOG}"
 driver_rc=0
-# Plan 194 §5 — two drivers run in order; the destination driver
-# proves §5.1-§5.4 and the streaming driver proves §5.5. Both
-# drivers share the same daemon-owned SSU2 session over the
-# reference and emit sanitized evidence keys into the same
-# driver-evidence.tsv the harness aggregates below. The streaming
-# driver is launched on a separate SAM session against the same
-# bridge port but with STYLE=STREAM so it does not interfere with
-# the destination driver's STYLE=RAW SAM socket.
+# Plan 198 §7 — the destination and Streaming drivers run against
+# separate public-client helpers. SAM remains available only for the
+# retained diagnostic compatibility row and is never a counted service
+# destination.
 DRIVER_DEST_TSV="${DRIVER_EVIDENCE}/driver-destination.tsv"
 DRIVER_STREAM_TSV="${DRIVER_EVIDENCE}/driver-streaming.tsv"
+mkdir -p "${DRIVER_EVIDENCE}/destination" "${DRIVER_EVIDENCE}/streaming"
 : > "${DRIVER_DEST_TSV}"
 : > "${DRIVER_STREAM_TSV}"
-# Plan 196 §5.4 — pass the actual selected SAM/SSU2 endpoints to the
-# driver. The harness owns the ports, not the upstream default tuple.
-if JAVA_ROUTER_INFO="${JAVA_RI}" \
+start_raw_helper
+RAW_REFERENCE_DESTINATION_B64="$(awk 'NR==1 {print $2}' "${RAW_HELPER_READY}")"
+echo "    public Java raw helper ready; running destination driver" >>"${DRIVER_LOG}"
+if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_RI}" \
    JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
-   JAVA_SAM_ENDPOINT="127.0.0.1:${JAVA_SAM_PORT}" \
    JAVA_I2CP_ENDPOINT="127.0.0.1:${JAVA_I2CP_PORT}" \
+   JAVA_RAW_CONTROL_ENDPOINT="127.0.0.1:${JAVA_RAW_CONTROL_PORT}" \
+   JAVA_RAW_REFERENCE_DESTINATION_B64="${RAW_REFERENCE_DESTINATION_B64}" \
    I2PR_SSU2_BIND="127.0.0.1:${I2PR_PORT}" \
    EVIDENCE_DIR="${DRIVER_EVIDENCE}/destination" \
    timeout --foreground "${DRIVER_TIMEOUT}" \
@@ -413,19 +509,24 @@ if JAVA_ROUTER_INFO="${JAVA_RI}" \
 else
   driver_rc=$?
 fi
+echo "    destination driver exit=${driver_rc}" >>"${DRIVER_LOG}"
 # Concatenate the destination driver's evidence into the destination TSV
 if [[ -f "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" ]]; then
   cat "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" >> "${DRIVER_DEST_TSV}"
 fi
+stop_reference_helper "${RAW_HELPER_PID}" "${JAVA_RAW_CONTROL_PORT}"
+
+start_stream_helper
+STREAM_REFERENCE_DESTINATION_B64="$(awk 'NR==1 {print $2}' "${STREAM_HELPER_READY}")"
+echo "    public Java streaming helper ready; running streaming driver" >>"${DRIVER_LOG}"
 # Streaming driver run. Reuses the same SSU2 endpoint and SAM
-# bridge; the driver creates its own SAM sessions internally so
-# there is no race against the destination session. The streaming
-# driver is independent of §5.4 — Plan 194 §5.5 is its own row set.
+# Java public Streaming manager; it is independent of §5.4.
 streaming_rc=0
-if JAVA_ROUTER_INFO="${JAVA_RI}" \
+if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_RI}" \
    JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
-   JAVA_SAM_ENDPOINT="127.0.0.1:${JAVA_SAM_PORT}" \
    JAVA_I2CP_ENDPOINT="127.0.0.1:${JAVA_I2CP_PORT}" \
+   JAVA_STREAM_CONTROL_ENDPOINT="127.0.0.1:${JAVA_STREAM_CONTROL_PORT}" \
+   JAVA_STREAM_REFERENCE_DESTINATION_B64="${STREAM_REFERENCE_DESTINATION_B64}" \
    I2PR_SSU2_BIND="127.0.0.1:${I2PR_STREAM_PORT}" \
    EVIDENCE_DIR="${DRIVER_EVIDENCE}/streaming" \
    timeout --foreground "${DRIVER_TIMEOUT}" \
@@ -436,6 +537,8 @@ if JAVA_ROUTER_INFO="${JAVA_RI}" \
 else
   streaming_rc=$?
 fi
+echo "    streaming driver exit=${streaming_rc}" >>"${DRIVER_LOG}"
+stop_reference_helper "${STREAM_HELPER_PID}" "${JAVA_STREAM_CONTROL_PORT}"
 if [[ -f "${DRIVER_EVIDENCE}/streaming/driver-evidence.tsv" ]]; then
   cat "${DRIVER_EVIDENCE}/streaming/driver-evidence.tsv" >> "${DRIVER_STREAM_TSV}"
 fi
@@ -445,11 +548,21 @@ cat "${DRIVER_DEST_TSV}" >> "${DRIVER_EVIDENCE}/driver-evidence.tsv"
 cat "${DRIVER_STREAM_TSV}" >> "${DRIVER_EVIDENCE}/driver-evidence.tsv"
 DRIVER_TSV="${DRIVER_EVIDENCE}/driver-evidence.tsv"
 echo "==> sanitized reference-side facts (counts only, never key material)"
+# Keep a narrowly filtered, secret-scrubbed router diagnostic so a public
+# client publication regression can be distinguished from an i2pr lookup
+# regression without exporting the raw Java router log.
+JAVA_LOG_FILE="$(find "${JAVA_DATA}" -type f -name 'log-router-*.txt' -print -quit 2>/dev/null || true)"
+if [[ -n "${JAVA_LOG_FILE}" ]]; then
+  grep -Ei 'LeaseSet|I2CP|Database(Store|Lookup)|publish|client tunnel' \
+    "${JAVA_LOG_FILE}" 2>/dev/null \
+    | sed -E 's/[A-Za-z0-9+~=\/~.-]{60,}/<redacted>/g' \
+    >"${EVIDENCE_DIR}/java-public-client-diagnostic.log" || true
+fi
 REFERENCE_FACTS="${EVIDENCE_DIR}/reference-facts.tsv"
 : > "${REFERENCE_FACTS}"
 {
-  printf 'java-udp-listening\t%s\n' "$(grep -c 'SSU2 endpoint\|UDPTransport\|Started UDPTransport\|UDP transport started' "${JAVA_DATA}/logs/log-router-0.txt" 2>/dev/null || true)"
-  printf 'java-sam-bridge-up\t%s\n' "$(grep -c 'SAM bridge started\|SAMBridge\|Starting SAM' "${JAVA_DATA}/logs/log-router-0.txt" 2>/dev/null || true)"
+  printf 'java-udp-listening\t%s\n' "$(grep -c 'SSU2 endpoint\|UDPTransport\|Started UDPTransport\|UDP transport started' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'java-sam-bridge-up\t%s\n' "$(grep -c 'SAM bridge started\|SAMBridge\|Starting SAM' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
   printf 'java-reseed-disabled\t%s\n' "$(grep -c '^router.reseedDisable=true$' "${JAVA_DATA}/router.config" 2>/dev/null || true)"
   printf 'java-floodfill-capable\t%s\n' "$(grep -c '^router.floodfillParticipant=true$' "${JAVA_DATA}/router.config" 2>/dev/null || true)"
   printf 'java-udp-port-bound\t%s\n' "$(grep -c "^i2np.udp.port=${JAVA_SSU2_PORT}$" "${JAVA_DATA}/router.config" 2>/dev/null || true)"
@@ -465,7 +578,7 @@ REFERENCE_FACTS="${EVIDENCE_DIR}/reference-facts.tsv"
   # processed (ConnectionPacketHandler.java:82 / PacketQueue.java:362-368).
   # That is the Java-side counterpart of i2pd's "Streaming: Incoming
   # stream from" — the reference StreamingDestination accepted the SYN.
-  printf 'java-streaming-accepted\t%s\n' "$(grep -cE 'Rcvd (accept|success) status' "${JAVA_DATA}/logs/log-router-0.txt" 2>/dev/null || true)"
+  printf 'java-streaming-accepted\t%s\n' "$(grep -cE 'Rcvd (accept|success) status' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
 } >> "${REFERENCE_FACTS}"
 ref_row() {
   local label="$1"
@@ -530,10 +643,10 @@ m6_key_row "external-reference-floodfill" "reference-floodfill-capable" \
   "reference RouterInfo advertises floodfill and bootstraps the authoritative store"
 m6_key_row "external-session-established" "session-established" \
   "authenticated SSU2 session establishes via daemon-owned runtime"
-m6_key_row "external-sam-destination-created" "sam-destination-created" \
-  "reference SAM RAW/RAW-DATAGRAM destination created through Java public SAM"
-m6_key_row "external-sam-streaming-created" "sam-streaming-created" \
-  "reference SAM STREAM destination created through Java public SAM bridge"
+m6_key_row "external-public-client-destination-created" "public-client-destination-created" \
+  "reference Standard LeaseSet2 service destination created through public Java I2PSession"
+m6_key_row "external-public-streaming-destination-created" "public-streaming-destination-created" \
+  "reference Streaming service destination created through public I2PSocketManager"
 ref_row "java-routerinfo-host-bound" "java-udp-port-bound" \
   "Java router binds the controlled UDP port and RouterInfo advertises it"
 ref_row "java-routerinfo-port-bound" "java-udp-port-bound" \
@@ -668,7 +781,7 @@ elif passed:
 else:
     java_status = "failed"
 evidence = {
-    "schema": "i2pr-m6-java-v1",
+    "schema": "i2pr-m6-java-v2",
     "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "i2pr_commit": commit,
     "os_image": platform.platform(),
@@ -680,7 +793,7 @@ evidence = {
         "revision": java_pin,
         "version": java_version,
         "role": "mandatory second-family mixed-router reference, unmodified",
-        "transit": "loopback-only, no public reseed, SAM loopback (Plan 194 second-family qualification)",
+        "transit": "loopback-only, no public reseed, public I2CP/Streaming client helpers; SAM diagnostic only",
         "datadir": "fresh per-run scratch dir under i2p.dir.config (ControlledRouter)",
         "selected_ports": {
             "ssu2": f"127.0.0.1:{ssu2_port}",
@@ -697,28 +810,28 @@ evidence = {
     "known_limitations": [
         "second-family Java qualification: i2pd first-family passed via Plan 193",
         "loopback-only Java reference; no public I2P participation",
-        "Plan 194 §5 proves destination + streaming layers end-to-end against the Java reference",
-        "Plan 196 owned the controlled first-run topology + authenticated SSU2 preflight (now superseded)",
+        "Plan 198 public Java client helpers prove destination + streaming layers end-to-end",
+        "SAM remains diagnostic compatibility evidence and is not a counted service destination",
     ],
 }
 out = Path(evidence_dir)
 out.mkdir(parents=True, exist_ok=True)
 (out / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 with (out / "evidence.md").open("w", encoding="utf-8") as stream:
-    stream.write("# Plan 194 M6 Java I2P second-family qualification evidence\n\n")
+    stream.write("# Plan 198 M6 Java public-client second-family closure evidence\n\n")
     stream.write(f"- i2pr commit: `{commit}`\n")
     stream.write(f"- Java I2P: `{java_version}` @ `{java_pin}` (unmodified)\n")
     stream.write(f"- OS/image: `{platform.platform()}`\n")
     stream.write(f"- Rust: `{rustc}`\n")
     stream.write("- Bind policy: `127.0.0.1` only, `advertise=false`, no introducer\n")
-    stream.write("- Java profile: `i2p.dir.config=scratch`, `router.reseedDisable=true`, SAM loopback (ControlledRouter)\n\n")
+    stream.write("- Java profile: `i2p.dir.config=scratch`, `router.reseedDisable=true`, public client helpers (SAM diagnostic only)\n\n")
     stream.write("| Result | Status | Detail |\n| --- | --- | --- |\n")
     for row in rows:
         stream.write(f"| {row['label']} | {row['status']} | {row['detail']} |\n")
 PY
 
 if [[ "${REQUIRED_FAILED}" -ne 0 ]]; then
-  echo "Plan 196 M6 Java I2P second-family lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
+  echo "Plan 198 M6 Java public-client second-family lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1
 fi
-echo "Plan 196 M6 Java I2P second-family lane passed; sanitized evidence: ${EVIDENCE_DIR}"
+echo "Plan 198 M6 Java public-client second-family lane passed; sanitized evidence: ${EVIDENCE_DIR}"

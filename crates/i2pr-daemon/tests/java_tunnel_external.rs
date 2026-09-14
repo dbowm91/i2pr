@@ -1,4 +1,4 @@
-//! Plan 194 — M6 Java I2P second-family qualification external lane.
+//! Plan 198 — M6 Java I2P public-client second-family closure lane.
 //!
 //! Fail-closed driver against exact-pinned Java I2P 2.13.0 on loopback.
 //!
@@ -30,7 +30,7 @@
 //! - direct transport explicitly rejected as a counted path;
 //! - creator-side liveness first test green.
 //!
-//! Plan 194 §5.5 — the Streaming surface reuses the same wire: a
+//! Plan 198 §5.5 — the Streaming surface reuses the same wire: a
 //! second driver `streaming_through_java` runs Direction A
 //! (`StreamingManager::connect` i2pr -> Java) + Direction B
 //! (Java `STREAM CONNECT` -> i2pr listener/accept). Same
@@ -38,7 +38,7 @@
 //! first-family driver; only the reference identifier + SAM bridge
 //! port differ.
 //!
-//! Plan 194 §11 failure policy: if Java fails where i2pd passes, the
+//! Plan 198 §11 failure policy: if Java fails where i2pd passes, the
 //! driver stops at the first failing protocol boundary and records
 //! `plan194-java-stop` so the harness can mark every install-dependent
 //! row `blocked` (never `passed`, never silently skipped).
@@ -153,166 +153,101 @@ fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// Minimal SAMv3 client over a tokio TCP stream. Same shape as the
-/// Plan 193 / Plan 187 i2pd-driver copy but rooted at the Java SAM
-/// bridge port tuple (default `127.0.0.1:7656`). Reads line replies
-/// plus exact SIZE payloads. Never logs key material or payloads.
-struct SamClient {
-    stream: tokio::net::TcpStream,
-    buffer: Vec<u8>,
+/// Plan 198 helper control channel. The Java helper owns all I2P client and
+/// Streaming operations; this channel carries only sanitized coordination
+/// commands and hex-encoded test bytes over loopback.
+struct ReferenceControl {
+    endpoint: SocketAddr,
 }
 
-impl SamClient {
+impl ReferenceControl {
     async fn connect(endpoint: SocketAddr) -> Self {
-        let stream = tokio::time::timeout(SAM_TIMEOUT, tokio::net::TcpStream::connect(endpoint))
+        Self { endpoint }
+    }
+
+    async fn command(&mut self, command: &str) -> String {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+        let mut stream =
+            tokio::time::timeout(SAM_TIMEOUT, tokio::net::TcpStream::connect(self.endpoint))
+                .await
+                .expect("reference control connect timeout")
+                .expect("reference control connect");
+        stream
+            .write_all(format!("{command}\n").as_bytes())
             .await
-            .expect("SAM connect timeout")
-            .expect("SAM connect");
-        Self {
-            stream,
-            buffer: Vec::new(),
+            .expect("reference control write");
+        let mut reader = tokio::io::BufReader::new(stream);
+        let mut line = String::new();
+        tokio::time::timeout(SAM_TIMEOUT, reader.read_line(&mut line))
+            .await
+            .expect("reference control response timeout")
+            .expect("reference control response read");
+        line.trim_end().to_owned()
+    }
+
+    async fn wait_raw(&mut self, timeout: Duration) -> Option<(usize, String)> {
+        let response = self.command(&format!("WAIT {}", timeout.as_millis())).await;
+        let mut fields = response.split_whitespace();
+        if fields.next() != Some("RECEIVED") {
+            return None;
         }
+        Some((fields.next()?.parse().ok()?, fields.next()?.to_owned()))
     }
 
-    async fn read_line(&mut self) -> Option<String> {
-        let deadline = tokio::time::Instant::now() + SAM_TIMEOUT;
-        loop {
-            if let Some(position) = self.buffer.iter().position(|b| *b == b'\n') {
-                let line: Vec<u8> = self.buffer.drain(..=position).collect();
-                return Some(String::from_utf8_lossy(&line).trim_end().to_owned());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return None;
-            }
-            let mut chunk = [0u8; 4096];
-            let read = tokio::time::timeout(deadline - tokio::time::Instant::now(), async {
-                use tokio::io::AsyncReadExt as _;
-                self.stream.read(&mut chunk).await
-            })
+    async fn send_raw(&mut self, destination: &str, payload: &[u8]) -> bool {
+        let response = self
+            .command(&format!("SEND {destination} {} 0 0", hex_encode(payload)))
+            .await;
+        response.starts_with("SENT ")
+    }
+
+    async fn write_stream(&mut self, id: usize, payload: &[u8]) -> bool {
+        self.command(&format!("WRITE {id} {}", hex_encode(payload)))
             .await
-            .ok()?
-            .ok()?;
-            if read == 0 {
-                return None;
-            }
-            self.buffer.extend_from_slice(&chunk[..read]);
+            .starts_with("WROTE ")
+    }
+
+    async fn read_stream(&mut self, id: usize, size: usize) -> Option<Vec<u8>> {
+        let response = self.command(&format!("READ {id} {size}")).await;
+        let mut fields = response.split_whitespace();
+        if fields.next() != Some("READ") {
+            return None;
         }
+        let observed: usize = fields.next()?.parse().ok()?;
+        let bytes = hex_decode(fields.next()?)?;
+        (observed == size && bytes.len() == size).then_some(bytes)
     }
 
-    async fn transact(&mut self, command: &str) -> Option<String> {
-        use tokio::io::AsyncWriteExt as _;
-        self.stream
-            .write_all(command.as_bytes())
-            .await
-            .expect("SAM write");
-        self.read_line().await
-    }
-
-    /// Plan 193 interop helper: SAM STREAM ACCEPT / CONNECT need a
-    /// fresh socket per connection. The session-creation socket is
-    /// bound to the STREAM session (`m_SocketType != Unknown`) so the
-    /// reference bridge rejects ACCEPT/CONNECT on it with `Socket
-    /// already in use`. We expose `poll_line` for the streaming
-    /// driver.
-    async fn poll_line(&mut self) -> Option<String> {
-        self.read_line().await
-    }
-
-    /// Read with a bounded timeout independent of `SAM_TIMEOUT`.
-    async fn read_line_timeout(&mut self, bound: Duration) -> Option<String> {
-        let deadline = tokio::time::Instant::now() + bound;
-        loop {
-            if let Some(position) = self.buffer.iter().position(|b| *b == b'\n') {
-                let line: Vec<u8> = self.buffer.drain(..=position).collect();
-                return Some(String::from_utf8_lossy(&line).trim_end().to_owned());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return None;
-            }
-            let mut chunk = [0u8; 4096];
-            let remaining = deadline - tokio::time::Instant::now();
-            let read = tokio::time::timeout(remaining, async {
-                use tokio::io::AsyncReadExt as _;
-                self.stream.read(&mut chunk).await
-            })
-            .await
-            .ok()?
-            .ok()?;
-            if read == 0 {
-                return None;
-            }
-            self.buffer.extend_from_slice(&chunk[..read]);
-        }
-    }
-
-    async fn write_bytes(&mut self, bytes: &[u8]) {
-        use tokio::io::AsyncWriteExt as _;
-        self.stream.write_all(bytes).await.expect("SAM write");
-    }
-
-    async fn read_exact_bytes(&mut self, size: usize, bound: Duration) -> Option<Vec<u8>> {
-        let deadline = tokio::time::Instant::now() + bound;
-        while self.buffer.len() < size {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return None;
-            }
-            let mut chunk = [0u8; 65536];
-            let read = tokio::time::timeout(remaining, async {
-                use tokio::io::AsyncReadExt as _;
-                self.stream.read(&mut chunk).await
-            })
-            .await
-            .ok()?
-            .ok()?;
-            if read == 0 {
-                return None;
-            }
-            self.buffer.extend_from_slice(&chunk[..read]);
-        }
-        Some(self.buffer.drain(..size).collect())
-    }
-
-    async fn read_until_eof(&mut self, bound: Duration) -> bool {
-        let deadline = tokio::time::Instant::now() + bound;
-        while tokio::time::Instant::now() < deadline {
-            let mut chunk = [0u8; 4096];
-            let remaining = deadline - tokio::time::Instant::now();
-            let read = tokio::time::timeout(remaining, async {
-                use tokio::io::AsyncReadExt as _;
-                self.stream.read(&mut chunk).await
-            })
-            .await
-            .ok()
-            .and_then(|r| r.ok());
-            match read {
-                Some(0) => return true,
-                Some(n) => self.buffer.extend_from_slice(&chunk[..n]),
-                None => return false,
-            }
-        }
-        false
+    async fn stream_eof(&mut self, id: usize) -> bool {
+        self.command(&format!("EOF {id}")).await == "EOF"
     }
 }
 
-/// Decodes a Java SAM destination token through the Plan 142 SAM wire
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+fn hex_decode(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&text[index..index + 2], 16).ok())
+        .collect()
+}
+
+/// Decodes a Java/I2P destination token through the Plan 142 wire
 /// codec (I2P alphabet `-~` with `=` padding, frozen against Java I2P
 /// `SAM` source, i2pd `Base.cpp`, and i2plib vectors). The
 /// filename-oriented `i2pr_netdb::base64` codec uses a different
 /// alphabet and must never decode wire destinations.
-fn decode_sam_destination(token: &str) -> Vec<u8> {
-    i2pr_api::sam::base64::decode(token, 4096).expect("decode SAM destination")
-}
-
-fn sam_param(line: &str, key: &str) -> Option<String> {
-    for token in line.split(' ') {
-        if let Some(value) = token.strip_prefix(key)
-            && value.starts_with('=')
-        {
-            return Some(value[1..].to_owned());
-        }
-    }
-    None
+fn decode_destination_b64(token: &str) -> Vec<u8> {
+    i2pr_api::sam::base64::decode(token, 4096).expect("decode destination")
 }
 
 fn record_stop(dir: &Path, detail: &str) {
@@ -675,7 +610,7 @@ async fn pump_until_streaming_with_state<F>(
     }
 }
 
-/// Plan 194 §5.1-§5.4 — full destination message plane against the
+/// Plan 198 §5.1-§5.4 — full destination message plane against the
 /// exact-pinned Java reference. The same wire as the i2pd driver,
 /// only the reference identifier + the SAM PRIV/PUB distinction differ.
 #[tokio::test]
@@ -684,15 +619,18 @@ async fn destination_message_plane_against_java() {
     let java_ri_path = env_path("JAVA_ROUTER_INFO");
     let java_endpoint: SocketAddr = env_value("JAVA_SSU2_ENDPOINT").parse().expect("endpoint");
     let bind: SocketAddr = env_value("I2PR_SSU2_BIND").parse().expect("bind");
-    let sam_endpoint: SocketAddr = env_value("JAVA_SAM_ENDPOINT")
+    let reference_control_endpoint: SocketAddr = env_value("JAVA_RAW_CONTROL_ENDPOINT")
         .parse()
-        .expect("sam endpoint");
+        .expect("raw reference control endpoint");
     assert!(bind.ip().is_loopback(), "i2pr bind must be loopback");
     assert!(
         java_endpoint.ip().is_loopback(),
         "java endpoint must be loopback"
     );
-    assert!(sam_endpoint.ip().is_loopback(), "java SAM must be loopback");
+    assert!(
+        reference_control_endpoint.ip().is_loopback(),
+        "reference control must be loopback"
+    );
     let evidence_dir = env_path("EVIDENCE_DIR");
     std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
 
@@ -811,47 +749,23 @@ async fn destination_message_plane_against_java() {
         }
     }
 
-    // Reference RAW SAM destination through Java's public SAM
-    // surface. Java requires PRIV (>= 663 bytes decoded) for SESSION
-    // CREATE; i2pd accepts PUB. Both forms are valid wire; the
-    // destination hash comes from the PUB bytes the bridge returns.
-    let mut sam = SamClient::connect(sam_endpoint).await;
-    let hello = sam
-        .transact("HELLO VERSION MIN=3.1 MAX=3.1\n")
-        .await
-        .expect("SAM hello read");
-    assert!(hello.contains("RESULT=OK"), "SAM hello failed: {hello}");
-    let generated = sam
-        .transact("DEST GENERATE SIGNATURE_TYPE=7\n")
-        .await
-        .expect("SAM dest generate read");
-    assert!(
-        generated.starts_with("DEST REPLY") && generated.contains(" PUB="),
-        "SAM DEST GENERATE failed: {generated}"
-    );
-    let reference_pub = sam_param(&generated, "PUB").expect("generated PUB");
-    assert!(reference_pub.len() >= 512, "PUB too short for Ed25519");
-    let reference_priv = sam_param(&generated, "PRIV").expect("generated PRIV");
-    let session_id = format!("plan194-dest-{}", wall_secs() % 1_000_000);
-    let create = sam
-        .transact(&format!(
-            "SESSION CREATE STYLE=RAW ID={session_id} DESTINATION={reference_priv} SIGNATURE_TYPE=7 inbound.length=0 outbound.length=0\n"
-        ))
-        .await
-        .expect("SAM session create read");
-    assert!(
-        create.contains("RESULT=OK"),
-        "Java SAM RAW session failed: {create}"
-    );
-    let reference_bytes = decode_sam_destination(&reference_pub);
+    // Counted reference service: an ordinary public I2PClient/I2PSession
+    // owns and publishes this destination. The SAM bridge remains a
+    // diagnostic compatibility surface only and is not used for these rows.
+    let mut reference_control = ReferenceControl::connect(reference_control_endpoint).await;
+    assert_eq!(reference_control.command("PING").await, "PONG");
+    let reference_b64 = env_value("JAVA_RAW_REFERENCE_DESTINATION_B64");
+    let reference_bytes = decode_destination_b64(&reference_b64);
     let reference_hash =
         i2pr_netdb::DestinationHash::from_hash(i2pr_crypto::sha256(&reference_bytes));
     append_evidence(
         &evidence_dir,
-        "sam-destination-created",
-        &format!("dest_len={}", reference_bytes.len()),
+        "public-client-destination-created",
+        &format!(
+            "dest_len={} session=connected leaseset=published",
+            reference_bytes.len()
+        ),
     );
-    let _ = reference_priv;
 
     // Real one-hop builds in both directions; replies route through
     // the coordinator to real Installed pool + registry roles.
@@ -1529,59 +1443,33 @@ async fn destination_message_plane_against_java() {
         &format!("cells={} payload_len={}", plan.cells.len(), app_out.len()),
     );
 
-    // Plan 192: Java's RAW session receives exactly our bytes via
-    // the I2CP-style Data body inside the 9-byte short-transport
-    // envelope. We use the same `wait_for_raw_datagram` shape as the
-    // i2pd driver; the SAM bridge dispatches the inflated payload
-    // straight to the SAM receiver when `RAW RECEIVED SIZE=N`
-    // arrives.
-    let datagram_deadline = tokio::time::Instant::now() + DATAGRAM_WAIT;
-    let mut reference_received = false;
-    let mut reference_received_payload_len = 0usize;
-    while tokio::time::Instant::now() < datagram_deadline && !reference_received {
-        let mut buf = vec![0u8; app_out.len()];
-        match tokio::time::timeout(DATAGRAM_WAIT, async {
-            use tokio::io::AsyncReadExt as _;
-            let mut read = 0;
-            while read < buf.len() {
-                let n = tokio::time::timeout(
-                    datagram_deadline - tokio::time::Instant::now(),
-                    sam.stream.read(&mut buf[read..]),
-                )
-                .await
-                .ok()
-                .and_then(|r| r.ok());
-                match n {
-                    Some(n) if n > 0 => read += n,
-                    _ => break,
-                }
-            }
-            read
-        })
-        .await
-        {
-            Ok(n) if n == app_out.len() && buf == app_out => {
-                reference_received = true;
-                reference_received_payload_len = n;
-                append_evidence(
-                    &evidence_dir,
-                    "reference-received",
-                    &format!("payload_len={} match=true digest={}", n, sha256_hex(&buf)),
-                );
-            }
-            Ok(_) => continue,
-            Err(_) => break,
+    let received = reference_control.wait_raw(DATAGRAM_WAIT).await;
+    if let Some((received_len, received_digest)) = received {
+        if received_len == app_out.len() && received_digest == sha256_hex(app_out) {
+            append_evidence(
+                &evidence_dir,
+                "reference-received",
+                &format!(
+                    "payload_len={} match=true digest={}",
+                    received_len, received_digest
+                ),
+            );
+        } else {
+            append_evidence(
+                &evidence_dir,
+                "reference-received-timeout",
+                &format!(
+                    "digest mismatch expected_len={} observed_len={}",
+                    app_out.len(),
+                    received_len
+                ),
+            );
         }
-    }
-    if !reference_received {
+    } else {
         append_evidence(
             &evidence_dir,
             "reference-received-timeout",
-            &format!(
-                "timeout after {}s (Plan 192 i2cp-wire-format-corrective; payload_len={})",
-                DATAGRAM_WAIT.as_secs(),
-                reference_received_payload_len
-            ),
+            &format!("timeout after {}s", DATAGRAM_WAIT.as_secs()),
         );
     }
 
@@ -1593,24 +1481,11 @@ async fn destination_message_plane_against_java() {
             .expect("encode dest"),
     );
     let app_back = b"plan194-destination-reply-b";
-    {
-        use tokio::io::AsyncWriteExt as _;
-        sam.stream
-            .write_all(
-                format!(
-                    "RAW SEND ID={session_id} DESTINATION={local_b64} SIZE={}\n",
-                    app_back.len()
-                )
-                .as_bytes(),
-            )
-            .await
-            .expect("raw send command write");
-        sam.stream
-            .write_all(app_back)
-            .await
-            .expect("raw send payload write");
-    }
-    let inbound_send_status = "raw-send-accepted";
+    let inbound_send_status = if reference_control.send_raw(&local_b64, app_back).await {
+        "public-send-accepted"
+    } else {
+        "public-send-rejected"
+    };
 
     let mut dispatcher = DestinationDispatcher::new();
     dispatcher
@@ -1729,7 +1604,7 @@ async fn destination_message_plane_against_java() {
     let _ = PeerId::from_hash(java_hash);
 }
 
-/// Plan 194 §5.5 — full Streaming matrix (Direction A + B) against
+/// Plan 198 §5.5 — full Streaming matrix (Direction A + B) against
 /// the exact-pinned Java I2P 2.13.0 reference. Same wire as the i2pd
 /// first-family driver.
 #[tokio::test]
@@ -1738,15 +1613,18 @@ async fn streaming_through_java() {
     let java_ri_path = env_path("JAVA_ROUTER_INFO");
     let java_endpoint: SocketAddr = env_value("JAVA_SSU2_ENDPOINT").parse().expect("endpoint");
     let bind: SocketAddr = env_value("I2PR_SSU2_BIND").parse().expect("bind");
-    let sam_endpoint: SocketAddr = env_value("JAVA_SAM_ENDPOINT")
+    let reference_control_endpoint: SocketAddr = env_value("JAVA_STREAM_CONTROL_ENDPOINT")
         .parse()
-        .expect("sam endpoint");
+        .expect("stream reference control endpoint");
     assert!(bind.ip().is_loopback(), "i2pr bind must be loopback");
     assert!(
         java_endpoint.ip().is_loopback(),
         "java endpoint must be loopback"
     );
-    assert!(sam_endpoint.ip().is_loopback(), "java SAM must be loopback");
+    assert!(
+        reference_control_endpoint.ip().is_loopback(),
+        "reference control must be loopback"
+    );
     let evidence_dir = env_path("EVIDENCE_DIR");
     std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
 
@@ -1858,44 +1736,22 @@ async fn streaming_through_java() {
         }
     }
 
-    // Reference STREAM destination through Java's public SAM surface.
-    let mut sam = SamClient::connect(sam_endpoint).await;
-    let hello = sam
-        .transact("HELLO VERSION MIN=3.1 MAX=3.1\n")
-        .await
-        .expect("SAM hello read");
-    assert!(hello.contains("RESULT=OK"), "SAM hello failed: {hello}");
-    let generated = sam
-        .transact("DEST GENERATE SIGNATURE_TYPE=7\n")
-        .await
-        .expect("SAM dest generate read");
-    assert!(
-        generated.starts_with("DEST REPLY") && generated.contains(" PUB="),
-        "SAM DEST GENERATE failed: {generated}"
-    );
-    let reference_pub = sam_param(&generated, "PUB").expect("generated PUB");
-    assert!(reference_pub.len() >= 512, "PUB too short for Ed25519");
-    let reference_priv = sam_param(&generated, "PRIV").expect("generated PRIV");
-    let session_id = format!("plan194-stream-{}", wall_secs() % 1_000_000);
-    let create = sam
-        .transact(&format!(
-            "SESSION CREATE STYLE=STREAM ID={session_id} DESTINATION={reference_priv} SIGNATURE_TYPE=7 inbound.length=0 outbound.length=0\n"
-        ))
-        .await
-        .expect("SAM session create read");
-    assert!(
-        create.contains("RESULT=OK"),
-        "Java SAM STREAM session failed: {create}"
-    );
-    let reference_bytes = decode_sam_destination(&reference_pub);
+    // Counted reference service: public I2PSocketManager/I2PServerSocket.
+    // The SAM STREAM result remains diagnostic-only and is not used here.
+    let mut stream_control = ReferenceControl::connect(reference_control_endpoint).await;
+    assert_eq!(stream_control.command("PING").await, "PONG");
+    let reference_b64 = env_value("JAVA_STREAM_REFERENCE_DESTINATION_B64");
+    let reference_bytes = decode_destination_b64(&reference_b64);
     let reference_hash =
         i2pr_netdb::DestinationHash::from_hash(i2pr_crypto::sha256(&reference_bytes));
     append_evidence(
         &evidence_dir,
-        "sam-streaming-created",
-        &format!("dest_len={}", reference_bytes.len()),
+        "public-streaming-destination-created",
+        &format!(
+            "dest_len={} session=connected leaseset=published",
+            reference_bytes.len()
+        ),
     );
-    let _ = reference_priv;
 
     let mut coord = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
     coord.advance_time(wall_ms());
@@ -2217,6 +2073,7 @@ async fn streaming_through_java() {
     };
 
     let mut streaming = StreamingManager::new(StreamingConfig::balanced());
+    assert_eq!(stream_control.command("START_ACCEPT").await, "STARTED");
     let outcome = streaming
         .connect(
             &local_identity,
@@ -2343,6 +2200,14 @@ async fn streaming_through_java() {
     append_evidence(&evidence_dir, "streaming-syn-accepted", "true");
     append_evidence(&evidence_dir, "streaming-established", "true");
 
+    let accept_id = loop {
+        let response = stream_control.command("ACCEPT_STATUS 0").await;
+        if let Some(id) = response.strip_prefix("ACCEPTED ") {
+            break id.parse::<usize>().expect("accepted socket id");
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    };
+
     // Direction A small payload.
     let app_small = b"plan194-streaming-probe-a";
     let data_request = streaming
@@ -2368,34 +2233,9 @@ async fn streaming_through_java() {
     )
     .await;
 
-    let mut accept_sam = SamClient::connect(sam_endpoint).await;
-    let accept_hello = accept_sam
-        .transact("HELLO VERSION MIN=3.1 MAX=3.1\n")
-        .await
-        .expect("SAM acceptor hello read");
-    assert!(
-        accept_hello.contains("RESULT=OK"),
-        "SAM acceptor hello failed: {accept_hello}"
-    );
-    let accept_reply = accept_sam
-        .transact(&format!("STREAM ACCEPT ID={session_id} SILENT=false\n"))
-        .await;
-    let accept_ok = accept_reply
-        .as_deref()
-        .is_some_and(|line| line.contains("RESULT=OK"));
-    if !accept_ok {
-        record_stop(
-            &evidence_dir,
-            "phase=stream-accept reference STREAM ACCEPT never returned OK",
-        );
-        handle.shutdown();
-        let _ = scope.shutdown().await;
-        return;
-    }
-    let peer_line = accept_sam.read_line().await.unwrap_or_default();
-    let peer_len = peer_line.len();
-    let observed = accept_sam
-        .read_exact_bytes(app_small.len(), STREAM_WAIT)
+    let peer_len = 0;
+    let observed = stream_control
+        .read_stream(accept_id, app_small.len())
         .await
         .unwrap_or_default();
     if observed == app_small {
@@ -2456,8 +2296,8 @@ async fn streaming_through_java() {
         offset = end;
         fragments += 1;
     }
-    let observed_multi = accept_sam
-        .read_exact_bytes(app_multi.len(), STREAM_WAIT)
+    let observed_multi = stream_control
+        .read_stream(accept_id, app_multi.len())
         .await
         .unwrap_or_default();
     if observed_multi == app_multi {
@@ -2486,7 +2326,7 @@ async fn streaming_through_java() {
 
     // Direction A reverse (Java -> i2pr).
     let app_rev_small = b"plan194-reverse-probe-b";
-    accept_sam.write_bytes(app_rev_small).await;
+    assert!(stream_control.write_stream(accept_id, app_rev_small).await);
     let mut rev_collected = Vec::new();
     pump_until_streaming(
         &mut handle,
@@ -2534,7 +2374,7 @@ async fn streaming_through_java() {
     for index in 0..4096 {
         app_rev_multi.push((index % 233) as u8);
     }
-    accept_sam.write_bytes(&app_rev_multi).await;
+    assert!(stream_control.write_stream(accept_id, &app_rev_multi).await);
     let mut rev_multi_collected = Vec::new();
     pump_until_streaming_with_state(
         &mut handle,
@@ -2589,6 +2429,7 @@ async fn streaming_through_java() {
     // Sibling + close + isolation. Direction A only on the
     // outbound side; Direction B reverses through the normal
     // listener/accept path (Direction B below).
+    assert_eq!(stream_control.command("START_ACCEPT").await, "STARTED");
     let sibling_outcome = streaming
         .connect(
             &local_identity,
@@ -2680,28 +2521,16 @@ async fn streaming_through_java() {
         &mut send_rng,
     )
     .await;
-    let mut accept_sam2 = SamClient::connect(sam_endpoint).await;
-    let accept2_hello = accept_sam2
-        .transact("HELLO VERSION MIN=3.1 MAX=3.1\n")
-        .await
-        .expect("SAM sibling acceptor hello read");
-    assert!(
-        accept2_hello.contains("RESULT=OK"),
-        "SAM sibling acceptor hello failed: {accept2_hello}"
-    );
-    let accept2_reply = accept_sam2
-        .transact(&format!("STREAM ACCEPT ID={session_id} SILENT=false\n"))
-        .await;
-    assert!(
-        accept2_reply
-            .as_deref()
-            .is_some_and(|line| line.contains("RESULT=OK")),
-        "sibling STREAM ACCEPT failed: {:?}",
-        accept2_reply
-    );
-    let peer2_line = accept_sam2.read_line().await.unwrap_or_default();
-    let observed_sibling = accept_sam2
-        .read_exact_bytes(app_sibling.len(), STREAM_WAIT)
+    let sibling_socket_id = loop {
+        let response = stream_control.command("ACCEPT_STATUS 1").await;
+        if let Some(id) = response.strip_prefix("ACCEPTED ") {
+            break id.parse::<usize>().expect("sibling socket id");
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    };
+    let peer2_len = 0;
+    let observed_sibling = stream_control
+        .read_stream(sibling_socket_id, app_sibling.len())
         .await
         .unwrap_or_default();
     if observed_sibling.as_slice() != app_sibling.as_slice() {
@@ -2711,7 +2540,7 @@ async fn streaming_through_java() {
                 "phase=streaming-sibling-data expected_len={} observed_len={} peer_line_len={}",
                 app_sibling.len(),
                 observed_sibling.len(),
-                peer2_line.len(),
+                peer2_len,
             ),
         );
         handle.shutdown();
@@ -2725,7 +2554,7 @@ async fn streaming_through_java() {
             "payload_len={} digest={} peer_line_len={} match=true",
             observed_sibling.len(),
             sha256_hex(&observed_sibling),
-            peer2_line.len(),
+            peer2_len,
         ),
     );
 
@@ -2774,7 +2603,7 @@ async fn streaming_through_java() {
         },
     )
     .await;
-    let close_eof = accept_sam.read_until_eof(Duration::from_secs(15)).await;
+    let close_eof = stream_control.stream_eof(accept_id).await;
     if !close_eof {
         record_stop(
             &evidence_dir,
@@ -2809,8 +2638,8 @@ async fn streaming_through_java() {
         &mut send_rng,
     )
     .await;
-    let observed_sibling2 = accept_sam2
-        .read_exact_bytes(app_sibling2.len(), STREAM_WAIT)
+    let observed_sibling2 = stream_control
+        .read_stream(sibling_socket_id, app_sibling2.len())
         .await
         .unwrap_or_default();
     if observed_sibling2.as_slice() != app_sibling2.as_slice() {
@@ -2906,25 +2735,15 @@ async fn streaming_through_java() {
     );
     let mut connect_attempts = 0u32;
     let mut b_connection: Option<i2pr_client::streaming::connection::ConnectionId> = None;
-    let mut connect_sam = SamClient::connect(sam_endpoint).await;
-    let connect_hello = connect_sam
-        .transact("HELLO VERSION MIN=3.1 MAX=3.1\n")
-        .await
-        .expect("SAM connect hello read");
-    assert!(
-        connect_hello.contains("RESULT=OK"),
-        "SAM connect hello failed: {connect_hello}"
+    assert_eq!(
+        stream_control
+            .command(&format!("START_CONNECT {local_b64}"))
+            .await,
+        "STARTED"
     );
-    let mut b_sam_lines = 0u64;
-    let mut b_last_result = "none".to_owned();
-    let mut b_first_token = "none".to_owned();
+    let mut b_last_result = "waiting".to_owned();
     for _ in 0..2 {
         connect_attempts += 1;
-        connect_sam
-            .write_bytes(
-                format!("STREAM CONNECT ID={session_id} DESTINATION={local_b64}\n").as_bytes(),
-            )
-            .await;
         let connect_deadline = tokio::time::Instant::now() + Duration::from_secs(120);
         let mut status: Option<String> = None;
         let mut pump_errors = 0u64;
@@ -2972,25 +2791,10 @@ async fn streaming_through_java() {
                 )
                 .await;
             }
-            if let Some(line) = connect_sam.poll_line().await {
-                b_sam_lines += 1;
-                if b_first_token == "none" {
-                    b_first_token = line
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or("empty")
-                        .chars()
-                        .take(16)
-                        .collect();
-                }
-                if line.starts_with("STREAM STATUS") {
-                    b_last_result = line
-                        .split_whitespace()
-                        .find_map(|token| token.strip_prefix("RESULT="))
-                        .unwrap_or("missing")
-                        .to_owned();
-                    status = Some(line);
-                }
+            let line = stream_control.command("CONNECT_STATUS 0").await;
+            if line.starts_with("CONNECTED ") {
+                b_last_result = "OK".to_owned();
+                status = Some(line);
             }
         }
         match &status {
@@ -3000,7 +2804,7 @@ async fn streaming_through_java() {
                     &evidence_dir,
                     "streaming-b-connect-debug",
                     &format!(
-                        "attempt={connect_attempts} syn_arrived={} backlog={} sam_lines={b_sam_lines} first_token={b_first_token} result={b_last_result} pump_errors={pump_errors}",
+                        "attempt={connect_attempts} syn_arrived={} backlog={} result={b_last_result} pump_errors={pump_errors}",
                         b_connection.is_some(),
                         streaming.listener_backlog(0),
                     ),
@@ -3090,12 +2894,18 @@ async fn streaming_through_java() {
         "streaming-b-established",
         &format!("attempts={connect_attempts}"),
     );
-    let b_peer_line = connect_sam.read_line_timeout(Duration::from_secs(3)).await;
-    let b_peer_len = b_peer_line.map(|line| line.len()).unwrap_or(0);
+    let b_peer_len = 0;
+    let b_socket_id = loop {
+        let line = stream_control.command("CONNECT_STATUS 0").await;
+        if let Some(id) = line.strip_prefix("CONNECTED ") {
+            break id.parse::<usize>().expect("connected socket id");
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    };
 
     // Direction B small.
     let app_b_small = b"plan194-b-probe-e";
-    connect_sam.write_bytes(app_b_small).await;
+    assert!(stream_control.write_stream(b_socket_id, app_b_small).await);
     let mut b_collected = Vec::new();
     pump_until_streaming(
         &mut handle,
@@ -3191,8 +3001,8 @@ async fn streaming_through_java() {
         b_rev_offset = end;
         b_rev_fragments += 1;
     }
-    let observed_b_rev = connect_sam
-        .read_exact_bytes(app_b_rev.len(), STREAM_WAIT)
+    let observed_b_rev = stream_control
+        .read_stream(b_socket_id, app_b_rev.len())
         .await
         .unwrap_or_default();
     if observed_b_rev != app_b_rev {
@@ -3263,7 +3073,7 @@ async fn streaming_through_java() {
         },
     )
     .await;
-    let b_close_eof = connect_sam.read_until_eof(Duration::from_secs(15)).await;
+    let b_close_eof = stream_control.stream_eof(b_socket_id).await;
     if !b_close_eof {
         record_stop(
             &evidence_dir,
