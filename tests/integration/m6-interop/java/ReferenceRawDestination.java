@@ -1,6 +1,20 @@
-// Plan 198 counted reference service.  This helper uses only the public
-// Java I2P client API; the localhost control socket carries coordination
-// commands and never carries I2P protocol framing.
+// Plan 198 counted reference service; Plan 200 evidence-semantics
+// corrective.  This helper uses only the public Java I2P client API;
+// the localhost control socket carries coordination commands and never
+// carries I2P protocol framing.
+//
+// Plan 200 §A.1 — `READY` (and the optional `LEASE_STATUS` line)
+// intentionally says only what the helper process can prove locally:
+//
+//   public helper process alive
+//   I2CP session established
+//   Destination public material available
+//   control socket ready
+//
+// `READY` MUST NOT imply or assert that the destination's LeaseSet2
+// is network-visible.  Network-visible publication is a separate
+// question and is proved by the harness through ordinary I2NP
+// DatabaseLookup/Store traffic, never by helper readiness.
 
 import net.i2p.client.I2PClient;
 import net.i2p.client.I2PClientFactory;
@@ -24,9 +38,18 @@ import java.security.MessageDigest;
 import java.util.Properties;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class ReferenceRawDestination {
     private static final String PIN = "9134f808337b401e8e53c73734c81fab04280c9d";
+
+    // Plan 200 §A.1 — bounded, sanitized, non-publication facts only.
+    private static final String PUBLIC_CLIENT_SESSION_CONNECTED = "1";
+    private static final String PUBLIC_CLIENT_CONTROL_READY = "1";
+    // Helper process epoch + ready epoch give the harness a coarse
+    // bounded lifetime to correlate with sanitized Java router log
+    // entries (which themselves are never retained in evidence).
+    private static final AtomicLong HELPER_START_MS = new AtomicLong(System.currentTimeMillis());
 
     private static String[] split(String line, int count) {
         String[] result = line.split(" ");
@@ -110,7 +133,23 @@ public final class ReferenceRawDestination {
         });
         session.connect();
         try (ServerSocket server = new ServerSocket(controlPort, 16, java.net.InetAddress.getByName("127.0.0.1"))) {
-            System.out.println("READY " + destination.toBase64() + " " + PIN);
+            // Plan 200 §A.1 — `READY` is intentionally the minimal helper
+            // process + session + destination + control-socket fact set;
+            // it MUST NOT include any publication claim. The harness
+            // treats it as equivalent to the recommended sanitized facts:
+            //
+            //   PUBLIC_CLIENT_SESSION_CONNECTED=1
+            //   PUBLIC_CLIENT_DESTINATION_LEN=<bounded integer>
+            //   PUBLIC_CLIENT_CONTROL_READY=1
+            //
+            // The destination Base64 is required to identify the
+            // destination the harness must look up; it is public material
+            // and never carries the private destination bytes.
+            System.out.println("READY PUBLIC_CLIENT_SESSION_CONNECTED=" + PUBLIC_CLIENT_SESSION_CONNECTED
+                + " PUBLIC_CLIENT_DESTINATION_LEN=" + destination.toBase64().length()
+                + " PUBLIC_CLIENT_CONTROL_READY=" + PUBLIC_CLIENT_CONTROL_READY
+                + " " + destination.toBase64()
+                + " " + PIN);
             System.out.flush();
             boolean stop = false;
             while (!stop) {
@@ -134,6 +173,21 @@ public final class ReferenceRawDestination {
                             boolean sent = session.sendMessage(peer, body, I2PSession.PROTO_DATAGRAM_RAW,
                                     Integer.parseInt(values[3]), Integer.parseInt(values[4]));
                             output.println(sent ? "SENT " + body.length + " " + digest(body) : "SEND_FAILED");
+                            break;
+                        }
+                        case "REPORT_STATUS": {
+                            // Plan 200 §A.2 — explicit, bounded status
+                            // report. Asserts ONLY helper-local facts;
+                            // never asserts publication or network
+                            // visibility (those are external questions
+                            // proved by the harness through ordinary I2NP
+                            // traffic).
+                            long uptimeMs = System.currentTimeMillis() - HELPER_START_MS.get();
+                            output.println("STATUS public_client_session_connected=" + PUBLIC_CLIENT_SESSION_CONNECTED
+                                + " public_client_destination_len=" + destination.toBase64().length()
+                                + " public_client_control_ready=" + PUBLIC_CLIENT_CONTROL_READY
+                                + " helper_uptime_ms=" + uptimeMs
+                                + " publications_observed=no");
                             break;
                         }
                         case "STOP": output.println("STOPPING"); stop = true; break;

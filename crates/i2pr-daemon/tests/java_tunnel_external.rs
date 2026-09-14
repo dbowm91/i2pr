@@ -1,4 +1,6 @@
 //! Plan 199 Phase A — M6 Java I2P public-client second-family closure lane.
+//! Plan 200 — Java public-client publication observability and verified
+//! bootstrap.
 //!
 //! Fail-closed driver against exact-pinned Java I2P 2.13.0 on loopback.
 //!
@@ -7,9 +9,18 @@
 //!   parser/signature/freshness path into the authoritative store;
 //! - effective floodfill capability verified before dispatch;
 //! - authenticated SSU2 session establishes via the daemon-owned runtime;
-//! - one reference SAM destination created through Java's public SAM
-//!   surface (transient; only public Destination facts recorded, never
-//!   keys);
+//! - Plan 200 §B: post-bootstrap positive proof that the Java main
+//!   NetDB can serve the peer RouterInfo through an ordinary
+//!   `DatabaseLookup`/`DatabaseStore` round-trip (in both
+//!   directions). The bootstrap submission alone is no longer
+//!   considered proof of network-visible installation;
+//! - one reference public client destination created through Java's
+//!   public I2PClient/I2PSession surface (transient; only public
+//!   Destination facts recorded, never keys);
+//! - Plan 200 §A: helper `READY` is decoupled from any
+//!   `leaseset=published` claim; publication is observed independently
+//!   through sanitized Java log facts and an ordinary i2pr
+//!   `DatabaseLookup` against the publication router;
 //! - one real one-hop outbound + inbound tunnel build accepted by the
 //!   reference, with build replies routed through
 //!   `ExploratoryBuildCoordinator::route_inbound_i2np` to real
@@ -42,6 +53,11 @@
 //! driver stops at the first failing protocol boundary and records
 //! `plan199-java-stop` so the harness can mark every install-dependent
 //! row `blocked` (never `passed`, never silently skipped).
+//!
+//! Plan 200 — one terminal `P200-*` classification is emitted per
+//! run (see `record_p200_classification`). The classification is the
+//! earliest protocol/lifecycle boundary at which the public-client
+//! publication chain stopped. Plan 201 will own the corrective.
 
 #![forbid(unsafe_code)]
 
@@ -83,8 +99,9 @@ use i2pr_daemon::tunnel_liveness::{
 };
 use i2pr_netdb::{LookupPolicy, RouterHash, RouterInfoStoreConfig};
 use i2pr_proto::{
-    DatabaseStoreData, DatabaseStoreMessage, Date, DeferredPayload, Hash, I2npBody, I2npMessage,
-    MAX_I2NP_PAYLOAD_SIZE, Mapping, RouterAddress, RouterInfo,
+    DatabaseLookupMessage, DatabaseStoreData, DatabaseStoreMessage, Date, DeferredPayload, Hash,
+    I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE, Mapping, ReplyEncryption, RouterAddress,
+    RouterInfo,
 };
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope, Ssu2PqKem};
 use i2pr_transport::{Deadline, MAX_I2NP_MESSAGE_BYTES, PeerId};
@@ -284,10 +301,214 @@ fn database_store_router_info_wire(key: Hash, router_info: &[u8], message_id: u3
     .expect("encode RouterInfo store message")
 }
 
+/// Plan 200 §B — build a short-transport DatabaseLookup for a RouterInfo
+/// hash. Direct delivery (`reply_tunnel_id = None`, no tunnel
+/// gateway) so Java replies on the same authenticated session that
+/// received the lookup. The `from` field is the i2pr-side RouterHash so
+/// the responder knows where to send the reply. Excluded peers is
+/// empty — the lookup is the first probe against the target router.
+fn database_lookup_router_info_wire(key: Hash, from: Hash, message_id: u32) -> Vec<u8> {
+    let lookup = DatabaseLookupMessage {
+        key,
+        from,
+        delivery_flag: false,
+        reply_tunnel_id: None,
+        lookup_type: 2, // RouterInfo lookup
+        excluded_peers: Vec::new(),
+        reply_encryption: ReplyEncryption::None,
+    };
+    I2npMessage::new_short_transport(
+        message_id,
+        wall_secs().saturating_add(60).min(u64::from(u32::MAX)) as u32,
+        I2npBody::DatabaseLookup(Box::new(lookup)),
+    )
+    .expect("RouterInfo lookup message")
+    .encode_short_transport_to_vec(MAX_I2NP_MESSAGE_BYTES)
+    .expect("encode RouterInfo lookup message")
+}
+
+/// Plan 200 §B.2 — probe the peer's main NetDB through an ordinary
+/// `DatabaseLookup` and pump inbound until a RouterInfo-bearing
+/// `DatabaseStore` arrives whose key/identity match the expected
+/// peer. Returns `true` only when the full round-trip evidence is
+/// decoded and validated; the function never claims proof from a
+/// `DeliveryStatus` alone.
+///
+/// Sanitized fact recorded:
+/// - `p200-routerinfo-lookup-<from>-wants-<expected>`: response
+///   observed (`true`/`false`), response type, key match, signature
+///   match, identity match, identity-hash match, advertised SSU2
+///   port match.
+const P200_LOOKUP_TIMEOUT: Duration = Duration::from_secs(20);
+
+#[allow(clippy::too_many_arguments)]
+async fn probe_routerinfo_lookup(
+    handle: &mut i2pr_daemon::router_i2np::Ssu2DaemonHandle,
+    target_peer: i2pr_transport::PeerId,
+    expected_hash: i2pr_proto::Hash,
+    expected_ri: &[u8],
+    lookup_message_id: u32,
+    from_hash: i2pr_proto::Hash,
+    evidence_dir: &Path,
+    probe_label: &str,
+) -> bool {
+    let lookup_wire = database_lookup_router_info_wire(
+        Hash::from_bytes(*expected_hash.as_bytes()),
+        Hash::from_bytes(*from_hash.as_bytes()),
+        lookup_message_id,
+    );
+    let request = RouterDeliveryRequest::new(target_peer, lookup_wire, DELIVERY_TIMEOUT)
+        .expect("RouterInfo lookup request");
+    let admission = handle
+        .delivery()
+        .deliver(request, &CancellationToken::new());
+    if admission != RouterDeliveryOutcome::Accepted {
+        append_evidence(
+            evidence_dir,
+            &format!("p200-routerinfo-lookup-{probe_label}"),
+            &format!("admission=rejected outcome={admission:?}"),
+        );
+        return false;
+    }
+    append_evidence(
+        evidence_dir,
+        &format!("p200-routerinfo-lookup-{probe_label}-admitted"),
+        "true",
+    );
+
+    let deadline = tokio::time::Instant::now() + P200_LOOKUP_TIMEOUT;
+    let mut pump_errors: u64 = 0;
+    let mut pump_others: u64 = 0;
+    let mut observed = false;
+    while tokio::time::Instant::now() < deadline && !observed {
+        let next = tokio::time::timeout(POLL_INTERVAL, handle.next_inbound()).await;
+        let Ok(Some(inbound)) = next else {
+            continue;
+        };
+        let message =
+            match I2npMessage::decode_short_transport(&inbound.bytes, MAX_I2NP_PAYLOAD_SIZE) {
+                Ok(message) => message,
+                Err(_) => {
+                    pump_errors += 1;
+                    continue;
+                }
+            };
+        let store = match message.body() {
+            I2npBody::DatabaseStore(store) => store,
+            _ => {
+                pump_others += 1;
+                continue;
+            }
+        };
+        if store.key != Hash::from_bytes(*expected_hash.as_bytes()) {
+            pump_others += 1;
+            continue;
+        }
+        let compressed = match &store.data {
+            DatabaseStoreData::RouterInfoCompressed(payload) => payload,
+            _ => {
+                pump_others += 1;
+                continue;
+            }
+        };
+        let payload_bytes = compressed.as_bytes();
+        let decoded = match RouterInfo::decode(
+            payload_bytes,
+            i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
+        ) {
+            Ok(router_info) => router_info,
+            Err(error) => {
+                append_evidence(
+                    evidence_dir,
+                    &format!("p200-routerinfo-lookup-{probe_label}-decode-error"),
+                    &format!("{error:?}"),
+                );
+                pump_errors += 1;
+                continue;
+            }
+        };
+        let identity_hash = decoded
+            .router_identity()
+            .hash()
+            .expect("RouterInfo identity hash");
+        let identity_match = identity_hash.as_bytes() == expected_hash.as_bytes();
+        let advertised_ssu2_count = decoded
+            .addresses()
+            .iter()
+            .filter(|addr| addr.transport_style() == "SSU2")
+            .count();
+        let has_ssu2 = advertised_ssu2_count >= 1;
+        let payload_len = decoded.encode_to_vec(65535).map(|b| b.len()).unwrap_or(0);
+        let expected_len = expected_ri.len();
+        let payload_match = payload_len == expected_len;
+        append_evidence(
+            evidence_dir,
+            &format!("p200-routerinfo-lookup-{probe_label}"),
+            &format!(
+                "response_observed=true key_match=true identity_match={identity_match} ssu2_addresses={advertised_ssu2_count} decoded_payload_match={payload_match} decoded_payload_len={payload_len} expected_payload_len={expected_len} pump_errors={pump_errors} pump_others={pump_others}"
+            ),
+        );
+        observed = identity_match && has_ssu2;
+    }
+    if !observed {
+        append_evidence(
+            evidence_dir,
+            &format!("p200-routerinfo-lookup-{probe_label}"),
+            &format!(
+                "response_observed=false key_match=false pump_errors={pump_errors} pump_others={pump_others}"
+            ),
+        );
+    }
+    observed
+}
+
+/// Plan 200 §11 — emit exactly one terminal classification
+/// `P200-{A..H}` per run. The earliest observed boundary wins. The
+/// caller passes a `phase_results` slice of `(boundary_label,
+/// observed_passed)` pairs in the order they were tested; the first
+/// non-passing boundary determines the classification. If everything
+/// passes, the classification is `P200-H-publication-path-passed`.
+fn record_p200_classification(evidence_dir: &Path, phase_results: &[(&str, bool)]) -> &'static str {
+    let classification =
+        if let Some((boundary, _)) = phase_results.iter().find(|(_, passed)| !passed) {
+            match *boundary {
+                "java-main-netdb-a-knows-b" => "P200-A-router-a-missing-router-b",
+                "java-main-netdb-b-knows-a" => "P200-B-router-b-missing-router-a",
+                "java-client-ls2-not-created" => "P200-C-client-ls2-not-created-or-current",
+                "java-client-tunnel-publication-path" => {
+                    "P200-D-client-tunnel-publication-path-unavailable"
+                }
+                "java-floodfill-candidate" => "P200-E-no-eligible-floodfill-candidate",
+                "java-store-emitted" => "P200-F-store-sent-no-ack",
+                "java-network-visible-leaseset" => "P200-G-store-acked-remote-lookup-fails",
+                _ => "P200-H-publication-path-passed",
+            }
+        } else {
+            "P200-H-publication-path-passed"
+        };
+    let detail = phase_results
+        .iter()
+        .map(|(label, passed)| format!("{label}={passed}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    append_evidence(
+        evidence_dir,
+        "p200-classification",
+        &format!("{classification} {detail}"),
+    );
+    classification
+}
+
 /// Plan 199 §A.2 bootstrap-only probe. It runs before either public Java
 /// helper is started, breaking the otherwise circular dependency where a
 /// one-hop public client waits for the publication router while the router
 /// waits for that client to become ready.
+///
+/// Plan 200 §B extends this probe with **positive post-bootstrap proof**
+/// that the receiving Java main NetDB can serve the peer RouterInfo
+/// through an ordinary `DatabaseLookup` round-trip in both
+/// directions. The bootstrap submission alone is no longer considered
+/// proof of network-visible installation.
 #[tokio::test]
 #[ignore = "Plan 199: requires the exact-pinned dual Java router environment"]
 async fn bootstrap_java_router_peers() {
@@ -305,6 +526,8 @@ async fn bootstrap_java_router_peers() {
     assert!(bind.ip().is_loopback());
     assert!(publication_endpoint.ip().is_loopback());
     assert!(service_endpoint.ip().is_loopback());
+    let evidence_dir = env_path("EVIDENCE_DIR");
+    std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
     let (publication_hash, publication_ssu2) =
         verify_reference_router_info(&publication_ri).expect("verify publication RouterInfo");
     let (service_hash, service_ssu2) =
@@ -341,7 +564,7 @@ async fn bootstrap_java_router_peers() {
     let service = Ssu2DaemonService::new(&config.ssu2, identity).expect("bootstrap service");
     let token = CancellationToken::new();
     let scope = ChildScope::for_test(&token, ChildFailurePolicy::FailParent);
-    let handle = service
+    let mut handle = service
         .start(&scope, &config.ssu2)
         .await
         .expect("bootstrap daemon");
@@ -376,15 +599,61 @@ async fn bootstrap_java_router_peers() {
             RouterDeliveryOutcome::Accepted
         );
     }
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    handle.shutdown();
-    let _ = scope.shutdown().await;
-    assert_eq!(handle.snapshot().active_sessions, 0);
     append_evidence(
-        &env_path("EVIDENCE_DIR"),
+        &evidence_dir,
         "java-router-peer-bootstrap-completed",
         "ordinary-authenticated-i2np-databasestore-both-directions",
     );
+
+    // Plan 200 §B — post-bootstrap positive lookup proof in both
+    // directions. We use the i2pr-side RouterHash as the lookup
+    // requester (`from`) so the responder knows where to send the
+    // reply. Direct delivery (`reply_tunnel_id = None`) keeps the
+    // probe on the existing authenticated session.
+    let i2pr_router_hash = bundle.identity().hash().expect("i2pr router hash");
+    let a_knows_b = probe_routerinfo_lookup(
+        &mut handle,
+        PeerId::from_hash(publication_hash),
+        service_hash,
+        &service_ri,
+        0x51A7_1301,
+        i2pr_router_hash,
+        &evidence_dir,
+        "a-knows-b",
+    )
+    .await;
+    let b_knows_a = probe_routerinfo_lookup(
+        &mut handle,
+        PeerId::from_hash(service_hash),
+        publication_hash,
+        &publication_ri,
+        0x51A7_1302,
+        i2pr_router_hash,
+        &evidence_dir,
+        "b-knows-a",
+    )
+    .await;
+
+    // Plan 200 §11 — terminal classification. The bootstrap probe
+    // itself only reaches the A/B main-NetDB bootstrap boundary; the
+    // C..H phases are recorded as blocked until Plan 201 (or this
+    // run's destination/Streaming driver) proves them.
+    record_p200_classification(
+        &evidence_dir,
+        &[
+            ("java-main-netdb-a-knows-b", a_knows_b),
+            ("java-main-netdb-b-knows-a", b_knows_a),
+            ("java-client-ls2-not-created", false),
+            ("java-client-tunnel-publication-path", false),
+            ("java-floodfill-candidate", false),
+            ("java-store-emitted", false),
+            ("java-network-visible-leaseset", false),
+        ],
+    );
+
+    handle.shutdown();
+    let _ = scope.shutdown().await;
+    assert_eq!(handle.snapshot().active_sessions, 0);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -965,18 +1234,31 @@ async fn destination_message_plane_against_java() {
     // diagnostic compatibility surface only and is not used for these rows.
     let mut reference_control = ReferenceControl::connect(reference_control_endpoint).await;
     assert_eq!(reference_control.command("PING").await, "PONG");
+    // Plan 200 §A.2 — `REPORT_STATUS` is the explicit bounded helper
+    // status command. Asserts ONLY helper-local facts.
+    let status_line = reference_control.command("REPORT_STATUS").await;
+    assert!(
+        status_line.starts_with("STATUS "),
+        "REPORT_STATUS must return a STATUS line, got: {status_line:?}"
+    );
     let reference_b64 = env_value("JAVA_RAW_REFERENCE_DESTINATION_B64");
     let reference_bytes = decode_destination_b64(&reference_b64);
     let reference_hash =
         i2pr_netdb::DestinationHash::from_hash(i2pr_crypto::sha256(&reference_bytes));
     append_evidence(
         &evidence_dir,
+        "public-client-session-established",
+        &format!("control_pong=true dest_len={}", reference_bytes.len()),
+    );
+    append_evidence(
+        &evidence_dir,
         "public-client-destination-created",
         &format!(
-            "dest_len={} session=connected leaseset=published",
+            "dest_len={} session=connected control_ready=1 publication_observed=external",
             reference_bytes.len()
         ),
     );
+    append_evidence(&evidence_dir, "public-client-leaseset-status", &status_line);
 
     // Real one-hop builds in both directions; replies route through
     // the coordinator to real Installed pool + registry roles.
@@ -2020,17 +2302,33 @@ async fn streaming_through_java() {
     // The SAM STREAM result remains diagnostic-only and is not used here.
     let mut stream_control = ReferenceControl::connect(reference_control_endpoint).await;
     assert_eq!(stream_control.command("PING").await, "PONG");
+    // Plan 200 §A.2 — explicit bounded helper status command.
+    let status_line = stream_control.command("REPORT_STATUS").await;
+    assert!(
+        status_line.starts_with("STATUS "),
+        "REPORT_STATUS must return a STATUS line, got: {status_line:?}"
+    );
     let reference_b64 = env_value("JAVA_STREAM_REFERENCE_DESTINATION_B64");
     let reference_bytes = decode_destination_b64(&reference_b64);
     let reference_hash =
         i2pr_netdb::DestinationHash::from_hash(i2pr_crypto::sha256(&reference_bytes));
     append_evidence(
         &evidence_dir,
+        "public-streaming-session-established",
+        &format!("control_pong=true dest_len={}", reference_bytes.len()),
+    );
+    append_evidence(
+        &evidence_dir,
         "public-streaming-destination-created",
         &format!(
-            "dest_len={} session=connected leaseset=published",
+            "dest_len={} session=connected control_ready=1 publication_observed=external",
             reference_bytes.len()
         ),
+    );
+    append_evidence(
+        &evidence_dir,
+        "public-streaming-leaseset-status",
+        &status_line,
     );
 
     let mut coord = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());

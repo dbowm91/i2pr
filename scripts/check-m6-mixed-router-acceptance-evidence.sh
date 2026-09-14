@@ -384,6 +384,126 @@ else
   done
 fi
 
+# ---- 10. Plan 200 Java public-client publication observability --------
+# Plan 200 is a diagnostic/evidence corrective: the lane must
+# (a) stop equating helper readiness with LeaseSet2 publication,
+# (b) prove Router A/B main-NetDB bootstrap through an ordinary
+#     post-store DatabaseLookup round-trip in both directions,
+# (c) observe sanitized Java client LeaseSet2 lifecycle facts,
+# (d) emit exactly one terminal `P200-{A..H}` classification per run,
+# (e) reject a publication row that lacks the post-store RouterInfo
+#     lookup proofs.
+if [[ -f "${JAVA_RAW_HELPER_SRC}" && -f "${JAVA_STREAM_HELPER_SRC}" ]]; then
+  # 10a. The helper `READY` line must NOT include `leaseset=published`.
+  # The new format must carry the bounded Plan 200 §A.1 facts
+  # (`PUBLIC_CLIENT_SESSION_CONNECTED`, `PUBLIC_CLIENT_DESTINATION_LEN`,
+  # `PUBLIC_CLIENT_CONTROL_READY`) and must NOT claim publication.
+  for helper in "${JAVA_RAW_HELPER_SRC}" "${JAVA_STREAM_HELPER_SRC}"; do
+    if ! grep -q 'PUBLIC_CLIENT_SESSION_CONNECTED' "${helper}"; then
+      echo "m6 mixed-router evidence check failed: ${helper} lacks the Plan 200 §A.1 PUBLIC_CLIENT_SESSION_CONNECTED fact" >&2
+      failures=$((failures + 1))
+    fi
+    if ! grep -q 'PUBLIC_CLIENT_DESTINATION_LEN' "${helper}"; then
+      echo "m6 mixed-router evidence check failed: ${helper} lacks the Plan 200 §A.1 PUBLIC_CLIENT_DESTINATION_LEN fact" >&2
+      failures=$((failures + 1))
+    fi
+    if ! grep -q 'PUBLIC_CLIENT_CONTROL_READY' "${helper}"; then
+      echo "m6 mixed-router evidence check failed: ${helper} lacks the Plan 200 §A.1 PUBLIC_CLIENT_CONTROL_READY fact" >&2
+      failures=$((failures + 1))
+    fi
+    # The bounded REPORT_STATUS command must be present so the harness
+    # can request the explicit helper-local fact set.
+    if ! grep -q 'REPORT_STATUS' "${helper}"; then
+      echo "m6 mixed-router evidence check failed: ${helper} lacks the Plan 200 §A.2 REPORT_STATUS command" >&2
+      failures=$((failures + 1))
+    fi
+    # Plan 200 §A.1 — reject any claim of helper-side
+    # `leaseset=published`; the Rust driver must no longer mix
+    # publication into readiness.
+    if grep -q 'leaseset=published' "${helper}"; then
+      echo "m6 mixed-router evidence check failed: ${helper} retains helper-side leaseset=published claim (Plan 200 §A.1 forbidden)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 10b. The Rust driver must NOT mix `leaseset=published` into any
+  # helper-readiness evidence row.
+  DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+  if [[ -f "${DRIVER_TEST}" ]]; then
+    if grep -nE 'session=connected leaseset=published' "${DRIVER_TEST}" >/dev/null 2>&1; then
+      echo "m6 mixed-router evidence check failed: ${DRIVER_TEST} still emits helper-side leaseset=published (Plan 200 §A.2 forbidden)" >&2
+      failures=$((failures + 1))
+    fi
+  fi
+  # 10c. The driver must support post-bootstrap RouterInfo lookup
+  # probes in both directions (`p200-routerinfo-lookup-a-knows-b`
+  # and `p200-routerinfo-lookup-b-knows-a`) and emit one terminal
+  # `P200-*` classification per run.
+  if [[ -f "${DRIVER_TEST}" ]]; then
+    if ! grep -q 'probe_routerinfo_lookup' "${DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${DRIVER_TEST} lacks the Plan 200 §B post-bootstrap RouterInfo lookup probe (probe_routerinfo_lookup)" >&2
+      failures=$((failures + 1))
+    fi
+    if ! grep -q 'record_p200_classification' "${DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${DRIVER_TEST} lacks the Plan 200 §11 P200-* terminal classification helper" >&2
+      failures=$((failures + 1))
+    fi
+    if ! grep -q '"a-knows-b"' "${DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${DRIVER_TEST} lacks the Plan 200 §B a-knows-b probe label" >&2
+      failures=$((failures + 1))
+    fi
+    if ! grep -q '"b-knows-a"' "${DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${DRIVER_TEST} lacks the Plan 200 §B b-knows-a probe label" >&2
+      failures=$((failures + 1))
+    fi
+    if ! grep -q 'database_lookup_router_info_wire' "${DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${DRIVER_TEST} lacks the Plan 200 §B database_lookup_router_info_wire helper" >&2
+      failures=$((failures + 1))
+    fi
+  fi
+  # 10d. The harness must wire the Plan 200 row set and the
+  # bootstrap-classification aggregator.
+  if [[ -f "${JAVA_HARNESS}" ]]; then
+    for row in \
+      external-routerinfo-lookup-a-knows-b \
+      external-routerinfo-lookup-b-knows-a \
+      external-java-client-subdb-created \
+      external-java-create-leaseset2-received \
+      external-java-client-leaseset-stored-current \
+      external-java-client-leaseset-publish-scheduled \
+      external-java-client-leaseset-republish-job-ran \
+      external-java-client-inbound-tunnel-eligible \
+      external-java-client-outbound-tunnel-eligible \
+      external-java-floodfill-candidate-available \
+      external-java-store-emitted \
+      external-java-store-ack-observed \
+      external-p200-classification; do
+      if ! grep -q "${row}" "${JAVA_HARNESS}"; then
+        echo "m6 mixed-router evidence check failed: run-java.sh missing Plan 200 row ${row}" >&2
+        failures=$((failures + 1))
+      fi
+    done
+    # The diagnostic Java log keys must be greppable from the
+    # helper-side counts (Plan 200 §C/D).
+    for key in \
+      java-client-subdb-created \
+      java-create-leaseset2-received \
+      java-client-leaseset-stored-current \
+      java-client-leaseset-publish-scheduled \
+      java-client-leaseset-republish-job-ran \
+      java-client-inbound-tunnel-selectable \
+      java-client-outbound-tunnel-selectable \
+      java-floodfill-candidate-non-empty \
+      java-store-emitted \
+      java-store-ack-observed \
+      java-store-failure-reason; do
+      if ! grep -q "${key}" "${JAVA_HARNESS}"; then
+        echo "m6 mixed-router evidence check failed: run-java.sh missing Plan 200 diagnostic key ${key}" >&2
+        failures=$((failures + 1))
+      fi
+    done
+  fi
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1

@@ -469,12 +469,26 @@ record is not `superseded-by-*`. Currently:
   `passed`; see
   [`plans/197-m6-pq-ssu2-option-support-corrective.md`](../../plans/197-m6-pq-ssu2-option-support-corrective.md)
   and [`plans/197-status.md`](../../plans/197-status.md));
-  Plan 194 retains the bounded SAM-bridge LS2-publication finding.
-  Plan 198 implements public Java I2PClient/I2PSession and
-  I2PSocketManager helpers, but the exact-pinned Java 2.13.0 controlled
-  router still does not return the public-client LeaseSet2 to the real
-  i2pr lookup path; mandatory Java lookup/delivery/Streaming rows remain
-  blocked and Plan 195 stays gated.
+   Plan 194 retains the bounded SAM-bridge LS2-publication finding.
+   Plan 198 implements public Java I2PClient/I2PSession and
+   I2PSocketManager helpers, but the exact-pinned Java 2.13.0 controlled
+   router still does not return the public-client LeaseSet2 to the real
+   i2pr lookup path; mandatory Java lookup/delivery/Streaming rows remain
+   blocked and Plan 195 stays gated. Plan 199 was the unified M6/M10
+   closure attempt and is decomposed into Plans 200–204.
+   Plan 200 (M6 Java public-client publication observability and
+   verified bootstrap) is the current diagnostic/evidence corrective:
+   Java helpers decouple `leaseset=published` from `READY` and add
+   bounded `REPORT_STATUS`; the Rust driver proves Router A/B main-NetDB
+   bootstrap through ordinary post-store DatabaseLookup round-trips in
+   both directions; sanitized Java log keys for the client LS2 lifecycle
+   and tunnel/floodfill/store/ack selection are emitted to evidence; and
+   exactly one terminal `P200-{A..H}` classification is recorded per
+   run. Plan 201 picks the smallest standards-compatible corrective
+   from that classification. The M10 production remote transport
+   branch is Plan 202 (parallel-executable with Plan 200); Plan 203 is
+   positive remote HTTP + IRC application interop; Plan 204 is the
+   convergence.
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).

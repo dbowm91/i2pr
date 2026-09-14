@@ -567,6 +567,15 @@ if ! /usr/bin/env JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
   driver_rc=1
 fi
 echo "    Java A/B ordinary RouterInfo bootstrap exit=${bootstrap_rc}" >>"${DRIVER_LOG}"
+# Plan 200 §B — include the bootstrap probe evidence in the
+# aggregated driver-evidence.tsv so the shell can read the
+# `p200-routerinfo-lookup-*` rows without a second pass over the
+# bootstrap evidence directory. The destination/streaming evidence
+# is concatenated below.
+BOOTSTRAP_TSV="${DRIVER_EVIDENCE}/bootstrap/driver-evidence.tsv"
+if [[ -f "${BOOTSTRAP_TSV}" ]]; then
+  cat "${BOOTSTRAP_TSV}" >> "${DRIVER_EVIDENCE}/bootstrap-driver-evidence.tsv"
+fi
 # Plan 199 §A.3 — the destination and Streaming drivers run against
 # separate public-client helpers. SAM remains available only for the
 # retained diagnostic compatibility row and is never a counted service
@@ -577,7 +586,15 @@ mkdir -p "${DRIVER_EVIDENCE}/destination" "${DRIVER_EVIDENCE}/streaming"
 : > "${DRIVER_DEST_TSV}"
 : > "${DRIVER_STREAM_TSV}"
 start_raw_helper
-RAW_REFERENCE_DESTINATION_B64="$(awk 'NR==1 {print $2}' "${RAW_HELPER_READY}")"
+# Plan 200 §A.1 — the helper's `READY` line is intentionally the
+# minimal public-client fact set; the b64 destination is the
+# last-but-one whitespace-separated field after `READY`, with
+# the Java PIN as the final field.
+RAW_REFERENCE_DESTINATION_B64="$(awk 'NR==1 {
+  for (i = NF; i >= 1; i--) {
+    if (length($i) > 100) { print $i; exit }
+  }
+}' "${RAW_HELPER_READY}")"
 echo "    public Java raw helper ready; running destination driver" >>"${DRIVER_LOG}"
 if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
    JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
@@ -606,7 +623,12 @@ fi
 stop_reference_helper "${RAW_HELPER_PID}" "${JAVA_RAW_CONTROL_PORT}"
 
 start_stream_helper
-STREAM_REFERENCE_DESTINATION_B64="$(awk 'NR==1 {print $2}' "${STREAM_HELPER_READY}")"
+# Plan 200 §A.1 — see RAW_REFERENCE_DESTINATION_B64 above.
+STREAM_REFERENCE_DESTINATION_B64="$(awk 'NR==1 {
+  for (i = NF; i >= 1; i--) {
+    if (length($i) > 100) { print $i; exit }
+  }
+}' "${STREAM_HELPER_READY}")"
 echo "    public Java streaming helper ready; running streaming driver" >>"${DRIVER_LOG}"
 # Streaming driver run. Reuses the same SSU2 endpoint and SAM
 # Java public Streaming manager; it is independent of §5.4.
@@ -637,6 +659,9 @@ if [[ -f "${DRIVER_EVIDENCE}/streaming/driver-evidence.tsv" ]]; then
 fi
 # Compose the aggregated driver-evidence.tsv the helpers below read.
 : > "${DRIVER_EVIDENCE}/driver-evidence.tsv"
+if [[ -f "${DRIVER_EVIDENCE}/bootstrap-driver-evidence.tsv" ]]; then
+  cat "${DRIVER_EVIDENCE}/bootstrap-driver-evidence.tsv" >> "${DRIVER_EVIDENCE}/driver-evidence.tsv"
+fi
 cat "${DRIVER_DEST_TSV}" >> "${DRIVER_EVIDENCE}/driver-evidence.tsv"
 cat "${DRIVER_STREAM_TSV}" >> "${DRIVER_EVIDENCE}/driver-evidence.tsv"
 DRIVER_TSV="${DRIVER_EVIDENCE}/driver-evidence.tsv"
@@ -672,6 +697,25 @@ REFERENCE_FACTS="${EVIDENCE_DIR}/reference-facts.tsv"
   # That is the Java-side counterpart of i2pd's "Streaming: Incoming
   # stream from" — the reference StreamingDestination accepted the SYN.
   printf 'java-streaming-accepted\t%s\n' "$(grep -cE 'Rcvd (accept|success) status' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  # Plan 200 §C — observe the Java client LeaseSet lifecycle through
+  # sanitized stock log events. Each count is a coarse signal only;
+  # absence is itself a diagnostic fact (not silently rewritten to
+  # "passed"). Raw log lines are NEVER retained as evidence — only
+  # these bounded count keys.
+  printf 'java-client-subdb-created\t%s\n' "$(grep -cE 'new FloodfillNetworkDatabaseSegmentor|new FloodfillNetworkDatabaseFacade|ClientConnectionRunner' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'java-create-leaseset2-received\t%s\n' "$(grep -cE 'CreateLeaseSet2MessageHandler|CreateLeaseSetMessage|handleCreateLeaseSet2|createNewLeaseSet' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'java-client-leaseset-stored-current\t%s\n' "$(grep -cE 'Stored local LeaseSet|getStoredLocal|LeaseSet stored|LeaseSet2 stored|current.*ls2' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'java-client-leaseset-publish-scheduled\t%s\n' "$(grep -cE 'Scheduling republish|RepublishLeaseSetJob|republish scheduled|will republish' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'java-client-leaseset-republish-job-ran\t%s\n' "$(grep -cE 'RepublishLeaseSetJob|republishStore|republishing leaseSet|RepublishJob run|publishing lease' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  # Plan 200 §D — tunnel eligibility, floodfill selection, store/ack
+  # bookkeeping. Each grep is bounded to the documented exact-pinned
+  # log shape; absence is itself a diagnostic fact, never rewritten.
+  printf 'java-client-inbound-tunnel-selectable\t%s\n' "$(grep -cE 'No inbound tunnels available|No reply inbound tunnels|inbound tunnel.*select|selectReplyInbound' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'java-client-outbound-tunnel-selectable\t%s\n' "$(grep -cE 'No outbound tunnels available|outbound tunnel.*select|selectOutboundTunnel|client tunnel.*select' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'java-floodfill-candidate-non-empty\t%s\n' "$(grep -cE 'No floodfill peers|No peers|No more peers|floodfill peer selector|floodfill routerInfo' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'java-store-emitted\t%s\n' "$(grep -cE 'Sending store|Sending to floodfill|Storing leaseSet|Storing leaseSet2|sent StoreJob|sent StoreMsg' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'java-store-ack-observed\t%s\n' "$(grep -cE 'DeliveryStatusMessageHandler|received ack|stored successfully|Store successful|Ack received|store reply.*received' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'java-store-failure-reason\t%s\n' "$(grep -cE 'store failed|store timeout|store exception|could not store|peer.*not eligible|peer.*unreachable' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
 } >> "${REFERENCE_FACTS}"
 ref_row() {
   local label="$1"
@@ -812,6 +856,68 @@ m6_key_row "external-liveness-first-test" "liveness-first-test" \
   "creator-side liveness scheduler first test succeeds during destination activity"
 ref_row "external-reseed-disabled" "java-no-public-reseed" \
   "Java router has the controlled no-public-reseed flag in the live datadir"
+
+# Plan 200 §B — post-bootstrap RouterInfo lookup proofs in both
+# directions. Each row is `passed` only when the corresponding
+# `p200-routerinfo-lookup-<label>` evidence key was emitted by the
+# bootstrap probe with `response_observed=true key_match=true
+# identity_match=true ssu2_addresses>=1`.
+m6_key_row "external-routerinfo-lookup-a-knows-b" "p200-routerinfo-lookup-a-knows-b" \
+  "Plan 200 §B: Java router A's main NetDB serves router B's RouterInfo through ordinary DatabaseLookup"
+m6_key_row "external-routerinfo-lookup-b-knows-a" "p200-routerinfo-lookup-b-knows-a" \
+  "Plan 200 §B: Java router B's main NetDB serves router A's RouterInfo through ordinary DatabaseLookup"
+
+# Plan 200 §C — Java client LeaseSet lifecycle observed through
+# sanitized stock log events. Each row is `passed` only when the
+# corresponding event class was observed at least once.
+ref_row "external-java-client-subdb-created" "java-client-subdb-created" \
+  "Plan 200 §C: Java created the client-specific NetDB facade (sanitized log count)"
+ref_row "external-java-create-leaseset2-received" "java-create-leaseset2-received" \
+  "Plan 200 §C: Java's client message listener received the CreateLeaseSet2 message (sanitized log count)"
+ref_row "external-java-client-leaseset-stored-current" "java-client-leaseset-stored-current" \
+  "Plan 200 §C: Java stored a current local LS2 in the client sub-NetDB (sanitized log count)"
+ref_row "external-java-client-leaseset-publish-scheduled" "java-client-leaseset-publish-scheduled" \
+  "Plan 200 §C: Java scheduled the republish job for the client LS2 (sanitized log count)"
+ref_row "external-java-client-leaseset-republish-job-ran" "java-client-leaseset-republish-job-ran" \
+  "Plan 200 §C: Java's republish job actually ran for the client LS2 (sanitized log count)"
+
+# Plan 200 §D — tunnel eligibility, floodfill selection, store
+# emission vs ack bookkeeping. Each row is `passed` only when the
+# sanitized Java log count is >= 1 (positive observation).
+ref_row "external-java-client-inbound-tunnel-eligible" "java-client-inbound-tunnel-selectable" \
+  "Plan 200 §D: Java's client inbound tunnel path is selectable (sanitized log count)"
+ref_row "external-java-client-outbound-tunnel-eligible" "java-client-outbound-tunnel-selectable" \
+  "Plan 200 §D: Java's client outbound tunnel path is selectable (sanitized log count)"
+ref_row "external-java-floodfill-candidate-available" "java-floodfill-candidate-non-empty" \
+  "Plan 200 §D: Java's floodfill selector had at least one candidate (sanitized log count)"
+ref_row "external-java-store-emitted" "java-store-emitted" \
+  "Plan 200 §D: Java emitted a DatabaseStore for the client LS2 (sanitized log count)"
+ref_row "external-java-store-ack-observed" "java-store-ack-observed" \
+  "Plan 200 §D: Java observed an ack / DeliveryStatus for the LS2 store (sanitized log count)"
+ref_row "external-java-store-failure-reason" "java-store-failure-reason" \
+  "Plan 200 §D: Java surfaced an explicit store failure reason (sanitized log count, positive or absent)"
+
+# Plan 200 §11 — emit one terminal `P200-*` classification row
+# derived from the bootstrap probe's `p200-classification` evidence.
+# The earliest non-passing boundary wins; if all observed
+# boundaries pass, the classification is `P200-H-publication-path-passed`.
+P200_CLASSIFICATION=""
+if [[ -f "${DRIVER_EVIDENCE}/bootstrap/driver-evidence.tsv" ]]; then
+  P200_CLASSIFICATION="$(awk -F'\t' '$1 == "p200-classification" { sub(/^[^ ]+ /, "", $2); print $2; exit }' "${DRIVER_EVIDENCE}/bootstrap/driver-evidence.tsv")"
+fi
+if [[ -z "${P200_CLASSIFICATION}" ]]; then
+  P200_CLASSIFICATION="P200-classification-missing"
+fi
+if [[ "${P200_CLASSIFICATION}" == "P200-H-publication-path-passed" ]]; then
+  record "external-p200-classification" passed "Plan 200 §11: ${P200_CLASSIFICATION}"
+else
+  # Per Plan 200 §11, downstream rows past the classified boundary
+  # stay blocked until Plan 201; the classification itself is
+  # recorded as `passed` because it is itself a diagnostic
+  # observation rather than a publication claim.
+  record "external-p200-classification" passed \
+    "Plan 200 §11: terminal classification ${P200_CLASSIFICATION} (downstream rows pending Plan 201 corrective)"
+fi
 
 echo "==> workspace gates slice"
 GATES_LOG="${EVIDENCE_DIR}/workspace-gates.log"

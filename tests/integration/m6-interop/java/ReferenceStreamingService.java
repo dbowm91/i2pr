@@ -1,5 +1,19 @@
-// Plan 198 counted reference service.  The I2P side uses only the public
-// Streaming API.  The localhost control socket is test coordination only.
+// Plan 198 counted reference service; Plan 200 evidence-semantics
+// corrective.  The I2P side uses only the public Streaming API.  The
+// localhost control socket is test coordination only.
+//
+// Plan 200 §A.1 — `READY` (and the optional `STATUS` report)
+// intentionally says only what the helper process can prove locally:
+//
+//   public helper process alive
+//   I2CP session established
+//   Destination public material available
+//   control socket ready
+//
+// `READY` MUST NOT imply or assert that the destination's LeaseSet2
+// is network-visible.  Network-visible publication is a separate
+// question and is proved by the harness through ordinary I2NP
+// DatabaseLookup/Store traffic, never by helper readiness.
 
 import net.i2p.client.I2PClient;
 import net.i2p.client.I2PClientFactory;
@@ -29,9 +43,14 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class ReferenceStreamingService {
     private static final String PIN = "9134f808337b401e8e53c73734c81fab04280c9d";
+    // Plan 200 §A.1 — bounded, sanitized, non-publication facts only.
+    private static final String PUBLIC_CLIENT_SESSION_CONNECTED = "1";
+    private static final String PUBLIC_CLIENT_CONTROL_READY = "1";
+    private static final AtomicLong HELPER_START_MS = new AtomicLong(System.currentTimeMillis());
     private static final Map<Integer, I2PSocket> SOCKETS = new ConcurrentHashMap<>();
     private static final List<Integer> ACCEPTED = Collections.synchronizedList(new ArrayList<>());
     private static final List<Integer> CONNECTED = Collections.synchronizedList(new ArrayList<>());
@@ -118,7 +137,15 @@ public final class ReferenceStreamingService {
         I2PServerSocket server = manager.getServerSocket();
         Destination destination = session.getMyDestination();
         try (ServerSocket control = new ServerSocket(controlPort, 16, java.net.InetAddress.getByName("127.0.0.1"))) {
-            System.out.println("READY " + destination.toBase64() + " " + PIN);
+            // Plan 200 §A.1 — `READY` is intentionally the minimal helper
+            // process + session + destination + control-socket fact set;
+            // it MUST NOT include any publication claim. See
+            // ReferenceRawDestination for the same rationale.
+            System.out.println("READY PUBLIC_CLIENT_SESSION_CONNECTED=" + PUBLIC_CLIENT_SESSION_CONNECTED
+                + " PUBLIC_CLIENT_DESTINATION_LEN=" + destination.toBase64().length()
+                + " PUBLIC_CLIENT_CONTROL_READY=" + PUBLIC_CLIENT_CONTROL_READY
+                + " " + destination.toBase64()
+                + " " + PIN);
             System.out.flush();
             boolean stop = false;
             while (!stop) {
@@ -130,6 +157,21 @@ public final class ReferenceStreamingService {
                     String[] values = line.split(" ");
                     switch (values[0]) {
                         case "PING": output.println("PONG"); break;
+                        case "REPORT_STATUS": {
+                            // Plan 200 §A.2 — explicit, bounded status
+                            // report. Asserts ONLY helper-local facts;
+                            // never asserts publication or network
+                            // visibility (those are external questions
+                            // proved by the harness through ordinary I2NP
+                            // traffic).
+                            long uptimeMs = System.currentTimeMillis() - HELPER_START_MS.get();
+                            output.println("STATUS public_client_session_connected=" + PUBLIC_CLIENT_SESSION_CONNECTED
+                                + " public_client_destination_len=" + destination.toBase64().length()
+                                + " public_client_control_ready=" + PUBLIC_CLIENT_CONTROL_READY
+                                + " helper_uptime_ms=" + uptimeMs
+                                + " publications_observed=no");
+                            break;
+                        }
                         case "START_ACCEPT":
                             if (!accepting) {
                                 accepting = true;
