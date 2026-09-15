@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plan 199 / Plan 181 / Plan 202 — static evidence-integrity check
+# Plan 199 / Plan 181 / Plan 207 — static evidence-integrity check
 # for the M10 service-tunnel external lane.
 #
 # Rejects known dangerous bookkeeping in
@@ -36,14 +36,18 @@
 #   irc-user-hostname-authenticated-destination, irc-ctcp-policy-local,
 #   external-clean-resource-baseline, unsupported-profile-ledger.
 #
-# Blocked labels (Plan 199 / Plan 202 execution stop condition):
-#   remote-independent-http-eepsite, remote-independent-irc-service,
-#   m10-remote-destination-streaming-composition.
+# Blocked labels (Plan 207 execution stop condition):
+#   remote-independent-http-eepsite, remote-independent-irc-service.
 #
-# Plan 202 invariant: the positive M10 remote destination/Streaming
-# composition driver must exist, must fail closed when the exact-
-# pinned i2pd environment is absent, must never log peer key
-# material, and must not auto-pass via a literal record call site.
+# Plan 207 invariant: the positive M10 remote HTTP + IRC application
+# interop driver must exist, must fail closed when the exact-pinned
+# i2pd environment is absent, must never log peer key material, and
+# must not auto-pass via a literal record call site. The aggregate
+# pass row must derive from the documented Plan 207 §9 subfact rows
+# the driver writes to its evidence file (real system curl + real
+# exact-pinned jaraco/irc public API invocations); synthetic label
+# injection through `record_remote_application_observation` is
+# insufficient and fails the check.
 #
 # Usage: bash scripts/check-service-tunnel-acceptance-evidence.sh
 
@@ -56,7 +60,7 @@ JARACO_PIN="90e10e690da2c7bf60de21be4e36d24c9ffd7474"
 I2PD_PIN="635b013a612ff47278ef02acf8580a28e10e26c5"
 REMOTE_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_remote_qualification.rs"
 PLAN202_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_remote_transport_qualification.rs"
-PLAN203_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_application_remote_qualification.rs"
+PLAN207_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_application_genuine_remote_qualification.rs"
 
 GUARDED=(
   m10-prerequisite-plans
@@ -95,14 +99,21 @@ BLOCKED=(
   remote-independent-irc-service
 )
 
-# Plan 203 — positive remote HTTP + IRC application interop rows.
+# Plan 207 — positive remote HTTP + IRC application interop rows.
 # The full lane must flow through `record_guarded` and produce the
-# Plan 203 §5/§6 evidence keys (`http-remote-application-established`
-# and `irc-remote-application-established`). The static checker
-# rejects literal `record "... passed"` lines; the positive rows
-# must flow through `record_guarded` and reference the documented
-# Plan 203 evidence keys.
-PLAN203_POSITIVE=(
+# documented Plan 207 §9 subfact rows in
+# `${EVIDENCE_DIR}/plan207-driver/driver-evidence.tsv`. The static
+# checker rejects literal `record "... passed"` lines; the positive
+# rows must flow through `record_guarded` and reference the
+# command-derived subfacts the runner reads from the driver
+# evidence file (real system curl exit codes / body digests /
+# status codes + real exact-pinned jaraco/irc public API exit codes
+# / PRIVMSG round-trip / CTCP+DCC policy + Plan 206 backend
+# counter facts). The Plan 207 driver replaces the synthetic Plan
+# 203 `record_remote_application_observation` label-injection
+# pattern; the manager's free observation helper is no longer
+# sufficient as a counted proof.
+PLAN207_POSITIVE=(
   remote-independent-http-eepsite
   remote-independent-irc-service
 )
@@ -172,7 +183,7 @@ fi
 # 3. Remote rows must flow through `record_guarded` (positive) or
 # `record_blocked` (fail-closed) — never literal `record "...passed"`
 # and never a pass-capable literal record without `record_guarded`.
-# Plan 203 promotes the two remote rows from Plan 181's
+# Plan 207 promotes the two remote rows from Plan 181's
 # `blocked-only` shape to a positive-command-derived shape, so
 # both `record_blocked` and `record_guarded` call sites are
 # required (the row chooses one path based on whether the exact-
@@ -206,22 +217,22 @@ for label in "${PLAN202_TRANSITIONAL[@]}"; do
     failures=$((failures + 1))
   fi
 done
-# Plan 203 — positive remote HTTP + IRC application interop rows.
+# Plan 207 — positive remote HTTP + IRC application interop rows.
 # Both rows must flow through `record_guarded` AND `record_blocked`
 # (one path for the missing-env case, one for the positive case).
 # Literal `record "...passed"` lines remain forbidden; the positive
-# rows must reference the documented Plan 203 §5/§6 evidence keys.
-for label in "${PLAN203_POSITIVE[@]}"; do
+# rows must reference the documented Plan 207 §9 evidence keys.
+for label in "${PLAN207_POSITIVE[@]}"; do
   if grep -n -E "^[[:space:]]*record \"${label}\" passed" "${HARNESS}"; then
-    echo "evidence check failed: Plan 203 row '${label}' claims passed literally (must flow through record_guarded)" >&2
+    echo "evidence check failed: Plan 207 row '${label}' claims passed literally (must flow through record_guarded)" >&2
     failures=$((failures + 1))
   fi
   if ! grep -q -E "record_blocked \"${label}\"" "${HARNESS}"; then
-    echo "evidence check failed: Plan 203 row '${label}' has no record_blocked call site" >&2
+    echo "evidence check failed: Plan 207 row '${label}' has no record_blocked call site" >&2
     failures=$((failures + 1))
   fi
   if ! grep -q -E "record_guarded \"${label}\"|^[[:space:]]*record \"${label}\" passed" "${HARNESS}"; then
-    echo "evidence check failed: Plan 203 row '${label}' has no record_guarded or post-`record` call site" >&2
+    echo "evidence check failed: Plan 207 row '${label}' has no record_guarded or post-`record` call site" >&2
     failures=$((failures + 1))
   fi
 done
@@ -465,53 +476,119 @@ if ! grep -q -F 'inbound_owners' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tu
   failures=$((failures + 1))
 fi
 
-# 13. Plan 203 — M10 positive remote HTTP + IRC application interop
-# driver exists, is `#[ignore]`-gated, declares the
-# `m10_positive_remote_http_and_irc_application_interop` Direction
-# A test name, exercises `RemoteDeliveryCounters` +
+# 13. Plan 207 — M10 genuine remote HTTP + IRC application interop
+# corrective driver exists, is `#[ignore]`-gated, declares the
+# `m10_genuine_remote_http_and_irc_application_interop` Direction
+# A test name, exercises `RemoteDestinationBackend` +
 # `install_router_delivery_handle` + `routing_decision_for`, and
-# asserts `RoutingDecision::RemoteRouter`. The driver never logs
-# peer key material. The manager exposes
-# `record_remote_application_observation` and the documented
-# 18-label observation set the static checker reads.
-if [[ ! -f "${PLAN203_DRIVER}" ]]; then
-  echo "evidence check failed: Plan 203 positive remote HTTP/IRC driver missing: ${PLAN203_DRIVER}" >&2
+# asserts `RoutingDecision::RemoteRouter`. The driver spawns real
+# system `curl` subprocess invocations against the i2pr HTTP client
+# listener and real exact-pinned jaraco/irc public API subprocess
+# invocations against the i2pr IRC client listener. The driver
+# never logs peer key material, never calls
+# `record_remote_application_observation`, and never substitutes
+# an in-tree HTTP/IRC shadow client for `curl`/jaraco.
+#
+# Plan 207 replaces Plan 203 — the synthetic
+# `record_remote_application_observation` label-injection pattern
+# is no longer sufficient as a counted proof; the aggregate pass
+# row must derive from the documented Plan 207 §9 subfact rows.
+if [[ ! -f "${PLAN207_DRIVER}" ]]; then
+  echo "evidence check failed: Plan 207 genuine remote HTTP/IRC driver missing: ${PLAN207_DRIVER}" >&2
   failures=$((failures + 1))
 else
-  if ! grep -q -F '#[ignore = "Plan 203' "${PLAN203_DRIVER}"; then
-    echo "evidence check failed: Plan 203 driver lost its #[ignore] gate" >&2
+  if ! grep -q -F '#[ignore = "Plan 207' "${PLAN207_DRIVER}"; then
+    echo "evidence check failed: Plan 207 driver lost its #[ignore] gate" >&2
     failures=$((failures + 1))
   fi
-  if ! grep -q -F 'm10_positive_remote_http_and_irc_application_interop' "${PLAN203_DRIVER}"; then
-    echo "evidence check failed: Plan 203 driver lost its Direction A test name" >&2
+  if ! grep -q -F 'm10_genuine_remote_http_and_irc_application_interop' "${PLAN207_DRIVER}"; then
+    echo "evidence check failed: Plan 207 driver lost its test name" >&2
     failures=$((failures + 1))
   fi
-  if ! grep -q -F 'RemoteDeliveryCounters' "${PLAN203_DRIVER}" && ! grep -q -F 'install_router_delivery_handle' "${PLAN203_DRIVER}"; then
-    echo "evidence check failed: Plan 203 driver lost its RemoteDeliveryCounters / install_router_delivery_handle wiring" >&2
+  if ! grep -q -F 'RemoteDestinationBackend' "${PLAN207_DRIVER}"; then
+    echo "evidence check failed: Plan 207 driver lost its RemoteDestinationBackend wiring" >&2
     failures=$((failures + 1))
   fi
-  if ! grep -q -F 'RoutingDecision::RemoteRouter' "${PLAN203_DRIVER}"; then
-    echo "evidence check failed: Plan 203 driver lost its RemoteRouter classification assertion" >&2
+  if ! grep -q -F 'RoutingDecision::RemoteRouter' "${PLAN207_DRIVER}"; then
+    echo "evidence check failed: Plan 207 driver lost its RemoteRouter classification assertion" >&2
     failures=$((failures + 1))
   fi
-  if grep -n -E '(println!|print!|eprintln!)[^;]*(peer_pub_b64|PUB_B64|PUB=)' "${PLAN203_DRIVER}"; then
-    echo "evidence check failed: Plan 203 driver may log peer key material" >&2
+  # Plan 207 §7 — real subprocess invocations only. The driver must
+  # spawn `curl` as a subprocess and the exact-pinned jaraco/irc
+  # Python driver as a subprocess; an in-tree `reqwest`-equivalent
+  # HTTP shadow client or a hand-coded IRC protocol shadow client
+  # are explicitly forbidden.
+  if ! grep -q -E 'Command::new\(\s*curl_bin\s*\)|std::process::Command::new\(\s*curl_bin\s*\)|std::process::Command::new\(\s*curl\s*\)' "${PLAN207_DRIVER}" &&
+     ! grep -q -E 'Command::new\("curl"\)|std::process::Command::new\("curl"\)' "${PLAN207_DRIVER}"; then
+    echo "evidence check failed: Plan 207 driver does not spawn the system curl binary as a subprocess" >&2
     failures=$((failures + 1))
   fi
-  # The Plan 203 §5/§6 documented evidence keys the static checker
-  # gates on must appear in the driver output.
-  for key in \
-    http-remote-application-established \
-    irc-remote-application-established \
-    manager-routing-decision; do
-    if ! grep -q "\"${key}\"" "${PLAN203_DRIVER}"; then
-      echo "evidence check failed: Plan 203 driver missing append_evidence for ${key}" >&2
-      failures=$((failures + 1))
-    fi
-  done
+  if ! grep -q -F 'irc.client' "${PLAN207_DRIVER}" &&
+     ! grep -q -F 'irc_driver.py' "${PLAN207_DRIVER}"; then
+    echo "evidence check failed: Plan 207 driver does not invoke the jaraco/irc public API subprocess" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 207 §9 — the driver must write the documented subfact rows
+  # to the TSV evidence file via `append_evidence` / `write_subfact`
+  # / equivalent. The aggregate pass rows derive from these rows
+  # only; manual label injection through
+  # `record_remote_application_observation` is insufficient.
+  if ! grep -q -F 'http-command-exit' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'http-status' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'http-body-digest' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'http-multipacket-digest' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'http-fixture-observed' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'http-no-clearnet-fallback' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'http-policy-retained' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'http-remote-stream-established' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'http-local-coowned-not-used' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'http-clean-resource-baseline' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'irc-driver-exit' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'irc-registration-welcome' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'irc-ping-pong-roundtrip' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'irc-privmsg-outbound-observed' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'irc-privmsg-inbound-observed' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'irc-ctcp-action-allowed' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'irc-dcc-blocked' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'irc-privacy-hostname-rewrite' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'irc-remote-stream-established' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'irc-local-coowned-not-used' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'irc-clean-resource-baseline' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'plan206-backend-counters' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'http-remote-application-established' "${PLAN207_DRIVER}" ||
+     ! grep -q -F 'irc-remote-application-established' "${PLAN207_DRIVER}"; then
+    echo "evidence check failed: Plan 207 driver omits at least one documented Plan 207 §9 subfact row" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 207 §9 — forbid manual label injection through the manager's
+  # free `record_remote_application_observation` helper. The Plan
+  # 207 driver must not call this helper; the aggregate pass row
+  # must derive from the command-derived subfact rows only.
+  # Comment lines (`//!` / `///` / `//`) and whitespace are excluded
+  # so the check fires only on actual call sites.
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN207_DRIVER}" |
+     grep -q 'record_remote_application_observation'; then
+    echo "evidence check failed: Plan 207 driver must not call record_remote_application_observation (Plan 207 §9 forbids manual label injection)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -n -E '(println!|print!|eprintln!)[^;]*(peer_pub_b64|PUB_B64|PUB=)' "${PLAN207_DRIVER}"; then
+    echo "evidence check failed: Plan 207 driver may log peer key material" >&2
+    failures=$((failures + 1))
+  fi
 fi
-# The manager must expose the Plan 203 §11 typed observation
-# surface and the documented 18-label observation set.
+# Plan 203 legacy — the in-tree shadow driver is retained as a
+# historical scaffold (its `record_remote_application_observation`
+# label injection is no longer accepted as a positive proof by the
+# Plan 207 lane). The static checker no longer requires the
+# Plan 203 driver to exist on disk; the harness records the two
+# remote rows `blocked` when the Plan 207 driver is not present.
+# Plan 203 §11 typed observation surface is retained as a
+# backwards-compatible manager API; new code must not depend on it
+# for counted evidence.
+if [[ ! -f "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs" ]]; then
+  echo "evidence check failed: service_tunnels.rs source missing" >&2
+  failures=$((failures + 1))
+fi
 if ! grep -q 'fn record_remote_application_observation' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
   echo "evidence check failed: ServiceTunnelManager lost record_remote_application_observation" >&2
   failures=$((failures + 1))
@@ -520,30 +597,6 @@ if ! grep -q 'REMOTE_APPLICATION_DOCUMENTED_LABELS' "${REPO_ROOT}/crates/i2pr-da
   echo "evidence check failed: ServiceTunnelManager lost REMOTE_APPLICATION_DOCUMENTED_LABELS" >&2
   failures=$((failures + 1))
 fi
-for label in \
-  http-get-status \
-  http-get-body-digest \
-  http-multipacket-digest \
-  http-no-clearnet-fallback \
-  http-policy-retained \
-  http-remote-stream-established-counter \
-  http-local-coowned-not-used \
-  http-clean-resource-baseline \
-  irc-connection-established \
-  irc-registration-welcome \
-  irc-ping-pong-roundtrip \
-  irc-privmsg-roundtrip \
-  irc-ctcp-action-allowed \
-  irc-dcc-blocked \
-  irc-privacy-hostname-rewrite \
-  irc-remote-stream-established-counter \
-  irc-local-coowned-not-used \
-  irc-clean-resource-baseline; do
-  if ! grep -q "\"${label}\"" "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
-    echo "evidence check failed: ServiceTunnelManager missing REMOTE_APPLICATION_DOCUMENTED_LABELS entry '${label}'" >&2
-    failures=$((failures + 1))
-  fi
-done
 
 # The manager-level routing-decision / router-delivery seams must
 # also be exercised through the daemon's own unit tests so the

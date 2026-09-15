@@ -75,16 +75,18 @@ It must not own:
 
 The daemon remains the sole M10 socket/task/composition owner.
 Milestone 10 independent acceptance is retained under Plan 181 +
-Plan 203 (29 local rows passed; the two `remote-independent-*`
-rows now flip `blocked → passed-on-env` through the Plan 203
-positive external driver once the dedicated M6 interop lane
-provisions the SSU2 endpoint + bind tuple). The manager owns a
+Plan 207 (29 local rows passed; the two `remote-independent-*`
+rows now flip `blocked → passed-on-env` through the Plan 207
+genuine external driver once the dedicated M6 interop lane
+provisions the SSU2 endpoint + bind tuple and the driver emits
+every documented Plan 207 §9 subfact row + `plan206-backend-counters`
+in the same evidence directory/run id). The manager owns a
 single shared `ServiceDestinationDelivery` capability (Plan 202
-§5) — installed through the daemon composition root via
-`install_router_delivery_handle` and shared across every service
-the manager owns; the typed `RoutingDecision` enum distinguishes
-the explicit local co-owned path (`LocalCoOwned`) from the
-remote-router path (`RemoteRouter`) and the typed failure
+§5 / Plan 206 §5) — installed through the daemon composition root
+via `install_router_delivery_handle` and shared across every
+service the manager owns; the typed `RoutingDecision` enum
+distinguishes the explicit local co-owned path (`LocalCoOwned`)
+from the remote-router path (`RemoteRouter`) and the typed failure
 (`RemoteUnresolved`). Plan 206 (M10 production remote delivery
 composition corrective) promoted the marker-shape capability into
 an executable backend: `RemoteDestinationBackend` owns the shared
